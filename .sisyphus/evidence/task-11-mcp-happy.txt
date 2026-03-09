@@ -1,0 +1,56 @@
+> Task :core:checkKotlinGradlePluginConfigurationErrors
+> Task :core:preBuild UP-TO-DATE
+> Task :core:preDebugBuild UP-TO-DATE
+> Task :core:generateDebugResValues UP-TO-DATE
+> Task :core:generateDebugResources UP-TO-DATE
+> Task :core:packageDebugResources UP-TO-DATE
+> Task :core:parseDebugLocalResources UP-TO-DATE
+> Task :core:generateDebugRFile UP-TO-DATE
+> Task :core:compileDebugKotlin UP-TO-DATE
+> Task :core:javaPreCompileDebug UP-TO-DATE
+> Task :core:compileDebugJavaWithJavac NO-SOURCE
+> Task :core:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :core:processDebugJavaRes UP-TO-DATE
+> Task :core:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :mcp:checkKotlinGradlePluginConfigurationErrors
+> Task :mcp:preBuild UP-TO-DATE
+> Task :mcp:preDebugBuild UP-TO-DATE
+> Task :mcp:generateDebugResValues UP-TO-DATE
+> Task :mcp:generateDebugResources UP-TO-DATE
+> Task :mcp:packageDebugResources UP-TO-DATE
+> Task :mcp:parseDebugLocalResources UP-TO-DATE
+> Task :mcp:generateDebugRFile UP-TO-DATE
+> Task :persistence:checkKotlinGradlePluginConfigurationErrors
+> Task :persistence:preBuild UP-TO-DATE
+> Task :persistence:preDebugBuild UP-TO-DATE
+> Task :persistence:generateDebugResValues UP-TO-DATE
+> Task :persistence:generateDebugResources UP-TO-DATE
+> Task :persistence:packageDebugResources UP-TO-DATE
+> Task :persistence:parseDebugLocalResources UP-TO-DATE
+> Task :persistence:generateDebugRFile UP-TO-DATE
+> Task :persistence:compileDebugKotlin UP-TO-DATE
+> Task :persistence:javaPreCompileDebug UP-TO-DATE
+> Task :persistence:compileDebugJavaWithJavac NO-SOURCE
+> Task :persistence:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :mcp:compileDebugKotlin UP-TO-DATE
+> Task :mcp:javaPreCompileDebug UP-TO-DATE
+> Task :mcp:compileDebugJavaWithJavac NO-SOURCE
+> Task :mcp:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :mcp:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :mcp:preDebugUnitTestBuild UP-TO-DATE
+> Task :mcp:generateDebugUnitTestStubRFile UP-TO-DATE
+> Task :mcp:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :mcp:processDebugJavaRes UP-TO-DATE
+> Task :persistence:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :persistence:processDebugJavaRes UP-TO-DATE
+> Task :mcp:compileDebugUnitTestKotlin
+> Task :mcp:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :mcp:processDebugUnitTestJavaRes UP-TO-DATE
+
+> Task :mcp:testDebugUnitTest
+
+McpManagerTest > ManualEnablePersistence_persistsAcrossRegistryReload STANDARD_OUT
+    MCP_EVIDENCE_HAPPY serverId=community-local declaredTrustState=REQUIRES_MANUAL_ENABLE initialExposure=BLOCKED persistedTrustState=ENABLED persistedManuallyEnabled=true reloadedExposure=ACTIVE activeClientId=community-local authStatus=NOT_REQUIRED authReady=true
+
+BUILD SUCCESSFUL in 5s
+38 actionable tasks: 5 executed, 33 up-to-date

@@ -1,0 +1,39 @@
+# Build outputs
+**/build/
+/.gradle/
+
+# Dependency caches
+**/node_modules/
+
+# IDE metadata
+/.idea/
+/.vscode/
+/.settings/
+/.project
+**/.settings/
+**/.project
+**/.classpath
+*.iml
+
+# Local tool state and caches
+/.claude/
+/.codex/
+/.lsp/
+/.opencode/
+/.pytest_cache/
+/.ruff_cache/
+/%TEMP%/
+/tmp_refs/
+**/__pycache__/
+*.py[cod]
+*.pid
+*.log
+
+# Android/Gradle local files
+/local.properties
+/gradle-*-bin.zip
+
+# Sisyphus local scratch files
+/.sisyphus/notepads/
+/.sisyphus/boulder.json
+/.sisyphus/tools/

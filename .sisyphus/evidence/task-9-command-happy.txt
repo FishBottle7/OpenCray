@@ -1,0 +1,44 @@
+> Task :core:checkKotlinGradlePluginConfigurationErrors
+> Task :core:preBuild UP-TO-DATE
+> Task :core:preDebugBuild UP-TO-DATE
+> Task :core:generateDebugResValues UP-TO-DATE
+> Task :core:generateDebugResources UP-TO-DATE
+> Task :core:packageDebugResources UP-TO-DATE
+> Task :core:parseDebugLocalResources UP-TO-DATE
+> Task :core:generateDebugRFile UP-TO-DATE
+> Task :core:compileDebugKotlin UP-TO-DATE
+> Task :core:javaPreCompileDebug UP-TO-DATE
+> Task :core:compileDebugJavaWithJavac NO-SOURCE
+> Task :core:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :core:processDebugJavaRes UP-TO-DATE
+> Task :core:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :runtime:checkKotlinGradlePluginConfigurationErrors
+> Task :runtime:preBuild UP-TO-DATE
+> Task :runtime:preDebugBuild UP-TO-DATE
+> Task :runtime:generateDebugResValues UP-TO-DATE
+> Task :runtime:generateDebugResources UP-TO-DATE
+> Task :runtime:packageDebugResources UP-TO-DATE
+> Task :runtime:parseDebugLocalResources UP-TO-DATE
+> Task :runtime:generateDebugRFile UP-TO-DATE
+> Task :runtime:compileDebugKotlin UP-TO-DATE
+> Task :runtime:javaPreCompileDebug UP-TO-DATE
+> Task :runtime:compileDebugJavaWithJavac NO-SOURCE
+> Task :runtime:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :runtime:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :runtime:preDebugUnitTestBuild UP-TO-DATE
+> Task :runtime:generateDebugUnitTestStubRFile UP-TO-DATE
+> Task :runtime:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :runtime:processDebugJavaRes UP-TO-DATE
+> Task :runtime:compileDebugUnitTestKotlin
+> Task :runtime:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :runtime:processDebugUnitTestJavaRes UP-TO-DATE
+
+> Task :runtime:testDebugUnitTest
+
+CommandExecutorTest > runAllowedCommandExecutionEmitsAuditAndSpawnsOnce STANDARD_OUT
+    task9-command-happy command=echo args=hello spawn_count=1 spawned=true execution_status=SUCCESS exit_code=0 gate_status=ALLOWED gate_reason=ALLOW_POLICY_ALLOW error_code=null
+
+BUILD SUCCESSFUL in 24s
+27 actionable tasks: 4 executed, 23 up-to-date
+Learnings note: Enabling runtime unit-test stdout made the allowed-path audit line visible in captured Gradle evidence.
+Issues note: The happy-path evidence intentionally shows error_code=null because successful execution does not set one.

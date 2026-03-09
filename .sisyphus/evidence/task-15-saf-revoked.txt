@@ -1,0 +1,82 @@
+Task 15 evidence for SafRevocationRecoveryTest
+
+Manual instrumentation command
+adb shell am instrument -w -e class com.opencray.app.SafRevocationRecoveryTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+
+Manual instrumentation output
+com.opencray.app.SafRevocationRecoveryTest:.
+
+Time: 2.496
+
+OK (1 test)
+
+Manual WorkspaceSettingsActivity UI capture using EXTRA_SCENARIO=revoked_grant
+Launch command
+adb shell am start -S -W -n org.opencray.app/com.opencray.app.WorkspaceSettingsActivity --es com.opencray.app.WorkspaceSettingsActivity.extra.SCENARIO revoked_grant
+Screenshot: .sisyphus/evidence/task-15-workspace-revoked-grant.png
+XML dump: .sisyphus/evidence/task-15-workspace-revoked-grant.xml
+
+Visible texts confirmed from the revoked_grant manual capture
+Workspace access
+Seeded preview: the persisted SAF grant exists, but Android revoked it.
+RECOVERY NEEDED
+Workspace permission needs recovery
+A persisted grant record still exists, but Android reported the permission as revoked and the workflow should recover it explicitly.
+Workspace ID: workspace-saf-ui
+Request: Relative path • projects/demo/docs/report.md
+Granted root summary
+Saved grant: revoked • revoked-at=2000
+Workspace root: projects/demo
+SAF document root: primary:OpenCray/projects/demo
+Tree URI: content://com.android.externalstorage.documents/tree/primary%3AOpenCray%2Fprojects%2Fdemo
+Workspace permission was revoked
+Android no longer honors the saved SAF grant. Re-authorize workspace to recover access to projects/demo.
+The saved grant stays visible below so recovery can target the same root instead of asking the host to guess.
+Workspace actions
+Deterministic labels stay stable here so later instrumentation can target the picker flow without guessing.
+Re-authorize workspace to recover the saved root, or clear grant if this access should be forgotten.
+Re-authorize workspace
+
+Literal connectedDebugAndroidTest --tests attempt observed in this shell
+./gradlew.bat connectedDebugAndroidTest --tests com.opencray.app.SafRevocationRecoveryTest
+
+Output
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Problem configuring task :app:connectedDebugAndroidTest from command line.
+> Unknown command-line option '--tests'.
+
+* Try:
+> Run gradlew help --task :app:connectedDebugAndroidTest to get task usage details.
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 1s
+
+Connected instrumentation attempt that reproduces the current UTP or gRPC blocker
+./gradlew.bat connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.opencray.app.SafRevocationRecoveryTest
+
+Failure output tail observed
+Unable to start the gRPC server.
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:connectedDebugAndroidTest'.
+> java.util.concurrent.ExecutionException: java.lang.IllegalArgumentException: Unable to start the UTP test results listener gRPC server.
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 8s
+> Task :app:connectedDebugAndroidTest FAILED
+212 actionable tasks: 10 executed, 202 up-to-date
+
+Summary
+Manual adb instrumentation passed for SafRevocationRecoveryTest. The refreshed WorkspaceSettingsActivity QA artifacts now show the revoked recovery surface from the revoked_grant scenario and reference the state-specific screenshot and XML capture above. The literal connectedDebugAndroidTest --tests form is rejected on configuration, and the Android-filtered connectedDebugAndroidTest path remains blocked by UTP gRPC listener startup in this environment.

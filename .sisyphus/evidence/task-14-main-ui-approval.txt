@@ -1,0 +1,74 @@
+Task 14 evidence for ApprovalFlowExecutesAfterConsent
+
+Manual instrumentation command
+adb shell am instrument -w -e class com.opencray.app.ApprovalFlowExecutesAfterConsent org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+
+Manual instrumentation output
+com.opencray.app.ApprovalFlowExecutesAfterConsent:.
+
+Time: 2.133
+
+OK (1 test)
+
+Current MainInteractionActivity UI summary from manual QA artifacts
+Screenshot: .sisyphus/evidence/task-14-main-ui.png
+XML dump: .sisyphus/evidence/task-14-main-ui.xml
+
+Visible texts confirmed on the current Task 14 Main UI surface
+OpenCray Chat
+Safe mode is holding one queued workspace write for explicit approval.
+Queue visible • 1 waiting
+Hide queue
+Approval required
+Allow the queued workspace write so the prepared summary update can be applied.
+Waiting for a decision before the queued action can continue.
+Approve write
+Keep blocked
+Execution mode
+Safe, Auto, and Developer stay explicit so a future host can swap behavior without changing this view.
+Requests approval before sensitive actions.
+Reset agent identity
+
+Literal connectedDebugAndroidTest --tests attempt observed in this shell
+./gradlew.bat connectedDebugAndroidTest --tests com.opencray.app.ApprovalFlowExecutesAfterConsent
+
+Output
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Problem configuring task :app:connectedDebugAndroidTest from command line.
+> Unknown command-line option '--tests'.
+
+* Try:
+> Run gradlew help --task :app:connectedDebugAndroidTest to get task usage details.
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 1s
+
+Connected instrumentation attempt that reproduces the current UTP or gRPC blocker
+./gradlew.bat connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.opencray.app.ApprovalFlowExecutesAfterConsent
+
+Failure output tail observed
+> Task :app:connectedDebugAndroidTest FAILED
+174 actionable tasks: 8 executed, 166 up-to-date
+Unable to start the gRPC server.
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:connectedDebugAndroidTest'.
+> java.util.concurrent.ExecutionException: java.lang.IllegalArgumentException: Unable to start the UTP test results listener gRPC server.
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 7s
+
+Summary
+Manual adb instrumentation passed for ApprovalFlowExecutesAfterConsent. The current MainInteractionActivity QA artifacts still show the expected approval surface and reference the existing screenshot and XML dump above. The Gradle connected path remains blocked here, with the literal --tests form rejected on configuration and the Android-filtered connectedDebugAndroidTest path failing at UTP gRPC listener startup.

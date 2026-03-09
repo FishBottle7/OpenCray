@@ -1,0 +1,88 @@
+Command
+adb shell am instrument -r -w -e class com.opencray.app.SecurityPolicyE2ETest#pathEscapeDenialIsVisibleEndToEnd org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+
+Output
+INSTRUMENTATION_STATUS: class=com.opencray.app.SecurityPolicyE2ETest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stream=
+com.opencray.app.SecurityPolicyE2ETest:
+INSTRUMENTATION_STATUS: test=pathEscapeDenialIsVisibleEndToEnd
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=com.opencray.app.SecurityPolicyE2ETest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=pathEscapeDenialIsVisibleEndToEnd
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_RESULT: stream=
+
+Time: 1.726
+
+OK (1 test)
+
+
+Literal SecurityPolicyE2ETest.kt excerpt read from app/src/androidTest/kotlin/com/opencray/app/SecurityPolicyE2ETest.kt:103-129
+103:   private fun pathEscapeDenialOutcome(): SecurityOutcome {
+104:     val workspaceRoot = freshWorkspace("security-policy-e2e-path-escape")
+105:     val outsidePath = workspaceRoot.resolveSibling("security-policy-e2e-outside.txt")
+106:     Files.deleteIfExists(outsidePath)
+107: 
+108:     val policyDecision = decidePolicy(
+109:       modeName = "DEVELOPER",
+110:       toolClassName = "WRITE_FILE",
+111:       workspaceRoot = workspaceRoot,
+112:       targetPath = outsidePath,
+113:     )
+114:     assertEquals(PolicyDecisionOutcome.DENY, policyDecision.outcome)
+115:     assertEquals("DENY_PATH_ESCAPE", policyDecision.reasonCode)
+116: 
+117:     val runtimeFailure = executeBatchExpectingFailure(
+118:       workspaceRoot = workspaceRoot,
+119:       operation = writeOperation(outsidePath, "blocked"),
+120:     )
+121:     assertEquals("DENY_PATH_ESCAPE", runtimeFailure.reasonCode)
+122:     assertTrue(Files.notExists(outsidePath))
+123: 
+124:     return SecurityOutcome(
+125:       operationLabel = "Write outside approved workspace",
+126:       reasonCode = policyDecision.reasonCode,
+127:       promptMessage = "Path-escape denial blocked the write before any file could leave the approved workspace root.",
+128:       reasonText = buildReasonText(policyDecision, runtimeFailure),
+129:       detailFragment = "escapes",
+
+
+Literal SecurityPolicyE2ETest.kt excerpt read from app/src/androidTest/kotlin/com/opencray/app/SecurityPolicyE2ETest.kt:157-166
+157:   private fun assertDeniedUiVisible(outcome: SecurityOutcome) {
+158:     assertTextVisible("Blocked by policy")
+159:     assertTextVisible(outcome.promptMessage)
+160:     assertTextVisible(outcome.operationLabel)
+161:     assertTextVisible("POLICY DENY")
+162:     assertTextVisible("RESULT FAILED")
+163:     assertTextVisible("NO APPROVAL")
+164:     assertTextContainingVisible("Status: DENIED | Reason: ${outcome.reasonCode}")
+165:     assertTextContainingVisible(outcome.reasonCode)
+166:     assertTextContainingVisible(outcome.detailFragment)
+
+
+Quoted exact Gradle connected-test blocker output from .sisyphus/evidence/task-15-saf-happy.txt:50-69
+./gradlew.bat connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.opencray.app.SafGrantAllowsInRootOps
+
+Unable to start the gRPC server.
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:connectedDebugAndroidTest'.
+> java.util.concurrent.ExecutionException: java.lang.IllegalArgumentException: Unable to start the UTP test results listener gRPC server.
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 8s
+> Task :app:connectedDebugAndroidTest FAILED

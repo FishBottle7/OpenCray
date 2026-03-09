@@ -1,0 +1,209 @@
+> Task :clean UP-TO-DATE
+> Task :app:clean
+> Task :core:clean
+> Task :mcp:clean
+> Task :persistence:clean
+> Task :runtime:clean
+> Task :skills:clean
+> Task :ui:clean
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preDebugBuild UP-TO-DATE
+> Task :app:mergeDebugNativeDebugMetadata NO-SOURCE
+> Task :app:checkKotlinGradlePluginConfigurationErrors
+> Task :core:preBuild UP-TO-DATE
+> Task :core:preDebugBuild UP-TO-DATE
+> Task :mcp:preBuild UP-TO-DATE
+> Task :mcp:preDebugBuild UP-TO-DATE
+> Task :core:writeDebugAarMetadata
+> Task :persistence:preBuild UP-TO-DATE
+> Task :persistence:preDebugBuild UP-TO-DATE
+> Task :mcp:writeDebugAarMetadata
+> Task :runtime:preBuild UP-TO-DATE
+> Task :runtime:preDebugBuild UP-TO-DATE
+> Task :persistence:writeDebugAarMetadata
+> Task :skills:preBuild UP-TO-DATE
+> Task :skills:preDebugBuild UP-TO-DATE
+> Task :runtime:writeDebugAarMetadata
+> Task :ui:preBuild UP-TO-DATE
+> Task :ui:preDebugBuild UP-TO-DATE
+> Task :skills:writeDebugAarMetadata
+> Task :ui:writeDebugAarMetadata
+> Task :app:generateDebugResValues
+> Task :app:checkDebugAarMetadata
+> Task :core:generateDebugResValues
+> Task :core:generateDebugResources
+> Task :core:packageDebugResources
+> Task :mcp:generateDebugResValues
+> Task :mcp:generateDebugResources
+> Task :mcp:packageDebugResources
+> Task :persistence:generateDebugResValues
+> Task :persistence:generateDebugResources
+> Task :persistence:packageDebugResources
+> Task :runtime:generateDebugResValues
+> Task :runtime:generateDebugResources
+> Task :runtime:packageDebugResources
+> Task :skills:generateDebugResValues
+> Task :skills:generateDebugResources
+> Task :skills:packageDebugResources
+> Task :ui:generateDebugResValues
+> Task :ui:generateDebugResources
+> Task :ui:packageDebugResources
+> Task :app:mapDebugSourceSetPaths
+> Task :app:generateDebugResources
+> Task :app:mergeDebugResources
+> Task :app:packageDebugResources
+> Task :app:createDebugCompatibleScreenManifests
+> Task :app:parseDebugLocalResources
+> Task :app:extractDeepLinksDebug
+> Task :core:extractDeepLinksDebug
+> Task :mcp:extractDeepLinksDebug
+> Task :core:processDebugManifest
+> Task :persistence:extractDeepLinksDebug
+> Task :mcp:processDebugManifest
+> Task :runtime:extractDeepLinksDebug
+> Task :persistence:processDebugManifest
+> Task :skills:extractDeepLinksDebug
+> Task :runtime:processDebugManifest
+> Task :ui:extractDeepLinksDebug
+> Task :skills:processDebugManifest
+> Task :ui:processDebugManifest
+> Task :core:compileDebugLibraryResources
+> Task :app:processDebugMainManifest
+> Task :app:processDebugManifest
+> Task :core:parseDebugLocalResources
+> Task :mcp:compileDebugLibraryResources
+> Task :core:generateDebugRFile
+> Task :mcp:parseDebugLocalResources
+> Task :persistence:compileDebugLibraryResources
+> Task :mcp:generateDebugRFile
+> Task :persistence:parseDebugLocalResources
+> Task :runtime:compileDebugLibraryResources
+> Task :persistence:generateDebugRFile
+> Task :runtime:parseDebugLocalResources
+> Task :skills:compileDebugLibraryResources
+> Task :runtime:generateDebugRFile
+> Task :skills:parseDebugLocalResources
+> Task :ui:compileDebugLibraryResources
+> Task :core:checkKotlinGradlePluginConfigurationErrors
+> Task :skills:generateDebugRFile
+> Task :ui:parseDebugLocalResources
+> Task :mcp:checkKotlinGradlePluginConfigurationErrors
+> Task :core:javaPreCompileDebug
+> Task :ui:generateDebugRFile
+> Task :persistence:checkKotlinGradlePluginConfigurationErrors
+> Task :mcp:javaPreCompileDebug
+> Task :runtime:checkKotlinGradlePluginConfigurationErrors
+> Task :persistence:javaPreCompileDebug
+> Task :skills:checkKotlinGradlePluginConfigurationErrors
+> Task :runtime:javaPreCompileDebug
+> Task :ui:checkKotlinGradlePluginConfigurationErrors
+> Task :skills:javaPreCompileDebug
+> Task :ui:javaPreCompileDebug
+> Task :app:javaPreCompileDebug
+> Task :app:mergeDebugShaders
+> Task :app:compileDebugShaders NO-SOURCE
+> Task :app:processDebugManifestForPackage
+> Task :app:generateDebugAssets UP-TO-DATE
+> Task :core:mergeDebugShaders
+> Task :core:compileDebugShaders NO-SOURCE
+> Task :core:generateDebugAssets UP-TO-DATE
+> Task :core:packageDebugAssets
+> Task :mcp:mergeDebugShaders
+> Task :mcp:compileDebugShaders NO-SOURCE
+> Task :mcp:generateDebugAssets UP-TO-DATE
+> Task :mcp:packageDebugAssets
+> Task :persistence:mergeDebugShaders
+> Task :persistence:compileDebugShaders NO-SOURCE
+> Task :persistence:generateDebugAssets UP-TO-DATE
+> Task :core:compileDebugKotlin
+> Task :persistence:packageDebugAssets
+> Task :core:compileDebugJavaWithJavac NO-SOURCE
+> Task :core:bundleLibCompileToJarDebug
+> Task :runtime:mergeDebugShaders
+> Task :runtime:compileDebugShaders NO-SOURCE
+> Task :runtime:generateDebugAssets UP-TO-DATE
+> Task :runtime:packageDebugAssets
+> Task :skills:mergeDebugShaders
+> Task :skills:compileDebugShaders NO-SOURCE
+> Task :skills:generateDebugAssets UP-TO-DATE
+> Task :skills:packageDebugAssets
+> Task :ui:mergeDebugShaders
+> Task :ui:compileDebugShaders NO-SOURCE
+> Task :ui:generateDebugAssets UP-TO-DATE
+> Task :ui:packageDebugAssets
+> Task :app:mergeDebugAssets
+> Task :app:compressDebugAssets
+> Task :core:processDebugJavaRes
+> Task :app:checkDebugDuplicateClasses
+> Task :app:desugarDebugFileDependencies
+> Task :core:bundleLibRuntimeToDirDebug
+> Task :app:mergeDebugJniLibFolders
+> Task :core:bundleLibRuntimeToJarDebug
+> Task :app:processDebugResources
+> Task :mcp:compileDebugKotlin
+> Task :core:mergeDebugJniLibFolders
+> Task :mcp:compileDebugJavaWithJavac NO-SOURCE
+> Task :mcp:bundleLibCompileToJarDebug
+> Task :mcp:processDebugJavaRes
+> Task :core:mergeDebugNativeLibs NO-SOURCE
+> Task :mcp:bundleLibRuntimeToJarDebug
+> Task :core:copyDebugJniLibsProjectOnly
+> Task :mcp:bundleLibRuntimeToDirDebug
+> Task :mcp:mergeDebugJniLibFolders
+> Task :mcp:mergeDebugNativeLibs NO-SOURCE
+> Task :mcp:copyDebugJniLibsProjectOnly
+> Task :persistence:mergeDebugJniLibFolders
+> Task :persistence:mergeDebugNativeLibs NO-SOURCE
+> Task :persistence:copyDebugJniLibsProjectOnly
+> Task :runtime:mergeDebugJniLibFolders
+> Task :runtime:mergeDebugNativeLibs NO-SOURCE
+> Task :runtime:copyDebugJniLibsProjectOnly
+> Task :skills:mergeDebugJniLibFolders
+> Task :skills:mergeDebugNativeLibs NO-SOURCE
+> Task :skills:copyDebugJniLibsProjectOnly
+> Task :ui:mergeDebugJniLibFolders
+> Task :ui:mergeDebugNativeLibs NO-SOURCE
+> Task :ui:copyDebugJniLibsProjectOnly
+> Task :app:mergeExtDexDebug
+> Task :app:validateSigningDebug
+> Task :app:mergeDebugNativeLibs NO-SOURCE
+> Task :app:stripDebugDebugSymbols NO-SOURCE
+> Task :app:writeDebugAppMetadata
+> Task :app:writeDebugSigningConfigVersions
+> Task :persistence:compileDebugKotlin
+> Task :persistence:compileDebugJavaWithJavac NO-SOURCE
+> Task :persistence:bundleLibCompileToJarDebug
+> Task :persistence:processDebugJavaRes
+> Task :persistence:bundleLibRuntimeToJarDebug
+> Task :persistence:bundleLibRuntimeToDirDebug
+> Task :runtime:compileDebugKotlin
+> Task :runtime:compileDebugJavaWithJavac NO-SOURCE
+> Task :runtime:bundleLibCompileToJarDebug
+> Task :runtime:processDebugJavaRes
+> Task :runtime:bundleLibRuntimeToJarDebug
+> Task :runtime:bundleLibRuntimeToDirDebug
+> Task :skills:compileDebugKotlin
+> Task :skills:compileDebugJavaWithJavac NO-SOURCE
+> Task :skills:bundleLibCompileToJarDebug
+> Task :skills:processDebugJavaRes
+> Task :skills:bundleLibRuntimeToJarDebug
+> Task :ui:compileDebugKotlin
+> Task :ui:compileDebugJavaWithJavac NO-SOURCE
+> Task :skills:bundleLibRuntimeToDirDebug
+> Task :ui:bundleLibCompileToJarDebug
+> Task :ui:processDebugJavaRes
+> Task :ui:bundleLibRuntimeToJarDebug
+> Task :ui:bundleLibRuntimeToDirDebug
+> Task :app:mergeLibDexDebug
+> Task :app:compileDebugKotlin
+> Task :app:compileDebugJavaWithJavac NO-SOURCE
+> Task :app:processDebugJavaRes
+> Task :app:dexBuilderDebug
+> Task :app:mergeDebugJavaResource
+> Task :app:mergeProjectDexDebug
+> Task :app:packageDebug
+> Task :app:createDebugApkListingFileRedirect
+> Task :app:assembleDebug
+
+BUILD SUCCESSFUL in 10s
+154 actionable tasks: 153 executed, 1 up-to-date

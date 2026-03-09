@@ -1,0 +1,51 @@
+Command
+adb shell am instrument -w -e class com.opencray.app.SecurityPolicyE2ETest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+
+Output
+
+com.opencray.app.SecurityPolicyE2ETest:..
+
+Time: 3.117
+
+OK (2 tests)
+
+
+Command
+adb shell am instrument -w -e class com.opencray.app.RestartPersistenceTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+
+Output
+
+com.opencray.app.RestartPersistenceTest:.
+
+Time: 0.349
+
+OK (1 test)
+
+
+Command
+python -m pytest -q python_tests/test_runtime_policy_e2e.py
+
+Output
+...                                                                      [100%]
+3 passed in 18.66s
+
+
+Quoted exact Gradle connected-test blocker output from .sisyphus/evidence/task-15-saf-happy.txt:50-69
+./gradlew.bat connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.opencray.app.SafGrantAllowsInRootOps
+
+Unable to start the gRPC server.
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:connectedDebugAndroidTest'.
+> java.util.concurrent.ExecutionException: java.lang.IllegalArgumentException: Unable to start the UTP test results listener gRPC server.
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 8s
+> Task :app:connectedDebugAndroidTest FAILED

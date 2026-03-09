@@ -1,0 +1,13 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+____________________________ test_failure_example _____________________________
+
+    def test_failure_example():
+>       assert False, "intentional failure for diagnostics"
+E       AssertionError: intentional failure for diagnostics
+E       assert False
+
+python_tests\test_failure_fixture_tmp.py:2: AssertionError
+=========================== short test summary info ===========================
+FAILED python_tests/test_failure_fixture_tmp.py::test_failure_example - Asser...
+1 failed in 0.42s

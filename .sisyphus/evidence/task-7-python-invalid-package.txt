@@ -1,0 +1,15 @@
+Pytest evidence for `python_tests/test_runtime_invalid_package.py`
+
+Exact command used:
+`python -m pytest -q python_tests/test_runtime_invalid_package.py`
+
+Target test function:
+`test_runtime_install_invalid_package_fails_cleanly`
+
+Preserved pytest terminal output already stored in this artifact:
+.                                                                        [100%]
+1 passed in 8.08s
+
+Verification rerun with the same exact command during this remediation:
+.                                                                        [100%]
+1 passed in 27.45s

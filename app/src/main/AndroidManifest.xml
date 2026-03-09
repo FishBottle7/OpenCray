@@ -1,0 +1,32 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:allowBackup="true"
+        android:label="OpenCray App">
+        <activity
+            android:name="com.opencray.app.SkillsManagementActivity"
+            android:exported="true"
+            android:label="Skills Management"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name="com.opencray.app.MainInteractionActivity"
+            android:exported="true"
+            android:label="Main Interaction"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+        <activity
+            android:name="com.opencray.app.WorkspaceSettingsActivity"
+            android:exported="true"
+            android:label="Workspace Settings"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+        <activity
+            android:name="com.opencray.app.SafetyAndLimitsActivity"
+            android:exported="true"
+            android:label="OpenCray Safety and limits"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    </application>
+</manifest>

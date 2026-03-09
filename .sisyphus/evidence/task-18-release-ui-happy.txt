@@ -1,0 +1,64 @@
+Task 18 evidence for SafetyAndLimitsScreenTest
+
+Manual instrumentation command
+adb shell am instrument -w -e class com.opencray.app.SafetyAndLimitsScreenTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+
+Manual instrumentation output
+com.opencray.app.SafetyAndLimitsScreenTest:.
+
+Time: 2.199
+
+OK (1 test)
+
+Manual SafetyAndLimitsActivity UI QA references
+Screenshot
+.sisyphus/evidence/task-18-safety-ui.png
+
+XML dump
+.sisyphus/evidence/task-18-safety-ui.xml
+
+Strings visible in the current XML dump
+Safety and limits
+Developer mode does not override hard denials. Protected-file, path, and other hard policy denials still stop the action.
+
+Additional strings already confirmed in the same manual SafetyAndLimitsActivity QA pass
+Rollback is local-only, not guaranteed for remote/external side effects such as shell commands, MCP actions, network requests, cloud changes, or any other external system change.
+V1 does not ship real Termux execution.
+Defaults: Enable telemetry = Off. Enable privacy guard = On.
+Current: Off • Default: Off • No telemetry leaves the device.
+Current: On • Default: On • Local redaction stays enabled for eligible analytics and audit details.
+
+Connected Gradle path blocker note
+On 2026-03-09, both of these connected Gradle paths succeeded in this shell instead of reproducing the older blocker:
+./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.opencray.app.SafetyAndLimitsScreenTest
+./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.opencray.app.SafetyAndLimitsScreenTest
+
+Exact previously observed UTP or gRPC blocker quote, preserved verbatim from real evidence because it did not reproduce today
+Source
+.sisyphus/evidence/task-15-saf-happy.txt
+
+Connected instrumentation attempt that reproduces the environment blocker
+./gradlew.bat connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.opencray.app.SafGrantAllowsInRootOps
+
+Failure output tail observed
+Unable to start the gRPC server.
+> Task :app:connectedDebugAndroidTest
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:connectedDebugAndroidTest'.
+> java.util.concurrent.ExecutionException: java.lang.IllegalArgumentException: Unable to start the UTP test results listener gRPC server.
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 11s
+> Task :app:connectedDebugAndroidTest FAILED
+174 actionable tasks: 9 executed, 165 up-to-date
+
+Summary
+Manual adb instrumentation passed for SafetyAndLimitsScreenTest. The current Task 18 screenshot and XML references still anchor the Safety and limits disclosure surface, and the exact previously observed UTP gRPC blocker is preserved above as a verbatim real-output quote.

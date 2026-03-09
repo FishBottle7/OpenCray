@@ -1,0 +1,6 @@
+.                                                                        [100%]
+1 passed in 8.76s
+
+
+Learnings note: Captured exact pytest terminal output for the happy-path runtime test.
+Issues note: None.

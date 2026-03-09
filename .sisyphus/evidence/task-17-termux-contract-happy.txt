@@ -1,0 +1,48 @@
+> Task :core:checkKotlinGradlePluginConfigurationErrors
+> Task :core:preBuild UP-TO-DATE
+> Task :core:preDebugBuild UP-TO-DATE
+> Task :core:generateDebugResValues UP-TO-DATE
+> Task :core:generateDebugResources UP-TO-DATE
+> Task :core:packageDebugResources UP-TO-DATE
+> Task :core:parseDebugLocalResources UP-TO-DATE
+> Task :core:generateDebugRFile UP-TO-DATE
+> Task :core:compileDebugKotlin UP-TO-DATE
+> Task :core:javaPreCompileDebug UP-TO-DATE
+> Task :core:compileDebugJavaWithJavac NO-SOURCE
+> Task :core:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :core:processDebugJavaRes UP-TO-DATE
+> Task :core:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :runtime:checkKotlinGradlePluginConfigurationErrors
+> Task :runtime:preBuild UP-TO-DATE
+> Task :runtime:preDebugBuild UP-TO-DATE
+> Task :runtime:generateDebugResValues UP-TO-DATE
+> Task :runtime:generateDebugResources UP-TO-DATE
+> Task :runtime:packageDebugResources UP-TO-DATE
+> Task :runtime:parseDebugLocalResources UP-TO-DATE
+> Task :runtime:generateDebugRFile UP-TO-DATE
+> Task :runtime:compileDebugKotlin UP-TO-DATE
+> Task :runtime:javaPreCompileDebug UP-TO-DATE
+> Task :runtime:compileDebugJavaWithJavac NO-SOURCE
+> Task :runtime:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :runtime:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :runtime:preDebugUnitTestBuild UP-TO-DATE
+> Task :runtime:generateDebugUnitTestStubRFile UP-TO-DATE
+> Task :runtime:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :runtime:processDebugJavaRes UP-TO-DATE
+> Task :runtime:compileDebugUnitTestKotlin
+> Task :runtime:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :runtime:processDebugUnitTestJavaRes UP-TO-DATE
+
+> Task :runtime:testDebugUnitTest
+
+RuntimeAdapterParityTest > runNoTermuxHardDependencyInV1ReturnsDeterministicUnavailableStubResponse STANDARD_OUT
+    task17-termux-contract-failure-guard operation=exec task_id=task-no-termux-hard-dependency python_executable=definitely-not-a-real-python-binary backend=termux_stub runtime_backend=termux_stub termux_available=false termux_v1_marker=unavailable_in_v1 status=denied error_code=TERMUX_UNAVAILABLE
+
+RuntimeAdapterParityTest > runRuntimeAdapterParityPreservesNormalizedEnvelopeAcrossInAppAndStubMappings STANDARD_OUT
+    task17-termux-contract-happy-exec operation=exec task_id=task-exec-parity in_app_backend=in_app stub_backend=termux_stub in_app_runtime_backend=in_app stub_runtime_backend=termux_stub termux_available=false termux_v1_marker=unavailable_in_v1 in_app_status=success stub_status=denied stub_error_code=TERMUX_UNAVAILABLE
+    task17-termux-contract-happy-install operation=install_dependencies task_id=task-install-parity in_app_backend=in_app stub_backend=termux_stub in_app_runtime_backend=in_app stub_runtime_backend=termux_stub termux_available=false termux_v1_marker=unavailable_in_v1 in_app_status=success stub_status=denied stub_error_code=TERMUX_UNAVAILABLE
+
+BUILD SUCCESSFUL in 3s
+27 actionable tasks: 4 executed, 23 up-to-date
+Learnings note: The parity evidence now shows exec and install operation types alongside in-app versus termux-stub backend markers and V1 availability metadata.
+Issues note: The exact `*RuntimeAdapterParity*` Gradle filter also runs the guard test because the class name matches the pattern, so that real output includes both summaries.

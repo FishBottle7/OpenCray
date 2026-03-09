@@ -1,0 +1,35 @@
+
+
+FAILURE: Build completed with 2 failures.
+
+1: Task failed with an exception.
+-----------
+* Where:
+Build file 'D:\codes\MobileProjects\OpenCray\app\build.gradle.kts' line: 38
+
+* What went wrong:
+Project with path ':mcp' could not be found in project ':app'.
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+==============================================================================
+
+2: Task failed with an exception.
+-----------
+* Where:
+Build file 'D:\codes\MobileProjects\OpenCray\app\build.gradle.kts' line: 38
+
+* What went wrong:
+Project with path ':mcp' could not be found in project ':app'.
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+==============================================================================
+
+BUILD FAILED in 2s

@@ -1,0 +1,42 @@
+> Task :core:checkKotlinGradlePluginConfigurationErrors
+> Task :core:preBuild UP-TO-DATE
+> Task :core:preDebugBuild UP-TO-DATE
+> Task :core:generateDebugResValues UP-TO-DATE
+> Task :core:generateDebugResources UP-TO-DATE
+> Task :core:packageDebugResources UP-TO-DATE
+> Task :core:parseDebugLocalResources UP-TO-DATE
+> Task :core:generateDebugRFile UP-TO-DATE
+> Task :core:compileDebugKotlin UP-TO-DATE
+> Task :core:javaPreCompileDebug UP-TO-DATE
+> Task :core:compileDebugJavaWithJavac NO-SOURCE
+> Task :core:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :core:processDebugJavaRes UP-TO-DATE
+> Task :core:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :skills:checkKotlinGradlePluginConfigurationErrors
+> Task :skills:preBuild UP-TO-DATE
+> Task :skills:preDebugBuild UP-TO-DATE
+> Task :skills:generateDebugResValues UP-TO-DATE
+> Task :skills:generateDebugResources UP-TO-DATE
+> Task :skills:packageDebugResources UP-TO-DATE
+> Task :skills:parseDebugLocalResources UP-TO-DATE
+> Task :skills:generateDebugRFile UP-TO-DATE
+> Task :skills:compileDebugKotlin UP-TO-DATE
+> Task :skills:javaPreCompileDebug UP-TO-DATE
+> Task :skills:compileDebugJavaWithJavac NO-SOURCE
+> Task :skills:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :skills:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :skills:preDebugUnitTestBuild UP-TO-DATE
+> Task :skills:generateDebugUnitTestStubRFile UP-TO-DATE
+> Task :skills:compileDebugUnitTestKotlin UP-TO-DATE
+> Task :skills:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :skills:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :skills:processDebugJavaRes UP-TO-DATE
+> Task :skills:processDebugUnitTestJavaRes UP-TO-DATE
+
+> Task :skills:testDebugUnitTest
+
+SkillEngineTest > testSkillValidationRejectsMalformed STANDARD_OUT
+    TASK10 invalid skillName=broken-skill reasonCode=INVALID_SKILL_METADATA invalidField=user-invocable registryEntryCreated=false
+
+BUILD SUCCESSFUL in 2s
+27 actionable tasks: 3 executed, 24 up-to-date

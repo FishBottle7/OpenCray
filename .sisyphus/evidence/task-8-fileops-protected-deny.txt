@@ -1,0 +1,58 @@
+> Task :core:checkKotlinGradlePluginConfigurationErrors
+> Task :core:preBuild UP-TO-DATE
+> Task :core:preDebugBuild UP-TO-DATE
+> Task :core:generateDebugResValues UP-TO-DATE
+> Task :core:generateDebugResources UP-TO-DATE
+> Task :core:packageDebugResources UP-TO-DATE
+> Task :core:parseDebugLocalResources UP-TO-DATE
+> Task :core:generateDebugRFile UP-TO-DATE
+> Task :core:compileDebugKotlin UP-TO-DATE
+> Task :core:javaPreCompileDebug UP-TO-DATE
+> Task :core:compileDebugJavaWithJavac NO-SOURCE
+> Task :core:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :core:processDebugJavaRes UP-TO-DATE
+> Task :filesystem:checkKotlinGradlePluginConfigurationErrors
+> Task :filesystem:preBuild UP-TO-DATE
+> Task :filesystem:preDebugBuild UP-TO-DATE
+> Task :filesystem:generateDebugResValues UP-TO-DATE
+> Task :filesystem:generateDebugResources UP-TO-DATE
+> Task :filesystem:packageDebugResources UP-TO-DATE
+> Task :filesystem:parseDebugLocalResources UP-TO-DATE
+> Task :filesystem:generateDebugRFile UP-TO-DATE
+> Task :core:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :policy:checkKotlinGradlePluginConfigurationErrors
+> Task :policy:preBuild UP-TO-DATE
+> Task :policy:preDebugBuild UP-TO-DATE
+> Task :policy:generateDebugResValues UP-TO-DATE
+> Task :policy:generateDebugResources UP-TO-DATE
+> Task :policy:packageDebugResources UP-TO-DATE
+> Task :policy:parseDebugLocalResources UP-TO-DATE
+> Task :policy:generateDebugRFile UP-TO-DATE
+> Task :policy:compileDebugKotlin UP-TO-DATE
+> Task :policy:javaPreCompileDebug UP-TO-DATE
+> Task :policy:compileDebugJavaWithJavac NO-SOURCE
+> Task :policy:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :filesystem:compileDebugKotlin UP-TO-DATE
+> Task :filesystem:javaPreCompileDebug UP-TO-DATE
+> Task :filesystem:compileDebugJavaWithJavac NO-SOURCE
+> Task :filesystem:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :filesystem:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :filesystem:preDebugUnitTestBuild UP-TO-DATE
+> Task :filesystem:generateDebugUnitTestStubRFile UP-TO-DATE
+> Task :filesystem:compileDebugUnitTestKotlin UP-TO-DATE
+> Task :filesystem:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :filesystem:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :filesystem:processDebugJavaRes UP-TO-DATE
+> Task :filesystem:processDebugUnitTestJavaRes UP-TO-DATE
+> Task :policy:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :policy:processDebugJavaRes UP-TO-DATE
+
+> Task :filesystem:testDebugUnitTest
+
+ProtectedRenameDeniedTest > protectedRenameIsDeniedWithDeterministicReasonCode STANDARD_OUT
+    protected hash before=9b2bbce6c72dd9bbd9c7a9976d5d76d1fcc2bb9832dec246375bb92006beccc3
+    protected hash after=9b2bbce6c72dd9bbd9c7a9976d5d76d1fcc2bb9832dec246375bb92006beccc3
+    protected hash unchanged=true
+
+BUILD SUCCESSFUL in 2s
+38 actionable tasks: 4 executed, 34 up-to-date

@@ -1,0 +1,91 @@
+Task 13 evidence for SkillsManagementLifecycleTest
+
+Manual instrumentation command
+adb shell am instrument -w -e class com.opencray.app.SkillsManagementLifecycleTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+
+Manual instrumentation output
+com.opencray.app.SkillsManagementLifecycleTest:.
+
+Time: 2.339
+
+OK (1 test)
+
+Manual SkillsManagementActivity launch command
+adb shell am start -W -n org.opencray.app/com.opencray.app.SkillsManagementActivity
+
+Launch output
+Starting: Intent { cmp=org.opencray.app/com.opencray.app.SkillsManagementActivity }
+Status: ok
+LaunchState: COLD
+Activity: org.opencray.app/com.opencray.app.SkillsManagementActivity
+TotalTime: 587
+WaitTime: 588
+Complete
+
+Visible UI texts extracted after launch from .sisyphus/evidence/task-13-skills-ui.xml
+Skills Management
+In-memory skill list with create/edit, lifecycle controls, install/uninstall, and package import/export.
+Current state
+This surface stays in memory for now. Save still validates against Task 10 metadata semantics.
+Loaded seeded in-memory skills for the Task 13 foundation.
+Skill list
+Select a skill to edit it, or start a fresh draft.
+Create new draft
+workspace-audit
+Reviews workspace state before deeper execution.
+active • installed • explicit-only • inline
+tool permissions=2 • subagent permissions=0
+Editing
+forked-review
+Escalates a heavier review path through a forked subagent.
+disabled • not installed • explicit-and-implicit • fork
+tool permissions=2 • subagent permissions=1
+Open in editor
+
+Screenshot
+.sisyphus/evidence/task-13-skills-management-ui.png
+
+Literal connectedDebugAndroidTest --tests attempt observed in this shell
+./gradlew.bat connectedDebugAndroidTest --tests com.opencray.app.SkillsManagementLifecycleTest
+
+Output
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Problem configuring task :app:connectedDebugAndroidTest from command line.
+> Unknown command-line option '--tests'.
+
+* Try:
+> Run gradlew help --task :app:connectedDebugAndroidTest to get task usage details.
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 2s
+
+Connected instrumentation attempt that reproduces the environment blocker
+./gradlew.bat connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.opencray.app.SkillsManagementLifecycleTest
+
+Failure output tail observed
+Unable to start the gRPC server.
+> Task :app:connectedDebugAndroidTest
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:connectedDebugAndroidTest'.
+> java.util.concurrent.ExecutionException: java.lang.IllegalArgumentException: Unable to start the UTP test results listener gRPC server.
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 11s
+> Task :app:connectedDebugAndroidTest FAILED
+174 actionable tasks: 9 executed, 165 up-to-date
+
+Summary
+Manual adb instrumentation passed for SkillsManagementLifecycleTest, SkillsManagementActivity launched successfully, and the current visible summary text matches the in-memory Task 13 QA surface. The Gradle connected path is still blocked in this environment, with the Android-filtered invocation failing at the UTP gRPC listener startup stage.

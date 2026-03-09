@@ -1,0 +1,42 @@
+> Task :core:checkKotlinGradlePluginConfigurationErrors
+> Task :core:preBuild UP-TO-DATE
+> Task :core:preDebugBuild UP-TO-DATE
+> Task :core:generateDebugResValues UP-TO-DATE
+> Task :core:generateDebugResources UP-TO-DATE
+> Task :core:packageDebugResources UP-TO-DATE
+> Task :core:parseDebugLocalResources UP-TO-DATE
+> Task :core:generateDebugRFile UP-TO-DATE
+> Task :core:compileDebugKotlin UP-TO-DATE
+> Task :core:javaPreCompileDebug UP-TO-DATE
+> Task :core:compileDebugJavaWithJavac NO-SOURCE
+> Task :core:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :core:processDebugJavaRes UP-TO-DATE
+> Task :core:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :llm:checkKotlinGradlePluginConfigurationErrors
+> Task :llm:preBuild UP-TO-DATE
+> Task :llm:preDebugBuild UP-TO-DATE
+> Task :llm:generateDebugResValues UP-TO-DATE
+> Task :llm:generateDebugResources UP-TO-DATE
+> Task :llm:packageDebugResources UP-TO-DATE
+> Task :llm:parseDebugLocalResources UP-TO-DATE
+> Task :llm:generateDebugRFile UP-TO-DATE
+> Task :llm:compileDebugKotlin UP-TO-DATE
+> Task :llm:javaPreCompileDebug UP-TO-DATE
+> Task :llm:compileDebugJavaWithJavac NO-SOURCE
+> Task :llm:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :llm:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :llm:preDebugUnitTestBuild UP-TO-DATE
+> Task :llm:generateDebugUnitTestStubRFile UP-TO-DATE
+> Task :llm:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :llm:processDebugJavaRes UP-TO-DATE
+> Task :llm:compileDebugUnitTestKotlin
+> Task :llm:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :llm:processDebugUnitTestJavaRes UP-TO-DATE
+
+> Task :llm:testDebugUnitTest
+
+LiteLlmGatewayTest > runProviderRouteSelectionRespectsActiveProfileSwitchingWithoutRestart STANDARD_OUT
+    TASK12 happy initial_active_profile=profile-openai initial_selected_provider=openai initial_selected_route=route-openai-primary initial_selected_model=gpt-4o-mini switched_active_profile=profile-anthropic switched_selected_provider=anthropic switched_selected_route=route-anthropic-primary switched_selected_model=claude-3-5-sonnet request_log_keys=traceId response_log_keys=providerRequestId
+
+BUILD SUCCESSFUL in 9s
+27 actionable tasks: 4 executed, 23 up-to-date

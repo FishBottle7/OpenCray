@@ -1,0 +1,80 @@
+Task 15 evidence for SafGrantAllowsInRootOps
+
+Manual instrumentation command
+adb shell am instrument -w -e class com.opencray.app.SafGrantAllowsInRootOps org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+
+Manual instrumentation output
+com.opencray.app.SafGrantAllowsInRootOps:.
+
+Time: 2.562
+
+OK (1 test)
+
+Manual WorkspaceSettingsActivity UI capture using EXTRA_SCENARIO=active_grant
+Launch command
+adb shell am start -S -W -n org.opencray.app/com.opencray.app.WorkspaceSettingsActivity --es com.opencray.app.WorkspaceSettingsActivity.extra.SCENARIO active_grant
+Screenshot: .sisyphus/evidence/task-15-workspace-active-grant.png
+XML dump: .sisyphus/evidence/task-15-workspace-active-grant.xml
+
+Visible texts confirmed from the active_grant manual capture
+Workspace access
+Seeded preview: the persisted SAF grant is active for an in-root request.
+GRANT ACTIVE
+Workspace grant active
+The request sits inside the stored SAF root, so later host wiring can continue without asking for a new permission grant.
+Workspace ID: workspace-saf-ui
+Request: Relative path • projects/demo/docs/report.md
+Granted root summary
+Saved grant: granted
+Workspace root: projects/demo
+SAF document root: primary:OpenCray/projects/demo
+Tree URI: content://com.android.externalstorage.documents/tree/primary%3AOpenCray%2Fprojects%2Fdemo
+Workspace actions
+Deterministic labels stay stable here so later instrumentation can target the picker flow without guessing.
+The grant is active. Pick workspace to change roots or clear grant to remove the saved access.
+Pick workspace
+Clear grant
+
+Literal connectedDebugAndroidTest --tests attempt observed in this shell
+./gradlew.bat connectedDebugAndroidTest --tests com.opencray.app.SafGrantAllowsInRootOps
+
+Output
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Problem configuring task :app:connectedDebugAndroidTest from command line.
+> Unknown command-line option '--tests'.
+
+* Try:
+> Run gradlew help --task :app:connectedDebugAndroidTest to get task usage details.
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 1s
+
+Connected instrumentation attempt that reproduces the current UTP or gRPC blocker
+./gradlew.bat connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.opencray.app.SafGrantAllowsInRootOps
+
+Failure output tail observed
+Unable to start the gRPC server.
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:connectedDebugAndroidTest'.
+> java.util.concurrent.ExecutionException: java.lang.IllegalArgumentException: Unable to start the UTP test results listener gRPC server.
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 8s
+> Task :app:connectedDebugAndroidTest FAILED
+212 actionable tasks: 12 executed, 200 up-to-date
+
+Summary
+Manual adb instrumentation passed for SafGrantAllowsInRootOps. The refreshed WorkspaceSettingsActivity QA artifacts now show the active persisted grant surface from the active_grant scenario and reference the state-specific screenshot and XML capture above. The literal connectedDebugAndroidTest --tests form is rejected on configuration, and the Android-filtered connectedDebugAndroidTest path remains blocked by UTP gRPC listener startup in this environment.

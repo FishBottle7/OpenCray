@@ -1,0 +1,25 @@
+> Task :core:checkKotlinGradlePluginConfigurationErrors
+> Task :core:preBuild UP-TO-DATE
+> Task :core:preDebugBuild UP-TO-DATE
+> Task :core:generateDebugResValues
+> Task :core:generateDebugResources
+> Task :core:packageDebugResources
+> Task :core:parseDebugLocalResources
+> Task :core:preDebugUnitTestBuild UP-TO-DATE
+> Task :core:javaPreCompileDebug
+> Task :core:javaPreCompileDebugUnitTest
+> Task :core:processDebugManifest
+> Task :core:generateDebugRFile
+> Task :core:generateDebugUnitTestStubRFile
+> Task :core:compileDebugKotlin
+> Task :core:compileDebugJavaWithJavac NO-SOURCE
+> Task :core:bundleLibRuntimeToJarDebug
+> Task :core:bundleLibCompileToJarDebug
+> Task :core:processDebugJavaRes
+> Task :core:compileDebugUnitTestKotlin
+> Task :core:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :core:processDebugUnitTestJavaRes
+> Task :core:testDebugUnitTest
+
+BUILD SUCCESSFUL in 7s
+16 actionable tasks: 16 executed

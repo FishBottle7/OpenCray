@@ -1,0 +1,44 @@
+> Task :core:checkKotlinGradlePluginConfigurationErrors
+> Task :core:preBuild UP-TO-DATE
+> Task :core:preDebugBuild UP-TO-DATE
+> Task :core:generateDebugResValues UP-TO-DATE
+> Task :core:generateDebugResources UP-TO-DATE
+> Task :core:packageDebugResources UP-TO-DATE
+> Task :core:parseDebugLocalResources UP-TO-DATE
+> Task :core:generateDebugRFile UP-TO-DATE
+> Task :core:compileDebugKotlin UP-TO-DATE
+> Task :core:javaPreCompileDebug UP-TO-DATE
+> Task :core:compileDebugJavaWithJavac NO-SOURCE
+> Task :core:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :core:processDebugJavaRes UP-TO-DATE
+> Task :core:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :runtime:checkKotlinGradlePluginConfigurationErrors
+> Task :runtime:preBuild UP-TO-DATE
+> Task :runtime:preDebugBuild UP-TO-DATE
+> Task :runtime:generateDebugResValues UP-TO-DATE
+> Task :runtime:generateDebugResources UP-TO-DATE
+> Task :runtime:packageDebugResources UP-TO-DATE
+> Task :runtime:parseDebugLocalResources UP-TO-DATE
+> Task :runtime:generateDebugRFile UP-TO-DATE
+> Task :runtime:compileDebugKotlin UP-TO-DATE
+> Task :runtime:javaPreCompileDebug UP-TO-DATE
+> Task :runtime:compileDebugJavaWithJavac NO-SOURCE
+> Task :runtime:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :runtime:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :runtime:preDebugUnitTestBuild UP-TO-DATE
+> Task :runtime:generateDebugUnitTestStubRFile UP-TO-DATE
+> Task :runtime:compileDebugUnitTestKotlin UP-TO-DATE
+> Task :runtime:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :runtime:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :runtime:processDebugJavaRes UP-TO-DATE
+> Task :runtime:processDebugUnitTestJavaRes UP-TO-DATE
+
+> Task :runtime:testDebugUnitTest
+
+CommandExecutorTest > runDeniedCommandNoSpawnEmitsAuditRecord STANDARD_OUT
+    task9-command-deny command=rm args=-rf / spawn_count=0 spawned=false execution_status=DENIED exit_code=null gate_status=DENIED gate_reason=DENY_POLICY_DECISION error_code=DENY_POLICY
+
+BUILD SUCCESSFUL in 5s
+27 actionable tasks: 3 executed, 24 up-to-date
+Learnings note: The denied-path evidence now captures deterministic gate, spawn, and error-code details from the targeted unit test.
+Issues note: This evidence file reflects the direct policy-deny case, while approval-required denial is covered by a separate test.

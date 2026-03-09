@@ -1,0 +1,93 @@
+Task 4 restart-safe persistence evidence
+
+This artifact records the deterministic local JVM evidence currently available for restart-safe persistence in `RestartSafePersistenceTest`.
+It is not a connected Android instrumentation run. No connected instrumentation was executed or claimed here.
+
+Exact targeted test command
+
+```text
+./gradlew :persistence:testDebugUnitTest --tests "*RestartSafePersistenceTest*"
+```
+
+Observed command output
+
+```text
+> Task :core:checkKotlinGradlePluginConfigurationErrors
+> Task :core:preBuild UP-TO-DATE
+> Task :core:preDebugBuild UP-TO-DATE
+> Task :core:generateDebugResValues UP-TO-DATE
+> Task :core:generateDebugResources UP-TO-DATE
+> Task :core:packageDebugResources UP-TO-DATE
+> Task :core:parseDebugLocalResources UP-TO-DATE
+> Task :core:generateDebugRFile UP-TO-DATE
+> Task :core:compileDebugKotlin UP-TO-DATE
+> Task :core:javaPreCompileDebug UP-TO-DATE
+> Task :core:compileDebugJavaWithJavac NO-SOURCE
+> Task :core:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :core:processDebugJavaRes UP-TO-DATE
+> Task :core:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :persistence:checkKotlinGradlePluginConfigurationErrors
+> Task :persistence:preBuild UP-TO-DATE
+> Task :persistence:preDebugBuild UP-TO-DATE
+> Task :persistence:generateDebugResValues UP-TO-DATE
+> Task :persistence:generateDebugResources UP-TO-DATE
+> Task :persistence:packageDebugResources UP-TO-DATE
+> Task :persistence:parseDebugLocalResources UP-TO-DATE
+> Task :persistence:generateDebugRFile UP-TO-DATE
+> Task :persistence:compileDebugKotlin UP-TO-DATE
+> Task :persistence:javaPreCompileDebug UP-TO-DATE
+> Task :persistence:compileDebugJavaWithJavac NO-SOURCE
+> Task :persistence:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :persistence:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :persistence:preDebugUnitTestBuild UP-TO-DATE
+> Task :persistence:generateDebugUnitTestStubRFile UP-TO-DATE
+> Task :persistence:compileDebugUnitTestKotlin UP-TO-DATE
+> Task :persistence:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :persistence:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :persistence:processDebugJavaRes UP-TO-DATE
+> Task :persistence:processDebugUnitTestJavaRes UP-TO-DATE
+> Task :persistence:testDebugUnitTest
+
+BUILD SUCCESSFUL in 2s
+27 actionable tasks: 3 executed, 24 up-to-date
+```
+
+Literal relevant assertions from `persistence/src/test/kotlin/com/opencray/persistence/RestartSafePersistenceTest.kt`
+
+values persist across recreated store instances
+
+```kotlin
+// Simulate app restart by creating new store instances.
+val soulStore2 = JsonFileSoulStore(directory = root)
+val sessionStore2 = JsonFileSessionStore(directory = root)
+val memoryStore2 = JsonFileMemoryStore(directory = root)
+
+assertEquals(soul, soulStore2.load())
+assertEquals(session, sessionStore2.load())
+assertEquals(listOf(memory), memoryStore2.list())
+
+// Migration/version metadata must exist in persisted JSON.
+assertContainsVersionMetadata(File(root, "soul.json"))
+assertContainsVersionMetadata(File(root, "session.json"))
+assertContainsVersionMetadata(File(root, "memory.json"))
+```
+
+version metadata assertions
+
+```kotlin
+private fun assertContainsVersionMetadata(file: File) {
+  assertTrue("Expected persisted file to exist: ${file.path}", file.exists())
+  val text = file.readText(Charsets.UTF_8)
+
+  assertTrue(text.contains("\"schemaVersion\""))
+  assertTrue(text.contains("\"migrationVersion\""))
+  assertTrue(text.contains("\"termuxMetadataVersion\""))
+  assertTrue(text.contains("\"termuxMetadata\""))
+}
+```
+
+Reading of this evidence
+
+- The filtered Gradle command above is the exact targeted unit test command used for `RestartSafePersistenceTest`.
+- Gradle's console output here does not print each assertion name, so the source assertions are included verbatim to show what the passing targeted run covers.
+- This is the deterministic restart-safe unit/integration evidence currently available for persistence restart safety. It is not connected Android instrumentation evidence.
