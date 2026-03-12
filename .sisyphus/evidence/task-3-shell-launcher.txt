@@ -1,0 +1,37 @@
+Build command
+-------------
+./gradlew :app:compileDebugKotlin :app:assembleDebug --console=plain
+
+Build output
+------------
+> Task :app:compileDebugKotlin UP-TO-DATE
+> Task :app:packageDebug
+> Task :app:assembleDebug
+
+BUILD SUCCESSFUL in 2s
+186 actionable tasks: 14 executed, 172 up-to-date
+
+Manual launch commands
+----------------------
+adb shell pm clear org.opencray.app
+adb shell am start -W -n org.opencray.app/com.opencray.app.AppShellActivity
+adb exec-out uiautomator dump /dev/tty
+
+Manual launch output
+--------------------
+Success
+Starting: Intent { cmp=org.opencray.app/com.opencray.app.AppShellActivity }
+Status: ok
+LaunchState: COLD
+Activity: org.opencray.app/com.opencray.app.AppShellActivity
+TotalTime: 1253
+WaitTime: 1257
+Complete
+
+UI excerpt from dumped hierarchy
+--------------------------------
+<node index="1" text="Chat" class="android.widget.TextView" package="org.opencray.app" />
+<node index="0" text="Chat" class="android.widget.Button" package="org.opencray.app" />
+<node index="1" text="Skills" class="android.widget.Button" package="org.opencray.app" />
+<node index="2" text="Files" class="android.widget.Button" package="org.opencray.app" />
+<node index="3" text="Settings" class="android.widget.Button" package="org.opencray.app" />

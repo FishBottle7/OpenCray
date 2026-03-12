@@ -1,0 +1,31 @@
+Task 11 About & Version clean-copy evidence
+Date: 2026-03-10
+
+Goal:
+- Verify that the About subpage reads like consumer product copy, not a debug or diagnostics console.
+
+Targeted instrumentation verification:
+- Command: `adb shell am instrument -w -e class com.opencray.app.AboutVersionScreenTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner`
+- Verified test coverage:
+  - `aboutScreenShowsAppMetadataAndGuardrailSummary`
+  - `aboutScreenStaysConsumerFacingInsteadOfDiagnosticHeavy`
+- Preserved output:
+  - `com.opencray.app.AboutVersionScreenTest:..`
+  - `Time: 9.184`
+  - `OK (2 tests)`
+
+Consumer-facing strings confirmed from direct adb launch plus `uiautomator dump`:
+- `Build details`
+- `Release guardrails verified`
+- `Version 1.0.0`
+- `Build 1`
+- `Android 8.0+, API 26`
+- `Protected paths and other blocked actions stay unavailable, even in more permissive modes.`
+- `Sensitive changes can still pause for review before they run, so approvals stay visible.`
+- `Rollback only covers local file checkpoints. Network, command, MCP, and other external side effects may need manual cleanup.`
+- `V1 stays focused. Real Termux execution, cloud sync, iOS support, parallel multi-agent execution, and a public marketplace review system are not part of this build.`
+
+Cleanliness checks:
+- No visible text matched `Exception`, `Stack trace`, `NullPointerException`, `DEBUG`, or `thread dump`.
+- The page exposes release guardrails as plain-language promises, not release-gate IDs, raw stack output, or implementation clutter.
+- No update checking, store integration, or remote release-notes copy was added to the About surface.

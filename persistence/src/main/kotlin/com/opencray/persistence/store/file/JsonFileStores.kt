@@ -135,14 +135,14 @@ class JsonFileMemoryStore(
   }
 }
 
-private fun extractSchemaVersion(json: String): Int {
+internal fun extractSchemaVersion(json: String): Int {
   val element = PersistenceJson.instance.parseToJsonElement(json)
   val obj = element as? JsonObject ?: return 0
   val v = obj["schemaVersion"] ?: return 0
   return (v as? JsonPrimitive)?.intOrNull ?: 0
 }
 
-private fun <T : Any> readRecord(
+internal fun <T : Any> readRecord(
   storage: DurableTextStorage,
   name: String,
   serializer: KSerializer<T>,
@@ -165,7 +165,7 @@ private fun <T : Any> readRecord(
   }
 }
 
-private fun <T : Any> writeRecord(
+internal fun <T : Any> writeRecord(
   storage: DurableTextStorage,
   name: String,
   serializer: KSerializer<T>,

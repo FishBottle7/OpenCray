@@ -2,6 +2,41 @@
 
 Use this checklist before approving any V1 release candidate. Every required item must be checked. Any fail condition blocks release.
 
+## Shell-era structure baseline
+
+Use these checks before reviewing the deeper release gates. Consumer release notes, QA scripts, screenshots, and support docs must describe the shell-era app that ships now, not the older standalone-activity layout.
+
+- [ ] SB-01 Launcher contract points to the shell
+  - Pass if: `.sisyphus/evidence/task-13-shell-launcher.txt` shows `com.opencray.app.AppShellActivity` is the only `MAIN` + `LAUNCHER` activity, and a launcher-style start renders `Chat`, `Skills`, `Files`, and `Settings`.
+  - Fail if: any release-facing document treats a legacy exported activity as the launcher or primary home surface.
+
+- [ ] SB-02 Legacy activity names are compatibility wrappers only
+  - Pass if: `.sisyphus/evidence/task-13-wrapper-routing.txt` shows direct launches of `SkillsManagementActivity`, `MainInteractionActivity`, `WorkspaceSettingsActivity`, and `SafetyAndLimitsActivity` all resume `AppShellActivity` and land on the intended shell destination.
+  - Fail if: a wrapper is documented as a standalone consumer destination, loses scenario data, or opens a parallel UX outside the shell.
+
+- [ ] SB-03 Consumer tab map stays `Chat / Skills / Files / Settings`
+  - Pass if: the launcher and shell tab evidence keep that top-level order visible and functional.
+  - Evidence: `.sisyphus/evidence/task-13-shell-launcher.txt`, `.sisyphus/evidence/task-4-chat-tab-approval.txt`, `.sisyphus/evidence/task-5-skills-tab-happy.txt`, `.sisyphus/evidence/task-6-files-workbench-happy.txt`, `.sisyphus/evidence/task-7-settings-home.txt`
+  - Fail if: release copy or QA steps still describe old activity names as peer top-level app sections.
+
+- [ ] SB-04 Settings uses a home-plus-subpage shell structure
+  - Pass if: `.sisyphus/evidence/task-7-settings-home.txt` shows exactly five Settings HOME cards, `MCP`, `Privacy & Telemetry`, `Safety & Limits`, `About & Version`, `Personalization`, and `.sisyphus/evidence/task-7-settings-back.txt` shows subpages return to HOME before leaving the tab.
+  - Pass if: `.sisyphus/evidence/task-8-mcp-settings-happy.txt`, `.sisyphus/evidence/task-9-privacy-settings-happy.txt`, `.sisyphus/evidence/task-10-safety-subpage-happy.txt`, `.sisyphus/evidence/task-11-about-screen-happy.txt`, and `.sisyphus/evidence/task-12-personalization-happy.txt` show real content inside the shell-owned Settings host.
+  - Fail if: release docs describe one merged long Settings page, or treat the old standalone screens as separate app areas.
+
+- [ ] SB-05 Bilingual behavior is system-locale driven in V1
+  - Pass if: `.sisyphus/evidence/task-2-bilingual-resources.txt` and `.sisyphus/evidence/task-2-reset-token-strings.txt` show paired `values` and `values-zh-rCN` resources, and the shell Settings evidence continues to define only the five cards above.
+  - Pass if: release copy states bilingual behavior follows the device locale and does not promise an in-app language switch in V1.
+  - Fail if: any release-facing copy promises a language picker or describes locale behavior that is not backed by the audited resource evidence.
+
+- [ ] SB-06 Files tab scope stays bounded to workspace grant state and root-safe actions
+  - Pass if: `.sisyphus/evidence/task-6-files-workbench-happy.txt`, `.sisyphus/evidence/task-6-files-workbench-deny.txt`, `.sisyphus/evidence/task-15-saf-happy.txt`, and `.sisyphus/evidence/task-15-saf-revoked.txt` keep the Files tab focused on workspace access, grant status, recovery, and outside-root denial handling.
+  - Fail if: release docs imply a general file browser, silent out-of-root access, or recovery outside the shell-hosted Files tab.
+
+- [ ] SB-07 Typed reset phrases stay exact
+  - Pass if: `.sisyphus/evidence/task-12-personalization-happy.txt`, `.sisyphus/evidence/task-12-personalization-reset-guard.txt`, and `.sisyphus/evidence/task-2-reset-token-strings.txt` show `RESET MEMORY` and `RESET SOUL` as the exact required phrases in both locales.
+  - Fail if: release copy localizes those tokens, softens exact matching, or misstates what each reset clears.
+
 ## Release gate checklist
 
 - [ ] RG-01 Policy matrix and protected-file invariants, Tasks 3 and 16
@@ -131,24 +166,46 @@ Use this checklist before approving any V1 release candidate. Every required ite
 
 ## Evidence artifact checklist
 
+- [ ] `.sisyphus/evidence/task-2-bilingual-resources.txt`
+- [ ] `.sisyphus/evidence/task-2-reset-token-strings.txt`
 - [ ] `.sisyphus/evidence/task-3-policy-happy.txt`
 - [ ] `.sisyphus/evidence/task-3-policy-protected-deny.txt`
+- [ ] `.sisyphus/evidence/task-4-chat-tab-approval.txt`
+- [ ] `.sisyphus/evidence/task-4-chat-tab-deny.txt`
+- [ ] `.sisyphus/evidence/task-5-skills-tab-happy.txt`
+- [ ] `.sisyphus/evidence/task-6-files-workbench-happy.txt`
+- [ ] `.sisyphus/evidence/task-6-files-workbench-deny.txt`
+- [ ] `.sisyphus/evidence/task-7-settings-home.txt`
+- [ ] `.sisyphus/evidence/task-7-settings-back.txt`
 - [ ] `.sisyphus/evidence/task-8-fileops-happy.txt`
 - [ ] `.sisyphus/evidence/task-8-fileops-protected-deny.txt`
+- [ ] `.sisyphus/evidence/task-8-mcp-settings-happy.txt`
+- [ ] `.sisyphus/evidence/task-8-mcp-settings-blocked.txt`
 - [ ] `.sisyphus/evidence/task-9-command-happy.txt`
 - [ ] `.sisyphus/evidence/task-9-command-deny.txt`
+- [ ] `.sisyphus/evidence/task-9-privacy-settings-happy.txt`
+- [ ] `.sisyphus/evidence/task-9-privacy-settings-disclosure.txt`
 - [ ] `.sisyphus/evidence/task-10-skills-happy.txt`
 - [ ] `.sisyphus/evidence/task-10-skills-invalid.txt`
+- [ ] `.sisyphus/evidence/task-10-safety-subpage-happy.txt`
 - [ ] `.sisyphus/evidence/task-11-mcp-happy.txt`
 - [ ] `.sisyphus/evidence/task-11-mcp-blocked.txt`
+- [ ] `.sisyphus/evidence/task-11-about-screen-happy.txt`
+- [ ] `.sisyphus/evidence/task-12-personalization-happy.txt`
+- [ ] `.sisyphus/evidence/task-12-personalization-reset-guard.txt`
+- [ ] `.sisyphus/evidence/task-13-shell-launcher.txt`
+- [ ] `.sisyphus/evidence/task-13-wrapper-routing.txt`
 - [ ] `.sisyphus/evidence/task-15-saf-happy.txt`
 - [ ] `.sisyphus/evidence/task-15-saf-revoked.txt`
 - [ ] `.sisyphus/evidence/task-15-workspace-ui.png`
 - [ ] `.sisyphus/evidence/task-15-workspace-ui.xml`
+- [ ] `.sisyphus/evidence/task-15-release-checklist-refresh.txt`
+- [ ] `.sisyphus/evidence/task-15-shell-migration-doc.txt`
 - [ ] `.sisyphus/evidence/task-16-e2e-happy.txt`
 - [ ] `.sisyphus/evidence/task-16-e2e-traversal-deny.txt`
 - [ ] `.sisyphus/evidence/task-17-termux-contract-happy.txt`
 - [ ] `.sisyphus/evidence/task-17-termux-contract-failure-guard.txt`
+- [ ] `docs/consumer-shell-migration.md`
 - [ ] `docs/termux-phase.md`
 - [ ] `.sisyphus/evidence/task-18-release-ui-happy.txt` required before ship
 - [ ] `.sisyphus/evidence/task-18-release-disclosure-guard.txt` required before ship
@@ -156,7 +213,9 @@ Use this checklist before approving any V1 release candidate. Every required ite
 ## Learnings
 
 - The safest release gate is plain: if a warning changes user expectations, tie it to a named evidence artifact.
+- Shell-era release docs stay clearer when each consumer claim names the shell destination first, then cites any legacy wrapper only as a compatibility route.
 
 ## Issues
 
 - This file defines the release gate now, but Task 18 UI and disclosure-test artifacts still need to exist before any V1 release can pass.
+- Shell evidence now spans Tasks 2 and 4 through 15, so release reviewers need `docs/consumer-shell-migration.md` nearby to keep old standalone activity names from slipping back into release copy.

@@ -1,0 +1,64 @@
+Task 2 resource paths checked
+- app/src/main/res/values/strings.xml
+- app/src/main/res/values-zh-rCN/strings.xml
+- ui/src/main/res/values/strings.xml
+- ui/src/main/res/values-zh-rCN/strings.xml
+
+Real grep output for reset tokens
+Found 4 match(es) in 2 file(s)
+
+D:\codes\MobileProjects\OpenCray\app\src\main\res\values-zh-rCN\strings.xml
+  30: <string name="reset_memory_phrase">RESET MEMORY</string>
+  31: <string name="reset_soul_phrase">RESET SOUL</string>
+
+D:\codes\MobileProjects\OpenCray\app\src\main\res\values\strings.xml
+  30: <string name="reset_memory_phrase">RESET MEMORY</string>
+  31: <string name="reset_soul_phrase">RESET SOUL</string>
+
+Real grep output for reset and personalization strings in app resources
+Found 6 match(es) in 2 file(s)
+
+D:\codes\MobileProjects\OpenCray\app\src\main\res\values-zh-rCN\strings.xml
+  29: <string name="settings_card_personalization">个性化</string>
+  30: <string name="reset_memory_phrase">RESET MEMORY</string>
+  31: <string name="reset_soul_phrase">RESET SOUL</string>
+
+D:\codes\MobileProjects\OpenCray\app\src\main\res\values\strings.xml
+  29: <string name="settings_card_personalization">Personalization</string>
+  30: <string name="reset_memory_phrase">RESET MEMORY</string>
+  31: <string name="reset_soul_phrase">RESET SOUL</string>
+
+Real grep output for reset and personalization strings in ui resources
+No matches found
+
+Real read evidence from app/src/main/res/values/strings.xml
+25:     <string name="settings_card_mcp">MCP</string>
+26:     <string name="settings_card_privacy_telemetry">Privacy &amp; Telemetry</string>
+27:     <string name="settings_card_safety_limits">Safety &amp; Limits</string>
+28:     <string name="settings_card_about_version">About &amp; Version</string>
+29:     <string name="settings_card_personalization">Personalization</string>
+30:     <string name="reset_memory_phrase">RESET MEMORY</string>
+31:     <string name="reset_soul_phrase">RESET SOUL</string>
+
+Real read evidence from app/src/main/res/values-zh-rCN/strings.xml
+25:     <string name="settings_card_mcp">MCP</string>
+26:     <string name="settings_card_privacy_telemetry">隐私与遥测</string>
+27:     <string name="settings_card_safety_limits">安全与限制</string>
+28:     <string name="settings_card_about_version">关于与版本</string>
+29:     <string name="settings_card_personalization">个性化</string>
+30:     <string name="reset_memory_phrase">RESET MEMORY</string>
+31:     <string name="reset_soul_phrase">RESET SOUL</string>
+
+Real read evidence from ui/src/main/res/values/strings.xml
+1: <resources>
+2:     <string name="workspace_picker_title">Workspace access</string>
+3:     <string name="workspace_picker_subtitle">Keep SAF grant state visible while host wiring for picker launches lands in a later slice.</string>
+4:     <string name="workspace_grant_summary_title">Granted root summary</string>
+5:     <string name="workspace_actions_title">Workspace actions</string>
+
+Real read evidence from ui/src/main/res/values-zh-rCN/strings.xml
+1: <resources>
+2:     <string name="workspace_picker_title">工作区访问</string>
+3:     <string name="workspace_picker_subtitle">在后续接入真实选择器之前，这里先持续展示 SAF 授权状态。</string>
+4:     <string name="workspace_grant_summary_title">已授权根目录摘要</string>
+5:     <string name="workspace_actions_title">工作区操作</string>

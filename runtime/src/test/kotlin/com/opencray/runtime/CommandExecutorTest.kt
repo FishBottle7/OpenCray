@@ -9,9 +9,14 @@ import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 class CommandExecutorTest {
+  @get:Rule
+  val temporaryFolder: TemporaryFolder = TemporaryFolder()
+
   @Test
   fun runAllowedCommandExecutionEmitsAuditAndSpawnsOnce() {
     val runner = RecordingRunner(
@@ -259,6 +264,46 @@ class CommandExecutorTest {
     assertTrue(audit.spawned)
     assertTrue(audit.outputLimitExceeded)
     assertEquals("OUTPUT_LIMIT_EXCEEDED", audit.errorCode)
+  }
+
+  @Test
+  fun runCommandOutsideApprovedWorkspaceIsDeniedBeforeSpawn() {
+    val workspaceRoot = temporaryFolder.newFolder("command-workspace").toPath()
+    val runner = RecordingRunner()
+    val audits = mutableListOf<CommandExecutionAuditRecord>()
+    val executor = CommandExecutor(
+      runner = runner,
+      config = CommandExecutionConfig(
+        approvedWorkingDirectories = setOf(workspaceRoot),
+      ),
+      auditSink = CommandAuditSink { record -> audits += record },
+      clock = clockOf(5_000L, 5_010L),
+    )
+    val request = CommandExecutionRequest(
+      taskId = "task-workspace-boundary",
+      command = "git",
+      args = listOf("status"),
+      workingDirectory = workspaceRoot.parent.toString(),
+      requestedAtEpochMs = 4_950L,
+      metadata = mapOf("traceId" to "trace-workspace-boundary"),
+    )
+    val policyDecision = PolicyDecision(
+      outcome = PolicyDecisionOutcome.ALLOW,
+      reasonCode = "ALLOW_SAFE_COMMAND",
+      detail = "Allowed by policy.",
+    )
+
+    val result = executor.execute(
+      request = request,
+      policyDecision = policyDecision,
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.DENIED, result.status)
+    assertEquals("WORKSPACE_BOUNDARY_DENIED", result.errorCode)
+    assertEquals(0, runner.spawnCount)
+    assertEquals(1, audits.size)
+    assertEquals(CommandGateStatus.DENIED, audits.single().gateStatus)
   }
 
   private fun runtimeHooks(cancelled: Boolean = false): RuntimeExecutionHooks = RuntimeExecutionHooks(

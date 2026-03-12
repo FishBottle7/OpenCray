@@ -1,0 +1,25 @@
+Task 8 MCP settings happy-path evidence
+Date: 2026-03-10
+
+Host files:
+- app/src/main/kotlin/com/opencray/app/AppShellActivity.kt
+- app/src/androidTest/kotlin/com/opencray/app/McpSettingsFlowTest.kt
+
+Verified implementation points:
+- Settings HOME still keeps the MCP card summary plus one master toggle surface through `buildMcpSummaryLine(...)` and `buildMcpHomeToggleSurface(...)`.
+- `renderSettingsSubpage(SettingsSubpage.MCP)` now routes to `renderMcpSettingsSubpage()` instead of the placeholder host.
+- The MCP subpage builds per-server cards from `McpClientFactory.load(mcpRegistry)`, so UI copy comes from safe trust/exposure/auth descriptor data rather than raw spec maps.
+- `McpSettingsFlowTest.homeSummaryAndManualEnableFlowStayVisibleWithoutSecrets` verified the visible HOME summary `Enabled 2 • Blocked 1 • Attention 2`, manually enabled `Community Bridge`, returned to HOME, and confirmed the updated summary `Enabled 3 • Blocked 0 • Attention 1`.
+- The same flow asserted that no visible text exposed `secret://`, `Authorization`, or `OPENCRAY_PROFILE`.
+
+Compile and unit-test verification:
+- Command: `./gradlew :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin :mcp:testDebugUnitTest`
+- Result: `BUILD SUCCESSFUL`
+
+Targeted instrumentation verification:
+- Command: `./gradlew :app:installDebug :app:installDebugAndroidTest && adb shell am instrument -w -e class com.opencray.app.McpSettingsFlowTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner`
+- Verified: `homeSummaryAndManualEnableFlowStayVisibleWithoutSecrets`
+- Preserved output:
+  - `com.opencray.app.McpSettingsFlowTest:..`
+  - `Time: 9.528`
+  - `OK (2 tests)`

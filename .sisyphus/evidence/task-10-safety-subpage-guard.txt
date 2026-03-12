@@ -1,0 +1,16 @@
+Task 10 disclosure-guard evidence
+
+Guard command:
+`./gradlew :app:testDebugUnitTest --tests "*DeveloperModeDisclosureRequired*"`
+
+Stable rerun output:
+```
+> Task :app:testDebugUnitTest UP-TO-DATE
+
+BUILD SUCCESSFUL in 1s
+143 actionable tasks: 9 executed, 134 up-to-date
+```
+
+Why this matters:
+- `DeveloperModeDisclosureRequired` remains the explicit release blocker for any future removal or softening of the mandatory Developer-mode warning text.
+- The final full Task 10 gate also passed with `./gradlew :app:testDebugUnitTest --tests "*DeveloperModeDisclosureRequired*" :app:compileDebugAndroidTestKotlin`.

@@ -18,46 +18,91 @@ import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
+import com.opencray.ui.design.OpenCrayButtonTone
+import com.opencray.ui.design.OpenCraySurfaceTone
+import com.opencray.ui.design.OpenCrayUiTokens
+import com.opencray.ui.design.ocBodyText
+import com.opencray.ui.design.ocButton
+import com.opencray.ui.design.ocCardBackground
+import com.opencray.ui.design.ocCardTitleText
+import com.opencray.ui.design.ocDp
+import com.opencray.ui.design.ocInputBackground
+import com.opencray.ui.design.ocLinearBlockParams
+import com.opencray.ui.design.ocMetaText
+import com.opencray.ui.design.ocPillBackground
+import com.opencray.ui.design.ocSectionCard
+import com.opencray.ui.design.ocSectionTitleText
 import com.opencray.skills.SkillExecutionContext
 import com.opencray.skills.SkillInvocationControl
+import org.opencray.ui.R
+
+private enum class SkillsPageMode {
+  LIST,
+  EDITOR,
+}
+
+private data class CollapsibleSection(
+  val card: LinearLayout,
+  val body: LinearLayout,
+  val toggleButton: Button,
+)
 
 class SkillsScreen(
   context: Context,
   private val viewModel: SkillEditorViewModel,
 ) : ScrollView(context) {
-  private val backgroundColor = Color.parseColor("#F5F7FB")
-  private val cardColor = Color.WHITE
-  private val selectedCardColor = Color.parseColor("#EAF2FF")
-  private val borderColor = Color.parseColor("#D7E1ED")
-  private val textPrimary = Color.parseColor("#152538")
-  private val textSecondary = Color.parseColor("#5D6B7B")
-  private val accentColor = Color.parseColor("#2353B6")
-  private val errorColor = Color.parseColor("#B3261E")
-  private val dangerColor = Color.parseColor("#8E1C1C")
+  private val backgroundColor = OpenCrayUiTokens.shellBackground
+  private val surfaceColor = OpenCrayUiTokens.surface
+  private val mutedSurfaceColor = OpenCrayUiTokens.surfaceMuted
+  private val selectedSurfaceColor = OpenCrayUiTokens.surfaceInfo
+  private val chipColor = OpenCrayUiTokens.surfaceMuted
+  private val chipStrongColor = OpenCrayUiTokens.textPrimary
+  private val accentColor = OpenCrayUiTokens.primary
+  private val textPrimary = OpenCrayUiTokens.textPrimary
+  private val textSecondary = OpenCrayUiTokens.textSecondary
+  private val errorColor = OpenCrayUiTokens.danger
+  private val dangerColor = OpenCrayUiTokens.danger
 
   private var stopObserving: (() -> Unit)? = null
   private var isRendering: Boolean = true
+  private var pageMode: SkillsPageMode = SkillsPageMode.LIST
+  private var packageSectionExpanded: Boolean = false
+  private var permissionsSectionExpanded: Boolean = false
 
   private val rootContainer = LinearLayout(context).apply {
     orientation = LinearLayout.VERTICAL
-    setPadding(dp(20), dp(20), dp(20), dp(28))
+    setPadding(dp(20), dp(12), dp(20), dp(32))
   }
 
-  private val statusText = bodyText()
-  private val skillListContainer = LinearLayout(context).apply {
+  private val listPage = LinearLayout(context).apply {
     orientation = LinearLayout.VERTICAL
   }
-  private val editorStatusText = bodyText()
-  private val selectedSkillText = bodyText()
-  private val importExportStatusText = bodyText()
+  private val editorPage = LinearLayout(context).apply {
+    orientation = LinearLayout.VERTICAL
+  }
 
-  private val createDraftButton = secondaryButton("Create new draft")
-  private val saveDraftButton = primaryButton("Save draft")
-  private val toggleLifecycleButton = secondaryButton("Disable selected")
-  private val toggleInstallButton = secondaryButton("Install selected")
-  private val deleteSkillButton = dangerButton("Delete selected")
-  private val importButton = secondaryButton("Import package")
-  private val exportButton = secondaryButton("Export package")
+  private val listStatusText = helperText()
+  private val installedSkillsContainer = LinearLayout(context).apply {
+    orientation = LinearLayout.VERTICAL
+  }
+  private val savedSkillsContainer = LinearLayout(context).apply {
+    orientation = LinearLayout.VERTICAL
+  }
+
+  private val editorTitleView = titleText("")
+  private val editorSubtitleView = helperText()
+  private val editorStatusText = helperText()
+  private val selectedSkillText = bodyText()
+  private val importExportStatusText = helperText()
+
+  private val createDraftButton = primaryButton(context.getString(R.string.skills_button_create_new_draft))
+  private val backToListButton = secondaryButton(context.getString(R.string.skills_editor_back))
+  private val saveDraftButton = primaryButton(context.getString(R.string.skills_button_save_draft))
+  private val importButton = secondaryButton(context.getString(R.string.skills_button_import_package))
+  private val exportButton = secondaryButton(context.getString(R.string.skills_button_export_package))
+  private val toggleLifecycleButton = secondaryButton(context.getString(R.string.skills_button_disable_selected))
+  private val toggleInstallButton = secondaryButton(context.getString(R.string.skills_button_install_selected))
+  private val deleteSkillButton = dangerButton(context.getString(R.string.skills_button_delete_selected))
 
   private val nameInput = inputField(singleLine = true, hint = "valid-skill-name")
   private val nameError = errorText()
@@ -98,6 +143,9 @@ class SkillsScreen(
     setTextColor(textPrimary)
   }
 
+  private lateinit var packageSection: CollapsibleSection
+  private lateinit var permissionsSection: CollapsibleSection
+
   init {
     isFillViewport = true
     setBackgroundColor(backgroundColor)
@@ -112,6 +160,7 @@ class SkillsScreen(
 
     buildScreen()
     bindInteractions()
+    renderPageMode()
   }
 
   override fun onAttachedToWindow() {
@@ -128,91 +177,120 @@ class SkillsScreen(
   }
 
   private fun buildScreen() {
-    rootContainer.addView(titleText("Skills Management"))
-    rootContainer.addView(
-      helperText(
-        "In-memory skill list with create/edit, lifecycle controls, install/uninstall, and package import/export.",
-      ),
-      blockParams(topDp = 8, bottomDp = 16),
-    )
+    rootContainer.addView(listPage)
+    rootContainer.addView(editorPage)
 
-    val statusSection = section(
-      title = "Current state",
-      subtitle = "This surface stays in memory for now. Save still validates against Task 10 metadata semantics.",
-    )
-    statusSection.addView(statusText, blockParams(topDp = 8))
+    buildListPage()
+    buildEditorPage()
+  }
 
-    val listSection = section(
-      title = "Skill list",
-      subtitle = "Select a skill to edit it, or start a fresh draft.",
-    )
-    listSection.addView(createDraftButton, blockParams(topDp = 8))
-    listSection.addView(skillListContainer, blockParams(topDp = 12))
+  private fun buildListPage() {
+    listPage.addView(titleText(context.getString(R.string.skills_title)))
+    listPage.addView(helperText(context.getString(R.string.skills_subtitle)), blockParams(topDp = 8))
+    listPage.addView(createDraftButton, blockParams(topDp = 16))
+    listPage.addView(listStatusText, blockParams(topDp = 10, bottomDp = 20))
 
-    val editorSection = section(
-      title = "Create / edit form",
-      subtitle = "Invocation control, permissions, and validation feedback are kept inline in the screen state.",
-    )
-    editorSection.addView(editorStatusText, blockParams(topDp = 8))
-    addField(editorSection, "name", "Lowercase alphanumeric-hyphen only.", nameInput, nameError)
-    addField(editorSection, "description", "Required and kept inline for validation feedback.", descriptionInput, descriptionError)
-    addField(editorSection, "license", "Optional contract metadata.", licenseInput, licenseError)
-    addField(editorSection, "compatibility", "One entry per line or comma-separated.", compatibilityInput, compatibilityError)
-    addField(editorSection, "metadata", "String-to-string metadata using key=value lines.", metadataInput, metadataError)
+    listPage.addView(sectionHeading(
+      title = context.getString(R.string.skills_installed_title),
+      subtitle = context.getString(R.string.skills_installed_subtitle),
+    ))
+    listPage.addView(installedSkillsContainer, blockParams(topDp = 12, bottomDp = 20))
 
+    listPage.addView(sectionHeading(
+      title = context.getString(R.string.skills_saved_title),
+      subtitle = context.getString(R.string.skills_saved_subtitle),
+    ))
+    listPage.addView(savedSkillsContainer, blockParams(topDp = 12))
+  }
+
+  private fun buildEditorPage() {
+    editorPage.addView(backToListButton)
+    editorPage.addView(editorTitleView, blockParams(topDp = 18))
+    editorPage.addView(editorSubtitleView, blockParams(topDp = 8))
+    editorPage.addView(editorStatusText, blockParams(topDp = 10))
+    editorPage.addView(
+      buttonRow(saveDraftButton, importButton),
+      blockParams(topDp = 16),
+    )
+    editorPage.addView(exportButton, blockParams(topDp = 10))
+
+    val basicsSection = contentSection(
+      title = context.getString(R.string.skills_editor_basics_title),
+      subtitle = context.getString(R.string.skills_editor_basics_subtitle),
+    )
+    addField(basicsSection, "name", nameInput, nameError)
+    addField(basicsSection, "description", descriptionInput, descriptionError)
+
+    val behaviorSection = contentSection(
+      title = context.getString(R.string.skills_editor_behavior_title),
+      subtitle = context.getString(R.string.skills_editor_behavior_subtitle),
+    )
     invocationGroup.addView(explicitOnlyOption)
     invocationGroup.addView(explicitAndImplicitOption)
-    addControlBlock(
-      editorSection,
-      label = "invocation-control",
-      helper = "Reuses Task 10 values exactly: explicit-only or explicit-and-implicit.",
-      control = invocationGroup,
-      error = invocationControlError,
-    )
-
-    addControlBlock(
-      editorSection,
-      label = "user-invocable",
-      helper = "Task 10 rejects user-invocable=false together with explicit-only.",
-      control = userInvocableCheckbox,
-      error = userInvocableError,
-    )
-
+    addControlBlock(behaviorSection, "invocation-control", invocationGroup, invocationControlError)
+    addControlBlock(behaviorSection, "user-invocable", userInvocableCheckbox, userInvocableError)
     contextGroup.addView(inlineContextOption)
     contextGroup.addView(forkContextOption)
-    addControlBlock(
-      editorSection,
-      label = "context",
-      helper = "Reuses Task 10 values exactly: inline or fork.",
-      control = contextGroup,
-      error = executionContextError,
-    )
+    addControlBlock(behaviorSection, "context", contextGroup, executionContextError)
 
-    addField(editorSection, "agent", "Used only when context=fork.", subagentInput, subagentError)
-    addField(editorSection, "allowed-tools", "Comma-separated or one per line.", allowedToolsInput, allowedToolsError)
-    addField(editorSection, "tool-permissions", "pattern=allow|ask|deny per line.", toolPermissionsInput, toolPermissionsError)
-    addField(editorSection, "subagent-permissions", "pattern=allow|ask|deny per line, fork-only.", subagentPermissionsInput, subagentPermissionsError)
-    editorSection.addView(saveDraftButton, blockParams(topDp = 8))
-
-    val lifecycleSection = section(
-      title = "Lifecycle + package actions",
-      subtitle = "Disable, delete, install, uninstall, import, and export all update in-memory state only.",
+    packageSection = collapsibleContentSection(
+      title = context.getString(R.string.skills_editor_package_title),
+      subtitle = context.getString(R.string.skills_editor_package_subtitle),
     )
-    lifecycleSection.addView(selectedSkillText, blockParams(topDp = 8))
-    lifecycleSection.addView(buttonRow(toggleLifecycleButton, toggleInstallButton), blockParams(topDp = 12))
-    lifecycleSection.addView(buttonRow(deleteSkillButton, importButton), blockParams(topDp = 12))
-    lifecycleSection.addView(exportButton, blockParams(topDp = 12))
-    lifecycleSection.addView(importExportStatusText, blockParams(topDp = 12))
+    addField(packageSection.body, "license", licenseInput, licenseError)
+    addField(packageSection.body, "compatibility", compatibilityInput, compatibilityError)
+    addField(packageSection.body, "metadata", metadataInput, metadataError)
+
+    permissionsSection = collapsibleContentSection(
+      title = context.getString(R.string.skills_editor_permissions_title),
+      subtitle = context.getString(R.string.skills_editor_permissions_subtitle),
+    )
+    addField(permissionsSection.body, "allowed-tools", allowedToolsInput, allowedToolsError)
+    addField(permissionsSection.body, "tool-permissions", toolPermissionsInput, toolPermissionsError)
+    addField(permissionsSection.body, "agent", subagentInput, subagentError)
+    addField(permissionsSection.body, "subagent-permissions", subagentPermissionsInput, subagentPermissionsError)
+
+    val actionsSection = contentSection(
+      title = context.getString(R.string.skills_editor_actions_title),
+      subtitle = context.getString(R.string.skills_editor_actions_subtitle),
+    )
+    actionsSection.addView(selectedSkillText)
+    actionsSection.addView(buttonRow(toggleLifecycleButton, toggleInstallButton), blockParams(topDp = 14))
+    actionsSection.addView(deleteSkillButton, blockParams(topDp = 10))
+    actionsSection.addView(importExportStatusText, blockParams(topDp = 12))
   }
 
   private fun bindInteractions() {
-    createDraftButton.setOnClickListener { viewModel.createNewSkillDraft() }
+    createDraftButton.setOnClickListener {
+      viewModel.createNewSkillDraft()
+      packageSectionExpanded = false
+      permissionsSectionExpanded = false
+      pageMode = SkillsPageMode.EDITOR
+      renderCollapsibleSections()
+      renderPageMode()
+    }
+    backToListButton.setOnClickListener {
+      pageMode = SkillsPageMode.LIST
+      renderPageMode()
+    }
+    packageSection.toggleButton.setOnClickListener {
+      packageSectionExpanded = !packageSectionExpanded
+      renderCollapsibleSections()
+    }
+    permissionsSection.toggleButton.setOnClickListener {
+      permissionsSectionExpanded = !permissionsSectionExpanded
+      renderCollapsibleSections()
+    }
     saveDraftButton.setOnClickListener { viewModel.saveDraft() }
-    toggleLifecycleButton.setOnClickListener { viewModel.toggleSelectedLifecycle() }
-    toggleInstallButton.setOnClickListener { viewModel.toggleSelectedInstallState() }
-    deleteSkillButton.setOnClickListener { viewModel.deleteSelectedSkill() }
     importButton.setOnClickListener { viewModel.triggerImportPlaceholder() }
     exportButton.setOnClickListener { viewModel.triggerExportPlaceholder() }
+    toggleLifecycleButton.setOnClickListener { viewModel.toggleSelectedLifecycle() }
+    toggleInstallButton.setOnClickListener { viewModel.toggleSelectedInstallState() }
+    deleteSkillButton.setOnClickListener {
+      viewModel.deleteSelectedSkill()
+      pageMode = SkillsPageMode.LIST
+      renderPageMode()
+    }
 
     bindText(nameInput) { value -> viewModel.updateName(value) }
     bindText(descriptionInput) { value -> viewModel.updateDescription(value) }
@@ -257,13 +335,6 @@ class SkillsScreen(
   private fun render(state: SkillsManagementUiState) {
     isRendering = true
 
-    statusText.text = state.statusMessage
-    importExportStatusText.text = state.importExportMessage
-    editorStatusText.text = state.editor.validationMessage
-    editorStatusText.setTextColor(
-      if (state.editor.fieldErrors.isEmpty()) textSecondary else errorColor,
-    )
-
     setTextIfChanged(nameInput, state.editor.draft.name)
     setTextIfChanged(descriptionInput, state.editor.draft.description)
     setTextIfChanged(licenseInput, state.editor.draft.license)
@@ -307,27 +378,81 @@ class SkillsScreen(
     renderError(toolPermissionsError, state.editor.fieldErrors[FIELD_TOOL_PERMISSIONS])
     renderError(subagentPermissionsError, state.editor.fieldErrors[FIELD_SUBAGENT_PERMISSIONS])
 
-    renderSkillList(state)
+    renderListPage(state)
+    renderEditorPage(state)
+    renderCollapsibleSections()
 
+    isRendering = false
+  }
+
+  private fun renderListPage(state: SkillsManagementUiState) {
+    val installedSkills = state.skills.filter { it.installState == SkillInstallState.INSTALLED }
+    val savedSkills = state.skills.filter { it.installState != SkillInstallState.INSTALLED }
+    listStatusText.text = if (state.skills.isEmpty()) {
+      context.getString(R.string.skills_list_summary_empty)
+    } else {
+      context.getString(
+        R.string.skills_list_summary,
+        installedSkills.size,
+        state.skills.size,
+      )
+    }
+
+    renderSkillGroup(
+      container = installedSkillsContainer,
+      skills = installedSkills,
+      emptyMessage = context.getString(R.string.skills_empty_installed),
+      selectedSkillId = state.selectedSkillId,
+    )
+    renderSkillGroup(
+      container = savedSkillsContainer,
+      skills = savedSkills,
+      emptyMessage = context.getString(R.string.skills_empty_saved),
+      selectedSkillId = state.selectedSkillId,
+    )
+  }
+
+  private fun renderEditorPage(state: SkillsManagementUiState) {
     val selectedSkill = state.skills.firstOrNull { it.id == state.selectedSkillId }
+
+    editorTitleView.text = if (selectedSkill == null) {
+      context.getString(R.string.skills_editor_create_title)
+    } else {
+      context.getString(R.string.skills_editor_edit_title)
+    }
+    editorSubtitleView.text = if (selectedSkill == null) {
+      context.getString(R.string.skills_editor_create_subtitle)
+    } else {
+      context.getString(R.string.skills_editor_edit_subtitle)
+    }
+
+    editorStatusText.text = if (state.editor.fieldErrors.isEmpty()) {
+      if (selectedSkill == null) {
+        context.getString(R.string.skills_editor_status_create)
+      } else {
+        context.getString(R.string.skills_editor_status_edit, selectedSkill.metadata.skillSpec.name)
+      }
+    } else {
+      state.editor.validationMessage
+    }
+    editorStatusText.setTextColor(if (state.editor.fieldErrors.isEmpty()) textSecondary else errorColor)
+
     selectedSkillText.text = if (selectedSkill == null) {
-      "No saved skill selected. Save the draft to disable, delete, install, or uninstall it. Import works in memory. Export unlocks when the draft has a name."
+      context.getString(R.string.skills_editor_selection_none)
     } else {
       buildString {
-        append("Selected: ")
         append(selectedSkill.metadata.skillSpec.name)
-        append("\nLifecycle: ")
+        append("\n")
         append(selectedSkill.lifecycleState.displayName())
-        append(" • Install: ")
+        append(" • ")
         append(selectedSkill.installState.displayName())
-        append("\nInvocation: ")
+        append(" • ")
         append(selectedSkill.metadata.invocationControl.displayName())
-        append(" • Context: ")
+        append(" • ")
         append(selectedSkill.metadata.executionContext.displayName())
-        append(" • user-invocable=")
-        append(selectedSkill.metadata.userInvocable)
       }
     }
+    importExportStatusText.text = state.importExportMessage
 
     val hasSelectedSkill = selectedSkill != null
     toggleLifecycleButton.isEnabled = hasSelectedSkill
@@ -335,82 +460,186 @@ class SkillsScreen(
     deleteSkillButton.isEnabled = hasSelectedSkill
     exportButton.isEnabled = hasSelectedSkill || state.editor.draft.name.isNotBlank()
     toggleLifecycleButton.text = if (selectedSkill?.lifecycleState == SkillLifecycleState.DISABLED) {
-      "Enable selected"
+      context.getString(R.string.skills_button_enable_selected)
     } else {
-      "Disable selected"
+      context.getString(R.string.skills_button_disable_selected)
     }
     toggleInstallButton.text = if (selectedSkill?.installState == SkillInstallState.INSTALLED) {
-      "Uninstall selected"
+      context.getString(R.string.skills_button_uninstall_selected)
     } else {
-      "Install selected"
+      context.getString(R.string.skills_button_install_selected)
     }
-
-    isRendering = false
   }
 
-  private fun renderSkillList(state: SkillsManagementUiState) {
-    skillListContainer.removeAllViews()
+  private fun renderCollapsibleSections() {
+    packageSection.body.visibility = if (packageSectionExpanded) View.VISIBLE else View.GONE
+    permissionsSection.body.visibility = if (permissionsSectionExpanded) View.VISIBLE else View.GONE
+    packageSection.toggleButton.text = context.getString(
+      if (packageSectionExpanded) {
+        R.string.skills_section_hide
+      } else {
+        R.string.skills_section_show
+      },
+    )
+    permissionsSection.toggleButton.text = context.getString(
+      if (permissionsSectionExpanded) {
+        R.string.skills_section_hide
+      } else {
+        R.string.skills_section_show
+      },
+    )
+  }
 
-    if (state.skills.isEmpty()) {
-      val emptyText = helperText("No saved skills yet. Use the form below to create the first one.")
-      skillListContainer.addView(emptyText)
+  private fun renderSkillGroup(
+    container: LinearLayout,
+    skills: List<ManagedSkill>,
+    emptyMessage: String,
+    selectedSkillId: String?,
+  ) {
+    container.removeAllViews()
+
+    if (skills.isEmpty()) {
+      container.addView(emptyStateLabel(emptyMessage))
       return
     }
 
-    state.skills.forEachIndexed { index, skill ->
-      val selected = skill.id == state.selectedSkillId
+    skills.forEachIndexed { index, skill ->
+      val selected = skill.id == selectedSkillId
       val card = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
-        background = cardBackground(if (selected) selectedCardColor else cardColor)
-        setPadding(dp(14), dp(14), dp(14), dp(14))
+        background = skillCardBackground(selected)
+        setPadding(dp(16), dp(16), dp(16), dp(16))
+        isClickable = true
+        isFocusable = true
+        setOnClickListener {
+          viewModel.selectSkill(skill.id)
+          packageSectionExpanded = false
+          permissionsSectionExpanded = false
+          pageMode = SkillsPageMode.EDITOR
+          renderCollapsibleSections()
+          renderPageMode()
+        }
       }
 
-      val name = titleText(skill.metadata.skillSpec.name, textSizeSp = 18f)
-      val description = bodyText().apply {
+      val titleRow = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+      }
+      titleRow.addView(
+        titleText(skill.metadata.skillSpec.name, textSizeSp = 18f),
+        LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+          marginEnd = dp(10)
+        },
+      )
+      titleRow.addView(skillChip(skill.installState.displayName(), emphasized = skill.installState == SkillInstallState.INSTALLED))
+      if (skill.lifecycleState == SkillLifecycleState.DISABLED) {
+        titleRow.addView(skillChip(skill.lifecycleState.displayName(), emphasized = false), chipLayoutParams())
+      }
+      if (selected) {
+        titleRow.addView(skillChip(context.getString(R.string.skills_card_selected), emphasized = true), chipLayoutParams())
+      }
+
+      val descriptionView = bodyText().apply {
         text = skill.metadata.skillSpec.description
         setTextColor(textSecondary)
       }
-      val summary = helperText(
+      val summaryView = helperText(
         buildString {
-          append(skill.lifecycleState.displayName())
-          append(" • ")
-          append(skill.installState.displayName())
-          append(" • ")
           append(skill.metadata.invocationControl.displayName())
           append(" • ")
           append(skill.metadata.executionContext.displayName())
+          append(" • ")
+          append(context.getString(R.string.skills_card_tap_to_edit))
         },
       )
-      val permissions = helperText(
-        "tool permissions=${skill.metadata.toolPermissions.size} • subagent permissions=${skill.metadata.subagentPermissions.size}",
-      )
 
-      val editButton = secondaryButton(if (selected) "Editing" else "Open in editor")
-      editButton.isEnabled = !selected
-      editButton.setOnClickListener { viewModel.selectSkill(skill.id) }
+      card.addView(titleRow)
+      card.addView(descriptionView, blockParams(topDp = 8))
+      card.addView(summaryView, blockParams(topDp = 10))
 
-      card.addView(name)
-      card.addView(description, blockParams(topDp = 6))
-      card.addView(summary, blockParams(topDp = 8))
-      card.addView(permissions, blockParams(topDp = 4))
-      card.addView(editButton, blockParams(topDp = 12))
-
-      skillListContainer.addView(card, blockParams(bottomDp = if (index == state.skills.lastIndex) 0 else 12))
+      container.addView(card, blockParams(bottomDp = if (index == skills.lastIndex) 0 else 10))
     }
+  }
+
+  private fun renderPageMode() {
+    listPage.visibility = if (pageMode == SkillsPageMode.LIST) View.VISIBLE else View.GONE
+    editorPage.visibility = if (pageMode == SkillsPageMode.EDITOR) View.VISIBLE else View.GONE
+  }
+
+  private fun sectionHeading(
+    title: String,
+    subtitle: String,
+  ): View = LinearLayout(context).apply {
+    orientation = LinearLayout.VERTICAL
+    addView(titleText(title, textSizeSp = 20f))
+    addView(helperText(subtitle), blockParams(topDp = 6))
+  }
+
+  private fun contentSection(
+    title: String,
+    subtitle: String,
+  ): LinearLayout {
+    val section = LinearLayout(context).apply {
+      orientation = LinearLayout.VERTICAL
+      background = sectionBackground()
+      setPadding(dp(16), dp(16), dp(16), dp(16))
+    }
+    section.addView(titleText(title, textSizeSp = 18f))
+    section.addView(helperText(subtitle), blockParams(topDp = 6))
+    editorPage.addView(section, blockParams(topDp = 18))
+    return section
+  }
+
+  private fun collapsibleContentSection(
+    title: String,
+    subtitle: String,
+  ): CollapsibleSection {
+    val section = LinearLayout(context).apply {
+      orientation = LinearLayout.VERTICAL
+      background = sectionBackground()
+      setPadding(dp(16), dp(16), dp(16), dp(16))
+    }
+    val headerRow = LinearLayout(context).apply {
+      orientation = LinearLayout.HORIZONTAL
+      gravity = Gravity.CENTER_VERTICAL
+    }
+    val headerTexts = LinearLayout(context).apply {
+      orientation = LinearLayout.VERTICAL
+    }
+    headerTexts.addView(titleText(title, textSizeSp = 18f))
+    headerTexts.addView(helperText(subtitle), blockParams(topDp = 6))
+    val toggleButton = tertiaryButton("")
+    headerRow.addView(
+      headerTexts,
+      LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+        marginEnd = dp(12)
+      },
+    )
+    headerRow.addView(toggleButton)
+    section.addView(headerRow)
+
+    val body = LinearLayout(context).apply {
+      orientation = LinearLayout.VERTICAL
+    }
+    section.addView(body, blockParams(topDp = 14))
+    editorPage.addView(section, blockParams(topDp = 18))
+    return CollapsibleSection(
+      card = section,
+      body = body,
+      toggleButton = toggleButton,
+    )
   }
 
   private fun addField(
     parent: LinearLayout,
     label: String,
-    helper: String,
     input: EditText,
     error: TextView,
   ) {
     val container = LinearLayout(context).apply {
       orientation = LinearLayout.VERTICAL
     }
-    container.addView(titleText(label, textSizeSp = 15f))
-    container.addView(helperText(helper), blockParams(topDp = 4))
+    container.addView(titleText(label, textSizeSp = 14f))
     container.addView(input, blockParams(topDp = 8))
     container.addView(error, blockParams(topDp = 6))
     parent.addView(container, blockParams(topDp = 12))
@@ -419,60 +648,35 @@ class SkillsScreen(
   private fun addControlBlock(
     parent: LinearLayout,
     label: String,
-    helper: String,
     control: View,
     error: TextView,
   ) {
     val container = LinearLayout(context).apply {
       orientation = LinearLayout.VERTICAL
     }
-    container.addView(titleText(label, textSizeSp = 15f))
-    container.addView(helperText(helper), blockParams(topDp = 4))
+    container.addView(titleText(label, textSizeSp = 14f))
     container.addView(control, blockParams(topDp = 8))
     container.addView(error, blockParams(topDp = 6))
     parent.addView(container, blockParams(topDp = 12))
   }
 
-  private fun section(
-    title: String,
-    subtitle: String,
-  ): LinearLayout {
-    val card = LinearLayout(context).apply {
-      orientation = LinearLayout.VERTICAL
-      background = cardBackground(cardColor)
-      setPadding(dp(16), dp(16), dp(16), dp(16))
-    }
-    card.addView(titleText(title, textSizeSp = 20f))
-    card.addView(helperText(subtitle), blockParams(topDp = 6))
-
-    val content = LinearLayout(context).apply {
-      orientation = LinearLayout.VERTICAL
-    }
-    card.addView(content, blockParams(topDp = 12))
-    rootContainer.addView(card, blockParams(bottomDp = 16))
-    return content
+  private fun emptyStateLabel(value: String): TextView = helperText(value).apply {
+    background = emptyStateBackground()
+    setPadding(dp(16), dp(16), dp(16), dp(16))
   }
 
   private fun titleText(
     value: String,
-    textSizeSp: Float = 24f,
-  ): TextView = TextView(context).apply {
-    text = value
-    textSize = textSizeSp
-    setTextColor(textPrimary)
-    setTypeface(typeface, Typeface.BOLD)
+    textSizeSp: Float = 28f,
+  ): TextView = if (textSizeSp >= 24f) {
+    context.ocSectionTitleText(value, textSizeSp)
+  } else {
+    context.ocCardTitleText(value, textSizeSp)
   }
 
-  private fun bodyText(): TextView = TextView(context).apply {
-    textSize = 14f
-    setTextColor(textPrimary)
-  }
+  private fun bodyText(): TextView = context.ocBodyText()
 
-  private fun helperText(value: String): TextView = TextView(context).apply {
-    text = value
-    textSize = 13f
-    setTextColor(textSecondary)
-  }
+  private fun helperText(value: String = ""): TextView = context.ocMetaText(value)
 
   private fun errorText(): TextView = TextView(context).apply {
     textSize = 13f
@@ -487,8 +691,8 @@ class SkillsScreen(
     this.hint = hint
     setTextColor(textPrimary)
     setHintTextColor(textSecondary)
-    background = fieldBackground()
-    setPadding(dp(12), dp(10), dp(12), dp(10))
+    background = context.ocInputBackground(fillColor = OpenCrayUiTokens.surface)
+    setPadding(dp(14), dp(12), dp(14), dp(12))
     isSingleLine = singleLine
     if (singleLine) {
       inputType = InputType.TYPE_CLASS_TEXT
@@ -506,24 +710,48 @@ class SkillsScreen(
   }
 
   private fun primaryButton(label: String): Button = Button(context).apply {
-    text = label
-    isAllCaps = false
-    setTextColor(Color.WHITE)
-    background = buttonBackground(accentColor)
+    val styled = context.ocButton(label, OpenCrayButtonTone.PRIMARY)
+    text = styled.text
+    isAllCaps = styled.isAllCaps
+    setTextColor(styled.currentTextColor)
+    background = styled.background
+    minHeight = styled.minHeight
+    minimumHeight = styled.minimumHeight
+    stateListAnimator = null
+    setPadding(dp(20), dp(12), dp(20), dp(12))
   }
 
   private fun secondaryButton(label: String): Button = Button(context).apply {
+    val styled = context.ocButton(label, OpenCrayButtonTone.SECONDARY)
+    text = styled.text
+    isAllCaps = styled.isAllCaps
+    setTextColor(styled.currentTextColor)
+    background = styled.background
+    minHeight = styled.minHeight
+    minimumHeight = styled.minimumHeight
+    stateListAnimator = null
+    setPadding(dp(20), dp(12), dp(20), dp(12))
+  }
+
+  private fun tertiaryButton(label: String): Button = Button(context).apply {
     text = label
     isAllCaps = false
-    setTextColor(accentColor)
-    background = outlineButtonBackground(accentColor)
+    setTextColor(textSecondary)
+    background = filledButtonBackground(OpenCrayUiTokens.surface)
+    stateListAnimator = null
+    setPadding(dp(12), dp(10), dp(12), dp(10))
   }
 
   private fun dangerButton(label: String): Button = Button(context).apply {
-    text = label
-    isAllCaps = false
-    setTextColor(Color.WHITE)
-    background = buttonBackground(dangerColor)
+    val styled = context.ocButton(label, OpenCrayButtonTone.DANGER)
+    text = styled.text
+    isAllCaps = styled.isAllCaps
+    setTextColor(styled.currentTextColor)
+    background = styled.background
+    minHeight = styled.minHeight
+    minimumHeight = styled.minimumHeight
+    stateListAnimator = null
+    setPadding(dp(20), dp(12), dp(20), dp(12))
   }
 
   private fun buttonRow(
@@ -596,43 +824,90 @@ class SkillsScreen(
     }
   }
 
-  private fun cardBackground(fillColor: Int): GradientDrawable = GradientDrawable().apply {
-    shape = GradientDrawable.RECTANGLE
-    cornerRadius = dp(18).toFloat()
-    setColor(fillColor)
-    setStroke(dp(1), borderColor)
+  private fun skillCardBackground(selected: Boolean): GradientDrawable = GradientDrawable().apply {
+    val drawable = context.ocCardBackground(
+      tone = if (selected) OpenCraySurfaceTone.INFO else OpenCraySurfaceTone.NEUTRAL,
+      stroked = true,
+    )
+    shape = drawable.shape
+    cornerRadius = drawable.cornerRadius
+    color = drawable.color
+    setStroke(dp(1), OpenCrayUiTokens.border)
+  }
+
+  private fun sectionBackground(): GradientDrawable = GradientDrawable().apply {
+    val drawable = context.ocCardBackground(OpenCraySurfaceTone.NEUTRAL, stroked = true)
+    shape = drawable.shape
+    cornerRadius = drawable.cornerRadius
+    color = drawable.color
+    setStroke(dp(1), OpenCrayUiTokens.border)
+  }
+
+  private fun emptyStateBackground(): GradientDrawable = GradientDrawable().apply {
+    val drawable = context.ocCardBackground(OpenCraySurfaceTone.SUBTLE, radiusDp = 14, stroked = true)
+    shape = drawable.shape
+    cornerRadius = drawable.cornerRadius
+    color = drawable.color
+    setStroke(dp(1), OpenCrayUiTokens.border)
   }
 
   private fun fieldBackground(): GradientDrawable = GradientDrawable().apply {
-    shape = GradientDrawable.RECTANGLE
-    cornerRadius = dp(14).toFloat()
-    setColor(Color.WHITE)
-    setStroke(dp(1), borderColor)
+    val drawable = context.ocInputBackground(fillColor = OpenCrayUiTokens.surface)
+    shape = drawable.shape
+    cornerRadius = drawable.cornerRadius
+    color = drawable.color
+    setStroke(dp(1), OpenCrayUiTokens.border)
   }
 
-  private fun buttonBackground(fillColor: Int): GradientDrawable = GradientDrawable().apply {
-    shape = GradientDrawable.RECTANGLE
-    cornerRadius = dp(14).toFloat()
-    setColor(fillColor)
+  private fun filledButtonBackground(fillColor: Int): GradientDrawable = GradientDrawable().apply {
+    val drawable = context.ocCardBackground(
+      tone = when (fillColor) {
+        accentColor -> OpenCraySurfaceTone.ACCENT
+        dangerColor -> OpenCraySurfaceTone.DANGER
+        else -> OpenCraySurfaceTone.SUBTLE
+      },
+      radiusDp = OpenCrayUiTokens.radiusButton,
+      stroked = fillColor != accentColor && fillColor != dangerColor,
+    )
+    shape = drawable.shape
+    cornerRadius = drawable.cornerRadius
+    color = drawable.color
   }
 
-  private fun outlineButtonBackground(strokeColor: Int): GradientDrawable = GradientDrawable().apply {
-    shape = GradientDrawable.RECTANGLE
-    cornerRadius = dp(14).toFloat()
-    setColor(Color.WHITE)
-    setStroke(dp(1), strokeColor)
+  private fun chipBackground(fillColor: Int): GradientDrawable = GradientDrawable().apply {
+    val drawable = context.ocPillBackground(
+      fillColor = fillColor,
+      strokeColor = if (fillColor == chipStrongColor) chipStrongColor else OpenCrayUiTokens.border,
+      strokeWidthDp = 1,
+    )
+    shape = drawable.shape
+    cornerRadius = drawable.cornerRadius
+    color = drawable.color
+  }
+
+  private fun skillChip(
+    label: String,
+    emphasized: Boolean,
+  ): TextView = TextView(context).apply {
+    text = label
+    textSize = 12f
+    setTextColor(if (emphasized) Color.WHITE else textPrimary)
+    setTypeface(typeface, Typeface.BOLD)
+    background = chipBackground(if (emphasized) chipStrongColor else chipColor)
+    setPadding(dp(10), dp(6), dp(10), dp(6))
+  }
+
+  private fun chipLayoutParams(): LinearLayout.LayoutParams = LinearLayout.LayoutParams(
+    ViewGroup.LayoutParams.WRAP_CONTENT,
+    ViewGroup.LayoutParams.WRAP_CONTENT,
+  ).apply {
+    marginStart = dp(6)
   }
 
   private fun blockParams(
     topDp: Int = 0,
     bottomDp: Int = 0,
-  ): LinearLayout.LayoutParams = LinearLayout.LayoutParams(
-    ViewGroup.LayoutParams.MATCH_PARENT,
-    ViewGroup.LayoutParams.WRAP_CONTENT,
-  ).apply {
-    topMargin = dp(topDp)
-    bottomMargin = dp(bottomDp)
-  }
+  ): LinearLayout.LayoutParams = context.ocLinearBlockParams(topDp = topDp, bottomDp = bottomDp)
 
-  private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+  private fun dp(value: Int): Int = context.ocDp(value)
 }

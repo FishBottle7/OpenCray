@@ -7,7 +7,7 @@ android {
   namespace = "org.opencray.policy"
   compileSdk = 33
   defaultConfig {
-    minSdk = 24
+    minSdk = 26
  // targetSdk removed (deprecated); property migrated to plugin defaults
   }
   buildTypes {

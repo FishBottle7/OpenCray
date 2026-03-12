@@ -8,6 +8,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
 import java.nio.charset.StandardCharsets
+import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -55,6 +56,7 @@ fun interface CommandAuditSink {
 data class CommandExecutionConfig(
   val timeoutMs: Long = 30_000,
   val outputByteLimit: Int = 64_000,
+  val approvedWorkingDirectories: Set<Path> = emptySet(),
 ) {
   init {
     require(timeoutMs > 0) { "CommandExecutionConfig timeoutMs must be > 0." }
@@ -270,6 +272,48 @@ class CommandExecutor(
     hooks: RuntimeExecutionHooks,
   ): ExecutionResult {
     val startedAt = clock()
+    val workingDirectoryViolation = validateWorkingDirectory(request)
+    if (workingDirectoryViolation != null) {
+      val result = ExecutionResult(
+        taskId = request.taskId,
+        status = ExecutionStatus.DENIED,
+        errorCode = ERROR_WORKSPACE_BOUNDARY,
+        errorMessage = workingDirectoryViolation,
+        policyDecision = policyDecision,
+        startedAtEpochMs = startedAt,
+        finishedAtEpochMs = maxOf(startedAt, clock()),
+        metadata = mapOf(
+          "command" to request.command,
+          "args" to request.args.joinToString("\u0000"),
+          "spawned" to "false",
+          "workingDirectoryRestricted" to config.approvedWorkingDirectories.isNotEmpty().toString(),
+        ),
+      )
+      auditSink.record(
+        CommandExecutionAuditRecord(
+          taskId = request.taskId,
+          command = request.command,
+          args = request.args,
+          workingDirectory = request.workingDirectory,
+          gateStatus = CommandGateStatus.DENIED,
+          gateReasonCode = ERROR_WORKSPACE_BOUNDARY,
+          policyOutcome = policyDecision.outcome,
+          policyReasonCode = policyDecision.reasonCode,
+          approvalTokenId = approvalToken?.tokenId,
+          approvalProvided = approvalToken != null,
+          approvedBy = approvalToken?.approvedBy,
+          executionStatus = result.status,
+          spawned = false,
+          exitCode = result.exitCode,
+          errorCode = result.errorCode,
+          startedAtEpochMs = result.startedAtEpochMs,
+          finishedAtEpochMs = result.finishedAtEpochMs,
+          detail = workingDirectoryViolation,
+          metadata = request.metadata,
+        ),
+      )
+      return result
+    }
     val gateDecision = ModeGate.evaluatePreExec(
       request = request,
       policyDecision = policyDecision,
@@ -437,6 +481,26 @@ class CommandExecutor(
     CommandGateStatus.ALLOWED -> ERROR_DENY_POLICY
   }
 
+  private fun validateWorkingDirectory(request: CommandExecutionRequest): String? {
+    if (config.approvedWorkingDirectories.isEmpty()) {
+      return null
+    }
+
+    val workingDirectory = request.workingDirectory?.trim().orEmpty()
+    if (workingDirectory.isEmpty()) {
+      return "Command working directory must stay inside the approved workspace."
+    }
+
+    val boundary = WorkspaceBoundary(config.approvedWorkingDirectories)
+    return runCatching {
+      boundary.ensureDirectory(
+        candidate = workingDirectory,
+        label = "command working directory",
+        defaultToRoot = false,
+      )
+    }.exceptionOrNull()?.message
+  }
+
   private fun executionMetadata(
     request: CommandExecutionRequest,
     gateDecision: CommandGateDecision,
@@ -490,6 +554,7 @@ class CommandExecutor(
   private companion object {
     const val ERROR_DENY_POLICY = "DENY_POLICY"
     const val ERROR_APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
+    const val ERROR_WORKSPACE_BOUNDARY = "WORKSPACE_BOUNDARY_DENIED"
     const val ERROR_TIMEOUT = "TIMEOUT"
     const val ERROR_OUTPUT_LIMIT_EXCEEDED = "OUTPUT_LIMIT_EXCEEDED"
     const val ERROR_CANCELLED_BY_HOOK = "CANCELLED_BY_HOOK"

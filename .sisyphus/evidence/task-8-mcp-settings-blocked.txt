@@ -1,0 +1,24 @@
+Task 8 MCP settings blocked-state evidence
+Date: 2026-03-10
+
+Host files:
+- app/src/main/kotlin/com/opencray/app/AppShellActivity.kt
+- app/src/androidTest/kotlin/com/opencray/app/McpSettingsFlowTest.kt
+
+Verified implementation points:
+- The MCP subpage shows the seeded unknown server `Community Bridge` with visible trust/auth/readiness summary: `Trust: Requires manual enable`, `Tools: Blocked`, `Auth: Credential configured`, and `Readiness: Ready`.
+- The blocked server stays visibly gated behind the subpage-only action text `Enable server`, and the card guidance stays explicit: `Blocked until you enable this server manually. Tools stay hidden until you consent here.`
+- No plaintext auth secrets or raw header/env values are rendered on the blocked path; the instrumentation flow explicitly checked that `secret://`, `Authorization`, and `OPENCRAY_PROFILE` never appear in visible text.
+- Settings HOME still holds the only master toggle surface; the blocked flow kept per-server control inside the MCP subpage.
+
+Compile and unit-test verification:
+- Command: `./gradlew :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin :mcp:testDebugUnitTest`
+- Result: `BUILD SUCCESSFUL`
+
+Targeted instrumentation verification:
+- Command: `./gradlew :app:installDebug :app:installDebugAndroidTest && adb shell am instrument -w -e class com.opencray.app.McpSettingsFlowTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner`
+- Verified: `unknownServerStaysBlockedUntilManualConsent`
+- Preserved output:
+  - `com.opencray.app.McpSettingsFlowTest:..`
+  - `Time: 9.528`
+  - `OK (2 tests)`

@@ -1,0 +1,67 @@
+Task 6 — Files workbench happy path evidence
+Date: 2026-03-10
+
+Required compile verification:
+$ ./gradlew :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
+BUILD SUCCESSFUL in 33s
+
+Install verification:
+$ ./gradlew :app:installDebug :app:installDebugAndroidTest
+> Task :app:installDebug
+Installed on 1 device.
+> Task :app:installDebugAndroidTest
+Installed on 1 device.
+BUILD SUCCESSFUL in 23s
+
+Happy-path shell verification:
+$ adb shell am instrument -w -e class com.opencray.app.FilesWorkbenchHappyPathTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+com.opencray.app.FilesWorkbenchHappyPathTest:.
+
+Time: 3.525
+
+OK (1 test)
+
+Covered assertions:
+- Files tab launches the shell directly into the granted-root workspace surface.
+- Visible labels remain `Workspace access`, `GRANT ACTIVE`, `Pick workspace`, and `Clear grant`.
+- `Clear grant` transitions the hosted workbench to `NO GRANT`.
+- `Pick workspace` transitions the hosted workbench back to `GRANT ACTIVE`.
+
+Remediation rerun — lightweight granted-root workbench
+Date: 2026-03-10
+
+Required compile + unit verification:
+$ ./gradlew :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin :filesystem:testDebugUnitTest
+BUILD SUCCESSFUL in 17s
+
+Install + happy-path instrumentation rerun:
+$ ./gradlew :app:installDebug :app:installDebugAndroidTest
+Installed on 1 device.
+BUILD SUCCESSFUL in 22s
+
+$ adb shell am instrument -w -e class com.opencray.app.FilesWorkbenchHappyPathTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+com.opencray.app.FilesWorkbenchHappyPathTest:.
+
+Time: 18.808
+
+OK (1 test)
+
+Expanded happy-path coverage:
+- Granted-root workbench visibly exposes browse/list, refresh, create file, create folder, rename, delete, copy relative path, and lightweight preview/metadata summary.
+- Folder navigation stays bounded to the granted root (`docs`, `docs/draft-copies-renamed`, and back to `workspace root`).
+- `Clear grant` still returns the Files tab to the `NO GRANT` family, and `Pick workspace` restores `GRANT ACTIVE`.
+
+Learning: The same shell-level grant controls can stay stable while the workbench underneath becomes meaningfully interactive.
+Issue: Folder mutations still rely on local bounded helpers because the shared file-ops backend currently models file mutations only.
+
+Remediation addendum — final Task 6 gap closure
+Compile verification rerun:
+$ ./gradlew :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin :filesystem:testDebugUnitTest
+BUILD SUCCESSFUL in 16s
+
+Source/test coverage addendum:
+- Happy-path androidTest now exercises bounded browse/list, refresh, create file, create folder, rename, delete, copy relative path, and preview/metadata summary inside the granted root.
+- The same happy-path test still verifies `Clear grant` -> `NO GRANT` and `Pick workspace` -> `GRANT ACTIVE` after workbench actions.
+
+Learnings note: Keeping the visible workbench pinned to the granted root let the remediation reuse the shared SAF grant model without expanding into unrestricted device browsing.
+Issues note: This artifact now records the required compile/test rerun; device-side adb happy-path instrumentation was not rerun during this remediation session.

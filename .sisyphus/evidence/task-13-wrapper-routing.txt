@@ -1,0 +1,53 @@
+Task 13 wrapper routing evidence
+Date: 2026-03-10
+
+Focused instrumentation verification
+- Command: `adb shell am instrument -w -e class com.opencray.app.ShellWrapperRoutingTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner`
+- Output:
+  - `com.opencray.app.ShellWrapperRoutingTest:.....`
+  - `Time: 14.6`
+  - `OK (5 tests)`
+- The passing test class verifies:
+  - `SkillsManagementActivity` routes into the shell Skills tab.
+  - `MainInteractionActivity` routes into the shell Chat tab and preserves `EXTRA_SCENARIO`.
+  - `WorkspaceSettingsActivity` routes into the shell Files tab and preserves `EXTRA_SCENARIO`.
+  - `SafetyAndLimitsActivity` routes into the shell Settings → Safety subpage.
+
+Direct adb wrapper launches
+
+1) Skills wrapper
+- Command: `adb shell am start -W -n org.opencray.app/com.opencray.app.SkillsManagementActivity`
+- Launch output: `Activity: org.opencray.app/com.opencray.app.AppShellActivity`
+- Resumed activity: `topResumedActivity=ActivityRecord{... org.opencray.app/com.opencray.app.AppShellActivity ...}`
+- UI checks:
+  - `Chat=True`
+  - `Skills=True`
+  - `Files=True`
+  - `Settings=True`
+  - `Create new draft=True`
+
+2) Chat wrapper with denied-policy scenario
+- Command: `adb shell am start -W -n org.opencray.app/com.opencray.app.MainInteractionActivity --es com.opencray.app.MainInteractionActivity.extra.SCENARIO denied_policy`
+- Launch output: `Activity: org.opencray.app/com.opencray.app.AppShellActivity`
+- Resumed activity: `topResumedActivity=ActivityRecord{... org.opencray.app/com.opencray.app.AppShellActivity ...}`
+- UI checks:
+  - `Blocked by policy=True`
+  - `Denied transparently because protected-policy rules block the write before execution.`
+
+3) Files wrapper with active-grant scenario
+- Command: `adb shell am start -W -n org.opencray.app/com.opencray.app.WorkspaceSettingsActivity --es com.opencray.app.WorkspaceSettingsActivity.extra.SCENARIO active_grant`
+- Launch output: `Activity: org.opencray.app/com.opencray.app.AppShellActivity`
+- Resumed activity: `topResumedActivity=ActivityRecord{... org.opencray.app/com.opencray.app.AppShellActivity ...}`
+- UI checks:
+  - `GRANT ACTIVE=True`
+  - `Workspace grant active=True`
+
+4) Safety wrapper
+- Command: `adb shell am start -W -n org.opencray.app/com.opencray.app.SafetyAndLimitsActivity`
+- Launch output: `Activity: org.opencray.app/com.opencray.app.AppShellActivity`
+- Resumed activity: `topResumedActivity=ActivityRecord{... org.opencray.app/com.opencray.app.AppShellActivity ...}`
+- Manual UI dump showed the Settings subpage back affordance (`← Settings`, rendered as replacement characters by `uiautomator` on this emulator) instead of the old standalone host.
+- The same route is covered exactly by `ShellWrapperRoutingTest.safetyAndLimitsWrapperRoutesIntoSettingsSafetySubpage`, which passed and asserts the shell title plus the required Safety disclosure text.
+
+Conclusion
+All four legacy exported activity names now behave as compatibility wrappers: direct launches route into `AppShellActivity`, land on the intended shell destination, and preserve the existing Chat/Files scenario contracts instead of showing a parallel standalone UX.

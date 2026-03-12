@@ -1,0 +1,37 @@
+Task 15 release checklist refresh evidence
+Date: 2026-03-10
+
+Updated file
+- docs/release-checklist.md
+
+Shell-era checklist refresh
+- Added a `Shell-era structure baseline` section.
+- Added auditable checks for the shell launcher, wrapper compatibility routing, top-level tab map, Settings home plus subpages, system-locale bilingual behavior, Files tab scope limits, and typed reset phrases.
+- Expanded the evidence artifact checklist so release review now points at the shell-era artifacts that already exist.
+- Appended concise Task 15 notes under `Learnings` and `Issues`.
+
+Evidence referenced by the refresh
+- .sisyphus/evidence/task-13-shell-launcher.txt
+- .sisyphus/evidence/task-13-wrapper-routing.txt
+- .sisyphus/evidence/task-7-settings-home.txt
+- .sisyphus/evidence/task-7-settings-back.txt
+- .sisyphus/evidence/task-8-mcp-settings-happy.txt
+- .sisyphus/evidence/task-8-mcp-settings-blocked.txt
+- .sisyphus/evidence/task-9-privacy-settings-happy.txt
+- .sisyphus/evidence/task-9-privacy-settings-disclosure.txt
+- .sisyphus/evidence/task-10-safety-subpage-happy.txt
+- .sisyphus/evidence/task-11-about-screen-happy.txt
+- .sisyphus/evidence/task-12-personalization-happy.txt
+- .sisyphus/evidence/task-12-personalization-reset-guard.txt
+- .sisyphus/evidence/task-2-bilingual-resources.txt
+- .sisyphus/evidence/task-2-reset-token-strings.txt
+- .sisyphus/evidence/task-6-files-workbench-happy.txt
+- .sisyphus/evidence/task-6-files-workbench-deny.txt
+- .sisyphus/evidence/task-15-saf-happy.txt
+- .sisyphus/evidence/task-15-saf-revoked.txt
+
+Learnings
+- The checklist is easier to use when every shell-era release claim points at the shell destination and its evidence file, not at a wrapper name alone.
+
+Issues
+- Release review now depends on shell evidence spread across multiple earlier tasks, so reviewers need the migration guide nearby during signoff.

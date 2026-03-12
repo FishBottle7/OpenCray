@@ -1,0 +1,21 @@
+Task 4 evidence for shell Chat denied-policy flow
+
+Denied-policy instrumentation command
+adb shell am instrument -w -e class com.opencray.app.ChatTabShellTest#deniedPolicyScenarioFromShellExtraRemainsVisible org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+
+Denied-policy instrumentation output
+com.opencray.app.ChatTabShellTest:.
+
+Time: 5.017
+
+OK (1 test)
+
+Related suite confirmation
+adb shell am instrument -w -e class com.opencray.app.ChatTabShellTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+
+Suite output
+com.opencray.app.ChatTabShellTest:....
+
+Time: 13.354
+
+OK (4 tests)

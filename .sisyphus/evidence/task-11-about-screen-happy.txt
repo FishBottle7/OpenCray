@@ -1,0 +1,43 @@
+Task 11 About & Version happy-path evidence
+Date: 2026-03-10
+
+Modified files:
+- app/src/main/kotlin/com/opencray/app/AppShellActivity.kt
+- app/src/androidTest/kotlin/com/opencray/app/AboutVersionScreenTest.kt
+
+Verified implementation points:
+- `renderSettingsSubpage()` now routes `SettingsSubpage.ABOUT` to `buildAboutVersionSubpage()` instead of the placeholder surface.
+- The About page stays consumer-facing with three cards: product summary, build details, and `Release guardrails verified`.
+- Runtime metadata comes from installed package info plus `applicationInfo.minSdkVersion`, which matched the current build config values from `app/build.gradle.kts`:
+  - `Version 1.0.0`
+  - `Build 1`
+  - `Android 8.0+, API 26`
+
+Diagnostics verification:
+- `lsp_diagnostics` reported no errors on `AppShellActivity.kt`.
+- `lsp_diagnostics` reported no errors on `AboutVersionScreenTest.kt`.
+
+Compile verification:
+- Command: `./gradlew :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin`
+- Result: `BUILD SUCCESSFUL`
+
+Targeted instrumentation verification:
+- Install refresh: `./gradlew :app:installDebug :app:installDebugAndroidTest`
+- Command: `adb shell am instrument -w -e class com.opencray.app.AboutVersionScreenTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner`
+- Preserved output:
+  - `com.opencray.app.AboutVersionScreenTest:..`
+  - `Time: 9.184`
+  - `OK (2 tests)`
+
+Visible text captured from direct adb launch plus `uiautomator dump`:
+- `About & Version`
+- `Installed build: 1.0.0`
+- `OpenCray`
+- `Version 1.0.0`
+- `Build 1`
+- `Android 8.0+, API 26`
+- `Release guardrails verified`
+- `Protected paths and other blocked actions stay unavailable, even in more permissive modes.`
+- `Sensitive changes can still pause for review before they run, so approvals stay visible.`
+- `Rollback only covers local file checkpoints. Network, command, MCP, and other external side effects may need manual cleanup.`
+- `V1 stays focused. Real Termux execution, cloud sync, iOS support, parallel multi-agent execution, and a public marketplace review system are not part of this build.`

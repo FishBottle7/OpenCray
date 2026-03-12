@@ -32,6 +32,8 @@
 # Android/Gradle local files
 /local.properties
 /gradle-*-bin.zip
+/.android-user-home/
+/.gradle-user-home/
 
 # Sisyphus local scratch files
 /.sisyphus/notepads/

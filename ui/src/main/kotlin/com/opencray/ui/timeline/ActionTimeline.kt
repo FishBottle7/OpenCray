@@ -10,6 +10,16 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.opencray.ui.design.OpenCraySurfaceTone
+import com.opencray.ui.design.OpenCrayUiTokens
+import com.opencray.ui.design.ocBodyText
+import com.opencray.ui.design.ocCardBackground
+import com.opencray.ui.design.ocCardTitleText
+import com.opencray.ui.design.ocDp
+import com.opencray.ui.design.ocLinearBlockParams
+import com.opencray.ui.design.ocMetaText
+import com.opencray.ui.design.ocPillBackground
+import com.opencray.ui.design.ocSurfaceBackground
 
 data class ActionTimelineItem(
   val sequenceNumber: Int,
@@ -59,15 +69,15 @@ class ActionTimeline @JvmOverloads constructor(
     const val DEFAULT_EMPTY_MESSAGE = "No action history yet. Policy decisions and results will appear here."
   }
 
-  private val surfaceColor = Color.WHITE
-  private val borderColor = Color.parseColor("#D7E1ED")
-  private val textPrimary = Color.parseColor("#152538")
-  private val textSecondary = Color.parseColor("#5D6B7B")
-  private val accentColor = Color.parseColor("#2353B6")
-  private val successColor = Color.parseColor("#1F7A44")
-  private val warningColor = Color.parseColor("#9A6700")
-  private val dangerColor = Color.parseColor("#8E1C1C")
-  private val mutedColor = Color.parseColor("#667085")
+  private val surfaceColor = OpenCrayUiTokens.surface
+  private val borderColor = OpenCrayUiTokens.border
+  private val textPrimary = OpenCrayUiTokens.textPrimary
+  private val textSecondary = OpenCrayUiTokens.textSecondary
+  private val accentColor = OpenCrayUiTokens.primary
+  private val successColor = OpenCrayUiTokens.success
+  private val warningColor = OpenCrayUiTokens.warning
+  private val dangerColor = OpenCrayUiTokens.danger
+  private val mutedColor = OpenCrayUiTokens.textTertiary
 
   private var items: List<ActionTimelineItem> = emptyList()
   private var emptyStateMessage: String = DEFAULT_EMPTY_MESSAGE
@@ -239,29 +249,17 @@ class ActionTimeline @JvmOverloads constructor(
   private fun titleText(
     value: String,
     textSizeSp: Float,
-  ): TextView = TextView(context).apply {
-    text = value
-    textSize = textSizeSp
-    setTextColor(textPrimary)
-    setTypeface(typeface, Typeface.BOLD)
-  }
+  ): TextView = context.ocCardTitleText(value, textSizeSp)
 
-  private fun bodyText(value: String): TextView = TextView(context).apply {
-    text = value
-    textSize = 14f
-    setTextColor(textPrimary)
-  }
+  private fun bodyText(value: String): TextView = context.ocBodyText(value)
 
-  private fun helperText(value: String): TextView = TextView(context).apply {
-    text = value
-    textSize = 13f
-    setTextColor(textSecondary)
-  }
+  private fun helperText(value: String): TextView = context.ocMetaText(value)
 
   private fun cardBackground(): GradientDrawable = GradientDrawable().apply {
-    shape = GradientDrawable.RECTANGLE
-    cornerRadius = dp(18).toFloat()
-    setColor(surfaceColor)
+    val drawable = context.ocCardBackground(OpenCraySurfaceTone.NEUTRAL, stroked = true)
+    shape = drawable.shape
+    cornerRadius = drawable.cornerRadius
+    color = drawable.color
     setStroke(dp(1), borderColor)
   }
 
@@ -285,9 +283,19 @@ class ActionTimeline @JvmOverloads constructor(
     borderColor: Int,
     cornerDp: Int,
   ): GradientDrawable = GradientDrawable().apply {
-    shape = GradientDrawable.RECTANGLE
-    cornerRadius = dp(cornerDp).toFloat()
-    setColor(fillColor)
+    val drawable = if (cornerDp >= OpenCrayUiTokens.radiusPill) {
+      context.ocPillBackground(fillColor = fillColor, strokeColor = borderColor, strokeWidthDp = 1)
+    } else {
+      context.ocSurfaceBackground(
+        fillColor = fillColor,
+        radiusDp = cornerDp,
+        strokeColor = borderColor,
+        strokeWidthDp = 1,
+      )
+    }
+    shape = drawable.shape
+    cornerRadius = drawable.cornerRadius
+    color = drawable.color
     setStroke(dp(1), borderColor)
   }
 
@@ -360,13 +368,7 @@ class ActionTimeline @JvmOverloads constructor(
   private fun blockParams(
     topDp: Int = 0,
     bottomDp: Int = 0,
-  ): LinearLayout.LayoutParams = LinearLayout.LayoutParams(
-    ViewGroup.LayoutParams.MATCH_PARENT,
-    ViewGroup.LayoutParams.WRAP_CONTENT,
-  ).apply {
-    topMargin = dp(topDp)
-    bottomMargin = dp(bottomDp)
-  }
+  ): LinearLayout.LayoutParams = context.ocLinearBlockParams(topDp = topDp, bottomDp = bottomDp)
 
   private fun chipParams(startDp: Int = 0): LinearLayout.LayoutParams = LinearLayout.LayoutParams(
     ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -375,7 +377,7 @@ class ActionTimeline @JvmOverloads constructor(
     marginStart = dp(startDp)
   }
 
-  private fun dp(value: Int): Int = (value * context.resources.displayMetrics.density).toInt()
+  private fun dp(value: Int): Int = context.ocDp(value)
 
   private data class ChipPalette(
     val fillColor: Int,

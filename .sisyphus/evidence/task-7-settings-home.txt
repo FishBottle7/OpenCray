@@ -1,0 +1,29 @@
+Task 7 Settings home evidence
+Date: 2026-03-10
+
+Host file:
+- app/src/main/kotlin/com/opencray/app/AppShellActivity.kt
+
+Verified implementation points:
+- The Settings tab now mounts `buildSettingsHost()` instead of the former placeholder card.
+- `renderSettingsHome()` builds the shell-owned HOME route as a summary hub, not a merged long page.
+- `settingsHomeCards()` defines exactly five HOME cards in this order:
+  1. MCP
+  2. Privacy & Telemetry
+  3. Safety & Limits
+  4. About & Version
+  5. Personalization
+- The MCP HOME card includes a visible summary plus `buildMcpHomeToggleSurface()` with the label `Enable MCP integrations`.
+- `renderSettingsSubpage()` keeps MCP / Privacy / Safety / About / Personalization bodies as placeholder host content only in this task.
+
+Compile verification:
+- Command: `./gradlew :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin`
+- Result: `BUILD SUCCESSFUL`
+
+Targeted instrumentation verification:
+- Command: `adb shell am instrument -w -e class com.opencray.app.SettingsNavigationTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner`
+- Verified: `settingsHomeShowsRequiredCardsInOrder`
+- Preserved output:
+  - `com.opencray.app.SettingsNavigationTest:..`
+  - `Time: 8.384`
+  - `OK (2 tests)`

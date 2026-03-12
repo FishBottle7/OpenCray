@@ -1,0 +1,23 @@
+Task 9 evidence for local-retention disclosure with telemetry off
+
+ADB instrumentation command
+adb shell am instrument -w -e class com.opencray.app.PrivacyTelemetrySettingsTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+
+Disclosure-focused test covered
+- PrivacyTelemetrySettingsTest.localRetentionDisclosureRemainsVisibleWhenTelemetryIsOff
+
+Observed instrumentation result
+com.opencray.app.PrivacyTelemetrySettingsTest:..
+
+Time: 30.943
+
+OK (2 tests)
+
+Verified disclosure text remains visible with telemetry Off
+Even with telemetry off, OpenCray still keeps local settings, workspace access state, consent choices, and recent audit history on this device until a later clear-data flow removes them.
+
+Verified telemetry-off state
+- The Enable telemetry switch can be toggled back to Off and remains visibly unchecked.
+- The disclosure above stays visible on the subpage while telemetry is Off.
+- Settings HOME reflects the stored telemetry-off state instead of implying zero local retention.
+- No copy was added that suggests telemetry-off clears mandatory local state.

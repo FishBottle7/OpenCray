@@ -1,0 +1,37 @@
+Manual launch commands
+----------------------
+adb shell am force-stop org.opencray.app
+adb shell am start -W -n org.opencray.app/com.opencray.app.AppShellActivity --es com.opencray.app.AppShellActivity.extra.START_TAB settings --es com.opencray.app.AppShellActivity.extra.START_SETTINGS_PAGE about
+adb shell am force-stop org.opencray.app
+adb shell am start -W -n org.opencray.app/com.opencray.app.AppShellActivity --es com.opencray.app.AppShellActivity.extra.START_TAB invalid-tab --es com.opencray.app.AppShellActivity.extra.START_SETTINGS_PAGE invalid-page
+adb exec-out uiautomator dump /dev/tty
+
+Manual launch output
+--------------------
+Starting: Intent { cmp=org.opencray.app/com.opencray.app.AppShellActivity (has extras) }
+Status: ok
+LaunchState: COLD
+Activity: org.opencray.app/com.opencray.app.AppShellActivity
+TotalTime: 826
+WaitTime: 895
+Complete
+Starting: Intent { cmp=org.opencray.app/com.opencray.app.AppShellActivity (has extras) }
+Status: ok
+LaunchState: COLD
+Activity: org.opencray.app/com.opencray.app.AppShellActivity
+TotalTime: 659
+WaitTime: 663
+Complete
+
+UI excerpt after invalid extras launch
+-------------------------------------
+<node index="1" text="Chat" class="android.widget.TextView" package="org.opencray.app" />
+<node index="2" text="Conversation placeholder host. This shell keeps the chat destination wired while the real surface is attached in a later task." class="android.widget.TextView" package="org.opencray.app" />
+<node index="0" text="Chat" class="android.widget.Button" package="org.opencray.app" />
+<node index="1" text="Skills" class="android.widget.Button" package="org.opencray.app" />
+<node index="2" text="Files" class="android.widget.Button" package="org.opencray.app" />
+<node index="3" text="Settings" class="android.widget.Button" package="org.opencray.app" />
+
+Fallback note
+-------------
+The invalid-extra launch above was executed immediately after priming persisted shell state to Settings/About, so the visible Chat screen confirms the Activity fell back safely instead of reopening the previously stored Settings destination.

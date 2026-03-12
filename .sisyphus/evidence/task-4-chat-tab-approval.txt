@@ -1,0 +1,35 @@
+Task 4 evidence for shell Chat approval flow
+
+Required compile command
+./gradlew :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin --console=plain
+
+Compile output summary
+BUILD SUCCESSFUL in 3s
+129 actionable tasks: 9 executed, 120 up-to-date
+
+Install command
+./gradlew :app:installDebug :app:installDebugAndroidTest --console=plain
+
+Install output summary
+Installed on 1 device.
+BUILD SUCCESSFUL in 7s
+
+Approval instrumentation command
+adb shell am instrument -w -e class com.opencray.app.ChatTabShellTest#chatTabKeepsApprovalFlowAndRetainsStateAcrossTabSwitches org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+
+Approval instrumentation output
+com.opencray.app.ChatTabShellTest:.
+
+Time: 4.461
+
+OK (1 test)
+
+Full shell chat suite command
+adb shell am instrument -w -e class com.opencray.app.ChatTabShellTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+
+Full shell chat suite output
+com.opencray.app.ChatTabShellTest:....
+
+Time: 13.354
+
+OK (4 tests)

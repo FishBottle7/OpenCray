@@ -1,0 +1,23 @@
+Task 7 Settings back evidence
+Date: 2026-03-10
+
+Host file:
+- app/src/main/kotlin/com/opencray/app/AppShellActivity.kt
+
+Verified implementation points:
+- `onBackPressed()` checks for `selectedTab == SETTINGS` plus `settingsSubpage != HOME`, then routes back to `SettingsSubpage.HOME` before calling `super.onBackPressed()`.
+- `buildSettingsSubpageHeader()` exposes a visible in-tab back affordance (`← Settings`) that also routes back to HOME without leaving the Settings tab.
+- `stateStore.save(currentDestination)` still persists the current `settingsSubpage`, so shell retention continues to use `AppShellStateStore`.
+- `renderDestination()` keeps the current settings route active while switching tabs because `currentDestination.copy(selectedTab = tab)` preserves the stored subpage.
+
+Compile verification:
+- Command: `./gradlew :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin`
+- Result: `BUILD SUCCESSFUL`
+
+Targeted instrumentation verification:
+- Command: `adb shell am instrument -w -e class com.opencray.app.SettingsNavigationTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner`
+- Verified: `enteringSubpageAndBackingOutReturnsToSettingsHomeBeforeLeavingTab`
+- Preserved output:
+  - `com.opencray.app.SettingsNavigationTest:..`
+  - `Time: 8.384`
+  - `OK (2 tests)`

@@ -29,6 +29,11 @@ android {
 dependencies {
   implementation(kotlin("stdlib"))
   implementation(project(":core"))
-  implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
+  implementation(project(":filesystem"))
+  implementation(project(":llm"))
+  implementation(project(":mcp"))
+  implementation(project(":policy"))
+  implementation(project(":skills"))
+  api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
   testImplementation("junit:junit:4.13.2")
 }

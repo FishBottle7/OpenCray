@@ -2,24 +2,23 @@ package com.opencray.ui.settings
 
 import android.content.Context
 import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.ColorDrawable
 import android.util.AttributeSet
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
-
-private const val DEFAULT_TELEMETRY_TITLE = "Telemetry and privacy"
-private const val DEFAULT_TELEMETRY_SUBTITLE =
-  "Explicit defaults stay visible here so later settings wiring can reuse stable labels and disclosures without guessing."
-private const val DEFAULT_DEFAULTS_DISCLOSURE =
-  "Defaults: Enable telemetry = Off. Enable privacy guard = On."
-private const val DEFAULT_LOCAL_RETENTION_DISCLOSURE =
-  "Even with telemetry off, OpenCray still keeps local settings, workspace access state, consent choices, and recent audit history on this device until a later clear-data flow removes them."
-private const val TELEMETRY_SWITCH_LABEL = "Enable telemetry"
-private const val PRIVACY_GUARD_SWITCH_LABEL = "Enable privacy guard"
+import com.opencray.ui.design.OpenCraySurfaceTone
+import com.opencray.ui.design.OpenCrayUiTokens
+import com.opencray.ui.design.ocBodyText
+import com.opencray.ui.design.ocCardBackground
+import com.opencray.ui.design.ocDp
+import com.opencray.ui.design.ocLinearBlockParams
+import com.opencray.ui.design.ocMetaText
+import com.opencray.ui.design.ocSectionCard
+import com.opencray.ui.design.ocSectionTitleText
+import org.opencray.ui.R
 
 data class TelemetryToggleState(
   val title: String,
@@ -40,30 +39,12 @@ data class TelemetryToggleState(
 }
 
 data class TelemetryTogglesState(
-  val title: String = DEFAULT_TELEMETRY_TITLE,
-  val subtitle: String = DEFAULT_TELEMETRY_SUBTITLE,
-  val telemetry: TelemetryToggleState = TelemetryToggleState(
-    title = "Telemetry collection",
-    switchLabel = TELEMETRY_SWITCH_LABEL,
-    enabledSummary = "Anonymous product telemetry is allowed.",
-    disabledSummary = "No telemetry leaves the device.",
-    disclosureText =
-      "Default: Off. Turning telemetry off blocks outbound telemetry, but local settings, approvals, and recent audit entries remain stored on this device.",
-    isChecked = false,
-    defaultValue = false,
-  ),
-  val privacyGuard: TelemetryToggleState = TelemetryToggleState(
-    title = "Privacy guard",
-    switchLabel = PRIVACY_GUARD_SWITCH_LABEL,
-    enabledSummary = "Local redaction stays enabled for eligible analytics and audit details.",
-    disabledSummary = "Eligible analytics and audit details can use full local detail.",
-    disclosureText =
-      "Default: On. Privacy guard changes what later telemetry may include, while local retention still keeps the current setting and recent audit history on-device.",
-    isChecked = true,
-    defaultValue = true,
-  ),
-  val defaultsDisclosure: String = DEFAULT_DEFAULTS_DISCLOSURE,
-  val localRetentionDisclosure: String = DEFAULT_LOCAL_RETENTION_DISCLOSURE,
+  val title: String,
+  val subtitle: String,
+  val telemetry: TelemetryToggleState,
+  val privacyGuard: TelemetryToggleState,
+  val defaultsDisclosure: String,
+  val localRetentionDisclosure: String,
 ) {
   init {
     require(title.isNotBlank()) { "title must not be blank." }
@@ -72,6 +53,33 @@ data class TelemetryTogglesState(
     require(localRetentionDisclosure.isNotBlank()) {
       "localRetentionDisclosure must not be blank."
     }
+  }
+
+  companion object {
+    fun localized(context: Context): TelemetryTogglesState = TelemetryTogglesState(
+      title = context.getString(R.string.telemetry_title),
+      subtitle = context.getString(R.string.telemetry_subtitle),
+      telemetry = TelemetryToggleState(
+        title = context.getString(R.string.telemetry_toggle_title),
+        switchLabel = context.getString(R.string.telemetry_switch_label),
+        enabledSummary = context.getString(R.string.telemetry_toggle_enabled_summary),
+        disabledSummary = context.getString(R.string.telemetry_toggle_disabled_summary),
+        disclosureText = context.getString(R.string.telemetry_toggle_disclosure),
+        isChecked = false,
+        defaultValue = false,
+      ),
+      privacyGuard = TelemetryToggleState(
+        title = context.getString(R.string.privacy_guard_title),
+        switchLabel = context.getString(R.string.privacy_guard_switch_label),
+        enabledSummary = context.getString(R.string.privacy_guard_enabled_summary),
+        disabledSummary = context.getString(R.string.privacy_guard_disabled_summary),
+        disclosureText = context.getString(R.string.privacy_guard_disclosure),
+        isChecked = true,
+        defaultValue = true,
+      ),
+      defaultsDisclosure = context.getString(R.string.telemetry_defaults_disclosure),
+      localRetentionDisclosure = context.getString(R.string.telemetry_local_retention_disclosure),
+    )
   }
 }
 
@@ -91,29 +99,27 @@ class TelemetryToggles @JvmOverloads constructor(
     val disclosureView: TextView,
   )
 
-  private val surfaceColor = Color.WHITE
-  private val backgroundColor = Color.parseColor("#F4F7FB")
-  private val borderColor = Color.parseColor("#D7E1ED")
-  private val textPrimary = Color.parseColor("#152538")
-  private val textSecondary = Color.parseColor("#5D6B7B")
-  private val accentColor = Color.parseColor("#2353B6")
-  private val successColor = Color.parseColor("#1F7A44")
+  private val surfaceColor = OpenCrayUiTokens.surface
+  private val backgroundColor = OpenCrayUiTokens.shellBackground
+  private val textPrimary = OpenCrayUiTokens.textPrimary
+  private val accentColor = OpenCrayUiTokens.primary
+  private val successColor = OpenCrayUiTokens.success
 
   private var listener: Listener? = null
-  private var state: TelemetryTogglesState = TelemetryTogglesState()
+  private var state: TelemetryTogglesState = TelemetryTogglesState.localized(context)
   private var isRendering: Boolean = false
 
   private val contentContainer = LinearLayout(context).apply {
     orientation = LinearLayout.VERTICAL
-    setPadding(dp(16), dp(16), dp(16), dp(24))
+    setPadding(dp(20), dp(12), dp(20), dp(28))
   }
 
-  private val headerTitleView = titleText(textSizeSp = 20f)
+  private val headerTitleView = titleText(textSizeSp = 28f)
   private val headerSubtitleView = helperText()
   private val telemetryToggleViews = buildToggleCard()
   private val privacyGuardToggleViews = buildToggleCard()
   private val disclosureCard = sectionCard()
-  private val disclosureTitleView = titleText("Defaults and local retention", 18f)
+  private val disclosureTitleView = titleText(context.getString(R.string.telemetry_disclosure_title), 18f)
   private val defaultsDisclosureView = helperText()
   private val localRetentionDisclosureView = bodyText()
 
@@ -130,9 +136,9 @@ class TelemetryToggles @JvmOverloads constructor(
     )
 
     contentContainer.addView(buildHeaderCard())
-    contentContainer.addView(telemetryToggleViews.card, blockParams(topDp = 16))
-    contentContainer.addView(privacyGuardToggleViews.card, blockParams(topDp = 16))
-    contentContainer.addView(disclosureCard, blockParams(topDp = 16))
+    contentContainer.addView(telemetryToggleViews.card, blockParams(topDp = 20))
+    contentContainer.addView(privacyGuardToggleViews.card, blockParams(topDp = 12))
+    contentContainer.addView(disclosureCard, blockParams(topDp = 24))
 
     setupDisclosureCard()
     bindToggleListeners()
@@ -156,30 +162,45 @@ class TelemetryToggles @JvmOverloads constructor(
   fun snapshotState(): TelemetryTogglesState = state
 
   private fun buildHeaderCard(): LinearLayout = sectionCard().apply {
+    background = ColorDrawable(Color.TRANSPARENT)
     addView(headerTitleView)
     addView(headerSubtitleView, blockParams(topDp = 6))
   }
 
   private fun setupDisclosureCard() {
+    disclosureCard.background = context.ocCardBackground(OpenCraySurfaceTone.SUBTLE)
     disclosureCard.addView(disclosureTitleView)
     disclosureCard.addView(defaultsDisclosureView, blockParams(topDp = 8))
     disclosureCard.addView(localRetentionDisclosureView, blockParams(topDp = 10))
   }
 
   private fun buildToggleCard(): ToggleCardViews {
-    val titleView = titleText(textSizeSp = 18f)
+    val titleView = titleText(textSizeSp = 20f)
     val stateSummaryView = helperText()
     val switchView = Switch(context).apply {
       textSize = 15f
       setTextColor(textPrimary)
-      minHeight = dp(48)
+      minHeight = dp(52)
     }
     val disclosureView = bodyText()
 
     val card = sectionCard().apply {
-      addView(titleView)
-      addView(stateSummaryView, blockParams(topDp = 6))
-      addView(switchView, blockParams(topDp = 12))
+      addView(
+        LinearLayout(context).apply {
+          orientation = LinearLayout.HORIZONTAL
+
+          addView(
+            titleView,
+            LinearLayout.LayoutParams(
+              0,
+              ViewGroup.LayoutParams.WRAP_CONTENT,
+              1f,
+            ),
+          )
+          addView(switchView)
+        },
+      )
+      addView(stateSummaryView, blockParams(topDp = 8))
       addView(disclosureView, blockParams(topDp = 10))
     }
 
@@ -230,19 +251,24 @@ class TelemetryToggles @JvmOverloads constructor(
   ) {
     views.titleView.text = toggleState.title
     views.stateSummaryView.text = buildString {
-      append("Current: ")
+      append(context.getString(R.string.telemetry_state_current_label))
+      append(": ")
       append(onOffLabel(toggleState.isChecked))
-      append(" • Default: ")
-      append(onOffLabel(toggleState.defaultValue))
-      append(" • ")
+      append(" · ")
       append(if (toggleState.isChecked) toggleState.enabledSummary else toggleState.disabledSummary)
     }
     views.switchView.text = toggleState.switchLabel
     views.switchView.contentDescription = toggleState.switchLabel
     views.switchView.isChecked = toggleState.isChecked
     views.disclosureView.text = toggleState.disclosureText
-    views.card.background = sectionBackground(
-      if (toggleState.isChecked) enabledStrokeColor else borderColor,
+    views.card.background = context.ocCardBackground(
+      tone = if (!toggleState.isChecked) {
+        OpenCraySurfaceTone.NEUTRAL
+      } else if (enabledStrokeColor == accentColor) {
+        OpenCraySurfaceTone.INFO
+      } else {
+        OpenCraySurfaceTone.SUCCESS
+      },
     )
   }
 
@@ -251,63 +277,31 @@ class TelemetryToggles @JvmOverloads constructor(
     localRetentionDisclosureView.text = state.localRetentionDisclosure
   }
 
-  private fun onOffLabel(value: Boolean): String = if (value) "On" else "Off"
-
-  private fun sectionCard(): LinearLayout = LinearLayout(context).apply {
-    orientation = LinearLayout.VERTICAL
-    background = sectionBackground(borderColor)
-    setPadding(dp(16), dp(16), dp(16), dp(16))
+  private fun onOffLabel(value: Boolean): String = if (value) {
+    context.getString(R.string.telemetry_state_on)
+  } else {
+    context.getString(R.string.telemetry_state_off)
   }
+
+  private fun sectionCard(): LinearLayout = context.ocSectionCard()
 
   private fun titleText(
     value: String,
     textSizeSp: Float,
-  ): TextView = TextView(context).apply {
-    text = value
-    textSize = textSizeSp
-    setTextColor(textPrimary)
-    setTypeface(typeface, Typeface.BOLD)
-  }
+  ): TextView = context.ocSectionTitleText(value, textSizeSp)
 
-  private fun titleText(textSizeSp: Float): TextView = TextView(context).apply {
-    textSize = textSizeSp
-    setTextColor(textPrimary)
-    setTypeface(typeface, Typeface.BOLD)
-  }
+  private fun titleText(textSizeSp: Float): TextView = context.ocSectionTitleText(textSizeSp = textSizeSp)
 
-  private fun bodyText(value: String = ""): TextView = TextView(context).apply {
-    text = value
-    textSize = 14f
-    setTextColor(textPrimary)
-    setLineSpacing(0f, 1.12f)
-  }
+  private fun bodyText(value: String = ""): TextView = context.ocBodyText(value)
 
-  private fun helperText(value: String = ""): TextView = TextView(context).apply {
-    text = value
-    textSize = 13f
-    setTextColor(textSecondary)
-    setLineSpacing(0f, 1.1f)
-  }
-
-  private fun sectionBackground(strokeColor: Int): GradientDrawable = GradientDrawable().apply {
-    shape = GradientDrawable.RECTANGLE
-    cornerRadius = dp(18).toFloat()
-    setColor(surfaceColor)
-    setStroke(dp(1), strokeColor)
-  }
+  private fun helperText(value: String = ""): TextView = context.ocMetaText(value)
 
   private fun blockParams(
     topDp: Int = 0,
     bottomDp: Int = 0,
-  ): LinearLayout.LayoutParams = LinearLayout.LayoutParams(
-    ViewGroup.LayoutParams.MATCH_PARENT,
-    ViewGroup.LayoutParams.WRAP_CONTENT,
-  ).apply {
-    topMargin = dp(topDp)
-    bottomMargin = dp(bottomDp)
-  }
+  ): LinearLayout.LayoutParams = context.ocLinearBlockParams(topDp = topDp, bottomDp = bottomDp)
 
-  private fun dp(value: Int): Int = (value * context.resources.displayMetrics.density).toInt()
+  private fun dp(value: Int): Int = context.ocDp(value)
 }
 
 // Issue: Persistence and policy enforcement intentionally stay outside this self-contained UI slice.

@@ -1,0 +1,49 @@
+Task 5 evidence for the shell-hosted Skills happy path
+
+Exact required compile verification command
+./gradlew :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin --console=plain
+
+Observed output
+> Task :app:compileDebugKotlin UP-TO-DATE
+> Task :app:compileDebugAndroidTestKotlin UP-TO-DATE
+
+BUILD SUCCESSFUL in 2s
+129 actionable tasks: 9 executed, 120 up-to-date
+
+Passing instrumentation command
+adb shell am instrument -w -e class com.opencray.app.SkillsTabShellTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+
+Observed instrumentation output
+com.opencray.app.SkillsTabShellTest:..
+
+Time: 9.903
+
+OK (2 tests)
+
+Manual shell launch command
+adb shell am start -W -n org.opencray.app/com.opencray.app.AppShellActivity --es com.opencray.app.AppShellActivity.extra.START_TAB skills
+
+Launch output
+Starting: Intent { cmp=org.opencray.app/com.opencray.app.AppShellActivity (has extras) }
+Status: ok
+LaunchState: COLD
+Activity: org.opencray.app/com.opencray.app.AppShellActivity
+TotalTime: 1056
+WaitTime: 1058
+Complete
+
+Machine-checked UI dump string presence after the manual shell launch
+Create new draft=True
+Save draft=True
+Import package=True
+Export package=True
+Import / export feedback=True
+Selected=True
+OpenCray sections=False
+Editing=False
+
+Relevant passing test coverage from `SkillsTabShellTest`
+- `skillsTabKeepsExistingSkillsFlowAndRetainsEditorStateAcrossTabSwitches` opens the shell, enters Skills, verifies `Create new draft`, `Save draft`, `Import package`, `Export package`, and `Import / export feedback` are visible without scrolling, asserts `OpenCray sections` is absent and no clickable `Editing` affordance exists, exports `workspace-audit`, selects `forked-review` via a card-wide click, edits the description, switches `Chat -> Skills`, verifies the edit persisted, saves, and toggles lifecycle successfully.
+
+Summary
+The shell now hosts the real `SkillsScreen` instead of the placeholder. Quick actions and feedback stay above the fold, card-wide selection works, the launcher-era top navigation does not appear inside the shell tab, and the editor state survives leaving and returning to Skills.

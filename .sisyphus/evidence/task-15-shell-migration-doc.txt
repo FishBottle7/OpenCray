@@ -1,0 +1,40 @@
+Task 15 shell migration doc evidence
+Date: 2026-03-10
+
+Created file
+- docs/consumer-shell-migration.md
+
+Documented items
+- Launcher contract: `AppShellActivity`
+- Wrapper compatibility policy for `SkillsManagementActivity`, `MainInteractionActivity`, `WorkspaceSettingsActivity`, and `SafetyAndLimitsActivity`
+- Fixed shell tab map: `Chat / Skills / Files / Settings`
+- Settings HOME plus subpage structure
+- System-locale bilingual behavior, with no in-app language switch promised for V1
+- Files tab scope limits around workspace access, recovery, and outside-root denial
+- Typed reset phrases: `RESET MEMORY` and `RESET SOUL`
+
+Primary source evidence cited in the document
+- .sisyphus/evidence/task-13-shell-launcher.txt
+- .sisyphus/evidence/task-13-wrapper-routing.txt
+- .sisyphus/evidence/task-7-settings-home.txt
+- .sisyphus/evidence/task-7-settings-back.txt
+- .sisyphus/evidence/task-8-mcp-settings-happy.txt
+- .sisyphus/evidence/task-8-mcp-settings-blocked.txt
+- .sisyphus/evidence/task-9-privacy-settings-happy.txt
+- .sisyphus/evidence/task-9-privacy-settings-disclosure.txt
+- .sisyphus/evidence/task-10-safety-subpage-happy.txt
+- .sisyphus/evidence/task-11-about-screen-happy.txt
+- .sisyphus/evidence/task-12-personalization-happy.txt
+- .sisyphus/evidence/task-12-personalization-reset-guard.txt
+- .sisyphus/evidence/task-2-bilingual-resources.txt
+- .sisyphus/evidence/task-2-reset-token-strings.txt
+- .sisyphus/evidence/task-6-files-workbench-happy.txt
+- .sisyphus/evidence/task-6-files-workbench-deny.txt
+- .sisyphus/evidence/task-15-saf-happy.txt
+- .sisyphus/evidence/task-15-saf-revoked.txt
+
+Learnings
+- A single migration guide helps reviewers translate old wrapper names into the shell destination users actually see.
+
+Issues
+- Locale behavior is grounded in resource evidence and Settings structure evidence, so release copy should avoid promising any language switch until separate proof exists.

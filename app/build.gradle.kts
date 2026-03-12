@@ -33,8 +33,10 @@ android {
 
 dependencies {
   implementation(kotlin("stdlib"))
+  implementation("androidx.core:core-ktx:1.10.1")
   // Baseline wiring to existing modules
   implementation(project(":core"))
+  implementation(project(":llm"))
   implementation(project(":runtime"))
   implementation(project(":ui"))
   implementation(project(":persistence"))

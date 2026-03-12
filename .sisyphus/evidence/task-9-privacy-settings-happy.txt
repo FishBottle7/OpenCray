@@ -1,0 +1,28 @@
+Task 9 evidence for Privacy & Telemetry settings happy path
+
+Required Gradle verification command
+./gradlew.bat :app:compileDebugKotlin :app:testDebugUnitTest --tests "*TelemetrySettingsPersistenceTest*" :app:compileDebugAndroidTestKotlin
+
+Observed result
+BUILD SUCCESSFUL
+
+Focused unit test coverage
+- TelemetrySettingsPersistenceTest.loadFallsBackToLocalizedDefaultsWhenNothingIsPersisted
+- TelemetrySettingsPersistenceTest.persistsChangedToggleStateAcrossReloadWithoutChangingDefaults
+
+ADB instrumentation command
+adb shell am instrument -w -e class com.opencray.app.PrivacyTelemetrySettingsTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+
+ADB instrumentation output
+com.opencray.app.PrivacyTelemetrySettingsTest:..
+
+Time: 30.943
+
+OK (2 tests)
+
+Verified happy-path behavior
+- SettingsSubpage.PRIVACY renders the real TelemetryToggles surface under the shell-owned Settings host.
+- Default visible state stays intact on first launch: Enable telemetry = Off, Enable privacy guard = On.
+- Toggling telemetry On and privacy guard Off persists across activity relaunch through the host-owned TelemetrySettingsStore.
+- Settings HOME reflects the updated stored state with the summary: Enable telemetry: On • Enable privacy guard: Off.
+- The local-retention disclosure remains visible on the Privacy & Telemetry subpage after relaunch.

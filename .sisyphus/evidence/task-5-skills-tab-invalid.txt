@@ -1,0 +1,30 @@
+Task 5 evidence for shell-hosted Skills invalid-name validation
+
+Exact required compile verification command
+./gradlew :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin --console=plain
+
+Observed output
+> Task :app:compileDebugKotlin UP-TO-DATE
+> Task :app:compileDebugAndroidTestKotlin UP-TO-DATE
+
+BUILD SUCCESSFUL in 2s
+129 actionable tasks: 9 executed, 120 up-to-date
+
+Passing instrumentation command
+adb shell am instrument -w -e class com.opencray.app.SkillsTabShellTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+
+Observed instrumentation output
+com.opencray.app.SkillsTabShellTest:..
+
+Time: 9.903
+
+OK (2 tests)
+
+Relevant passing test coverage from `SkillsTabShellTest`
+- `invalidSkillNameStillShowsInlineValidationInsideShellSkillsTab` opens the shell, switches to Skills, creates a new draft, enters `Invalid Name`, taps `Save draft`, and asserts the inline error `Skill name must use lowercase alphanumeric-hyphen format.` plus the status message `Validation blocked the save. Fix the inline feedback and try again.`
+
+Manual shell-hosted launch reference used in this task
+adb shell am start -W -n org.opencray.app/com.opencray.app.AppShellActivity --es com.opencray.app.AppShellActivity.extra.START_TAB skills
+
+Summary
+The invalid-name flow still surfaces inline validation inside the shell-hosted Skills tab, so the existing skills editor behavior remains intact after moving the screen into `AppShellActivity`.

@@ -1,0 +1,43 @@
+Task 6 — Files workbench denial/recovery evidence
+Date: 2026-03-10
+
+Deny/recovery shell verification:
+$ adb shell am instrument -w -e class com.opencray.app.FilesWorkbenchDeniedStateTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+com.opencray.app.FilesWorkbenchDeniedStateTest:.
+
+Time: 4.632
+
+OK (1 test)
+
+Covered assertions:
+- `revoked_grant` shows `RECOVERY NEEDED` and the existing `Re-authorize workspace` action.
+- Re-authorizing returns the hosted Files tab to `GRANT ACTIVE`.
+- `outside_root_denial` shows `OUTSIDE ROOT` plus the existing outside-root guidance text.
+- Picking a broader workspace from the denial state returns the hosted Files tab to `GRANT ACTIVE`.
+
+Remediation rerun — denial families with live bounded workbench
+Date: 2026-03-10
+
+$ adb shell am instrument -w -e class com.opencray.app.FilesWorkbenchDeniedStateTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+com.opencray.app.FilesWorkbenchDeniedStateTest:.
+
+Time: 14.071
+
+OK (1 test)
+
+Expanded denial/recovery coverage:
+- `revoked_grant` still surfaces `RECOVERY NEEDED`, but now also makes it explicit that browsing/editing stay paused until re-authorization.
+- Re-authorizing restores the Files tab to an active granted-root workbench.
+- `outside_root_denial` still surfaces `OUTSIDE ROOT`, while the bounded workbench remains available inside the saved root for in-scope browsing and preview.
+- Picking a broader workspace from the denial state still returns the hosted Files tab to `GRANT ACTIVE`.
+
+Learning: Outside-root denial is clearer when the app still shows the in-scope root the user can safely keep using.
+Issue: This evidence still depends on emulator availability even though the required Gradle gate now passes independently of device execution.
+
+Remediation addendum — final Task 6 gap closure
+Source/test coverage addendum:
+- Denial coverage now keeps the saved-root workbench surface visible while `RECOVERY NEEDED` and `OUTSIDE ROOT` guidance remain explicit.
+- Re-authorize and pick flows still recover the Files tab back to `GRANT ACTIVE` after the denied states.
+
+Learnings note: Outside-root denial can still expose the saved granted-root workbench without widening access beyond that root.
+Issues note: The adb denial artifact above remains the last captured device-side run; this remediation session focused on source updates plus the required compile/test verification.

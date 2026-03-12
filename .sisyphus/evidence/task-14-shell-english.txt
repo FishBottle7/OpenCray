@@ -1,0 +1,18 @@
+adb shell cmd locale get-device-locale
+en-US
+
+adb shell cmd locale get-app-locales org.opencray.app
+Locales for org.opencray.app for user 0 are [en-US]
+
+adb shell am instrument -w -e class com.opencray.app.ChatTabShellTest,com.opencray.app.SkillsTabShellTest,com.opencray.app.FilesWorkbenchHappyPathTest,com.opencray.app.FilesWorkbenchDeniedStateTest,com.opencray.app.SettingsNavigationTest,com.opencray.app.ShellWrapperRoutingTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner
+
+com.opencray.app.SettingsNavigationTest:..
+com.opencray.app.ChatTabShellTest:....
+com.opencray.app.ShellWrapperRoutingTest:.....
+com.opencray.app.FilesWorkbenchDeniedStateTest:.
+com.opencray.app.SkillsTabShellTest:..
+com.opencray.app.FilesWorkbenchHappyPathTest:.
+
+Time: 88.517
+
+OK (15 tests)

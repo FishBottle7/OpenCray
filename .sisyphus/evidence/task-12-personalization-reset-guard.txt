@@ -1,0 +1,29 @@
+Task 12 Personalization reset-guard evidence
+Date: 2026-03-10
+
+Replay command:
+`adb shell am instrument -w -e class com.opencray.app.PersonalizationSettingsTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner`
+
+Real replay output:
+```text
+com.opencray.app.PersonalizationSettingsTest:..
+
+Time: 13.718
+
+OK (2 tests)
+```
+
+No simulated log lines were added. The block above is the replay output captured from the adb run.
+
+Typed-reset guard proof from `PersonalizationSettingsTest.personalizationShowsPresetsCustomEditingAndTypedResetArming()`:
+- `assertButtonEnabled("Reset memory", expected = false)` proves the memory reset starts disabled.
+- The wrong-token path is explicit: `setEditTextValue("Type RESET MEMORY", "reset memory")`, then `assertButtonEnabled("Reset memory", expected = false)`, with the visible prompt `Type RESET MEMORY exactly to enable this reset.`
+- The exact-token path is explicit: `setEditTextValue("Type RESET MEMORY", "RESET MEMORY")`, then `assertButtonEnabled("Reset memory", expected = true)`, followed by the staged feedback text `Memory reset is staged in UI only for now.`
+- The second reset uses the same arm-only-on-exact-token rule: `setEditTextValue("Type RESET SOUL", "RESET SOUL")`, then `assertButtonEnabled("Reset soul", expected = true)`, followed by `Soul reset is staged in UI only for now.`
+
+Non-idle queue lockout proof from `PersonalizationSettingsTest.personalizationKeepsResetControlsDisabledUntilQueueReturnsIdle()`:
+- The page shows the visible state banner `Queue or session is not idle`.
+- The page shows the explanatory text `A queued chat action is still waiting for a decision, so both reset controls stay disabled until the shell returns to idle.`
+- Both typed confirmation inputs are disabled with `assertEditTextEnabled("Type RESET MEMORY", expected = false)` and `assertEditTextEnabled("Type RESET SOUL", expected = false)`.
+- Both reset buttons are disabled with `assertButtonEnabled("Reset memory", expected = false)` and `assertButtonEnabled("Reset soul", expected = false)`.
+- The lockout helper text `Disabled until the active queue or session is idle.` is also asserted as visible.

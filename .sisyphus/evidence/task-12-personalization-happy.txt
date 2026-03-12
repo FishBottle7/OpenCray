@@ -1,0 +1,24 @@
+Task 12 Personalization happy-path evidence
+Date: 2026-03-10
+
+Replay command:
+`adb shell am instrument -w -e class com.opencray.app.PersonalizationSettingsTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner`
+
+Real replay output:
+```text
+com.opencray.app.PersonalizationSettingsTest:..
+
+Time: 13.718
+
+OK (2 tests)
+```
+
+No simulated log lines were added. The block above is the replay output captured from the adb run.
+
+Evidence from `PersonalizationSettingsTest.personalizationShowsPresetsCustomEditingAndTypedResetArming()`:
+- The page content is verified with visible text assertions for `Personality presets`, `Steady guide`, `Focused builder`, `Warm collaborator`, `Custom personality overlay`, and `Danger zone`.
+- Preset switching is proven by clicking `Focused builder` and then asserting the visible copy `Base voice: concise, execution-first, and optimized for concrete next steps.`
+- Custom editing is proven by setting `Optional custom personality label` to `Night Shift` and `Add custom tone, goals, and boundaries` to `Be direct, acknowledge tradeoffs, and keep a calm tone.`, then asserting visible text `Night Shift` and `Custom overlay: Be direct, acknowledge tradeoffs, and keep a calm tone.`
+- Wrong-token blocking is explicit: the test first asserts `Reset memory` is disabled, sets `Type RESET MEMORY` to `reset memory`, asserts `Reset memory` is still disabled, and checks the visible warning `Type RESET MEMORY exactly to enable this reset.`
+- Exact-token arming is explicit: the test sets `Type RESET MEMORY` to `RESET MEMORY`, asserts `Reset memory` is enabled, clicks it, and verifies `Memory reset is staged in UI only for now.`
+- The second guarded action is also exercised with the exact token path: the test sets `Type RESET SOUL` to `RESET SOUL`, asserts `Reset soul` is enabled, clicks it, and verifies `Soul reset is staged in UI only for now.`

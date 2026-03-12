@@ -1,0 +1,33 @@
+Task 13 shell launcher evidence
+Date: 2026-03-10
+
+Manifest contract
+- `app/src/main/AndroidManifest.xml:5-14` declares `com.opencray.app.AppShellActivity` as the only `MAIN` + `LAUNCHER` activity.
+- `app/src/main/AndroidManifest.xml:15-34` keeps `SkillsManagementActivity`, `MainInteractionActivity`, `WorkspaceSettingsActivity`, and `SafetyAndLimitsActivity` declared and exported for compatibility entry points.
+
+Required build verification
+- Command: `./gradlew :app:assembleDebug :app:compileDebugAndroidTestKotlin --console=plain`
+- Result: `BUILD SUCCESSFUL in 17s`
+- Tail output: `195 actionable tasks: 15 executed, 180 up-to-date`
+
+Focused instrumentation verification
+- Command: `adb shell am instrument -w -e class com.opencray.app.ShellWrapperRoutingTest org.opencray.app.test/androidx.test.runner.AndroidJUnitRunner`
+- Output:
+  - `com.opencray.app.ShellWrapperRoutingTest:.....`
+  - `Time: 14.6`
+  - `OK (5 tests)`
+- Coverage includes `manifestKeepsAppShellAsOnlyLauncherAndLegacyWrappersExported`, which asserts `AppShellActivity` is the only launcher and the four wrappers remain exported.
+
+Launcher resolution and launch evidence
+- Resolve command: `adb shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER org.opencray.app`
+- Resolve output: `org.opencray.app/com.opencray.app.AppShellActivity`
+- Launcher-style start command: `adb shell monkey -p org.opencray.app -c android.intent.category.LAUNCHER 1`
+- Resumed activity after launcher start: `topResumedActivity=ActivityRecord{... org.opencray.app/com.opencray.app.AppShellActivity ...}`
+- UI dump checks after launcher start:
+  - `Chat=True`
+  - `Skills=True`
+  - `Files=True`
+  - `Settings=True`
+
+Conclusion
+`AppShellActivity` is the only launcher, it is the resumed activity after a launcher-style app start, and the bottom navigation visible on screen matches the shell contract.
