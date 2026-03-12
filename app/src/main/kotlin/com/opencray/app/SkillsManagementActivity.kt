@@ -6,7 +6,7 @@ import android.os.Bundle
 import com.opencray.app.shell.AppShellNavigationExtras
 import com.opencray.app.shell.AppShellTab
 
-class SkillsManagementActivity : Activity() {
+class SkillsManagementActivity : LocalizedActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
 

@@ -1,9 +1,10 @@
 package com.opencray.app
 
-import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.net.Uri
 import android.content.pm.PackageManager
+import android.provider.OpenableColumns
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.Typeface
@@ -71,6 +72,8 @@ import com.opencray.mcp.McpRegistryServerRecord
 import com.opencray.mcp.McpServerAuthState
 import com.opencray.mcp.McpServerAuthStatus
 import com.opencray.persistence.security.CredentialRef
+import com.opencray.persistence.model.ChatAttachmentEntry
+import com.opencray.persistence.model.ChatAttachmentKind
 import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.persistence.model.ChatTranscriptMessageEntry
 import com.opencray.runtime.AgentToolCall
@@ -85,10 +88,14 @@ import com.opencray.ui.chat.ApprovalDecision
 import com.opencray.ui.chat.ApprovalPromptState
 import com.opencray.ui.chat.ApprovalPromptStatus
 import com.opencray.ui.chat.ChatMessageAction
+import com.opencray.ui.chat.ChatAttachmentVisualKind
+import com.opencray.ui.chat.ChatAttachmentVisualState
+import com.opencray.ui.chat.ChatCommandOptionState
 import com.opencray.ui.chat.ChatMessageDisplayRole
 import com.opencray.ui.chat.ChatMessageItemState
 import com.opencray.ui.chat.ChatMode
 import com.opencray.ui.chat.ChatSessionListItemState
+import com.opencray.ui.chat.ChatSessionSummaryState
 import com.opencray.ui.chat.ChatScreen
 import com.opencray.ui.chat.ChatScreenState
 import com.opencray.ui.chat.ConversationMessageRole
@@ -108,6 +115,8 @@ import com.opencray.ui.timeline.ActionPolicyDecision
 import com.opencray.ui.timeline.ActionResultStatus
 import com.opencray.ui.timeline.ActionTimelineItem
 import org.opencray.app.R
+import java.io.File
+import java.io.FileOutputStream
 import java.text.DateFormat
 import java.util.Locale
 import java.util.UUID
@@ -120,6 +129,8 @@ private const val STATE_CHAT_SCENARIO = "chat_scenario"
 private const val STATE_CHAT_SELECTED_MODE = "chat_selected_mode"
 private const val STATE_CHAT_QUEUE_VISIBLE = "chat_queue_visible"
 private const val STATE_CHAT_APPROVAL_OUTCOME = "chat_approval_outcome"
+private const val REQUEST_PICK_CHAT_IMAGE = 4201
+private const val REQUEST_PICK_CHAT_FILE = 4202
 private const val STATE_FILES_SCENARIO = "files_scenario"
 private const val STATE_PERSONALIZATION_PRESET = "personalization_preset"
 private const val STATE_PERSONALIZATION_CUSTOM_LABEL = "personalization_custom_label"
@@ -129,8 +140,9 @@ private const val STATE_PERSONALIZATION_SOUL_CONFIRMATION = "personalization_sou
 private const val STATE_PERSONALIZATION_LAST_RESET_PREVIEW = "personalization_last_reset_preview"
 private const val MCP_SETTINGS_SEED_EPOCH_MS = 1_710_000_200_000L
 
-class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.Listener {
+class AppShellActivity : LocalizedActivity(), ChatScreen.Listener, WorkspacePickerScreen.Listener {
   private lateinit var stateStore: AppShellStateStore
+  private lateinit var localeSettingsStore: LocaleSettingsStore
   private lateinit var telemetrySettingsStore: TelemetrySettingsStore
   private lateinit var llmSettingsStore: LlmSettingsStore
   private lateinit var personalizationStore: PersonalizationLocalStore
@@ -143,10 +155,10 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
   private lateinit var settingsHostScrollView: ScrollView
   private lateinit var settingsContentContainer: LinearLayout
   private lateinit var skillsScreen: SkillsScreen
+  private lateinit var skillsViewModel: SkillEditorViewModel
 
   private val navigationButtons = linkedMapOf<AppShellTab, Button>()
   private val tabContentViews = linkedMapOf<AppShellTab, View>()
-  private val skillsViewModel = SkillEditorViewModel()
   private val mcpClientFactory = McpClientFactory()
   private val chatExecutor: ExecutorService = Executors.newSingleThreadExecutor()
   private val inFlightChatSessions = linkedSetOf<String>()
@@ -168,6 +180,8 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
   private var personalizationLastResetPreview: PersonalizationResetPreview = PersonalizationResetPreview.NONE
   private var suppressPersonalizationPersistence: Boolean = false
   private var isKeyboardVisible: Boolean = false
+  private var pendingChatAttachments: List<ChatAttachmentEntry> = emptyList()
+  private var pendingChatCommandLabel: String? = null
 
   private data class AgentTraceItemState(
     val id: String,
@@ -190,6 +204,11 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
     val anchorMessageId: String,
     val items: List<AgentTraceItemState>,
     val nextOrdinal: Int,
+  )
+
+  private data class AttachmentMetadata(
+    val displayName: String,
+    val sizeBytes: Long?,
   )
 
   private fun settingsPageCard(
@@ -253,10 +272,12 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
     )
 
     stateStore = AppShellStateStore.fromContext(this)
+    localeSettingsStore = LocaleSettingsStore.fromContext(this)
     telemetrySettingsStore = TelemetrySettingsStore.fromContext(this)
     llmSettingsStore = LlmSettingsStore.fromContext(this)
     personalizationStore = PersonalizationLocalStore.fromContext(this)
     chatSessionStore = ChatSessionLocalStore.fromContext(this)
+    skillsViewModel = SkillEditorViewModel.fromContext(this)
     currentDestination = AppShellLaunchStateResolver.resolve(
       restoredTabRaw = savedInstanceState?.getString(STATE_SELECTED_TAB),
       restoredSettingsSubpageRaw = savedInstanceState?.getString(STATE_SETTINGS_SUBPAGE),
@@ -356,17 +377,32 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
 
   override fun onSessionSelected(sessionId: String) {
     chatSessionsState = chatSessionStore.selectSession(sessionId)
+    clearPendingChatComposer()
     renderChatState()
   }
 
   override fun onNewSessionRequested() {
     chatSessionsState = chatSessionStore.createSession()
+    clearPendingChatComposer()
     renderChatState()
   }
 
   override fun onMessageSubmitted(text: String) {
     val activeSessionId = chatSessionsState.activeSession.sessionId
-    chatSessionsState = chatSessionStore.appendUserMessage(activeSessionId, text)
+    val submittedAttachments = pendingChatAttachments
+    val submittedCommandLabel = pendingChatCommandLabel
+    val runtimeInput = buildRuntimeInput(
+      text = text,
+      commandLabel = submittedCommandLabel,
+      attachments = submittedAttachments,
+    )
+    chatSessionsState = chatSessionStore.appendUserMessage(
+      sessionId = activeSessionId,
+      text = text,
+      commandLabel = submittedCommandLabel,
+      attachments = submittedAttachments,
+    )
+    clearPendingChatComposer()
     if (isSessionInFlight(activeSessionId)) {
       chatSessionsState = chatSessionStore.appendMessage(
         sessionId = activeSessionId,
@@ -389,7 +425,7 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
     chatExecutor.execute {
       runAgentPrompt(
         sessionId = activeSessionId,
-        userText = text,
+        userText = runtimeInput,
         pendingMessageId = pendingResult.messageId,
       )
     }
@@ -397,6 +433,36 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
 
   override fun onComposerFocusChanged(hasFocus: Boolean) {
     syncBottomNavigationVisibility()
+  }
+
+  override fun onImageAttachmentRequested() {
+    startActivityForResult(
+      Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+        addCategory(Intent.CATEGORY_OPENABLE)
+        type = "image/*"
+      },
+      REQUEST_PICK_CHAT_IMAGE,
+    )
+  }
+
+  override fun onFileAttachmentRequested() {
+    startActivityForResult(
+      Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+        addCategory(Intent.CATEGORY_OPENABLE)
+        type = "*/*"
+      },
+      REQUEST_PICK_CHAT_FILE,
+    )
+  }
+
+  override fun onComposerAttachmentRemoved(attachmentId: String) {
+    pendingChatAttachments = pendingChatAttachments.filterNot { it.attachmentId == attachmentId }
+    renderChatState()
+  }
+
+  override fun onCommandSelected(commandLabel: String) {
+    pendingChatCommandLabel = commandLabel
+    renderChatState()
   }
 
   override fun onMessageActionRequested(
@@ -433,8 +499,120 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
     renderDestination()
   }
 
+  override fun onActivityResult(
+    requestCode: Int,
+    resultCode: Int,
+    data: Intent?,
+  ) {
+    super.onActivityResult(requestCode, resultCode, data)
+    if (resultCode != RESULT_OK) {
+      return
+    }
+    val uri = data?.data ?: return
+    when (requestCode) {
+      REQUEST_PICK_CHAT_IMAGE -> {
+        copyChatAttachment(uri, preferredKind = ChatAttachmentKind.IMAGE)?.let { attachment ->
+          pendingChatAttachments = pendingChatAttachments + attachment
+          renderChatState()
+        }
+      }
+
+      REQUEST_PICK_CHAT_FILE -> {
+        copyChatAttachment(uri, preferredKind = null)?.let { attachment ->
+          pendingChatAttachments = pendingChatAttachments + attachment
+          renderChatState()
+        }
+      }
+    }
+  }
+
   private fun isSessionInFlight(sessionId: String): Boolean = synchronized(inFlightChatSessions) {
     inFlightChatSessions.contains(sessionId)
+  }
+
+  private fun clearPendingChatComposer() {
+    pendingChatAttachments = emptyList()
+    pendingChatCommandLabel = null
+  }
+
+  private fun copyChatAttachment(
+    uri: Uri,
+    preferredKind: ChatAttachmentKind?,
+  ): ChatAttachmentEntry? = runCatching {
+    val mimeType = contentResolver.getType(uri)
+    val metadata = queryAttachmentMetadata(uri)
+    val kind = preferredKind ?: if (mimeType?.startsWith("image/") == true) {
+      ChatAttachmentKind.IMAGE
+    } else {
+      ChatAttachmentKind.FILE
+    }
+    val safeName = metadata.displayName.ifBlank { defaultAttachmentName(kind, mimeType) }
+    val targetFile = File(chatAttachmentDirectory(), buildAttachmentFileName(safeName))
+    contentResolver.openInputStream(uri)?.use { input ->
+      FileOutputStream(targetFile).use { output -> input.copyTo(output) }
+    } ?: return null
+    ChatAttachmentEntry(
+      attachmentId = "attachment-${UUID.randomUUID().toString().take(8)}",
+      kind = kind,
+      displayName = safeName,
+      localPath = targetFile.absolutePath,
+      mimeType = mimeType,
+      sizeBytes = metadata.sizeBytes ?: targetFile.length(),
+    )
+  }.getOrElse {
+    showActionToast("Attachment import failed")
+    null
+  }
+
+  private fun chatAttachmentDirectory(): File = File(
+    ChatSessionLocalStore.directoryForContext(this),
+    "attachments",
+  ).apply {
+    if (!exists()) {
+      mkdirs()
+    }
+  }
+
+  private fun buildAttachmentFileName(displayName: String): String {
+    val extension = displayName.substringAfterLast('.', "").trim()
+    val sanitizedBase = displayName.substringBeforeLast('.', displayName)
+      .replace(Regex("[^A-Za-z0-9._-]"), "_")
+      .ifBlank { "attachment" }
+      .take(40)
+    val suffix = UUID.randomUUID().toString().take(8)
+    return if (extension.isBlank()) {
+      "$sanitizedBase-$suffix"
+    } else {
+      "$sanitizedBase-$suffix.$extension"
+    }
+  }
+
+  private fun defaultAttachmentName(
+    kind: ChatAttachmentKind,
+    mimeType: String?,
+  ): String = when (kind) {
+    ChatAttachmentKind.IMAGE -> "image-${System.currentTimeMillis()}.${mimeType?.substringAfter('/') ?: "jpg"}"
+    ChatAttachmentKind.FILE -> "file-${System.currentTimeMillis()}"
+  }
+
+  private fun queryAttachmentMetadata(uri: Uri): AttachmentMetadata {
+    contentResolver.query(
+      uri,
+      arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+      null,
+      null,
+      null,
+    )?.use { cursor ->
+      val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+      val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+      if (cursor.moveToFirst()) {
+        return AttachmentMetadata(
+          displayName = if (nameIndex >= 0) cursor.getString(nameIndex).orEmpty() else "",
+          sizeBytes = if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else null,
+        )
+      }
+    }
+    return AttachmentMetadata(displayName = "", sizeBytes = null)
   }
 
   private fun deleteMessage(messageId: String) {
@@ -542,7 +720,7 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
 
   private fun shareMessage(messageId: String) {
     val message = activeChatMessage(messageId) ?: return
-    val shareText = resolvedMessageBody(message)
+    val shareText = runtimeInputFor(message)
     if (shareText.isBlank()) return
     startActivity(
       Intent.createChooser(
@@ -575,7 +753,7 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
         .lastOrNull { message -> message.role == ChatTranscriptRole.USER }
     } ?: return
 
-    val userText = resolvedMessageBody(sourceUserMessage)
+    val userText = runtimeInputFor(sourceUserMessage)
     if (userText.isBlank()) {
       return
     }
@@ -614,6 +792,12 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
 
   private fun resolvedMessageBody(message: ChatTranscriptMessageEntry): String =
     message.text ?: chatSessionStore.promptTemplateBody(message.promptTemplateRefId).orEmpty()
+
+  private fun runtimeInputFor(message: ChatTranscriptMessageEntry): String = buildRuntimeInput(
+    text = resolvedMessageBody(message),
+    commandLabel = message.commandLabel,
+    attachments = message.attachments,
+  )
 
   private fun rollbackAssistantSideEffectsForRecall(
     sessionId: String,
@@ -1160,20 +1344,20 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
     addView(
       LinearLayout(this@AppShellActivity).apply {
         orientation = LinearLayout.HORIZONTAL
-        setPadding(dp(12), dp(6), dp(12), dp(8))
+        setPadding(dp(12), dp(5), dp(12), dp(7))
 
         addView(navigationButton(AppShellTab.CHAT, R.string.shell_tab_chat), navigationButtonParams())
         addView(
           navigationButton(AppShellTab.SKILLS, R.string.shell_tab_skills),
-          navigationButtonParams(startDp = 6),
+          navigationButtonParams(),
         )
         addView(
           navigationButton(AppShellTab.FILES, R.string.shell_tab_files),
-          navigationButtonParams(startDp = 6),
+          navigationButtonParams(),
         )
         addView(
           navigationButton(AppShellTab.SETTINGS, R.string.shell_tab_settings),
-          navigationButtonParams(startDp = 6),
+          navigationButtonParams(),
         )
       },
       LinearLayout.LayoutParams(
@@ -1184,23 +1368,24 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
   }
 
   private fun navigationButton(tab: AppShellTab, labelResId: Int): Button = Button(this).apply {
-    text = getString(labelResId)
+    text = getString(labelResId).uppercase(Locale.US)
     isAllCaps = false
-    typeface = Typeface.DEFAULT
+    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
     minHeight = dp(54)
     minimumHeight = dp(54)
     minWidth = 0
     minimumWidth = 0
     gravity = Gravity.CENTER
     includeFontPadding = false
-    letterSpacing = 0.01f
-    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-    compoundDrawablePadding = dp(3)
+    stateListAnimator = null
+    letterSpacing = 0.035f
+    setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+    compoundDrawablePadding = dp(2)
     background = navigationTabBackground(
       fillColor = Color.TRANSPARENT,
       strokeColor = Color.TRANSPARENT,
     )
-    setPadding(dp(6), dp(8), dp(6), dp(7))
+    setPadding(0, dp(5), 0, dp(8))
     setOnClickListener {
       currentDestination = currentDestination.copy(selectedTab = tab)
       renderDestination()
@@ -1223,6 +1408,9 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
       applyNavigationButtonStyle(button = button, tab = tab, isSelected = isSelected)
     }
     syncBottomNavigationVisibility()
+    if (currentDestination.selectedTab == AppShellTab.SKILLS) {
+      skillsViewModel.refresh()
+    }
 
     renderSettingsSurface(
       force =
@@ -1258,9 +1446,12 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
   }
 
   private fun renderSettingsHome() {
-    settingsContentContainer.addView(sectionTitle(getString(R.string.shell_tab_settings)))
+    settingsContentContainer.addView(sectionEyebrow("#6E6E73"))
+    settingsContentContainer.addView(sectionTitle(getString(R.string.shell_tab_settings)), textParams(topDp = 8))
     settingsContentContainer.addView(
-      bodyTextView(getString(R.string.settings_home_intro)),
+      bodyTextView(getString(R.string.settings_home_intro)).apply {
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+      },
       textParams(topDp = 8),
     )
     settingsContentContainer.addView(
@@ -1271,7 +1462,7 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
     settingsHomeCards().forEachIndexed { index, card ->
       settingsContentContainer.addView(
         buildSettingsHomeCard(card),
-        textParams(topDp = if (index == 0) 24 else 12),
+        textParams(topDp = if (index == 0) 12 else 0),
       )
     }
   }
@@ -1296,68 +1487,22 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
   }
 
   private fun buildSettingsOverviewCard(): View = settingsPageCard(
-    fillColor = OpenCrayUiTokens.surfaceMuted,
-    paddingDp = 20,
+    fillColor = Color.WHITE,
+    paddingDp = 16,
   ).apply {
-    val llmState = llmSettingsStore.load()
     val telemetryState = currentTelemetrySettingsState()
-    addView(titleText(getString(R.string.shell_product_name), textSizeSp = 20f))
+    addView(titleText(getString(R.string.settings_home_profile_title), textSizeSp = 17f))
     addView(
-      helperTextView(
-        buildString {
-          append(workspaceStatusBadgeLabel())
-          append(" • ")
-          append(llmStatusLabel(llmState))
-          append(" • ")
-          append(onOffLabel(telemetryState.privacyGuard.isChecked))
-          append(" privacy guard")
-        },
-      ),
-      textParams(topDp = 6),
-    )
-    addView(
-      LinearLayout(this@AppShellActivity).apply {
-        orientation = LinearLayout.VERTICAL
-        addView(
-          LinearLayout(this@AppShellActivity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(
-              statusBadgeText(
-                text = workspaceStatusBadgeLabel(),
-                accentColor = Color.parseColor(accentColorForSettingsSubpage(SettingsSubpage.WORKSPACE)),
-                accentColorHex = accentColorForSettingsSubpage(SettingsSubpage.WORKSPACE),
-              ),
-            )
-            addView(
-              statusBadgeText(
-                text = llmStatusLabel(llmState),
-                accentColor = Color.parseColor(accentColorForSettingsSubpage(SettingsSubpage.LLM)),
-                accentColorHex = accentColorForSettingsSubpage(SettingsSubpage.LLM),
-              ),
-              LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-              ).apply {
-                marginStart = dp(8)
-              },
-            )
-          },
-        )
-        addView(
-          statusBadgeText(
-            text = if (telemetryState.privacyGuard.isChecked) "Guard On" else "Guard Off",
-            accentColor = Color.parseColor(accentColorForSettingsSubpage(SettingsSubpage.PRIVACY)),
-            accentColorHex = accentColorForSettingsSubpage(SettingsSubpage.PRIVACY),
-          ),
-          textParams(topDp = 8),
-        )
+      bodyTextView(
+        getString(
+          R.string.settings_home_profile_meta,
+          personalizationToneLabel(personalizationPreset),
+          telemetryProfileLabel(telemetryState),
+        ),
+      ).apply {
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
       },
-      textParams(topDp = 14),
-    )
-    addView(
-      bodyTextView("Primary controls stay compact here so design review and runtime validation can both happen at a glance."),
-      textParams(topDp = 12),
+      textParams(topDp = 10),
     )
   }
 
@@ -1729,64 +1874,29 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
   }
 
   private fun buildPersonalizationSettingsContent(): View {
-    val accentColorHex = accentColorForSettingsSubpage(SettingsSubpage.PERSONALIZATION)
-    val accentColor = Color.parseColor(accentColorHex)
+    val accentColor = Color.parseColor(accentColorForSettingsSubpage(SettingsSubpage.PERSONALIZATION))
     val dangerColor = Color.parseColor("#B63A48")
     val resetsIdle = arePersonalizationResetsIdle()
 
     return LinearLayout(this).apply {
       orientation = LinearLayout.VERTICAL
 
-      val presetCards = linkedMapOf<PersonalizationPreset, View>()
-      val presetStatusViews = linkedMapOf<PersonalizationPreset, TextView>()
-      val previewTitleView = titleText("", textSizeSp = 18f)
-      val previewBodyView = bodyTextView()
-      val stagedResetCard = LinearLayout(this@AppShellActivity).apply {
-        orientation = LinearLayout.VERTICAL
-        background = surfaceBackground(Color.parseColor("#FFF4F5"))
-        setPadding(dp(14), dp(14), dp(14), dp(14))
-        visibility = View.GONE
-        addView(titleText(getString(R.string.personalization_last_staged_reset_title), textSizeSp = 16f))
+      lateinit var freeEditInput: EditText
+      val previewBodyView = bodyTextView().apply {
+        setTextColor(OpenCrayUiTokens.textPrimary)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
       }
-      val stagedResetBodyView = bodyTextView().apply {
+      val stagedResetCard = settingsPageCard(fillColor = Color.parseColor("#FFF4F5"), paddingDp = 12).apply {
+        orientation = LinearLayout.VERTICAL
+        visibility = View.GONE
+      }
+      val stagedResetBodyView = helperTextView("").apply {
         setTextColor(Color.parseColor("#7B2732"))
       }
-      lateinit var labelInput: EditText
-      lateinit var guidanceInput: EditText
+      stagedResetCard.addView(titleText(getString(R.string.personalization_last_staged_reset_title), textSizeSp = 15f))
       stagedResetCard.addView(stagedResetBodyView, textParams(topDp = 6))
 
-      fun syncPresetSelection() {
-        presetCards.forEach { (preset, card) ->
-          val isSelected = preset == personalizationPreset
-          card.background =
-            if (isSelected) {
-              surfaceBackground(Color.parseColor("#EAF7EE"))
-            } else {
-              surfaceBackground(Color.WHITE)
-            }
-          card.alpha = if (isSelected) 1f else 0.95f
-        }
-
-        presetStatusViews.forEach { (preset, statusView) ->
-          val isSelected = preset == personalizationPreset
-          statusView.text =
-            if (isSelected) {
-              getString(R.string.personalization_preset_status_selected)
-            } else {
-              getString(R.string.personalization_preset_status_available)
-            }
-          statusView.setTextColor(
-            if (isSelected) {
-              Color.parseColor("#1B5E20")
-            } else {
-              Color.parseColor("#5D6B7B")
-            },
-          )
-        }
-      }
-
       fun syncProfilePreview() {
-        previewTitleView.text = currentPersonalizationProfileTitle()
         previewBodyView.text = currentPersonalizationProfileSummary()
       }
 
@@ -1797,146 +1907,121 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
       }
 
       addView(
-        settingsPageCard(fillColor = settingsSurfaceColor(SettingsSubpage.PERSONALIZATION)).apply {
-          orientation = LinearLayout.VERTICAL
-          addView(titleText(getString(R.string.personalization_shape_title), textSizeSp = 20f))
-          addView(bodyTextView(getString(R.string.personalization_shape_body)), textParams(topDp = 8))
-          addView(helperTextView(getString(R.string.personalization_shape_helper)), textParams(topDp = 8))
+        settingsPageCard().apply {
+          addView(titleText(getString(R.string.personalization_screen_tone_preset), textSizeSp = 17f))
+          addView(
+            buildSegmentedControl(
+              options = listOf(
+                PersonalizationPreset.STEADY to getString(R.string.settings_tone_quiet),
+                PersonalizationPreset.BUILDER to getString(R.string.settings_tone_focus),
+                PersonalizationPreset.WARM to getString(R.string.settings_tone_warm),
+              ),
+              selected = personalizationPreset,
+            ) { preset ->
+              personalizationPreset = preset
+              persistPersonalizationSoulProfile()
+              syncProfilePreview()
+              renderSettingsSurface(force = true)
+            },
+            textParams(topDp = 12),
+          )
+          addView(
+            helperTextView(getString(R.string.personalization_screen_tone_helper)),
+            textParams(topDp = 12),
+          )
         },
       )
 
       addView(
         settingsPageCard().apply {
-          orientation = LinearLayout.VERTICAL
-
+          addView(titleText(getString(R.string.personalization_screen_free_editing), textSizeSp = 17f))
           addView(
-            titleText(getString(R.string.personalization_presets_title), textSizeSp = 18f),
+            helperTextView(getString(R.string.personalization_screen_free_editing_helper)),
+            textParams(topDp = 6),
           )
-          addView(helperTextView(getString(R.string.personalization_presets_helper)), textParams(topDp = 6))
-
-          PersonalizationPreset.entries.forEachIndexed { index, preset ->
-            val statusView = helperTextView("")
-            val card = LinearLayout(this@AppShellActivity).apply {
-              orientation = LinearLayout.VERTICAL
-              isClickable = true
-              isFocusable = true
-              setPadding(dp(16), dp(16), dp(16), dp(16))
-              setOnClickListener {
-                personalizationPreset = preset
-                persistPersonalizationSoulProfile()
-                syncPresetSelection()
-                syncProfilePreview()
+          addView(
+            settingsPageCard(fillColor = Color.parseColor("#F7F7FA"), paddingDp = 12).apply {
+              addView(helperTextView(getString(R.string.personalization_screen_guidance_label)))
+              freeEditInput = buildTextInput(
+                hint = getString(R.string.personalization_custom_guidance_hint),
+                singleLine = false,
+                strokeColor = Color.TRANSPARENT,
+              ).apply {
+                setText(personalizationCustomGuidance)
+                background = ColorDrawable(Color.TRANSPARENT)
+                setPadding(0, dp(4), 0, 0)
+                minLines = 3
+                addTextChangedListener(
+                  simpleTextWatcher { value ->
+                    personalizationCustomGuidance = value
+                    persistPersonalizationSoulProfile()
+                    syncProfilePreview()
+                  },
+                )
               }
-
-              addView(titleText(personalizationPresetTitle(preset), textSizeSp = 16f))
-              addView(bodyTextView(personalizationPresetSummary(preset)), textParams(topDp = 6))
-              addView(helperTextView(personalizationPresetVoice(preset)), textParams(topDp = 8))
-              addView(statusView, textParams(topDp = 10))
-            }
-
-            presetCards[preset] = card
-            presetStatusViews[preset] = statusView
-            addView(card, textParams(topDp = if (index == 0) 12 else 10))
-          }
+              addView(freeEditInput, textParams(topDp = 4))
+            },
+            textParams(topDp = 12),
+          )
+          addView(
+            settingsPageCard(fillColor = OpenCrayUiTokens.surfaceMuted, paddingDp = 12).apply {
+              addView(helperTextView(getString(R.string.personalization_live_preview_title)))
+              addView(previewBodyView, textParams(topDp = 6))
+            },
+            textParams(topDp = 12),
+          )
         },
-        textParams(topDp = 20),
+        textParams(topDp = 16),
       )
 
       addView(
         settingsPageCard().apply {
-          orientation = LinearLayout.VERTICAL
-
+          addView(titleText(getString(R.string.personalization_screen_behavior_defaults), textSizeSp = 17f))
           addView(
-            titleText(getString(R.string.personalization_custom_overlay_title), textSizeSp = 18f),
+            buildPrototypeToggleRow(
+              title = getString(R.string.personalization_screen_personal_memory_title),
+              detail = getString(R.string.personalization_screen_personal_memory_body),
+              checked = true,
+              onCheckedChanged = { },
+            ),
+            textParams(topDp = 12),
           )
-          addView(helperTextView(getString(R.string.personalization_custom_overlay_helper)), textParams(topDp = 6))
-
-          labelInput = buildTextInput(
-            hint = getString(R.string.personalization_custom_label_hint),
-            singleLine = true,
-            strokeColor = accentColor,
-          ).apply {
-            setText(personalizationCustomLabel)
-            addTextChangedListener(
-              simpleTextWatcher { value ->
-                personalizationCustomLabel = value
-                persistPersonalizationSoulProfile()
-                syncProfilePreview()
-              },
-            )
-          }
-          addView(labelInput, textParams(topDp = 12))
-          addView(helperTextView(getString(R.string.personalization_custom_label_helper)), textParams(topDp = 6))
-
-          guidanceInput = buildTextInput(
-            hint = getString(R.string.personalization_custom_guidance_hint),
-            singleLine = false,
-            strokeColor = accentColor,
-          ).apply {
-            setText(personalizationCustomGuidance)
-            addTextChangedListener(
-              simpleTextWatcher { value ->
-                personalizationCustomGuidance = value
-                persistPersonalizationSoulProfile()
-                syncProfilePreview()
-              },
-            )
-          }
-          addView(guidanceInput, textParams(topDp = 12))
-          addView(helperTextView(getString(R.string.personalization_custom_guidance_helper)), textParams(topDp = 6))
-
+          addView(dividerLine(), textParams(topDp = 12))
           addView(
-            settingsPageCard(fillColor = OpenCrayUiTokens.surfaceMuted, paddingDp = 14).apply {
-              orientation = LinearLayout.VERTICAL
-
-              addView(titleText(getString(R.string.personalization_live_preview_title), textSizeSp = 16f))
-              addView(previewTitleView, textParams(topDp = 8))
-              addView(previewBodyView, textParams(topDp = 8))
+            buildPrototypeValueRow(
+              title = getString(R.string.personalization_screen_prompt_overlay_title),
+              value = getString(R.string.shell_common_on),
+            ),
+            textParams(topDp = 12),
+          )
+          addView(dividerLine(), textParams(topDp = 12))
+          addView(
+            buildSegmentedValueRow(
+              title = getString(R.string.personalization_screen_app_language_title),
+              options = listOf(
+                AppLanguage.ENGLISH to getString(R.string.settings_language_english),
+                AppLanguage.SIMPLIFIED_CHINESE to getString(R.string.settings_language_simplified_chinese),
+              ),
+              selected = currentAppLanguage(),
+            ) { language ->
+              switchAppLanguage(language)
             },
             textParams(topDp = 12),
           )
         },
-        textParams(topDp = 20),
+        textParams(topDp = 16),
       )
 
       addView(
-        settingsPageCard(fillColor = OpenCrayUiTokens.surfaceDanger).apply {
-          orientation = LinearLayout.VERTICAL
-
-          addView(titleText(getString(R.string.personalization_danger_zone_title), textSizeSp = 20f))
-          addView(bodyTextView(getString(R.string.personalization_danger_zone_body)), textParams(topDp = 8))
-          addView(helperTextView(getString(R.string.personalization_danger_zone_helper)), textParams(topDp = 8))
-
+        settingsPageCard(fillColor = Color.parseColor("#FFF4F5")).apply {
+          addView(titleText(getString(R.string.personalization_danger_zone_title), textSizeSp = 17f).apply {
+            setTextColor(Color.parseColor("#8F2431"))
+          })
           addView(
-            settingsPageCard(paddingDp = 14).apply {
-              orientation = LinearLayout.VERTICAL
-
-              addView(
-                titleText(
-                  getString(
-                    if (resetsIdle) {
-                      R.string.personalization_queue_idle_title
-                    } else {
-                      R.string.personalization_queue_busy_title
-                    },
-                  ),
-                  textSizeSp = 16f,
-                ),
-              )
-              addView(
-                bodyTextView(
-                  getString(
-                    if (resetsIdle) {
-                      R.string.personalization_queue_idle_body
-                    } else {
-                      R.string.personalization_queue_busy_body
-                    },
-                  ),
-                ),
-                textParams(topDp = 6),
-              )
+            helperTextView(getString(R.string.personalization_screen_danger_zone_helper)).apply {
+              setTextColor(Color.parseColor("#7B2732"))
             },
-            textParams(topDp = 12),
+            textParams(topDp = 6),
           )
           addView(stagedResetCard, textParams(topDp = 12))
           addView(
@@ -1986,10 +2071,8 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
                   personalizationCustomLabel = ""
                   personalizationCustomGuidance = ""
                   personalizationLastResetPreview = PersonalizationResetPreview.SOUL
-                  labelInput.setText("")
-                  guidanceInput.setText("")
+                  freeEditInput.setText("")
                 }
-                syncPresetSelection()
                 syncProfilePreview()
               },
               onVisualStateChanged = ::syncStagedResetNotice,
@@ -1997,10 +2080,9 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
             textParams(topDp = 12),
           )
         },
-        textParams(topDp = 24),
+        textParams(topDp = 16),
       )
 
-      syncPresetSelection()
       syncProfilePreview()
       syncStagedResetNotice()
     }
@@ -2021,7 +2103,7 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
   ): View = LinearLayout(this).apply {
     orientation = LinearLayout.VERTICAL
     background = surfaceBackground(Color.WHITE)
-    setPadding(dp(14), dp(14), dp(14), dp(14))
+    setPadding(dp(12), dp(12), dp(12), dp(12))
 
     val guidanceView = helperTextView("")
     val resetButton = actionButton(label = title, fillColor = accentColor)
@@ -2053,9 +2135,9 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
       )
     }
 
-    addView(titleText(title, textSizeSp = 18f))
+    addView(titleText(title, textSizeSp = 15f))
     addView(bodyTextView(scopeCopy), textParams(topDp = 6))
-    addView(helperTextView(retainCopy), textParams(topDp = 8))
+    addView(helperTextView(retainCopy), textParams(topDp = 6))
     addView(confirmationInput, textParams(topDp = 12))
     addView(guidanceView, textParams(topDp = 6))
     addView(resetButton, textParams(topDp = 12))
@@ -2078,45 +2160,39 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
   }
 
   private fun buildSettingsHomeCard(card: SettingsHomeCard): View = LinearLayout(this).apply {
-    val accentColor = Color.parseColor(card.accentColorHex)
-    orientation = LinearLayout.VERTICAL
-    background = surfaceBackground(settingsSurfaceColor(card.subpage))
-    setPadding(dp(20), dp(20), dp(20), dp(20))
+    val accentColor = if (card.subpage == SettingsSubpage.SAFETY) {
+      OpenCrayUiTokens.primary
+    } else {
+      OpenCrayUiTokens.textPrimary
+    }
+    orientation = LinearLayout.HORIZONTAL
+    gravity = Gravity.CENTER_VERTICAL
+    background = ColorDrawable(Color.TRANSPARENT)
+    minimumHeight = dp(44)
+    setPadding(dp(12), dp(8), dp(12), dp(8))
     isClickable = true
     isFocusable = true
     setOnClickListener {
       currentDestination = currentDestination.copy(settingsSubpage = card.subpage)
       renderDestination()
     }
-
     addView(
-      LinearLayout(this@AppShellActivity).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-
-        addView(
-          LinearLayout(this@AppShellActivity).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(titleText(card.title, textSizeSp = 20f))
-            addView(helperTextView(card.detail), textParams(topDp = 6))
-          },
-          LinearLayout.LayoutParams(
-            0,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            1f,
-          ),
-        )
-        addView(statusBadgeText(card.badgeText, accentColor, card.accentColorHex))
+      TextView(this@AppShellActivity).apply {
+        text = card.title
+        typeface = if (card.subpage == SettingsSubpage.SAFETY) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        setTextColor(accentColor)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+      },
+      LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+    )
+    addView(
+      TextView(this@AppShellActivity).apply {
+        text = getString(R.string.settings_chevron)
+        setTextColor(if (card.subpage == SettingsSubpage.SAFETY) OpenCrayUiTokens.primary else Color.parseColor("#C7C7CC"))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+        typeface = Typeface.DEFAULT_BOLD
       },
     )
-    addView(bodyTextView(card.summary), textParams(topDp = 12))
-
-    if (card.subpage == SettingsSubpage.MCP) {
-      addView(
-        buildMcpHomeToggleSurface(),
-        textParams(topDp = 12),
-      )
-    }
   }
 
   private fun buildMcpHomeToggleSurface(): View = LinearLayout(this).apply {
@@ -2173,29 +2249,12 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
         }
       },
     )
+    addView(sectionTitle(labelForSettingsSubpage(subpage)), textParams(topDp = 6))
     addView(
-      settingsPageCard(fillColor = settingsSurfaceColor(subpage)).apply {
-        addView(
-          LinearLayout(this@AppShellActivity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(
-              sectionTitle(labelForSettingsSubpage(subpage)),
-              LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-            )
-            addView(
-              statusBadgeText(
-                text = settingsHeaderBadgeText(subpage),
-                accentColor = Color.parseColor(accentColorForSettingsSubpage(subpage)),
-                accentColorHex = accentColorForSettingsSubpage(subpage),
-              ),
-            )
-          },
-          textParams(topDp = 0),
-        )
-        addView(bodyTextView(summaryForSettingsSubpage(subpage)), textParams(topDp = 8))
+      bodyTextView(prototypeSubtitleForSettingsSubpage(subpage)).apply {
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
       },
-      textParams(topDp = 12),
+      textParams(topDp = 8),
     )
   }
 
@@ -2634,9 +2693,21 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
     drawerSummary = buildChatDrawerSummary(),
     sessions = buildChatSessionItems(),
     messages = buildConversationMessages(),
-    emptyMessage = "Start with a message, a command, or a file reference.",
-    draftHint = "Ask OpenCray or type / for a command",
-    composerAssistiveText = buildChatComposerAssistiveText(),
+    emptyMessage = "Start with a message, an image, a file, or a command.",
+    draftHint = "Message OpenCray",
+    composerAssistiveText = "",
+    screenTitle = "Chat",
+    modeLabel = chatModeBadgeLabel(selectedMode),
+    activeSessionTitle = chatSessionsState.activeSession.title,
+    activeSessionDetail = buildChatDrawerSummary(),
+    sessionSummary = buildChatSessionSummary(),
+    composerAttachments = pendingChatAttachments.map(::toAttachmentVisualState),
+    availableCommands = listOf(
+      ChatCommandOptionState(id = "summarize", label = "Summarize"),
+      ChatCommandOptionState(id = "explain", label = "Explain"),
+      ChatCommandOptionState(id = "plan", label = "Plan"),
+    ),
+    selectedCommandLabel = pendingChatCommandLabel,
   )
 
   private fun buildChatSubtitle(): String {
@@ -2673,6 +2744,29 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
     }
   }
 
+  private fun buildChatSessionSummary(): ChatSessionSummaryState? {
+    val activeSession = chatSessionsState.activeSession
+    val visibleCount = visibleMessageCount(activeSession.messages)
+    if (visibleCount == 0) {
+      return null
+    }
+    return ChatSessionSummaryState(
+      title = activeSession.title,
+      meta = "$visibleCount messages",
+      detail = when (selectedMode) {
+        ChatMode.SAFE -> "Safe mode still asks before edits in this session."
+        ChatMode.AUTO -> "Auto mode keeps the session moving with fewer interruptions."
+        ChatMode.DEVELOPER -> "Dev mode exposes deeper control for this session."
+      },
+    )
+  }
+
+  private fun chatModeBadgeLabel(mode: ChatMode): String = when (mode) {
+    ChatMode.SAFE -> "SAFE"
+    ChatMode.AUTO -> "AUTO"
+    ChatMode.DEVELOPER -> "DEV"
+  }
+
   private fun buildChatComposerAssistiveText(): String {
     return ""
   }
@@ -2688,7 +2782,6 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
   }
 
   private fun buildConversationMessages(): List<ChatMessageItemState> {
-    val timeFormatter = DateFormat.getTimeInstance(DateFormat.SHORT, Locale.getDefault())
     val activeSession = chatSessionsState.activeSession
     val traceState = synchronized(transientAgentTraces) { transientAgentTraces[activeSession.sessionId] }
     val traceMessages = traceState?.items?.map { it.toChatMessageItemState() }.orEmpty()
@@ -2713,7 +2806,9 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
           com.opencray.persistence.model.ChatTranscriptRole.TOOL -> ChatMessageDisplayRole.TOOL
         },
         body = resolvedText,
-        meta = buildMessageMeta(message, timeFormatter),
+        meta = "",
+        commandLabel = message.commandLabel,
+        attachments = message.attachments.map(::toAttachmentVisualState),
       )
     }
     if (!insertedTrace) {
@@ -2724,6 +2819,53 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
 
   private fun visibleMessageCount(messages: List<ChatTranscriptMessageEntry>): Int =
     messages.count { message -> !shouldHideChatMessage(message) }
+
+  private fun toAttachmentVisualState(entry: ChatAttachmentEntry): ChatAttachmentVisualState = ChatAttachmentVisualState(
+    attachmentId = entry.attachmentId,
+    kind = when (entry.kind) {
+      ChatAttachmentKind.IMAGE -> ChatAttachmentVisualKind.IMAGE
+      ChatAttachmentKind.FILE -> ChatAttachmentVisualKind.FILE
+    },
+    displayName = entry.displayName,
+    detail = entry.sizeBytes?.let(::formatAttachmentSize).orEmpty(),
+    localPath = entry.localPath,
+  )
+
+  private fun formatAttachmentSize(sizeBytes: Long): String {
+    val kb = 1024.0
+    val mb = kb * 1024.0
+    return when {
+      sizeBytes >= mb -> String.format(Locale.US, "%.1f MB", sizeBytes / mb)
+      sizeBytes >= kb -> String.format(Locale.US, "%.1f KB", sizeBytes / kb)
+      else -> "$sizeBytes B"
+    }
+  }
+
+  private fun buildRuntimeInput(
+    text: String,
+    commandLabel: String?,
+    attachments: List<ChatAttachmentEntry>,
+  ): String = buildString {
+    if (!commandLabel.isNullOrBlank()) {
+      append("Command: ")
+      append(commandLabel)
+      append('\n')
+    }
+    if (attachments.isNotEmpty()) {
+      append("Attachments:\n")
+      attachments.forEach { attachment ->
+        append("- ")
+        append(attachment.displayName)
+        append('\n')
+      }
+    }
+    if (text.isNotBlank()) {
+      if (isNotEmpty()) {
+        append('\n')
+      }
+      append(text)
+    }
+  }.trim()
 
   private fun shouldHideChatMessage(message: ChatTranscriptMessageEntry): Boolean =
     message.role == ChatTranscriptRole.SYSTEM &&
@@ -2751,17 +2893,6 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
         syncBottomNavigationVisibility()
       }
     }
-  }
-
-  private fun buildMessageMeta(
-    message: ChatTranscriptMessageEntry,
-    timeFormatter: DateFormat,
-  ): String {
-    val parts = mutableListOf(timeFormatter.format(message.createdAtEpochMs))
-    if (message.promptTemplateRefId != null) {
-      parts += "Stored as template reference"
-    }
-    return parts.joinToString(" • ")
   }
 
   private fun assistantPlaceholderFor(text: String): String = when {
@@ -2938,66 +3069,61 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
   }
 
   private fun settingsHomeCards(): List<SettingsHomeCard> {
-    val mcpReport = currentMcpReport()
-    val telemetryState = currentTelemetrySettingsState()
-    val safetyState = currentSafetyState()
-    val llmState = llmSettingsStore.load()
-
     return listOf(
       SettingsHomeCard(
         subpage = SettingsSubpage.WORKSPACE,
         title = labelForSettingsSubpage(SettingsSubpage.WORKSPACE),
-        detail = "Root grant and bounded file access",
-        summary = workspaceAccessSummary(),
-        badgeText = workspaceStatusBadgeLabel(),
+        detail = "",
+        summary = "",
+        badgeText = "",
         accentColorHex = accentColorForSettingsSubpage(SettingsSubpage.WORKSPACE),
       ),
       SettingsHomeCard(
         subpage = SettingsSubpage.LLM,
         title = labelForSettingsSubpage(SettingsSubpage.LLM),
-        detail = "Provider endpoint and local prompt controls",
-        summary = llmSettingsHomeSummary(llmState),
-        badgeText = llmStatusLabel(llmState),
+        detail = "",
+        summary = "",
+        badgeText = "",
         accentColorHex = accentColorForSettingsSubpage(SettingsSubpage.LLM),
       ),
       SettingsHomeCard(
         subpage = SettingsSubpage.MCP,
         title = labelForSettingsSubpage(SettingsSubpage.MCP),
-        detail = "Trust, auth, and tool exposure",
-        summary = buildMcpSummaryLine(mcpReport),
-        badgeText = if (mcpReport.blockedClients.isEmpty()) "Ready" else "Attention",
+        detail = "",
+        summary = "",
+        badgeText = "",
         accentColorHex = accentColorForSettingsSubpage(SettingsSubpage.MCP),
       ),
       SettingsHomeCard(
         subpage = SettingsSubpage.PRIVACY,
         title = labelForSettingsSubpage(SettingsSubpage.PRIVACY),
-        detail = "Telemetry defaults and privacy guard",
-        summary = privacySummary(telemetryState),
-        badgeText = if (telemetryState.privacyGuard.isChecked) "Guard On" else "Guard Off",
+        detail = "",
+        summary = "",
+        badgeText = "",
         accentColorHex = accentColorForSettingsSubpage(SettingsSubpage.PRIVACY),
       ),
       SettingsHomeCard(
         subpage = SettingsSubpage.SAFETY,
         title = labelForSettingsSubpage(SettingsSubpage.SAFETY),
-        detail = "Risk boundaries and release-critical warnings",
-        summary = getString(R.string.settings_home_safety_summary, highestRiskSafetyHeadline(safetyState)),
-        badgeText = "Review",
+        detail = "",
+        summary = "",
+        badgeText = "",
         accentColorHex = accentColorForSettingsSubpage(SettingsSubpage.SAFETY),
       ),
       SettingsHomeCard(
         subpage = SettingsSubpage.ABOUT,
         title = labelForSettingsSubpage(SettingsSubpage.ABOUT),
-        detail = "Version, build, and guardrails",
-        summary = getString(R.string.settings_home_about_summary, installedVersionLabel()),
-        badgeText = installedVersionLabel(),
+        detail = "",
+        summary = "",
+        badgeText = "",
         accentColorHex = accentColorForSettingsSubpage(SettingsSubpage.ABOUT),
       ),
       SettingsHomeCard(
         subpage = SettingsSubpage.PERSONALIZATION,
         title = labelForSettingsSubpage(SettingsSubpage.PERSONALIZATION),
-        detail = "Preset voice, custom overlay, and resets",
-        summary = getString(R.string.settings_home_personalization_summary),
-        badgeText = personalizationPresetTitle(personalizationPreset),
+        detail = "",
+        summary = "",
+        badgeText = "",
         accentColorHex = accentColorForSettingsSubpage(SettingsSubpage.PERSONALIZATION),
       ),
     )
@@ -3006,6 +3132,33 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
   private fun currentTelemetrySettingsState(): TelemetryTogglesState = telemetrySettingsStore.load(
     TelemetryTogglesState.localized(this),
   )
+
+  private fun personalizationToneLabel(preset: PersonalizationPreset): String = when (preset) {
+    PersonalizationPreset.STEADY -> getString(R.string.settings_tone_quiet)
+    PersonalizationPreset.BUILDER -> getString(R.string.settings_tone_focus)
+    PersonalizationPreset.WARM -> getString(R.string.settings_tone_warm)
+  }
+
+  private fun telemetryProfileLabel(state: TelemetryTogglesState): String = if (state.telemetry.isChecked) {
+    getString(R.string.settings_telemetry_profile_active)
+  } else {
+    getString(R.string.settings_telemetry_profile_minimal)
+  }
+
+  private fun currentAppLanguage(): AppLanguage = localeSettingsStore.loadLanguage()
+
+  private fun currentAppLanguageLabel(): String = when (currentAppLanguage()) {
+    AppLanguage.ENGLISH -> getString(R.string.settings_language_english)
+    AppLanguage.SIMPLIFIED_CHINESE -> getString(R.string.settings_language_simplified_chinese)
+  }
+
+  private fun switchAppLanguage(language: AppLanguage) {
+    if (currentAppLanguage() == language) {
+      return
+    }
+    localeSettingsStore.saveLanguage(language)
+    recreate()
+  }
 
   private fun llmStatusLabel(state: LlmSettingsState): String = when {
     !state.enabled -> getString(R.string.llm_settings_status_disabled)
@@ -3029,6 +3182,17 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
       .firstOrNull { it.subpage == subpage }
       ?.summary
       ?: labelForSettingsSubpage(subpage)
+  }
+
+  private fun prototypeSubtitleForSettingsSubpage(subpage: SettingsSubpage): String = when (subpage) {
+    SettingsSubpage.WORKSPACE -> getString(R.string.settings_workspace_subtitle)
+    SettingsSubpage.LLM -> getString(R.string.settings_llm_subtitle)
+    SettingsSubpage.MCP -> getString(R.string.settings_mcp_subtitle)
+    SettingsSubpage.PRIVACY -> getString(R.string.settings_privacy_subtitle)
+    SettingsSubpage.SAFETY -> getString(R.string.settings_safety_subtitle)
+    SettingsSubpage.ABOUT -> getString(R.string.settings_about_subtitle)
+    SettingsSubpage.PERSONALIZATION -> getString(R.string.settings_personalization_subtitle)
+    SettingsSubpage.HOME -> getString(R.string.settings_home_intro)
   }
 
   private fun highestRiskSafetyHeadline(state: SafetyAndLimitsScreenState): String {
@@ -3242,6 +3406,96 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
     else -> Color.parseColor("#F3F6FA")
   }
 
+  private fun <T> buildSegmentedControl(
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelected: (T) -> Unit,
+  ): LinearLayout = LinearLayout(this).apply {
+    orientation = LinearLayout.HORIZONTAL
+    background = pillBackground(Color.parseColor("#ECEEF3"))
+    setPadding(dp(4), dp(4), dp(4), dp(4))
+
+    options.forEachIndexed { index, (value, label) ->
+      addView(
+        Button(this@AppShellActivity).apply {
+          text = label.uppercase(Locale.US)
+          isAllCaps = false
+          minHeight = dp(34)
+          minimumHeight = dp(34)
+          minWidth = 0
+          minimumWidth = 0
+          stateListAnimator = null
+          typeface = Typeface.DEFAULT_BOLD
+          setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+          setPadding(dp(10), 0, dp(10), 0)
+          val isSelected = selected == value
+          background = pillBackground(if (isSelected) Color.WHITE else Color.parseColor("#ECEEF3"))
+          setTextColor(if (isSelected) OpenCrayUiTokens.textPrimary else OpenCrayUiTokens.textSecondary)
+          alpha = if (isSelected) 1f else 0.92f
+          setOnClickListener { onSelected(value) }
+        },
+        LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+          if (index > 0) {
+            marginStart = dp(6)
+          }
+        },
+      )
+    }
+  }
+
+  private fun buildPrototypeToggleRow(
+    title: String,
+    detail: String,
+    checked: Boolean,
+    onCheckedChanged: (Boolean) -> Unit,
+  ): View = LinearLayout(this).apply {
+    orientation = LinearLayout.HORIZONTAL
+    gravity = Gravity.CENTER_VERTICAL
+    addView(
+      LinearLayout(this@AppShellActivity).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(titleText(title, textSizeSp = 15f))
+        addView(helperTextView(detail), textParams(topDp = 4))
+      },
+      LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+    )
+    addView(
+      Switch(this@AppShellActivity).apply {
+        isChecked = checked
+        text = ""
+        setOnCheckedChangeListener { _, isCheckedValue ->
+          onCheckedChanged(isCheckedValue)
+        }
+      },
+    )
+  }
+
+  private fun buildPrototypeValueRow(
+    title: String,
+    value: String,
+  ): View = LinearLayout(this).apply {
+    orientation = LinearLayout.HORIZONTAL
+    gravity = Gravity.CENTER_VERTICAL
+    addView(titleText(title, textSizeSp = 15f), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+    addView(statusBadgeText(value, OpenCrayUiTokens.textPrimary, "#F7F7FA").apply {
+      setTextColor(OpenCrayUiTokens.textPrimary)
+    })
+  }
+
+  private fun <T> buildSegmentedValueRow(
+    title: String,
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelected: (T) -> Unit,
+  ): View = LinearLayout(this).apply {
+    orientation = LinearLayout.VERTICAL
+    addView(titleText(title, textSizeSp = 15f))
+    addView(
+      buildSegmentedControl(options, selected, onSelected),
+      textParams(topDp = 10),
+    )
+  }
+
   private fun navigationBarBackground(): GradientDrawable = GradientDrawable().apply {
     val drawable = ocSurfaceBackground(
       fillColor = OpenCrayUiTokens.surface,
@@ -3275,17 +3529,17 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
     tab: AppShellTab,
     isSelected: Boolean,
   ) {
-    val selectedFillColor = OpenCrayUiTokens.surfaceInfo
+    val selectedFillColor = Color.TRANSPARENT
     val selectedStrokeColor = Color.TRANSPARENT
     val selectedContentColor = OpenCrayUiTokens.primary
-    val unselectedContentColor = OpenCrayUiTokens.textSecondary
+    val unselectedContentColor = Color.parseColor("#8E8E93")
     val contentColor = if (isSelected) selectedContentColor else unselectedContentColor
     button.background = navigationTabBackground(
-      fillColor = if (isSelected) selectedFillColor else Color.TRANSPARENT,
-      strokeColor = if (isSelected) selectedStrokeColor else Color.TRANSPARENT,
+      fillColor = selectedFillColor,
+      strokeColor = selectedStrokeColor,
     )
     button.setTextColor(contentColor)
-    button.typeface = if (isSelected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+    button.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
     button.alpha = 1f
     button.setCompoundDrawablesRelativeWithIntrinsicBounds(
       null,
@@ -3298,7 +3552,10 @@ class AppShellActivity : Activity(), ChatScreen.Listener, WorkspacePickerScreen.
   private fun navigationTabIcon(iconResId: Int, tintColor: Int): Drawable? = ContextCompat
     .getDrawable(this, iconResId)
     ?.mutate()
-    ?.apply { setTint(tintColor) }
+    ?.apply {
+      setTint(tintColor)
+      setBounds(0, 0, dp(18), dp(18))
+    }
 
   private fun navigationIconResId(tab: AppShellTab): Int = when (tab) {
     AppShellTab.CHAT -> R.drawable.ic_nav_chat

@@ -7,7 +7,7 @@ import com.opencray.app.shell.AppShellNavigationExtras
 import com.opencray.app.shell.AppShellTab
 import com.opencray.app.shell.SettingsSubpage
 
-class WorkspaceSettingsActivity : Activity() {
+class WorkspaceSettingsActivity : LocalizedActivity() {
   companion object {
     const val EXTRA_SCENARIO = "com.opencray.app.WorkspaceSettingsActivity.extra.SCENARIO"
     const val SCENARIO_NO_GRANT: String = FILES_WORKBENCH_SCENARIO_NO_GRANT

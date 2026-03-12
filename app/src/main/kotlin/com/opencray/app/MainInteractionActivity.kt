@@ -9,7 +9,7 @@ import com.opencray.ui.chat.ApprovalDecision
 import com.opencray.ui.chat.ChatMode
 import com.opencray.ui.chat.ChatScreen
 
-class MainInteractionActivity : Activity(), ChatScreen.Listener {
+class MainInteractionActivity : LocalizedActivity(), ChatScreen.Listener {
   companion object {
     const val EXTRA_SCENARIO = "com.opencray.app.MainInteractionActivity.extra.SCENARIO"
     const val SCENARIO_DEFAULT_APPROVAL = "default_approval"

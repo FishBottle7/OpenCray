@@ -14,6 +14,28 @@ enum class ChatTranscriptRole {
 }
 
 @Serializable
+enum class ChatAttachmentKind {
+  IMAGE,
+  FILE,
+}
+
+@Serializable
+data class ChatAttachmentEntry(
+  val attachmentId: String,
+  val kind: ChatAttachmentKind,
+  val displayName: String,
+  val localPath: String,
+  val mimeType: String? = null,
+  val sizeBytes: Long? = null,
+) {
+  init {
+    require(attachmentId.isNotBlank()) { "ChatAttachmentEntry attachmentId must not be blank." }
+    require(displayName.isNotBlank()) { "ChatAttachmentEntry displayName must not be blank." }
+    require(localPath.isNotBlank()) { "ChatAttachmentEntry localPath must not be blank." }
+  }
+}
+
+@Serializable
 data class ChatPromptTemplateEntry(
   val templateId: String,
   val label: String,
@@ -33,12 +55,19 @@ data class ChatTranscriptMessageEntry(
   val role: ChatTranscriptRole,
   val text: String? = null,
   val promptTemplateRefId: String? = null,
+  val commandLabel: String? = null,
+  val attachments: List<ChatAttachmentEntry> = emptyList(),
   val createdAtEpochMs: Long,
 ) {
   init {
     require(messageId.isNotBlank()) { "ChatTranscriptMessageEntry messageId must not be blank." }
-    require(!text.isNullOrBlank() || !promptTemplateRefId.isNullOrBlank()) {
-      "ChatTranscriptMessageEntry must contain text or promptTemplateRefId."
+    require(
+      !text.isNullOrBlank() ||
+        !promptTemplateRefId.isNullOrBlank() ||
+        !commandLabel.isNullOrBlank() ||
+        attachments.isNotEmpty(),
+    ) {
+      "ChatTranscriptMessageEntry must contain text, promptTemplateRefId, commandLabel, or attachments."
     }
   }
 }

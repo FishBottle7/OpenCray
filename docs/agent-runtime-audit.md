@@ -1,151 +1,562 @@
 # Agent Runtime Audit
 
-Audit date: 2026-03-11
+Audit date: 2026-03-12
 
 ## Scope
 
-This note audits the current repository state for three questions:
+This document summarizes a repository-level audit of OpenCray's current agent implementation. The goals are:
 
-1. Has OpenCray already implemented an OpenClaw-like agent loop?
-2. Can the agent freely access workspace content and installed software directories?
-3. Which tools or tool-like capability modules currently exist in the codebase?
+1. Describe what the project already has today.
+2. Identify what is still missing before OpenCray can be called a complete agent runtime.
+3. Compare the current design to OpenClaw using OpenClaw's official documentation as of 2026-03-12.
+4. Audit the current prompt and system-prompt architecture.
 
-The conclusions below describe the code that exists in this repository on 2026-03-11. They do not assume future host wiring or deferred runtime work.
+This is a static code audit of the repository plus a documentation comparison against OpenClaw official docs. It is not a claim that every path has been executed on-device in production.
 
-## Executive summary
+## Sources
 
-| Topic | Current status | Short conclusion |
-| --- | --- | --- |
-| OpenClaw-like agent loop | Partial skeleton only | There is a serial session queue and task lifecycle model, but no production multi-turn thought-action-observation loop. |
-| LLM integration into agent runtime | Not wired end-to-end | `DefaultLiteLlmGateway` exists as a standalone gateway, but it is not connected to `AgentLoop` as a real autonomous runtime. |
-| Workspace access | Restricted | File and Python execution paths are explicitly constrained to approved roots or workspace-local paths. |
-| Installed software directory access | Not generally allowed as a file capability | File tooling is bounded to approved roots. Command execution is looser, but still policy-gated and not wired into a completed agent loop. |
-| Tooling model | Mixed maturity | Several capability modules exist, but there is no single production tool registry or unified tool dispatcher like OpenClaw. |
-| Termux or external runtime | Stub only in V1 | Real Termux execution is explicitly out of scope for the current V1 contract. |
+### Local code inspected
 
-## Agent loop status
+- `app/src/main/kotlin/com/opencray/app/AppShellActivity.kt`
+- `app/src/main/kotlin/com/opencray/app/ChatSessionLocalStore.kt`
+- `app/src/main/kotlin/com/opencray/app/LlmSettingsStore.kt`
+- `app/src/main/kotlin/com/opencray/app/PersonalizationLocalStore.kt`
+- `core/src/main/kotlin/com/opencray/core/contracts/AgentContracts.kt`
+- `core/src/main/kotlin/com/opencray/core/orchestrator/AgentLoop.kt`
+- `core/src/main/kotlin/com/opencray/core/orchestrator/SessionQueue.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/AgentTooling.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/ModeGate.kt`
+- `skills/src/main/kotlin/com/opencray/skills/SkillLoader.kt`
+- `skills/src/main/kotlin/com/opencray/skills/SkillValidator.kt`
+- `ui/src/main/kotlin/com/opencray/ui/skills/SkillEditorViewModel.kt`
+- `persistence/src/main/kotlin/com/opencray/persistence/store/SessionStoreQueueSnapshotStore.kt`
+- `persistence/src/main/kotlin/com/opencray/persistence/store/file/JsonFileStores.kt`
+- `persistence/src/main/kotlin/com/opencray/persistence/model/MemoryRecord.kt`
+- `persistence/src/main/kotlin/com/opencray/persistence/model/SoulRecord.kt`
 
-| Area | Evidence | Status | Notes |
+### External docs verified on 2026-03-12
+
+- OpenClaw Agent Runtime: https://docs.openclaw.ai/concepts/agent
+- OpenClaw Agent Workspace: https://docs.openclaw.ai/concepts/agent-workspace
+- OpenClaw Memory: https://docs.openclaw.ai/concepts/memory
+- OpenClaw System Prompt: https://docs.openclaw.ai/concepts/system-prompt
+- OpenClaw Hooks: https://docs.openclaw.ai/automation/hooks
+- OpenClaw Agent Bootstrapping: https://docs.openclaw.ai/start/bootstrapping
+- OpenClaw Sub-Agents: https://docs.openclaw.ai/tools/subagents
+- OpenClaw Tools: https://docs.openclaw.ai/tools
+
+## Executive Summary
+
+OpenCray is no longer just a stub. It already has a real minimum agent core:
+
+- a task contract
+- a serial session queue
+- a multi-turn LLM and tool loop
+- a unified tool dispatcher
+- local persistence primitives for session, memory, and soul
+- a skills loader and validator
+
+However, it is still not a complete agent runtime in the stronger sense implied by systems like OpenClaw.
+
+The biggest gaps are:
+
+- no production memory write and recall loop
+- only partial soul integration
+- no full session-context injection from stored chat history
+- no true skill execution engine
+- no persistent agent session wiring in the Android app
+- no complete approval loop across all mutating tools
+- no sub-agent orchestration
+- no hook or bootstrap architecture comparable to OpenClaw
+- a very small prompt architecture compared to mature agent runtimes
+
+Short version:
+
+- OpenCray has a working agent skeleton.
+- OpenCray does not yet have a complete agent operating system.
+
+## Current Agent Runtime: What Already Exists
+
+### 1. Core orchestration exists
+
+OpenCray already has the main structural pieces expected from an agent host:
+
+- `AgentTask`, `ExecutionResult`, and task lifecycle contracts in `core/contracts`.
+- `AgentLoop` as a thin facade over `SessionQueue`.
+- `SessionQueue` implementing serial FIFO execution, retry, cancellation, stop/resume, and snapshot support.
+- `SessionTaskRuntime` as the execution abstraction.
+
+This means the project has a real orchestration backbone rather than only UI placeholder state.
+
+### 2. Multi-turn LLM and tool loop exists
+
+`OpenCrayAgentRuntime` already implements a minimal but real thought-action-observation loop:
+
+- start with the user task input
+- build a prompt that includes tool definitions
+- call the LLM
+- parse model output into either `final` or `tool_call`
+- dispatch the tool call
+- append the tool observation back into transcript
+- continue until final answer or limit exhaustion
+
+This is important because the previous repository state only suggested scaffolding. The current code has a real runtime loop.
+
+The loop is still intentionally narrow:
+
+- model output is constrained to JSON objects
+- supported actions are only `final` and `tool_call`
+- there is no planner/reflection layer
+- there is no native `skill_execute` action type
+
+### 3. Unified dispatcher exists
+
+`OpenCrayToolDispatcher` is a real, centralized dispatcher and not just a loose collection of capability modules. It registers and dispatches:
+
+- `workspace_list_files`
+- `workspace_read_file`
+- `workspace_write_file`
+- `workspace_move_file`
+- `workspace_delete_file`
+- `command_exec`
+- `python_exec`
+- `skills_list`
+- `skill_read`
+- `mcp_list_servers`
+
+This is already a meaningful milestone. The repository now has a single runtime surface the model can use.
+
+### 4. App wiring exists, but only for one-shot runs
+
+The Android app does run the agent runtime from chat:
+
+- it builds a runtime in `AppShellActivity`
+- creates a single `PROMPT` task
+- submits that task into a fresh `AgentLoop`
+- immediately drains the queue until idle
+- writes the final text back into the chat UI
+
+This means the app does not merely host demo text. It can run a real prompt through a real runtime.
+
+The limitation is architectural:
+
+- every prompt starts a fresh loop
+- the queue store is in-memory for the app's live path
+- nothing about the agent session persists as an active runtime object after the answer is returned
+
+## What Is Still Missing
+
+### 1. Memory is not a runtime mechanism yet
+
+The repository has `MemoryRecord` and `JsonFileMemoryStore`, but that is only storage infrastructure.
+
+What is missing:
+
+- no production code writes durable memory after a conversation
+- no production code reads memory before or during a run
+- no retrieval policy exists
+- no query, ranking, tag-filter, top-k, recency, or compaction policy exists
+- no distinction exists between daily memory and durable memory
+- no model-facing memory tool exists
+
+In practical terms, OpenCray has a memory file format, not a memory system.
+
+### 2. Soul is only partially integrated
+
+`SoulRecord` and `PersonalizationLocalStore` are real, and the app does load and save soul-like user preference state.
+
+What is already wired:
+
+- preset, custom label, and custom guidance are persisted
+- the current personalization summary is appended to the runtime system prompt
+
+What is missing:
+
+- soul is not a first-class runtime file or profile
+- soul is not structured into explicit boundaries, tone, escalation rules, or durable persona directives
+- soul is not used to shape tool policy or skill selection
+- soul is not evolved or updated by the agent itself
+
+Current soul behavior is best described as "prompt overlay", not "agent personality runtime".
+
+### 3. Chat history is not fully injected as agent context
+
+The app has a local chat session store and persists messages. However, the runtime itself does not reconstruct the full stored conversation as model context.
+
+Today, the runtime mostly starts from:
+
+- the current user input
+- the runtime system prompt
+- a session policy string
+- the personalization overlay
+
+What is missing:
+
+- replay or summarization of prior message history into the runtime transcript
+- structured conversation window management
+- compaction and resume behavior
+- persistent run state across turns in the app host
+
+### 4. Skills are only partially integrated
+
+The skills stack is real in these areas:
+
+- discovery of `SKILL.md`
+- front matter parsing
+- validation
+- registry construction
+- Android-side listing, enabling, deleting, and catalog install into app-private directories
+
+The app-side repository currently manages two roots:
+
+- `filesDir/skills`
+- `filesDir/skills-catalog`
+
+What is missing:
+
+- the runtime is not given `skillsRoots` by the Android app
+- `skills_list` and `skill_read` are read-only tools
+- `SKILL_CALL` is only mapped to `skill_read`
+- no skill execution engine exists
+- skill metadata such as invocation control, tool permissions, context, and subagent hints are not consumed by the runtime as execution policy
+
+Current state:
+
+- OpenCray has a skills package system
+- OpenCray does not yet have a skill runtime
+
+### 5. Session persistence exists in infrastructure, not in the live app path
+
+The repository includes restart-safe queue persistence via `SessionStoreQueueSnapshotStore`, and tests exist for restart recovery.
+
+What is missing in the app:
+
+- the actual chat-triggered agent path still uses `InMemorySessionQueueSnapshotStore`
+- the live app does not restore an interrupted or paused agent run
+- there is no long-lived agent session manager in the Android shell
+
+This is a major gap between "runtime infrastructure exists" and "product behavior is complete."
+
+### 6. Approval and safety are not uniformly enforced across mutating tools
+
+`ModeGate` is real and handles `ALLOW`, `ASK`, and `DENY`.
+
+However, today:
+
+- `command_exec` goes through policy and approval handling
+- file mutations and Python execution do not uniformly go through the same approval gate
+
+This creates an inconsistency:
+
+- Safe mode claims to require approval for sensitive operations
+- actual enforcement is narrower than that claim
+
+To become a robust local agent, all side-effecting actions need a consistent safety model.
+
+### 7. No sub-agent architecture
+
+There is no evidence of:
+
+- spawning child agents
+- passing bounded context to sub-agents
+- collecting child results
+- managing nested depth or concurrency
+- applying distinct prompts for sub-agent roles
+
+This matters because once the core loop works, the next large capability jump is usually multi-agent decomposition.
+
+### 8. No lifecycle hooks or bootstrap system
+
+The repository does not currently expose an OpenClaw-like hooks system.
+
+There is also no file-driven bootstrap ritual comparable to:
+
+- first-run identity shaping
+- workspace bootstrap files
+- automatic session-memory flush hooks
+- boot-time automation
+
+This is one of the biggest architectural differences from OpenClaw.
+
+## Prompt and System Prompt Audit
+
+## Current OpenCray prompt layers
+
+OpenCray currently has only a small prompt stack.
+
+### Layer 1. Default runtime system prompt
+
+`OpenCrayAgentRuntimeConfig.DEFAULT_OPENCRAY_SYSTEM_PROMPT` is the main hardcoded identity prompt for the runtime.
+
+Its role is narrow:
+
+- identify the agent as OpenCray
+- instruct it to be workspace-first
+- encourage tools over guessing
+
+This is a useful seed prompt, but it is short and generic.
+
+### Layer 2. User-editable system prompt
+
+`LlmSettingsStore` persists a user-provided `systemPrompt`.
+
+This means the app already supports runtime prompt overrides, but this is still one text field, not a full prompt architecture.
+
+### Layer 3. Chat default system template
+
+`ChatSessionLocalStore` seeds a default system template with `system.default.v1`.
+
+Its current value is mainly about preserving transcript completeness and user-visible context.
+
+This is closer to a session policy or host behavior note than a full agent operating prompt.
+
+### Layer 4. Personalization overlay
+
+`AppShellActivity.resolvedAgentSystemPrompt()` appends a personalization summary derived from soul-like settings.
+
+This gives the model some personality guidance, but only in flattened natural language form.
+
+### Layer 5. Runtime action-format prompt
+
+`OpenCrayAgentRuntime.renderPrompt()` adds a second layer of behavior control on every turn:
+
+- decide next step
+- return exactly one JSON object
+- use one of the allowed shapes
+- see the tool list
+- see task metadata
+- see the running transcript
+
+This is operationally important because it is doing most of the real control work. In practice, it is the strongest prompt in the current system.
+
+## Prompt maturity assessment
+
+OpenCray currently has prompt support, but not a mature prompt architecture.
+
+What exists:
+
+- one default runtime identity prompt
+- one chat session template
+- one user-editable prompt override
+- one personalization overlay
+- one action-format scaffold
+
+What does not exist yet:
+
+- file-based prompt decomposition
+- dedicated tool-usage policy prompt blocks
+- dedicated memory behavior prompt blocks
+- dedicated skill invocation prompt blocks
+- separate sub-agent prompts
+- compaction prompts
+- reflection prompts
+- bootstrap prompts tied to workspace files
+
+## Important conclusion about prompts
+
+Building a capable agent usually does require more than one system prompt. The important point is not raw quantity, but layering.
+
+A stronger prompt stack typically separates:
+
+- identity
+- tone and boundaries
+- user profile
+- operating rules
+- tool policy
+- memory policy
+- skill policy
+- safety and escalation rules
+- host or surface-specific instructions
+
+OpenCray is still at the stage where most of this is compressed into a very small amount of prompt text.
+
+## OpenCray vs OpenClaw
+
+The comparison below is based on OpenClaw official docs verified on 2026-03-12.
+
+### 1. Workspace model
+
+OpenClaw treats the workspace as the agent's primary home directory and context source. The docs describe a workspace-centered runtime with injected bootstrap files and optional sandbox variants.
+
+OpenCray today has:
+
+- an approved workspace root for runtime tools
+- a bounded file system model
+- app-private persistence stores
+
+Gap:
+
+- OpenCray has a workspace boundary
+- OpenCray does not yet have a workspace-centric agent identity architecture
+
+### 2. Bootstrap files and project-context injection
+
+OpenClaw injects workspace files such as:
+
+- `AGENTS.md`
+- `SOUL.md`
+- `TOOLS.md`
+- `IDENTITY.md`
+- `USER.md`
+- optional `HEARTBEAT.md`
+- one-time `BOOTSTRAP.md`
+- optional `MEMORY.md`
+
+OpenCray today does not have an equivalent file-driven prompt architecture.
+
+Gap:
+
+- OpenClaw is file-first
+- OpenCray is string-first
+
+### 3. Memory model
+
+OpenClaw documents a two-layer memory design:
+
+- daily markdown logs under `memory/YYYY-MM-DD.md`
+- optional curated long-term memory in `MEMORY.md`
+
+It also exposes memory-facing tools and documents when the agent should write memory.
+
+OpenCray today has:
+
+- `MemoryRecord`
+- `JsonFileMemoryStore`
+
+Gap:
+
+- OpenClaw has a runtime memory loop
+- OpenCray has a persistence primitive only
+
+### 4. System prompt assembly
+
+OpenClaw documents a system prompt that is rebuilt each run and includes:
+
+- tool list
+- skills metadata
+- workspace location
+- time and runtime metadata
+- injected workspace bootstrap files
+
+OpenCray currently assembles:
+
+- base system prompt
+- session policy text
+- personalization overlay
+- runtime action formatting text
+
+Gap:
+
+- OpenCray's prompt is much smaller and much less structured
+
+### 5. Skills
+
+OpenClaw documents multi-location skill loading with workspace override precedence.
+
+OpenCray already has multi-root skill loading capability in `SkillLoader`, and the Android shell now has app-managed and catalog directories for skills.
+
+Gap:
+
+- OpenClaw's skills are runtime-facing execution components
+- OpenCray's skills are still largely package metadata and management artifacts
+
+### 6. Hooks
+
+OpenClaw exposes a hook system for automation and lifecycle extension.
+
+OpenCray does not currently expose a hook system.
+
+Gap:
+
+- no session lifecycle hook points
+- no memory flush hook
+- no bootstrap-extra-files hook
+- no command logging hook model beyond direct runtime logic
+
+### 7. Sub-agents
+
+OpenClaw documents sub-agent support and explicit constraints around depth, context, and stop propagation.
+
+OpenCray currently has no comparable runtime capability.
+
+### 8. Tool groups and policy surface
+
+OpenClaw documents grouped tool policy surfaces such as file-system, memory, session, web, and runtime groups.
+
+OpenCray today has a local dispatcher and `ModeGate`, but not a similarly rich policy language or grouped tool governance model.
+
+## Summary Table: OpenCray vs OpenClaw
+
+| Capability area | OpenCray today | OpenClaw docs on 2026-03-12 | Gap level |
 | --- | --- | --- | --- |
-| Agent loop facade | `core/src/main/kotlin/com/opencray/core/orchestrator/AgentLoop.kt` | Implemented as a thin wrapper | `AgentLoop` forwards to `SessionQueue` and exposes `submit`, `runUntilIdle`, `cancel`, `retry`, `stop`, `resume`, and `snapshot`. |
-| Session execution queue | `core/src/main/kotlin/com/opencray/core/orchestrator/SessionQueue.kt` | Implemented | FIFO serial execution, retry, cancellation, stop/resume, restart-safe snapshot persistence. |
-| Task contract | `core/src/main/kotlin/com/opencray/core/contracts/AgentContracts.kt` | Implemented | Task types include `PROMPT`, `TOOL_CALL`, `SKILL_CALL`, and `SYSTEM`, but this is a contract layer, not a fully wired dispatcher. |
-| Runtime abstraction | `SessionTaskRuntime` in `SessionQueue.kt` | Implemented as interface only | The queue delegates to a runtime callback, but the repository does not wire a production agent runtime that loops across LLM and tools. |
-| Multi-turn tool loop | No production implementation found | Missing | No repository evidence of a completed cycle that repeatedly does model inference, tool selection, tool execution, result injection, and continuation until completion. |
-| Production chat host wiring | `ui/src/main/kotlin/com/opencray/ui/chat/ChatScreen.kt`, `app/src/main/kotlin/com/opencray/app/AppShellActivity.kt` | Placeholder or seeded | The chat surface uses seeded state and explicit placeholder copy rather than live agent execution state. |
-| Restart-safe session recovery | `persistence/src/main/kotlin/com/opencray/persistence/store/SessionStoreQueueSnapshotStore.kt` and android tests | Implemented | Queue snapshots persist and restore correctly, but that is orchestration infrastructure rather than a complete autonomous agent loop. |
+| Core task loop | Present | Present | Low |
+| Multi-turn tool loop | Present, minimal | Present, mature | Medium |
+| Central dispatcher | Present | Present | Low |
+| Workspace-first architecture | Partial | Strong | Medium |
+| File-based bootstrap prompt stack | Absent | Strong | High |
+| Memory write and recall loop | Absent | Strong | High |
+| Skill execution runtime | Absent | Present | High |
+| Hooks | Absent | Present | High |
+| Sub-agents | Absent | Present | High |
+| Persistent live session runtime in app | Absent | Present | High |
+| Safety coverage consistency | Partial | More mature policy model | Medium |
 
-## OpenClaw-style loop gap assessment
+## What OpenCray Needs Next
 
-| Capability expected from an OpenClaw-like runtime | Current state | Gap |
-| --- | --- | --- |
-| Model receives prompt plus tool schema | Not found in production loop | Missing host/runtime integration |
-| Model emits tool call or next action | Contract types exist, but no completed routing layer found | Missing dispatcher |
-| Tool executes and returns structured observation | Individual modules exist | Not unified under a production agent runtime |
-| Observation is fed back into the next model turn | Not found | Missing |
-| Loop continues until terminal answer or stop condition | Queue can drain tasks, but not model-driven turns | Missing |
-| User-visible chat reflects live runtime state | Current UI is seeded and placeholder-heavy | Missing |
+The next milestone should not be "add more UI." The next milestone should be "turn the current skeleton into an actual agent operating model."
 
-## Workspace and filesystem boundary
+### Priority 0: Complete the runtime loop around state
 
-| Capability | Boundary model | Current behavior |
-| --- | --- | --- |
-| File mutations | Approved roots only | `FileOpsService` resolves paths against approved roots, rejects traversal, rejects path escape, and protects a minimum protected-file set. |
-| Path validation | Canonical path checks | `..` traversal and out-of-root paths are denied by both filesystem and policy layers. |
-| Protected files | Hard minimum registry | `agent.md`, `memory.md`, and `soul.md` are protected from destructive mutation. |
-| SAF workspace access | Granted root only | `SafWorkspaceBridge` models `Granted`, `OutsideGrantedRoot`, `InvalidPath`, `NotGranted`, and `Revoked`. |
-| Files tab workbench | Local seeded sandboxed workbench | The current workbench is created under app cache storage and seeded with demo content. It is not a general unrestricted device file browser. |
+- pass real session history into runtime
+- make the app use persistent queue snapshots for live runs
+- unify cancellation, retry, and resume with user-facing controls
 
-## Runtime and command boundary
+### Priority 0: Build a real memory system
 
-| Capability | Current behavior | Boundary strength |
-| --- | --- | --- |
-| Local command execution | `CommandExecutor` launches local processes through `ProcessBuilder` | Medium |
-| Command approval gating | `ModeGate` enforces `ALLOW`, `ASK`, and `DENY` based on policy decisions and approval tokens | Strong at policy layer |
-| Command timeout and output limits | Implemented | Strong operational guardrail |
-| Command allowlist | Not found | Weak |
-| Working directory must stay in workspace | Not found in `CommandExecutor` or `ModeGate` | Weak |
-| Real Termux backend | Not implemented in V1 | Not available |
+- define short-term versus durable memory
+- decide when memory should be written
+- add retrieval and ranking
+- inject recalled memory into runtime context or expose it as tools
 
-The important practical distinction is:
+### Priority 0: Expand the prompt architecture
 
-| Path | Can it freely leave the workspace? |
-| --- | --- |
-| File mutation services | No |
-| Python script execution through `python_runner` | No |
-| SAF-granted workbench operations | No |
-| Local command execution | Potentially yes at the process level, but still policy-gated and not wired into a completed autonomous agent runtime |
+- separate identity, soul, user, tools, and memory policy
+- stop compressing everything into one or two strings
+- make prompt layers inspectable and testable
 
-## Current tool and capability inventory
+### Priority 1: Turn skills into executable runtime units
 
-| Capability module | File or module | Current role | Maturity |
-| --- | --- | --- | --- |
-| Session queue runtime skeleton | `core/orchestrator` | Serial task orchestration, cancellation, retry, persistence | Implemented infrastructure |
-| LLM gateway | `llm/src/main/kotlin/com/opencray/llm/LiteLlmGateway.kt` | Provider routing and fallback handling | Implemented module |
-| Local command executor | `runtime/src/main/kotlin/com/opencray/runtime/CommandExecutor.kt` | Local process execution with gating and audit | Implemented module |
-| Python runtime adapter | `runtime/src/main/kotlin/com/opencray/runtime/PythonRuntimeAdapter.kt` | Executes workspace-local Python scripts via `python_runner` | Implemented module |
-| Python dependency installer | `runtime/src/main/kotlin/com/opencray/runtime/PipInstaller.kt` | Installs workspace-local Python dependencies into a workspace-managed venv | Implemented module |
-| Python runner | `python_runner/runner.py` | Workspace-bound script execution and offline-style dependency installation | Implemented module |
-| File mutation service | `filesystem/src/main/kotlin/com/opencray/filesystem/FileOpsService.kt` | Create, write, delete, and move inside approved roots | Implemented module |
-| SAF workspace bridge | `filesystem/src/main/kotlin/com/opencray/filesystem/SafWorkspaceBridge.kt` | Workspace grant state and path authorization model | Implemented module |
-| MCP registry | `mcp/src/main/kotlin/com/opencray/mcp/McpRegistry.kt` | Server registration, trust state, enablement state, auth readiness metadata | Implemented module |
-| MCP client exposure factory | `mcp/src/main/kotlin/com/opencray/mcp/McpClientFactory.kt` | Converts registered servers into active or blocked descriptors | Implemented descriptor layer only |
-| Skills loader and registry | `skills/src/main/kotlin/com/opencray/skills/SkillLoader.kt` | Discovers and validates `SKILL.md` packages | Implemented loader layer |
-| Skills management UI | `ui/src/main/kotlin/com/opencray/ui/skills/SkillEditorViewModel.kt` | In-memory management UI with placeholder install and export flows | Partial or placeholder |
-| Termux runtime adapter contract | `runtime/src/main/kotlin/com/opencray/runtime/TermuxRuntimeAdapterContract.kt` | Defines normalized adapter API and unavailable stub | Contract only |
+- pass `skillsRoots` into the runtime from the app
+- define `skill_execute`
+- enforce skill-specific tool permissions
+- honor invocation-control and execution context
 
-## Tooling maturity table
+### Priority 1: Unify safety across all side-effecting tools
 
-| Tool or extension surface | Production-ready? | Why |
-| --- | --- | --- |
-| File mutations | Mostly yes as a local module | The service is concrete and tested, with rollback and path safety. |
-| Local commands | Partially | The executor is real, but not visibly integrated into a completed agent runtime. |
-| Python execution | Partially | The runtime path is real, but workspace-bound and not shown as part of a completed agent loop. |
-| Python dependency install | Partially | Real module, but still a capability building block rather than a finished agent runtime behavior. |
-| Skills | Not as a full execution runtime | Discovery and validation exist, but repository evidence points to metadata and UI scaffolding more than a complete execution engine. |
-| MCP | Not as a full callable tool runtime | Registry and exposure states exist, but runtime connection wiring is explicitly deferred. |
-| Termux | No | V1 intentionally ships an unavailable stub. |
+- file mutation tools should go through the same policy logic as commands
+- Python execution should also use unified approval semantics
+- app mode labels should match actual enforcement
 
-## Why the current UI does not prove a completed agent runtime
+### Priority 1: Introduce a workspace bootstrap model
 
-| UI surface | Current state | Why it matters |
-| --- | --- | --- |
-| Chat screen | Placeholder and seeded | The screen explicitly says a future host can stream user and agent messages into it. |
-| Chat timeline | Seeded scenario output | `AppShellActivity` builds deterministic approval and denial scenarios rather than reflecting a live runtime. |
-| Skills UI | In-memory management and placeholder install or export actions | This demonstrates shell and metadata work, not a production skill execution pipeline. |
-| Files tab | Bounded lightweight workbench | Useful for granted-root browsing and small edits, but not evidence of unrestricted agent filesystem access. |
+- add file-backed identity and soul documents
+- support optional user profile and tool-convention docs
+- define what the runtime injects every run versus on demand
 
-## Stub and scaffold indicators
+### Priority 2: Add hooks and sub-agent orchestration
 
-| File | Meaning |
-| --- | --- |
-| `core/src/main/kotlin/com/opencray/core/CoreStub.kt` | Core module still has stub residue. |
-| `runtime/src/main/kotlin/com/opencray/runtime/RuntimeStub.kt` | Runtime module still has stub residue. |
-| `mcp/src/main/kotlin/com/opencray/mcp/McpStub.kt` | MCP module still has stub residue. |
-| `skills/src/main/kotlin/com/opencray/skills/SkillsStub.kt` | Skills module still has stub residue. |
+- session lifecycle hooks
+- memory flush before compaction
+- sub-agent spawn and bounded result return
+- explicit prompt reduction for child agents
 
-These files do not prove a feature is absent by themselves, but together with the seeded UI and the missing runtime wiring they reinforce that the repository is still in a staged foundation state rather than a fully integrated autonomous agent runtime state.
+## Final Assessment
 
-## Bottom line
+OpenCray is now beyond the "pure prototype" stage, but it is still before the "complete agent runtime" stage.
 
-| Question | Answer |
-| --- | --- |
-| Has this repository completed an OpenClaw-like agent loop? | No |
-| Does it have useful orchestration infrastructure already? | Yes |
-| Can the agent freely access any workspace or installed software directory? | No |
-| Are there real capability modules in the repository already? | Yes |
-| Are those modules unified into one production autonomous tool runtime? | No |
-| Is real Termux or external runtime execution part of the current V1 build? | No |
+The most accurate description of the current repository is:
 
-## Suggested next implementation milestones
+"OpenCray has a working minimum agent loop, a real dispatcher, persistence primitives, and a skill package system. It does not yet have the memory, soul, session, skills, hooks, and prompt architecture needed for a full OpenClaw-class agent runtime."
 
-| Priority | Missing piece | Why it matters |
-| --- | --- | --- |
-| P0 | Wire `AgentLoop` to a production runtime that can call LLM and tools | This is the missing core of a real agent loop. |
-| P0 | Add a unified tool dispatcher with structured tool schemas and result envelopes | This is required for model-driven tool use. |
-| P0 | Feed tool observations back into the next LLM turn | Without this there is no OpenClaw-style multi-turn loop. |
-| P1 | Replace seeded chat state with live session state | This makes the runtime visible and debuggable in the product shell. |
-| P1 | Decide and enforce command workspace boundaries | Current command execution is looser than file and Python paths. |
-| P1 | Finish MCP runtime connection wiring | Current MCP support is mostly registry and exposure metadata. |
-| P2 | Build a real skill execution engine on top of the current loader and validator | Current skills support is not yet a full runtime. |
-| P2 | Implement a real Termux backend only if V2 scope includes it | V1 explicitly does not ship real Termux execution. |
+That distinction matters because the next phase should focus less on adding isolated modules and more on closing the loops between the modules that already exist.

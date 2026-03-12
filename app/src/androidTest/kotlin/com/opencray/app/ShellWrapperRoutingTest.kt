@@ -62,7 +62,7 @@ class ShellWrapperRoutingTest {
 
     assertShellChromeVisible()
     assertActivityTitle(targetContext.getString(R.string.shell_tab_skills))
-    assertTextVisible("Create new draft")
+    assertTextVisible("Workspace set")
   }
 
   @Test

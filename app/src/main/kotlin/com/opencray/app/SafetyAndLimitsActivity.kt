@@ -7,7 +7,7 @@ import com.opencray.app.shell.AppShellNavigationExtras
 import com.opencray.app.shell.AppShellTab
 import com.opencray.app.shell.SettingsSubpage
 
-class SafetyAndLimitsActivity : Activity() {
+class SafetyAndLimitsActivity : LocalizedActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
 

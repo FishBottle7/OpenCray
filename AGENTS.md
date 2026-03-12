@@ -23,3 +23,6 @@ Git history uses Conventional Commit prefixes such as `feat:` and `fix:`. In thi
 
 ## Security & Configuration Notes
 Do not commit secrets, local SDK paths, or device-specific config. Treat workspace, policy, and credential flows as security-sensitive areas and preserve existing safeguards when editing them.
+
+## UI Prototype Implementation Rules
+When implementing the mobile UI from the Pencil prototype, treat the Pencil design as the source of truth and refactor the app UI to match it as closely as practical. If the existing app contains a UI element, state, interaction, or visual treatment that is not present in the approved Pencil prototype, stop and ask the user before keeping, changing, or removing it. If any product, interaction, copy, navigation, or state detail is uncertain during implementation, ask the user instead of deciding independently. Do not fill in missing UI behavior or visuals based on assumption when the prototype or prior user direction does not make the requirement explicit.

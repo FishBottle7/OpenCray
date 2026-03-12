@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import android.content.Context
+import com.opencray.persistence.model.ChatAttachmentEntry
 import com.opencray.persistence.model.ChatPromptTemplateEntry
 import com.opencray.persistence.model.ChatTranscriptMessageEntry
 import com.opencray.persistence.model.ChatTranscriptRole
@@ -44,12 +45,30 @@ internal class ChatSessionLocalStore(
   }
 
   fun appendUserMessage(sessionId: String, text: String): ChatSessionsState {
+    return appendUserMessage(
+      sessionId = sessionId,
+      text = text,
+      commandLabel = null,
+      attachments = emptyList(),
+    )
+  }
+
+  fun appendUserMessage(
+    sessionId: String,
+    text: String,
+    commandLabel: String?,
+    attachments: List<ChatAttachmentEntry>,
+  ): ChatSessionsState {
     val trimmed = text.trim()
-    require(trimmed.isNotEmpty()) { "appendUserMessage text must not be blank." }
+    require(trimmed.isNotEmpty() || !commandLabel.isNullOrBlank() || attachments.isNotEmpty()) {
+      "appendUserMessage requires text, commandLabel, or attachments."
+    }
     return appendMessage(
       sessionId = sessionId,
       role = ChatTranscriptRole.USER,
       text = trimmed,
+      commandLabel = commandLabel?.trim()?.ifBlank { null },
+      attachments = attachments,
       updateTitle = true,
     ).state
   }
@@ -62,6 +81,8 @@ internal class ChatSessionLocalStore(
     sessionId = sessionId,
     role = role,
     text = text,
+    commandLabel = null,
+    attachments = emptyList(),
     updateTitle = false,
   )
 
@@ -265,6 +286,8 @@ internal class ChatSessionLocalStore(
       sessionId = sessionId,
       role = ChatTranscriptRole.ASSISTANT,
       text = trimmed,
+      commandLabel = null,
+      attachments = emptyList(),
       updateTitle = false,
     ).state
   }
@@ -273,6 +296,8 @@ internal class ChatSessionLocalStore(
     sessionId: String,
     role: ChatTranscriptRole,
     text: String,
+    commandLabel: String?,
+    attachments: List<ChatAttachmentEntry>,
     updateTitle: Boolean,
   ): AppendMessageResult {
     val workspace = loadWorkspaceOrCreate()
@@ -282,7 +307,9 @@ internal class ChatSessionLocalStore(
     val appendedMessage = ChatTranscriptMessageEntry(
       messageId = messageId(role.name.lowercase()),
       role = role,
-      text = text,
+      text = text.ifBlank { null },
+      commandLabel = commandLabel,
+      attachments = attachments,
       createdAtEpochMs = now,
     )
     val updatedMessages = currentSession.messages + appendedMessage
@@ -389,7 +416,7 @@ internal class ChatSessionLocalStore(
       val preview = session.messages
         .asReversed()
         .firstOrNull { message -> message.role != ChatTranscriptRole.SYSTEM }
-        ?.text
+        ?.let(::previewForMessage)
         .orEmpty()
         .trim()
 
@@ -411,9 +438,26 @@ internal class ChatSessionLocalStore(
     messages: List<ChatTranscriptMessageEntry>,
   ): String {
     if (currentTitle != DEFAULT_SESSION_TITLE) return currentTitle
-    val firstUserText = messages.firstOrNull { it.role == ChatTranscriptRole.USER }?.text.orEmpty().trim()
+    val firstUserText = messages.firstOrNull { it.role == ChatTranscriptRole.USER }
+      ?.let(::previewForMessage)
+      .orEmpty()
+      .trim()
     if (firstUserText.isBlank()) return currentTitle
     return firstUserText.take(26)
+  }
+
+  private fun previewForMessage(message: ChatTranscriptMessageEntry): String {
+    val text = message.text.orEmpty().trim()
+    if (text.isNotBlank()) {
+      return text
+    }
+    if (!message.commandLabel.isNullOrBlank()) {
+      return message.commandLabel.orEmpty().trim()
+    }
+    if (message.attachments.isNotEmpty()) {
+      return message.attachments.first().displayName
+    }
+    return ""
   }
 
   private fun branchTitleFor(sourceTitle: String): String = when {
