@@ -32,10 +32,17 @@ enum class PolicyDecisionOutcome {
 }
 
 @Serializable
+enum class PolicyApprovalRisk {
+  @SerialName("standard") STANDARD,
+  @SerialName("high_risk") HIGH_RISK,
+}
+
+@Serializable
 data class PolicyDecision(
   val outcome: PolicyDecisionOutcome,
   val reasonCode: String,
   val detail: String? = null,
+  val approvalRisk: PolicyApprovalRisk = PolicyApprovalRisk.STANDARD,
 ) {
   init {
     require(reasonCode.isNotBlank()) { "Policy reasonCode must not be blank." }

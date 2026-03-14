@@ -1,21 +1,16 @@
 package com.opencray.app
 
-import android.app.Activity
-import android.content.Intent
 import android.os.Bundle
-import com.opencray.app.shell.AppShellNavigationExtras
-import com.opencray.app.shell.AppShellTab
-import com.opencray.app.shell.SettingsSubpage
 
 class SafetyAndLimitsActivity : LocalizedActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
 
     startActivity(
-      Intent(this, AppShellActivity::class.java).apply {
-        putExtra(AppShellNavigationExtras.EXTRA_START_TAB, AppShellTab.SETTINGS.name)
-        putExtra(AppShellNavigationExtras.EXTRA_START_SETTINGS_PAGE, SettingsSubpage.SAFETY.name)
-      },
+      OpenCrayFlutterActivity.intent(
+        this,
+        OpenCrayFlutterActivity.Destination.SETTINGS_SAFETY,
+      ),
     )
     finish()
   }

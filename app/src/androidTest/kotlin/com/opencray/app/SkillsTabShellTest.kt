@@ -9,7 +9,6 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.opencray.app.shell.AppShellNavigationExtras
 import com.opencray.app.shell.AppShellTab
-import com.opencray.ui.skills.SkillEditorViewModel
 import java.io.File
 import org.junit.After
 import org.junit.Assert.assertTrue
@@ -36,13 +35,13 @@ class SkillsTabShellTest {
   fun skillsTabShowsPrototypeLayoutFromRealManagedSkillsDirectory() {
     clearSkillRoots()
     seedSkill(
-      root = SkillEditorViewModel.managedSkillsRootForContext(targetContext),
+      root = AppSkillsStorage.managedSkillsRootForContext(targetContext),
       folderName = "ui-ux-pro-max",
       name = "ui-ux-pro-max",
       description = "Design guidance and layout polish",
     )
     seedSkill(
-      root = SkillEditorViewModel.managedSkillsRootForContext(targetContext),
+      root = AppSkillsStorage.managedSkillsRootForContext(targetContext),
       folderName = "ios-hig-design",
       name = "ios-hig-design",
       description = "Apple-style interface rules",
@@ -102,8 +101,8 @@ class SkillsTabShellTest {
   }
 
   private fun clearSkillRoots() {
-    SkillEditorViewModel.managedSkillsRootForContext(targetContext).deleteRecursively()
-    SkillEditorViewModel.catalogSkillsRootForContext(targetContext).deleteRecursively()
+    AppSkillsStorage.managedSkillsRootForContext(targetContext).deleteRecursively()
+    AppSkillsStorage.catalogSkillsRootForContext(targetContext).deleteRecursively()
   }
 
   private fun assertTextVisible(text: String) {

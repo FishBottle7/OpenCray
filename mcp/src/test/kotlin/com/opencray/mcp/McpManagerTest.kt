@@ -14,6 +14,14 @@ class McpManagerTest {
   private val clientFactory = McpClientFactory()
 
   @Test
+  fun RuntimeSupport_isExplicitlyExposureOnly() {
+    assertEquals("exposure_only", McpRuntimeSupport.BRIDGE_STATUS_EXPOSURE_ONLY)
+    assertFalse(McpRuntimeSupport.REMOTE_TOOL_BRIDGE_AVAILABLE)
+    assertEquals(setOf("mcp_list_servers"), McpRuntimeSupport.SUPPORTED_AGENT_TOOL_NAMES)
+    assertTrue(McpRuntimeSupport.bridgeSummary().contains("not callable yet"))
+  }
+
+  @Test
   fun ManualEnablePersistence_persistsAcrossRegistryReload() {
     var now = 1_710_000_000_000L
     val store = InMemoryMcpRegistryStore()

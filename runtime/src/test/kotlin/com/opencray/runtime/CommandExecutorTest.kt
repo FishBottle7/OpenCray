@@ -2,6 +2,7 @@ package com.opencray.runtime
 
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
+import com.opencray.core.contracts.PolicyApprovalRisk
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.RetryRequest
@@ -153,6 +154,7 @@ class CommandExecutorTest {
 
     assertEquals(ExecutionStatus.DENIED, result.status)
     assertEquals("APPROVAL_REQUIRED", result.errorCode)
+    assertEquals("STANDARD", result.metadata["approvalRisk"])
     assertEquals(0, runner.spawnCount)
     assertEquals(1, audits.size)
 
@@ -162,6 +164,50 @@ class CommandExecutorTest {
     assertEquals(ExecutionStatus.DENIED, audit.executionStatus)
     assertFalse(audit.spawned)
     assertEquals("APPROVAL_REQUIRED", audit.errorCode)
+  }
+
+  @Test
+  fun runHighRiskAskWithoutApprovalTokenReturnsDedicatedHighRiskCodeAndDoesNotSpawn() {
+    val runner = RecordingRunner()
+    val audits = mutableListOf<CommandExecutionAuditRecord>()
+    val executor = CommandExecutor(
+      runner = runner,
+      auditSink = CommandAuditSink { record -> audits += record },
+      clock = clockOf(2_700L, 2_710L),
+    )
+    val request = CommandExecutionRequest(
+      taskId = "task-high-risk-approval-required",
+      command = "python",
+      args = listOf("script.py"),
+      requestedAtEpochMs = 2_650L,
+      metadata = mapOf("traceId" to "trace-high-risk-approval-required"),
+    )
+    val policyDecision = PolicyDecision(
+      outcome = PolicyDecisionOutcome.ASK,
+      reasonCode = "ASK_SAFE_COMMAND_HIGH_RISK",
+      detail = "Approval is required before command execution.",
+      approvalRisk = PolicyApprovalRisk.HIGH_RISK,
+    )
+
+    val result = executor.execute(
+      request = request,
+      policyDecision = policyDecision,
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.DENIED, result.status)
+    assertEquals("HIGH_RISK_APPROVAL_REQUIRED", result.errorCode)
+    assertEquals("HIGH_RISK", result.metadata["approvalRisk"])
+    assertTrue(result.errorMessage.orEmpty().contains("High-risk approval"))
+    assertEquals(0, runner.spawnCount)
+    assertEquals(1, audits.size)
+
+    val audit = audits.single()
+    assertEquals(CommandGateStatus.BLOCKED, audit.gateStatus)
+    assertEquals(CommandGateReasonCode.BLOCK_APPROVAL_REQUIRED, audit.gateReasonCode)
+    assertEquals(ExecutionStatus.DENIED, audit.executionStatus)
+    assertFalse(audit.spawned)
+    assertEquals("HIGH_RISK_APPROVAL_REQUIRED", audit.errorCode)
   }
 
   @Test

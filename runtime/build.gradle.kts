@@ -32,7 +32,7 @@ dependencies {
   implementation(project(":filesystem"))
   implementation(project(":llm"))
   implementation(project(":mcp"))
-  implementation(project(":policy"))
+  api(project(":policy"))
   implementation(project(":skills"))
   api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
   testImplementation("junit:junit:4.13.2")

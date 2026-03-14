@@ -1,6 +1,7 @@
 package com.opencray.policy
 
 import com.opencray.core.contracts.PolicyDecision
+import com.opencray.core.contracts.PolicyApprovalRisk
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import java.nio.file.Files
 import java.nio.file.Path
@@ -9,6 +10,13 @@ enum class ExecutionMode {
   SAFE,
   AUTO,
   DEVELOPER,
+  ;
+
+  companion object {
+    fun fromLabelOrNull(label: String?): ExecutionMode? = values().firstOrNull { mode ->
+      mode.name.equals(label?.trim(), ignoreCase = true)
+    }
+  }
 }
 
 enum class PolicyToolClass {
@@ -39,8 +47,8 @@ data class PolicyRequest(
 object PolicyReasonCode {
   const val ALLOW_SAFE_READ = "ALLOW_SAFE_READ"
   const val ASK_SAFE_WRITE = "ASK_SAFE_WRITE"
-  const val DENY_SAFE_DESTRUCTIVE = "DENY_SAFE_DESTRUCTIVE"
-  const val DENY_SAFE_COMMAND = "DENY_SAFE_COMMAND"
+  const val ASK_SAFE_DESTRUCTIVE_HIGH_RISK = "ASK_SAFE_DESTRUCTIVE_HIGH_RISK"
+  const val ASK_SAFE_COMMAND_HIGH_RISK = "ASK_SAFE_COMMAND_HIGH_RISK"
 
   const val ALLOW_AUTO_STANDARD = "ALLOW_AUTO_STANDARD"
   const val ASK_AUTO_DESTRUCTIVE = "ASK_AUTO_DESTRUCTIVE"
@@ -60,6 +68,7 @@ class ModePolicy(
   private data class MatrixRule(
     val outcome: PolicyDecisionOutcome,
     val reasonCode: String,
+    val approvalRisk: PolicyApprovalRisk = PolicyApprovalRisk.STANDARD,
   )
 
   private val matrix: Map<ExecutionMode, Map<PolicyToolClass, MatrixRule>> =
@@ -74,20 +83,24 @@ class ModePolicy(
           reasonCode = PolicyReasonCode.ASK_SAFE_WRITE,
         ),
         PolicyToolClass.DELETE_FILE to MatrixRule(
-          outcome = PolicyDecisionOutcome.DENY,
-          reasonCode = PolicyReasonCode.DENY_SAFE_DESTRUCTIVE,
+          outcome = PolicyDecisionOutcome.ASK,
+          reasonCode = PolicyReasonCode.ASK_SAFE_DESTRUCTIVE_HIGH_RISK,
+          approvalRisk = PolicyApprovalRisk.HIGH_RISK,
         ),
         PolicyToolClass.MOVE_FILE to MatrixRule(
-          outcome = PolicyDecisionOutcome.DENY,
-          reasonCode = PolicyReasonCode.DENY_SAFE_DESTRUCTIVE,
+          outcome = PolicyDecisionOutcome.ASK,
+          reasonCode = PolicyReasonCode.ASK_SAFE_DESTRUCTIVE_HIGH_RISK,
+          approvalRisk = PolicyApprovalRisk.HIGH_RISK,
         ),
         PolicyToolClass.RENAME_FILE to MatrixRule(
-          outcome = PolicyDecisionOutcome.DENY,
-          reasonCode = PolicyReasonCode.DENY_SAFE_DESTRUCTIVE,
+          outcome = PolicyDecisionOutcome.ASK,
+          reasonCode = PolicyReasonCode.ASK_SAFE_DESTRUCTIVE_HIGH_RISK,
+          approvalRisk = PolicyApprovalRisk.HIGH_RISK,
         ),
         PolicyToolClass.EXECUTE_COMMAND to MatrixRule(
-          outcome = PolicyDecisionOutcome.DENY,
-          reasonCode = PolicyReasonCode.DENY_SAFE_COMMAND,
+          outcome = PolicyDecisionOutcome.ASK,
+          reasonCode = PolicyReasonCode.ASK_SAFE_COMMAND_HIGH_RISK,
+          approvalRisk = PolicyApprovalRisk.HIGH_RISK,
         ),
       ),
       ExecutionMode.AUTO to mapOf(
@@ -162,6 +175,7 @@ class ModePolicy(
     return PolicyDecision(
       outcome = matrixRule.outcome,
       reasonCode = matrixRule.reasonCode,
+      approvalRisk = matrixRule.approvalRisk,
     )
   }
 

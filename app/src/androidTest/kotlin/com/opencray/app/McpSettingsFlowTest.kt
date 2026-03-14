@@ -52,7 +52,8 @@ class McpSettingsFlowTest {
     performClickOnText("Enable server")
 
     assertTextVisible("Trust: Enabled • Manual consent saved")
-    assertTextVisible("Tools: Active")
+    assertTextVisible("Exposure: Active (status only)")
+    assertTextVisible("Remote MCP tools are not proxied into the shell runtime yet.")
     assertNoVisibleTextContaining("secret://")
     assertNoVisibleTextContaining("Authorization")
 
@@ -73,10 +74,10 @@ class McpSettingsFlowTest {
     assertActivityNotFinishing()
     assertTextVisible("Community Bridge")
     assertTextVisible("Trust: Requires manual enable")
-    assertTextVisible("Tools: Blocked")
+    assertTextVisible("Exposure: Blocked")
     assertTextVisible("Auth: Credential configured")
     assertTextVisible("Readiness: Ready")
-    assertTextVisible("Blocked until you enable this server manually. Tools stay hidden until you consent here.")
+    assertTextVisible("Blocked until you enable this server manually. Exposure stays hidden until you consent here, and remote MCP tools are not proxied yet.")
     assertTextVisible("Enable server")
     assertNoVisibleTextContaining("secret://")
     assertNoVisibleTextContaining("Authorization")

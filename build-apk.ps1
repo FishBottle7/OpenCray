@@ -1,6 +1,6 @@
 param(
   [ValidateSet("debug", "release")]
-  [string]$Variant = "debug",
+  [string]$Variant = "release",
 
   [switch]$Clean
 )
@@ -10,11 +10,12 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $projectRoot
 
-$gradleUserHome = Join-Path $projectRoot ".gradle-user-home"
-$androidUserHome = Join-Path $projectRoot ".android-user-home"
-$localGradleRoot = Join-Path $gradleUserHome "local-gradle"
-$bundledGradleZip = Join-Path $projectRoot "gradle-8.13-bin.zip"
-$gradleLauncher = Join-Path $localGradleRoot "gradle-8.13\\bin\\gradle.bat"
+$flutterAppDir = Join-Path $projectRoot "flutter_app"
+$flutterBat = $null
+if ($env:FLUTTER_ROOT) {
+  $flutterBat = Join-Path $env:FLUTTER_ROOT "bin\\flutter.bat"
+}
+$fallbackFlutterBat = "D:\\Program Files\\flutter\\bin\\flutter.bat"
 
 function Write-Step {
   param([string]$Message)
@@ -29,51 +30,73 @@ function Ensure-Directory {
   }
 }
 
-function Get-GradleCommand {
-  Ensure-Directory -Path $gradleUserHome
+function Get-FlutterCommand {
+  $pathFlutter = Get-Command flutter -ErrorAction SilentlyContinue
+  if ($pathFlutter) {
+    return $pathFlutter.Source
+  }
 
-  if (Test-Path $bundledGradleZip) {
-    if (-not (Test-Path $gradleLauncher)) {
-      Write-Step "Extracting bundled Gradle 8.13"
-      Ensure-Directory -Path $localGradleRoot
-      Expand-Archive -Path $bundledGradleZip -DestinationPath $localGradleRoot -Force
+  if ($env:FLUTTER_ROOT -and (Test-Path $flutterBat)) {
+    return $flutterBat
+  }
+
+  if (Test-Path $fallbackFlutterBat) {
+    return $fallbackFlutterBat
+  }
+
+  throw "Flutter command not found. Please install Flutter or set FLUTTER_ROOT."
+}
+
+if (-not (Test-Path $flutterAppDir)) {
+  throw "flutter_app directory not found: $flutterAppDir"
+}
+
+$buildType = switch ($Variant) {
+  "debug" { "Debug" }
+  "release" { "Release" }
+  default { throw "Unsupported variant: $Variant" }
+}
+
+$flutterCommand = Get-FlutterCommand
+Push-Location $flutterAppDir
+try {
+  if ($Clean) {
+    Write-Step "Running Flutter clean"
+    & $flutterCommand "clean" "--suppress-analytics"
+    if ($LASTEXITCODE -ne 0) {
+      throw "Flutter clean failed with exit code $LASTEXITCODE"
     }
-
-    return $gradleLauncher
   }
 
-  return Join-Path $projectRoot "gradlew.bat"
-}
-
-$env:GRADLE_USER_HOME = $gradleUserHome
-Ensure-Directory -Path $androidUserHome
-$env:ANDROID_USER_HOME = $androidUserHome
-$gradleCommand = Get-GradleCommand
-$taskName = ":app:assemble$($Variant.Substring(0, 1).ToUpper() + $Variant.Substring(1))"
-
-if ($Clean) {
-  Write-Step "Running clean"
-  & $gradleCommand "--no-daemon" "clean"
+  Write-Step "Fetching Flutter dependencies"
+  & $flutterCommand "pub" "get" "--suppress-analytics"
   if ($LASTEXITCODE -ne 0) {
-    throw "Gradle clean failed with exit code $LASTEXITCODE"
+    throw "flutter pub get failed with exit code $LASTEXITCODE"
   }
+  
+  Write-Step "Building Flutter APK ($Variant)"
+  & $flutterCommand "build" "apk" "--$Variant" "--target-platform" "android-arm64" "--suppress-analytics"
+  if ($LASTEXITCODE -ne 0) {
+    throw "Flutter build failed with exit code $LASTEXITCODE"
+  }
+
+  $apkDir = Join-Path $flutterAppDir "build\\app\\outputs\\flutter-apk"
+  if (-not (Test-Path $apkDir)) {
+    throw "Build completed, but no Flutter APK directory was found: $apkDir"
+  }
+
+  $apkFiles = Get-ChildItem -Path $apkDir -Filter "*.apk" -File -ErrorAction Stop |
+    Sort-Object LastWriteTime -Descending
+  if (-not $apkFiles) {
+    throw "Build completed, but no Flutter APK was found in $apkDir."
+  }
+
+  $primaryApk = $apkFiles[0]
+}
+finally {
+  Pop-Location
 }
 
-Write-Step "Building APK ($Variant)"
-& $gradleCommand "--no-daemon" $taskName
-if ($LASTEXITCODE -ne 0) {
-  throw "Gradle build failed with exit code $LASTEXITCODE"
-}
-
-$apkOutputDir = Join-Path $projectRoot "app\\build\\outputs\\apk\\$Variant"
-$apkFiles = Get-ChildItem -Path $apkOutputDir -Filter "*.apk" -File -ErrorAction Stop |
-  Sort-Object LastWriteTime -Descending
-
-if (-not $apkFiles) {
-  throw "Build completed, but no APK was found in $apkOutputDir"
-}
-
-$primaryApk = $apkFiles[0]
 $artifactDir = Join-Path $projectRoot "build\\apk"
 Ensure-Directory -Path $artifactDir
 

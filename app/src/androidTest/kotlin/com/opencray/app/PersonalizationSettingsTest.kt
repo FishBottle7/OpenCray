@@ -18,7 +18,6 @@ import com.opencray.persistence.model.SessionRecord
 import com.opencray.persistence.store.file.JsonFileMemoryStore
 import com.opencray.persistence.store.file.JsonFileSessionStore
 import com.opencray.persistence.store.file.JsonFileSoulStore
-import com.opencray.ui.settings.TelemetryTogglesState
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

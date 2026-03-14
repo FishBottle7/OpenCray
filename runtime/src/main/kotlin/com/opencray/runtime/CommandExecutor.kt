@@ -2,6 +2,7 @@ package com.opencray.runtime
 
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
+import com.opencray.core.contracts.PolicyApprovalRisk
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import java.io.ByteArrayOutputStream
@@ -319,13 +320,14 @@ class CommandExecutor(
       policyDecision = policyDecision,
       approvalToken = approvalToken,
       decidedAtEpochMs = startedAt,
+      approvalRequiredDetail = approvalRequiredDetailFor(policyDecision),
     )
 
     if (!gateDecision.shouldExecute) {
       val result = ExecutionResult(
         taskId = request.taskId,
         status = ExecutionStatus.DENIED,
-        errorCode = deniedErrorCodeFor(gateDecision.status),
+        errorCode = deniedErrorCodeFor(gateDecision),
         errorMessage = gateDecision.detail,
         policyDecision = policyDecision,
         startedAtEpochMs = startedAt,
@@ -475,10 +477,23 @@ class CommandExecutor(
     return result
   }
 
-  private fun deniedErrorCodeFor(status: CommandGateStatus): String = when (status) {
+  private fun deniedErrorCodeFor(gateDecision: CommandGateDecision): String = when (gateDecision.status) {
     CommandGateStatus.DENIED -> ERROR_DENY_POLICY
-    CommandGateStatus.BLOCKED -> ERROR_APPROVAL_REQUIRED
+    CommandGateStatus.BLOCKED -> when (gateDecision.policyDecision.approvalRisk) {
+      PolicyApprovalRisk.HIGH_RISK -> ERROR_HIGH_RISK_APPROVAL_REQUIRED
+      PolicyApprovalRisk.STANDARD -> ERROR_APPROVAL_REQUIRED
+    }
     CommandGateStatus.ALLOWED -> ERROR_DENY_POLICY
+  }
+
+  private fun approvalRequiredDetailFor(
+    policyDecision: com.opencray.core.contracts.PolicyDecision,
+  ): String = when (policyDecision.approvalRisk) {
+    PolicyApprovalRisk.HIGH_RISK ->
+      "High-risk approval is required before command execution. Review this request carefully."
+
+    PolicyApprovalRisk.STANDARD ->
+      "Approval token is required before command execution."
   }
 
   private fun validateWorkingDirectory(request: CommandExecutionRequest): String? {
@@ -514,6 +529,9 @@ class CommandExecutor(
     metadata["gateReasonCode"] = gateDecision.reasonCode
     metadata["policyOutcome"] = gateDecision.policyDecision.outcome.name
     metadata["policyReasonCode"] = gateDecision.policyDecision.reasonCode
+    if (gateDecision.policyDecision.outcome == PolicyDecisionOutcome.ASK) {
+      metadata["approvalRisk"] = gateDecision.policyDecision.approvalRisk.name
+    }
     metadata["spawned"] = spawned.toString()
     gateDecision.approvalToken?.tokenId?.let { metadata["approvalTokenId"] = it }
     request.workingDirectory?.let { metadata["workingDirectory"] = it }
@@ -554,6 +572,7 @@ class CommandExecutor(
   private companion object {
     const val ERROR_DENY_POLICY = "DENY_POLICY"
     const val ERROR_APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
+    const val ERROR_HIGH_RISK_APPROVAL_REQUIRED = "HIGH_RISK_APPROVAL_REQUIRED"
     const val ERROR_WORKSPACE_BOUNDARY = "WORKSPACE_BOUNDARY_DENIED"
     const val ERROR_TIMEOUT = "TIMEOUT"
     const val ERROR_OUTPUT_LIMIT_EXCEEDED = "OUTPUT_LIMIT_EXCEEDED"

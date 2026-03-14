@@ -2,7 +2,6 @@ package com.opencray.app
 
 import android.content.Context
 import android.content.SharedPreferences
-import com.opencray.ui.settings.TelemetryTogglesState
 
 private const val DEFAULT_TELEMETRY_SETTINGS_PREFERENCES = "opencray.telemetry-settings"
 

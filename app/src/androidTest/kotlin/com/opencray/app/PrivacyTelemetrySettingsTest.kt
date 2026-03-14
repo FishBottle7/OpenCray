@@ -12,7 +12,6 @@ import com.opencray.app.shell.AppShellNavigationExtras
 import com.opencray.app.shell.AppShellStateStore
 import com.opencray.app.shell.AppShellTab
 import com.opencray.app.shell.SettingsSubpage
-import com.opencray.ui.settings.TelemetryTogglesState
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

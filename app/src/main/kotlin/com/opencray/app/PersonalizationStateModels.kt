@@ -2,6 +2,8 @@ package com.opencray.app
 
 internal enum class PersonalizationPreset {
   STEADY,
+  BUILDER,
+  WARM,
   ;
 
   companion object {
@@ -13,6 +15,8 @@ internal enum class PersonalizationPreset {
 
 internal enum class PersonalizationResetPreview {
   NONE,
+  MEMORY,
+  SOUL,
   ;
 
   companion object {

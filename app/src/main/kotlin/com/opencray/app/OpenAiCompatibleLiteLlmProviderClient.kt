@@ -18,11 +18,12 @@ internal class OpenAiCompatibleLiteLlmProviderClient : LiteLlmProviderClient {
     if (baseUrl.isEmpty()) {
       return LiteLlmProviderResult.Failure(
         errorCode = "PROVIDER_BASE_URL_MISSING",
-        errorMessage = "Provider route baseUrl is required for OpenAI-compatible requests.",
+        errorMessage = "Provider route baseUrl is required.",
       )
     }
 
-    val endpoint = buildEndpointUrl(baseUrl)
+    val protocol = resolvedProtocol(request)
+    val endpoint = buildEndpointUrl(baseUrl, protocol)
     val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
       requestMethod = "POST"
       connectTimeout = request.route.timeoutMs.toInt()
@@ -64,9 +65,8 @@ internal class OpenAiCompatibleLiteLlmProviderClient : LiteLlmProviderClient {
 
         else -> {
           val parsed = JSONObject(responseText)
-          val choice = parsed.optJSONArray("choices")?.optJSONObject(0)
-          val finishReason = choice?.optString("finish_reason")?.takeIf { it.isNotBlank() }
-          val content = extractMessageContent(choice)
+          val finishReason = finishReasonFor(parsed, protocol)
+          val content = extractMessageContent(parsed, protocol)
           if (content.isBlank()) {
             LiteLlmProviderResult.Failure(
               errorCode = "PROVIDER_EMPTY_RESPONSE",
@@ -99,16 +99,35 @@ internal class OpenAiCompatibleLiteLlmProviderClient : LiteLlmProviderClient {
     }
   }
 
-  private fun buildEndpointUrl(baseUrl: String): String {
+  private fun buildEndpointUrl(
+    baseUrl: String,
+    protocol: String,
+  ): String {
     val trimmed = baseUrl.trimEnd('/')
-    return when {
-      trimmed.endsWith("/chat/completions") -> trimmed
-      trimmed.endsWith("/v1") -> "$trimmed/chat/completions"
-      else -> "$trimmed/chat/completions"
+    return when (protocol) {
+      LlmProviderProtocols.ANTHROPIC -> when {
+        trimmed.endsWith("/v1/messages") -> trimmed
+        trimmed.endsWith("/v1") -> "$trimmed/messages"
+        else -> "$trimmed/v1/messages"
+      }
+
+      else -> when {
+        trimmed.endsWith("/chat/completions") -> trimmed
+        trimmed.endsWith("/v1") -> "$trimmed/chat/completions"
+        else -> "$trimmed/chat/completions"
+      }
     }
   }
 
   private fun buildRequestBody(request: LiteLlmProviderRequest): String {
+    val protocol = resolvedProtocol(request)
+    return when (protocol) {
+      LlmProviderProtocols.ANTHROPIC -> buildAnthropicRequestBody(request)
+      else -> buildOpenAiRequestBody(request)
+    }
+  }
+
+  private fun buildOpenAiRequestBody(request: LiteLlmProviderRequest): String {
     val payload = JSONObject()
       .put("model", request.route.model)
       .put(
@@ -131,10 +150,52 @@ internal class OpenAiCompatibleLiteLlmProviderClient : LiteLlmProviderClient {
 
     request.route.metadata["temperature"]?.toDoubleOrNull()?.let { payload.put("temperature", it) }
     request.route.metadata["max_tokens"]?.toIntOrNull()?.let { payload.put("max_tokens", it) }
+    request.route.metadata["reasoning_effort"]?.takeIf { it.isNotBlank() }?.let { payload.put("reasoning_effort", it) }
     return payload.toString()
   }
 
-  private fun extractMessageContent(choice: JSONObject?): String {
+  private fun buildAnthropicRequestBody(request: LiteLlmProviderRequest): String {
+    val payload = JSONObject()
+      .put("model", request.route.model)
+      .put(
+        "messages",
+        JSONArray().put(
+          JSONObject()
+            .put("role", "user")
+            .put("content", request.request.prompt),
+        ),
+      )
+      .put(
+        "max_tokens",
+        request.route.metadata["max_tokens"]?.toIntOrNull() ?: DEFAULT_ANTHROPIC_MAX_TOKENS,
+      )
+
+    request.request.systemPrompt?.takeIf { it.isNotBlank() }?.let { systemPrompt ->
+      payload.put("system", systemPrompt)
+    }
+    request.route.metadata["thinking_budget_tokens"]?.toIntOrNull()?.let { budgetTokens ->
+      payload.put(
+        "thinking",
+        JSONObject()
+          .put("type", "enabled")
+          .put("budget_tokens", budgetTokens),
+      )
+    }
+    return payload.toString()
+  }
+
+  private fun extractMessageContent(
+    payload: JSONObject,
+    protocol: String,
+  ): String = when (protocol) {
+    LlmProviderProtocols.ANTHROPIC -> extractAnthropicMessageContent(payload)
+    else -> {
+      val choice = payload.optJSONArray("choices")?.optJSONObject(0)
+      extractOpenAiMessageContent(choice)
+    }
+  }
+
+  private fun extractOpenAiMessageContent(choice: JSONObject?): String {
     if (choice == null) return ""
     val message = choice.optJSONObject("message") ?: return ""
     val content = message.opt("content")
@@ -162,6 +223,33 @@ internal class OpenAiCompatibleLiteLlmProviderClient : LiteLlmProviderClient {
     }
   }
 
+  private fun extractAnthropicMessageContent(payload: JSONObject): String {
+    val content = payload.optJSONArray("content") ?: return ""
+    return buildString {
+      for (index in 0 until content.length()) {
+        val block = content.optJSONObject(index) ?: continue
+        if (block.optString("type") != "text") {
+          continue
+        }
+        val text = block.optString("text")
+        if (text.isNotBlank()) {
+          append(text)
+        }
+      }
+    }
+  }
+
+  private fun finishReasonFor(
+    payload: JSONObject,
+    protocol: String,
+  ): String? = when (protocol) {
+    LlmProviderProtocols.ANTHROPIC -> payload.optString("stop_reason").takeIf { it.isNotBlank() }
+    else -> payload.optJSONArray("choices")
+      ?.optJSONObject(0)
+      ?.optString("finish_reason")
+      ?.takeIf { it.isNotBlank() }
+  }
+
   private fun extractErrorMessage(responseText: String): String = runCatching {
     val errorObject = JSONObject(responseText).optJSONObject("error")
     errorObject?.optString("message")?.takeIf { it.isNotBlank() } ?: responseText
@@ -186,5 +274,12 @@ internal class OpenAiCompatibleLiteLlmProviderClient : LiteLlmProviderClient {
         }
       }
     }
+  }
+
+  private fun resolvedProtocol(request: LiteLlmProviderRequest): String =
+    LlmProviderProtocols.normalize(request.route.metadata["protocol"])
+
+  companion object {
+    private const val DEFAULT_ANTHROPIC_MAX_TOKENS: Int = 4096
   }
 }

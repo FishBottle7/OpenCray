@@ -1,6 +1,7 @@
 package com.opencray.runtime
 
 import com.opencray.core.contracts.PolicyDecision
+import com.opencray.core.contracts.PolicyApprovalRisk
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -115,6 +116,9 @@ object ModeGate {
     policyDecision: PolicyDecision,
     approvalToken: CommandApprovalToken? = null,
     decidedAtEpochMs: Long = System.currentTimeMillis(),
+    approvalRequiredDetail: String = "Approval token is required before command execution.",
+    approvalTaskMismatchDetail: String = "Approval token does not match the requested task.",
+    denyDetail: String = "Policy denied command execution.",
   ): CommandGateDecision {
     val resolvedGate = when (policyDecision.outcome) {
       PolicyDecisionOutcome.ALLOW -> ResolvedGate(
@@ -129,14 +133,14 @@ object ModeGate {
           status = CommandGateStatus.BLOCKED,
           reasonCode = CommandGateReasonCode.BLOCK_APPROVAL_REQUIRED,
           shouldExecute = false,
-          detail = policyDecision.detail ?: "Approval token is required before command execution.",
+          detail = approvalRequiredDetail(policyDecision, approvalRequiredDetail),
         )
 
         approvalToken.taskId != request.taskId -> ResolvedGate(
           status = CommandGateStatus.BLOCKED,
           reasonCode = CommandGateReasonCode.BLOCK_APPROVAL_TASK_MISMATCH,
           shouldExecute = false,
-          detail = "Approval token does not match the requested task.",
+          detail = approvalTaskMismatchDetail,
         )
 
         else -> ResolvedGate(
@@ -151,7 +155,7 @@ object ModeGate {
         status = CommandGateStatus.DENIED,
         reasonCode = CommandGateReasonCode.DENY_POLICY_DECISION,
         shouldExecute = false,
-        detail = policyDecision.detail ?: "Policy denied command execution.",
+        detail = policyDecision.detail ?: denyDetail,
       )
     }
 
@@ -191,4 +195,20 @@ object ModeGate {
     val shouldExecute: Boolean,
     val detail: String? = null,
   )
+
+  private fun approvalRequiredDetail(
+    policyDecision: PolicyDecision,
+    fallback: String,
+  ): String {
+    val detail = policyDecision.detail ?: fallback
+    return when (policyDecision.approvalRisk) {
+      PolicyApprovalRisk.HIGH_RISK -> if (detail.contains("high-risk", ignoreCase = true)) {
+        detail
+      } else {
+        "High-risk approval required. Review this request carefully before approving. $detail"
+      }
+
+      PolicyApprovalRisk.STANDARD -> detail
+    }
+  }
 }

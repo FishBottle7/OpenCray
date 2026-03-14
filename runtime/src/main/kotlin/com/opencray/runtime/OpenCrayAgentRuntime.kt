@@ -16,6 +16,12 @@ import com.opencray.llm.LiteLlmGateway
 import com.opencray.llm.LiteLlmGatewayRequest
 import com.opencray.llm.LiteLlmGatewayResult
 import com.opencray.llm.LiteLlmGatewayStatus
+import com.opencray.runtime.context.AgentRuntimeSessionContext
+import com.opencray.runtime.context.ContextAssemblyReport
+import com.opencray.runtime.context.PromptAssembler
+import com.opencray.runtime.context.PromptAssemblyInput
+import com.opencray.runtime.context.RuntimeConversationMessage
+import com.opencray.runtime.context.RuntimeConversationRole
 import java.util.UUID
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -25,6 +31,8 @@ data class OpenCrayAgentRuntimeConfig(
   val maxTurns: Int = 8,
   val maxToolCalls: Int = 12,
   val systemPrompt: String = DEFAULT_OPENCRAY_SYSTEM_PROMPT,
+  val sessionContext: AgentRuntimeSessionContext = AgentRuntimeSessionContext(),
+  val promptAssembler: PromptAssembler = PromptAssembler(),
   val llmMetadata: Map<String, String> = emptyMap(),
   val llmAuthHeaders: Map<String, String> = emptyMap(),
   val json: Json = Json { ignoreUnknownKeys = true; prettyPrint = true },
@@ -65,27 +73,42 @@ class OpenCrayAgentRuntime(
 
   private fun executePromptTask(task: AgentTask, hooks: RuntimeExecutionHooks): ExecutionResult {
     val startedAt = clock()
-    val transcript = mutableListOf(
-      ConversationEntry(role = ConversationRole.USER, content = task.input),
-    )
+    val transcript = seededConversation(task).toMutableList()
     var toolCallCount = 0
     var turn = 0
     var lastGatewayResult: LiteLlmGatewayResult? = null
+    var lastContextReport: ContextAssemblyReport? = null
 
     while (turn < config.maxTurns) {
       if (hooks.isCancellationRequested()) {
         return cancelledResult(task = task, startedAt = startedAt, finishedAt = clock())
       }
 
+      val assembledPrompt = config.promptAssembler.assemble(
+        PromptAssemblyInput(
+          task = task,
+          baseSystemPrompt = config.systemPrompt,
+          sessionContext = config.sessionContext,
+          toolDefinitions = toolDispatcher.definitions(),
+          liveConversation = transcript,
+        ),
+      )
+      lastContextReport = assembledPrompt.report
+
       val request = LiteLlmGatewayRequest(
         requestId = "agent-${task.id}-turn-$turn-${UUID.randomUUID().toString().take(8)}",
-        prompt = renderPrompt(task = task, transcript = transcript),
-        systemPrompt = config.systemPrompt,
+        prompt = assembledPrompt.taskPrompt,
+        systemPrompt = assembledPrompt.systemPrompt,
         metadata = buildMap {
           put("taskId", task.id)
           put("taskType", task.type.name)
           put("turnIndex", turn.toString())
-          putAll(task.metadata)
+          put("contextSourceMessageCount", assembledPrompt.report.sourceTranscriptMessageCount.toString())
+          put("contextWindowMessageCount", assembledPrompt.report.windowedTranscriptMessageCount.toString())
+          put("contextMessageCount", assembledPrompt.report.windowedTranscriptMessageCount.toString())
+          put("contextOmittedMessageCount", assembledPrompt.report.omittedTranscriptMessageCount.toString())
+          put("contextTruncatedMessageCount", assembledPrompt.report.truncatedTranscriptMessageCount.toString())
+          putAll(task.metadata.filterKeys(::isGatewayVisibleMetadataKey))
           putAll(config.llmMetadata)
         },
         authHeaders = config.llmAuthHeaders,
@@ -94,7 +117,14 @@ class OpenCrayAgentRuntime(
       lastGatewayResult = gatewayResult
       val outputText = gatewayResult.outputText
       if (gatewayResult.status != LiteLlmGatewayStatus.SUCCESS || outputText.isNullOrBlank()) {
-        return llmFailureResult(task = task, startedAt = startedAt, gatewayResult = gatewayResult)
+        return llmFailureResult(
+          task = task,
+          startedAt = startedAt,
+          gatewayResult = gatewayResult,
+          turn = turn,
+          toolCallCount = toolCallCount,
+          contextReport = lastContextReport,
+        )
       }
 
       val modelAction = parseModelAction(outputText)
@@ -110,6 +140,7 @@ class OpenCrayAgentRuntime(
               turn = turn,
               toolCallCount = toolCallCount,
               responseFormat = modelAction.responseFormat,
+              contextReport = lastContextReport,
             ),
           )
         }
@@ -127,12 +158,13 @@ class OpenCrayAgentRuntime(
                 turn = turn,
                 toolCallCount = toolCallCount,
                 responseFormat = "tool_budget_exceeded",
+                contextReport = lastContextReport,
               ),
             )
           }
 
-          transcript += ConversationEntry(
-            role = ConversationRole.ASSISTANT,
+          transcript += RuntimeConversationMessage(
+            role = RuntimeConversationRole.ASSISTANT,
             content = "tool_call ${modelAction.call.toolName} ${config.json.encodeToString(JsonObject.serializer(), modelAction.call.arguments)}",
           )
           eventSink.onToolCall(task = task, turn = turn, call = modelAction.call)
@@ -141,8 +173,8 @@ class OpenCrayAgentRuntime(
           if (toolResult.status == AgentToolResultStatus.CANCELLED) {
             return cancelledResult(task = task, startedAt = startedAt, finishedAt = clock())
           }
-          transcript += ConversationEntry(
-            role = ConversationRole.TOOL,
+          transcript += RuntimeConversationMessage(
+            role = RuntimeConversationRole.TOOL,
             content = toolResult.toObservationText(config.json),
           )
           toolCallCount += 1
@@ -162,6 +194,7 @@ class OpenCrayAgentRuntime(
         turn = turn,
         toolCallCount = toolCallCount,
         responseFormat = "turn_limit_exceeded",
+        contextReport = lastContextReport,
       ),
     )
   }
@@ -250,46 +283,24 @@ class OpenCrayAgentRuntime(
     }
   }
 
-  private fun renderPrompt(task: AgentTask, transcript: List<ConversationEntry>): String = buildString {
-    appendLine("Decide the next step for this OpenCray task.")
-    appendLine()
-    appendLine("Return exactly one JSON object and nothing else.")
-    appendLine("Use one of these shapes:")
-    appendLine("""{"type":"tool_call","tool_name":"workspace_read_file","arguments":{"path":"README.md"}}""")
-    appendLine("""{"type":"final","answer":"Concise answer for the user."}""")
-    appendLine()
-    appendLine("Available tools:")
-    toolDispatcher.definitions().forEach { definition ->
-      appendLine(definition.renderForPrompt())
-    }
-    appendLine()
-    appendLine("Task metadata:")
-    appendLine("task_id=${task.id}")
-    appendLine("task_type=${task.type.name}")
-    if (task.metadata.isNotEmpty()) {
-      task.metadata.toSortedMap().forEach { (key, value) ->
-        appendLine("$key=$value")
-      }
-    }
-    appendLine()
-    appendLine("Conversation:")
-    transcript.forEach { entry ->
-      appendLine("[${entry.role.name.lowercase()}]")
-      appendLine(entry.content)
-      appendLine()
-    }
-    appendLine("If you already have enough evidence, respond with type=final.")
-  }
-
   private fun buildResultMetadata(
     gatewayResult: LiteLlmGatewayResult?,
     turn: Int,
     toolCallCount: Int,
     responseFormat: String,
+    contextReport: ContextAssemblyReport? = null,
   ): Map<String, String> = buildMap {
     put("turnCount", (turn + 1).toString())
     put("toolCallCount", toolCallCount.toString())
     put("responseFormat", responseFormat)
+    contextReport?.let { report ->
+      put("contextLayerNames", report.layers.joinToString(separator = ",") { layer -> layer.name })
+      put("contextSourceMessageCount", report.sourceTranscriptMessageCount.toString())
+      put("contextWindowMessageCount", report.windowedTranscriptMessageCount.toString())
+      put("contextMessageCount", report.windowedTranscriptMessageCount.toString())
+      put("contextOmittedMessageCount", report.omittedTranscriptMessageCount.toString())
+      put("contextTruncatedMessageCount", report.truncatedTranscriptMessageCount.toString())
+    }
     gatewayResult?.selectedRoute?.routeId?.let { put("selectedRouteId", it) }
     gatewayResult?.selectedRoute?.providerId?.let { put("selectedProviderId", it) }
     gatewayResult?.selectedRoute?.model?.let { put("selectedModel", it) }
@@ -301,6 +312,9 @@ class OpenCrayAgentRuntime(
     task: AgentTask,
     startedAt: Long,
     gatewayResult: LiteLlmGatewayResult,
+    turn: Int,
+    toolCallCount: Int,
+    contextReport: ContextAssemblyReport?,
   ): ExecutionResult = when (gatewayResult.status) {
     LiteLlmGatewayStatus.TIMEOUT -> ExecutionResult(
       taskId = task.id,
@@ -311,9 +325,10 @@ class OpenCrayAgentRuntime(
       finishedAtEpochMs = maxOf(startedAt, clock()),
       metadata = buildResultMetadata(
         gatewayResult = gatewayResult,
-        turn = 0,
-        toolCallCount = 0,
+        turn = turn,
+        toolCallCount = toolCallCount,
         responseFormat = "llm_timeout",
+        contextReport = contextReport,
       ),
     )
 
@@ -327,9 +342,10 @@ class OpenCrayAgentRuntime(
       errorMessage = gatewayResult.errorMessage ?: "LLM request failed.",
       metadata = buildResultMetadata(
         gatewayResult = gatewayResult,
-        turn = 0,
-        toolCallCount = 0,
+        turn = turn,
+        toolCallCount = toolCallCount,
         responseFormat = "llm_failure",
+        contextReport = contextReport,
       ),
     )
 
@@ -456,15 +472,23 @@ class OpenCrayAgentRuntime(
   private fun JsonObject.primitiveContent(key: String): String? =
     (this[key] as? JsonPrimitive)?.content
 
-  private data class ConversationEntry(
-    val role: ConversationRole,
-    val content: String,
-  )
+  private fun isGatewayVisibleMetadataKey(key: String): Boolean = !key.startsWith(HIDDEN_METADATA_PREFIX)
 
-  private enum class ConversationRole {
-    USER,
-    ASSISTANT,
-    TOOL,
+  private fun seededConversation(task: AgentTask): List<RuntimeConversationMessage> {
+    val seeded = config.sessionContext.conversation.toMutableList()
+    val normalizedInput = task.input.trim()
+    if (normalizedInput.isBlank()) {
+      return seeded
+    }
+    val lastEntry = seeded.lastOrNull()
+    if (lastEntry?.role == RuntimeConversationRole.USER && lastEntry.content == normalizedInput) {
+      return seeded
+    }
+    seeded += RuntimeConversationMessage(
+      role = RuntimeConversationRole.USER,
+      content = normalizedInput,
+    )
+    return seeded
   }
 
   private sealed interface AgentModelAction {
@@ -476,6 +500,10 @@ class OpenCrayAgentRuntime(
     data class ToolCall(
       val call: AgentToolCall,
     ) : AgentModelAction
+  }
+
+  private companion object {
+    const val HIDDEN_METADATA_PREFIX: String = "_host."
   }
 }
 

@@ -2,10 +2,45 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:allowBackup="true"
+        android:name="com.opencray.app.OpenCrayApplication"
         android:label="@string/app_name">
         <activity
             android:name="com.opencray.app.AppShellActivity"
             android:exported="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar"
+            android:windowSoftInputMode="adjustResize|stateHidden" />
+        <activity
+            android:name="com.opencray.app.SkillsManagementActivity"
+            android:exported="true"
+            android:label="@string/activity_label_skills_management"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+        <activity
+            android:name="com.opencray.app.MainInteractionActivity"
+            android:exported="true"
+            android:label="@string/activity_label_main_interaction"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+        <activity
+            android:name="com.opencray.app.WorkspaceSettingsActivity"
+            android:exported="true"
+            android:label="@string/activity_label_workspace_settings"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+        <activity
+            android:name="com.opencray.app.SafetyAndLimitsActivity"
+            android:exported="true"
+            android:label="@string/activity_label_safety_limits"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+        <activity
+            android:name="com.opencray.app.OpenCrayFlutterActivity"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:exported="true"
+            android:hardwareAccelerated="true"
+            android:launchMode="singleTop"
+            android:label="@string/app_name"
             android:theme="@android:style/Theme.Material.Light.NoActionBar"
             android:windowSoftInputMode="adjustResize|stateHidden">
             <intent-filter>
@@ -13,26 +48,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <activity
-            android:name="com.opencray.app.SkillsManagementActivity"
-            android:exported="true"
-            android:label="@string/activity_label_skills_management"
-            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
-        <activity
-            android:name="com.opencray.app.MainInteractionActivity"
-            android:exported="true"
-            android:label="@string/activity_label_main_interaction"
-            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
-        <activity
-            android:name="com.opencray.app.WorkspaceSettingsActivity"
-            android:exported="true"
-            android:label="@string/activity_label_workspace_settings"
-            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
-        <activity
-            android:name="com.opencray.app.SafetyAndLimitsActivity"
-            android:exported="true"
-            android:label="@string/activity_label_safety_limits"
-            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

@@ -1,6 +1,7 @@
 package com.opencray.policy
 
 import com.opencray.core.contracts.PolicyDecisionOutcome
+import com.opencray.core.contracts.PolicyApprovalRisk
 import java.nio.file.Files
 import java.nio.file.Paths
 import org.junit.Assert.assertEquals
@@ -35,28 +36,32 @@ class ModePolicyMatrixTest {
       MatrixExpectation(
         mode = ExecutionMode.SAFE,
         toolClass = PolicyToolClass.DELETE_FILE,
-        expectedOutcome = PolicyDecisionOutcome.DENY,
-        expectedReasonCode = PolicyReasonCode.DENY_SAFE_DESTRUCTIVE,
+        expectedOutcome = PolicyDecisionOutcome.ASK,
+        expectedReasonCode = PolicyReasonCode.ASK_SAFE_DESTRUCTIVE_HIGH_RISK,
+        expectedApprovalRisk = PolicyApprovalRisk.HIGH_RISK,
       ),
       MatrixExpectation(
         mode = ExecutionMode.SAFE,
         toolClass = PolicyToolClass.MOVE_FILE,
-        expectedOutcome = PolicyDecisionOutcome.DENY,
-        expectedReasonCode = PolicyReasonCode.DENY_SAFE_DESTRUCTIVE,
+        expectedOutcome = PolicyDecisionOutcome.ASK,
+        expectedReasonCode = PolicyReasonCode.ASK_SAFE_DESTRUCTIVE_HIGH_RISK,
+        expectedApprovalRisk = PolicyApprovalRisk.HIGH_RISK,
         destinationRelativePath = "moved.txt",
       ),
       MatrixExpectation(
         mode = ExecutionMode.SAFE,
         toolClass = PolicyToolClass.RENAME_FILE,
-        expectedOutcome = PolicyDecisionOutcome.DENY,
-        expectedReasonCode = PolicyReasonCode.DENY_SAFE_DESTRUCTIVE,
+        expectedOutcome = PolicyDecisionOutcome.ASK,
+        expectedReasonCode = PolicyReasonCode.ASK_SAFE_DESTRUCTIVE_HIGH_RISK,
+        expectedApprovalRisk = PolicyApprovalRisk.HIGH_RISK,
         destinationRelativePath = "renamed.txt",
       ),
       MatrixExpectation(
         mode = ExecutionMode.SAFE,
         toolClass = PolicyToolClass.EXECUTE_COMMAND,
-        expectedOutcome = PolicyDecisionOutcome.DENY,
-        expectedReasonCode = PolicyReasonCode.DENY_SAFE_COMMAND,
+        expectedOutcome = PolicyDecisionOutcome.ASK,
+        expectedReasonCode = PolicyReasonCode.ASK_SAFE_COMMAND_HIGH_RISK,
+        expectedApprovalRisk = PolicyApprovalRisk.HIGH_RISK,
         targetRelativePath = null,
       ),
 
@@ -153,6 +158,7 @@ class ModePolicyMatrixTest {
       )
       assertEquals(matrixCase.expectedOutcome, decision.outcome)
       assertEquals(matrixCase.expectedReasonCode, decision.reasonCode)
+      assertEquals(matrixCase.expectedApprovalRisk, decision.approvalRisk)
     }
   }
 
@@ -220,6 +226,7 @@ class ModePolicyMatrixTest {
     val toolClass: PolicyToolClass,
     val expectedOutcome: PolicyDecisionOutcome,
     val expectedReasonCode: String,
+    val expectedApprovalRisk: PolicyApprovalRisk = PolicyApprovalRisk.STANDARD,
     val targetRelativePath: String? = "target.txt",
     val destinationRelativePath: String? = null,
   )

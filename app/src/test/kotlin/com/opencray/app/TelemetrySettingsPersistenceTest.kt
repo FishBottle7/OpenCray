@@ -1,7 +1,4 @@
 package com.opencray.app
-
-import com.opencray.ui.settings.TelemetryToggleState
-import com.opencray.ui.settings.TelemetryTogglesState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

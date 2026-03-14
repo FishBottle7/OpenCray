@@ -1,0 +1,221 @@
+package com.opencray.app
+
+import android.content.Context
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
+import io.flutter.plugin.common.MethodCall
+import io.flutter.plugin.common.MethodChannel
+
+internal class OpenCrayFlutterHostBridge(
+  context: Context,
+) {
+  private val hostRuntime = OpenCrayHostRuntime.fromContext(context)
+  private var shellObserverDisposer: (() -> Unit)? = null
+  private var settingsObserverDisposer: (() -> Unit)? = null
+  private var skillsObserverDisposer: (() -> Unit)? = null
+  private var chatObserverDisposer: (() -> Unit)? = null
+
+  fun attach(flutterEngine: FlutterEngine) {
+    MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL).setMethodCallHandler(::onMethodCall)
+    EventChannel(flutterEngine.dartExecutor.binaryMessenger, SHELL_SNAPSHOT_CHANNEL).setStreamHandler(
+      observerStreamHandler(
+        observe = hostRuntime::observeShell,
+        onDisposeChanged = { disposer -> shellObserverDisposer = disposer },
+      ),
+    )
+    EventChannel(
+      flutterEngine.dartExecutor.binaryMessenger,
+      SETTINGS_OVERVIEW_CHANNEL,
+    ).setStreamHandler(
+      observerStreamHandler(
+        observe = hostRuntime::observeSettingsOverview,
+        onDisposeChanged = { disposer -> settingsObserverDisposer = disposer },
+      ),
+    )
+    EventChannel(flutterEngine.dartExecutor.binaryMessenger, SKILLS_SNAPSHOT_CHANNEL).setStreamHandler(
+      observerStreamHandler(
+        observe = hostRuntime::observeSkills,
+        onDisposeChanged = { disposer -> skillsObserverDisposer = disposer },
+      ),
+    )
+    EventChannel(flutterEngine.dartExecutor.binaryMessenger, CHAT_SNAPSHOT_CHANNEL).setStreamHandler(
+      observerStreamHandler(
+        observe = hostRuntime::observeChat,
+        onDisposeChanged = { disposer -> chatObserverDisposer = disposer },
+      ),
+    )
+  }
+
+  fun detach(flutterEngine: FlutterEngine) {
+    MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL).setMethodCallHandler(null)
+    EventChannel(flutterEngine.dartExecutor.binaryMessenger, SHELL_SNAPSHOT_CHANNEL).setStreamHandler(null)
+    EventChannel(flutterEngine.dartExecutor.binaryMessenger, SETTINGS_OVERVIEW_CHANNEL).setStreamHandler(null)
+    EventChannel(flutterEngine.dartExecutor.binaryMessenger, SKILLS_SNAPSHOT_CHANNEL).setStreamHandler(null)
+    EventChannel(flutterEngine.dartExecutor.binaryMessenger, CHAT_SNAPSHOT_CHANNEL).setStreamHandler(null)
+    shellObserverDisposer?.invoke()
+    settingsObserverDisposer?.invoke()
+    skillsObserverDisposer?.invoke()
+    chatObserverDisposer?.invoke()
+    shellObserverDisposer = null
+    settingsObserverDisposer = null
+    skillsObserverDisposer = null
+    chatObserverDisposer = null
+  }
+
+  private fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+    runCatching {
+      when (call.method) {
+        "loadShellSnapshot" -> hostRuntime.loadShellSnapshot()
+        "loadSettingsOverview" -> hostRuntime.loadSettingsOverview()
+        "loadSettingsDetail" -> hostRuntime.loadSettingsDetail(
+          routeIdRaw = call.argument<String>("routeId").orEmpty(),
+        )
+        "loadLlmConfig" -> hostRuntime.loadLlmConfig()
+        "saveLlmConfig" -> hostRuntime.saveLlmConfig(
+          enabled = call.argument<Boolean>("enabled") == true,
+          providerId = call.argument<String>("providerId").orEmpty(),
+          protocol = call.argument<String>("protocol").orEmpty(),
+          providerName = call.argument<String>("providerName").orEmpty(),
+          providerNotes = call.argument<String>("providerNotes").orEmpty(),
+          baseUrl = call.argument<String>("baseUrl").orEmpty(),
+          apiKey = call.argument<String>("apiKey").orEmpty(),
+          model = call.argument<String>("model").orEmpty(),
+          reasoningEffort = call.argument<String>("reasoningEffort").orEmpty(),
+          systemPrompt = call.argument<String>("systemPrompt").orEmpty(),
+        )
+        "validateLlmConfig" -> {
+          runAsync(result) {
+            hostRuntime.validateLlmConfig(
+              providerId = call.argument<String>("providerId").orEmpty(),
+              protocol = call.argument<String>("protocol").orEmpty(),
+              baseUrl = call.argument<String>("baseUrl").orEmpty(),
+              apiKey = call.argument<String>("apiKey").orEmpty(),
+              model = call.argument<String>("model").orEmpty(),
+              reasoningEffort = call.argument<String>("reasoningEffort").orEmpty(),
+            )
+          }
+          return
+        }
+        "loadPersonalizationConfig" -> hostRuntime.loadPersonalizationConfig()
+        "savePersonalizationConfig" -> hostRuntime.savePersonalizationConfig(
+          presetId = call.argument<String>("presetId").orEmpty(),
+          customLabel = call.argument<String>("customLabel").orEmpty(),
+          customGuidance = call.argument<String>("customGuidance").orEmpty(),
+        )
+        "setAppLanguage" -> hostRuntime.setAppLanguage(
+          languageId = call.argument<String>("languageId").orEmpty(),
+        )
+        "runPersonalizationReset" -> hostRuntime.runPersonalizationReset(
+          scopeId = call.argument<String>("scopeId").orEmpty(),
+        )
+        "loadMcpSettings" -> hostRuntime.loadMcpSettings()
+        "setMcpMasterEnabled" -> hostRuntime.setMcpMasterEnabled(
+          enabled = call.argument<Boolean>("enabled") == true,
+        )
+        "setMcpServerEnabled" -> hostRuntime.setMcpServerEnabled(
+          serverId = call.argument<String>("serverId").orEmpty(),
+          enabled = call.argument<Boolean>("enabled") == true,
+        )
+
+        "loadSkillsSnapshot" -> hostRuntime.loadSkillsSnapshot(
+          query = call.argument<String>("query").orEmpty(),
+        )
+        "setSkillEnabled" -> {
+          hostRuntime.setSkillEnabled(
+            skillId = call.argument<String>("skillId").orEmpty(),
+            enabled = call.argument<Boolean>("enabled") == true,
+          )
+          null
+        }
+        "installSuggestedSkill" -> hostRuntime.installSuggestedSkill(
+          call.argument<String>("skillId").orEmpty(),
+        )
+        "deleteInstalledSkill" -> hostRuntime.deleteInstalledSkill(
+          call.argument<String>("skillId").orEmpty(),
+        )
+        "refreshSkills" -> hostRuntime.refreshSkills()
+        "loadSkillInstructions" -> hostRuntime.loadSkillInstructions(
+          call.argument<String>("skillId").orEmpty(),
+        )
+        "activateSkillsInstallSource" -> hostRuntime.activateSkillsInstallSource(
+          call.argument<String>("sourceId").orEmpty(),
+        )
+
+        "loadChatSnapshot" -> hostRuntime.loadChatSnapshot()
+        "createChatSession" -> {
+          hostRuntime.createChatSession()
+          null
+        }
+
+        "selectChatSession" -> {
+          hostRuntime.selectChatSession(call.argument<String>("sessionId").orEmpty())
+          null
+        }
+
+        "submitChatMessage" -> {
+          hostRuntime.submitChatMessage(call.argument<String>("text").orEmpty())
+          null
+        }
+
+        else -> {
+          result.notImplemented()
+          return
+        }
+      }
+    }.onSuccess { payload ->
+      result.success(payload)
+    }.onFailure { throwable ->
+      result.error(
+        "HOST_BRIDGE_ERROR",
+        throwable.message ?: throwable::class.java.simpleName,
+        null,
+      )
+    }
+  }
+
+  private fun runAsync(
+    result: MethodChannel.Result,
+    action: () -> Any?,
+  ) {
+    Thread {
+      runCatching(action)
+        .onSuccess(result::success)
+        .onFailure { throwable ->
+          result.error(
+            "HOST_BRIDGE_ERROR",
+            throwable.message ?: throwable::class.java.simpleName,
+            null,
+          )
+        }
+    }.start()
+  }
+
+  private fun observerStreamHandler(
+    observe: ((Map<String, Any?>) -> Unit) -> (() -> Unit),
+    onDisposeChanged: ((() -> Unit)?) -> Unit,
+  ): EventChannel.StreamHandler = object : EventChannel.StreamHandler {
+    private var currentDispose: (() -> Unit)? = null
+
+    override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
+      currentDispose?.invoke()
+      currentDispose = observe { payload ->
+        events.success(payload)
+      }
+      onDisposeChanged(currentDispose)
+    }
+
+    override fun onCancel(arguments: Any?) {
+      currentDispose?.invoke()
+      currentDispose = null
+      onDisposeChanged(null)
+    }
+  }
+
+  companion object {
+    private const val METHOD_CHANNEL = "com.opencray.host/methods"
+    private const val SHELL_SNAPSHOT_CHANNEL = "com.opencray.host/shell_snapshot"
+    private const val SETTINGS_OVERVIEW_CHANNEL = "com.opencray.host/settings_overview"
+    private const val SKILLS_SNAPSHOT_CHANNEL = "com.opencray.host/skills_snapshot"
+    private const val CHAT_SNAPSHOT_CHANNEL = "com.opencray.host/chat_snapshot"
+  }
+}

@@ -14,8 +14,9 @@ class ContractSerializationRoundtripTest {
       input = "Summarize the workspace state",
       state = AgentTaskState.RUNNING,
       policyDecision = PolicyDecision(
-        outcome = PolicyDecisionOutcome.ALLOW,
-        reasonCode = "SAFE_MODE_ALLOWLIST",
+        outcome = PolicyDecisionOutcome.ASK,
+        reasonCode = "SAFE_MODE_HIGH_RISK_APPROVAL",
+        approvalRisk = PolicyApprovalRisk.HIGH_RISK,
       ),
       skillName = "workspace-summary",
       createdAtEpochMs = 1_710_000_000_000,

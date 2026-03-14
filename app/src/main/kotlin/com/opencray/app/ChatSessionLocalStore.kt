@@ -11,7 +11,7 @@ import com.opencray.persistence.store.file.JsonFileChatWorkspaceStore
 import java.io.File
 import java.util.UUID
 
-internal class ChatSessionLocalStore(
+internal open class ChatSessionLocalStore(
   private val directory: File,
   private val nowEpochMs: () -> Long = System::currentTimeMillis,
 ) {
@@ -27,6 +27,9 @@ internal class ChatSessionLocalStore(
   }
 
   fun createSession(): ChatSessionsState = createSessionInternal(loadWorkspaceOrCreate())
+
+  fun loadSession(sessionId: String): ChatTranscriptSessionEntry? =
+    loadWorkspaceOrCreate().sessions.firstOrNull { session -> session.sessionId == sessionId }
 
   fun selectSession(sessionId: String): ChatSessionsState {
     val workspace = loadWorkspaceOrCreate()
@@ -290,6 +293,55 @@ internal class ChatSessionLocalStore(
       attachments = emptyList(),
       updateTitle = false,
     ).state
+  }
+
+  fun reserveMessageId(role: ChatTranscriptRole): String = messageId(role.name.lowercase())
+
+  open fun appendSubmittedTurn(
+    sessionId: String,
+    userText: String,
+    assistantMessageId: String,
+    assistantPlaceholderText: String,
+  ): ChatSessionsState {
+    val normalizedUserText = userText.trim()
+    val normalizedAssistantText = assistantPlaceholderText.trim()
+    require(normalizedUserText.isNotEmpty()) { "appendSubmittedTurn userText must not be blank." }
+    require(normalizedAssistantText.isNotEmpty()) { "appendSubmittedTurn assistantPlaceholderText must not be blank." }
+    require(assistantMessageId.isNotBlank()) { "appendSubmittedTurn assistantMessageId must not be blank." }
+
+    val workspace = loadWorkspaceOrCreate()
+    val currentSession = workspace.sessions.firstOrNull { it.sessionId == sessionId } ?: activeSessionFrom(workspace)
+      ?: createSessionInternal(workspace).activeSession
+    val now = nowEpochMs()
+    val userMessage = ChatTranscriptMessageEntry(
+      messageId = messageId(ChatTranscriptRole.USER.name.lowercase()),
+      role = ChatTranscriptRole.USER,
+      text = normalizedUserText,
+      createdAtEpochMs = now,
+    )
+    val assistantMessage = ChatTranscriptMessageEntry(
+      messageId = assistantMessageId,
+      role = ChatTranscriptRole.ASSISTANT,
+      text = normalizedAssistantText,
+      createdAtEpochMs = now,
+    )
+    val updatedMessages = currentSession.messages + listOf(userMessage, assistantMessage)
+    val updatedSession = currentSession.copy(
+      title = titleForSession(currentSession.title, updatedMessages),
+      messages = updatedMessages,
+      updatedAtEpochMs = now,
+    )
+    val updatedWorkspace = replaceSession(
+      workspace = workspace,
+      updatedSession = updatedSession,
+      activeSessionId = updatedSession.sessionId,
+      updatedAtEpochMs = now,
+    )
+    workspaceStore.save(updatedWorkspace)
+    return ChatSessionsState(
+      sessions = sessionsForUi(updatedWorkspace),
+      activeSession = updatedSession,
+    )
   }
 
   private fun appendMessage(

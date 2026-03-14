@@ -34,6 +34,12 @@
 /gradle-*-bin.zip
 /.android-user-home/
 /.gradle-user-home/
+/.gradle-local/
+/.gradle-project-cache-runtime/
+/.gradle-user/
+/.gradle-user-*/
+/.tools/
+**/.tmp_fonts/
 
 # Sisyphus local scratch files
 /.sisyphus/notepads/

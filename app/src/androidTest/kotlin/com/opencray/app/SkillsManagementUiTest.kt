@@ -7,7 +7,6 @@ import android.view.ViewGroup
 import android.widget.TextView
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.opencray.ui.skills.SkillEditorViewModel
 import java.io.File
 import org.junit.After
 import org.junit.Assert.assertTrue
@@ -34,13 +33,13 @@ class SkillsManagementUiTest {
   fun wrapperActivityShowsRealInstalledSkillsAndInstallTab() {
     clearSkillRoots()
     seedSkill(
-      root = SkillEditorViewModel.managedSkillsRootForContext(targetContext),
+      root = AppSkillsStorage.managedSkillsRootForContext(targetContext),
       folderName = "skill-installer",
       name = "skill-installer",
       description = "Install curated or local skills",
     )
     seedSkill(
-      root = SkillEditorViewModel.catalogSkillsRootForContext(targetContext),
+      root = AppSkillsStorage.catalogSkillsRootForContext(targetContext),
       folderName = "find-skills",
       name = "find-skills",
       description = "Suggests skills for a task",
@@ -91,8 +90,8 @@ class SkillsManagementUiTest {
   }
 
   private fun clearSkillRoots() {
-    SkillEditorViewModel.managedSkillsRootForContext(targetContext).deleteRecursively()
-    SkillEditorViewModel.catalogSkillsRootForContext(targetContext).deleteRecursively()
+    AppSkillsStorage.managedSkillsRootForContext(targetContext).deleteRecursively()
+    AppSkillsStorage.catalogSkillsRootForContext(targetContext).deleteRecursively()
   }
 
   private fun assertTextVisible(text: String) {
