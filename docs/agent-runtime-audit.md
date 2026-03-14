@@ -29,7 +29,7 @@ This is a static code audit of the repository plus a documentation comparison ag
 - `runtime/src/main/kotlin/com/opencray/runtime/ModeGate.kt`
 - `skills/src/main/kotlin/com/opencray/skills/SkillLoader.kt`
 - `skills/src/main/kotlin/com/opencray/skills/SkillValidator.kt`
-- `ui/src/main/kotlin/com/opencray/ui/skills/SkillEditorViewModel.kt`
+- `app/src/main/kotlin/com/opencray/app/AppSkillsStorage.kt`
 - `persistence/src/main/kotlin/com/opencray/persistence/store/SessionStoreQueueSnapshotStore.kt`
 - `persistence/src/main/kotlin/com/opencray/persistence/store/file/JsonFileStores.kt`
 - `persistence/src/main/kotlin/com/opencray/persistence/model/MemoryRecord.kt`

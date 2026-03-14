@@ -40,8 +40,8 @@ It answers:
 
 - `docs/harmony-portability-architecture.md`
 - `docs/context-management-design.md`
-- `docs/design-p0-session-runtime-manager.md`
-- `docs/design-p0-prompt-layer-architecture.md`
+- `docs/done/design-p0-session-runtime-manager.md`
+- `docs/done/design-p0-prompt-layer-architecture.md`
 - `docs/agent-runtime-roadmap.md`
 
 ## Executive Summary
@@ -117,12 +117,12 @@ That is exactly what Flutter must not become.
 
 ## Current UI surfaces that will be replaced
 
-Current Android-native UI surfaces include:
+Current UI surfaces include:
 
-- `ui/src/main/kotlin/com/opencray/ui/chat/ChatScreen.kt`
-- `ui/src/main/kotlin/com/opencray/ui/skills/SkillsScreen.kt`
-- files workbench UI owned through `AppShellActivity`
-- settings UI sections owned through `AppShellActivity`
+- chat in `flutter_app/lib/features/chat/chat_feature_screen.dart`
+- skills in `flutter_app/lib/features/skills/skills_feature.dart`
+- files in `flutter_app/lib/features/files/files_feature.dart`
+- settings in `flutter_app/lib/features/settings/settings_feature.dart`
 
 These are useful as product references and state-shape references, but not as the future architecture shape.
 
@@ -394,7 +394,7 @@ Flutter should never need to understand how `AgentLoop` or `SessionQueue` work i
 
 Current ownership:
 
-- chat presentation in `ChatScreen`
+- chat presentation in `flutter_app/lib/features/chat/chat_feature_screen.dart`
 - chat orchestration in `AppShellActivity`
 - runtime creation in `AppShellActivity`
 
@@ -408,9 +408,9 @@ Future ownership:
 
 Current ownership:
 
-- native `SkillsScreen`
-- `SkillEditorViewModel`
-- `AppShellActivity` wiring
+- Flutter skills surface
+- `AppSkillsStorage`
+- `AppShellActivity` / Flutter host wiring
 
 Future ownership:
 
@@ -501,9 +501,9 @@ Flutter migration will go better if the native UI state classes are treated as t
 
 Examples worth mining for state structure:
 
-- `ChatScreenState`
-- `ChatMessageItemState`
-- `ChatComposerState`
+- `OpenCrayChatSnapshot`
+- `ChatFeatureState`
+- `ChatComposerState` in Flutter
 - skills list item states
 - files workbench state
 

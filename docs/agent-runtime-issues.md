@@ -579,7 +579,7 @@ Without runtime visibility, the Android skills UI and the runtime exist as paral
 
 #### Suggested implementation areas
 
-- `ui/src/main/kotlin/com/opencray/ui/skills/SkillEditorViewModel.kt`
+- `app/src/main/kotlin/com/opencray/app/facade/skills/SkillsFacade.kt`
 - `app/src/main/kotlin/com/opencray/app/AppShellActivity.kt`
 - `runtime/src/main/kotlin/com/opencray/runtime/AgentTooling.kt`
 

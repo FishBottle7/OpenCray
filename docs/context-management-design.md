@@ -28,9 +28,9 @@ This document is intentionally deeper than the earlier audit and roadmap documen
 - `docs/agent-runtime-issues.md`
 - `docs/agent-runtime-roadmap.md`
 - `docs/agent-runtime-reference-guide.md`
-- `docs/design-p0-live-queue-persistence.md`
-- `docs/design-p0-session-runtime-manager.md`
-- `docs/design-p0-prompt-layer-architecture.md`
+- `docs/done/design-p0-live-queue-persistence.md`
+- `docs/done/design-p0-session-runtime-manager.md`
+- `docs/done/design-p0-prompt-layer-architecture.md`
 
 ## Research Method
 

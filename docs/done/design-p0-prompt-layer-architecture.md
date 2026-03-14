@@ -4,7 +4,9 @@ Last updated: 2026-03-12
 
 ## Status
 
-Draft
+Completed
+
+This design has been implemented through the runtime prompt assembly path and verified by tests.
 
 ## Related backlog items
 

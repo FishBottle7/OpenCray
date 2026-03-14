@@ -14,11 +14,11 @@ It is meant to answer five planning questions:
 4. What are the main technical risks?
 5. What is the minimum sequence that gets OpenCray from "working skeleton" to "complete runtime"?
 
-For detailed P0 implementation drafts, see:
+For completed P0 implementation plans, see:
 
-- `docs/design-p0-live-queue-persistence.md`
-- `docs/design-p0-session-runtime-manager.md`
-- `docs/design-p0-prompt-layer-architecture.md`
+- `docs/done/design-p0-live-queue-persistence.md`
+- `docs/done/design-p0-session-runtime-manager.md`
+- `docs/done/design-p0-prompt-layer-architecture.md`
 
 This roadmap is intentionally pragmatic. It does not try to optimize for every future feature. It optimizes for getting the current architecture into a stable, extensible shape.
 

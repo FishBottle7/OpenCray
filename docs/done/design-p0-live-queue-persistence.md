@@ -4,7 +4,9 @@ Last updated: 2026-03-12
 
 ## Status
 
-Draft
+Completed
+
+This design has been implemented in the production host path and verified by tests.
 
 ## Related backlog items
 

@@ -320,7 +320,7 @@ The app has real managed and catalog skill directories, but runtime does not rec
 
 #### Suggested files
 
-- `ui/src/main/kotlin/com/opencray/ui/skills/SkillEditorViewModel.kt`
+- `app/src/main/kotlin/com/opencray/app/AppSkillsStorage.kt`
 - `app/src/main/kotlin/com/opencray/app/AppShellActivity.kt`
 - `runtime/src/main/kotlin/com/opencray/runtime/AgentTooling.kt`
 
