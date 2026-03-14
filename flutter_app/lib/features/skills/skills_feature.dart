@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../core/bridge/opencray_host_bridge.dart';
+import '../../core/copy/opencray_ui_copy.dart';
 import '../../core/models/opencray_skills_snapshot.dart';
 
 enum SkillsPage { manage, install }
@@ -20,11 +21,13 @@ class SkillsFeatureScreen extends StatefulWidget {
   const SkillsFeatureScreen({
     super.key,
     required this.bridge,
+    required this.copy,
     this.initialPage = SkillsPage.manage,
     this.showActionsMenuOnStart = false,
   });
 
   final OpenCrayHostBridge bridge;
+  final OpenCrayUiCopy copy;
   final SkillsPage initialPage;
   final bool showActionsMenuOnStart;
 
@@ -85,9 +88,9 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Text(
-                'AUTOMATION LIBRARY',
-                style: TextStyle(
+              Text(
+                widget.copy.skillsEyebrow,
+                style: const TextStyle(
                   fontSize: 12,
                   height: 1.1,
                   fontWeight: FontWeight.w600,
@@ -96,9 +99,9 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
                 ),
               ),
               const SizedBox(height: 10),
-              const Text(
-                'Skills',
-                style: TextStyle(
+              Text(
+                widget.copy.skillsTitle,
+                style: const TextStyle(
                   fontSize: 28,
                   height: 1.08,
                   fontWeight: FontWeight.w600,
@@ -108,8 +111,8 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
               const SizedBox(height: 8),
               Text(
                 _selectedPage == SkillsPage.manage
-                    ? 'Manage the installed skill packages for this workspace.'
-                    : 'Install additional skills from the local catalog when one is available.',
+                    ? widget.copy.skillsManageSubtitle
+                    : widget.copy.skillsInstallSubtitle,
                 style: const TextStyle(
                   fontSize: 14,
                   height: 1.35,
@@ -118,6 +121,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
               ),
               const SizedBox(height: 18),
               _SummaryCard(
+                copy: widget.copy,
                 page: _selectedPage,
                 enabledCount: installedSkills
                     .where((skill) => skill.isEnabled)
@@ -127,6 +131,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
               ),
               const SizedBox(height: 12),
               _SegmentedControl(
+                copy: widget.copy,
                 selectedPage: _selectedPage,
                 onChanged: (page) => setState(() => _selectedPage = page),
               ),
@@ -149,18 +154,17 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
       return const _LoadingCard();
     }
     if (installedSkills.isEmpty) {
-      return const _EmptyCard(
-        title: 'No installed skills',
-        body:
-            'This workspace does not currently expose any managed skills through the host runtime.',
+      return _EmptyCard(
+        title: widget.copy.skillsNoInstalledTitle,
+        body: widget.copy.skillsNoInstalledBody,
       );
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text(
-          'Manage skills in this workspace',
-          style: TextStyle(
+        Text(
+          widget.copy.skillsManageSectionTitle,
+          style: const TextStyle(
             fontSize: 13,
             height: 1.2,
             fontWeight: FontWeight.w600,
@@ -203,11 +207,14 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _SearchField(controller: _searchController),
+        _SearchField(
+          controller: _searchController,
+          hintText: widget.copy.skillsSearchHint,
+        ),
         const SizedBox(height: 14),
-        const Text(
-          'Install from',
-          style: TextStyle(
+        Text(
+          widget.copy.skillsInstallFromTitle,
+          style: const TextStyle(
             fontSize: 13,
             height: 1.2,
             fontWeight: FontWeight.w600,
@@ -244,9 +251,9 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
           ),
         ),
         const SizedBox(height: 14),
-        const Text(
-          'Suggested',
-          style: TextStyle(
+        Text(
+          widget.copy.skillsSuggestedTitle,
+          style: const TextStyle(
             fontSize: 13,
             height: 1.2,
             fontWeight: FontWeight.w600,
@@ -257,10 +264,9 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
         if (!_isLoaded)
           const _LoadingCard()
         else if (filteredSuggested.isEmpty)
-          const _EmptyCard(
-            title: 'No catalog skills',
-            body:
-                'No additional skills are available from the local catalog on this device.',
+          _EmptyCard(
+            title: widget.copy.skillsNoCatalogTitle,
+            body: widget.copy.skillsNoCatalogBody,
           )
         else
           DecoratedBox(
@@ -277,6 +283,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
                 ) ...[
                   _SuggestedRow(
                     item: filteredSuggested[index],
+                    installLabel: widget.copy.skillsInstallButton,
                     onInstall: () =>
                         _installSuggestedSkill(filteredSuggested[index]),
                   ),
@@ -326,7 +333,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
       setState(() {
         _isLoaded = true;
       });
-      _showMessage('Failed to load workspace skills from the host runtime.');
+      _showMessage(widget.copy.skillsLoadFailed);
     }
   }
 
@@ -402,7 +409,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
           suggestedSkills: _snapshot.suggestedSkills,
         );
       });
-      _showMessage('Failed to update ${skill.name}.');
+      _showMessage(widget.copy.skillsUpdateFailed(skill.name));
     }
   }
 
@@ -416,7 +423,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
       }
     } catch (_) {
       if (mounted) {
-        _showMessage('Failed to install ${skill.name}.');
+        _showMessage(widget.copy.skillsInstallFailed(skill.name));
       }
     }
   }
@@ -477,7 +484,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
                     const SizedBox(height: 18),
                     _ActionRow(
                       icon: Icons.visibility_outlined,
-                      label: 'Preview instructions',
+                      label: widget.copy.skillsPreviewInstructions,
                       onTap: () {
                         Navigator.of(context).pop();
                         _previewInstructions(skill);
@@ -485,7 +492,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
                     ),
                     _ActionRow(
                       icon: Icons.system_update_alt_rounded,
-                      label: 'Update skills',
+                      label: widget.copy.skillsUpdateAction,
                       onTap: () {
                         Navigator.of(context).pop();
                         _refreshSkills();
@@ -496,8 +503,8 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
                           ? Icons.toggle_off_outlined
                           : Icons.toggle_on_outlined,
                       label: skill.isEnabled
-                          ? 'Disable for this workspace'
-                          : 'Enable for this workspace',
+                          ? widget.copy.skillsDisableForWorkspace
+                          : widget.copy.skillsEnableForWorkspace,
                       onTap: () {
                         Navigator.of(context).pop();
                         _setSkillEnabled(skill, !skill.isEnabled);
@@ -506,7 +513,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
                     if (skill.canDelete)
                       _ActionRow(
                         icon: Icons.delete_outline_rounded,
-                        label: 'Remove skill',
+                        label: widget.copy.skillsRemoveAction,
                         color: _danger,
                         onTap: () {
                           Navigator.of(context).pop();
@@ -575,7 +582,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Close'),
+                child: Text(widget.copy.skillsClose),
               ),
             ],
           );
@@ -583,7 +590,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
       );
     } catch (_) {
       if (mounted) {
-        _showMessage('Failed to load ${skill.name} instructions.');
+        _showMessage(widget.copy.skillsPreviewFailed(skill.name));
       }
     }
   }
@@ -596,7 +603,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
       }
     } catch (_) {
       if (mounted) {
-        _showMessage('Failed to refresh skills.');
+        _showMessage(widget.copy.skillsRefreshFailed);
       }
     }
   }
@@ -611,7 +618,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
       }
     } catch (_) {
       if (mounted) {
-        _showMessage('Failed to remove ${skill.name}.');
+        _showMessage(widget.copy.skillsRemoveFailed(skill.name));
       }
     }
   }
@@ -625,12 +632,14 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
 
 class _SummaryCard extends StatelessWidget {
   const _SummaryCard({
+    required this.copy,
     required this.page,
     required this.enabledCount,
     required this.installedCount,
     required this.suggestedCount,
   });
 
+  final OpenCrayUiCopy copy;
   final SkillsPage page;
   final int enabledCount;
   final int installedCount;
@@ -638,10 +647,12 @@ class _SummaryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final title = page == SkillsPage.manage ? 'Workspace set' : 'Install ready';
+    final title = page == SkillsPage.manage
+        ? copy.skillsSummaryManageTitle
+        : copy.skillsSummaryInstallTitle;
     final subtitle = page == SkillsPage.manage
-        ? '$enabledCount of $installedCount installed skills enabled'
-        : '$suggestedCount skills available from the local catalog';
+        ? copy.skillsSummaryManageBody(enabledCount, installedCount)
+        : copy.skillsSummaryInstallBody(suggestedCount);
     return SizedBox(
       width: double.infinity,
       child: DecoratedBox(
@@ -682,10 +693,12 @@ class _SummaryCard extends StatelessWidget {
 
 class _SegmentedControl extends StatelessWidget {
   const _SegmentedControl({
+    required this.copy,
     required this.selectedPage,
     required this.onChanged,
   });
 
+  final OpenCrayUiCopy copy;
   final SkillsPage selectedPage;
   final ValueChanged<SkillsPage> onChanged;
 
@@ -702,7 +715,7 @@ class _SegmentedControl extends StatelessWidget {
           children: [
             Expanded(
               child: _SegmentButton(
-                label: 'Manage',
+                label: copy.skillsManageTab,
                 selected: selectedPage == SkillsPage.manage,
                 onTap: () => onChanged(SkillsPage.manage),
               ),
@@ -710,7 +723,7 @@ class _SegmentedControl extends StatelessWidget {
             const SizedBox(width: 4),
             Expanded(
               child: _SegmentButton(
-                label: 'Install',
+                label: copy.skillsInstallTab,
                 selected: selectedPage == SkillsPage.install,
                 onTap: () => onChanged(SkillsPage.install),
               ),
@@ -937,9 +950,14 @@ class _SourceRow extends StatelessWidget {
 }
 
 class _SuggestedRow extends StatelessWidget {
-  const _SuggestedRow({required this.item, required this.onInstall});
+  const _SuggestedRow({
+    required this.item,
+    required this.installLabel,
+    required this.onInstall,
+  });
 
   final OpenCraySuggestedSkillSnapshot item;
+  final String installLabel;
   final VoidCallback onInstall;
 
   @override
@@ -984,9 +1002,9 @@ class _SuggestedRow extends StatelessWidget {
                 color: const Color(0xFFEEF5FF),
                 borderRadius: BorderRadius.circular(999),
               ),
-              child: const Text(
-                'Install',
-                style: TextStyle(
+              child: Text(
+                installLabel,
+                style: const TextStyle(
                   fontSize: 12,
                   height: 1.1,
                   fontWeight: FontWeight.w600,
@@ -1002,9 +1020,10 @@ class _SuggestedRow extends StatelessWidget {
 }
 
 class _SearchField extends StatelessWidget {
-  const _SearchField({required this.controller});
+  const _SearchField({required this.controller, required this.hintText});
 
   final TextEditingController controller;
+  final String hintText;
 
   @override
   Widget build(BuildContext context) {
@@ -1026,10 +1045,10 @@ class _SearchField extends StatelessWidget {
             Expanded(
               child: TextField(
                 controller: controller,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   border: InputBorder.none,
-                  hintText: 'Search the skill catalog',
-                  hintStyle: TextStyle(
+                  hintText: hintText,
+                  hintStyle: const TextStyle(
                     fontSize: 14,
                     height: 1.2,
                     color: Color(0xFF8E8E93),

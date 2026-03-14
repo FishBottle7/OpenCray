@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
+import 'package:opencray/core/copy/opencray_ui_copy.dart';
 import 'package:opencray/core/models/opencray_skills_snapshot.dart';
 import 'package:opencray/features/skills/skills_feature.dart';
 
@@ -30,7 +31,12 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        home: Scaffold(body: SkillsFeatureScreen(bridge: bridge)),
+        home: Scaffold(
+          body: SkillsFeatureScreen(
+            bridge: bridge,
+            copy: OpenCrayUiCopy.fromLocaleTag('en'),
+          ),
+        ),
       ),
     );
     await tester.pumpAndSettle();

@@ -60,7 +60,7 @@ internal class OpenCrayHostRuntime private constructor(
   private var llmConfigFacade: LlmConfigFacade,
   private var personalizationFacade: PersonalizationFacade,
   private var mcpSettingsFacade: McpSettingsFacade,
-  private val skillsFacade: SkillsFacade,
+  private var skillsFacade: SkillsFacade,
   private val sessionRuntimeManager: AgentSessionRuntimeManager,
   private var strings: HostRuntimeStrings,
   private val mainThreadPoster: MainThreadPoster,
@@ -99,8 +99,9 @@ internal class OpenCrayHostRuntime private constructor(
 
   fun loadShellSnapshot(): Map<String, Any?> = mapOf(
     "initialTab" to stateStore.load().selectedTab.routeKey,
-    "hostLabel" to "HOST CONNECTED",
-    "hostSummary" to "Android host bridge is attached to the live app runtime.",
+    "localeTag" to strings.localeTag,
+    "hostLabel" to strings.shellHostLabel,
+    "hostSummary" to strings.shellHostSummary,
     "isHostConnected" to true,
   )
 
@@ -212,7 +213,9 @@ internal class OpenCrayHostRuntime private constructor(
         personalizationFacade.load()
       }
     }
+    emitShellSnapshot()
     emitSettingsOverview()
+    emitSkillsSnapshot()
     emitChatSnapshot()
     return snapshot.toMap()
   }
@@ -265,7 +268,7 @@ internal class OpenCrayHostRuntime private constructor(
       "Unable to install '$skillId' from the local catalog."
     }
     emitSkillsSnapshot()
-    return "Installed $skillId."
+    return strings.skillInstalled(skillId)
   }
 
   fun deleteInstalledSkill(skillId: String): String {
@@ -276,7 +279,7 @@ internal class OpenCrayHostRuntime private constructor(
       "Unable to remove '$skillId'."
     }
     emitSkillsSnapshot()
-    return "Removed $skillId."
+    return strings.skillRemoved(skillId)
   }
 
   fun refreshSkills(): String {
@@ -284,7 +287,7 @@ internal class OpenCrayHostRuntime private constructor(
       skillsFacade.refresh()
     }
     emitSkillsSnapshot()
-    return "Reloaded skills from local storage."
+    return strings.skillsReloaded
   }
 
   fun loadSkillInstructions(skillId: String): Map<String, Any?> {
@@ -305,33 +308,34 @@ internal class OpenCrayHostRuntime private constructor(
     val activeSession = chatState.activeSession
     val visibleMessages = activeSession.messages.filter(::isVisibleChatMessage)
     val pendingCount = pendingTaskCount(activeSession.sessionId)
+    val activeSessionTitle = displaySessionTitle(activeSession.title)
     mapOf(
-      "screenTitle" to "Chat",
-      "modeLabel" to DEFAULT_MODE_LABEL,
-      "sessionButtonLabel" to "Sessions",
+      "screenTitle" to strings.chatScreenTitle,
+      "modeLabel" to strings.chatModeLabel,
+      "sessionButtonLabel" to strings.chatSessionButtonLabel,
       "composerPlaceholder" to strings.composerPlaceholder,
       "summary" to mapOf(
-        "title" to activeSession.title,
-        "badge" to "${visibleMessages.size} messages",
+        "title" to activeSessionTitle,
+        "badge" to strings.chatMessagesBadge(visibleMessages.size),
         "body" to if (pendingCount > 0) {
-          "Reply in progress"
+          strings.chatSummaryReplyInProgress
         } else if (visibleMessages.isEmpty()) {
-          "Start a new session"
+          strings.chatSummaryStartNewSession
         } else {
-          "Local transcript is restored into the runtime window for each task."
+          strings.chatSummaryRestored
         },
       ),
       "messages" to visibleMessages.map(::chatMessageToMap),
       "drawer" to mapOf(
-        "eyebrow" to "Recent sessions",
-        "title" to "Recent sessions",
-        "ctaLabel" to "New session",
+        "eyebrow" to strings.chatRecentSessionsEyebrow,
+        "title" to strings.chatRecentSessionsTitle,
+        "ctaLabel" to strings.chatNewSessionLabel,
         "sessions" to chatState.sessions.map { session ->
           mapOf(
             "sessionId" to session.sessionId,
-            "title" to session.title,
+            "title" to displaySessionTitle(session.title),
             "preview" to session.lastMessagePreview,
-            "meta" to "${session.messageCount} messages",
+            "meta" to strings.chatMessagesBadge(session.messageCount),
             "isSelected" to (session.sessionId == activeSession.sessionId),
           )
         },
@@ -433,6 +437,13 @@ internal class OpenCrayHostRuntime private constructor(
   private fun isVisibleChatMessage(message: ChatTranscriptMessageEntry): Boolean =
     message.role != ChatTranscriptRole.SYSTEM
 
+  private fun displaySessionTitle(rawTitle: String): String =
+    if (rawTitle == ChatSessionLocalStore.DEFAULT_SESSION_TITLE) {
+      strings.chatDefaultSessionTitle
+    } else {
+      rawTitle
+    }
+
   private fun chatMessageToMap(message: ChatTranscriptMessageEntry): Map<String, Any?> {
     val resolvedText = message.text ?: chatSessionStore.promptTemplateBody(message.promptTemplateRefId).orEmpty()
     val kind = when (message.role) {
@@ -463,6 +474,9 @@ internal class OpenCrayHostRuntime private constructor(
   internal fun currentMcpExposureReport() =
     synchronized(lock) { mcpSettingsFacade.currentExposureReport() }
 
+  internal fun currentEnabledSkillRoots() =
+    synchronized(lock) { skillsFacade.enabledSkillRoots() }
+
   private fun refreshLocalizedResourcesLocked() {
     val baseContext = appContext ?: return
     val localizedContext = OpenCrayLocaleManager.wrap(baseContext)
@@ -481,19 +495,8 @@ internal class OpenCrayHostRuntime private constructor(
       settingsStore = McpSettingsStore.fromContext(baseContext),
       registryStore = AppMcpRegistryStore.fromContext(baseContext),
     )
-    strings = HostRuntimeStrings(
-      composerPlaceholder = localizedContext.getString(R.string.chat_message_opencray),
-      agentThinking = localizedContext.getString(R.string.chat_agent_thinking),
-      agentCancelled = localizedContext.getString(R.string.chat_agent_cancelled),
-      agentMissingLlm = localizedContext.getString(R.string.chat_agent_missing_llm),
-      agentEmptyAnswer = localizedContext.getString(
-        R.string.chat_agent_failed,
-        "The model returned an empty answer.",
-      ),
-      agentFailed = { detail ->
-        localizedContext.getString(R.string.chat_agent_failed, detail)
-      },
-    )
+    skillsFacade = LocalSkillsFacade.fromContext(localizedContext)
+    strings = localizedHostRuntimeStrings(localizedContext)
   }
 
   private fun SettingsOverviewSnapshot.toMap(): Map<String, Any?> = mapOf(
@@ -715,6 +718,11 @@ internal class OpenCrayHostRuntime private constructor(
     emitSnapshot(chatListeners, payload)
   }
 
+  private fun emitShellSnapshot() {
+    val payload = loadShellSnapshot()
+    emitSnapshot(shellListeners, payload)
+  }
+
   private fun emitSettingsOverview() {
     val payload = loadSettingsOverview()
     emitSnapshot(settingsOverviewListeners, payload)
@@ -761,6 +769,23 @@ internal class OpenCrayHostRuntime private constructor(
       skillsFacade: SkillsFacade = EmptySkillsFacade,
       sessionRuntimeManager: AgentSessionRuntimeManager,
       strings: HostRuntimeStrings = HostRuntimeStrings(
+        localeTag = "en",
+        shellHostLabel = "HOST CONNECTED",
+        shellHostSummary = "Android host bridge is attached to the live app runtime.",
+        chatScreenTitle = "Chat",
+        chatModeLabel = "AUTO",
+        chatSessionButtonLabel = "Sessions",
+        chatRecentSessionsEyebrow = "Recent sessions",
+        chatRecentSessionsTitle = "Recent sessions",
+        chatNewSessionLabel = "New session",
+        chatDefaultSessionTitle = "New chat",
+        chatMessagesBadge = { count -> "$count messages" },
+        chatSummaryReplyInProgress = "Reply in progress",
+        chatSummaryStartNewSession = "Start a new session",
+        chatSummaryRestored = "Local transcript is restored into the runtime window for each task.",
+        skillInstalled = { skillId -> "Installed $skillId." },
+        skillRemoved = { skillId -> "Removed $skillId." },
+        skillsReloaded = "Reloaded skills from local storage.",
         composerPlaceholder = "Message OpenCray",
         agentThinking = "Thinking",
         agentCancelled = "Cancelled",
@@ -789,7 +814,7 @@ internal class OpenCrayHostRuntime private constructor(
       val llmSettingsStore = LlmSettingsStore.fromContext(appContext)
       val personalizationStore = PersonalizationLocalStore.fromContext(appContext)
       val chatSessionStore = ChatSessionLocalStore.fromContext(appContext)
-      val skillsFacade = LocalSkillsFacade.fromContext(appContext)
+      val skillsFacade = LocalSkillsFacade.fromContext(localizedContext)
       val mcpSettingsStore = McpSettingsStore.fromContext(appContext)
       val mcpRegistryStore = AppMcpRegistryStore.fromContext(appContext)
       val chatExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -824,33 +849,75 @@ internal class OpenCrayHostRuntime private constructor(
             sessionContextFactory = chatContextFactory,
             soulProfileProvider = { personalizationStore.loadSoulProfile() },
             workspaceRootsProvider = { setOf(AppAgentWorkspace.ensureRootForContext(appContext)) },
-            skillsRootsProvider = skillsFacade::enabledSkillRoots,
+            skillsRootsProvider = { hostRuntime.currentEnabledSkillRoots() },
             mcpReportProvider = { hostRuntime.currentMcpExposureReport() },
           ),
           snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
           executor = chatExecutor,
         ),
-        strings = HostRuntimeStrings(
-          composerPlaceholder = localizedContext.getString(R.string.chat_message_opencray),
-          agentThinking = localizedContext.getString(R.string.chat_agent_thinking),
-          agentCancelled = localizedContext.getString(R.string.chat_agent_cancelled),
-          agentMissingLlm = localizedContext.getString(R.string.chat_agent_missing_llm),
-          agentEmptyAnswer = localizedContext.getString(
-            R.string.chat_agent_failed,
-            "The model returned an empty answer.",
-          ),
-          agentFailed = { detail ->
-            localizedContext.getString(R.string.chat_agent_failed, detail)
-          },
-        ),
+        strings = localizedHostRuntimeStrings(localizedContext),
         mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
       )
       return hostRuntime
     }
+
+    private fun localizedHostRuntimeStrings(context: Context): HostRuntimeStrings = HostRuntimeStrings(
+      localeTag = LocaleSettingsStore.fromContext(context).loadLanguage().tag,
+      shellHostLabel = context.getString(R.string.flutter_host_label_android),
+      shellHostSummary = context.getString(R.string.flutter_host_summary_android),
+      chatScreenTitle = context.getString(R.string.shell_tab_chat),
+      chatModeLabel = context.getString(R.string.chat_mode_auto),
+      chatSessionButtonLabel = context.getString(R.string.chat_sessions_button),
+      chatRecentSessionsEyebrow = context.getString(R.string.chat_recent_sessions_eyebrow),
+      chatRecentSessionsTitle = context.getString(R.string.chat_recent_sessions_title),
+      chatNewSessionLabel = context.getString(R.string.chat_new_session),
+      chatDefaultSessionTitle = context.getString(R.string.chat_default_session_title),
+      chatMessagesBadge = { count ->
+        context.getString(R.string.chat_messages_badge, count)
+      },
+      chatSummaryReplyInProgress = context.getString(R.string.chat_summary_reply_in_progress),
+      chatSummaryStartNewSession = context.getString(R.string.chat_summary_start_new_session),
+      chatSummaryRestored = context.getString(R.string.chat_summary_restored),
+      skillInstalled = { skillId ->
+        context.getString(R.string.skills_message_installed, skillId)
+      },
+      skillRemoved = { skillId ->
+        context.getString(R.string.skills_message_removed, skillId)
+      },
+      skillsReloaded = context.getString(R.string.skills_message_reloaded),
+      composerPlaceholder = context.getString(R.string.chat_message_opencray),
+      agentThinking = context.getString(R.string.chat_agent_thinking),
+      agentCancelled = context.getString(R.string.chat_agent_cancelled),
+      agentMissingLlm = context.getString(R.string.chat_agent_missing_llm),
+      agentEmptyAnswer = context.getString(
+        R.string.chat_agent_failed,
+        "The model returned an empty answer.",
+      ),
+      agentFailed = { detail ->
+        context.getString(R.string.chat_agent_failed, detail)
+      },
+    )
   }
 }
 
 internal data class HostRuntimeStrings(
+  val localeTag: String,
+  val shellHostLabel: String,
+  val shellHostSummary: String,
+  val chatScreenTitle: String,
+  val chatModeLabel: String,
+  val chatSessionButtonLabel: String,
+  val chatRecentSessionsEyebrow: String,
+  val chatRecentSessionsTitle: String,
+  val chatNewSessionLabel: String,
+  val chatDefaultSessionTitle: String,
+  val chatMessagesBadge: (Int) -> String,
+  val chatSummaryReplyInProgress: String,
+  val chatSummaryStartNewSession: String,
+  val chatSummaryRestored: String,
+  val skillInstalled: (String) -> String,
+  val skillRemoved: (String) -> String,
+  val skillsReloaded: String,
   val composerPlaceholder: String,
   val agentThinking: String,
   val agentCancelled: String,

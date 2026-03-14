@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../core/copy/opencray_ui_copy.dart';
+
 class FileDirectoryData {
   const FileDirectoryData({required this.name, required this.itemCount});
 
@@ -15,7 +17,9 @@ class FileEntryData {
 }
 
 class FilesFeatureScreen extends StatelessWidget {
-  const FilesFeatureScreen({super.key});
+  const FilesFeatureScreen({super.key, required this.copy});
+
+  final OpenCrayUiCopy copy;
 
   static const _shellBackground = Color(0xFFF5F5F7);
   static const _textPrimary = Color(0xFF111111);
@@ -24,44 +28,62 @@ class FilesFeatureScreen extends StatelessWidget {
   static const _accent = Color(0xFF007AFF);
   static const _divider = Color(0xFFE5E5EA);
 
-  static const List<FileDirectoryData> _directories = [
-    FileDirectoryData(name: 'ui', itemCount: '12 items'),
-    FileDirectoryData(name: 'app', itemCount: '8 items'),
-    FileDirectoryData(name: 'docs', itemCount: '19 items'),
-  ];
-
-  static const List<FileEntryData> _entries = [
-    FileEntryData(name: 'chat_feature_screen.dart', meta: '35 KB   12:58 AM'),
-    FileEntryData(name: 'SkillsScreen.kt', meta: '21 KB   Yesterday'),
-    FileEntryData(name: 'mobile-ui-layout-spec.md', meta: '12 KB   Mar 11'),
-  ];
-
   @override
   Widget build(BuildContext context) {
-    return const ColoredBox(
+    final directories = <FileDirectoryData>[
+      FileDirectoryData(
+        name: 'ui',
+        itemCount: copy.filesDirectoryItemCount(12),
+      ),
+      FileDirectoryData(
+        name: 'app',
+        itemCount: copy.filesDirectoryItemCount(8),
+      ),
+      FileDirectoryData(
+        name: 'docs',
+        itemCount: copy.filesDirectoryItemCount(19),
+      ),
+    ];
+    final entries = <FileEntryData>[
+      FileEntryData(
+        name: 'chat_feature_screen.dart',
+        meta: copy.filesEntryMetaChat,
+      ),
+      FileEntryData(name: 'SkillsScreen.kt', meta: copy.filesEntryMetaSkills),
+      FileEntryData(
+        name: 'mobile-ui-layout-spec.md',
+        meta: copy.filesEntryMetaSpec,
+      ),
+    ];
+    return ColoredBox(
       color: _shellBackground,
       child: SafeArea(
         bottom: false,
         child: SingleChildScrollView(
-          padding: EdgeInsets.fromLTRB(20, 8, 20, 24),
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(
-                'Files',
-                style: TextStyle(
+                copy.filesTitle,
+                style: const TextStyle(
                   fontSize: 30,
                   height: 1.05,
                   fontWeight: FontWeight.w600,
                   color: _textPrimary,
                 ),
               ),
-              SizedBox(height: 16),
-              _SearchBar(),
-              SizedBox(height: 12),
-              _LocationCard(),
-              SizedBox(height: 12),
-              _FileListCard(directories: _directories, entries: _entries),
+              const SizedBox(height: 16),
+              _SearchBar(hint: copy.filesSearchHint),
+              const SizedBox(height: 12),
+              _LocationCard(
+                title: copy.filesLocationTitle,
+                path: copy.filesLocationPath,
+                itemCount: copy.filesLocationItemCount,
+                availableSpace: copy.filesLocationAvailableSpace,
+              ),
+              const SizedBox(height: 12),
+              _FileListCard(directories: directories, entries: entries),
             ],
           ),
         ),
@@ -71,7 +93,9 @@ class FilesFeatureScreen extends StatelessWidget {
 }
 
 class _SearchBar extends StatelessWidget {
-  const _SearchBar();
+  const _SearchBar({required this.hint});
+
+  final String hint;
 
   @override
   Widget build(BuildContext context) {
@@ -80,16 +104,20 @@ class _SearchBar extends StatelessWidget {
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
       ),
-      child: const Padding(
+      child: Padding(
         padding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
         child: Row(
           children: [
-            Icon(Icons.search_rounded, size: 18, color: Color(0xFF8E8E93)),
-            SizedBox(width: 10),
+            const Icon(
+              Icons.search_rounded,
+              size: 18,
+              color: Color(0xFF8E8E93),
+            ),
+            const SizedBox(width: 10),
             Expanded(
               child: Text(
-                'Search files and folders',
-                style: TextStyle(
+                hint,
+                style: const TextStyle(
                   fontSize: 14,
                   height: 1.2,
                   color: Color(0xFF8E8E93),
@@ -104,7 +132,17 @@ class _SearchBar extends StatelessWidget {
 }
 
 class _LocationCard extends StatelessWidget {
-  const _LocationCard();
+  const _LocationCard({
+    required this.title,
+    required this.path,
+    required this.itemCount,
+    required this.availableSpace,
+  });
+
+  final String title;
+  final String path;
+  final String itemCount;
+  final String availableSpace;
 
   @override
   Widget build(BuildContext context) {
@@ -118,8 +156,8 @@ class _LocationCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Location',
+            Text(
+              title,
               style: TextStyle(
                 fontSize: 12,
                 height: 1.2,
@@ -127,8 +165,8 @@ class _LocationCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 6),
-            const Text(
-              'OpenCray / src / main',
+            Text(
+              path,
               style: TextStyle(
                 fontSize: 17,
                 height: 1.2,
@@ -139,8 +177,8 @@ class _LocationCard extends StatelessWidget {
             const SizedBox(height: 10),
             Row(
               children: [
-                const Text(
-                  '622 items',
+                Text(
+                  itemCount,
                   style: TextStyle(
                     fontSize: 13,
                     height: 1.2,
@@ -157,8 +195,8 @@ class _LocationCard extends StatelessWidget {
                     color: const Color(0xFFF1F2F6),
                     borderRadius: BorderRadius.circular(999),
                   ),
-                  child: const Text(
-                    '4.1 GB available',
+                  child: Text(
+                    availableSpace,
                     style: TextStyle(
                       fontSize: 12,
                       height: 1.1,

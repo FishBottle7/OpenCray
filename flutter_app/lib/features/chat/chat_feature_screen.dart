@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 
 import '../../core/bridge/opencray_host_bridge.dart';
+import '../../core/copy/opencray_ui_copy.dart';
 import '../../core/models/opencray_chat_snapshot.dart';
 import 'chat_models.dart';
 import 'chat_seed_data.dart';
@@ -11,11 +12,13 @@ import 'chat_seed_data.dart';
 class OpenCrayChatFeature extends StatefulWidget {
   const OpenCrayChatFeature({
     super.key,
+    required this.copy,
     this.state,
     this.bridge,
     this.bottomInset = 10,
   });
 
+  final OpenCrayUiCopy copy;
   final ChatFeatureState? state;
   final OpenCrayHostBridge? bridge;
   final double bottomInset;
@@ -25,11 +28,13 @@ class OpenCrayChatFeature extends StatefulWidget {
 }
 
 class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
-  late ChatFeatureState _state = widget.state ?? OpenCrayChatSeedData.main();
+  late ChatFeatureState _state =
+      widget.state ?? OpenCrayChatSeedData.main(widget.copy);
   late final TextEditingController _composerController =
       TextEditingController();
   late final FocusNode _composerFocusNode = FocusNode();
   StreamSubscription<OpenCrayChatSnapshot>? _chatSubscription;
+  final Set<String> _approvalTaskIdsInFlight = <String>{};
 
   bool get _usesHostBridge => widget.bridge != null;
 
@@ -87,7 +92,13 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                               20,
                               widget.bottomInset + _composerReserve(_state),
                             ),
-                            child: _ChatScrollContent(state: _state),
+                            child: _ChatScrollContent(
+                              copy: widget.copy,
+                              state: _state,
+                              busyApprovalTaskIds: _approvalTaskIdsInFlight,
+                              onApproveApproval: _approvePendingApproval,
+                              onRejectApproval: _rejectPendingApproval,
+                            ),
                           ),
                         ),
                       ),
@@ -101,6 +112,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                             widget.bottomInset,
                           ),
                           child: _ComposerCard(
+                            copy: widget.copy,
                             state: _state,
                             controller: _composerController,
                             focusNode: _composerFocusNode,
@@ -193,7 +205,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       return;
     }
     setState(() {
-      _state = OpenCrayChatSeedData.empty();
+      _state = OpenCrayChatSeedData.empty(widget.copy);
     });
   }
 
@@ -203,7 +215,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       _state = _state.copyWith(
         composer: composer.copyWith(
           showAddMenu: !composer.showAddMenu,
-          addActions: OpenCrayChatSeedData.sampleAddActions(),
+          addActions: OpenCrayChatSeedData.sampleAddActions(widget.copy),
           commandOptions: const <ChatCommandOptionData>[],
           clearSelectedCommand: true,
         ),
@@ -213,11 +225,13 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
 
   void _handleAddAction(ChatAddActionData action) {
     setState(() {
-      if (action.label == 'Command') {
+      if (action.label == widget.copy.chatActionCommand) {
         _state = _state.copyWith(
           composer: _state.composer.copyWith(
             showAddMenu: false,
-            commandOptions: OpenCrayChatSeedData.sampleCommandOptions(),
+            commandOptions: OpenCrayChatSeedData.sampleCommandOptions(
+              widget.copy,
+            ),
             clearSelectedCommand: true,
           ),
         );
@@ -236,7 +250,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           composer: _state.composer.copyWith(
             attachments: currentAttachments,
             showAddMenu: true,
-            addActions: OpenCrayChatSeedData.sampleAddActions(),
+            addActions: OpenCrayChatSeedData.sampleAddActions(widget.copy),
           ),
         );
       }
@@ -248,7 +262,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       _state = _state.copyWith(
         composer: _state.composer.copyWith(
           showAddMenu: false,
-          commandOptions: OpenCrayChatSeedData.sampleCommandOptions(),
+          commandOptions: OpenCrayChatSeedData.sampleCommandOptions(
+            widget.copy,
+          ),
           clearSelectedCommand: true,
         ),
       );
@@ -275,17 +291,62 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         if (!mounted) {
           return;
         }
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Failed to submit message to host runtime.'),
-          ),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(widget.copy.chatSubmitFailed)));
       }
       return;
     }
     setState(() {
-      _state = _state.copyWith(composer: const ChatComposerState());
+      _state = _state.copyWith(
+        composer: ChatComposerState(placeholder: _state.composer.placeholder),
+      );
     });
+  }
+
+  Future<void> _approvePendingApproval(ChatPendingApprovalData approval) async {
+    await _runApprovalAction(
+      taskId: approval.taskId,
+      action: (bridge) => bridge.approveChatApproval(approval.taskId),
+    );
+  }
+
+  Future<void> _rejectPendingApproval(ChatPendingApprovalData approval) async {
+    await _runApprovalAction(
+      taskId: approval.taskId,
+      action: (bridge) => bridge.rejectChatApproval(approval.taskId),
+    );
+  }
+
+  Future<void> _runApprovalAction({
+    required String taskId,
+    required Future<void> Function(OpenCrayHostBridge bridge) action,
+  }) async {
+    final bridge = widget.bridge;
+    if (bridge == null || _approvalTaskIdsInFlight.contains(taskId)) {
+      return;
+    }
+    setState(() {
+      _approvalTaskIdsInFlight.add(taskId);
+    });
+    try {
+      await action(bridge);
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(widget.copy.chatApprovalActionFailed)),
+      );
+    } finally {
+      if (!mounted) {
+        _approvalTaskIdsInFlight.remove(taskId);
+      } else {
+        setState(() {
+          _approvalTaskIdsInFlight.remove(taskId);
+        });
+      }
+    }
   }
 
   void _closeComposerMenus() {
@@ -318,12 +379,12 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   ChatAttachmentData _attachmentForAction(String label) {
-    if (label == 'Image') {
-      return OpenCrayChatSeedData.sampleAttachments().firstWhere(
+    if (label == widget.copy.chatActionImage) {
+      return OpenCrayChatSeedData.sampleAttachments(widget.copy).firstWhere(
         (ChatAttachmentData item) => item.kind == ChatAttachmentKind.image,
       );
     }
-    return OpenCrayChatSeedData.sampleAttachments().firstWhere(
+    return OpenCrayChatSeedData.sampleAttachments(widget.copy).firstWhere(
       (ChatAttachmentData item) => item.kind == ChatAttachmentKind.file,
     );
   }
@@ -399,7 +460,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         commandOptions: const <ChatCommandOptionData>[],
         addActions: _usesHostBridge
             ? const <ChatAddActionData>[]
-            : OpenCrayChatSeedData.sampleAddActions(),
+            : OpenCrayChatSeedData.sampleAddActions(widget.copy),
       ),
       drawer: ChatSessionsDrawerState(
         eyebrow: snapshot.drawer.eyebrow,
@@ -417,6 +478,18 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             )
             .toList(growable: false),
       ),
+      pendingApprovals: snapshot.pendingApprovals
+          .map(
+            (approval) => ChatPendingApprovalData(
+              taskId: approval.taskId,
+              title: approval.title,
+              body: approval.body,
+              approveLabel: approval.approveLabel,
+              rejectLabel: approval.rejectLabel,
+              isHighRisk: approval.isHighRisk,
+            ),
+          )
+          .toList(growable: false),
       modeLabel: snapshot.modeLabel,
       sessionButtonLabel: snapshot.sessionButtonLabel,
       emptyThreadHeight: snapshot.messages.isEmpty ? 260 : 0,
@@ -426,9 +499,19 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
 }
 
 class _ChatScrollContent extends StatelessWidget {
-  const _ChatScrollContent({required this.state});
+  const _ChatScrollContent({
+    required this.copy,
+    required this.state,
+    required this.busyApprovalTaskIds,
+    required this.onApproveApproval,
+    required this.onRejectApproval,
+  });
 
+  final OpenCrayUiCopy copy;
   final ChatFeatureState state;
+  final Set<String> busyApprovalTaskIds;
+  final ValueChanged<ChatPendingApprovalData> onApproveApproval;
+  final ValueChanged<ChatPendingApprovalData> onRejectApproval;
 
   @override
   Widget build(BuildContext context) {
@@ -438,6 +521,16 @@ class _ChatScrollContent extends StatelessWidget {
         Text(state.screenTitle, style: _ChatTextStyles.pageTitle),
         const SizedBox(height: 20),
         _SummaryCard(summary: state.summary),
+        if (state.pendingApprovals.isNotEmpty) ...<Widget>[
+          const SizedBox(height: 16),
+          _PendingApprovalList(
+            copy: copy,
+            approvals: state.pendingApprovals,
+            busyApprovalTaskIds: busyApprovalTaskIds,
+            onApproveApproval: onApproveApproval,
+            onRejectApproval: onRejectApproval,
+          ),
+        ],
         const SizedBox(height: 20),
         if (state.messages.isEmpty)
           SizedBox(height: state.emptyThreadHeight)
@@ -473,9 +566,7 @@ class _TopGlassBar extends StatelessWidget {
                 ],
                 stops: <double>[0, 0.34, 0.76, 1],
               ),
-              border: Border(
-                bottom: BorderSide(color: Color(0x30FFFFFF)),
-              ),
+              border: Border(bottom: BorderSide(color: Color(0x30FFFFFF))),
               boxShadow: <BoxShadow>[
                 BoxShadow(
                   color: Color(0x10000000),
@@ -583,6 +674,195 @@ class _SummaryCard extends StatelessWidget {
   }
 }
 
+class _PendingApprovalList extends StatelessWidget {
+  const _PendingApprovalList({
+    required this.copy,
+    required this.approvals,
+    required this.busyApprovalTaskIds,
+    required this.onApproveApproval,
+    required this.onRejectApproval,
+  });
+
+  final OpenCrayUiCopy copy;
+  final List<ChatPendingApprovalData> approvals;
+  final Set<String> busyApprovalTaskIds;
+  final ValueChanged<ChatPendingApprovalData> onApproveApproval;
+  final ValueChanged<ChatPendingApprovalData> onRejectApproval;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        Text(
+          copy.chatPendingApprovalsTitle,
+          style: _ChatTextStyles.sectionLabel,
+        ),
+        const SizedBox(height: 10),
+        ...approvals.map(
+          (approval) => Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: _PendingApprovalCard(
+              copy: copy,
+              approval: approval,
+              isBusy: busyApprovalTaskIds.contains(approval.taskId),
+              onApprove: () => onApproveApproval(approval),
+              onReject: () => onRejectApproval(approval),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _PendingApprovalCard extends StatelessWidget {
+  const _PendingApprovalCard({
+    required this.copy,
+    required this.approval,
+    required this.isBusy,
+    required this.onApprove,
+    required this.onReject,
+  });
+
+  final OpenCrayUiCopy copy;
+  final ChatPendingApprovalData approval;
+  final bool isBusy;
+  final VoidCallback onApprove;
+  final VoidCallback onReject;
+
+  @override
+  Widget build(BuildContext context) {
+    final Color accentColor = approval.isHighRisk
+        ? _ChatPalette.highRiskAccent
+        : _ChatPalette.accent;
+    final Color surfaceColor = approval.isHighRisk
+        ? _ChatPalette.highRiskSurface
+        : Colors.white;
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: surfaceColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: approval.isHighRisk
+              ? _ChatPalette.highRiskBorder
+              : _ChatPalette.border,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Expanded(
+                  child: Text(approval.title, style: _ChatTextStyles.cardTitle),
+                ),
+                if (approval.isHighRisk) ...<Widget>[
+                  const SizedBox(width: 12),
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: _ChatPalette.highRiskBadgeSurface,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      child: Text(
+                        copy.chatHighRiskApproval,
+                        style: _ChatTextStyles.highRiskBadge,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            if (approval.body.trim().isNotEmpty) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(approval.body, style: _ChatTextStyles.bodyMuted),
+            ],
+            const SizedBox(height: 12),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: _ApprovalActionButton(
+                    label: approval.rejectLabel,
+                    foregroundColor: _ChatPalette.textSecondary,
+                    backgroundColor: Colors.white,
+                    borderColor: _ChatPalette.border,
+                    onPressed: isBusy ? null : onReject,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _ApprovalActionButton(
+                    label: approval.approveLabel,
+                    foregroundColor: Colors.white,
+                    backgroundColor: accentColor,
+                    borderColor: accentColor,
+                    onPressed: isBusy ? null : onApprove,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ApprovalActionButton extends StatelessWidget {
+  const _ApprovalActionButton({
+    required this.label,
+    required this.foregroundColor,
+    required this.backgroundColor,
+    required this.borderColor,
+    required this.onPressed,
+  });
+
+  final String label;
+  final Color foregroundColor;
+  final Color backgroundColor;
+  final Color borderColor;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool enabled = onPressed != null;
+    return GestureDetector(
+      onTap: onPressed,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        height: 38,
+        decoration: BoxDecoration(
+          color: enabled
+              ? backgroundColor
+              : backgroundColor.withValues(alpha: 0.55),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: enabled ? borderColor : borderColor.withValues(alpha: 0.55),
+          ),
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          label,
+          style: _ChatTextStyles.approvalAction.copyWith(
+            color: enabled
+                ? foregroundColor
+                : foregroundColor.withValues(alpha: 0.6),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _MessageList extends StatelessWidget {
   const _MessageList({required this.messages});
 
@@ -682,6 +962,7 @@ class _Bubble extends StatelessWidget {
 
 class _ComposerCard extends StatelessWidget {
   const _ComposerCard({
+    required this.copy,
     required this.state,
     required this.controller,
     required this.focusNode,
@@ -692,6 +973,7 @@ class _ComposerCard extends StatelessWidget {
     required this.onAttachmentRemoved,
   });
 
+  final OpenCrayUiCopy copy;
   final ChatFeatureState state;
   final TextEditingController controller;
   final FocusNode focusNode;
@@ -722,10 +1004,7 @@ class _ComposerCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                const Text(
-                  'Commands',
-                  style: _ChatTextStyles.commandsLabel,
-                ),
+                Text(copy.chatCommands, style: _ChatTextStyles.commandsLabel),
                 const SizedBox(height: 8),
                 ...state.composer.commandOptions.map(
                   (ChatCommandOptionData option) => _CommandOptionTile(
@@ -746,9 +1025,8 @@ class _ComposerCard extends StatelessWidget {
               itemBuilder: (BuildContext context, int index) {
                 return _AttachmentCard(
                   attachment: state.composer.attachments[index],
-                  onRemove: () => onAttachmentRemoved(
-                    state.composer.attachments[index],
-                  ),
+                  onRemove: () =>
+                      onAttachmentRemoved(state.composer.attachments[index]),
                 );
               },
               separatorBuilder: (BuildContext context, int index) {
@@ -772,18 +1050,16 @@ class _ComposerCard extends StatelessWidget {
         ),
         if (state.composer.showAddMenu) ...<Widget>[
           const SizedBox(height: 10),
-          Text('Add to message', style: _ChatTextStyles.sectionLabel),
+          Text(copy.chatAddToMessage, style: _ChatTextStyles.sectionLabel),
           const SizedBox(height: 10),
           Row(
             children: state.composer.addActions
                 .map(
                   (ChatAddActionData action) => Expanded(
-                    flex: action.label == 'Command' ? 12 : 9,
+                    flex: action.label == copy.chatActionCommand ? 12 : 9,
                     child: Padding(
                       padding: EdgeInsets.only(
-                        right: action == state.composer.addActions.last
-                            ? 0
-                            : 8,
+                        right: action == state.composer.addActions.last ? 0 : 8,
                       ),
                       child: _AddActionPill(
                         action: action,
@@ -804,10 +1080,7 @@ class _ComposerCard extends StatelessWidget {
 
     return DecoratedBox(
       decoration: _ChatDecorations.card(),
-      child: Padding(
-        padding: const EdgeInsets.all(10),
-        child: content,
-      ),
+      child: Padding(padding: const EdgeInsets.all(10), child: content),
     );
   }
 }
@@ -844,7 +1117,7 @@ class _InputRow extends StatelessWidget {
       Radius.circular(17),
     );
 
-    return Row(
+    final Widget inputRow = Row(
       crossAxisAlignment: CrossAxisAlignment.end,
       children: <Widget>[
         Expanded(
@@ -894,59 +1167,15 @@ class _InputRow extends StatelessWidget {
                               ),
                             ),
                             textInputAction: TextInputAction.send,
-                            onSubmitted: enabled ? (_) => onSendPressed() : null,
+                            onSubmitted: enabled
+                                ? (_) => onSendPressed()
+                                : null,
                           ),
                         ),
                       ),
                     ),
                   ),
                 );
-
-                if (showDefaultGlass) {
-                  messageField = Stack(
-                    clipBehavior: Clip.none,
-                    children: <Widget>[
-                      Positioned(
-                        left: -6,
-                        right: -6,
-                        bottom: -10,
-                        child: IgnorePointer(
-                          child: SizedBox(
-                            height: 52,
-                            child: ClipRRect(
-                              borderRadius: messageFieldRadius,
-                              child: BackdropFilter(
-                                filter: ImageFilter.blur(
-                                  sigmaX: 18,
-                                  sigmaY: 18,
-                                ),
-                                child: const DecoratedBox(
-                                  decoration: BoxDecoration(
-                                    gradient: LinearGradient(
-                                      begin: Alignment.topCenter,
-                                      end: Alignment.bottomCenter,
-                                      colors: <Color>[
-                                        Color(0x00FFFFFF),
-                                        Color(0x73FFFFFF),
-                                        Color(0x61F0F5FF),
-                                        Color(0x00F0F5FF),
-                                      ],
-                                      stops: <double>[0, 0.32, 0.72, 1],
-                                    ),
-                                    borderRadius: messageFieldRadius,
-                                  ),
-                                  child: SizedBox.expand(),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      messageField,
-                    ],
-                  );
-                }
-
                 return messageField;
               },
             ),
@@ -970,6 +1199,48 @@ class _InputRow extends StatelessWidget {
           icon: Icons.arrow_upward_rounded,
           onPressed: enabled ? onSendPressed : null,
         ),
+      ],
+    );
+
+    if (!showDefaultGlass) {
+      return inputRow;
+    }
+
+    return Stack(
+      clipBehavior: Clip.none,
+      children: <Widget>[
+        Positioned(
+          left: -8,
+          right: -8,
+          top: -6,
+          bottom: -6,
+          child: IgnorePointer(
+            child: ClipRRect(
+              borderRadius: messageFieldRadius,
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                child: const DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: <Color>[
+                        Color(0x00FFFFFF),
+                        Color(0x73FFFFFF),
+                        Color(0x61F0F5FF),
+                        Color(0x00F0F5FF),
+                      ],
+                      stops: <double>[0, 0.32, 0.72, 1],
+                    ),
+                    borderRadius: messageFieldRadius,
+                  ),
+                  child: SizedBox.expand(),
+                ),
+              ),
+            ),
+          ),
+        ),
+        inputRow,
       ],
     );
   }
@@ -1348,6 +1619,10 @@ class _ChatPalette {
 
   static const Color background = Color(0xFFF5F5F7);
   static const Color accent = Color(0xFF007AFF);
+  static const Color highRiskAccent = Color(0xFFC84B31);
+  static const Color highRiskSurface = Color(0xFFFFF5F2);
+  static const Color highRiskBorder = Color(0xFFF2C6BA);
+  static const Color highRiskBadgeSurface = Color(0xFFFFE0D7);
   static const Color textPrimary = Color(0xFF111111);
   static const Color textSecondary = Color(0xFF6E6E73);
   static const Color textTertiary = Color(0xFF8E8E93);
@@ -1416,6 +1691,13 @@ class _ChatTextStyles {
     color: _ChatPalette.textSecondary,
   );
 
+  static const TextStyle highRiskBadge = TextStyle(
+    fontSize: 11,
+    height: 1.1,
+    fontWeight: FontWeight.w700,
+    color: _ChatPalette.highRiskAccent,
+  );
+
   static const TextStyle placeholder = TextStyle(
     fontSize: 15,
     height: 1.2,
@@ -1442,6 +1724,12 @@ class _ChatTextStyles {
     height: 1.1,
     fontWeight: FontWeight.w600,
     color: _ChatPalette.textPrimary,
+  );
+
+  static const TextStyle approvalAction = TextStyle(
+    fontSize: 13,
+    height: 1.1,
+    fontWeight: FontWeight.w700,
   );
 
   static const TextStyle attachmentLabel = TextStyle(

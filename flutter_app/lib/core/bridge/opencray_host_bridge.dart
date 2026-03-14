@@ -92,4 +92,8 @@ abstract interface class OpenCrayHostBridge {
   Future<void> selectChatSession(String sessionId);
 
   Future<void> submitChatMessage(String text);
+
+  Future<void> approveChatApproval(String taskId);
+
+  Future<void> rejectChatApproval(String taskId);
 }

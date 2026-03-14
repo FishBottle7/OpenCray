@@ -19,6 +19,7 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   Future<OpenCrayShellSnapshot> loadShellSnapshot() async =>
       OpenCrayShellSnapshot(
         initialTab: OpenCrayTab.chat,
+        localeTag: 'en',
         hostLabel: 'HOST ERROR',
         hostSummary: _failureMessage,
         isHostConnected: false,
@@ -309,4 +310,10 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
 
   @override
   Future<void> submitChatMessage(String text) async {}
+
+  @override
+  Future<void> approveChatApproval(String taskId) async {}
+
+  @override
+  Future<void> rejectChatApproval(String taskId) async {}
 }

@@ -9,6 +9,7 @@ void main() {
     final bridge = OpenCraySeedBridge(
       initialSnapshot: const OpenCrayShellSnapshot(
         initialTab: OpenCrayTab.chat,
+        localeTag: 'en',
         hostLabel: 'HOST READY',
         hostSummary: 'Flutter shell is attached to a seed bridge.',
         isHostConnected: false,

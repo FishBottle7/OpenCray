@@ -70,6 +70,7 @@ class _OpenCrayAppShellState extends State<OpenCrayAppShell> {
         ],
       ),
       bottomNavigationBar: OpenCrayBottomNavigation(
+        snapshot: _snapshot,
         selectedTab: _selectedTab,
         onTabSelected: (tab) {
           if (_selectedTab == tab) {

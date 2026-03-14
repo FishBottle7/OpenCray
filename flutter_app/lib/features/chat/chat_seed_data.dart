@@ -1,220 +1,232 @@
 import 'package:flutter/material.dart';
 
+import '../../core/copy/opencray_ui_copy.dart';
 import 'chat_models.dart';
 
 class OpenCrayChatSeedData {
   const OpenCrayChatSeedData._();
 
-  static final ChatSessionsDrawerState _drawer = ChatSessionsDrawerState(
-    eyebrow: 'SESSION HISTORY',
-    title: 'Recent sessions',
-    ctaLabel: 'New session',
-    sessions: const <ChatSessionListItemData>[
-      ChatSessionListItemData(
-        sessionId: 'seed-refine-mobile-layout',
-        title: 'Refine mobile layout',
-        preview: 'Safe mode still asks before edits in this session.',
-        meta: 'Now',
-        isSelected: true,
-      ),
-      ChatSessionListItemData(
-        sessionId: 'seed-review-shell-limits',
-        title: 'Review shell limits',
-        preview: 'Summarize the current permission boundaries.',
-        meta: '18 min ago',
-      ),
-      ChatSessionListItemData(
-        sessionId: 'seed-prepare-flutter-shell',
-        title: 'Prepare Flutter shell',
-        preview: 'Split the migration into host and presentation layers.',
-        meta: 'Yesterday',
-      ),
-    ],
+  static ChatSessionsDrawerState _drawer(OpenCrayUiCopy copy) =>
+      ChatSessionsDrawerState(
+        eyebrow: copy.chatSeedDrawerEyebrow,
+        title: copy.chatSeedRecentSessions,
+        ctaLabel: copy.chatSeedNewSession,
+        sessions: <ChatSessionListItemData>[
+          ChatSessionListItemData(
+            sessionId: 'seed-refine-mobile-layout',
+            title: copy.chatSeedRefineLayoutTitle,
+            preview: copy.chatSeedRefineLayoutPreview,
+            meta: copy.chatSeedNow,
+            isSelected: true,
+          ),
+          ChatSessionListItemData(
+            sessionId: 'seed-review-shell-limits',
+            title: copy.chatSeedReviewShellTitle,
+            preview: copy.chatSeedReviewShellPreview,
+            meta: copy.chatSeedMinutesAgo,
+          ),
+          ChatSessionListItemData(
+            sessionId: 'seed-prepare-flutter-shell',
+            title: copy.chatSeedPrepareShellTitle,
+            preview: copy.chatSeedPrepareShellPreview,
+            meta: copy.chatSeedYesterday,
+          ),
+        ],
+      );
+
+  static ChatSessionSummary _summary(OpenCrayUiCopy copy) => ChatSessionSummary(
+    title: copy.chatSeedSummaryTitle,
+    badge: copy.chatSeedSummaryBadge,
+    body: copy.chatSeedSummaryBody,
   );
 
-  static const ChatSessionSummary _summary = ChatSessionSummary(
-    title: 'Refine mobile layout',
-    badge: '3 pending',
-    body: 'Safe mode still asks before edits in this session.',
-  );
-
-  static const List<ChatMessageData> _mainMessages = <ChatMessageData>[
-    ChatMessageData(kind: ChatMessageKind.timeline, text: 'Today'),
-    ChatMessageData(
-      kind: ChatMessageKind.inbound,
-      text: 'Workspace ready. I can inspect or edit.',
-    ),
-    ChatMessageData(
-      kind: ChatMessageKind.outbound,
-      text: 'Why is write access pending?',
-    ),
-    ChatMessageData(
-      kind: ChatMessageKind.inbound,
-      text: 'Safe mode still asks before edits.',
-    ),
-    ChatMessageData(
-      kind: ChatMessageKind.outbound,
-      text: 'Show current limits.',
-    ),
-  ];
-
-  static const List<ChatMessageData> _attachmentMessages = <ChatMessageData>[
-    ChatMessageData(kind: ChatMessageKind.timeline, text: 'Today'),
-    ChatMessageData(
-      kind: ChatMessageKind.inbound,
-      text: 'Drop a screenshot or workspace file into the next prompt.',
-    ),
-    ChatMessageData(
-      kind: ChatMessageKind.outbound,
-      text: 'Use these two files in the next pass.',
-    ),
-  ];
-
-  static const List<ChatMessageData> _commandMessages = <ChatMessageData>[
-    ChatMessageData(kind: ChatMessageKind.timeline, text: 'Today'),
-    ChatMessageData(
-      kind: ChatMessageKind.inbound,
-      text: 'Choose a command shortcut or keep typing.',
-    ),
-    ChatMessageData(
-      kind: ChatMessageKind.outbound,
-      text: 'Open a command for the workspace root.',
-    ),
-  ];
-
-  static const List<ChatMessageData> _addMenuMessages = <ChatMessageData>[
-    ChatMessageData(
-      kind: ChatMessageKind.inbound,
-      text: 'Add an image, file, or command before sending.',
-    ),
-  ];
-
-  static const List<ChatAttachmentData> _attachments = <ChatAttachmentData>[
-    ChatAttachmentData(
-      kind: ChatAttachmentKind.image,
-      label: 'workspace-shot.png',
-      detail: 'Image · 1.8 MB',
-      accentColor: Color(0xFFE6F0FF),
-    ),
-    ChatAttachmentData(
-      kind: ChatAttachmentKind.file,
-      label: 'mobile-ui-layout-spec.md',
-      detail: 'File · 12 KB',
-      accentColor: Color(0xFFF2F3F7),
-    ),
-  ];
-
-  static const List<ChatCommandOptionData> _commandOptions =
-      <ChatCommandOptionData>[
-        ChatCommandOptionData(
-          label: 'Command',
-          description: 'Run a workspace shell command with approval.',
+  static List<ChatMessageData> _mainMessages(OpenCrayUiCopy copy) =>
+      <ChatMessageData>[
+        ChatMessageData(kind: ChatMessageKind.timeline, text: copy.chatToday),
+        ChatMessageData(
+          kind: ChatMessageKind.inbound,
+          text: copy.chatSeedWorkspaceReady,
         ),
-        ChatCommandOptionData(
-          label: 'Patch',
-          description: 'Apply a structured file patch to the current repo.',
+        ChatMessageData(
+          kind: ChatMessageKind.outbound,
+          text: copy.chatSeedWhyWritePending,
         ),
-        ChatCommandOptionData(
-          label: 'Review',
-          description: 'Scan the current change list and summarize risks.',
+        ChatMessageData(
+          kind: ChatMessageKind.inbound,
+          text: copy.chatSeedSafeModeAsks,
+        ),
+        ChatMessageData(
+          kind: ChatMessageKind.outbound,
+          text: copy.chatSeedShowCurrentLimits,
         ),
       ];
 
-  static const List<ChatAddActionData> _addActions = <ChatAddActionData>[
-    ChatAddActionData(label: 'Image', icon: Icons.image_outlined),
-    ChatAddActionData(label: 'File', icon: Icons.attach_file_rounded),
-    ChatAddActionData(label: 'Command', icon: Icons.terminal_rounded),
+  static List<ChatMessageData> _attachmentMessages(OpenCrayUiCopy copy) =>
+      <ChatMessageData>[
+        ChatMessageData(kind: ChatMessageKind.timeline, text: copy.chatToday),
+        ChatMessageData(
+          kind: ChatMessageKind.inbound,
+          text: copy.chatSeedDropFileHint,
+        ),
+        ChatMessageData(
+          kind: ChatMessageKind.outbound,
+          text: copy.chatSeedUseTwoFiles,
+        ),
+      ];
+
+  static List<ChatMessageData> _commandMessages(OpenCrayUiCopy copy) =>
+      <ChatMessageData>[
+        ChatMessageData(kind: ChatMessageKind.timeline, text: copy.chatToday),
+        ChatMessageData(
+          kind: ChatMessageKind.inbound,
+          text: copy.chatSeedChooseCommand,
+        ),
+        ChatMessageData(
+          kind: ChatMessageKind.outbound,
+          text: copy.chatSeedOpenWorkspaceCommand,
+        ),
+      ];
+
+  static List<ChatMessageData> _addMenuMessages(OpenCrayUiCopy copy) =>
+      <ChatMessageData>[
+        ChatMessageData(
+          kind: ChatMessageKind.inbound,
+          text: copy.chatSeedAddBeforeSending,
+        ),
+      ];
+
+  static List<ChatAttachmentData> sampleAttachments(OpenCrayUiCopy copy) =>
+      <ChatAttachmentData>[
+        ChatAttachmentData(
+          kind: ChatAttachmentKind.image,
+          label: 'workspace-shot.png',
+          detail: copy.chatSeedImageDetail,
+          accentColor: const Color(0xFFE6F0FF),
+        ),
+        ChatAttachmentData(
+          kind: ChatAttachmentKind.file,
+          label: 'mobile-ui-layout-spec.md',
+          detail: copy.chatSeedFileDetail,
+          accentColor: const Color(0xFFF2F3F7),
+        ),
+      ];
+
+  static List<ChatCommandOptionData> sampleCommandOptions(
+    OpenCrayUiCopy copy,
+  ) => <ChatCommandOptionData>[
+    ChatCommandOptionData(
+      label: copy.chatActionCommand,
+      description: copy.chatCommandActionDescription,
+    ),
+    ChatCommandOptionData(
+      label: copy.chatCommandPatch,
+      description: copy.chatPatchActionDescription,
+    ),
+    ChatCommandOptionData(
+      label: copy.chatCommandReview,
+      description: copy.chatReviewActionDescription,
+    ),
   ];
 
-  static ChatFeatureState main() {
+  static List<ChatAddActionData> sampleAddActions(
+    OpenCrayUiCopy copy,
+  ) => <ChatAddActionData>[
+    ChatAddActionData(label: copy.chatActionImage, icon: Icons.image_outlined),
+    ChatAddActionData(
+      label: copy.chatActionFile,
+      icon: Icons.attach_file_rounded,
+    ),
+    ChatAddActionData(
+      label: copy.chatActionCommand,
+      icon: Icons.terminal_rounded,
+    ),
+  ];
+
+  static ChatFeatureState main(OpenCrayUiCopy copy) {
     return ChatFeatureState(
       variant: ChatPrototypeVariant.main,
-      screenTitle: 'Chat',
-      summary: _summary,
-      messages: _mainMessages,
-      composer: const ChatComposerState(),
-      drawer: _drawer,
+      screenTitle: copy.chatSeedScreenTitle,
+      summary: _summary(copy),
+      messages: _mainMessages(copy),
+      composer: ChatComposerState(placeholder: copy.chatComposerPlaceholder),
+      drawer: _drawer(copy),
     );
   }
 
-  static ChatFeatureState empty() {
+  static ChatFeatureState empty(OpenCrayUiCopy copy) {
     return ChatFeatureState(
       variant: ChatPrototypeVariant.empty,
-      screenTitle: 'Chat',
-      summary: const ChatSessionSummary(
-        title: 'Start a new session',
-        badge: 'No history yet',
-        body: 'Message OpenCray with a task, file, image, or command.',
+      screenTitle: copy.chatSeedScreenTitle,
+      summary: ChatSessionSummary(
+        title: copy.chatSeedEmptyTitle,
+        badge: copy.chatSeedEmptyBadge,
+        body: copy.chatSeedEmptyBody,
       ),
       messages: const <ChatMessageData>[],
-      composer: const ChatComposerState(),
-      drawer: _drawer,
+      composer: ChatComposerState(placeholder: copy.chatComposerPlaceholder),
+      drawer: _drawer(copy),
       emptyThreadHeight: 280,
     );
   }
 
-  static ChatFeatureState attachments() {
+  static ChatFeatureState attachments(OpenCrayUiCopy copy) {
     return ChatFeatureState(
       variant: ChatPrototypeVariant.attachments,
-      screenTitle: 'Chat',
-      summary: const ChatSessionSummary(
-        title: 'Review attached files',
-        badge: '2 items ready',
-        body: 'These attachments stay with the next message only.',
+      screenTitle: copy.chatSeedScreenTitle,
+      summary: ChatSessionSummary(
+        title: copy.chatSeedAttachmentsTitle,
+        badge: copy.chatSeedAttachmentsBadge,
+        body: copy.chatSeedAttachmentsBody,
       ),
-      messages: _attachmentMessages,
-      composer: const ChatComposerState(attachments: _attachments),
-      drawer: _drawer,
+      messages: _attachmentMessages(copy),
+      composer: ChatComposerState(
+        placeholder: copy.chatComposerPlaceholder,
+        attachments: sampleAttachments(copy),
+      ),
+      drawer: _drawer(copy),
     );
   }
 
-  static ChatFeatureState commandMenu() {
+  static ChatFeatureState commandMenu(OpenCrayUiCopy copy) {
     return ChatFeatureState(
       variant: ChatPrototypeVariant.commandMenu,
-      screenTitle: 'Chat',
-      summary: const ChatSessionSummary(
-        title: 'Command shortcuts',
-        badge: 'Safe mode',
-        body: 'Choose a command surface before sending the next prompt.',
+      screenTitle: copy.chatSeedScreenTitle,
+      summary: ChatSessionSummary(
+        title: copy.chatSeedCommandTitle,
+        badge: copy.chatSeedCommandBadge,
+        body: copy.chatSeedCommandBody,
       ),
-      messages: _commandMessages,
-      composer: const ChatComposerState(
-        selectedCommand: 'Command',
-        commandOptions: _commandOptions,
+      messages: _commandMessages(copy),
+      composer: ChatComposerState(
+        placeholder: copy.chatComposerPlaceholder,
+        selectedCommand: copy.chatActionCommand,
+        commandOptions: sampleCommandOptions(copy),
       ),
-      drawer: _drawer,
+      drawer: _drawer(copy),
     );
   }
 
-  static ChatFeatureState addMenu() {
+  static ChatFeatureState addMenu(OpenCrayUiCopy copy) {
     return ChatFeatureState(
       variant: ChatPrototypeVariant.addMenu,
-      screenTitle: 'Chat',
-      summary: const ChatSessionSummary(
-        title: 'Prepare the next turn',
-        badge: 'Composer open',
-        body: 'Add context before you send the next request.',
+      screenTitle: copy.chatSeedScreenTitle,
+      summary: ChatSessionSummary(
+        title: copy.chatSeedAddMenuTitle,
+        badge: copy.chatSeedAddMenuBadge,
+        body: copy.chatSeedAddMenuBody,
       ),
-      messages: _addMenuMessages,
-      composer: const ChatComposerState(
+      messages: _addMenuMessages(copy),
+      composer: ChatComposerState(
+        placeholder: copy.chatComposerPlaceholder,
         showAddMenu: true,
-        addActions: _addActions,
+        addActions: sampleAddActions(copy),
       ),
-      drawer: _drawer,
+      drawer: _drawer(copy),
       emptyThreadHeight: 170,
     );
   }
 
-  static ChatFeatureState drawerOpen() {
-    return main().copyWith(drawerOpen: true);
+  static ChatFeatureState drawerOpen(OpenCrayUiCopy copy) {
+    return main(copy).copyWith(drawerOpen: true);
   }
-
-  static List<ChatAttachmentData> sampleAttachments() =>
-      List<ChatAttachmentData>.of(_attachments);
-
-  static List<ChatCommandOptionData> sampleCommandOptions() =>
-      List<ChatCommandOptionData>.of(_commandOptions);
-
-  static List<ChatAddActionData> sampleAddActions() =>
-      List<ChatAddActionData>.of(_addActions);
 }

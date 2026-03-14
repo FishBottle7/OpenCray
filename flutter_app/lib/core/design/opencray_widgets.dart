@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../app/opencray_tabs.dart';
+import '../copy/opencray_ui_copy.dart';
 import '../models/opencray_shell_snapshot.dart';
 import 'opencray_tokens.dart';
 
@@ -152,10 +153,12 @@ class OpenCrayPillButton extends StatelessWidget {
 class OpenCrayBottomNavigation extends StatelessWidget {
   const OpenCrayBottomNavigation({
     super.key,
+    required this.snapshot,
     required this.selectedTab,
     required this.onTabSelected,
   });
 
+  final OpenCrayShellSnapshot snapshot;
   final OpenCrayTab selectedTab;
   final ValueChanged<OpenCrayTab> onTabSelected;
 
@@ -182,6 +185,7 @@ class OpenCrayBottomNavigation extends StatelessWidget {
                 for (final tab in OpenCrayTab.values)
                   Expanded(
                     child: _BottomNavItem(
+                      snapshot: snapshot,
                       tab: tab,
                       selected: selectedTab == tab,
                       onTap: () => onTabSelected(tab),
@@ -250,17 +254,20 @@ class OpenCrayTabPlaceholder extends StatelessWidget {
 
 class _BottomNavItem extends StatelessWidget {
   const _BottomNavItem({
+    required this.snapshot,
     required this.tab,
     required this.selected,
     required this.onTap,
   });
 
+  final OpenCrayShellSnapshot snapshot;
   final OpenCrayTab tab;
   final bool selected;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
+    final copy = OpenCrayUiCopy.fromLocaleTag(snapshot.localeTag);
     final color = selected
         ? OpenCrayColors.primary
         : OpenCrayColors.textSecondary;
@@ -284,7 +291,7 @@ class _BottomNavItem extends StatelessWidget {
               ),
               const SizedBox(height: OpenCraySizes.bottomNavItemGap),
               Text(
-                tab.label.toUpperCase(),
+                copy.tabLabel(tab).toUpperCase(),
                 style: Theme.of(context).textTheme.labelMedium?.copyWith(
                   color: color,
                   fontSize: 10,

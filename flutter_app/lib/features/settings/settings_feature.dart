@@ -2224,25 +2224,50 @@ class _PrototypeSelectionRow extends StatelessWidget {
       borderRadius: BorderRadius.circular(12),
       onTap: onTap,
       child: _PrototypeFieldSurface(
-        child: SizedBox(
-          height: compact ? 44 : 52,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minHeight: compact ? 44 : 52),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+            padding: EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: compact ? 12 : 14,
+            ),
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Expanded(
-                  child: Text(title, style: _SettingsTextStyles.fieldValue),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      title,
+                      style: _SettingsTextStyles.fieldValue,
+                      strutStyle: _SettingsTextStyles.fieldValueStrut,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
                 ),
                 if (trailingLabel != null) ...[
-                  Text(
-                    trailingLabel!,
-                    style: _SettingsTextStyles.selectionMeta,
+                  Center(
+                    child: Text(
+                      trailingLabel!,
+                      style: _SettingsTextStyles.selectionMeta,
+                    ),
                   ),
                   const SizedBox(width: 6),
-                  const Text('›', style: _SettingsTextStyles.selectionChevron),
+                  const Center(
+                    child: Text(
+                      '›',
+                      style: _SettingsTextStyles.selectionChevron,
+                    ),
+                  ),
                 ] else ...[
                   const Spacer(),
-                  const Text('›', style: _SettingsTextStyles.selectionChevron),
+                  const Center(
+                    child: Text(
+                      '›',
+                      style: _SettingsTextStyles.selectionChevron,
+                    ),
+                  ),
                 ],
               ],
             ),

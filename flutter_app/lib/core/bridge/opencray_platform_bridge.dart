@@ -257,6 +257,19 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   Future<void> submitChatMessage(String text) => _methodChannel
       .invokeMethod<void>('submitChatMessage', <String, Object?>{'text': text});
 
+  @override
+  Future<void> approveChatApproval(String taskId) =>
+      _methodChannel.invokeMethod<void>(
+        'approveChatApproval',
+        <String, Object?>{'taskId': taskId},
+      );
+
+  @override
+  Future<void> rejectChatApproval(String taskId) =>
+      _methodChannel.invokeMethod<void>('rejectChatApproval', <String, Object?>{
+        'taskId': taskId,
+      });
+
   static Future<Map<Object?, Object?>> _invokeMap(
     String method, {
     Map<String, Object?>? arguments,
@@ -281,6 +294,7 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   ) {
     return OpenCrayShellSnapshot(
       initialTab: _parseTab(payload['initialTab'] as String?),
+      localeTag: payload['localeTag'] as String? ?? 'en',
       hostLabel: payload['hostLabel'] as String? ?? 'HOST READY',
       hostSummary:
           payload['hostSummary'] as String? ??

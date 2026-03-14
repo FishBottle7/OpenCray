@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/bridge/opencray_host_bridge.dart';
 import '../core/bridge/opencray_seed_bridge.dart';
+import '../core/copy/opencray_ui_copy.dart';
 import '../core/models/opencray_shell_snapshot.dart';
 import '../core/design/opencray_theme.dart';
 import '../features/chat/chat_feature.dart';
@@ -92,6 +93,7 @@ class _ShellEntry extends StatelessWidget {
             snapshot.data ??
             const OpenCrayShellSnapshot(
               initialTab: OpenCrayTab.chat,
+              localeTag: 'en',
               hostLabel: 'HOST READY',
               hostSummary: 'Flutter shell is attached to a seed bridge.',
               isHostConnected: false,
@@ -117,10 +119,13 @@ Map<OpenCrayTab, OpenCrayTabBuilder> _defaultBuilders(
   required OpenCrayHostBridge bridge,
   required SettingsPage settingsInitialPage,
 }) {
+  final copy = OpenCrayUiCopy.fromLocaleTag(snapshot.localeTag);
   return {
-    OpenCrayTab.chat: (context) => OpenCrayChatFeature(bridge: bridge),
-    OpenCrayTab.skills: (context) => SkillsFeatureScreen(bridge: bridge),
-    OpenCrayTab.files: (context) => const FilesFeatureScreen(),
+    OpenCrayTab.chat: (context) =>
+        OpenCrayChatFeature(bridge: bridge, copy: copy),
+    OpenCrayTab.skills: (context) =>
+        SkillsFeatureScreen(bridge: bridge, copy: copy),
+    OpenCrayTab.files: (context) => FilesFeatureScreen(copy: copy),
     OpenCrayTab.settings: (context) => SettingsFeatureScreen(
       initialPage: settingsInitialPage,
       facade: BridgeSettingsFacade(bridge: bridge),

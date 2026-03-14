@@ -229,6 +229,16 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   Future<void> submitChatMessage(String text) =>
       _postVoid('v1/submit_chat_message', <String, Object?>{'text': text});
 
+  @override
+  Future<void> approveChatApproval(String taskId) => _postVoid(
+    'v1/approve_chat_approval',
+    <String, Object?>{'taskId': taskId},
+  );
+
+  @override
+  Future<void> rejectChatApproval(String taskId) =>
+      _postVoid('v1/reject_chat_approval', <String, Object?>{'taskId': taskId});
+
   Stream<T> _watchMap<T>(
     Future<Map<Object?, Object?>> Function() loader,
     T Function(Map<Object?, Object?> payload) parser,
@@ -347,6 +357,7 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   ) {
     return OpenCrayShellSnapshot(
       initialTab: _parseTab(payload['initialTab'] as String?),
+      localeTag: payload['localeTag'] as String? ?? 'en',
       hostLabel: payload['hostLabel'] as String? ?? 'HOST READY',
       hostSummary:
           payload['hostSummary'] as String? ??

@@ -24,6 +24,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
            initialSnapshot ??
            const OpenCrayShellSnapshot(
              initialTab: OpenCrayTab.chat,
+             localeTag: 'en',
              hostLabel: 'HOST READY',
              hostSummary: 'Flutter shell is attached to a seed bridge.',
              isHostConnected: false,
@@ -299,6 +300,8 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       _personalizationConfig,
       selectedAppLanguageId: languageId,
     );
+    _snapshot = _snapshot.copyWith(localeTag: languageId);
+    update(_snapshot);
     _refreshSettingsOverview();
     return _personalizationConfig;
   }
@@ -499,8 +502,19 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       ],
       drawer: _chatSnapshot.drawer,
       isInputEnabled: true,
+      pendingApprovals: _chatSnapshot.pendingApprovals,
     );
     _emitChatSnapshot();
+  }
+
+  @override
+  Future<void> approveChatApproval(String taskId) async {
+    _resolveChatApproval(taskId);
+  }
+
+  @override
+  Future<void> rejectChatApproval(String taskId) async {
+    _resolveChatApproval(taskId);
   }
 
   void update(OpenCrayShellSnapshot snapshot) {
@@ -547,6 +561,27 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     if (!_chatController.isClosed) {
       _chatController.add(_chatSnapshot);
     }
+  }
+
+  void _resolveChatApproval(String taskId) {
+    final remainingApprovals = _chatSnapshot.pendingApprovals
+        .where((approval) => approval.taskId != taskId)
+        .toList(growable: false);
+    if (remainingApprovals.length == _chatSnapshot.pendingApprovals.length) {
+      return;
+    }
+    _chatSnapshot = OpenCrayChatSnapshot(
+      screenTitle: _chatSnapshot.screenTitle,
+      modeLabel: _chatSnapshot.modeLabel,
+      sessionButtonLabel: _chatSnapshot.sessionButtonLabel,
+      composerPlaceholder: _chatSnapshot.composerPlaceholder,
+      summary: _chatSnapshot.summary,
+      messages: _chatSnapshot.messages,
+      drawer: _chatSnapshot.drawer,
+      isInputEnabled: _chatSnapshot.isInputEnabled,
+      pendingApprovals: remainingApprovals,
+    );
+    _emitChatSnapshot();
   }
 }
 

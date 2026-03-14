@@ -540,7 +540,7 @@ internal open class ChatSessionLocalStore(
   )
 
   companion object {
-    private const val DEFAULT_SESSION_TITLE = "New chat"
+    internal const val DEFAULT_SESSION_TITLE = "New chat"
     internal const val DIRECTORY_NAME = "chat-local-state"
     internal const val DEFAULT_SYSTEM_TEMPLATE_ID = "system.default.v1"
     internal const val DEFAULT_SYSTEM_TEMPLATE_VALUE =

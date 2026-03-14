@@ -2,9 +2,11 @@ package com.opencray.app.facade.skills
 
 import android.content.Context
 import com.opencray.app.AppSkillsStorage
+import com.opencray.app.OpenCrayLocaleManager
 import com.opencray.skills.LoadedSkill
 import com.opencray.skills.SkillLoader
 import java.io.File
+import org.opencray.app.R
 
 private const val PREFERENCES_NAME = "opencray.skills.workspace"
 private const val PREF_PREFIX_ENABLED = "enabled:"
@@ -165,14 +167,14 @@ internal class LocalSkillsFacade private constructor(
 
   override fun activateInstallSource(sourceId: String): String = when (sourceId) {
     INSTALL_SOURCE_CURATED -> if (loadCatalogSkills().isEmpty()) {
-      "No local skills catalog is installed on this device."
+      context.getString(R.string.skills_activate_curated_empty)
     } else {
-      "Use the suggestions list below to install from the local catalog."
+      context.getString(R.string.skills_activate_curated_available)
     }
 
-    INSTALL_SOURCE_LOCAL -> "Local folder install is not wired into the Flutter host yet."
-    INSTALL_SOURCE_GIT -> "Git repository install is not wired into the Flutter host yet."
-    else -> "That install source is unavailable."
+    INSTALL_SOURCE_LOCAL -> context.getString(R.string.skills_activate_local_unwired)
+    INSTALL_SOURCE_GIT -> context.getString(R.string.skills_activate_git_unwired)
+    else -> context.getString(R.string.skills_activate_unknown)
   }
 
   private fun loadInstalledSkills(): List<InstalledSkillSnapshot> = loadManagedSkills().map { skill ->
@@ -215,27 +217,31 @@ internal class LocalSkillsFacade private constructor(
     return listOf(
       InstallSourceSnapshot(
         id = INSTALL_SOURCE_CURATED,
-        title = "Curated skills",
+        title = context.getString(R.string.skills_install_source_curated_title),
         subtitle = if (catalogAvailable) {
-          "Install from the local catalog already available on this device."
+          context.getString(R.string.skills_install_source_curated_subtitle_available)
         } else {
-          "No local catalog is installed on this device yet."
+          context.getString(R.string.skills_install_source_curated_subtitle_empty)
         },
-        actionLabel = if (catalogAvailable) "Browse" else "Empty",
+        actionLabel = if (catalogAvailable) {
+          context.getString(R.string.skills_install_source_curated_action_browse)
+        } else {
+          context.getString(R.string.skills_install_source_curated_action_empty)
+        },
         isAvailable = catalogAvailable,
       ),
       InstallSourceSnapshot(
         id = INSTALL_SOURCE_LOCAL,
-        title = "Local path",
-        subtitle = "Importing a skill from a local folder is not wired into Flutter yet.",
-        actionLabel = "Unavailable",
+        title = context.getString(R.string.skills_install_source_local_title),
+        subtitle = context.getString(R.string.skills_install_source_local_subtitle),
+        actionLabel = context.getString(R.string.skills_install_source_action_unavailable),
         isAvailable = false,
       ),
       InstallSourceSnapshot(
         id = INSTALL_SOURCE_GIT,
-        title = "GitHub repository",
-        subtitle = "Downloading a skill package from GitHub is not wired into Flutter yet.",
-        actionLabel = "Unavailable",
+        title = context.getString(R.string.skills_install_source_git_title),
+        subtitle = context.getString(R.string.skills_install_source_git_subtitle),
+        actionLabel = context.getString(R.string.skills_install_source_action_unavailable),
         isAvailable = false,
       ),
     )
@@ -262,7 +268,7 @@ internal class LocalSkillsFacade private constructor(
 
   companion object {
     fun fromContext(context: Context): LocalSkillsFacade =
-      LocalSkillsFacade(context.applicationContext)
+      LocalSkillsFacade(OpenCrayLocaleManager.wrap(context.applicationContext))
   }
 }
 

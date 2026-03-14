@@ -15,6 +15,7 @@ class ChatFeatureState {
     required this.messages,
     required this.composer,
     required this.drawer,
+    this.pendingApprovals = const <ChatPendingApprovalData>[],
     this.modeLabel = 'SAFE',
     this.drawerOpen = false,
     this.sessionButtonLabel = 'Sessions',
@@ -28,6 +29,7 @@ class ChatFeatureState {
   final List<ChatMessageData> messages;
   final ChatComposerState composer;
   final ChatSessionsDrawerState drawer;
+  final List<ChatPendingApprovalData> pendingApprovals;
   final String modeLabel;
   final bool drawerOpen;
   final String sessionButtonLabel;
@@ -41,6 +43,7 @@ class ChatFeatureState {
     List<ChatMessageData>? messages,
     ChatComposerState? composer,
     ChatSessionsDrawerState? drawer,
+    List<ChatPendingApprovalData>? pendingApprovals,
     String? modeLabel,
     bool? drawerOpen,
     String? sessionButtonLabel,
@@ -54,6 +57,7 @@ class ChatFeatureState {
       messages: messages ?? this.messages,
       composer: composer ?? this.composer,
       drawer: drawer ?? this.drawer,
+      pendingApprovals: pendingApprovals ?? this.pendingApprovals,
       modeLabel: modeLabel ?? this.modeLabel,
       drawerOpen: drawerOpen ?? this.drawerOpen,
       sessionButtonLabel: sessionButtonLabel ?? this.sessionButtonLabel,
@@ -87,6 +91,25 @@ class ChatMessageData {
   final ChatMessageKind kind;
   final String text;
   final String meta;
+}
+
+@immutable
+class ChatPendingApprovalData {
+  const ChatPendingApprovalData({
+    required this.taskId,
+    required this.title,
+    required this.body,
+    required this.approveLabel,
+    required this.rejectLabel,
+    required this.isHighRisk,
+  });
+
+  final String taskId;
+  final String title;
+  final String body;
+  final String approveLabel;
+  final String rejectLabel;
+  final bool isHighRisk;
 }
 
 @immutable

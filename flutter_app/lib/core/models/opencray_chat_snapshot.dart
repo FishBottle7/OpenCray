@@ -91,6 +91,37 @@ class OpenCrayChatDrawerSnapshot {
   }
 }
 
+class OpenCrayChatPendingApprovalSnapshot {
+  const OpenCrayChatPendingApprovalSnapshot({
+    required this.taskId,
+    required this.title,
+    required this.body,
+    required this.approveLabel,
+    required this.rejectLabel,
+    required this.isHighRisk,
+  });
+
+  final String taskId;
+  final String title;
+  final String body;
+  final String approveLabel;
+  final String rejectLabel;
+  final bool isHighRisk;
+
+  factory OpenCrayChatPendingApprovalSnapshot.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    return OpenCrayChatPendingApprovalSnapshot(
+      taskId: map['taskId'] as String? ?? '',
+      title: map['title'] as String? ?? '',
+      body: map['body'] as String? ?? '',
+      approveLabel: map['approveLabel'] as String? ?? 'Approve',
+      rejectLabel: map['rejectLabel'] as String? ?? 'Reject',
+      isHighRisk: map['isHighRisk'] as bool? ?? false,
+    );
+  }
+}
+
 class OpenCrayChatSnapshot {
   const OpenCrayChatSnapshot({
     required this.screenTitle,
@@ -101,6 +132,7 @@ class OpenCrayChatSnapshot {
     required this.messages,
     required this.drawer,
     required this.isInputEnabled,
+    this.pendingApprovals = const <OpenCrayChatPendingApprovalSnapshot>[],
   });
 
   final String screenTitle;
@@ -111,9 +143,12 @@ class OpenCrayChatSnapshot {
   final List<OpenCrayChatMessageSnapshot> messages;
   final OpenCrayChatDrawerSnapshot drawer;
   final bool isInputEnabled;
+  final List<OpenCrayChatPendingApprovalSnapshot> pendingApprovals;
 
   factory OpenCrayChatSnapshot.fromMap(Map<Object?, Object?> map) {
     final rawMessages = map['messages'] as List<Object?>? ?? const <Object?>[];
+    final rawPendingApprovals =
+        map['pendingApprovals'] as List<Object?>? ?? const <Object?>[];
     return OpenCrayChatSnapshot(
       screenTitle: map['screenTitle'] as String? ?? 'Chat',
       modeLabel: map['modeLabel'] as String? ?? 'AUTO',
@@ -131,6 +166,10 @@ class OpenCrayChatSnapshot {
         map['drawer'] as Map<Object?, Object?>? ?? const <Object?, Object?>{},
       ),
       isInputEnabled: map['isInputEnabled'] as bool? ?? true,
+      pendingApprovals: rawPendingApprovals
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatPendingApprovalSnapshot.fromMap)
+          .toList(growable: false),
     );
   }
 }
