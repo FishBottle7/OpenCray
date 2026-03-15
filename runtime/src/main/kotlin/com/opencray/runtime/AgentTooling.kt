@@ -69,6 +69,7 @@ data class AgentToolDefinition(
 data class AgentToolCall(
   val toolName: String,
   val arguments: JsonObject = JsonObject(emptyMap()),
+  val reason: String? = null,
 ) {
   init {
     require(toolName.isNotBlank()) { "AgentToolCall toolName must not be blank." }
@@ -129,6 +130,8 @@ data class OpenCrayToolDispatcherConfig(
   val skillsRoots: List<File> = emptyList(),
   val mcpExposureReport: McpClientExposureReport? = null,
   val modePolicy: ModePolicy = ModePolicy(),
+  val approvedTaskId: String? = null,
+  val approvedToolName: String? = null,
   val commandExecutor: CommandExecutor? = null,
   val pythonRuntimeAdapter: PythonRuntimeAdapter = PythonRuntimeAdapter(),
   val commandApprovalToken: CommandApprovalToken? = null,
@@ -687,10 +690,15 @@ class OpenCrayToolDispatcher(
       targetPath = source,
       destinationPath = destination,
     )
-    gateFileMutation(
+    val effectivePolicyDecision = applyApprovedToolOverride(
       task = task,
       toolName = "workspace_move_file",
       policyDecision = policyDecision,
+    )
+    gateFileMutation(
+      task = task,
+      toolName = "workspace_move_file",
+      policyDecision = effectivePolicyDecision,
       affectedPaths = mapOf(
         "sourcePath" to boundary.defaultRoot.relativize(source).toString(),
         "destinationPath" to boundary.defaultRoot.relativize(destination).toString(),
@@ -710,7 +718,7 @@ class OpenCrayToolDispatcher(
       content = "Moved ${boundary.defaultRoot.relativize(source)} to ${boundary.defaultRoot.relativize(destination)}.",
       metadata = mapOf(
         "executionMode" to inferExecutionMode(task).name,
-        "policyReasonCode" to policyDecision.reasonCode,
+        "policyReasonCode" to effectivePolicyDecision.reasonCode,
         "sourcePath" to boundary.defaultRoot.relativize(source).toString(),
         "destinationPath" to boundary.defaultRoot.relativize(destination).toString(),
       ),
@@ -724,10 +732,15 @@ class OpenCrayToolDispatcher(
       toolClass = PolicyToolClass.DELETE_FILE,
       targetPath = path,
     )
-    gateFileMutation(
+    val effectivePolicyDecision = applyApprovedToolOverride(
       task = task,
       toolName = "workspace_delete_file",
       policyDecision = policyDecision,
+    )
+    gateFileMutation(
+      task = task,
+      toolName = "workspace_delete_file",
+      policyDecision = effectivePolicyDecision,
       affectedPaths = mapOf("path" to boundary.defaultRoot.relativize(path).toString()),
     )?.let { return it }
     fileOpsService.executeBatch(
@@ -741,7 +754,7 @@ class OpenCrayToolDispatcher(
       content = "Deleted ${boundary.defaultRoot.relativize(path)}.",
       metadata = mapOf(
         "executionMode" to inferExecutionMode(task).name,
-        "policyReasonCode" to policyDecision.reasonCode,
+        "policyReasonCode" to effectivePolicyDecision.reasonCode,
         "path" to boundary.defaultRoot.relativize(path).toString(),
       ),
     )
@@ -761,10 +774,15 @@ class OpenCrayToolDispatcher(
       toolClass = PolicyToolClass.WRITE_FILE,
       targetPath = path,
     )
-    gateFileMutation(
+    val effectivePolicyDecision = applyApprovedToolOverride(
       task = task,
       toolName = toolName,
       policyDecision = policyDecision,
+    )
+    gateFileMutation(
+      task = task,
+      toolName = toolName,
+      policyDecision = effectivePolicyDecision,
       affectedPaths = mapOf(metadataPathKey to pathMetadataValue(toolName = toolName, path = path)),
     )?.let { return it }
     val batchResult = fileOpsService.executeBatch(
@@ -781,7 +799,7 @@ class OpenCrayToolDispatcher(
       content = successMessage,
       metadata = mapOf(
         "executionMode" to inferExecutionMode(task).name,
-        "policyReasonCode" to policyDecision.reasonCode,
+        "policyReasonCode" to effectivePolicyDecision.reasonCode,
         metadataPathKey to pathMetadataValue(toolName = toolName, path = path),
         "checkpointId" to batchResult.checkpointId,
         "checkpointEntryCount" to batchResult.checkpointEntryCount.toString(),
@@ -956,6 +974,11 @@ class OpenCrayToolDispatcher(
       task = task,
       toolClass = PolicyToolClass.EXECUTE_COMMAND,
     )
+    val effectivePolicyDecision = applyApprovedToolOverride(
+      task = task,
+      toolName = "command_exec",
+      policyDecision = policyDecision,
+    )
     val executionResult = commandExecutor.execute(
       request = CommandExecutionRequest(
         taskId = task.id,
@@ -966,10 +989,10 @@ class OpenCrayToolDispatcher(
         metadata = mapOf(
           "toolName" to "command_exec",
           "executionMode" to inferExecutionMode(task).name,
-          "policyReasonCode" to policyDecision.reasonCode,
-        ) + approvalRiskMetadata(policyDecision),
+          "policyReasonCode" to effectivePolicyDecision.reasonCode,
+        ) + approvalRiskMetadata(effectivePolicyDecision),
       ),
-      policyDecision = policyDecision,
+      policyDecision = effectivePolicyDecision,
       approvalToken = config.commandApprovalToken,
       hooks = hooks,
     )
@@ -982,10 +1005,15 @@ class OpenCrayToolDispatcher(
       task = task,
       toolClass = PolicyToolClass.EXECUTE_COMMAND,
     )
-    gatePolicyControlledTool(
+    val effectivePolicyDecision = applyApprovedToolOverride(
       task = task,
       toolName = "python_exec",
       policyDecision = policyDecision,
+    )
+    gatePolicyControlledTool(
+      task = task,
+      toolName = "python_exec",
+      policyDecision = effectivePolicyDecision,
       affectedPaths = mapOf("scriptPath" to boundary.defaultRoot.relativize(scriptPath).toString()),
       askDetail = "Approval is required before python_exec can run.",
       denyDetail = "Policy denied python_exec.",
@@ -1002,9 +1030,9 @@ class OpenCrayToolDispatcher(
     return toolResult.copy(
       metadata = toolResult.metadata + mapOf(
         "executionMode" to inferExecutionMode(task).name,
-        "policyReasonCode" to policyDecision.reasonCode,
+        "policyReasonCode" to effectivePolicyDecision.reasonCode,
         "scriptPath" to boundary.defaultRoot.relativize(scriptPath).toString(),
-      ) + approvalRiskMetadata(policyDecision),
+      ) + approvalRiskMetadata(effectivePolicyDecision),
     )
   }
 
@@ -1107,10 +1135,11 @@ class OpenCrayToolDispatcher(
         destinationPath = destinationPath,
       ),
     )
-    return mergePolicyDecisions(
+    val mergedDecision = mergePolicyDecisions(
       coarseDecision = task.policyDecision,
       fineGrainedDecision = fineGrainedDecision,
     )
+    return applyApprovedTaskOverride(task = task, policyDecision = mergedDecision)
   }
 
   private fun inferExecutionMode(task: AgentTask): ExecutionMode =
@@ -1149,6 +1178,49 @@ class OpenCrayToolDispatcher(
   private fun approvalRiskRank(approvalRisk: PolicyApprovalRisk): Int = when (approvalRisk) {
     PolicyApprovalRisk.STANDARD -> 0
     PolicyApprovalRisk.HIGH_RISK -> 1
+  }
+
+  private fun applyApprovedTaskOverride(
+    task: AgentTask,
+    policyDecision: PolicyDecision,
+  ): PolicyDecision {
+    if (!config.approvedToolName.isNullOrBlank()) {
+      return policyDecision
+    }
+    val approvedTaskId = config.approvedTaskId
+      ?.takeIf(String::isNotBlank)
+      ?: return policyDecision
+    if (approvedTaskId != task.id || policyDecision.outcome != PolicyDecisionOutcome.ASK) {
+      return policyDecision
+    }
+    return PolicyDecision(
+      outcome = PolicyDecisionOutcome.ALLOW,
+      reasonCode = "USER_APPROVED_RETRY",
+      detail = "User approved this task retry.",
+      approvalRisk = policyDecision.approvalRisk,
+    )
+  }
+
+  private fun applyApprovedToolOverride(
+    task: AgentTask,
+    toolName: String,
+    policyDecision: PolicyDecision,
+  ): PolicyDecision {
+    val approvedTaskId = config.approvedTaskId
+      ?.takeIf(String::isNotBlank)
+      ?: return policyDecision
+    val approvedToolName = config.approvedToolName
+      ?.takeIf(String::isNotBlank)
+      ?: return policyDecision
+    if (approvedTaskId != task.id || approvedToolName != toolName || policyDecision.outcome != PolicyDecisionOutcome.ASK) {
+      return policyDecision
+    }
+    return PolicyDecision(
+      outcome = PolicyDecisionOutcome.ALLOW,
+      reasonCode = "USER_APPROVED_RETRY",
+      detail = "User approved this task retry for $toolName.",
+      approvalRisk = policyDecision.approvalRisk,
+    )
   }
 
   private fun gateFileMutation(

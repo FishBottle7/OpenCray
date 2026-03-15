@@ -2,6 +2,7 @@ package com.opencray.runtime.context
 
 import com.opencray.core.contracts.AgentTask
 import com.opencray.runtime.AgentToolDefinition
+import com.opencray.runtime.memory.MemoryRecallResult
 
 data class RuntimeConversationMessage(
   val role: RuntimeConversationRole,
@@ -24,11 +25,13 @@ data class RuntimeSoulProfile(
   val displayName: String? = null,
   val voice: String? = null,
   val customGuidance: String? = null,
+  val extensions: Map<String, String> = emptyMap(),
 )
 
 data class AgentRuntimeSessionContext(
   val sessionPolicyText: String? = null,
   val soulProfile: RuntimeSoulProfile? = null,
+  val recalledMemory: MemoryRecallResult = MemoryRecallResult(),
   val conversation: List<RuntimeConversationMessage> = emptyList(),
 )
 
@@ -70,6 +73,9 @@ data class ContextAssemblyReport(
   val windowedTranscriptMessageCount: Int,
   val omittedTranscriptMessageCount: Int,
   val truncatedTranscriptMessageCount: Int,
+  val matchedMemoryRecordCount: Int = 0,
+  val injectedMemoryRecordCount: Int = 0,
+  val omittedMemoryRecordCount: Int = 0,
 ) {
   val transcriptMessageCount: Int
     get() = windowedTranscriptMessageCount

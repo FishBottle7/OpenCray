@@ -211,6 +211,18 @@ class OpenCrayUiCopy {
   String get chatHighRiskApproval => isChinese ? '高风险' : 'High risk';
   String get chatApprovalActionFailed =>
       isChinese ? '处理审批请求失败。' : 'Failed to process approval request.';
+  String get chatRunWorkingLabel => isChinese ? '运行中' : 'Running';
+  String get chatRunWaitingApprovalLabel =>
+      isChinese ? '等待审批' : 'Waiting for approval';
+  String get chatRunThinkingActive => isChinese
+      ? '正在分析请求，并决定下一步要做什么。'
+      : 'Analyzing the request and deciding the next step.';
+  String chatRunCallingTool(String toolName) => isChinese
+      ? '正在调用工具：$toolName'
+      : 'Calling tool: $toolName';
+  String chatRunToolFollowUp(String toolName) => isChinese
+      ? '已收到 $toolName 的结果，正在判断下一步。'
+      : 'Received $toolName and evaluating the next step.';
   String get chatComposerPlaceholder =>
       isChinese ? '给 OpenCray 发消息' : 'Message OpenCray';
   String get chatActionImage => isChinese ? '图片' : 'Image';

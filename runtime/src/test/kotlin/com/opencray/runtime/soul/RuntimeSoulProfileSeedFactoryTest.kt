@@ -49,4 +49,28 @@ class RuntimeSoulProfileSeedFactoryTest {
     assertEquals("calm direct", seed.extensions["voice"])
     assertEquals("Stay terse.", seed.customGuidance)
   }
+
+  @Test
+  fun createNormalizesExtensionKeysAndLetsExplicitVoiceWin() {
+    val seed = factory.create(
+      RuntimeSoulProfile(
+        voice = "direct",
+        extensions = mapOf(
+          "toolUseBias" to "tool forward",
+          " collaboration-preferences " to " Keep the user posted. ",
+          "voice" to "soft",
+          "blank" to "   ",
+        ),
+      ),
+    )
+
+    requireNotNull(seed)
+    assertEquals("tool forward", seed.extensions[SoulProfileExtensionKeys.TOOL_USE_BIAS])
+    assertEquals(
+      "Keep the user posted.",
+      seed.extensions[SoulProfileExtensionKeys.COLLABORATION_PREFERENCES],
+    )
+    assertEquals("direct", seed.extensions[SoulProfileExtensionKeys.VOICE])
+    assertEquals(false, seed.extensions.containsKey("blank"))
+  }
 }

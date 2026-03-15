@@ -8,12 +8,12 @@ class RuntimeSoulProfileSeedFactory {
       return null
     }
 
-    val presetName = profile.presetName.normalizedScalarOrNull()?.uppercase()
-    val displayName = profile.displayName.normalizedScalarOrNull()
-    val customGuidance = profile.customGuidance.normalizedScalarOrNull()
-    val extensions = buildMap {
-      profile.voice.normalizedScalarOrNull()?.let { voice ->
-        put("voice", voice)
+    val presetName = normalizeSoulScalarOrNull(profile.presetName)?.uppercase()
+    val displayName = normalizeSoulScalarOrNull(profile.displayName)
+    val customGuidance = normalizeSoulScalarOrNull(profile.customGuidance)
+    val extensions = normalizeSoulExtensions(profile.extensions).toMutableMap().apply {
+      normalizeSoulScalarOrNull(profile.voice)?.let { voice ->
+        put(SoulProfileExtensionKeys.VOICE, voice)
       }
     }
 
@@ -28,10 +28,4 @@ class RuntimeSoulProfileSeedFactory {
       extensions = extensions,
     )
   }
-
-  private fun String?.normalizedScalarOrNull(): String? =
-    this
-      ?.replace(Regex("\\s+"), " ")
-      ?.trim()
-      ?.takeIf(String::isNotEmpty)
 }

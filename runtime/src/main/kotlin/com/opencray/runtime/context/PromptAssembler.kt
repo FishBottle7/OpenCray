@@ -1,12 +1,17 @@
 package com.opencray.runtime.context
 
 import com.opencray.runtime.AgentToolDefinition
+import com.opencray.runtime.memory.MemoryPromptLayer
+import com.opencray.runtime.soul.RuntimeSoulPromptComposer
 
 class PromptAssembler(
   private val transcriptWindowBuilder: TranscriptWindowBuilder = TranscriptWindowBuilder(),
+  private val soulPromptComposer: RuntimeSoulPromptComposer = RuntimeSoulPromptComposer(),
+  private val memoryPromptLayer: MemoryPromptLayer = MemoryPromptLayer(),
 ) {
   fun assemble(input: PromptAssemblyInput): AssembledPrompt {
     val transcriptWindow = transcriptWindowBuilder.build(input.liveConversation)
+    val recalledMemory = input.sessionContext.recalledMemory
     val layers = buildList {
       addLayer(
         name = "Identity",
@@ -26,7 +31,12 @@ class PromptAssembler(
       addLayer(
         name = "Personalization",
         kind = PromptLayerKind.SYSTEM,
-        content = renderSoulProfile(input.sessionContext.soulProfile),
+        content = soulPromptComposer.compose(input.sessionContext.soulProfile),
+      )
+      addLayer(
+        name = "Retrieved Memory",
+        kind = PromptLayerKind.CONTEXT,
+        content = memoryPromptLayer.render(recalledMemory),
       )
       addLayer(
         name = "Tool Protocol",
@@ -55,6 +65,9 @@ class PromptAssembler(
         windowedTranscriptMessageCount = transcriptWindow.messages.size,
         omittedTranscriptMessageCount = transcriptWindow.omittedMessageCount,
         truncatedTranscriptMessageCount = transcriptWindow.truncatedMessageCount,
+        matchedMemoryRecordCount = recalledMemory.matchedRecordCount,
+        injectedMemoryRecordCount = recalledMemory.memories.size,
+        omittedMemoryRecordCount = recalledMemory.omittedRecordCount,
       ),
     )
   }
@@ -77,38 +90,25 @@ class PromptAssembler(
     )
   }
 
-  private fun renderSoulProfile(profile: RuntimeSoulProfile?): String = buildString {
-    if (profile == null) {
-      return@buildString
-    }
-    profile.displayName?.trim()?.takeIf(String::isNotBlank)?.let { value ->
-      appendLine("display_name=$value")
-    }
-    profile.presetName?.trim()?.takeIf(String::isNotBlank)?.let { value ->
-      appendLine("preset=$value")
-    }
-    profile.voice?.trim()?.takeIf(String::isNotBlank)?.let { value ->
-      appendLine("voice=$value")
-    }
-    profile.customGuidance?.trim()?.takeIf(String::isNotBlank)?.let { value ->
-      appendLine("custom_guidance=$value")
-    }
-  }.trim()
-
   private fun renderToolProtocolLayer(toolDefinitions: List<AgentToolDefinition>): String = buildString {
     appendLine("Decide the next step for this OpenCray task.")
     appendLine()
-    appendLine("Return exactly one JSON object and nothing else.")
+    appendLine("On each turn, return exactly one JSON action and nothing else.")
     appendLine("Use one of these shapes:")
     appendLine("""{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}""")
+    appendLine("""{"type":"tool_call","tool_name":"Write","reason":"Need to update the workspace before answering.","arguments":{"file_path":"notes.txt","content":"..."}}""")
     appendLine("""{"type":"final","answer":"Concise answer for the user."}""")
+    appendLine("If you return type=tool_call, the runtime will execute it, append the tool result, and ask you for the next action.")
+    appendLine("If you need multiple tools, call only the next tool now. After each tool result the runtime will ask for the next action.")
+    appendLine("A tool_call may include reason or justification, but it must not include a final answer.")
+    appendLine("Do not return multiple tool calls in one response.")
     appendLine()
     appendLine("Available tools:")
     toolDefinitions.forEach { definition ->
       appendLine(definition.renderForPrompt())
     }
     appendLine()
-    append("If you already have enough evidence, respond with type=final.")
+    append("Only return type=final when you are ready to answer the user.")
   }.trim()
 
   private fun renderTaskContextLayer(

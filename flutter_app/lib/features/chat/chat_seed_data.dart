@@ -148,6 +148,7 @@ class OpenCrayChatSeedData {
       screenTitle: copy.chatSeedScreenTitle,
       summary: _summary(copy),
       messages: _mainMessages(copy),
+      runTraces: const <ChatRunTraceData>[],
       composer: ChatComposerState(placeholder: copy.chatComposerPlaceholder),
       drawer: _drawer(copy),
     );
@@ -163,6 +164,7 @@ class OpenCrayChatSeedData {
         body: copy.chatSeedEmptyBody,
       ),
       messages: const <ChatMessageData>[],
+      runTraces: const <ChatRunTraceData>[],
       composer: ChatComposerState(placeholder: copy.chatComposerPlaceholder),
       drawer: _drawer(copy),
       emptyThreadHeight: 280,
@@ -179,6 +181,7 @@ class OpenCrayChatSeedData {
         body: copy.chatSeedAttachmentsBody,
       ),
       messages: _attachmentMessages(copy),
+      runTraces: const <ChatRunTraceData>[],
       composer: ChatComposerState(
         placeholder: copy.chatComposerPlaceholder,
         attachments: sampleAttachments(copy),
@@ -197,6 +200,7 @@ class OpenCrayChatSeedData {
         body: copy.chatSeedCommandBody,
       ),
       messages: _commandMessages(copy),
+      runTraces: const <ChatRunTraceData>[],
       composer: ChatComposerState(
         placeholder: copy.chatComposerPlaceholder,
         selectedCommand: copy.chatActionCommand,
@@ -216,6 +220,7 @@ class OpenCrayChatSeedData {
         body: copy.chatSeedAddMenuBody,
       ),
       messages: _addMenuMessages(copy),
+      runTraces: const <ChatRunTraceData>[],
       composer: ChatComposerState(
         placeholder: copy.chatComposerPlaceholder,
         showAddMenu: true,

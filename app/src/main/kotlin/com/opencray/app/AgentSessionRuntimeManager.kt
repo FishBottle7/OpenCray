@@ -3,17 +3,59 @@ package com.opencray.app
 import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.AgentTaskState
 import com.opencray.core.contracts.ExecutionResult
+import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.orchestrator.AgentLoop
+import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.SessionLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
 import com.opencray.core.orchestrator.SessionTaskRuntime
+import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.OpenCrayAgentEngine
 import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
 import java.util.UUID
 import java.util.concurrent.ExecutorService
+
+internal data class AgentRunSubmission(
+  val sessionId: String,
+  val runId: String,
+  val taskId: String,
+  val acceptedAtEpochMs: Long,
+)
+
+internal data class AgentRunSnapshot(
+  val sessionId: String,
+  val runId: String,
+  val taskId: String,
+  val acceptedAtEpochMs: Long,
+  val updatedAtEpochMs: Long,
+  val lifecycleState: QueueTaskLifecycleState?,
+  val taskState: AgentTaskState?,
+  val attempt: Int = 0,
+  val executionStatus: ExecutionStatus? = null,
+  val errorCode: String? = null,
+  val errorMessage: String? = null,
+  val responseFormat: String? = null,
+  val pendingMessageId: String? = null,
+  val lastEvent: OpenCrayAgentRunEvent? = null,
+) {
+  val isTerminal: Boolean
+    get() = when (lifecycleState) {
+      QueueTaskLifecycleState.COMPLETED,
+      QueueTaskLifecycleState.FAILED,
+      QueueTaskLifecycleState.CANCELLED,
+      -> true
+
+      QueueTaskLifecycleState.QUEUED,
+      QueueTaskLifecycleState.RUNNING,
+      QueueTaskLifecycleState.RETRY_PENDING,
+      QueueTaskLifecycleState.CANCEL_REQUESTED,
+      null,
+      -> false
+    }
+}
 
 internal interface AgentSessionRuntimeManager {
   fun forSession(sessionId: String): AgentSessionHandle
@@ -34,13 +76,19 @@ internal interface AgentSessionHandle {
     visibleThroughMessageId: String,
     policyDecision: PolicyDecision,
     metadata: Map<String, String> = emptyMap(),
-  ): AgentTask
+  ): AgentRunSubmission
 
   fun ensureProcessing()
 
   fun requestCancel(taskId: String): Boolean
 
   fun requestRetry(taskId: String): Boolean
+
+  fun listRuns(): List<AgentRunSnapshot>
+
+  fun findRun(runId: String): AgentRunSnapshot?
+
+  fun waitForRun(runId: String, timeoutMs: Long): AgentRunSnapshot?
 
   fun requestCancelForPendingMessageIds(pendingMessageIds: Set<String>): Int
 
@@ -55,6 +103,8 @@ internal interface AgentSessionRuntimeListener {
   fun onTaskStarted(sessionId: String, task: AgentTask) = Unit
 
   fun onTaskFinished(sessionId: String, task: AgentTask, result: ExecutionResult) = Unit
+
+  fun onRunEvent(sessionId: String, task: AgentTask, event: OpenCrayAgentRunEvent) = Unit
 
   fun onToolCall(sessionId: String, task: AgentTask, turn: Int, call: AgentToolCall) = Unit
 
@@ -127,27 +177,34 @@ private class ManagedAgentSessionHandle(
   private val executor: ExecutorService,
   private val listenerProvider: () -> List<AgentSessionRuntimeListener>,
 ) : AgentSessionHandle {
+  private val runLock = Any()
+  private val runRecordsById = linkedMapOf<String, ManagedRunRecord>()
   private val processingLock = Any()
   private var processing: Boolean = false
   private var lastAccessEpochMs: Long = System.currentTimeMillis()
   private val baseRuntime = runtimeFactory.create(
     sessionId = sessionId,
     eventSink = object : OpenCrayAgentRuntimeEventSink {
-      override fun onToolCall(task: AgentTask, turn: Int, call: AgentToolCall) {
+      override fun onRunEvent(task: AgentTask, event: OpenCrayAgentRunEvent) {
+        recordRunEvent(event)
         listenerProvider().forEach { listener ->
-          listener.onToolCall(sessionId = sessionId, task = task, turn = turn, call = call)
-        }
-      }
-
-      override fun onToolResult(task: AgentTask, turn: Int, call: AgentToolCall, result: AgentToolResult) {
-        listenerProvider().forEach { listener ->
-          listener.onToolResult(
-            sessionId = sessionId,
-            task = task,
-            turn = turn,
-            call = call,
-            result = result,
-          )
+          listener.onRunEvent(sessionId = sessionId, task = task, event = event)
+          when (event) {
+            is com.opencray.runtime.OpenCrayToolCallEvent -> listener.onToolCall(
+              sessionId = sessionId,
+              task = task,
+              turn = event.turn,
+              call = event.call,
+            )
+            is com.opencray.runtime.OpenCrayToolResultEvent -> listener.onToolResult(
+              sessionId = sessionId,
+              task = task,
+              turn = event.turn,
+              call = event.call,
+              result = event.result,
+            )
+            else -> Unit
+          }
         }
       }
     },
@@ -158,6 +215,7 @@ private class ManagedAgentSessionHandle(
         listener.onTaskStarted(sessionId = sessionId, task = task)
       }
       val result = baseRuntime.execute(task, hooks)
+      recordRunResult(task = task, result = result)
       listenerProvider().forEach { listener ->
         listener.onTaskFinished(sessionId = sessionId, task = task, result = result)
       }
@@ -175,21 +233,34 @@ private class ManagedAgentSessionHandle(
     visibleThroughMessageId: String,
     policyDecision: PolicyDecision,
     metadata: Map<String, String>,
-  ): AgentTask {
+  ): AgentRunSubmission {
     touch()
+    val acceptedAtEpochMs = System.currentTimeMillis()
+    val runId = "run-$sessionId-${UUID.randomUUID().toString().take(8)}"
     val task = AgentTask(
       id = "prompt-$sessionId-${UUID.randomUUID().toString().take(8)}",
       type = com.opencray.core.contracts.AgentTaskType.PROMPT,
       input = userText,
       policyDecision = policyDecision,
-      createdAtEpochMs = System.currentTimeMillis(),
+      createdAtEpochMs = acceptedAtEpochMs,
       metadata = metadata + mapOf(
+        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
         AppAgentSessionTaskRuntimeFactory.METADATA_HOST_SESSION_ID to sessionId,
         AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to pendingMessageId,
         AppAgentSessionTaskRuntimeFactory.METADATA_VISIBLE_THROUGH_MESSAGE_ID to visibleThroughMessageId,
       ),
     )
-    return loop.submit(task)
+    val submittedTask = loop.submit(task)
+    val submission = AgentRunSubmission(
+      sessionId = sessionId,
+      runId = runId,
+      taskId = submittedTask.id,
+      acceptedAtEpochMs = acceptedAtEpochMs,
+    )
+    synchronized(runLock) {
+      runRecordsById[runId] = ManagedRunRecord(submission = submission)
+    }
+    return submission
   }
 
   override fun ensureProcessing() {
@@ -243,6 +314,39 @@ private class ManagedAgentSessionHandle(
     return retried
   }
 
+  override fun listRuns(): List<AgentRunSnapshot> {
+    touch()
+    return currentRunSnapshots()
+  }
+
+  override fun findRun(runId: String): AgentRunSnapshot? {
+    touch()
+    return currentRunSnapshots().firstOrNull { snapshot -> snapshot.runId == runId }
+  }
+
+  override fun waitForRun(runId: String, timeoutMs: Long): AgentRunSnapshot? {
+    touch()
+    val boundedTimeoutMs = timeoutMs.coerceAtLeast(0L)
+    val deadline = System.currentTimeMillis() + boundedTimeoutMs
+    while (true) {
+      val snapshot = findRun(runId)
+      if (snapshot?.isTerminal == true) {
+        return snapshot
+      }
+      val now = System.currentTimeMillis()
+      if (now >= deadline) {
+        return snapshot
+      }
+      val sleepMs = minOf(RUN_WAIT_POLL_INTERVAL_MS, deadline - now).coerceAtLeast(1L)
+      try {
+        Thread.sleep(sleepMs)
+      } catch (_: InterruptedException) {
+        Thread.currentThread().interrupt()
+        return snapshot
+      }
+    }
+  }
+
   override fun requestCancelForPendingMessageIds(pendingMessageIds: Set<String>): Int {
     if (pendingMessageIds.isEmpty()) {
       return 0
@@ -294,5 +398,83 @@ private class ManagedAgentSessionHandle(
 
   fun touch() {
     lastAccessEpochMs = System.currentTimeMillis()
+  }
+
+  private fun recordRunEvent(event: OpenCrayAgentRunEvent) {
+    synchronized(runLock) {
+      val existing = runRecordsById[event.runId]
+      if (existing != null) {
+        runRecordsById[event.runId] = existing.copy(lastEvent = event)
+      }
+    }
+  }
+
+  private fun recordRunResult(task: AgentTask, result: ExecutionResult) {
+    val runId = runIdFor(task)
+    synchronized(runLock) {
+      val existing = runRecordsById[runId]
+      if (existing != null) {
+        runRecordsById[runId] = existing.copy(lastResult = result)
+      }
+    }
+  }
+
+  private fun currentRunSnapshots(): List<AgentRunSnapshot> {
+    val queueSnapshot = loop.snapshot()
+    val taskSnapshotsByRunId = queueSnapshot.tasks.associateBy { taskSnapshot ->
+      runIdFor(taskSnapshot.task)
+    }
+    val records = synchronized(runLock) { runRecordsById.toMap() }
+    val runIds = linkedSetOf<String>().apply {
+      addAll(records.keys)
+      addAll(taskSnapshotsByRunId.keys)
+    }
+    return runIds.map { runId ->
+      val record = records[runId]
+      val taskSnapshot = taskSnapshotsByRunId[runId]
+      val result = record?.lastResult
+      val taskId = taskSnapshot?.task?.id ?: record?.submission?.taskId ?: runId
+      val acceptedAtEpochMs = record?.submission?.acceptedAtEpochMs
+        ?: taskSnapshot?.task?.createdAtEpochMs
+        ?: 0L
+      val updatedAtEpochMs = maxOf(
+        taskSnapshot?.task?.updatedAtEpochMs ?: 0L,
+        result?.finishedAtEpochMs ?: 0L,
+        record?.lastEvent?.emittedAtEpochMs ?: 0L,
+        acceptedAtEpochMs,
+      )
+      AgentRunSnapshot(
+        sessionId = sessionId,
+        runId = runId,
+        taskId = taskId,
+        acceptedAtEpochMs = acceptedAtEpochMs,
+        updatedAtEpochMs = updatedAtEpochMs,
+        lifecycleState = taskSnapshot?.lifecycleState,
+        taskState = taskSnapshot?.task?.state,
+        attempt = taskSnapshot?.attempt ?: 0,
+        executionStatus = result?.status,
+        errorCode = result?.errorCode ?: taskSnapshot?.lastErrorCode,
+        errorMessage = result?.errorMessage ?: taskSnapshot?.lastErrorMessage,
+        responseFormat = result?.metadata?.get("responseFormat"),
+        pendingMessageId = taskSnapshot?.task?.metadata
+          ?.get(AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID),
+        lastEvent = record?.lastEvent,
+      )
+    }.sortedByDescending { snapshot -> snapshot.acceptedAtEpochMs }
+  }
+
+  private fun runIdFor(task: AgentTask): String =
+    task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
+      ?.takeIf(String::isNotBlank)
+      ?: task.id
+
+  private data class ManagedRunRecord(
+    val submission: AgentRunSubmission,
+    val lastEvent: OpenCrayAgentRunEvent? = null,
+    val lastResult: ExecutionResult? = null,
+  )
+
+  private companion object {
+    const val RUN_WAIT_POLL_INTERVAL_MS: Long = 50L
   }
 }

@@ -7,13 +7,13 @@ class SoulPromptRenderer {
     }
 
     return buildString {
-      profile.displayName.normalizedScalarOrNull()?.let { value ->
+      normalizeSoulScalarOrNull(profile.displayName)?.let { value ->
         appendLine("display_name=$value")
       }
-      profile.presetName.normalizedScalarOrNull()?.let { value ->
+      normalizeSoulScalarOrNull(profile.presetName)?.let { value ->
         appendLine("preset=$value")
       }
-      profile.voice.normalizedScalarOrNull()?.let { value ->
+      normalizeSoulScalarOrNull(profile.voice)?.let { value ->
         appendLine("voice=$value")
       }
       appendLine("tone=${profile.tone.name.lowercase()}")
@@ -24,7 +24,7 @@ class SoulPromptRenderer {
       appendList("escalation_rules", profile.escalationRules)
       appendList("forbidden_behaviors", profile.forbiddenBehaviors)
       appendList("collaboration_preferences", profile.collaborationPreferences)
-      profile.customGuidance.normalizedScalarOrNull()?.let { value ->
+      normalizeSoulScalarOrNull(profile.customGuidance)?.let { value ->
         appendLine("custom_guidance=$value")
       }
     }.trim()
@@ -34,7 +34,7 @@ class SoulPromptRenderer {
     name: String,
     values: List<String>,
   ) {
-    val normalized = values.mapNotNull { value -> value.normalizedScalarOrNull() }
+    val normalized = values.mapNotNull(::normalizeSoulScalarOrNull)
     if (normalized.isEmpty()) {
       return
     }
@@ -43,10 +43,4 @@ class SoulPromptRenderer {
       appendLine("- $value")
     }
   }
-
-  private fun String?.normalizedScalarOrNull(): String? =
-    this
-      ?.replace(Regex("\\s+"), " ")
-      ?.trim()
-      ?.takeIf(String::isNotEmpty)
 }

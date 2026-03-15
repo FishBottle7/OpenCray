@@ -58,17 +58,44 @@ class OpenCrayAgentRuntime(
   private val eventSink: OpenCrayAgentRuntimeEventSink = NoOpOpenCrayAgentRuntimeEventSink,
   private val clock: () -> Long = System::currentTimeMillis,
 ) : SessionTaskRuntime {
-  override fun execute(task: AgentTask, hooks: RuntimeExecutionHooks): ExecutionResult = when (task.type) {
-    AgentTaskType.PROMPT -> executePromptTask(task = task, hooks = hooks)
-    AgentTaskType.TOOL_CALL -> executeDirectToolCall(task = task, hooks = hooks)
-    AgentTaskType.SKILL_CALL -> executeDirectSkillCall(task = task)
-    AgentTaskType.SYSTEM -> successResult(
-      task = task,
-      body = task.input,
-      startedAt = clock(),
-      finishedAt = clock(),
-      metadata = mapOf("taskType" to task.type.name, "responseFormat" to "passthrough"),
-    )
+  override fun execute(task: AgentTask, hooks: RuntimeExecutionHooks): ExecutionResult {
+    emitLifecycleEvent(task = task, phase = OpenCrayRunLifecyclePhase.START)
+    return try {
+      val result = when (task.type) {
+        AgentTaskType.PROMPT -> executePromptTask(task = task, hooks = hooks)
+        AgentTaskType.TOOL_CALL -> executeDirectToolCall(task = task, hooks = hooks)
+        AgentTaskType.SKILL_CALL -> executeDirectSkillCall(task = task)
+        AgentTaskType.SYSTEM -> successResult(
+          task = task,
+          body = task.input,
+          startedAt = clock(),
+          finishedAt = clock(),
+          metadata = mapOf("taskType" to task.type.name, "responseFormat" to "passthrough"),
+        )
+      }
+      emitLifecycleEvent(
+        task = task,
+        phase = when (result.status) {
+          ExecutionStatus.CANCELLED -> OpenCrayRunLifecyclePhase.CANCELLED
+          ExecutionStatus.FAILED,
+          ExecutionStatus.TIMEOUT,
+          -> OpenCrayRunLifecyclePhase.ERROR
+          ExecutionStatus.SUCCESS,
+          ExecutionStatus.DENIED,
+          -> OpenCrayRunLifecyclePhase.END
+        },
+        result = result,
+      )
+      result
+    } catch (throwable: Throwable) {
+      emitLifecycleEvent(
+        task = task,
+        phase = OpenCrayRunLifecyclePhase.ERROR,
+        errorCode = "RUNTIME_EXCEPTION",
+        errorMessage = throwable.message ?: throwable::class.java.simpleName,
+      )
+      throw throwable
+    }
   }
 
   private fun executePromptTask(task: AgentTask, hooks: RuntimeExecutionHooks): ExecutionResult {
@@ -78,6 +105,8 @@ class OpenCrayAgentRuntime(
     var turn = 0
     var lastGatewayResult: LiteLlmGatewayResult? = null
     var lastContextReport: ContextAssemblyReport? = null
+    var protocolErrorCount = 0
+    var lastProtocolErrorMessage: String? = null
 
     while (turn < config.maxTurns) {
       if (hooks.isCancellationRequested()) {
@@ -95,11 +124,13 @@ class OpenCrayAgentRuntime(
       )
       lastContextReport = assembledPrompt.report
 
+      val runId = runIdFor(task)
       val request = LiteLlmGatewayRequest(
-        requestId = "agent-${task.id}-turn-$turn-${UUID.randomUUID().toString().take(8)}",
+        requestId = "agent-$runId-turn-$turn-${UUID.randomUUID().toString().take(8)}",
         prompt = assembledPrompt.taskPrompt,
         systemPrompt = assembledPrompt.systemPrompt,
         metadata = buildMap {
+          put("runId", runId)
           put("taskId", task.id)
           put("taskType", task.type.name)
           put("turnIndex", turn.toString())
@@ -127,60 +158,177 @@ class OpenCrayAgentRuntime(
         )
       }
 
-      val modelAction = parseModelAction(outputText)
-      when (modelAction) {
-        is AgentModelAction.Final -> {
+      val parsedBatch = parseModelActionBatch(outputText)
+      when (parsedBatch) {
+        is ParsedModelActionBatch.ProtocolError -> {
+          protocolErrorCount += 1
+          lastProtocolErrorMessage = parsedBatch.reason
+          transcript += RuntimeConversationMessage(
+            role = RuntimeConversationRole.ASSISTANT,
+            content = outputText.trim().take(MAX_PROTOCOL_ERROR_PREVIEW_CHARS),
+          )
+          transcript += RuntimeConversationMessage(
+            role = RuntimeConversationRole.TOOL,
+            content = buildProtocolRecoveryObservation(
+              rawOutput = outputText,
+              reason = parsedBatch.reason,
+            ),
+          )
+          turn += 1
+          continue
+        }
+
+        is ParsedModelActionBatch.Actions -> {
+          val toolCalls = parsedBatch.actions.filterIsInstance<AgentModelAction.ToolCall>()
+          if (toolCalls.isNotEmpty()) {
+            var shouldContinueBatch = true
+            toolCalls.forEach { toolAction ->
+              if (!shouldContinueBatch) return@forEach
+              if (toolCallCount >= config.maxToolCalls) {
+                return failedResult(
+                  task = task,
+                  startedAt = startedAt,
+                  finishedAt = clock(),
+                  errorCode = "MAX_TOOL_CALLS_EXCEEDED",
+                  errorMessage = "Agent exceeded the configured tool call budget.",
+                  metadata = buildResultMetadata(
+                    gatewayResult = gatewayResult,
+                    turn = turn,
+                    toolCallCount = toolCallCount,
+                    responseFormat = "tool_budget_exceeded",
+                    contextReport = lastContextReport,
+                  ),
+                )
+              }
+
+              transcript += RuntimeConversationMessage(
+                role = RuntimeConversationRole.ASSISTANT,
+                content = buildToolCallTranscriptEntry(toolAction.call),
+              )
+              eventSink.onRunEvent(
+                task = task,
+                event = OpenCrayToolCallEvent(
+                  runId = runIdFor(task),
+                  taskId = task.id,
+                  turn = turn,
+                  call = toolAction.call,
+                  emittedAtEpochMs = clock(),
+                ),
+              )
+              val toolResult = toolDispatcher.dispatch(task = task, call = toolAction.call, hooks = hooks)
+              eventSink.onRunEvent(
+                task = task,
+                event = OpenCrayToolResultEvent(
+                  runId = runIdFor(task),
+                  taskId = task.id,
+                  turn = turn,
+                  call = toolAction.call,
+                  result = toolResult,
+                  emittedAtEpochMs = clock(),
+                ),
+              )
+              if (toolResult.status == AgentToolResultStatus.CANCELLED) {
+                return cancelledResult(task = task, startedAt = startedAt, finishedAt = clock())
+              }
+              if (toolResult.isApprovalRequiredDenial()) {
+                val approvalResult = toolResult.toExecutionResult(
+                  task = task,
+                  startedAt = startedAt,
+                  finishedAt = clock(),
+                  json = config.json,
+                )
+                return approvalResult.copy(
+                  metadata = approvalResult.metadata +
+                    buildResultMetadata(
+                      gatewayResult = gatewayResult,
+                      turn = turn,
+                      toolCallCount = toolCallCount + 1,
+                      responseFormat = "tool_approval_required",
+                      contextReport = lastContextReport,
+                    ) +
+                    toolReasonMetadata(toolAction.call),
+                )
+              }
+              transcript += RuntimeConversationMessage(
+                role = RuntimeConversationRole.TOOL,
+                content = toolResult.toObservationText(config.json),
+              )
+              toolCallCount += 1
+              if (toolResult.status != AgentToolResultStatus.SUCCESS) {
+                shouldContinueBatch = false
+              }
+            }
+            if (parsedBatch.requiresSingleActionReminder) {
+              transcript += RuntimeConversationMessage(
+                role = RuntimeConversationRole.TOOL,
+                content = buildSingleActionReminderObservation(),
+              )
+            }
+            turn += 1
+            continue
+          }
+
+          val finalAction = parsedBatch.actions.lastOrNull { action -> action is AgentModelAction.Final }
+            as? AgentModelAction.Final
+          if (finalAction == null) {
+            protocolErrorCount += 1
+            lastProtocolErrorMessage = "Model output did not contain a usable action."
+            transcript += RuntimeConversationMessage(
+              role = RuntimeConversationRole.ASSISTANT,
+              content = outputText.trim().take(MAX_PROTOCOL_ERROR_PREVIEW_CHARS),
+            )
+            transcript += RuntimeConversationMessage(
+              role = RuntimeConversationRole.TOOL,
+              content = buildProtocolRecoveryObservation(
+                rawOutput = outputText,
+                reason = lastProtocolErrorMessage.orEmpty(),
+              ),
+            )
+            turn += 1
+            continue
+          }
+          emitAssistantEvent(
+            task = task,
+            turn = turn,
+            text = finalAction.answer,
+            responseFormat = finalAction.responseFormat,
+            isFinal = true,
+          )
           return successResult(
             task = task,
-            body = modelAction.answer,
+            body = finalAction.answer,
             startedAt = startedAt,
             finishedAt = clock(),
             metadata = buildResultMetadata(
               gatewayResult = gatewayResult,
               turn = turn,
               toolCallCount = toolCallCount,
-              responseFormat = modelAction.responseFormat,
+              responseFormat = finalAction.responseFormat,
               contextReport = lastContextReport,
             ),
           )
         }
-
-        is AgentModelAction.ToolCall -> {
-          if (toolCallCount >= config.maxToolCalls) {
-            return failedResult(
-              task = task,
-              startedAt = startedAt,
-              finishedAt = clock(),
-              errorCode = "MAX_TOOL_CALLS_EXCEEDED",
-              errorMessage = "Agent exceeded the configured tool call budget.",
-              metadata = buildResultMetadata(
-                gatewayResult = gatewayResult,
-                turn = turn,
-                toolCallCount = toolCallCount,
-                responseFormat = "tool_budget_exceeded",
-                contextReport = lastContextReport,
-              ),
-            )
-          }
-
-          transcript += RuntimeConversationMessage(
-            role = RuntimeConversationRole.ASSISTANT,
-            content = "tool_call ${modelAction.call.toolName} ${config.json.encodeToString(JsonObject.serializer(), modelAction.call.arguments)}",
-          )
-          eventSink.onToolCall(task = task, turn = turn, call = modelAction.call)
-          val toolResult = toolDispatcher.dispatch(task = task, call = modelAction.call, hooks = hooks)
-          eventSink.onToolResult(task = task, turn = turn, call = modelAction.call, result = toolResult)
-          if (toolResult.status == AgentToolResultStatus.CANCELLED) {
-            return cancelledResult(task = task, startedAt = startedAt, finishedAt = clock())
-          }
-          transcript += RuntimeConversationMessage(
-            role = RuntimeConversationRole.TOOL,
-            content = toolResult.toObservationText(config.json),
-          )
-          toolCallCount += 1
-        }
       }
-      turn += 1
+    }
+
+    if (lastProtocolErrorMessage != null) {
+      return failedResult(
+        task = task,
+        startedAt = startedAt,
+        finishedAt = clock(),
+        errorCode = "MODEL_ACTION_FORMAT_ERROR",
+        errorMessage = "The model returned invalid tool/action payloads and never recovered.",
+        metadata = buildResultMetadata(
+          gatewayResult = lastGatewayResult,
+          turn = turn,
+          toolCallCount = toolCallCount,
+          responseFormat = "protocol_error_exhausted",
+          contextReport = lastContextReport,
+        ) + mapOf(
+          "protocolErrorCount" to protocolErrorCount.toString(),
+          "lastProtocolError" to lastProtocolErrorMessage.orEmpty(),
+        ),
+      )
     }
 
     return failedResult(
@@ -201,8 +349,12 @@ class OpenCrayAgentRuntime(
 
   private fun executeDirectToolCall(task: AgentTask, hooks: RuntimeExecutionHooks): ExecutionResult {
     val startedAt = clock()
-    val parsedAction = parseModelAction(task.input)
-    val toolCall = (parsedAction as? AgentModelAction.ToolCall)?.call
+    val parsedBatch = parseModelActionBatch(task.input)
+    val toolCall = (parsedBatch as? ParsedModelActionBatch.Actions)
+      ?.actions
+      ?.filterIsInstance<AgentModelAction.ToolCall>()
+      ?.firstOrNull()
+      ?.call
       ?: return failedResult(
         task = task,
         startedAt = startedAt,
@@ -212,7 +364,28 @@ class OpenCrayAgentRuntime(
         metadata = mapOf("taskType" to task.type.name),
       )
 
+    eventSink.onRunEvent(
+      task = task,
+      event = OpenCrayToolCallEvent(
+        runId = runIdFor(task),
+        taskId = task.id,
+        turn = 0,
+        call = toolCall,
+        emittedAtEpochMs = clock(),
+      ),
+    )
     val toolResult = toolDispatcher.dispatch(task = task, call = toolCall, hooks = hooks)
+    eventSink.onRunEvent(
+      task = task,
+      event = OpenCrayToolResultEvent(
+        runId = runIdFor(task),
+        taskId = task.id,
+        turn = 0,
+        call = toolCall,
+        result = toolResult,
+        emittedAtEpochMs = clock(),
+      ),
+    )
     return toolResult.toExecutionResult(
       task = task,
       startedAt = startedAt,
@@ -223,19 +396,41 @@ class OpenCrayAgentRuntime(
 
   private fun executeDirectSkillCall(task: AgentTask): ExecutionResult {
     val startedAt = clock()
-    val toolResult = toolDispatcher.dispatch(
-      task = task,
-      call = AgentToolCall(
-        toolName = "skill_read",
-        arguments = JsonObject(
-          mapOf(
-            "name" to JsonPrimitive(task.skillName ?: task.input.trim()),
-          ),
+    val toolCall = AgentToolCall(
+      toolName = "skill_read",
+      arguments = JsonObject(
+        mapOf(
+          "name" to JsonPrimitive(task.skillName ?: task.input.trim()),
         ),
       ),
+    )
+    eventSink.onRunEvent(
+      task = task,
+      event = OpenCrayToolCallEvent(
+        runId = runIdFor(task),
+        taskId = task.id,
+        turn = 0,
+        call = toolCall,
+        emittedAtEpochMs = clock(),
+      ),
+    )
+    val toolResult = toolDispatcher.dispatch(
+      task = task,
+      call = toolCall,
       hooks = RuntimeExecutionHooks(
         isCancellationRequested = { false },
         requestRetry = { _ -> Unit },
+      ),
+    )
+    eventSink.onRunEvent(
+      task = task,
+      event = OpenCrayToolResultEvent(
+        runId = runIdFor(task),
+        taskId = task.id,
+        turn = 0,
+        call = toolCall,
+        result = toolResult,
+        emittedAtEpochMs = clock(),
       ),
     )
     return toolResult.toExecutionResult(
@@ -246,42 +441,108 @@ class OpenCrayAgentRuntime(
     )
   }
 
-  private fun parseModelAction(rawOutput: String): AgentModelAction {
+  private fun parseModelActionBatch(rawOutput: String): ParsedModelActionBatch {
     val trimmed = rawOutput.trim()
-    val jsonCandidate = extractJsonObject(trimmed)
-    if (jsonCandidate == null) {
-      return AgentModelAction.Final(answer = trimmed, responseFormat = "raw_text")
+    val jsonSequence = extractJsonSequence(trimmed)
+    if (jsonSequence == null) {
+      return ParsedModelActionBatch.ProtocolError(
+        reason = "Model output must be a single JSON action object.",
+      )
     }
-
     return runCatching {
-      val parsed = config.json.parseToJsonElement(jsonCandidate) as? JsonObject
-        ?: error("Model output must decode to a JSON object.")
-      val type = parsed.primitiveContent("type")?.trim()?.lowercase()
-        ?: parsed.primitiveContent("decision")?.trim()?.lowercase()
-        ?: error("Model output must contain 'type' or 'decision'.")
-      when (type) {
-        "final", "answer" -> AgentModelAction.Final(
-          answer = parsed.primitiveContent("answer")?.trim().orEmpty().ifBlank {
-            error("Final action must contain a non-blank 'answer'.")
-          },
-          responseFormat = "json_final",
-        )
-
-        "tool_call", "tool" -> AgentModelAction.ToolCall(
-          call = AgentToolCall(
-            toolName = parsed.primitiveContent("tool_name")?.trim().orEmpty().ifBlank {
-              error("tool_call action must contain a non-blank 'tool_name'.")
-            },
-            arguments = parsed["arguments"] as? JsonObject ?: JsonObject(emptyMap()),
-          ),
-        )
-
-        else -> error("Unsupported model action type '$type'.")
+      val actions = mutableListOf<AgentModelAction>()
+      var ignoredNonActionContent = false
+      jsonSequence.envelopes.forEach { envelope ->
+        if (envelope.leadingText.isNotBlank()) {
+          ignoredNonActionContent = true
+        }
+        val parsedObjectActions = parseActionObject(envelope.json)
+        actions += parsedObjectActions.actions
+        ignoredNonActionContent = ignoredNonActionContent || parsedObjectActions.ignoredNonActionContent
       }
+      if (jsonSequence.trailingText.isNotBlank()) {
+        ignoredNonActionContent = true
+      }
+      if (actions.isEmpty()) {
+        error("Model output did not contain any executable actions.")
+      }
+      ParsedModelActionBatch.Actions(
+        actions = actions,
+        ignoredNonActionContent = ignoredNonActionContent,
+      )
     }.getOrElse {
-      AgentModelAction.Final(answer = trimmed, responseFormat = "raw_fallback")
+      ParsedModelActionBatch.ProtocolError(
+        reason = it.message ?: "Model output could not be parsed as a JSON action.",
+      )
     }
   }
+
+  private fun parseActionObject(rawJson: String): ParsedActionObject {
+    val parsed = config.json.parseToJsonElement(rawJson) as? JsonObject
+      ?: error("Model output must decode to a JSON object.")
+    val nestedActions = (parsed["actions"] as? kotlinx.serialization.json.JsonArray)
+      ?.map { element ->
+        val nestedObject = element as? JsonObject ?: error("Each action inside 'actions' must be a JSON object.")
+        parseActionObject(config.json.encodeToString(JsonObject.serializer(), nestedObject))
+      }
+      .orEmpty()
+    if (nestedActions.isNotEmpty()) {
+      return ParsedActionObject(
+        actions = nestedActions.flatMap { action -> action.actions },
+        ignoredNonActionContent = nestedActions.any(ParsedActionObject::ignoredNonActionContent),
+      )
+    }
+
+    val type = parsed.primitiveContent("type")?.trim()?.lowercase()
+      ?: parsed.primitiveContent("decision")?.trim()?.lowercase()
+    val hasToolCallShape = parsed.primitiveContent("tool_name")?.isNotBlank() == true
+    val hasFinalAnswerShape = parsed.primitiveContent("answer")?.isNotBlank() == true
+    val toolCalls = (parsed["tool_calls"] as? kotlinx.serialization.json.JsonArray)
+      ?.map { element ->
+        val toolCallObject = element as? JsonObject ?: error("Each entry inside 'tool_calls' must be a JSON object.")
+        AgentModelAction.ToolCall(call = parseToolCall(toolCallObject))
+      }
+      .orEmpty()
+    if (toolCalls.isNotEmpty()) {
+      return ParsedActionObject(
+        actions = toolCalls,
+        ignoredNonActionContent = parsed.primitiveContent("answer")?.isNotBlank() == true ||
+          parsed.primitiveContent("message")?.isNotBlank() == true,
+      )
+    }
+
+    return when {
+      type in setOf("tool_call", "tool") || hasToolCallShape -> ParsedActionObject(
+        actions = listOf(AgentModelAction.ToolCall(call = parseToolCall(parsed))),
+        ignoredNonActionContent = parsed.primitiveContent("answer")?.isNotBlank() == true ||
+          parsed.primitiveContent("message")?.isNotBlank() == true,
+      )
+
+      type in setOf("final", "answer") || (type == null && hasFinalAnswerShape) -> ParsedActionObject(
+        actions = listOf(
+          AgentModelAction.Final(
+            answer = parsed.primitiveContent("answer")?.trim().orEmpty().ifBlank {
+              error("Final action must contain a non-blank 'answer'.")
+            },
+            responseFormat = "json_final",
+          ),
+        ),
+      )
+
+      type == null -> error("Model output must contain 'type' or 'decision'.")
+
+      else -> error("Unsupported model action type '$type'.")
+    }
+  }
+
+  private fun parseToolCall(parsed: JsonObject): AgentToolCall = AgentToolCall(
+    toolName = parsed.primitiveContent("tool_name")?.trim().orEmpty().ifBlank {
+      error("tool_call action must contain a non-blank 'tool_name'.")
+    },
+    arguments = parsed["arguments"] as? JsonObject ?: JsonObject(emptyMap()),
+    reason = parsed.primitiveContent("reason")?.trim()?.takeIf(String::isNotBlank)
+      ?: parsed.primitiveContent("justification")?.trim()?.takeIf(String::isNotBlank),
+  )
 
   private fun buildResultMetadata(
     gatewayResult: LiteLlmGatewayResult?,
@@ -428,25 +689,30 @@ class OpenCrayAgentRuntime(
     )
   }
 
-  private fun extractJsonObject(raw: String): String? {
+  private fun AgentToolResult.isApprovalRequiredDenial(): Boolean =
+    status == AgentToolResultStatus.DENIED &&
+      (errorCode == ERROR_APPROVAL_REQUIRED || errorCode == ERROR_HIGH_RISK_APPROVAL_REQUIRED)
+
+  private fun extractJsonSequence(raw: String): JsonSequence? {
     val fenced = raw.lines()
       .dropWhile { line -> !line.trimStart().startsWith("```") }
       .drop(1)
       .takeWhile { line -> !line.trimStart().startsWith("```") }
       .joinToString(separator = "\n")
       .trim()
-    if (fenced.startsWith("{") && fenced.endsWith("}")) {
-      return fenced
-    }
-    if (raw.startsWith("{") && raw.endsWith("}")) {
-      return raw
+    val source = when {
+      fenced.startsWith("{") && fenced.endsWith("}") -> fenced
+      raw.startsWith("{") && raw.endsWith("}") -> raw
+      else -> raw
     }
 
+    val envelopes = mutableListOf<JsonEnvelope>()
     var depth = 0
     var startIndex = -1
     var inString = false
     var escaped = false
-    for ((index, character) in raw.withIndex()) {
+    var cursor = 0
+    for ((index, character) in source.withIndex()) {
       when {
         inString && escaped -> escaped = false
         inString && character == '\\' -> escaped = true
@@ -461,16 +727,29 @@ class OpenCrayAgentRuntime(
         !inString && character == '}' -> {
           depth -= 1
           if (depth == 0 && startIndex >= 0) {
-            return raw.substring(startIndex, index + 1)
+            envelopes += JsonEnvelope(
+              json = source.substring(startIndex, index + 1),
+              leadingText = source.substring(cursor, startIndex),
+            )
+            cursor = index + 1
           }
         }
       }
     }
-    return null
+    if (envelopes.isEmpty()) return null
+    return JsonSequence(
+      envelopes = envelopes,
+      trailingText = source.substring(cursor),
+    )
   }
 
   private fun JsonObject.primitiveContent(key: String): String? =
     (this[key] as? JsonPrimitive)?.content
+
+  private fun runIdFor(task: AgentTask): String =
+    task.metadata[RUN_ID_METADATA_KEY]
+      ?.takeIf(String::isNotBlank)
+      ?: task.id
 
   private fun isGatewayVisibleMetadataKey(key: String): Boolean = !key.startsWith(HIDDEN_METADATA_PREFIX)
 
@@ -491,6 +770,92 @@ class OpenCrayAgentRuntime(
     return seeded
   }
 
+  private fun emitLifecycleEvent(
+    task: AgentTask,
+    phase: OpenCrayRunLifecyclePhase,
+    result: ExecutionResult? = null,
+    errorCode: String? = null,
+    errorMessage: String? = null,
+  ) {
+    eventSink.onRunEvent(
+      task = task,
+      event = OpenCrayLifecycleEvent(
+        runId = runIdFor(task),
+        taskId = task.id,
+        phase = phase,
+        status = result?.status,
+        errorCode = result?.errorCode ?: errorCode,
+        errorMessage = result?.errorMessage ?: errorMessage,
+        turn = result?.metadata?.get("turnCount")?.toIntOrNull()?.minus(1),
+        emittedAtEpochMs = clock(),
+      ),
+    )
+  }
+
+  private fun emitAssistantEvent(
+    task: AgentTask,
+    turn: Int,
+    text: String,
+    responseFormat: String,
+    isFinal: Boolean,
+  ) {
+    eventSink.onRunEvent(
+      task = task,
+      event = OpenCrayAssistantEvent(
+        runId = runIdFor(task),
+        taskId = task.id,
+        turn = turn,
+        text = text,
+        responseFormat = responseFormat,
+        isFinal = isFinal,
+        emittedAtEpochMs = clock(),
+      ),
+    )
+  }
+
+  private fun buildToolCallTranscriptEntry(call: AgentToolCall): String = buildString {
+    append("tool_call ")
+    append(call.toolName)
+    call.reason
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { reason ->
+        append(" reason=")
+        append(reason)
+      }
+    append(' ')
+    append(config.json.encodeToString(JsonObject.serializer(), call.arguments))
+  }
+
+  private fun toolReasonMetadata(call: AgentToolCall): Map<String, String> =
+    call.reason
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { reason -> mapOf("toolReason" to reason) }
+      ?: emptyMap()
+
+  private fun buildSingleActionReminderObservation(): String = buildString {
+    appendLine("Protocol note: return only the next action on each turn.")
+    appendLine("Do not include a final answer alongside a tool_call.")
+    append("If you need multiple tools, call them one at a time across turns.")
+  }.trim()
+
+  private fun buildProtocolRecoveryObservation(
+    rawOutput: String,
+    reason: String,
+  ): String = buildString {
+    appendLine("Protocol error: return exactly one JSON action with type=tool_call or type=final.")
+    appendLine("A tool_call may include reason or justification, but it must not include a final answer.")
+    appendLine("If you need multiple tools, call only the next tool now and wait for the next turn.")
+    appendLine("Do not explain the protocol. Do not answer in prose unless you emit type=final.")
+    appendLine("Reason: $reason")
+    val preview = rawOutput.trim().take(MAX_PROTOCOL_ERROR_PREVIEW_CHARS)
+    if (preview.isNotBlank()) {
+      appendLine("Previous response preview:")
+      append(preview)
+    }
+  }.trim()
+
   private sealed interface AgentModelAction {
     data class Final(
       val answer: String,
@@ -502,18 +867,43 @@ class OpenCrayAgentRuntime(
     ) : AgentModelAction
   }
 
+  private data class JsonEnvelope(
+    val json: String,
+    val leadingText: String,
+  )
+
+  private data class JsonSequence(
+    val envelopes: List<JsonEnvelope>,
+    val trailingText: String,
+  )
+
+  private data class ParsedActionObject(
+    val actions: List<AgentModelAction>,
+    val ignoredNonActionContent: Boolean = false,
+  )
+
+  private sealed interface ParsedModelActionBatch {
+    data class Actions(
+      val actions: List<AgentModelAction>,
+      val ignoredNonActionContent: Boolean,
+    ) : ParsedModelActionBatch {
+      val requiresSingleActionReminder: Boolean
+        get() = ignoredNonActionContent || actions.size > 1
+    }
+
+    data class ProtocolError(
+      val reason: String,
+    ) : ParsedModelActionBatch
+  }
+
   private companion object {
     const val HIDDEN_METADATA_PREFIX: String = "_host."
+    const val RUN_ID_METADATA_KEY: String = "${HIDDEN_METADATA_PREFIX}runId"
+    const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
+    const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
+    const val MAX_PROTOCOL_ERROR_PREVIEW_CHARS: Int = 600
   }
 }
-
-interface OpenCrayAgentRuntimeEventSink {
-  fun onToolCall(task: AgentTask, turn: Int, call: AgentToolCall) = Unit
-
-  fun onToolResult(task: AgentTask, turn: Int, call: AgentToolCall, result: AgentToolResult) = Unit
-}
-
-object NoOpOpenCrayAgentRuntimeEventSink : OpenCrayAgentRuntimeEventSink
 
 class OpenCrayAgentEngine(
   private val runtime: SessionTaskRuntime,

@@ -81,6 +81,20 @@ class SoulProfileResolverTest {
   }
 
   @Test
+  fun resolveReturnsNullWhenSeedOnlyContainsBlankExtensions() {
+    val profile = resolver.resolve(
+      SoulProfileSeed(
+        extensions = mapOf(
+          "voice" to "   ",
+          "toolUseBias" to "\n",
+        ),
+      ),
+    )
+
+    assertEquals(null, profile)
+  }
+
+  @Test
   fun resolveNormalizesAndDeduplicatesListEntries() {
     val profile = resolver.resolve(
       SoulProfileSeed(
@@ -94,5 +108,24 @@ class SoulProfileResolverTest {
     requireNotNull(profile)
     assertEquals(3, profile.forbiddenBehaviors.size)
     assertTrue(profile.forbiddenBehaviors.contains("Avoid bluffing."))
+  }
+
+  @Test
+  fun resolveSupportsMixedExtensionKeyFormats() {
+    val profile = resolver.resolve(
+      SoulProfileSeed(
+        presetName = "builder",
+        extensions = mapOf(
+          "toolUseBias" to "tool-forward",
+          "user-relationship-style" to "supportive",
+          "collaboration preferences" to " Keep the user posted. ",
+        ),
+      ),
+    )
+
+    requireNotNull(profile)
+    assertEquals(ToolUseBias.TOOL_FORWARD, profile.toolUseBias)
+    assertEquals(UserRelationshipStyle.SUPPORTIVE, profile.userRelationshipStyle)
+    assertTrue(profile.collaborationPreferences.contains("Keep the user posted."))
   }
 }

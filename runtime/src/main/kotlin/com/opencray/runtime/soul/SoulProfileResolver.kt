@@ -7,34 +7,39 @@ class SoulProfileResolver {
     }
 
     val normalizedPreset = seed.presetName.normalizedOrNull()?.uppercase()
-    val normalizedDisplayName = seed.displayName.normalizedScalarOrNull()
-    val normalizedGuidance = seed.customGuidance.normalizedScalarOrNull()
+    val normalizedDisplayName = normalizeSoulScalarOrNull(seed.displayName)
+    val normalizedGuidance = normalizeSoulScalarOrNull(seed.customGuidance)
+    val normalizedExtensions = normalizeSoulExtensions(seed.extensions)
     if (
       normalizedPreset == null &&
       normalizedDisplayName == null &&
       normalizedGuidance == null &&
-      seed.extensions.isEmpty()
+      normalizedExtensions.isEmpty()
     ) {
       return null
     }
 
+    val defaultForbiddenBehaviors = forbiddenBehaviors(normalizedExtensions)
     val resolved = when (normalizedPreset) {
-      "BUILDER" -> builderPreset(seed)
-      "WARM" -> warmPreset(seed)
-      "STEADY", null -> steadyPreset(seed)
-      else -> customPreset(seed, presetName = normalizedPreset)
+      "BUILDER" -> builderPreset(defaultForbiddenBehaviors)
+      "WARM" -> warmPreset(defaultForbiddenBehaviors)
+      "STEADY", null -> steadyPreset(defaultForbiddenBehaviors)
+      else -> customPreset(
+        presetName = normalizedPreset,
+        forbiddenBehaviors = defaultForbiddenBehaviors,
+      )
     }
-    val overridden = applyExtensionOverrides(resolved, seed.extensions)
+    val overridden = applyExtensionOverrides(resolved, normalizedExtensions)
 
     return overridden.takeIf(SoulProfile::isMeaningful)?.copy(
       presetName = normalizedPreset,
       displayName = normalizedDisplayName,
-      voice = seed.extensions[Extensions.VOICE].normalizedScalarOrNull() ?: overridden.voice,
+      voice = normalizedExtensions[SoulProfileExtensionKeys.VOICE] ?: overridden.voice,
       customGuidance = normalizedGuidance ?: overridden.customGuidance,
     )
   }
 
-  private fun steadyPreset(seed: SoulProfileSeed): SoulProfile = SoulProfile(
+  private fun steadyPreset(forbiddenBehaviors: List<String>): SoulProfile = SoulProfile(
     presetName = "STEADY",
     tone = SoulTone.STEADY,
     verbosity = SoulVerbosity.BALANCED,
@@ -49,10 +54,10 @@ class SoulProfileResolver {
       "Keep reasoning concrete and implementation-first.",
       "Preserve user-visible context across turns.",
     ),
-    forbiddenBehaviors = forbiddenBehaviors(seed),
+    forbiddenBehaviors = forbiddenBehaviors,
   )
 
-  private fun builderPreset(seed: SoulProfileSeed): SoulProfile = SoulProfile(
+  private fun builderPreset(forbiddenBehaviors: List<String>): SoulProfile = SoulProfile(
     presetName = "BUILDER",
     tone = SoulTone.BUILDER,
     verbosity = SoulVerbosity.TERSE,
@@ -67,10 +72,10 @@ class SoulProfileResolver {
       "Default to direct language over soft framing.",
       "Bias toward action once the direction is clear.",
     ),
-    forbiddenBehaviors = forbiddenBehaviors(seed),
+    forbiddenBehaviors = forbiddenBehaviors,
   )
 
-  private fun warmPreset(seed: SoulProfileSeed): SoulProfile = SoulProfile(
+  private fun warmPreset(forbiddenBehaviors: List<String>): SoulProfile = SoulProfile(
     presetName = "WARM",
     tone = SoulTone.WARM,
     verbosity = SoulVerbosity.BALANCED,
@@ -85,12 +90,12 @@ class SoulProfileResolver {
       "Keep the tone calm and collaborative.",
       "Make next steps easy to follow without hiding important detail.",
     ),
-    forbiddenBehaviors = forbiddenBehaviors(seed),
+    forbiddenBehaviors = forbiddenBehaviors,
   )
 
   private fun customPreset(
-    seed: SoulProfileSeed,
     presetName: String,
+    forbiddenBehaviors: List<String>,
   ): SoulProfile = SoulProfile(
     presetName = presetName,
     tone = SoulTone.CUSTOM,
@@ -104,30 +109,34 @@ class SoulProfileResolver {
     collaborationPreferences = listOf(
       "Preserve the custom profile while keeping runtime behavior testable.",
     ),
-    forbiddenBehaviors = forbiddenBehaviors(seed),
+    forbiddenBehaviors = forbiddenBehaviors,
   )
 
   private fun applyExtensionOverrides(
     profile: SoulProfile,
     extensions: Map<String, String>,
   ): SoulProfile {
-    val tone = extensions[Extensions.TONE].parseEnumOrNull<SoulTone>() ?: profile.tone
-    val verbosity = extensions[Extensions.VERBOSITY].parseEnumOrNull<SoulVerbosity>() ?: profile.verbosity
+    val tone = extensions[SoulProfileExtensionKeys.TONE].parseEnumOrNull<SoulTone>() ?: profile.tone
+    val verbosity = extensions[SoulProfileExtensionKeys.VERBOSITY].parseEnumOrNull<SoulVerbosity>() ?: profile.verbosity
     val relationshipStyle =
-      extensions[Extensions.USER_RELATIONSHIP_STYLE].parseEnumOrNull<UserRelationshipStyle>()
+      extensions[SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE].parseEnumOrNull<UserRelationshipStyle>()
         ?: profile.userRelationshipStyle
-    val riskTolerance = extensions[Extensions.RISK_TOLERANCE].parseEnumOrNull<RiskTolerance>() ?: profile.riskTolerance
-    val toolUseBias = extensions[Extensions.TOOL_USE_BIAS].parseEnumOrNull<ToolUseBias>() ?: profile.toolUseBias
-    val voice = extensions[Extensions.VOICE].normalizedScalarOrNull() ?: profile.voice
-    val customGuidance = extensions[Extensions.CUSTOM_GUIDANCE].normalizedScalarOrNull() ?: profile.customGuidance
-    val escalationRules = mergeDistinct(profile.escalationRules, extensions[Extensions.ESCALATION_RULES].parseList())
+    val riskTolerance =
+      extensions[SoulProfileExtensionKeys.RISK_TOLERANCE].parseEnumOrNull<RiskTolerance>() ?: profile.riskTolerance
+    val toolUseBias =
+      extensions[SoulProfileExtensionKeys.TOOL_USE_BIAS].parseEnumOrNull<ToolUseBias>() ?: profile.toolUseBias
+    val voice = normalizeSoulScalarOrNull(extensions[SoulProfileExtensionKeys.VOICE]) ?: profile.voice
+    val customGuidance =
+      normalizeSoulScalarOrNull(extensions[SoulProfileExtensionKeys.CUSTOM_GUIDANCE]) ?: profile.customGuidance
+    val escalationRules =
+      mergeDistinct(profile.escalationRules, extensions[SoulProfileExtensionKeys.ESCALATION_RULES].parseList())
     val forbiddenBehaviors = mergeDistinct(
       profile.forbiddenBehaviors,
-      extensions[Extensions.FORBIDDEN_BEHAVIORS].parseList(),
+      extensions[SoulProfileExtensionKeys.FORBIDDEN_BEHAVIORS].parseList(),
     )
     val collaborationPreferences = mergeDistinct(
       profile.collaborationPreferences,
-      extensions[Extensions.COLLABORATION_PREFERENCES].parseList(),
+      extensions[SoulProfileExtensionKeys.COLLABORATION_PREFERENCES].parseList(),
     )
 
     return profile.copy(
@@ -144,33 +153,23 @@ class SoulProfileResolver {
     )
   }
 
-  private fun forbiddenBehaviors(seed: SoulProfileSeed): List<String> {
-    val fromExtensions = seed.extensions[Extensions.FORBIDDEN_BEHAVIORS].parseList()
+  private fun forbiddenBehaviors(extensions: Map<String, String>): List<String> {
+    val fromExtensions = extensions[SoulProfileExtensionKeys.FORBIDDEN_BEHAVIORS].parseList()
     return (DEFAULT_FORBIDDEN_BEHAVIORS + fromExtensions).distinct()
   }
 
   private fun String?.normalizedOrNull(): String? =
     this?.trim()?.takeIf(String::isNotEmpty)
 
-  private fun String?.normalizedScalarOrNull(): String? =
-    this
-      ?.replace(Regex("\\s+"), " ")
-      ?.trim()
-      ?.takeIf(String::isNotEmpty)
-
   private fun String?.parseList(): List<String> = this
     ?.split('|', '\n')
-    ?.mapNotNull { value -> value.normalizedScalarOrNull() }
+    ?.mapNotNull(::normalizeSoulScalarOrNull)
     ?.distinct()
     .orEmpty()
 
   private inline fun <reified T : Enum<T>> String?.parseEnumOrNull(): T? {
-    val normalized = this
-      ?.replace('-', '_')
-      ?.replace(' ', '_')
-      ?.trim()
+    val normalized = normalizeSoulExtensionKeyOrNull(this)
       ?.uppercase()
-      ?.takeIf(String::isNotEmpty)
       ?: return null
     return enumValues<T>().firstOrNull { value -> value.name == normalized }
   }
@@ -179,23 +178,10 @@ class SoulProfileResolver {
     base: List<String>,
     additions: List<String>,
   ): List<String> = (base + additions)
-    .mapNotNull { value -> value.normalizedScalarOrNull() }
+    .mapNotNull(::normalizeSoulScalarOrNull)
     .distinct()
 
   private companion object {
-    object Extensions {
-      const val VOICE: String = "voice"
-      const val TONE: String = "tone"
-      const val VERBOSITY: String = "verbosity"
-      const val USER_RELATIONSHIP_STYLE: String = "user_relationship_style"
-      const val RISK_TOLERANCE: String = "risk_tolerance"
-      const val TOOL_USE_BIAS: String = "tool_use_bias"
-      const val ESCALATION_RULES: String = "escalation_rules"
-      const val FORBIDDEN_BEHAVIORS: String = "forbidden_behaviors"
-      const val COLLABORATION_PREFERENCES: String = "collaboration_preferences"
-      const val CUSTOM_GUIDANCE: String = "custom_guidance"
-    }
-
     val DEFAULT_FORBIDDEN_BEHAVIORS: List<String> = listOf(
       "Do not fabricate workspace facts when a tool or local evidence is required.",
       "Do not hide uncertainty behind confident wording.",

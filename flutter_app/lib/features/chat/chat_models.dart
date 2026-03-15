@@ -13,6 +13,7 @@ class ChatFeatureState {
     required this.screenTitle,
     required this.summary,
     required this.messages,
+    required this.runTraces,
     required this.composer,
     required this.drawer,
     this.pendingApprovals = const <ChatPendingApprovalData>[],
@@ -27,6 +28,7 @@ class ChatFeatureState {
   final String screenTitle;
   final ChatSessionSummary summary;
   final List<ChatMessageData> messages;
+  final List<ChatRunTraceData> runTraces;
   final ChatComposerState composer;
   final ChatSessionsDrawerState drawer;
   final List<ChatPendingApprovalData> pendingApprovals;
@@ -41,6 +43,7 @@ class ChatFeatureState {
     String? screenTitle,
     ChatSessionSummary? summary,
     List<ChatMessageData>? messages,
+    List<ChatRunTraceData>? runTraces,
     ChatComposerState? composer,
     ChatSessionsDrawerState? drawer,
     List<ChatPendingApprovalData>? pendingApprovals,
@@ -55,6 +58,7 @@ class ChatFeatureState {
       screenTitle: screenTitle ?? this.screenTitle,
       summary: summary ?? this.summary,
       messages: messages ?? this.messages,
+      runTraces: runTraces ?? this.runTraces,
       composer: composer ?? this.composer,
       drawer: drawer ?? this.drawer,
       pendingApprovals: pendingApprovals ?? this.pendingApprovals,
@@ -65,6 +69,21 @@ class ChatFeatureState {
       isInputEnabled: isInputEnabled ?? this.isInputEnabled,
     );
   }
+}
+
+@immutable
+class ChatRunTraceData {
+  const ChatRunTraceData({
+    required this.runId,
+    required this.label,
+    required this.body,
+    this.isHighRisk = false,
+  });
+
+  final String runId;
+  final String label;
+  final String body;
+  final bool isHighRisk;
 }
 
 @immutable

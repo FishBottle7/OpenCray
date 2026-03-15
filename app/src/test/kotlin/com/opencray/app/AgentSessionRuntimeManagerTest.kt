@@ -8,6 +8,10 @@ import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.core.orchestrator.SessionTaskRuntime
+import com.opencray.runtime.OpenCrayAssistantEvent
+import com.opencray.runtime.OpenCrayAgentRunEvent
+import com.opencray.runtime.OpenCrayRunLifecyclePhase
+import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
 import java.util.concurrent.AbstractExecutorService
 import java.util.concurrent.TimeUnit
@@ -44,13 +48,13 @@ class AgentSessionRuntimeManagerTest {
     )
     val handle = manager.forSession("session-queued")
 
-    handle.submitPrompt(
+    val firstRun = handle.submitPrompt(
       userText = "first prompt",
       pendingMessageId = "pending-1",
       visibleThroughMessageId = "pending-1",
       policyDecision = allowDecision(),
     )
-    handle.submitPrompt(
+    val secondRun = handle.submitPrompt(
       userText = "second prompt",
       pendingMessageId = "pending-2",
       visibleThroughMessageId = "pending-2",
@@ -75,6 +79,10 @@ class AgentSessionRuntimeManagerTest {
       completedSnapshot.tasks.map { it.lifecycleState },
     )
     assertEquals(listOf("first prompt", "second prompt"), runtimeFactory.executedInputs)
+    assertEquals(
+      linkedSetOf(firstRun.runId, secondRun.runId),
+      handle.listRuns().mapTo(linkedSetOf(), AgentRunSnapshot::runId),
+    )
   }
 
   @Test
@@ -86,7 +94,7 @@ class AgentSessionRuntimeManagerTest {
       runtimeFactory = initialFactory,
       executor = initialExecutor,
     )
-    firstManager.forSession(sessionId).submitPrompt(
+    val submission = firstManager.forSession(sessionId).submitPrompt(
       userText = "restored prompt",
       pendingMessageId = "pending-restored",
       visibleThroughMessageId = "pending-restored",
@@ -109,6 +117,7 @@ class AgentSessionRuntimeManagerTest {
     val snapshot = restoredHandle.snapshot()
     assertEquals(listOf(QueueTaskLifecycleState.COMPLETED), snapshot.tasks.map { it.lifecycleState })
     assertEquals(listOf("restored prompt"), restoredFactory.executedInputs)
+    assertEquals(QueueTaskLifecycleState.COMPLETED, restoredHandle.findRun(submission.runId)?.lifecycleState)
   }
 
   @Test
@@ -121,7 +130,7 @@ class AgentSessionRuntimeManagerTest {
     )
     val handle = manager.forSession("session-cancel")
 
-    handle.submitPrompt(
+    val firstRun = handle.submitPrompt(
       userText = "first prompt",
       pendingMessageId = "pending-1",
       visibleThroughMessageId = "pending-1",
@@ -151,6 +160,67 @@ class AgentSessionRuntimeManagerTest {
       completedSnapshot.tasks.map { it.lifecycleState },
     )
     assertEquals(listOf("first prompt"), runtimeFactory.executedInputs)
+    assertEquals(firstRun.runId, handle.listRuns().last().runId)
+  }
+
+  @Test
+  fun listenersReceiveRunEventsFromUnderlyingRuntime() {
+    val executor = RecordingExecutorService()
+    val runtimeFactory = RecordingRuntimeFactory(
+      onExecute = { task, eventSink ->
+        eventSink.onRunEvent(
+          task,
+          OpenCrayLifecycleEvent(
+            runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID].orEmpty(),
+            taskId = task.id,
+            phase = OpenCrayRunLifecyclePhase.START,
+            emittedAtEpochMs = 10L,
+          ),
+        )
+        eventSink.onRunEvent(
+          task,
+          OpenCrayAssistantEvent(
+            runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID].orEmpty(),
+            taskId = task.id,
+            turn = 0,
+            text = "working",
+            responseFormat = "json_final",
+            isFinal = true,
+            emittedAtEpochMs = 11L,
+          ),
+        )
+      },
+    )
+    val manager = manager(runtimeFactory = runtimeFactory, executor = executor)
+    val handle = manager.forSession("session-events")
+    val observed = mutableListOf<OpenCrayAgentRunEvent>()
+    manager.observe(
+      object : AgentSessionRuntimeListener {
+        override fun onRunEvent(sessionId: String, task: AgentTask, event: OpenCrayAgentRunEvent) {
+          observed += event
+        }
+      },
+    )
+
+    val submission = handle.submitPrompt(
+      userText = "event prompt",
+      pendingMessageId = "pending-event",
+      visibleThroughMessageId = "pending-event",
+      policyDecision = allowDecision(),
+    )
+    handle.ensureProcessing()
+
+    executor.runNext()
+
+    assertEquals(listOf("lifecycle", "assistant"), observed.map { event ->
+      when (event) {
+        is OpenCrayLifecycleEvent -> "lifecycle"
+        is OpenCrayAssistantEvent -> "assistant"
+        else -> "other"
+      }
+    })
+    assertEquals(submission.runId, observed.first().runId)
+    assertEquals(submission.runId, handle.waitForRun(submission.runId, 0L)?.runId)
   }
 
   private fun manager(
@@ -168,13 +238,16 @@ class AgentSessionRuntimeManagerTest {
     reasonCode = "TEST_ALLOW",
   )
 
-  private class RecordingRuntimeFactory : AgentSessionTaskRuntimeFactory {
+  private class RecordingRuntimeFactory(
+    private val onExecute: ((AgentTask, OpenCrayAgentRuntimeEventSink) -> Unit)? = null,
+  ) : AgentSessionTaskRuntimeFactory {
     val executedInputs = mutableListOf<String>()
 
     override fun create(
       sessionId: String,
       eventSink: OpenCrayAgentRuntimeEventSink,
     ): SessionTaskRuntime = SessionTaskRuntime { task: AgentTask, _: RuntimeExecutionHooks ->
+      onExecute?.invoke(task, eventSink)
       executedInputs += task.input
       ExecutionResult(
         taskId = task.id,

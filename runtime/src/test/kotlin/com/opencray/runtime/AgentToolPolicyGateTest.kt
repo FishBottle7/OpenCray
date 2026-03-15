@@ -249,6 +249,84 @@ class AgentToolPolicyGateTest {
   }
 
   @Test
+  fun approvedToolGrantOnlyAllowsMatchingToolOnRetry() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-approved-tool").toPath()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        approvedTaskId = "task-approved",
+        approvedToolName = "Write",
+      ),
+    )
+
+    val writeResult = dispatcher.dispatch(
+      task = agentTask(
+        id = "task-approved",
+        metadata = mapOf("chatMode" to "SAFE"),
+      ),
+      call = AgentToolCall(
+        toolName = "Write",
+        arguments = JsonObject(
+          mapOf(
+            "file_path" to JsonPrimitive("notes.txt"),
+            "content" to JsonPrimitive("hello"),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+    val deleteResult = dispatcher.dispatch(
+      task = agentTask(
+        id = "task-approved",
+        metadata = mapOf("chatMode" to "SAFE"),
+      ),
+      call = AgentToolCall(
+        toolName = "workspace_delete_file",
+        arguments = JsonObject(
+          mapOf("path" to JsonPrimitive("notes.txt")),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, writeResult.status)
+    assertEquals("USER_APPROVED_RETRY", writeResult.metadata["policyReasonCode"])
+    assertEquals(AgentToolResultStatus.DENIED, deleteResult.status)
+    assertEquals("HIGH_RISK_APPROVAL_REQUIRED", deleteResult.errorCode)
+  }
+
+  @Test
+  fun approvedTaskFallbackStillAllowsRetryWhenToolContextIsUnavailable() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-approved-task").toPath()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        approvedTaskId = "task-approved",
+      ),
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(
+        id = "task-approved",
+        metadata = mapOf("chatMode" to "SAFE"),
+      ),
+      call = AgentToolCall(
+        toolName = "Write",
+        arguments = JsonObject(
+          mapOf(
+            "file_path" to JsonPrimitive("notes.txt"),
+            "content" to JsonPrimitive("hello"),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals("USER_APPROVED_RETRY", result.metadata["policyReasonCode"])
+  }
+
+  @Test
   fun coarseTaskDenyStillOverridesDeveloperModeAllowance() {
     val workspaceRoot = temporaryFolder.newFolder("tool-policy-coarse-deny").toPath()
     val dispatcher = OpenCrayToolDispatcher(
@@ -357,13 +435,14 @@ class AgentToolPolicyGateTest {
   }
 
   private fun agentTask(
+    id: String = "task-${System.nanoTime()}",
     policyDecision: PolicyDecision = PolicyDecision(
       outcome = PolicyDecisionOutcome.ALLOW,
       reasonCode = "HOST_ALLOW",
     ),
     metadata: Map<String, String> = emptyMap(),
   ): AgentTask = AgentTask(
-    id = "task-${System.nanoTime()}",
+    id = id,
     type = AgentTaskType.TOOL_CALL,
     input = """{"type":"tool_call"}""",
     policyDecision = policyDecision,
