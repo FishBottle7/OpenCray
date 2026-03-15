@@ -33,8 +33,11 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   late final TextEditingController _composerController =
       TextEditingController();
   late final FocusNode _composerFocusNode = FocusNode();
+  final ScrollController _chatScrollController = ScrollController();
+  final GlobalKey _composerKey = GlobalKey();
   StreamSubscription<OpenCrayChatSnapshot>? _chatSubscription;
   final Set<String> _approvalTaskIdsInFlight = <String>{};
+  double _composerHeight = 0;
 
   bool get _usesHostBridge => widget.bridge != null;
 
@@ -48,9 +51,15 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         if (!mounted) {
           return;
         }
+        final ChatFeatureState nextState = _mapSnapshot(snapshot);
+        final bool shouldScrollToBottom =
+            nextState.messages.length > _state.messages.length;
         setState(() {
-          _state = _mapSnapshot(snapshot);
+          _state = nextState;
         });
+        if (shouldScrollToBottom) {
+          _scheduleScrollToBottom();
+        }
       });
     }
   }
@@ -60,6 +69,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     _chatSubscription?.cancel();
     _composerController.dispose();
     _composerFocusNode.dispose();
+    _chatScrollController.dispose();
     super.dispose();
   }
 
@@ -68,6 +78,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     const double toolbarReserveHeight = 44;
     final double topGlassBarHeight =
         MediaQuery.paddingOf(context).top + toolbarReserveHeight + 4;
+    _scheduleComposerHeightSync();
 
     return ColoredBox(
       color: _ChatPalette.background,
@@ -86,11 +97,12 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                           onTap: _closeComposerMenus,
                           behavior: HitTestBehavior.translucent,
                           child: SingleChildScrollView(
+                            controller: _chatScrollController,
                             padding: EdgeInsets.fromLTRB(
                               20,
                               4,
                               20,
-                              widget.bottomInset + _composerReserve(_state),
+                              _composerScrollInset(),
                             ),
                             child: _ChatScrollContent(
                               copy: widget.copy,
@@ -111,18 +123,21 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                             20,
                             widget.bottomInset,
                           ),
-                          child: _ComposerCard(
-                            copy: widget.copy,
-                            state: _state,
-                            controller: _composerController,
-                            focusNode: _composerFocusNode,
-                            onPlusPressed: _togglePlusMenu,
-                            onSendPressed: () {
-                              _sendCurrentState();
-                            },
-                            onAddActionSelected: _handleAddAction,
-                            onCommandSelected: _showCommandMenu,
-                            onAttachmentRemoved: _removeAttachment,
+                          child: KeyedSubtree(
+                            key: _composerKey,
+                            child: _ComposerCard(
+                              copy: widget.copy,
+                              state: _state,
+                              controller: _composerController,
+                              focusNode: _composerFocusNode,
+                              onPlusPressed: _togglePlusMenu,
+                              onSendPressed: () {
+                                _sendCurrentState();
+                              },
+                              onAddActionSelected: _handleAddAction,
+                              onCommandSelected: _showCommandMenu,
+                              onAttachmentRemoved: _removeAttachment,
+                            ),
                           ),
                         ),
                       ),
@@ -163,27 +178,50 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     );
   }
 
-  double _composerReserve(ChatFeatureState state) {
-    var reserve = 176.0;
-    if (state.composer.commandOptions.isNotEmpty) {
-      reserve += 84;
+  double _composerScrollInset() {
+    final double measuredHeight = _composerHeight;
+    if (measuredHeight > 0) {
+      return widget.bottomInset + measuredHeight + 12;
     }
-    if (state.composer.attachments.isNotEmpty) {
-      reserve += 38;
-    }
-    if (state.composer.showAddMenu) {
-      reserve += 46;
-    }
-    if (state.messages.isEmpty && state.emptyThreadHeight > 0) {
-      reserve = 188;
-      if (state.composer.showAddMenu) {
-        reserve += 46;
+    return widget.bottomInset + 84;
+  }
+
+  void _scheduleComposerHeightSync() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
       }
-      if (state.composer.attachments.isNotEmpty) {
-        reserve += 38;
+      final BuildContext? composerContext = _composerKey.currentContext;
+      final double? nextHeight = composerContext?.size?.height;
+      if (nextHeight == null || (nextHeight - _composerHeight).abs() < 0.5) {
+        return;
       }
-    }
-    return reserve;
+      setState(() {
+        _composerHeight = nextHeight;
+      });
+    });
+  }
+
+  void _scheduleScrollToBottom({bool animated = true}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_chatScrollController.hasClients) {
+        return;
+      }
+      final ScrollPosition position = _chatScrollController.position;
+      final double target = position.maxScrollExtent;
+      if ((target - position.pixels).abs() < 1) {
+        return;
+      }
+      if (animated) {
+        _chatScrollController.animateTo(
+          target,
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+        );
+        return;
+      }
+      _chatScrollController.jumpTo(target);
+    });
   }
 
   void _showDrawer() {
@@ -306,28 +344,28 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
 
   Future<void> _approvePendingApproval(ChatPendingApprovalData approval) async {
     await _runApprovalAction(
-      taskId: approval.taskId,
-      action: (bridge) => bridge.approveChatApproval(approval.taskId),
+      approvalId: approval.approvalId,
+      action: (bridge) => bridge.approveChatApproval(approval.approvalId),
     );
   }
 
   Future<void> _rejectPendingApproval(ChatPendingApprovalData approval) async {
     await _runApprovalAction(
-      taskId: approval.taskId,
-      action: (bridge) => bridge.rejectChatApproval(approval.taskId),
+      approvalId: approval.approvalId,
+      action: (bridge) => bridge.rejectChatApproval(approval.approvalId),
     );
   }
 
   Future<void> _runApprovalAction({
-    required String taskId,
+    required String approvalId,
     required Future<void> Function(OpenCrayHostBridge bridge) action,
   }) async {
     final bridge = widget.bridge;
-    if (bridge == null || _approvalTaskIdsInFlight.contains(taskId)) {
+    if (bridge == null || _approvalTaskIdsInFlight.contains(approvalId)) {
       return;
     }
     setState(() {
-      _approvalTaskIdsInFlight.add(taskId);
+      _approvalTaskIdsInFlight.add(approvalId);
     });
     try {
       await action(bridge);
@@ -340,10 +378,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       );
     } finally {
       if (!mounted) {
-        _approvalTaskIdsInFlight.remove(taskId);
+        _approvalTaskIdsInFlight.remove(approvalId);
       } else {
         setState(() {
-          _approvalTaskIdsInFlight.remove(taskId);
+          _approvalTaskIdsInFlight.remove(approvalId);
         });
       }
     }
@@ -428,6 +466,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     setState(() {
       _state = _mapSnapshot(snapshot);
     });
+    if (snapshot.messages.isNotEmpty) {
+      _scheduleScrollToBottom(animated: false);
+    }
   }
 
   ChatFeatureState _mapSnapshot(OpenCrayChatSnapshot snapshot) {
@@ -481,6 +522,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       pendingApprovals: snapshot.pendingApprovals
           .map(
             (approval) => ChatPendingApprovalData(
+              runId: approval.runId,
               taskId: approval.taskId,
               title: approval.title,
               body: approval.body,
@@ -705,7 +747,7 @@ class _PendingApprovalList extends StatelessWidget {
             child: _PendingApprovalCard(
               copy: copy,
               approval: approval,
-              isBusy: busyApprovalTaskIds.contains(approval.taskId),
+              isBusy: busyApprovalTaskIds.contains(approval.approvalId),
               onApprove: () => onApproveApproval(approval),
               onReject: () => onRejectApproval(approval),
             ),
@@ -1015,7 +1057,7 @@ class _ComposerCard extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(height: 2),
+          const SizedBox(height: 10),
         ],
         if (state.composer.attachments.isNotEmpty) ...<Widget>[
           SizedBox(
@@ -1116,6 +1158,8 @@ class _InputRow extends StatelessWidget {
     const BorderRadius messageFieldInnerRadius = BorderRadius.all(
       Radius.circular(17),
     );
+    const double messageFieldMinHeight = 40;
+    const double messageFieldMaxHeight = 92;
 
     final Widget inputRow = Row(
       crossAxisAlignment: CrossAxisAlignment.end,
@@ -1127,56 +1171,67 @@ class _InputRow extends StatelessWidget {
             child: AnimatedBuilder(
               animation: focusNode,
               builder: (BuildContext context, Widget? child) {
-                final bool isFocused = focusNode.hasFocus;
-                final Color borderColor = isFocused
+                final bool showOutline =
+                    hasIntegratedSurface || focusNode.hasFocus;
+                final Color fieldOutlineColor = focusNode.hasFocus
                     ? _ChatPalette.accent
                     : _ChatPalette.composerStroke;
 
-                Widget messageField = SizedBox(
-                  height: 40,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: hasIntegratedSurface ? borderColor : Colors.white,
-                      borderRadius: messageFieldRadius,
+                return AnimatedSize(
+                  duration: const Duration(milliseconds: 160),
+                  curve: Curves.easeOutCubic,
+                  alignment: Alignment.bottomCenter,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(
+                      minHeight: messageFieldMinHeight,
+                      maxHeight: messageFieldMaxHeight,
                     ),
-                    child: Padding(
-                      padding: EdgeInsets.all(hasIntegratedSurface ? 1 : 0),
-                      child: ClipRRect(
-                        borderRadius: hasIntegratedSurface
-                            ? messageFieldInnerRadius
-                            : messageFieldRadius,
-                        child: ColoredBox(
-                          color: Colors.white,
-                          child: TextField(
-                            controller: controller,
-                            focusNode: focusNode,
-                            enabled: enabled,
-                            minLines: 1,
-                            maxLines: 4,
-                            textAlignVertical: TextAlignVertical.center,
-                            decoration: InputDecoration(
-                              border: InputBorder.none,
-                              hintText: placeholder,
-                              hintStyle: _ChatTextStyles.placeholder,
-                              isCollapsed: true,
-                              contentPadding: const EdgeInsets.fromLTRB(
-                                14,
-                                10,
-                                14,
-                                10,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: showOutline ? fieldOutlineColor : Colors.white,
+                        borderRadius: messageFieldRadius,
+                      ),
+                      child: Padding(
+                        padding: EdgeInsets.all(showOutline ? 1 : 0),
+                        child: ClipRRect(
+                          borderRadius: showOutline
+                              ? messageFieldInnerRadius
+                              : messageFieldRadius,
+                          child: ColoredBox(
+                            color: Colors.white,
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                              child: TextField(
+                                controller: controller,
+                                focusNode: focusNode,
+                                enabled: enabled,
+                                minLines: 1,
+                                maxLines: 4,
+                                textAlignVertical: TextAlignVertical.center,
+                                decoration: InputDecoration(
+                                  border: InputBorder.none,
+                                  enabledBorder: InputBorder.none,
+                                  focusedBorder: InputBorder.none,
+                                  disabledBorder: InputBorder.none,
+                                  errorBorder: InputBorder.none,
+                                  focusedErrorBorder: InputBorder.none,
+                                  isCollapsed: true,
+                                  hintText: placeholder,
+                                  hintStyle: _ChatTextStyles.placeholder,
+                                  contentPadding: EdgeInsets.zero,
+                                ),
+                                textInputAction: TextInputAction.newline,
+                                onSubmitted: enabled
+                                    ? (_) => onSendPressed()
+                                    : null,
                               ),
                             ),
-                            textInputAction: TextInputAction.send,
-                            onSubmitted: enabled
-                                ? (_) => onSendPressed()
-                                : null,
                           ),
                         ),
                       ),
                     ),
                   ),
                 );
-                return messageField;
               },
             ),
           ),

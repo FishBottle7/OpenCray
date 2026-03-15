@@ -93,5 +93,17 @@ internal class ChatRuntimeSessionContextFactory(
       presetName = presetName.ifBlank { null },
       displayName = customLabel.ifBlank { null },
       customGuidance = customGuidance.ifBlank { null },
+      extensions = extensions.filter { (key, value) ->
+        key.isNotBlank() &&
+          value.isNotBlank() &&
+          !RuntimeSoulReservedKeys.contains(key.trim().lowercase())
+      },
     )
+
+  private companion object {
+    val RuntimeSoulReservedKeys: Set<String> = setOf(
+      "preset",
+      "custom_guidance",
+    )
+  }
 }

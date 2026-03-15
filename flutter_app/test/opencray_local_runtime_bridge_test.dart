@@ -72,6 +72,50 @@ void main() {
     expect(snapshot.isHostConnected, isTrue);
   });
 
+  test('local runtime bridge loads files snapshot over http', () async {
+    requestHandler = (request) async {
+      expect(request.method, 'GET');
+      expect(request.uri.path, '/v1/files_snapshot');
+      await writeJson(request, <String, Object?>{
+        'rootName': 'agent-workspace',
+        'rootPath': '/tmp/agent-workspace',
+        'availableBytes': 4096,
+        'directoryCount': 1,
+        'fileCount': 1,
+        'entryCount': 2,
+        'isTruncated': false,
+        'children': <Object?>[
+          <String, Object?>{
+            'name': 'docs',
+            'relativePath': 'docs',
+            'isDirectory': true,
+            'childCount': 1,
+            'sizeBytes': null,
+            'isTruncated': false,
+            'children': <Object?>[
+              <String, Object?>{
+                'name': 'report.md',
+                'relativePath': 'docs/report.md',
+                'isDirectory': false,
+                'childCount': 0,
+                'sizeBytes': 1024,
+                'isTruncated': false,
+                'children': const <Object?>[],
+              },
+            ],
+          },
+        ],
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final snapshot = await bridge.loadFilesSnapshot();
+
+    expect(snapshot.rootPath, '/tmp/agent-workspace');
+    expect(snapshot.children.single.name, 'docs');
+    expect(snapshot.children.single.children.single.sizeBytes, 1024);
+  });
+
   test(
     'local runtime bridge posts validation requests and parses results',
     () async {

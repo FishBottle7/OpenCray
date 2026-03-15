@@ -125,7 +125,8 @@ Map<OpenCrayTab, OpenCrayTabBuilder> _defaultBuilders(
         OpenCrayChatFeature(bridge: bridge, copy: copy),
     OpenCrayTab.skills: (context) =>
         SkillsFeatureScreen(bridge: bridge, copy: copy),
-    OpenCrayTab.files: (context) => FilesFeatureScreen(copy: copy),
+    OpenCrayTab.files: (context) =>
+        FilesFeatureScreen(bridge: bridge, copy: copy),
     OpenCrayTab.settings: (context) => SettingsFeatureScreen(
       initialPage: settingsInitialPage,
       facade: BridgeSettingsFacade(bridge: bridge),

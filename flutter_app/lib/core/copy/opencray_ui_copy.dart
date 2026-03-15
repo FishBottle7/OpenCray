@@ -36,6 +36,29 @@ class OpenCrayUiCopy {
   String get filesLocationItemCount => isChinese ? '622 项' : '622 items';
   String get filesLocationAvailableSpace =>
       isChinese ? '可用 4.1 GB' : '4.1 GB available';
+  String get filesRefreshAction => isChinese ? '刷新' : 'Refresh';
+  String get filesTreeTitle => isChinese ? '文件树' : 'File tree';
+  String get filesEmptyTitle => isChinese ? '工作区还是空的' : 'Workspace is empty';
+  String get filesEmptyBody => isChinese
+      ? '当代理开始写入工作区后，这里会显示真实的目录树。'
+      : 'The real workspace tree will appear here once the agent starts writing files.';
+  String get filesLoadFailed => isChinese
+      ? '从宿主运行时加载文件树失败。'
+      : 'Failed to load the workspace tree from the host runtime.';
+  String get filesNoMatchesTitle => isChinese ? '没有匹配项' : 'No matching files';
+  String filesNoMatchesBody(String query) => isChinese
+      ? '当前工作区里没有匹配“$query”的文件或文件夹。'
+      : 'No files or folders in the current workspace match "$query".';
+  String filesWorkspaceTotals(int directoryCount, int fileCount) => isChinese
+      ? '$directoryCount 个文件夹 · $fileCount 个文件'
+      : '$directoryCount folders · $fileCount files';
+  String filesAvailableSpace(String amount) =>
+      isChinese ? '可用 $amount' : '$amount available';
+  String filesItemsShown(int count) =>
+      isChinese ? '显示 $count 项' : '$count shown';
+  String get filesTreeTruncated => isChinese
+      ? '文件树已按安全上限截断，只显示部分节点。'
+      : 'The tree was truncated at a safety limit and only shows part of the workspace.';
   String filesDirectoryItemCount(int count) =>
       isChinese ? '$count 项' : '$count items';
   String get filesEntryMetaChat =>
@@ -128,7 +151,7 @@ class OpenCrayUiCopy {
   String get llmValidateModel => isChinese ? '验证模型' : 'Validate Model';
   String get llmBaseUrlLabel => 'Base URL';
   String get llmBaseUrlHint => 'https://api.openai.com/v1';
-  String get llmApiKeyLabel => 'API key';
+  String get llmApiKeyLabel => isChinese ? 'API 密钥' : 'API key';
   String get llmApiKeyHint =>
       isChinese ? '远程提供商需要填写' : 'Required for remote providers';
   String get llmStoredLocally => isChinese ? '已本地保存' : 'Stored locally';
@@ -150,9 +173,8 @@ class OpenCrayUiCopy {
   String get llmValidateRequiresBaseUrl => isChinese
       ? '验证模型前必须填写 Base URL。'
       : 'Base URL is required to validate the model.';
-  String get llmValidateRequiresModel => isChinese
-      ? '验证模型前必须填写 Model。'
-      : 'Model is required to validate the model.';
+  String get llmValidateRequiresModel =>
+      isChinese ? '验证模型前必须填写模型名称。' : 'Model is required to validate the model.';
   String get llmFallbackCustomProviderTitle =>
       isChinese ? '自定义提供商' : 'Custom provider';
   String get llmFallbackCustomProviderSubtitle =>

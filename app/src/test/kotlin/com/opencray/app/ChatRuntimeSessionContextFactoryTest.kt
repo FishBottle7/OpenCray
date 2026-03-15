@@ -3,8 +3,10 @@ package com.opencray.app
 import com.opencray.persistence.model.ChatAttachmentEntry
 import com.opencray.persistence.model.ChatAttachmentKind
 import com.opencray.persistence.model.ChatTranscriptRole
+import com.opencray.runtime.soul.SoulProfileExtensionKeys
 import com.opencray.runtime.context.RuntimeConversationRole
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -55,6 +57,12 @@ class ChatRuntimeSessionContextFactoryTest {
         presetName = "BUILDER",
         customLabel = "Night Shift",
         customGuidance = "Stay direct.",
+        extensions = mapOf(
+          "voice" to "calm but direct",
+          "toolUseBias" to "tool-forward",
+          "preset" to "should-not-leak",
+          "custom_guidance" to "should-not-duplicate",
+        ),
       ),
     )
 
@@ -62,6 +70,10 @@ class ChatRuntimeSessionContextFactoryTest {
     assertEquals("BUILDER", context.soulProfile?.presetName)
     assertEquals("Night Shift", context.soulProfile?.displayName)
     assertEquals("Stay direct.", context.soulProfile?.customGuidance)
+    assertEquals("calm but direct", context.soulProfile?.extensions?.get("voice"))
+    assertEquals("tool-forward", context.soulProfile?.extensions?.get("toolUseBias"))
+    assertFalse(context.soulProfile?.extensions?.containsKey("preset") == true)
+    assertFalse(context.soulProfile?.extensions?.containsKey("custom_guidance") == true)
     assertEquals(2, context.conversation.size)
     assertEquals(RuntimeConversationRole.USER, context.conversation[0].role)
     assertTrue(context.conversation[0].content.contains("Command: Summarize"))
@@ -102,6 +114,38 @@ class ChatRuntimeSessionContextFactoryTest {
     assertTrue(context.conversation.first().content.contains("First question"))
     assertTrue(context.conversation.none { message -> message.content.contains("Future question") })
     assertTrue(context.conversation.none { message -> message.content.contains("Future answer") })
+  }
+
+  @Test
+  fun createForwardsManagedSoulExtensionsGeneratedByPersonalizationStore() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-soul-extensions"))
+    val personalizationStore = PersonalizationLocalStore(
+      temporaryFolder.newFolder("personalization-store"),
+      nowEpochMs = IncrementingClock(3_000L)::next,
+    )
+    val state = chatStore.loadState()
+    val sessionId = state.activeSession.sessionId
+    personalizationStore.saveSoulProfile(
+      PersonalizationLocalStore.SoulProfile(
+        presetName = "BUILDER",
+        customLabel = "Night Shift",
+        customGuidance = "Stay direct.",
+      ),
+    )
+
+    val context = ChatRuntimeSessionContextFactory(chatStore).create(
+      sessionId = sessionId,
+      soulProfile = personalizationStore.loadSoulProfile(),
+    )
+
+    assertEquals("builder", context.soulProfile?.extensions?.get(SoulProfileExtensionKeys.TONE))
+    assertEquals("terse", context.soulProfile?.extensions?.get(SoulProfileExtensionKeys.VERBOSITY))
+    assertEquals(
+      "direct",
+      context.soulProfile?.extensions?.get(SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE),
+    )
+    assertEquals("balanced", context.soulProfile?.extensions?.get(SoulProfileExtensionKeys.RISK_TOLERANCE))
+    assertEquals("tool_forward", context.soulProfile?.extensions?.get(SoulProfileExtensionKeys.TOOL_USE_BIAS))
   }
 
   private class IncrementingClock(

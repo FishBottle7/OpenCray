@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
 import '../models/opencray_mcp_settings.dart';
@@ -14,6 +15,7 @@ import 'opencray_host_bridge.dart';
 class OpenCraySeedBridge implements OpenCrayHostBridge {
   OpenCraySeedBridge({
     OpenCrayShellSnapshot? initialSnapshot,
+    OpenCrayFilesSnapshot? initialFilesSnapshot,
     OpenCraySettingsOverviewSnapshot? initialSettingsOverview,
     OpenCrayLlmConfigSnapshot? initialLlmConfig,
     OpenCrayPersonalizationConfigSnapshot? initialPersonalizationConfig,
@@ -29,6 +31,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
              hostSummary: 'Flutter shell is attached to a seed bridge.',
              isHostConnected: false,
            ),
+       _filesSnapshot = initialFilesSnapshot ?? _buildSeedFilesSnapshot(),
        _settingsOverview =
            initialSettingsOverview ??
            const OpenCraySettingsOverviewSnapshot(
@@ -65,6 +68,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
        _llmConfig =
            initialLlmConfig ??
            const OpenCrayLlmConfigSnapshot(
+             localeTag: 'en',
              enabled: false,
              providerId: 'openai',
              providerOptions: <OpenCrayLlmProviderOptionSnapshot>[
@@ -190,6 +194,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   final StreamController<OpenCrayChatSnapshot> _chatController =
       StreamController<OpenCrayChatSnapshot>.broadcast();
   OpenCrayShellSnapshot _snapshot;
+  final OpenCrayFilesSnapshot _filesSnapshot;
   OpenCraySettingsOverviewSnapshot _settingsOverview;
   OpenCrayLlmConfigSnapshot _llmConfig;
   OpenCrayPersonalizationConfigSnapshot _personalizationConfig;
@@ -205,6 +210,9 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     yield _snapshot;
     yield* _controller.stream;
   }
+
+  @override
+  Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async => _filesSnapshot;
 
   @override
   Future<OpenCraySettingsOverviewSnapshot> loadSettingsOverview() async =>
@@ -242,6 +250,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
         apiKey.trim().isNotEmpty &&
         model.trim().isNotEmpty;
     _llmConfig = OpenCrayLlmConfigSnapshot(
+      localeTag: _llmConfig.localeTag,
       enabled: isConfigured,
       providerId: providerId,
       protocol: protocol,
@@ -299,6 +308,21 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     _personalizationConfig = _copySeedPersonalizationConfig(
       _personalizationConfig,
       selectedAppLanguageId: languageId,
+    );
+    _llmConfig = OpenCrayLlmConfigSnapshot(
+      localeTag: languageId,
+      enabled: _llmConfig.enabled,
+      providerId: _llmConfig.providerId,
+      protocol: _llmConfig.protocol,
+      providerOptions: _llmConfig.providerOptions,
+      providerName: _llmConfig.providerName,
+      providerNotes: _llmConfig.providerNotes,
+      baseUrl: _llmConfig.baseUrl,
+      apiKey: _llmConfig.apiKey,
+      model: _llmConfig.model,
+      reasoningEffort: _llmConfig.reasoningEffort,
+      systemPrompt: _llmConfig.systemPrompt,
+      helperText: _llmConfig.helperText,
     );
     _snapshot = _snapshot.copyWith(localeTag: languageId);
     update(_snapshot);
@@ -446,6 +470,28 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<OpenCrayChatRuntimeSnapshot> loadChatRuntimeSnapshot() async =>
+      const OpenCrayChatRuntimeSnapshot(
+        sessionId: '',
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      );
+
+  @override
+  Stream<OpenCrayChatRuntimeSnapshot> watchChatRuntimeSnapshot() async* {
+    yield await loadChatRuntimeSnapshot();
+  }
+
+  @override
+  Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId) async => null;
+
+  @override
+  Future<OpenCrayChatRunSnapshot?> waitForChatRun(
+    String runId, {
+    Duration timeout = const Duration(seconds: 15),
+  }) async => null;
+
+  @override
   Future<void> createChatSession() async {
     _chatSnapshot = const OpenCrayChatSnapshot(
       screenTitle: 'Chat',
@@ -481,10 +527,10 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   Future<void> selectChatSession(String sessionId) async {}
 
   @override
-  Future<void> submitChatMessage(String text) async {
+  Future<OpenCrayChatRunSubmission?> submitChatMessage(String text) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) {
-      return;
+      return null;
     }
     _chatSnapshot = OpenCrayChatSnapshot(
       screenTitle: _chatSnapshot.screenTitle,
@@ -505,16 +551,22 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       pendingApprovals: _chatSnapshot.pendingApprovals,
     );
     _emitChatSnapshot();
+    return const OpenCrayChatRunSubmission(
+      sessionId: 'seed-session',
+      runId: 'seed-run',
+      taskId: 'seed-task',
+      acceptedAtEpochMs: 0,
+    );
   }
 
   @override
-  Future<void> approveChatApproval(String taskId) async {
-    _resolveChatApproval(taskId);
+  Future<void> approveChatApproval(String approvalId) async {
+    _resolveChatApproval(approvalId);
   }
 
   @override
-  Future<void> rejectChatApproval(String taskId) async {
-    _resolveChatApproval(taskId);
+  Future<void> rejectChatApproval(String approvalId) async {
+    _resolveChatApproval(approvalId);
   }
 
   void update(OpenCrayShellSnapshot snapshot) {
@@ -990,6 +1042,86 @@ OpenCrayPersonalizationConfigSnapshot _buildSeedPersonalizationConfig() {
         armedGuidance:
             'Ready to restore the default preset and clear custom overlay guidance.',
         isInputEnabled: true,
+      ),
+    ],
+  );
+}
+
+OpenCrayFilesSnapshot _buildSeedFilesSnapshot() {
+  return const OpenCrayFilesSnapshot(
+    rootName: 'agent-workspace',
+    rootPath: '/seed/agent-workspace',
+    availableBytes: 4100000000,
+    directoryCount: 3,
+    fileCount: 4,
+    entryCount: 7,
+    isTruncated: false,
+    children: <OpenCrayFileTreeNodeSnapshot>[
+      OpenCrayFileTreeNodeSnapshot(
+        name: 'app',
+        relativePath: 'app',
+        isDirectory: true,
+        childCount: 2,
+        sizeBytes: null,
+        isTruncated: false,
+        children: <OpenCrayFileTreeNodeSnapshot>[
+          OpenCrayFileTreeNodeSnapshot(
+            name: 'shell',
+            relativePath: 'app/shell',
+            isDirectory: true,
+            childCount: 1,
+            sizeBytes: null,
+            isTruncated: false,
+            children: <OpenCrayFileTreeNodeSnapshot>[
+              OpenCrayFileTreeNodeSnapshot(
+                name: 'opencray_shell.dart',
+                relativePath: 'app/shell/opencray_shell.dart',
+                isDirectory: false,
+                childCount: 0,
+                sizeBytes: 18432,
+                isTruncated: false,
+                children: <OpenCrayFileTreeNodeSnapshot>[],
+              ),
+            ],
+          ),
+          OpenCrayFileTreeNodeSnapshot(
+            name: 'README.md',
+            relativePath: 'app/README.md',
+            isDirectory: false,
+            childCount: 0,
+            sizeBytes: 4096,
+            isTruncated: false,
+            children: <OpenCrayFileTreeNodeSnapshot>[],
+          ),
+        ],
+      ),
+      OpenCrayFileTreeNodeSnapshot(
+        name: 'docs',
+        relativePath: 'docs',
+        isDirectory: true,
+        childCount: 1,
+        sizeBytes: null,
+        isTruncated: false,
+        children: <OpenCrayFileTreeNodeSnapshot>[
+          OpenCrayFileTreeNodeSnapshot(
+            name: 'mobile-ui-layout-spec.md',
+            relativePath: 'docs/mobile-ui-layout-spec.md',
+            isDirectory: false,
+            childCount: 0,
+            sizeBytes: 12288,
+            isTruncated: false,
+            children: <OpenCrayFileTreeNodeSnapshot>[],
+          ),
+        ],
+      ),
+      OpenCrayFileTreeNodeSnapshot(
+        name: 'workspace-notes.txt',
+        relativePath: 'workspace-notes.txt',
+        isDirectory: false,
+        childCount: 0,
+        sizeBytes: 1536,
+        isTruncated: false,
+        children: <OpenCrayFileTreeNodeSnapshot>[],
       ),
     ],
   );

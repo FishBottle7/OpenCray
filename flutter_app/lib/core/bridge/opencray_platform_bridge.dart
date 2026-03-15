@@ -2,6 +2,7 @@ import 'package:flutter/services.dart';
 
 import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
 import '../models/opencray_mcp_settings.dart';
@@ -29,6 +30,9 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   static const EventChannel _chatSnapshotChannel = EventChannel(
     'com.opencray.host/chat_snapshot',
   );
+  static const EventChannel _chatRuntimeSnapshotChannel = EventChannel(
+    'com.opencray.host/chat_runtime_snapshot',
+  );
 
   @override
   Future<OpenCrayShellSnapshot> loadShellSnapshot() async =>
@@ -39,6 +43,10 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       .receiveBroadcastStream()
       .map(_requireMap)
       .map(_parseShellSnapshot);
+
+  @override
+  Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async =>
+      OpenCrayFilesSnapshot.fromMap(await _invokeMap('loadFilesSnapshot'));
 
   @override
   Future<OpenCraySettingsOverviewSnapshot> loadSettingsOverview() async =>
@@ -244,6 +252,49 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       .map(OpenCrayChatSnapshot.fromMap);
 
   @override
+  Future<OpenCrayChatRuntimeSnapshot> loadChatRuntimeSnapshot() async =>
+      OpenCrayChatRuntimeSnapshot.fromMap(
+        await _invokeMap('loadChatRuntimeSnapshot'),
+      );
+
+  @override
+  Stream<OpenCrayChatRuntimeSnapshot> watchChatRuntimeSnapshot() =>
+      _chatRuntimeSnapshotChannel
+          .receiveBroadcastStream()
+          .map(_requireMap)
+          .map(OpenCrayChatRuntimeSnapshot.fromMap);
+
+  @override
+  Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId) async {
+    final payload = await _methodChannel.invokeMethod<Object?>(
+      'loadChatRunSnapshot',
+      <String, Object?>{'runId': runId},
+    );
+    if (payload == null) {
+      return null;
+    }
+    return OpenCrayChatRunSnapshot.fromMap(_requireMap(payload));
+  }
+
+  @override
+  Future<OpenCrayChatRunSnapshot?> waitForChatRun(
+    String runId, {
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    final payload = await _methodChannel.invokeMethod<Object?>(
+      'waitForChatRun',
+      <String, Object?>{
+        'runId': runId,
+        'timeoutMs': timeout.inMilliseconds,
+      },
+    );
+    if (payload == null) {
+      return null;
+    }
+    return OpenCrayChatRunSnapshot.fromMap(_requireMap(payload));
+  }
+
+  @override
   Future<void> createChatSession() =>
       _methodChannel.invokeMethod<void>('createChatSession');
 
@@ -254,20 +305,29 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       });
 
   @override
-  Future<void> submitChatMessage(String text) => _methodChannel
-      .invokeMethod<void>('submitChatMessage', <String, Object?>{'text': text});
+  Future<OpenCrayChatRunSubmission?> submitChatMessage(String text) async {
+    final payload = await _methodChannel.invokeMethod<Object?>(
+      'submitChatMessage',
+      <String, Object?>{'text': text},
+    );
+    if (payload == null) {
+      return null;
+    }
+    return OpenCrayChatRunSubmission.fromMap(_requireMap(payload));
+  }
 
   @override
-  Future<void> approveChatApproval(String taskId) =>
+  Future<void> approveChatApproval(String approvalId) =>
       _methodChannel.invokeMethod<void>(
         'approveChatApproval',
-        <String, Object?>{'taskId': taskId},
+        <String, Object?>{'runId': approvalId, 'taskId': approvalId},
       );
 
   @override
-  Future<void> rejectChatApproval(String taskId) =>
+  Future<void> rejectChatApproval(String approvalId) =>
       _methodChannel.invokeMethod<void>('rejectChatApproval', <String, Object?>{
-        'taskId': taskId,
+        'runId': approvalId,
+        'taskId': approvalId,
       });
 
   static Future<Map<Object?, Object?>> _invokeMap(

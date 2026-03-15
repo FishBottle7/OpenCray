@@ -6,7 +6,10 @@ import com.opencray.app.LlmProviderPreset
 import com.opencray.app.LlmProviderProtocols
 import com.opencray.app.LlmSettingsState
 import com.opencray.app.LlmSettingsStore
+import com.opencray.app.LocaleSettingsStore
 import com.opencray.app.OpenAiCompatibleLiteLlmProviderClient
+import com.opencray.app.OpenCrayLocaleManager
+import com.opencray.app.OpenCrayUserAgent
 import com.opencray.llm.DefaultLiteLlmGateway
 import com.opencray.llm.InMemoryLiteLlmRoutingSettingsStore
 import com.opencray.llm.LiteLlmGatewayRequest
@@ -16,6 +19,7 @@ import com.opencray.llm.ModelProfile
 import com.opencray.llm.ProviderRoute
 import com.opencray.llm.ProviderRouting
 import java.net.URI
+import org.opencray.app.R
 
 data class LlmProviderOptionSnapshot(
   val id: String,
@@ -27,6 +31,7 @@ data class LlmProviderOptionSnapshot(
 )
 
 data class LlmConfigSnapshot(
+  val localeTag: String,
   val enabled: Boolean,
   val providerId: String,
   val protocol: String,
@@ -68,6 +73,25 @@ data class LlmValidationResult(
   val message: String,
 )
 
+internal data class LlmConfigStrings(
+  val localeTag: String,
+  val helperText: String,
+  val customProviderTitle: String,
+  val openAiSubtitle: String,
+  val deepSeekSubtitle: String,
+  val openRouterSubtitle: String,
+  val customProviderSubtitle: String,
+  val validationSuccess: (String) -> String,
+  val validationTimeout: (Long) -> String,
+  val validationRateLimited: String,
+  val validationFailed: String,
+  val baseUrlRequiredEnabled: String,
+  val baseUrlValidateRequired: String,
+  val modelValidateRequired: String,
+  val baseUrlInvalid: String,
+  val baseUrlScheme: String,
+)
+
 interface LlmConfigFacade {
   fun load(): LlmConfigSnapshot
 
@@ -79,6 +103,7 @@ interface LlmConfigFacade {
 internal class LocalLlmConfigFacade private constructor(
   private val llmSettingsStore: LlmSettingsStore,
   private val providerClient: LiteLlmProviderClient,
+  private val strings: LlmConfigStrings,
 ) : LlmConfigFacade {
   override fun load(): LlmConfigSnapshot = snapshotFor(llmSettingsStore.load())
 
@@ -96,7 +121,7 @@ internal class LocalLlmConfigFacade private constructor(
       providerPreset.defaultModel
     }
     if (request.enabled && baseUrl.isBlank()) {
-      throw IllegalArgumentException("Base URL is required when the provider is enabled.")
+      throw IllegalArgumentException(strings.baseUrlRequiredEnabled)
     }
     if (baseUrl.isNotBlank()) {
       requireValidBaseUrl(baseUrl)
@@ -106,7 +131,7 @@ internal class LocalLlmConfigFacade private constructor(
       providerId = providerPreset.id,
       protocol = protocol,
       providerName = request.providerName.trim().ifBlank {
-        if (providerPreset.isCustom) "Custom provider" else providerPreset.title
+        localizedProviderTitle(providerPreset)
       },
       providerNotes = request.providerNotes.trim(),
       baseUrl = baseUrl,
@@ -135,10 +160,10 @@ internal class LocalLlmConfigFacade private constructor(
       providerPreset.defaultModel
     }
     if (baseUrl.isBlank()) {
-      throw IllegalArgumentException("Base URL is required to validate the model.")
+      throw IllegalArgumentException(strings.baseUrlValidateRequired)
     }
     if (model.isBlank()) {
-      throw IllegalArgumentException("Model is required to validate the model.")
+      throw IllegalArgumentException(strings.modelValidateRequired)
     }
     requireValidBaseUrl(baseUrl)
 
@@ -183,23 +208,25 @@ internal class LocalLlmConfigFacade private constructor(
     return when (result.status) {
       LiteLlmGatewayStatus.SUCCESS -> LlmValidationResult(
         isSuccess = true,
-        message = "Connection verified for $model.",
+        message = strings.validationSuccess(model),
       )
       LiteLlmGatewayStatus.TIMEOUT -> LlmValidationResult(
         isSuccess = false,
         message = result.errorMessage?.ifBlank {
-          "Validation timed out after ${VALIDATION_TIMEOUT_MS / 1000} seconds."
-        } ?: "Validation timed out after ${VALIDATION_TIMEOUT_MS / 1000} seconds.",
+          strings.validationTimeout(VALIDATION_TIMEOUT_MS / 1000)
+        } ?: strings.validationTimeout(VALIDATION_TIMEOUT_MS / 1000),
       )
       LiteLlmGatewayStatus.RATE_LIMITED -> LlmValidationResult(
         isSuccess = false,
         message = result.errorMessage?.ifBlank {
-          "Provider rate limited the validation request."
-        } ?: "Provider rate limited the validation request.",
+          strings.validationRateLimited
+        } ?: strings.validationRateLimited,
       )
       LiteLlmGatewayStatus.FAILED -> LlmValidationResult(
         isSuccess = false,
-        message = result.errorMessage?.ifBlank { "Validation failed." } ?: "Validation failed.",
+        message = result.errorMessage?.ifBlank {
+          strings.validationFailed
+        } ?: strings.validationFailed,
       )
     }
   }
@@ -207,15 +234,22 @@ internal class LocalLlmConfigFacade private constructor(
   private fun snapshotFor(state: LlmSettingsState): LlmConfigSnapshot {
     val sanitized = state.sanitized()
     return LlmConfigSnapshot(
+      localeTag = strings.localeTag,
       enabled = sanitized.enabled,
       providerId = sanitized.providerId,
       protocol = sanitized.protocol,
       providerOptions = LlmProviderCatalog.presets.map(::toSnapshot),
       providerName = sanitized.providerName.ifBlank {
-        LlmProviderCatalog.displayNameFor(
+        localizedDisplayNameFor(
           providerId = sanitized.providerId,
           baseUrl = sanitized.baseUrl,
         )
+      }.let { providerName ->
+        if (sanitized.providerId == "custom" && providerName == "Custom provider") {
+          strings.customProviderTitle
+        } else {
+          providerName
+        }
       },
       providerNotes = sanitized.providerNotes,
       baseUrl = sanitized.baseUrl,
@@ -223,27 +257,56 @@ internal class LocalLlmConfigFacade private constructor(
       model = sanitized.model,
       reasoningEffort = sanitized.reasoningEffort,
       systemPrompt = sanitized.systemPrompt,
-      helperText = "This build supports OpenAI-compatible and Anthropic endpoints. Base URL and API key must be ready before chat can call the provider.",
+      helperText = strings.helperText,
     )
   }
 
   private fun toSnapshot(preset: LlmProviderPreset): LlmProviderOptionSnapshot =
     LlmProviderOptionSnapshot(
       id = preset.id,
-      title = preset.title,
-      subtitle = preset.subtitle,
+      title = localizedProviderTitle(preset),
+      subtitle = localizedProviderSubtitle(preset),
       defaultBaseUrl = preset.defaultBaseUrl,
       defaultModel = preset.defaultModel,
       isCustom = preset.isCustom,
     )
 
+  private fun localizedProviderTitle(preset: LlmProviderPreset): String = when (preset.id) {
+    "custom" -> strings.customProviderTitle
+    else -> preset.title
+  }
+
+  private fun localizedProviderSubtitle(preset: LlmProviderPreset): String = when (preset.id) {
+    "openai" -> strings.openAiSubtitle
+    "deepseek" -> strings.deepSeekSubtitle
+    "openrouter" -> strings.openRouterSubtitle
+    "custom" -> strings.customProviderSubtitle
+    else -> preset.subtitle
+  }
+
+  private fun localizedDisplayNameFor(
+    providerId: String,
+    baseUrl: String,
+  ): String {
+    val preset = LlmProviderCatalog.presetById(providerId)
+    if (preset != null && !preset.isCustom) {
+      return localizedProviderTitle(preset)
+    }
+    val host = runCatching { URI(baseUrl.trim()).host.orEmpty() }.getOrDefault("")
+    return when {
+      preset != null -> localizedProviderTitle(preset)
+      host.isNotBlank() -> host
+      else -> strings.customProviderTitle
+    }
+  }
+
   private fun requireValidBaseUrl(baseUrl: String) {
     val parsed = runCatching { URI(baseUrl) }.getOrElse {
-      throw IllegalArgumentException("Base URL must be a valid http or https URL.")
+      throw IllegalArgumentException(strings.baseUrlInvalid)
     }
     val scheme = parsed.scheme.orEmpty().lowercase()
     if (scheme != "http" && scheme != "https") {
-      throw IllegalArgumentException("Base URL must start with http:// or https://.")
+      throw IllegalArgumentException(strings.baseUrlScheme)
     }
   }
 
@@ -267,10 +330,17 @@ internal class LocalLlmConfigFacade private constructor(
   }
 
   companion object {
-    fun fromContext(context: Context): LlmConfigFacade = LocalLlmConfigFacade(
-      llmSettingsStore = LlmSettingsStore.fromContext(context.applicationContext),
-      providerClient = OpenAiCompatibleLiteLlmProviderClient(),
-    )
+    fun fromContext(context: Context): LlmConfigFacade {
+      val localizedContext = OpenCrayLocaleManager.wrap(context.applicationContext)
+      val localeTag = LocaleSettingsStore.fromContext(context.applicationContext).loadLanguage().tag
+      return LocalLlmConfigFacade(
+        llmSettingsStore = LlmSettingsStore.fromContext(context.applicationContext),
+        providerClient = OpenAiCompatibleLiteLlmProviderClient(
+          userAgent = OpenCrayUserAgent.fromContext(context.applicationContext),
+        ),
+        strings = localizedStrings(localizedContext, localeTag),
+      )
+    }
 
     internal fun createForTest(
       llmSettingsStore: LlmSettingsStore,
@@ -278,6 +348,50 @@ internal class LocalLlmConfigFacade private constructor(
     ): LlmConfigFacade = LocalLlmConfigFacade(
       llmSettingsStore = llmSettingsStore,
       providerClient = providerClient,
+      strings = defaultStrings(),
+    )
+
+    private fun localizedStrings(context: Context, localeTag: String): LlmConfigStrings =
+      LlmConfigStrings(
+        localeTag = localeTag,
+        helperText = context.getString(R.string.llm_settings_helper_text),
+        customProviderTitle = context.getString(R.string.llm_provider_custom_title),
+        openAiSubtitle = context.getString(R.string.llm_provider_openai_subtitle),
+        deepSeekSubtitle = context.getString(R.string.llm_provider_deepseek_subtitle),
+        openRouterSubtitle = context.getString(R.string.llm_provider_openrouter_subtitle),
+        customProviderSubtitle = context.getString(R.string.llm_provider_custom_subtitle),
+        validationSuccess = { model ->
+          context.getString(R.string.llm_validation_success, model)
+        },
+        validationTimeout = { seconds ->
+          context.getString(R.string.llm_validation_timeout, seconds)
+        },
+        validationRateLimited = context.getString(R.string.llm_validation_rate_limited),
+        validationFailed = context.getString(R.string.llm_validation_failed),
+        baseUrlRequiredEnabled = context.getString(R.string.llm_error_base_url_required_enabled),
+        baseUrlValidateRequired = context.getString(R.string.llm_error_base_url_validate_required),
+        modelValidateRequired = context.getString(R.string.llm_error_model_validate_required),
+        baseUrlInvalid = context.getString(R.string.llm_error_base_url_invalid),
+        baseUrlScheme = context.getString(R.string.llm_error_base_url_scheme),
+      )
+
+    private fun defaultStrings(): LlmConfigStrings = LlmConfigStrings(
+      localeTag = "en",
+      helperText = "This build supports OpenAI-compatible and Anthropic endpoints. Base URL and API key must be ready before Chat can call the provider.",
+      customProviderTitle = "Custom provider",
+      openAiSubtitle = "Official OpenAI-compatible endpoint.",
+      deepSeekSubtitle = "DeepSeek OpenAI-compatible API.",
+      openRouterSubtitle = "OpenAI-compatible routing across multiple providers.",
+      customProviderSubtitle = "Any OpenAI-compatible or Anthropic endpoint.",
+      validationSuccess = { model -> "Connection verified for $model." },
+      validationTimeout = { seconds -> "Validation timed out after $seconds seconds." },
+      validationRateLimited = "Provider rate limited the validation request.",
+      validationFailed = "Validation failed.",
+      baseUrlRequiredEnabled = "Base URL is required when the provider is enabled.",
+      baseUrlValidateRequired = "Base URL is required to validate the model.",
+      modelValidateRequired = "Model is required to validate the model.",
+      baseUrlInvalid = "Base URL must be a valid http or https URL.",
+      baseUrlScheme = "Base URL must start with http:// or https://.",
     )
 
     private const val VALIDATION_PROFILE_ID: String = "profile-validation"
@@ -288,6 +402,7 @@ internal class LocalLlmConfigFacade private constructor(
 
 internal object EmptyLlmConfigFacade : LlmConfigFacade {
   override fun load(): LlmConfigSnapshot = LlmConfigSnapshot(
+    localeTag = "en",
     enabled = false,
     providerId = "custom",
     protocol = LlmProviderProtocols.OPENAI,

@@ -10,6 +10,7 @@ void main() {
   ) async {
     final facade = _FakeSettingsFacade(
       llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
         enabled: false,
         providerId: 'openai',
         protocol: 'openai',
@@ -65,6 +66,7 @@ void main() {
     (tester) async {
       final facade = _FakeSettingsFacade(
         llmConfig: const LlmConfigSnapshot(
+          localeTag: 'en',
           enabled: true,
           providerId: 'openai',
           protocol: 'openai',
@@ -118,6 +120,7 @@ void main() {
     (tester) async {
       final facade = _FakeSettingsFacade(
         llmConfig: const LlmConfigSnapshot(
+          localeTag: 'en',
           enabled: true,
           providerId: 'custom',
           protocol: 'openai',
@@ -325,6 +328,7 @@ class _FakeSettingsFacade implements SettingsFacade {
   }) async {
     saveCallCount += 1;
     llmConfig = LlmConfigSnapshot(
+      localeTag: llmConfig.localeTag,
       enabled: enabled,
       providerId: providerId,
       protocol: protocol,

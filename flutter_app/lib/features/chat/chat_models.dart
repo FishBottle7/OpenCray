@@ -96,6 +96,7 @@ class ChatMessageData {
 @immutable
 class ChatPendingApprovalData {
   const ChatPendingApprovalData({
+    required this.runId,
     required this.taskId,
     required this.title,
     required this.body,
@@ -104,12 +105,15 @@ class ChatPendingApprovalData {
     required this.isHighRisk,
   });
 
+  final String runId;
   final String taskId;
   final String title;
   final String body;
   final String approveLabel;
   final String rejectLabel;
   final bool isHighRisk;
+
+  String get approvalId => runId.isNotEmpty ? runId : taskId;
 }
 
 @immutable

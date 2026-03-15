@@ -93,6 +93,7 @@ class OpenCrayChatDrawerSnapshot {
 
 class OpenCrayChatPendingApprovalSnapshot {
   const OpenCrayChatPendingApprovalSnapshot({
+    required this.runId,
     required this.taskId,
     required this.title,
     required this.body,
@@ -101,6 +102,7 @@ class OpenCrayChatPendingApprovalSnapshot {
     required this.isHighRisk,
   });
 
+  final String runId;
   final String taskId;
   final String title;
   final String body;
@@ -108,16 +110,193 @@ class OpenCrayChatPendingApprovalSnapshot {
   final String rejectLabel;
   final bool isHighRisk;
 
+  String get approvalId => runId.isNotEmpty ? runId : taskId;
+
   factory OpenCrayChatPendingApprovalSnapshot.fromMap(
     Map<Object?, Object?> map,
   ) {
     return OpenCrayChatPendingApprovalSnapshot(
+      runId: map['runId'] as String? ?? '',
       taskId: map['taskId'] as String? ?? '',
       title: map['title'] as String? ?? '',
       body: map['body'] as String? ?? '',
       approveLabel: map['approveLabel'] as String? ?? 'Approve',
       rejectLabel: map['rejectLabel'] as String? ?? 'Reject',
       isHighRisk: map['isHighRisk'] as bool? ?? false,
+    );
+  }
+}
+
+class OpenCrayChatRuntimeEventSnapshot {
+  const OpenCrayChatRuntimeEventSnapshot({
+    required this.kind,
+    required this.runId,
+    required this.taskId,
+    required this.emittedAtEpochMs,
+    this.turn,
+    this.phase,
+    this.status,
+    this.errorCode,
+    this.errorMessage,
+    this.responseFormat,
+    this.isFinal,
+    this.text,
+    this.toolName,
+    this.toolReason,
+    this.argumentsJson,
+    this.toolStatus,
+    this.contentPreview,
+  });
+
+  final String kind;
+  final String runId;
+  final String taskId;
+  final int emittedAtEpochMs;
+  final int? turn;
+  final String? phase;
+  final String? status;
+  final String? errorCode;
+  final String? errorMessage;
+  final String? responseFormat;
+  final bool? isFinal;
+  final String? text;
+  final String? toolName;
+  final String? toolReason;
+  final String? argumentsJson;
+  final String? toolStatus;
+  final String? contentPreview;
+
+  factory OpenCrayChatRuntimeEventSnapshot.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    return OpenCrayChatRuntimeEventSnapshot(
+      kind: map['kind'] as String? ?? '',
+      runId: map['runId'] as String? ?? '',
+      taskId: map['taskId'] as String? ?? '',
+      emittedAtEpochMs: map['emittedAtEpochMs'] as int? ?? 0,
+      turn: map['turn'] as int?,
+      phase: map['phase'] as String?,
+      status: map['status'] as String?,
+      errorCode: map['errorCode'] as String?,
+      errorMessage: map['errorMessage'] as String?,
+      responseFormat: map['responseFormat'] as String?,
+      isFinal: map['isFinal'] as bool?,
+      text: map['text'] as String?,
+      toolName: map['toolName'] as String?,
+      toolReason: map['toolReason'] as String?,
+      argumentsJson: map['argumentsJson'] as String?,
+      toolStatus: map['toolStatus'] as String?,
+      contentPreview: map['contentPreview'] as String?,
+    );
+  }
+}
+
+class OpenCrayChatRunSnapshot {
+  const OpenCrayChatRunSnapshot({
+    required this.sessionId,
+    required this.runId,
+    required this.taskId,
+    required this.acceptedAtEpochMs,
+    required this.updatedAtEpochMs,
+    required this.attempt,
+    required this.isTerminal,
+    this.lifecycleState,
+    this.taskState,
+    this.executionStatus,
+    this.errorCode,
+    this.errorMessage,
+    this.responseFormat,
+    this.pendingMessageId,
+    this.lastEvent,
+  });
+
+  final String sessionId;
+  final String runId;
+  final String taskId;
+  final int acceptedAtEpochMs;
+  final int updatedAtEpochMs;
+  final String? lifecycleState;
+  final String? taskState;
+  final int attempt;
+  final String? executionStatus;
+  final String? errorCode;
+  final String? errorMessage;
+  final String? responseFormat;
+  final String? pendingMessageId;
+  final bool isTerminal;
+  final OpenCrayChatRuntimeEventSnapshot? lastEvent;
+
+  factory OpenCrayChatRunSnapshot.fromMap(Map<Object?, Object?> map) {
+    final rawLastEvent = map['lastEvent'];
+    return OpenCrayChatRunSnapshot(
+      sessionId: map['sessionId'] as String? ?? '',
+      runId: map['runId'] as String? ?? '',
+      taskId: map['taskId'] as String? ?? '',
+      acceptedAtEpochMs: map['acceptedAtEpochMs'] as int? ?? 0,
+      updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
+      lifecycleState: map['lifecycleState'] as String?,
+      taskState: map['taskState'] as String?,
+      attempt: map['attempt'] as int? ?? 0,
+      executionStatus: map['executionStatus'] as String?,
+      errorCode: map['errorCode'] as String?,
+      errorMessage: map['errorMessage'] as String?,
+      responseFormat: map['responseFormat'] as String?,
+      pendingMessageId: map['pendingMessageId'] as String?,
+      isTerminal: map['isTerminal'] as bool? ?? false,
+      lastEvent: rawLastEvent is Map<Object?, Object?>
+          ? OpenCrayChatRuntimeEventSnapshot.fromMap(rawLastEvent)
+          : null,
+    );
+  }
+}
+
+class OpenCrayChatRuntimeSnapshot {
+  const OpenCrayChatRuntimeSnapshot({
+    required this.sessionId,
+    required this.activeRuns,
+    required this.events,
+  });
+
+  final String sessionId;
+  final List<OpenCrayChatRunSnapshot> activeRuns;
+  final List<OpenCrayChatRuntimeEventSnapshot> events;
+
+  factory OpenCrayChatRuntimeSnapshot.fromMap(Map<Object?, Object?> map) {
+    final rawActiveRuns = map['activeRuns'] as List<Object?>? ?? const <Object?>[];
+    final rawEvents = map['events'] as List<Object?>? ?? const <Object?>[];
+    return OpenCrayChatRuntimeSnapshot(
+      sessionId: map['sessionId'] as String? ?? '',
+      activeRuns: rawActiveRuns
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatRunSnapshot.fromMap)
+          .toList(growable: false),
+      events: rawEvents
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatRuntimeEventSnapshot.fromMap)
+          .toList(growable: false),
+    );
+  }
+}
+
+class OpenCrayChatRunSubmission {
+  const OpenCrayChatRunSubmission({
+    required this.sessionId,
+    required this.runId,
+    required this.taskId,
+    required this.acceptedAtEpochMs,
+  });
+
+  final String sessionId;
+  final String runId;
+  final String taskId;
+  final int acceptedAtEpochMs;
+
+  factory OpenCrayChatRunSubmission.fromMap(Map<Object?, Object?> map) {
+    return OpenCrayChatRunSubmission(
+      sessionId: map['sessionId'] as String? ?? '',
+      runId: map['runId'] as String? ?? '',
+      taskId: map['taskId'] as String? ?? '',
+      acceptedAtEpochMs: map['acceptedAtEpochMs'] as int? ?? 0,
     );
   }
 }
@@ -133,6 +312,7 @@ class OpenCrayChatSnapshot {
     required this.drawer,
     required this.isInputEnabled,
     this.pendingApprovals = const <OpenCrayChatPendingApprovalSnapshot>[],
+    this.runtimeActivity,
   });
 
   final String screenTitle;
@@ -144,11 +324,13 @@ class OpenCrayChatSnapshot {
   final OpenCrayChatDrawerSnapshot drawer;
   final bool isInputEnabled;
   final List<OpenCrayChatPendingApprovalSnapshot> pendingApprovals;
+  final OpenCrayChatRuntimeSnapshot? runtimeActivity;
 
   factory OpenCrayChatSnapshot.fromMap(Map<Object?, Object?> map) {
     final rawMessages = map['messages'] as List<Object?>? ?? const <Object?>[];
     final rawPendingApprovals =
         map['pendingApprovals'] as List<Object?>? ?? const <Object?>[];
+    final rawRuntimeActivity = map['runtimeActivity'];
     return OpenCrayChatSnapshot(
       screenTitle: map['screenTitle'] as String? ?? 'Chat',
       modeLabel: map['modeLabel'] as String? ?? 'AUTO',
@@ -170,6 +352,9 @@ class OpenCrayChatSnapshot {
           .whereType<Map<Object?, Object?>>()
           .map(OpenCrayChatPendingApprovalSnapshot.fromMap)
           .toList(growable: false),
+      runtimeActivity: rawRuntimeActivity is Map<Object?, Object?>
+          ? OpenCrayChatRuntimeSnapshot.fromMap(rawRuntimeActivity)
+          : null,
     );
   }
 }

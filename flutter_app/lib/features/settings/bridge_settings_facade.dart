@@ -189,6 +189,7 @@ class BridgeSettingsFacade implements SettingsFacade {
 
   static LlmConfigSnapshot _mapLlmConfig(OpenCrayLlmConfigSnapshot snapshot) {
     return LlmConfigSnapshot(
+      localeTag: snapshot.localeTag,
       enabled: snapshot.enabled,
       providerId: snapshot.providerId,
       protocol: snapshot.protocol,

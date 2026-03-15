@@ -11,6 +11,7 @@ import com.opencray.llm.ModelProfile
 import com.opencray.llm.ProviderRoute
 import com.opencray.llm.ProviderRouting
 import com.opencray.mcp.McpClientExposureReport
+import com.opencray.persistence.model.MemoryRecord
 import com.opencray.runtime.AgentTodoStore
 import com.opencray.runtime.InMemoryAgentTodoStore
 import com.opencray.runtime.OpenCrayAgentRuntime
@@ -18,6 +19,10 @@ import com.opencray.runtime.OpenCrayAgentRuntimeConfig
 import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
 import com.opencray.runtime.OpenCrayToolDispatcher
 import com.opencray.runtime.OpenCrayToolDispatcherConfig
+import com.opencray.runtime.context.AgentRuntimeSessionContext
+import com.opencray.runtime.memory.MemoryRecallRequest
+import com.opencray.runtime.memory.MemoryRecallResult
+import com.opencray.runtime.memory.MemoryRetriever
 import java.io.File
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
@@ -30,8 +35,12 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val workspaceRootsProvider: () -> Set<Path>,
   private val skillsRootsProvider: () -> List<File>,
   private val mcpReportProvider: () -> McpClientExposureReport?,
+  private val memoryRecordsProvider: () -> List<MemoryRecord> = { emptyList() },
+  private val providerUserAgent: String = OpenCrayUserAgent.providerApi("0"),
+  private val approvalRegistry: AgentTaskApprovalRegistry = AgentTaskApprovalRegistry(),
 ) : AgentSessionTaskRuntimeFactory {
   private val todoStoresBySession: ConcurrentMap<String, AgentTodoStore> = ConcurrentHashMap()
+  private val memoryRetriever: MemoryRetriever = MemoryRetriever()
 
   override fun create(
     sessionId: String,
@@ -77,6 +86,14 @@ internal class AppAgentSessionTaskRuntimeFactory(
     )
     val pendingMessageId = task.metadata[METADATA_PENDING_MESSAGE_ID].orEmpty()
     val visibleThroughMessageId = task.metadata[METADATA_VISIBLE_THROUGH_MESSAGE_ID].orEmpty()
+    val approvalGrant = approvalRegistry.consumeApproved(sessionId, task.id)
+    val sessionContext = createSessionContext(
+      sessionId = sessionId,
+      visibleThroughMessageId = visibleThroughMessageId.takeIf(String::isNotBlank),
+      excludedMessageIds = pendingMessageId.takeIf(String::isNotBlank)?.let(::setOf).orEmpty(),
+      soulProfile = soulProfileProvider(),
+      taskInput = task.input,
+    )
     val runtime = OpenCrayAgentRuntime(
       gateway = DefaultLiteLlmGateway(
         routingStore = InMemoryLiteLlmRoutingSettingsStore(
@@ -92,13 +109,17 @@ internal class AppAgentSessionTaskRuntimeFactory(
             ),
           ),
         ),
-        providerClient = OpenAiCompatibleLiteLlmProviderClient(),
+        providerClient = OpenAiCompatibleLiteLlmProviderClient(
+          userAgent = providerUserAgent,
+        ),
       ),
       toolDispatcher = OpenCrayToolDispatcher(
         OpenCrayToolDispatcherConfig(
           workspaceRoots = workspaceRootsProvider(),
           skillsRoots = skillsRootsProvider(),
           mcpExposureReport = mcpReportProvider(),
+          approvedTaskId = task.id.takeIf { approvalGrant != null },
+          approvedToolName = approvalGrant?.toolName,
           todoStore = todoStoreForSession(sessionId),
         ),
       ),
@@ -106,12 +127,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
         systemPrompt = llmSettings.systemPrompt.ifBlank {
           OpenCrayAgentRuntimeConfig.DEFAULT_OPENCRAY_SYSTEM_PROMPT
         },
-        sessionContext = sessionContextFactory.create(
-          sessionId = sessionId,
-          visibleThroughMessageId = visibleThroughMessageId.takeIf(String::isNotBlank),
-          excludedMessageIds = pendingMessageId.takeIf(String::isNotBlank)?.let(::setOf).orEmpty(),
-          soulProfile = soulProfileProvider(),
-        ),
+        sessionContext = sessionContext,
         llmMetadata = task.metadata.filterKeys(::isLlmVisibleMetadataKey) + mapOf("sessionId" to sessionId),
         llmAuthHeaders = LlmProviderProtocols.authHeaders(
           protocol = llmSettings.protocol,
@@ -126,9 +142,39 @@ internal class AppAgentSessionTaskRuntimeFactory(
   internal fun todoStoreForSession(sessionId: String): AgentTodoStore =
     todoStoresBySession.computeIfAbsent(sessionId) { InMemoryAgentTodoStore() }
 
+  internal fun recalledMemoryFor(
+    sessionId: String,
+    taskInput: String,
+  ): MemoryRecallResult = memoryRetriever.retrieve(
+    records = memoryRecordsProvider(),
+    request = MemoryRecallRequest(
+      sessionId = sessionId,
+      userInput = taskInput,
+    ),
+  )
+
+  private fun createSessionContext(
+    sessionId: String,
+    visibleThroughMessageId: String?,
+    excludedMessageIds: Set<String>,
+    soulProfile: PersonalizationLocalStore.SoulProfile?,
+    taskInput: String,
+  ): AgentRuntimeSessionContext = sessionContextFactory.create(
+    sessionId = sessionId,
+    visibleThroughMessageId = visibleThroughMessageId,
+    excludedMessageIds = excludedMessageIds,
+    soulProfile = soulProfile,
+  ).copy(
+    recalledMemory = recalledMemoryFor(
+      sessionId = sessionId,
+      taskInput = taskInput,
+    ),
+  )
+
   companion object {
     const val ERROR_CODE_MISSING_LLM_CONFIG: String = "MISSING_LLM_CONFIG"
     const val METADATA_HOST_PREFIX: String = "_host."
+    const val METADATA_RUN_ID: String = "${METADATA_HOST_PREFIX}runId"
     const val METADATA_HOST_SESSION_ID: String = "${METADATA_HOST_PREFIX}sessionId"
     const val METADATA_PENDING_MESSAGE_ID: String = "${METADATA_HOST_PREFIX}pendingMessageId"
     const val METADATA_VISIBLE_THROUGH_MESSAGE_ID: String = "${METADATA_HOST_PREFIX}visibleThroughMessageId"

@@ -1,5 +1,6 @@
 class OpenCrayLlmConfigSnapshot {
   const OpenCrayLlmConfigSnapshot({
+    required this.localeTag,
     required this.enabled,
     required this.providerId,
     required this.protocol,
@@ -14,6 +15,7 @@ class OpenCrayLlmConfigSnapshot {
     required this.helperText,
   });
 
+  final String localeTag;
   final bool enabled;
   final String providerId;
   final String protocol;
@@ -29,6 +31,7 @@ class OpenCrayLlmConfigSnapshot {
 
   factory OpenCrayLlmConfigSnapshot.fromMap(Map<Object?, Object?> payload) {
     return OpenCrayLlmConfigSnapshot(
+      localeTag: payload['localeTag'] as String? ?? 'en',
       enabled: payload['enabled'] as bool? ?? false,
       providerId: payload['providerId'] as String? ?? 'custom',
       protocol: payload['protocol'] as String? ?? 'openai',

@@ -119,6 +119,7 @@ internal class OpenCrayLocalRuntimeServer(
     val body = request.jsonBody()
     val payload: Any? = when (request.method to request.path) {
       "GET" to "/v1/shell_snapshot" -> hostRuntime.loadShellSnapshot()
+      "GET" to "/v1/files_snapshot" -> hostRuntime.loadFilesSnapshot()
       "GET" to "/v1/settings_overview" -> hostRuntime.loadSettingsOverview()
       "GET" to "/v1/settings_detail" -> hostRuntime.loadSettingsDetail(
         routeIdRaw = request.queryParameter("routeId"),
@@ -183,6 +184,10 @@ internal class OpenCrayLocalRuntimeServer(
         skillId = request.queryParameter("skillId"),
       )
       "GET" to "/v1/chat_snapshot" -> hostRuntime.loadChatSnapshot()
+      "GET" to "/v1/chat_runtime_snapshot" -> hostRuntime.loadChatRuntimeSnapshot()
+      "GET" to "/v1/chat_run_snapshot" -> hostRuntime.loadChatRunSnapshot(
+        runId = request.queryParameter("runId"),
+      )
       "POST" to "/v1/create_chat_session" -> {
         hostRuntime.createChatSession()
         null
@@ -191,8 +196,21 @@ internal class OpenCrayLocalRuntimeServer(
         hostRuntime.selectChatSession(body.optString("sessionId"))
         null
       }
-      "POST" to "/v1/submit_chat_message" -> {
-        hostRuntime.submitChatMessage(body.optString("text"))
+      "POST" to "/v1/submit_chat_message" -> hostRuntime.submitChatMessage(body.optString("text"))
+      "POST" to "/v1/wait_chat_run" -> hostRuntime.waitForChatRun(
+        runId = body.optString("runId"),
+        timeoutMs = body.optLong("timeoutMs", 15_000L),
+      )
+      "POST" to "/v1/approve_chat_approval" -> {
+        hostRuntime.approveChatApproval(
+          body.optString("runId").takeIf(String::isNotBlank) ?: body.optString("taskId"),
+        )
+        null
+      }
+      "POST" to "/v1/reject_chat_approval" -> {
+        hostRuntime.rejectChatApproval(
+          body.optString("runId").takeIf(String::isNotBlank) ?: body.optString("taskId"),
+        )
         null
       }
       else -> return LocalRuntimeResponse(

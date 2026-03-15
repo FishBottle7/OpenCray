@@ -101,4 +101,53 @@ void main() {
     expect(result.isSuccess, isTrue);
     expect(result.message, 'Validated.');
   });
+
+  test('platform bridge loads files snapshot payloads', () async {
+    late MethodCall capturedCall;
+    const bridge = OpenCrayPlatformBridge();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(methodChannel, (call) async {
+          capturedCall = call;
+          return <String, Object?>{
+            'rootName': 'agent-workspace',
+            'rootPath': '/data/user/0/com.opencray/files/agent-workspace',
+            'availableBytes': 2048,
+            'directoryCount': 1,
+            'fileCount': 1,
+            'entryCount': 2,
+            'isTruncated': false,
+            'children': <Object?>[
+              <String, Object?>{
+                'name': 'docs',
+                'relativePath': 'docs',
+                'isDirectory': true,
+                'childCount': 1,
+                'sizeBytes': null,
+                'isTruncated': false,
+                'children': <Object?>[
+                  <String, Object?>{
+                    'name': 'report.md',
+                    'relativePath': 'docs/report.md',
+                    'isDirectory': false,
+                    'childCount': 0,
+                    'sizeBytes': 512,
+                    'isTruncated': false,
+                    'children': const <Object?>[],
+                  },
+                ],
+              },
+            ],
+          };
+        });
+
+    final snapshot = await bridge.loadFilesSnapshot();
+
+    expect(capturedCall.method, 'loadFilesSnapshot');
+    expect(snapshot.rootName, 'agent-workspace');
+    expect(snapshot.children.single.name, 'docs');
+    expect(
+      snapshot.children.single.children.single.relativePath,
+      'docs/report.md',
+    );
+  });
 }

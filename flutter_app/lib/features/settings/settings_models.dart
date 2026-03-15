@@ -163,6 +163,7 @@ class LlmProviderOption {
 
 class LlmConfigSnapshot {
   const LlmConfigSnapshot({
+    required this.localeTag,
     required this.enabled,
     required this.providerId,
     required this.protocol,
@@ -177,6 +178,7 @@ class LlmConfigSnapshot {
     required this.helperText,
   });
 
+  final String localeTag;
   final bool enabled;
   final String providerId;
   final String protocol;

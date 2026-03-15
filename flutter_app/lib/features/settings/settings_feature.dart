@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../core/copy/opencray_ui_copy.dart';
 import '../../core/design/opencray_tokens.dart';
 import 'settings_facade.dart';
 import 'settings_models.dart';
@@ -437,9 +438,10 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         key: ValueKey<String>('settings-llm-loading'),
       );
     }
+    final copy = OpenCrayUiCopy.fromLocaleTag(snapshot.localeTag);
     final selectedProvider = _selectedProviderFor(snapshot);
     final selectedProtocol = _draftProtocolFor(selectedProvider);
-    final optionsLabel = '${snapshot.providerOptions.length} options';
+    final optionsLabel = copy.llmOptionsCount(snapshot.providerOptions.length);
     final showsReasoning =
         selectedProtocol == 'anthropic' ||
         _modelController.text.toLowerCase().contains('gpt');
@@ -452,17 +454,14 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
           const SizedBox(height: 8),
           const Text('LLM', style: _SettingsTextStyles.pageTitleSubpage),
           const SizedBox(height: 8),
-          const Text(
-            'Select providers, routing, and response defaults.',
-            style: _SettingsTextStyles.subtitle,
-          ),
+          Text(copy.llmPageSubtitle, style: _SettingsTextStyles.subtitle),
           const SizedBox(height: 16),
           _SettingsCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Primary provider',
+                Text(
+                  copy.llmPrimaryProviderTitle,
                   style: _SettingsTextStyles.cardTitle,
                 ),
                 const SizedBox(height: 10),
@@ -474,39 +473,41 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                 const SizedBox(height: 12),
                 Text(
                   selectedProvider.isCustom
-                      ? 'Best for larger provider lists.'
-                      : 'Best when you have many providers configured.',
+                      ? copy.llmPrimaryProviderCustomHelper
+                      : copy.llmPrimaryProviderPresetHelper,
                   style: _SettingsTextStyles.body,
                 ),
                 if (selectedProvider.isCustom) ...[
                   const SizedBox(height: 12),
                   const Divider(height: 1, color: OpenCrayColors.divider),
                   const SizedBox(height: 12),
-                  const Text(
-                    'API protocol',
+                  Text(
+                    copy.llmProtocolTitle,
                     style: _SettingsTextStyles.fieldLabel,
                   ),
                   const SizedBox(height: 8),
                   _PrototypeSelectionRow(
                     title: _protocolTitle(selectedProtocol),
-                    trailingLabel: '${_protocolOptions.length} options',
+                    trailingLabel: copy.llmOptionsCount(
+                      _protocolOptions.length,
+                    ),
                     compact: true,
                     onTap: _openProtocolSheet,
                   ),
                   const SizedBox(height: 12),
                   _PrototypeField(
-                    label: 'Provider name',
+                    label: copy.llmProviderNameLabel,
                     controller: _providerNameController,
                     focusNode: _providerNameFocusNode,
-                    hintText: 'Acme Inference',
+                    hintText: copy.llmProviderNameHint,
                     keyboardType: TextInputType.visiblePassword,
                   ),
                   const SizedBox(height: 12),
                   _PrototypeField(
-                    label: 'Notes',
+                    label: copy.llmNotesLabel,
                     controller: _providerNotesController,
                     focusNode: _providerNotesFocusNode,
-                    hintText: 'Regional fallback',
+                    hintText: copy.llmNotesHint,
                     keyboardType: TextInputType.visiblePassword,
                   ),
                 ],
@@ -520,58 +521,60 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
               children: [
                 Row(
                   children: [
-                    const Expanded(
+                    Expanded(
                       child: Text(
-                        'Connection',
+                        copy.llmConnectionTitle,
                         style: _SettingsTextStyles.cardTitle,
                       ),
                     ),
                     _HeaderActionChip(
                       label: _isValidating
-                          ? 'Validating…'
-                          : (_isSavingDraft ? 'Saving…' : 'Validate Model'),
+                          ? copy.llmValidating
+                          : (_isSavingDraft
+                                ? copy.llmSaving
+                                : copy.llmValidateModel),
                       onTap: _isValidating ? null : _validateLlmConfig,
                     ),
                   ],
                 ),
                 const SizedBox(height: 14),
                 _PrototypeField(
-                  label: 'Base URL',
+                  label: copy.llmBaseUrlLabel,
                   controller: _baseUrlController,
                   focusNode: _baseUrlFocusNode,
-                  hintText: 'https://api.openai.com/v1',
+                  hintText: copy.llmBaseUrlHint,
                   keyboardType: TextInputType.url,
                 ),
                 const SizedBox(height: 12),
                 _PrototypeField(
-                  label: 'API key',
+                  label: copy.llmApiKeyLabel,
                   controller: _apiKeyController,
                   focusNode: _apiKeyFocusNode,
-                  hintText: 'Required for remote providers',
+                  hintText: copy.llmApiKeyHint,
                   obscureText: true,
                   keyboardType: TextInputType.visiblePassword,
                   trailingText: _apiKeyController.text.trim().isEmpty
                       ? null
-                      : 'Stored locally',
+                      : copy.llmStoredLocally,
                   onChanged: (_) => setState(() {}),
                 ),
                 const SizedBox(height: 12),
                 _PrototypeField(
-                  label: 'Model name',
+                  label: copy.llmModelNameLabel,
                   controller: _modelController,
                   focusNode: _modelFocusNode,
-                  hintText: 'gpt-4o-mini',
+                  hintText: copy.llmModelHint,
                   keyboardType: TextInputType.visiblePassword,
                   onChanged: (_) => setState(() {}),
                 ),
                 if (showsReasoning) ...[
                   const SizedBox(height: 12),
                   _PrototypeSelectionField(
-                    label: 'Reasoning effort',
+                    label: copy.llmReasoningEffortLabel,
                     title: _reasoningEffortTitle(_reasoningEffort),
                     trailingLabel: selectedProtocol == 'anthropic'
-                        ? 'Anthropic thinking enabled'
-                        : 'GPT model detected',
+                        ? copy.llmAnthropicThinkingEnabled
+                        : copy.llmGptModelDetected,
                     onTap: _openReasoningSheet,
                   ),
                 ],
@@ -583,25 +586,21 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Advanced prompt',
+                Text(
+                  copy.llmAdvancedPromptTitle,
                   style: _SettingsTextStyles.cardTitle,
                 ),
                 const SizedBox(height: 12),
                 _PrototypeField(
-                  label: 'Prompt override',
+                  label: copy.llmPromptOverrideLabel,
                   controller: _systemPromptController,
                   focusNode: _systemPromptFocusNode,
-                  hintText:
-                      'Leave empty to use the default OpenCray system prompt',
+                  hintText: copy.llmPromptOverrideHint,
                   minLines: 5,
                   maxLines: 8,
                 ),
                 const SizedBox(height: 12),
-                const Text(
-                  'Changes save automatically when a field loses focus.',
-                  style: _SettingsTextStyles.body,
-                ),
+                Text(copy.llmAutosaveHint, style: _SettingsTextStyles.body),
                 const SizedBox(height: 8),
                 Text(snapshot.helperText, style: _SettingsTextStyles.body),
               ],
@@ -644,14 +643,15 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
   }
 
   Future<void> _validateLlmConfig() async {
+    final copy = _copyForSnapshot();
     FocusScope.of(context).unfocus();
     await _saveDraft();
     if (_baseUrlController.text.trim().isEmpty) {
-      _showMessage('Base URL is required to validate the model.');
+      _showMessage(copy.llmValidateRequiresBaseUrl);
       return;
     }
     if (_modelController.text.trim().isEmpty) {
-      _showMessage('Model is required to validate the model.');
+      _showMessage(copy.llmValidateRequiresModel);
       return;
     }
     setState(() {
@@ -688,6 +688,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     if (snapshot == null) {
       return;
     }
+    final copy = _copyForSnapshot();
     final selected = await showModalBottomSheet<LlmProviderOption>(
       context: context,
       backgroundColor: Colors.transparent,
@@ -718,8 +719,8 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                         ),
                       ),
                     ),
-                    const Text(
-                      'Primary provider',
+                    Text(
+                      copy.llmPrimaryProviderTitle,
                       style: _SettingsTextStyles.cardTitle,
                     ),
                     const SizedBox(height: 12),
@@ -771,6 +772,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
   }
 
   Future<void> _openReasoningSheet() async {
+    final copy = _copyForSnapshot();
     final selected = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: Colors.transparent,
@@ -801,8 +803,8 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                         ),
                       ),
                     ),
-                    const Text(
-                      'Reasoning effort',
+                    Text(
+                      copy.llmReasoningEffortLabel,
                       style: _SettingsTextStyles.cardTitle,
                     ),
                     const SizedBox(height: 12),
@@ -845,6 +847,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
   }
 
   Future<void> _openProtocolSheet() async {
+    final copy = _copyForSnapshot();
     final selected = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: Colors.transparent,
@@ -875,8 +878,8 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                         ),
                       ),
                     ),
-                    const Text(
-                      'API protocol',
+                    Text(
+                      copy.llmProtocolTitle,
                       style: _SettingsTextStyles.cardTitle,
                     ),
                     const SizedBox(height: 12),
@@ -928,10 +931,11 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
 
   LlmProviderOption _selectedProviderFor(LlmConfigSnapshot snapshot) {
     if (snapshot.providerOptions.isEmpty) {
-      return const LlmProviderOption(
+      final copy = OpenCrayUiCopy.fromLocaleTag(snapshot.localeTag);
+      return LlmProviderOption(
         id: 'custom',
-        title: 'Custom provider',
-        subtitle: 'No provider presets are available.',
+        title: copy.llmFallbackCustomProviderTitle,
+        subtitle: copy.llmFallbackCustomProviderSubtitle,
         defaultBaseUrl: '',
         defaultModel: '',
         isCustom: true,
@@ -1044,6 +1048,9 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  OpenCrayUiCopy _copyForSnapshot() =>
+      OpenCrayUiCopy.fromLocaleTag(_snapshot?.localeTag ?? 'en');
+
   String _draftProtocol() {
     final snapshot = _snapshot;
     if (snapshot == null) {
@@ -1056,20 +1063,17 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
       provider.isCustom ? _protocol : 'openai';
 
   String _protocolTitle(String protocol) {
+    final copy = _copyForSnapshot();
     switch (protocol) {
       case 'anthropic':
-        return 'Anthropic';
+        return copy.llmProtocolAnthropic;
       default:
-        return 'OpenAI compatible';
+        return copy.llmProtocolOpenAiCompatible;
     }
   }
 
-  String _reasoningEffortTitle(String reasoningEffort) {
-    if (reasoningEffort == 'xhigh') {
-      return 'XHigh';
-    }
-    return '${reasoningEffort[0].toUpperCase()}${reasoningEffort.substring(1)}';
-  }
+  String _reasoningEffortTitle(String reasoningEffort) =>
+      _copyForSnapshot().llmReasoningTitle(reasoningEffort);
 }
 
 class _PersonalizationSettingsPage extends StatefulWidget {

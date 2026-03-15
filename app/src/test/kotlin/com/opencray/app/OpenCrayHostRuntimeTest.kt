@@ -31,6 +31,8 @@ import com.opencray.core.orchestrator.SessionLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.persistence.model.ChatTranscriptRole
+import com.opencray.runtime.OpenCrayLifecycleEvent
+import com.opencray.runtime.OpenCrayRunLifecyclePhase
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -101,7 +103,7 @@ class OpenCrayHostRuntimeTest {
     val messages = chatStore.loadState().activeSession.messages
 
     assertEquals(1, messages.size)
-    assertEquals(listOf(handle.submittedTaskIds.single()), handle.cancelledTaskIds)
+    assertEquals(listOf(handle.submissions.single().taskId), handle.cancelledTaskIds)
     assertTrue(handle.ensureProcessingTaskIds.isEmpty())
   }
 
@@ -124,7 +126,7 @@ class OpenCrayHostRuntimeTest {
 
     assertEquals(listOf("Need a durable owner path", "Thinking"), messages.map { it.text })
     assertEquals(listOf("Need a durable owner path"), handle.submittedInputs)
-    assertEquals(listOf(handle.submittedTaskIds.single()), handle.ensureProcessingTaskIds)
+    assertEquals(listOf(handle.submissions.single().taskId), handle.ensureProcessingTaskIds)
   }
 
   @Test
@@ -193,6 +195,308 @@ class OpenCrayHostRuntimeTest {
       .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
 
     assertEquals("Failed: Invalid API key.", messages.last().text)
+  }
+
+  @Test
+  fun taskSuccessRedactsInternalToolPayloadFromChatAndDrawerPreview() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-tool-payload-success"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    hostRuntime.submitChatMessage("Need a clean answer")
+    val task = handle.submittedTasks.single()
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata,
+      ),
+    )
+
+    val messages = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+    val snapshot = hostRuntime.loadChatSnapshot()
+    val drawer = snapshot["drawer"] as Map<*, *>
+    val sessions = drawer["sessions"] as List<*>
+    val firstSession = sessions.first() as Map<*, *>
+
+    assertEquals(
+      "The agent produced an internal tool payload instead of a user-facing reply.",
+      messages.last().text,
+    )
+    assertEquals(
+      "The agent produced an internal tool payload instead of a user-facing reply.",
+      firstSession["preview"],
+    )
+  }
+
+  @Test
+  fun approvalRequiredFailureAppearsInPendingApprovals() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approval-pending"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    hostRuntime.submitChatMessage("Need approval")
+    val task = handle.submittedTasks.single()
+    val run = handle.submissions.single()
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.DENIED,
+        errorCode = "APPROVAL_REQUIRED",
+        errorMessage = "Approval is required before Write can run.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata,
+      ),
+    )
+
+    val snapshot = hostRuntime.loadChatSnapshot()
+    val pendingApprovals = snapshot["pendingApprovals"] as List<*>
+    val pendingApproval = pendingApprovals.single() as Map<*, *>
+    val messages = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+
+    assertEquals("Approval is required before Write can run.", messages.last().text)
+    assertEquals(run.runId, pendingApproval["runId"])
+    assertEquals(task.id, pendingApproval["taskId"])
+    assertEquals("standard", pendingApproval["risk"])
+    assertEquals("Approval is required before Write can run.", pendingApproval["body"])
+  }
+
+  @Test
+  fun approvalRequiredFailureRedactsInternalToolPayloadFromBubbleAndApprovalBody() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approval-redaction"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    hostRuntime.submitChatMessage("Need approval")
+    val task = handle.submittedTasks.single()
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.DENIED,
+        errorCode = "APPROVAL_REQUIRED",
+        errorMessage = """{"type":"tool_call","tool_name":"Write","arguments":{"file_path":"note.txt","content":"secret"}}""",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata,
+      ),
+    )
+
+    val snapshot = hostRuntime.loadChatSnapshot()
+    val pendingApprovals = snapshot["pendingApprovals"] as List<*>
+    val pendingApproval = pendingApprovals.single() as Map<*, *>
+    val messages = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+
+    assertEquals("Approval required before the agent can continue.", messages.last().text)
+    assertEquals("Approval required before the agent can continue.", pendingApproval["body"])
+  }
+
+  @Test
+  fun approvalRequiredFailureIncludesToolReasonInPendingApprovalBody() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approval-reason"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    hostRuntime.submitChatMessage("Need approval")
+    val task = handle.submittedTasks.single()
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.DENIED,
+        errorCode = "APPROVAL_REQUIRED",
+        errorMessage = "Approval is required before Write can run.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          "toolReason" to "Need to update notes.txt before answering.",
+        ),
+      ),
+    )
+
+    val snapshot = hostRuntime.loadChatSnapshot()
+    val pendingApprovals = snapshot["pendingApprovals"] as List<*>
+    val pendingApproval = pendingApprovals.single() as Map<*, *>
+
+    assertEquals(
+      "Approval is required before Write can run.\nReason: Need to update notes.txt before answering.",
+      pendingApproval["body"],
+    )
+  }
+
+  @Test
+  fun chatSnapshotIncludesRuntimeActivityEvents() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-runtime-activity"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    hostRuntime.submitChatMessage("Need runtime events")
+    val task = handle.submittedTasks.single()
+    val run = handle.submissions.single()
+    manager.emitRunEvent(
+      sessionId = activeSessionId,
+      task = task,
+      event = OpenCrayLifecycleEvent(
+        runId = run.runId,
+        taskId = task.id,
+        phase = OpenCrayRunLifecyclePhase.START,
+        emittedAtEpochMs = 1_100L,
+      ),
+    )
+
+    val snapshot = hostRuntime.loadChatSnapshot()
+    val runtimeActivity = snapshot["runtimeActivity"] as Map<*, *>
+    val events = runtimeActivity["events"] as List<*>
+    val firstEvent = events.single() as Map<*, *>
+
+    assertEquals(activeSessionId, runtimeActivity["sessionId"])
+    assertEquals("lifecycle", firstEvent["kind"])
+    assertEquals("start", firstEvent["phase"])
+    assertEquals(run.runId, firstEvent["runId"])
+  }
+
+  @Test
+  fun submitChatMessageReturnsRunSubmissionAndRunSnapshot() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-submission"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    val submission = hostRuntime.submitChatMessage("Need a run id")!!
+    val runId = submission["runId"] as String
+    val runSnapshot = hostRuntime.loadChatRunSnapshot(runId)
+
+    assertEquals(activeSessionId, submission["sessionId"])
+    assertEquals(handle.submissions.single().taskId, submission["taskId"])
+    assertEquals(runId, runSnapshot?.get("runId"))
+    assertEquals(handle.submissions.single().taskId, runSnapshot?.get("taskId"))
+  }
+
+  @Test
+  fun approveChatApprovalRetriesTaskAndRestoresThinkingPlaceholder() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approval-retry"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+      retryResult = true,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    val run = hostRuntime.submitChatMessage("Need approval")!!
+    val task = handle.submittedTasks.single()
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.DENIED,
+        errorCode = "HIGH_RISK_APPROVAL_REQUIRED",
+        errorMessage = "High-risk approval required. Review this request carefully before approving. Approval is required before command_exec can run.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata,
+      ),
+    )
+
+    hostRuntime.approveChatApproval(run["runId"] as String)
+
+    val snapshot = hostRuntime.loadChatSnapshot()
+    val pendingApprovals = snapshot["pendingApprovals"] as List<*>
+    val messages = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+
+    assertEquals(listOf(task.id), handle.retriedTaskIds)
+    assertTrue(pendingApprovals.isEmpty())
+    assertEquals("Thinking", messages.last().text)
+  }
+
+  @Test
+  fun rejectChatApprovalHidesPendingApprovalWithoutRetry() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approval-reject"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+      retryResult = true,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    val run = hostRuntime.submitChatMessage("Need approval")!!
+    val task = handle.submittedTasks.single()
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.DENIED,
+        errorCode = "APPROVAL_REQUIRED",
+        errorMessage = "Approval is required before Write can run.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata,
+      ),
+    )
+
+    hostRuntime.rejectChatApproval(run["runId"] as String)
+
+    val snapshot = hostRuntime.loadChatSnapshot()
+    val pendingApprovals = snapshot["pendingApprovals"] as List<*>
+
+    assertTrue(handle.retriedTaskIds.isEmpty())
+    assertTrue(pendingApprovals.isEmpty())
   }
 
   @Test
@@ -550,6 +854,16 @@ class OpenCrayHostRuntimeTest {
       }
     }
 
+    fun emitRunEvent(
+      sessionId: String,
+      task: AgentTask,
+      event: com.opencray.runtime.OpenCrayAgentRunEvent,
+    ) {
+      listeners.forEach { listener ->
+        listener.onRunEvent(sessionId, task, event)
+      }
+    }
+
     override fun observe(listener: AgentSessionRuntimeListener): () -> Unit {
       listeners += listener
       return {
@@ -566,13 +880,16 @@ class OpenCrayHostRuntimeTest {
     override val sessionId: String,
     private val onResume: ((String) -> Unit)? = null,
     private val submitFailure: Throwable? = null,
+    private val retryResult: Boolean = false,
   ) : AgentSessionHandle {
     val submittedInputs = mutableListOf<String>()
-    val submittedTaskIds = mutableListOf<String>()
     val submittedTasks = mutableListOf<AgentTask>()
+    val submissions = mutableListOf<AgentRunSubmission>()
     val ensureProcessingTaskIds = mutableListOf<String>()
     val cancelledTaskIds = mutableListOf<String>()
+    val retriedTaskIds = mutableListOf<String>()
     private var lastSubmittedTaskId: String? = null
+    private val runSnapshotsById = linkedMapOf<String, AgentRunSnapshot>()
 
     override fun submitPrompt(
       userText: String,
@@ -580,13 +897,13 @@ class OpenCrayHostRuntimeTest {
       visibleThroughMessageId: String,
       policyDecision: PolicyDecision,
       metadata: Map<String, String>,
-    ): AgentTask {
+    ): AgentRunSubmission {
       submitFailure?.let { throw it }
       submittedInputs += userText
-      val taskId = "task-${submittedTaskIds.size + 1}"
-      submittedTaskIds += taskId
+      val taskId = "task-${submittedTasks.size + 1}"
+      val runId = "run-${submittedTasks.size + 1}"
       lastSubmittedTaskId = taskId
-      return AgentTask(
+      val task = AgentTask(
         id = taskId,
         type = AgentTaskType.PROMPT,
         input = userText,
@@ -595,11 +912,31 @@ class OpenCrayHostRuntimeTest {
           reasonCode = "TEST_ALLOW",
         ),
         metadata = metadata + mapOf(
+          AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
           AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to pendingMessageId,
           AppAgentSessionTaskRuntimeFactory.METADATA_VISIBLE_THROUGH_MESSAGE_ID to visibleThroughMessageId,
         ),
         createdAtEpochMs = 1_000L,
-      ).also(submittedTasks::add)
+      )
+      val submission = AgentRunSubmission(
+        sessionId = sessionId,
+        runId = runId,
+        taskId = taskId,
+        acceptedAtEpochMs = 1_000L,
+      )
+      submittedTasks += task
+      submissions += submission
+      runSnapshotsById[runId] = AgentRunSnapshot(
+        sessionId = sessionId,
+        runId = runId,
+        taskId = taskId,
+        acceptedAtEpochMs = 1_000L,
+        updatedAtEpochMs = 1_000L,
+        lifecycleState = null,
+        taskState = null,
+        pendingMessageId = pendingMessageId,
+      )
+      return submission
     }
 
     override fun ensureProcessing() {
@@ -611,7 +948,16 @@ class OpenCrayHostRuntimeTest {
       return true
     }
 
-    override fun requestRetry(taskId: String): Boolean = false
+    override fun requestRetry(taskId: String): Boolean {
+      retriedTaskIds += taskId
+      return retryResult
+    }
+
+    override fun listRuns(): List<AgentRunSnapshot> = runSnapshotsById.values.toList()
+
+    override fun findRun(runId: String): AgentRunSnapshot? = runSnapshotsById[runId]
+
+    override fun waitForRun(runId: String, timeoutMs: Long): AgentRunSnapshot? = findRun(runId)
 
     override fun requestCancelForPendingMessageIds(pendingMessageIds: Set<String>): Int = 0
 

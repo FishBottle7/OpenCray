@@ -1,4 +1,5 @@
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
 import '../models/opencray_mcp_settings.dart';
@@ -11,6 +12,8 @@ abstract interface class OpenCrayHostBridge {
   Future<OpenCrayShellSnapshot> loadShellSnapshot();
 
   Stream<OpenCrayShellSnapshot> watchShellSnapshot();
+
+  Future<OpenCrayFilesSnapshot> loadFilesSnapshot();
 
   Future<OpenCraySettingsOverviewSnapshot> loadSettingsOverview();
 
@@ -87,13 +90,24 @@ abstract interface class OpenCrayHostBridge {
 
   Stream<OpenCrayChatSnapshot> watchChatSnapshot();
 
+  Future<OpenCrayChatRuntimeSnapshot> loadChatRuntimeSnapshot();
+
+  Stream<OpenCrayChatRuntimeSnapshot> watchChatRuntimeSnapshot();
+
+  Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId);
+
+  Future<OpenCrayChatRunSnapshot?> waitForChatRun(
+    String runId, {
+    Duration timeout,
+  });
+
   Future<void> createChatSession();
 
   Future<void> selectChatSession(String sessionId);
 
-  Future<void> submitChatMessage(String text);
+  Future<OpenCrayChatRunSubmission?> submitChatMessage(String text);
 
-  Future<void> approveChatApproval(String taskId);
+  Future<void> approveChatApproval(String approvalId);
 
-  Future<void> rejectChatApproval(String taskId);
+  Future<void> rejectChatApproval(String approvalId);
 }

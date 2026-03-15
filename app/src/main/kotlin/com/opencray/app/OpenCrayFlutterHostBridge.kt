@@ -14,6 +14,7 @@ internal class OpenCrayFlutterHostBridge(
   private var settingsObserverDisposer: (() -> Unit)? = null
   private var skillsObserverDisposer: (() -> Unit)? = null
   private var chatObserverDisposer: (() -> Unit)? = null
+  private var chatRuntimeObserverDisposer: (() -> Unit)? = null
 
   fun attach(flutterEngine: FlutterEngine) {
     MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL).setMethodCallHandler(::onMethodCall)
@@ -44,6 +45,12 @@ internal class OpenCrayFlutterHostBridge(
         onDisposeChanged = { disposer -> chatObserverDisposer = disposer },
       ),
     )
+    EventChannel(flutterEngine.dartExecutor.binaryMessenger, CHAT_RUNTIME_SNAPSHOT_CHANNEL).setStreamHandler(
+      observerStreamHandler(
+        observe = hostRuntime::observeChatRuntime,
+        onDisposeChanged = { disposer -> chatRuntimeObserverDisposer = disposer },
+      ),
+    )
   }
 
   fun detach(flutterEngine: FlutterEngine) {
@@ -52,20 +59,24 @@ internal class OpenCrayFlutterHostBridge(
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, SETTINGS_OVERVIEW_CHANNEL).setStreamHandler(null)
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, SKILLS_SNAPSHOT_CHANNEL).setStreamHandler(null)
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, CHAT_SNAPSHOT_CHANNEL).setStreamHandler(null)
+    EventChannel(flutterEngine.dartExecutor.binaryMessenger, CHAT_RUNTIME_SNAPSHOT_CHANNEL).setStreamHandler(null)
     shellObserverDisposer?.invoke()
     settingsObserverDisposer?.invoke()
     skillsObserverDisposer?.invoke()
     chatObserverDisposer?.invoke()
+    chatRuntimeObserverDisposer?.invoke()
     shellObserverDisposer = null
     settingsObserverDisposer = null
     skillsObserverDisposer = null
     chatObserverDisposer = null
+    chatRuntimeObserverDisposer = null
   }
 
   private fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
     runCatching {
       when (call.method) {
         "loadShellSnapshot" -> hostRuntime.loadShellSnapshot()
+        "loadFilesSnapshot" -> hostRuntime.loadFilesSnapshot()
         "loadSettingsOverview" -> hostRuntime.loadSettingsOverview()
         "loadSettingsDetail" -> hostRuntime.loadSettingsDetail(
           routeIdRaw = call.argument<String>("routeId").orEmpty(),
@@ -142,6 +153,19 @@ internal class OpenCrayFlutterHostBridge(
         )
 
         "loadChatSnapshot" -> hostRuntime.loadChatSnapshot()
+        "loadChatRuntimeSnapshot" -> hostRuntime.loadChatRuntimeSnapshot()
+        "loadChatRunSnapshot" -> hostRuntime.loadChatRunSnapshot(
+          call.argument<String>("runId").orEmpty(),
+        )
+        "waitForChatRun" -> {
+          runAsync(result) {
+            hostRuntime.waitForChatRun(
+              runId = call.argument<String>("runId").orEmpty(),
+              timeoutMs = call.argument<Number>("timeoutMs")?.toLong() ?: 15_000L,
+            )
+          }
+          return
+        }
         "createChatSession" -> {
           hostRuntime.createChatSession()
           null
@@ -152,8 +176,19 @@ internal class OpenCrayFlutterHostBridge(
           null
         }
 
-        "submitChatMessage" -> {
-          hostRuntime.submitChatMessage(call.argument<String>("text").orEmpty())
+        "submitChatMessage" -> hostRuntime.submitChatMessage(call.argument<String>("text").orEmpty())
+        "approveChatApproval" -> {
+          hostRuntime.approveChatApproval(
+            call.argument<String>("runId")?.takeIf(String::isNotBlank)
+              ?: call.argument<String>("taskId").orEmpty(),
+          )
+          null
+        }
+        "rejectChatApproval" -> {
+          hostRuntime.rejectChatApproval(
+            call.argument<String>("runId")?.takeIf(String::isNotBlank)
+              ?: call.argument<String>("taskId").orEmpty(),
+          )
           null
         }
 
@@ -217,5 +252,6 @@ internal class OpenCrayFlutterHostBridge(
     private const val SETTINGS_OVERVIEW_CHANNEL = "com.opencray.host/settings_overview"
     private const val SKILLS_SNAPSHOT_CHANNEL = "com.opencray.host/skills_snapshot"
     private const val CHAT_SNAPSHOT_CHANNEL = "com.opencray.host/chat_snapshot"
+    private const val CHAT_RUNTIME_SNAPSHOT_CHANNEL = "com.opencray.host/chat_runtime_snapshot"
   }
 }

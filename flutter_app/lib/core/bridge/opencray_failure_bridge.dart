@@ -1,5 +1,6 @@
 import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
 import '../models/opencray_mcp_settings.dart';
@@ -31,6 +32,10 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async =>
+      throw StateError(_failureMessage);
+
+  @override
   Future<OpenCraySettingsOverviewSnapshot> loadSettingsOverview() async =>
       OpenCraySettingsOverviewSnapshot(
         eyebrow: 'HOST ERROR',
@@ -59,6 +64,7 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayLlmConfigSnapshot> loadLlmConfig() async =>
       const OpenCrayLlmConfigSnapshot(
+        localeTag: 'en',
         enabled: false,
         providerId: 'custom',
         protocol: 'openai',
@@ -303,17 +309,39 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<OpenCrayChatRuntimeSnapshot> loadChatRuntimeSnapshot() async =>
+      const OpenCrayChatRuntimeSnapshot(
+        sessionId: '',
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      );
+
+  @override
+  Stream<OpenCrayChatRuntimeSnapshot> watchChatRuntimeSnapshot() async* {
+    yield await loadChatRuntimeSnapshot();
+  }
+
+  @override
+  Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId) async => null;
+
+  @override
+  Future<OpenCrayChatRunSnapshot?> waitForChatRun(
+    String runId, {
+    Duration timeout = const Duration(seconds: 15),
+  }) async => null;
+
+  @override
   Future<void> createChatSession() async {}
 
   @override
   Future<void> selectChatSession(String sessionId) async {}
 
   @override
-  Future<void> submitChatMessage(String text) async {}
+  Future<OpenCrayChatRunSubmission?> submitChatMessage(String text) async => null;
 
   @override
-  Future<void> approveChatApproval(String taskId) async {}
+  Future<void> approveChatApproval(String approvalId) async {}
 
   @override
-  Future<void> rejectChatApproval(String taskId) async {}
+  Future<void> rejectChatApproval(String approvalId) async {}
 }

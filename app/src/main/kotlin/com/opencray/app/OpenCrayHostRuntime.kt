@@ -46,8 +46,15 @@ import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
+import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.persistence.model.ChatTranscriptMessageEntry
 import com.opencray.persistence.model.ChatTranscriptRole
+import com.opencray.runtime.OpenCrayAgentRunEvent
+import com.opencray.runtime.OpenCrayAssistantEvent
+import com.opencray.runtime.OpenCrayLifecycleEvent
+import com.opencray.runtime.OpenCrayToolCallEvent
+import com.opencray.runtime.OpenCrayToolResultEvent
+import java.util.ArrayDeque
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import org.opencray.app.R
@@ -61,7 +68,9 @@ internal class OpenCrayHostRuntime private constructor(
   private var personalizationFacade: PersonalizationFacade,
   private var mcpSettingsFacade: McpSettingsFacade,
   private var skillsFacade: SkillsFacade,
+  private val workspaceSnapshotProvider: () -> Map<String, Any?>,
   private val sessionRuntimeManager: AgentSessionRuntimeManager,
+  private val approvalRegistry: AgentTaskApprovalRegistry,
   private var strings: HostRuntimeStrings,
   private val mainThreadPoster: MainThreadPoster,
 ) {
@@ -70,27 +79,47 @@ internal class OpenCrayHostRuntime private constructor(
   private val settingsOverviewListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val skillsListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val chatListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  private val chatRuntimeListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  private val pendingApprovalsBySession = linkedMapOf<String, LinkedHashMap<String, PendingApprovalSnapshot>>()
+  private val runtimeEventsBySession = linkedMapOf<String, ArrayDeque<OpenCrayAgentRunEvent>>()
 
   init {
     sessionRuntimeManager.observe(
       object : AgentSessionRuntimeListener {
         override fun onTaskStarted(sessionId: String, task: AgentTask) {
           emitChatSnapshot()
+          emitChatRuntimeSnapshot()
         }
 
         override fun onTaskFinished(sessionId: String, task: AgentTask, result: ExecutionResult) {
           val pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
             ?.takeIf(String::isNotBlank)
-            ?: return
           synchronized(lock) {
-            chatSessionStore.replaceMessage(
-              sessionId = sessionId,
-              messageId = pendingMessageId,
-              role = ChatTranscriptRole.ASSISTANT,
-              text = finalTextFor(result),
-            )
+            if (isApprovalRequiredResult(result)) {
+              recordPendingApprovalLocked(sessionId = sessionId, task = task, result = result)
+            } else {
+              clearPendingApprovalLocked(sessionId = sessionId, taskId = task.id)
+              approvalRegistry.clear(sessionId = sessionId, taskId = task.id)
+            }
+            pendingMessageId?.let { messageId ->
+              chatSessionStore.replaceMessage(
+                sessionId = sessionId,
+                messageId = messageId,
+                role = ChatTranscriptRole.ASSISTANT,
+                text = finalTextFor(result),
+              )
+            }
           }
           emitChatSnapshot()
+          emitChatRuntimeSnapshot()
+        }
+
+        override fun onRunEvent(sessionId: String, task: AgentTask, event: OpenCrayAgentRunEvent) {
+          synchronized(lock) {
+            recordRuntimeEventLocked(sessionId = sessionId, event = event)
+          }
+          emitChatSnapshot()
+          emitChatRuntimeSnapshot()
         }
       },
     )
@@ -251,6 +280,10 @@ internal class OpenCrayHostRuntime private constructor(
       listener = listener,
     )
 
+  fun loadFilesSnapshot(): Map<String, Any?> = synchronized(lock) {
+    workspaceSnapshotProvider()
+  }
+
   fun setSkillEnabled(skillId: String, enabled: Boolean) {
     synchronized(lock) {
       require(skillsFacade.setSkillEnabled(skillId = skillId, enabled = enabled)) {
@@ -308,6 +341,7 @@ internal class OpenCrayHostRuntime private constructor(
     val activeSession = chatState.activeSession
     val visibleMessages = activeSession.messages.filter(::isVisibleChatMessage)
     val pendingCount = pendingTaskCount(activeSession.sessionId)
+    val pendingApprovals = pendingApprovalsForSession(activeSession.sessionId)
     val activeSessionTitle = displaySessionTitle(activeSession.title)
     mapOf(
       "screenTitle" to strings.chatScreenTitle,
@@ -317,7 +351,9 @@ internal class OpenCrayHostRuntime private constructor(
       "summary" to mapOf(
         "title" to activeSessionTitle,
         "badge" to strings.chatMessagesBadge(visibleMessages.size),
-        "body" to if (pendingCount > 0) {
+        "body" to if (pendingApprovals.isNotEmpty()) {
+          strings.chatSummaryApprovalRequired
+        } else if (pendingCount > 0) {
           strings.chatSummaryReplyInProgress
         } else if (visibleMessages.isEmpty()) {
           strings.chatSummaryStartNewSession
@@ -326,6 +362,19 @@ internal class OpenCrayHostRuntime private constructor(
         },
       ),
       "messages" to visibleMessages.map(::chatMessageToMap),
+      "pendingApprovals" to pendingApprovals.map { approval ->
+        mapOf(
+          "runId" to approval.runId,
+          "taskId" to approval.taskId,
+          "pendingMessageId" to approval.pendingMessageId,
+          "risk" to if (approval.isHighRisk) "high_risk" else "standard",
+          "isHighRisk" to approval.isHighRisk,
+          "title" to approval.title,
+          "body" to approval.body,
+          "approveLabel" to strings.chatApprovalApproveLabel,
+          "rejectLabel" to strings.chatApprovalRejectLabel,
+        )
+      },
       "drawer" to mapOf(
         "eyebrow" to strings.chatRecentSessionsEyebrow,
         "title" to strings.chatRecentSessionsTitle,
@@ -334,12 +383,13 @@ internal class OpenCrayHostRuntime private constructor(
           mapOf(
             "sessionId" to session.sessionId,
             "title" to displaySessionTitle(session.title),
-            "preview" to session.lastMessagePreview,
+            "preview" to sanitizeDrawerPreviewText(session.lastMessagePreview),
             "meta" to strings.chatMessagesBadge(session.messageCount),
             "isSelected" to (session.sessionId == activeSession.sessionId),
           )
         },
       ),
+      "runtimeActivity" to runtimeActivitySnapshotLocked(activeSession.sessionId),
       "isInputEnabled" to true,
     )
   }
@@ -351,12 +401,34 @@ internal class OpenCrayHostRuntime private constructor(
       listener = listener,
     )
 
+  fun loadChatRuntimeSnapshot(): Map<String, Any?> = synchronized(lock) {
+    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
+    runtimeActivitySnapshotLocked(activeSessionId)
+  }
+
+  fun loadChatRunSnapshot(runId: String): Map<String, Any?>? = synchronized(lock) {
+    findRunSnapshotLocked(runId)?.let(::runSnapshotToMap)
+  }
+
+  fun waitForChatRun(
+    runId: String,
+    timeoutMs: Long = DEFAULT_RUN_WAIT_TIMEOUT_MS,
+  ): Map<String, Any?>? = waitForRunSnapshot(runId, timeoutMs)?.let(::runSnapshotToMap)
+
+  fun observeChatRuntime(listener: (Map<String, Any?>) -> Unit): () -> Unit =
+    observeWithInitial(
+      listeners = chatRuntimeListeners,
+      initialPayload = loadChatRuntimeSnapshot(),
+      listener = listener,
+    )
+
   fun createChatSession() {
     synchronized(lock) {
       val createdState = chatSessionStore.createSession()
       sessionRuntimeManager.forSession(createdState.activeSession.sessionId).resume()
     }
     emitChatSnapshot()
+    emitChatRuntimeSnapshot()
   }
 
   fun selectChatSession(sessionId: String) {
@@ -365,20 +437,58 @@ internal class OpenCrayHostRuntime private constructor(
       sessionRuntimeManager.forSession(selectedState.activeSession.sessionId).resume()
     }
     emitChatSnapshot()
+    emitChatRuntimeSnapshot()
   }
 
-  fun submitChatMessage(text: String) {
+  fun approveChatApproval(taskId: String) {
+    synchronized(lock) {
+      val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
+      val approval = pendingApprovalForIdentifier(activeSessionId, taskId)
+        ?: error("Pending approval '$taskId' is unavailable.")
+      approvalRegistry.markApproved(activeSessionId, approval.taskId, toolName = approval.toolName)
+      val retried = sessionRuntimeManager.forSession(activeSessionId).requestRetry(approval.taskId)
+      if (!retried) {
+        approvalRegistry.clear(activeSessionId, approval.taskId)
+        error("Unable to retry pending approval '$taskId'.")
+      }
+      clearPendingApprovalLocked(activeSessionId, approval.taskId)
+      approval.pendingMessageId?.let { pendingMessageId ->
+        chatSessionStore.replaceMessage(
+          sessionId = activeSessionId,
+          messageId = pendingMessageId,
+          role = ChatTranscriptRole.ASSISTANT,
+          text = strings.agentThinking,
+        )
+      }
+    }
+    emitChatSnapshot()
+    emitChatRuntimeSnapshot()
+  }
+
+  fun rejectChatApproval(taskId: String) {
+    synchronized(lock) {
+      val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
+      val approval = pendingApprovalForIdentifier(activeSessionId, taskId)
+        ?: error("Pending approval '$taskId' is unavailable.")
+      approvalRegistry.markRejected(activeSessionId, approval.taskId)
+      clearPendingApprovalLocked(activeSessionId, approval.taskId)
+    }
+    emitChatSnapshot()
+    emitChatRuntimeSnapshot()
+  }
+
+  fun submitChatMessage(text: String): Map<String, Any?>? {
     val trimmed = text.trim()
     if (trimmed.isEmpty()) {
-      return
+      return null
     }
 
-    synchronized(lock) {
+    val submission = synchronized(lock) {
       val activeState = chatSessionStore.loadState()
       val sessionId = activeState.activeSession.sessionId
       val handle = sessionRuntimeManager.forSession(sessionId)
       val pendingMessageId = chatSessionStore.reserveMessageId(ChatTranscriptRole.ASSISTANT)
-      val submittedTask = handle.submitPrompt(
+      val submittedRun = handle.submitPrompt(
         userText = ChatRuntimeTextFormatter.format(
           text = trimmed,
           commandLabel = null,
@@ -403,12 +513,15 @@ internal class OpenCrayHostRuntime private constructor(
           assistantPlaceholderText = strings.agentThinking,
         )
       } catch (throwable: Throwable) {
-        handle.requestCancel(submittedTask.id)
+        handle.requestCancel(submittedRun.taskId)
         throw throwable
       }
       handle.ensureProcessing()
+      submittedRun
     }
     emitChatSnapshot()
+    emitChatRuntimeSnapshot()
+    return runSubmissionToMap(submission)
   }
 
   private fun ensureActiveSessionResumed() {
@@ -421,18 +534,249 @@ internal class OpenCrayHostRuntime private constructor(
     .tasks
     .count { taskSnapshot ->
       when (taskSnapshot.lifecycleState) {
-        com.opencray.core.orchestrator.QueueTaskLifecycleState.QUEUED,
-        com.opencray.core.orchestrator.QueueTaskLifecycleState.RUNNING,
-        com.opencray.core.orchestrator.QueueTaskLifecycleState.RETRY_PENDING,
-        com.opencray.core.orchestrator.QueueTaskLifecycleState.CANCEL_REQUESTED,
+        QueueTaskLifecycleState.QUEUED,
+        QueueTaskLifecycleState.RUNNING,
+        QueueTaskLifecycleState.RETRY_PENDING,
+        QueueTaskLifecycleState.CANCEL_REQUESTED,
         -> true
 
-        com.opencray.core.orchestrator.QueueTaskLifecycleState.COMPLETED,
-        com.opencray.core.orchestrator.QueueTaskLifecycleState.CANCELLED,
-        com.opencray.core.orchestrator.QueueTaskLifecycleState.FAILED,
+        QueueTaskLifecycleState.COMPLETED,
+        QueueTaskLifecycleState.CANCELLED,
+        QueueTaskLifecycleState.FAILED,
         -> false
       }
     }
+
+  private fun pendingApprovalsForSession(sessionId: String): List<PendingApprovalSnapshot> {
+    val snapshot = sessionRuntimeManager.forSession(sessionId).snapshot()
+    val transientApprovals = pendingApprovalsBySession[sessionId].orEmpty()
+    approvalRegistry.retainKnownTasks(
+      sessionId = sessionId,
+      taskIds = snapshot.tasks.mapTo(linkedSetOf()) { taskSnapshot -> taskSnapshot.task.id } + transientApprovals.keys,
+    )
+
+    val combined = linkedMapOf<String, PendingApprovalSnapshot>()
+    snapshot.tasks
+      .asSequence()
+      .filter { taskSnapshot ->
+        taskSnapshot.lifecycleState == QueueTaskLifecycleState.FAILED &&
+          isApprovalRequiredError(taskSnapshot.lastErrorCode)
+      }
+      .map { taskSnapshot ->
+        val isHighRisk = taskSnapshot.lastErrorCode == ERROR_HIGH_RISK_APPROVAL_REQUIRED
+        PendingApprovalSnapshot(
+          runId = runIdFor(taskSnapshot.task),
+          taskId = taskSnapshot.task.id,
+          pendingMessageId = taskSnapshot.task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
+            ?.takeIf(String::isNotBlank),
+          toolName = null,
+          isHighRisk = isHighRisk,
+          title = if (isHighRisk) {
+            strings.chatHighRiskApprovalRequiredTitle
+          } else {
+            strings.chatApprovalRequiredTitle
+          },
+          body = sanitizeApprovalBody(
+            body = taskSnapshot.lastErrorMessage,
+            isHighRisk = isHighRisk,
+          ),
+        )
+      }
+      .forEach { approval ->
+        combined[approval.taskId] = approval
+      }
+    transientApprovals.values.forEach { approval ->
+      combined[approval.taskId] = approval
+    }
+    return combined.values.filter { approval ->
+      !approvalRegistry.isApproved(sessionId, approval.taskId) &&
+        !approvalRegistry.isRejected(sessionId, approval.taskId)
+    }
+  }
+
+  private fun pendingApprovalForIdentifier(
+    sessionId: String,
+    taskIdOrRunId: String,
+  ): PendingApprovalSnapshot? = pendingApprovalsForSession(sessionId)
+    .firstOrNull { approval ->
+      approval.taskId == taskIdOrRunId || approval.runId == taskIdOrRunId
+    }
+
+  private fun recordPendingApprovalLocked(
+    sessionId: String,
+    task: AgentTask,
+    result: ExecutionResult,
+  ) {
+    val isHighRisk = result.errorCode == ERROR_HIGH_RISK_APPROVAL_REQUIRED
+    val approval = PendingApprovalSnapshot(
+      runId = runIdFor(task),
+      taskId = task.id,
+      pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
+        ?.takeIf(String::isNotBlank),
+      toolName = result.metadata["toolName"]?.takeIf(String::isNotBlank),
+      isHighRisk = isHighRisk,
+      title = if (isHighRisk) {
+        strings.chatHighRiskApprovalRequiredTitle
+      } else {
+        strings.chatApprovalRequiredTitle
+      },
+      body = composeApprovalBody(
+        body = sanitizeApprovalBody(
+          body = result.errorMessage,
+          isHighRisk = isHighRisk,
+        ),
+        toolReason = result.metadata["toolReason"],
+      ),
+    )
+    pendingApprovalsBySession
+      .getOrPut(sessionId) { linkedMapOf() }[task.id] = approval
+  }
+
+  private fun clearPendingApprovalLocked(sessionId: String, taskId: String) {
+    val sessionApprovals = pendingApprovalsBySession[sessionId] ?: return
+    sessionApprovals.remove(taskId)
+    if (sessionApprovals.isEmpty()) {
+      pendingApprovalsBySession.remove(sessionId)
+    }
+  }
+
+  private fun recordRuntimeEventLocked(sessionId: String, event: OpenCrayAgentRunEvent) {
+    val events = runtimeEventsBySession.getOrPut(sessionId) { ArrayDeque() }
+    events += event
+    while (events.size > MAX_RUNTIME_EVENT_HISTORY) {
+      events.removeFirst()
+    }
+  }
+
+  private fun runtimeActivitySnapshotLocked(sessionId: String): Map<String, Any?> {
+    val runs = sessionRuntimeManager.forSession(sessionId).listRuns()
+    val recentEvents = runtimeEventsBySession[sessionId]?.toList().orEmpty()
+    return mapOf(
+      "sessionId" to sessionId,
+      "activeRuns" to runs
+        .filterNot(AgentRunSnapshot::isTerminal)
+        .map { run ->
+          runSnapshotToMap(
+            run.copy(
+              lastEvent = run.lastEvent ?: recentEvents.lastOrNull { event -> event.runId == run.runId },
+            ),
+          )
+        },
+      "events" to recentEvents.map(::runtimeEventToMap),
+    )
+  }
+
+  private fun findRunSnapshotLocked(runId: String): AgentRunSnapshot? {
+    val sessionIds = chatSessionStore.loadState().sessions
+      .mapTo(linkedSetOf()) { session -> session.sessionId }
+    return sessionIds.firstNotNullOfOrNull { sessionId ->
+      sessionRuntimeManager.forSession(sessionId).findRun(runId)
+    }
+  }
+
+  private fun waitForRunSnapshot(runId: String, timeoutMs: Long): AgentRunSnapshot? {
+    val boundedTimeoutMs = timeoutMs.coerceAtLeast(0L)
+    val existing = synchronized(lock) { findRunSnapshotLocked(runId) }
+    if (existing != null) {
+      return sessionRuntimeManager.forSession(existing.sessionId).waitForRun(runId, boundedTimeoutMs)
+    }
+    val deadline = System.currentTimeMillis() + boundedTimeoutMs
+    while (true) {
+      val discovered = synchronized(lock) { findRunSnapshotLocked(runId) }
+      if (discovered != null) {
+        return sessionRuntimeManager.forSession(discovered.sessionId).waitForRun(
+          runId,
+          (deadline - System.currentTimeMillis()).coerceAtLeast(0L),
+        )
+      }
+      if (System.currentTimeMillis() >= deadline) {
+        return null
+      }
+      Thread.sleep(RUN_LOOKUP_POLL_INTERVAL_MS)
+    }
+  }
+
+  private fun runSubmissionToMap(submission: AgentRunSubmission): Map<String, Any?> = mapOf(
+    "sessionId" to submission.sessionId,
+    "runId" to submission.runId,
+    "taskId" to submission.taskId,
+    "acceptedAtEpochMs" to submission.acceptedAtEpochMs,
+  )
+
+  private fun runSnapshotToMap(run: AgentRunSnapshot): Map<String, Any?> = mapOf(
+    "sessionId" to run.sessionId,
+    "runId" to run.runId,
+    "taskId" to run.taskId,
+    "acceptedAtEpochMs" to run.acceptedAtEpochMs,
+    "updatedAtEpochMs" to run.updatedAtEpochMs,
+    "lifecycleState" to run.lifecycleState?.name?.lowercase(),
+    "taskState" to run.taskState?.name?.lowercase(),
+    "attempt" to run.attempt,
+    "executionStatus" to run.executionStatus?.name?.lowercase(),
+    "errorCode" to run.errorCode,
+    "errorMessage" to run.errorMessage,
+    "responseFormat" to run.responseFormat,
+    "pendingMessageId" to run.pendingMessageId,
+    "isTerminal" to run.isTerminal,
+    "lastEvent" to run.lastEvent?.let(::runtimeEventToMap),
+  )
+
+  private fun runIdFor(task: AgentTask): String =
+    task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
+      ?.takeIf(String::isNotBlank)
+      ?: task.id
+
+  private fun runtimeEventToMap(event: OpenCrayAgentRunEvent): Map<String, Any?> = when (event) {
+    is OpenCrayLifecycleEvent -> mapOf(
+      "kind" to "lifecycle",
+      "runId" to event.runId,
+      "taskId" to event.taskId,
+      "turn" to event.turn,
+      "emittedAtEpochMs" to event.emittedAtEpochMs,
+      "phase" to event.phase.name.lowercase(),
+      "status" to event.status?.name?.lowercase(),
+      "errorCode" to event.errorCode,
+      "errorMessage" to event.errorMessage,
+    )
+    is OpenCrayAssistantEvent -> mapOf(
+      "kind" to "assistant",
+      "runId" to event.runId,
+      "taskId" to event.taskId,
+      "turn" to event.turn,
+      "emittedAtEpochMs" to event.emittedAtEpochMs,
+      "responseFormat" to event.responseFormat,
+      "isFinal" to event.isFinal,
+      "text" to event.text,
+    )
+    is OpenCrayToolCallEvent -> mapOf(
+      "kind" to "tool_call",
+      "runId" to event.runId,
+      "taskId" to event.taskId,
+      "turn" to event.turn,
+      "emittedAtEpochMs" to event.emittedAtEpochMs,
+      "toolName" to event.call.toolName,
+      "toolReason" to event.call.reason,
+      "argumentsJson" to event.call.arguments.toString(),
+    )
+    is OpenCrayToolResultEvent -> mapOf(
+      "kind" to "tool_result",
+      "runId" to event.runId,
+      "taskId" to event.taskId,
+      "turn" to event.turn,
+      "emittedAtEpochMs" to event.emittedAtEpochMs,
+      "toolName" to event.call.toolName,
+      "toolStatus" to event.result.status.name.lowercase(),
+      "errorCode" to event.result.errorCode,
+      "errorMessage" to event.result.errorMessage,
+      "contentPreview" to event.result.content.take(MAX_RUNTIME_EVENT_PREVIEW_CHARS),
+    )
+  }
+
+  private fun isApprovalRequiredResult(result: ExecutionResult): Boolean =
+    result.status == ExecutionStatus.DENIED && isApprovalRequiredError(result.errorCode)
+
+  private fun isApprovalRequiredError(errorCode: String?): Boolean =
+    errorCode == ERROR_APPROVAL_REQUIRED || errorCode == ERROR_HIGH_RISK_APPROVAL_REQUIRED
 
   private fun isVisibleChatMessage(message: ChatTranscriptMessageEntry): Boolean =
     message.role != ChatTranscriptRole.SYSTEM
@@ -452,23 +796,143 @@ internal class OpenCrayHostRuntime private constructor(
       ChatTranscriptRole.TOOL -> "timeline"
       ChatTranscriptRole.SYSTEM -> "timeline"
     }
+    val visibleText = when (message.role) {
+      ChatTranscriptRole.ASSISTANT -> sanitizePotentialInternalAgentText(
+        text = resolvedText,
+        fallback = strings.agentInternalPayloadHidden,
+      )
+
+      else -> resolvedText
+    }
     return mapOf(
       "kind" to kind,
-      "text" to resolvedText,
+      "text" to visibleText,
       "meta" to "",
     )
   }
 
-  private fun finalTextFor(result: ExecutionResult): String = when (result.status) {
-    ExecutionStatus.SUCCESS -> result.stdout.ifBlank { strings.agentEmptyAnswer }
-    ExecutionStatus.CANCELLED -> strings.agentCancelled
-    ExecutionStatus.FAILED -> if (result.errorCode == AppAgentSessionTaskRuntimeFactory.ERROR_CODE_MISSING_LLM_CONFIG) {
-      strings.agentMissingLlm
-    } else {
-      strings.agentFailed(result.errorMessage ?: result.errorCode ?: result.status.name)
-    }
+  private fun finalTextFor(result: ExecutionResult): String {
+    val rawText = when (result.status) {
+      ExecutionStatus.SUCCESS -> result.stdout.ifBlank { strings.agentEmptyAnswer }
+      ExecutionStatus.CANCELLED -> strings.agentCancelled
+      ExecutionStatus.DENIED -> result.errorMessage ?: strings.agentFailed(
+        result.errorCode ?: result.status.name,
+      )
+      ExecutionStatus.FAILED -> if (result.errorCode == AppAgentSessionTaskRuntimeFactory.ERROR_CODE_MISSING_LLM_CONFIG) {
+        strings.agentMissingLlm
+      } else {
+        strings.agentFailed(result.errorMessage ?: result.errorCode ?: result.status.name)
+      }
 
-    else -> strings.agentFailed(result.errorMessage ?: result.errorCode ?: result.status.name)
+      else -> strings.agentFailed(result.errorMessage ?: result.errorCode ?: result.status.name)
+    }
+    return sanitizePotentialInternalAgentText(
+      text = rawText,
+      fallback = when (result.status) {
+        ExecutionStatus.SUCCESS -> strings.agentInternalPayloadHidden
+        ExecutionStatus.DENIED -> approvalFallbackBody(
+          isHighRisk = result.errorCode == ERROR_HIGH_RISK_APPROVAL_REQUIRED,
+        )
+        else -> strings.agentInternalPayloadHidden
+      },
+    )
+  }
+
+  private fun sanitizeApprovalBody(body: String?, isHighRisk: Boolean): String {
+    val fallback = approvalFallbackBody(isHighRisk = isHighRisk)
+    val resolved = body?.takeIf(String::isNotBlank) ?: return fallback
+    return sanitizePotentialInternalAgentText(
+      text = resolved,
+      fallback = fallback,
+    )
+  }
+
+  private fun approvalFallbackBody(isHighRisk: Boolean): String = if (isHighRisk) {
+    strings.chatHighRiskApprovalRequiredBody
+  } else {
+    strings.chatSummaryApprovalRequired
+  }
+
+  private fun sanitizeDrawerPreviewText(text: String): String {
+    val restoredFallback = restoreKnownPreviewFallback(text.trim())
+    if (restoredFallback != null) {
+      return restoredFallback
+    }
+    return sanitizePotentialInternalAgentText(
+      text = text,
+      fallback = strings.agentInternalPayloadHidden,
+    )
+  }
+
+  private fun restoreKnownPreviewFallback(text: String): String? {
+    val knownFallbacks = listOf(
+      strings.agentInternalPayloadHidden,
+      strings.chatSummaryApprovalRequired,
+      strings.chatHighRiskApprovalRequiredBody,
+    )
+    return knownFallbacks.firstOrNull { fallback ->
+      text == fallback.take(DRAWER_PREVIEW_MAX_CHARS).trimEnd()
+    }
+  }
+
+  private fun composeApprovalBody(body: String, toolReason: String?): String {
+    val reason = toolReason
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return body
+    return buildString {
+      appendLine(body)
+      append("Reason: ")
+      append(reason)
+    }
+  }
+
+  private fun sanitizePotentialInternalAgentText(text: String, fallback: String): String {
+    val trimmed = text.trim()
+    if (trimmed.isBlank()) return text
+    return if (looksLikeInternalToolPayload(trimmed)) fallback else text
+  }
+
+  private fun looksLikeInternalToolPayload(text: String): Boolean {
+    val jsonCandidate = extractEmbeddedJsonObject(text) ?: return false
+    val normalized = jsonCandidate.lowercase()
+    val explicitToolAction =
+      "\"type\"" in normalized &&
+        ("\"tool_call\"" in normalized || "\"tool\"" in normalized)
+    val toolArgumentShape = "\"tool_name\"" in normalized && "\"arguments\"" in normalized
+    return explicitToolAction || toolArgumentShape
+  }
+
+  private fun extractEmbeddedJsonObject(raw: String): String? {
+    val trimmed = raw.trim()
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      return trimmed
+    }
+    var depth = 0
+    var startIndex = -1
+    var inString = false
+    var escaped = false
+    for ((index, character) in raw.withIndex()) {
+      when {
+        inString && escaped -> escaped = false
+        inString && character == '\\' -> escaped = true
+        character == '"' -> inString = !inString
+        !inString && character == '{' -> {
+          if (depth == 0) {
+            startIndex = index
+          }
+          depth += 1
+        }
+
+        !inString && character == '}' -> {
+          depth -= 1
+          if (depth == 0 && startIndex >= 0) {
+            return raw.substring(startIndex, index + 1)
+          }
+        }
+      }
+    }
+    return null
   }
 
   internal fun currentMcpExposureReport() =
@@ -539,6 +1003,7 @@ internal class OpenCrayHostRuntime private constructor(
   )
 
   private fun LlmConfigSnapshot.toMap(): Map<String, Any?> = mapOf(
+    "localeTag" to localeTag,
     "enabled" to enabled,
     "providerId" to providerId,
     "protocol" to protocol,
@@ -718,6 +1183,11 @@ internal class OpenCrayHostRuntime private constructor(
     emitSnapshot(chatListeners, payload)
   }
 
+  private fun emitChatRuntimeSnapshot() {
+    val payload = loadChatRuntimeSnapshot()
+    emitSnapshot(chatRuntimeListeners, payload)
+  }
+
   private fun emitShellSnapshot() {
     val payload = loadShellSnapshot()
     emitSnapshot(shellListeners, payload)
@@ -748,6 +1218,13 @@ internal class OpenCrayHostRuntime private constructor(
 
   companion object {
     private const val DEFAULT_MODE_LABEL: String = "AUTO"
+    private const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
+    private const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
+    private const val DEFAULT_RUN_WAIT_TIMEOUT_MS: Long = 15_000L
+    private const val RUN_LOOKUP_POLL_INTERVAL_MS: Long = 50L
+    private const val MAX_RUNTIME_EVENT_HISTORY: Int = 24
+    private const val MAX_RUNTIME_EVENT_PREVIEW_CHARS: Int = 240
+    private const val DRAWER_PREVIEW_MAX_CHARS: Int = 52
 
     @Volatile
     private var instance: OpenCrayHostRuntime? = null
@@ -767,7 +1244,20 @@ internal class OpenCrayHostRuntime private constructor(
       personalizationFacade: PersonalizationFacade = EmptyPersonalizationFacade,
       mcpSettingsFacade: McpSettingsFacade = EmptyMcpSettingsFacade,
       skillsFacade: SkillsFacade = EmptySkillsFacade,
+      workspaceSnapshotProvider: () -> Map<String, Any?> = {
+        WorkspaceTreeSnapshot(
+          rootName = AppAgentWorkspace.DIRECTORY_NAME,
+          rootPath = AppAgentWorkspace.DIRECTORY_NAME,
+          availableBytes = 0L,
+          directoryCount = 0,
+          fileCount = 0,
+          entryCount = 0,
+          isTruncated = false,
+          children = emptyList(),
+        ).toMap()
+      },
       sessionRuntimeManager: AgentSessionRuntimeManager,
+      approvalRegistry: AgentTaskApprovalRegistry = AgentTaskApprovalRegistry(),
       strings: HostRuntimeStrings = HostRuntimeStrings(
         localeTag = "en",
         shellHostLabel = "HOST CONNECTED",
@@ -803,7 +1293,9 @@ internal class OpenCrayHostRuntime private constructor(
       personalizationFacade = personalizationFacade,
       mcpSettingsFacade = mcpSettingsFacade,
       skillsFacade = skillsFacade,
+      workspaceSnapshotProvider = workspaceSnapshotProvider,
       sessionRuntimeManager = sessionRuntimeManager,
+      approvalRegistry = approvalRegistry,
       strings = strings,
       mainThreadPoster = mainThreadPoster,
     )
@@ -817,8 +1309,15 @@ internal class OpenCrayHostRuntime private constructor(
       val skillsFacade = LocalSkillsFacade.fromContext(localizedContext)
       val mcpSettingsStore = McpSettingsStore.fromContext(appContext)
       val mcpRegistryStore = AppMcpRegistryStore.fromContext(appContext)
+      val providerUserAgent = OpenCrayUserAgent.fromContext(appContext)
       val chatExecutor: ExecutorService = Executors.newSingleThreadExecutor()
       val chatContextFactory = ChatRuntimeSessionContextFactory(chatSessionStore)
+      val approvalRegistry = AgentTaskApprovalRegistry()
+      val workspaceSnapshotProvider = {
+        AppAgentWorkspaceSnapshotFactory.createSnapshot(
+          AppAgentWorkspace.ensureRootForContext(appContext),
+        ).toMap()
+      }
       lateinit var hostRuntime: OpenCrayHostRuntime
       val personalizationFacade = LocalPersonalizationFacade.createForTest(
         context = localizedContext,
@@ -842,6 +1341,7 @@ internal class OpenCrayHostRuntime private constructor(
         personalizationFacade = personalizationFacade,
         mcpSettingsFacade = mcpSettingsFacade,
         skillsFacade = skillsFacade,
+        workspaceSnapshotProvider = workspaceSnapshotProvider,
         sessionRuntimeManager = DefaultAgentSessionRuntimeManager(
           agentId = "opencray-flutter-host",
           runtimeFactory = AppAgentSessionTaskRuntimeFactory(
@@ -851,10 +1351,14 @@ internal class OpenCrayHostRuntime private constructor(
             workspaceRootsProvider = { setOf(AppAgentWorkspace.ensureRootForContext(appContext)) },
             skillsRootsProvider = { hostRuntime.currentEnabledSkillRoots() },
             mcpReportProvider = { hostRuntime.currentMcpExposureReport() },
+            memoryRecordsProvider = personalizationStore::listMemoryRecords,
+            providerUserAgent = providerUserAgent,
+            approvalRegistry = approvalRegistry,
           ),
           snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
           executor = chatExecutor,
         ),
+        approvalRegistry = approvalRegistry,
         strings = localizedHostRuntimeStrings(localizedContext),
         mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
       )
@@ -924,6 +1428,23 @@ internal data class HostRuntimeStrings(
   val agentMissingLlm: String,
   val agentEmptyAnswer: String,
   val agentFailed: (String) -> String,
+  val agentInternalPayloadHidden: String = "The agent produced an internal tool payload instead of a user-facing reply.",
+  val chatSummaryApprovalRequired: String = "Approval required before the agent can continue.",
+  val chatApprovalRequiredTitle: String = "Approval required",
+  val chatHighRiskApprovalRequiredTitle: String = "High-risk approval required",
+  val chatHighRiskApprovalRequiredBody: String = "High-risk approval required. Review this request carefully before approving.",
+  val chatApprovalApproveLabel: String = "Approve",
+  val chatApprovalRejectLabel: String = "Reject",
+)
+
+private data class PendingApprovalSnapshot(
+  val runId: String,
+  val taskId: String,
+  val pendingMessageId: String?,
+  val toolName: String?,
+  val isHighRisk: Boolean,
+  val title: String,
+  val body: String,
 )
 
 internal fun interface MainThreadPoster {

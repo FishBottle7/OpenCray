@@ -12,7 +12,9 @@ import java.nio.charset.StandardCharsets
 import org.json.JSONArray
 import org.json.JSONObject
 
-internal class OpenAiCompatibleLiteLlmProviderClient : LiteLlmProviderClient {
+internal class OpenAiCompatibleLiteLlmProviderClient(
+  private val userAgent: String = OpenCrayUserAgent.providerApi("0"),
+) : LiteLlmProviderClient {
   override fun execute(request: LiteLlmProviderRequest): LiteLlmProviderResult {
     val baseUrl = request.route.baseUrl?.trim().orEmpty()
     if (baseUrl.isEmpty()) {
@@ -37,6 +39,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient : LiteLlmProviderClient {
           setRequestProperty(name, value)
         }
       }
+      setRequestProperty("User-Agent", userAgent)
     }
 
     return try {
@@ -281,5 +284,8 @@ internal class OpenAiCompatibleLiteLlmProviderClient : LiteLlmProviderClient {
 
   companion object {
     private const val DEFAULT_ANTHROPIC_MAX_TOKENS: Int = 4096
+
+    internal fun providerUserAgent(versionName: String): String =
+      OpenCrayUserAgent.providerApi(versionName)
   }
 }
