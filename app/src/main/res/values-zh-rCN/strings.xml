@@ -167,6 +167,8 @@
     <string name="chat_agent_missing_llm">远程 LLM 尚未就绪。请先到 设置 → LLM 配好 Base URL 和 API key。</string>
     <string name="chat_agent_failed">Agent 请求失败：%1$s</string>
     <string name="chat_agent_cancelled">Agent 请求已取消。</string>
+    <string name="chat_approval_approved">审批已通过，Agent 正在继续执行。</string>
+    <string name="chat_approval_rejected">审批已拒绝，请求的操作未执行。</string>
     <string name="chat_tool_call_template">工具调用：%1$s %2$s</string>
     <string name="chat_tool_result_template">工具结果：%1$s\n%2$s</string>
     <string name="about_product_body">OpenCray 把聊天、技能、文件和设置放在同一个壳层里，切换更简单，当前位置也更稳定。</string>
@@ -284,4 +286,10 @@
     <string name="personalization_screen_danger_zone_helper">任一重置真正解锁前，都必须先完成输入确认。</string>
     <string name="flutter_host_label_android">ANDROID HOST</string>
     <string name="flutter_host_summary_android">Flutter 壳层已经连接到 Android 宿主应用层。</string>
+    <string name="files_share_error_no_selection">请先选择至少一个文件或文件夹再分享。</string>
+    <string name="files_share_error_missing_entry">所选项目里有内容已经不存在了。</string>
+    <string name="files_share_error_no_target">这台设备上没有可用的分享应用。</string>
+    <string name="files_share_error_outside_workspace">只能分享当前工作区里的内容。</string>
+    <string name="files_share_error_prepare_failed">准备分享内容时失败了。</string>
+    <string name="files_share_error_launch_failed">无法打开系统分享面板。</string>
 </resources>

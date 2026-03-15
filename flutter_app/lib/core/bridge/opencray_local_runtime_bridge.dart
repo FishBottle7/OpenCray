@@ -4,6 +4,7 @@ import 'dart:io';
 
 import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_file_text_preview.dart';
 import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
@@ -36,6 +37,69 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async =>
       OpenCrayFilesSnapshot.fromMap(await _getMap('v1/files_snapshot'));
+
+  @override
+  Future<OpenCrayFileTextPreview> loadWorkspaceTextPreview(
+    String relativePath,
+  ) async => OpenCrayFileTextPreview.fromMap(
+    await _getMap(
+      'v1/workspace_text_preview',
+      queryParameters: <String, String>{'relativePath': relativePath},
+    ),
+  );
+
+  @override
+  Future<OpenCrayFilesSnapshot> createWorkspaceFolder({
+    required String parentRelativePath,
+    required String name,
+  }) async => OpenCrayFilesSnapshot.fromMap(
+    await _postMap('v1/create_workspace_folder', <String, Object?>{
+      'parentRelativePath': parentRelativePath,
+      'name': name,
+    }),
+  );
+
+  @override
+  Future<OpenCrayFilesSnapshot> renameWorkspaceEntry({
+    required String targetRelativePath,
+    required String newName,
+  }) async => OpenCrayFilesSnapshot.fromMap(
+    await _postMap('v1/rename_workspace_entry', <String, Object?>{
+      'targetRelativePath': targetRelativePath,
+      'newName': newName,
+    }),
+  );
+
+  @override
+  Future<OpenCrayFilesSnapshot> deleteWorkspaceEntries(
+    List<String> relativePaths,
+  ) async => OpenCrayFilesSnapshot.fromMap(
+    await _postMap('v1/delete_workspace_entries', <String, Object?>{
+      'relativePaths': relativePaths,
+    }),
+  );
+
+  @override
+  Future<OpenCrayFilesSnapshot> pasteWorkspaceEntries({
+    required List<String> sourceRelativePaths,
+    required String destinationRelativePath,
+    required bool move,
+  }) async => OpenCrayFilesSnapshot.fromMap(
+    await _postMap('v1/paste_workspace_entries', <String, Object?>{
+      'sourceRelativePaths': sourceRelativePaths,
+      'destinationRelativePath': destinationRelativePath,
+      'move': move,
+    }),
+  );
+
+  @override
+  Future<void> shareWorkspaceEntries(List<String> relativePaths) => _postVoid(
+    'v1/share_workspace_entries',
+    <String, Object?>{'relativePaths': relativePaths},
+  );
+
+  @override
+  Future<void> showNativeToast(String message) async {}
 
   @override
   Future<OpenCraySettingsOverviewSnapshot> loadSettingsOverview() async =>

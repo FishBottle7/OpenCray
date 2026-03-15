@@ -19,6 +19,7 @@ enum class QueueTaskLifecycleState {
   QUEUED,
   RUNNING,
   RETRY_PENDING,
+  SUSPENDED,
   CANCEL_REQUESTED,
   COMPLETED,
   FAILED,
@@ -96,9 +97,19 @@ data class RetryRequest(
   }
 }
 
+data class SuspensionRequest(
+  val reasonCode: String,
+  val detail: String? = null,
+) {
+  init {
+    require(reasonCode.isNotBlank()) { "SuspensionRequest reasonCode must not be blank." }
+  }
+}
+
 data class RuntimeExecutionHooks(
   val isCancellationRequested: () -> Boolean,
   val requestRetry: (RetryRequest) -> Unit,
+  val requestSuspend: (SuspensionRequest) -> Unit = {},
 )
 
 fun interface SessionTaskRuntime {
@@ -190,7 +201,7 @@ class SessionQueue(
   /**
    * Cancellation hook exposed to downstream runtime invocations.
    *
-   * - QUEUED/RETRY_PENDING tasks are cancelled before execution.
+   * - QUEUED/RETRY_PENDING/SUSPENDED tasks are cancelled before execution.
    * - RUNNING tasks transition to CANCEL_REQUESTED and runtime can observe this via hooks.
    */
   fun requestCancel(taskId: String): Boolean {
@@ -200,6 +211,7 @@ class SessionQueue(
     return when (current.lifecycleState) {
       QueueTaskLifecycleState.QUEUED,
       QueueTaskLifecycleState.RETRY_PENDING,
+      QueueTaskLifecycleState.SUSPENDED,
       -> {
         transitionTask(index, QueueTaskLifecycleState.CANCELLED)
         true
@@ -228,6 +240,18 @@ class SessionQueue(
     if (current.attempt >= config.maxAttempts) return false
 
     transitionTask(index, QueueTaskLifecycleState.RETRY_PENDING)
+    transitionTask(index, QueueTaskLifecycleState.QUEUED)
+    return true
+  }
+
+  /**
+   * Resume a task that is explicitly suspended, for example while awaiting approval.
+   */
+  fun requestResumeTask(taskId: String): Boolean {
+    val index = indexOfTask(taskId) ?: return false
+    val current = taskEntries[index]
+    if (current.lifecycleState != QueueTaskLifecycleState.SUSPENDED) return false
+
     transitionTask(index, QueueTaskLifecycleState.QUEUED)
     return true
   }
@@ -307,11 +331,13 @@ class SessionQueue(
     val runningSnapshot = taskEntries[index]
 
     var retryRequest: RetryRequest? = null
+    var suspensionRequest: SuspensionRequest? = null
     val hooks = RuntimeExecutionHooks(
       isCancellationRequested = {
         taskEntries.getOrNull(index)?.lifecycleState == QueueTaskLifecycleState.CANCEL_REQUESTED
       },
       requestRetry = { request -> retryRequest = request },
+      requestSuspend = { request -> suspensionRequest = request },
     )
 
     val normalizedResult = executeRuntimeSafely(runningSnapshot.task, hooks)
@@ -322,6 +348,20 @@ class SessionQueue(
         normalizedResult.status != ExecutionStatus.SUCCESS &&
         normalizedResult.status != ExecutionStatus.CANCELLED &&
         latest.attempt < config.maxAttempts
+
+    if (suspensionRequest != null &&
+      latest.lifecycleState != QueueTaskLifecycleState.CANCEL_REQUESTED &&
+      normalizedResult.status != ExecutionStatus.SUCCESS &&
+      normalizedResult.status != ExecutionStatus.CANCELLED
+    ) {
+      transitionTask(
+        index = index,
+        to = QueueTaskLifecycleState.SUSPENDED,
+        errorCode = normalizedResult.errorCode ?: suspensionRequest?.reasonCode,
+        errorMessage = normalizedResult.errorMessage ?: suspensionRequest?.detail,
+      )
+      return normalizedResult
+    }
 
     if (shouldRetry) {
       val request = retryRequest!!
@@ -461,6 +501,8 @@ class SessionQueue(
     QueueTaskLifecycleState.CANCEL_REQUESTED,
     -> AgentTaskState.RUNNING
 
+    QueueTaskLifecycleState.SUSPENDED -> AgentTaskState.SUSPENDED
+
     QueueTaskLifecycleState.COMPLETED -> AgentTaskState.COMPLETED
     QueueTaskLifecycleState.FAILED -> AgentTaskState.FAILED
     QueueTaskLifecycleState.CANCELLED -> AgentTaskState.CANCELLED
@@ -474,12 +516,17 @@ class SessionQueue(
       ),
       QueueTaskLifecycleState.RUNNING to setOf(
         QueueTaskLifecycleState.RETRY_PENDING,
+        QueueTaskLifecycleState.SUSPENDED,
         QueueTaskLifecycleState.CANCEL_REQUESTED,
         QueueTaskLifecycleState.COMPLETED,
         QueueTaskLifecycleState.FAILED,
         QueueTaskLifecycleState.CANCELLED,
       ),
       QueueTaskLifecycleState.RETRY_PENDING to setOf(
+        QueueTaskLifecycleState.QUEUED,
+        QueueTaskLifecycleState.CANCELLED,
+      ),
+      QueueTaskLifecycleState.SUSPENDED to setOf(
         QueueTaskLifecycleState.QUEUED,
         QueueTaskLifecycleState.CANCELLED,
       ),

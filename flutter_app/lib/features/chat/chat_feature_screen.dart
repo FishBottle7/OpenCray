@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -8,6 +9,50 @@ import '../../core/copy/opencray_ui_copy.dart';
 import '../../core/models/opencray_chat_snapshot.dart';
 import 'chat_models.dart';
 import 'chat_seed_data.dart';
+
+@visibleForTesting
+OpenCrayChatRuntimeSnapshot? resolveChatRuntimeSnapshot(
+  OpenCrayChatRuntimeSnapshot? embedded,
+  OpenCrayChatRuntimeSnapshot? streamed,
+) {
+  if (embedded == null) {
+    return streamed;
+  }
+  if (streamed == null) {
+    return embedded;
+  }
+  final int embeddedVersion = runtimeSnapshotVersion(embedded);
+  final int streamedVersion = runtimeSnapshotVersion(streamed);
+  if (streamedVersion > embeddedVersion) {
+    return streamed;
+  }
+  if (embeddedVersion > streamedVersion) {
+    return embedded;
+  }
+  if (embedded.activeRuns.length != streamed.activeRuns.length) {
+    return embedded.activeRuns.length < streamed.activeRuns.length
+        ? embedded
+        : streamed;
+  }
+  return streamed;
+}
+
+@visibleForTesting
+int runtimeSnapshotVersion(OpenCrayChatRuntimeSnapshot snapshot) {
+  final int latestEventEpochMs = snapshot.events.fold<int>(
+    0,
+    (latest, event) =>
+        latest > event.emittedAtEpochMs ? latest : event.emittedAtEpochMs,
+  );
+  final int latestRunEpochMs = snapshot.activeRuns.fold<int>(
+    0,
+    (latest, run) =>
+        latest > run.updatedAtEpochMs ? latest : run.updatedAtEpochMs,
+  );
+  return latestEventEpochMs > latestRunEpochMs
+      ? latestEventEpochMs
+      : latestRunEpochMs;
+}
 
 class OpenCrayChatFeature extends StatefulWidget {
   const OpenCrayChatFeature({
@@ -50,7 +95,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     final bridge = widget.bridge;
     if (bridge != null) {
       _hydrateFromHost(bridge);
-      _chatSubscription = bridge.watchChatSnapshot().listen(_handleChatSnapshot);
+      _chatSubscription = bridge.watchChatSnapshot().listen(
+        _handleChatSnapshot,
+      );
       _chatRuntimeSubscription = bridge.watchChatRuntimeSnapshot().listen(
         _handleChatRuntimeSnapshot,
       );
@@ -359,7 +406,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       _latestChatRuntimeSnapshot,
     );
     final bool shouldScrollToBottom =
-        nextState.messages.length > _state.messages.length;
+        nextState.messages.length > _state.messages.length ||
+        nextState.runTraces.length > _state.runTraces.length ||
+        nextState.pendingApprovals.length > _state.pendingApprovals.length;
     setState(() {
       _state = nextState;
     });
@@ -469,6 +518,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
               preview: item.preview,
               meta: item.meta,
               isSelected: item.sessionId == session.sessionId,
+              unreadCount: item.sessionId == session.sessionId
+                  ? 0
+                  : item.unreadCount,
             ),
           )
           .toList(growable: false);
@@ -513,6 +565,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     );
     return ChatFeatureState(
       variant: messages.isEmpty && runTraces.isEmpty
+              && snapshot.pendingApprovals.isEmpty
           ? ChatPrototypeVariant.empty
           : ChatPrototypeVariant.main,
       screenTitle: snapshot.screenTitle,
@@ -543,6 +596,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                 preview: session.preview,
                 meta: session.meta,
                 isSelected: session.isSelected,
+                unreadCount: session.unreadCount,
               ),
             )
             .toList(growable: false),
@@ -606,55 +660,603 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             left.acceptedAtEpochMs.compareTo(right.acceptedAtEpochMs),
       );
     return activeRuns
-        .map(_mapRunTrace)
+        .map(
+          (run) => _mapRunTrace(
+            run: run,
+            runtimeSnapshot: runtimeSnapshot,
+          ),
+        )
         .toList(growable: false);
   }
 
-  ChatRunTraceData _mapRunTrace(OpenCrayChatRunSnapshot run) {
+  ChatRunTraceData _mapRunTrace({
+    required OpenCrayChatRunSnapshot run,
+    required OpenCrayChatRuntimeSnapshot runtimeSnapshot,
+  }) {
+    final List<OpenCrayChatRuntimeEventSnapshot> runEvents = _runEventsFor(
+      run: run,
+      runtimeSnapshot: runtimeSnapshot,
+    );
     final event = run.lastEvent;
     final toolName = event?.toolName?.trim();
-    final toolReason = event?.toolReason?.trim();
+    final bool waitingApproval = _isWaitingApproval(run);
+    final List<ChatRunTraceHistoryEntry> history = _buildRunTraceHistory(
+      run: run,
+      runEvents: runEvents,
+    );
+    final OpenCrayChatRuntimeEventSnapshot? pairedToolCall =
+        event?.kind == 'tool_result'
+        ? _findPreviousToolCall(
+            runEvents,
+            beforeIndex: runEvents.length,
+            toolName: toolName,
+          )
+        : null;
     switch (event?.kind) {
       case 'tool_call':
         return ChatRunTraceData(
           runId: run.runId,
+          taskId: run.taskId,
           label: toolName?.isNotEmpty == true
               ? toolName!
               : widget.copy.chatRunWorkingLabel,
-          body: toolReason?.isNotEmpty == true
-              ? toolReason!
-              : widget.copy.chatRunCallingTool(
-                  toolName?.isNotEmpty == true
-                      ? toolName!
-                      : widget.copy.chatRunWorkingLabel,
-                ),
+          body: _buildToolCallPreviewBody(event!),
+          history: history,
+          isHighRisk: waitingApproval &&
+              run.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED',
         );
       case 'tool_result':
         return ChatRunTraceData(
           runId: run.runId,
-          label: toolName?.isNotEmpty == true
+          taskId: run.taskId,
+          label: waitingApproval
+              ? widget.copy.chatRunWaitingApprovalLabel
+              : toolName?.isNotEmpty == true
               ? toolName!
               : widget.copy.chatRunWorkingLabel,
-          body: toolName?.isNotEmpty == true
-              ? widget.copy.chatRunToolFollowUp(toolName!)
-              : widget.copy.chatRunThinkingActive,
+          body: _buildToolResultPreviewBody(
+            event: event!,
+            pairedToolCall: pairedToolCall,
+            waitingApproval: waitingApproval,
+            runErrorMessage: run.errorMessage,
+          ),
+          history: history,
+          isHighRisk: waitingApproval &&
+              run.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED',
         );
       case 'assistant':
         final text = event?.text?.trim();
         return ChatRunTraceData(
           runId: run.runId,
+          taskId: run.taskId,
+          label: widget.copy.chatRunWorkingLabel,
+          body: text?.isNotEmpty == true
+              ? text!
+              : widget.copy.chatRunThinkingActive,
+          history: history,
+          isHighRisk: waitingApproval &&
+              run.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED',
+        );
+      default:
+        return ChatRunTraceData(
+          runId: run.runId,
+          taskId: run.taskId,
+          label: waitingApproval
+              ? widget.copy.chatRunWaitingApprovalLabel
+              : widget.copy.chatRunWorkingLabel,
+          body: waitingApproval
+              ? run.errorMessage?.trim().isNotEmpty == true
+                  ? run.errorMessage!.trim()
+                  : widget.copy.chatRunWaitingApprovalLabel
+              : widget.copy.chatRunThinkingActive,
+          history: history,
+          isHighRisk: waitingApproval &&
+              run.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED',
+        );
+    }
+  }
+
+  List<ChatRunTraceHistoryEntry> _buildRunTraceHistory({
+    required OpenCrayChatRunSnapshot run,
+    required List<OpenCrayChatRuntimeEventSnapshot> runEvents,
+  }) {
+    final history = <ChatRunTraceHistoryEntry>[];
+    for (int index = 0; index < runEvents.length; index += 1) {
+      final mapped = _mapRunTraceHistoryEntry(
+        event: runEvents[index],
+        runEvents: runEvents,
+        index: index,
+      );
+      if (mapped != null) {
+        history.add(mapped);
+      }
+    }
+    if (history.isEmpty) {
+      history.add(
+        ChatRunTraceHistoryEntry(
+          label: widget.copy.chatRunWorkingLabel,
+          body: widget.copy.chatRunThinkingActive,
+        ),
+      );
+    }
+    if (_isWaitingApproval(run)) {
+      final approvalBody = run.errorMessage?.trim();
+      final waitingEntry = ChatRunTraceHistoryEntry(
+        label: widget.copy.chatRunWaitingApprovalLabel,
+        body: approvalBody?.isNotEmpty == true
+            ? approvalBody!
+            : widget.copy.chatRunWaitingApprovalLabel,
+        isHighRisk: run.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED',
+      );
+      if (history.isEmpty ||
+          history.last.label != waitingEntry.label ||
+          history.last.body != waitingEntry.body) {
+        history.add(waitingEntry);
+      }
+    }
+    return history;
+  }
+
+  ChatRunTraceHistoryEntry? _mapRunTraceHistoryEntry(
+    {
+    required OpenCrayChatRuntimeEventSnapshot event,
+    required List<OpenCrayChatRuntimeEventSnapshot> runEvents,
+    required int index,
+  }
+  ) {
+    final toolName = event.toolName?.trim();
+    switch (event.kind) {
+      case 'lifecycle':
+        if (event.phase?.toLowerCase() == 'start') {
+          return ChatRunTraceHistoryEntry(
+            label: widget.copy.chatRunWorkingLabel,
+            body: widget.copy.chatRunThinkingActive,
+          );
+        }
+        return null;
+      case 'tool_call':
+        final resolvedToolName = toolName?.isNotEmpty == true
+            ? toolName!
+            : widget.copy.chatRunWorkingLabel;
+        return ChatRunTraceHistoryEntry(
+          label: resolvedToolName,
+          body: _buildToolCallHistoryBody(event),
+        );
+      case 'tool_result':
+        final resolvedToolName = toolName?.isNotEmpty == true
+            ? toolName!
+            : widget.copy.chatRunWorkingLabel;
+        final OpenCrayChatRuntimeEventSnapshot? pairedToolCall =
+            _findPreviousToolCall(
+              runEvents,
+              beforeIndex: index,
+              toolName: resolvedToolName,
+            );
+        return ChatRunTraceHistoryEntry(
+          label: resolvedToolName,
+          body: _buildToolResultHistoryBody(
+            event: event,
+            pairedToolCall: pairedToolCall,
+          ),
+          isHighRisk: event.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED',
+        );
+      case 'assistant':
+        final text = event.text?.trim();
+        return ChatRunTraceHistoryEntry(
           label: widget.copy.chatRunWorkingLabel,
           body: text?.isNotEmpty == true
               ? text!
               : widget.copy.chatRunThinkingActive,
         );
       default:
-        return ChatRunTraceData(
-          runId: run.runId,
-          label: widget.copy.chatRunWorkingLabel,
-          body: widget.copy.chatRunThinkingActive,
-        );
+        return null;
     }
+  }
+
+  bool _isWaitingApproval(OpenCrayChatRunSnapshot run) =>
+      run.errorCode == 'APPROVAL_REQUIRED' ||
+      run.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED';
+
+  List<OpenCrayChatRuntimeEventSnapshot> _runEventsFor({
+    required OpenCrayChatRunSnapshot run,
+    required OpenCrayChatRuntimeSnapshot runtimeSnapshot,
+  }) => runtimeSnapshot.events
+      .where((event) => event.runId == run.runId)
+      .toList(growable: false)
+    ..sort(
+      (left, right) => left.emittedAtEpochMs.compareTo(right.emittedAtEpochMs),
+    );
+
+  OpenCrayChatRuntimeEventSnapshot? _findPreviousToolCall(
+    List<OpenCrayChatRuntimeEventSnapshot> runEvents, {
+    required int beforeIndex,
+    String? toolName,
+  }) {
+    final String? normalizedToolName = toolName?.trim();
+    for (int index = beforeIndex - 1; index >= 0; index -= 1) {
+      final candidate = runEvents[index];
+      if (candidate.kind != 'tool_call') {
+        continue;
+      }
+      final String? candidateToolName = candidate.toolName?.trim();
+      if (normalizedToolName == null ||
+          normalizedToolName.isEmpty ||
+          candidateToolName == normalizedToolName) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  String _buildToolCallPreviewBody(OpenCrayChatRuntimeEventSnapshot event) {
+    final String resolvedToolName =
+        _nonEmpty(event.toolName) ??
+        widget.copy.chatRunWorkingLabel;
+    final String summary = _toolActionSummary(
+      toolName: resolvedToolName,
+      argumentsJson: event.argumentsJson,
+    );
+    final String? reason = _nonEmpty(event.toolReason);
+    return _joinTraceSections(<String?>[
+      summary,
+      reason,
+    ]);
+  }
+
+  String _buildToolResultPreviewBody({
+    required OpenCrayChatRuntimeEventSnapshot event,
+    required OpenCrayChatRuntimeEventSnapshot? pairedToolCall,
+    required bool waitingApproval,
+    required String? runErrorMessage,
+  }) {
+    final String resolvedToolName =
+        _nonEmpty(event.toolName) ??
+        widget.copy.chatRunWorkingLabel;
+    final String summary = _toolActionSummary(
+      toolName: resolvedToolName,
+      argumentsJson: pairedToolCall?.argumentsJson,
+    );
+    final String? message = (waitingApproval
+            ? _nonEmpty(runErrorMessage)
+            : _nonEmpty(event.errorMessage)) ??
+        _nonEmpty(event.contentPreview);
+    return _joinTraceSections(<String?>[
+      summary,
+      message ?? widget.copy.chatRunToolFollowUp(resolvedToolName),
+    ]);
+  }
+
+  String _buildToolCallHistoryBody(OpenCrayChatRuntimeEventSnapshot event) {
+    final String resolvedToolName =
+        _nonEmpty(event.toolName) ??
+        widget.copy.chatRunWorkingLabel;
+    final String summary = _toolActionSummary(
+      toolName: resolvedToolName,
+      argumentsJson: event.argumentsJson,
+    );
+    final String? reason = _nonEmpty(event.toolReason);
+    final String? detail = _toolCallDetailBody(
+      toolName: resolvedToolName,
+      argumentsJson: event.argumentsJson,
+    );
+    return _joinTraceSections(<String?>[
+      summary,
+      reason,
+      detail,
+    ]);
+  }
+
+  String _buildToolResultHistoryBody({
+    required OpenCrayChatRuntimeEventSnapshot event,
+    required OpenCrayChatRuntimeEventSnapshot? pairedToolCall,
+  }) {
+    final String resolvedToolName =
+        _nonEmpty(event.toolName) ??
+        widget.copy.chatRunWorkingLabel;
+    final String summary = _toolActionSummary(
+      toolName: resolvedToolName,
+      argumentsJson: pairedToolCall?.argumentsJson,
+    );
+    final String? errorMessage = _nonEmpty(event.errorMessage);
+    final String? preview = _nonEmpty(event.contentPreview);
+    return _joinTraceSections(<String?>[
+      summary,
+      errorMessage ?? preview ?? widget.copy.chatRunToolFollowUp(resolvedToolName),
+    ]);
+  }
+
+  String _toolActionSummary({
+    required String toolName,
+    required String? argumentsJson,
+  }) {
+    final Map<String, dynamic>? arguments = _decodeJsonObject(argumentsJson);
+    final String fallback = widget.copy.chatRunCallingTool(toolName);
+    switch (toolName) {
+      case 'Read':
+        final String? path = _argumentString(
+          arguments,
+          'file_path',
+          fallbackKey: 'path',
+        );
+        if (path == null) {
+          return fallback;
+        }
+        final int? offset = _argumentInt(arguments, 'offset');
+        final int? limit = _argumentInt(arguments, 'limit');
+        final String range = _readRangeSummary(offset: offset, limit: limit);
+        return widget.copy.isChinese
+            ? '读取 $path${range.isNotEmpty ? '，$range' : ''}'
+            : 'Read $path${range.isNotEmpty ? ' $range' : ''}';
+      case 'Grep':
+        final String? pattern = _argumentString(arguments, 'pattern');
+        if (pattern == null) {
+          return fallback;
+        }
+        final String path = _argumentString(arguments, 'path') ?? '.';
+        final String? glob = _argumentString(arguments, 'glob');
+        final String globSuffix = glob == null
+            ? ''
+            : widget.copy.isChinese
+            ? '，glob: $glob'
+            : ' (glob: $glob)';
+        return widget.copy.isChinese
+            ? '在 $path 中搜索 "$pattern"$globSuffix'
+            : 'Search "$pattern" in $path$globSuffix';
+      case 'Glob':
+        final String? pattern = _argumentString(arguments, 'pattern');
+        if (pattern == null) {
+          return fallback;
+        }
+        final String path = _argumentString(arguments, 'path') ?? '.';
+        return widget.copy.isChinese
+            ? '在 $path 中匹配 $pattern'
+            : 'Match $pattern in $path';
+      case 'LS':
+        final String path =
+            _argumentString(arguments, 'path') ??
+            _argumentString(arguments, 'file_path') ??
+            '.';
+        return widget.copy.isChinese ? '列出 $path' : 'List $path';
+      case 'Write':
+        final String? path = _argumentString(
+          arguments,
+          'file_path',
+          fallbackKey: 'path',
+        );
+        return path == null
+            ? fallback
+            : widget.copy.isChinese
+            ? '写入 $path'
+            : 'Write $path';
+      case 'Edit':
+        final String? path = _argumentString(
+          arguments,
+          'file_path',
+          fallbackKey: 'path',
+        );
+        return path == null
+            ? fallback
+            : widget.copy.isChinese
+            ? '编辑 $path'
+            : 'Edit $path';
+      case 'MultiEdit':
+        final String? path = _argumentString(
+          arguments,
+          'file_path',
+          fallbackKey: 'path',
+        );
+        final int editCount = _argumentList(arguments, 'edits')?.length ?? 0;
+        if (path == null) {
+          return fallback;
+        }
+        if (editCount <= 0) {
+          return widget.copy.isChinese ? '批量编辑 $path' : 'MultiEdit $path';
+        }
+        return widget.copy.isChinese
+            ? '对 $path 应用 $editCount 处编辑'
+            : 'Apply $editCount edit(s) to $path';
+      case 'TodoWrite':
+        final int todoCount = _argumentList(arguments, 'todos')?.length ?? 0;
+        if (todoCount <= 0) {
+          return widget.copy.isChinese ? '读取当前待办列表' : 'Read current todo list';
+        }
+        return widget.copy.isChinese
+            ? '更新 $todoCount 条待办'
+            : 'Update $todoCount todo(s)';
+      default:
+        return fallback;
+    }
+  }
+
+  String? _toolCallDetailBody({
+    required String toolName,
+    required String? argumentsJson,
+  }) {
+    final Map<String, dynamic>? arguments = _decodeJsonObject(argumentsJson);
+    if (arguments == null || arguments.isEmpty) {
+      return _nonEmpty(argumentsJson);
+    }
+    switch (toolName) {
+      case 'Edit':
+        return _editDetailBody(arguments);
+      case 'MultiEdit':
+        return _multiEditDetailBody(arguments);
+      case 'Write':
+        return _writeDetailBody(arguments);
+      default:
+        return _prettyJson(arguments);
+    }
+  }
+
+  String? _editDetailBody(Map<String, dynamic> arguments) {
+    final String? oldString = _argumentString(arguments, 'old_string');
+    final String? newString = _argumentString(arguments, 'new_string');
+    if (oldString == null || newString == null) {
+      return _prettyJson(arguments);
+    }
+    return _diffBlock(oldString: oldString, newString: newString);
+  }
+
+  String? _multiEditDetailBody(Map<String, dynamic> arguments) {
+    final List<dynamic>? edits = _argumentList(arguments, 'edits');
+    if (edits == null || edits.isEmpty) {
+      return _prettyJson(arguments);
+    }
+    final List<String> blocks = <String>[];
+    for (int index = 0; index < edits.length; index += 1) {
+      final dynamic rawEdit = edits[index];
+      if (rawEdit is! Map) {
+        continue;
+      }
+      final Map<String, dynamic> edit = Map<String, dynamic>.from(
+        rawEdit.map(
+          (key, value) => MapEntry(key.toString(), value),
+        ),
+      );
+      final String? oldString = _argumentString(edit, 'old_string');
+      final String? newString = _argumentString(edit, 'new_string');
+      if (oldString == null || newString == null) {
+        blocks.add(_prettyJson(edit));
+        continue;
+      }
+      blocks.add(
+        _joinTraceSections(<String>[
+          widget.copy.isChinese ? '编辑 ${index + 1}' : 'Edit ${index + 1}',
+          _diffBlock(oldString: oldString, newString: newString),
+        ]),
+      );
+    }
+    return blocks.isEmpty ? _prettyJson(arguments) : blocks.join('\n\n');
+  }
+
+  String? _writeDetailBody(Map<String, dynamic> arguments) {
+    final String? content = _argumentString(arguments, 'content');
+    if (content == null) {
+      return _prettyJson(arguments);
+    }
+    return content;
+  }
+
+  String _diffBlock({
+    required String oldString,
+    required String newString,
+  }) {
+    final List<String> removed = _diffLines(prefix: '-', text: oldString);
+    final List<String> added = _diffLines(prefix: '+', text: newString);
+    return <String>[
+      ...removed,
+      ...added,
+    ].join('\n');
+  }
+
+  List<String> _diffLines({
+    required String prefix,
+    required String text,
+  }) {
+    final List<String> lines = text
+        .replaceAll('\r\n', '\n')
+        .replaceAll('\r', '\n')
+        .split('\n');
+    if (lines.isEmpty) {
+      return <String>['$prefix '];
+    }
+    return lines.map((line) => '$prefix $line').toList(growable: false);
+  }
+
+  String _readRangeSummary({
+    required int? offset,
+    required int? limit,
+  }) {
+    if (offset == null && limit == null) {
+      return '';
+    }
+    if (widget.copy.isChinese) {
+      if (offset != null && limit != null) {
+        final int endLine = offset + limit - 1;
+        return '第 $offset-$endLine 行';
+      }
+      if (offset != null) {
+        return '从第 $offset 行开始';
+      }
+      return '前 $limit 行';
+    }
+    if (offset != null && limit != null) {
+      final int endLine = offset + limit - 1;
+      return 'lines $offset-$endLine';
+    }
+    if (offset != null) {
+      return 'from line $offset';
+    }
+    return 'first $limit lines';
+  }
+
+  Map<String, dynamic>? _decodeJsonObject(String? rawJson) {
+    final String? normalized = _nonEmpty(rawJson);
+    if (normalized == null) {
+      return null;
+    }
+    try {
+      final dynamic decoded = jsonDecode(normalized);
+      if (decoded is! Map) {
+        return null;
+      }
+      return Map<String, dynamic>.from(
+        decoded.map((key, value) => MapEntry(key.toString(), value)),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String? _argumentString(
+    Map<String, dynamic>? arguments,
+    String key, {
+    String? fallbackKey,
+  }) {
+    if (arguments == null) {
+      return null;
+    }
+    final dynamic value = arguments[key] ?? (fallbackKey == null ? null : arguments[fallbackKey]);
+    final String normalized = switch (value) {
+      null => '',
+      String stringValue => stringValue.trim(),
+      _ => value.toString().trim(),
+    };
+    return normalized.isEmpty ? null : normalized;
+  }
+
+  int? _argumentInt(Map<String, dynamic>? arguments, String key) {
+    if (arguments == null) {
+      return null;
+    }
+    final dynamic value = arguments[key];
+    return switch (value) {
+      int intValue => intValue,
+      num numValue => numValue.toInt(),
+      String stringValue => int.tryParse(stringValue.trim()),
+      _ => null,
+    };
+  }
+
+  List<dynamic>? _argumentList(Map<String, dynamic>? arguments, String key) {
+    if (arguments == null) {
+      return null;
+    }
+    final dynamic value = arguments[key];
+    return value is List<dynamic> ? value : null;
+  }
+
+  String _prettyJson(Map<String, dynamic> value) =>
+      const JsonEncoder.withIndent('  ').convert(value);
+
+  String _joinTraceSections(List<String?> sections) => sections
+      .map((section) => section?.trim() ?? '')
+      .where((section) => section.isNotEmpty)
+      .join('\n\n');
+
+  String? _nonEmpty(String? value) {
+    final String normalized = value?.trim() ?? '';
+    return normalized.isEmpty ? null : normalized;
   }
 
   static const Set<String> _thinkingPlaceholders = <String>{
@@ -669,35 +1271,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   OpenCrayChatRuntimeSnapshot? _resolveRuntimeSnapshot(
     OpenCrayChatRuntimeSnapshot? embedded,
     OpenCrayChatRuntimeSnapshot? streamed,
-  ) {
-    if (embedded == null) {
-      return streamed;
-    }
-    if (streamed == null) {
-      return embedded;
-    }
-    return _runtimeSnapshotVersion(streamed) >= _runtimeSnapshotVersion(embedded)
-        ? streamed
-        : embedded;
-  }
-
-  int _runtimeSnapshotVersion(OpenCrayChatRuntimeSnapshot snapshot) {
-    final latestEventEpochMs = snapshot.events.fold<int>(
-      0,
-      (latest, event) => latest > event.emittedAtEpochMs
-          ? latest
-          : event.emittedAtEpochMs,
-    );
-    final latestRunEpochMs = snapshot.activeRuns.fold<int>(
-      0,
-      (latest, run) => latest > run.updatedAtEpochMs
-          ? latest
-          : run.updatedAtEpochMs,
-    );
-    return latestEventEpochMs > latestRunEpochMs
-        ? latestEventEpochMs
-        : latestRunEpochMs;
-  }
+  ) => resolveChatRuntimeSnapshot(embedded, streamed);
 }
 
 class _ChatScrollContent extends StatelessWidget {
@@ -723,21 +1297,21 @@ class _ChatScrollContent extends StatelessWidget {
         Text(state.screenTitle, style: _ChatTextStyles.pageTitle),
         const SizedBox(height: 20),
         _SummaryCard(summary: state.summary),
-        if (state.pendingApprovals.isNotEmpty) ...<Widget>[
-          const SizedBox(height: 16),
-          _PendingApprovalList(
+        const SizedBox(height: 20),
+        if (state.messages.isEmpty &&
+            state.runTraces.isEmpty &&
+            state.pendingApprovals.isEmpty)
+          SizedBox(height: state.emptyThreadHeight)
+        else
+          _MessageList(
             copy: copy,
-            approvals: state.pendingApprovals,
+            messages: state.messages,
+            runTraces: state.runTraces,
+            pendingApprovals: state.pendingApprovals,
             busyApprovalTaskIds: busyApprovalTaskIds,
             onApproveApproval: onApproveApproval,
             onRejectApproval: onRejectApproval,
           ),
-        ],
-        const SizedBox(height: 20),
-        if (state.messages.isEmpty && state.runTraces.isEmpty)
-          SizedBox(height: state.emptyThreadHeight)
-        else
-          _MessageList(messages: state.messages, runTraces: state.runTraces),
       ],
     );
   }
@@ -872,48 +1446,6 @@ class _SummaryCard extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
-}
-
-class _PendingApprovalList extends StatelessWidget {
-  const _PendingApprovalList({
-    required this.copy,
-    required this.approvals,
-    required this.busyApprovalTaskIds,
-    required this.onApproveApproval,
-    required this.onRejectApproval,
-  });
-
-  final OpenCrayUiCopy copy;
-  final List<ChatPendingApprovalData> approvals;
-  final Set<String> busyApprovalTaskIds;
-  final ValueChanged<ChatPendingApprovalData> onApproveApproval;
-  final ValueChanged<ChatPendingApprovalData> onRejectApproval;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: <Widget>[
-        Text(
-          copy.chatPendingApprovalsTitle,
-          style: _ChatTextStyles.sectionLabel,
-        ),
-        const SizedBox(height: 10),
-        ...approvals.map(
-          (approval) => Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: _PendingApprovalCard(
-              copy: copy,
-              approval: approval,
-              isBusy: busyApprovalTaskIds.contains(approval.approvalId),
-              onApprove: () => onApproveApproval(approval),
-              onReject: () => onRejectApproval(approval),
-            ),
-          ),
-        ),
-      ],
     );
   }
 }
@@ -1066,85 +1598,187 @@ class _ApprovalActionButton extends StatelessWidget {
 }
 
 class _MessageList extends StatelessWidget {
-  const _MessageList({required this.messages, required this.runTraces});
+  const _MessageList({
+    required this.copy,
+    required this.messages,
+    required this.runTraces,
+    required this.pendingApprovals,
+    required this.busyApprovalTaskIds,
+    required this.onApproveApproval,
+    required this.onRejectApproval,
+  });
 
+  final OpenCrayUiCopy copy;
   final List<ChatMessageData> messages;
   final List<ChatRunTraceData> runTraces;
+  final List<ChatPendingApprovalData> pendingApprovals;
+  final Set<String> busyApprovalTaskIds;
+  final ValueChanged<ChatPendingApprovalData> onApproveApproval;
+  final ValueChanged<ChatPendingApprovalData> onRejectApproval;
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: <Widget>[
-        ...messages.map((ChatMessageData message) {
-          switch (message.kind) {
-            case ChatMessageKind.timeline:
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Center(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFE9E9ED),
-                      borderRadius: BorderRadius.circular(999),
+    final remainingApprovals = List<ChatPendingApprovalData>.of(
+      pendingApprovals,
+      growable: true,
+    );
+    final children = <Widget>[];
+
+    for (final message in messages) {
+      switch (message.kind) {
+        case ChatMessageKind.timeline:
+          children.add(
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Center(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE9E9ED),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
                     ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 5,
-                      ),
-                      child: Text(message.text, style: _ChatTextStyles.timeline),
+                    child: Text(
+                      message.text,
+                      style: _ChatTextStyles.timeline,
                     ),
                   ),
                 ),
-              );
-            case ChatMessageKind.inbound:
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: _Bubble(
-                    text: message.text,
-                    backgroundColor: Colors.white,
-                    textColor: _ChatPalette.textPrimary,
-                    maxWidth: 252,
-                  ),
+              ),
+            ),
+          );
+        case ChatMessageKind.inbound:
+          children.add(
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: _Bubble(
+                  text: message.text,
+                  backgroundColor: Colors.white,
+                  textColor: _ChatPalette.textPrimary,
+                  maxWidth: 252,
                 ),
-              );
-            case ChatMessageKind.outbound:
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Align(
-                  alignment: Alignment.centerRight,
-                  child: _Bubble(
-                    text: message.text,
-                    backgroundColor: _ChatPalette.accent,
-                    textColor: Colors.white,
-                    maxWidth: 236,
-                  ),
+              ),
+            ),
+          );
+        case ChatMessageKind.outbound:
+          children.add(
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: _Bubble(
+                  text: message.text,
+                  backgroundColor: _ChatPalette.accent,
+                  textColor: Colors.white,
+                  maxWidth: 236,
                 ),
-              );
-          }
-        }),
-        ...runTraces.map(
-          (trace) => Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: _RunTraceBubble(trace: trace),
+              ),
+            ),
+          );
+      }
+    }
+
+    for (final trace in runTraces) {
+      children.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: _RunTraceBubble(
+              key: ValueKey<String>('chat-run-trace-${trace.runId}'),
+              trace: trace,
             ),
           ),
         ),
-      ],
-    );
+      );
+      final matchingApprovalIndex = remainingApprovals.indexWhere(
+        (approval) =>
+            approval.runId == trace.runId || approval.taskId == trace.taskId,
+      );
+      if (matchingApprovalIndex >= 0) {
+        final approval = remainingApprovals.removeAt(matchingApprovalIndex);
+        children.add(
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 292),
+                child: _PendingApprovalCard(
+                  copy: copy,
+                  approval: approval,
+                  isBusy: busyApprovalTaskIds.contains(approval.approvalId),
+                  onApprove: () => onApproveApproval(approval),
+                  onReject: () => onRejectApproval(approval),
+                ),
+              ),
+            ),
+          ),
+        );
+      }
+    }
+
+    for (final approval in remainingApprovals) {
+      children.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 292),
+              child: _PendingApprovalCard(
+                copy: copy,
+                approval: approval,
+                isBusy: busyApprovalTaskIds.contains(approval.approvalId),
+                onApprove: () => onApproveApproval(approval),
+                onReject: () => onRejectApproval(approval),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Column(children: children);
   }
 }
 
-class _RunTraceBubble extends StatelessWidget {
-  const _RunTraceBubble({required this.trace});
+class _RunTraceBubble extends StatefulWidget {
+  const _RunTraceBubble({super.key, required this.trace});
 
   final ChatRunTraceData trace;
 
   @override
+  State<_RunTraceBubble> createState() => _RunTraceBubbleState();
+}
+
+class _RunTraceBubbleState extends State<_RunTraceBubble> {
+  late final ScrollController _bodyScrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _bodyScrollController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _openFullscreen() {
+    return showDialog<void>(
+      context: context,
+      barrierColor: const Color(0x8A0B0E14),
+      builder: (dialogContext) => _RunTraceFullscreenSheet(trace: widget.trace),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final trace = widget.trace;
+    const double bubbleWidth = 252;
+    const double bodyMaxHeight = 136;
     final Color surfaceColor = trace.isHighRisk
         ? _ChatPalette.highRiskSurface
         : const Color(0xFFF3F4F7);
@@ -1157,50 +1791,282 @@ class _RunTraceBubble extends StatelessWidget {
     final Color chipTextColor = trace.isHighRisk
         ? _ChatPalette.highRiskAccent
         : _ChatPalette.textSecondary;
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 252),
-      child: DecoratedBox(
-        decoration: ShapeDecoration(
-          color: surfaceColor,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-            side: BorderSide(color: borderColor),
+    return GestureDetector(
+      onDoubleTap: _openFullscreen,
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+        width: bubbleWidth,
+        child: DecoratedBox(
+          decoration: ShapeDecoration(
+            color: surfaceColor,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+              side: BorderSide(color: borderColor),
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: chipColor,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    child: Text(
+                      trace.label,
+                      style: _ChatTextStyles.timeline.copyWith(
+                        color: chipTextColor,
+                      ),
+                    ),
+                  ),
+                ),
+                if (trace.body.trim().isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 8),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: bodyMaxHeight),
+                    child: Scrollbar(
+                      controller: _bodyScrollController,
+                      child: SingleChildScrollView(
+                        key: ValueKey<String>(
+                          'chat-run-trace-scroll-${trace.runId}',
+                        ),
+                        controller: _bodyScrollController,
+                        primary: false,
+                        padding: EdgeInsets.zero,
+                        physics: const ClampingScrollPhysics(),
+                        child: Text(
+                          trace.body,
+                          style: _ChatTextStyles.bubble.copyWith(
+                            color: _ChatPalette.textPrimary,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
           ),
         ),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  color: chipColor,
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
+      ),
+    );
+  }
+}
+
+class _RunTraceFullscreenSheet extends StatefulWidget {
+  const _RunTraceFullscreenSheet({required this.trace});
+
+  final ChatRunTraceData trace;
+
+  @override
+  State<_RunTraceFullscreenSheet> createState() =>
+      _RunTraceFullscreenSheetState();
+}
+
+class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
+  late final ScrollController _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final trace = widget.trace;
+    final history = trace.history.isNotEmpty
+        ? trace.history
+        : <ChatRunTraceHistoryEntry>[
+            ChatRunTraceHistoryEntry(
+              label: trace.label,
+              body: trace.body,
+              isHighRisk: trace.isHighRisk,
+            ),
+          ];
+    final Color surfaceColor = trace.isHighRisk
+        ? _ChatPalette.highRiskSurface
+        : Colors.white;
+    final Color borderColor = trace.isHighRisk
+        ? _ChatPalette.highRiskBorder
+        : _ChatPalette.border;
+    final Color chipColor = trace.isHighRisk
+        ? _ChatPalette.highRiskBadgeSurface
+        : const Color(0xFFE7EBF4);
+    final Color chipTextColor = trace.isHighRisk
+        ? _ChatPalette.highRiskAccent
+        : _ChatPalette.textSecondary;
+    return Dialog.fullscreen(
+      key: ValueKey<String>('chat-run-trace-fullscreen-${trace.runId}'),
+      backgroundColor: _ChatPalette.background,
+      child: SafeArea(
+        child: Column(
+          children: <Widget>[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+              child: Row(
+                children: <Widget>[
+                  Expanded(
+                    child: Text(
+                      trace.label,
+                      style: _ChatTextStyles.cardTitle,
+                    ),
                   ),
-                  child: Text(
-                    trace.label,
-                    style: _ChatTextStyles.timeline.copyWith(
-                      color: chipTextColor,
+                  GestureDetector(
+                    onTap: () => Navigator.of(context).pop(),
+                    behavior: HitTestBehavior.opaque,
+                    child: Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: _ChatPalette.border),
+                      ),
+                      alignment: Alignment.center,
+                      child: const Icon(
+                        Icons.close_rounded,
+                        size: 18,
+                        color: _ChatPalette.textPrimary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: surfaceColor,
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(color: borderColor),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: chipColor,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 5,
+                            ),
+                            child: Text(
+                              trace.label,
+                              style: _ChatTextStyles.timeline.copyWith(
+                                color: chipTextColor,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        Expanded(
+                          child: Scrollbar(
+                            controller: _scrollController,
+                            thumbVisibility: true,
+                            child: SingleChildScrollView(
+                              key: ValueKey<String>(
+                                'chat-run-trace-fullscreen-scroll-${trace.runId}',
+                              ),
+                              controller: _scrollController,
+                              primary: false,
+                              padding: EdgeInsets.zero,
+                              physics: const ClampingScrollPhysics(),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: history
+                                    .map(
+                                      (entry) => Padding(
+                                        padding: const EdgeInsets.only(
+                                          bottom: 12,
+                                        ),
+                                        child: _RunTraceHistoryCard(
+                                          entry: entry,
+                                        ),
+                                      ),
+                                    )
+                                    .toList(growable: false),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
               ),
-              if (trace.body.trim().isNotEmpty) ...<Widget>[
-                const SizedBox(height: 8),
-                Text(
-                  trace.body,
-                  style: _ChatTextStyles.bubble.copyWith(
-                    color: _ChatPalette.textPrimary,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RunTraceHistoryCard extends StatelessWidget {
+  const _RunTraceHistoryCard({required this.entry});
+
+  final ChatRunTraceHistoryEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    final Color chipColor = entry.isHighRisk
+        ? _ChatPalette.highRiskBadgeSurface
+        : const Color(0xFFEFF2F8);
+    final Color chipTextColor = entry.isHighRisk
+        ? _ChatPalette.highRiskAccent
+        : _ChatPalette.textSecondary;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F8FB),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFE6E8EF)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: chipColor,
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 4,
+                ),
+                child: Text(
+                  entry.label,
+                  style: _ChatTextStyles.timeline.copyWith(
+                    color: chipTextColor,
                   ),
                 ),
-              ],
-            ],
-          ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              entry.body,
+              style: _ChatTextStyles.bubble.copyWith(
+                color: _ChatPalette.textPrimary,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -1441,7 +2307,12 @@ class _InputRow extends StatelessWidget {
                           child: ColoredBox(
                             color: Colors.white,
                             child: Padding(
-                              padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                              padding: const EdgeInsets.fromLTRB(
+                                14,
+                                10,
+                                14,
+                                10,
+                              ),
                               child: TextField(
                                 controller: controller,
                                 focusNode: focusNode,
@@ -1881,6 +2752,13 @@ class _SessionListTile extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
                   Text(session.meta, style: _ChatTextStyles.sessionMeta),
+                  if (session.unreadCount > 0) ...<Widget>[
+                    const SizedBox(width: 8),
+                    _SessionUnreadBadge(
+                      sessionId: session.sessionId,
+                      count: session.unreadCount,
+                    ),
+                  ],
                 ],
               ),
               const SizedBox(height: 6),
@@ -1892,6 +2770,49 @@ class _SessionListTile extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SessionUnreadBadge extends StatelessWidget {
+  const _SessionUnreadBadge({
+    required this.sessionId,
+    required this.count,
+  });
+
+  final String sessionId;
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    if (count <= 1) {
+      return Container(
+        key: ValueKey<String>('chat-session-unread-$sessionId'),
+        width: 10,
+        height: 10,
+        decoration: const BoxDecoration(
+          color: Color(0xFFFF3B30),
+          shape: BoxShape.circle,
+        ),
+      );
+    }
+    final String label = count > 99 ? '99+' : '$count';
+    return Container(
+      key: ValueKey<String>('chat-session-unread-$sessionId'),
+      constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFF3B30),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        label,
+        style: _ChatTextStyles.timeline.copyWith(
+          color: Colors.white,
+          fontSize: 11,
         ),
       ),
     );

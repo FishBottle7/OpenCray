@@ -97,6 +97,66 @@ class MemoryWriterTest {
     assertEquals("7776000000", record.extensions[MemoryRecordExtensionKeys.TTL_MS])
   }
 
+  @Test
+  fun writeSupersedesPreviousActivePreferenceForSameScopeAndPreferenceKey() {
+    val store = InMemoryMemoryStore()
+    val clock = IncrementingClock(start = 10_000L)
+    val writer = MemoryWriter(
+      store = store,
+      clock = clock::next,
+    )
+
+    writer.write(
+      listOf(
+        MemoryCandidate(
+          kind = MemoryKind.USER_PREFERENCE,
+          scope = MemoryScope.USER,
+          status = MemoryStatus.ACTIVE,
+          content = "Agent style profile should be warm",
+          source = MemoryEvidenceSource.USER_INPUT,
+          sourceSessionId = "session-a",
+          extensions = styleProfilePreferenceExtensions(
+            styleProfile = "warm",
+            scope = MemoryScope.USER,
+          ),
+        ),
+      ),
+    )
+    writer.write(
+      listOf(
+        MemoryCandidate(
+          kind = MemoryKind.USER_PREFERENCE,
+          scope = MemoryScope.USER,
+          status = MemoryStatus.ACTIVE,
+          content = "Agent style profile should be serious",
+          source = MemoryEvidenceSource.USER_INPUT,
+          sourceSessionId = "session-b",
+          extensions = styleProfilePreferenceExtensions(
+            styleProfile = "serious",
+            scope = MemoryScope.USER,
+          ),
+        ),
+      ),
+    )
+
+    val records = store.list().sortedBy(MemoryRecord::createdAtEpochMs)
+    assertEquals(2, records.size)
+    val resolved = records.first { record ->
+      record.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE] == "warm"
+    }
+    val active = records.first { record ->
+      record.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE] == "serious"
+    }
+
+    assertEquals("resolved", resolved.extensions[MemoryRecordExtensionKeys.STATUS])
+    assertEquals("superseded", resolved.extensions[MemoryRecordExtensionKeys.RESOLUTION_REASON])
+    assertEquals(active.id, resolved.extensions[MemoryRecordExtensionKeys.SUPERSEDED_BY])
+    assertEquals("active", active.extensions[MemoryRecordExtensionKeys.STATUS])
+    assertEquals("warm", resolved.extensions[MemorySoulExtensionKeys.TONE])
+    assertEquals("serious and formal", active.extensions[MemorySoulExtensionKeys.VOICE])
+    assertEquals("direct", active.extensions[MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE])
+  }
+
   private class InMemoryMemoryStore : MemoryStore {
     private val records = linkedMapOf<String, MemoryRecord>()
 

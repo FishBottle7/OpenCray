@@ -75,12 +75,29 @@ class ChatFeatureState {
 class ChatRunTraceData {
   const ChatRunTraceData({
     required this.runId,
+    required this.taskId,
+    required this.label,
+    required this.body,
+    this.history = const <ChatRunTraceHistoryEntry>[],
+    this.isHighRisk = false,
+  });
+
+  final String runId;
+  final String taskId;
+  final String label;
+  final String body;
+  final List<ChatRunTraceHistoryEntry> history;
+  final bool isHighRisk;
+}
+
+@immutable
+class ChatRunTraceHistoryEntry {
+  const ChatRunTraceHistoryEntry({
     required this.label,
     required this.body,
     this.isHighRisk = false,
   });
 
-  final String runId;
   final String label;
   final String body;
   final bool isHighRisk;
@@ -229,6 +246,7 @@ class ChatSessionListItemData {
     required this.preview,
     required this.meta,
     this.isSelected = false,
+    this.unreadCount = 0,
   });
 
   final String sessionId;
@@ -236,4 +254,5 @@ class ChatSessionListItemData {
   final String preview;
   final String meta;
   final bool isSelected;
+  final int unreadCount;
 }

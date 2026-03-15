@@ -2,6 +2,7 @@ import 'package:flutter/services.dart';
 
 import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_file_text_preview.dart';
 import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
@@ -47,6 +48,83 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async =>
       OpenCrayFilesSnapshot.fromMap(await _invokeMap('loadFilesSnapshot'));
+
+  @override
+  Future<OpenCrayFileTextPreview> loadWorkspaceTextPreview(
+    String relativePath,
+  ) async => OpenCrayFileTextPreview.fromMap(
+    await _invokeMap(
+      'loadWorkspaceTextPreview',
+      arguments: <String, Object?>{'relativePath': relativePath},
+    ),
+  );
+
+  @override
+  Future<OpenCrayFilesSnapshot> createWorkspaceFolder({
+    required String parentRelativePath,
+    required String name,
+  }) async => OpenCrayFilesSnapshot.fromMap(
+    await _invokeMap(
+      'createWorkspaceFolder',
+      arguments: <String, Object?>{
+        'parentRelativePath': parentRelativePath,
+        'name': name,
+      },
+    ),
+  );
+
+  @override
+  Future<OpenCrayFilesSnapshot> renameWorkspaceEntry({
+    required String targetRelativePath,
+    required String newName,
+  }) async => OpenCrayFilesSnapshot.fromMap(
+    await _invokeMap(
+      'renameWorkspaceEntry',
+      arguments: <String, Object?>{
+        'targetRelativePath': targetRelativePath,
+        'newName': newName,
+      },
+    ),
+  );
+
+  @override
+  Future<OpenCrayFilesSnapshot> deleteWorkspaceEntries(
+    List<String> relativePaths,
+  ) async => OpenCrayFilesSnapshot.fromMap(
+    await _invokeMap(
+      'deleteWorkspaceEntries',
+      arguments: <String, Object?>{'relativePaths': relativePaths},
+    ),
+  );
+
+  @override
+  Future<OpenCrayFilesSnapshot> pasteWorkspaceEntries({
+    required List<String> sourceRelativePaths,
+    required String destinationRelativePath,
+    required bool move,
+  }) async => OpenCrayFilesSnapshot.fromMap(
+    await _invokeMap(
+      'pasteWorkspaceEntries',
+      arguments: <String, Object?>{
+        'sourceRelativePaths': sourceRelativePaths,
+        'destinationRelativePath': destinationRelativePath,
+        'move': move,
+      },
+    ),
+  );
+
+  @override
+  Future<void> shareWorkspaceEntries(List<String> relativePaths) =>
+      _methodChannel.invokeMethod<void>(
+        'shareWorkspaceEntries',
+        <String, Object?>{'relativePaths': relativePaths},
+      );
+
+  @override
+  Future<void> showNativeToast(String message) =>
+      _methodChannel.invokeMethod<void>('showNativeToast', <String, Object?>{
+        'message': message,
+      });
 
   @override
   Future<OpenCraySettingsOverviewSnapshot> loadSettingsOverview() async =>
@@ -283,10 +361,7 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   }) async {
     final payload = await _methodChannel.invokeMethod<Object?>(
       'waitForChatRun',
-      <String, Object?>{
-        'runId': runId,
-        'timeoutMs': timeout.inMilliseconds,
-      },
+      <String, Object?>{'runId': runId, 'timeoutMs': timeout.inMilliseconds},
     );
     if (payload == null) {
       return null;

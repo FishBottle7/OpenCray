@@ -9,6 +9,7 @@ version:
 
 project_type: app
 
+# Tracks metadata for the flutter migrate command
 migration:
   platforms:
     - platform: root
@@ -18,5 +19,12 @@ migration:
       create_revision: ac4e799d237041cf905519190471f657b657155a
       base_revision: ac4e799d237041cf905519190471f657b657155a
 
+  # User provided section
+
+  # List of Local paths (relative to this file) that should be
+  # ignored by the migrate tool.
+  #
+  # Files that are not part of the templates will be ignored by default.
   unmanaged_files:
     - 'lib/main.dart'
+    - 'ios/Runner.xcodeproj/project.pbxproj'

@@ -1,17 +1,9 @@
 package com.opencray.runtime.context
 
 import com.opencray.runtime.AgentToolDefinition
-import com.opencray.runtime.memory.MemoryPromptLayer
-import com.opencray.runtime.soul.RuntimeSoulPromptComposer
 
-class PromptAssembler(
-  private val transcriptWindowBuilder: TranscriptWindowBuilder = TranscriptWindowBuilder(),
-  private val soulPromptComposer: RuntimeSoulPromptComposer = RuntimeSoulPromptComposer(),
-  private val memoryPromptLayer: MemoryPromptLayer = MemoryPromptLayer(),
-) {
-  fun assemble(input: PromptAssemblyInput): AssembledPrompt {
-    val transcriptWindow = transcriptWindowBuilder.build(input.liveConversation)
-    val recalledMemory = input.sessionContext.recalledMemory
+class PromptAssembler {
+  fun assemble(input: ManagedPromptContext): AssembledPrompt {
     val layers = buildList {
       addLayer(
         name = "Identity",
@@ -26,17 +18,27 @@ class PromptAssembler(
       addLayer(
         name = "Session Policy",
         kind = PromptLayerKind.SYSTEM,
-        content = input.sessionContext.sessionPolicyText.orEmpty().trim(),
+        content = input.sessionPolicyText,
       )
       addLayer(
         name = "Personalization",
         kind = PromptLayerKind.SYSTEM,
-        content = soulPromptComposer.compose(input.sessionContext.soulProfile),
+        content = input.personalizationText,
       )
       addLayer(
         name = "Retrieved Memory",
         kind = PromptLayerKind.CONTEXT,
-        content = memoryPromptLayer.render(recalledMemory),
+        content = input.memoryText,
+      )
+      addLayer(
+        name = "Pruning Summary",
+        kind = PromptLayerKind.CONTEXT,
+        content = input.pruningSummary?.text.orEmpty(),
+      )
+      addLayer(
+        name = "Compaction Summary",
+        kind = PromptLayerKind.CONTEXT,
+        content = input.compactionSummary?.text.orEmpty(),
       )
       addLayer(
         name = "Tool Protocol",
@@ -48,7 +50,7 @@ class PromptAssembler(
         kind = PromptLayerKind.CONTEXT,
         content = renderTaskContextLayer(
           task = input.task,
-          transcriptWindow = transcriptWindow,
+          transcriptWindow = input.transcriptWindow,
         ),
       )
     }
@@ -61,13 +63,22 @@ class PromptAssembler(
       layers = layers,
       report = ContextAssemblyReport(
         layers = layers.map(::toLayerReport),
-        sourceTranscriptMessageCount = input.liveConversation.count { message -> message.content.isNotBlank() },
-        windowedTranscriptMessageCount = transcriptWindow.messages.size,
-        omittedTranscriptMessageCount = transcriptWindow.omittedMessageCount,
-        truncatedTranscriptMessageCount = transcriptWindow.truncatedMessageCount,
-        matchedMemoryRecordCount = recalledMemory.matchedRecordCount,
-        injectedMemoryRecordCount = recalledMemory.memories.size,
-        omittedMemoryRecordCount = recalledMemory.omittedRecordCount,
+        sourceTranscriptMessageCount = input.report.sourceTranscriptMessageCount,
+        windowedTranscriptMessageCount = input.report.windowedTranscriptMessageCount,
+        omittedTranscriptMessageCount = input.report.omittedTranscriptMessageCount,
+        truncatedTranscriptMessageCount = input.report.truncatedTranscriptMessageCount,
+        prunedTranscriptMessageCount = input.report.prunedTranscriptMessageCount,
+        rewrittenTranscriptMessageCount = input.report.rewrittenTranscriptMessageCount,
+        duplicateBackgroundTranscriptMessageCount = input.report.duplicateBackgroundTranscriptMessageCount,
+        bulkyToolTranscriptRewriteCount = input.report.bulkyToolTranscriptRewriteCount,
+        attachmentLikeTranscriptRewriteCount = input.report.attachmentLikeTranscriptRewriteCount,
+        pruningSummaryIncluded = input.report.pruningSummaryIncluded,
+        compactedTranscriptMessageCount = input.report.compactedTranscriptMessageCount,
+        compactionSummaryIncluded = input.report.compactionSummaryIncluded,
+        matchedMemoryRecordCount = input.report.matchedMemoryRecordCount,
+        injectedMemoryRecordCount = input.report.injectedMemoryRecordCount,
+        omittedMemoryRecordCount = input.report.omittedMemoryRecordCount,
+        memoryRecallTrace = input.report.memoryRecallTrace,
       ),
     )
   }

@@ -13,14 +13,19 @@ data class TranscriptWindowConfig(
 class TranscriptWindowBuilder(
   private val config: TranscriptWindowConfig = TranscriptWindowConfig(),
 ) {
-  fun build(messages: List<RuntimeConversationMessage>): TranscriptWindow {
+  fun build(messages: List<RuntimeConversationMessage>): TranscriptWindow =
+    buildSelection(messages).window
+
+  fun buildSelection(messages: List<RuntimeConversationMessage>): TranscriptWindowSelection {
     val normalized = messages.mapNotNull { entry ->
       entry.content.trim().takeIf(String::isNotBlank)?.let { content ->
         entry.copy(content = content)
       }
     }
     val selectedIndexes = selectWindowIndexes(normalized)
+    val selectedIndexSet = selectedIndexes.toSet()
     val omittedMessageCount = normalized.size - selectedIndexes.size
+    val omittedMessages = normalized.filterIndexed { index, _ -> index !in selectedIndexSet }
     var truncatedMessageCount = 0
     val windowedMessages = selectedIndexes.map { index ->
       val entry = normalized[index]
@@ -32,10 +37,14 @@ class TranscriptWindowBuilder(
       entry.copy(content = boundedContent)
     }
 
-    return TranscriptWindow(
-      messages = windowedMessages,
-      omittedMessageCount = omittedMessageCount,
-      truncatedMessageCount = truncatedMessageCount,
+    return TranscriptWindowSelection(
+      window = TranscriptWindow(
+        messages = windowedMessages,
+        omittedMessageCount = omittedMessageCount,
+        truncatedMessageCount = truncatedMessageCount,
+      ),
+      normalizedMessages = normalized,
+      omittedMessages = omittedMessages,
     )
   }
 

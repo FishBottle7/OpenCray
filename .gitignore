@@ -32,6 +32,7 @@
 # Android/Gradle local files
 /local.properties
 /gradle-*-bin.zip
+/gradle-*/
 /.android-user-home/
 /.gradle-user-home/
 /.gradle-local/

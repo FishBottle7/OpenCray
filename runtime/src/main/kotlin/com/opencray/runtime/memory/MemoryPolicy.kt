@@ -43,6 +43,7 @@ data class MemoryCandidate(
   val sourceTaskId: String? = null,
   val workspaceId: String? = null,
   val ttlMs: Long? = null,
+  val extensions: Map<String, String> = emptyMap(),
 ) {
   init {
     require(content.isNotBlank()) { "MemoryCandidate content must not be blank." }
@@ -189,4 +190,8 @@ object MemoryRecordExtensionKeys {
   const val LAST_CONFIRMED_AT_EPOCH_MS: String = "last_confirmed_at_epoch_ms"
   const val RESOLVED_AT_EPOCH_MS: String = "resolved_at_epoch_ms"
   const val RESOLUTION_REASON: String = "resolution_reason"
+  const val SUPERSEDED_BY: String = "superseded_by"
+  const val PREFERENCE_KEY: String = "preference_key"
+  const val PREFERENCE_VALUE: String = "preference_value"
+  const val PREFERENCE_TEMPORALITY: String = "preference_temporality"
 }

@@ -56,4 +56,26 @@ class TranscriptWindowBuilderTest {
     assertFalse(window.messages.first().content.contains("\n"))
     assertTrue(window.messages.first().content.endsWith("…"))
   }
+
+  @Test
+  fun buildSelectionExposesOmittedMessagesForCompaction() {
+    val builder = TranscriptWindowBuilder(
+      TranscriptWindowConfig(
+        maxMessages = 2,
+        maxCharsPerMessage = 80,
+      ),
+    )
+
+    val selection = builder.buildSelection(
+      listOf(
+        RuntimeConversationMessage(RuntimeConversationRole.USER, "older-user"),
+        RuntimeConversationMessage(RuntimeConversationRole.ASSISTANT, "older-assistant"),
+        RuntimeConversationMessage(RuntimeConversationRole.USER, "latest-user"),
+      ),
+    )
+
+    assertEquals(1, selection.window.omittedMessageCount)
+    assertEquals(listOf("older-user"), selection.omittedMessages.map { message -> message.content })
+    assertEquals(listOf("older-user", "older-assistant", "latest-user"), selection.normalizedMessages.map { message -> message.content })
+  }
 }

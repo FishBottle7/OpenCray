@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
+import 'package:opencray/core/models/opencray_chat_snapshot.dart';
 import 'package:opencray/features/settings/settings.dart';
 
 void main() {
@@ -179,6 +181,119 @@ void main() {
       expect(facade.llmConfig.reasoningEffort, 'xhigh');
     },
   );
+
+  testWidgets(
+    'about version page opens debug tools and renders memory trace details',
+    (tester) async {
+      final facade = _FakeSettingsFacade(
+        llmConfig: const LlmConfigSnapshot(
+          localeTag: 'en',
+          enabled: false,
+          providerId: 'openai',
+          protocol: 'openai',
+          providerOptions: <LlmProviderOption>[
+            LlmProviderOption(
+              id: 'openai',
+              title: 'OpenAI',
+              subtitle: 'Official OpenAI-compatible endpoint.',
+              defaultBaseUrl: 'https://api.openai.com/v1',
+              defaultModel: 'gpt-4o-mini',
+              isCustom: false,
+            ),
+          ],
+          providerName: 'OpenAI',
+          providerNotes: '',
+          baseUrl: 'https://api.openai.com/v1',
+          apiKey: '',
+          model: 'gpt-4o-mini',
+          reasoningEffort: 'medium',
+          systemPrompt: '',
+          helperText: 'Helper text',
+        ),
+        validationResult: const LlmValidationResult(
+          isSuccess: true,
+          message: 'Validated.',
+        ),
+      );
+      final debugBridge = _FakeDebugBridge(
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'final',
+              runId: 'run-memory',
+              taskId: 'task-memory',
+              emittedAtEpochMs: 2000,
+            ),
+          ],
+        ),
+        runSnapshots: <String, OpenCrayChatRunSnapshot>{
+          'run-memory': const OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-memory',
+            taskId: 'task-memory',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 2000,
+            attempt: 1,
+            isTerminal: true,
+            executionStatus: 'success',
+            taskState: 'completed',
+            responseFormat: 'json_final',
+            memoryTrace: OpenCrayChatRunMemoryTraceSnapshot(
+              matchedRecordCount: 2,
+              injectedRecordCount: 1,
+              omittedRecordCount: 1,
+              queryTerms: <String>['chinese', 'gradle'],
+              selected: <OpenCrayChatRunMemorySelectedSnapshot>[
+                OpenCrayChatRunMemorySelectedSnapshot(
+                  id: 'memory-user',
+                  score: 420,
+                  matchedTerms: <String>['chinese'],
+                ),
+              ],
+              omitted: <OpenCrayChatRunMemoryOmittedSnapshot>[
+                OpenCrayChatRunMemoryOmittedSnapshot(
+                  id: 'memory-project',
+                  reason: 'max_records',
+                ),
+              ],
+              filteredCounts: <String, int>{'scope_mismatch': 1, 'expired': 2},
+            ),
+          ),
+        },
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.aboutVersion,
+            standalone: true,
+            debugBridge: debugBridge,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Debug tools'), findsOneWidget);
+      expect(find.text('Context & Memory Trace'), findsOneWidget);
+
+      await tester.tap(find.text('Context & Memory Trace'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Runtime memory trace'), findsOneWidget);
+      expect(find.text('run-memory'), findsWidgets);
+      expect(find.text('Matched: 2'), findsOneWidget);
+      expect(find.text('Injected: 1'), findsOneWidget);
+      expect(find.text('Omitted: 1'), findsOneWidget);
+      expect(find.text('Term: chinese'), findsOneWidget);
+      expect(find.text('Record: memory-user'), findsOneWidget);
+      expect(find.text('Reason: max_records'), findsOneWidget);
+      expect(find.text('scope_mismatch: 1'), findsOneWidget);
+      expect(find.text('expired: 2'), findsOneWidget);
+    },
+  );
 }
 
 class _FakeSettingsFacade implements SettingsFacade {
@@ -305,9 +420,23 @@ class _FakeSettingsFacade implements SettingsFacade {
   Future<SettingsDetailSnapshot> loadDetail(SettingsPage page) async =>
       SettingsDetailSnapshot(
         page: page,
-        title: '',
-        subtitle: '',
-        sections: const <SettingsSectionSnapshot>[],
+        title: page == SettingsPage.aboutVersion ? 'About & Version' : '',
+        subtitle: page == SettingsPage.aboutVersion
+            ? 'Build information and app diagnostics.'
+            : '',
+        sections: page == SettingsPage.aboutVersion
+            ? const <SettingsSectionSnapshot>[
+                SettingsSectionSnapshot(
+                  title: 'Version',
+                  rows: <SettingsRowSnapshot>[
+                    SettingsRowSnapshot.value(
+                      title: 'Installed version',
+                      valueLabel: '1.0.0',
+                    ),
+                  ],
+                ),
+              ]
+            : const <SettingsSectionSnapshot>[],
       );
 
   @override
@@ -388,4 +517,22 @@ class _FakeSettingsFacade implements SettingsFacade {
     required String serverId,
     required bool enabled,
   }) async => mcpSettings;
+}
+
+class _FakeDebugBridge extends OpenCraySeedBridge {
+  _FakeDebugBridge({
+    required this.runtimeSnapshot,
+    required Map<String, OpenCrayChatRunSnapshot> runSnapshots,
+  }) : _runSnapshots = runSnapshots;
+
+  final OpenCrayChatRuntimeSnapshot runtimeSnapshot;
+  final Map<String, OpenCrayChatRunSnapshot> _runSnapshots;
+
+  @override
+  Future<OpenCrayChatRuntimeSnapshot> loadChatRuntimeSnapshot() async =>
+      runtimeSnapshot;
+
+  @override
+  Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId) async =>
+      _runSnapshots[runId];
 }

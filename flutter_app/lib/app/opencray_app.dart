@@ -54,6 +54,7 @@ class _OpenCrayAppState extends State<OpenCrayApp> {
               initialPage: entry.settingsInitialPage,
               facade: BridgeSettingsFacade(bridge: _bridge),
               standalone: true,
+              debugBridge: _bridge,
             ),
           );
         }
@@ -71,7 +72,7 @@ class _OpenCrayAppState extends State<OpenCrayApp> {
   }
 }
 
-class _ShellEntry extends StatelessWidget {
+class _ShellEntry extends StatefulWidget {
   const _ShellEntry({
     required this.bridge,
     this.snapshotFuture,
@@ -85,9 +86,16 @@ class _ShellEntry extends StatelessWidget {
   final SettingsPage settingsInitialPage;
 
   @override
+  State<_ShellEntry> createState() => _ShellEntryState();
+}
+
+class _ShellEntryState extends State<_ShellEntry> {
+  late final FilesFeatureController _filesController = FilesFeatureController();
+
+  @override
   Widget build(BuildContext context) {
     return FutureBuilder<OpenCrayShellSnapshot>(
-      future: snapshotFuture ?? bridge.loadShellSnapshot(),
+      future: widget.snapshotFuture ?? widget.bridge.loadShellSnapshot(),
       builder: (context, snapshot) {
         final shellSnapshot =
             snapshot.data ??
@@ -98,15 +106,17 @@ class _ShellEntry extends StatelessWidget {
               hostSummary: 'Flutter shell is attached to a seed bridge.',
               isHostConnected: false,
             );
-        final initialTab = tab ?? shellSnapshot.initialTab;
+        final initialTab = widget.tab ?? shellSnapshot.initialTab;
         return OpenCrayAppShell(
-          bridge: bridge,
+          bridge: widget.bridge,
           initialSnapshot: shellSnapshot,
           initialTab: initialTab,
+          filesController: _filesController,
           buildersForSnapshot: (snapshot) => _defaultBuilders(
             snapshot,
-            bridge: bridge,
-            settingsInitialPage: settingsInitialPage,
+            bridge: widget.bridge,
+            settingsInitialPage: widget.settingsInitialPage,
+            filesController: _filesController,
           ),
         );
       },
@@ -118,19 +128,25 @@ Map<OpenCrayTab, OpenCrayTabBuilder> _defaultBuilders(
   OpenCrayShellSnapshot snapshot, {
   required OpenCrayHostBridge bridge,
   required SettingsPage settingsInitialPage,
+  required FilesFeatureController filesController,
 }) {
   final copy = OpenCrayUiCopy.fromLocaleTag(snapshot.localeTag);
   return {
-    OpenCrayTab.chat: (context) =>
+    OpenCrayTab.chat: (context, isActive) =>
         OpenCrayChatFeature(bridge: bridge, copy: copy),
-    OpenCrayTab.skills: (context) =>
+    OpenCrayTab.skills: (context, isActive) =>
         SkillsFeatureScreen(bridge: bridge, copy: copy),
-    OpenCrayTab.files: (context) =>
-        FilesFeatureScreen(bridge: bridge, copy: copy),
-    OpenCrayTab.settings: (context) => SettingsFeatureScreen(
+    OpenCrayTab.files: (context, isActive) => FilesFeatureScreen(
+      bridge: bridge,
+      copy: copy,
+      isTabActive: isActive,
+      controller: filesController,
+    ),
+    OpenCrayTab.settings: (context, isActive) => SettingsFeatureScreen(
       initialPage: settingsInitialPage,
       facade: BridgeSettingsFacade(bridge: bridge),
       standalone: false,
+      debugBridge: bridge,
     ),
   };
 }

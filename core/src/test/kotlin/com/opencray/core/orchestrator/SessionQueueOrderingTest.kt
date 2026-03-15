@@ -156,6 +156,81 @@ class SessionQueueOrderingTest {
     assertTrue(runningCancelTransitions.contains(QueueTaskLifecycleState.CANCEL_REQUESTED))
   }
 
+  @Test
+  fun suspensionHooksPauseTaskUntilExplicitResume() {
+    val store = RecordingSnapshotStore()
+    val queueClock = IncrementingClock(start = 70_000L)
+
+    val attempts = linkedMapOf<String, Int>()
+    var runtimeNow = 95_000L
+    val runtime = SessionTaskRuntime { task, hooks ->
+      val attempt = (attempts[task.id] ?: 0) + 1
+      attempts[task.id] = attempt
+
+      val started = runtimeNow++
+      val finished = runtimeNow++
+
+      if (attempt == 1) {
+        hooks.requestSuspend(
+          SuspensionRequest(
+            reasonCode = "APPROVAL_REQUIRED",
+            detail = "Approval is required before Write can run.",
+          ),
+        )
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.DENIED,
+          errorCode = "APPROVAL_REQUIRED",
+          errorMessage = "Approval is required before Write can run.",
+          startedAtEpochMs = started,
+          finishedAtEpochMs = finished,
+        )
+      } else {
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.SUCCESS,
+          startedAtEpochMs = started,
+          finishedAtEpochMs = finished,
+        )
+      }
+    }
+
+    val queue = SessionQueue(
+      sessionId = "session-suspension-1",
+      agentId = "agent-suspension-1",
+      runtime = runtime,
+      snapshotStore = store,
+      clock = queueClock,
+    )
+
+    queue.enqueue(task(id = "task-approval", createdAt = 3_000L))
+
+    val firstResults = queue.drain()
+    val suspendedSnapshot = queue.snapshot().tasks.single()
+
+    assertEquals(listOf("task-approval"), firstResults.map { it.taskId })
+    assertEquals(ExecutionStatus.DENIED, firstResults.single().status)
+    assertEquals(QueueTaskLifecycleState.SUSPENDED, suspendedSnapshot.lifecycleState)
+    assertEquals(1, suspendedSnapshot.attempt)
+
+    assertTrue(queue.requestResumeTask("task-approval"))
+
+    val resumedResults = queue.drain()
+    val completedSnapshot = queue.snapshot().tasks.single()
+
+    assertEquals(ExecutionStatus.SUCCESS, resumedResults.single().status)
+    assertEquals(QueueTaskLifecycleState.COMPLETED, completedSnapshot.lifecycleState)
+    assertEquals(2, completedSnapshot.attempt)
+
+    val approvalTransitions = store.history
+      .mapNotNull { snapshot ->
+        snapshot.tasks.firstOrNull { it.task.id == "task-approval" }?.lifecycleState
+      }
+
+    assertTrue(approvalTransitions.contains(QueueTaskLifecycleState.SUSPENDED))
+    assertTrue(approvalTransitions.contains(QueueTaskLifecycleState.COMPLETED))
+  }
+
   private fun task(id: String, createdAt: Long): AgentTask = AgentTask(
     id = id,
     type = AgentTaskType.PROMPT,

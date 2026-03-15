@@ -11,12 +11,14 @@ import com.opencray.core.orchestrator.SessionQueue
 import com.opencray.core.orchestrator.SessionQueueConfig
 import com.opencray.core.orchestrator.SessionQueueSnapshotStore
 import com.opencray.core.orchestrator.SessionTaskRuntime
+import com.opencray.core.orchestrator.SuspensionRequest
 import com.opencray.core.orchestrator.SystemQueueClock
 import com.opencray.llm.LiteLlmGateway
 import com.opencray.llm.LiteLlmGatewayRequest
 import com.opencray.llm.LiteLlmGatewayResult
 import com.opencray.llm.LiteLlmGatewayStatus
 import com.opencray.runtime.context.AgentRuntimeSessionContext
+import com.opencray.runtime.context.ContextManager
 import com.opencray.runtime.context.ContextAssemblyReport
 import com.opencray.runtime.context.PromptAssembler
 import com.opencray.runtime.context.PromptAssemblyInput
@@ -32,6 +34,7 @@ data class OpenCrayAgentRuntimeConfig(
   val maxToolCalls: Int = 12,
   val systemPrompt: String = DEFAULT_OPENCRAY_SYSTEM_PROMPT,
   val sessionContext: AgentRuntimeSessionContext = AgentRuntimeSessionContext(),
+  val contextManager: ContextManager = ContextManager(),
   val promptAssembler: PromptAssembler = PromptAssembler(),
   val llmMetadata: Map<String, String> = emptyMap(),
   val llmAuthHeaders: Map<String, String> = emptyMap(),
@@ -113,7 +116,7 @@ class OpenCrayAgentRuntime(
         return cancelledResult(task = task, startedAt = startedAt, finishedAt = clock())
       }
 
-      val assembledPrompt = config.promptAssembler.assemble(
+      val managedContext = config.contextManager.prepare(
         PromptAssemblyInput(
           task = task,
           baseSystemPrompt = config.systemPrompt,
@@ -122,6 +125,7 @@ class OpenCrayAgentRuntime(
           liveConversation = transcript,
         ),
       )
+      val assembledPrompt = config.promptAssembler.assemble(managedContext)
       lastContextReport = assembledPrompt.report
 
       val runId = runIdFor(task)
@@ -139,6 +143,9 @@ class OpenCrayAgentRuntime(
           put("contextMessageCount", assembledPrompt.report.windowedTranscriptMessageCount.toString())
           put("contextOmittedMessageCount", assembledPrompt.report.omittedTranscriptMessageCount.toString())
           put("contextTruncatedMessageCount", assembledPrompt.report.truncatedTranscriptMessageCount.toString())
+          put("contextPrunedMessageCount", assembledPrompt.report.prunedTranscriptMessageCount.toString())
+          put("contextRewrittenMessageCount", assembledPrompt.report.rewrittenTranscriptMessageCount.toString())
+          put("contextPruningSummaryIncluded", assembledPrompt.report.pruningSummaryIncluded.toString())
           putAll(task.metadata.filterKeys(::isGatewayVisibleMetadataKey))
           putAll(config.llmMetadata)
         },
@@ -236,6 +243,12 @@ class OpenCrayAgentRuntime(
                   startedAt = startedAt,
                   finishedAt = clock(),
                   json = config.json,
+                )
+                hooks.requestSuspend(
+                  SuspensionRequest(
+                    reasonCode = approvalResult.errorCode ?: "APPROVAL_REQUIRED",
+                    detail = approvalResult.errorMessage,
+                  ),
                 )
                 return approvalResult.copy(
                   metadata = approvalResult.metadata +
@@ -391,7 +404,16 @@ class OpenCrayAgentRuntime(
       startedAt = startedAt,
       finishedAt = clock(),
       json = config.json,
-    )
+    ).also { result ->
+      if (toolResult.isApprovalRequiredDenial()) {
+        hooks.requestSuspend(
+          SuspensionRequest(
+            reasonCode = result.errorCode ?: "APPROVAL_REQUIRED",
+            detail = result.errorMessage,
+          ),
+        )
+      }
+    }
   }
 
   private fun executeDirectSkillCall(task: AgentTask): ExecutionResult {
@@ -561,6 +583,54 @@ class OpenCrayAgentRuntime(
       put("contextMessageCount", report.windowedTranscriptMessageCount.toString())
       put("contextOmittedMessageCount", report.omittedTranscriptMessageCount.toString())
       put("contextTruncatedMessageCount", report.truncatedTranscriptMessageCount.toString())
+      put("contextPrunedMessageCount", report.prunedTranscriptMessageCount.toString())
+      put("contextRewrittenMessageCount", report.rewrittenTranscriptMessageCount.toString())
+      put("contextPruningSummaryIncluded", report.pruningSummaryIncluded.toString())
+      put("contextMatchedMemoryCount", report.matchedMemoryRecordCount.toString())
+      put("contextInjectedMemoryCount", report.injectedMemoryRecordCount.toString())
+      put("contextOmittedMemoryCount", report.omittedMemoryRecordCount.toString())
+      report.memoryRecallTrace.queryTerms
+        .takeIf { terms -> terms.isNotEmpty() }
+        ?.let { terms -> put("contextMemoryQueryTerms", terms.joinToString(separator = ",")) }
+      report.memoryRecallTrace.selected
+        .takeIf { selected -> selected.isNotEmpty() }
+        ?.let { selected ->
+          put(
+            "contextMemorySelectedSummary",
+            selected.joinToString(separator = ";") { trace ->
+              buildString {
+                append(trace.id)
+                append("@")
+                append(trace.score)
+                if (trace.matchedTerms.isNotEmpty()) {
+                  append("[")
+                  append(trace.matchedTerms.joinToString(separator = "|"))
+                  append("]")
+                }
+              }
+            },
+          )
+        }
+      report.memoryRecallTrace.omitted
+        .takeIf { omitted -> omitted.isNotEmpty() }
+        ?.let { omitted ->
+          put(
+            "contextMemoryOmittedSummary",
+            omitted.joinToString(separator = ";") { trace ->
+              "${trace.id}:${trace.omissionReason.name.lowercase()}"
+            },
+          )
+        }
+      report.memoryRecallTrace.filteredCounts
+        .takeIf { counts -> counts.isNotEmpty() }
+        ?.let { counts ->
+          put(
+            "contextMemoryFilteredCounts",
+            counts.entries.joinToString(separator = ",") { (reason, count) ->
+              "${reason.name.lowercase()}:$count"
+            },
+          )
+        }
     }
     gatewayResult?.selectedRoute?.routeId?.let { put("selectedRouteId", it) }
     gatewayResult?.selectedRoute?.providerId?.let { put("selectedProviderId", it) }

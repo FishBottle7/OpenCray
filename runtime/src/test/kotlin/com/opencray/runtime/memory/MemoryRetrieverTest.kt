@@ -66,11 +66,15 @@ class MemoryRetrieverTest {
     assertEquals(4, result.memories.size)
     assertEquals(4, result.matchedRecordCount)
     assertEquals(0, result.omittedRecordCount)
+    assertTrue(result.trace.queryTerms.containsAll(listOf("chinese", "gradle", "no-revert", "verify")))
     assertTrue(result.memories.take(2).map { memory -> memory.id }.containsAll(listOf("workspace-rule", "user-pref")))
     assertTrue(result.memories.any { memory -> memory.id == "gradle-fact" })
     assertTrue(result.memories.any { memory -> memory.id == "same-session-open" })
     assertTrue(result.memories.none { memory -> memory.id == "other-session-open" })
     assertTrue(result.memories.none { memory -> memory.id == "unrelated-fact" })
+    assertEquals(result.memories.map { memory -> memory.id }, result.trace.selected.map { trace -> trace.id })
+    assertEquals(1, result.trace.filteredCounts[MemoryRecallFilterReason.SCOPE_MISMATCH])
+    assertEquals(1, result.trace.filteredCounts[MemoryRecallFilterReason.UNMATCHED_PROJECT_FACT])
   }
 
   @Test
@@ -79,7 +83,7 @@ class MemoryRetrieverTest {
       policy = MemoryPolicy(
         recallBudget = MemoryRecallBudget(
           maxRecords = 3,
-          maxChars = 240,
+          maxChars = 400,
           maxRecordsPerKind = 1,
         ),
       ),
@@ -129,11 +133,17 @@ class MemoryRetrieverTest {
     )
 
     assertEquals(3, result.memories.size)
-    assertEquals(5, result.matchedRecordCount)
-    assertEquals(2, result.omittedRecordCount)
+    assertEquals(4, result.matchedRecordCount)
+    assertEquals(1, result.omittedRecordCount)
     assertEquals(1, result.memories.count { memory -> memory.kind == MemoryKind.USER_PREFERENCE })
     assertEquals(1, result.memories.count { memory -> memory.kind == MemoryKind.PROJECT_FACT })
     assertEquals(1, result.memories.count { memory -> memory.kind == MemoryKind.DURABLE_INSTRUCTION })
+    assertEquals(listOf("pref-2"), result.trace.omitted.map { trace -> trace.id })
+    assertEquals(
+      listOf(MemoryRecallOmissionReason.MAX_PER_KIND),
+      result.trace.omitted.map { trace -> trace.omissionReason },
+    )
+    assertEquals(1, result.trace.filteredCounts[MemoryRecallFilterReason.UNMATCHED_PROJECT_FACT])
   }
 
   @Test
@@ -177,6 +187,39 @@ class MemoryRetrieverTest {
     assertEquals(listOf("active-rule"), result.memories.map { memory -> memory.id })
     assertEquals(1, result.matchedRecordCount)
     assertEquals(0, result.omittedRecordCount)
+    assertEquals(1, result.trace.filteredCounts[MemoryRecallFilterReason.EXPIRED])
+    assertEquals(1, result.trace.filteredCounts[MemoryRecallFilterReason.RESOLVED])
+  }
+
+  @Test
+  fun retrieveKeepsSoulPreferenceRecordsOutOfGenericMemoryRecallLayer() {
+    val retriever = MemoryRetriever(clock = { NOW_EPOCH_MS })
+
+    val result = retriever.retrieve(
+      records = listOf(
+        memoryRecord(
+          id = "agent-name",
+          content = "Agent display name is Xiao Bai",
+          kind = MemoryKind.USER_PREFERENCE,
+          scope = MemoryScope.USER,
+          preferenceKey = MemoryPreferenceKeys.AGENT_DISPLAY_NAME,
+          preferenceValue = "Xiao Bai",
+        ),
+        memoryRecord(
+          id = "user-pref",
+          content = "Default to concise Chinese replies.",
+          kind = MemoryKind.USER_PREFERENCE,
+          scope = MemoryScope.USER,
+        ),
+      ),
+      request = MemoryRecallRequest(
+        sessionId = "session-main",
+        userInput = "Please keep using Chinese.",
+      ),
+    )
+
+    assertEquals(listOf("user-pref"), result.memories.map { memory -> memory.id })
+    assertEquals(1, result.trace.filteredCounts[MemoryRecallFilterReason.SOUL_PREFERENCE])
   }
 
   private fun memoryRecord(
@@ -190,6 +233,8 @@ class MemoryRetrieverTest {
     ttlMs: Long? = null,
     lastConfirmedAtEpochMs: Long? = null,
     updatedAtEpochMs: Long = NOW_EPOCH_MS - 2_000L,
+    preferenceKey: String? = null,
+    preferenceValue: String? = null,
   ): MemoryRecord = MemoryRecord(
     id = id,
     content = content,
@@ -208,6 +253,8 @@ class MemoryRetrieverTest {
       lastConfirmedAtEpochMs?.let { put(MemoryRecordExtensionKeys.LAST_CONFIRMED_AT_EPOCH_MS, it.toString()) }
       ttlMs?.let { put(MemoryRecordExtensionKeys.TTL_MS, it.toString()) }
       workspaceId?.let { put(MemoryRecordExtensionKeys.WORKSPACE_ID, it) }
+      preferenceKey?.let { put(MemoryRecordExtensionKeys.PREFERENCE_KEY, it) }
+      preferenceValue?.let { put(MemoryRecordExtensionKeys.PREFERENCE_VALUE, it) }
     },
   )
 

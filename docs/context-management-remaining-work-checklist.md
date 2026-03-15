@@ -1,6 +1,6 @@
 # Context Management Remaining Work Checklist
 
-Last updated: 2026-03-13
+Last updated: 2026-03-15
 
 ## Current checkpoint
 
@@ -24,9 +24,11 @@ Phase 1 foundation now in progress:
 - `runtime/memory` now contains typed policy, deterministic candidate extraction, and structured record writing primitives
 - `runtime/memory` now also contains bounded recall, ranking, and prompt-layer rendering primitives, and `PromptAssembler` can inject a dedicated `Retrieved Memory` layer with report counts when callers provide recalled records
 - the live app path now reads persisted memory records through `AppAgentSessionTaskRuntimeFactory` before prompt assembly, and completed turns now flow through host-side deterministic memory ingestion
+- chat-derived identity and style preferences now stay in memory as structured overrides and are resolved into an effective runtime soul profile instead of directly overwriting persisted soul state
 - workspace identity is now derived from the app workspace root set and used consistently for workspace-scoped memory recall and writes
 - completed turns now also maintain session-scoped `task_commitment` memory deterministically, resolving completed commitments and expiring stale ones before new writes
 - host runtime activity now exposes `memory_write` events with written, resolved, and expired memory ids so memory maintenance stays debuggable from the live session surface
+- memory recall trace now projects through host run snapshots and the local runtime server, so existing debug surfaces can inspect it without adding a dedicated memory UI first
 - the next safe rollout step is wiring this soul foundation into the existing prompt path without reopening P0 ownership changes
 
 ## Remaining work after P0
@@ -36,6 +38,7 @@ Phase 1 foundation now in progress:
 1. Structured soul profile
    - Replace the current flat soul overlay with typed runtime fields.
    - Introduce resolver and renderer stages so tone, verbosity, escalation style, and tool-use bias can be tested independently.
+   - Current status: chat-derived naming and style preferences can now override runtime soul through structured memory records, but explicit promotion into persisted soul still needs a separate confirmation path.
 
 2. Deterministic memory write pipeline
    - Add a memory candidate extractor after completed turns.
@@ -48,7 +51,8 @@ Phase 1 foundation now in progress:
    - Retrieve bounded memory relevant to the current session/task before the LLM call.
    - Keep recall budgeted and traceable in the context report.
    - Current status: recall is budgeted, workspace-aware, prompt-visible, and live app runs now refresh memory through post-turn deterministic writes.
-   - Remaining gaps: add deeper run/report visibility for why specific records were ranked in or pruned out.
+   - Current status: runtime context reports now include bounded memory recall trace data for query terms, selected records, budget-omitted records, and filtered counts.
+   - Remaining gaps: expose this trace more consistently across operator/debug entry points and decide whether a dedicated debug screen is still needed after the existing snapshot surfaces prove sufficient.
 
 4. Runtime-visible skill inventory
    - Assemble an explicit inventory layer from managed skills roots.
@@ -63,6 +67,8 @@ Phase 1 foundation now in progress:
 6. Context pruner
    - Add prompt-local pruning rules for large tool outputs, repeated observations, and bulky attachments.
    - Keep pruning separate from durable compaction.
+   - Current status: prompt-local pruning now rewrites oversized tool payloads, collapses attachment-like blobs, and drops consecutive duplicate background noise before transcript windowing, with summary/report counters carried through prompt assembly and runtime metadata.
+   - Remaining gaps: semantic dedupe across non-consecutive failed search loops and richer structured-artifact summarization are still pending.
 
 7. Durable compaction summaries
    - Introduce session-level summaries for older turns.

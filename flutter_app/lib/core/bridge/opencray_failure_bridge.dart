@@ -1,5 +1,6 @@
 import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_file_text_preview.dart';
 import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
@@ -34,6 +35,42 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async =>
       throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayFileTextPreview> loadWorkspaceTextPreview(
+    String relativePath,
+  ) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayFilesSnapshot> createWorkspaceFolder({
+    required String parentRelativePath,
+    required String name,
+  }) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayFilesSnapshot> renameWorkspaceEntry({
+    required String targetRelativePath,
+    required String newName,
+  }) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayFilesSnapshot> deleteWorkspaceEntries(
+    List<String> relativePaths,
+  ) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayFilesSnapshot> pasteWorkspaceEntries({
+    required List<String> sourceRelativePaths,
+    required String destinationRelativePath,
+    required bool move,
+  }) async => throw StateError(_failureMessage);
+
+  @override
+  Future<void> shareWorkspaceEntries(List<String> relativePaths) async =>
+      throw StateError(_failureMessage);
+
+  @override
+  Future<void> showNativeToast(String message) async {}
 
   @override
   Future<OpenCraySettingsOverviewSnapshot> loadSettingsOverview() async =>
@@ -322,7 +359,8 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   }
 
   @override
-  Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId) async => null;
+  Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId) async =>
+      null;
 
   @override
   Future<OpenCrayChatRunSnapshot?> waitForChatRun(
@@ -337,7 +375,8 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   Future<void> selectChatSession(String sessionId) async {}
 
   @override
-  Future<OpenCrayChatRunSubmission?> submitChatMessage(String text) async => null;
+  Future<OpenCrayChatRunSubmission?> submitChatMessage(String text) async =>
+      null;
 
   @override
   Future<void> approveChatApproval(String approvalId) async {}

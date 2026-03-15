@@ -19,6 +19,8 @@ class AgentLoop(
 
   fun requestRetry(taskId: String): Boolean = queue.requestRetry(taskId)
 
+  fun requestResumeTask(taskId: String): Boolean = queue.requestResumeTask(taskId)
+
   fun stop(): SessionLifecycleState = queue.stop()
 
   fun resume(): SessionLifecycleState = queue.resume()

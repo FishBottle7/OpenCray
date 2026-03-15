@@ -167,6 +167,8 @@
     <string name="chat_agent_missing_llm">Remote LLM is not ready. Open Settings → LLM and configure Base URL and API key first.</string>
     <string name="chat_agent_failed">Agent request failed: %1$s</string>
     <string name="chat_agent_cancelled">Agent request was cancelled.</string>
+    <string name="chat_approval_approved">Approval granted. The agent is resuming.</string>
+    <string name="chat_approval_rejected">Approval rejected. The requested action was not run.</string>
     <string name="chat_tool_call_template">Tool call: %1$s %2$s</string>
     <string name="chat_tool_result_template">Tool result: %1$s\n%2$s</string>
     <string name="about_product_body">OpenCray keeps Chat, Skills, Files, and Settings inside one shell, so moving around the app stays simple and your place stays predictable.</string>
@@ -284,4 +286,10 @@
     <string name="personalization_screen_danger_zone_helper">Typed confirmation is required before either reset can arm.</string>
     <string name="flutter_host_label_android">ANDROID HOST</string>
     <string name="flutter_host_summary_android">Flutter shell is attached to the Android host application layer.</string>
+    <string name="files_share_error_no_selection">Select at least one file or folder to share.</string>
+    <string name="files_share_error_missing_entry">One or more selected items are no longer available.</string>
+    <string name="files_share_error_no_target">No app is available to share this item.</string>
+    <string name="files_share_error_outside_workspace">Only items inside the current workspace can be shared.</string>
+    <string name="files_share_error_prepare_failed">Could not prepare the selected items for sharing.</string>
+    <string name="files_share_error_launch_failed">Could not open the system share sheet.</string>
 </resources>

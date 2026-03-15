@@ -29,9 +29,35 @@ class OpenCrayUiCopy {
   }
 
   String get filesTitle => isChinese ? '文件' : 'Files';
+  String get appBackExitHint =>
+      isChinese ? '再按一次返回即可退出' : 'Press back again to exit';
   String get filesSearchHint =>
       isChinese ? '搜索文件和文件夹' : 'Search files and folders';
   String get filesLocationTitle => isChinese ? '位置' : 'Location';
+  String get filesNewAction => isChinese ? '新建' : 'New';
+  String get filesDoneAction => isChinese ? '完成' : 'Done';
+  String get filesShareAction => isChinese ? '分享' : 'Share';
+  String get filesMoveAction => isChinese ? '移动' : 'Move';
+  String get filesCopyAction => isChinese ? '复制' : 'Copy';
+  String get filesPasteAction => isChinese ? '粘贴' : 'Paste';
+  String get filesRenameAction => isChinese ? '重命名' : 'Rename';
+  String get filesDeleteAction => isChinese ? '删除' : 'Delete';
+  String get filesCancelAction => isChinese ? '取消' : 'Cancel';
+  String get filesCreateAction => isChinese ? '创建' : 'Create';
+  String get filesSaveAction => isChinese ? '保存' : 'Save';
+  String get filesCreateFolderTitle => isChinese ? '新建文件夹' : 'New Folder';
+  String get filesRenameEntryTitle => isChinese ? '重命名' : 'Rename';
+  String get filesNameFieldHint => isChinese ? '输入名称' : 'Enter a name';
+  String get filesPreviewCloseAction => isChinese ? '关闭预览' : 'Close preview';
+  String get filesPreviewEmptyBody =>
+      isChinese ? '这个文件是空的。' : 'This file is empty.';
+  String get filesPreviewTruncatedNotice => isChinese
+      ? '预览只显示了文件的前一部分内容。'
+      : 'Preview shows only the beginning of this file.';
+  String filesSelectedCount(int count) =>
+      isChinese ? '已选 $count 项' : '$count Selected';
+  String filesActionUnavailable(String action) =>
+      isChinese ? '$action 还没接入。' : '$action is not wired yet.';
   String get filesLocationPath => 'OpenCray / src / main';
   String get filesLocationItemCount => isChinese ? '622 项' : '622 items';
   String get filesLocationAvailableSpace =>
@@ -45,10 +71,19 @@ class OpenCrayUiCopy {
   String get filesLoadFailed => isChinese
       ? '从宿主运行时加载文件树失败。'
       : 'Failed to load the workspace tree from the host runtime.';
+  String get filesFolderEmptyTitle =>
+      isChinese ? '这个文件夹还是空的' : 'This folder is empty';
+  String get filesFolderEmptyBody => isChinese
+      ? '当前目录里还没有文件或文件夹。'
+      : 'There are no files or folders in this directory yet.';
   String get filesNoMatchesTitle => isChinese ? '没有匹配项' : 'No matching files';
   String filesNoMatchesBody(String query) => isChinese
       ? '当前工作区里没有匹配“$query”的文件或文件夹。'
       : 'No files or folders in the current workspace match "$query".';
+  String filesDeleteConfirmTitle(int count) =>
+      isChinese ? '删除这 $count 项？' : 'Delete these $count items?';
+  String filesDeleteConfirmBody(int count) =>
+      isChinese ? '删除后无法恢复。' : 'This action cannot be undone.';
   String filesWorkspaceTotals(int directoryCount, int fileCount) => isChinese
       ? '$directoryCount 个文件夹 · $fileCount 个文件'
       : '$directoryCount folders · $fileCount files';
@@ -217,9 +252,8 @@ class OpenCrayUiCopy {
   String get chatRunThinkingActive => isChinese
       ? '正在分析请求，并决定下一步要做什么。'
       : 'Analyzing the request and deciding the next step.';
-  String chatRunCallingTool(String toolName) => isChinese
-      ? '正在调用工具：$toolName'
-      : 'Calling tool: $toolName';
+  String chatRunCallingTool(String toolName) =>
+      isChinese ? '正在调用工具：$toolName' : 'Calling tool: $toolName';
   String chatRunToolFollowUp(String toolName) => isChinese
       ? '已收到 $toolName 的结果，正在判断下一步。'
       : 'Received $toolName and evaluating the next step.';

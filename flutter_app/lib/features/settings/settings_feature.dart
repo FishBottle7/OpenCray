@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../core/bridge/opencray_host_bridge.dart';
+import '../../core/models/opencray_chat_snapshot.dart';
 import '../../core/copy/opencray_ui_copy.dart';
 import '../../core/design/opencray_tokens.dart';
 import 'settings_facade.dart';
@@ -13,11 +15,13 @@ class SettingsFeatureScreen extends StatefulWidget {
     required this.facade,
     this.initialPage = SettingsPage.home,
     this.standalone = false,
+    this.debugBridge,
   });
 
   final SettingsPage initialPage;
   final SettingsFacade facade;
   final bool standalone;
+  final OpenCrayHostBridge? debugBridge;
 
   @override
   State<SettingsFeatureScreen> createState() => _SettingsFeatureScreenState();
@@ -123,7 +127,6 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
       case SettingsPage.workspaceAccess:
       case SettingsPage.privacyTelemetry:
       case SettingsPage.safetyLimits:
-      case SettingsPage.aboutVersion:
         final detailSnapshot = _detailCache[_page];
         if (detailSnapshot == null) {
           return const _SettingsLoading(
@@ -136,6 +139,20 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
           onBack: onBack,
           backLabel: backLabel,
         );
+      case SettingsPage.aboutVersion:
+        final detailSnapshot = _detailCache[_page];
+        if (detailSnapshot == null) {
+          return const _SettingsLoading(
+            key: ValueKey<String>('settings-detail-loading'),
+          );
+        }
+        return _AboutVersionPage(
+          key: const ValueKey<String>('settings-about-version'),
+          snapshot: detailSnapshot,
+          onBack: onBack,
+          backLabel: backLabel,
+          debugBridge: widget.debugBridge,
+        );
     }
   }
 
@@ -147,6 +164,7 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
             facade: widget.facade,
             initialPage: page,
             standalone: true,
+            debugBridge: widget.debugBridge,
           ),
         ),
       );
@@ -279,74 +297,537 @@ class _SettingsDetailPage extends StatelessWidget {
           const SizedBox(height: 8),
           Text(snapshot.subtitle, style: _SettingsTextStyles.subtitle),
           const SizedBox(height: 16),
-          ...snapshot.sections.map(
-            (SettingsSectionSnapshot section) => Padding(
+          ..._buildDetailSectionCards(snapshot.sections),
+        ],
+      ),
+    );
+  }
+}
+
+List<Widget> _buildDetailSectionCards(
+  List<SettingsSectionSnapshot> sections,
+) => sections
+    .map(
+      (SettingsSectionSnapshot section) => Padding(
+        padding: const EdgeInsets.only(bottom: 16),
+        child: _SettingsCard(
+          backgroundColor:
+              section.backgroundTone == SettingsSectionBackgroundTone.danger
+              ? OpenCrayColors.dangerSurface
+              : Colors.white,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (section.title.isNotEmpty)
+                Text(section.title, style: _SettingsTextStyles.cardTitle),
+              if (section.title.isNotEmpty && section.segmentedOptions == null)
+                const SizedBox(height: 8),
+              if (section.segmentedOptions != null) ...[
+                const SizedBox(height: 12),
+                _SegmentedSelector(
+                  labels: section.segmentedOptions!,
+                  selectedIndex: section.segmentedIndex ?? 0,
+                ),
+              ],
+              if (section.helperText != null) ...[
+                const SizedBox(height: 12),
+                Text(section.helperText!, style: _SettingsTextStyles.body),
+              ],
+              if (section.inlinePanelText != null) ...[
+                const SizedBox(height: 12),
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF4F4F7),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text(
+                      section.inlinePanelText!,
+                      style: _SettingsTextStyles.bodyStrong,
+                    ),
+                  ),
+                ),
+              ],
+              if (section.rows.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                for (int index = 0; index < section.rows.length; index++) ...[
+                  _DetailRow(row: section.rows[index]),
+                  if (index < section.rows.length - 1)
+                    const Divider(height: 1, color: OpenCrayColors.divider),
+                ],
+              ],
+            ],
+          ),
+        ),
+      ),
+    )
+    .toList(growable: false);
+
+class _AboutVersionPage extends StatelessWidget {
+  const _AboutVersionPage({
+    super.key,
+    required this.snapshot,
+    required this.onBack,
+    required this.backLabel,
+    required this.debugBridge,
+  });
+
+  final SettingsDetailSnapshot snapshot;
+  final VoidCallback onBack;
+  final String backLabel;
+  final OpenCrayHostBridge? debugBridge;
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _BackLink(onTap: onBack, label: backLabel),
+          const SizedBox(height: 8),
+          Text(snapshot.title, style: _SettingsTextStyles.pageTitleSubpage),
+          const SizedBox(height: 8),
+          Text(snapshot.subtitle, style: _SettingsTextStyles.subtitle),
+          const SizedBox(height: 16),
+          ..._buildDetailSectionCards(snapshot.sections),
+          if (debugBridge != null) ...[
+            Padding(
               padding: const EdgeInsets.only(bottom: 16),
               child: _SettingsCard(
-                backgroundColor:
-                    section.backgroundTone ==
-                        SettingsSectionBackgroundTone.danger
-                    ? OpenCrayColors.dangerSurface
-                    : Colors.white,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    if (section.title.isNotEmpty)
-                      Text(section.title, style: _SettingsTextStyles.cardTitle),
-                    if (section.title.isNotEmpty &&
-                        section.segmentedOptions == null)
-                      const SizedBox(height: 8),
-                    if (section.segmentedOptions != null) ...[
-                      const SizedBox(height: 12),
-                      _SegmentedSelector(
-                        labels: section.segmentedOptions!,
-                        selectedIndex: section.segmentedIndex ?? 0,
-                      ),
-                    ],
-                    if (section.helperText != null) ...[
-                      const SizedBox(height: 12),
-                      Text(
-                        section.helperText!,
-                        style: _SettingsTextStyles.body,
-                      ),
-                    ],
-                    if (section.inlinePanelText != null) ...[
-                      const SizedBox(height: 12),
-                      DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF4F4F7),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Text(
-                            section.inlinePanelText!,
-                            style: _SettingsTextStyles.bodyStrong,
+                    Text('Debug tools', style: _SettingsTextStyles.cardTitle),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Inspect runtime activity and memory recall trace from recent chat runs without enabling verbose logs.',
+                      style: _SettingsTextStyles.body,
+                    ),
+                    const SizedBox(height: 12),
+                    _HomeEntryRow(
+                      title: 'Context & Memory Trace',
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (context) => _MemoryDebugPage(
+                              bridge: debugBridge!,
+                              backLabel: snapshot.title,
+                            ),
                           ),
-                        ),
-                      ),
-                    ],
-                    if (section.rows.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      for (
-                        int index = 0;
-                        index < section.rows.length;
-                        index++
-                      ) ...[
-                        _DetailRow(row: section.rows[index]),
-                        if (index < section.rows.length - 1)
-                          const Divider(
-                            height: 1,
-                            color: OpenCrayColors.divider,
-                          ),
-                      ],
-                    ],
+                        );
+                      },
+                    ),
                   ],
                 ),
               ),
             ),
-          ),
+          ],
         ],
+      ),
+    );
+  }
+}
+
+class _MemoryDebugPage extends StatefulWidget {
+  const _MemoryDebugPage({required this.bridge, required this.backLabel});
+
+  final OpenCrayHostBridge bridge;
+  final String backLabel;
+
+  @override
+  State<_MemoryDebugPage> createState() => _MemoryDebugPageState();
+}
+
+class _MemoryDebugPageState extends State<_MemoryDebugPage> {
+  bool _isLoading = true;
+  bool _isRefreshing = false;
+  String? _loadError;
+  List<String> _recentRunIds = const <String>[];
+  String? _selectedRunId;
+  OpenCrayChatRunSnapshot? _selectedRunSnapshot;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: OpenCrayColors.shellBackground,
+      body: SafeArea(
+        bottom: false,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _BackLink(
+                onTap: () => Navigator.of(context).pop(),
+                label: widget.backLabel,
+              ),
+              const SizedBox(height: 8),
+              const Text('Debug', style: _SettingsTextStyles.pageTitleSubpage),
+              const SizedBox(height: 8),
+              const Text(
+                'Recent runtime runs and the structured memory trace captured for each run.',
+                style: _SettingsTextStyles.subtitle,
+              ),
+              const SizedBox(height: 16),
+              _SettingsCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'Runtime memory trace',
+                            style: _SettingsTextStyles.cardTitle,
+                          ),
+                        ),
+                        _HeaderActionChip(
+                          label: _isRefreshing ? 'Refreshing' : 'Refresh',
+                          onTap: _isRefreshing ? null : _refresh,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Uses the existing host run snapshot path. No separate debug protocol or log scraping is required.',
+                      style: _SettingsTextStyles.body,
+                    ),
+                    if (_loadError != null) ...[
+                      const SizedBox(height: 12),
+                      Text(_loadError!, style: _SettingsTextStyles.bodyStrong),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              if (_isLoading)
+                const _SettingsLoading(
+                  key: ValueKey<String>('memory-debug-loading'),
+                )
+              else ...[
+                _buildRunSelectorCard(),
+                if (_selectedRunSnapshot != null) ...[
+                  const SizedBox(height: 16),
+                  _buildRunDetailsCard(_selectedRunSnapshot!),
+                ],
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRunSelectorCard() {
+    if (_recentRunIds.isEmpty) {
+      return _SettingsCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: const [
+            Text('Recent runs', style: _SettingsTextStyles.cardTitle),
+            SizedBox(height: 8),
+            Text(
+              'No recent run ids are visible in the current runtime activity snapshot.',
+              style: _SettingsTextStyles.body,
+            ),
+          ],
+        ),
+      );
+    }
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Recent runs', style: _SettingsTextStyles.cardTitle),
+          const SizedBox(height: 8),
+          Text(
+            'Select a run to inspect its memory recall trace.',
+            style: _SettingsTextStyles.body,
+          ),
+          const SizedBox(height: 8),
+          for (int index = 0; index < _recentRunIds.length; index++) ...[
+            _HomeEntryRow(
+              title: _recentRunIds[index],
+              selected: _recentRunIds[index] == _selectedRunId,
+              onTap: () => _selectRun(_recentRunIds[index]),
+            ),
+            if (index < _recentRunIds.length - 1)
+              const Divider(height: 1, color: OpenCrayColors.divider),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRunDetailsCard(OpenCrayChatRunSnapshot run) {
+    final trace = run.memoryTrace;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SettingsCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Selected run', style: _SettingsTextStyles.cardTitle),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _DebugValueChip(label: 'Run', value: run.runId),
+                  _DebugValueChip(
+                    label: 'Status',
+                    value: run.executionStatus ?? 'unknown',
+                  ),
+                  _DebugValueChip(
+                    label: 'Task state',
+                    value: run.taskState ?? 'unknown',
+                  ),
+                  _DebugValueChip(
+                    label: 'Format',
+                    value: run.responseFormat ?? 'n/a',
+                  ),
+                ],
+              ),
+              if (run.errorCode?.isNotEmpty == true) ...[
+                const SizedBox(height: 12),
+                Text(
+                  'Error: ${run.errorCode} ${run.errorMessage ?? ''}'.trim(),
+                  style: _SettingsTextStyles.bodyStrong,
+                ),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _SettingsCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Memory trace', style: _SettingsTextStyles.cardTitle),
+              const SizedBox(height: 10),
+              if (trace == null)
+                const Text(
+                  'No recalled memory trace was captured for this run.',
+                  style: _SettingsTextStyles.body,
+                )
+              else ...[
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _DebugValueChip(
+                      label: 'Matched',
+                      value: '${trace.matchedRecordCount ?? 0}',
+                    ),
+                    _DebugValueChip(
+                      label: 'Injected',
+                      value: '${trace.injectedRecordCount ?? 0}',
+                    ),
+                    _DebugValueChip(
+                      label: 'Omitted',
+                      value: '${trace.omittedRecordCount ?? 0}',
+                    ),
+                  ],
+                ),
+                if (trace.queryTerms.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Text('Query terms', style: _SettingsTextStyles.cardTitle),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: trace.queryTerms
+                        .map(
+                          (term) => _DebugValueChip(label: 'Term', value: term),
+                        )
+                        .toList(growable: false),
+                  ),
+                ],
+                if (trace.selected.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    'Selected records',
+                    style: _SettingsTextStyles.cardTitle,
+                  ),
+                  const SizedBox(height: 8),
+                  for (final selected in trace.selected) ...[
+                    _DebugKeyValueLine('Record', selected.id),
+                    if (selected.score != null)
+                      _DebugKeyValueLine('Score', '${selected.score}'),
+                    if (selected.matchedTerms.isNotEmpty)
+                      _DebugKeyValueLine(
+                        'Matched terms',
+                        selected.matchedTerms.join(', '),
+                      ),
+                    const SizedBox(height: 8),
+                  ],
+                ],
+                if (trace.omitted.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text('Omitted records', style: _SettingsTextStyles.cardTitle),
+                  const SizedBox(height: 8),
+                  for (final omitted in trace.omitted) ...[
+                    _DebugKeyValueLine('Record', omitted.id),
+                    _DebugKeyValueLine('Reason', omitted.reason),
+                    const SizedBox(height: 8),
+                  ],
+                ],
+                if (trace.filteredCounts.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text('Filtered counts', style: _SettingsTextStyles.cardTitle),
+                  const SizedBox(height: 8),
+                  ...trace.filteredCounts.entries.map(
+                    (entry) => _DebugKeyValueLine(entry.key, '${entry.value}'),
+                  ),
+                ],
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _refresh() async {
+    final shouldShowLoading = _recentRunIds.isEmpty && !_isRefreshing;
+    setState(() {
+      _loadError = null;
+      _isLoading = shouldShowLoading;
+      _isRefreshing = true;
+    });
+    try {
+      final runtimeSnapshot = await widget.bridge.loadChatRuntimeSnapshot();
+      final recentRunIds = _collectRecentRunIds(runtimeSnapshot);
+      final nextSelectedRunId = recentRunIds.contains(_selectedRunId)
+          ? _selectedRunId
+          : (recentRunIds.isEmpty ? null : recentRunIds.first);
+      final nextSnapshot = nextSelectedRunId == null
+          ? null
+          : await widget.bridge.loadChatRunSnapshot(nextSelectedRunId);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _recentRunIds = recentRunIds;
+        _selectedRunId = nextSelectedRunId;
+        _selectedRunSnapshot = nextSnapshot;
+        _isLoading = false;
+        _isRefreshing = false;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _loadError = 'Failed to load runtime debug data: $error';
+        _isLoading = false;
+        _isRefreshing = false;
+      });
+    }
+  }
+
+  Future<void> _selectRun(String runId) async {
+    setState(() {
+      _selectedRunId = runId;
+      _selectedRunSnapshot = null;
+      _isRefreshing = true;
+      _loadError = null;
+    });
+    try {
+      final snapshot = await widget.bridge.loadChatRunSnapshot(runId);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _selectedRunSnapshot = snapshot;
+        _isRefreshing = false;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _loadError = 'Failed to load run snapshot: $error';
+        _isRefreshing = false;
+      });
+    }
+  }
+
+  List<String> _collectRecentRunIds(OpenCrayChatRuntimeSnapshot snapshot) {
+    final runEpochs = <String, int>{};
+    for (final run in snapshot.activeRuns) {
+      if (run.runId.trim().isEmpty) {
+        continue;
+      }
+      runEpochs[run.runId] = run.updatedAtEpochMs;
+    }
+    for (final event in snapshot.events) {
+      if (event.runId.trim().isEmpty) {
+        continue;
+      }
+      final existingEpoch = runEpochs[event.runId];
+      if (existingEpoch == null || event.emittedAtEpochMs > existingEpoch) {
+        runEpochs[event.runId] = event.emittedAtEpochMs;
+      }
+    }
+    final recentRuns = runEpochs.entries.toList(growable: false)
+      ..sort((left, right) => right.value.compareTo(left.value));
+    return recentRuns
+        .map((entry) => entry.key)
+        .where((runId) => runId.trim().isNotEmpty)
+        .take(8)
+        .toList(growable: false);
+  }
+}
+
+class _DebugValueChip extends StatelessWidget {
+  const _DebugValueChip({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFFF3F4F7),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        child: Text('$label: $value', style: _SettingsTextStyles.valueChip),
+      ),
+    );
+  }
+}
+
+class _DebugKeyValueLine extends StatelessWidget {
+  const _DebugKeyValueLine(this.label, this.value);
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: RichText(
+        text: TextSpan(
+          style: _SettingsTextStyles.body,
+          children: [
+            TextSpan(text: '$label: ', style: _SettingsTextStyles.bodyStrong),
+            TextSpan(text: value),
+          ],
+        ),
       ),
     );
   }

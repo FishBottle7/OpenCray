@@ -24,6 +24,7 @@ import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.file.Path
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -148,13 +149,45 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun createWorkspaceFolderRouteMutatesWorkspace() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-route-create").toPath()
+    val server = localRuntimeServer(
+      workspaceRootProvider = { workspaceRoot },
+      workspaceSnapshotProvider = {
+        AppAgentWorkspaceSnapshotFactory.createSnapshot(workspaceRoot).toMap()
+      },
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/create_workspace_folder",
+        body = JSONObject().apply {
+          put("parentRelativePath", "")
+          put("name", "drafts")
+        }.toString(),
+      )
+      val payload = JSONObject(response.body)
+      val children = payload.getJSONArray("children")
+
+      assertEquals(200, response.statusCode)
+      assertTrue(workspaceRoot.resolve("drafts").toFile().isDirectory)
+      assertEquals("drafts", children.getJSONObject(0).getString("name"))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun forwardsApprovalRequestsToHostRuntime() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approval-route"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
     val runtimeManager = RecordingRuntimeManager()
     val handle = RecordingSessionHandle(
       sessionId = activeSessionId,
-      retryResult = true,
+      resumeResult = true,
     )
     runtimeManager.handle = handle
     val hostRuntime = OpenCrayHostRuntime.createForTest(
@@ -210,7 +243,7 @@ class OpenCrayLocalRuntimeServerTest {
       )
 
       assertEquals(200, response.statusCode)
-      assertEquals(listOf(task.id), handle.retriedTaskIds)
+      assertEquals(listOf(task.id), handle.resumedTaskIds)
     } finally {
       server.close()
     }
@@ -223,7 +256,7 @@ class OpenCrayLocalRuntimeServerTest {
     val runtimeManager = RecordingRuntimeManager()
     val handle = RecordingSessionHandle(
       sessionId = activeSessionId,
-      retryResult = false,
+      resumeResult = false,
     )
     runtimeManager.handle = handle
     val hostRuntime = OpenCrayHostRuntime.createForTest(
@@ -269,13 +302,56 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun cancelsChatRunOverLoopbackHttp() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-cancel-run-route"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeManager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      resumeResult = false,
+    )
+    runtimeManager.handle = handle
+    val hostRuntime = OpenCrayHostRuntime.createForTest(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      chatSessionStore = chatStore,
+      settingsFacade = NoOpSettingsFacade,
+      llmConfigFacade = EmptyLlmConfigFacade,
+      sessionRuntimeManager = runtimeManager,
+      strings = hostRuntimeStrings(),
+    )
+    val submission = hostRuntime.submitChatMessage("Cancel me")!!
+    val server = OpenCrayLocalRuntimeServer(
+      hostRuntimeProvider = { hostRuntime },
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/cancel_chat_run",
+        body = JSONObject().apply {
+          put("runId", submission["runId"])
+        }.toString(),
+      )
+
+      assertEquals(200, response.statusCode)
+      assertEquals(listOf(handle.submissions.single().taskId), handle.cancelledTaskIds)
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun submitChatMessageReturnsRunSubmissionPayload() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-submit-run-route"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
     val runtimeManager = RecordingRuntimeManager()
     val handle = RecordingSessionHandle(
       sessionId = activeSessionId,
-      retryResult = false,
+      resumeResult = false,
     )
     runtimeManager.handle = handle
     val hostRuntime = OpenCrayHostRuntime.createForTest(
@@ -320,7 +396,7 @@ class OpenCrayLocalRuntimeServerTest {
     val runtimeManager = RecordingRuntimeManager()
     val handle = RecordingSessionHandle(
       sessionId = activeSessionId,
-      retryResult = false,
+      resumeResult = false,
     )
     runtimeManager.handle = handle
     val hostRuntime = OpenCrayHostRuntime.createForTest(
@@ -332,6 +408,27 @@ class OpenCrayLocalRuntimeServerTest {
       strings = hostRuntimeStrings(),
     )
     val submission = hostRuntime.submitChatMessage("Need a run snapshot")!!
+    val task = handle.submittedTasks.single()
+    runtimeManager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = ExecutionStatus.SUCCESS,
+        stdout = "Completed with memory trace.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          "contextMatchedMemoryCount" to "2",
+          "contextInjectedMemoryCount" to "1",
+          "contextOmittedMemoryCount" to "1",
+          "contextMemoryQueryTerms" to "chinese,gradle",
+          "contextMemorySelectedSummary" to "memory-user@420[chinese]",
+          "contextMemoryOmittedSummary" to "memory-project:max_records",
+          "contextMemoryFilteredCounts" to "scope_mismatch:1,expired:2",
+        ),
+      ),
+    )
     val server = OpenCrayLocalRuntimeServer(
       hostRuntimeProvider = { hostRuntime },
       requestedPort = 0,
@@ -346,10 +443,22 @@ class OpenCrayLocalRuntimeServerTest {
         "/v1/chat_run_snapshot?runId=${submission["runId"]}",
       )
       val payload = JSONObject(response.body)
+      val memoryTrace = payload.getJSONObject("memoryTrace")
+      val selected = memoryTrace.getJSONArray("selected")
+      val omitted = memoryTrace.getJSONArray("omitted")
+      val filteredCounts = memoryTrace.getJSONObject("filteredCounts")
 
       assertEquals(200, response.statusCode)
       assertEquals(submission["runId"], payload.getString("runId"))
       assertEquals(submission["taskId"], payload.getString("taskId"))
+      assertEquals(2, memoryTrace.getInt("matchedRecordCount"))
+      assertEquals(1, memoryTrace.getInt("injectedRecordCount"))
+      assertEquals(1, memoryTrace.getInt("omittedRecordCount"))
+      assertEquals("chinese", memoryTrace.getJSONArray("queryTerms").getString(0))
+      assertEquals("memory-user", selected.getJSONObject(0).getString("id"))
+      assertEquals("max_records", omitted.getJSONObject(0).getString("reason"))
+      assertEquals(1, filteredCounts.getInt("scope_mismatch"))
+      assertEquals(2, filteredCounts.getInt("expired"))
     } finally {
       server.close()
     }
@@ -357,6 +466,7 @@ class OpenCrayLocalRuntimeServerTest {
 
   private fun localRuntimeServer(
     llmConfigFacade: LlmConfigFacade = EmptyLlmConfigFacade,
+    workspaceRootProvider: (() -> Path)? = null,
     workspaceSnapshotProvider: () -> Map<String, Any?> = {
       WorkspaceTreeSnapshot(
         rootName = AppAgentWorkspace.DIRECTORY_NAME,
@@ -378,6 +488,7 @@ class OpenCrayLocalRuntimeServerTest {
         ),
         settingsFacade = NoOpSettingsFacade,
         llmConfigFacade = llmConfigFacade,
+        workspaceRootProvider = workspaceRootProvider,
         workspaceSnapshotProvider = workspaceSnapshotProvider,
         sessionRuntimeManager = NoOpRuntimeManager(),
         strings = HostRuntimeStrings(
@@ -557,9 +668,10 @@ class OpenCrayLocalRuntimeServerTest {
 
   private class RecordingSessionHandle(
     override val sessionId: String,
-    private val retryResult: Boolean,
+    private val resumeResult: Boolean,
   ) : AgentSessionHandle {
-    val retriedTaskIds = mutableListOf<String>()
+    val cancelledTaskIds = mutableListOf<String>()
+    val resumedTaskIds = mutableListOf<String>()
     val submittedTasks = mutableListOf<AgentTask>()
     val submissions = mutableListOf<AgentRunSubmission>()
     private val runSnapshotsById = linkedMapOf<String, AgentRunSnapshot>()
@@ -608,11 +720,18 @@ class OpenCrayLocalRuntimeServerTest {
 
     override fun ensureProcessing() = Unit
 
-    override fun requestCancel(taskId: String): Boolean = false
+    override fun requestCancel(taskId: String): Boolean {
+      cancelledTaskIds += taskId
+      return true
+    }
 
     override fun requestRetry(taskId: String): Boolean {
-      retriedTaskIds += taskId
-      return retryResult
+      return false
+    }
+
+    override fun requestResumeTask(taskId: String): Boolean {
+      resumedTaskIds += taskId
+      return resumeResult
     }
 
     override fun listRuns(): List<AgentRunSnapshot> = runSnapshotsById.values.toList()
@@ -651,6 +770,8 @@ class OpenCrayLocalRuntimeServerTest {
     override fun requestCancel(taskId: String): Boolean = false
 
     override fun requestRetry(taskId: String): Boolean = false
+
+    override fun requestResumeTask(taskId: String): Boolean = false
 
     override fun listRuns(): List<AgentRunSnapshot> = emptyList()
 

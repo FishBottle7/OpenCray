@@ -19,6 +19,13 @@ import com.opencray.llm.LiteLlmRouteSelectionMetadata
 import com.opencray.runtime.context.AgentRuntimeSessionContext
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.memory.MemoryKind
+import com.opencray.runtime.memory.MemoryRecallResult
+import com.opencray.runtime.memory.MemoryRecallTrace
+import com.opencray.runtime.memory.MemoryRecallSelectedTrace
+import com.opencray.runtime.memory.MemoryScope
+import com.opencray.runtime.memory.MemoryStatus
+import com.opencray.runtime.memory.RetrievedMemory
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -114,6 +121,114 @@ class OpenCrayAgentRuntimeTest {
     assertTrue(gateway.requests[0].prompt.contains("Earlier question."))
     assertTrue(gateway.requests[0].prompt.contains("Earlier answer."))
     assertTrue(gateway.requests[0].prompt.contains("What changed since then?"))
+  }
+
+  @Test
+  fun runPromptTaskExposesMemoryRecallTraceInResultMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-memory-trace-workspace")
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"Applied the recalled memory."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        sessionContext = AgentRuntimeSessionContext(
+          recalledMemory = MemoryRecallResult(
+            memories = listOf(
+              RetrievedMemory(
+                id = "memory-user",
+                kind = MemoryKind.USER_PREFERENCE,
+                scope = MemoryScope.USER,
+                status = MemoryStatus.ACTIVE,
+                content = "Default to concise Chinese replies.",
+                lastConfirmedAtEpochMs = 2_000L,
+                matchedTerms = listOf("chinese"),
+                score = 420,
+              ),
+            ),
+            matchedRecordCount = 2,
+            omittedRecordCount = 1,
+            trace = MemoryRecallTrace(
+              queryTerms = listOf("chinese", "gradle"),
+              selected = listOf(
+                MemoryRecallSelectedTrace(
+                  id = "memory-user",
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.USER,
+                  score = 420,
+                  matchedTerms = listOf("chinese"),
+                  contentPreview = "Default to concise Chinese replies.",
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+      clock = IncrementingClock(start = 2_500L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Keep using Chinese and verify Gradle."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("2", result.metadata["contextMatchedMemoryCount"])
+    assertEquals("1", result.metadata["contextInjectedMemoryCount"])
+    assertEquals("1", result.metadata["contextOmittedMemoryCount"])
+    assertEquals("chinese,gradle", result.metadata["contextMemoryQueryTerms"])
+    assertEquals("memory-user@420[chinese]", result.metadata["contextMemorySelectedSummary"])
+    assertTrue(gateway.requests.single().prompt.contains("[Retrieved Memory]"))
+  }
+
+  @Test
+  fun runPromptTaskExposesPruningMetadataWhenSeededConversationNeedsCleanup() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-pruning-metadata")
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"clean context applied"}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        sessionContext = AgentRuntimeSessionContext(
+          conversation = listOf(
+            RuntimeConversationMessage(RuntimeConversationRole.TOOL, "Protocol note."),
+            RuntimeConversationMessage(RuntimeConversationRole.TOOL, "Protocol note."),
+            RuntimeConversationMessage(
+              RuntimeConversationRole.TOOL,
+              "data:image/png;base64," + "A".repeat(160),
+            ),
+          ),
+        ),
+      ),
+      clock = IncrementingClock(start = 2_750L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Continue from the cleaned transcript."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("1", result.metadata["contextPrunedMessageCount"])
+    assertEquals("1", result.metadata["contextRewrittenMessageCount"])
+    assertEquals("true", result.metadata["contextPruningSummaryIncluded"])
+    assertTrue(gateway.requests.single().prompt.contains("[Pruning Summary]"))
+    assertTrue(gateway.requests.single().prompt.contains("Attachment-like payload pruned from prompt."))
   }
 
   @Test

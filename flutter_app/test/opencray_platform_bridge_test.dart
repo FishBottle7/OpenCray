@@ -150,4 +150,66 @@ void main() {
       'docs/report.md',
     );
   });
+
+  test('platform bridge loads text preview payloads', () async {
+    late MethodCall capturedCall;
+    const bridge = OpenCrayPlatformBridge();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(methodChannel, (call) async {
+          capturedCall = call;
+          return <String, Object?>{
+            'name': 'report.md',
+            'relativePath': 'docs/report.md',
+            'content': '# Report\n\nPreview body',
+            'isTruncated': false,
+          };
+        });
+
+    final preview = await bridge.loadWorkspaceTextPreview('docs/report.md');
+
+    expect(capturedCall.method, 'loadWorkspaceTextPreview');
+    expect(capturedCall.arguments, isA<Map<Object?, Object?>>());
+    final arguments = capturedCall.arguments as Map<Object?, Object?>;
+    expect(arguments['relativePath'], 'docs/report.md');
+    expect(preview.name, 'report.md');
+    expect(preview.content, '# Report\n\nPreview body');
+    expect(preview.isTruncated, isFalse);
+  });
+
+  test('platform bridge forwards share requests to the host channel', () async {
+    late MethodCall capturedCall;
+    const bridge = OpenCrayPlatformBridge();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(methodChannel, (call) async {
+          capturedCall = call;
+          return null;
+        });
+
+    await bridge.shareWorkspaceEntries(<String>['docs/report.md', 'todo.txt']);
+
+    expect(capturedCall.method, 'shareWorkspaceEntries');
+    expect(capturedCall.arguments, isA<Map<Object?, Object?>>());
+    final arguments = capturedCall.arguments as Map<Object?, Object?>;
+    expect(arguments['relativePaths'], <String>['docs/report.md', 'todo.txt']);
+  });
+
+  test(
+    'platform bridge forwards native toast requests to the host channel',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return null;
+          });
+
+      await bridge.showNativeToast('Press back again to exit');
+
+      expect(capturedCall.method, 'showNativeToast');
+      expect(capturedCall.arguments, isA<Map<Object?, Object?>>());
+      final arguments = capturedCall.arguments as Map<Object?, Object?>;
+      expect(arguments['message'], 'Press back again to exit');
+    },
+  );
 }

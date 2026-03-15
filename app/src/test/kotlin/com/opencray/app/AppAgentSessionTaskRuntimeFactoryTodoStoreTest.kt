@@ -1,6 +1,10 @@
 package com.opencray.app
 
 import com.opencray.persistence.model.MemoryRecord
+import com.opencray.runtime.AgentToolCall
+import com.opencray.runtime.AgentToolResult
+import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.context.RuntimeConversationRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
@@ -9,6 +13,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
   @get:Rule
@@ -86,6 +92,221 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
   }
 
   @Test
+  fun recordRunCancellationAppendsReplayToolObservation() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-cancelled"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-run-cancelled").toPath()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+
+    factory.recordRunCancellation(
+      sessionId = "session-1",
+      taskId = "task-1",
+      runId = "run-1",
+      toolName = "Write",
+    )
+
+    val snapshot = factory.transcriptStoreForSession("session-1").snapshot()
+
+    assertEquals(1, snapshot.size)
+    assertEquals(RuntimeConversationRole.TOOL, snapshot.single().role)
+    assertTrue(snapshot.single().content.contains("run_cancelled"))
+    assertTrue(snapshot.single().content.contains("task_id=task-1"))
+    assertTrue(snapshot.single().content.contains("run_id=run-1"))
+    assertTrue(snapshot.single().content.contains("tool_name=Write"))
+    assertTrue(snapshot.single().content.contains("outcome=user_cancelled"))
+  }
+
+  @Test
+  fun repairTerminalReplayFromRunSnapshotsBackfillsInterruptedAndRetryAbandoned() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-terminal-repair"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-terminal-repair").toPath()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+
+    factory.repairTerminalReplayFromRunSnapshots(
+      sessionId = "session-1",
+      runs = listOf(
+        AgentRunSnapshot(
+          sessionId = "session-1",
+          runId = "run-failed-1",
+          taskId = "task-failed-1",
+          acceptedAtEpochMs = 1_000L,
+          updatedAtEpochMs = 1_100L,
+          lifecycleState = com.opencray.core.orchestrator.QueueTaskLifecycleState.FAILED,
+          taskState = com.opencray.core.contracts.AgentTaskState.FAILED,
+          attempt = 1,
+          executionStatus = com.opencray.core.contracts.ExecutionStatus.FAILED,
+          errorCode = "RUNTIME_EXCEPTION",
+        ),
+        AgentRunSnapshot(
+          sessionId = "session-1",
+          runId = "run-failed-2",
+          taskId = "task-failed-2",
+          acceptedAtEpochMs = 2_000L,
+          updatedAtEpochMs = 2_100L,
+          lifecycleState = com.opencray.core.orchestrator.QueueTaskLifecycleState.FAILED,
+          taskState = com.opencray.core.contracts.AgentTaskState.FAILED,
+          attempt = 2,
+          executionStatus = com.opencray.core.contracts.ExecutionStatus.FAILED,
+          errorCode = "TOOL_EXECUTION_FAILED",
+        ),
+      ),
+    )
+    factory.repairTerminalReplayFromRunSnapshots(
+      sessionId = "session-1",
+      runs = listOf(
+        AgentRunSnapshot(
+          sessionId = "session-1",
+          runId = "run-failed-1",
+          taskId = "task-failed-1",
+          acceptedAtEpochMs = 1_000L,
+          updatedAtEpochMs = 1_100L,
+          lifecycleState = com.opencray.core.orchestrator.QueueTaskLifecycleState.FAILED,
+          taskState = com.opencray.core.contracts.AgentTaskState.FAILED,
+          attempt = 1,
+          executionStatus = com.opencray.core.contracts.ExecutionStatus.FAILED,
+          errorCode = "RUNTIME_EXCEPTION",
+        ),
+        AgentRunSnapshot(
+          sessionId = "session-1",
+          runId = "run-failed-2",
+          taskId = "task-failed-2",
+          acceptedAtEpochMs = 2_000L,
+          updatedAtEpochMs = 2_100L,
+          lifecycleState = com.opencray.core.orchestrator.QueueTaskLifecycleState.FAILED,
+          taskState = com.opencray.core.contracts.AgentTaskState.FAILED,
+          attempt = 2,
+          executionStatus = com.opencray.core.contracts.ExecutionStatus.FAILED,
+          errorCode = "TOOL_EXECUTION_FAILED",
+        ),
+      ),
+    )
+
+    val snapshot = factory.transcriptStoreForSession("session-1").snapshot()
+
+    assertEquals(2, snapshot.size)
+    assertTrue(snapshot[0].content.startsWith("run_interrupted"))
+    assertTrue(snapshot[0].content.contains("task_id=task-failed-1"))
+    assertTrue(snapshot[1].content.startsWith("retry_abandoned"))
+    assertTrue(snapshot[1].content.contains("attempt=2"))
+  }
+
+  @Test
+  fun recordSuccessfulToolInteractionAppendsToolCallAndResultReplaySummaries() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-tool-replay"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-tool-replay").toPath()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+
+    factory.recordSuccessfulToolInteraction(
+      sessionId = "session-1",
+      event = OpenCrayToolResultEvent(
+        runId = "run-1",
+        taskId = "task-1",
+        turn = 2,
+        call = AgentToolCall(
+          toolName = "Read",
+          arguments = buildJsonObject {
+            put("file_path", "README.md")
+            put("offset", 5)
+            put("limit", 2)
+          },
+          reason = "Inspect the install section before answering.",
+        ),
+        result = AgentToolResult(
+          toolName = "Read",
+          status = AgentToolResultStatus.SUCCESS,
+          content = "Line five\nLine six\n",
+          metadata = mapOf(
+            "filePath" to "README.md",
+            "offset" to "5",
+            "returnedLineCount" to "2",
+          ),
+        ),
+        emittedAtEpochMs = 1_000L,
+      ),
+    )
+
+    val snapshot = factory.transcriptStoreForSession("session-1").snapshot()
+
+    assertEquals(2, snapshot.size)
+    assertEquals(RuntimeConversationRole.TOOL, snapshot[0].role)
+    assertTrue(snapshot[0].content.startsWith("tool_call "))
+    assertTrue(snapshot[0].content.contains("\"run_id\":\"run-1\""))
+    assertTrue(snapshot[0].content.contains("\"turn\":2"))
+    assertTrue(snapshot[0].content.contains("\"tool_name\":\"Read\""))
+    assertTrue(snapshot[0].content.contains("\"file_path\":\"README.md\""))
+    assertTrue(snapshot[1].content.startsWith("tool_result "))
+    assertTrue(snapshot[1].content.contains("\"status\":\"success\""))
+    assertTrue(snapshot[1].content.contains("\"content_preview\":\"Line five Line six\""))
+    assertTrue(snapshot[1].content.contains("\"filePath\":\"README.md\""))
+  }
+
+  @Test
+  fun recordSuccessfulToolInteractionSkipsDuplicateReplayEntriesForSameRunTurn() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-tool-replay-dedupe"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-tool-replay-dedupe").toPath()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    val event = OpenCrayToolResultEvent(
+      runId = "run-1",
+      taskId = "task-1",
+      turn = 1,
+      call = AgentToolCall(
+        toolName = "Grep",
+        arguments = buildJsonObject {
+          put("pattern", "TODO")
+          put("path", ".")
+        },
+      ),
+      result = AgentToolResult(
+        toolName = "Grep",
+        status = AgentToolResultStatus.SUCCESS,
+        content = "src/Main.kt:10:// TODO",
+        metadata = mapOf(
+          "path" to ".",
+          "pattern" to "TODO",
+          "matchCount" to "1",
+        ),
+      ),
+      emittedAtEpochMs = 2_000L,
+    )
+
+    factory.recordSuccessfulToolInteraction(sessionId = "session-1", event = event)
+    factory.recordSuccessfulToolInteraction(sessionId = "session-1", event = event)
+
+    val snapshot = factory.transcriptStoreForSession("session-1").snapshot()
+
+    assertEquals(2, snapshot.size)
+    assertTrue(snapshot[0].content.contains("\"run_id\":\"run-1\""))
+    assertTrue(snapshot[1].content.contains("\"matchCount\":\"1\""))
+  }
+
+  @Test
   fun recalledMemoryForUsesPersistedRecordsAndSessionAndWorkspaceFiltering() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-memory"))
     val personalizationStore = PersonalizationLocalStore(temporaryFolder.newFolder("personalization-memory"))
@@ -152,6 +373,56 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     assertTrue(recalled.memories.none { memory -> memory.id == "commitment-other-session" })
   }
 
+  @Test
+  fun effectiveSoulProfileForOverlaysUserIdentityPreferenceAndSessionStylePreference() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-soul-memory"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-soul-memory").toPath()
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+
+    val effective = factory.effectiveSoulProfileFor(
+      sessionId = sessionId,
+      soulProfile = PersonalizationLocalStore.SoulProfile(
+        presetName = "BUILDER",
+        customLabel = "",
+        customGuidance = "Stay direct.",
+      ),
+      memoryRecords = listOf(
+        memoryRecord(
+          id = "agent-name",
+          content = "Agent display name is Xiao Bai",
+          kind = "user_preference",
+          scope = "user",
+          sourceSessionId = "session-source",
+          preferenceKey = "agent_display_name",
+          preferenceValue = "Xiao Bai",
+        ),
+        memoryRecord(
+          id = "session-style",
+          content = "Agent style profile should be warm",
+          kind = "user_preference",
+          scope = "session",
+          sourceSessionId = sessionId,
+          preferenceKey = "agent_style_profile",
+          preferenceValue = "warm",
+        ),
+      ),
+    )
+
+    assertEquals("Xiao Bai", effective?.displayName)
+    assertEquals("BUILDER", effective?.presetName)
+    assertEquals("Stay direct.", effective?.customGuidance)
+    assertEquals("warm and gentle", effective?.voice)
+    assertEquals("warm", effective?.extensions?.get("tone"))
+  }
+
   private fun memoryRecord(
     id: String,
     content: String,
@@ -160,6 +431,8 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     sourceSessionId: String,
     status: String = "active",
     workspaceId: String? = null,
+    preferenceKey: String? = null,
+    preferenceValue: String? = null,
   ): MemoryRecord = MemoryRecord(
     id = id,
     content = content,
@@ -177,6 +450,8 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
       "source_session_id" to sourceSessionId,
     ) + listOfNotNull(
       workspaceId?.let { "workspace_id" to it },
+      preferenceKey?.let { "preference_key" to it },
+      preferenceValue?.let { "preference_value" to it },
     ).toMap(),
   )
 }

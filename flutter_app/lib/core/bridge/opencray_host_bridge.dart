@@ -1,4 +1,5 @@
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_file_text_preview.dart';
 import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
@@ -14,6 +15,32 @@ abstract interface class OpenCrayHostBridge {
   Stream<OpenCrayShellSnapshot> watchShellSnapshot();
 
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot();
+
+  Future<OpenCrayFileTextPreview> loadWorkspaceTextPreview(String relativePath);
+
+  Future<OpenCrayFilesSnapshot> createWorkspaceFolder({
+    required String parentRelativePath,
+    required String name,
+  });
+
+  Future<OpenCrayFilesSnapshot> renameWorkspaceEntry({
+    required String targetRelativePath,
+    required String newName,
+  });
+
+  Future<OpenCrayFilesSnapshot> deleteWorkspaceEntries(
+    List<String> relativePaths,
+  );
+
+  Future<OpenCrayFilesSnapshot> pasteWorkspaceEntries({
+    required List<String> sourceRelativePaths,
+    required String destinationRelativePath,
+    required bool move,
+  });
+
+  Future<void> shareWorkspaceEntries(List<String> relativePaths);
+
+  Future<void> showNativeToast(String message);
 
   Future<OpenCraySettingsOverviewSnapshot> loadSettingsOverview();
 

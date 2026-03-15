@@ -7,6 +7,7 @@ import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.session.SessionTranscriptStore
+import com.opencray.runtime.session.SessionTranscriptRules
 import java.io.File
 import kotlinx.serialization.Serializable
 
@@ -44,15 +45,16 @@ private class FileBackedSessionTranscriptStore(
   private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory)
 
   override fun snapshot(): List<RuntimeConversationMessage> = synchronized(lock) {
-    loadRecord().messages
+    loadNormalizedRecord().messages
   }
 
   override fun seedIfEmpty(messages: List<RuntimeConversationMessage>) {
-    if (messages.isEmpty()) {
+    val normalized = SessionTranscriptRules.normalize(messages)
+    if (normalized.isEmpty()) {
       return
     }
     synchronized(lock) {
-      val existing = loadRecord()
+      val existing = loadNormalizedRecord()
       if (existing.messages.isNotEmpty()) {
         return
       }
@@ -60,7 +62,7 @@ private class FileBackedSessionTranscriptStore(
         existing.copy(
           recordVersion = existing.recordVersion + 1L,
           updatedAtEpochMs = System.currentTimeMillis(),
-          messages = messages,
+          messages = normalized,
         ),
       )
     }
@@ -68,15 +70,16 @@ private class FileBackedSessionTranscriptStore(
 
   override fun appendIfDistinct(message: RuntimeConversationMessage) {
     synchronized(lock) {
-      val existing = loadRecord()
-      if (existing.messages.lastOrNull() == message) {
+      val existing = loadNormalizedRecord()
+      val normalizedMessages = SessionTranscriptRules.normalize(existing.messages + message)
+      if (normalizedMessages == existing.messages) {
         return
       }
       saveRecord(
         existing.copy(
           recordVersion = existing.recordVersion + 1L,
           updatedAtEpochMs = System.currentTimeMillis(),
-          messages = existing.messages + message,
+          messages = normalizedMessages,
         ),
       )
     }
@@ -97,6 +100,21 @@ private class FileBackedSessionTranscriptStore(
       deserializer = SessionTranscriptRecord.serializer(),
       string = encoded,
     )
+  }
+
+  private fun loadNormalizedRecord(): SessionTranscriptRecord {
+    val existing = loadRecord()
+    val normalizedMessages = SessionTranscriptRules.normalize(existing.messages)
+    if (normalizedMessages == existing.messages) {
+      return existing
+    }
+    val repaired = existing.copy(
+      recordVersion = existing.recordVersion + 1L,
+      updatedAtEpochMs = System.currentTimeMillis(),
+      messages = normalizedMessages,
+    )
+    saveRecord(repaired)
+    return repaired
   }
 
   private fun saveRecord(record: SessionTranscriptRecord) {

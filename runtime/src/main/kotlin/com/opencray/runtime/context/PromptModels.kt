@@ -2,8 +2,11 @@ package com.opencray.runtime.context
 
 import com.opencray.core.contracts.AgentTask
 import com.opencray.runtime.AgentToolDefinition
+import com.opencray.runtime.memory.MemoryRecallTrace
 import com.opencray.runtime.memory.MemoryRecallResult
+import kotlinx.serialization.Serializable
 
+@Serializable
 data class RuntimeConversationMessage(
   val role: RuntimeConversationRole,
   val content: String,
@@ -13,6 +16,7 @@ data class RuntimeConversationMessage(
   }
 }
 
+@Serializable
 enum class RuntimeConversationRole {
   SYSTEM,
   USER,
@@ -41,6 +45,42 @@ data class PromptAssemblyInput(
   val sessionContext: AgentRuntimeSessionContext,
   val toolDefinitions: List<AgentToolDefinition>,
   val liveConversation: List<RuntimeConversationMessage>,
+)
+
+data class ManagedPromptContext(
+  val task: AgentTask,
+  val baseSystemPrompt: String,
+  val sessionPolicyText: String = "",
+  val personalizationText: String = "",
+  val memoryText: String = "",
+  val pruningSummary: TranscriptPruningSummary? = null,
+  val compactionSummary: CompactionSummary? = null,
+  val toolDefinitions: List<AgentToolDefinition> = emptyList(),
+  val transcriptWindow: TranscriptWindow = TranscriptWindow(
+    messages = emptyList(),
+    omittedMessageCount = 0,
+    truncatedMessageCount = 0,
+  ),
+  val report: ContextSelectionReport = ContextSelectionReport(),
+)
+
+data class ContextSelectionReport(
+  val sourceTranscriptMessageCount: Int = 0,
+  val windowedTranscriptMessageCount: Int = 0,
+  val omittedTranscriptMessageCount: Int = 0,
+  val truncatedTranscriptMessageCount: Int = 0,
+  val prunedTranscriptMessageCount: Int = 0,
+  val rewrittenTranscriptMessageCount: Int = 0,
+  val duplicateBackgroundTranscriptMessageCount: Int = 0,
+  val bulkyToolTranscriptRewriteCount: Int = 0,
+  val attachmentLikeTranscriptRewriteCount: Int = 0,
+  val pruningSummaryIncluded: Boolean = false,
+  val compactedTranscriptMessageCount: Int = 0,
+  val compactionSummaryIncluded: Boolean = false,
+  val matchedMemoryRecordCount: Int = 0,
+  val injectedMemoryRecordCount: Int = 0,
+  val omittedMemoryRecordCount: Int = 0,
+  val memoryRecallTrace: MemoryRecallTrace = MemoryRecallTrace(),
 )
 
 data class PromptLayer(
@@ -73,9 +113,18 @@ data class ContextAssemblyReport(
   val windowedTranscriptMessageCount: Int,
   val omittedTranscriptMessageCount: Int,
   val truncatedTranscriptMessageCount: Int,
+  val prunedTranscriptMessageCount: Int = 0,
+  val rewrittenTranscriptMessageCount: Int = 0,
+  val duplicateBackgroundTranscriptMessageCount: Int = 0,
+  val bulkyToolTranscriptRewriteCount: Int = 0,
+  val attachmentLikeTranscriptRewriteCount: Int = 0,
+  val pruningSummaryIncluded: Boolean = false,
+  val compactedTranscriptMessageCount: Int = 0,
+  val compactionSummaryIncluded: Boolean = false,
   val matchedMemoryRecordCount: Int = 0,
   val injectedMemoryRecordCount: Int = 0,
   val omittedMemoryRecordCount: Int = 0,
+  val memoryRecallTrace: MemoryRecallTrace = MemoryRecallTrace(),
 ) {
   val transcriptMessageCount: Int
     get() = windowedTranscriptMessageCount
@@ -93,3 +142,44 @@ data class TranscriptWindow(
   val omittedMessageCount: Int,
   val truncatedMessageCount: Int,
 )
+
+data class TranscriptWindowSelection(
+  val window: TranscriptWindow,
+  val normalizedMessages: List<RuntimeConversationMessage>,
+  val omittedMessages: List<RuntimeConversationMessage>,
+)
+
+data class PrunedTranscript(
+  val messages: List<RuntimeConversationMessage>,
+  val summary: TranscriptPruningSummary? = null,
+)
+
+data class TranscriptPruningSummary(
+  val text: String,
+  val removedMessageCount: Int = 0,
+  val rewrittenMessageCount: Int = 0,
+  val duplicateBackgroundMessageCount: Int = 0,
+  val bulkyToolMessageCount: Int = 0,
+  val attachmentLikeMessageCount: Int = 0,
+) {
+  init {
+    require(text.isNotBlank()) { "TranscriptPruningSummary text must not be blank." }
+    require(removedMessageCount + rewrittenMessageCount >= 1) {
+      "TranscriptPruningSummary must describe at least one pruning change."
+    }
+  }
+}
+
+data class CompactionSummary(
+  val text: String,
+  val compactedMessageCount: Int,
+  val omittedUserMessageCount: Int = 0,
+  val omittedAssistantMessageCount: Int = 0,
+  val omittedToolMessageCount: Int = 0,
+  val omittedSystemMessageCount: Int = 0,
+) {
+  init {
+    require(text.isNotBlank()) { "CompactionSummary text must not be blank." }
+    require(compactedMessageCount >= 1) { "CompactionSummary compactedMessageCount must be >= 1." }
+  }
+}

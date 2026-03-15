@@ -8,6 +8,11 @@ import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.store.MemoryStore
+import com.opencray.runtime.memory.MemoryCandidateExtractor
+import com.opencray.runtime.memory.SoulMemoryIntent
+import com.opencray.runtime.memory.SoulMemoryIntentInterpretation
+import com.opencray.runtime.memory.SoulMemoryIntentInterpreter
+import com.opencray.runtime.memory.SoulMemoryIntentRequest
 import com.opencray.runtime.memory.MemoryWriter
 import com.opencray.runtime.memory.TaskCommitmentResolver
 import org.junit.Assert.assertEquals
@@ -150,6 +155,48 @@ class ChatMemoryIngestionCoordinatorTest {
     assertEquals("resolved", memoryStore.list().single { record -> record.id == "commitment-1" }.extensions["status"])
   }
 
+  @Test
+  fun ingestCompletedTurnUsesSemanticSoulInterpreterForMemoryWrites() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = MemoryCandidateExtractor(
+        soulIntentInterpreter = FixedSoulIntentInterpreter(
+          SoulMemoryIntentInterpretation.Success(
+            intents = listOf(
+              SoulMemoryIntent(
+                preferenceKey = "agent_display_name",
+                preferenceValue = "小白",
+                scope = com.opencray.runtime.memory.MemoryScope.USER,
+                soulExtensions = mapOf(
+                  "soul_display_name" to "小白",
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-semantic",
+      task = promptTask(
+        id = "task-semantic",
+        input = "以后叫你小白。",
+      ),
+      result = successResult(taskId = "task-semantic"),
+      assistantOutput = "知道了。",
+      toolObservations = emptyList(),
+    )
+
+    assertEquals(1, summary.writtenRecords.size)
+    val record = memoryStore.list().single()
+    assertEquals("agent_display_name", record.extensions["preference_key"])
+    assertEquals("小白", record.extensions["preference_value"])
+    assertEquals("小白", record.extensions["soul_display_name"])
+  }
+
   private fun promptTask(id: String, input: String): AgentTask = AgentTask(
     id = id,
     type = AgentTaskType.PROMPT,
@@ -185,5 +232,13 @@ class ChatMemoryIngestionCoordinatorTest {
       records.clear()
       return hadRecords
     }
+  }
+
+  private class FixedSoulIntentInterpreter(
+    private val interpretation: SoulMemoryIntentInterpretation,
+  ) : SoulMemoryIntentInterpreter {
+    override fun interpret(
+      request: SoulMemoryIntentRequest,
+    ): SoulMemoryIntentInterpretation = interpretation
   }
 }

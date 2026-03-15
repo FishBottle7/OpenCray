@@ -27,16 +27,16 @@ internal class FileBackedAgentQueueSnapshotStoreFactory(
   internal fun directoryForSession(sessionId: String): File =
     File(runtimeRootDirectory, encodeSessionId(sessionId))
 
-  private fun encodeSessionId(sessionId: String): String {
-    val normalized = sessionId.trim().ifBlank { "default-session" }
-    val encoded = Base64.getUrlEncoder()
-      .withoutPadding()
-      .encodeToString(normalized.toByteArray(StandardCharsets.UTF_8))
-    return "session-$encoded"
-  }
-
   companion object {
     internal const val DIRECTORY_NAME = "agent-runtime"
+
+    internal fun encodeSessionId(sessionId: String): String {
+      val normalized = sessionId.trim().ifBlank { "default-session" }
+      val encoded = Base64.getUrlEncoder()
+        .withoutPadding()
+        .encodeToString(normalized.toByteArray(StandardCharsets.UTF_8))
+      return "session-$encoded"
+    }
 
     fun fromContext(context: Context): AgentQueueSnapshotStoreFactory =
       FileBackedAgentQueueSnapshotStoreFactory(

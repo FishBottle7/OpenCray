@@ -116,6 +116,27 @@ void main() {
     expect(snapshot.children.single.children.single.sizeBytes, 1024);
   });
 
+  test('local runtime bridge loads text preview over http', () async {
+    requestHandler = (request) async {
+      expect(request.method, 'GET');
+      expect(request.uri.path, '/v1/workspace_text_preview');
+      expect(request.uri.queryParameters['relativePath'], 'docs/report.md');
+      await writeJson(request, <String, Object?>{
+        'name': 'report.md',
+        'relativePath': 'docs/report.md',
+        'content': '# Report\n\nPreview body',
+        'isTruncated': true,
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final preview = await bridge.loadWorkspaceTextPreview('docs/report.md');
+
+    expect(preview.name, 'report.md');
+    expect(preview.relativePath, 'docs/report.md');
+    expect(preview.isTruncated, isTrue);
+  });
+
   test(
     'local runtime bridge posts validation requests and parses results',
     () async {
@@ -147,6 +168,24 @@ void main() {
       expect(result.message, 'Validated against local runtime.');
     },
   );
+
+  test('local runtime bridge posts share requests over http', () async {
+    late Map<String, Object?> capturedBody;
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/share_workspace_entries');
+      capturedBody = await readJsonBody(request);
+      await writeJson(request, null);
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    await bridge.shareWorkspaceEntries(<String>['docs/report.md', 'todo.txt']);
+
+    expect(capturedBody['relativePaths'], <Object?>[
+      'docs/report.md',
+      'todo.txt',
+    ]);
+  });
 
   test(
     'local runtime connector returns null when loopback runtime is unavailable',

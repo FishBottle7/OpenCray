@@ -23,6 +23,7 @@ import com.opencray.app.facade.settings.SettingsRouteId
 import com.opencray.app.shell.AppShellStateStore
 import com.opencray.app.shell.InMemoryAppShellKeyValueStore
 import com.opencray.core.contracts.AgentTask
+import com.opencray.core.contracts.AgentTaskState
 import com.opencray.core.contracts.AgentTaskType
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.PolicyDecision
@@ -93,6 +94,90 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun backgroundSessionReplyDoesNotSwitchActiveSessionAndMarksUnread() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-background-unread"))
+    val sessionAId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handleA = RecordingSessionHandle(
+      sessionId = sessionAId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handleA)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    hostRuntime.submitChatMessage("Reply later")
+    val task = handleA.submittedTasks.single()
+
+    hostRuntime.createChatSession()
+    val sessionBId = chatStore.loadState().activeSession.sessionId
+
+    manager.emitTaskFinished(
+      sessionId = sessionAId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "Background reply finished.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata,
+      ),
+    )
+
+    val snapshot = hostRuntime.loadChatSnapshot()
+    val drawer = snapshot["drawer"] as Map<*, *>
+    val sessions = (drawer["sessions"] as List<*>).map { it as Map<*, *> }
+    val sessionA = sessions.first { session -> session["sessionId"] == sessionAId }
+    val sessionB = sessions.first { session -> session["sessionId"] == sessionBId }
+
+    assertEquals(sessionBId, chatStore.loadState().activeSession.sessionId)
+    assertEquals(true, sessionB["isSelected"])
+    assertEquals(1, sessionA["unreadCount"])
+    assertEquals(0, sessionB["unreadCount"])
+  }
+
+  @Test
+  fun selectingSessionClearsUnreadCountForThatSession() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-clear-unread"))
+    val sessionAId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handleA = RecordingSessionHandle(
+      sessionId = sessionAId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handleA)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    hostRuntime.submitChatMessage("Reply later")
+    val task = handleA.submittedTasks.single()
+    hostRuntime.createChatSession()
+
+    manager.emitTaskFinished(
+      sessionId = sessionAId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "Background reply finished.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata,
+      ),
+    )
+
+    hostRuntime.selectChatSession(sessionAId)
+
+    val snapshot = hostRuntime.loadChatSnapshot()
+    val drawer = snapshot["drawer"] as Map<*, *>
+    val sessions = (drawer["sessions"] as List<*>).map { it as Map<*, *> }
+    val selectedSession = sessions.first { session -> session["sessionId"] == sessionAId }
+
+    assertEquals(sessionAId, chatStore.loadState().activeSession.sessionId)
+    assertEquals(true, selectedSession["isSelected"])
+    assertEquals(0, selectedSession["unreadCount"])
+  }
+
+  @Test
   fun submitChatMessageCancelsQueuedTaskWhenTranscriptPersistenceFails() {
     val chatStore = FailingChatSessionLocalStore(temporaryFolder.newFolder("chat-store-persist-fail"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -135,6 +220,27 @@ class OpenCrayHostRuntimeTest {
     assertEquals(listOf("Need a durable owner path", "Thinking"), messages.map { it.text })
     assertEquals(listOf("Need a durable owner path"), handle.submittedInputs)
     assertEquals(listOf(handle.submissions.single().taskId), handle.ensureProcessingTaskIds)
+  }
+
+  @Test
+  fun submitChatMessageDoesNotAttachHostOnlyPolicyDetailToPromptTask() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-policy-detail"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    hostRuntime.submitChatMessage("Check approval behavior")
+
+    val submittedTask = handle.submittedTasks.single()
+
+    assertEquals(PolicyDecisionOutcome.ALLOW, submittedTask.policyDecision.outcome)
+    assertEquals("FLUTTER_CHAT_ALLOW", submittedTask.policyDecision.reasonCode)
+    assertEquals(null, submittedTask.policyDecision.detail)
   }
 
   @Test
@@ -247,6 +353,50 @@ class OpenCrayHostRuntimeTest {
       "The agent produced an internal tool payload instead of a user-facing reply.",
       firstSession["preview"],
     )
+  }
+
+  @Test
+  fun chatObserverReceivesSettledSnapshotAfterTaskFinish() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-settled-observer"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeManager = SettlingRuntimeManager(sessionId = activeSessionId)
+    val mainThreadPoster = QueuedMainThreadPoster()
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = runtimeManager,
+      mainThreadPoster = mainThreadPoster,
+    )
+    val observedSnapshots = mutableListOf<Map<String, Any?>>()
+    val dispose = hostRuntime.observeChat { snapshot ->
+      observedSnapshots += snapshot
+    }
+    mainThreadPoster.flush()
+    observedSnapshots.clear()
+
+    hostRuntime.submitChatMessage("Need a settled final reply")
+    mainThreadPoster.flush()
+    observedSnapshots.clear()
+
+    runtimeManager.emitTaskFinished(
+      ExecutionResult(
+        taskId = runtimeManager.handle.requireSubmittedTask().id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "Settled final reply",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = mapOf("responseFormat" to "json_final"),
+      ),
+    )
+    mainThreadPoster.flush()
+    dispose()
+
+    val snapshot = observedSnapshots.last()
+    val messages = (snapshot["messages"] as List<*>).map { it as Map<*, *> }
+    val runtimeActivity = snapshot["runtimeActivity"] as Map<*, *>
+    val activeRuns = runtimeActivity["activeRuns"] as List<*>
+
+    assertEquals("Settled final reply", messages.last()["text"])
+    assertTrue(activeRuns.isEmpty())
   }
 
   @Test
@@ -640,6 +790,58 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun completedRunSnapshotIncludesStructuredMemoryTrace() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-memory-trace"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    val submission = hostRuntime.submitChatMessage("Need run memory trace")!!
+    val task = handle.submittedTasks.single()
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "Applied the recalled memory.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          "responseFormat" to "json_final",
+          "contextMatchedMemoryCount" to "2",
+          "contextInjectedMemoryCount" to "1",
+          "contextOmittedMemoryCount" to "1",
+          "contextMemoryQueryTerms" to "chinese,gradle",
+          "contextMemorySelectedSummary" to "memory-user@420[chinese]",
+          "contextMemoryOmittedSummary" to "memory-project:max_records",
+          "contextMemoryFilteredCounts" to "scope_mismatch:1,expired:2",
+        ),
+      ),
+    )
+
+    val runSnapshot = hostRuntime.loadChatRunSnapshot(submission["runId"] as String)!!
+    val memoryTrace = runSnapshot["memoryTrace"] as Map<*, *>
+    val selected = memoryTrace["selected"] as List<*>
+    val omitted = memoryTrace["omitted"] as List<*>
+    val filteredCounts = memoryTrace["filteredCounts"] as Map<*, *>
+
+    assertEquals(2, memoryTrace["matchedRecordCount"])
+    assertEquals(1, memoryTrace["injectedRecordCount"])
+    assertEquals(1, memoryTrace["omittedRecordCount"])
+    assertEquals(listOf("chinese", "gradle"), memoryTrace["queryTerms"])
+    assertEquals("memory-user", (selected.single() as Map<*, *>)["id"])
+    assertEquals("max_records", (omitted.single() as Map<*, *>)["reason"])
+    assertEquals(1, filteredCounts["scope_mismatch"])
+    assertEquals(2, filteredCounts["expired"])
+  }
+
+  @Test
   fun approveChatApprovalResumesTaskAndRestoresThinkingPlaceholder() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approval-resume"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -677,7 +879,14 @@ class OpenCrayHostRuntimeTest {
 
     assertEquals(listOf(task.id), handle.resumedTaskIds)
     assertTrue(pendingApprovals.isEmpty())
-    assertEquals("Thinking", messages.last().text)
+    assertEquals(
+      listOf(
+        "Need approval",
+        "Thinking",
+        "Approval granted. The agent is resuming.",
+      ),
+      messages.map { it.text },
+    )
   }
 
   @Test
@@ -713,10 +922,101 @@ class OpenCrayHostRuntimeTest {
 
     val snapshot = hostRuntime.loadChatSnapshot()
     val pendingApprovals = snapshot["pendingApprovals"] as List<*>
+    val messages = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
 
     assertEquals(listOf(task.id), handle.cancelledTaskIds)
     assertTrue(handle.resumedTaskIds.isEmpty())
     assertTrue(pendingApprovals.isEmpty())
+    assertEquals(
+      listOf(
+        "Need approval",
+        "Approval is required before Write can run.",
+        "Approval rejected. The requested action was not run.",
+      ),
+      messages.map { it.text },
+    )
+  }
+
+  @Test
+  fun cancelChatRunCancelsTaskAndRecordsReplayObservation() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-cancel"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val replayCalls = mutableListOf<Map<String, String?>>()
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      runCancellationReplayRecorder = { sessionId, taskId, runId, toolName ->
+        replayCalls += mapOf(
+          "sessionId" to sessionId,
+          "taskId" to taskId,
+          "runId" to runId,
+          "toolName" to toolName,
+        )
+      },
+    )
+
+    val run = hostRuntime.submitChatMessage("Cancel this run")!!
+
+    hostRuntime.cancelChatRun(run["runId"] as String)
+
+    assertEquals(listOf(handle.submissions.single().taskId), handle.cancelledTaskIds)
+    assertEquals(
+      listOf(
+        mapOf(
+          "sessionId" to activeSessionId,
+          "taskId" to handle.submissions.single().taskId,
+          "runId" to (run["runId"] as String),
+          "toolName" to null,
+        ),
+      ),
+      replayCalls,
+    )
+  }
+
+  @Test
+  fun taskFailureRepairsTerminalReplayObservation() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-terminal-repair"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val repairCalls = mutableListOf<Pair<String, List<AgentRunSnapshot>>>()
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      terminalReplayRepairer = { sessionId, runs ->
+        repairCalls += sessionId to runs
+      },
+    )
+
+    hostRuntime.submitChatMessage("Will fail")
+    val task = handle.submittedTasks.single()
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.FAILED,
+        errorCode = "RUNTIME_EXCEPTION",
+        errorMessage = "boom",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata,
+      ),
+    )
+
+    assertEquals(activeSessionId, repairCalls.single().first)
+    assertEquals(task.id, repairCalls.single().second.single().taskId)
   }
 
   @Test
@@ -823,11 +1123,14 @@ class OpenCrayHostRuntimeTest {
 
   private fun hostRuntime(
     chatStore: ChatSessionLocalStore,
-    runtimeManager: RecordingRuntimeManager,
+    runtimeManager: AgentSessionRuntimeManager,
     llmConfigFacade: LlmConfigFacade = RecordingLlmConfigFacade(),
     personalizationFacade: PersonalizationFacade = RecordingPersonalizationFacade(),
     mcpSettingsFacade: McpSettingsFacade = RecordingMcpSettingsFacade(),
     memoryIngestionCoordinator: ChatMemoryIngestionCoordinator? = null,
+    runCancellationReplayRecorder: (String, String, String, String?) -> Unit = { _, _, _, _ -> },
+    terminalReplayRepairer: (String, List<AgentRunSnapshot>) -> Unit = { _, _ -> },
+    mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
   ): OpenCrayHostRuntime = OpenCrayHostRuntime.createForTest(
     stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
     chatSessionStore = chatStore,
@@ -837,6 +1140,9 @@ class OpenCrayHostRuntimeTest {
     mcpSettingsFacade = mcpSettingsFacade,
     sessionRuntimeManager = runtimeManager,
     memoryIngestionCoordinator = memoryIngestionCoordinator,
+    runCancellationReplayRecorder = runCancellationReplayRecorder,
+    terminalReplayRepairer = terminalReplayRepairer,
+    mainThreadPoster = mainThreadPoster,
     strings = HostRuntimeStrings(
       localeTag = "en",
       shellHostLabel = "HOST CONNECTED",
@@ -1071,6 +1377,7 @@ class OpenCrayHostRuntimeTest {
       task: AgentTask,
       result: ExecutionResult,
     ) {
+      handlesBySession[sessionId]?.recordResult(task = task, result = result)
       listeners.forEach { listener ->
         listener.onTaskFinished(sessionId, task, result)
       }
@@ -1081,6 +1388,7 @@ class OpenCrayHostRuntimeTest {
       task: AgentTask,
       event: com.opencray.runtime.OpenCrayAgentRunEvent,
     ) {
+      handlesBySession[sessionId]?.recordEvent(event)
       listeners.forEach { listener ->
         listener.onRunEvent(sessionId, task, event)
       }
@@ -1096,6 +1404,205 @@ class OpenCrayHostRuntimeTest {
     override fun release(sessionId: String) = Unit
 
     override fun releaseIdleSessions() = Unit
+  }
+
+  private class SettlingRuntimeManager(
+    private val sessionId: String,
+  ) : AgentSessionRuntimeManager {
+    private val listeners = mutableListOf<AgentSessionRuntimeListener>()
+    val handle = SettlingSessionHandle(sessionId = sessionId)
+
+    override fun forSession(sessionId: String): AgentSessionHandle {
+      require(sessionId == this.sessionId) {
+        "Unexpected sessionId: $sessionId"
+      }
+      return handle
+    }
+
+    override fun observe(listener: AgentSessionRuntimeListener): () -> Unit {
+      listeners += listener
+      return {
+        listeners -= listener
+      }
+    }
+
+    override fun release(sessionId: String) = Unit
+
+    override fun releaseIdleSessions() = Unit
+
+    fun emitTaskFinished(result: ExecutionResult) {
+      val task = handle.requireSubmittedTask()
+      handle.recordResult(result)
+      listeners.forEach { listener ->
+        listener.onTaskFinished(sessionId = sessionId, task = task, result = result)
+      }
+      handle.settleTerminalState()
+    }
+  }
+
+  private class SettlingSessionHandle(
+    override val sessionId: String,
+  ) : AgentSessionHandle {
+    private var submittedTask: AgentTask? = null
+    private var submission: AgentRunSubmission? = null
+    private var lifecycleState: QueueTaskLifecycleState = QueueTaskLifecycleState.QUEUED
+    private var result: ExecutionResult? = null
+
+    override fun submitPrompt(
+      userText: String,
+      pendingMessageId: String,
+      visibleThroughMessageId: String,
+      policyDecision: PolicyDecision,
+      metadata: Map<String, String>,
+    ): AgentRunSubmission {
+      val runId = "settling-run"
+      val task = AgentTask(
+        id = "settling-task",
+        type = AgentTaskType.PROMPT,
+        input = userText,
+        policyDecision = policyDecision,
+        metadata = metadata + mapOf(
+          AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+          AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to pendingMessageId,
+          AppAgentSessionTaskRuntimeFactory.METADATA_VISIBLE_THROUGH_MESSAGE_ID to visibleThroughMessageId,
+        ),
+        createdAtEpochMs = 1_000L,
+      )
+      val createdSubmission = AgentRunSubmission(
+        sessionId = sessionId,
+        runId = runId,
+        taskId = task.id,
+        acceptedAtEpochMs = 1_000L,
+      )
+      submittedTask = task
+      submission = createdSubmission
+      lifecycleState = QueueTaskLifecycleState.QUEUED
+      result = null
+      return createdSubmission
+    }
+
+    override fun ensureProcessing() {
+      lifecycleState = QueueTaskLifecycleState.RUNNING
+    }
+
+    override fun requestCancel(taskId: String): Boolean = false
+
+    override fun requestRetry(taskId: String): Boolean = false
+
+    override fun requestResumeTask(taskId: String): Boolean = false
+
+    override fun listRuns(): List<AgentRunSnapshot> {
+      val task = submittedTask ?: return emptyList()
+      val createdSubmission = submission ?: return emptyList()
+      return listOf(
+        AgentRunSnapshot(
+          sessionId = sessionId,
+          runId = createdSubmission.runId,
+          taskId = task.id,
+          acceptedAtEpochMs = createdSubmission.acceptedAtEpochMs,
+          updatedAtEpochMs = result?.finishedAtEpochMs ?: task.updatedAtEpochMs,
+          lifecycleState = lifecycleState,
+          taskState = taskStateFor(lifecycleState),
+          attempt = 1,
+          executionStatus = result?.status,
+          errorCode = result?.errorCode,
+          errorMessage = result?.errorMessage,
+          responseFormat = result?.metadata?.get("responseFormat"),
+          resultMetadata = result?.metadata.orEmpty(),
+          pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID],
+        ),
+      )
+    }
+
+    override fun findRun(runId: String): AgentRunSnapshot? =
+      listRuns().firstOrNull { snapshot -> snapshot.runId == runId }
+
+    override fun waitForRun(runId: String, timeoutMs: Long): AgentRunSnapshot? =
+      findRun(runId)
+
+    override fun requestCancelForPendingMessageIds(pendingMessageIds: Set<String>): Int = 0
+
+    override fun resume(): SessionLifecycleState = SessionLifecycleState.IDLE
+
+    override fun snapshot(): SessionQueueSnapshot {
+      val task = submittedTask
+      val updatedAtEpochMs = result?.finishedAtEpochMs ?: 1_000L
+      if (task == null) {
+        return SessionQueueSnapshot(
+          sessionId = sessionId,
+          agentId = "test-agent",
+          updatedAtEpochMs = updatedAtEpochMs,
+        )
+      }
+      return SessionQueueSnapshot(
+        sessionId = sessionId,
+        agentId = "test-agent",
+        tasks = listOf(
+          SessionQueueTaskSnapshot(
+            enqueueOrder = 0,
+            task = task.copy(
+              state = taskStateFor(lifecycleState),
+              updatedAtEpochMs = updatedAtEpochMs,
+            ),
+            lifecycleState = lifecycleState,
+            attempt = 1,
+            lastErrorCode = result?.errorCode,
+            lastErrorMessage = result?.errorMessage,
+          ),
+        ),
+        updatedAtEpochMs = updatedAtEpochMs,
+      )
+    }
+
+    override fun hasPendingWork(): Boolean =
+      lifecycleState == QueueTaskLifecycleState.QUEUED ||
+        lifecycleState == QueueTaskLifecycleState.RUNNING
+
+    fun requireSubmittedTask(): AgentTask =
+      checkNotNull(submittedTask) { "Expected task to be submitted." }
+
+    fun recordResult(result: ExecutionResult) {
+      this.result = result
+    }
+
+    fun settleTerminalState() {
+      lifecycleState = when (result?.status) {
+        com.opencray.core.contracts.ExecutionStatus.SUCCESS -> QueueTaskLifecycleState.COMPLETED
+        com.opencray.core.contracts.ExecutionStatus.CANCELLED -> QueueTaskLifecycleState.CANCELLED
+        else -> QueueTaskLifecycleState.FAILED
+      }
+    }
+
+    private fun taskStateFor(
+      lifecycleState: QueueTaskLifecycleState,
+    ): AgentTaskState = when (lifecycleState) {
+      QueueTaskLifecycleState.QUEUED,
+      QueueTaskLifecycleState.RETRY_PENDING,
+      -> AgentTaskState.QUEUED
+
+      QueueTaskLifecycleState.RUNNING,
+      QueueTaskLifecycleState.CANCEL_REQUESTED,
+      -> AgentTaskState.RUNNING
+
+      QueueTaskLifecycleState.SUSPENDED -> AgentTaskState.SUSPENDED
+      QueueTaskLifecycleState.COMPLETED -> AgentTaskState.COMPLETED
+      QueueTaskLifecycleState.FAILED -> AgentTaskState.FAILED
+      QueueTaskLifecycleState.CANCELLED -> AgentTaskState.CANCELLED
+    }
+  }
+
+  private class QueuedMainThreadPoster : MainThreadPoster {
+    private val actions = ArrayDeque<() -> Unit>()
+
+    override fun post(action: () -> Unit) {
+      actions += action
+    }
+
+    fun flush() {
+      while (actions.isNotEmpty()) {
+        actions.removeFirst().invoke()
+      }
+    }
   }
 
   private class RecordingSessionHandle(
@@ -1129,10 +1636,7 @@ class OpenCrayHostRuntimeTest {
         id = taskId,
         type = AgentTaskType.PROMPT,
         input = userText,
-        policyDecision = PolicyDecision(
-          outcome = PolicyDecisionOutcome.ALLOW,
-          reasonCode = "TEST_ALLOW",
-        ),
+        policyDecision = policyDecision,
         metadata = metadata + mapOf(
           AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
           AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to pendingMessageId,
@@ -1177,6 +1681,30 @@ class OpenCrayHostRuntimeTest {
     override fun requestResumeTask(taskId: String): Boolean {
       resumedTaskIds += taskId
       return resumeResult
+    }
+
+    fun recordResult(
+      task: AgentTask,
+      result: ExecutionResult,
+    ) {
+      val runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID].orEmpty()
+      val existing = runSnapshotsById[runId] ?: return
+      runSnapshotsById[runId] = existing.copy(
+        updatedAtEpochMs = result.finishedAtEpochMs,
+        executionStatus = result.status,
+        errorCode = result.errorCode,
+        errorMessage = result.errorMessage,
+        responseFormat = result.metadata["responseFormat"],
+        resultMetadata = result.metadata,
+      )
+    }
+
+    fun recordEvent(event: com.opencray.runtime.OpenCrayAgentRunEvent) {
+      val existing = runSnapshotsById[event.runId] ?: return
+      runSnapshotsById[event.runId] = existing.copy(
+        updatedAtEpochMs = event.emittedAtEpochMs,
+        lastEvent = event,
+      )
     }
 
     override fun listRuns(): List<AgentRunSnapshot> = runSnapshotsById.values.toList()

@@ -19,6 +19,7 @@ enum class AgentTaskType {
 enum class AgentTaskState {
   @SerialName("queued") QUEUED,
   @SerialName("running") RUNNING,
+  @SerialName("suspended") SUSPENDED,
   @SerialName("completed") COMPLETED,
   @SerialName("failed") FAILED,
   @SerialName("cancelled") CANCELLED,

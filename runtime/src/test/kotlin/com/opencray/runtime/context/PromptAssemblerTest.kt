@@ -6,7 +6,12 @@ import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.runtime.AgentToolDefinition
 import com.opencray.runtime.memory.MemoryKind
+import com.opencray.runtime.memory.MemoryRecallFilterReason
+import com.opencray.runtime.memory.MemoryRecallOmissionReason
 import com.opencray.runtime.memory.MemoryRecallResult
+import com.opencray.runtime.memory.MemoryRecallTrace
+import com.opencray.runtime.memory.MemoryRecallOmittedTrace
+import com.opencray.runtime.memory.MemoryRecallSelectedTrace
 import com.opencray.runtime.memory.MemoryScope
 import com.opencray.runtime.memory.MemoryStatus
 import com.opencray.runtime.memory.RetrievedMemory
@@ -18,7 +23,7 @@ import org.junit.Test
 class PromptAssemblerTest {
   @Test
   fun assembleBuildsNamedSystemAndTaskLayers() {
-    val assembler = PromptAssembler(
+    val contextManager = ContextManager(
       transcriptWindowBuilder = TranscriptWindowBuilder(
         TranscriptWindowConfig(
           maxMessages = 2,
@@ -26,32 +31,35 @@ class PromptAssemblerTest {
         ),
       ),
     )
+    val assembler = PromptAssembler()
 
     val prompt = assembler.assemble(
-      PromptAssemblyInput(
-        task = promptTask(),
-        baseSystemPrompt = "You are OpenCray for testing.",
-        sessionContext = AgentRuntimeSessionContext(
-          sessionPolicyText = "Keep the current session aligned with earlier decisions.",
-          soulProfile = RuntimeSoulProfile(
-            presetName = "BUILDER",
-            displayName = "Night Shift",
-            customGuidance = "Be terse and implementation-first.",
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "You are OpenCray for testing.",
+          sessionContext = AgentRuntimeSessionContext(
+            sessionPolicyText = "Keep the current session aligned with earlier decisions.",
+            soulProfile = RuntimeSoulProfile(
+              presetName = "BUILDER",
+              displayName = "Night Shift",
+              customGuidance = "Be terse and implementation-first.",
+            ),
           ),
-        ),
-        toolDefinitions = listOf(
-          AgentToolDefinition(
-            name = "workspace_read_file",
-            description = "Read a file from the workspace.",
+          toolDefinitions = listOf(
+            AgentToolDefinition(
+              name = "workspace_read_file",
+              description = "Read a file from the workspace.",
+            ),
           ),
-        ),
-        liveConversation = listOf(
-          RuntimeConversationMessage(RuntimeConversationRole.USER, "Older request."),
-          RuntimeConversationMessage(
-            RuntimeConversationRole.ASSISTANT,
-            "This assistant message is intentionally long so the transcript window has to truncate it before rendering.",
+          liveConversation = listOf(
+            RuntimeConversationMessage(RuntimeConversationRole.USER, "Older request."),
+            RuntimeConversationMessage(
+              RuntimeConversationRole.ASSISTANT,
+              "This assistant message is intentionally long so the transcript window has to truncate it before rendering.",
+            ),
+            RuntimeConversationMessage(RuntimeConversationRole.USER, "Latest request."),
           ),
-          RuntimeConversationMessage(RuntimeConversationRole.USER, "Latest request."),
         ),
       ),
     )
@@ -69,6 +77,8 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("it must not include a final answer"))
     assertTrue(prompt.taskPrompt.contains("Available tools:"))
     assertTrue(prompt.taskPrompt.contains("[Task Context]"))
+    assertTrue(prompt.taskPrompt.contains("[Compaction Summary]"))
+    assertTrue(prompt.taskPrompt.contains("Compacted 1 older message(s) outside the active transcript window."))
     assertTrue(prompt.taskPrompt.contains("task_id=task-context"))
     assertTrue(prompt.taskPrompt.contains("Omitted 1 older message(s)"))
     assertEquals(3, prompt.report.sourceTranscriptMessageCount)
@@ -76,49 +86,105 @@ class PromptAssemblerTest {
     assertEquals(2, prompt.report.transcriptMessageCount)
     assertEquals(1, prompt.report.omittedTranscriptMessageCount)
     assertEquals(1, prompt.report.truncatedTranscriptMessageCount)
+    assertEquals(0, prompt.report.prunedTranscriptMessageCount)
+    assertEquals(0, prompt.report.rewrittenTranscriptMessageCount)
+    assertFalse(prompt.report.pruningSummaryIncluded)
+    assertEquals(1, prompt.report.compactedTranscriptMessageCount)
+    assertTrue(prompt.report.compactionSummaryIncluded)
     assertEquals(0, prompt.report.injectedMemoryRecordCount)
   }
 
   @Test
-  fun assembleOmitsOptionalLayersWhenEmpty() {
+  fun assembleIncludesPruningSummaryLayerWhenTranscriptWasPruned() {
+    val contextManager = ContextManager(
+      contextPruner = ContextPruner(
+        ContextPrunerConfig(
+          maxToolChars = 80,
+          maxToolLines = 4,
+          maxAttachmentChars = 48,
+          maxPreviewChars = 64,
+        ),
+      ),
+    )
     val assembler = PromptAssembler()
 
     val prompt = assembler.assemble(
-      PromptAssemblyInput(
-        task = promptTask(),
-        baseSystemPrompt = "Base identity.",
-        sessionContext = AgentRuntimeSessionContext(),
-        toolDefinitions = emptyList(),
-        liveConversation = emptyList(),
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "Base identity.",
+          sessionContext = AgentRuntimeSessionContext(),
+          toolDefinitions = emptyList(),
+          liveConversation = listOf(
+            RuntimeConversationMessage(RuntimeConversationRole.USER, "Inspect the prior output."),
+            RuntimeConversationMessage(RuntimeConversationRole.TOOL, "Repeated note."),
+            RuntimeConversationMessage(RuntimeConversationRole.TOOL, "Repeated note."),
+            RuntimeConversationMessage(
+              RuntimeConversationRole.TOOL,
+              "data:image/png;base64," + "A".repeat(160),
+            ),
+          ),
+        ),
+      ),
+    )
+
+    assertTrue(prompt.taskPrompt.contains("[Pruning Summary]"))
+    assertTrue(prompt.taskPrompt.contains("removed=1, rewritten=1"))
+    assertTrue(prompt.report.pruningSummaryIncluded)
+    assertEquals(1, prompt.report.prunedTranscriptMessageCount)
+    assertEquals(1, prompt.report.rewrittenTranscriptMessageCount)
+    assertEquals(1, prompt.report.attachmentLikeTranscriptRewriteCount)
+  }
+
+  @Test
+  fun assembleOmitsOptionalLayersWhenEmpty() {
+    val contextManager = ContextManager()
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "Base identity.",
+          sessionContext = AgentRuntimeSessionContext(),
+          toolDefinitions = emptyList(),
+          liveConversation = emptyList(),
+        ),
       ),
     )
 
     assertTrue(prompt.systemPrompt.contains("[Identity]"))
     assertFalse(prompt.systemPrompt.contains("[Session Policy]"))
     assertFalse(prompt.systemPrompt.contains("[Personalization]"))
+    assertFalse(prompt.taskPrompt.contains("[Compaction Summary]"))
     assertTrue(prompt.taskPrompt.contains("No prior conversation context."))
     assertEquals(0, prompt.report.sourceTranscriptMessageCount)
     assertEquals(0, prompt.report.windowedTranscriptMessageCount)
     assertEquals(0, prompt.report.transcriptMessageCount)
+    assertFalse(prompt.report.pruningSummaryIncluded)
+    assertFalse(prompt.report.compactionSummaryIncluded)
     assertEquals(0, prompt.report.injectedMemoryRecordCount)
   }
 
   @Test
   fun assembleOmitsHostOnlyTaskMetadataFromPrompt() {
+    val contextManager = ContextManager()
     val assembler = PromptAssembler()
 
     val prompt = assembler.assemble(
-      PromptAssemblyInput(
-        task = promptTask().copy(
-          metadata = mapOf(
-            "chatMode" to "AUTO",
-            "_host.pendingMessageId" to "assistant-1",
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask().copy(
+            metadata = mapOf(
+              "chatMode" to "AUTO",
+              "_host.pendingMessageId" to "assistant-1",
+            ),
           ),
+          baseSystemPrompt = "Base identity.",
+          sessionContext = AgentRuntimeSessionContext(),
+          toolDefinitions = emptyList(),
+          liveConversation = emptyList(),
         ),
-        baseSystemPrompt = "Base identity.",
-        sessionContext = AgentRuntimeSessionContext(),
-        toolDefinitions = emptyList(),
-        liveConversation = emptyList(),
       ),
     )
 
@@ -129,40 +195,78 @@ class PromptAssemblerTest {
 
   @Test
   fun assembleInjectsRetrievedMemoryAsDedicatedContextLayer() {
+    val contextManager = ContextManager()
     val assembler = PromptAssembler()
 
     val prompt = assembler.assemble(
-      PromptAssemblyInput(
-        task = promptTask(),
-        baseSystemPrompt = "Base identity.",
-        sessionContext = AgentRuntimeSessionContext(
-          recalledMemory = MemoryRecallResult(
-            memories = listOf(
-              RetrievedMemory(
-                id = "memory-user",
-                kind = MemoryKind.USER_PREFERENCE,
-                scope = MemoryScope.USER,
-                status = MemoryStatus.ACTIVE,
-                content = "Default to concise Chinese replies.",
-                lastConfirmedAtEpochMs = 10L,
-                score = 420,
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "Base identity.",
+          sessionContext = AgentRuntimeSessionContext(
+            recalledMemory = MemoryRecallResult(
+              memories = listOf(
+                RetrievedMemory(
+                  id = "memory-user",
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.USER,
+                  status = MemoryStatus.ACTIVE,
+                  content = "Default to concise Chinese replies.",
+                  lastConfirmedAtEpochMs = 10L,
+                  score = 420,
+                ),
+                RetrievedMemory(
+                  id = "memory-project",
+                  kind = MemoryKind.PROJECT_FACT,
+                  scope = MemoryScope.WORKSPACE,
+                  status = MemoryStatus.ACTIVE,
+                  content = "Project uses the Gradle wrapper from the repo root.",
+                  lastConfirmedAtEpochMs = 11L,
+                  score = 360,
+                ),
               ),
-              RetrievedMemory(
-                id = "memory-project",
-                kind = MemoryKind.PROJECT_FACT,
-                scope = MemoryScope.WORKSPACE,
-                status = MemoryStatus.ACTIVE,
-                content = "Project uses the Gradle wrapper from the repo root.",
-                lastConfirmedAtEpochMs = 11L,
-                score = 360,
+              matchedRecordCount = 3,
+              omittedRecordCount = 1,
+              trace = MemoryRecallTrace(
+                queryTerms = listOf("chinese", "gradle"),
+                selected = listOf(
+                  MemoryRecallSelectedTrace(
+                    id = "memory-user",
+                    kind = MemoryKind.USER_PREFERENCE,
+                    scope = MemoryScope.USER,
+                    score = 420,
+                    matchedTerms = listOf("chinese"),
+                    contentPreview = "Default to concise Chinese replies.",
+                  ),
+                  MemoryRecallSelectedTrace(
+                    id = "memory-project",
+                    kind = MemoryKind.PROJECT_FACT,
+                    scope = MemoryScope.WORKSPACE,
+                    score = 360,
+                    matchedTerms = listOf("gradle"),
+                    contentPreview = "Project uses the Gradle wrapper from the repo root.",
+                  ),
+                ),
+                omitted = listOf(
+                  MemoryRecallOmittedTrace(
+                    id = "memory-omitted",
+                    kind = MemoryKind.PROJECT_FACT,
+                    scope = MemoryScope.WORKSPACE,
+                    score = 280,
+                    matchedTerms = listOf("gradle"),
+                    omissionReason = MemoryRecallOmissionReason.MAX_RECORDS,
+                    contentPreview = "Project keeps legacy Gradle scripts under scripts/.",
+                  ),
+                ),
+                filteredCounts = mapOf(
+                  MemoryRecallFilterReason.SCOPE_MISMATCH to 1,
+                ),
               ),
             ),
-            matchedRecordCount = 3,
-            omittedRecordCount = 1,
           ),
+          toolDefinitions = emptyList(),
+          liveConversation = emptyList(),
         ),
-        toolDefinitions = emptyList(),
-        liveConversation = emptyList(),
       ),
     )
 
@@ -170,10 +274,17 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("Default to concise Chinese replies."))
     assertTrue(prompt.taskPrompt.contains("Project uses the Gradle wrapper from the repo root."))
     assertTrue(prompt.taskPrompt.contains("Omitted 1 additional memory record(s) due to recall budget."))
+    assertFalse(prompt.taskPrompt.contains("[Compaction Summary]"))
     assertTrue(prompt.taskPrompt.indexOf("[Retrieved Memory]") < prompt.taskPrompt.indexOf("[Tool Protocol]"))
+    assertFalse(prompt.report.pruningSummaryIncluded)
     assertEquals(3, prompt.report.matchedMemoryRecordCount)
     assertEquals(2, prompt.report.injectedMemoryRecordCount)
     assertEquals(1, prompt.report.omittedMemoryRecordCount)
+    assertFalse(prompt.report.compactionSummaryIncluded)
+    assertEquals(listOf("chinese", "gradle"), prompt.report.memoryRecallTrace.queryTerms)
+    assertEquals(listOf("memory-user", "memory-project"), prompt.report.memoryRecallTrace.selected.map { trace -> trace.id })
+    assertEquals(listOf("memory-omitted"), prompt.report.memoryRecallTrace.omitted.map { trace -> trace.id })
+    assertEquals(1, prompt.report.memoryRecallTrace.filteredCounts[MemoryRecallFilterReason.SCOPE_MISMATCH])
   }
 
   private fun promptTask(): AgentTask = AgentTask(

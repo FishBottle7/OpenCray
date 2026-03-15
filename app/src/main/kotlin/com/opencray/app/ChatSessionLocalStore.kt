@@ -126,7 +126,10 @@ internal open class ChatSessionLocalStore(
     val updatedWorkspace = replaceSession(
       workspace = workspace,
       updatedSession = updatedSession,
-      activeSessionId = updatedSession.sessionId,
+      activeSessionId = preservedActiveSessionId(
+        workspace = workspace,
+        fallbackSessionId = updatedSession.sessionId,
+      ),
       updatedAtEpochMs = now,
     )
     workspaceStore.save(updatedWorkspace)
@@ -169,7 +172,10 @@ internal open class ChatSessionLocalStore(
     val updatedWorkspace = replaceSession(
       workspace = workspace,
       updatedSession = updatedSession,
-      activeSessionId = updatedSession.sessionId,
+      activeSessionId = preservedActiveSessionId(
+        workspace = workspace,
+        fallbackSessionId = updatedSession.sessionId,
+      ),
       updatedAtEpochMs = now,
     )
     workspaceStore.save(updatedWorkspace)
@@ -195,7 +201,10 @@ internal open class ChatSessionLocalStore(
     val updatedWorkspace = replaceSession(
       workspace = workspace,
       updatedSession = updatedSession,
-      activeSessionId = updatedSession.sessionId,
+      activeSessionId = preservedActiveSessionId(
+        workspace = workspace,
+        fallbackSessionId = updatedSession.sessionId,
+      ),
       updatedAtEpochMs = now,
     )
     workspaceStore.save(updatedWorkspace)
@@ -236,7 +245,10 @@ internal open class ChatSessionLocalStore(
     val updatedWorkspace = replaceSession(
       workspace = workspace,
       updatedSession = updatedSession,
-      activeSessionId = updatedSession.sessionId,
+      activeSessionId = preservedActiveSessionId(
+        workspace = workspace,
+        fallbackSessionId = updatedSession.sessionId,
+      ),
       updatedAtEpochMs = now,
     )
     workspaceStore.save(updatedWorkspace)
@@ -334,7 +346,10 @@ internal open class ChatSessionLocalStore(
     val updatedWorkspace = replaceSession(
       workspace = workspace,
       updatedSession = updatedSession,
-      activeSessionId = updatedSession.sessionId,
+      activeSessionId = preservedActiveSessionId(
+        workspace = workspace,
+        fallbackSessionId = updatedSession.sessionId,
+      ),
       updatedAtEpochMs = now,
     )
     workspaceStore.save(updatedWorkspace)
@@ -373,7 +388,10 @@ internal open class ChatSessionLocalStore(
     val updatedWorkspace = replaceSession(
       workspace = workspace,
       updatedSession = updatedSession,
-      activeSessionId = updatedSession.sessionId,
+      activeSessionId = preservedActiveSessionId(
+        workspace = workspace,
+        fallbackSessionId = updatedSession.sessionId,
+      ),
       updatedAtEpochMs = now,
     )
     workspaceStore.save(updatedWorkspace)
@@ -448,6 +466,13 @@ internal open class ChatSessionLocalStore(
   private fun activeSessionFrom(workspace: ChatWorkspaceRecord): ChatTranscriptSessionEntry? =
     workspace.activeSessionId?.let { activeId -> workspace.sessions.firstOrNull { it.sessionId == activeId } }
       ?: workspace.sessions.maxByOrNull { it.updatedAtEpochMs }
+
+  private fun preservedActiveSessionId(
+    workspace: ChatWorkspaceRecord,
+    fallbackSessionId: String,
+  ): String = workspace.activeSessionId
+    ?.takeIf { activeId -> workspace.sessions.any { session -> session.sessionId == activeId } }
+    ?: fallbackSessionId
 
   private fun replaceSession(
     workspace: ChatWorkspaceRecord,

@@ -28,10 +28,52 @@ data class RetrievedMemory(
   val score: Int,
 )
 
+enum class MemoryRecallOmissionReason {
+  MAX_RECORDS,
+  MAX_CHARS,
+  MAX_PER_KIND,
+}
+
+enum class MemoryRecallFilterReason {
+  INVALID,
+  RESOLVED,
+  SCOPE_MISMATCH,
+  EXPIRED,
+  SOUL_PREFERENCE,
+  UNMATCHED_PROJECT_FACT,
+}
+
+data class MemoryRecallSelectedTrace(
+  val id: String,
+  val kind: MemoryKind,
+  val scope: MemoryScope,
+  val score: Int,
+  val matchedTerms: List<String> = emptyList(),
+  val contentPreview: String,
+)
+
+data class MemoryRecallOmittedTrace(
+  val id: String,
+  val kind: MemoryKind,
+  val scope: MemoryScope,
+  val score: Int,
+  val matchedTerms: List<String> = emptyList(),
+  val omissionReason: MemoryRecallOmissionReason,
+  val contentPreview: String,
+)
+
+data class MemoryRecallTrace(
+  val queryTerms: List<String> = emptyList(),
+  val selected: List<MemoryRecallSelectedTrace> = emptyList(),
+  val omitted: List<MemoryRecallOmittedTrace> = emptyList(),
+  val filteredCounts: Map<MemoryRecallFilterReason, Int> = emptyMap(),
+)
+
 data class MemoryRecallResult(
   val memories: List<RetrievedMemory> = emptyList(),
   val matchedRecordCount: Int = 0,
   val omittedRecordCount: Int = 0,
+  val trace: MemoryRecallTrace = MemoryRecallTrace(),
 )
 
 class MemoryRetriever(
@@ -42,18 +84,29 @@ class MemoryRetriever(
     records: List<MemoryRecord>,
     request: MemoryRecallRequest,
   ): MemoryRecallResult {
+    val queryTerms = extractQueryTerms(request.userInput)
     if (records.isEmpty()) {
-      return MemoryRecallResult()
+      return MemoryRecallResult(
+        trace = MemoryRecallTrace(queryTerms = queryTerms.toList()),
+      )
     }
 
-    val queryTerms = extractQueryTerms(request.userInput)
+    val filteredCounts = linkedMapOf<MemoryRecallFilterReason, Int>()
     val matched = records
       .mapNotNull { record ->
-        toRetrievedMemory(
-          record = record,
-          request = request,
-          queryTerms = queryTerms,
-        )
+        when (
+          val evaluation = evaluateRecord(
+            record = record,
+            request = request,
+            queryTerms = queryTerms,
+          )
+        ) {
+          is RecallEvaluation.Matched -> evaluation.memory
+          is RecallEvaluation.Filtered -> {
+            filteredCounts[evaluation.reason] = (filteredCounts[evaluation.reason] ?: 0) + 1
+            null
+          }
+        }
       }
       .sortedWith(
         compareByDescending<RetrievedMemory> { it.score }
@@ -61,50 +114,67 @@ class MemoryRetriever(
           .thenBy { it.id },
       )
     if (matched.isEmpty()) {
-      return MemoryRecallResult()
+      return MemoryRecallResult(
+        trace = MemoryRecallTrace(
+          queryTerms = queryTerms.toList(),
+          filteredCounts = filteredCounts.toMap(),
+        ),
+      )
     }
 
     val selected = mutableListOf<RetrievedMemory>()
+    val omitted = mutableListOf<MemoryRecallOmittedTrace>()
     val selectedByKind = linkedMapOf<MemoryKind, Int>()
     var consumedChars = 0
     matched.forEach { memory ->
-      if (selected.size >= policy.recallBudget.maxRecords) {
-        return@forEach
+      val omissionReason = when {
+        selected.size >= policy.recallBudget.maxRecords -> MemoryRecallOmissionReason.MAX_RECORDS
+        (selectedByKind[memory.kind] ?: 0) >= policy.recallBudget.maxRecordsPerKind -> MemoryRecallOmissionReason.MAX_PER_KIND
+        consumedChars + estimatedPromptChars(memory) > policy.recallBudget.maxChars -> MemoryRecallOmissionReason.MAX_CHARS
+        else -> null
       }
-      if ((selectedByKind[memory.kind] ?: 0) >= policy.recallBudget.maxRecordsPerKind) {
-        return@forEach
-      }
-      val projectedChars = consumedChars + estimatedPromptChars(memory)
-      if (projectedChars > policy.recallBudget.maxChars) {
+      if (omissionReason != null) {
+        omitted += memory.toOmittedTrace(omissionReason)
         return@forEach
       }
       selected += memory
       selectedByKind[memory.kind] = (selectedByKind[memory.kind] ?: 0) + 1
-      consumedChars = projectedChars
+      consumedChars += estimatedPromptChars(memory)
     }
 
     return MemoryRecallResult(
       memories = selected,
       matchedRecordCount = matched.size,
       omittedRecordCount = (matched.size - selected.size).coerceAtLeast(0),
+      trace = MemoryRecallTrace(
+        queryTerms = queryTerms.toList(),
+        selected = selected.map { memory -> memory.toSelectedTrace() },
+        omitted = omitted.take(MAX_OMITTED_TRACE_ENTRIES),
+        filteredCounts = filteredCounts.toMap(),
+      ),
     )
   }
 
-  private fun toRetrievedMemory(
+  private fun evaluateRecord(
     record: MemoryRecord,
     request: MemoryRecallRequest,
     queryTerms: Set<String>,
-  ): RetrievedMemory? {
-    val metadata = record.metadata() ?: return null
-    val normalizedContent = policy.normalizeCandidateContent(record.content) ?: return null
+  ): RecallEvaluation {
+    val metadata = record.parseMemoryMetadata()
+      ?: return RecallEvaluation.Filtered(MemoryRecallFilterReason.INVALID)
+    val normalizedContent = policy.normalizeCandidateContent(record.content)
+      ?: return RecallEvaluation.Filtered(MemoryRecallFilterReason.INVALID)
     if (metadata.status == MemoryStatus.RESOLVED) {
-      return null
+      return RecallEvaluation.Filtered(MemoryRecallFilterReason.RESOLVED)
     }
     if (!scopeMatches(metadata = metadata, request = request)) {
-      return null
+      return RecallEvaluation.Filtered(MemoryRecallFilterReason.SCOPE_MISMATCH)
     }
     if (isExpired(metadata = metadata, updatedAtEpochMs = record.updatedAtEpochMs)) {
-      return null
+      return RecallEvaluation.Filtered(MemoryRecallFilterReason.EXPIRED)
+    }
+    if (metadata.preferenceKey != null) {
+      return RecallEvaluation.Filtered(MemoryRecallFilterReason.SOUL_PREFERENCE)
     }
 
     val normalizedContentLowered = normalizedContent.lowercase(Locale.US)
@@ -112,27 +182,56 @@ class MemoryRetriever(
       normalizedContentLowered.contains(term.lowercase(Locale.US))
     }
     if (metadata.kind == MemoryKind.PROJECT_FACT && matchedTerms.isEmpty()) {
-      return null
+      return RecallEvaluation.Filtered(MemoryRecallFilterReason.UNMATCHED_PROJECT_FACT)
     }
 
-    return RetrievedMemory(
-      id = record.id,
-      kind = metadata.kind,
-      scope = metadata.scope,
-      status = metadata.status,
-      content = normalizedContent,
-      source = metadata.source,
-      sourceSessionId = metadata.sourceSessionId,
-      workspaceId = metadata.workspaceId,
-      lastConfirmedAtEpochMs = metadata.lastConfirmedAtEpochMs ?: record.updatedAtEpochMs,
-      matchedTerms = matchedTerms.sorted(),
-      score = score(
-        metadata = metadata,
-        updatedAtEpochMs = record.updatedAtEpochMs,
-        matchedTerms = matchedTerms,
-        normalizedContent = normalizedContent,
+    return RecallEvaluation.Matched(
+      RetrievedMemory(
+        id = record.id,
+        kind = metadata.kind,
+        scope = metadata.scope,
+        status = metadata.status,
+        content = normalizedContent,
+        source = metadata.source,
+        sourceSessionId = metadata.sourceSessionId,
+        workspaceId = metadata.workspaceId,
+        lastConfirmedAtEpochMs = metadata.lastConfirmedAtEpochMs ?: record.updatedAtEpochMs,
+        matchedTerms = matchedTerms.sorted(),
+        score = score(
+          metadata = metadata,
+          updatedAtEpochMs = record.updatedAtEpochMs,
+          matchedTerms = matchedTerms,
+          normalizedContent = normalizedContent,
+        ),
       ),
     )
+  }
+
+  private fun RetrievedMemory.toSelectedTrace(): MemoryRecallSelectedTrace = MemoryRecallSelectedTrace(
+    id = id,
+    kind = kind,
+    scope = scope,
+    score = score,
+    matchedTerms = matchedTerms,
+    contentPreview = content.take(MAX_TRACE_CONTENT_CHARS),
+  )
+
+  private fun RetrievedMemory.toOmittedTrace(
+    omissionReason: MemoryRecallOmissionReason,
+  ): MemoryRecallOmittedTrace = MemoryRecallOmittedTrace(
+    id = id,
+    kind = kind,
+    scope = scope,
+    score = score,
+    matchedTerms = matchedTerms,
+    omissionReason = omissionReason,
+    contentPreview = content.take(MAX_TRACE_CONTENT_CHARS),
+  )
+
+  private sealed interface RecallEvaluation {
+    data class Matched(val memory: RetrievedMemory) : RecallEvaluation
+
+    data class Filtered(val reason: MemoryRecallFilterReason) : RecallEvaluation
   }
 
   private fun score(
@@ -215,90 +314,14 @@ class MemoryRetriever(
       .toCollection(linkedSetOf())
   }
 
-  private fun MemoryRecord.metadata(): ParsedMemoryMetadata? {
-    val kind = parseEnumValue(
-      extensionValue = extensions[MemoryRecordExtensionKeys.KIND],
-      tags = tags,
-      tagPrefix = "kind:",
-      parser = ::parseMemoryKind,
-    ) ?: return null
-    val scope = parseEnumValue(
-      extensionValue = extensions[MemoryRecordExtensionKeys.SCOPE],
-      tags = tags,
-      tagPrefix = "scope:",
-      parser = ::parseMemoryScope,
-    ) ?: return null
-    val status = parseEnumValue(
-      extensionValue = extensions[MemoryRecordExtensionKeys.STATUS],
-      tags = tags,
-      tagPrefix = "status:",
-      parser = ::parseMemoryStatus,
-    ) ?: return null
-    return ParsedMemoryMetadata(
-      kind = kind,
-      scope = scope,
-      status = status,
-      source = parseMemoryEvidenceSource(extensions[MemoryRecordExtensionKeys.SOURCE]),
-      sourceSessionId = extensions[MemoryRecordExtensionKeys.SOURCE_SESSION_ID]?.takeIf(String::isNotBlank),
-      workspaceId = extensions[MemoryRecordExtensionKeys.WORKSPACE_ID]?.takeIf(String::isNotBlank),
-      ttlMs = extensions[MemoryRecordExtensionKeys.TTL_MS]?.toLongOrNull(),
-      lastConfirmedAtEpochMs = extensions[MemoryRecordExtensionKeys.LAST_CONFIRMED_AT_EPOCH_MS]?.toLongOrNull(),
-    )
-  }
-
-  private fun <T> parseEnumValue(
-    extensionValue: String?,
-    tags: List<String>,
-    tagPrefix: String,
-    parser: (String) -> T?,
-  ): T? {
-    parser(extensionValue.orEmpty())?.let { return it }
-    return tags.firstOrNull { tag ->
-      tag.startsWith(tagPrefix)
-    }?.substringAfter(tagPrefix)?.let(parser)
-  }
-
-  private fun parseMemoryKind(raw: String): MemoryKind? =
-    parseEnum(raw) { token -> MemoryKind.valueOf(token) }
-
-  private fun parseMemoryScope(raw: String): MemoryScope? =
-    parseEnum(raw) { token -> MemoryScope.valueOf(token) }
-
-  private fun parseMemoryStatus(raw: String): MemoryStatus? =
-    parseEnum(raw) { token -> MemoryStatus.valueOf(token) }
-
-  private fun parseMemoryEvidenceSource(raw: String?): MemoryEvidenceSource? =
-    parseEnum(raw.orEmpty()) { token -> MemoryEvidenceSource.valueOf(token) }
-
-  private fun <T> parseEnum(
-    raw: String,
-    parser: (String) -> T,
-  ): T? {
-    val normalized = raw
-      .trim()
-      .replace('-', '_')
-      .replace(' ', '_')
-      .uppercase(Locale.US)
-      .takeIf(String::isNotBlank)
-      ?: return null
-    return runCatching { parser(normalized) }.getOrNull()
-  }
-
-  private data class ParsedMemoryMetadata(
-    val kind: MemoryKind,
-    val scope: MemoryScope,
-    val status: MemoryStatus,
-    val source: MemoryEvidenceSource?,
-    val sourceSessionId: String?,
-    val workspaceId: String?,
-    val ttlMs: Long?,
-    val lastConfirmedAtEpochMs: Long?,
-  )
-
   private companion object {
     const val DAY_MS: Long = 24L * 60L * 60L * 1000L
+    const val MAX_TRACE_CONTENT_CHARS: Int = 96
+    const val MAX_OMITTED_TRACE_ENTRIES: Int = 8
     val QUERY_TERM_REGEX: Regex = Regex("[\\p{L}\\p{N}_./:-]{2,}")
     val ENGLISH_STOP_TERMS: Set<String> = setOf(
+      "do",
+      "not",
       "the",
       "this",
       "that",

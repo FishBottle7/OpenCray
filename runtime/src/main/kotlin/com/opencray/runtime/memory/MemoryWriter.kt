@@ -23,6 +23,15 @@ class MemoryWriter(
     candidates.forEach { candidate ->
       val recordId = stableRecordId(candidate)
       val now = clock()
+      resolveSupersededPreferenceRecords(
+        existingRecords = existingById.values.toList(),
+        candidate = candidate,
+        incomingRecordId = recordId,
+        nowEpochMs = now,
+      ).forEach { supersededRecord ->
+        store.upsert(supersededRecord)
+        existingById[supersededRecord.id] = supersededRecord
+      }
       val existing = existingById[recordId]
       val record = MemoryRecord(
         id = recordId,
@@ -85,6 +94,12 @@ class MemoryWriter(
       existing?.extensions?.get(MemoryRecordExtensionKeys.FIRST_CONFIRMED_AT_EPOCH_MS) ?: nowEpochMs.toString(),
     )
     put(MemoryRecordExtensionKeys.LAST_CONFIRMED_AT_EPOCH_MS, nowEpochMs.toString())
+    candidate.extensions.forEach { (key, value) ->
+      if (key.isBlank() || value.isBlank()) {
+        return@forEach
+      }
+      put(key, value)
+    }
   }
 
   private fun stableRecordId(candidate: MemoryCandidate): String {
@@ -93,9 +108,82 @@ class MemoryWriter(
       MemoryScope.WORKSPACE -> "workspace:${candidate.workspaceId?.takeIf(String::isNotBlank) ?: DEFAULT_WORKSPACE_ID}"
       MemoryScope.SESSION -> "session:${candidate.sourceSessionId}"
     }
-    val canonical = candidate.content.lowercase(Locale.US)
+    val canonical = preferenceIdentity(candidate)
+      ?: candidate.content.lowercase(Locale.US)
     val digestSource = "${candidate.kind.name.lowercase(Locale.US)}|$scopeIdentity|$canonical"
     return "mem-${sha256Hex(digestSource).take(24)}"
+  }
+
+  private fun preferenceIdentity(candidate: MemoryCandidate): String? {
+    val preferenceKey = normalizeMemoryPreferenceKeyOrNull(
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY],
+    ) ?: return null
+    val preferenceValue = normalizeMemoryPreferenceValueOrNull(
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE],
+    ) ?: return null
+    return "pref|$preferenceKey|${preferenceValue.lowercase(Locale.US)}"
+  }
+
+  private fun resolveSupersededPreferenceRecords(
+    existingRecords: List<MemoryRecord>,
+    candidate: MemoryCandidate,
+    incomingRecordId: String,
+    nowEpochMs: Long,
+  ): List<MemoryRecord> {
+    val preferenceKey = normalizeMemoryPreferenceKeyOrNull(
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY],
+    ) ?: return emptyList()
+    val preferenceValue = normalizeMemoryPreferenceValueOrNull(
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE],
+    ) ?: return emptyList()
+    return existingRecords
+      .filter { record -> record.id != incomingRecordId }
+      .mapNotNull { record ->
+        val metadata = record.parseMemoryMetadata() ?: return@mapNotNull null
+        if (metadata.status != MemoryStatus.ACTIVE) {
+          return@mapNotNull null
+        }
+        if (metadata.preferenceKey != preferenceKey) {
+          return@mapNotNull null
+        }
+        if (!scopeIdentityMatches(metadata = metadata, candidate = candidate)) {
+          return@mapNotNull null
+        }
+        if (metadata.preferenceValue == preferenceValue) {
+          return@mapNotNull null
+        }
+        record.copy(
+          tags = record.tags
+            .filterNot { tag -> tag.startsWith("status:") }
+            .plus("status:${MemoryStatus.RESOLVED.name.lowercase(Locale.US)}")
+            .distinct()
+            .sorted(),
+          recordVersion = record.recordVersion + 1L,
+          updatedAtEpochMs = maxOf(record.createdAtEpochMs, nowEpochMs),
+          extensions = record.extensions + mapOf(
+            MemoryRecordExtensionKeys.STATUS to MemoryStatus.RESOLVED.name.lowercase(Locale.US),
+            MemoryRecordExtensionKeys.RESOLVED_AT_EPOCH_MS to nowEpochMs.toString(),
+            MemoryRecordExtensionKeys.RESOLUTION_REASON to RESOLUTION_REASON_SUPERSEDED,
+            MemoryRecordExtensionKeys.SUPERSEDED_BY to incomingRecordId,
+            MemoryRecordExtensionKeys.LAST_CONFIRMED_AT_EPOCH_MS to nowEpochMs.toString(),
+          ),
+        )
+      }
+  }
+
+  private fun scopeIdentityMatches(
+    metadata: ParsedMemoryMetadata,
+    candidate: MemoryCandidate,
+  ): Boolean = when (candidate.scope) {
+    MemoryScope.USER -> metadata.scope == MemoryScope.USER
+    MemoryScope.SESSION -> {
+      metadata.scope == MemoryScope.SESSION &&
+        metadata.sourceSessionId == candidate.sourceSessionId
+    }
+    MemoryScope.WORKSPACE -> {
+      metadata.scope == MemoryScope.WORKSPACE &&
+        metadata.workspaceId == candidate.workspaceId
+    }
   }
 
   private fun sha256Hex(raw: String): String {
@@ -105,5 +193,6 @@ class MemoryWriter(
 
   private companion object {
     const val DEFAULT_WORKSPACE_ID: String = "default-workspace"
+    const val RESOLUTION_REASON_SUPERSEDED: String = "superseded"
   }
 }

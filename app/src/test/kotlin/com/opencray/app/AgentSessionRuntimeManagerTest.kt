@@ -17,6 +17,7 @@ import java.util.concurrent.AbstractExecutorService
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -223,6 +224,76 @@ class AgentSessionRuntimeManagerTest {
     assertEquals(submission.runId, handle.waitForRun(submission.runId, 0L)?.runId)
   }
 
+  @Test
+  fun completedRunSnapshotRetainsResultMetadataForHostTraceProjection() {
+    val executor = RecordingExecutorService()
+    val runtimeFactory = RecordingRuntimeFactory(
+      executionResultFactory = { task ->
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.SUCCESS,
+          stdout = "done",
+          startedAtEpochMs = 1_000L,
+          finishedAtEpochMs = 1_001L,
+          metadata = task.metadata + mapOf(
+            "responseFormat" to "json_final",
+            "contextMatchedMemoryCount" to "2",
+            "contextMemorySelectedSummary" to "memory-user@420[chinese]",
+          ),
+        )
+      },
+    )
+    val manager = manager(runtimeFactory = runtimeFactory, executor = executor)
+    val handle = manager.forSession("session-metadata")
+
+    handle.submitPrompt(
+      userText = "trace metadata",
+      pendingMessageId = "pending-trace",
+      visibleThroughMessageId = "pending-trace",
+      policyDecision = allowDecision(),
+    )
+    handle.ensureProcessing()
+    executor.runNext()
+
+    val snapshot = handle.listRuns().single()
+
+    assertEquals("json_final", snapshot.responseFormat)
+    assertEquals("2", snapshot.resultMetadata["contextMatchedMemoryCount"])
+    assertEquals("memory-user@420[chinese]", snapshot.resultMetadata["contextMemorySelectedSummary"])
+  }
+
+  @Test
+  fun runSnapshotTreatsExecutionResultAsTerminalBeforeQueueLifecycleSettles() {
+    val snapshot = AgentRunSnapshot(
+      sessionId = "session-terminal-race",
+      runId = "run-terminal-race",
+      taskId = "task-terminal-race",
+      acceptedAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_001L,
+      lifecycleState = null,
+      taskState = null,
+      executionStatus = ExecutionStatus.SUCCESS,
+    )
+
+    assertTrue(snapshot.isTerminal)
+  }
+
+  @Test
+  fun runSnapshotTreatsSuspendedLifecycleAsNonTerminal() {
+    val snapshot = AgentRunSnapshot(
+      sessionId = "session-suspended",
+      runId = "run-suspended",
+      taskId = "task-suspended",
+      acceptedAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_001L,
+      lifecycleState = QueueTaskLifecycleState.SUSPENDED,
+      taskState = null,
+      executionStatus = ExecutionStatus.DENIED,
+    )
+
+    assertTrue(!snapshot.isTerminal)
+  }
+
   private fun manager(
     runtimeFactory: AgentSessionTaskRuntimeFactory,
     executor: RecordingExecutorService,
@@ -240,6 +311,15 @@ class AgentSessionRuntimeManagerTest {
 
   private class RecordingRuntimeFactory(
     private val onExecute: ((AgentTask, OpenCrayAgentRuntimeEventSink) -> Unit)? = null,
+    private val executionResultFactory: (AgentTask) -> ExecutionResult = { task ->
+      ExecutionResult(
+        taskId = task.id,
+        status = ExecutionStatus.SUCCESS,
+        stdout = "ok:${task.input}",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+      )
+    },
   ) : AgentSessionTaskRuntimeFactory {
     val executedInputs = mutableListOf<String>()
 
@@ -249,13 +329,7 @@ class AgentSessionRuntimeManagerTest {
     ): SessionTaskRuntime = SessionTaskRuntime { task: AgentTask, _: RuntimeExecutionHooks ->
       onExecute?.invoke(task, eventSink)
       executedInputs += task.input
-      ExecutionResult(
-        taskId = task.id,
-        status = ExecutionStatus.SUCCESS,
-        stdout = "ok:${task.input}",
-        startedAtEpochMs = 1_000L,
-        finishedAtEpochMs = 1_001L,
-      )
+      executionResultFactory(task)
     }
   }
 

@@ -4,12 +4,22 @@ import java.util.Locale
 
 class MemoryCandidateExtractor(
   private val policy: MemoryPolicy = MemoryPolicy(),
+  private val soulIntentInterpreter: SoulMemoryIntentInterpreter = NoOpSoulMemoryIntentInterpreter,
 ) {
   fun extract(evidence: MemoryTurnEvidence): List<MemoryCandidate> {
     val candidates = linkedMapOf<String, MemoryCandidate>()
+    val soulIntentOutcome = extractSoulPreferenceCandidates(evidence)
+
+    soulIntentOutcome.candidates.forEach { candidate ->
+      candidates.putIfAbsent(candidate.identityKey(), candidate)
+    }
 
     splitStatements(evidence.userInput).forEach { statement ->
-      val candidate = extractFromUserStatement(statement = statement, evidence = evidence) ?: return@forEach
+      val candidate = extractFromUserStatement(
+        statement = statement,
+        evidence = evidence,
+        allowHeuristicSoulFallback = soulIntentOutcome.allowHeuristicSoulFallback,
+      ) ?: return@forEach
       candidates.putIfAbsent(candidate.identityKey(), candidate)
     }
 
@@ -35,8 +45,14 @@ class MemoryCandidateExtractor(
   private fun extractFromUserStatement(
     statement: String,
     evidence: MemoryTurnEvidence,
+    allowHeuristicSoulFallback: Boolean,
   ): MemoryCandidate? {
     extractDurableInstruction(statement = statement, evidence = evidence)?.let { return it }
+    if (allowHeuristicSoulFallback) {
+      extractAgentDisplayNamePreference(statement = statement, evidence = evidence)?.let { return it }
+      extractAgentStylePreference(statement = statement, evidence = evidence)?.let { return it }
+      extractAgentVerbosityPreference(statement = statement, evidence = evidence)?.let { return it }
+    }
     extractProjectFact(
       statement = statement,
       source = MemoryEvidenceSource.USER_INPUT,
@@ -67,6 +83,75 @@ class MemoryCandidateExtractor(
       content = content,
       source = MemoryEvidenceSource.USER_INPUT,
       evidence = evidence,
+    )
+  }
+
+  private fun extractAgentDisplayNamePreference(
+    statement: String,
+    evidence: MemoryTurnEvidence,
+  ): MemoryCandidate? {
+    val normalized = policy.normalizeCandidateContent(statement) ?: return null
+    val displayName = extractDisplayName(normalized) ?: return null
+    val scope = resolvePreferenceScope(
+      normalized = normalized,
+      defaultScope = MemoryScope.USER,
+    )
+    return createCandidate(
+      kind = MemoryKind.USER_PREFERENCE,
+      scope = scope,
+      content = "Agent display name is $displayName",
+      source = MemoryEvidenceSource.USER_INPUT,
+      evidence = evidence,
+      extensions = displayNamePreferenceExtensions(
+        displayName = displayName,
+        scope = scope,
+      ),
+    )
+  }
+
+  private fun extractAgentStylePreference(
+    statement: String,
+    evidence: MemoryTurnEvidence,
+  ): MemoryCandidate? {
+    val normalized = policy.normalizeCandidateContent(statement) ?: return null
+    val styleProfile = resolveStyleProfile(normalized) ?: return null
+    val scope = resolvePreferenceScope(
+      normalized = normalized,
+      defaultScope = MemoryScope.SESSION,
+    )
+    return createCandidate(
+      kind = MemoryKind.USER_PREFERENCE,
+      scope = scope,
+      content = "Agent style profile should be $styleProfile",
+      source = MemoryEvidenceSource.USER_INPUT,
+      evidence = evidence,
+      extensions = styleProfilePreferenceExtensions(
+        styleProfile = styleProfile,
+        scope = scope,
+      ),
+    )
+  }
+
+  private fun extractAgentVerbosityPreference(
+    statement: String,
+    evidence: MemoryTurnEvidence,
+  ): MemoryCandidate? {
+    val normalized = policy.normalizeCandidateContent(statement) ?: return null
+    val verbosity = resolveVerbosityProfile(normalized) ?: return null
+    val scope = resolvePreferenceScope(
+      normalized = normalized,
+      defaultScope = MemoryScope.SESSION,
+    )
+    return createCandidate(
+      kind = MemoryKind.USER_PREFERENCE,
+      scope = scope,
+      content = "Agent verbosity should be $verbosity",
+      source = MemoryEvidenceSource.USER_INPUT,
+      evidence = evidence,
+      extensions = verbosityPreferenceExtensions(
+        verbosity = verbosity,
+        scope = scope,
+      ),
     )
   }
 
@@ -177,18 +262,23 @@ class MemoryCandidateExtractor(
   private fun createCandidate(
     kind: MemoryKind,
     content: String,
+    scope: MemoryScope = policy.resolveScope(kind = kind, content = content),
+    status: MemoryStatus = policy.defaultStatusFor(kind),
     source: MemoryEvidenceSource,
     evidence: MemoryTurnEvidence,
+    ttlMs: Long? = policy.ttlMsFor(kind),
+    extensions: Map<String, String> = emptyMap(),
   ): MemoryCandidate = MemoryCandidate(
     kind = kind,
-    scope = policy.resolveScope(kind = kind, content = content),
-    status = policy.defaultStatusFor(kind),
+    scope = scope,
+    status = status,
     content = content,
     source = source,
     sourceSessionId = evidence.sessionId,
     sourceTaskId = evidence.taskId,
     workspaceId = evidence.workspaceId,
-    ttlMs = policy.ttlMsFor(kind),
+    ttlMs = ttlMs,
+    extensions = extensions,
   )
 
   private fun MemoryCandidate.identityKey(): String =
@@ -202,7 +292,190 @@ class MemoryCandidateExtractor(
     .split(Regex("[\\r\\n]+|(?<=[.!?;。！？；])"))
     .mapNotNull(policy::normalizeCandidateContent)
 
+  private fun extractSoulPreferenceCandidates(
+    evidence: MemoryTurnEvidence,
+  ): SoulPreferenceCandidateExtraction {
+    val request = SoulMemoryIntentRequest(
+      sessionId = evidence.sessionId,
+      workspaceId = evidence.workspaceId,
+      userInput = evidence.userInput,
+    )
+    return when (val interpretation = soulIntentInterpreter.interpret(request)) {
+      is SoulMemoryIntentInterpretation.Success -> SoulPreferenceCandidateExtraction(
+        candidates = interpretation.intents.mapNotNull { intent ->
+          candidateFromSoulIntent(
+            intent = intent,
+            evidence = evidence,
+          )
+        },
+        allowHeuristicSoulFallback = false,
+      )
+
+      is SoulMemoryIntentInterpretation.Unavailable -> SoulPreferenceCandidateExtraction(
+        allowHeuristicSoulFallback = interpretation.allowHeuristicFallback,
+      )
+    }
+  }
+
+  private fun candidateFromSoulIntent(
+    intent: SoulMemoryIntent,
+    evidence: MemoryTurnEvidence,
+  ): MemoryCandidate? {
+    val preferenceKey = normalizeMemoryPreferenceKeyOrNull(intent.preferenceKey)
+      ?.takeIf { key -> key in supportedSoulPreferenceKeys() }
+      ?: return null
+    val preferenceValue = normalizeMemoryPreferenceValueOrNull(intent.preferenceValue) ?: return null
+    val extensions = buildSoulPreferenceExtensions(
+      preferenceKey = preferenceKey,
+      preferenceValue = preferenceValue,
+      scope = intent.scope,
+      soulExtensions = intent.soulExtensions,
+    )
+    if (extensions.isEmpty()) {
+      return null
+    }
+    val content = when (preferenceKey) {
+      MemoryPreferenceKeys.AGENT_DISPLAY_NAME -> "Agent display name is $preferenceValue"
+      MemoryPreferenceKeys.AGENT_STYLE_PROFILE -> "Agent style profile should be $preferenceValue"
+      MemoryPreferenceKeys.AGENT_VERBOSITY -> "Agent verbosity should be $preferenceValue"
+      else -> return null
+    }
+    return createCandidate(
+      kind = MemoryKind.USER_PREFERENCE,
+      scope = intent.scope,
+      content = content,
+      source = MemoryEvidenceSource.USER_INPUT,
+      evidence = evidence,
+      extensions = extensions,
+    )
+  }
+
   private companion object {
+    val DISPLAY_NAME_PATTERNS: List<Regex> = listOf(
+      Regex("(?i)^(?:from now on\\s*,?\\s*)?(?:please\\s+)?(?:call yourself|your name is)\\s+(.+)$"),
+      Regex("^(?:以后|之后|从现在开始|这次|这一轮|暂时|先)?(?:请)?(?:你叫|你的名字是|以后叫你|之后叫你)\\s*(.+)$"),
+    )
+
+    val LONG_TERM_SCOPE_MARKERS: List<String> = listOf(
+      "from now on",
+      "going forward",
+      "default",
+      "always",
+      "以后",
+      "之后",
+      "默认",
+      "今后",
+      "以后都",
+      "从现在开始",
+    )
+
+    val SESSION_SCOPE_MARKERS: List<String> = listOf(
+      "for now",
+      "this session",
+      "this chat",
+      "for this chat",
+      "this time",
+      "暂时",
+      "先",
+      "这次",
+      "这一轮",
+      "这回",
+    )
+
+    val WARM_STYLE_MARKERS: List<String> = listOf(
+      "warm",
+      "warmer",
+      "gentle",
+      "gentler",
+      "friendly",
+      "friendlier",
+      "soft",
+      "softer",
+      "less cold",
+      "not so cold",
+      "温柔",
+      "温暖",
+      "暖一点",
+      "柔和",
+      "别太冷",
+      "别这么冷",
+      "别冷冰冰",
+    )
+
+    val SERIOUS_STYLE_MARKERS: List<String> = listOf(
+      "serious",
+      "formal",
+      "professional",
+      "严肃",
+      "正式",
+      "严谨",
+      "专业",
+    )
+
+    val STYLE_TARGET_MARKERS: List<String> = listOf(
+      "be ",
+      "sound ",
+      "talk ",
+      "speak ",
+      "reply ",
+      "tone",
+      "voice",
+      "说话",
+      "语气",
+      "风格",
+      "一点",
+      "一些",
+    )
+
+    val TERSE_VERBOSITY_MARKERS: List<String> = listOf(
+      "brief",
+      "briefer",
+      "concise",
+      "more concise",
+      "shorter",
+      "keep it short",
+      "keep it brief",
+      "terse",
+      "less verbose",
+      "简洁",
+      "简短",
+      "精炼",
+      "简明",
+      "短一点",
+      "少说一点",
+      "别太长",
+      "言简意赅",
+    )
+
+    val EXPANSIVE_VERBOSITY_MARKERS: List<String> = listOf(
+      "detailed",
+      "more detailed",
+      "detail",
+      "elaborate",
+      "more verbose",
+      "go deeper",
+      "详细",
+      "更详细",
+      "展开",
+      "多讲一点",
+      "说细一点",
+      "讲细一点",
+      "详细一点",
+      "多一点细节",
+    )
+
+    val VERBOSITY_TARGET_MARKERS: List<String> = listOf(
+      "reply",
+      "respond",
+      "answer",
+      "explain",
+      "回答",
+      "回复",
+      "解释",
+      "说明",
+      "说话",
+    )
+
     val USER_PREFERENCE_PREFIXES: List<String> = listOf(
       "default to ",
       "prefer ",
@@ -273,5 +546,89 @@ class MemoryCandidateExtractor(
       "下一步我会",
       "我会",
     )
+
+    const val MAX_DISPLAY_NAME_CHARS: Int = 32
   }
+
+  private fun extractDisplayName(normalized: String): String? {
+    val match = DISPLAY_NAME_PATTERNS.firstNotNullOfOrNull { pattern ->
+      pattern.matchEntire(normalized)?.groupValues?.getOrNull(1)
+    } ?: return null
+    return normalizeMemoryPreferenceValueOrNull(
+      match.removePrefix("叫你").trim(),
+    )?.takeIf { value ->
+      value.length <= MAX_DISPLAY_NAME_CHARS
+    }
+  }
+
+  private fun resolveStyleProfile(normalized: String): String? {
+    if (!looksLikeStylePreference(normalized)) {
+      return null
+    }
+    val lowered = normalized.lowercase(Locale.US)
+    return when {
+      WARM_STYLE_MARKERS.any { marker -> lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker) } -> "warm"
+      SERIOUS_STYLE_MARKERS.any { marker -> lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker) } -> "serious"
+      else -> null
+    }
+  }
+
+  private fun looksLikeStylePreference(normalized: String): Boolean {
+    val lowered = normalized.lowercase(Locale.US)
+    return STYLE_TARGET_MARKERS.any { marker ->
+      lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker)
+    }
+  }
+
+  private fun resolveVerbosityProfile(normalized: String): String? {
+    if (!looksLikeVerbosityPreference(normalized)) {
+      return null
+    }
+    val lowered = normalized.lowercase(Locale.US)
+    return when {
+      TERSE_VERBOSITY_MARKERS.any { marker -> lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker) } ->
+        "terse"
+
+      EXPANSIVE_VERBOSITY_MARKERS.any { marker ->
+        lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker)
+      } -> "expansive"
+
+      else -> null
+    }
+  }
+
+  private fun looksLikeVerbosityPreference(normalized: String): Boolean {
+    val lowered = normalized.lowercase(Locale.US)
+    val hasTargetMarker = VERBOSITY_TARGET_MARKERS.any { marker ->
+      lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker)
+    }
+    if (!hasTargetMarker) {
+      return false
+    }
+    return TERSE_VERBOSITY_MARKERS.any { marker ->
+      lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker)
+    } || EXPANSIVE_VERBOSITY_MARKERS.any { marker ->
+      lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker)
+    }
+  }
+
+  private fun resolvePreferenceScope(
+    normalized: String,
+    defaultScope: MemoryScope,
+  ): MemoryScope {
+    val lowered = normalized.lowercase(Locale.US)
+    if (SESSION_SCOPE_MARKERS.any { marker -> lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker) }) {
+      return MemoryScope.SESSION
+    }
+    if (LONG_TERM_SCOPE_MARKERS.any { marker -> lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker) }) {
+      return MemoryScope.USER
+    }
+    return defaultScope
+  }
+
+  private data class SoulPreferenceCandidateExtraction(
+    val candidates: List<MemoryCandidate> = emptyList(),
+    val allowHeuristicSoulFallback: Boolean,
+  )
+
 }

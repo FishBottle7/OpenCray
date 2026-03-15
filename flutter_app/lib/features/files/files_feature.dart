@@ -1,27 +1,45 @@
+import 'dart:async';
+import 'dart:ui';
+
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/bridge/opencray_host_bridge.dart';
 import '../../core/copy/opencray_ui_copy.dart';
+import '../../core/models/opencray_file_text_preview.dart';
 import '../../core/models/opencray_files_snapshot.dart';
+
+class FilesFeatureController {
+  bool Function()? _backPressHandler;
+
+  bool consumeBackPress() => _backPressHandler?.call() ?? false;
+}
 
 class FilesFeatureScreen extends StatefulWidget {
   const FilesFeatureScreen({
     super.key,
     required this.bridge,
     required this.copy,
+    this.isTabActive = true,
+    this.controller,
   });
 
   final OpenCrayHostBridge bridge;
   final OpenCrayUiCopy copy;
+  final bool isTabActive;
+  final FilesFeatureController? controller;
 
-  static const _shellBackground = Color(0xFFF5F5F7);
-  static const _surface = Colors.white;
-  static const _surfaceMuted = Color(0xFFF1F2F6);
-  static const _textPrimary = Color(0xFF111111);
-  static const _textSecondary = Color(0xFF6E6E73);
-  static const _textTertiary = Color(0xFF8E8E93);
-  static const _accent = Color(0xFF007AFF);
-  static const _divider = Color(0xFFE5E5EA);
+  static const Color shellBackground = Color(0xFFF5F5F7);
+  static const Color surface = Colors.white;
+  static const Color surfaceMuted = Color(0xFFF1F2F6);
+  static const Color surfacePressed = Color(0xFFE9F1FF);
+  static const Color textPrimary = Color(0xFF111111);
+  static const Color textSecondary = Color(0xFF6E6E73);
+  static const Color textTertiary = Color(0xFF8E8E93);
+  static const Color accent = Color(0xFF007AFF);
+  static const Color danger = Color(0xFFFF3B30);
+  static const Color divider = Color(0xFFE5E5EA);
 
   @override
   State<FilesFeatureScreen> createState() => _FilesFeatureScreenState();
@@ -29,75 +47,188 @@ class FilesFeatureScreen extends StatefulWidget {
 
 class _FilesFeatureScreenState extends State<FilesFeatureScreen> {
   late final TextEditingController _searchController = TextEditingController()
-    ..addListener(_onQueryChanged);
+    ..addListener(_handleQueryChanged);
+  late final ScrollController _scrollController = ScrollController()
+    ..addListener(_handleScroll);
+  final GlobalKey _locationActionRowKey = GlobalKey();
 
   OpenCrayFilesSnapshot? _snapshot;
+  String _currentDirectoryPath = '';
   String _query = '';
   String? _errorMessage;
   bool _isLoading = true;
-  final Set<String> _expandedPaths = <String>{};
+  bool _isMutating = false;
+  bool _isSelectionMode = false;
+  bool _showStickyBrowseBar = false;
+  Set<String> _selectedPaths = <String>{};
+  _PendingTransfer? _pendingTransfer;
+
+  bool get _hasPendingTransfer => _pendingTransfer != null;
+  bool get _handlesBackPress => _isSelectionMode || _hasPendingTransfer;
+  bool get _showsSelectionToolbar => _isSelectionMode || _hasPendingTransfer;
 
   @override
   void initState() {
     super.initState();
-    _loadSnapshot();
+    widget.controller?._backPressHandler = _consumeBackPress;
+    unawaited(_loadSnapshot());
+  }
+
+  @override
+  void didUpdateWidget(covariant FilesFeatureScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller?._backPressHandler = null;
+      widget.controller?._backPressHandler = _consumeBackPress;
+    }
+    if (oldWidget.isTabActive &&
+        !widget.isTabActive &&
+        (_isSelectionMode || _hasPendingTransfer)) {
+      setState(() {
+        _isSelectionMode = false;
+        _selectedPaths = <String>{};
+        _pendingTransfer = null;
+      });
+    }
   }
 
   @override
   void dispose() {
+    widget.controller?._backPressHandler = null;
     _searchController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    _scheduleStickyBarSync();
     final snapshot = _snapshot;
-    final visibleNodes = snapshot == null
+    final currentEntries = snapshot == null
         ? const <OpenCrayFileTreeNodeSnapshot>[]
-        : _visibleNodes(snapshot.children);
+        : _visibleEntries(snapshot);
 
-    return ColoredBox(
-      color: FilesFeatureScreen._shellBackground,
-      child: SafeArea(
-        bottom: false,
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+    return PopScope<void>(
+      canPop: !_handlesBackPress,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) {
+          return;
+        }
+        _consumeBackPress();
+      },
+      child: ColoredBox(
+        color: FilesFeatureScreen.shellBackground,
+        child: SafeArea(
+          bottom: false,
+          child: Stack(
+            fit: StackFit.expand,
             children: [
-              Text(
-                widget.copy.filesTitle,
-                style: const TextStyle(
-                  fontSize: 30,
-                  height: 1.05,
-                  fontWeight: FontWeight.w600,
-                  color: FilesFeatureScreen._textPrimary,
+              AbsorbPointer(
+                absorbing: _isMutating,
+                child: SingleChildScrollView(
+                  key: const ValueKey<String>('files-scroll-view'),
+                  controller: _scrollController,
+                  padding: EdgeInsets.fromLTRB(
+                    20,
+                    8,
+                    20,
+                    _showsSelectionToolbar ? 118 : 28,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _TitleRow(
+                        copy: widget.copy,
+                        isSelectionMode: _isSelectionMode,
+                        selectedCount: _selectedPaths.length,
+                        onDone: _isSelectionMode ? _exitSelectionMode : null,
+                      ),
+                      const SizedBox(height: 16),
+                      _SearchBar(
+                        controller: _searchController,
+                        hint: widget.copy.filesSearchHint,
+                      ),
+                      const SizedBox(height: 12),
+                      _LocationCard(
+                        copy: widget.copy,
+                        snapshot: snapshot,
+                        directoryName: _currentDirectoryName(snapshot),
+                        absolutePath: _currentAbsolutePath(snapshot),
+                        visibleItemCount: currentEntries.length,
+                        isLoading: _isLoading,
+                        isMutating: _isMutating,
+                        actionRowKey: _locationActionRowKey,
+                        breadcrumbs: _visibleBreadcrumbs(),
+                        breadcrumbsEnabled: !_isSelectionMode,
+                        onRefresh: _loadSnapshot,
+                        onCreateFolder: _handleCreateFolder,
+                        onBreadcrumbTap: _handleBreadcrumbTap,
+                      ),
+                      const SizedBox(height: 12),
+                      _DirectoryCard(
+                        copy: widget.copy,
+                        query: _query,
+                        snapshot: snapshot,
+                        entries: currentEntries,
+                        isLoading: _isLoading,
+                        errorMessage: _errorMessage,
+                        isSelectionMode: _isSelectionMode,
+                        selectedPaths: _selectedPaths,
+                        pendingTransfer: _pendingTransfer,
+                        onEntryTap: _handleEntryTap,
+                        onEntryLongPress: _handleEntryLongPress,
+                      ),
+                    ],
+                  ),
                 ),
               ),
-              const SizedBox(height: 16),
-              _SearchBar(
-                controller: _searchController,
-                hint: widget.copy.filesSearchHint,
-              ),
-              const SizedBox(height: 12),
-              _LocationCard(
-                copy: widget.copy,
-                snapshot: snapshot,
-                isLoading: _isLoading,
-                onRefresh: _loadSnapshot,
-              ),
-              const SizedBox(height: 12),
-              _TreeCard(
-                copy: widget.copy,
-                isLoading: _isLoading,
-                errorMessage: _errorMessage,
-                query: _query,
-                snapshot: snapshot,
-                visibleNodes: visibleNodes,
-                expandedPaths: _expandedPaths,
-                onRefresh: _loadSnapshot,
-                onToggleDirectory: _toggleDirectory,
-              ),
+              if (_showStickyBrowseBar && snapshot != null)
+                Positioned(
+                  top: MediaQuery.of(context).padding.top + 6,
+                  left: 20,
+                  right: 20,
+                  child: _StickyLocationBar(
+                    key: const ValueKey<String>('files-sticky-bar'),
+                    copy: widget.copy,
+                    breadcrumbs: _visibleBreadcrumbs(),
+                    breadcrumbsEnabled: !_isSelectionMode,
+                    onBreadcrumbTap: _handleBreadcrumbTap,
+                    onCreateFolder: _handleCreateFolder,
+                    isBusy: _isLoading || _isMutating,
+                  ),
+                ),
+              if (_showsSelectionToolbar)
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: _SelectionToolbar(
+                    key: const ValueKey<String>('files-selection-toolbar'),
+                    copy: widget.copy,
+                    isPendingTransfer: _hasPendingTransfer,
+                    canShare: _isSelectionMode && _selectedPaths.isNotEmpty,
+                    canMove: _isSelectionMode && _selectedPaths.isNotEmpty,
+                    canCopy: _isSelectionMode && _selectedPaths.isNotEmpty,
+                    canPaste: _hasPendingTransfer,
+                    canRename: _isSelectionMode && _selectedPaths.length == 1,
+                    canDelete: _isSelectionMode && _selectedPaths.isNotEmpty,
+                    onShare: _handleShare,
+                    onMove: _isSelectionMode
+                        ? () => _handleStartTransfer(true)
+                        : null,
+                    onCopyOrPaste: _hasPendingTransfer
+                        ? _handlePasteTransfer
+                        : (_isSelectionMode
+                              ? () => _handleStartTransfer(false)
+                              : null),
+                    onRename: _isSelectionMode && _selectedPaths.length == 1
+                        ? _handleRename
+                        : null,
+                    onDelete: _isSelectionMode && _selectedPaths.isNotEmpty
+                        ? _handleDelete
+                        : null,
+                  ),
+                ),
             ],
           ),
         ),
@@ -117,6 +248,13 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen> {
       }
       setState(() {
         _snapshot = snapshot;
+        _currentDirectoryPath = _normalizeDirectoryPath(
+          snapshot,
+          _currentDirectoryPath,
+        );
+        _selectedPaths = _sanitizeSelectedPaths(snapshot, _selectedPaths);
+        _isSelectionMode = _isSelectionMode && _selectedPaths.isNotEmpty;
+        _pendingTransfer = _sanitizePendingTransfer(snapshot, _pendingTransfer);
         _isLoading = false;
         _errorMessage = null;
       });
@@ -126,66 +264,652 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen> {
       }
       setState(() {
         _isLoading = false;
-        _errorMessage = '$error';
+        _errorMessage = _userFacingErrorMessage(error);
       });
     }
   }
 
-  void _onQueryChanged() {
+  void _handleQueryChanged() {
     setState(() {
       _query = _searchController.text;
     });
   }
 
-  void _toggleDirectory(OpenCrayFileTreeNodeSnapshot node) {
-    if (_query.trim().isNotEmpty) {
-      return;
-    }
-    setState(() {
-      if (_expandedPaths.contains(node.relativePath)) {
-        _expandedPaths.remove(node.relativePath);
-      } else {
-        _expandedPaths.add(node.relativePath);
+  void _handleScroll() {
+    _syncStickyBarVisibility();
+  }
+
+  void _scheduleStickyBarSync() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
       }
+      _syncStickyBarVisibility();
     });
   }
 
-  List<OpenCrayFileTreeNodeSnapshot> _visibleNodes(
-    List<OpenCrayFileTreeNodeSnapshot> nodes,
+  void _syncStickyBarVisibility() {
+    final actionContext = _locationActionRowKey.currentContext;
+    if (actionContext == null) {
+      return;
+    }
+    final renderObject = actionContext.findRenderObject();
+    if (renderObject is! RenderBox || !renderObject.hasSize) {
+      return;
+    }
+    final actionTop = renderObject.localToGlobal(Offset.zero).dy;
+    final threshold = MediaQuery.of(context).padding.top + 18;
+    final shouldShow = actionTop <= threshold;
+    if (shouldShow == _showStickyBrowseBar) {
+      return;
+    }
+    setState(() {
+      _showStickyBrowseBar = shouldShow;
+    });
+  }
+
+  List<OpenCrayFileTreeNodeSnapshot> _visibleEntries(
+    OpenCrayFilesSnapshot snapshot,
   ) {
     final query = _query.trim().toLowerCase();
+    final entries = [..._currentEntries(snapshot)]..sort(_compareEntries);
     if (query.isEmpty) {
-      return nodes;
+      return entries;
     }
-    return nodes
-        .map((node) => _filterNode(node, query))
-        .whereType<OpenCrayFileTreeNodeSnapshot>()
+    return entries
+        .where(
+          (entry) =>
+              entry.name.toLowerCase().contains(query) ||
+              entry.relativePath.toLowerCase().contains(query),
+        )
         .toList(growable: false);
   }
 
-  OpenCrayFileTreeNodeSnapshot? _filterNode(
-    OpenCrayFileTreeNodeSnapshot node,
-    String query,
+  List<OpenCrayFileTreeNodeSnapshot> _currentEntries(
+    OpenCrayFilesSnapshot snapshot,
   ) {
-    final matchesSelf =
-        node.name.toLowerCase().contains(query) ||
-        node.relativePath.toLowerCase().contains(query);
-    if (!node.isDirectory) {
-      return matchesSelf ? node : null;
+    if (_currentDirectoryPath.isEmpty) {
+      return snapshot.children;
+    }
+    final node = _findNodeByPath(snapshot.children, _currentDirectoryPath);
+    if (node == null || !node.isDirectory) {
+      return const <OpenCrayFileTreeNodeSnapshot>[];
+    }
+    return node.children;
+  }
+
+  int _compareEntries(
+    OpenCrayFileTreeNodeSnapshot left,
+    OpenCrayFileTreeNodeSnapshot right,
+  ) {
+    if (left.isDirectory != right.isDirectory) {
+      return left.isDirectory ? -1 : 1;
+    }
+    return left.name.toLowerCase().compareTo(right.name.toLowerCase());
+  }
+
+  String _currentDirectoryName(OpenCrayFilesSnapshot? snapshot) {
+    if (_currentDirectoryPath.isEmpty) {
+      return snapshot?.rootName ?? widget.copy.filesLocationTitle;
+    }
+    return _pathSegments(_currentDirectoryPath).lastOrNull ??
+        widget.copy.filesLocationTitle;
+  }
+
+  String _currentAbsolutePath(OpenCrayFilesSnapshot? snapshot) {
+    final rootPath = (snapshot?.rootPath ?? '').replaceAll('\\', '/').trim();
+    if (rootPath.isEmpty) {
+      return _currentDirectoryPath.isEmpty ? '/' : '/$_currentDirectoryPath';
+    }
+    if (_currentDirectoryPath.isEmpty) {
+      return rootPath;
+    }
+    return '$rootPath/$_currentDirectoryPath';
+  }
+
+  List<_BreadcrumbSegment> _visibleBreadcrumbs() {
+    final segments = _pathSegments(_currentDirectoryPath);
+    if (segments.isEmpty) {
+      return const <_BreadcrumbSegment>[
+        _BreadcrumbSegment(label: '/', relativePath: ''),
+      ];
     }
 
-    if (matchesSelf) {
-      return node;
+    final breadcrumbs = <_BreadcrumbSegment>[
+      const _BreadcrumbSegment(label: '/', relativePath: ''),
+    ];
+    var current = '';
+    for (final segment in segments) {
+      current = current.isEmpty ? segment : '$current/$segment';
+      breadcrumbs.add(
+        _BreadcrumbSegment(label: segment, relativePath: current),
+      );
     }
 
-    final filteredChildren = node.children
-        .map((child) => _filterNode(child, query))
-        .whereType<OpenCrayFileTreeNodeSnapshot>()
-        .toList(growable: false);
-    if (filteredChildren.isEmpty) {
+    if (breadcrumbs.length <= 3) {
+      return breadcrumbs;
+    }
+
+    return <_BreadcrumbSegment>[
+      const _BreadcrumbSegment(label: '...', relativePath: null),
+      ...breadcrumbs.sublist(breadcrumbs.length - 2),
+    ];
+  }
+
+  void _handleBreadcrumbTap(String relativePath) {
+    if (_currentDirectoryPath == relativePath) {
+      return;
+    }
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() {
+      _currentDirectoryPath = relativePath;
+    });
+  }
+
+  void _handleEntryTap(OpenCrayFileTreeNodeSnapshot entry) {
+    FocusManager.instance.primaryFocus?.unfocus();
+    if (_isSelectionMode) {
+      setState(() {
+        if (_selectedPaths.contains(entry.relativePath)) {
+          _selectedPaths.remove(entry.relativePath);
+        } else {
+          _selectedPaths.add(entry.relativePath);
+        }
+        if (_selectedPaths.isEmpty) {
+          _isSelectionMode = false;
+        }
+      });
+      return;
+    }
+    if (entry.isDirectory) {
+      setState(() {
+        _currentDirectoryPath = entry.relativePath;
+      });
+      return;
+    }
+    unawaited(_openTextPreview(entry));
+  }
+
+  void _handleEntryLongPress(OpenCrayFileTreeNodeSnapshot entry) {
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() {
+      _pendingTransfer = null;
+      _isSelectionMode = true;
+      _selectedPaths = <String>{entry.relativePath};
+    });
+  }
+
+  void _exitSelectionMode() {
+    setState(() {
+      _isSelectionMode = false;
+      _selectedPaths = <String>{};
+    });
+  }
+
+  bool _consumeBackPress() {
+    if (!_handlesBackPress) {
+      return false;
+    }
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() {
+      _isSelectionMode = false;
+      _selectedPaths = <String>{};
+      _pendingTransfer = null;
+    });
+    return true;
+  }
+
+  Future<void> _handleCreateFolder() async {
+    final name = await _promptForName(
+      title: widget.copy.filesCreateFolderTitle,
+      confirmLabel: widget.copy.filesCreateAction,
+    );
+    if (!mounted || name == null) {
+      return;
+    }
+    await _runSnapshotMutation(
+      () => widget.bridge.createWorkspaceFolder(
+        parentRelativePath: _currentDirectoryPath,
+        name: name,
+      ),
+      applyState: (snapshot) {
+        _snapshot = snapshot;
+        _currentDirectoryPath = _normalizeDirectoryPath(
+          snapshot,
+          _currentDirectoryPath,
+        );
+        _selectedPaths = _sanitizeSelectedPaths(snapshot, _selectedPaths);
+        _pendingTransfer = _sanitizePendingTransfer(snapshot, _pendingTransfer);
+        _errorMessage = null;
+      },
+    );
+  }
+
+  Future<void> _handleRename() async {
+    if (_selectedPaths.length != 1) {
+      return;
+    }
+    final targetPath = _selectedPaths.single;
+    final currentName = _pathSegments(targetPath).lastOrNull ?? '';
+    final nextName = await _promptForName(
+      title: widget.copy.filesRenameEntryTitle,
+      confirmLabel: widget.copy.filesSaveAction,
+      initialValue: currentName,
+    );
+    if (!mounted || nextName == null) {
+      return;
+    }
+    final renamedPath = _joinRelativePath(_parentPath(targetPath), nextName);
+    await _runSnapshotMutation(
+      () => widget.bridge.renameWorkspaceEntry(
+        targetRelativePath: targetPath,
+        newName: nextName,
+      ),
+      applyState: (snapshot) {
+        _snapshot = snapshot;
+        _currentDirectoryPath = _normalizeDirectoryPath(
+          snapshot,
+          _currentDirectoryPath,
+        );
+        _selectedPaths = _findNodeByPath(snapshot.children, renamedPath) == null
+            ? <String>{}
+            : <String>{renamedPath};
+        _isSelectionMode = _selectedPaths.isNotEmpty;
+        _pendingTransfer = _sanitizePendingTransfer(snapshot, _pendingTransfer);
+        _errorMessage = null;
+      },
+    );
+  }
+
+  Future<void> _handleDelete() async {
+    final targets = _selectedPaths.toList(growable: false);
+    if (targets.isEmpty) {
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(widget.copy.filesDeleteConfirmTitle(targets.length)),
+        content: Text(widget.copy.filesDeleteConfirmBody(targets.length)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text(widget.copy.filesCancelAction),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(
+              widget.copy.filesDeleteAction,
+              style: const TextStyle(color: FilesFeatureScreen.danger),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) {
+      return;
+    }
+    await _runSnapshotMutation(
+      () => widget.bridge.deleteWorkspaceEntries(targets),
+      applyState: (snapshot) {
+        _snapshot = snapshot;
+        _currentDirectoryPath = _normalizeDirectoryPath(
+          snapshot,
+          _currentDirectoryPath,
+        );
+        _selectedPaths = <String>{};
+        _isSelectionMode = false;
+        _pendingTransfer = _sanitizePendingTransfer(snapshot, _pendingTransfer);
+        _errorMessage = null;
+      },
+    );
+  }
+
+  Future<void> _handleShare() async {
+    final targets = _selectedPaths.toList(growable: false);
+    if (targets.isEmpty || _isMutating) {
+      return;
+    }
+    setState(() {
+      _isMutating = true;
+    });
+    try {
+      await widget.bridge.shareWorkspaceEntries(targets);
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      _showToast(_userFacingErrorMessage(error));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isMutating = false;
+        });
+      }
+    }
+  }
+
+  void _handleStartTransfer(bool move) {
+    if (_selectedPaths.isEmpty) {
+      return;
+    }
+    final orderedPaths = _selectedPaths.toList()..sort();
+    setState(() {
+      _pendingTransfer = _PendingTransfer(
+        sourceRelativePaths: orderedPaths,
+        move: move,
+      );
+      _isSelectionMode = false;
+      _selectedPaths = <String>{};
+    });
+  }
+
+  Future<void> _handlePasteTransfer() async {
+    final pendingTransfer = _pendingTransfer;
+    if (pendingTransfer == null) {
+      return;
+    }
+    await _runSnapshotMutation(
+      () => widget.bridge.pasteWorkspaceEntries(
+        sourceRelativePaths: pendingTransfer.sourceRelativePaths,
+        destinationRelativePath: _currentDirectoryPath,
+        move: pendingTransfer.move,
+      ),
+      applyState: (snapshot) {
+        _snapshot = snapshot;
+        _currentDirectoryPath = _normalizeDirectoryPath(
+          snapshot,
+          _currentDirectoryPath,
+        );
+        _selectedPaths = <String>{};
+        _isSelectionMode = false;
+        _pendingTransfer = null;
+        _errorMessage = null;
+      },
+    );
+  }
+
+  Future<void> _runSnapshotMutation(
+    Future<OpenCrayFilesSnapshot> Function() mutation, {
+    required void Function(OpenCrayFilesSnapshot snapshot) applyState,
+  }) async {
+    if (_isMutating) {
+      return;
+    }
+    setState(() {
+      _isMutating = true;
+    });
+    try {
+      final snapshot = await mutation();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        applyState(snapshot);
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      _showToast(_userFacingErrorMessage(error));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isMutating = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _openTextPreview(OpenCrayFileTreeNodeSnapshot entry) async {
+    try {
+      final preview = await widget.bridge.loadWorkspaceTextPreview(
+        entry.relativePath,
+      );
+      if (!mounted) {
+        return;
+      }
+      await _showTextPreviewDialog(preview);
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      _showToast(_userFacingErrorMessage(error));
+    }
+  }
+
+  Future<void> _showTextPreviewDialog(OpenCrayFileTextPreview preview) {
+    return showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: widget.copy.filesPreviewCloseAction,
+      barrierColor: Colors.transparent,
+      transitionDuration: const Duration(milliseconds: 180),
+      pageBuilder: (dialogContext, animation, secondaryAnimation) {
+        return GestureDetector(
+          onTap: () => Navigator.of(dialogContext).pop(),
+          child: Material(
+            color: Colors.transparent,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                ClipRect(
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                    child: ColoredBox(
+                      key: const ValueKey<String>(
+                        'files-text-preview-backdrop',
+                      ),
+                      color: const Color(0x26000000),
+                    ),
+                  ),
+                ),
+                SafeArea(
+                  child: Center(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
+                      child: GestureDetector(
+                        onTap: () {},
+                        child: _TextPreviewDialog(
+                          key: const ValueKey<String>(
+                            'files-text-preview-dialog',
+                          ),
+                          copy: widget.copy,
+                          preview: preview,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+      transitionBuilder: (context, animation, secondaryAnimation, child) {
+        final curved = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOutCubic,
+          reverseCurve: Curves.easeInCubic,
+        );
+        return FadeTransition(
+          opacity: curved,
+          child: ScaleTransition(
+            scale: Tween<double>(begin: 0.96, end: 1).animate(curved),
+            child: child,
+          ),
+        );
+      },
+    );
+  }
+
+  Future<String?> _promptForName({
+    required String title,
+    required String confirmLabel,
+    String initialValue = '',
+  }) async {
+    final controller = TextEditingController(text: initialValue);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: InputDecoration(hintText: widget.copy.filesNameFieldHint),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text(widget.copy.filesCancelAction),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
+            child: Text(confirmLabel),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (result == null || result.trim().isEmpty) {
       return null;
     }
-    return node.copyWith(children: filteredChildren);
+    return result.trim();
+  }
+
+  void _showToast(String message) {
+    final normalized = message.trim();
+    if (normalized.isEmpty) {
+      return;
+    }
+    unawaited(
+      widget.bridge.showNativeToast(normalized).catchError((Object _) {}),
+    );
+  }
+
+  String _userFacingErrorMessage(Object error) {
+    if (error is PlatformException) {
+      final message = error.message?.trim();
+      if (message != null && message.isNotEmpty) {
+        return message;
+      }
+    }
+    final raw = '$error'.trim();
+    if (raw.startsWith('Bad state: ')) {
+      return raw.substring('Bad state: '.length);
+    }
+    if (raw.startsWith('PlatformException(')) {
+      final segments = raw.split(', ');
+      if (segments.length >= 2) {
+        final message = segments[1].trim();
+        if (message.isNotEmpty && message != 'null') {
+          return message;
+        }
+      }
+    }
+    return raw;
+  }
+
+  OpenCrayFileTreeNodeSnapshot? _findNodeByPath(
+    List<OpenCrayFileTreeNodeSnapshot> nodes,
+    String targetRelativePath,
+  ) {
+    for (final node in nodes) {
+      if (node.relativePath == targetRelativePath) {
+        return node;
+      }
+      final nested = _findNodeByPath(node.children, targetRelativePath);
+      if (nested != null) {
+        return nested;
+      }
+    }
+    return null;
+  }
+
+  String _normalizeDirectoryPath(
+    OpenCrayFilesSnapshot snapshot,
+    String candidatePath,
+  ) {
+    var current = candidatePath.trim();
+    while (current.isNotEmpty) {
+      final node = _findNodeByPath(snapshot.children, current);
+      if (node != null && node.isDirectory) {
+        return current;
+      }
+      current = _parentPath(current);
+    }
+    return '';
+  }
+
+  Set<String> _sanitizeSelectedPaths(
+    OpenCrayFilesSnapshot snapshot,
+    Set<String> selectedPaths,
+  ) {
+    return selectedPaths
+        .where((path) => _findNodeByPath(snapshot.children, path) != null)
+        .toSet();
+  }
+
+  _PendingTransfer? _sanitizePendingTransfer(
+    OpenCrayFilesSnapshot snapshot,
+    _PendingTransfer? pendingTransfer,
+  ) {
+    if (pendingTransfer == null) {
+      return null;
+    }
+    final allExist = pendingTransfer.sourceRelativePaths.every(
+      (path) => _findNodeByPath(snapshot.children, path) != null,
+    );
+    return allExist ? pendingTransfer : null;
+  }
+}
+
+class _TitleRow extends StatelessWidget {
+  const _TitleRow({
+    required this.copy,
+    required this.isSelectionMode,
+    required this.selectedCount,
+    required this.onDone,
+  });
+
+  final OpenCrayUiCopy copy;
+  final bool isSelectionMode;
+  final int selectedCount;
+  final VoidCallback? onDone;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = isSelectionMode
+        ? copy.filesSelectedCount(selectedCount)
+        : copy.filesTitle;
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            title,
+            style: const TextStyle(
+              fontSize: 30,
+              height: 1.05,
+              fontWeight: FontWeight.w600,
+              color: FilesFeatureScreen.textPrimary,
+            ),
+          ),
+        ),
+        if (isSelectionMode)
+          TextButton(
+            key: const ValueKey<String>('files-selection-done'),
+            onPressed: onDone,
+            child: Text(
+              copy.filesDoneAction,
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: FilesFeatureScreen.accent,
+              ),
+            ),
+          ),
+      ],
+    );
   }
 }
 
@@ -207,13 +931,14 @@ class _SearchBar extends StatelessWidget {
         child: Row(
           children: [
             const Icon(
-              Icons.search_rounded,
+              CupertinoIcons.search,
               size: 18,
-              color: FilesFeatureScreen._textTertiary,
+              color: FilesFeatureScreen.textTertiary,
             ),
             const SizedBox(width: 10),
             Expanded(
               child: TextField(
+                key: const ValueKey<String>('files-search-field'),
                 controller: controller,
                 decoration: InputDecoration(
                   border: InputBorder.none,
@@ -221,7 +946,7 @@ class _SearchBar extends StatelessWidget {
                   hintStyle: const TextStyle(
                     fontSize: 14,
                     height: 1.2,
-                    color: FilesFeatureScreen._textTertiary,
+                    color: FilesFeatureScreen.textTertiary,
                   ),
                 ),
               ),
@@ -237,25 +962,36 @@ class _LocationCard extends StatelessWidget {
   const _LocationCard({
     required this.copy,
     required this.snapshot,
+    required this.directoryName,
+    required this.absolutePath,
+    required this.visibleItemCount,
     required this.isLoading,
+    required this.isMutating,
+    required this.actionRowKey,
+    required this.breadcrumbs,
+    required this.breadcrumbsEnabled,
     required this.onRefresh,
+    required this.onCreateFolder,
+    required this.onBreadcrumbTap,
   });
 
   final OpenCrayUiCopy copy;
   final OpenCrayFilesSnapshot? snapshot;
+  final String directoryName;
+  final String absolutePath;
+  final int visibleItemCount;
   final bool isLoading;
+  final bool isMutating;
+  final GlobalKey actionRowKey;
+  final List<_BreadcrumbSegment> breadcrumbs;
+  final bool breadcrumbsEnabled;
   final Future<void> Function() onRefresh;
+  final Future<void> Function() onCreateFolder;
+  final ValueChanged<String> onBreadcrumbTap;
 
   @override
   Widget build(BuildContext context) {
-    final path = snapshot?.rootPath ?? copy.filesLocationPath;
-    final rootName = snapshot?.rootName ?? copy.filesLocationTitle;
-    final summary = snapshot == null
-        ? copy.filesLocationItemCount
-        : copy.filesWorkspaceTotals(
-            snapshot!.directoryCount,
-            snapshot!.fileCount,
-          );
+    final statsLabel = copy.filesDirectoryItemCount(visibleItemCount);
     final availableSpace = snapshot == null
         ? copy.filesLocationAvailableSpace
         : copy.filesAvailableSpace(_formatBytes(snapshot!.availableBytes));
@@ -263,10 +999,10 @@ class _LocationCard extends StatelessWidget {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(18),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -277,56 +1013,53 @@ class _LocationCard extends StatelessWidget {
                   style: const TextStyle(
                     fontSize: 12,
                     height: 1.2,
-                    color: FilesFeatureScreen._textTertiary,
+                    color: FilesFeatureScreen.textTertiary,
                   ),
                 ),
                 const Spacer(),
                 InkWell(
                   borderRadius: BorderRadius.circular(999),
-                  onTap: isLoading
-                      ? null
-                      : () {
-                          onRefresh();
-                        },
+                  onTap: isLoading || isMutating ? null : () => onRefresh(),
                   child: Container(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 10,
                       vertical: 6,
                     ),
                     decoration: BoxDecoration(
-                      color: FilesFeatureScreen._surfaceMuted,
+                      color: FilesFeatureScreen.surfaceMuted,
                       borderRadius: BorderRadius.circular(999),
                     ),
                     child: Text(
                       copy.filesRefreshAction,
                       style: const TextStyle(
                         fontSize: 12,
-                        height: 1.1,
                         fontWeight: FontWeight.w600,
-                        color: FilesFeatureScreen._textSecondary,
+                        color: FilesFeatureScreen.textSecondary,
                       ),
                     ),
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 8),
             Text(
-              rootName,
+              directoryName,
               style: const TextStyle(
-                fontSize: 17,
+                fontSize: 18,
                 height: 1.2,
                 fontWeight: FontWeight.w600,
-                color: FilesFeatureScreen._textPrimary,
+                color: FilesFeatureScreen.textPrimary,
               ),
             ),
             const SizedBox(height: 6),
             Text(
-              path,
+              absolutePath,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 fontSize: 13,
                 height: 1.3,
-                color: FilesFeatureScreen._textSecondary,
+                color: FilesFeatureScreen.textSecondary,
               ),
             ),
             const SizedBox(height: 10),
@@ -335,11 +1068,11 @@ class _LocationCard extends StatelessWidget {
               runSpacing: 10,
               children: [
                 Text(
-                  summary,
+                  statsLabel,
                   style: const TextStyle(
                     fontSize: 13,
                     height: 1.2,
-                    color: FilesFeatureScreen._textSecondary,
+                    color: FilesFeatureScreen.textSecondary,
                   ),
                 ),
                 Container(
@@ -348,20 +1081,32 @@ class _LocationCard extends StatelessWidget {
                     vertical: 6,
                   ),
                   decoration: BoxDecoration(
-                    color: FilesFeatureScreen._surfaceMuted,
+                    color: FilesFeatureScreen.surfaceMuted,
                     borderRadius: BorderRadius.circular(999),
                   ),
                   child: Text(
                     availableSpace,
                     style: const TextStyle(
                       fontSize: 12,
-                      height: 1.1,
                       fontWeight: FontWeight.w500,
-                      color: FilesFeatureScreen._textSecondary,
+                      color: FilesFeatureScreen.textSecondary,
                     ),
                   ),
                 ),
               ],
+            ),
+            const SizedBox(height: 12),
+            Container(
+              key: actionRowKey,
+              padding: const EdgeInsets.only(top: 2),
+              child: _LocationActionRow(
+                newLabel: copy.filesNewAction,
+                breadcrumbs: breadcrumbs,
+                breadcrumbsEnabled: breadcrumbsEnabled,
+                onBreadcrumbTap: onBreadcrumbTap,
+                onCreateFolder: onCreateFolder,
+                isBusy: isLoading || isMutating,
+              ),
             ),
           ],
         ),
@@ -370,35 +1115,230 @@ class _LocationCard extends StatelessWidget {
   }
 }
 
-class _TreeCard extends StatelessWidget {
-  const _TreeCard({
+class _StickyLocationBar extends StatelessWidget {
+  const _StickyLocationBar({
+    super.key,
     required this.copy,
-    required this.isLoading,
-    required this.errorMessage,
-    required this.query,
-    required this.snapshot,
-    required this.visibleNodes,
-    required this.expandedPaths,
-    required this.onRefresh,
-    required this.onToggleDirectory,
+    required this.breadcrumbs,
+    required this.breadcrumbsEnabled,
+    required this.onBreadcrumbTap,
+    required this.onCreateFolder,
+    required this.isBusy,
   });
 
   final OpenCrayUiCopy copy;
-  final bool isLoading;
-  final String? errorMessage;
+  final List<_BreadcrumbSegment> breadcrumbs;
+  final bool breadcrumbsEnabled;
+  final ValueChanged<String> onBreadcrumbTap;
+  final Future<void> Function() onCreateFolder;
+  final bool isBusy;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: FilesFeatureScreen.surface.withValues(alpha: 0.96),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x14000000),
+            blurRadius: 16,
+            offset: Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+        child: _LocationActionRow(
+          isSticky: true,
+          newLabel: copy.filesNewAction,
+          breadcrumbs: breadcrumbs,
+          breadcrumbsEnabled: breadcrumbsEnabled,
+          onBreadcrumbTap: onBreadcrumbTap,
+          onCreateFolder: onCreateFolder,
+          isBusy: isBusy,
+        ),
+      ),
+    );
+  }
+}
+
+class _LocationActionRow extends StatelessWidget {
+  const _LocationActionRow({
+    required this.newLabel,
+    required this.breadcrumbs,
+    required this.breadcrumbsEnabled,
+    required this.onBreadcrumbTap,
+    required this.onCreateFolder,
+    required this.isBusy,
+    this.isSticky = false,
+  });
+
+  final String newLabel;
+  final List<_BreadcrumbSegment> breadcrumbs;
+  final bool breadcrumbsEnabled;
+  final ValueChanged<String> onBreadcrumbTap;
+  final Future<void> Function() onCreateFolder;
+  final bool isBusy;
+  final bool isSticky;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: _BreadcrumbTrail(
+            breadcrumbs: breadcrumbs,
+            onBreadcrumbTap: breadcrumbsEnabled ? onBreadcrumbTap : null,
+          ),
+        ),
+        const SizedBox(width: 12),
+        InkWell(
+          key: isSticky
+              ? const ValueKey<String>('files-sticky-new')
+              : const ValueKey<String>('files-location-new'),
+          borderRadius: BorderRadius.circular(12),
+          onTap: isBusy ? null : () => onCreateFolder(),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  CupertinoIcons.folder_badge_plus,
+                  size: 18,
+                  color: FilesFeatureScreen.accent,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  newLabel,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: FilesFeatureScreen.accent,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _BreadcrumbTrail extends StatelessWidget {
+  const _BreadcrumbTrail({
+    required this.breadcrumbs,
+    required this.onBreadcrumbTap,
+  });
+
+  final List<_BreadcrumbSegment> breadcrumbs;
+  final ValueChanged<String>? onBreadcrumbTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          for (var index = 0; index < breadcrumbs.length; index++) ...[
+            if (index > 0)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 4),
+                child: Text(
+                  '/',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: FilesFeatureScreen.textTertiary,
+                  ),
+                ),
+              ),
+            _BreadcrumbChip(
+              segment: breadcrumbs[index],
+              onTap:
+                  breadcrumbs[index].relativePath == null ||
+                      onBreadcrumbTap == null
+                  ? null
+                  : () => onBreadcrumbTap!(breadcrumbs[index].relativePath!),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _BreadcrumbChip extends StatelessWidget {
+  const _BreadcrumbChip({required this.segment, required this.onTap});
+
+  final _BreadcrumbSegment segment;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = segment.relativePath == null
+        ? FilesFeatureScreen.textTertiary
+        : FilesFeatureScreen.textSecondary;
+    return InkWell(
+      key: segment.relativePath == null
+          ? null
+          : ValueKey<String>(
+              'files-breadcrumb-${segment.relativePath!.isEmpty ? 'root' : segment.relativePath}',
+            ),
+      borderRadius: BorderRadius.circular(10),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+        child: Text(
+          segment.label,
+          style: TextStyle(
+            fontSize: 13,
+            height: 1.2,
+            fontWeight: segment.relativePath == null
+                ? FontWeight.w500
+                : FontWeight.w600,
+            color: color,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DirectoryCard extends StatelessWidget {
+  const _DirectoryCard({
+    required this.copy,
+    required this.query,
+    required this.snapshot,
+    required this.entries,
+    required this.isLoading,
+    required this.errorMessage,
+    required this.isSelectionMode,
+    required this.selectedPaths,
+    required this.pendingTransfer,
+    required this.onEntryTap,
+    required this.onEntryLongPress,
+  });
+
+  final OpenCrayUiCopy copy;
   final String query;
   final OpenCrayFilesSnapshot? snapshot;
-  final List<OpenCrayFileTreeNodeSnapshot> visibleNodes;
-  final Set<String> expandedPaths;
-  final Future<void> Function() onRefresh;
-  final ValueChanged<OpenCrayFileTreeNodeSnapshot> onToggleDirectory;
+  final List<OpenCrayFileTreeNodeSnapshot> entries;
+  final bool isLoading;
+  final String? errorMessage;
+  final bool isSelectionMode;
+  final Set<String> selectedPaths;
+  final _PendingTransfer? pendingTransfer;
+  final ValueChanged<OpenCrayFileTreeNodeSnapshot> onEntryTap;
+  final ValueChanged<OpenCrayFileTreeNodeSnapshot> onEntryLongPress;
 
   @override
   Widget build(BuildContext context) {
     if (isLoading && snapshot == null) {
       return const _StateCard(
         child: Padding(
-          padding: EdgeInsets.all(20),
+          padding: EdgeInsets.all(24),
           child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
         ),
       );
@@ -415,9 +1355,8 @@ class _TreeCard extends StatelessWidget {
                 copy.filesLoadFailed,
                 style: const TextStyle(
                   fontSize: 16,
-                  height: 1.2,
                   fontWeight: FontWeight.w600,
-                  color: FilesFeatureScreen._textPrimary,
+                  color: FilesFeatureScreen.textPrimary,
                 ),
               ),
               const SizedBox(height: 8),
@@ -426,40 +1365,7 @@ class _TreeCard extends StatelessWidget {
                 style: const TextStyle(
                   fontSize: 14,
                   height: 1.35,
-                  color: FilesFeatureScreen._textSecondary,
-                ),
-              ),
-              const SizedBox(height: 14),
-              _ActionChip(label: copy.filesRefreshAction, onTap: onRefresh),
-            ],
-          ),
-        ),
-      );
-    }
-
-    if (snapshot == null || snapshot!.children.isEmpty) {
-      return _StateCard(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                copy.filesEmptyTitle,
-                style: const TextStyle(
-                  fontSize: 16,
-                  height: 1.2,
-                  fontWeight: FontWeight.w600,
-                  color: FilesFeatureScreen._textPrimary,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                copy.filesEmptyBody,
-                style: const TextStyle(
-                  fontSize: 14,
-                  height: 1.35,
-                  color: FilesFeatureScreen._textSecondary,
+                  color: FilesFeatureScreen.textSecondary,
                 ),
               ),
             ],
@@ -468,7 +1374,8 @@ class _TreeCard extends StatelessWidget {
       );
     }
 
-    if (visibleNodes.isEmpty) {
+    if (snapshot == null || entries.isEmpty) {
+      final hasQuery = query.trim().isNotEmpty;
       return _StateCard(
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -476,21 +1383,24 @@ class _TreeCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                copy.filesNoMatchesTitle,
+                hasQuery
+                    ? copy.filesNoMatchesTitle
+                    : copy.filesFolderEmptyTitle,
                 style: const TextStyle(
                   fontSize: 16,
-                  height: 1.2,
                   fontWeight: FontWeight.w600,
-                  color: FilesFeatureScreen._textPrimary,
+                  color: FilesFeatureScreen.textPrimary,
                 ),
               ),
               const SizedBox(height: 8),
               Text(
-                copy.filesNoMatchesBody(query),
+                hasQuery
+                    ? copy.filesNoMatchesBody(query)
+                    : copy.filesFolderEmptyBody,
                 style: const TextStyle(
                   fontSize: 14,
                   height: 1.35,
-                  color: FilesFeatureScreen._textSecondary,
+                  color: FilesFeatureScreen.textSecondary,
                 ),
               ),
             ],
@@ -501,59 +1411,29 @@ class _TreeCard extends StatelessWidget {
 
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: FilesFeatureScreen._surface,
-        borderRadius: BorderRadius.circular(16),
+        color: FilesFeatureScreen.surface,
+        borderRadius: BorderRadius.circular(18),
       ),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Text(
-                  copy.filesTreeTitle,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    height: 1.2,
-                    fontWeight: FontWeight.w600,
-                    color: FilesFeatureScreen._textPrimary,
-                  ),
-                ),
-                const Spacer(),
-                Text(
-                  copy.filesItemsShown(visibleNodes.length),
-                  style: const TextStyle(
-                    fontSize: 12,
-                    height: 1.2,
-                    color: FilesFeatureScreen._textTertiary,
-                  ),
-                ),
-              ],
-            ),
-            if (snapshot!.isTruncated) ...[
-              const SizedBox(height: 6),
-              Text(
-                copy.filesTreeTruncated,
-                style: const TextStyle(
-                  fontSize: 12,
-                  height: 1.3,
-                  color: FilesFeatureScreen._textSecondary,
-                ),
-              ),
-            ],
-            const SizedBox(height: 12),
-            for (var index = 0; index < visibleNodes.length; index++) ...[
-              _TreeNodeTile(
+            for (var index = 0; index < entries.length; index++) ...[
+              _DirectoryEntryTile(
+                entry: entries[index],
                 copy: copy,
-                node: visibleNodes[index],
-                depth: 0,
-                alwaysExpanded: query.trim().isNotEmpty,
-                expandedPaths: expandedPaths,
-                onToggleDirectory: onToggleDirectory,
+                isSelectionMode: isSelectionMode,
+                isSelected: selectedPaths.contains(entries[index].relativePath),
+                isFaded:
+                    pendingTransfer?.move == true &&
+                    pendingTransfer!.sourceRelativePaths.contains(
+                      entries[index].relativePath,
+                    ),
+                onTap: () => onEntryTap(entries[index]),
+                onLongPress: () => onEntryLongPress(entries[index]),
               ),
-              if (index < visibleNodes.length - 1)
-                const Divider(height: 1, color: FilesFeatureScreen._divider),
+              if (index < entries.length - 1)
+                const Divider(height: 1, color: FilesFeatureScreen.divider),
             ],
           ],
         ),
@@ -562,114 +1442,422 @@ class _TreeCard extends StatelessWidget {
   }
 }
 
-class _TreeNodeTile extends StatelessWidget {
-  const _TreeNodeTile({
+class _DirectoryEntryTile extends StatelessWidget {
+  const _DirectoryEntryTile({
+    required this.entry,
     required this.copy,
-    required this.node,
-    required this.depth,
-    required this.alwaysExpanded,
-    required this.expandedPaths,
-    required this.onToggleDirectory,
+    required this.isSelectionMode,
+    required this.isSelected,
+    required this.isFaded,
+    required this.onTap,
+    required this.onLongPress,
   });
 
+  final OpenCrayFileTreeNodeSnapshot entry;
   final OpenCrayUiCopy copy;
-  final OpenCrayFileTreeNodeSnapshot node;
-  final int depth;
-  final bool alwaysExpanded;
-  final Set<String> expandedPaths;
-  final ValueChanged<OpenCrayFileTreeNodeSnapshot> onToggleDirectory;
+  final bool isSelectionMode;
+  final bool isSelected;
+  final bool isFaded;
+  final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
-    final isExpanded =
-        alwaysExpanded ||
-        (!node.isDirectory ? false : expandedPaths.contains(node.relativePath));
-    final leadingIcon = node.isDirectory
-        ? (isExpanded ? Icons.folder_open_rounded : Icons.folder_rounded)
-        : Icons.description_outlined;
-    final leadingColor = node.isDirectory
-        ? FilesFeatureScreen._accent
-        : FilesFeatureScreen._textTertiary;
-    final metaText = node.isDirectory
-        ? copy.filesDirectoryItemCount(node.childCount)
-        : _formatBytes(node.sizeBytes ?? 0);
+    final icon = entry.isDirectory
+        ? CupertinoIcons.folder_fill
+        : CupertinoIcons.doc_text;
+    final iconColor = entry.isDirectory
+        ? FilesFeatureScreen.accent
+        : FilesFeatureScreen.textTertiary;
+    final metaText = entry.isDirectory
+        ? copy.filesDirectoryItemCount(entry.childCount)
+        : _formatBytes(entry.sizeBytes ?? 0);
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        InkWell(
-          onTap: node.isDirectory ? () => onToggleDirectory(node) : null,
-          borderRadius: BorderRadius.circular(12),
-          child: Padding(
-            padding: EdgeInsets.fromLTRB(4 + depth * 14, 10, 4, 10),
-            child: Row(
-              children: [
-                Icon(leadingIcon, color: leadingColor, size: 20),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        node.name,
-                        style: const TextStyle(
-                          fontSize: 15,
-                          height: 1.25,
-                          fontWeight: FontWeight.w500,
-                          color: FilesFeatureScreen._textPrimary,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        metaText,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          height: 1.2,
-                          color: FilesFeatureScreen._textSecondary,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                if (node.isDirectory)
-                  Icon(
-                    isExpanded
-                        ? Icons.expand_more_rounded
-                        : Icons.chevron_right_rounded,
-                    size: 18,
-                    color: FilesFeatureScreen._textTertiary,
-                  ),
-              ],
-            ),
+    return AnimatedOpacity(
+      duration: const Duration(milliseconds: 160),
+      opacity: isFaded ? 0.38 : 1,
+      child: InkWell(
+        key: ValueKey<String>('files-row-${entry.relativePath}'),
+        onTap: onTap,
+        onLongPress: onLongPress,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
+          decoration: BoxDecoration(
+            color: isSelected
+                ? FilesFeatureScreen.surfacePressed
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(14),
           ),
-        ),
-        if (node.isDirectory && isExpanded && node.children.isNotEmpty) ...[
-          for (var index = 0; index < node.children.length; index++) ...[
-            _TreeNodeTile(
-              copy: copy,
-              node: node.children[index],
-              depth: depth + 1,
-              alwaysExpanded: alwaysExpanded,
-              expandedPaths: expandedPaths,
-              onToggleDirectory: onToggleDirectory,
-            ),
-            if (index < node.children.length - 1)
-              const Divider(height: 1, color: FilesFeatureScreen._divider),
-          ],
-          if (node.isTruncated)
-            Padding(
-              padding: EdgeInsets.fromLTRB(18 + (depth + 1) * 14, 0, 4, 10),
-              child: Text(
-                copy.filesTreeTruncated,
-                style: const TextStyle(
-                  fontSize: 12,
-                  height: 1.3,
-                  color: FilesFeatureScreen._textTertiary,
+          child: Row(
+            children: [
+              if (isSelectionMode) ...[
+                Icon(
+                  isSelected
+                      ? CupertinoIcons.check_mark_circled_solid
+                      : CupertinoIcons.circle,
+                  size: 20,
+                  color: isSelected
+                      ? FilesFeatureScreen.accent
+                      : FilesFeatureScreen.textTertiary,
+                ),
+                const SizedBox(width: 10),
+              ],
+              Icon(icon, size: 20, color: iconColor),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      entry.name,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        height: 1.25,
+                        fontWeight: FontWeight.w500,
+                        color: FilesFeatureScreen.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      metaText,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: FilesFeatureScreen.textSecondary,
+                      ),
+                    ),
+                  ],
                 ),
               ),
+              if (entry.isDirectory && !isSelectionMode)
+                const Icon(
+                  CupertinoIcons.chevron_right,
+                  size: 16,
+                  color: FilesFeatureScreen.textTertiary,
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SelectionToolbar extends StatelessWidget {
+  const _SelectionToolbar({
+    super.key,
+    required this.copy,
+    required this.isPendingTransfer,
+    required this.canShare,
+    required this.canMove,
+    required this.canCopy,
+    required this.canPaste,
+    required this.canRename,
+    required this.canDelete,
+    required this.onShare,
+    required this.onMove,
+    required this.onCopyOrPaste,
+    required this.onRename,
+    required this.onDelete,
+  });
+
+  final OpenCrayUiCopy copy;
+  final bool isPendingTransfer;
+  final bool canShare;
+  final bool canMove;
+  final bool canCopy;
+  final bool canPaste;
+  final bool canRename;
+  final bool canDelete;
+  final VoidCallback? onShare;
+  final VoidCallback? onMove;
+  final VoidCallback? onCopyOrPaste;
+  final VoidCallback? onRename;
+  final VoidCallback? onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        color: FilesFeatureScreen.surface,
+        border: Border(top: BorderSide(color: FilesFeatureScreen.divider)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+        child: Row(
+          children: [
+            Expanded(
+              child: _ToolbarItem(
+                icon: CupertinoIcons.share,
+                label: copy.filesShareAction,
+                enabled: canShare,
+                onTap: onShare,
+              ),
             ),
-        ],
-      ],
+            Expanded(
+              child: _ToolbarItem(
+                icon: CupertinoIcons.folder,
+                label: copy.filesMoveAction,
+                enabled: canMove,
+                onTap: onMove,
+              ),
+            ),
+            Expanded(
+              child: _ToolbarItem(
+                key: ValueKey<String>(
+                  isPendingTransfer
+                      ? 'files-toolbar-action-paste'
+                      : 'files-toolbar-action-copy',
+                ),
+                icon: isPendingTransfer
+                    ? CupertinoIcons.doc_on_clipboard
+                    : CupertinoIcons.doc_on_doc,
+                label: isPendingTransfer
+                    ? copy.filesPasteAction
+                    : copy.filesCopyAction,
+                enabled: isPendingTransfer ? canPaste : canCopy,
+                onTap: onCopyOrPaste,
+              ),
+            ),
+            Expanded(
+              child: _ToolbarItem(
+                icon: CupertinoIcons.pencil,
+                label: copy.filesRenameAction,
+                enabled: canRename,
+                onTap: onRename,
+              ),
+            ),
+            Expanded(
+              child: _ToolbarItem(
+                icon: CupertinoIcons.delete,
+                label: copy.filesDeleteAction,
+                enabled: canDelete,
+                accentColor: FilesFeatureScreen.danger,
+                onTap: onDelete,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ToolbarItem extends StatelessWidget {
+  const _ToolbarItem({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.enabled,
+    required this.onTap,
+    this.accentColor = FilesFeatureScreen.textSecondary,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool enabled;
+  final VoidCallback? onTap;
+  final Color accentColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = enabled
+        ? accentColor
+        : FilesFeatureScreen.textTertiary.withValues(alpha: 0.55);
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: enabled ? onTap : null,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 20, color: color),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TextPreviewDialog extends StatelessWidget {
+  const _TextPreviewDialog({
+    super.key,
+    required this.copy,
+    required this.preview,
+  });
+
+  final OpenCrayUiCopy copy;
+  final OpenCrayFileTextPreview preview;
+
+  @override
+  Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxWidth: 560,
+        maxHeight: media.size.height * 0.78,
+      ),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: FilesFeatureScreen.surface.withValues(alpha: 0.96),
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x22000000),
+              blurRadius: 30,
+              offset: Offset(0, 18),
+            ),
+          ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: FilesFeatureScreen.surfaceMuted,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(
+                      CupertinoIcons.doc_text,
+                      size: 20,
+                      color: FilesFeatureScreen.accent,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          preview.name,
+                          key: const ValueKey<String>(
+                            'files-text-preview-title',
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w600,
+                            color: FilesFeatureScreen.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          preview.relativePath,
+                          key: const ValueKey<String>(
+                            'files-text-preview-path',
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: FilesFeatureScreen.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  InkWell(
+                    key: const ValueKey<String>('files-text-preview-close'),
+                    borderRadius: BorderRadius.circular(16),
+                    onTap: () => Navigator.of(context).pop(),
+                    child: Container(
+                      width: 32,
+                      height: 32,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: FilesFeatureScreen.surfaceMuted,
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: const Icon(
+                        CupertinoIcons.xmark,
+                        size: 16,
+                        color: FilesFeatureScreen.textSecondary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              if (preview.isTruncated) ...[
+                const SizedBox(height: 14),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 9,
+                  ),
+                  decoration: BoxDecoration(
+                    color: FilesFeatureScreen.surfaceMuted,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Text(
+                    copy.filesPreviewTruncatedNotice,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      height: 1.35,
+                      color: FilesFeatureScreen.textSecondary,
+                    ),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 14),
+              const Divider(height: 1, color: FilesFeatureScreen.divider),
+              const SizedBox(height: 14),
+              Expanded(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8F8FA),
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+                    child: preview.content.isEmpty
+                        ? Center(
+                            child: Text(
+                              copy.filesPreviewEmptyBody,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                color: FilesFeatureScreen.textSecondary,
+                              ),
+                            ),
+                          )
+                        : SelectionArea(
+                            child: SingleChildScrollView(
+                              child: Text(
+                                preview.content,
+                                style: const TextStyle(
+                                  fontSize: 13.5,
+                                  height: 1.5,
+                                  fontFamily: 'monospace',
+                                  color: FilesFeatureScreen.textPrimary,
+                                ),
+                              ),
+                            ),
+                          ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -683,45 +1871,53 @@ class _StateCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: FilesFeatureScreen._surface,
-        borderRadius: BorderRadius.circular(16),
+        color: FilesFeatureScreen.surface,
+        borderRadius: BorderRadius.circular(18),
       ),
       child: child,
     );
   }
 }
 
-class _ActionChip extends StatelessWidget {
-  const _ActionChip({required this.label, required this.onTap});
+class _PendingTransfer {
+  const _PendingTransfer({
+    required this.sourceRelativePaths,
+    required this.move,
+  });
+
+  final List<String> sourceRelativePaths;
+  final bool move;
+}
+
+class _BreadcrumbSegment {
+  const _BreadcrumbSegment({required this.label, required this.relativePath});
 
   final String label;
-  final Future<void> Function() onTap;
+  final String? relativePath;
+}
 
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(999),
-      onTap: () {
-        onTap();
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: const Color(0xFFEEF5FF),
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Text(
-          label,
-          style: const TextStyle(
-            fontSize: 12,
-            height: 1.1,
-            fontWeight: FontWeight.w600,
-            color: FilesFeatureScreen._accent,
-          ),
-        ),
-      ),
-    );
+List<String> _pathSegments(String relativePath) {
+  return relativePath
+      .split('/')
+      .map((segment) => segment.trim())
+      .where((segment) => segment.isNotEmpty)
+      .toList(growable: false);
+}
+
+String _parentPath(String relativePath) {
+  final normalized = relativePath.trim();
+  if (normalized.isEmpty || !normalized.contains('/')) {
+    return '';
   }
+  return normalized.substring(0, normalized.lastIndexOf('/'));
+}
+
+String _joinRelativePath(String parent, String name) {
+  final normalizedParent = parent.trim();
+  if (normalizedParent.isEmpty) {
+    return name.trim();
+  }
+  return '$normalizedParent/${name.trim()}';
 }
 
 String _formatBytes(int bytes) {
@@ -739,4 +1935,8 @@ String _formatBytes(int bytes) {
       ? value.toStringAsFixed(0)
       : value.toStringAsFixed(1);
   return '$formatted ${units[unitIndex]}';
+}
+
+extension on List<String> {
+  String? get lastOrNull => isEmpty ? null : last;
 }

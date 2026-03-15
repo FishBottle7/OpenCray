@@ -38,22 +38,25 @@ internal data class AgentRunSnapshot(
   val errorCode: String? = null,
   val errorMessage: String? = null,
   val responseFormat: String? = null,
+  val resultMetadata: Map<String, String> = emptyMap(),
   val pendingMessageId: String? = null,
   val lastEvent: OpenCrayAgentRunEvent? = null,
 ) {
   val isTerminal: Boolean
     get() = when (lifecycleState) {
+      QueueTaskLifecycleState.QUEUED,
+      QueueTaskLifecycleState.RUNNING,
+      QueueTaskLifecycleState.RETRY_PENDING,
+      QueueTaskLifecycleState.SUSPENDED,
+      QueueTaskLifecycleState.CANCEL_REQUESTED,
+      -> false
+
       QueueTaskLifecycleState.COMPLETED,
       QueueTaskLifecycleState.FAILED,
       QueueTaskLifecycleState.CANCELLED,
       -> true
 
-      QueueTaskLifecycleState.QUEUED,
-      QueueTaskLifecycleState.RUNNING,
-      QueueTaskLifecycleState.RETRY_PENDING,
-      QueueTaskLifecycleState.CANCEL_REQUESTED,
-      null,
-      -> false
+      null -> executionStatus != null
     }
 }
 
@@ -83,6 +86,8 @@ internal interface AgentSessionHandle {
   fun requestCancel(taskId: String): Boolean
 
   fun requestRetry(taskId: String): Boolean
+
+  fun requestResumeTask(taskId: String): Boolean
 
   fun listRuns(): List<AgentRunSnapshot>
 
@@ -314,6 +319,15 @@ private class ManagedAgentSessionHandle(
     return retried
   }
 
+  override fun requestResumeTask(taskId: String): Boolean {
+    touch()
+    val resumed = loop.requestResumeTask(taskId)
+    if (resumed) {
+      ensureProcessing()
+    }
+    return resumed
+  }
+
   override fun listRuns(): List<AgentRunSnapshot> {
     touch()
     return currentRunSnapshots()
@@ -389,6 +403,7 @@ private class ManagedAgentSessionHandle(
       AgentTaskState.RUNNING,
       -> true
 
+      AgentTaskState.SUSPENDED,
       AgentTaskState.COMPLETED,
       AgentTaskState.CANCELLED,
       AgentTaskState.FAILED,
@@ -456,6 +471,7 @@ private class ManagedAgentSessionHandle(
         errorCode = result?.errorCode ?: taskSnapshot?.lastErrorCode,
         errorMessage = result?.errorMessage ?: taskSnapshot?.lastErrorMessage,
         responseFormat = result?.metadata?.get("responseFormat"),
+        resultMetadata = result?.metadata.orEmpty(),
         pendingMessageId = taskSnapshot?.task?.metadata
           ?.get(AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID),
         lastEvent = record?.lastEvent,

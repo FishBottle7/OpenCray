@@ -77,6 +77,37 @@ internal class OpenCrayFlutterHostBridge(
       when (call.method) {
         "loadShellSnapshot" -> hostRuntime.loadShellSnapshot()
         "loadFilesSnapshot" -> hostRuntime.loadFilesSnapshot()
+        "loadWorkspaceTextPreview" -> hostRuntime.loadWorkspaceTextPreview(
+          relativePath = call.argument<String>("relativePath").orEmpty(),
+        )
+        "createWorkspaceFolder" -> hostRuntime.createWorkspaceFolder(
+          parentRelativePath = call.argument<String>("parentRelativePath").orEmpty(),
+          name = call.argument<String>("name").orEmpty(),
+        )
+        "renameWorkspaceEntry" -> hostRuntime.renameWorkspaceEntry(
+          targetRelativePath = call.argument<String>("targetRelativePath").orEmpty(),
+          newName = call.argument<String>("newName").orEmpty(),
+        )
+        "deleteWorkspaceEntries" -> hostRuntime.deleteWorkspaceEntries(
+          relativePaths = (call.argument<List<String>>("relativePaths") ?: emptyList()),
+        )
+        "pasteWorkspaceEntries" -> hostRuntime.pasteWorkspaceEntries(
+          sourceRelativePaths = (call.argument<List<String>>("sourceRelativePaths") ?: emptyList()),
+          destinationRelativePath = call.argument<String>("destinationRelativePath").orEmpty(),
+          move = call.argument<Boolean>("move") == true,
+        )
+        "shareWorkspaceEntries" -> {
+          hostRuntime.shareWorkspaceEntries(
+            relativePaths = (call.argument<List<String>>("relativePaths") ?: emptyList()),
+          )
+          null
+        }
+        "showNativeToast" -> {
+          hostRuntime.showNativeToast(
+            message = call.argument<String>("message").orEmpty(),
+          )
+          null
+        }
         "loadSettingsOverview" -> hostRuntime.loadSettingsOverview()
         "loadSettingsDetail" -> hostRuntime.loadSettingsDetail(
           routeIdRaw = call.argument<String>("routeId").orEmpty(),
@@ -186,6 +217,13 @@ internal class OpenCrayFlutterHostBridge(
         }
         "rejectChatApproval" -> {
           hostRuntime.rejectChatApproval(
+            call.argument<String>("runId")?.takeIf(String::isNotBlank)
+              ?: call.argument<String>("taskId").orEmpty(),
+          )
+          null
+        }
+        "cancelChatRun" -> {
+          hostRuntime.cancelChatRun(
             call.argument<String>("runId")?.takeIf(String::isNotBlank)
               ?: call.argument<String>("taskId").orEmpty(),
           )

@@ -120,6 +120,32 @@ internal class OpenCrayLocalRuntimeServer(
     val payload: Any? = when (request.method to request.path) {
       "GET" to "/v1/shell_snapshot" -> hostRuntime.loadShellSnapshot()
       "GET" to "/v1/files_snapshot" -> hostRuntime.loadFilesSnapshot()
+      "GET" to "/v1/workspace_text_preview" -> hostRuntime.loadWorkspaceTextPreview(
+        relativePath = request.queryParameter("relativePath"),
+      )
+      "POST" to "/v1/create_workspace_folder" -> hostRuntime.createWorkspaceFolder(
+        parentRelativePath = body.optString("parentRelativePath"),
+        name = body.optString("name"),
+      )
+      "POST" to "/v1/rename_workspace_entry" -> hostRuntime.renameWorkspaceEntry(
+        targetRelativePath = body.optString("targetRelativePath"),
+        newName = body.optString("newName"),
+      )
+      "POST" to "/v1/delete_workspace_entries" -> hostRuntime.deleteWorkspaceEntries(
+        relativePaths = body.optJSONArray("relativePaths")?.let(::jsonArrayToStrings) ?: emptyList(),
+      )
+      "POST" to "/v1/paste_workspace_entries" -> hostRuntime.pasteWorkspaceEntries(
+        sourceRelativePaths = body.optJSONArray("sourceRelativePaths")?.let(::jsonArrayToStrings)
+          ?: emptyList(),
+        destinationRelativePath = body.optString("destinationRelativePath"),
+        move = body.optBoolean("move"),
+      )
+      "POST" to "/v1/share_workspace_entries" -> {
+        hostRuntime.shareWorkspaceEntries(
+          relativePaths = body.optJSONArray("relativePaths")?.let(::jsonArrayToStrings) ?: emptyList(),
+        )
+        null
+      }
       "GET" to "/v1/settings_overview" -> hostRuntime.loadSettingsOverview()
       "GET" to "/v1/settings_detail" -> hostRuntime.loadSettingsDetail(
         routeIdRaw = request.queryParameter("routeId"),
@@ -209,6 +235,12 @@ internal class OpenCrayLocalRuntimeServer(
       }
       "POST" to "/v1/reject_chat_approval" -> {
         hostRuntime.rejectChatApproval(
+          body.optString("runId").takeIf(String::isNotBlank) ?: body.optString("taskId"),
+        )
+        null
+      }
+      "POST" to "/v1/cancel_chat_run" -> {
+        hostRuntime.cancelChatRun(
           body.optString("runId").takeIf(String::isNotBlank) ?: body.optString("taskId"),
         )
         null
@@ -360,6 +392,11 @@ internal class OpenCrayLocalRuntimeServer(
       }
   }
 }
+
+private fun jsonArrayToStrings(array: JSONArray): List<String> =
+  List(array.length()) { index ->
+    array.optString(index)
+  }
 
 private data class LocalRuntimeRequest(
   val method: String,
