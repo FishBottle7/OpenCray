@@ -31,8 +31,16 @@ import com.opencray.core.orchestrator.SessionLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.persistence.model.ChatTranscriptRole
+import com.opencray.persistence.model.MemoryRecord
+import com.opencray.persistence.store.MemoryStore
+import com.opencray.runtime.AgentToolCall
+import com.opencray.runtime.AgentToolResult
+import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
+import com.opencray.runtime.memory.MemoryRecordExtensionKeys
+import com.opencray.runtime.memory.MemoryWriter
+import com.opencray.runtime.memory.TaskCommitmentResolver
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -242,6 +250,217 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun taskSuccessWritesDeterministicMemoryAfterCompletion() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-memory-write"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val memoryStore = InMemoryMemoryStore()
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root").toPath()
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(
+        memoryStore = memoryStore,
+        workspaceIdProvider = { AppWorkspaceIdentity.fromRoots(setOf(workspaceRoot)) },
+      ),
+    )
+
+    hostRuntime.submitChatMessage(
+      """
+        Please default to Simplified Chinese for explanations.
+        Do not use git reset --hard in this repo.
+      """.trimIndent(),
+    )
+    val task = handle.submittedTasks.single()
+    val run = handle.submissions.single()
+    manager.emitRunEvent(
+      sessionId = activeSessionId,
+      task = task,
+      event = com.opencray.runtime.OpenCrayToolResultEvent(
+        runId = run.runId,
+        taskId = task.id,
+        turn = 0,
+        call = AgentToolCall(toolName = "Read"),
+        result = AgentToolResult(
+          toolName = "Read",
+          status = AgentToolResultStatus.SUCCESS,
+          content = "Project uses the Gradle wrapper from the repo root.",
+        ),
+        emittedAtEpochMs = 1_000L,
+      ),
+    )
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "Next I will run the targeted runtime tests.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata,
+      ),
+    )
+
+    val writtenKinds = memoryStore.list().mapNotNull { record -> record.extensions["kind"] }.sorted()
+    val runtimeActivity = hostRuntime.loadChatSnapshot()["runtimeActivity"] as Map<*, *>
+    val events = runtimeActivity["events"] as List<*>
+    val memoryEvent = events.last() as Map<*, *>
+
+    assertEquals(
+      listOf("durable_instruction", "project_fact", "task_commitment", "user_preference"),
+      writtenKinds,
+    )
+    assertEquals("memory_write", memoryEvent["kind"])
+    assertEquals(run.runId, memoryEvent["runId"])
+    assertEquals(listOf("durable_instruction", "project_fact", "task_commitment", "user_preference"), memoryEvent["writtenKinds"])
+  }
+
+  @Test
+  fun approvalRequiredTaskDoesNotWriteMemory() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-memory-approval"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val memoryStore = InMemoryMemoryStore()
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(memoryStore = memoryStore),
+    )
+
+    hostRuntime.submitChatMessage("Please default to PowerShell commands.")
+    val task = handle.submittedTasks.single()
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.DENIED,
+        errorCode = "APPROVAL_REQUIRED",
+        errorMessage = "Approval is required before Write can run.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata,
+      ),
+    )
+
+    assertTrue(memoryStore.list().isEmpty())
+  }
+
+  @Test
+  fun taskSuccessReportsResolvedAndExpiredCommitmentsInMemoryWriteEvent() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-memory-maintenance"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val memoryStore = InMemoryMemoryStore().apply {
+      upsert(
+        taskCommitmentRecord(
+          id = "commitment-open",
+          content = "run the targeted runtime tests",
+          sourceSessionId = activeSessionId,
+          updatedAtEpochMs = 1_000L,
+        ),
+      )
+      upsert(
+        taskCommitmentRecord(
+          id = "commitment-expired",
+          content = "clean up the temporary transcript snapshot",
+          sourceSessionId = activeSessionId,
+          updatedAtEpochMs = 1_000L,
+          ttlMs = 100L,
+          lastConfirmedAtEpochMs = 1_050L,
+        ),
+      )
+    }
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(
+        memoryStore = memoryStore,
+        writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
+        taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 2_000L }),
+      ),
+    )
+
+    hostRuntime.submitChatMessage("Please continue.")
+    val task = handle.submittedTasks.single()
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "I ran the targeted runtime tests and updated the docs.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata,
+      ),
+    )
+
+    val runtimeActivity = hostRuntime.loadChatSnapshot()["runtimeActivity"] as Map<*, *>
+    val events = runtimeActivity["events"] as List<*>
+    val memoryEvent = events.last() as Map<*, *>
+
+    assertEquals("memory_write", memoryEvent["kind"])
+    assertEquals(listOf("commitment-open"), memoryEvent["resolvedRecordIds"])
+    assertEquals(listOf("commitment-expired"), memoryEvent["expiredRecordIds"])
+    assertEquals("resolved", memoryStore.list().single { record -> record.id == "commitment-open" }.extensions["status"])
+    assertTrue(memoryStore.list().none { record -> record.id == "commitment-expired" })
+  }
+
+  @Test
+  fun memoryWriteFailureDoesNotBreakTaskCompletionPath() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-memory-failure"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(memoryStore = FailingMemoryStore()),
+    )
+
+    hostRuntime.submitChatMessage("Please default to Chinese replies.")
+    val task = handle.submittedTasks.single()
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "All good.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata,
+      ),
+    )
+
+    val messages = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+
+    assertEquals("All good.", messages.last().text)
+  }
+
+  @Test
   fun approvalRequiredFailureAppearsInPendingApprovals() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approval-pending"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -421,14 +640,14 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
-  fun approveChatApprovalRetriesTaskAndRestoresThinkingPlaceholder() {
-    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approval-retry"))
+  fun approveChatApprovalResumesTaskAndRestoresThinkingPlaceholder() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approval-resume"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
     val manager = RecordingRuntimeManager()
     val handle = RecordingSessionHandle(
       sessionId = activeSessionId,
       onResume = manager.resumedSessionIds::add,
-      retryResult = true,
+      resumeResult = true,
     )
     manager.putHandle(handle)
     val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
@@ -456,7 +675,7 @@ class OpenCrayHostRuntimeTest {
     val messages = chatStore.loadState().activeSession.messages
       .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
 
-    assertEquals(listOf(task.id), handle.retriedTaskIds)
+    assertEquals(listOf(task.id), handle.resumedTaskIds)
     assertTrue(pendingApprovals.isEmpty())
     assertEquals("Thinking", messages.last().text)
   }
@@ -469,7 +688,7 @@ class OpenCrayHostRuntimeTest {
     val handle = RecordingSessionHandle(
       sessionId = activeSessionId,
       onResume = manager.resumedSessionIds::add,
-      retryResult = true,
+      resumeResult = true,
     )
     manager.putHandle(handle)
     val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
@@ -495,7 +714,8 @@ class OpenCrayHostRuntimeTest {
     val snapshot = hostRuntime.loadChatSnapshot()
     val pendingApprovals = snapshot["pendingApprovals"] as List<*>
 
-    assertTrue(handle.retriedTaskIds.isEmpty())
+    assertEquals(listOf(task.id), handle.cancelledTaskIds)
+    assertTrue(handle.resumedTaskIds.isEmpty())
     assertTrue(pendingApprovals.isEmpty())
   }
 
@@ -607,6 +827,7 @@ class OpenCrayHostRuntimeTest {
     llmConfigFacade: LlmConfigFacade = RecordingLlmConfigFacade(),
     personalizationFacade: PersonalizationFacade = RecordingPersonalizationFacade(),
     mcpSettingsFacade: McpSettingsFacade = RecordingMcpSettingsFacade(),
+    memoryIngestionCoordinator: ChatMemoryIngestionCoordinator? = null,
   ): OpenCrayHostRuntime = OpenCrayHostRuntime.createForTest(
     stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
     chatSessionStore = chatStore,
@@ -615,6 +836,7 @@ class OpenCrayHostRuntimeTest {
     personalizationFacade = personalizationFacade,
     mcpSettingsFacade = mcpSettingsFacade,
     sessionRuntimeManager = runtimeManager,
+    memoryIngestionCoordinator = memoryIngestionCoordinator,
     strings = HostRuntimeStrings(
       localeTag = "en",
       shellHostLabel = "HOST CONNECTED",
@@ -880,14 +1102,14 @@ class OpenCrayHostRuntimeTest {
     override val sessionId: String,
     private val onResume: ((String) -> Unit)? = null,
     private val submitFailure: Throwable? = null,
-    private val retryResult: Boolean = false,
+    private val resumeResult: Boolean = false,
   ) : AgentSessionHandle {
     val submittedInputs = mutableListOf<String>()
     val submittedTasks = mutableListOf<AgentTask>()
     val submissions = mutableListOf<AgentRunSubmission>()
     val ensureProcessingTaskIds = mutableListOf<String>()
     val cancelledTaskIds = mutableListOf<String>()
-    val retriedTaskIds = mutableListOf<String>()
+    val resumedTaskIds = mutableListOf<String>()
     private var lastSubmittedTaskId: String? = null
     private val runSnapshotsById = linkedMapOf<String, AgentRunSnapshot>()
 
@@ -949,8 +1171,12 @@ class OpenCrayHostRuntimeTest {
     }
 
     override fun requestRetry(taskId: String): Boolean {
-      retriedTaskIds += taskId
-      return retryResult
+      return false
+    }
+
+    override fun requestResumeTask(taskId: String): Boolean {
+      resumedTaskIds += taskId
+      return resumeResult
     }
 
     override fun listRuns(): List<AgentRunSnapshot> = runSnapshotsById.values.toList()
@@ -985,5 +1211,62 @@ class OpenCrayHostRuntimeTest {
       assistantMessageId: String,
       assistantPlaceholderText: String,
     ): ChatSessionsState = error("transcript persistence failed")
+  }
+
+  private class InMemoryMemoryStore : MemoryStore {
+    private val records = linkedMapOf<String, MemoryRecord>()
+
+    override fun list(): List<MemoryRecord> = records.values.toList()
+
+    override fun upsert(record: MemoryRecord) {
+      records[record.id] = record
+    }
+
+    override fun delete(id: String): Boolean = records.remove(id) != null
+
+    override fun clear(): Boolean {
+      val hadRecords = records.isNotEmpty()
+      records.clear()
+      return hadRecords
+    }
+  }
+
+  private fun taskCommitmentRecord(
+    id: String,
+    content: String,
+    sourceSessionId: String,
+    updatedAtEpochMs: Long,
+    ttlMs: Long = 14L * 24L * 60L * 60L * 1000L,
+    lastConfirmedAtEpochMs: Long = updatedAtEpochMs,
+  ): MemoryRecord = MemoryRecord(
+    id = id,
+    content = content,
+    createdAtEpochMs = updatedAtEpochMs,
+    updatedAtEpochMs = updatedAtEpochMs,
+    tags = listOf(
+      "kind:task_commitment",
+      "scope:session",
+      "status:open",
+    ),
+    extensions = mapOf(
+      MemoryRecordExtensionKeys.KIND to "task_commitment",
+      MemoryRecordExtensionKeys.SCOPE to "session",
+      MemoryRecordExtensionKeys.STATUS to "open",
+      MemoryRecordExtensionKeys.SOURCE_SESSION_ID to sourceSessionId,
+      MemoryRecordExtensionKeys.TTL_MS to ttlMs.toString(),
+      MemoryRecordExtensionKeys.LAST_CONFIRMED_AT_EPOCH_MS to lastConfirmedAtEpochMs.toString(),
+    ),
+  )
+
+  private class FailingMemoryStore : MemoryStore {
+    override fun list(): List<MemoryRecord> = emptyList()
+
+    override fun upsert(record: MemoryRecord) {
+      error("memory store unavailable")
+    }
+
+    override fun delete(id: String): Boolean = false
+
+    override fun clear(): Boolean = false
   }
 }

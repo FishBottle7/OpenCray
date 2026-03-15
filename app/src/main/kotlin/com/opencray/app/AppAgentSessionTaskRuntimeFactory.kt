@@ -20,9 +20,13 @@ import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
 import com.opencray.runtime.OpenCrayToolDispatcher
 import com.opencray.runtime.OpenCrayToolDispatcherConfig
 import com.opencray.runtime.context.AgentRuntimeSessionContext
+import com.opencray.runtime.context.RuntimeConversationMessage
+import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.memory.MemoryRecallRequest
 import com.opencray.runtime.memory.MemoryRecallResult
 import com.opencray.runtime.memory.MemoryRetriever
+import com.opencray.runtime.session.InMemorySessionTranscriptStore
+import com.opencray.runtime.session.SessionTranscriptStore
 import java.io.File
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
@@ -38,8 +42,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val memoryRecordsProvider: () -> List<MemoryRecord> = { emptyList() },
   private val providerUserAgent: String = OpenCrayUserAgent.providerApi("0"),
   private val approvalRegistry: AgentTaskApprovalRegistry = AgentTaskApprovalRegistry(),
+  private val transcriptStoreProvider: (String) -> SessionTranscriptStore = { InMemorySessionTranscriptStore() },
 ) : AgentSessionTaskRuntimeFactory {
   private val todoStoresBySession: ConcurrentMap<String, AgentTodoStore> = ConcurrentHashMap()
+  private val transcriptStoresBySession: ConcurrentMap<String, SessionTranscriptStore> = ConcurrentHashMap()
   private val memoryRetriever: MemoryRetriever = MemoryRetriever()
 
   override fun create(
@@ -87,12 +93,14 @@ internal class AppAgentSessionTaskRuntimeFactory(
     val pendingMessageId = task.metadata[METADATA_PENDING_MESSAGE_ID].orEmpty()
     val visibleThroughMessageId = task.metadata[METADATA_VISIBLE_THROUGH_MESSAGE_ID].orEmpty()
     val approvalGrant = approvalRegistry.consumeApproved(sessionId, task.id)
+    val transcriptStore = transcriptStoreForSession(sessionId)
     val sessionContext = createSessionContext(
       sessionId = sessionId,
       visibleThroughMessageId = visibleThroughMessageId.takeIf(String::isNotBlank),
       excludedMessageIds = pendingMessageId.takeIf(String::isNotBlank)?.let(::setOf).orEmpty(),
       soulProfile = soulProfileProvider(),
       taskInput = task.input,
+      transcriptStore = transcriptStore,
     )
     val runtime = OpenCrayAgentRuntime(
       gateway = DefaultLiteLlmGateway(
@@ -136,11 +144,48 @@ internal class AppAgentSessionTaskRuntimeFactory(
       ),
       eventSink = eventSink,
     )
-    return runtime.execute(task, hooks)
+    val result = runtime.execute(task, hooks)
+    recordSuccessfulAssistantTurn(
+      sessionId = sessionId,
+      task = task,
+      result = result,
+    )
+    return result
   }
 
   internal fun todoStoreForSession(sessionId: String): AgentTodoStore =
     todoStoresBySession.computeIfAbsent(sessionId) { InMemoryAgentTodoStore() }
+
+  internal fun transcriptStoreForSession(sessionId: String): SessionTranscriptStore =
+    transcriptStoresBySession.computeIfAbsent(sessionId, transcriptStoreProvider)
+
+  internal fun recordApprovalRejection(
+    sessionId: String,
+    toolName: String?,
+    isHighRisk: Boolean,
+  ) {
+    transcriptStoreForSession(sessionId).appendIfDistinct(
+      RuntimeConversationMessage(
+        role = RuntimeConversationRole.TOOL,
+        content = buildString {
+          append("approval_rejected")
+          toolName
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?.let { resolvedToolName ->
+              append(" tool_name=")
+              append(resolvedToolName)
+            }
+          append(" outcome=user_rejected")
+          append(" executed=false")
+          if (isHighRisk) {
+            append(" risk=high_risk")
+          }
+          append(" next_step=await_user_instruction")
+        },
+      ),
+    )
+  }
 
   internal fun recalledMemoryFor(
     sessionId: String,
@@ -150,6 +195,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     request = MemoryRecallRequest(
       sessionId = sessionId,
       userInput = taskInput,
+      workspaceId = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider()),
     ),
   )
 
@@ -159,17 +205,57 @@ internal class AppAgentSessionTaskRuntimeFactory(
     excludedMessageIds: Set<String>,
     soulProfile: PersonalizationLocalStore.SoulProfile?,
     taskInput: String,
-  ): AgentRuntimeSessionContext = sessionContextFactory.create(
-    sessionId = sessionId,
-    visibleThroughMessageId = visibleThroughMessageId,
-    excludedMessageIds = excludedMessageIds,
-    soulProfile = soulProfile,
-  ).copy(
-    recalledMemory = recalledMemoryFor(
+    transcriptStore: SessionTranscriptStore,
+  ): AgentRuntimeSessionContext {
+    val baseContext = sessionContextFactory.create(
       sessionId = sessionId,
-      taskInput = taskInput,
-    ),
-  )
+      visibleThroughMessageId = visibleThroughMessageId,
+      excludedMessageIds = excludedMessageIds,
+      soulProfile = soulProfile,
+    )
+    transcriptStore.seedIfEmpty(baseContext.conversation)
+    taskInput.trim()
+      .takeIf(String::isNotBlank)
+      ?.let { normalizedInput ->
+        transcriptStore.appendIfDistinct(
+          RuntimeConversationMessage(
+            role = RuntimeConversationRole.USER,
+            content = normalizedInput,
+          ),
+        )
+      }
+    return baseContext.copy(
+      recalledMemory = recalledMemoryFor(
+        sessionId = sessionId,
+        taskInput = taskInput,
+      ),
+      conversation = transcriptStore.snapshot(),
+    )
+  }
+
+  private fun recordSuccessfulAssistantTurn(
+    sessionId: String,
+    task: AgentTask,
+    result: ExecutionResult,
+  ) {
+    if (task.type != com.opencray.core.contracts.AgentTaskType.PROMPT) {
+      return
+    }
+    if (result.status != ExecutionStatus.SUCCESS) {
+      return
+    }
+    result.stdout
+      .trim()
+      .takeIf(String::isNotBlank)
+      ?.let { assistantText ->
+        transcriptStoreForSession(sessionId).appendIfDistinct(
+          RuntimeConversationMessage(
+            role = RuntimeConversationRole.ASSISTANT,
+            content = assistantText,
+          ),
+        )
+      }
+  }
 
   companion object {
     const val ERROR_CODE_MISSING_LLM_CONFIG: String = "MISSING_LLM_CONFIG"

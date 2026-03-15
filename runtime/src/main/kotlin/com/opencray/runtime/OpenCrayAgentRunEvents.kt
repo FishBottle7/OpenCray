@@ -54,6 +54,17 @@ data class OpenCrayToolResultEvent(
   override val emittedAtEpochMs: Long,
 ) : OpenCrayAgentRunEvent
 
+data class OpenCrayMemoryWriteEvent(
+  override val runId: String,
+  override val taskId: String,
+  val writtenRecordIds: List<String> = emptyList(),
+  val writtenKinds: List<String> = emptyList(),
+  val resolvedRecordIds: List<String> = emptyList(),
+  val expiredRecordIds: List<String> = emptyList(),
+  override val turn: Int? = null,
+  override val emittedAtEpochMs: Long,
+) : OpenCrayAgentRunEvent
+
 interface OpenCrayAgentRuntimeEventSink {
   fun onRunEvent(task: com.opencray.core.contracts.AgentTask, event: OpenCrayAgentRunEvent) = Unit
 }

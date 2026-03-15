@@ -21,9 +21,12 @@ Phase 1 foundation now in progress:
 - preset resolution, prompt rendering, and compatibility seed mapping from `RuntimeSoulProfile` are covered by focused unit tests
 - the soul scaffold now includes a runtime-side prompt composer plus normalized extension handling so future host adapters can feed typed fields without depending on fragile string keys
 - app-side personalization storage now generates core typed soul extensions from preset selection and forwards them into `RuntimeSoulProfile.extensions`
-- `runtime/memory` now contains typed policy, deterministic candidate extraction, and structured record writing primitives, but they are not yet wired into post-turn ingestion or recall
+- `runtime/memory` now contains typed policy, deterministic candidate extraction, and structured record writing primitives
 - `runtime/memory` now also contains bounded recall, ranking, and prompt-layer rendering primitives, and `PromptAssembler` can inject a dedicated `Retrieved Memory` layer with report counts when callers provide recalled records
-- the live app path now reads persisted memory records through `AppAgentSessionTaskRuntimeFactory` before prompt assembly, but post-turn deterministic writes are still not wired
+- the live app path now reads persisted memory records through `AppAgentSessionTaskRuntimeFactory` before prompt assembly, and completed turns now flow through host-side deterministic memory ingestion
+- workspace identity is now derived from the app workspace root set and used consistently for workspace-scoped memory recall and writes
+- completed turns now also maintain session-scoped `task_commitment` memory deterministically, resolving completed commitments and expiring stale ones before new writes
+- host runtime activity now exposes `memory_write` events with written, resolved, and expired memory ids so memory maintenance stays debuggable from the live session surface
 - the next safe rollout step is wiring this soul foundation into the existing prompt path without reopening P0 ownership changes
 
 ## Remaining work after P0
@@ -38,11 +41,14 @@ Phase 1 foundation now in progress:
    - Add a memory candidate extractor after completed turns.
    - Gate writes through explicit policy instead of model-authored free-form dumps.
    - Start with `user_preference`, `project_fact`, `durable_instruction`, and `task_commitment`.
+   - Current status: post-turn writes, `task_commitment` resolve/expire maintenance, and host-visible `memory_write` summaries are now implemented.
+   - Remaining gaps: completion heuristics are still phrase-based and there is no operator-facing maintenance surface yet.
 
 3. Memory recall layer
    - Retrieve bounded memory relevant to the current session/task before the LLM call.
    - Keep recall budgeted and traceable in the context report.
-   - Remaining gaps: add workspace identity to the recall request and wire post-turn writes so recalled records stay fresh.
+   - Current status: recall is budgeted, workspace-aware, prompt-visible, and live app runs now refresh memory through post-turn deterministic writes.
+   - Remaining gaps: add deeper run/report visibility for why specific records were ranked in or pruned out.
 
 4. Runtime-visible skill inventory
    - Assemble an explicit inventory layer from managed skills roots.
@@ -73,6 +79,7 @@ Phase 1 foundation now in progress:
 10. Full context trace
    - Emit run-level trace data for layer composition, retrieved memories, skill capsules, pruning, and compaction.
    - Make postmortem inspection possible without re-running the session.
+    - Memory write activity is now visible at the host runtime layer; deeper cross-layer trace capture is still pending.
 
 ## Recommended execution order
 

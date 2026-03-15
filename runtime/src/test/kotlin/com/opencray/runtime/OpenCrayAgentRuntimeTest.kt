@@ -7,6 +7,7 @@ import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.RetryRequest
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
+import com.opencray.core.orchestrator.SuspensionRequest
 import com.opencray.llm.LiteLlmAttemptOutcome
 import com.opencray.llm.LiteLlmAttemptRecord
 import com.opencray.llm.LiteLlmCompletionMode
@@ -168,12 +169,15 @@ class OpenCrayAgentRuntimeTest {
       clock = IncrementingClock(start = 3_500L)::next,
     )
 
+    val suspensionRequests = mutableListOf<SuspensionRequest>()
     val result = runtime.execute(
       task = promptTask(
         input = "Write a note in safe mode.",
         metadata = mapOf("chatMode" to "SAFE"),
       ),
-      hooks = runtimeHooks(),
+      hooks = runtimeHooks(
+        onSuspend = suspensionRequests::add,
+      ),
     )
 
     assertEquals(ExecutionStatus.DENIED, result.status)
@@ -181,6 +185,7 @@ class OpenCrayAgentRuntimeTest {
     assertEquals("tool_approval_required", result.metadata["responseFormat"])
     assertEquals("1", result.metadata["toolCallCount"])
     assertEquals(1, gateway.requests.size)
+    assertEquals(listOf("APPROVAL_REQUIRED"), suspensionRequests.map(SuspensionRequest::reasonCode))
     assertTrue(!Files.exists(workspaceRoot.toPath().resolve("note.txt")))
   }
 
@@ -224,6 +229,7 @@ class OpenCrayAgentRuntimeTest {
           is OpenCrayToolCallEvent -> "tool_call"
           is OpenCrayToolResultEvent -> "tool_result"
           is OpenCrayAssistantEvent -> "assistant"
+          is OpenCrayMemoryWriteEvent -> "memory_write"
         }
       },
     )
@@ -470,9 +476,12 @@ class OpenCrayAgentRuntimeTest {
     createdAtEpochMs = 500L,
   )
 
-  private fun runtimeHooks(): RuntimeExecutionHooks = RuntimeExecutionHooks(
+  private fun runtimeHooks(
+    onSuspend: (SuspensionRequest) -> Unit = {},
+  ): RuntimeExecutionHooks = RuntimeExecutionHooks(
     isCancellationRequested = { false },
     requestRetry = { _: RetryRequest -> error("Retry not expected in OpenCrayAgentRuntimeTest.") },
+    requestSuspend = onSuspend,
   )
 
   private class IncrementingClock(

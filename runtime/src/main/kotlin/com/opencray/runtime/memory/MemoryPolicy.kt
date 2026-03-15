@@ -187,4 +187,6 @@ object MemoryRecordExtensionKeys {
   const val TTL_MS: String = "ttl_ms"
   const val FIRST_CONFIRMED_AT_EPOCH_MS: String = "first_confirmed_at_epoch_ms"
   const val LAST_CONFIRMED_AT_EPOCH_MS: String = "last_confirmed_at_epoch_ms"
+  const val RESOLVED_AT_EPOCH_MS: String = "resolved_at_epoch_ms"
+  const val RESOLUTION_REASON: String = "resolution_reason"
 }

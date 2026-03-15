@@ -49,9 +49,11 @@ import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.persistence.model.ChatTranscriptMessageEntry
 import com.opencray.persistence.model.ChatTranscriptRole
+import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayLifecycleEvent
+import com.opencray.runtime.OpenCrayMemoryWriteEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import java.util.ArrayDeque
@@ -71,6 +73,8 @@ internal class OpenCrayHostRuntime private constructor(
   private val workspaceSnapshotProvider: () -> Map<String, Any?>,
   private val sessionRuntimeManager: AgentSessionRuntimeManager,
   private val approvalRegistry: AgentTaskApprovalRegistry,
+  private val memoryIngestionCoordinator: ChatMemoryIngestionCoordinator? = null,
+  private val approvalReplayRecorder: (String, String?, Boolean) -> Unit = { _, _, _ -> },
   private var strings: HostRuntimeStrings,
   private val mainThreadPoster: MainThreadPoster,
 ) {
@@ -94,7 +98,8 @@ internal class OpenCrayHostRuntime private constructor(
         override fun onTaskFinished(sessionId: String, task: AgentTask, result: ExecutionResult) {
           val pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
             ?.takeIf(String::isNotBlank)
-          synchronized(lock) {
+          val completedTurn = synchronized(lock) {
+            val finalText = finalTextFor(result)
             if (isApprovalRequiredResult(result)) {
               recordPendingApprovalLocked(sessionId = sessionId, task = task, result = result)
             } else {
@@ -106,7 +111,47 @@ internal class OpenCrayHostRuntime private constructor(
                 sessionId = sessionId,
                 messageId = messageId,
                 role = ChatTranscriptRole.ASSISTANT,
-                text = finalTextFor(result),
+                text = finalText,
+              )
+            }
+            CompletedTurnForMemoryIngestion(
+              sessionId = sessionId,
+              task = task,
+              result = result,
+              userInput = resolvedUserTextLocked(
+                sessionId = sessionId,
+                pendingMessageId = pendingMessageId,
+                task = task,
+              ),
+              assistantOutput = finalText,
+              toolObservations = successfulToolObservationsLocked(sessionId = sessionId, task = task),
+            )
+          }
+          val ingestionSummary = runCatching {
+            memoryIngestionCoordinator?.ingestCompletedTurn(
+              sessionId = completedTurn.sessionId,
+              task = completedTurn.task,
+              result = completedTurn.result,
+              userInput = completedTurn.userInput,
+              assistantOutput = completedTurn.assistantOutput,
+              toolObservations = completedTurn.toolObservations,
+            )
+          }.getOrNull()
+          if (ingestionSummary != null && !ingestionSummary.isEmpty) {
+            synchronized(lock) {
+              recordRuntimeEventLocked(
+                sessionId = completedTurn.sessionId,
+                event = OpenCrayMemoryWriteEvent(
+                  runId = runIdFor(completedTurn.task),
+                  taskId = completedTurn.task.id,
+                  writtenRecordIds = ingestionSummary.writtenRecords.map { record -> record.id },
+                  writtenKinds = ingestionSummary.writtenRecords.mapNotNull { record ->
+                    record.extensions["kind"]
+                  }.distinct().sorted(),
+                  resolvedRecordIds = ingestionSummary.resolvedRecords.map { record -> record.id },
+                  expiredRecordIds = ingestionSummary.expiredRecordIds,
+                  emittedAtEpochMs = completedTurn.result.finishedAtEpochMs,
+                ),
               )
             }
           }
@@ -446,10 +491,10 @@ internal class OpenCrayHostRuntime private constructor(
       val approval = pendingApprovalForIdentifier(activeSessionId, taskId)
         ?: error("Pending approval '$taskId' is unavailable.")
       approvalRegistry.markApproved(activeSessionId, approval.taskId, toolName = approval.toolName)
-      val retried = sessionRuntimeManager.forSession(activeSessionId).requestRetry(approval.taskId)
-      if (!retried) {
+      val resumed = sessionRuntimeManager.forSession(activeSessionId).requestResumeTask(approval.taskId)
+      if (!resumed) {
         approvalRegistry.clear(activeSessionId, approval.taskId)
-        error("Unable to retry pending approval '$taskId'.")
+        error("Unable to resume pending approval '$taskId'.")
       }
       clearPendingApprovalLocked(activeSessionId, approval.taskId)
       approval.pendingMessageId?.let { pendingMessageId ->
@@ -470,7 +515,13 @@ internal class OpenCrayHostRuntime private constructor(
       val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
       val approval = pendingApprovalForIdentifier(activeSessionId, taskId)
         ?: error("Pending approval '$taskId' is unavailable.")
+      approvalReplayRecorder(
+        activeSessionId,
+        approval.toolName,
+        approval.isHighRisk,
+      )
       approvalRegistry.markRejected(activeSessionId, approval.taskId)
+      sessionRuntimeManager.forSession(activeSessionId).requestCancel(approval.taskId)
       clearPendingApprovalLocked(activeSessionId, approval.taskId)
     }
     emitChatSnapshot()
@@ -542,6 +593,7 @@ internal class OpenCrayHostRuntime private constructor(
 
         QueueTaskLifecycleState.COMPLETED,
         QueueTaskLifecycleState.CANCELLED,
+        QueueTaskLifecycleState.SUSPENDED,
         QueueTaskLifecycleState.FAILED,
         -> false
       }
@@ -559,7 +611,8 @@ internal class OpenCrayHostRuntime private constructor(
     snapshot.tasks
       .asSequence()
       .filter { taskSnapshot ->
-        taskSnapshot.lifecycleState == QueueTaskLifecycleState.FAILED &&
+        (taskSnapshot.lifecycleState == QueueTaskLifecycleState.SUSPENDED ||
+          taskSnapshot.lifecycleState == QueueTaskLifecycleState.FAILED) &&
           isApprovalRequiredError(taskSnapshot.lastErrorCode)
       }
       .map { taskSnapshot ->
@@ -646,6 +699,44 @@ internal class OpenCrayHostRuntime private constructor(
     while (events.size > MAX_RUNTIME_EVENT_HISTORY) {
       events.removeFirst()
     }
+  }
+
+  private fun successfulToolObservationsLocked(sessionId: String, task: AgentTask): List<String> {
+    val runId = runIdFor(task)
+    return runtimeEventsBySession[sessionId]
+      ?.asSequence()
+      ?.filter { event -> event.runId == runId }
+      ?.mapNotNull { event ->
+        (event as? OpenCrayToolResultEvent)
+          ?.takeIf { toolEvent -> toolEvent.result.status == AgentToolResultStatus.SUCCESS }
+          ?.result
+          ?.content
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+      }
+      ?.distinct()
+      ?.toList()
+      .orEmpty()
+  }
+
+  private fun resolvedUserTextLocked(
+    sessionId: String,
+    pendingMessageId: String?,
+    task: AgentTask,
+  ): String {
+    val messageId = pendingMessageId?.takeIf(String::isNotBlank) ?: return task.input
+    val messages = chatSessionStore.loadSession(sessionId)?.messages.orEmpty()
+    val assistantIndex = messages.indexOfFirst { message -> message.messageId == messageId }
+    if (assistantIndex <= 0) {
+      return task.input
+    }
+    return messages
+      .take(assistantIndex)
+      .lastOrNull { message -> message.role == ChatTranscriptRole.USER }
+      ?.text
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: task.input
   }
 
   private fun runtimeActivitySnapshotLocked(sessionId: String): Map<String, Any?> {
@@ -769,6 +860,17 @@ internal class OpenCrayHostRuntime private constructor(
       "errorCode" to event.result.errorCode,
       "errorMessage" to event.result.errorMessage,
       "contentPreview" to event.result.content.take(MAX_RUNTIME_EVENT_PREVIEW_CHARS),
+    )
+    is OpenCrayMemoryWriteEvent -> mapOf(
+      "kind" to "memory_write",
+      "runId" to event.runId,
+      "taskId" to event.taskId,
+      "turn" to event.turn,
+      "emittedAtEpochMs" to event.emittedAtEpochMs,
+      "writtenRecordIds" to event.writtenRecordIds,
+      "writtenKinds" to event.writtenKinds,
+      "resolvedRecordIds" to event.resolvedRecordIds,
+      "expiredRecordIds" to event.expiredRecordIds,
     )
   }
 
@@ -1258,6 +1360,7 @@ internal class OpenCrayHostRuntime private constructor(
       },
       sessionRuntimeManager: AgentSessionRuntimeManager,
       approvalRegistry: AgentTaskApprovalRegistry = AgentTaskApprovalRegistry(),
+      memoryIngestionCoordinator: ChatMemoryIngestionCoordinator? = null,
       strings: HostRuntimeStrings = HostRuntimeStrings(
         localeTag = "en",
         shellHostLabel = "HOST CONNECTED",
@@ -1296,6 +1399,8 @@ internal class OpenCrayHostRuntime private constructor(
       workspaceSnapshotProvider = workspaceSnapshotProvider,
       sessionRuntimeManager = sessionRuntimeManager,
       approvalRegistry = approvalRegistry,
+      memoryIngestionCoordinator = memoryIngestionCoordinator,
+      approvalReplayRecorder = { _, _, _ -> },
       strings = strings,
       mainThreadPoster = mainThreadPoster,
     )
@@ -1313,12 +1418,30 @@ internal class OpenCrayHostRuntime private constructor(
       val chatExecutor: ExecutorService = Executors.newSingleThreadExecutor()
       val chatContextFactory = ChatRuntimeSessionContextFactory(chatSessionStore)
       val approvalRegistry = AgentTaskApprovalRegistry()
+      val workspaceRootProvider = { setOf(AppAgentWorkspace.ensureRootForContext(appContext)) }
       val workspaceSnapshotProvider = {
         AppAgentWorkspaceSnapshotFactory.createSnapshot(
-          AppAgentWorkspace.ensureRootForContext(appContext),
+          workspaceRootProvider().first(),
         ).toMap()
       }
+      val transcriptStoreFactory = FileBackedAgentSessionTranscriptStoreFactory.fromContext(appContext)
+      val memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(
+        memoryStore = personalizationStore.asMemoryStore(),
+        workspaceIdProvider = { AppWorkspaceIdentity.fromRoots(workspaceRootProvider()) },
+      )
       lateinit var hostRuntime: OpenCrayHostRuntime
+      val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+        llmSettingsProvider = { llmSettingsStore.load() },
+        sessionContextFactory = chatContextFactory,
+        soulProfileProvider = { personalizationStore.loadSoulProfile() },
+        workspaceRootsProvider = workspaceRootProvider,
+        skillsRootsProvider = { hostRuntime.currentEnabledSkillRoots() },
+        mcpReportProvider = { hostRuntime.currentMcpExposureReport() },
+        memoryRecordsProvider = personalizationStore::listMemoryRecords,
+        providerUserAgent = providerUserAgent,
+        approvalRegistry = approvalRegistry,
+        transcriptStoreProvider = transcriptStoreFactory::forChatSession,
+      )
       val personalizationFacade = LocalPersonalizationFacade.createForTest(
         context = localizedContext,
         store = personalizationStore,
@@ -1344,21 +1467,13 @@ internal class OpenCrayHostRuntime private constructor(
         workspaceSnapshotProvider = workspaceSnapshotProvider,
         sessionRuntimeManager = DefaultAgentSessionRuntimeManager(
           agentId = "opencray-flutter-host",
-          runtimeFactory = AppAgentSessionTaskRuntimeFactory(
-            llmSettingsProvider = { llmSettingsStore.load() },
-            sessionContextFactory = chatContextFactory,
-            soulProfileProvider = { personalizationStore.loadSoulProfile() },
-            workspaceRootsProvider = { setOf(AppAgentWorkspace.ensureRootForContext(appContext)) },
-            skillsRootsProvider = { hostRuntime.currentEnabledSkillRoots() },
-            mcpReportProvider = { hostRuntime.currentMcpExposureReport() },
-            memoryRecordsProvider = personalizationStore::listMemoryRecords,
-            providerUserAgent = providerUserAgent,
-            approvalRegistry = approvalRegistry,
-          ),
+          runtimeFactory = runtimeFactory,
           snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
           executor = chatExecutor,
         ),
         approvalRegistry = approvalRegistry,
+        memoryIngestionCoordinator = memoryIngestionCoordinator,
+        approvalReplayRecorder = runtimeFactory::recordApprovalRejection,
         strings = localizedHostRuntimeStrings(localizedContext),
         mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
       )
@@ -1435,6 +1550,15 @@ internal data class HostRuntimeStrings(
   val chatHighRiskApprovalRequiredBody: String = "High-risk approval required. Review this request carefully before approving.",
   val chatApprovalApproveLabel: String = "Approve",
   val chatApprovalRejectLabel: String = "Reject",
+)
+
+private data class CompletedTurnForMemoryIngestion(
+  val sessionId: String,
+  val task: AgentTask,
+  val result: ExecutionResult,
+  val userInput: String,
+  val assistantOutput: String,
+  val toolObservations: List<String>,
 )
 
 private data class PendingApprovalSnapshot(

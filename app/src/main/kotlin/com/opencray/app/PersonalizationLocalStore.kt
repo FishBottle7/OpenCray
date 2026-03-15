@@ -3,6 +3,7 @@ package com.opencray.app
 import android.content.Context
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.model.SoulRecord
+import com.opencray.persistence.store.MemoryStore
 import com.opencray.persistence.store.SessionStoreQueueSnapshotStore
 import com.opencray.persistence.store.file.JsonFileMemoryStore
 import com.opencray.persistence.store.file.JsonFileSessionStore
@@ -75,6 +76,8 @@ internal class PersonalizationLocalStore(
   internal fun upsertMemoryRecord(record: MemoryRecord) {
     memoryStore.upsert(record)
   }
+
+  internal fun asMemoryStore(): MemoryStore = memoryStore
 
   fun clearMemoryAndHistory() {
     memoryStore.clear()
