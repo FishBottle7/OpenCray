@@ -15,14 +15,18 @@ void main() {
         localeTag: 'en',
         enabled: false,
         providerId: 'openai',
+        selectedProviderOptionId: 'openai',
         protocol: 'openai',
         providerOptions: <LlmProviderOption>[
           LlmProviderOption(
             id: 'openai',
+            providerId: 'openai',
             title: 'OpenAI',
             subtitle: 'Official OpenAI-compatible endpoint.',
             defaultBaseUrl: 'https://api.openai.com/v1',
             defaultModel: 'gpt-4o-mini',
+            protocol: 'openai',
+            apiKey: '',
             isCustom: false,
           ),
         ],
@@ -71,14 +75,18 @@ void main() {
           localeTag: 'en',
           enabled: true,
           providerId: 'openai',
+          selectedProviderOptionId: 'openai',
           protocol: 'openai',
           providerOptions: <LlmProviderOption>[
             LlmProviderOption(
               id: 'openai',
+              providerId: 'openai',
               title: 'OpenAI',
               subtitle: 'Official OpenAI-compatible endpoint.',
               defaultBaseUrl: 'https://api.openai.com/v1',
               defaultModel: 'gpt-4o-mini',
+              protocol: 'openai',
+              apiKey: '',
               isCustom: false,
             ),
           ],
@@ -125,14 +133,18 @@ void main() {
           localeTag: 'en',
           enabled: true,
           providerId: 'custom',
+          selectedProviderOptionId: 'custom',
           protocol: 'openai',
           providerOptions: <LlmProviderOption>[
             LlmProviderOption(
               id: 'custom',
+              providerId: 'custom',
               title: 'Custom provider',
               subtitle: 'Any OpenAI-compatible or Anthropic endpoint.',
               defaultBaseUrl: '',
               defaultModel: '',
+              protocol: 'openai',
+              apiKey: '',
               isCustom: true,
             ),
           ],
@@ -182,6 +194,181 @@ void main() {
     },
   );
 
+  testWidgets('custom provider save action adds a reusable provider option', (
+    tester,
+  ) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: false,
+        providerId: 'custom',
+        selectedProviderOptionId: 'custom',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'custom',
+            providerId: 'custom',
+            title: 'Custom provider',
+            subtitle: 'Any OpenAI-compatible or Anthropic endpoint.',
+            defaultBaseUrl: '',
+            defaultModel: '',
+            protocol: 'openai',
+            apiKey: '',
+            isCustom: true,
+          ),
+        ],
+        providerName: 'Custom provider',
+        providerNotes: '',
+        baseUrl: '',
+        apiKey: '',
+        model: '',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.llm,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField).at(0), 'Acme');
+    await tester.enterText(find.byType(TextField).at(1), 'Regional fallback');
+    await tester.enterText(
+      find.byType(TextField).at(2),
+      'https://api.acme.example/v1',
+    );
+    await tester.enterText(find.byType(TextField).at(3), 'secret');
+    await tester.enterText(find.byType(TextField).at(4), 'claude-3-7-sonnet');
+
+    final onTap = tester
+        .widget<InkWell>(
+          find.byKey(const ValueKey<String>('settings-llm-save-provider')),
+        )
+        .onTap;
+    expect(onTap, isNotNull);
+    await tester.runAsync(() async {
+      final result = Function.apply(onTap!, const <Object?>[]);
+      if (result is Future<void>) {
+        await result;
+      }
+    });
+    await tester.pumpAndSettle();
+
+    expect(facade.llmConfig.selectedProviderOptionId, 'saved-custom');
+    expect(facade.llmConfig.providerOptions.last.title, 'Acme');
+    expect(facade.llmConfig.providerOptions.last.subtitle, 'Regional fallback');
+    expect(facade.llmConfig.providerOptions.last.apiKey, 'secret');
+  });
+
+  testWidgets(
+    'saved custom provider edits stay selected, show temporary hint, and overwrite on save',
+    (tester) async {
+      final facade = _FakeSettingsFacade(
+        llmConfig: const LlmConfigSnapshot(
+          localeTag: 'en',
+          enabled: true,
+          providerId: 'custom',
+          selectedProviderOptionId: 'saved-custom',
+          protocol: 'anthropic',
+          providerOptions: <LlmProviderOption>[
+            LlmProviderOption(
+              id: 'custom',
+              providerId: 'custom',
+              title: 'Custom provider',
+              subtitle: 'Any OpenAI-compatible or Anthropic endpoint.',
+              defaultBaseUrl: '',
+              defaultModel: '',
+              protocol: 'openai',
+              apiKey: '',
+              isCustom: true,
+            ),
+            LlmProviderOption(
+              id: 'saved-custom',
+              providerId: 'custom',
+              title: 'Acme',
+              subtitle: 'Regional fallback',
+              defaultBaseUrl: 'https://api.acme.example/v1',
+              defaultModel: 'claude-3-7-sonnet',
+              protocol: 'anthropic',
+              apiKey: 'secret',
+              isCustom: true,
+            ),
+          ],
+          providerName: 'Acme',
+          providerNotes: 'Regional fallback',
+          baseUrl: 'https://api.acme.example/v1',
+          apiKey: 'secret',
+          model: 'claude-3-7-sonnet',
+          reasoningEffort: 'high',
+          systemPrompt: '',
+          helperText: 'Helper text',
+        ),
+        validationResult: const LlmValidationResult(
+          isSuccess: true,
+          message: 'Validated.',
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.llm,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField).at(0), 'Acme Edge');
+      await tester.pump();
+
+      expect(find.text('Temp edit'), findsOneWidget);
+      expect(find.text('Best for larger provider lists.'), findsNothing);
+      expect(facade.llmConfig.selectedProviderOptionId, 'saved-custom');
+
+      final onTap = tester
+          .widget<InkWell>(
+            find.byKey(const ValueKey<String>('settings-llm-save-provider')),
+          )
+          .onTap;
+      expect(onTap, isNotNull);
+      await tester.runAsync(() async {
+        final result = Function.apply(onTap!, const <Object?>[]);
+        if (result is Future<void>) {
+          await result;
+        }
+      });
+      await tester.pumpAndSettle();
+
+      expect(find.text('Temp edit'), findsNothing);
+      expect(facade.llmConfig.selectedProviderOptionId, 'saved-custom');
+      expect(
+        facade.llmConfig.providerOptions.where(
+          (option) => option.id == 'saved-custom',
+        ),
+        hasLength(1),
+      );
+      expect(facade.llmConfig.providerOptions.last.title, 'Acme Edge');
+      expect(
+        facade.llmConfig.providerOptions.last.subtitle,
+        'Regional fallback',
+      );
+    },
+  );
+
   testWidgets(
     'about version page opens debug tools and renders memory trace details',
     (tester) async {
@@ -190,14 +377,18 @@ void main() {
           localeTag: 'en',
           enabled: false,
           providerId: 'openai',
+          selectedProviderOptionId: 'openai',
           protocol: 'openai',
           providerOptions: <LlmProviderOption>[
             LlmProviderOption(
               id: 'openai',
+              providerId: 'openai',
               title: 'OpenAI',
               subtitle: 'Official OpenAI-compatible endpoint.',
               defaultBaseUrl: 'https://api.openai.com/v1',
               defaultModel: 'gpt-4o-mini',
+              protocol: 'openai',
+              apiKey: '',
               isCustom: false,
             ),
           ],
@@ -293,6 +484,174 @@ void main() {
       expect(find.text('scope_mismatch: 1'), findsOneWidget);
       expect(find.text('expired: 2'), findsOneWidget);
     },
+  );
+
+  testWidgets('safety page saves mode and file delete policy changes', (
+    tester,
+  ) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: false,
+        providerId: 'openai',
+        selectedProviderOptionId: 'openai',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'openai',
+            providerId: 'openai',
+            title: 'OpenAI',
+            subtitle: 'Official OpenAI-compatible endpoint.',
+            defaultBaseUrl: 'https://api.openai.com/v1',
+            defaultModel: 'gpt-4o-mini',
+            protocol: 'openai',
+            apiKey: '',
+            isCustom: false,
+          ),
+        ],
+        providerName: 'OpenAI',
+        providerNotes: '',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: '',
+        model: 'gpt-4o-mini',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.safetyLimits,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('DEV'));
+    await tester.pumpAndSettle();
+
+    expect(facade.safetySettings.automationMode, SafetyAutomationMode.dev);
+
+    await tester.tap(find.text('Customize sensitive actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('File deletes'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Block'));
+    await tester.pumpAndSettle();
+
+    expect(facade.safetySettings.fileDeletesPolicy, ToolPolicyOverride.block);
+  });
+
+  testWidgets('safety page saves file change policy from dedicated page', (
+    tester,
+  ) async {
+    final facade = _buildSettingsFacade();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.safetyLimits,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Customize sensitive actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('File changes'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Inherit from mode'), findsOneWidget);
+
+    await tester.tap(find.text('Allow'));
+    await tester.pumpAndSettle();
+
+    expect(facade.safetySettings.fileChangesPolicy, ToolPolicyOverride.allow);
+  });
+
+  testWidgets(
+    'workspace access page saves profile and approved path navigation',
+    (tester) async {
+      final facade = _buildSettingsFacade();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.workspaceAccess,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('OPEN'));
+      await tester.pumpAndSettle();
+
+      expect(
+        facade.safetySettings.workspaceAccessProfile,
+        WorkspaceAccessProfile.open,
+      );
+
+      await tester.tap(find.byType(Switch));
+      await tester.pumpAndSettle();
+
+      expect(facade.safetySettings.readOnlyOutsideWorkspace, isFalse);
+
+      await tester.tap(find.text('Review approved paths'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Approved paths'), findsOneWidget);
+      expect(find.text('Workspace root'), findsOneWidget);
+      expect(find.text('Photo library'), findsOneWidget);
+    },
+  );
+}
+
+_FakeSettingsFacade _buildSettingsFacade() {
+  return _FakeSettingsFacade(
+    llmConfig: const LlmConfigSnapshot(
+      localeTag: 'en',
+      enabled: false,
+      providerId: 'openai',
+      selectedProviderOptionId: 'openai',
+      protocol: 'openai',
+      providerOptions: <LlmProviderOption>[
+        LlmProviderOption(
+          id: 'openai',
+          providerId: 'openai',
+          title: 'OpenAI',
+          subtitle: 'Official OpenAI-compatible endpoint.',
+          defaultBaseUrl: 'https://api.openai.com/v1',
+          defaultModel: 'gpt-4o-mini',
+          protocol: 'openai',
+          apiKey: '',
+          isCustom: false,
+        ),
+      ],
+      providerName: 'OpenAI',
+      providerNotes: '',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: '',
+      model: 'gpt-4o-mini',
+      reasoningEffort: 'medium',
+      systemPrompt: '',
+      helperText: 'Helper text',
+    ),
+    validationResult: const LlmValidationResult(
+      isSuccess: true,
+      message: 'Validated.',
+    ),
   );
 }
 
@@ -399,6 +758,24 @@ class _FakeSettingsFacade implements SettingsFacade {
       ),
     ],
   );
+  SafetySettingsSnapshot safetySettings = const SafetySettingsSnapshot(
+    automationMode: SafetyAutomationMode.auto,
+    rollbackJournalEnabled: true,
+    maxFilesPerBatch: 20,
+    undoWindowHours: 24,
+    fileChangesPolicy: ToolPolicyOverride.inherit,
+    fileDeletesPolicy: ToolPolicyOverride.inherit,
+    shellCommandsPolicy: ToolPolicyOverride.inherit,
+    externalAccessMode: ExternalAccessMode.selectPaths,
+    locations: <SafetyLocationSetting>[
+      SafetyLocationSetting(id: 'photo_library', enabled: true),
+      SafetyLocationSetting(id: 'downloads', enabled: true),
+      SafetyLocationSetting(id: 'documents', enabled: false),
+      SafetyLocationSetting(id: 'recordings', enabled: false),
+    ],
+    workspaceAccessProfile: WorkspaceAccessProfile.work,
+    readOnlyOutsideWorkspace: true,
+  );
   int saveCallCount = 0;
 
   @override
@@ -446,6 +823,7 @@ class _FakeSettingsFacade implements SettingsFacade {
   Future<LlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
     required String providerId,
+    required String selectedProviderOptionId,
     required String protocol,
     required String providerName,
     required String providerNotes,
@@ -460,8 +838,59 @@ class _FakeSettingsFacade implements SettingsFacade {
       localeTag: llmConfig.localeTag,
       enabled: enabled,
       providerId: providerId,
+      selectedProviderOptionId: selectedProviderOptionId,
       protocol: protocol,
       providerOptions: llmConfig.providerOptions,
+      providerName: providerName,
+      providerNotes: providerNotes,
+      baseUrl: baseUrl,
+      apiKey: apiKey,
+      model: model,
+      reasoningEffort: reasoningEffort,
+      systemPrompt: systemPrompt,
+      helperText: llmConfig.helperText,
+    );
+    return llmConfig;
+  }
+
+  @override
+  Future<LlmConfigSnapshot> saveCustomLlmProvider({
+    required String selectedProviderOptionId,
+    required String protocol,
+    required String providerName,
+    required String providerNotes,
+    required String baseUrl,
+    required String apiKey,
+    required String model,
+    required String reasoningEffort,
+    required String systemPrompt,
+  }) async {
+    saveCallCount += 1;
+    final savedOptionId = selectedProviderOptionId == 'custom'
+        ? 'saved-custom'
+        : selectedProviderOptionId;
+    final savedOption = LlmProviderOption(
+      id: savedOptionId,
+      providerId: 'custom',
+      title: providerName,
+      subtitle: providerNotes,
+      defaultBaseUrl: baseUrl,
+      defaultModel: model,
+      protocol: protocol,
+      apiKey: apiKey,
+      isCustom: true,
+    );
+    llmConfig = LlmConfigSnapshot(
+      localeTag: llmConfig.localeTag,
+      enabled: baseUrl.isNotEmpty && apiKey.isNotEmpty,
+      providerId: 'custom',
+      selectedProviderOptionId: savedOptionId,
+      protocol: protocol,
+      providerOptions: <LlmProviderOption>[
+        for (final option in llmConfig.providerOptions)
+          if (option.id != savedOptionId) option,
+        savedOption,
+      ],
       providerName: providerName,
       providerNotes: providerNotes,
       baseUrl: baseUrl,
@@ -517,6 +946,17 @@ class _FakeSettingsFacade implements SettingsFacade {
     required String serverId,
     required bool enabled,
   }) async => mcpSettings;
+
+  @override
+  Future<SafetySettingsSnapshot> loadSafetySettings() async => safetySettings;
+
+  @override
+  Future<SafetySettingsSnapshot> saveSafetySettings(
+    SafetySettingsSnapshot snapshot,
+  ) async {
+    safetySettings = snapshot;
+    return safetySettings;
+  }
 }
 
 class _FakeDebugBridge extends OpenCraySeedBridge {

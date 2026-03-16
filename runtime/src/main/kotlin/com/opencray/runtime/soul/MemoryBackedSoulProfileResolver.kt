@@ -139,7 +139,7 @@ class MemoryBackedSoulProfileResolver {
 
       MemoryPreferenceKeys.AGENT_VERBOSITY -> {
         if (!hasTypedVerbosity) {
-          val normalizedVerbosity = normalizeSoulExtensionKeyOrNull(preference.value)
+          val normalizedVerbosity = normalizeExtensionKeyOrNull(preference.value)
           when (normalizedVerbosity) {
             "terse",
             "balanced",
@@ -155,7 +155,7 @@ class MemoryBackedSoulProfileResolver {
     raw: String?,
     apply: (String) -> Unit,
   ): Boolean {
-    val normalized = normalizeSoulScalarOrNull(raw) ?: return false
+    val normalized = normalizeScalarOrNull(raw) ?: return false
     apply(normalized)
     return true
   }
@@ -165,10 +165,25 @@ class MemoryBackedSoulProfileResolver {
     extensions: MutableMap<String, String>,
     soulKey: String,
   ): Boolean {
-    val normalized = normalizeSoulExtensionKeyOrNull(raw) ?: return false
+    val normalized = normalizeExtensionKeyOrNull(raw) ?: return false
     extensions[soulKey] = normalized
     return true
   }
+
+  private fun normalizeScalarOrNull(raw: String?): String? =
+    raw
+      ?.replace(Regex("\\s+"), " ")
+      ?.trim()
+      ?.takeIf(String::isNotEmpty)
+
+  private fun normalizeExtensionKeyOrNull(raw: String?): String? =
+    raw
+      ?.replace(Regex("([a-z0-9])([A-Z])"), "$1_$2")
+      ?.replace(Regex("[\\s\\-]+"), "_")
+      ?.replace(Regex("_+"), "_")
+      ?.trim('_')
+      ?.lowercase()
+      ?.takeIf(String::isNotEmpty)
 
   private fun scopeMatches(
     scope: MemoryScope,

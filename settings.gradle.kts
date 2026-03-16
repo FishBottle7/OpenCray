@@ -1,3 +1,7 @@
 rootProject.name = "OpenCray"
 include(":app", ":core", ":runtime", ":skills", ":mcp", ":llm", ":persistence", ":policy", ":filesystem")
-apply(from = file("flutter_app/.android/include_flutter.groovy"))
+
+val flutterModuleScript = file("flutter_app/.android/include_flutter.groovy")
+if (flutterModuleScript.exists()) {
+  apply(from = flutterModuleScript)
+}
