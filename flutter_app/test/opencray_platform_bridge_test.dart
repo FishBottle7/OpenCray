@@ -219,6 +219,7 @@ void main() {
             'automationModeId': 'dev',
             'rollbackJournalEnabled': true,
             'maxFilesPerBatch': 20,
+            'maxAgentTurns': 0,
             'undoWindowHours': 24,
             'fileChangesPolicyId': 'inherit',
             'fileDeletesPolicyId': 'block',
@@ -239,6 +240,7 @@ void main() {
       automationModeId: 'dev',
       rollbackJournalEnabled: true,
       maxFilesPerBatch: 20,
+      maxAgentTurns: 0,
       undoWindowHours: 24,
       fileChangesPolicyId: 'inherit',
       fileDeletesPolicyId: 'block',
@@ -256,10 +258,35 @@ void main() {
     expect(capturedCall.arguments, isA<Map<Object?, Object?>>());
     final arguments = capturedCall.arguments as Map<Object?, Object?>;
     expect(arguments['automationModeId'], 'dev');
+    expect(arguments['maxAgentTurns'], 0);
     expect(arguments['fileDeletesPolicyId'], 'block');
     expect(snapshot.automationModeId, 'dev');
+    expect(snapshot.maxAgentTurns, 0);
     expect(snapshot.fileDeletesPolicyId, 'block');
   });
+
+  test(
+    'platform bridge authorizes external access over the host channel',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return true;
+          });
+
+      final granted = await bridge.authorizeExternalAccessLocation(
+        'photo_library',
+      );
+
+      expect(capturedCall.method, 'authorizeExternalAccessLocation');
+      expect(capturedCall.arguments, isA<Map<Object?, Object?>>());
+      final arguments = capturedCall.arguments as Map<Object?, Object?>;
+      expect(arguments['locationId'], 'photo_library');
+      expect(granted, isTrue);
+    },
+  );
 
   test('platform bridge loads text preview payloads', () async {
     late MethodCall capturedCall;

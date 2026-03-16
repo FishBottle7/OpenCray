@@ -28,6 +28,13 @@ import com.opencray.app.facade.personalization.PersonalizationPresetSnapshot
 import com.opencray.app.facade.personalization.PersonalizationResetActionSnapshot
 import com.opencray.app.facade.personalization.PersonalizationResetScope
 import com.opencray.app.facade.personalization.SavePersonalizationConfigRequest
+import com.opencray.app.facade.search.EmptyNetworkSearchConfigFacade
+import com.opencray.app.facade.search.LocalNetworkSearchConfigFacade
+import com.opencray.app.facade.search.NetworkSearchConfigFacade
+import com.opencray.app.facade.search.NetworkSearchConfigSnapshot
+import com.opencray.app.facade.search.NetworkSearchSlotSnapshot
+import com.opencray.app.facade.search.SaveNetworkSearchConfigRequest
+import com.opencray.app.facade.search.SaveNetworkSearchSlotRequest
 import com.opencray.app.facade.safety.EmptySafetySettingsFacade
 import com.opencray.app.facade.safety.LocalSafetySettingsFacade
 import com.opencray.app.facade.safety.SaveSafetySettingsRequest
@@ -80,12 +87,19 @@ internal class OpenCrayHostRuntime private constructor(
   private val stateStore: AppShellStateStore,
   private val chatSessionStore: ChatSessionLocalStore,
   private var settingsFacade: SettingsFacade,
+  private var networkSearchConfigFacade: NetworkSearchConfigFacade,
   private var llmConfigFacade: LlmConfigFacade,
   private var personalizationFacade: PersonalizationFacade,
   private var mcpSettingsFacade: McpSettingsFacade,
   private var safetySettingsFacade: SafetySettingsFacade,
   private var skillsFacade: SkillsFacade,
   private val workspaceRootProvider: (() -> Path)?,
+  private val approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot = {
+    ApprovedReadRootsSnapshot(
+      roots = emptySet(),
+      summary = "workspace=unavailable",
+    )
+  },
   private val workspaceSnapshotProvider: () -> Map<String, Any?>,
   private val sessionRuntimeManager: AgentSessionRuntimeManager,
   private val approvalRegistry: AgentTaskApprovalRegistry,
@@ -245,6 +259,31 @@ internal class OpenCrayHostRuntime private constructor(
     return synchronized(lock) { settingsFacade.loadDetail(routeId) }.toMap()
   }
 
+  fun loadNetworkSearchConfig(): Map<String, Any?> =
+    synchronized(lock) { networkSearchConfigFacade.load() }.toMap()
+
+  fun saveNetworkSearchConfig(
+    slots: List<Map<String, Any?>>,
+  ): Map<String, Any?> {
+    val snapshot = synchronized(lock) {
+      networkSearchConfigFacade.save(
+        SaveNetworkSearchConfigRequest(
+          slots = slots.map { slot ->
+            SaveNetworkSearchSlotRequest(
+              id = slot["id"]?.toString().orEmpty(),
+              providerId = slot["providerId"]?.toString().orEmpty(),
+              label = slot["label"]?.toString().orEmpty(),
+              apiKey = slot["apiKey"]?.toString().orEmpty(),
+              enabled = slot["enabled"] as? Boolean ?: true,
+            )
+          },
+        ),
+      )
+    }
+    emitSettingsOverview()
+    return snapshot.toMap()
+  }
+
   fun loadLlmConfig(): Map<String, Any?> =
     synchronized(lock) { llmConfigFacade.load() }.toMap()
 
@@ -397,6 +436,7 @@ internal class OpenCrayHostRuntime private constructor(
     automationModeId: String,
     rollbackJournalEnabled: Boolean,
     maxFilesPerBatch: Int,
+    maxAgentTurns: Int = SafetySettingsState.DEFAULT_MAX_AGENT_TURNS,
     undoWindowHours: Int,
     fileChangesPolicyId: String,
     fileDeletesPolicyId: String,
@@ -415,6 +455,7 @@ internal class OpenCrayHostRuntime private constructor(
           automationModeId = automationModeId,
           rollbackJournalEnabled = rollbackJournalEnabled,
           maxFilesPerBatch = maxFilesPerBatch,
+          maxAgentTurns = maxAgentTurns,
           undoWindowHours = undoWindowHours,
           fileChangesPolicyId = fileChangesPolicyId,
           fileDeletesPolicyId = fileDeletesPolicyId,
@@ -1208,6 +1249,8 @@ internal class OpenCrayHostRuntime private constructor(
     "errorMessage" to run.errorMessage,
     "responseFormat" to run.responseFormat,
     "memoryTrace" to memoryTraceFromMetadata(run.resultMetadata),
+    "skillInventory" to skillInventoryFromMetadata(run.resultMetadata),
+    "activeSkill" to activeSkillFromMetadata(run.resultMetadata),
     "pendingMessageId" to run.pendingMessageId,
     "managedProcessIds" to run.managedProcessIds,
     "runningManagedProcessCount" to run.runningManagedProcessCount,
@@ -1259,6 +1302,77 @@ internal class OpenCrayHostRuntime private constructor(
     }
   }
 
+  private fun skillInventoryFromMetadata(metadata: Map<String, String>): Map<String, Any?>? {
+    val visibleCount = metadata["contextVisibleSkillCount"]?.toIntOrNull()
+    val injectedCount = metadata["contextInjectedSkillCount"]?.toIntOrNull()
+    val omittedCount = metadata["contextOmittedSkillCount"]?.toIntOrNull()
+    val implicitCount = metadata["contextImplicitSkillCount"]?.toIntOrNull()
+    val invalidCount = metadata["contextInvalidSkillCount"]?.toIntOrNull()
+    val omittedTraceCount = metadata["contextVisibleSkillTraceOmittedCount"]?.toIntOrNull()
+    val skills = parseVisibleSkillTrace(metadata["contextVisibleSkillSummary"].orEmpty())
+    if (
+      visibleCount == null &&
+      injectedCount == null &&
+      omittedCount == null &&
+      implicitCount == null &&
+      invalidCount == null &&
+      omittedTraceCount == null &&
+      skills.isEmpty()
+    ) {
+      return null
+    }
+    return buildMap {
+      visibleCount?.let { put("visibleSkillCount", it) }
+      injectedCount?.let { put("injectedSkillCount", it) }
+      omittedCount?.let { put("omittedSkillCount", it) }
+      implicitCount?.let { put("implicitSkillCount", it) }
+      invalidCount?.let { put("invalidSkillCount", it) }
+      omittedTraceCount?.let { put("omittedTraceSkillCount", it) }
+      if (skills.isNotEmpty()) {
+        put("skills", skills)
+      }
+    }
+  }
+
+  private fun activeSkillFromMetadata(metadata: Map<String, String>): Map<String, Any?>? {
+    val name = metadata["contextActiveSkillName"]?.takeIf(String::isNotBlank)
+    val relativePath = metadata["contextActiveSkillRelativePath"]?.takeIf(String::isNotBlank)
+    val invocationControl = metadata["contextActiveSkillInvocationControl"]?.takeIf(String::isNotBlank)
+    val executionContext = metadata["contextActiveSkillExecutionContext"]?.takeIf(String::isNotBlank)
+    val activationSource = metadata["contextActiveSkillActivationSource"]?.takeIf(String::isNotBlank)
+    val toolRestrictionEnabled = metadata["contextActiveSkillToolRestrictionEnabled"]?.toBooleanStrictOrNull()
+    val truncated = metadata["contextActiveSkillTruncated"]?.toBooleanStrictOrNull()
+    val allowedToolKeys = metadata["contextActiveSkillAllowedTools"]
+      .orEmpty()
+      .split(',')
+      .map(String::trim)
+      .filter(String::isNotBlank)
+    if (
+      name == null &&
+      relativePath == null &&
+      invocationControl == null &&
+      executionContext == null &&
+      activationSource == null &&
+      toolRestrictionEnabled == null &&
+      truncated == null &&
+      allowedToolKeys.isEmpty()
+    ) {
+      return null
+    }
+    return buildMap {
+      name?.let { put("name", it) }
+      relativePath?.let { put("relativePath", it) }
+      invocationControl?.let { put("invocationControl", it) }
+      executionContext?.let { put("executionContext", it) }
+      activationSource?.let { put("activationSource", it) }
+      toolRestrictionEnabled?.let { put("toolRestrictionEnabled", it) }
+      truncated?.let { put("truncated", it) }
+      if (allowedToolKeys.isNotEmpty()) {
+        put("allowedToolKeys", allowedToolKeys)
+      }
+    }
+  }
+
   private fun parseSelectedMemoryTrace(raw: String): List<Map<String, Any?>> = raw
     .split(';')
     .map(String::trim)
@@ -1287,6 +1401,21 @@ internal class OpenCrayHostRuntime private constructor(
       mapOf(
         "id" to id,
         "reason" to reason,
+      )
+    }
+
+  private fun parseVisibleSkillTrace(raw: String): List<Map<String, Any?>> = raw
+    .split(';')
+    .map(String::trim)
+    .filter(String::isNotBlank)
+    .mapNotNull { token ->
+      val match = VISIBLE_SKILL_TRACE_REGEX.matchEntire(token) ?: return@mapNotNull null
+      mapOf(
+        "name" to match.groupValues[1],
+        "relativePath" to match.groupValues[2],
+        "invocationControl" to match.groupValues[3],
+        "userInvocable" to match.groupValues[4].toBooleanStrictOrNull(),
+        "executionContext" to match.groupValues[5],
       )
     }
 
@@ -1571,6 +1700,7 @@ internal class OpenCrayHostRuntime private constructor(
   private fun safetyMetadataForTask(
     snapshot: SafetySettingsSnapshot,
   ): Map<String, String> = buildMap {
+    val approvedReadRoots = approvedReadRootsProvider()
     put(SafetySettingsMetadataKeys.CHAT_MODE, snapshot.automationMode.chatMetadataLabel)
     put(
       SafetySettingsMetadataKeys.EXECUTION_MODE,
@@ -1587,6 +1717,22 @@ internal class OpenCrayHostRuntime private constructor(
     put(
       SafetySettingsMetadataKeys.SHELL_COMMANDS_POLICY_ID,
       snapshot.shellCommandsPolicy.wireValue,
+    )
+    put(
+      SafetySettingsMetadataKeys.EXTERNAL_ACCESS_MODE_ID,
+      snapshot.externalAccessMode.wireValue,
+    )
+    put(
+      SafetySettingsMetadataKeys.WORKSPACE_ACCESS_PROFILE_ID,
+      snapshot.workspaceAccessProfile.wireValue,
+    )
+    put(
+      SafetySettingsMetadataKeys.READ_ONLY_OUTSIDE_WORKSPACE,
+      snapshot.readOnlyOutsideWorkspace.toString(),
+    )
+    put(
+      SafetySettingsMetadataKeys.APPROVED_READ_ROOTS,
+      approvedReadRoots.summary,
     )
   }
 
@@ -1632,6 +1778,21 @@ internal class OpenCrayHostRuntime private constructor(
     "title" to title,
     "subtitle" to subtitle,
     "sections" to sections.map { section -> section.toMap() },
+  )
+
+  private fun NetworkSearchConfigSnapshot.toMap(): Map<String, Any?> = mapOf(
+    "localeTag" to localeTag,
+    "title" to title,
+    "subtitle" to subtitle,
+    "slots" to slots.map { slot -> slot.toMap() },
+  )
+
+  private fun NetworkSearchSlotSnapshot.toMap(): Map<String, Any?> = mapOf(
+    "id" to id,
+    "providerId" to providerId,
+    "label" to label,
+    "apiKey" to apiKey,
+    "enabled" to enabled,
   )
 
   private fun SettingsSectionSnapshot.toMap(): Map<String, Any?> = mapOf(
@@ -1781,6 +1942,7 @@ internal class OpenCrayHostRuntime private constructor(
     "automationModeId" to automationMode.wireValue,
     "rollbackJournalEnabled" to rollbackJournalEnabled,
     "maxFilesPerBatch" to maxFilesPerBatch,
+    "maxAgentTurns" to maxAgentTurns,
     "undoWindowHours" to undoWindowHours,
     "fileChangesPolicyId" to fileChangesPolicy.wireValue,
     "fileDeletesPolicyId" to fileDeletesPolicy.wireValue,
@@ -1910,6 +2072,8 @@ internal class OpenCrayHostRuntime private constructor(
     private const val MAX_RUNTIME_EVENT_PREVIEW_CHARS: Int = 240
     private const val DRAWER_PREVIEW_MAX_CHARS: Int = 52
     private val MEMORY_SELECTED_TRACE_REGEX: Regex = Regex("""^(.+?)@(\d+)(?:\[(.*)])?$""")
+    private val VISIBLE_SKILL_TRACE_REGEX: Regex =
+      Regex("""^([a-z0-9-]+)@(.+)\[([^\]|]+)\|(true|false)\|([^\]|]+)]$""")
 
     @Volatile
     private var instance: OpenCrayHostRuntime? = null
@@ -1925,12 +2089,25 @@ internal class OpenCrayHostRuntime private constructor(
       stateStore: AppShellStateStore,
       chatSessionStore: ChatSessionLocalStore,
       settingsFacade: SettingsFacade,
+      networkSearchConfigFacade: NetworkSearchConfigFacade = EmptyNetworkSearchConfigFacade,
       llmConfigFacade: LlmConfigFacade = EmptyLlmConfigFacade,
       personalizationFacade: PersonalizationFacade = EmptyPersonalizationFacade,
       mcpSettingsFacade: McpSettingsFacade = EmptyMcpSettingsFacade,
       safetySettingsFacade: SafetySettingsFacade = EmptySafetySettingsFacade,
       skillsFacade: SkillsFacade = EmptySkillsFacade,
       workspaceRootProvider: (() -> Path)? = null,
+      approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot = {
+        workspaceRootProvider?.invoke()?.let { workspaceRoot ->
+          val normalizedWorkspaceRoot = workspaceRoot.toAbsolutePath().normalize()
+          ApprovedReadRootsSnapshot(
+            roots = setOf(normalizedWorkspaceRoot),
+            summary = "workspace=${normalizedWorkspaceRoot.toString().replace('\\', '/')}",
+          )
+        } ?: ApprovedReadRootsSnapshot(
+          roots = emptySet(),
+          summary = "workspace=unavailable",
+        )
+      },
       workspaceSnapshotProvider: () -> Map<String, Any?> = {
         WorkspaceTreeSnapshot(
           rootName = AppAgentWorkspace.DIRECTORY_NAME,
@@ -1981,12 +2158,14 @@ internal class OpenCrayHostRuntime private constructor(
       stateStore = stateStore,
       chatSessionStore = chatSessionStore,
       settingsFacade = settingsFacade,
+      networkSearchConfigFacade = networkSearchConfigFacade,
       llmConfigFacade = llmConfigFacade,
       personalizationFacade = personalizationFacade,
       mcpSettingsFacade = mcpSettingsFacade,
       safetySettingsFacade = safetySettingsFacade,
       skillsFacade = skillsFacade,
       workspaceRootProvider = workspaceRootProvider,
+      approvedReadRootsProvider = approvedReadRootsProvider,
       workspaceSnapshotProvider = workspaceSnapshotProvider,
       sessionRuntimeManager = sessionRuntimeManager,
       approvalRegistry = approvalRegistry,
@@ -2007,17 +2186,27 @@ internal class OpenCrayHostRuntime private constructor(
       val skillsFacade = LocalSkillsFacade.fromContext(localizedContext)
       val mcpSettingsStore = McpSettingsStore.fromContext(appContext)
       val mcpRegistryStore = AppMcpRegistryStore.fromContext(appContext)
+      val webSearchSettingsStore = WebSearchSettingsStore.fromContext(appContext)
       val providerUserAgent = OpenCrayUserAgent.fromContext(appContext)
       val chatExecutor: ExecutorService = Executors.newSingleThreadExecutor()
       val chatContextFactory = ChatRuntimeSessionContextFactory(chatSessionStore)
       val approvalRegistry = AgentTaskApprovalRegistry()
       val workspaceRootProvider = { AppAgentWorkspace.ensureRootForContext(appContext) }
       val workspaceRootsProvider = { setOf(workspaceRootProvider()) }
+      val safetySettingsFacade = LocalSafetySettingsFacade.fromContext(appContext)
+      val approvedReadRootsProvider = {
+        ApprovedReadRootsResolver.resolve(
+          context = appContext,
+          workspaceRoot = workspaceRootProvider(),
+          safetySettings = safetySettingsFacade.load(),
+        )
+      }
       val workspaceSnapshotProvider = {
         AppAgentWorkspaceSnapshotFactory.createSnapshot(
           workspaceRootProvider(),
         ).toMap()
       }
+      val pythonRuntime = P4aPythonRuntime.fromContext(appContext)
       val transcriptStoreFactory = FileBackedAgentSessionTranscriptStoreFactory.fromContext(appContext)
       val processRegistryFactory = FileBackedAgentProcessRegistryFactory.fromContext(appContext)
       val liteLlmProviderClient = OpenAiCompatibleLiteLlmProviderClient(
@@ -2045,9 +2234,11 @@ internal class OpenCrayHostRuntime private constructor(
       lateinit var hostRuntime: OpenCrayHostRuntime
       val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
         llmSettingsProvider = { llmSettingsStore.load() },
+        safetySettingsProvider = { SafetySettingsStore.fromContext(appContext).load() },
         sessionContextFactory = chatContextFactory,
         soulProfileProvider = { personalizationStore.loadSoulProfile() },
         workspaceRootsProvider = workspaceRootsProvider,
+        readRootsProvider = { approvedReadRootsProvider().roots },
         skillsRootsProvider = { hostRuntime.currentEnabledSkillRoots() },
         mcpReportProvider = { hostRuntime.currentMcpExposureReport() },
         memoryRecordsProvider = personalizationStore::listMemoryRecords,
@@ -2055,6 +2246,13 @@ internal class OpenCrayHostRuntime private constructor(
         approvalRegistry = approvalRegistry,
         processRegistryProvider = processRegistryFactory::forChatSession,
         transcriptStoreProvider = transcriptStoreFactory::forChatSession,
+        pythonRuntimeProvider = { pythonRuntime },
+        webSearchProviderFactory = {
+          AppConfiguredWebSearchProviderFactory.create(
+            slots = webSearchSettingsStore.load(),
+            userAgent = providerUserAgent,
+          )
+        },
       )
       val personalizationFacade = LocalPersonalizationFacade.createForTest(
         context = localizedContext,
@@ -2074,12 +2272,14 @@ internal class OpenCrayHostRuntime private constructor(
         stateStore = AppShellStateStore.fromContext(appContext),
         chatSessionStore = chatSessionStore,
         settingsFacade = LocalSettingsFacade.fromContext(localizedContext),
+        networkSearchConfigFacade = LocalNetworkSearchConfigFacade.fromContext(localizedContext),
         llmConfigFacade = LocalLlmConfigFacade.fromContext(localizedContext),
         personalizationFacade = personalizationFacade,
         mcpSettingsFacade = mcpSettingsFacade,
-        safetySettingsFacade = LocalSafetySettingsFacade.fromContext(appContext),
+        safetySettingsFacade = safetySettingsFacade,
         skillsFacade = skillsFacade,
         workspaceRootProvider = workspaceRootProvider,
+        approvedReadRootsProvider = approvedReadRootsProvider,
         workspaceSnapshotProvider = workspaceSnapshotProvider,
         sessionRuntimeManager = DefaultAgentSessionRuntimeManager(
           agentId = "opencray-flutter-host",

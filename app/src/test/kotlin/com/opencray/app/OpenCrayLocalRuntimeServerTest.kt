@@ -7,6 +7,9 @@ import com.opencray.app.facade.llm.LlmValidationResult
 import com.opencray.app.facade.llm.SaveCustomLlmProviderRequest
 import com.opencray.app.facade.llm.SaveLlmConfigRequest
 import com.opencray.app.facade.llm.ValidateLlmConfigRequest
+import com.opencray.app.facade.search.EmptyNetworkSearchConfigFacade
+import com.opencray.app.facade.search.LocalNetworkSearchConfigFacade
+import com.opencray.app.facade.search.NetworkSearchConfigFacade
 import com.opencray.app.facade.settings.SettingsDetailSnapshot
 import com.opencray.app.facade.settings.SettingsFacade
 import com.opencray.app.facade.settings.SettingsOverviewSnapshot
@@ -27,6 +30,7 @@ import com.opencray.runtime.OpenCrayRunLifecyclePhase
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.file.Path
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -194,6 +198,64 @@ class OpenCrayLocalRuntimeServerTest {
         ),
         llmConfigFacade.lastSavedCustomRequest,
       )
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun forwardsNetworkSearchConfigRequestsToHostRuntime() {
+    val networkSearchConfigFacade = LocalNetworkSearchConfigFacade.createForTest(
+      WebSearchSettingsStore(InMemoryWebSearchSettingsKeyValueStore()),
+    )
+    val server = localRuntimeServer(networkSearchConfigFacade = networkSearchConfigFacade)
+    server.ensureStarted()
+
+    try {
+      val initialResponse = request(server, "GET", "/v1/network_search_config")
+      val initialPayload = JSONObject(initialResponse.body)
+
+      assertEquals(200, initialResponse.statusCode)
+      assertEquals("Network & Search", initialPayload.getString("title"))
+      assertEquals(0, initialPayload.getJSONArray("slots").length())
+
+      val saveResponse = request(
+        server,
+        "POST",
+        "/v1/save_network_search_config",
+        body = JSONObject().apply {
+          put(
+            "slots",
+            JSONArray().put(
+              JSONObject().apply {
+                put("id", "slot-primary")
+                put("providerId", "exa")
+                put("label", "Primary Exa")
+                put("apiKey", "exa-secret")
+                put("enabled", true)
+              },
+            ).put(
+              JSONObject().apply {
+                put("id", "slot-backup")
+                put("providerId", "brave")
+                put("label", "Backup Brave")
+                put("apiKey", "brave-secret")
+                put("enabled", false)
+              },
+            ),
+          )
+        }.toString(),
+      )
+      val savedPayload = JSONObject(saveResponse.body)
+      val savedSlots = savedPayload.getJSONArray("slots")
+
+      assertEquals(200, saveResponse.statusCode)
+      assertEquals(2, savedSlots.length())
+      assertEquals("exa", savedSlots.getJSONObject(0).getString("providerId"))
+      assertEquals("Primary Exa", savedSlots.getJSONObject(0).getString("label"))
+      assertEquals(true, savedSlots.getJSONObject(0).getBoolean("enabled"))
+      assertEquals("brave", savedSlots.getJSONObject(1).getString("providerId"))
+      assertEquals(false, savedSlots.getJSONObject(1).getBoolean("enabled"))
     } finally {
       server.close()
     }
@@ -630,8 +692,96 @@ class OpenCrayLocalRuntimeServerTest {
     }
   }
 
+  @Test
+  fun exposesSkillInventoryOverChatRunSnapshotRoute() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-skill-route"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeManager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      resumeResult = false,
+    )
+    runtimeManager.handle = handle
+    val hostRuntime = OpenCrayHostRuntime.createForTest(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      chatSessionStore = chatStore,
+      settingsFacade = NoOpSettingsFacade,
+      llmConfigFacade = EmptyLlmConfigFacade,
+      sessionRuntimeManager = runtimeManager,
+      strings = hostRuntimeStrings(),
+    )
+    val submission = hostRuntime.submitChatMessage("Need a run skill snapshot")!!
+    val task = handle.submittedTasks.single()
+    runtimeManager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = ExecutionStatus.SUCCESS,
+        stdout = "Completed with skill inventory.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          "contextVisibleSkillCount" to "2",
+          "contextInjectedSkillCount" to "2",
+          "contextOmittedSkillCount" to "0",
+          "contextImplicitSkillCount" to "1",
+          "contextInvalidSkillCount" to "1",
+          "contextVisibleSkillTraceOmittedCount" to "3",
+          "contextActiveSkillName" to "ui-ux-pro-max",
+          "contextActiveSkillRelativePath" to ".codex/skills/ui-ux-pro-max/SKILL.md",
+          "contextActiveSkillInvocationControl" to "explicit-only",
+          "contextActiveSkillExecutionContext" to "inline",
+          "contextActiveSkillActivationSource" to "skill_read",
+          "contextActiveSkillToolRestrictionEnabled" to "true",
+          "contextActiveSkillAllowedTools" to "read,write",
+          "contextActiveSkillTruncated" to "false",
+          "contextVisibleSkillSummary" to
+            "ui-ux-pro-max@.codex/skills/ui-ux-pro-max/SKILL.md[explicit-only|true|inline];" +
+            "fun-brainstorming@.codex/skills/fun-brainstorming/SKILL.md[explicit-and-implicit|true|fork]",
+        ),
+      ),
+    )
+    val server = OpenCrayLocalRuntimeServer(
+      hostRuntimeProvider = { hostRuntime },
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "GET",
+        "/v1/chat_run_snapshot?runId=${submission["runId"]}",
+      )
+      val payload = JSONObject(response.body)
+      val skillInventory = payload.getJSONObject("skillInventory")
+      val activeSkill = payload.getJSONObject("activeSkill")
+      val skills = skillInventory.getJSONArray("skills")
+
+      assertEquals(200, response.statusCode)
+      assertEquals(2, skillInventory.getInt("visibleSkillCount"))
+      assertEquals(2, skillInventory.getInt("injectedSkillCount"))
+      assertEquals(1, skillInventory.getInt("implicitSkillCount"))
+      assertEquals(1, skillInventory.getInt("invalidSkillCount"))
+      assertEquals(3, skillInventory.getInt("omittedTraceSkillCount"))
+      assertEquals("ui-ux-pro-max", skills.getJSONObject(0).getString("name"))
+      assertEquals(".codex/skills/ui-ux-pro-max/SKILL.md", skills.getJSONObject(0).getString("relativePath"))
+      assertTrue(skills.getJSONObject(0).getBoolean("userInvocable"))
+      assertEquals("fork", skills.getJSONObject(1).getString("executionContext"))
+      assertEquals("ui-ux-pro-max", activeSkill.getString("name"))
+      assertEquals("skill_read", activeSkill.getString("activationSource"))
+      assertTrue(activeSkill.getBoolean("toolRestrictionEnabled"))
+      assertEquals("read", activeSkill.getJSONArray("allowedToolKeys").getString(0))
+    } finally {
+      server.close()
+    }
+  }
+
   private fun localRuntimeServer(
     llmConfigFacade: LlmConfigFacade = EmptyLlmConfigFacade,
+    networkSearchConfigFacade: NetworkSearchConfigFacade = EmptyNetworkSearchConfigFacade,
     workspaceRootProvider: (() -> Path)? = null,
     workspaceSnapshotProvider: () -> Map<String, Any?> = {
       WorkspaceTreeSnapshot(
@@ -653,6 +803,7 @@ class OpenCrayLocalRuntimeServerTest {
           temporaryFolder.newFolder("chat-store-${System.nanoTime()}"),
         ),
         settingsFacade = NoOpSettingsFacade,
+        networkSearchConfigFacade = networkSearchConfigFacade,
         llmConfigFacade = llmConfigFacade,
         workspaceRootProvider = workspaceRootProvider,
         workspaceSnapshotProvider = workspaceSnapshotProvider,

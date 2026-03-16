@@ -80,4 +80,8 @@ object SafetySettingsMetadataKeys {
   const val FILE_CHANGES_POLICY_ID = "fileChangesPolicyId"
   const val FILE_DELETES_POLICY_ID = "fileDeletesPolicyId"
   const val SHELL_COMMANDS_POLICY_ID = "shellCommandsPolicyId"
+  const val EXTERNAL_ACCESS_MODE_ID = "externalAccessModeId"
+  const val WORKSPACE_ACCESS_PROFILE_ID = "workspaceAccessProfileId"
+  const val READ_ONLY_OUTSIDE_WORKSPACE = "readOnlyOutsideWorkspace"
+  const val APPROVED_READ_ROOTS = "approvedReadRoots"
 }

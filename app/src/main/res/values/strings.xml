@@ -55,7 +55,7 @@
     <string name="settings_card_workspace_access">Workspace Access</string>
     <string name="settings_card_llm">LLM</string>
     <string name="settings_card_mcp">MCP</string>
-    <string name="settings_card_privacy_telemetry">Privacy &amp; Telemetry</string>
+    <string name="settings_card_privacy_telemetry">Network &amp; Search</string>
     <string name="settings_card_safety_limits">Safety &amp; Limits</string>
     <string name="settings_card_about_version">About &amp; Version</string>
     <string name="settings_card_personalization">Personalization</string>
@@ -245,13 +245,16 @@
     <string name="personalization_preset_builder_voice">Base voice: concise, execution-first, and optimized for concrete next steps.</string>
     <string name="personalization_preset_warm_voice">Base voice: supportive, slightly warmer, and better for collaborative exploration.</string>
     <string name="settings_home_profile_title">OpenCray on this device</string>
-    <string name="settings_home_profile_meta">Personalization: %1$s\nTelemetry: %2$s</string>
+    <string name="settings_home_profile_meta">Personalization: %1$s\nSearch: %2$s</string>
     <string name="settings_chevron">›</string>
     <string name="settings_tone_quiet">Quiet</string>
     <string name="settings_tone_focus">Focus</string>
     <string name="settings_tone_warm">Warm</string>
     <string name="settings_telemetry_profile_minimal">Minimal</string>
     <string name="settings_telemetry_profile_active">Active</string>
+    <string name="settings_search_profile_empty">No active search slots</string>
+    <string name="settings_search_profile_one">1 active search slot</string>
+    <string name="settings_search_profile_many">%1$d active search slots</string>
     <string name="telemetry_title">Telemetry and privacy</string>
     <string name="telemetry_subtitle">Adjust the two core toggles here, with defaults and local retention kept on the same page.</string>
     <string name="telemetry_defaults_disclosure">Defaults: Enable telemetry = Off. Enable privacy guard = On.</string>
@@ -271,7 +274,7 @@
     <string name="settings_workspace_subtitle">Choose where the agent can read, write, and ask first.</string>
     <string name="settings_llm_subtitle">Select providers, routing, and response defaults.</string>
     <string name="settings_mcp_subtitle">Control server discovery, approvals, and health checks.</string>
-    <string name="settings_privacy_subtitle">Decide what leaves the device and how long it stays.</string>
+    <string name="settings_privacy_subtitle">Add API keys here. Enabled slots run top to bottom.</string>
     <string name="settings_safety_subtitle">Choose how much freedom the agent gets.</string>
     <string name="settings_about_subtitle">See build details, release notes, and diagnostics.</string>
     <string name="settings_personalization_subtitle">Tune voice, memory, and default tone for this device.</string>

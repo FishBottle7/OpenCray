@@ -55,7 +55,7 @@
     <string name="settings_card_workspace_access">工作区访问</string>
     <string name="settings_card_llm">LLM</string>
     <string name="settings_card_mcp">MCP</string>
-    <string name="settings_card_privacy_telemetry">隐私与遥测</string>
+    <string name="settings_card_privacy_telemetry">联网搜索</string>
     <string name="settings_card_safety_limits">安全与限制</string>
     <string name="settings_card_about_version">关于与版本</string>
     <string name="settings_card_personalization">个性化</string>
@@ -245,13 +245,16 @@
     <string name="personalization_preset_builder_voice">基础语气：简洁、执行优先，并针对明确下一步进行优化。</string>
     <string name="personalization_preset_warm_voice">基础语气：支持感更强、稍微更温暖，也更适合协作式探索。</string>
     <string name="settings_home_profile_title">这台设备上的 OpenCray</string>
-    <string name="settings_home_profile_meta">个性化：%1$s\n遥测：%2$s</string>
+    <string name="settings_home_profile_meta">个性化：%1$s\n搜索：%2$s</string>
     <string name="settings_chevron">›</string>
     <string name="settings_tone_quiet">安静</string>
     <string name="settings_tone_focus">专注</string>
     <string name="settings_tone_warm">温和</string>
     <string name="settings_telemetry_profile_minimal">最小</string>
     <string name="settings_telemetry_profile_active">活跃</string>
+    <string name="settings_search_profile_empty">没有启用的搜索槽位</string>
+    <string name="settings_search_profile_one">1 个启用的搜索槽位</string>
+    <string name="settings_search_profile_many">%1$d 个启用的搜索槽位</string>
     <string name="telemetry_title">遥测与隐私</string>
     <string name="telemetry_subtitle">这里直接调整两个核心开关，默认值和本地保留说明也放在同一页。</string>
     <string name="telemetry_defaults_disclosure">默认值：开启遥测 = 关闭。开启隐私保护 = 开启。</string>
@@ -271,7 +274,7 @@
     <string name="settings_workspace_subtitle">选择代理可以在哪些地方读取、写入，以及需要先询问。</string>
     <string name="settings_llm_subtitle">选择提供商、路由和响应默认值。</string>
     <string name="settings_mcp_subtitle">控制服务器发现、批准和健康检查。</string>
-    <string name="settings_privacy_subtitle">决定什么会离开设备，以及它会保留多久。</string>
+    <string name="settings_privacy_subtitle">在这里添加 API key。启用的槽位会按顺序依次尝试。</string>
     <string name="settings_safety_subtitle">决定代理可以拥有多大的自由度。</string>
     <string name="settings_about_subtitle">查看构建信息、发布说明和诊断信息。</string>
     <string name="settings_personalization_subtitle">调整这台设备上的语气、记忆和默认风格。</string>

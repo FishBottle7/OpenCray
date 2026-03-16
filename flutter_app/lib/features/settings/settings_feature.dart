@@ -136,15 +136,9 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
           backLabel: backLabel,
         );
       case SettingsPage.privacyTelemetry:
-        final detailSnapshot = _detailCache[_page];
-        if (detailSnapshot == null) {
-          return const _SettingsLoading(
-            key: ValueKey<String>('settings-detail-loading'),
-          );
-        }
-        return _SettingsDetailPage(
-          key: ValueKey<String>('settings-${_page.name}'),
-          snapshot: detailSnapshot,
+        return _NetworkSearchSettingsPage(
+          key: const ValueKey<String>('settings-network-search-editor'),
+          facade: widget.facade,
           onBack: onBack,
           backLabel: backLabel,
         );
@@ -219,6 +213,7 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
 
   bool _usesDedicatedPage(SettingsPage page) =>
       page == SettingsPage.llm ||
+      page == SettingsPage.privacyTelemetry ||
       page == SettingsPage.personalization ||
       page == SettingsPage.mcp ||
       page == SettingsPage.workspaceAccess ||
@@ -285,38 +280,6 @@ class _SettingsLoading extends StatelessWidget {
         width: 24,
         height: 24,
         child: CircularProgressIndicator(strokeWidth: 2),
-      ),
-    );
-  }
-}
-
-class _SettingsDetailPage extends StatelessWidget {
-  const _SettingsDetailPage({
-    super.key,
-    required this.snapshot,
-    required this.onBack,
-    required this.backLabel,
-  });
-
-  final SettingsDetailSnapshot snapshot;
-  final VoidCallback onBack;
-  final String backLabel;
-
-  @override
-  Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _BackLink(onTap: onBack, label: backLabel),
-          const SizedBox(height: 8),
-          Text(snapshot.title, style: _SettingsTextStyles.pageTitleSubpage),
-          const SizedBox(height: 8),
-          Text(snapshot.subtitle, style: _SettingsTextStyles.subtitle),
-          const SizedBox(height: 16),
-          ..._buildDetailSectionCards(snapshot.sections),
-        ],
       ),
     );
   }
@@ -846,6 +809,391 @@ class _DebugKeyValueLine extends StatelessWidget {
             TextSpan(text: value),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _NetworkSearchSettingsPage extends StatefulWidget {
+  const _NetworkSearchSettingsPage({
+    super.key,
+    required this.facade,
+    required this.onBack,
+    required this.backLabel,
+  });
+
+  final SettingsFacade facade;
+  final VoidCallback onBack;
+  final String backLabel;
+
+  @override
+  State<_NetworkSearchSettingsPage> createState() =>
+      _NetworkSearchSettingsPageState();
+}
+
+class _NetworkSearchSettingsPageState extends State<_NetworkSearchSettingsPage> {
+  NetworkSearchConfigSnapshot? _snapshot;
+  String? _loadError;
+  List<NetworkSearchSlotSnapshot> _slots = <NetworkSearchSlotSnapshot>[];
+  bool _isSaving = false;
+  bool _hasQueuedSave = false;
+  Timer? _saveDebounce;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _saveDebounce?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final snapshot = _snapshot;
+    if (snapshot == null) {
+      return _loadError == null
+          ? const _SettingsLoading(
+              key: ValueKey<String>('settings-network-search-loading'),
+            )
+          : _SettingsLoadErrorCard(
+              title: 'Network & Search',
+              message: _loadError!,
+              onBack: widget.onBack,
+              backLabel: widget.backLabel,
+              onRetry: _load,
+            );
+    }
+    final copy = OpenCrayUiCopy.fromLocaleTag(snapshot.localeTag);
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _BackLink(onTap: widget.onBack, label: widget.backLabel),
+          const SizedBox(height: 8),
+          Text(snapshot.title, style: _SettingsTextStyles.pageTitleSubpage),
+          const SizedBox(height: 8),
+          Text(snapshot.subtitle, style: _SettingsTextStyles.subtitle),
+          const SizedBox(height: 16),
+          for (int index = 0; index < _slots.length; index++) ...[
+            _NetworkSearchSlotCard(
+              key: ValueKey<String>('network-search-slot-${_slots[index].id}'),
+              slot: _slots[index],
+              index: index,
+              localeTag: snapshot.localeTag,
+              canMoveUp: index > 0,
+              canMoveDown: index < _slots.length - 1,
+              onChanged: _updateSlot,
+              onMoveUp: index > 0 ? () => _moveSlot(index, index - 1) : null,
+              onMoveDown: index < _slots.length - 1
+                  ? () => _moveSlot(index, index + 1)
+                  : null,
+              onDelete: () => _deleteSlot(_slots[index].id),
+            ),
+            const SizedBox(height: 16),
+          ],
+          InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: _addSlot,
+            child: _SettingsCard(
+              child: Text(
+                _isSaving ? copy.networkSearchSaving : copy.networkSearchAddSlotAction,
+                style: _SettingsTextStyles.actionChip,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _load() async {
+    try {
+      final snapshot = await widget.facade.loadNetworkSearchConfig();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _loadError = null;
+        _applySnapshot(snapshot);
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _loadError = error.toString().replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
+  void _applySnapshot(NetworkSearchConfigSnapshot snapshot) {
+    _snapshot = snapshot;
+    _slots = snapshot.slots.toList(growable: false);
+  }
+
+  void _updateSlot(NetworkSearchSlotSnapshot updatedSlot) {
+    setState(() {
+      _slots = _slots
+          .map((slot) => slot.id == updatedSlot.id ? updatedSlot : slot)
+          .toList(growable: false);
+    });
+    _scheduleSave();
+  }
+
+  void _addSlot() {
+    setState(() {
+      _slots = <NetworkSearchSlotSnapshot>[
+        ..._slots,
+        NetworkSearchSlotSnapshot(
+          id: 'slot-${DateTime.now().microsecondsSinceEpoch}',
+          providerId: 'exa',
+          label: '',
+          apiKey: '',
+          enabled: true,
+        ),
+      ];
+    });
+    _saveNow();
+  }
+
+  void _moveSlot(int fromIndex, int toIndex) {
+    if (fromIndex == toIndex) {
+      return;
+    }
+    setState(() {
+      final reordered = _slots.toList(growable: true);
+      final slot = reordered.removeAt(fromIndex);
+      reordered.insert(toIndex, slot);
+      _slots = reordered;
+    });
+    _saveNow();
+  }
+
+  void _deleteSlot(String slotId) {
+    setState(() {
+      _slots = _slots.where((slot) => slot.id != slotId).toList(growable: false);
+    });
+    _saveNow();
+  }
+
+  void _scheduleSave() {
+    _saveDebounce?.cancel();
+    _saveDebounce = Timer(const Duration(milliseconds: 350), _saveNow);
+  }
+
+  Future<void> _saveNow() async {
+    _saveDebounce?.cancel();
+    if (_snapshot == null) {
+      return;
+    }
+    if (_isSaving) {
+      _hasQueuedSave = true;
+      return;
+    }
+    setState(() {
+      _isSaving = true;
+    });
+    try {
+      final updatedSnapshot = await widget.facade.saveNetworkSearchConfig(_slots);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _applySnapshot(updatedSnapshot);
+      });
+    } catch (error) {
+      if (mounted) {
+        _showMessage(error.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
+        });
+        if (_hasQueuedSave) {
+          _hasQueuedSave = false;
+          _saveNow();
+        }
+      }
+    }
+  }
+
+  void _showMessage(String message) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+class _NetworkSearchSlotCard extends StatefulWidget {
+  const _NetworkSearchSlotCard({
+    super.key,
+    required this.slot,
+    required this.index,
+    required this.localeTag,
+    required this.canMoveUp,
+    required this.canMoveDown,
+    required this.onChanged,
+    required this.onDelete,
+    this.onMoveUp,
+    this.onMoveDown,
+  });
+
+  final NetworkSearchSlotSnapshot slot;
+  final int index;
+  final String localeTag;
+  final bool canMoveUp;
+  final bool canMoveDown;
+  final ValueChanged<NetworkSearchSlotSnapshot> onChanged;
+  final VoidCallback onDelete;
+  final VoidCallback? onMoveUp;
+  final VoidCallback? onMoveDown;
+
+  @override
+  State<_NetworkSearchSlotCard> createState() => _NetworkSearchSlotCardState();
+}
+
+class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
+  late final TextEditingController _labelController;
+  late final TextEditingController _apiKeyController;
+  late final FocusNode _labelFocusNode;
+  late final FocusNode _apiKeyFocusNode;
+  Timer? _saveDebounce;
+
+  @override
+  void initState() {
+    super.initState();
+    _labelController = TextEditingController(text: widget.slot.label);
+    _apiKeyController = TextEditingController(text: widget.slot.apiKey);
+    _labelFocusNode = FocusNode()..addListener(_handleFocusChange);
+    _apiKeyFocusNode = FocusNode()..addListener(_handleFocusChange);
+  }
+
+  @override
+  void didUpdateWidget(covariant _NetworkSearchSlotCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.slot.label != _labelController.text) {
+      _labelController.text = widget.slot.label;
+    }
+    if (widget.slot.apiKey != _apiKeyController.text) {
+      _apiKeyController.text = widget.slot.apiKey;
+    }
+  }
+
+  @override
+  void dispose() {
+    _saveDebounce?.cancel();
+    _labelFocusNode
+      ..removeListener(_handleFocusChange)
+      ..dispose();
+    _apiKeyFocusNode
+      ..removeListener(_handleFocusChange)
+      ..dispose();
+    _labelController.dispose();
+    _apiKeyController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final copy = OpenCrayUiCopy.fromLocaleTag(widget.localeTag);
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  copy.networkSearchSlotTitle(widget.index),
+                  style: _SettingsTextStyles.cardTitle,
+                ),
+              ),
+              _PrototypeSwitch(
+                value: widget.slot.enabled,
+                onChanged: (enabled) {
+                  widget.onChanged(widget.slot.copyWith(enabled: enabled));
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(copy.networkSearchProviderLabel, style: _SettingsTextStyles.fieldLabel),
+          const SizedBox(height: 6),
+          _InteractiveSegmentedSelector(
+            labels: const <String>['exa', 'tavily', 'brave'],
+            selectedId: widget.slot.providerId,
+            labelBuilder: copy.networkSearchProviderTitle,
+            onSelected: (providerId) {
+              widget.onChanged(widget.slot.copyWith(providerId: providerId));
+            },
+          ),
+          const SizedBox(height: 10),
+          _InlineEditableField(
+            title: copy.networkSearchLabelFieldTitle,
+            hintText: copy.networkSearchLabelHint,
+            controller: _labelController,
+            focusNode: _labelFocusNode,
+            onChanged: (_) => _scheduleEmit(),
+          ),
+          const SizedBox(height: 8),
+          _InlineEditableField(
+            title: copy.networkSearchApiKeyFieldTitle,
+            hintText: copy.networkSearchApiKeyHint,
+            controller: _apiKeyController,
+            focusNode: _apiKeyFocusNode,
+            onChanged: (_) => _scheduleEmit(),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              if (widget.canMoveUp)
+                _InlineTextAction(
+                  label: copy.networkSearchMoveUp,
+                  onTap: widget.onMoveUp,
+                ),
+              if (widget.canMoveUp && widget.canMoveDown)
+                const SizedBox(width: 12),
+              if (widget.canMoveDown)
+                _InlineTextAction(
+                  label: copy.networkSearchMoveDown,
+                  onTap: widget.onMoveDown,
+                ),
+              const Spacer(),
+              _InlineTextAction(
+                label: copy.networkSearchDelete,
+                color: OpenCrayColors.dangerText,
+                onTap: widget.onDelete,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _handleFocusChange() {
+    if (!_labelFocusNode.hasFocus && !_apiKeyFocusNode.hasFocus) {
+      _emitNow();
+    }
+  }
+
+  void _scheduleEmit() {
+    _saveDebounce?.cancel();
+    _saveDebounce = Timer(const Duration(milliseconds: 300), _emitNow);
+  }
+
+  void _emitNow() {
+    _saveDebounce?.cancel();
+    widget.onChanged(
+      widget.slot.copyWith(
+        label: _labelController.text,
+        apiKey: _apiKeyController.text,
       ),
     );
   }
@@ -2930,6 +3278,149 @@ class _PrototypeSelectionRow extends StatelessWidget {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _InteractiveSegmentedSelector extends StatelessWidget {
+  const _InteractiveSegmentedSelector({
+    required this.labels,
+    required this.selectedId,
+    required this.labelBuilder,
+    required this.onSelected,
+  });
+
+  final List<String> labels;
+  final String selectedId;
+  final String Function(String value) labelBuilder;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFFECEEF3),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(4),
+        child: Row(
+          children: [
+            for (final label in labels)
+              Expanded(
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(999),
+                  onTap: () => onSelected(label),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 160),
+                    curve: Curves.easeOutCubic,
+                    decoration: BoxDecoration(
+                      color: label == selectedId
+                          ? Colors.white
+                          : Colors.transparent,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Text(
+                      labelBuilder(label),
+                      textAlign: TextAlign.center,
+                      style: _SettingsTextStyles.valueChip.copyWith(
+                        color: label == selectedId
+                            ? OpenCrayColors.textPrimary
+                            : OpenCrayColors.textSecondary,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InlineEditableField extends StatelessWidget {
+  const _InlineEditableField({
+    required this.title,
+    required this.hintText,
+    required this.controller,
+    required this.focusNode,
+    this.onChanged,
+  });
+
+  final String title;
+  final String hintText;
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final ValueChanged<String>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return _PrototypeFieldSurface(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Row(
+          children: [
+            Text(title, style: _SettingsTextStyles.selectionMeta),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextField(
+                controller: controller,
+                focusNode: focusNode,
+                onChanged: onChanged,
+                textAlign: TextAlign.right,
+                autocorrect: false,
+                enableSuggestions: false,
+                enableIMEPersonalizedLearning: false,
+                spellCheckConfiguration: const SpellCheckConfiguration.disabled(),
+                smartDashesType: SmartDashesType.disabled,
+                smartQuotesType: SmartQuotesType.disabled,
+                keyboardType: TextInputType.visiblePassword,
+                style: _SettingsTextStyles.fieldValue,
+                strutStyle: _SettingsTextStyles.fieldValueStrut,
+                decoration: InputDecoration(
+                  hintText: hintText,
+                  hintStyle: _SettingsTextStyles.fieldValue.copyWith(
+                    color: OpenCrayColors.textTertiary,
+                    fontWeight: FontWeight.w400,
+                  ),
+                  isCollapsed: true,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                  border: InputBorder.none,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InlineTextAction extends StatelessWidget {
+  const _InlineTextAction({
+    required this.label,
+    required this.onTap,
+    this.color = OpenCrayColors.primary,
+  });
+
+  final String label;
+  final VoidCallback? onTap;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Text(
+          label,
+          style: _SettingsTextStyles.inlineAction.copyWith(color: color),
         ),
       ),
     );

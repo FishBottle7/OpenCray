@@ -373,6 +373,13 @@ Python 入口脚本建议只处理一个请求，然后退出。
 - 把 `PythonRuntimeAdapter` 从具体类改为接口边界
 - 现有实现迁移为 host backend
 
+当前状态（2026-03-16）：
+
+- 已完成
+- 已落地 `PythonScriptRuntime`
+- 已落地 `HostProcessPythonRuntime`
+- 已完成 Android 侧 `pythonRuntimeProvider` 注入入口
+
 产出：
 
 - `PythonScriptRuntime`
@@ -385,6 +392,18 @@ Python 入口脚本建议只处理一个请求，然后退出。
 
 - 用 `p4a` 产出最小 runtime 制品
 - 只执行一个简单脚本并回传 stdout
+
+当前状态（2026-03-16）：
+
+- Kotlin 侧桥接前置工作已完成
+- 已落地 `P4aPythonRuntime`
+- 已固定 request/result JSON 文件协议
+- 已加入 launcher 抽象与结果轮询
+- 已有 JVM 测试覆盖“launcher unavailable”和“result 成功回传”
+- 已加入 `tools/android_python_runtime_p4a/` 脚手架与 Python 入口脚本
+- 已加入 Android launcher contract 与 `service/main.py` worker 脚手架
+- `app` 已支持自动加载 `tools/android_python_runtime_p4a/dist/*.aar`
+- 真正的 `p4a` 打包产物与 Python service 入口仍未接入，因此本阶段尚未验收完成
 
 验收：
 

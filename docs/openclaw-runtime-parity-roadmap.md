@@ -141,7 +141,7 @@ Dependencies:
 
 Status:
 
-- In progress: session-scoped managed process registries are now wired into the app runtime, the dispatcher exposes `ProcessStart` / `ProcessList` / `ProcessRead` / `ProcessWait` / `ProcessTerminate`, `ProcessStart` now supports both raw commands and managed Python script launches through `script_path`, prompt guidance nudges the model toward the managed-process flow for long-running commands and Python work, runtime tests now cover both dispatcher-level behavior and multi-turn agent usage of the new process tools, managed process snapshots are now persisted per session so terminal state survives restart while orphaned restored `RUNNING` records are repaired into an explicit interrupted failure state, idle-session release now keeps sessions alive while they still own live managed processes, deleting a chat session now terminates that session's live managed processes before releasing runtime ownership, and run snapshots now retain managed-process linkage so a restored completed run can still report whether it owns live background work.
+- In progress: session-scoped managed process registries are now wired into the app runtime, the dispatcher exposes `ProcessStart` / `ProcessList` / `ProcessRead` / `ProcessWait` / `ProcessTerminate`, `ProcessStart` now supports both raw commands and managed Python script launches through `script_path`, prompt guidance nudges the model toward the managed-process flow for long-running commands and Python work, runtime tests now cover both dispatcher-level behavior and multi-turn agent usage of the new process tools, managed process snapshots are now persisted per session so terminal state survives restart while orphaned restored `RUNNING` records are repaired into an explicit interrupted failure state, idle-session release now keeps sessions alive while they still own live managed processes, deleting a chat session now terminates that session's live managed processes before releasing runtime ownership, run snapshots now retain managed-process linkage so a restored completed run can still report whether it owns live background work, and restored non-terminal runs that only point at interrupted managed-process snapshots now collapse into a terminal interrupted run instead of being auto-resumed.
 
 ### P3. Tool Policy Pipeline
 
@@ -242,8 +242,8 @@ Dependencies:
 
 The next concrete execution order is:
 
-1. Add run/process settling and repair rules on top of durable run records plus managed-process state.
-2. Decide when a terminal run with only interrupted-restored processes should collapse into a fully settled replay-visible outcome.
+1. Repair restored terminal assistant placeholders and other host-visible artifacts from durable run snapshots, not only durable replay state.
+2. Decide whether repaired interrupted runs should also rewrite the durable queue snapshot or remain a projection layered over the restored queue entry.
 3. Purge or compact session runtime artifacts consistently on session deletion once retention semantics are finalized.
 4. After managed-process/run durability is stable, move into P3 tool policy pipeline unification.
 

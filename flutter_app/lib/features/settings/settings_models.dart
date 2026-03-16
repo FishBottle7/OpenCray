@@ -143,6 +143,52 @@ class SettingsDetailSnapshot {
   final List<SettingsSectionSnapshot> sections;
 }
 
+class NetworkSearchSlotSnapshot {
+  const NetworkSearchSlotSnapshot({
+    required this.id,
+    required this.providerId,
+    required this.label,
+    required this.apiKey,
+    required this.enabled,
+  });
+
+  final String id;
+  final String providerId;
+  final String label;
+  final String apiKey;
+  final bool enabled;
+
+  NetworkSearchSlotSnapshot copyWith({
+    String? id,
+    String? providerId,
+    String? label,
+    String? apiKey,
+    bool? enabled,
+  }) {
+    return NetworkSearchSlotSnapshot(
+      id: id ?? this.id,
+      providerId: providerId ?? this.providerId,
+      label: label ?? this.label,
+      apiKey: apiKey ?? this.apiKey,
+      enabled: enabled ?? this.enabled,
+    );
+  }
+}
+
+class NetworkSearchConfigSnapshot {
+  const NetworkSearchConfigSnapshot({
+    required this.localeTag,
+    required this.title,
+    required this.subtitle,
+    required this.slots,
+  });
+
+  final String localeTag;
+  final String title;
+  final String subtitle;
+  final List<NetworkSearchSlotSnapshot> slots;
+}
+
 class LlmProviderOption {
   const LlmProviderOption({
     required this.id,

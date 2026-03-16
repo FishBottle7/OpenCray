@@ -2,15 +2,26 @@ package com.opencray.app
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import androidx.core.app.ActivityCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 
-class OpenCrayFlutterActivity : FlutterActivity() {
+internal interface ExternalAccessPermissionRequestHost {
+  fun requestExternalAccessPermissions(
+    permissions: Array<String>,
+    callback: (Boolean) -> Unit,
+  )
+}
+
+class OpenCrayFlutterActivity : FlutterActivity(), ExternalAccessPermissionRequestHost {
   private var hostBridge: OpenCrayFlutterHostBridge? = null
+  private var pendingPermissionCallback: ((Boolean) -> Unit)? = null
 
   companion object {
     private const val EXTRA_DESTINATION =
       "com.opencray.app.OpenCrayFlutterActivity.extra.DESTINATION"
+    private const val PERMISSION_REQUEST_CODE: Int = 2_401
 
     fun intent(
       context: Context,
@@ -53,5 +64,34 @@ class OpenCrayFlutterActivity : FlutterActivity() {
   override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
     hostBridge?.detach(flutterEngine)
     super.cleanUpFlutterEngine(flutterEngine)
+  }
+
+  override fun requestExternalAccessPermissions(
+    permissions: Array<String>,
+    callback: (Boolean) -> Unit,
+  ) {
+    if (permissions.isEmpty()) {
+      callback(true)
+      return
+    }
+    pendingPermissionCallback?.invoke(false)
+    pendingPermissionCallback = callback
+    ActivityCompat.requestPermissions(this, permissions, PERMISSION_REQUEST_CODE)
+  }
+
+  override fun onRequestPermissionsResult(
+    requestCode: Int,
+    permissions: Array<out String>,
+    grantResults: IntArray,
+  ) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    if (requestCode != PERMISSION_REQUEST_CODE) {
+      return
+    }
+    val callback = pendingPermissionCallback
+    pendingPermissionCallback = null
+    callback?.invoke(grantResults.isNotEmpty() && grantResults.all { result ->
+      result == PackageManager.PERMISSION_GRANTED
+    })
   }
 }

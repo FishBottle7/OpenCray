@@ -63,7 +63,16 @@ android {
 
 dependencies {
   implementation(kotlin("stdlib"))
+  implementation("androidx.activity:activity-ktx:1.9.3")
   implementation("androidx.core:core-ktx:1.10.1")
+  implementation(
+    fileTree(
+      mapOf(
+        "dir" to rootProject.file("tools/android_python_runtime_p4a/dist"),
+        "include" to listOf("*.aar"),
+      ),
+    ),
+  )
   if (hasFlutterModule) {
     implementation(project(":flutter"))
   } else {

@@ -357,6 +357,89 @@ class AgentSessionRuntimeManagerTest {
   }
 
   @Test
+  fun restoredInterruptedManagedProcessRunSettlesAndDoesNotAutoResume() {
+    val sessionId = "session-restored-interrupted-process"
+    val firstManager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+    )
+    val firstHandle = firstManager.forSession(sessionId)
+
+    val submission = firstHandle.submitPrompt(
+      userText = "wait for the background process",
+      pendingMessageId = "pending-restored-process",
+      visibleThroughMessageId = "pending-restored-process",
+      policyDecision = allowDecision(),
+    )
+    firstManager.release(sessionId)
+
+    val restoredExecutor = RecordingExecutorService()
+    val restoredFactory = RecordingRuntimeFactory(
+      managedProcessesProvider = { restoredSessionId ->
+        if (restoredSessionId == sessionId) {
+          listOf(
+            managedProcessSnapshot(
+              processId = "proc-restored",
+              taskId = submission.taskId,
+              status = ManagedProcessStatus.FAILED,
+            ).copy(
+              errorCode = ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE,
+              errorMessage = "Managed process state was restored without a live controller; marking it interrupted.",
+              updatedAtEpochMs = 1_002L,
+              finishedAtEpochMs = 1_002L,
+              metadata = mapOf(
+                METADATA_RESTORED_FROM_DURABLE_STORE to "true",
+                METADATA_RESTORED_TERMINAL_STATE to RESTORED_TERMINAL_STATE_INTERRUPTED,
+              ),
+            ),
+          )
+        } else {
+          emptyList()
+        }
+      },
+    )
+    val restoredManager = manager(
+      runtimeFactory = restoredFactory,
+      executor = restoredExecutor,
+    )
+    val restoredHandle = restoredManager.forSession(sessionId)
+
+    val restoredRun = restoredHandle.findRun(submission.runId)
+
+    assertEquals(ExecutionStatus.FAILED, restoredRun?.executionStatus)
+    assertEquals(ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE, restoredRun?.errorCode)
+    assertEquals(QueueTaskLifecycleState.FAILED, restoredRun?.lifecycleState)
+    assertEquals(AgentTaskState.FAILED, restoredRun?.taskState)
+    assertEquals(
+      RESTORED_TERMINAL_STATE_INTERRUPTED,
+      restoredRun?.resultMetadata?.get(METADATA_RESTORED_TERMINAL_STATE),
+    )
+    assertEquals(listOf("proc-restored"), restoredRun?.managedProcessIds)
+    assertEquals(0, restoredRun?.runningManagedProcessCount)
+    assertTrue(restoredRun?.hasLiveManagedProcesses == false)
+    assertTrue(restoredRun?.isTerminal == true)
+    assertTrue(restoredRun?.isActive == false)
+    assertTrue(!restoredHandle.hasPendingWork())
+
+    restoredHandle.resume()
+
+    assertEquals(0, restoredExecutor.pendingCount())
+    assertTrue(restoredFactory.executedInputs.isEmpty())
+
+    restoredManager.release(sessionId)
+
+    val persistedManager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+    )
+    val persistedRun = persistedManager.forSession(sessionId).findRun(submission.runId)
+
+    assertEquals(ExecutionStatus.FAILED, persistedRun?.executionStatus)
+    assertEquals(ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE, persistedRun?.errorCode)
+    assertEquals(listOf("proc-restored"), persistedRun?.managedProcessIds)
+  }
+
+  @Test
   fun requestCancelForPendingMessageIdsMatchesHiddenHostMetadata() {
     val executor = RecordingExecutorService()
     val runtimeFactory = RecordingRuntimeFactory()

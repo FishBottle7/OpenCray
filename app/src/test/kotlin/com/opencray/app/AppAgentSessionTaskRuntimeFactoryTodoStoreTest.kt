@@ -7,6 +7,9 @@ import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.process.InMemoryAgentProcessRegistry
 import com.opencray.runtime.context.RuntimeConversationRole
+import java.io.File
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
@@ -231,6 +234,48 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
   }
 
   @Test
+  fun repairTerminalReplayFromRunSnapshotsMarksRestoredInterruptedProcessRuns() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-process-restore-repair"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-process-restore-repair").toPath()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+
+    factory.repairTerminalReplayFromRunSnapshots(
+      sessionId = "session-1",
+      runs = listOf(
+        AgentRunSnapshot(
+          sessionId = "session-1",
+          runId = "run-restored-process",
+          taskId = "task-restored-process",
+          acceptedAtEpochMs = 1_000L,
+          updatedAtEpochMs = 1_100L,
+          lifecycleState = com.opencray.core.orchestrator.QueueTaskLifecycleState.FAILED,
+          taskState = com.opencray.core.contracts.AgentTaskState.FAILED,
+          attempt = 1,
+          executionStatus = com.opencray.core.contracts.ExecutionStatus.FAILED,
+          errorCode = ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE,
+          resultMetadata = mapOf(
+            METADATA_RESTORED_TERMINAL_STATE to RESTORED_TERMINAL_STATE_INTERRUPTED,
+          ),
+        ),
+      ),
+    )
+
+    val snapshot = factory.transcriptStoreForSession("session-1").snapshot()
+
+    assertEquals(1, snapshot.size)
+    assertTrue(snapshot.single().content.startsWith("run_interrupted"))
+    assertTrue(snapshot.single().content.contains("outcome=restored_process_interrupted"))
+    assertTrue(snapshot.single().content.contains("error_code=$ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE"))
+  }
+
+  @Test
   fun recordSuccessfulToolInteractionAppendsToolCallAndResultReplaySummaries() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-tool-replay"))
     val workspaceRoot = temporaryFolder.newFolder("workspace-root-tool-replay").toPath()
@@ -450,6 +495,54 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     assertEquals("warm", effective?.extensions?.get("tone"))
   }
 
+  @Test
+  fun visibleSkillInventoryForLoadsVisibleSkillsAndTracksInvalidEntries() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-skill-inventory"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-skill-inventory").toPath()
+    val skillsRoot = temporaryFolder.newFolder("skills-root-skill-inventory")
+    writeSkill(
+      root = skillsRoot,
+      relativeDirectory = "ui-ux-pro-max",
+      frontMatter = """
+        name: ui-ux-pro-max
+        description: High-end UI review workflow.
+        invocation-control: explicit-only
+        user-invocable: true
+      """.trimIndent(),
+      body = "# UI UX Pro Max",
+    )
+    writeSkill(
+      root = skillsRoot,
+      relativeDirectory = "broken-skill",
+      frontMatter = """
+        name: broken-skill
+        description: Invalid because it is unreachable.
+        invocation-control: explicit-only
+        user-invocable: false
+      """.trimIndent(),
+      body = "# Broken",
+    )
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { listOf(skillsRoot) },
+      mcpReportProvider = { null },
+    )
+
+    val inventory = factory.visibleSkillInventoryFor()
+    val skillCatalog = factory.skillCatalogFor()
+
+    assertEquals(1, inventory.visibleSkillCount)
+    assertEquals(1, inventory.invalidSkillCount)
+    assertEquals(listOf("ui-ux-pro-max"), inventory.skills.map { skill -> skill.name })
+    assertEquals(listOf("ui-ux-pro-max"), inventory.trace.visible.map { trace -> trace.name })
+    assertEquals(0, inventory.trace.implicitSkillCount)
+    assertEquals(listOf("ui-ux-pro-max"), skillCatalog.skillsByName.keys.toList())
+    assertEquals("# UI UX Pro Max", skillCatalog.skillsByName["ui-ux-pro-max"]?.markdownBody?.trim())
+  }
+
   private fun memoryRecord(
     id: String,
     content: String,
@@ -481,4 +574,23 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
       preferenceValue?.let { "preference_value" to it },
     ).toMap(),
   )
+
+  private fun writeSkill(
+    root: File,
+    relativeDirectory: String,
+    frontMatter: String,
+    body: String,
+  ): File {
+    val skillDirectory = root.resolve(relativeDirectory)
+    Files.createDirectories(skillDirectory.toPath())
+    val skillFile = skillDirectory.resolve("SKILL.md")
+    val content = buildString {
+      appendLine("---")
+      appendLine(frontMatter)
+      appendLine("---")
+      appendLine(body)
+    }
+    Files.write(skillFile.toPath(), content.toByteArray(StandardCharsets.UTF_8))
+    return skillFile
+  }
 }

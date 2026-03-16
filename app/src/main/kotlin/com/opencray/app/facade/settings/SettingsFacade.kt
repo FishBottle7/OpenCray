@@ -8,6 +8,7 @@ import com.opencray.app.LlmSettingsState
 import com.opencray.app.LlmSettingsStore
 import com.opencray.app.LocaleSettingsStore
 import com.opencray.app.OpenCrayLocaleManager
+import com.opencray.app.WebSearchSettingsStore
 import android.content.Context
 import com.opencray.app.PersonalizationLocalStore
 import com.opencray.app.TelemetrySettingsStore
@@ -131,10 +132,11 @@ internal class LocalSettingsFacade(
   private val localeSettingsStore: LocaleSettingsStore,
   private val telemetrySettingsStore: TelemetrySettingsStore,
   private val personalizationLocalStore: PersonalizationLocalStore,
+  private val webSearchSettingsStore: WebSearchSettingsStore,
 ) : SettingsFacade {
   override fun loadOverview(): SettingsOverviewSnapshot {
-    val telemetryState = telemetrySettingsStore.load(TelemetryTogglesState.localized(context))
     val soulProfile = personalizationLocalStore.loadSoulProfile()
+    val searchSlots = webSearchSettingsStore.load()
     return SettingsOverviewSnapshot(
       eyebrow = "APP SHELL",
       title = context.getString(R.string.shell_tab_settings),
@@ -143,7 +145,7 @@ internal class LocalSettingsFacade(
       deviceSummary = context.getString(
         R.string.settings_home_profile_meta,
         personalizationLabel(soulProfile),
-        telemetryProfileLabel(telemetryState),
+        searchProfileLabel(searchSlots),
       ),
       entries = listOf(
         SettingsHomeEntrySnapshot(
@@ -251,32 +253,12 @@ internal class LocalSettingsFacade(
       subtitle = context.getString(R.string.settings_privacy_subtitle),
       sections = listOf(
         SettingsSectionSnapshot(
-          title = telemetryState().telemetry.title,
-          helperText = telemetryState().defaultsDisclosure,
+          title = "Search slots",
+          helperText = "Configured search keys run from top to bottom when fallback is needed.",
           rows = listOf(
-            SettingsRowSnapshot.toggle(
-              title = telemetryState().telemetry.switchLabel,
-              subtitle = if (telemetryState().telemetry.isChecked) {
-                telemetryState().telemetry.enabledSummary
-              } else {
-                telemetryState().telemetry.disabledSummary
-              },
-              toggleValue = telemetryState().telemetry.isChecked,
-            ),
-          ),
-        ),
-        SettingsSectionSnapshot(
-          title = telemetryState().privacyGuard.title,
-          helperText = telemetryState().localRetentionDisclosure,
-          rows = listOf(
-            SettingsRowSnapshot.toggle(
-              title = telemetryState().privacyGuard.switchLabel,
-              subtitle = if (telemetryState().privacyGuard.isChecked) {
-                telemetryState().privacyGuard.enabledSummary
-              } else {
-                telemetryState().privacyGuard.disabledSummary
-              },
-              toggleValue = telemetryState().privacyGuard.isChecked,
+            SettingsRowSnapshot.value(
+              title = "Active slots",
+              valueLabel = searchProfileLabel(webSearchSettingsStore.load()),
             ),
           ),
         ),
@@ -461,12 +443,16 @@ internal class LocalSettingsFacade(
     return context.getString(R.string.shell_android_api_label, releaseLabel, minSdk)
   }
 
-  private fun telemetryProfileLabel(state: TelemetryTogglesState): String =
-    if (state.telemetry.isChecked) {
-      context.getString(R.string.settings_telemetry_profile_active)
-    } else {
-      context.getString(R.string.settings_telemetry_profile_minimal)
+  private fun searchProfileLabel(slots: List<com.opencray.app.WebSearchSlotConfig>): String {
+    val activeCount = slots.count { slot ->
+      slot.enabled && slot.apiKey.isNotBlank()
     }
+    return when {
+      activeCount <= 0 -> context.getString(R.string.settings_search_profile_empty)
+      activeCount == 1 -> context.getString(R.string.settings_search_profile_one)
+      else -> context.getString(R.string.settings_search_profile_many, activeCount)
+    }
+  }
 
   private fun personalizationLabel(
     profile: PersonalizationLocalStore.SoulProfile?,
@@ -489,6 +475,7 @@ internal class LocalSettingsFacade(
       localeSettingsStore = LocaleSettingsStore.fromContext(context),
       telemetrySettingsStore = TelemetrySettingsStore.fromContext(context),
       personalizationLocalStore = PersonalizationLocalStore.fromContext(context),
+      webSearchSettingsStore = WebSearchSettingsStore.fromContext(context),
     )
   }
 }

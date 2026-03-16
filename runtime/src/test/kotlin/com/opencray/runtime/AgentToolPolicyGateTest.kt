@@ -192,6 +192,96 @@ class AgentToolPolicyGateTest {
   }
 
   @Test
+  fun approvedReadOnlyRootCanBeReadAndImportedIntoWorkspace() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-import-workspace").toPath()
+    val externalRoot = temporaryFolder.newFolder("tool-policy-import-external").toPath()
+    val source = externalRoot.resolve("photo.txt")
+    Files.write(source, "camera roll".toByteArray(StandardCharsets.UTF_8))
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        readRoots = setOf(workspaceRoot, externalRoot),
+      ),
+    )
+
+    val readResult = dispatcher.dispatch(
+      task = agentTask(
+        metadata = mapOf("chatMode" to "AUTO"),
+      ),
+      call = AgentToolCall(
+        toolName = "Read",
+        arguments = JsonObject(
+          mapOf("file_path" to JsonPrimitive(source.toString())),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, readResult.status)
+    assertEquals("camera roll", readResult.content)
+
+    val importResult = dispatcher.dispatch(
+      task = agentTask(
+        metadata = mapOf("chatMode" to "AUTO"),
+      ),
+      call = AgentToolCall(
+        toolName = "workspace_import_file",
+        arguments = JsonObject(
+          mapOf(
+            "source_path" to JsonPrimitive(source.toString()),
+            "destination_path" to JsonPrimitive("imports/photo.txt"),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, importResult.status)
+    assertEquals(
+      "camera roll",
+      String(
+        Files.readAllBytes(workspaceRoot.resolve("imports").resolve("photo.txt")),
+        StandardCharsets.UTF_8,
+      ),
+    )
+    assertEquals("ALLOW_AUTO_STANDARD", importResult.metadata["policyReasonCode"])
+  }
+
+  @Test
+  fun writeToolCannotMutateApprovedReadOnlyRoot() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-read-only-workspace").toPath()
+    val externalRoot = temporaryFolder.newFolder("tool-policy-read-only-external").toPath()
+    val target = externalRoot.resolve("blocked.txt")
+    Files.write(target, "keep".toByteArray(StandardCharsets.UTF_8))
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        readRoots = setOf(workspaceRoot, externalRoot),
+      ),
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(
+        metadata = mapOf("chatMode" to "DEVELOPER"),
+      ),
+      call = AgentToolCall(
+        toolName = "workspace_write_file",
+        arguments = JsonObject(
+          mapOf(
+            "path" to JsonPrimitive(target.toString()),
+            "content" to JsonPrimitive("mutated"),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.FAILED, result.status)
+    assertTrue(result.content.contains("escapes approved workspace roots"))
+    assertEquals("keep", String(Files.readAllBytes(target), StandardCharsets.UTF_8))
+  }
+
+  @Test
   fun safeModeDeleteRequiresHighRiskApprovalAndDoesNotMutateFile() {
     val workspaceRoot = temporaryFolder.newFolder("tool-policy-safe-delete").toPath()
     val target = workspaceRoot.resolve("notes.txt")

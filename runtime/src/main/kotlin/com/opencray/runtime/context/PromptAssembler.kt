@@ -31,6 +31,16 @@ class PromptAssembler {
         content = input.memoryText,
       )
       addLayer(
+        name = "Skill Inventory",
+        kind = PromptLayerKind.CONTEXT,
+        content = input.skillInventoryText,
+      )
+      addLayer(
+        name = "Active Skill",
+        kind = PromptLayerKind.CONTEXT,
+        content = input.activeSkillText,
+      )
+      addLayer(
         name = "Pruning Summary",
         kind = PromptLayerKind.CONTEXT,
         content = input.pruningSummary?.text.orEmpty(),
@@ -79,6 +89,12 @@ class PromptAssembler {
         injectedMemoryRecordCount = input.report.injectedMemoryRecordCount,
         omittedMemoryRecordCount = input.report.omittedMemoryRecordCount,
         memoryRecallTrace = input.report.memoryRecallTrace,
+        visibleSkillCount = input.report.visibleSkillCount,
+        injectedSkillCount = input.report.injectedSkillCount,
+        omittedSkillCount = input.report.omittedSkillCount,
+        invalidSkillCount = input.report.invalidSkillCount,
+        skillInventoryTrace = input.report.skillInventoryTrace,
+        activeSkillTrace = input.report.activeSkillTrace,
       ),
     )
   }
@@ -104,6 +120,9 @@ class PromptAssembler {
   private fun renderToolProtocolLayer(toolDefinitions: List<AgentToolDefinition>): String = buildString {
     val hasMemorySearchTool = toolDefinitions.any { definition -> definition.name == "memory_search" }
     val hasMemoryGetTool = toolDefinitions.any { definition -> definition.name == "memory_get" }
+    val hasImportTool = toolDefinitions.any { definition ->
+      definition.name == "ImportFile" || definition.name == "workspace_import_file"
+    }
     appendLine("Decide the next step for this OpenCray task.")
     appendLine()
     appendLine("On each turn, return exactly one JSON action and nothing else.")
@@ -119,6 +138,10 @@ class PromptAssembler {
     appendLine("For current information from the internet, prefer WebSearch when a search provider is configured, and use WebFetch when you already have a URL to read.")
     appendLine("For commands you want to manage across multiple turns, prefer ProcessStart and then use ProcessRead or ProcessWait.")
     appendLine("For long-running Python scripts, prefer ProcessStart with script_path instead of python_exec.")
+    if (hasImportTool) {
+      appendLine("When task metadata includes approvedReadRoots, you may inspect those roots with absolute paths.")
+      appendLine("Approved external roots are read-only. Use ImportFile to copy files or folders into the writable workspace before editing, deleting, or other mutating operations.")
+    }
     appendLine("A tool_call may include reason or justification, but it must not include a final answer.")
     appendLine("Do not return multiple tool calls in one response.")
     if (hasMemorySearchTool) {

@@ -26,13 +26,15 @@ import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.memory.MemoryToolOperation
 import com.opencray.runtime.memory.memoryToolTraceFrom
+import com.opencray.runtime.skills.ActiveSkillCapsule
+import com.opencray.runtime.skills.ActiveSkillCapsuleResolver
 import java.util.UUID
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 data class OpenCrayAgentRuntimeConfig(
-  val maxTurns: Int = 8,
+  val maxTurns: Int = DEFAULT_MAX_TURNS,
   val maxToolCalls: Int = 12,
   val systemPrompt: String = DEFAULT_OPENCRAY_SYSTEM_PROMPT,
   val sessionContext: AgentRuntimeSessionContext = AgentRuntimeSessionContext(),
@@ -43,12 +45,13 @@ data class OpenCrayAgentRuntimeConfig(
   val json: Json = Json { ignoreUnknownKeys = true; prettyPrint = true },
 ) {
   init {
-    require(maxTurns >= 1) { "OpenCrayAgentRuntimeConfig maxTurns must be >= 1." }
+    require(maxTurns >= 0) { "OpenCrayAgentRuntimeConfig maxTurns must be >= 0." }
     require(maxToolCalls >= 1) { "OpenCrayAgentRuntimeConfig maxToolCalls must be >= 1." }
     require(systemPrompt.isNotBlank()) { "OpenCrayAgentRuntimeConfig systemPrompt must not be blank." }
   }
 
   companion object {
+    const val DEFAULT_MAX_TURNS: Int = 16
     const val DEFAULT_OPENCRAY_SYSTEM_PROMPT: String =
       "You are OpenCray, a workspace-first coding agent. " +
         "You may call one tool at a time when you need concrete workspace facts or to make a change. " +
@@ -63,6 +66,8 @@ class OpenCrayAgentRuntime(
   private val eventSink: OpenCrayAgentRuntimeEventSink = NoOpOpenCrayAgentRuntimeEventSink,
   private val clock: () -> Long = System::currentTimeMillis,
 ) : SessionTaskRuntime {
+  private val activeSkillCapsuleResolver: ActiveSkillCapsuleResolver = ActiveSkillCapsuleResolver()
+
   override fun execute(task: AgentTask, hooks: RuntimeExecutionHooks): ExecutionResult {
     emitLifecycleEvent(task = task, phase = OpenCrayRunLifecyclePhase.START)
     return try {
@@ -112,34 +117,58 @@ class OpenCrayAgentRuntime(
     var lastContextReport: ContextAssemblyReport? = null
     var protocolErrorCount = 0
     var lastProtocolErrorMessage: String? = null
+    var activeSkillName: String? = null
+    var activeSkillActivationSource: String? = null
 
-    while (turn < config.maxTurns) {
+    while (hasTurnBudgetRemaining(turn)) {
       if (hooks.isCancellationRequested()) {
         return cancelledResult(task = task, startedAt = startedAt, finishedAt = clock())
       }
 
+      val turnAwareConversation = promptConversationForTurn(
+        transcript = transcript,
+        turn = turn,
+      )
+      val activeSkillCapsule = activeSkillCapsuleResolver.resolve(
+        catalog = config.sessionContext.skillCatalog,
+        activeSkillName = activeSkillName,
+        activationSource = activeSkillActivationSource,
+      )
+      val visibleToolDefinitions = visibleToolDefinitionsForTurn(
+        allDefinitions = toolDispatcher.definitions(),
+        activeSkillCapsule = activeSkillCapsule,
+      )
       val managedContext = config.contextManager.prepare(
         PromptAssemblyInput(
           task = task,
           baseSystemPrompt = config.systemPrompt,
           sessionContext = config.sessionContext,
-          toolDefinitions = toolDispatcher.definitions(),
-          liveConversation = transcript,
+          activeSkillCapsule = activeSkillCapsule,
+          toolDefinitions = visibleToolDefinitions,
+          liveConversation = turnAwareConversation,
         ),
       )
       val assembledPrompt = config.promptAssembler.assemble(managedContext)
       lastContextReport = assembledPrompt.report
+      val enforcedSystemPrompt = enforcedSystemPromptForTurn(
+        systemPrompt = assembledPrompt.systemPrompt,
+        turn = turn,
+      )
 
       val runId = runIdFor(task)
       val request = LiteLlmGatewayRequest(
         requestId = "agent-$runId-turn-$turn-${UUID.randomUUID().toString().take(8)}",
         prompt = assembledPrompt.taskPrompt,
-        systemPrompt = assembledPrompt.systemPrompt,
+        systemPrompt = enforcedSystemPrompt,
         metadata = buildMap {
           put("runId", runId)
           put("taskId", task.id)
           put("taskType", task.type.name)
           put("turnIndex", turn.toString())
+          remainingTurnBudget(turn)?.let { remainingTurns ->
+            put("remainingTurnCount", remainingTurns.toString())
+            put("maxTurnCount", config.maxTurns.toString())
+          }
           put("contextSourceMessageCount", assembledPrompt.report.sourceTranscriptMessageCount.toString())
           put("contextWindowMessageCount", assembledPrompt.report.windowedTranscriptMessageCount.toString())
           put("contextMessageCount", assembledPrompt.report.windowedTranscriptMessageCount.toString())
@@ -190,6 +219,22 @@ class OpenCrayAgentRuntime(
         is ParsedModelActionBatch.Actions -> {
           val toolCalls = parsedBatch.actions.filterIsInstance<AgentModelAction.ToolCall>()
           if (toolCalls.isNotEmpty()) {
+            if (isFinalAnswerOnlyTurn(turn)) {
+              return failedResult(
+                task = task,
+                startedAt = startedAt,
+                finishedAt = clock(),
+                errorCode = "MAX_TURNS_EXCEEDED",
+                errorMessage = "Agent reached the configured turn limit and still tried to call another tool instead of returning a final answer.",
+                metadata = buildResultMetadata(
+                  gatewayResult = gatewayResult,
+                  turn = turn,
+                  toolCallCount = toolCallCount,
+                  responseFormat = "turn_limit_final_answer_required",
+                  contextReport = lastContextReport,
+                ) + mapOf("finalAnswerRequired" to "true"),
+              )
+            }
             var shouldContinueBatch = true
             toolCalls.forEach { toolAction ->
               if (!shouldContinueBatch) return@forEach
@@ -216,7 +261,7 @@ class OpenCrayAgentRuntime(
               )
               eventSink.onRunEvent(
                 task = task,
-                event = OpenCrayToolCallEvent(
+              event = OpenCrayToolCallEvent(
                   runId = runIdFor(task),
                   taskId = task.id,
                   turn = turn,
@@ -224,7 +269,10 @@ class OpenCrayAgentRuntime(
                   emittedAtEpochMs = clock(),
                 ),
               )
-              val toolResult = toolDispatcher.dispatch(task = task, call = toolAction.call, hooks = hooks)
+              val toolResult = gateActiveSkillToolCall(
+                call = toolAction.call,
+                activeSkillCapsule = activeSkillCapsule,
+              ) ?: toolDispatcher.dispatch(task = task, call = toolAction.call, hooks = hooks)
               eventSink.onRunEvent(
                 task = task,
                 event = OpenCrayToolResultEvent(
@@ -269,6 +317,16 @@ class OpenCrayAgentRuntime(
                     ) +
                     toolReasonMetadata(toolAction.call),
                 )
+              }
+              if (toolResult.status == AgentToolResultStatus.SUCCESS) {
+                val activatedSkillName = activatedSkillNameFrom(
+                  call = toolAction.call,
+                  result = toolResult,
+                )
+                if (!activatedSkillName.isNullOrBlank()) {
+                  activeSkillName = activatedSkillName
+                  activeSkillActivationSource = ACTIVATION_SOURCE_SKILL_READ
+                }
               }
               transcript += RuntimeConversationMessage(
                 role = RuntimeConversationRole.TOOL,
@@ -645,6 +703,49 @@ class OpenCrayAgentRuntime(
             },
           )
         }
+      put("contextVisibleSkillCount", report.visibleSkillCount.toString())
+      put("contextInjectedSkillCount", report.injectedSkillCount.toString())
+      put("contextOmittedSkillCount", report.omittedSkillCount.toString())
+      put("contextImplicitSkillCount", report.skillInventoryTrace.implicitSkillCount.toString())
+      put("contextInvalidSkillCount", report.invalidSkillCount.toString())
+      report.skillInventoryTrace.visible
+        .takeIf { visible -> visible.isNotEmpty() }
+        ?.let { visible ->
+          put(
+            "contextVisibleSkillSummary",
+            visible.joinToString(separator = ";") { trace ->
+              buildString {
+                append(trace.name)
+                append("@")
+                append(trace.relativePath)
+                append("[")
+                append(trace.invocationControl)
+                append("|")
+                append(trace.userInvocable)
+                append("|")
+                append(trace.executionContext)
+                append("]")
+              }
+            },
+          )
+        }
+      report.skillInventoryTrace.omittedTraceSkillCount
+        .takeIf { omittedTraceCount -> omittedTraceCount > 0 }
+        ?.let { omittedTraceCount ->
+          put("contextVisibleSkillTraceOmittedCount", omittedTraceCount.toString())
+        }
+      report.activeSkillTrace.name?.let { put("contextActiveSkillName", it) }
+      report.activeSkillTrace.relativePath?.let { put("contextActiveSkillRelativePath", it) }
+      report.activeSkillTrace.invocationControl?.let { put("contextActiveSkillInvocationControl", it) }
+      report.activeSkillTrace.executionContext?.let { put("contextActiveSkillExecutionContext", it) }
+      report.activeSkillTrace.activationSource?.let { put("contextActiveSkillActivationSource", it) }
+      put("contextActiveSkillToolRestrictionEnabled", report.activeSkillTrace.toolRestrictionEnabled.toString())
+      put("contextActiveSkillTruncated", report.activeSkillTrace.truncated.toString())
+      report.activeSkillTrace.allowedToolKeys
+        .takeIf { allowedToolKeys -> allowedToolKeys.isNotEmpty() }
+        ?.let { allowedToolKeys ->
+          put("contextActiveSkillAllowedTools", allowedToolKeys.joinToString(separator = ","))
+        }
     }
     gatewayResult?.selectedRoute?.routeId?.let { put("selectedRouteId", it) }
     gatewayResult?.selectedRoute?.providerId?.let { put("selectedProviderId", it) }
@@ -652,6 +753,74 @@ class OpenCrayAgentRuntime(
     gatewayResult?.completionMode?.name?.let { put("completionMode", it) }
     gatewayResult?.status?.name?.let { put("llmStatus", it) }
   }
+
+  private fun visibleToolDefinitionsForTurn(
+    allDefinitions: List<AgentToolDefinition>,
+    activeSkillCapsule: ActiveSkillCapsule?,
+  ): List<AgentToolDefinition> {
+    val allowedToolKeys = normalizedAllowedToolKeys(activeSkillCapsule)
+      .takeIf { keys -> keys.isNotEmpty() }
+      ?.plus(DEFAULT_ACTIVE_SKILL_EXEMPT_TOOL_KEYS)
+      ?: return allDefinitions
+    return allDefinitions.filter { definition ->
+      toolPolicyKey(definition.name) in allowedToolKeys
+    }
+  }
+
+  private fun gateActiveSkillToolCall(
+    call: AgentToolCall,
+    activeSkillCapsule: ActiveSkillCapsule?,
+  ): AgentToolResult? {
+    val capsule = activeSkillCapsule
+      ?.takeIf { active -> active.toolRestrictionEnabled }
+      ?: return null
+    val allowedToolKeys = normalizedAllowedToolKeys(capsule)
+    val requestedToolKey = toolPolicyKey(call.toolName)
+    if (requestedToolKey in allowedToolKeys || requestedToolKey in DEFAULT_ACTIVE_SKILL_EXEMPT_TOOL_KEYS) {
+      return null
+    }
+    val detail = buildString {
+      append("Active skill '")
+      append(capsule.name)
+      append("' restricts tool usage for this run. ")
+      append("Requested tool '")
+      append(call.toolName)
+      append("' is outside the active allowlist.")
+    }
+    return AgentToolResult(
+      toolName = call.toolName,
+      status = AgentToolResultStatus.DENIED,
+      content = detail,
+      errorCode = ERROR_SKILL_TOOL_POLICY_BLOCKED,
+      errorMessage = detail,
+      metadata = mapOf(
+        "activeSkillName" to capsule.name,
+        "activeSkillRelativePath" to capsule.relativePath,
+        "requestedToolKey" to requestedToolKey,
+        "allowedToolKeys" to allowedToolKeys.sorted().joinToString(separator = ","),
+      ),
+    )
+  }
+
+  private fun activatedSkillNameFrom(
+    call: AgentToolCall,
+    result: AgentToolResult,
+  ): String? {
+    if (toolPolicyKey(call.toolName) != "skill_read") {
+      return null
+    }
+    return result.metadata["skillName"]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+  }
+
+  private fun normalizedAllowedToolKeys(
+    activeSkillCapsule: ActiveSkillCapsule?,
+  ): Set<String> = activeSkillCapsule
+    ?.allowedToolKeys
+    ?.map(::toolPolicyKey)
+    ?.toSet()
+    ?: emptySet()
 
   private fun llmFailureResult(
     task: AgentTask,
@@ -854,6 +1023,54 @@ class OpenCrayAgentRuntime(
     return seeded
   }
 
+  private fun hasTurnBudgetRemaining(turn: Int): Boolean =
+    config.maxTurns == 0 || turn < config.maxTurns
+
+  private fun remainingTurnBudget(turn: Int): Int? =
+    config.maxTurns
+      .takeIf { configuredLimit -> configuredLimit > 0 }
+      ?.let { configuredLimit -> (configuredLimit - turn).coerceAtLeast(0) }
+
+  private fun isFinalAnswerOnlyTurn(turn: Int): Boolean = remainingTurnBudget(turn) == 1
+
+  private fun promptConversationForTurn(
+    transcript: List<RuntimeConversationMessage>,
+    turn: Int,
+  ): List<RuntimeConversationMessage> {
+    val reminder = turnBudgetReminderFor(turn) ?: return transcript
+    if (transcript.lastOrNull() == reminder) {
+      return transcript
+    }
+    return transcript + reminder
+  }
+
+  private fun enforcedSystemPromptForTurn(
+    systemPrompt: String?,
+    turn: Int,
+  ): String? {
+    val appendix = when (remainingTurnBudget(turn)) {
+      1 -> FINAL_TURN_SYSTEM_PROMPT_APPENDIX
+      2 -> PENULTIMATE_TURN_SYSTEM_PROMPT_APPENDIX
+      else -> null
+    } ?: return systemPrompt
+    return listOfNotNull(systemPrompt?.trim()?.takeIf(String::isNotBlank), appendix)
+      .joinToString(separator = "\n\n")
+  }
+
+  private fun turnBudgetReminderFor(turn: Int): RuntimeConversationMessage? = when (remainingTurnBudget(turn)) {
+    1 -> RuntimeConversationMessage(
+      role = RuntimeConversationRole.TOOL,
+      content = buildFinalAnswerRequiredObservation(),
+    )
+
+    2 -> RuntimeConversationMessage(
+      role = RuntimeConversationRole.TOOL,
+      content = buildFinalAnswerSoonObservation(),
+    )
+
+    else -> null
+  }
+
   private fun emitLifecycleEvent(
     task: AgentTask,
     phase: OpenCrayRunLifecyclePhase,
@@ -959,6 +1176,18 @@ class OpenCrayAgentRuntime(
     append("If you need multiple tools, call them one at a time across turns.")
   }.trim()
 
+  private fun buildFinalAnswerSoonObservation(): String = buildString {
+    appendLine("Turn budget note: after this turn, only one model turn remains.")
+    appendLine("If you still need one last tool, use it now.")
+    append("The next turn must return a final answer without calling another tool.")
+  }.trim()
+
+  private fun buildFinalAnswerRequiredObservation(): String = buildString {
+    appendLine("Turn budget note: this is the last allowed model turn.")
+    appendLine("Do not call any more tools.")
+    append("Return exactly one JSON final action now with the best user-facing answer you can provide.")
+  }.trim()
+
   private fun buildProtocolRecoveryObservation(
     rawOutput: String,
     reason: String,
@@ -974,6 +1203,52 @@ class OpenCrayAgentRuntime(
       append(preview)
     }
   }.trim()
+
+  private fun toolPolicyKey(toolName: String): String = when (toolName.trim().lowercase()) {
+    "ls",
+    "list",
+    "workspace_list_files",
+    -> "ls"
+
+    "read",
+    "workspace_read_file",
+    -> "read"
+
+    "write",
+    "workspace_write_file",
+    -> "write"
+
+    "grep" -> "grep"
+    "glob" -> "glob"
+    "edit" -> "edit"
+    "multiedit" -> "multiedit"
+    "importfile",
+    "import",
+    "workspace_import_file",
+    -> "importfile"
+
+    "workspace_move_file" -> "move"
+    "workspace_delete_file" -> "delete"
+    "bash",
+    "command_exec",
+    -> "bash"
+
+    "python_exec" -> "python_exec"
+    "websearch" -> "websearch"
+    "webfetch" -> "webfetch"
+    "todowrite" -> "todowrite"
+    "processstart" -> "processstart"
+    "processlist" -> "processlist"
+    "processread" -> "processread"
+    "processwait" -> "processwait"
+    "processterminate" -> "processterminate"
+    "skills_list" -> "skills_list"
+    "skill_read" -> "skill_read"
+    "memory_search" -> "memory_search"
+    "memory_get" -> "memory_get"
+    "mcp_list_servers" -> "mcp_list_servers"
+    else -> toolName.trim().lowercase()
+  }
 
   private sealed interface AgentModelAction {
     data class Final(
@@ -1020,7 +1295,14 @@ class OpenCrayAgentRuntime(
     const val RUN_ID_METADATA_KEY: String = "${HIDDEN_METADATA_PREFIX}runId"
     const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
     const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
+    const val ERROR_SKILL_TOOL_POLICY_BLOCKED: String = "SKILL_TOOL_POLICY_BLOCKED"
     const val MAX_PROTOCOL_ERROR_PREVIEW_CHARS: Int = 600
+    const val ACTIVATION_SOURCE_SKILL_READ: String = "skill_read"
+    const val PENULTIMATE_TURN_SYSTEM_PROMPT_APPENDIX: String =
+      "[Turn Budget]\nYou have two model turns left including this one. If another tool is still necessary, use at most one more tool now and be ready to answer on the next turn."
+    const val FINAL_TURN_SYSTEM_PROMPT_APPENDIX: String =
+      "[Turn Budget]\nThis is the last allowed model turn. You must return exactly one JSON final action now. Do not call any more tools."
+    val DEFAULT_ACTIVE_SKILL_EXEMPT_TOOL_KEYS: Set<String> = setOf("skills_list", "skill_read")
   }
 }
 

@@ -6,6 +6,8 @@ import com.opencray.runtime.memory.MemoryRecallOmittedTrace
 import com.opencray.runtime.memory.MemoryRecallResult
 import com.opencray.runtime.memory.MemoryRecallSelectedTrace
 import com.opencray.runtime.memory.RetrievedMemory
+import com.opencray.runtime.skills.ActiveSkillPromptLayer
+import com.opencray.runtime.skills.SkillInventoryPromptLayer
 import com.opencray.runtime.soul.RuntimeSoulPromptComposer
 
 data class ContextManagerConfig(
@@ -24,12 +26,16 @@ class ContextManager(
   private val compactionPolicy: CompactionPolicy = CompactionPolicy(),
   private val soulPromptComposer: RuntimeSoulPromptComposer = RuntimeSoulPromptComposer(),
   private val memoryPromptLayer: MemoryPromptLayer = MemoryPromptLayer(),
+  private val skillInventoryPromptLayer: SkillInventoryPromptLayer = SkillInventoryPromptLayer(),
+  private val activeSkillPromptLayer: ActiveSkillPromptLayer = ActiveSkillPromptLayer(),
   private val config: ContextManagerConfig = ContextManagerConfig(),
 ) {
   fun prepare(input: PromptAssemblyInput): ManagedPromptContext {
     val prunedTranscript = contextPruner.prune(input.liveConversation)
     val transcriptSelection = transcriptWindowBuilder.buildSelection(prunedTranscript.messages)
     val selectedMemory = selectMemory(input.sessionContext.recalledMemory)
+    val renderedSkillInventory = skillInventoryPromptLayer.render(input.sessionContext.skillInventory)
+    val renderedActiveSkill = activeSkillPromptLayer.render(input.activeSkillCapsule)
     val compactionSummary = compactionPolicy.summarize(transcriptSelection.omittedMessages)
 
     return ManagedPromptContext(
@@ -38,6 +44,8 @@ class ContextManager(
       sessionPolicyText = input.sessionContext.sessionPolicyText.orEmpty().trim(),
       personalizationText = soulPromptComposer.compose(input.sessionContext.soulProfile).trim(),
       memoryText = memoryPromptLayer.render(selectedMemory),
+      skillInventoryText = renderedSkillInventory.text,
+      activeSkillText = renderedActiveSkill.text,
       pruningSummary = prunedTranscript.summary,
       compactionSummary = compactionSummary,
       toolDefinitions = input.toolDefinitions,
@@ -59,6 +67,12 @@ class ContextManager(
         injectedMemoryRecordCount = selectedMemory.memories.size,
         omittedMemoryRecordCount = selectedMemory.omittedRecordCount,
         memoryRecallTrace = selectedMemory.trace,
+        visibleSkillCount = input.sessionContext.skillInventory.visibleSkillCount,
+        injectedSkillCount = renderedSkillInventory.injectedSkillCount,
+        omittedSkillCount = renderedSkillInventory.omittedSkillCount,
+        invalidSkillCount = input.sessionContext.skillInventory.invalidSkillCount,
+        skillInventoryTrace = input.sessionContext.skillInventory.trace,
+        activeSkillTrace = renderedActiveSkill.trace,
       ),
     )
   }

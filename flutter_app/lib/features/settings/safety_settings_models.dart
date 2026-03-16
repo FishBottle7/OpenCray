@@ -117,6 +117,7 @@ class SafetySettingsSnapshot {
     required this.automationMode,
     required this.rollbackJournalEnabled,
     required this.maxFilesPerBatch,
+    this.maxAgentTurns = 0,
     required this.undoWindowHours,
     required this.fileChangesPolicy,
     required this.fileDeletesPolicy,
@@ -130,6 +131,7 @@ class SafetySettingsSnapshot {
   final SafetyAutomationMode automationMode;
   final bool rollbackJournalEnabled;
   final int maxFilesPerBatch;
+  final int maxAgentTurns;
   final int undoWindowHours;
   final ToolPolicyOverride fileChangesPolicy;
   final ToolPolicyOverride fileDeletesPolicy;
@@ -155,6 +157,7 @@ class SafetySettingsSnapshot {
     SafetyAutomationMode? automationMode,
     bool? rollbackJournalEnabled,
     int? maxFilesPerBatch,
+    int? maxAgentTurns,
     int? undoWindowHours,
     ToolPolicyOverride? fileChangesPolicy,
     ToolPolicyOverride? fileDeletesPolicy,
@@ -169,6 +172,7 @@ class SafetySettingsSnapshot {
       rollbackJournalEnabled:
           rollbackJournalEnabled ?? this.rollbackJournalEnabled,
       maxFilesPerBatch: maxFilesPerBatch ?? this.maxFilesPerBatch,
+      maxAgentTurns: maxAgentTurns ?? this.maxAgentTurns,
       undoWindowHours: undoWindowHours ?? this.undoWindowHours,
       fileChangesPolicy: fileChangesPolicy ?? this.fileChangesPolicy,
       fileDeletesPolicy: fileDeletesPolicy ?? this.fileDeletesPolicy,

@@ -40,7 +40,10 @@ Phase 1 foundation now in progress:
 - memory recall trace now projects through host run snapshots and the local runtime server, so existing debug surfaces can inspect it without adding a dedicated memory UI first
 - user-input durable memory extraction now prefers a constrained semantic interpreter for `user_preference`, `durable_instruction`, `project_fact`, and structured soul preference intents, with old keyword heuristics retained only as an explicit fallback when no interpreter is available
 - prompt-local pruning now runs before transcript windowing, and prompt-time compaction emits an explicit omitted-history summary instead of silently dropping older replay
-- the next safe rollout step is finishing the remaining OpenClaw-aligned memory paths without letting `ContextManager` absorb source-selection logic that belongs to memory or soul modules
+- projected memory corpus tools now expose `memory_search` and `memory_get`, and explicit memory retrieval emits `memory_retrieval` runtime events that project through host/local run snapshots
+- managed skills roots now resolve into a bounded `Skill Inventory` prompt layer, and run metadata/snapshots now preserve which skills were visible versus injected for later debugging
+- explicit `skill_read` can now promote one active skill into a dedicated `Active Skill` capsule layer for later turns, with host-visible trace and allowlist-style tool narrowing kept outside `ContextManager`
+- the next safe rollout step is pre-compaction memory flush and durable compaction work, now that Level 2 skill activation is in place without moving source-selection logic into `ContextManager`
 
 ## Remaining work after P0
 
@@ -72,17 +75,20 @@ Phase 1 foundation now in progress:
    - Add explicit `memory_search` and `memory_get` runtime tools similar to OpenClaw.
    - Search should run against a projected memory corpus, not raw `memory.json`.
    - Automatic bounded recall and explicit memory tools should coexist rather than replace one another.
-   - Current status: not implemented yet.
+   - Current status: implemented with projected-corpus search/get tooling and `memory_retrieval` runtime events visible through existing host/local snapshot surfaces.
+   - Remaining gaps: better operator-facing maintenance/debug UI is still optional if the existing snapshot surfaces prove sufficient.
 
 5. Runtime-visible skill inventory
    - Assemble an explicit inventory layer from managed skills roots.
    - Snapshot which skills were visible for a run so behavior can be debugged later.
-   - Current status: not implemented as a prompt-visible runtime layer yet.
+   - Current status: implemented as a bounded prompt-visible `Skill Inventory` layer with run metadata and host/local snapshot projection for visible, injected, omitted, implicit, and invalid skill counts.
+   - Remaining gaps: inventory visibility is traceable, but there is still no active skill capsule selection or tool-policy narrowing stage.
 
 6. Active skill capsule injection
    - When a skill is selected, inject a dedicated skill capsule instead of relying on raw `skill_read` only.
    - Narrow tool policy where required.
-   - Current status: not implemented yet.
+   - Current status: implemented as a run-local progressive disclosure path: successful `skill_read` activates a dedicated `Active Skill` context layer for later turns, trace projects through runtime metadata plus host/local run snapshots, and simple allowlist-style tool narrowing is enforced outside `ContextManager`.
+   - Remaining gaps: there is still no automatic implicit skill selection, no executable `skill_execute` runtime, and no fork/subagent execution path for `context: fork` skills.
 
 ### Phase 2: budget pressure, bootstrap context, and child runtimes
 
@@ -117,22 +123,19 @@ Phase 1 foundation now in progress:
 12. Full context trace
    - Emit run-level trace data for layer composition, retrieved memories, skill capsules, pruning, and compaction.
    - Make postmortem inspection possible without re-running the session.
-   - Current status: memory write activity is now visible at the host runtime layer, and memory recall trace is present in runtime reports.
-   - Remaining gaps: deeper cross-layer trace capture is still pending, including memory-tool retrieval trace, memory-flush trace, skill visibility/capsule trace, and durable compaction trace.
+   - Current status: memory write activity, bounded memory recall trace, explicit memory-tool retrieval trace, skill visibility trace, and active skill capsule trace now project through runtime metadata plus host/local snapshot surfaces.
+   - Remaining gaps: deeper cross-layer trace capture is still pending, including memory-flush trace, bootstrap-file trace, and durable compaction trace.
 
 ## Recommended execution order
 
 1. Preserve the `ContextManager` boundary as allocator/budget owner only
 2. Finish structured soul promotion/confirmation work
 3. Finish the remaining memory debug/operator surfaces
-4. Add OpenClaw-style on-demand memory tools
-5. Skill inventory layer
-6. Active skill capsule
-7. Add pre-compaction memory flush
-8. Durable compaction summaries
-9. Bootstrap files
-10. Subagent context modes
-11. Full context trace
+4. Add pre-compaction memory flush
+5. Durable compaction summaries
+6. Bootstrap files
+7. Subagent context modes
+8. Full context trace
 
 ## Handoff notes for the next worker
 

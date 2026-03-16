@@ -17,6 +17,9 @@ import com.opencray.app.facade.personalization.PersonalizationPresetSnapshot
 import com.opencray.app.facade.personalization.PersonalizationResetActionSnapshot
 import com.opencray.app.facade.personalization.PersonalizationResetScope
 import com.opencray.app.facade.personalization.SavePersonalizationConfigRequest
+import com.opencray.app.facade.search.EmptyNetworkSearchConfigFacade
+import com.opencray.app.facade.search.LocalNetworkSearchConfigFacade
+import com.opencray.app.facade.search.NetworkSearchConfigFacade
 import com.opencray.app.facade.safety.SafetySettingsFacade
 import com.opencray.app.facade.safety.SafetySettingsLocationSnapshot
 import com.opencray.app.facade.safety.SafetySettingsSnapshot
@@ -418,6 +421,39 @@ class OpenCrayHostRuntimeTest {
     assertEquals("allow", submittedTask.metadata["fileChangesPolicyId"])
     assertEquals("block", submittedTask.metadata["fileDeletesPolicyId"])
     assertEquals("ask", submittedTask.metadata["shellCommandsPolicyId"])
+  }
+
+  @Test
+  fun submitChatMessageIncludesApprovedReadRootsMetadata() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approved-read-roots"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      approvedReadRootsProvider = {
+        ApprovedReadRootsSnapshot(
+          roots = emptySet(),
+          summary = "workspace=/workspace | photo_library=/storage/emulated/0/DCIM,/storage/emulated/0/Pictures",
+        )
+      },
+    )
+
+    hostRuntime.submitChatMessage("Check external read roots")
+
+    val submittedTask = handle.submittedTasks.single()
+
+    assertEquals("select_paths", submittedTask.metadata["externalAccessModeId"])
+    assertEquals("true", submittedTask.metadata["readOnlyOutsideWorkspace"])
+    assertEquals(
+      "workspace=/workspace | photo_library=/storage/emulated/0/DCIM,/storage/emulated/0/Pictures",
+      submittedTask.metadata["approvedReadRoots"],
+    )
   }
 
   @Test
@@ -1218,6 +1254,74 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun completedRunSnapshotIncludesStructuredSkillInventory() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-skill-inventory"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    val submission = hostRuntime.submitChatMessage("Need run skill inventory trace")!!
+    val task = handle.submittedTasks.single()
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "Applied the visible skills.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          "responseFormat" to "json_final",
+          "contextVisibleSkillCount" to "2",
+          "contextInjectedSkillCount" to "2",
+          "contextOmittedSkillCount" to "0",
+          "contextImplicitSkillCount" to "1",
+          "contextInvalidSkillCount" to "1",
+          "contextActiveSkillName" to "ui-ux-pro-max",
+          "contextActiveSkillRelativePath" to ".codex/skills/ui-ux-pro-max/SKILL.md",
+          "contextActiveSkillInvocationControl" to "explicit-only",
+          "contextActiveSkillExecutionContext" to "inline",
+          "contextActiveSkillActivationSource" to "skill_read",
+          "contextActiveSkillToolRestrictionEnabled" to "true",
+          "contextActiveSkillAllowedTools" to "read,write",
+          "contextActiveSkillTruncated" to "false",
+          "contextVisibleSkillSummary" to
+            "ui-ux-pro-max@.codex/skills/ui-ux-pro-max/SKILL.md[explicit-only|true|inline];" +
+            "fun-brainstorming@.codex/skills/fun-brainstorming/SKILL.md[explicit-and-implicit|true|fork]",
+        ),
+      ),
+    )
+
+    val runSnapshot = hostRuntime.loadChatRunSnapshot(submission["runId"] as String)!!
+    val skillInventory = runSnapshot["skillInventory"] as Map<*, *>
+    val activeSkill = runSnapshot["activeSkill"] as Map<*, *>
+    val skills = skillInventory["skills"] as List<*>
+    val firstSkill = skills[0] as Map<*, *>
+    val secondSkill = skills[1] as Map<*, *>
+
+    assertEquals(2, skillInventory["visibleSkillCount"])
+    assertEquals(2, skillInventory["injectedSkillCount"])
+    assertEquals(0, skillInventory["omittedSkillCount"])
+    assertEquals(1, skillInventory["implicitSkillCount"])
+    assertEquals(1, skillInventory["invalidSkillCount"])
+    assertEquals("ui-ux-pro-max", firstSkill["name"])
+    assertEquals(".codex/skills/ui-ux-pro-max/SKILL.md", firstSkill["relativePath"])
+    assertEquals("explicit-only", firstSkill["invocationControl"])
+    assertEquals(true, firstSkill["userInvocable"])
+    assertEquals("fork", secondSkill["executionContext"])
+    assertEquals("ui-ux-pro-max", activeSkill["name"])
+    assertEquals("skill_read", activeSkill["activationSource"])
+    assertEquals(true, activeSkill["toolRestrictionEnabled"])
+    assertEquals(listOf("read", "write"), activeSkill["allowedToolKeys"])
+  }
+
+  @Test
   fun runSnapshotIncludesManagedProcessLinkageAndKeepsLiveProcessRunVisible() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-process-linkage"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -1551,6 +1655,49 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun networkSearchConfigRoundTripsForFlutterBridge() {
+    val facade = LocalNetworkSearchConfigFacade.createForTest(
+      WebSearchSettingsStore(InMemoryWebSearchSettingsKeyValueStore()),
+    )
+    val hostRuntime = hostRuntime(
+      chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-network-search")),
+      runtimeManager = RecordingRuntimeManager(),
+      networkSearchConfigFacade = facade,
+    )
+
+    val initialPayload = hostRuntime.loadNetworkSearchConfig()
+    assertEquals("Network & Search", initialPayload["title"])
+    assertEquals(0, (initialPayload["slots"] as List<*>).size)
+
+    val savedPayload = hostRuntime.saveNetworkSearchConfig(
+      slots = listOf(
+        mapOf(
+          "id" to "slot-primary",
+          "providerId" to "brave",
+          "label" to "Primary Brave",
+          "apiKey" to "brave-secret",
+          "enabled" to true,
+        ),
+        mapOf(
+          "id" to "slot-backup",
+          "providerId" to "tavily",
+          "label" to "Backup Tavily",
+          "apiKey" to "",
+          "enabled" to false,
+        ),
+      ),
+    )
+
+    val savedSlots = (savedPayload["slots"] as List<*>).map { it as Map<*, *> }
+    assertEquals(2, savedSlots.size)
+    assertEquals("brave", savedSlots[0]["providerId"])
+    assertEquals("Primary Brave", savedSlots[0]["label"])
+    assertEquals(true, savedSlots[0]["enabled"])
+    assertEquals("tavily", savedSlots[1]["providerId"])
+    assertEquals(false, savedSlots[1]["enabled"])
+  }
+
+  @Test
   fun setAppLanguageReturnsUpdatedPersonalizationPayload() {
     val hostRuntime = hostRuntime(
       chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-language")),
@@ -1601,11 +1748,15 @@ class OpenCrayHostRuntimeTest {
   private fun hostRuntime(
     chatStore: ChatSessionLocalStore,
     runtimeManager: AgentSessionRuntimeManager,
+    networkSearchConfigFacade: NetworkSearchConfigFacade = EmptyNetworkSearchConfigFacade,
     llmConfigFacade: LlmConfigFacade = RecordingLlmConfigFacade(),
     personalizationFacade: PersonalizationFacade = RecordingPersonalizationFacade(),
     mcpSettingsFacade: McpSettingsFacade = RecordingMcpSettingsFacade(),
     safetySettingsFacade: SafetySettingsFacade = RecordingSafetySettingsFacade(),
     memoryIngestionCoordinator: ChatMemoryIngestionCoordinator? = null,
+    approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot = {
+      ApprovedReadRootsSnapshot(roots = emptySet(), summary = "workspace=unavailable")
+    },
     runCancellationReplayRecorder: (String, String, String, String?) -> Unit = { _, _, _, _ -> },
     terminalReplayRepairer: (String, List<AgentRunSnapshot>) -> Unit = { _, _ -> },
     mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
@@ -1613,11 +1764,13 @@ class OpenCrayHostRuntimeTest {
     stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
     chatSessionStore = chatStore,
     settingsFacade = NoOpSettingsFacade,
+    networkSearchConfigFacade = networkSearchConfigFacade,
     llmConfigFacade = llmConfigFacade,
     personalizationFacade = personalizationFacade,
     mcpSettingsFacade = mcpSettingsFacade,
     safetySettingsFacade = safetySettingsFacade,
     sessionRuntimeManager = runtimeManager,
+    approvedReadRootsProvider = approvedReadRootsProvider,
     memoryIngestionCoordinator = memoryIngestionCoordinator,
     runCancellationReplayRecorder = runCancellationReplayRecorder,
     terminalReplayRepairer = terminalReplayRepairer,
@@ -1866,6 +2019,7 @@ class OpenCrayHostRuntimeTest {
         automationMode = SafetyAutomationMode.fromWireValue(request.automationModeId),
         rollbackJournalEnabled = request.rollbackJournalEnabled,
         maxFilesPerBatch = request.maxFilesPerBatch,
+        maxAgentTurns = request.maxAgentTurns,
         undoWindowHours = request.undoWindowHours,
         fileChangesPolicy = ToolPolicyOverride.fromWireValue(request.fileChangesPolicyId),
         fileDeletesPolicy = ToolPolicyOverride.fromWireValue(request.fileDeletesPolicyId),
@@ -1889,6 +2043,7 @@ class OpenCrayHostRuntimeTest {
       automationMode = SafetyAutomationMode.AUTO,
       rollbackJournalEnabled = true,
       maxFilesPerBatch = 20,
+      maxAgentTurns = SafetySettingsState.DEFAULT_MAX_AGENT_TURNS,
       undoWindowHours = 24,
       fileChangesPolicy = ToolPolicyOverride.INHERIT,
       fileDeletesPolicy = ToolPolicyOverride.INHERIT,

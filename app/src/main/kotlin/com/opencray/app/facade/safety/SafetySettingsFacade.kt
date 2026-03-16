@@ -1,6 +1,7 @@
 package com.opencray.app.facade.safety
 
 import android.content.Context
+import com.opencray.app.ApprovedReadRootsResolver
 import com.opencray.app.SafetySettingsState
 import com.opencray.app.SafetySettingsStore
 import com.opencray.policy.ExternalAccessMode
@@ -17,6 +18,7 @@ data class SafetySettingsSnapshot(
   val automationMode: SafetyAutomationMode,
   val rollbackJournalEnabled: Boolean,
   val maxFilesPerBatch: Int,
+  val maxAgentTurns: Int = SafetySettingsState.DEFAULT_MAX_AGENT_TURNS,
   val undoWindowHours: Int,
   val fileChangesPolicy: ToolPolicyOverride,
   val fileDeletesPolicy: ToolPolicyOverride,
@@ -31,6 +33,7 @@ data class SaveSafetySettingsRequest(
   val automationModeId: String,
   val rollbackJournalEnabled: Boolean,
   val maxFilesPerBatch: Int,
+  val maxAgentTurns: Int = SafetySettingsState.DEFAULT_MAX_AGENT_TURNS,
   val undoWindowHours: Int,
   val fileChangesPolicyId: String,
   val fileDeletesPolicyId: String,
@@ -63,11 +66,19 @@ object EmptySafetySettingsFacade : SafetySettingsFacade {
 
 internal class LocalSafetySettingsFacade(
   private val store: SafetySettingsStore,
+  private val reconcileState: (SafetySettingsState) -> SafetySettingsState = { it },
 ) : SafetySettingsFacade {
-  override fun load(): SafetySettingsSnapshot = store.load().toSnapshot()
+  override fun load(): SafetySettingsSnapshot {
+    val stored = store.load()
+    val reconciled = reconcileState(stored).sanitized()
+    if (reconciled != stored) {
+      store.save(reconciled)
+    }
+    return reconciled.toSnapshot()
+  }
 
   override fun save(request: SaveSafetySettingsRequest): SafetySettingsSnapshot {
-    val state = request.toState()
+    val state = reconcileState(request.toState()).sanitized()
     store.save(state)
     return state.toSnapshot()
   }
@@ -75,6 +86,7 @@ internal class LocalSafetySettingsFacade(
   companion object {
     fun fromContext(context: Context): LocalSafetySettingsFacade = LocalSafetySettingsFacade(
       store = SafetySettingsStore.fromContext(context),
+      reconcileState = { state -> reconcileExternalAccessAuthorization(context, state) },
     )
   }
 }
@@ -83,6 +95,7 @@ private fun SaveSafetySettingsRequest.toState(): SafetySettingsState = SafetySet
   automationMode = SafetyAutomationMode.fromWireValue(automationModeId),
   rollbackJournalEnabled = rollbackJournalEnabled,
   maxFilesPerBatch = maxFilesPerBatch,
+  maxAgentTurns = maxAgentTurns,
   undoWindowHours = undoWindowHours,
   fileChangesPolicy = ToolPolicyOverride.fromWireValue(fileChangesPolicyId),
   fileDeletesPolicy = ToolPolicyOverride.fromWireValue(fileDeletesPolicyId),
@@ -100,6 +113,7 @@ private fun SafetySettingsState.toSnapshot(): SafetySettingsSnapshot = SafetySet
   automationMode = automationMode,
   rollbackJournalEnabled = rollbackJournalEnabled,
   maxFilesPerBatch = maxFilesPerBatch,
+  maxAgentTurns = maxAgentTurns,
   undoWindowHours = undoWindowHours,
   fileChangesPolicy = fileChangesPolicy,
   fileDeletesPolicy = fileDeletesPolicy,
@@ -113,4 +127,18 @@ private fun SafetySettingsState.toSnapshot(): SafetySettingsSnapshot = SafetySet
   ),
   workspaceAccessProfile = workspaceAccessProfile,
   readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
+)
+
+private fun reconcileExternalAccessAuthorization(
+  context: Context,
+  state: SafetySettingsState,
+): SafetySettingsState = state.copy(
+  photoLibraryEnabled = state.photoLibraryEnabled &&
+    ApprovedReadRootsResolver.hasAccessibleLocation(context, "photo_library"),
+  downloadsEnabled = state.downloadsEnabled &&
+    ApprovedReadRootsResolver.hasAccessibleLocation(context, "downloads"),
+  documentsEnabled = state.documentsEnabled &&
+    ApprovedReadRootsResolver.hasAccessibleLocation(context, "documents"),
+  recordingsEnabled = state.recordingsEnabled &&
+    ApprovedReadRootsResolver.hasAccessibleLocation(context, "recordings"),
 )

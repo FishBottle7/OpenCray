@@ -88,6 +88,12 @@ internal data class AgentRunSnapshot(
 
 private const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
 private const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
+internal const val ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE: String = "PROCESS_INTERRUPTED_ON_RESTORE"
+internal const val METADATA_RESTORED_TERMINAL_STATE: String = "restoredTerminalState"
+internal const val METADATA_RESTORED_FROM_DURABLE_STORE: String = "restoredFromDurableStore"
+internal const val METADATA_RUN_REPAIR_SOURCE: String = "runRepairSource"
+internal const val RUN_REPAIR_SOURCE_MANAGED_PROCESS_RESTORE: String = "managed_process_restore"
+internal const val RESTORED_TERMINAL_STATE_INTERRUPTED: String = "interrupted"
 
 internal interface AgentSessionRuntimeManager {
   fun forSession(sessionId: String): AgentSessionHandle
@@ -455,19 +461,7 @@ private class ManagedAgentSessionHandle(
     return loop.snapshot()
   }
 
-  override fun hasPendingWork(): Boolean = loop.snapshot().tasks.any { taskSnapshot ->
-    when (taskSnapshot.task.state) {
-      AgentTaskState.QUEUED,
-      AgentTaskState.RUNNING,
-      -> true
-
-      AgentTaskState.SUSPENDED,
-      AgentTaskState.COMPLETED,
-      AgentTaskState.CANCELLED,
-      AgentTaskState.FAILED,
-      -> false
-    }
-  }
+  override fun hasPendingWork(): Boolean = currentRunSnapshots().any { snapshot -> !snapshot.isTerminal }
 
   override fun listManagedProcesses(): List<ManagedProcessSnapshot> =
     runtimeFactory.listManagedProcesses(sessionId)
@@ -532,7 +526,15 @@ private class ManagedAgentSessionHandle(
 
   private fun currentRunSnapshots(): List<AgentRunSnapshot> {
     val queueSnapshot = loop.snapshot()
-    val managedProcessesById = listManagedProcesses().associateBy(ManagedProcessSnapshot::processId)
+    val managedProcesses = listManagedProcesses()
+    synchronized(runLock) {
+      seedMissingRunRecordsLocked(queueSnapshot)
+      repairRestoredInterruptedRunsLocked(
+        queueSnapshot = queueSnapshot,
+        managedProcesses = managedProcesses,
+      )
+    }
+    val managedProcessesById = managedProcesses.associateBy(ManagedProcessSnapshot::processId)
     val taskSnapshotsByRunId = queueSnapshot.tasks.associateBy { taskSnapshot ->
       runIdFor(taskSnapshot.task)
     }
@@ -561,7 +563,18 @@ private class ManagedAgentSessionHandle(
         taskSnapshot?.task?.updatedAtEpochMs ?: 0L,
         result?.finishedAtEpochMs ?: 0L,
         record?.lastEvent?.emittedAtEpochMs ?: 0L,
+        managedProcessIds.maxOfOrNull { processId ->
+          managedProcessesById[processId]?.updatedAtEpochMs ?: 0L
+        } ?: 0L,
         acceptedAtEpochMs,
+      )
+      val projectedLifecycleState = projectedLifecycleState(
+        original = taskSnapshot?.lifecycleState,
+        result = result,
+      )
+      val projectedTaskState = projectedTaskState(
+        original = taskSnapshot?.task?.state,
+        result = result,
       )
       AgentRunSnapshot(
         sessionId = sessionId,
@@ -569,8 +582,8 @@ private class ManagedAgentSessionHandle(
         taskId = taskId,
         acceptedAtEpochMs = acceptedAtEpochMs,
         updatedAtEpochMs = updatedAtEpochMs,
-        lifecycleState = taskSnapshot?.lifecycleState,
-        taskState = taskSnapshot?.task?.state,
+        lifecycleState = projectedLifecycleState,
+        taskState = projectedTaskState,
         attempt = taskSnapshot?.attempt ?: 0,
         executionStatus = result?.status,
         errorCode = result?.errorCode ?: taskSnapshot?.lastErrorCode,
@@ -586,6 +599,42 @@ private class ManagedAgentSessionHandle(
         lastEvent = record?.lastEvent,
       )
     }.sortedByDescending { snapshot -> snapshot.acceptedAtEpochMs }
+  }
+
+  private fun repairRestoredInterruptedRunsLocked(
+    queueSnapshot: SessionQueueSnapshot,
+    managedProcesses: List<ManagedProcessSnapshot>,
+  ) {
+    val managedProcessesById = managedProcesses.associateBy(ManagedProcessSnapshot::processId)
+    val taskSnapshotsByRunId = queueSnapshot.tasks.associateBy { taskSnapshot ->
+      runIdFor(taskSnapshot.task)
+    }
+    runRecordsById.entries.toList().forEach { (runId, record) ->
+      val taskSnapshot = taskSnapshotsByRunId[runId]
+      val taskId = taskSnapshot?.task?.id ?: record.submission.taskId
+      val associatedProcesses = associatedManagedProcesses(
+        taskId = taskId,
+        existingIds = record.managedProcessIds,
+        managedProcessesById = managedProcessesById,
+      )
+      if (!shouldRepairRestoredInterruptedRun(taskSnapshot, record, associatedProcesses)) {
+        return@forEach
+      }
+      val updated = record.copy(
+        managedProcessIds = (
+          record.managedProcessIds +
+            associatedProcesses.map(ManagedProcessSnapshot::processId)
+          ).distinct(),
+        lastResult = repairedInterruptedRestoreResult(
+          record = record,
+          associatedProcesses = associatedProcesses,
+        ),
+      )
+      if (updated != record) {
+        runRecordsById[runId] = updated
+        persistRunRecordLocked(updated)
+      }
+    }
   }
 
   private fun restorePersistedRunRecordsLocked() {
@@ -665,6 +714,63 @@ private class ManagedAgentSessionHandle(
       if (processId in current) current else current + processId
     }
 
+  private fun shouldRepairRestoredInterruptedRun(
+    taskSnapshot: com.opencray.core.orchestrator.SessionQueueTaskSnapshot?,
+    record: ManagedRunRecord,
+    associatedProcesses: List<ManagedProcessSnapshot>,
+  ): Boolean {
+    if (record.lastResult != null) {
+      return false
+    }
+    if (taskSnapshot == null || isTerminalLifecycle(taskSnapshot.lifecycleState)) {
+      return false
+    }
+    if (associatedProcesses.isEmpty()) {
+      return false
+    }
+    if (associatedProcesses.any { snapshot -> snapshot.status == ManagedProcessStatus.RUNNING }) {
+      return false
+    }
+    return associatedProcesses.all { snapshot -> snapshot.isTerminalAfterRestore() } &&
+      associatedProcesses.any { snapshot -> snapshot.isInterruptedOnRestore() }
+  }
+
+  private fun repairedInterruptedRestoreResult(
+    record: ManagedRunRecord,
+    associatedProcesses: List<ManagedProcessSnapshot>,
+  ): ExecutionResult {
+    val orderedProcessIds = associatedProcesses
+      .map(ManagedProcessSnapshot::processId)
+      .distinct()
+      .sorted()
+    val latestUpdateEpochMs = associatedProcesses.maxOf { snapshot ->
+      snapshot.finishedAtEpochMs ?: snapshot.updatedAtEpochMs
+    }
+    val startedAtEpochMs = record.submission.acceptedAtEpochMs
+    val finishedAtEpochMs = maxOf(startedAtEpochMs, latestUpdateEpochMs)
+    return ExecutionResult(
+      taskId = record.submission.taskId,
+      status = ExecutionStatus.FAILED,
+      errorCode = ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE,
+      errorMessage = buildString {
+        append("Managed process state was restored in an interrupted terminal state")
+        if (orderedProcessIds.isNotEmpty()) {
+          append(" for ")
+          append(orderedProcessIds.joinToString(", "))
+        }
+        append("; marking the run interrupted until the user decides how to continue.")
+      },
+      startedAtEpochMs = startedAtEpochMs,
+      finishedAtEpochMs = finishedAtEpochMs,
+      metadata = mapOf(
+        METADATA_RESTORED_TERMINAL_STATE to RESTORED_TERMINAL_STATE_INTERRUPTED,
+        METADATA_RESTORED_FROM_DURABLE_STORE to "true",
+        METADATA_RUN_REPAIR_SOURCE to RUN_REPAIR_SOURCE_MANAGED_PROCESS_RESTORE,
+        "managedProcessIds" to orderedProcessIds.joinToString(","),
+      ),
+    )
+  }
+
   private fun associatedManagedProcessIds(
     taskId: String,
     existingIds: List<String>,
@@ -677,6 +783,76 @@ private class ManagedAgentSessionHandle(
         .map(ManagedProcessSnapshot::processId)
         .toList()
     ).distinct()
+
+  private fun associatedManagedProcesses(
+    taskId: String,
+    existingIds: List<String>,
+    managedProcessesById: Map<String, ManagedProcessSnapshot>,
+  ): List<ManagedProcessSnapshot> = associatedManagedProcessIds(
+    taskId = taskId,
+    existingIds = existingIds,
+    managedProcessesById = managedProcessesById,
+  ).mapNotNull(managedProcessesById::get)
+
+  private fun projectedLifecycleState(
+    original: QueueTaskLifecycleState?,
+    result: ExecutionResult?,
+  ): QueueTaskLifecycleState? = if (
+    isInterruptedOnRestoreResult(result) &&
+    (original == null || !isTerminalLifecycle(original))
+  ) {
+    QueueTaskLifecycleState.FAILED
+  } else {
+    original
+  }
+
+  private fun projectedTaskState(
+    original: AgentTaskState?,
+    result: ExecutionResult?,
+  ): AgentTaskState? = if (
+    isInterruptedOnRestoreResult(result) &&
+    (original == null || !isTerminalTaskState(original))
+  ) {
+    AgentTaskState.FAILED
+  } else {
+    original
+  }
+
+  private fun isInterruptedOnRestoreResult(result: ExecutionResult?): Boolean =
+    result?.errorCode == ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE &&
+      result.metadata[METADATA_RESTORED_TERMINAL_STATE] == RESTORED_TERMINAL_STATE_INTERRUPTED
+
+  private fun isTerminalLifecycle(state: QueueTaskLifecycleState): Boolean = when (state) {
+    QueueTaskLifecycleState.COMPLETED,
+    QueueTaskLifecycleState.FAILED,
+    QueueTaskLifecycleState.CANCELLED,
+    -> true
+
+    QueueTaskLifecycleState.QUEUED,
+    QueueTaskLifecycleState.RUNNING,
+    QueueTaskLifecycleState.RETRY_PENDING,
+    QueueTaskLifecycleState.SUSPENDED,
+    QueueTaskLifecycleState.CANCEL_REQUESTED,
+    -> false
+  }
+
+  private fun isTerminalTaskState(state: AgentTaskState): Boolean = when (state) {
+    AgentTaskState.COMPLETED,
+    AgentTaskState.CANCELLED,
+    AgentTaskState.FAILED,
+    -> true
+
+    AgentTaskState.QUEUED,
+    AgentTaskState.RUNNING,
+    AgentTaskState.SUSPENDED,
+    -> false
+  }
+
+  private fun ManagedProcessSnapshot.isInterruptedOnRestore(): Boolean =
+    errorCode == ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE ||
+      metadata[METADATA_RESTORED_TERMINAL_STATE] == RESTORED_TERMINAL_STATE_INTERRUPTED
+
+  private fun ManagedProcessSnapshot.isTerminalAfterRestore(): Boolean = status.isTerminal
 
   private fun runIdFor(task: AgentTask): String =
     task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]

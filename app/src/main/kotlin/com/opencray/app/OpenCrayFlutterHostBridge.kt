@@ -1,15 +1,20 @@
 package com.opencray.app
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 
 internal class OpenCrayFlutterHostBridge(
-  context: Context,
+  private val context: Context,
 ) {
   private val hostRuntime = OpenCrayHostRuntime.fromContext(context)
+  private val permissionHost: ExternalAccessPermissionRequestHost? =
+    context as? ExternalAccessPermissionRequestHost
+  private val mainHandler = Handler(Looper.getMainLooper())
   private var shellObserverDisposer: (() -> Unit)? = null
   private var settingsObserverDisposer: (() -> Unit)? = null
   private var skillsObserverDisposer: (() -> Unit)? = null
@@ -126,6 +131,13 @@ internal class OpenCrayFlutterHostBridge(
         "loadSettingsDetail" -> hostRuntime.loadSettingsDetail(
           routeIdRaw = call.argument<String>("routeId").orEmpty(),
         )
+        "loadNetworkSearchConfig" -> hostRuntime.loadNetworkSearchConfig()
+        "saveNetworkSearchConfig" -> hostRuntime.saveNetworkSearchConfig(
+          slots = (call.argument<List<*>>("slots") ?: emptyList<Any?>()).mapNotNull { slot ->
+            @Suppress("UNCHECKED_CAST")
+            slot as? Map<String, Any?>
+          },
+        )
         "loadLlmConfig" -> hostRuntime.loadLlmConfig()
         "saveLlmConfig" -> hostRuntime.saveLlmConfig(
           enabled = call.argument<Boolean>("enabled") == true,
@@ -189,6 +201,8 @@ internal class OpenCrayFlutterHostBridge(
           automationModeId = call.argument<String>("automationModeId").orEmpty(),
           rollbackJournalEnabled = call.argument<Boolean>("rollbackJournalEnabled") != false,
           maxFilesPerBatch = call.argument<Int>("maxFilesPerBatch") ?: 20,
+          maxAgentTurns = call.argument<Int>("maxAgentTurns")
+            ?: SafetySettingsState.DEFAULT_MAX_AGENT_TURNS,
           undoWindowHours = call.argument<Int>("undoWindowHours") ?: 24,
           fileChangesPolicyId = call.argument<String>("fileChangesPolicyId").orEmpty(),
           fileDeletesPolicyId = call.argument<String>("fileDeletesPolicyId").orEmpty(),
@@ -201,6 +215,13 @@ internal class OpenCrayFlutterHostBridge(
           workspaceAccessProfileId = call.argument<String>("workspaceAccessProfileId").orEmpty(),
           readOnlyOutsideWorkspace = call.argument<Boolean>("readOnlyOutsideWorkspace") != false,
         )
+        "authorizeExternalAccessLocation" -> {
+          authorizeExternalAccessLocation(
+            locationId = call.argument<String>("locationId").orEmpty(),
+            result = result,
+          )
+          return
+        }
 
         "loadSkillsSnapshot" -> hostRuntime.loadSkillsSnapshot(
           query = call.argument<String>("query").orEmpty(),
@@ -314,6 +335,43 @@ internal class OpenCrayFlutterHostBridge(
           )
         }
     }.start()
+  }
+
+  private fun authorizeExternalAccessLocation(
+    locationId: String,
+    result: MethodChannel.Result,
+  ) {
+    val permissions = ApprovedReadRootsResolver
+      .permissionsToRequest(context = context, locationId = locationId)
+      .toTypedArray()
+    if (permissions.isEmpty()) {
+      result.success(
+        ApprovedReadRootsResolver.hasAccessibleLocation(
+          context = context,
+          locationId = locationId,
+        ),
+      )
+      return
+    }
+    val host = permissionHost
+    if (host == null) {
+      result.error(
+        "HOST_BRIDGE_ERROR",
+        "External access permission host is unavailable.",
+        null,
+      )
+      return
+    }
+    mainHandler.post {
+      host.requestExternalAccessPermissions(permissions) { granted ->
+        result.success(
+          granted && ApprovedReadRootsResolver.hasAccessibleLocation(
+            context = context,
+            locationId = locationId,
+          ),
+        )
+      }
+    }
   }
 
   private fun observerStreamHandler(

@@ -25,6 +25,9 @@ class SafetySettingsCopy {
   static const String approvedPathsTitle = 'Approved paths';
   static const String approvedPathsSubtitle =
       'Review the workspace root and any extra public locations that remain available in this profile.';
+  static const String agentTurnLimitTitle = 'Max agent turns';
+  static const String agentTurnLimitSubtitle =
+      '0 means no hard limit. If a limit is set, the last allowed turn is reserved for the final answer.';
 
   static String automationModeLabel(SafetyAutomationMode mode) {
     switch (mode) {
@@ -145,5 +148,15 @@ class SafetySettingsCopy {
     required ToolPolicyOverride policy,
   }) {
     return '$title · ${policyLabel(policy)}';
+  }
+
+  static String agentTurnLimitValue(int turns) {
+    if (turns <= 0) {
+      return 'No limit';
+    }
+    if (turns == 1) {
+      return '1 turn';
+    }
+    return '$turns turns';
   }
 }

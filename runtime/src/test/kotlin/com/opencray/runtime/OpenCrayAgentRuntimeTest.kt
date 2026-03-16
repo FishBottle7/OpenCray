@@ -30,6 +30,13 @@ import com.opencray.runtime.process.AgentProcessRegistry
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.skills.SkillCatalogResolver
+import com.opencray.runtime.skills.SkillInventory
+import com.opencray.runtime.skills.SkillInventoryTrace
+import com.opencray.runtime.skills.VisibleSkill
+import com.opencray.runtime.skills.VisibleSkillTrace
+import com.opencray.skills.SkillExecutionContext
+import com.opencray.skills.SkillInvocationControl
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -193,6 +200,211 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
+  fun runPromptTaskExposesSkillInventoryMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-skill-inventory-metadata")
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"Used the visible skill inventory."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        sessionContext = AgentRuntimeSessionContext(
+          skillInventory = SkillInventory(
+            skills = listOf(
+              VisibleSkill(
+                name = "ui-ux-pro-max",
+                description = "High-end UI review workflow.",
+                relativePath = ".codex/skills/ui-ux-pro-max/SKILL.md",
+                invocationControl = SkillInvocationControl.EXPLICIT_ONLY,
+                userInvocable = true,
+                executionContext = SkillExecutionContext.INLINE,
+              ),
+              VisibleSkill(
+                name = "fun-brainstorming",
+                description = "Fast architectural brainstorming workflow.",
+                relativePath = ".codex/skills/fun-brainstorming/SKILL.md",
+                invocationControl = SkillInvocationControl.EXPLICIT_AND_IMPLICIT,
+                userInvocable = true,
+                executionContext = SkillExecutionContext.FORK,
+              ),
+            ),
+            invalidSkillCount = 1,
+            trace = SkillInventoryTrace(
+              visible = listOf(
+                VisibleSkillTrace(
+                  name = "ui-ux-pro-max",
+                  relativePath = ".codex/skills/ui-ux-pro-max/SKILL.md",
+                  invocationControl = "explicit-only",
+                  userInvocable = true,
+                  executionContext = "inline",
+                  descriptionPreview = "High-end UI review workflow.",
+                ),
+                VisibleSkillTrace(
+                  name = "fun-brainstorming",
+                  relativePath = ".codex/skills/fun-brainstorming/SKILL.md",
+                  invocationControl = "explicit-and-implicit",
+                  userInvocable = true,
+                  executionContext = "fork",
+                  descriptionPreview = "Fast architectural brainstorming workflow.",
+                ),
+              ),
+              totalVisibleSkillCount = 2,
+              implicitSkillCount = 1,
+              invalidSkillCount = 1,
+            ),
+          ),
+        ),
+      ),
+      clock = IncrementingClock(start = 2_650L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Use the right skill workflow before answering."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("2", result.metadata["contextVisibleSkillCount"])
+    assertEquals("2", result.metadata["contextInjectedSkillCount"])
+    assertEquals("0", result.metadata["contextOmittedSkillCount"])
+    assertEquals("1", result.metadata["contextImplicitSkillCount"])
+    assertEquals("1", result.metadata["contextInvalidSkillCount"])
+    assertEquals(
+      "ui-ux-pro-max@.codex/skills/ui-ux-pro-max/SKILL.md[explicit-only|true|inline];" +
+        "fun-brainstorming@.codex/skills/fun-brainstorming/SKILL.md[explicit-and-implicit|true|fork]",
+      result.metadata["contextVisibleSkillSummary"],
+    )
+    assertTrue(gateway.requests.single().prompt.contains("[Skill Inventory]"))
+    assertTrue(gateway.requests.single().prompt.contains("name=ui-ux-pro-max"))
+  }
+
+  @Test
+  fun runPromptTaskPromotesReadSkillIntoActiveCapsule() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-active-skill-workspace")
+    val skillsRoot = temporaryFolder.newFolder("agent-active-skill-root")
+    writeSkill(
+      root = skillsRoot,
+      relativeDirectory = "ui-ux-pro-max",
+      frontMatter = """
+        name: ui-ux-pro-max
+        description: High-end UI review workflow.
+        invocation-control: explicit-only
+        user-invocable: true
+        allowed-tools: [ read, write ]
+      """.trimIndent(),
+      body = """
+        # UI UX Pro Max
+
+        Audit the current interface first, then apply a concrete design system.
+      """.trimIndent(),
+    )
+    val skillCatalog = SkillCatalogResolver().resolve(listOf(skillsRoot))
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"skill_read","arguments":{"name":"ui-ux-pro-max"}}""",
+        """{"type":"final","answer":"Used the active skill capsule."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+          skillsRoots = listOf(skillsRoot),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        sessionContext = AgentRuntimeSessionContext(
+          skillInventory = skillCatalog.inventory,
+          skillCatalog = skillCatalog,
+        ),
+      ),
+      clock = IncrementingClock(start = 2_700L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Load the UI skill, then follow it."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("ui-ux-pro-max", result.metadata["contextActiveSkillName"])
+    assertEquals("skill_read", result.metadata["contextActiveSkillActivationSource"])
+    assertEquals("true", result.metadata["contextActiveSkillToolRestrictionEnabled"])
+    assertEquals("read,write", result.metadata["contextActiveSkillAllowedTools"])
+    assertEquals(2, gateway.requests.size)
+    assertTrue(gateway.requests[1].prompt.contains("[Active Skill]"))
+    assertTrue(gateway.requests[1].prompt.contains("name=ui-ux-pro-max"))
+    assertTrue(gateway.requests[1].prompt.contains("Audit the current interface first"))
+    assertTrue(gateway.requests[1].prompt.contains("- Read:"))
+    assertFalse(gateway.requests[1].prompt.contains("- Bash:"))
+  }
+
+  @Test
+  fun runPromptTaskBlocksDisallowedToolWhenActiveSkillRestrictsTools() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-active-skill-policy-workspace")
+    val skillsRoot = temporaryFolder.newFolder("agent-active-skill-policy-root")
+    writeSkill(
+      root = skillsRoot,
+      relativeDirectory = "ui-ux-pro-max",
+      frontMatter = """
+        name: ui-ux-pro-max
+        description: High-end UI review workflow.
+        invocation-control: explicit-only
+        user-invocable: true
+        allowed-tools: [ read, write ]
+      """.trimIndent(),
+      body = """
+        # UI UX Pro Max
+
+        Stay within the read/write design workflow.
+      """.trimIndent(),
+    )
+    val skillCatalog = SkillCatalogResolver().resolve(listOf(skillsRoot))
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"skill_read","arguments":{"name":"ui-ux-pro-max"}}""",
+        """{"type":"tool_call","tool_name":"Bash","arguments":{"command":"git status"}}""",
+        """{"type":"final","answer":"Stopped after the skill policy blocked Bash."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+          skillsRoots = listOf(skillsRoot),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        sessionContext = AgentRuntimeSessionContext(
+          skillInventory = skillCatalog.inventory,
+          skillCatalog = skillCatalog,
+        ),
+      ),
+      clock = IncrementingClock(start = 2_800L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Load the UI skill and then try Bash anyway."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("ui-ux-pro-max", result.metadata["contextActiveSkillName"])
+    assertEquals(3, gateway.requests.size)
+    assertTrue(gateway.requests[2].prompt.contains("SKILL_TOOL_POLICY_BLOCKED"))
+    assertTrue(gateway.requests[2].prompt.contains("outside the active allowlist"))
+  }
+
+  @Test
   fun runPromptTaskExposesPruningMetadataWhenSeededConversationNeedsCleanup() {
     val workspaceRoot = temporaryFolder.newFolder("agent-pruning-metadata")
     val gateway = RecordingGateway(
@@ -266,6 +478,155 @@ class OpenCrayAgentRuntimeTest {
     assertEquals(ExecutionStatus.FAILED, result.status)
     assertEquals("MAX_TOOL_CALLS_EXCEEDED", result.errorCode)
     assertEquals("tool_budget_exceeded", result.metadata["responseFormat"])
+  }
+
+  @Test
+  fun runPromptTaskAddsTurnBudgetReminderBeforeLastTurn() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-turn-budget-reminder")
+    Files.write(
+      workspaceRoot.toPath().resolve("README.md"),
+      "turn budget".toByteArray(StandardCharsets.UTF_8),
+    )
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
+        """{"type":"final","answer":"Returning the final answer in time."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 3, maxToolCalls = 2),
+      clock = IncrementingClock(start = 3_250L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Read README and answer before the turn budget runs out."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Returning the final answer in time.", result.stdout)
+    assertEquals("2", result.metadata["turnCount"])
+    assertEquals(2, gateway.requests.size)
+    assertEquals("3", gateway.requests[0].metadata["remainingTurnCount"])
+    assertEquals("2", gateway.requests[1].metadata["remainingTurnCount"])
+    assertTrue(
+      gateway.requests[1].systemPrompt.orEmpty().contains(
+        "You have two model turns left including this one.",
+      ),
+    )
+    assertTrue(
+      gateway.requests[1].prompt.contains(
+        "Turn budget note: after this turn, only one model turn remains.",
+      ),
+    )
+  }
+
+  @Test
+  fun runPromptTaskFinalAnswerOnlyTurnRejectsAnotherToolCall() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-final-turn-only")
+    Files.write(
+      workspaceRoot.toPath().resolve("README.md"),
+      "final turn only".toByteArray(StandardCharsets.UTF_8),
+    )
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
+        """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 2, maxToolCalls = 2),
+      clock = IncrementingClock(start = 3_375L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Use one tool, then answer on the final turn."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.FAILED, result.status)
+    assertEquals("MAX_TURNS_EXCEEDED", result.errorCode)
+    assertEquals("turn_limit_final_answer_required", result.metadata["responseFormat"])
+    assertEquals("true", result.metadata["finalAnswerRequired"])
+    assertEquals("2", result.metadata["turnCount"])
+    assertEquals("1", result.metadata["toolCallCount"])
+    assertEquals("1", gateway.requests[1].metadata["remainingTurnCount"])
+    assertTrue(
+      gateway.requests[1].systemPrompt.orEmpty().contains(
+        "This is the last allowed model turn. You must return exactly one JSON final action now.",
+      ),
+    )
+    assertTrue(
+      gateway.requests[1].prompt.contains(
+        "Turn budget note: this is the last allowed model turn.",
+      ),
+    )
+  }
+
+  @Test
+  fun runPromptTaskWithoutHardTurnLimitSkipsBudgetEnforcement() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-no-turn-cap")
+    Files.write(
+      workspaceRoot.toPath().resolve("README.md"),
+      "first".toByteArray(StandardCharsets.UTF_8),
+    )
+    Files.write(
+      workspaceRoot.toPath().resolve("NOTES.md"),
+      "second".toByteArray(StandardCharsets.UTF_8),
+    )
+    Files.write(
+      workspaceRoot.toPath().resolve("TODO.md"),
+      "third".toByteArray(StandardCharsets.UTF_8),
+    )
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
+        """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"NOTES.md"}}""",
+        """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"TODO.md"}}""",
+        """{"type":"final","answer":"Unlimited turn budget completed."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 0, maxToolCalls = 3),
+      clock = IncrementingClock(start = 3_450L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Keep using tools until you have enough context."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Unlimited turn budget completed.", result.stdout)
+    assertEquals("4", result.metadata["turnCount"])
+    assertEquals("3", result.metadata["toolCallCount"])
+    assertEquals(4, gateway.requests.size)
+    assertTrue(
+      gateway.requests.all { request ->
+        request.metadata["remainingTurnCount"] == null &&
+          request.metadata["maxTurnCount"] == null &&
+          !request.systemPrompt.orEmpty().contains("[Turn Budget]") &&
+          !request.prompt.contains("Turn budget note:")
+      },
+    )
   }
 
   @Test
@@ -692,6 +1053,25 @@ class OpenCrayAgentRuntimeTest {
     metadata = metadata,
     createdAtEpochMs = 500L,
   )
+
+  private fun writeSkill(
+    root: File,
+    relativeDirectory: String,
+    frontMatter: String,
+    body: String,
+  ): File {
+    val skillDirectory = root.resolve(relativeDirectory)
+    Files.createDirectories(skillDirectory.toPath())
+    val skillFile = skillDirectory.resolve("SKILL.md")
+    val content = buildString {
+      appendLine("---")
+      appendLine(frontMatter)
+      appendLine("---")
+      appendLine(body)
+    }
+    Files.write(skillFile.toPath(), content.toByteArray(StandardCharsets.UTF_8))
+    return skillFile
+  }
 
   private fun runtimeHooks(
     onSuspend: (SuspensionRequest) -> Unit = {},

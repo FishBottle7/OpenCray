@@ -224,6 +224,34 @@ class OpenCrayUiCopy {
   String get llmProtocolAnthropic => 'Anthropic';
   String get llmProtocolOpenAiCompatible =>
       isChinese ? 'OpenAI 兼容' : 'OpenAI compatible';
+  String networkSearchSlotTitle(int index) =>
+      isChinese ? '槽位 ${index + 1}' : 'Slot ${index + 1}';
+  String get networkSearchProviderLabel =>
+      isChinese ? '提供商' : 'Provider';
+  String get networkSearchLabelFieldTitle => isChinese ? '标签' : 'Label';
+  String get networkSearchLabelHint =>
+      isChinese ? '例如：主 Exa' : 'For example: Primary Exa';
+  String get networkSearchApiKeyFieldTitle =>
+      isChinese ? 'API 密钥' : 'API key';
+  String get networkSearchApiKeyHint =>
+      isChinese ? '粘贴 provider 的密钥' : 'Paste the provider key';
+  String get networkSearchAddSlotAction =>
+      isChinese ? '+ 添加搜索槽位' : '+ Add search slot';
+  String get networkSearchMoveUp => isChinese ? '上移' : 'Move up';
+  String get networkSearchMoveDown => isChinese ? '下移' : 'Move down';
+  String get networkSearchDelete => isChinese ? '删除' : 'Delete';
+  String get networkSearchSaving => isChinese ? '保存中…' : 'Saving…';
+  String networkSearchProviderTitle(String providerId) {
+    switch (providerId) {
+      case 'tavily':
+        return 'TAVILY';
+      case 'brave':
+        return 'BRAVE';
+      case 'exa':
+      default:
+        return 'EXA';
+    }
+  }
   String llmReasoningTitle(String reasoningEffort) {
     if (!isChinese) {
       if (reasoningEffort == 'xhigh') {

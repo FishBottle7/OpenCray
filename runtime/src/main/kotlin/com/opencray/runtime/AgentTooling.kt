@@ -145,13 +145,14 @@ data class AgentToolResult(
 
 data class OpenCrayToolDispatcherConfig(
   val workspaceRoots: Set<Path>,
+  val readRoots: Set<Path> = workspaceRoots,
   val skillsRoots: List<File> = emptyList(),
   val mcpExposureReport: McpClientExposureReport? = null,
   val modePolicy: ModePolicy = ModePolicy(),
   val approvedTaskId: String? = null,
   val approvedToolName: String? = null,
   val commandExecutor: CommandExecutor? = null,
-  val pythonRuntimeAdapter: PythonRuntimeAdapter = PythonRuntimeAdapter(),
+  val pythonRuntimeAdapter: PythonScriptRuntime = HostProcessPythonRuntime(),
   val commandApprovalToken: CommandApprovalToken? = null,
   val todoStore: AgentTodoStore = InMemoryAgentTodoStore(),
   val processRegistry: AgentProcessRegistry = InMemoryAgentProcessRegistry(),
@@ -168,6 +169,7 @@ data class OpenCrayToolDispatcherConfig(
 ) {
   init {
     require(workspaceRoots.isNotEmpty()) { "OpenCrayToolDispatcherConfig workspaceRoots must not be empty." }
+    require(readRoots.isNotEmpty()) { "OpenCrayToolDispatcherConfig readRoots must not be empty." }
     require(maxReadBytes > 0) { "OpenCrayToolDispatcherConfig maxReadBytes must be > 0." }
     require(maxDirectoryEntries > 0) { "OpenCrayToolDispatcherConfig maxDirectoryEntries must be > 0." }
     require(maxWebFetchChars > 0) { "OpenCrayToolDispatcherConfig maxWebFetchChars must be > 0." }
@@ -180,8 +182,9 @@ data class OpenCrayToolDispatcherConfig(
 class OpenCrayToolDispatcher(
   private val config: OpenCrayToolDispatcherConfig,
 ) {
-  private val boundary = WorkspaceBoundary(config.workspaceRoots)
-  private val fileOpsService = FileOpsService(boundary.approvedRoots())
+  private val writeBoundary = WorkspaceBoundary(config.workspaceRoots)
+  private val readBoundary = WorkspaceBoundary(config.readRoots)
+  private val fileOpsService = FileOpsService(writeBoundary.approvedRoots())
   private val todoStore = config.todoStore
   private val processRegistry = config.processRegistry
   private val webContentFetcher = config.webContentFetcher
@@ -189,7 +192,7 @@ class OpenCrayToolDispatcher(
   private val memorySearchService = MemorySearchService()
   private val commandExecutor = config.commandExecutor ?: CommandExecutor(
     config = CommandExecutionConfig(
-      approvedWorkingDirectories = boundary.approvedRoots(),
+      approvedWorkingDirectories = writeBoundary.approvedRoots(),
     ),
   )
 
@@ -197,17 +200,17 @@ class OpenCrayToolDispatcher(
     val canonicalDefinitions = listOf(
       AgentToolDefinition(
         name = "LS",
-        description = "List files and directories under the approved workspace.",
+        description = "List files and directories under the approved readable roots. Use workspace-relative paths for the main workspace, or absolute paths for approved external read-only roots listed in task metadata.",
         parameters = listOf(
-          AgentToolParameter("path", "string", required = false, description = "Directory path relative to the workspace root. Defaults to the workspace root."),
+          AgentToolParameter("path", "string", required = false, description = "Workspace-relative path, or an absolute path inside an approved external read-only root. Defaults to the writable workspace root."),
           AgentToolParameter("max_entries", "number", required = false, description = "Maximum number of entries to return."),
         ),
       ),
       AgentToolDefinition(
         name = "Read",
-        description = "Read a text file from the approved workspace. Supports optional 1-based line offsets and limits.",
+        description = "Read a text file from the approved readable roots. Supports optional 1-based line offsets and limits.",
         parameters = listOf(
-          AgentToolParameter("file_path", "string", required = true, description = "File path relative to the workspace root."),
+          AgentToolParameter("file_path", "string", required = true, description = "Workspace-relative path, or an absolute path inside an approved external read-only root."),
           AgentToolParameter("offset", "number", required = false, description = "1-based starting line number."),
           AgentToolParameter("limit", "number", required = false, description = "Maximum number of lines to return."),
         ),
@@ -222,20 +225,20 @@ class OpenCrayToolDispatcher(
       ),
       AgentToolDefinition(
         name = "Grep",
-        description = "Search workspace text files with a regular expression and return matching lines.",
+        description = "Search readable text files with a regular expression and return matching lines from the workspace or approved external read-only roots.",
         parameters = listOf(
           AgentToolParameter("pattern", "string", required = true, description = "Regular expression pattern to search for."),
-          AgentToolParameter("path", "string", required = false, description = "Optional file or directory path relative to the workspace root."),
+          AgentToolParameter("path", "string", required = false, description = "Optional workspace-relative path, or an absolute path inside an approved external read-only root."),
           AgentToolParameter("glob", "string", required = false, description = "Optional glob filter applied to relative file paths."),
           AgentToolParameter("max_results", "number", required = false, description = "Maximum number of matching lines to return."),
         ),
       ),
       AgentToolDefinition(
         name = "Glob",
-        description = "Recursively match workspace paths with a glob pattern.",
+        description = "Recursively match readable paths with a glob pattern across the workspace and approved external read-only roots.",
         parameters = listOf(
           AgentToolParameter("pattern", "string", required = true, description = "Glob pattern to match against workspace-relative paths."),
-          AgentToolParameter("path", "string", required = false, description = "Optional file or directory path relative to the workspace root."),
+          AgentToolParameter("path", "string", required = false, description = "Optional workspace-relative path, or an absolute path inside an approved external read-only root."),
           AgentToolParameter("max_results", "number", required = false, description = "Maximum number of matching paths to return."),
         ),
       ),
@@ -271,6 +274,14 @@ class OpenCrayToolDispatcher(
         parameters = listOf(
           AgentToolParameter("file_path", "string", required = true, description = "File path relative to the workspace root."),
           AgentToolParameter("edits", "object[]", required = true, description = "Array of edit objects with old_string, new_string, and optional replace_all."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "ImportFile",
+        description = "Copy a file or folder from an approved readable root into the writable workspace without mutating the source. Use this to bring photos or public files into the workspace.",
+        parameters = listOf(
+          AgentToolParameter("source_path", "string", required = true, description = "Workspace-relative path, or an absolute path inside an approved external read-only root."),
+          AgentToolParameter("destination_path", "string", required = true, description = "Destination path inside the writable workspace root."),
         ),
       ),
       AgentToolDefinition(
@@ -332,17 +343,17 @@ class OpenCrayToolDispatcher(
       ),
       AgentToolDefinition(
         name = "workspace_list_files",
-        description = "List files under the approved workspace.",
+        description = "List files under the approved readable roots.",
         parameters = listOf(
-          AgentToolParameter("path", "string", required = false, description = "Directory path relative to the workspace root."),
+          AgentToolParameter("path", "string", required = false, description = "Workspace-relative path, or an absolute path inside an approved external read-only root."),
           AgentToolParameter("max_entries", "number", required = false, description = "Maximum number of entries to return."),
         ),
       ),
       AgentToolDefinition(
         name = "workspace_read_file",
-        description = "Read a text file from the approved workspace.",
+        description = "Read a text file from the approved readable roots.",
         parameters = listOf(
-          AgentToolParameter("path", "string", required = true, description = "File path relative to the workspace root."),
+          AgentToolParameter("path", "string", required = true, description = "Workspace-relative path, or an absolute path inside an approved external read-only root."),
         ),
       ),
       AgentToolDefinition(
@@ -351,6 +362,14 @@ class OpenCrayToolDispatcher(
         parameters = listOf(
           AgentToolParameter("path", "string", required = true, description = "File path relative to the workspace root."),
           AgentToolParameter("content", "string", required = true, description = "Full UTF-8 text content to write."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "workspace_import_file",
+        description = "Copy a file or folder from an approved readable root into the writable workspace.",
+        parameters = listOf(
+          AgentToolParameter("source_path", "string", required = true, description = "Workspace-relative path, or an absolute path inside an approved external read-only root."),
+          AgentToolParameter("destination_path", "string", required = true, description = "Destination path inside the writable workspace root."),
         ),
       ),
       AgentToolDefinition(
@@ -425,6 +444,7 @@ class OpenCrayToolDispatcher(
         "workspace_list_files" -> listWorkspaceFiles(call.arguments)
         "workspace_read_file" -> readWorkspaceFile(call.arguments)
         "workspace_write_file" -> writeWorkspaceFile(task = task, arguments = call.arguments)
+        "workspace_import_file" -> importFileIntoWorkspace(task = task, arguments = call.arguments)
         "workspace_move_file" -> moveWorkspaceFile(task = task, arguments = call.arguments)
         "workspace_delete_file" -> deleteWorkspaceFile(task = task, arguments = call.arguments)
         "LS" -> listFilesForClaude(arguments = call.arguments)
@@ -432,6 +452,7 @@ class OpenCrayToolDispatcher(
         "Write" -> writeFileForClaude(task = task, arguments = call.arguments)
         "Grep" -> grepWorkspace(arguments = call.arguments)
         "Glob" -> globWorkspace(arguments = call.arguments)
+        "ImportFile" -> importFileForClaude(task = task, arguments = call.arguments)
         "WebSearch" -> webSearch(task = task, arguments = call.arguments)
         "WebFetch" -> webFetch(task = task, arguments = call.arguments)
         "Edit" -> editWorkspaceFile(task = task, arguments = call.arguments)
@@ -470,7 +491,7 @@ class OpenCrayToolDispatcher(
   }
 
   private fun listWorkspaceFiles(arguments: JsonObject): AgentToolResult {
-    val directory = boundary.ensureDirectory(
+    val directory = readBoundary.ensureDirectory(
       candidate = arguments.optionalString("path"),
       label = "workspace list",
       defaultToRoot = true,
@@ -490,9 +511,8 @@ class OpenCrayToolDispatcher(
       "Directory is empty."
     } else {
       entries.joinToString(separator = "\n") { entry ->
-        val relative = boundary.defaultRoot.relativize(entry).toString().ifBlank { "." }
         val kind = if (Files.isDirectory(entry)) "dir" else "file"
-        "$kind\t$relative"
+        "$kind\t${displayPathForModel(entry)}"
       }
     }
     return AgentToolResult(
@@ -500,14 +520,14 @@ class OpenCrayToolDispatcher(
       status = AgentToolResultStatus.SUCCESS,
       content = rendered,
       metadata = mapOf(
-        "path" to boundary.defaultRoot.relativize(directory).toString().ifBlank { "." },
+        "path" to displayPathForModel(directory),
         "entryCount" to entries.size.toString(),
       ),
     )
   }
 
   private fun readWorkspaceFile(arguments: JsonObject): AgentToolResult {
-    val file = boundary.ensureFile(arguments.requiredString("path"), label = "workspace read")
+    val file = readBoundary.ensureFile(arguments.requiredString("path"), label = "workspace read")
     val bytes = Files.readAllBytes(file)
     val truncated = bytes.size > config.maxReadBytes
     val body = bytes.toString(StandardCharsets.UTF_8)
@@ -518,7 +538,7 @@ class OpenCrayToolDispatcher(
       status = AgentToolResultStatus.SUCCESS,
       content = body,
       metadata = mapOf(
-        "path" to boundary.defaultRoot.relativize(file).toString(),
+        "path" to displayPathForModel(file),
         "byteCount" to bytes.size.toString(),
         "truncated" to truncated.toString(),
       ),
@@ -526,19 +546,19 @@ class OpenCrayToolDispatcher(
   }
 
   private fun writeWorkspaceFile(task: AgentTask, arguments: JsonObject): AgentToolResult {
-    val path = boundary.resolve(arguments.requiredString("path"), label = "workspace write", defaultToRoot = false)
+    val path = writeBoundary.resolve(arguments.requiredString("path"), label = "workspace write", defaultToRoot = false)
     return writeTextFile(
       task = task,
       toolName = "workspace_write_file",
       path = path,
       content = arguments.requiredText("content"),
       metadataPathKey = "path",
-      successMessage = "Wrote ${boundary.defaultRoot.relativize(path)} successfully.",
+      successMessage = "Wrote ${displayWritablePath(path)} successfully.",
     )
   }
 
   private fun listFilesForClaude(arguments: JsonObject): AgentToolResult {
-    val directory = boundary.ensureDirectory(
+    val directory = readBoundary.ensureDirectory(
       candidate = arguments.optionalString("path"),
       label = "LS",
       defaultToRoot = true,
@@ -573,7 +593,7 @@ class OpenCrayToolDispatcher(
   }
 
   private fun readFileForClaude(arguments: JsonObject): AgentToolResult {
-    val file = boundary.ensureFile(arguments.requiredStringFrom("file_path", "path"), label = "Read")
+    val file = readBoundary.ensureFile(arguments.requiredStringFrom("file_path", "path"), label = "Read")
     val offset = arguments.optionalInt("offset") ?: 1
     require(offset >= 1) { "Read offset must be >= 1." }
     val limit = arguments.optionalInt("limit")
@@ -611,14 +631,90 @@ class OpenCrayToolDispatcher(
   }
 
   private fun writeFileForClaude(task: AgentTask, arguments: JsonObject): AgentToolResult {
-    val path = boundary.resolve(arguments.requiredStringFrom("file_path", "path"), label = "Write", defaultToRoot = false)
+    val path = writeBoundary.resolve(arguments.requiredStringFrom("file_path", "path"), label = "Write", defaultToRoot = false)
     return writeTextFile(
       task = task,
       toolName = "Write",
       path = path,
       content = arguments.requiredText("content"),
       metadataPathKey = "filePath",
-      successMessage = "Wrote ${displayPathForModel(path)} successfully.",
+      successMessage = "Wrote ${displayWritablePath(path)} successfully.",
+    )
+  }
+
+  private fun importFileForClaude(task: AgentTask, arguments: JsonObject): AgentToolResult =
+    importFileIntoWorkspace(
+      task = task,
+      arguments = buildJsonObject {
+        put(
+          "source_path",
+          JsonPrimitive(arguments.requiredStringFrom("source_path", "path")),
+        )
+        put(
+          "destination_path",
+          JsonPrimitive(arguments.requiredString("destination_path")),
+        )
+      },
+      toolName = "ImportFile",
+    )
+
+  private fun importFileIntoWorkspace(
+    task: AgentTask,
+    arguments: JsonObject,
+    toolName: String = "workspace_import_file",
+  ): AgentToolResult {
+    val source = readBoundary.resolve(
+      arguments.requiredString("source_path"),
+      label = "import source",
+      defaultToRoot = false,
+    )
+    require(Files.exists(source)) { "Import source does not exist: $source" }
+    val destination = writeBoundary.resolve(
+      arguments.requiredString("destination_path"),
+      label = "import destination",
+      defaultToRoot = false,
+    )
+    if (Files.isDirectory(source)) {
+      require(!destination.startsWith(source)) {
+        "A folder cannot be imported into itself."
+      }
+    }
+    require(!Files.exists(destination)) {
+      "Import destination already exists: ${displayWritablePath(destination)}"
+    }
+
+    val policyDecision = policyDecisionFor(
+      task = task,
+      toolClass = PolicyToolClass.WRITE_FILE,
+      targetPath = destination,
+    )
+    val effectivePolicyDecision = applyApprovedToolOverride(
+      task = task,
+      toolName = toolName,
+      policyDecision = policyDecision,
+    )
+    gateFileMutation(
+      task = task,
+      toolName = toolName,
+      policyDecision = effectivePolicyDecision,
+      affectedPaths = mapOf(
+        "sourcePath" to displayPathForModel(source),
+        "destinationPath" to displayWritablePath(destination),
+      ),
+    )?.let { return it }
+
+    copyIntoWorkspace(source = source, destination = destination)
+
+    return AgentToolResult(
+      toolName = toolName,
+      status = AgentToolResultStatus.SUCCESS,
+      content = "Imported ${displayPathForModel(source)} into ${displayWritablePath(destination)}.",
+      metadata = mapOf(
+        "executionMode" to inferExecutionMode(task).name,
+        "policyReasonCode" to effectivePolicyDecision.reasonCode,
+        "sourcePath" to displayPathForModel(source),
+        "destinationPath" to displayWritablePath(destination),
+      ),
     )
   }
 
@@ -866,7 +962,7 @@ class OpenCrayToolDispatcher(
   }
 
   private fun editWorkspaceFile(task: AgentTask, arguments: JsonObject): AgentToolResult {
-    val file = boundary.ensureFile(arguments.requiredStringFrom("file_path", "path"), label = "Edit")
+    val file = writeBoundary.ensureFile(arguments.requiredStringFrom("file_path", "path"), label = "Edit")
     val edit = TextEdit(
       oldString = arguments.requiredString("old_string"),
       newString = arguments.requiredText("new_string"),
@@ -886,7 +982,7 @@ class OpenCrayToolDispatcher(
   }
 
   private fun multiEditWorkspaceFile(task: AgentTask, arguments: JsonObject): AgentToolResult {
-    val file = boundary.ensureFile(arguments.requiredStringFrom("file_path", "path"), label = "MultiEdit")
+    val file = writeBoundary.ensureFile(arguments.requiredStringFrom("file_path", "path"), label = "MultiEdit")
     val edits = arguments.requiredObjectArray("edits").mapIndexed { index, entry ->
       TextEdit(
         oldString = entry.requiredString("old_string"),
@@ -1044,7 +1140,7 @@ class OpenCrayToolDispatcher(
 
   private fun resolveBashLaunch(arguments: JsonObject): ManagedProcessLaunch {
     val command = arguments.requiredString("command")
-    val workingDirectory = boundary.resolve(
+    val workingDirectory = writeBoundary.resolve(
       candidate = arguments.optionalString("working_directory"),
       label = "Bash working directory",
       defaultToRoot = true,
@@ -1124,7 +1220,7 @@ class OpenCrayToolDispatcher(
     require((command == null) != (scriptPathCandidate == null)) {
       "ProcessStart requires exactly one of 'command' or 'script_path'."
     }
-    val workingDirectory = boundary.resolve(
+    val workingDirectory = writeBoundary.resolve(
       candidate = arguments.optionalString("working_directory"),
       label = "process working directory",
       defaultToRoot = true,
@@ -1138,7 +1234,7 @@ class OpenCrayToolDispatcher(
       )
     }
 
-    val scriptPath = boundary.resolve(
+    val scriptPath = writeBoundary.resolve(
       candidate = scriptPathCandidate,
       label = "python script",
       defaultToRoot = false,
@@ -1149,13 +1245,13 @@ class OpenCrayToolDispatcher(
       ?: "python"
     val pythonRequest = PythonExecRequest(
       taskId = "managed-python-process",
-      workspaceRoot = boundary.defaultRoot,
+      workspaceRoot = writeBoundary.defaultRoot,
       scriptPath = scriptPath,
       args = userArgs,
       timeoutMs = timeoutMs,
       pythonExecutable = pythonExecutable,
     )
-    val pythonCommand = PythonRuntimeAdapter.commandFor(pythonRequest)
+    val pythonCommand = HostProcessPythonRuntime.commandFor(pythonRequest)
     return ManagedProcessLaunch(
       command = pythonCommand.first(),
       args = pythonCommand.drop(1),
@@ -1248,8 +1344,8 @@ class OpenCrayToolDispatcher(
   }
 
   private fun moveWorkspaceFile(task: AgentTask, arguments: JsonObject): AgentToolResult {
-    val source = boundary.resolve(arguments.requiredString("source_path"), label = "workspace move source", defaultToRoot = false)
-    val destination = boundary.resolve(
+    val source = writeBoundary.resolve(arguments.requiredString("source_path"), label = "workspace move source", defaultToRoot = false)
+    val destination = writeBoundary.resolve(
       arguments.requiredString("destination_path"),
       label = "workspace move destination",
       defaultToRoot = false,
@@ -1270,8 +1366,8 @@ class OpenCrayToolDispatcher(
       toolName = "workspace_move_file",
       policyDecision = effectivePolicyDecision,
       affectedPaths = mapOf(
-        "sourcePath" to boundary.defaultRoot.relativize(source).toString(),
-        "destinationPath" to boundary.defaultRoot.relativize(destination).toString(),
+        "sourcePath" to displayWritablePath(source),
+        "destinationPath" to displayWritablePath(destination),
       ),
     )?.let { return it }
     fileOpsService.executeBatch(
@@ -1285,18 +1381,18 @@ class OpenCrayToolDispatcher(
     return AgentToolResult(
       toolName = "workspace_move_file",
       status = AgentToolResultStatus.SUCCESS,
-      content = "Moved ${boundary.defaultRoot.relativize(source)} to ${boundary.defaultRoot.relativize(destination)}.",
+      content = "Moved ${displayWritablePath(source)} to ${displayWritablePath(destination)}.",
       metadata = mapOf(
         "executionMode" to inferExecutionMode(task).name,
         "policyReasonCode" to effectivePolicyDecision.reasonCode,
-        "sourcePath" to boundary.defaultRoot.relativize(source).toString(),
-        "destinationPath" to boundary.defaultRoot.relativize(destination).toString(),
+        "sourcePath" to displayWritablePath(source),
+        "destinationPath" to displayWritablePath(destination),
       ),
     )
   }
 
   private fun deleteWorkspaceFile(task: AgentTask, arguments: JsonObject): AgentToolResult {
-    val path = boundary.resolve(arguments.requiredString("path"), label = "workspace delete", defaultToRoot = false)
+    val path = writeBoundary.resolve(arguments.requiredString("path"), label = "workspace delete", defaultToRoot = false)
     val policyDecision = policyDecisionFor(
       task = task,
       toolClass = PolicyToolClass.DELETE_FILE,
@@ -1311,7 +1407,7 @@ class OpenCrayToolDispatcher(
       task = task,
       toolName = "workspace_delete_file",
       policyDecision = effectivePolicyDecision,
-      affectedPaths = mapOf("path" to boundary.defaultRoot.relativize(path).toString()),
+      affectedPaths = mapOf("path" to displayWritablePath(path)),
     )?.let { return it }
     fileOpsService.executeBatch(
       operations = listOf(
@@ -1321,11 +1417,11 @@ class OpenCrayToolDispatcher(
     return AgentToolResult(
       toolName = "workspace_delete_file",
       status = AgentToolResultStatus.SUCCESS,
-      content = "Deleted ${boundary.defaultRoot.relativize(path)}.",
+      content = "Deleted ${displayWritablePath(path)}.",
       metadata = mapOf(
         "executionMode" to inferExecutionMode(task).name,
         "policyReasonCode" to effectivePolicyDecision.reasonCode,
-        "path" to boundary.defaultRoot.relativize(path).toString(),
+        "path" to displayWritablePath(path),
       ),
     )
   }
@@ -1383,10 +1479,35 @@ class OpenCrayToolDispatcher(
     "Write",
     "Grep",
     "Glob",
+    "ImportFile",
     "Edit",
     "MultiEdit",
     "TodoWrite" -> displayPathForModel(path)
-    else -> boundary.defaultRoot.relativize(path).toString().ifBlank { "." }
+    else -> displayWritablePath(path)
+  }
+
+  private fun copyIntoWorkspace(source: Path, destination: Path) {
+    if (Files.isDirectory(source)) {
+      copyDirectoryIntoWorkspace(source = source, destination = destination)
+      return
+    }
+    Files.createDirectories(destination.parent)
+    Files.copy(source, destination)
+  }
+
+  private fun copyDirectoryIntoWorkspace(source: Path, destination: Path) {
+    Files.walk(source).use { stream ->
+      stream.forEach { current ->
+        val relative = source.relativize(current)
+        val target = if (relative.nameCount == 0) destination else destination.resolve(relative.toString())
+        if (Files.isDirectory(current)) {
+          Files.createDirectories(target)
+        } else {
+          Files.createDirectories(target.parent)
+          Files.copy(current, target)
+        }
+      }
+    }
   }
 
   private fun truncateToReadBudget(text: String): Pair<String, Boolean> {
@@ -1442,7 +1563,7 @@ class OpenCrayToolDispatcher(
   }
 
   private fun resolveSearchRoot(candidate: String?, label: String): Path {
-    val resolved = boundary.resolve(candidate = candidate, label = label, defaultToRoot = true)
+    val resolved = readBoundary.resolve(candidate = candidate, label = label, defaultToRoot = true)
     require(Files.exists(resolved)) { "$label does not exist: $resolved" }
     require(Files.isDirectory(resolved) || Files.isRegularFile(resolved)) { "$label is not a file or directory: $resolved" }
     return resolved
@@ -1491,7 +1612,23 @@ class OpenCrayToolDispatcher(
   }
 
   private fun displayPathForModel(path: Path): String =
-    boundary.defaultRoot.relativize(path).toString().ifBlank { "." }.replace(File.separatorChar, '/')
+    runCatching {
+      val normalized = path.toAbsolutePath().normalize()
+      val writableRoot = writeBoundary.defaultRoot
+      if (normalized.startsWith(writableRoot)) {
+        writableRoot.relativize(normalized).toString().ifBlank { "." }
+      } else {
+        normalized.toString()
+      }
+    }.getOrDefault(path.toAbsolutePath().normalize().toString()).replace(File.separatorChar, '/')
+
+  private fun displayWritablePath(path: Path): String =
+    runCatching {
+      writeBoundary.defaultRoot
+        .relativize(path.toAbsolutePath().normalize())
+        .toString()
+        .ifBlank { "." }
+    }.getOrDefault(path.toAbsolutePath().normalize().toString()).replace(File.separatorChar, '/')
 
   private fun applyTextEdits(
     source: String,
@@ -1535,7 +1672,7 @@ class OpenCrayToolDispatcher(
     hooks: com.opencray.core.orchestrator.RuntimeExecutionHooks,
   ): AgentToolResult {
     val command = arguments.requiredString("command")
-    val workingDirectory = boundary.resolve(
+    val workingDirectory = writeBoundary.resolve(
       candidate = arguments.optionalString("working_directory"),
       label = "command working directory",
       defaultToRoot = true,
@@ -1570,7 +1707,7 @@ class OpenCrayToolDispatcher(
   }
 
   private fun executePython(task: AgentTask, arguments: JsonObject): AgentToolResult {
-    val scriptPath = boundary.resolve(arguments.requiredString("script_path"), label = "python script", defaultToRoot = false)
+    val scriptPath = writeBoundary.resolve(arguments.requiredString("script_path"), label = "python script", defaultToRoot = false)
     val policyDecision = policyDecisionFor(
       task = task,
       toolClass = PolicyToolClass.EXECUTE_COMMAND,
@@ -1584,14 +1721,14 @@ class OpenCrayToolDispatcher(
       task = task,
       toolName = "python_exec",
       policyDecision = effectivePolicyDecision,
-      affectedPaths = mapOf("scriptPath" to boundary.defaultRoot.relativize(scriptPath).toString()),
+      affectedPaths = mapOf("scriptPath" to displayWritablePath(scriptPath)),
       askDetail = "Approval is required before python_exec can run.",
       denyDetail = "Policy denied python_exec.",
     )?.let { return it }
     val executionResult = config.pythonRuntimeAdapter.exec(
       request = PythonExecRequest(
         taskId = task.id,
-        workspaceRoot = boundary.defaultRoot,
+        workspaceRoot = writeBoundary.defaultRoot,
         scriptPath = scriptPath,
         args = arguments.optionalStringArray("args"),
       ),
@@ -1601,7 +1738,7 @@ class OpenCrayToolDispatcher(
       metadata = toolResult.metadata + mapOf(
         "executionMode" to inferExecutionMode(task).name,
         "policyReasonCode" to effectivePolicyDecision.reasonCode,
-        "scriptPath" to boundary.defaultRoot.relativize(scriptPath).toString(),
+        "scriptPath" to displayWritablePath(scriptPath),
       ) + approvalRiskMetadata(effectivePolicyDecision),
     )
   }
@@ -1940,7 +2077,7 @@ class OpenCrayToolDispatcher(
       PolicyRequest(
         mode = inferExecutionMode(task),
         toolClass = toolClass,
-        workspaceRoot = boundary.defaultRoot,
+        workspaceRoot = writeBoundary.defaultRoot,
         targetPath = targetPath,
         destinationPath = destinationPath,
       ),
@@ -2351,6 +2488,8 @@ class OpenCrayToolDispatcher(
       "webfetch" to "WebFetch",
       "edit" to "Edit",
       "multiedit" to "MultiEdit",
+      "importfile" to "ImportFile",
+      "import" to "ImportFile",
       "todowrite" to "TodoWrite",
       "processstart" to "ProcessStart",
       "processlist" to "ProcessList",

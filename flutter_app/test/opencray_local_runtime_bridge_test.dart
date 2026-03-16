@@ -305,6 +305,7 @@ void main() {
           'automationModeId': capturedBody['automationModeId'],
           'rollbackJournalEnabled': true,
           'maxFilesPerBatch': 20,
+          'maxAgentTurns': capturedBody['maxAgentTurns'],
           'undoWindowHours': 24,
           'fileChangesPolicyId': 'inherit',
           'fileDeletesPolicyId': capturedBody['fileDeletesPolicyId'],
@@ -326,6 +327,7 @@ void main() {
         automationModeId: 'dev',
         rollbackJournalEnabled: true,
         maxFilesPerBatch: 20,
+        maxAgentTurns: 0,
         undoWindowHours: 24,
         fileChangesPolicyId: 'inherit',
         fileDeletesPolicyId: 'block',
@@ -340,8 +342,10 @@ void main() {
       );
 
       expect(capturedBody['automationModeId'], 'dev');
+      expect(capturedBody['maxAgentTurns'], 0);
       expect(capturedBody['fileDeletesPolicyId'], 'block');
       expect(snapshot.automationModeId, 'dev');
+      expect(snapshot.maxAgentTurns, 0);
       expect(snapshot.fileDeletesPolicyId, 'block');
     },
   );

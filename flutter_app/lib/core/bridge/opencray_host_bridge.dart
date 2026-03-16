@@ -5,6 +5,7 @@ import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
 import '../models/opencray_mcp_settings.dart';
+import '../models/opencray_network_search_config.dart';
 import '../models/opencray_personalization_config.dart';
 import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
@@ -68,6 +69,12 @@ abstract interface class OpenCrayHostBridge {
   Stream<OpenCraySettingsOverviewSnapshot> watchSettingsOverview();
 
   Future<OpenCraySettingsDetailSnapshot> loadSettingsDetail(String routeId);
+
+  Future<OpenCrayNetworkSearchConfigSnapshot> loadNetworkSearchConfig();
+
+  Future<OpenCrayNetworkSearchConfigSnapshot> saveNetworkSearchConfig(
+    List<OpenCrayNetworkSearchSlotSnapshot> slots,
+  );
 
   Future<OpenCrayLlmConfigSnapshot> loadLlmConfig();
 
@@ -133,10 +140,13 @@ abstract interface class OpenCrayHostBridge {
 
   Future<OpenCraySafetySettingsSnapshot> loadSafetySettings();
 
+  Future<bool> authorizeExternalAccessLocation(String locationId);
+
   Future<OpenCraySafetySettingsSnapshot> saveSafetySettings({
     required String automationModeId,
     required bool rollbackJournalEnabled,
     required int maxFilesPerBatch,
+    int maxAgentTurns = 0,
     required int undoWindowHours,
     required String fileChangesPolicyId,
     required String fileDeletesPolicyId,

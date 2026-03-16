@@ -2,6 +2,7 @@ import '../../core/bridge/opencray_host_bridge.dart';
 import '../../core/models/opencray_llm_config.dart';
 import '../../core/models/opencray_llm_validation.dart';
 import '../../core/models/opencray_mcp_settings.dart';
+import '../../core/models/opencray_network_search_config.dart';
 import '../../core/models/opencray_personalization_config.dart';
 import '../../core/models/opencray_safety_settings.dart';
 import '../../core/models/opencray_settings_snapshot.dart';
@@ -26,6 +27,29 @@ class BridgeSettingsFacade implements SettingsFacade {
   @override
   Future<SettingsDetailSnapshot> loadDetail(SettingsPage page) async =>
       _mapDetail(await _bridge.loadSettingsDetail(page.routeId));
+
+  @override
+  Future<NetworkSearchConfigSnapshot> loadNetworkSearchConfig() async =>
+      _mapNetworkSearch(await _bridge.loadNetworkSearchConfig());
+
+  @override
+  Future<NetworkSearchConfigSnapshot> saveNetworkSearchConfig(
+    List<NetworkSearchSlotSnapshot> slots,
+  ) async => _mapNetworkSearch(
+    await _bridge.saveNetworkSearchConfig(
+      slots
+          .map(
+            (slot) => OpenCrayNetworkSearchSlotSnapshot(
+              id: slot.id,
+              providerId: slot.providerId,
+              label: slot.label,
+              apiKey: slot.apiKey,
+              enabled: slot.enabled,
+            ),
+          )
+          .toList(growable: false),
+    ),
+  );
 
   @override
   Future<LlmConfigSnapshot> loadLlmConfig() async =>
@@ -153,6 +177,10 @@ class BridgeSettingsFacade implements SettingsFacade {
       _mapSafetySettings(await _bridge.loadSafetySettings());
 
   @override
+  Future<bool> authorizeExternalAccessLocation(String locationId) =>
+      _bridge.authorizeExternalAccessLocation(locationId);
+
+  @override
   Future<SafetySettingsSnapshot> saveSafetySettings(
     SafetySettingsSnapshot snapshot,
   ) async => _mapSafetySettings(
@@ -160,6 +188,7 @@ class BridgeSettingsFacade implements SettingsFacade {
       automationModeId: snapshot.automationMode.id,
       rollbackJournalEnabled: snapshot.rollbackJournalEnabled,
       maxFilesPerBatch: snapshot.maxFilesPerBatch,
+      maxAgentTurns: snapshot.maxAgentTurns,
       undoWindowHours: snapshot.undoWindowHours,
       fileChangesPolicyId: snapshot.fileChangesPolicy.id,
       fileDeletesPolicyId: snapshot.fileDeletesPolicy.id,
@@ -236,6 +265,27 @@ class BridgeSettingsFacade implements SettingsFacade {
                       OpenCraySettingsSectionBackgroundTone.danger
                   ? SettingsSectionBackgroundTone.danger
                   : SettingsSectionBackgroundTone.surface,
+            ),
+          )
+          .toList(growable: false),
+    );
+  }
+
+  static NetworkSearchConfigSnapshot _mapNetworkSearch(
+    OpenCrayNetworkSearchConfigSnapshot snapshot,
+  ) {
+    return NetworkSearchConfigSnapshot(
+      localeTag: snapshot.localeTag,
+      title: snapshot.title,
+      subtitle: snapshot.subtitle,
+      slots: snapshot.slots
+          .map(
+            (slot) => NetworkSearchSlotSnapshot(
+              id: slot.id,
+              providerId: slot.providerId,
+              label: slot.label,
+              apiKey: slot.apiKey,
+              enabled: slot.enabled,
             ),
           )
           .toList(growable: false),
@@ -398,6 +448,7 @@ class BridgeSettingsFacade implements SettingsFacade {
       automationMode: safetyAutomationModeFromId(snapshot.automationModeId),
       rollbackJournalEnabled: snapshot.rollbackJournalEnabled,
       maxFilesPerBatch: snapshot.maxFilesPerBatch,
+      maxAgentTurns: snapshot.maxAgentTurns,
       undoWindowHours: snapshot.undoWindowHours,
       fileChangesPolicy: toolPolicyOverrideFromId(snapshot.fileChangesPolicyId),
       fileDeletesPolicy: toolPolicyOverrideFromId(snapshot.fileDeletesPolicyId),

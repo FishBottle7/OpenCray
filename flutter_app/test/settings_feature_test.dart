@@ -486,6 +486,47 @@ void main() {
     },
   );
 
+  testWidgets(
+    'network search page saves slot edits, provider changes, and add slot',
+    (tester) async {
+      final facade = _buildSettingsFacade();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.privacyTelemetry,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Network & Search'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField).at(0), 'Primary Exa');
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pump(const Duration(milliseconds: 800));
+
+      expect(facade.networkSearchConfig.slots.first.label, 'Primary Exa');
+
+      await tester.tap(find.text('BRAVE').first);
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(facade.networkSearchConfig.slots.first.providerId, 'brave');
+
+      await tester.tap(find.byType(Switch).first);
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(facade.networkSearchConfig.slots.first.enabled, isFalse);
+
+      await tester.tap(find.text('+ Add search slot'));
+      await tester.pump();
+
+      expect(facade.networkSearchConfig.slots.length, 3);
+    },
+  );
+
   testWidgets('safety page saves mode and file delete policy changes', (
     tester,
   ) async {
@@ -540,6 +581,17 @@ void main() {
 
     expect(facade.safetySettings.automationMode, SafetyAutomationMode.dev);
 
+    await tester.ensureVisible(find.text('No limit'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('No limit'), findsOneWidget);
+
+    await tester.tap(find.text('+'));
+    await tester.pumpAndSettle();
+
+    expect(facade.safetySettings.maxAgentTurns, 1);
+    expect(find.text('1 turn'), findsOneWidget);
+
     await tester.tap(find.text('Customize sensitive actions'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('File deletes'));
@@ -578,6 +630,41 @@ void main() {
 
     expect(facade.safetySettings.fileChangesPolicy, ToolPolicyOverride.allow);
   });
+
+  testWidgets(
+    'safety page keeps external location disabled when authorization is denied',
+    (tester) async {
+      final facade = _buildSettingsFacade();
+      facade.authorizationResponses['recordings'] = false;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.safetyLimits,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Customize sensitive actions'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('External access'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byType(Switch).at(3));
+      await tester.pumpAndSettle();
+
+      expect(facade.authorizationRequests, <String>['recordings']);
+      expect(facade.safetySettings.isLocationEnabled('recordings'), isFalse);
+      expect(facade.safetySaveCallCount, 0);
+      expect(
+        find.text('Recordings access is unavailable or was not granted.'),
+        findsOneWidget,
+      );
+    },
+  );
 
   testWidgets(
     'workspace access page saves profile and approved path navigation',
@@ -661,6 +748,28 @@ class _FakeSettingsFacade implements SettingsFacade {
     required this.validationResult,
   });
 
+  NetworkSearchConfigSnapshot networkSearchConfig =
+      const NetworkSearchConfigSnapshot(
+        localeTag: 'en',
+        title: 'Network & Search',
+        subtitle: 'Add API keys here. Enabled slots run top to bottom.',
+        slots: <NetworkSearchSlotSnapshot>[
+          NetworkSearchSlotSnapshot(
+            id: 'slot-1',
+            providerId: 'exa',
+            label: 'Primary Exa',
+            apiKey: 'sk_live_demo',
+            enabled: true,
+          ),
+          NetworkSearchSlotSnapshot(
+            id: 'slot-2',
+            providerId: 'tavily',
+            label: 'Tavily Backup',
+            apiKey: 'tvly-demo',
+            enabled: true,
+          ),
+        ],
+      );
   LlmConfigSnapshot llmConfig;
   final LlmValidationResult validationResult;
   final PersonalizationConfigSnapshot personalizationConfig =
@@ -776,7 +885,10 @@ class _FakeSettingsFacade implements SettingsFacade {
     workspaceAccessProfile: WorkspaceAccessProfile.work,
     readOnlyOutsideWorkspace: true,
   );
+  final Map<String, bool> authorizationResponses = <String, bool>{};
+  final List<String> authorizationRequests = <String>[];
   int saveCallCount = 0;
+  int safetySaveCallCount = 0;
 
   @override
   Future<SettingsOverviewSnapshot> loadOverview() async =>
@@ -815,6 +927,23 @@ class _FakeSettingsFacade implements SettingsFacade {
               ]
             : const <SettingsSectionSnapshot>[],
       );
+
+  @override
+  Future<NetworkSearchConfigSnapshot> loadNetworkSearchConfig() async =>
+      networkSearchConfig;
+
+  @override
+  Future<NetworkSearchConfigSnapshot> saveNetworkSearchConfig(
+    List<NetworkSearchSlotSnapshot> slots,
+  ) async {
+    networkSearchConfig = NetworkSearchConfigSnapshot(
+      localeTag: networkSearchConfig.localeTag,
+      title: networkSearchConfig.title,
+      subtitle: networkSearchConfig.subtitle,
+      slots: slots,
+    );
+    return networkSearchConfig;
+  }
 
   @override
   Future<LlmConfigSnapshot> loadLlmConfig() async => llmConfig;
@@ -951,9 +1080,16 @@ class _FakeSettingsFacade implements SettingsFacade {
   Future<SafetySettingsSnapshot> loadSafetySettings() async => safetySettings;
 
   @override
+  Future<bool> authorizeExternalAccessLocation(String locationId) async {
+    authorizationRequests.add(locationId);
+    return authorizationResponses[locationId] ?? true;
+  }
+
+  @override
   Future<SafetySettingsSnapshot> saveSafetySettings(
     SafetySettingsSnapshot snapshot,
   ) async {
+    safetySaveCallCount += 1;
     safetySettings = snapshot;
     return safetySettings;
   }

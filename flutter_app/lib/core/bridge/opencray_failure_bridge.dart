@@ -6,6 +6,7 @@ import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
 import '../models/opencray_mcp_settings.dart';
+import '../models/opencray_network_search_config.dart';
 import '../models/opencray_personalization_config.dart';
 import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
@@ -122,6 +123,20 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     subtitle: _failureMessage,
     sections: const <OpenCraySettingsSectionSnapshot>[],
   );
+
+  @override
+  Future<OpenCrayNetworkSearchConfigSnapshot> loadNetworkSearchConfig() async =>
+      OpenCrayNetworkSearchConfigSnapshot(
+        localeTag: 'en',
+        title: 'Network & Search',
+        subtitle: _failureMessage,
+        slots: const <OpenCrayNetworkSearchSlotSnapshot>[],
+      );
+
+  @override
+  Future<OpenCrayNetworkSearchConfigSnapshot> saveNetworkSearchConfig(
+    List<OpenCrayNetworkSearchSlotSnapshot> slots,
+  ) async => throw StateError(_failureMessage);
 
   @override
   Future<OpenCrayLlmConfigSnapshot> loadLlmConfig() async =>
@@ -324,6 +339,7 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     automationModeId: 'auto',
     rollbackJournalEnabled: true,
     maxFilesPerBatch: 20,
+    maxAgentTurns: 0,
     undoWindowHours: 24,
     fileChangesPolicyId: 'inherit',
     fileDeletesPolicyId: 'inherit',
@@ -343,10 +359,14 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   );
 
   @override
+  Future<bool> authorizeExternalAccessLocation(String locationId) async => true;
+
+  @override
   Future<OpenCraySafetySettingsSnapshot> saveSafetySettings({
     required String automationModeId,
     required bool rollbackJournalEnabled,
     required int maxFilesPerBatch,
+    int maxAgentTurns = 0,
     required int undoWindowHours,
     required String fileChangesPolicyId,
     required String fileDeletesPolicyId,

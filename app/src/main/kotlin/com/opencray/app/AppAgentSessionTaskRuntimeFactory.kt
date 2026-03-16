@@ -15,6 +15,7 @@ import com.opencray.mcp.McpClientExposureReport
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.runtime.AgentTodoStore
 import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.HostProcessPythonRuntime
 import com.opencray.runtime.InMemoryAgentTodoStore
 import com.opencray.runtime.OpenCrayAgentRuntime
 import com.opencray.runtime.OpenCrayAgentRuntimeConfig
@@ -23,6 +24,7 @@ import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
 import com.opencray.runtime.OpenCrayToolDispatcher
 import com.opencray.runtime.OpenCrayToolDispatcherConfig
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.PythonScriptRuntime
 import com.opencray.runtime.context.AgentRuntimeSessionContext
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
@@ -35,7 +37,11 @@ import com.opencray.runtime.process.InMemoryAgentProcessRegistry
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.session.InMemorySessionTranscriptStore
 import com.opencray.runtime.session.SessionTranscriptStore
+import com.opencray.runtime.skills.SkillCatalogResolver
+import com.opencray.runtime.skills.SkillInventoryResolver
 import com.opencray.runtime.soul.MemoryBackedSoulProfileResolver
+import com.opencray.runtime.web.UnconfiguredWebSearchProvider
+import com.opencray.runtime.web.WebSearchProvider
 import java.io.File
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
@@ -48,9 +54,11 @@ import kotlinx.serialization.json.put
 
 internal class AppAgentSessionTaskRuntimeFactory(
   private val llmSettingsProvider: () -> LlmSettingsState,
+  private val safetySettingsProvider: () -> SafetySettingsState = { SafetySettingsState() },
   private val sessionContextFactory: ChatRuntimeSessionContextFactory,
   private val soulProfileProvider: () -> PersonalizationLocalStore.SoulProfile?,
   private val workspaceRootsProvider: () -> Set<Path>,
+  private val readRootsProvider: () -> Set<Path> = workspaceRootsProvider,
   private val skillsRootsProvider: () -> List<File>,
   private val mcpReportProvider: () -> McpClientExposureReport?,
   private val memoryRecordsProvider: () -> List<MemoryRecord> = { emptyList() },
@@ -58,12 +66,16 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val approvalRegistry: AgentTaskApprovalRegistry = AgentTaskApprovalRegistry(),
   private val processRegistryProvider: (String) -> AgentProcessRegistry = { InMemoryAgentProcessRegistry() },
   private val transcriptStoreProvider: (String) -> SessionTranscriptStore = { InMemorySessionTranscriptStore() },
+  private val pythonRuntimeProvider: () -> PythonScriptRuntime = { HostProcessPythonRuntime() },
+  private val webSearchProviderFactory: () -> WebSearchProvider = { UnconfiguredWebSearchProvider },
 ) : AgentSessionTaskRuntimeFactory {
   private val todoStoresBySession: ConcurrentMap<String, AgentTodoStore> = ConcurrentHashMap()
   private val processRegistriesBySession: ConcurrentMap<String, AgentProcessRegistry> = ConcurrentHashMap()
   private val transcriptStoresBySession: ConcurrentMap<String, SessionTranscriptStore> = ConcurrentHashMap()
   private val memoryRetriever: MemoryRetriever = MemoryRetriever()
   private val memoryBackedSoulResolver: MemoryBackedSoulProfileResolver = MemoryBackedSoulProfileResolver()
+  private val skillCatalogResolver: SkillCatalogResolver = SkillCatalogResolver()
+  private val skillInventoryResolver: SkillInventoryResolver = SkillInventoryResolver()
   private val replayJson: Json = Json { prettyPrint = false }
 
   override fun create(
@@ -93,6 +105,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     eventSink: OpenCrayAgentRuntimeEventSink,
   ): ExecutionResult {
     val llmSettings = llmSettingsProvider().sanitized()
+    val safetySettings = safetySettingsProvider().sanitized()
     if (!llmSettings.isConfigured()) {
       return ExecutionResult(
         taskId = task.id,
@@ -154,12 +167,15 @@ internal class AppAgentSessionTaskRuntimeFactory(
       toolDispatcher = OpenCrayToolDispatcher(
         OpenCrayToolDispatcherConfig(
           workspaceRoots = workspaceRootsProvider(),
+          readRoots = readRootsProvider(),
           skillsRoots = skillsRootsProvider(),
           mcpExposureReport = mcpReportProvider(),
           approvedTaskId = task.id.takeIf { approvalGrant != null },
           approvedToolName = approvalGrant?.toolName,
+          pythonRuntimeAdapter = pythonRuntimeProvider(),
           todoStore = todoStoreForSession(sessionId),
           processRegistry = processRegistryForSession(sessionId),
+          webSearchProvider = webSearchProviderFactory(),
           memoryToolContext = MemoryToolContext(
             sessionId = sessionId,
             workspaceId = workspaceId,
@@ -168,6 +184,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
         ),
       ),
       config = OpenCrayAgentRuntimeConfig(
+        maxTurns = safetySettings.maxAgentTurns,
         systemPrompt = llmSettings.systemPrompt.ifBlank {
           OpenCrayAgentRuntimeConfig.DEFAULT_OPENCRAY_SYSTEM_PROMPT
         },
@@ -179,7 +196,6 @@ internal class AppAgentSessionTaskRuntimeFactory(
         ),
       ),
       eventSink = transcriptAwareEventSink(
-        sessionId = sessionId,
         transcriptStore = transcriptStore,
         delegate = eventSink,
       ),
@@ -308,7 +324,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     soulProfile: PersonalizationLocalStore.SoulProfile?,
     memoryRecords: List<MemoryRecord> = memoryRecordsProvider(),
     workspaceId: String? = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider()),
-  ) = memoryBackedSoulResolver.overlay(
+    ) = memoryBackedSoulResolver.overlay(
     baseProfile = sessionContextFactory.create(
       sessionId = sessionId,
       soulProfile = soulProfile,
@@ -317,6 +333,12 @@ internal class AppAgentSessionTaskRuntimeFactory(
     sessionId = sessionId,
     workspaceId = workspaceId,
   )
+
+  internal fun visibleSkillInventoryFor() =
+    skillInventoryResolver.resolve(skillsRootsProvider())
+
+  internal fun skillCatalogFor() =
+    skillCatalogResolver.resolve(skillsRootsProvider())
 
   private fun createSessionContext(
     sessionId: String,
@@ -345,6 +367,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
           ),
         )
       }
+    val skillCatalog = skillCatalogFor()
     return baseContext.copy(
       soulProfile = memoryBackedSoulResolver.overlay(
         baseProfile = baseContext.soulProfile,
@@ -358,12 +381,13 @@ internal class AppAgentSessionTaskRuntimeFactory(
         memoryRecords = memoryRecords,
         workspaceId = workspaceId,
       ),
+      skillInventory = skillCatalog.inventory,
+      skillCatalog = skillCatalog,
       conversation = transcriptStore.snapshot(),
     )
   }
 
   private fun transcriptAwareEventSink(
-    sessionId: String,
     transcriptStore: SessionTranscriptStore,
     delegate: OpenCrayAgentRuntimeEventSink,
   ): OpenCrayAgentRuntimeEventSink = object : OpenCrayAgentRuntimeEventSink {
@@ -512,7 +536,11 @@ internal class AppAgentSessionTaskRuntimeFactory(
           content = buildTerminalReplayContent(
             prefix = if (run.attempt > 1) "retry_abandoned" else "run_interrupted",
             run = run,
-            outcome = if (run.attempt > 1) "retry_budget_exhausted" else "terminal_failure",
+            outcome = when {
+              run.isInterruptedManagedProcessRestore() -> "restored_process_interrupted"
+              run.attempt > 1 -> "retry_budget_exhausted"
+              else -> "terminal_failure"
+            },
           ),
         )
 
@@ -559,6 +587,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
           message.content.startsWith("retry_abandoned")
         )
   }
+
+  private fun AgentRunSnapshot.isInterruptedManagedProcessRestore(): Boolean =
+    errorCode == ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE &&
+      resultMetadata[METADATA_RESTORED_TERMINAL_STATE] == RESTORED_TERMINAL_STATE_INTERRUPTED
 
   companion object {
     const val ERROR_CODE_MISSING_LLM_CONFIG: String = "MISSING_LLM_CONFIG"

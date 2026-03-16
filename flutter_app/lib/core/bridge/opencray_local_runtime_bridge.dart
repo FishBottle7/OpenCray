@@ -10,6 +10,7 @@ import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
 import '../models/opencray_mcp_settings.dart';
+import '../models/opencray_network_search_config.dart';
 import '../models/opencray_personalization_config.dart';
 import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
@@ -165,6 +166,21 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   );
 
   @override
+  Future<OpenCrayNetworkSearchConfigSnapshot> loadNetworkSearchConfig() async =>
+      OpenCrayNetworkSearchConfigSnapshot.fromMap(
+        await _getMap('v1/network_search_config'),
+      );
+
+  @override
+  Future<OpenCrayNetworkSearchConfigSnapshot> saveNetworkSearchConfig(
+    List<OpenCrayNetworkSearchSlotSnapshot> slots,
+  ) async => OpenCrayNetworkSearchConfigSnapshot.fromMap(
+    await _postMap('v1/save_network_search_config', <String, Object?>{
+      'slots': slots.map((slot) => slot.toMap()).toList(growable: false),
+    }),
+  );
+
+  @override
   Future<OpenCrayLlmConfigSnapshot> loadLlmConfig() async =>
       OpenCrayLlmConfigSnapshot.fromMap(await _getMap('v1/llm_config'));
 
@@ -309,10 +325,14 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
       );
 
   @override
+  Future<bool> authorizeExternalAccessLocation(String locationId) async => true;
+
+  @override
   Future<OpenCraySafetySettingsSnapshot> saveSafetySettings({
     required String automationModeId,
     required bool rollbackJournalEnabled,
     required int maxFilesPerBatch,
+    int maxAgentTurns = 0,
     required int undoWindowHours,
     required String fileChangesPolicyId,
     required String fileDeletesPolicyId,
@@ -329,6 +349,7 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
       'automationModeId': automationModeId,
       'rollbackJournalEnabled': rollbackJournalEnabled,
       'maxFilesPerBatch': maxFilesPerBatch,
+      'maxAgentTurns': maxAgentTurns,
       'undoWindowHours': undoWindowHours,
       'fileChangesPolicyId': fileChangesPolicyId,
       'fileDeletesPolicyId': fileDeletesPolicyId,

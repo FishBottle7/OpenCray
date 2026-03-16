@@ -4,6 +4,11 @@ import com.opencray.core.contracts.AgentTask
 import com.opencray.runtime.AgentToolDefinition
 import com.opencray.runtime.memory.MemoryRecallTrace
 import com.opencray.runtime.memory.MemoryRecallResult
+import com.opencray.runtime.skills.ActiveSkillCapsule
+import com.opencray.runtime.skills.ActiveSkillTrace
+import com.opencray.runtime.skills.SkillCatalog
+import com.opencray.runtime.skills.SkillInventory
+import com.opencray.runtime.skills.SkillInventoryTrace
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -36,6 +41,8 @@ data class AgentRuntimeSessionContext(
   val sessionPolicyText: String? = null,
   val soulProfile: RuntimeSoulProfile? = null,
   val recalledMemory: MemoryRecallResult = MemoryRecallResult(),
+  val skillInventory: SkillInventory = SkillInventory(),
+  val skillCatalog: SkillCatalog = SkillCatalog(),
   val conversation: List<RuntimeConversationMessage> = emptyList(),
 )
 
@@ -43,6 +50,7 @@ data class PromptAssemblyInput(
   val task: AgentTask,
   val baseSystemPrompt: String,
   val sessionContext: AgentRuntimeSessionContext,
+  val activeSkillCapsule: ActiveSkillCapsule? = null,
   val toolDefinitions: List<AgentToolDefinition>,
   val liveConversation: List<RuntimeConversationMessage>,
 )
@@ -53,6 +61,8 @@ data class ManagedPromptContext(
   val sessionPolicyText: String = "",
   val personalizationText: String = "",
   val memoryText: String = "",
+  val skillInventoryText: String = "",
+  val activeSkillText: String = "",
   val pruningSummary: TranscriptPruningSummary? = null,
   val compactionSummary: CompactionSummary? = null,
   val toolDefinitions: List<AgentToolDefinition> = emptyList(),
@@ -81,6 +91,12 @@ data class ContextSelectionReport(
   val injectedMemoryRecordCount: Int = 0,
   val omittedMemoryRecordCount: Int = 0,
   val memoryRecallTrace: MemoryRecallTrace = MemoryRecallTrace(),
+  val visibleSkillCount: Int = 0,
+  val injectedSkillCount: Int = 0,
+  val omittedSkillCount: Int = 0,
+  val invalidSkillCount: Int = 0,
+  val skillInventoryTrace: SkillInventoryTrace = SkillInventoryTrace(),
+  val activeSkillTrace: ActiveSkillTrace = ActiveSkillTrace(),
 )
 
 data class PromptLayer(
@@ -125,6 +141,12 @@ data class ContextAssemblyReport(
   val injectedMemoryRecordCount: Int = 0,
   val omittedMemoryRecordCount: Int = 0,
   val memoryRecallTrace: MemoryRecallTrace = MemoryRecallTrace(),
+  val visibleSkillCount: Int = 0,
+  val injectedSkillCount: Int = 0,
+  val omittedSkillCount: Int = 0,
+  val invalidSkillCount: Int = 0,
+  val skillInventoryTrace: SkillInventoryTrace = SkillInventoryTrace(),
+  val activeSkillTrace: ActiveSkillTrace = ActiveSkillTrace(),
 ) {
   val transcriptMessageCount: Int
     get() = windowedTranscriptMessageCount

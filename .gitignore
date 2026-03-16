@@ -43,6 +43,7 @@
 /.gradle-user-*/
 /.tools/
 **/.tmp_fonts/
+/.tmp/
 /tmp_*.patch
 
 # Sisyphus local scratch files

@@ -8,6 +8,12 @@ abstract interface class SettingsFacade {
 
   Future<SettingsDetailSnapshot> loadDetail(SettingsPage page);
 
+  Future<NetworkSearchConfigSnapshot> loadNetworkSearchConfig();
+
+  Future<NetworkSearchConfigSnapshot> saveNetworkSearchConfig(
+    List<NetworkSearchSlotSnapshot> slots,
+  );
+
   Future<LlmConfigSnapshot> loadLlmConfig();
 
   Future<LlmConfigSnapshot> saveLlmConfig({
@@ -67,6 +73,8 @@ abstract interface class SettingsFacade {
   });
 
   Future<SafetySettingsSnapshot> loadSafetySettings();
+
+  Future<bool> authorizeExternalAccessLocation(String locationId);
 
   Future<SafetySettingsSnapshot> saveSafetySettings(
     SafetySettingsSnapshot snapshot,

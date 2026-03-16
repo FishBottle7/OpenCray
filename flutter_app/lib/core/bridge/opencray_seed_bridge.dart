@@ -9,6 +9,7 @@ import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
 import '../models/opencray_mcp_settings.dart';
+import '../models/opencray_network_search_config.dart';
 import '../models/opencray_personalization_config.dart';
 import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
@@ -48,7 +49,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
              title: 'Settings',
              subtitle: 'Access, providers,\nand personal defaults.',
              deviceTitle: 'OpenCray on this device',
-             deviceSummary: 'Personalization: Quiet\nTelemetry: Minimal',
+             deviceSummary: 'Personalization: Quiet\nSearch: 2 active slots',
              entries: <OpenCraySettingsHomeEntrySnapshot>[
                OpenCraySettingsHomeEntrySnapshot(
                  routeId: 'workspace_access',
@@ -58,7 +59,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
                OpenCraySettingsHomeEntrySnapshot(routeId: 'mcp', title: 'MCP'),
                OpenCraySettingsHomeEntrySnapshot(
                  routeId: 'privacy_telemetry',
-                 title: 'Privacy & Telemetry',
+                 title: 'Network & Search',
                ),
                OpenCraySettingsHomeEntrySnapshot(
                  routeId: 'safety_limits',
@@ -125,6 +126,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
              automationModeId: 'auto',
              rollbackJournalEnabled: true,
              maxFilesPerBatch: 20,
+             maxAgentTurns: 0,
              undoWindowHours: 24,
              fileChangesPolicyId: 'inherit',
              fileDeletesPolicyId: 'inherit',
@@ -246,6 +248,28 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   OpenCrayFilesSnapshot _filesSnapshot;
   Map<String, String> _textDocumentsByPath;
   OpenCraySettingsOverviewSnapshot _settingsOverview;
+  OpenCrayNetworkSearchConfigSnapshot _networkSearchConfig =
+      const OpenCrayNetworkSearchConfigSnapshot(
+        localeTag: 'en',
+        title: 'Network & Search',
+        subtitle: 'Add API keys here. Enabled slots run top to bottom.',
+        slots: <OpenCrayNetworkSearchSlotSnapshot>[
+          OpenCrayNetworkSearchSlotSnapshot(
+            id: 'seed-search-1',
+            providerId: 'exa',
+            label: 'Primary Exa',
+            apiKey: 'sk_live_demo_7Q9K',
+            enabled: true,
+          ),
+          OpenCrayNetworkSearchSlotSnapshot(
+            id: 'seed-search-2',
+            providerId: 'tavily',
+            label: 'Tavily Backup',
+            apiKey: 'tvly-demo-BK24',
+            enabled: true,
+          ),
+        ],
+      );
   OpenCrayLlmConfigSnapshot _llmConfig;
   OpenCrayPersonalizationConfigSnapshot _personalizationConfig;
   OpenCrayMcpSettingsSnapshot _mcpSettings;
@@ -503,6 +527,24 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   ) async => _seedSettingsDetailFor(routeId);
 
   @override
+  Future<OpenCrayNetworkSearchConfigSnapshot> loadNetworkSearchConfig() async =>
+      _networkSearchConfig;
+
+  @override
+  Future<OpenCrayNetworkSearchConfigSnapshot> saveNetworkSearchConfig(
+    List<OpenCrayNetworkSearchSlotSnapshot> slots,
+  ) async {
+    _networkSearchConfig = OpenCrayNetworkSearchConfigSnapshot(
+      localeTag: _networkSearchConfig.localeTag,
+      title: _networkSearchConfig.title,
+      subtitle: _networkSearchConfig.subtitle,
+      slots: slots,
+    );
+    _refreshSettingsOverview();
+    return _networkSearchConfig;
+  }
+
+  @override
   Future<OpenCrayLlmConfigSnapshot> loadLlmConfig() async => _llmConfig;
 
   @override
@@ -730,10 +772,14 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       _safetySettings;
 
   @override
+  Future<bool> authorizeExternalAccessLocation(String locationId) async => true;
+
+  @override
   Future<OpenCraySafetySettingsSnapshot> saveSafetySettings({
     required String automationModeId,
     required bool rollbackJournalEnabled,
     required int maxFilesPerBatch,
+    int maxAgentTurns = 0,
     required int undoWindowHours,
     required String fileChangesPolicyId,
     required String fileDeletesPolicyId,
@@ -750,6 +796,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       automationModeId: automationModeId,
       rollbackJournalEnabled: rollbackJournalEnabled,
       maxFilesPerBatch: maxFilesPerBatch,
+      maxAgentTurns: maxAgentTurns,
       undoWindowHours: undoWindowHours,
       fileChangesPolicyId: fileChangesPolicyId,
       fileDeletesPolicyId: fileDeletesPolicyId,
@@ -1076,7 +1123,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       subtitle: _settingsOverview.subtitle,
       deviceTitle: _settingsOverview.deviceTitle,
       deviceSummary:
-          'Personalization: ${_personalizationConfig.livePreviewName}\nTelemetry: Minimal',
+          'Personalization: ${_personalizationConfig.livePreviewName}\nSearch: ${_networkSearchConfig.slots.where((slot) => slot.enabled && slot.apiKey.trim().isNotEmpty).length} active slots',
       entries: _settingsOverview.entries,
     );
     updateSettingsOverview(updatedOverview);
@@ -1281,39 +1328,16 @@ OpenCraySettingsDetailSnapshot _seedSettingsDetailFor(String routeId) {
     case 'privacy_telemetry':
       return const OpenCraySettingsDetailSnapshot(
         routeId: 'privacy_telemetry',
-        title: 'Privacy & Telemetry',
-        subtitle: 'Decide what leaves the device and how long it stays.',
+        title: 'Network & Search',
+        subtitle: 'Add API keys here. Enabled slots run top to bottom.',
         sections: <OpenCraySettingsSectionSnapshot>[
           OpenCraySettingsSectionSnapshot(
-            title: 'Telemetry profile',
-            segmentedOptions: <String>['QUIET', 'BAL', 'FULL'],
-            segmentedIndex: 0,
-            helperText: 'Quieter profiles send fewer diagnostics.',
-          ),
-          OpenCraySettingsSectionSnapshot(
-            title: 'Data controls',
+            title: 'Search slots',
+            helperText: 'Enabled provider keys run in order until one succeeds.',
             rows: <OpenCraySettingsRowSnapshot>[
-              OpenCraySettingsRowSnapshot.chevron(
-                title: 'Review collected signals',
-                subtitle: 'Give clear exports before asking for more.',
-              ),
-            ],
-          ),
-          OpenCraySettingsSectionSnapshot(
-            title: 'Safeguards',
-            rows: <OpenCraySettingsRowSnapshot>[
-              OpenCraySettingsRowSnapshot.toggle(
-                title: 'Crash reports',
-                subtitle: 'Share anonymous failures for stability.',
-                toggleValue: true,
-              ),
               OpenCraySettingsRowSnapshot.value(
-                title: 'Retention',
-                valueLabel: '7 days',
-              ),
-              OpenCraySettingsRowSnapshot.value(
-                title: 'Data export',
-                valueLabel: 'Ready',
+                title: 'Configured slots',
+                valueLabel: '2',
               ),
             ],
           ),

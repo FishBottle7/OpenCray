@@ -109,7 +109,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
           children: [
             const Text('Automation mode', style: _SettingsTextStyles.cardTitle),
             const SizedBox(height: 10),
-            _InteractiveSegmentedSelector<SafetyAutomationMode>(
+            _EnumSegmentedSelector<SafetyAutomationMode>(
               values: SafetyAutomationMode.values,
               currentValue: snapshot.automationMode,
               labelBuilder: SafetySettingsCopy.automationModeLabel,
@@ -174,6 +174,42 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
             _PrototypeValueRow(
               title: 'Max files per batch',
               value: '${snapshot.maxFilesPerBatch}',
+            ),
+            const Divider(height: 1, color: OpenCrayColors.divider),
+            _PrototypeStepperRow(
+              title: SafetySettingsCopy.agentTurnLimitTitle,
+              subtitle: SafetySettingsCopy.agentTurnLimitSubtitle,
+              value: SafetySettingsCopy.agentTurnLimitValue(
+                snapshot.maxAgentTurns,
+              ),
+              decrementLabel: '-',
+              incrementLabel: '+',
+              canDecrement: !_isSaving && snapshot.maxAgentTurns > 0,
+              canIncrement: !_isSaving && snapshot.maxAgentTurns < 64,
+              onDecrement: () {
+                if (_isSaving) {
+                  return;
+                }
+                _persist(
+                  snapshot.copyWith(
+                    maxAgentTurns: snapshot.maxAgentTurns > 0
+                        ? snapshot.maxAgentTurns - 1
+                        : 0,
+                  ),
+                );
+              },
+              onIncrement: () {
+                if (_isSaving) {
+                  return;
+                }
+                _persist(
+                  snapshot.copyWith(
+                    maxAgentTurns: snapshot.maxAgentTurns < 64
+                        ? snapshot.maxAgentTurns + 1
+                        : 64,
+                  ),
+                );
+              },
             ),
             const Divider(height: 1, color: OpenCrayColors.divider),
             _PrototypeValueRow(
@@ -302,7 +338,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
           children: [
             const Text('Access model', style: _SettingsTextStyles.cardTitle),
             const SizedBox(height: 10),
-            _InteractiveSegmentedSelector<ExternalAccessMode>(
+            _EnumSegmentedSelector<ExternalAccessMode>(
               values: ExternalAccessMode.values,
               currentValue: snapshot.externalAccessMode,
               labelBuilder: SafetySettingsCopy.externalAccessModeLabel,
@@ -339,11 +375,10 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
                 value: snapshot.locations[index].enabled,
                 enabled: togglesEnabled,
                 onChanged: (value) {
-                  _persist(
-                    snapshot.withLocationEnabled(
-                      snapshot.locations[index].id,
-                      value,
-                    ),
+                  _handleExternalLocationToggle(
+                    snapshot: snapshot,
+                    locationId: snapshot.locations[index].id,
+                    enabled: value,
                   );
                 },
               ),
@@ -533,6 +568,42 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
       });
     }
   }
+
+  Future<void> _handleExternalLocationToggle({
+    required SafetySettingsSnapshot snapshot,
+    required String locationId,
+    required bool enabled,
+  }) async {
+    final nextSnapshot = snapshot.withLocationEnabled(locationId, enabled);
+    if (!enabled) {
+      await _persist(nextSnapshot);
+      return;
+    }
+    try {
+      final granted = await widget.facade.authorizeExternalAccessLocation(
+        locationId,
+      );
+      if (!mounted) {
+        return;
+      }
+      if (!granted) {
+        setState(() {
+          _errorMessage =
+              '${SafetySettingsCopy.locationLabel(locationId)} access is unavailable or was not granted.';
+        });
+        return;
+      }
+      await _persist(nextSnapshot);
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _errorMessage =
+            'Failed to authorize ${SafetySettingsCopy.locationLabel(locationId)}: $error';
+      });
+    }
+  }
 }
 
 class _WorkspaceAccessSettingsPage extends StatefulWidget {
@@ -701,7 +772,7 @@ List<Widget> _buildWorkspaceAccessShared(
         children: [
           const Text('Access profile', style: _SettingsTextStyles.cardTitle),
           const SizedBox(height: 10),
-          _InteractiveSegmentedSelector<WorkspaceAccessProfile>(
+          _EnumSegmentedSelector<WorkspaceAccessProfile>(
             values: WorkspaceAccessProfile.values,
             currentValue: snapshot.workspaceAccessProfile,
             labelBuilder: SafetySettingsCopy.workspaceProfileLabel,
@@ -880,8 +951,8 @@ String _inheritedOutcomeLabelForCommand(SafetyAutomationMode mode) {
   }
 }
 
-class _InteractiveSegmentedSelector<T> extends StatelessWidget {
-  const _InteractiveSegmentedSelector({
+class _EnumSegmentedSelector<T> extends StatelessWidget {
+  const _EnumSegmentedSelector({
     required this.values,
     required this.currentValue,
     required this.labelBuilder,
@@ -1069,6 +1140,100 @@ class _PrototypeValueRow extends StatelessWidget {
           Expanded(child: Text(title, style: _SettingsTextStyles.rowTitle)),
           _PrototypeValuePill(value: value),
         ],
+      ),
+    );
+  }
+}
+
+class _PrototypeStepperRow extends StatelessWidget {
+  const _PrototypeStepperRow({
+    required this.title,
+    required this.subtitle,
+    required this.value,
+    required this.decrementLabel,
+    required this.incrementLabel,
+    required this.canDecrement,
+    required this.canIncrement,
+    required this.onDecrement,
+    required this.onIncrement,
+  });
+
+  final String title;
+  final String subtitle;
+  final String value;
+  final String decrementLabel;
+  final String incrementLabel;
+  final bool canDecrement;
+  final bool canIncrement;
+  final VoidCallback onDecrement;
+  final VoidCallback onIncrement;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(child: Text(title, style: _SettingsTextStyles.rowTitle)),
+              const SizedBox(width: 12),
+              _StepperButton(
+                label: decrementLabel,
+                enabled: canDecrement,
+                onTap: onDecrement,
+              ),
+              const SizedBox(width: 8),
+              _PrototypeValuePill(value: value),
+              const SizedBox(width: 8),
+              _StepperButton(
+                label: incrementLabel,
+                enabled: canIncrement,
+                onTap: onIncrement,
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(subtitle, style: _SettingsTextStyles.rowSubtitle),
+        ],
+      ),
+    );
+  }
+}
+
+class _StepperButton extends StatelessWidget {
+  const _StepperButton({
+    required this.label,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(999),
+      onTap: enabled ? onTap : null,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: enabled ? const Color(0xFFF7F7FA) : const Color(0xFFF0F0F3),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Text(
+            label,
+            style: _SettingsTextStyles.valueChip.copyWith(
+              color: enabled
+                  ? OpenCrayColors.textPrimary
+                  : OpenCrayColors.textSecondary,
+            ),
+          ),
+        ),
       ),
     );
   }

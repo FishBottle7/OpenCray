@@ -164,6 +164,10 @@ internal class OpenCrayLocalRuntimeServer(
       "GET" to "/v1/settings_detail" -> hostRuntime.loadSettingsDetail(
         routeIdRaw = request.queryParameter("routeId"),
       )
+      "GET" to "/v1/network_search_config" -> hostRuntime.loadNetworkSearchConfig()
+      "POST" to "/v1/save_network_search_config" -> hostRuntime.saveNetworkSearchConfig(
+        slots = body.optJSONArray("slots")?.let(::jsonArrayToMaps) ?: emptyList(),
+      )
       "GET" to "/v1/llm_config" -> hostRuntime.loadLlmConfig()
       "POST" to "/v1/save_llm_config" -> hostRuntime.saveLlmConfig(
         enabled = body.optBoolean("enabled"),
@@ -222,6 +226,10 @@ internal class OpenCrayLocalRuntimeServer(
         automationModeId = body.optString("automationModeId"),
         rollbackJournalEnabled = body.optBoolean("rollbackJournalEnabled", true),
         maxFilesPerBatch = body.optInt("maxFilesPerBatch", 20),
+        maxAgentTurns = body.optInt(
+          "maxAgentTurns",
+          SafetySettingsState.DEFAULT_MAX_AGENT_TURNS,
+        ),
         undoWindowHours = body.optInt("undoWindowHours", 24),
         fileChangesPolicyId = body.optString("fileChangesPolicyId"),
         fileDeletesPolicyId = body.optString("fileDeletesPolicyId"),
@@ -447,6 +455,27 @@ internal class OpenCrayLocalRuntimeServer(
 private fun jsonArrayToStrings(array: JSONArray): List<String> =
   List(array.length()) { index ->
     array.optString(index)
+  }
+
+private fun jsonArrayToMaps(array: JSONArray): List<Map<String, Any?>> =
+  List(array.length()) { index ->
+    array.optJSONObject(index)?.let(::jsonObjectToMap) ?: emptyMap()
+  }
+
+private fun jsonObjectToMap(payload: JSONObject): Map<String, Any?> =
+  payload.keys().asSequence().associateWith { key ->
+    when (val value = payload.opt(key)) {
+      JSONObject.NULL -> null
+      is JSONObject -> jsonObjectToMap(value)
+      is JSONArray -> List(value.length()) { index ->
+        when (val entry = value.opt(index)) {
+          JSONObject.NULL -> null
+          is JSONObject -> jsonObjectToMap(entry)
+          else -> entry
+        }
+      }
+      else -> value
+    }
   }
 
 private data class LocalRuntimeRequest(
