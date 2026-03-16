@@ -22,7 +22,9 @@
     <string name="shell_tab_skills">技能</string>
     <string name="shell_tab_files">文件</string>
     <string name="shell_tab_settings">设置</string>
+    <string name="chat_mode_safe">安全</string>
     <string name="chat_mode_auto">自动</string>
+    <string name="chat_mode_dev">开发</string>
     <string name="chat_sessions_button">会话</string>
     <string name="chat_recent_sessions_eyebrow">最近会话</string>
     <string name="chat_recent_sessions_title">最近会话</string>

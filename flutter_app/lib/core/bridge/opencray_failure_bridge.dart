@@ -1,14 +1,17 @@
 import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_file_image_preview.dart';
 import '../models/opencray_file_text_preview.dart';
 import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
 import '../models/opencray_mcp_settings.dart';
 import '../models/opencray_personalization_config.dart';
+import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
 import '../models/opencray_skills_snapshot.dart';
+import '../models/opencray_workspace_text_document.dart';
 import 'opencray_host_bridge.dart';
 
 class OpenCrayFailureBridge implements OpenCrayHostBridge {
@@ -37,12 +40,28 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
       throw StateError(_failureMessage);
 
   @override
+  Future<OpenCrayFileImagePreview> loadWorkspaceImagePreview(
+    String relativePath,
+  ) async => throw StateError(_failureMessage);
+
+  @override
   Future<OpenCrayFileTextPreview> loadWorkspaceTextPreview(
     String relativePath,
   ) async => throw StateError(_failureMessage);
 
   @override
+  Future<OpenCrayWorkspaceTextDocument> loadWorkspaceTextDocument(
+    String relativePath,
+  ) async => throw StateError(_failureMessage);
+
+  @override
   Future<OpenCrayFilesSnapshot> createWorkspaceFolder({
+    required String parentRelativePath,
+    required String name,
+  }) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayFilesSnapshot> createWorkspaceTextFile({
     required String parentRelativePath,
     required String name,
   }) async => throw StateError(_failureMessage);
@@ -57,6 +76,12 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   Future<OpenCrayFilesSnapshot> deleteWorkspaceEntries(
     List<String> relativePaths,
   ) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayFilesSnapshot> saveWorkspaceTextDocument({
+    required String targetRelativePath,
+    required String content,
+  }) async => throw StateError(_failureMessage);
 
   @override
   Future<OpenCrayFilesSnapshot> pasteWorkspaceEntries({
@@ -104,14 +129,18 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
         localeTag: 'en',
         enabled: false,
         providerId: 'custom',
+        selectedProviderOptionId: 'custom',
         protocol: 'openai',
         providerOptions: <OpenCrayLlmProviderOptionSnapshot>[
           OpenCrayLlmProviderOptionSnapshot(
             id: 'custom',
+            providerId: 'custom',
             title: 'Custom provider',
             subtitle: 'The Android host bridge failed to initialize.',
             defaultBaseUrl: '',
             defaultModel: '',
+            protocol: 'openai',
+            apiKey: '',
             isCustom: true,
           ),
         ],
@@ -129,6 +158,20 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   Future<OpenCrayLlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
     required String providerId,
+    required String selectedProviderOptionId,
+    required String protocol,
+    required String providerName,
+    required String providerNotes,
+    required String baseUrl,
+    required String apiKey,
+    required String model,
+    required String reasoningEffort,
+    required String systemPrompt,
+  }) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> saveCustomLlmProvider({
+    required String selectedProviderOptionId,
     required String protocol,
     required String providerName,
     required String providerNotes,
@@ -276,6 +319,48 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   }) async => throw StateError(_failureMessage);
 
   @override
+  Future<OpenCraySafetySettingsSnapshot>
+  loadSafetySettings() async => const OpenCraySafetySettingsSnapshot(
+    automationModeId: 'auto',
+    rollbackJournalEnabled: true,
+    maxFilesPerBatch: 20,
+    undoWindowHours: 24,
+    fileChangesPolicyId: 'inherit',
+    fileDeletesPolicyId: 'inherit',
+    shellCommandsPolicyId: 'inherit',
+    externalAccessModeId: 'select_paths',
+    locations: <OpenCraySafetySettingsLocationSnapshot>[
+      OpenCraySafetySettingsLocationSnapshot(
+        id: 'photo_library',
+        enabled: true,
+      ),
+      OpenCraySafetySettingsLocationSnapshot(id: 'downloads', enabled: true),
+      OpenCraySafetySettingsLocationSnapshot(id: 'documents', enabled: false),
+      OpenCraySafetySettingsLocationSnapshot(id: 'recordings', enabled: false),
+    ],
+    workspaceAccessProfileId: 'work',
+    readOnlyOutsideWorkspace: true,
+  );
+
+  @override
+  Future<OpenCraySafetySettingsSnapshot> saveSafetySettings({
+    required String automationModeId,
+    required bool rollbackJournalEnabled,
+    required int maxFilesPerBatch,
+    required int undoWindowHours,
+    required String fileChangesPolicyId,
+    required String fileDeletesPolicyId,
+    required String shellCommandsPolicyId,
+    required String externalAccessModeId,
+    required bool photoLibraryEnabled,
+    required bool downloadsEnabled,
+    required bool documentsEnabled,
+    required bool recordingsEnabled,
+    required String workspaceAccessProfileId,
+    required bool readOnlyOutsideWorkspace,
+  }) async => throw StateError(_failureMessage);
+
+  @override
   Future<OpenCraySkillsSnapshot> loadSkillsSnapshot() async =>
       const OpenCraySkillsSnapshot(
         installedSkills: <OpenCrayInstalledSkillSnapshot>[],
@@ -370,6 +455,12 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
 
   @override
   Future<void> createChatSession() async {}
+
+  @override
+  Future<void> copyChatSession(String sessionId) async {}
+
+  @override
+  Future<void> deleteChatSession(String sessionId) async {}
 
   @override
   Future<void> selectChatSession(String sessionId) async {}

@@ -1218,6 +1218,80 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun runSnapshotIncludesManagedProcessLinkageAndKeepsLiveProcessRunVisible() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-process-linkage"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    val submission = hostRuntime.submitChatMessage("Start the dev server")!!
+    val task = handle.submittedTasks.single()
+    handle.putManagedProcess(
+      com.opencray.runtime.process.ManagedProcessSnapshot(
+        processId = "proc-live",
+        taskId = task.id,
+        command = "npm",
+        args = listOf("run", "dev"),
+        workingDirectory = ".",
+        status = com.opencray.runtime.process.ManagedProcessStatus.RUNNING,
+        processStarted = true,
+        timeoutMs = 120_000L,
+        startedAtEpochMs = 1_000L,
+        updatedAtEpochMs = 1_001L,
+      ),
+    )
+    manager.emitRunEvent(
+      sessionId = activeSessionId,
+      task = task,
+      event = com.opencray.runtime.OpenCrayToolResultEvent(
+        runId = submission["runId"] as String,
+        taskId = task.id,
+        turn = 1,
+        call = AgentToolCall(
+          toolName = "ProcessStart",
+        ),
+        result = AgentToolResult(
+          toolName = "ProcessStart",
+          status = AgentToolResultStatus.SUCCESS,
+          content = "Started dev server",
+          metadata = mapOf("processId" to "proc-live"),
+        ),
+        emittedAtEpochMs = 1_001L,
+      ),
+    )
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "Server is running in the background.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_002L,
+        metadata = task.metadata,
+      ),
+    )
+
+    val runSnapshot = hostRuntime.loadChatRunSnapshot(submission["runId"] as String)!!
+    val runtimeActivity = hostRuntime.loadChatSnapshot()["runtimeActivity"] as Map<*, *>
+    val activeRuns = runtimeActivity["activeRuns"] as List<*>
+    val activeRun = activeRuns.single() as Map<*, *>
+
+    assertEquals(listOf("proc-live"), runSnapshot["managedProcessIds"])
+    assertEquals(1, runSnapshot["runningManagedProcessCount"])
+    assertEquals(true, runSnapshot["hasLiveManagedProcesses"])
+    assertEquals(true, runSnapshot["isTerminal"])
+    assertEquals(true, runSnapshot["isActive"])
+    assertEquals(submission["runId"], activeRun["runId"])
+    assertEquals(true, activeRun["hasLiveManagedProcesses"])
+  }
+
+  @Test
   fun approveChatApprovalResumesTaskAndRestoresThinkingPlaceholder() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approval-resume"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -2197,13 +2271,20 @@ class OpenCrayHostRuntimeTest {
       val existing = runSnapshotsById[event.runId] ?: return
       runSnapshotsById[event.runId] = existing.copy(
         updatedAtEpochMs = event.emittedAtEpochMs,
+        managedProcessIds = mergeManagedProcessIds(
+          existing = existing.managedProcessIds,
+          candidate = (event as? com.opencray.runtime.OpenCrayToolResultEvent)
+            ?.result
+            ?.metadata
+            ?.get("processId"),
+        ),
         lastEvent = event,
       )
     }
 
-    override fun listRuns(): List<AgentRunSnapshot> = runSnapshotsById.values.toList()
+    override fun listRuns(): List<AgentRunSnapshot> = runSnapshotsById.values.map(::withManagedProcessState)
 
-    override fun findRun(runId: String): AgentRunSnapshot? = runSnapshotsById[runId]
+    override fun findRun(runId: String): AgentRunSnapshot? = runSnapshotsById[runId]?.let(::withManagedProcessState)
 
     override fun waitForRun(runId: String, timeoutMs: Long): AgentRunSnapshot? = findRun(runId)
 
@@ -2246,6 +2327,34 @@ class OpenCrayHostRuntimeTest {
     fun putManagedProcess(snapshot: com.opencray.runtime.process.ManagedProcessSnapshot) {
       managedProcessesById[snapshot.processId] = snapshot
     }
+
+    private fun withManagedProcessState(snapshot: AgentRunSnapshot): AgentRunSnapshot {
+      val managedProcessIds = (
+        snapshot.managedProcessIds +
+          managedProcessesById.values
+            .asSequence()
+            .filter { process -> process.taskId == snapshot.taskId }
+            .map { process -> process.processId }
+            .toList()
+        ).distinct()
+      val runningManagedProcessCount = managedProcessIds.count { processId ->
+        managedProcessesById[processId]?.status == com.opencray.runtime.process.ManagedProcessStatus.RUNNING
+      }
+      return snapshot.copy(
+        managedProcessIds = managedProcessIds,
+        runningManagedProcessCount = runningManagedProcessCount,
+        hasLiveManagedProcesses = runningManagedProcessCount > 0,
+      )
+    }
+
+    private fun mergeManagedProcessIds(
+      existing: List<String>,
+      candidate: String?,
+    ): List<String> = candidate
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { processId -> if (processId in existing) existing else existing + processId }
+      ?: existing
   }
 
   private class FailingChatSessionLocalStore(

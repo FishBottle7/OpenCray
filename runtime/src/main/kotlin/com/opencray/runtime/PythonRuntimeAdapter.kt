@@ -31,23 +31,7 @@ class PythonRuntimeAdapter(
 ) {
   fun exec(request: PythonExecRequest): ExecutionResult {
     val startedAt = System.currentTimeMillis()
-
-    val cmd = buildList {
-      add(request.pythonExecutable)
-      add("-m")
-      add("python_runner.runner")
-      add("exec")
-      add("--workspace")
-      add(request.workspaceRoot.toString())
-      add("--script")
-      add(request.scriptPath.toString())
-      add("--timeout-seconds")
-      add((request.timeoutMs.toDouble() / 1000.0).toString())
-      if (request.args.isNotEmpty()) {
-        add("--")
-        addAll(request.args)
-      }
-    }
+    val cmd = commandFor(request)
 
     val stdoutBuf = ByteArrayOutputStream()
     val stderrBuf = ByteArrayOutputStream()
@@ -151,6 +135,25 @@ class PythonRuntimeAdapter(
       "cancelled" -> ExecutionStatus.CANCELLED
       "denied" -> ExecutionStatus.DENIED
       else -> ExecutionStatus.FAILED
+    }
+  }
+
+  companion object {
+    internal fun commandFor(request: PythonExecRequest): List<String> = buildList {
+      add(request.pythonExecutable)
+      add("-m")
+      add("python_runner.runner")
+      add("exec")
+      add("--workspace")
+      add(request.workspaceRoot.toString())
+      add("--script")
+      add(request.scriptPath.toString())
+      add("--timeout-seconds")
+      add((request.timeoutMs.toDouble() / 1000.0).toString())
+      if (request.args.isNotEmpty()) {
+        add("--")
+        addAll(request.args)
+      }
     }
   }
 }

@@ -107,7 +107,8 @@ Dependencies:
 
 Status:
 
-- In progress: per-session runtime transcript ownership is in place, approval rejection and user-initiated run cancellation are recorded as replay-visible tool observations, transcript state is persisted under the session runtime directory for restart restore, successful tool call/result summaries are now appended into the durable runtime transcript instead of living only in UI/runtime event history, replay pruning is now category-aware so recent write/mutation summaries and recent discovery/search conclusions are kept ahead of older low-value tool noise without dropping user/assistant turns or terminal tool outcomes, restored failed runs are now backfilled into replay as `run_interrupted` / `retry_abandoned` notes when needed, a first explicit `ContextManager` now owns transcript windowing plus bounded soul/memory injection before `PromptAssembler` renders the final prompt layers, and prompt-time compaction now produces an explicit omitted-history summary layer instead of silently dropping older context.
+- In progress: per-session runtime transcript ownership is in place, approval rejection and user-initiated run cancellation are recorded as replay-visible tool observations, transcript state is persisted under the session runtime directory for restart restore, successful tool call/result summaries are now appended into the durable runtime transcript instead of living only in UI/runtime event history, replay pruning is now category-aware so recent write/mutation summaries and recent discovery/search conclusions are kept ahead of older low-value tool noise without dropping user/assistant turns or terminal tool outcomes, restored failed runs are now backfilled into replay as `run_interrupted` / `retry_abandoned` notes when needed, a first explicit `ContextManager` now owns transcript windowing, prompt-local pruning, prompt-time compaction, and final prompt-space allocation before `PromptAssembler` renders the final prompt layers, and per-session run records are now also durable so run submissions, final results, and the latest runtime event survive handle release or app restart instead of only living in memory.
+- Boundary note: memory retrieval/ranking belongs in `runtime/memory`, and effective soul resolution belongs in `runtime/soul`. `ContextManager` may enforce final bounded allocation pressure on already-resolved inputs, but it should not become the semantic selector for which soul or memory content exists in the first place.
 
 ### P2. Managed Process Runtime
 
@@ -137,6 +138,10 @@ Acceptance:
 Dependencies:
 
 - P0 complete
+
+Status:
+
+- In progress: session-scoped managed process registries are now wired into the app runtime, the dispatcher exposes `ProcessStart` / `ProcessList` / `ProcessRead` / `ProcessWait` / `ProcessTerminate`, `ProcessStart` now supports both raw commands and managed Python script launches through `script_path`, prompt guidance nudges the model toward the managed-process flow for long-running commands and Python work, runtime tests now cover both dispatcher-level behavior and multi-turn agent usage of the new process tools, managed process snapshots are now persisted per session so terminal state survives restart while orphaned restored `RUNNING` records are repaired into an explicit interrupted failure state, idle-session release now keeps sessions alive while they still own live managed processes, deleting a chat session now terminates that session's live managed processes before releasing runtime ownership, and run snapshots now retain managed-process linkage so a restored completed run can still report whether it owns live background work.
 
 ### P3. Tool Policy Pipeline
 
@@ -200,7 +205,8 @@ Dependencies:
 
 Status:
 
-- In progress: a dedicated `ContextManager` now owns prompt budgeting, prompt-time compaction emits an explicit omitted-history summary layer, and prompt-local pruning now rewrites oversized tool payloads, collapses attachment-like blobs, and removes consecutive duplicate background noise before transcript windowing.
+- In progress: a dedicated `ContextManager` now owns prompt budgeting, transcript windowing, and prompt-local compaction/pruning, prompt-time compaction emits an explicit omitted-history summary layer, and prompt-local pruning now rewrites oversized tool payloads, collapses attachment-like blobs, and removes consecutive duplicate background noise before transcript windowing.
+- Boundary note: this slice should stop at allocation and compaction. Memory recall policy, soul overlay policy, and other source-specific selection rules stay outside `ContextManager`.
 
 ### P5. Subagent Runtime
 
@@ -236,10 +242,10 @@ Dependencies:
 
 The next concrete execution order is:
 
-1. Extend the runtime-owned transcript slice beyond successful user/assistant turns and approval rejection notes.
-2. Decide how cancellation and approval-denied outcomes should be summarized in durable replay without polluting resumed tasks.
-3. Add transcript pruning and repair rules on top of the durable store.
-4. After replay ownership is stable, move into P2 managed process runtime.
+1. Add run/process settling and repair rules on top of durable run records plus managed-process state.
+2. Decide when a terminal run with only interrupted-restored processes should collapse into a fully settled replay-visible outcome.
+3. Purge or compact session runtime artifacts consistently on session deletion once retention semantics are finalized.
+4. After managed-process/run durability is stable, move into P3 tool policy pipeline unification.
 
 ## Non-Goals For This Slice
 

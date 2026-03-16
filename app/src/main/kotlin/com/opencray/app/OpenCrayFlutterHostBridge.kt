@@ -77,10 +77,20 @@ internal class OpenCrayFlutterHostBridge(
       when (call.method) {
         "loadShellSnapshot" -> hostRuntime.loadShellSnapshot()
         "loadFilesSnapshot" -> hostRuntime.loadFilesSnapshot()
+        "loadWorkspaceImagePreview" -> hostRuntime.loadWorkspaceImagePreview(
+          relativePath = call.argument<String>("relativePath").orEmpty(),
+        )
         "loadWorkspaceTextPreview" -> hostRuntime.loadWorkspaceTextPreview(
           relativePath = call.argument<String>("relativePath").orEmpty(),
         )
+        "loadWorkspaceTextDocument" -> hostRuntime.loadWorkspaceTextDocument(
+          relativePath = call.argument<String>("relativePath").orEmpty(),
+        )
         "createWorkspaceFolder" -> hostRuntime.createWorkspaceFolder(
+          parentRelativePath = call.argument<String>("parentRelativePath").orEmpty(),
+          name = call.argument<String>("name").orEmpty(),
+        )
+        "createWorkspaceTextFile" -> hostRuntime.createWorkspaceTextFile(
           parentRelativePath = call.argument<String>("parentRelativePath").orEmpty(),
           name = call.argument<String>("name").orEmpty(),
         )
@@ -90,6 +100,10 @@ internal class OpenCrayFlutterHostBridge(
         )
         "deleteWorkspaceEntries" -> hostRuntime.deleteWorkspaceEntries(
           relativePaths = (call.argument<List<String>>("relativePaths") ?: emptyList()),
+        )
+        "saveWorkspaceTextDocument" -> hostRuntime.saveWorkspaceTextDocument(
+          targetRelativePath = call.argument<String>("targetRelativePath").orEmpty(),
+          content = call.argument<String>("content").orEmpty(),
         )
         "pasteWorkspaceEntries" -> hostRuntime.pasteWorkspaceEntries(
           sourceRelativePaths = (call.argument<List<String>>("sourceRelativePaths") ?: emptyList()),
@@ -116,6 +130,18 @@ internal class OpenCrayFlutterHostBridge(
         "saveLlmConfig" -> hostRuntime.saveLlmConfig(
           enabled = call.argument<Boolean>("enabled") == true,
           providerId = call.argument<String>("providerId").orEmpty(),
+          selectedProviderOptionId = call.argument<String>("selectedProviderOptionId").orEmpty(),
+          protocol = call.argument<String>("protocol").orEmpty(),
+          providerName = call.argument<String>("providerName").orEmpty(),
+          providerNotes = call.argument<String>("providerNotes").orEmpty(),
+          baseUrl = call.argument<String>("baseUrl").orEmpty(),
+          apiKey = call.argument<String>("apiKey").orEmpty(),
+          model = call.argument<String>("model").orEmpty(),
+          reasoningEffort = call.argument<String>("reasoningEffort").orEmpty(),
+          systemPrompt = call.argument<String>("systemPrompt").orEmpty(),
+        )
+        "saveCustomLlmProvider" -> hostRuntime.saveCustomLlmProvider(
+          selectedProviderOptionId = call.argument<String>("selectedProviderOptionId").orEmpty(),
           protocol = call.argument<String>("protocol").orEmpty(),
           providerName = call.argument<String>("providerName").orEmpty(),
           providerNotes = call.argument<String>("providerNotes").orEmpty(),
@@ -158,6 +184,23 @@ internal class OpenCrayFlutterHostBridge(
           serverId = call.argument<String>("serverId").orEmpty(),
           enabled = call.argument<Boolean>("enabled") == true,
         )
+        "loadSafetySettings" -> hostRuntime.loadSafetySettings()
+        "saveSafetySettings" -> hostRuntime.saveSafetySettings(
+          automationModeId = call.argument<String>("automationModeId").orEmpty(),
+          rollbackJournalEnabled = call.argument<Boolean>("rollbackJournalEnabled") != false,
+          maxFilesPerBatch = call.argument<Int>("maxFilesPerBatch") ?: 20,
+          undoWindowHours = call.argument<Int>("undoWindowHours") ?: 24,
+          fileChangesPolicyId = call.argument<String>("fileChangesPolicyId").orEmpty(),
+          fileDeletesPolicyId = call.argument<String>("fileDeletesPolicyId").orEmpty(),
+          shellCommandsPolicyId = call.argument<String>("shellCommandsPolicyId").orEmpty(),
+          externalAccessModeId = call.argument<String>("externalAccessModeId").orEmpty(),
+          photoLibraryEnabled = call.argument<Boolean>("photoLibraryEnabled") != false,
+          downloadsEnabled = call.argument<Boolean>("downloadsEnabled") != false,
+          documentsEnabled = call.argument<Boolean>("documentsEnabled") == true,
+          recordingsEnabled = call.argument<Boolean>("recordingsEnabled") == true,
+          workspaceAccessProfileId = call.argument<String>("workspaceAccessProfileId").orEmpty(),
+          readOnlyOutsideWorkspace = call.argument<Boolean>("readOnlyOutsideWorkspace") != false,
+        )
 
         "loadSkillsSnapshot" -> hostRuntime.loadSkillsSnapshot(
           query = call.argument<String>("query").orEmpty(),
@@ -199,6 +242,16 @@ internal class OpenCrayFlutterHostBridge(
         }
         "createChatSession" -> {
           hostRuntime.createChatSession()
+          null
+        }
+
+        "copyChatSession" -> {
+          hostRuntime.copyChatSession(call.argument<String>("sessionId").orEmpty())
+          null
+        }
+
+        "deleteChatSession" -> {
+          hostRuntime.deleteChatSession(call.argument<String>("sessionId").orEmpty())
           null
         }
 

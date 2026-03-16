@@ -2,15 +2,18 @@ import 'package:flutter/services.dart';
 
 import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_file_image_preview.dart';
 import '../models/opencray_file_text_preview.dart';
 import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
 import '../models/opencray_mcp_settings.dart';
 import '../models/opencray_personalization_config.dart';
+import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
 import '../models/opencray_skills_snapshot.dart';
+import '../models/opencray_workspace_text_document.dart';
 import 'opencray_host_bridge.dart';
 
 class OpenCrayPlatformBridge implements OpenCrayHostBridge {
@@ -50,11 +53,31 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       OpenCrayFilesSnapshot.fromMap(await _invokeMap('loadFilesSnapshot'));
 
   @override
+  Future<OpenCrayFileImagePreview> loadWorkspaceImagePreview(
+    String relativePath,
+  ) async => OpenCrayFileImagePreview.fromMap(
+    await _invokeMap(
+      'loadWorkspaceImagePreview',
+      arguments: <String, Object?>{'relativePath': relativePath},
+    ),
+  );
+
+  @override
   Future<OpenCrayFileTextPreview> loadWorkspaceTextPreview(
     String relativePath,
   ) async => OpenCrayFileTextPreview.fromMap(
     await _invokeMap(
       'loadWorkspaceTextPreview',
+      arguments: <String, Object?>{'relativePath': relativePath},
+    ),
+  );
+
+  @override
+  Future<OpenCrayWorkspaceTextDocument> loadWorkspaceTextDocument(
+    String relativePath,
+  ) async => OpenCrayWorkspaceTextDocument.fromMap(
+    await _invokeMap(
+      'loadWorkspaceTextDocument',
       arguments: <String, Object?>{'relativePath': relativePath},
     ),
   );
@@ -66,6 +89,20 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   }) async => OpenCrayFilesSnapshot.fromMap(
     await _invokeMap(
       'createWorkspaceFolder',
+      arguments: <String, Object?>{
+        'parentRelativePath': parentRelativePath,
+        'name': name,
+      },
+    ),
+  );
+
+  @override
+  Future<OpenCrayFilesSnapshot> createWorkspaceTextFile({
+    required String parentRelativePath,
+    required String name,
+  }) async => OpenCrayFilesSnapshot.fromMap(
+    await _invokeMap(
+      'createWorkspaceTextFile',
       arguments: <String, Object?>{
         'parentRelativePath': parentRelativePath,
         'name': name,
@@ -94,6 +131,20 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
     await _invokeMap(
       'deleteWorkspaceEntries',
       arguments: <String, Object?>{'relativePaths': relativePaths},
+    ),
+  );
+
+  @override
+  Future<OpenCrayFilesSnapshot> saveWorkspaceTextDocument({
+    required String targetRelativePath,
+    required String content,
+  }) async => OpenCrayFilesSnapshot.fromMap(
+    await _invokeMap(
+      'saveWorkspaceTextDocument',
+      arguments: <String, Object?>{
+        'targetRelativePath': targetRelativePath,
+        'content': content,
+      },
     ),
   );
 
@@ -155,6 +206,7 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   Future<OpenCrayLlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
     required String providerId,
+    required String selectedProviderOptionId,
     required String protocol,
     required String providerName,
     required String providerNotes,
@@ -169,6 +221,35 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       arguments: <String, Object?>{
         'enabled': enabled,
         'providerId': providerId,
+        'selectedProviderOptionId': selectedProviderOptionId,
+        'protocol': protocol,
+        'providerName': providerName,
+        'providerNotes': providerNotes,
+        'baseUrl': baseUrl,
+        'apiKey': apiKey,
+        'model': model,
+        'reasoningEffort': reasoningEffort,
+        'systemPrompt': systemPrompt,
+      },
+    ),
+  );
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> saveCustomLlmProvider({
+    required String selectedProviderOptionId,
+    required String protocol,
+    required String providerName,
+    required String providerNotes,
+    required String baseUrl,
+    required String apiKey,
+    required String model,
+    required String reasoningEffort,
+    required String systemPrompt,
+  }) async => OpenCrayLlmConfigSnapshot.fromMap(
+    await _invokeMap(
+      'saveCustomLlmProvider',
+      arguments: <String, Object?>{
+        'selectedProviderOptionId': selectedProviderOptionId,
         'protocol': protocol,
         'providerName': providerName,
         'providerNotes': providerNotes,
@@ -267,6 +348,50 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
     await _invokeMap(
       'setMcpServerEnabled',
       arguments: <String, Object?>{'serverId': serverId, 'enabled': enabled},
+    ),
+  );
+
+  @override
+  Future<OpenCraySafetySettingsSnapshot> loadSafetySettings() async =>
+      OpenCraySafetySettingsSnapshot.fromMap(
+        await _invokeMap('loadSafetySettings'),
+      );
+
+  @override
+  Future<OpenCraySafetySettingsSnapshot> saveSafetySettings({
+    required String automationModeId,
+    required bool rollbackJournalEnabled,
+    required int maxFilesPerBatch,
+    required int undoWindowHours,
+    required String fileChangesPolicyId,
+    required String fileDeletesPolicyId,
+    required String shellCommandsPolicyId,
+    required String externalAccessModeId,
+    required bool photoLibraryEnabled,
+    required bool downloadsEnabled,
+    required bool documentsEnabled,
+    required bool recordingsEnabled,
+    required String workspaceAccessProfileId,
+    required bool readOnlyOutsideWorkspace,
+  }) async => OpenCraySafetySettingsSnapshot.fromMap(
+    await _invokeMap(
+      'saveSafetySettings',
+      arguments: <String, Object?>{
+        'automationModeId': automationModeId,
+        'rollbackJournalEnabled': rollbackJournalEnabled,
+        'maxFilesPerBatch': maxFilesPerBatch,
+        'undoWindowHours': undoWindowHours,
+        'fileChangesPolicyId': fileChangesPolicyId,
+        'fileDeletesPolicyId': fileDeletesPolicyId,
+        'shellCommandsPolicyId': shellCommandsPolicyId,
+        'externalAccessModeId': externalAccessModeId,
+        'photoLibraryEnabled': photoLibraryEnabled,
+        'downloadsEnabled': downloadsEnabled,
+        'documentsEnabled': documentsEnabled,
+        'recordingsEnabled': recordingsEnabled,
+        'workspaceAccessProfileId': workspaceAccessProfileId,
+        'readOnlyOutsideWorkspace': readOnlyOutsideWorkspace,
+      },
     ),
   );
 
@@ -372,6 +497,18 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   @override
   Future<void> createChatSession() =>
       _methodChannel.invokeMethod<void>('createChatSession');
+
+  @override
+  Future<void> copyChatSession(String sessionId) =>
+      _methodChannel.invokeMethod<void>('copyChatSession', <String, Object?>{
+        'sessionId': sessionId,
+      });
+
+  @override
+  Future<void> deleteChatSession(String sessionId) =>
+      _methodChannel.invokeMethod<void>('deleteChatSession', <String, Object?>{
+        'sessionId': sessionId,
+      });
 
   @override
   Future<void> selectChatSession(String sessionId) =>

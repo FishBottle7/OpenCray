@@ -137,6 +137,130 @@ void main() {
     expect(preview.isTruncated, isTrue);
   });
 
+  test('local runtime bridge loads text documents over http', () async {
+    requestHandler = (request) async {
+      expect(request.method, 'GET');
+      expect(request.uri.path, '/v1/workspace_text_document');
+      expect(request.uri.queryParameters['relativePath'], 'docs/report.md');
+      await writeJson(request, <String, Object?>{
+        'name': 'report.md',
+        'relativePath': 'docs/report.md',
+        'content': '# Report\n\nEditable body',
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final document = await bridge.loadWorkspaceTextDocument('docs/report.md');
+
+    expect(document.name, 'report.md');
+    expect(document.relativePath, 'docs/report.md');
+    expect(document.content, '# Report\n\nEditable body');
+  });
+
+  test('local runtime bridge posts create text file requests', () async {
+    late Map<String, Object?> capturedBody;
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/create_workspace_text_file');
+      capturedBody = await readJsonBody(request);
+      await writeJson(request, <String, Object?>{
+        'rootName': 'agent-workspace',
+        'rootPath': '/tmp/agent-workspace',
+        'availableBytes': 4096,
+        'directoryCount': 0,
+        'fileCount': 1,
+        'entryCount': 1,
+        'isTruncated': false,
+        'children': <Object?>[
+          <String, Object?>{
+            'name': 'notes.txt',
+            'relativePath': 'notes.txt',
+            'isDirectory': false,
+            'childCount': 0,
+            'sizeBytes': 0,
+            'isTruncated': false,
+            'children': const <Object?>[],
+          },
+        ],
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final snapshot = await bridge.createWorkspaceTextFile(
+      parentRelativePath: '',
+      name: 'notes.txt',
+    );
+
+    expect(capturedBody['parentRelativePath'], '');
+    expect(capturedBody['name'], 'notes.txt');
+    expect(snapshot.children.single.relativePath, 'notes.txt');
+  });
+
+  test('local runtime bridge posts save text document requests', () async {
+    late Map<String, Object?> capturedBody;
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/save_workspace_text_document');
+      capturedBody = await readJsonBody(request);
+      await writeJson(request, <String, Object?>{
+        'rootName': 'agent-workspace',
+        'rootPath': '/tmp/agent-workspace',
+        'availableBytes': 4096,
+        'directoryCount': 0,
+        'fileCount': 1,
+        'entryCount': 1,
+        'isTruncated': false,
+        'children': <Object?>[
+          <String, Object?>{
+            'name': 'notes.txt',
+            'relativePath': 'notes.txt',
+            'isDirectory': false,
+            'childCount': 0,
+            'sizeBytes': 11,
+            'isTruncated': false,
+            'children': const <Object?>[],
+          },
+        ],
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final snapshot = await bridge.saveWorkspaceTextDocument(
+      targetRelativePath: 'notes.txt',
+      content: 'hello world',
+    );
+
+    expect(capturedBody['targetRelativePath'], 'notes.txt');
+    expect(capturedBody['content'], 'hello world');
+    expect(snapshot.children.single.sizeBytes, 11);
+  });
+
+  test('local runtime bridge loads image preview over http', () async {
+    requestHandler = (request) async {
+      expect(request.method, 'GET');
+      expect(request.uri.path, '/v1/workspace_image_preview');
+      expect(request.uri.queryParameters['relativePath'], 'images/cover.png');
+      await writeJson(request, <String, Object?>{
+        'name': 'cover.png',
+        'relativePath': 'images/cover.png',
+        'mimeType': 'image/png',
+        'width': 1,
+        'height': 1,
+        'bytesBase64': _tinyPngBase64,
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final preview = await bridge.loadWorkspaceImagePreview('images/cover.png');
+
+    expect(preview.name, 'cover.png');
+    expect(preview.relativePath, 'images/cover.png');
+    expect(preview.mimeType, 'image/png');
+    expect(preview.width, 1);
+    expect(preview.height, 1);
+    expect(preview.bytes, base64Decode(_tinyPngBase64));
+  });
+
   test(
     'local runtime bridge posts validation requests and parses results',
     () async {
@@ -168,6 +292,114 @@ void main() {
       expect(result.message, 'Validated against local runtime.');
     },
   );
+
+  test(
+    'local runtime bridge posts safety settings and parses results',
+    () async {
+      late Map<String, Object?> capturedBody;
+      requestHandler = (request) async {
+        expect(request.method, 'POST');
+        expect(request.uri.path, '/v1/save_safety_settings');
+        capturedBody = await readJsonBody(request);
+        await writeJson(request, <String, Object?>{
+          'automationModeId': capturedBody['automationModeId'],
+          'rollbackJournalEnabled': true,
+          'maxFilesPerBatch': 20,
+          'undoWindowHours': 24,
+          'fileChangesPolicyId': 'inherit',
+          'fileDeletesPolicyId': capturedBody['fileDeletesPolicyId'],
+          'shellCommandsPolicyId': 'ask',
+          'externalAccessModeId': 'select_paths',
+          'locations': <Object?>[
+            <String, Object?>{'id': 'photo_library', 'enabled': true},
+            <String, Object?>{'id': 'downloads', 'enabled': true},
+            <String, Object?>{'id': 'documents', 'enabled': false},
+            <String, Object?>{'id': 'recordings', 'enabled': false},
+          ],
+          'workspaceAccessProfileId': 'work',
+          'readOnlyOutsideWorkspace': true,
+        });
+      };
+
+      final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+      final snapshot = await bridge.saveSafetySettings(
+        automationModeId: 'dev',
+        rollbackJournalEnabled: true,
+        maxFilesPerBatch: 20,
+        undoWindowHours: 24,
+        fileChangesPolicyId: 'inherit',
+        fileDeletesPolicyId: 'block',
+        shellCommandsPolicyId: 'ask',
+        externalAccessModeId: 'select_paths',
+        photoLibraryEnabled: true,
+        downloadsEnabled: true,
+        documentsEnabled: false,
+        recordingsEnabled: false,
+        workspaceAccessProfileId: 'work',
+        readOnlyOutsideWorkspace: true,
+      );
+
+      expect(capturedBody['automationModeId'], 'dev');
+      expect(capturedBody['fileDeletesPolicyId'], 'block');
+      expect(snapshot.automationModeId, 'dev');
+      expect(snapshot.fileDeletesPolicyId, 'block');
+    },
+  );
+
+  test('local runtime bridge posts save custom provider requests', () async {
+    late Map<String, Object?> capturedBody;
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/save_custom_llm_provider');
+      capturedBody = await readJsonBody(request);
+      await writeJson(request, <String, Object?>{
+        'localeTag': 'en',
+        'enabled': true,
+        'providerId': 'custom',
+        'selectedProviderOptionId': 'saved-custom',
+        'protocol': 'anthropic',
+        'providerOptions': <Object?>[
+          <String, Object?>{
+            'id': 'saved-custom',
+            'providerId': 'custom',
+            'title': 'Acme',
+            'subtitle': 'Regional fallback',
+            'defaultBaseUrl': 'https://api.acme.example/v1',
+            'defaultModel': 'claude-3-7-sonnet',
+            'protocol': 'anthropic',
+            'apiKey': 'secret',
+            'isCustom': true,
+          },
+        ],
+        'providerName': 'Acme',
+        'providerNotes': 'Regional fallback',
+        'baseUrl': 'https://api.acme.example/v1',
+        'apiKey': 'secret',
+        'model': 'claude-3-7-sonnet',
+        'reasoningEffort': 'high',
+        'systemPrompt': '',
+        'helperText': 'Helper text',
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final snapshot = await bridge.saveCustomLlmProvider(
+      selectedProviderOptionId: 'custom',
+      protocol: 'anthropic',
+      providerName: 'Acme',
+      providerNotes: 'Regional fallback',
+      baseUrl: 'https://api.acme.example/v1',
+      apiKey: 'secret',
+      model: 'claude-3-7-sonnet',
+      reasoningEffort: 'high',
+      systemPrompt: '',
+    );
+
+    expect(capturedBody['selectedProviderOptionId'], 'custom');
+    expect(capturedBody['providerNotes'], 'Regional fallback');
+    expect(snapshot.selectedProviderOptionId, 'saved-custom');
+    expect(snapshot.providerOptions.single.protocol, 'anthropic');
+  });
 
   test('local runtime bridge posts share requests over http', () async {
     late Map<String, Object?> capturedBody;
@@ -247,3 +479,6 @@ class _RecordingConnector implements OpenCrayHostBridgeConnector {
     return bridge;
   }
 }
+
+const String _tinyPngBase64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wn1yt4AAAAASUVORK5CYII=';

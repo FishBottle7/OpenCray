@@ -580,6 +580,81 @@ void main() {
     );
   });
 
+  testWidgets('new creates supported text files and opens the editor', (
+    tester,
+  ) async {
+    final bridge = OpenCraySeedBridge(
+      initialFilesSnapshot: const OpenCrayFilesSnapshot(
+        rootName: 'agent-workspace',
+        rootPath: '/tmp/agent-workspace',
+        availableBytes: 2048,
+        directoryCount: 0,
+        fileCount: 0,
+        entryCount: 0,
+        isTruncated: false,
+        children: <OpenCrayFileTreeNodeSnapshot>[],
+      ),
+    );
+
+    await _pumpFilesScreen(tester, bridge: bridge);
+
+    await tester.tap(find.byKey(const ValueKey<String>('files-location-new')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey<String>('files-create-entry-field')),
+      'notes.txt',
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey<String>('files-create-entry-submit')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('files-text-editor-dialog')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('files-row-notes.txt')),
+      findsOneWidget,
+    );
+    expect(find.text('notes.txt'), findsWidgets);
+  });
+
+  testWidgets('new blocks unsupported file types inline', (tester) async {
+    final bridge = OpenCraySeedBridge(
+      initialFilesSnapshot: const OpenCrayFilesSnapshot(
+        rootName: 'agent-workspace',
+        rootPath: '/tmp/agent-workspace',
+        availableBytes: 2048,
+        directoryCount: 0,
+        fileCount: 0,
+        entryCount: 0,
+        isTruncated: false,
+        children: <OpenCrayFileTreeNodeSnapshot>[],
+      ),
+    );
+
+    await _pumpFilesScreen(tester, bridge: bridge);
+
+    await tester.tap(find.byKey(const ValueKey<String>('files-location-new')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey<String>('files-create-entry-field')),
+      'archive.zip',
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('This file type is not supported here yet.'),
+      findsOneWidget,
+    );
+    final submitButton = tester.widget<TextButton>(
+      find.byKey(const ValueKey<String>('files-create-entry-submit')),
+    );
+    expect(submitButton.onPressed, isNull);
+  });
+
   testWidgets('tapping a text file opens the preview dialog', (tester) async {
     final bridge = OpenCraySeedBridge(
       initialFilesSnapshot: const OpenCrayFilesSnapshot(
@@ -646,6 +721,238 @@ void main() {
 
     expect(
       find.byKey(const ValueKey<String>('files-text-preview-dialog')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('markdown files render as markdown inside the preview dialog', (
+    tester,
+  ) async {
+    final bridge = OpenCraySeedBridge(
+      initialFilesSnapshot: const OpenCrayFilesSnapshot(
+        rootName: 'agent-workspace',
+        rootPath: '/tmp/agent-workspace',
+        availableBytes: 2048,
+        directoryCount: 1,
+        fileCount: 1,
+        entryCount: 2,
+        isTruncated: false,
+        children: <OpenCrayFileTreeNodeSnapshot>[
+          OpenCrayFileTreeNodeSnapshot(
+            name: 'app',
+            relativePath: 'app',
+            isDirectory: true,
+            childCount: 1,
+            sizeBytes: null,
+            isTruncated: false,
+            children: <OpenCrayFileTreeNodeSnapshot>[
+              OpenCrayFileTreeNodeSnapshot(
+                name: 'README.md',
+                relativePath: 'app/README.md',
+                isDirectory: false,
+                childCount: 0,
+                sizeBytes: 96,
+                isTruncated: false,
+                children: <OpenCrayFileTreeNodeSnapshot>[],
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+
+    await _pumpFilesScreen(tester, bridge: bridge);
+
+    await tester.tap(find.byKey(const ValueKey<String>('files-row-app')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey<String>('files-row-app/README.md')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('files-text-preview-markdown')),
+      findsOneWidget,
+    );
+    expect(find.text('OpenCray Shell'), findsOneWidget);
+  });
+
+  testWidgets('double tapping preview body opens the text editor', (
+    tester,
+  ) async {
+    final bridge = OpenCraySeedBridge(
+      initialFilesSnapshot: const OpenCrayFilesSnapshot(
+        rootName: 'agent-workspace',
+        rootPath: '/tmp/agent-workspace',
+        availableBytes: 2048,
+        directoryCount: 0,
+        fileCount: 1,
+        entryCount: 1,
+        isTruncated: false,
+        children: <OpenCrayFileTreeNodeSnapshot>[
+          OpenCrayFileTreeNodeSnapshot(
+            name: 'workspace-notes.txt',
+            relativePath: 'workspace-notes.txt',
+            isDirectory: false,
+            childCount: 0,
+            sizeBytes: 128,
+            isTruncated: false,
+            children: <OpenCrayFileTreeNodeSnapshot>[],
+          ),
+        ],
+      ),
+    );
+
+    await _pumpFilesScreen(tester, bridge: bridge);
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('files-row-workspace-notes.txt')),
+    );
+    await tester.pumpAndSettle();
+
+    final previewBody = find.byKey(
+      const ValueKey<String>('files-text-preview-body'),
+    );
+    await tester.tap(previewBody);
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.tap(previewBody);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('files-text-editor-dialog')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('saving text edits updates later previews', (tester) async {
+    final bridge = OpenCraySeedBridge(
+      initialFilesSnapshot: const OpenCrayFilesSnapshot(
+        rootName: 'agent-workspace',
+        rootPath: '/tmp/agent-workspace',
+        availableBytes: 2048,
+        directoryCount: 0,
+        fileCount: 1,
+        entryCount: 1,
+        isTruncated: false,
+        children: <OpenCrayFileTreeNodeSnapshot>[
+          OpenCrayFileTreeNodeSnapshot(
+            name: 'workspace-notes.txt',
+            relativePath: 'workspace-notes.txt',
+            isDirectory: false,
+            childCount: 0,
+            sizeBytes: 128,
+            isTruncated: false,
+            children: <OpenCrayFileTreeNodeSnapshot>[],
+          ),
+        ],
+      ),
+    );
+
+    await _pumpFilesScreen(tester, bridge: bridge);
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('files-row-workspace-notes.txt')),
+    );
+    await tester.pumpAndSettle();
+
+    final previewBody = find.byKey(
+      const ValueKey<String>('files-text-preview-body'),
+    );
+    await tester.tap(previewBody);
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.tap(previewBody);
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byKey(const ValueKey<String>('files-text-editor-field')),
+      'Edited body',
+    );
+    await tester.tap(
+      find.byKey(const ValueKey<String>('files-text-editor-save')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('files-text-editor-dialog')),
+      findsNothing,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('files-row-workspace-notes.txt')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Edited body'), findsOneWidget);
+  });
+
+  testWidgets('tapping an image file opens the preview dialog', (tester) async {
+    final bridge = OpenCraySeedBridge(
+      initialFilesSnapshot: const OpenCrayFilesSnapshot(
+        rootName: 'agent-workspace',
+        rootPath: '/tmp/agent-workspace',
+        availableBytes: 2048,
+        directoryCount: 1,
+        fileCount: 1,
+        entryCount: 2,
+        isTruncated: false,
+        children: <OpenCrayFileTreeNodeSnapshot>[
+          OpenCrayFileTreeNodeSnapshot(
+            name: 'images',
+            relativePath: 'images',
+            isDirectory: true,
+            childCount: 1,
+            sizeBytes: null,
+            isTruncated: false,
+            children: <OpenCrayFileTreeNodeSnapshot>[
+              OpenCrayFileTreeNodeSnapshot(
+                name: 'cover.png',
+                relativePath: 'images/cover.png',
+                isDirectory: false,
+                childCount: 0,
+                sizeBytes: 256,
+                isTruncated: false,
+                children: <OpenCrayFileTreeNodeSnapshot>[],
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+
+    await _pumpFilesScreen(tester, bridge: bridge);
+
+    await tester.tap(find.byKey(const ValueKey<String>('files-row-images')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey<String>('files-row-images/cover.png')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('files-image-preview-dialog')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('files-image-preview-backdrop')),
+      findsOneWidget,
+    );
+    expect(find.byType(BackdropFilter), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('files-image-preview-title')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('files-image-preview-image')),
+      findsOneWidget,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('files-image-preview-close')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('files-image-preview-dialog')),
       findsNothing,
     );
   });

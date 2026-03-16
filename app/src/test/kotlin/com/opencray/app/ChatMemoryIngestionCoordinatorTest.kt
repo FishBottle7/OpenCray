@@ -13,6 +13,15 @@ import com.opencray.runtime.memory.SoulMemoryIntent
 import com.opencray.runtime.memory.SoulMemoryIntentInterpretation
 import com.opencray.runtime.memory.SoulMemoryIntentInterpreter
 import com.opencray.runtime.memory.SoulMemoryIntentRequest
+import com.opencray.runtime.memory.TaskCommitmentIntentAction
+import com.opencray.runtime.memory.TaskCommitmentIntentDecision
+import com.opencray.runtime.memory.TaskCommitmentIntentInterpretation
+import com.opencray.runtime.memory.TaskCommitmentIntentInterpreter
+import com.opencray.runtime.memory.TaskCommitmentIntentRequest
+import com.opencray.runtime.memory.UserMemoryIntent
+import com.opencray.runtime.memory.UserMemoryIntentInterpretation
+import com.opencray.runtime.memory.UserMemoryIntentInterpreter
+import com.opencray.runtime.memory.UserMemoryIntentRequest
 import com.opencray.runtime.memory.MemoryWriter
 import com.opencray.runtime.memory.TaskCommitmentResolver
 import org.junit.Assert.assertEquals
@@ -156,6 +165,61 @@ class ChatMemoryIngestionCoordinatorTest {
   }
 
   @Test
+  fun ingestCompletedTurnReportsReaffirmedCommitmentWhenSemanticResolverKeepsItAlive() {
+    val memoryStore = InMemoryMemoryStore().apply {
+      upsert(
+        MemoryRecord(
+          id = "commitment-reaffirm",
+          content = "stabilize the flaky runtime test",
+          createdAtEpochMs = 1_000L,
+          updatedAtEpochMs = 1_001L,
+          tags = listOf("kind:task_commitment", "scope:session", "status:open"),
+          extensions = mapOf(
+            "kind" to "task_commitment",
+            "scope" to "session",
+            "status" to "open",
+            "source_session_id" to "session-1",
+            "ttl_ms" to (14L * 24L * 60L * 60L * 1000L).toString(),
+            "last_confirmed_at_epoch_ms" to "1001",
+          ),
+        ),
+      )
+    }
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(
+        store = memoryStore,
+        clock = { 2_000L },
+        intentInterpreter = FixedTaskCommitmentIntentInterpreter(
+          TaskCommitmentIntentInterpretation.Success(
+            decisions = listOf(
+              TaskCommitmentIntentDecision(
+                commitmentId = "commitment-reaffirm",
+                action = TaskCommitmentIntentAction.REAFFIRM,
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-1",
+      task = promptTask(
+        id = "task-3",
+        input = "Please continue.",
+      ),
+      result = successResult(taskId = "task-3"),
+      assistantOutput = "The flaky runtime test still needs work; I am continuing on it next.",
+      toolObservations = emptyList(),
+    )
+
+    assertEquals(listOf("commitment-reaffirm"), summary.reaffirmedRecords.map { record -> record.id })
+    assertEquals("open", memoryStore.list().single { record -> record.id == "commitment-reaffirm" }.extensions["status"])
+  }
+
+  @Test
   fun ingestCompletedTurnUsesSemanticSoulInterpreterForMemoryWrites() {
     val memoryStore = InMemoryMemoryStore()
     val coordinator = ChatMemoryIngestionCoordinator(
@@ -195,6 +259,54 @@ class ChatMemoryIngestionCoordinatorTest {
     assertEquals("agent_display_name", record.extensions["preference_key"])
     assertEquals("小白", record.extensions["preference_value"])
     assertEquals("小白", record.extensions["soul_display_name"])
+  }
+
+  @Test
+  fun ingestCompletedTurnUsesSemanticUserInterpreterForGeneralDurableMemories() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = MemoryCandidateExtractor(
+        userIntentInterpreter = FixedUserIntentInterpreter(
+          UserMemoryIntentInterpretation.Success(
+            intents = listOf(
+              UserMemoryIntent(
+                kind = com.opencray.runtime.memory.MemoryKind.USER_PREFERENCE,
+                scope = com.opencray.runtime.memory.MemoryScope.USER,
+                content = "Default to PowerShell commands",
+              ),
+              UserMemoryIntent(
+                kind = com.opencray.runtime.memory.MemoryKind.DURABLE_INSTRUCTION,
+                scope = com.opencray.runtime.memory.MemoryScope.WORKSPACE,
+                content = "Do not use git reset --hard in this repo",
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-user-semantic",
+      task = promptTask(
+        id = "task-user-semantic",
+        input = "以后都用 PowerShell，这个仓库不要用 git reset --hard。",
+      ),
+      result = successResult(taskId = "task-user-semantic"),
+      assistantOutput = "知道了。",
+      toolObservations = emptyList(),
+    )
+
+    assertEquals(2, summary.writtenRecords.size)
+    assertTrue(memoryStore.list().any { record ->
+      record.content == "Default to PowerShell commands" &&
+        record.extensions["kind"] == "user_preference"
+    })
+    assertTrue(memoryStore.list().any { record ->
+      record.content == "Do not use git reset --hard in this repo" &&
+        record.extensions["scope"] == "workspace"
+    })
   }
 
   private fun promptTask(id: String, input: String): AgentTask = AgentTask(
@@ -240,5 +352,21 @@ class ChatMemoryIngestionCoordinatorTest {
     override fun interpret(
       request: SoulMemoryIntentRequest,
     ): SoulMemoryIntentInterpretation = interpretation
+  }
+
+  private class FixedUserIntentInterpreter(
+    private val interpretation: UserMemoryIntentInterpretation,
+  ) : UserMemoryIntentInterpreter {
+    override fun interpret(
+      request: UserMemoryIntentRequest,
+    ): UserMemoryIntentInterpretation = interpretation
+  }
+
+  private class FixedTaskCommitmentIntentInterpreter(
+    private val interpretation: TaskCommitmentIntentInterpretation,
+  ) : TaskCommitmentIntentInterpreter {
+    override fun interpret(
+      request: TaskCommitmentIntentRequest,
+    ): TaskCommitmentIntentInterpretation = interpretation
   }
 }

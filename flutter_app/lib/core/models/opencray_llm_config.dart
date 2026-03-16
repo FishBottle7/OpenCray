@@ -3,6 +3,7 @@ class OpenCrayLlmConfigSnapshot {
     required this.localeTag,
     required this.enabled,
     required this.providerId,
+    required this.selectedProviderOptionId,
     required this.protocol,
     required this.providerOptions,
     required this.providerName,
@@ -18,6 +19,7 @@ class OpenCrayLlmConfigSnapshot {
   final String localeTag;
   final bool enabled;
   final String providerId;
+  final String selectedProviderOptionId;
   final String protocol;
   final List<OpenCrayLlmProviderOptionSnapshot> providerOptions;
   final String providerName;
@@ -34,6 +36,9 @@ class OpenCrayLlmConfigSnapshot {
       localeTag: payload['localeTag'] as String? ?? 'en',
       enabled: payload['enabled'] as bool? ?? false,
       providerId: payload['providerId'] as String? ?? 'custom',
+      selectedProviderOptionId:
+          payload['selectedProviderOptionId'] as String? ??
+          (payload['providerId'] as String? ?? 'custom'),
       protocol: payload['protocol'] as String? ?? 'openai',
       providerOptions: _requireList(payload['providerOptions'])
           .map(_requireMap)
@@ -54,18 +59,24 @@ class OpenCrayLlmConfigSnapshot {
 class OpenCrayLlmProviderOptionSnapshot {
   const OpenCrayLlmProviderOptionSnapshot({
     required this.id,
+    required this.providerId,
     required this.title,
     required this.subtitle,
     required this.defaultBaseUrl,
     required this.defaultModel,
+    required this.protocol,
+    required this.apiKey,
     required this.isCustom,
   });
 
   final String id;
+  final String providerId;
   final String title;
   final String subtitle;
   final String defaultBaseUrl;
   final String defaultModel;
+  final String protocol;
+  final String apiKey;
   final bool isCustom;
 
   factory OpenCrayLlmProviderOptionSnapshot.fromMap(
@@ -73,10 +84,13 @@ class OpenCrayLlmProviderOptionSnapshot {
   ) {
     return OpenCrayLlmProviderOptionSnapshot(
       id: payload['id'] as String? ?? '',
+      providerId: payload['providerId'] as String? ?? '',
       title: payload['title'] as String? ?? '',
       subtitle: payload['subtitle'] as String? ?? '',
       defaultBaseUrl: payload['defaultBaseUrl'] as String? ?? '',
       defaultModel: payload['defaultModel'] as String? ?? '',
+      protocol: payload['protocol'] as String? ?? 'openai',
+      apiKey: payload['apiKey'] as String? ?? '',
       isCustom: payload['isCustom'] as bool? ?? false,
     );
   }

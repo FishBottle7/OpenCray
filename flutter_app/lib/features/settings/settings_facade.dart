@@ -1,4 +1,5 @@
 import 'settings_models.dart';
+import 'safety_settings_models.dart';
 
 abstract interface class SettingsFacade {
   Future<SettingsOverviewSnapshot> loadOverview();
@@ -12,6 +13,19 @@ abstract interface class SettingsFacade {
   Future<LlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
     required String providerId,
+    required String selectedProviderOptionId,
+    required String protocol,
+    required String providerName,
+    required String providerNotes,
+    required String baseUrl,
+    required String apiKey,
+    required String model,
+    required String reasoningEffort,
+    required String systemPrompt,
+  });
+
+  Future<LlmConfigSnapshot> saveCustomLlmProvider({
+    required String selectedProviderOptionId,
     required String protocol,
     required String providerName,
     required String providerNotes,
@@ -51,4 +65,10 @@ abstract interface class SettingsFacade {
     required String serverId,
     required bool enabled,
   });
+
+  Future<SafetySettingsSnapshot> loadSafetySettings();
+
+  Future<SafetySettingsSnapshot> saveSafetySettings(
+    SafetySettingsSnapshot snapshot,
+  );
 }

@@ -6,6 +6,9 @@ import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.RetryRequest
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
+import com.opencray.runtime.web.WebContentFetcher
+import com.opencray.runtime.web.WebFetchRequest
+import com.opencray.runtime.web.WebFetchResult
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -56,6 +59,38 @@ class AgentToolPolicyGateTest {
   }
 
   @Test
+  fun settingsOverrideCanAllowDeletesWithoutApproval() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-delete-override-allow").toPath()
+    val target = workspaceRoot.resolve("notes.txt")
+    Files.write(target, "delete me".toByteArray(StandardCharsets.UTF_8))
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+      ),
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(
+        metadata = mapOf(
+          "chatMode" to "AUTO",
+          "fileDeletesPolicyId" to "allow",
+        ),
+      ),
+      call = AgentToolCall(
+        toolName = "workspace_delete_file",
+        arguments = JsonObject(
+          mapOf("path" to JsonPrimitive("notes.txt")),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals("SETTINGS_OVERRIDE_ALLOW", result.metadata["policyReasonCode"])
+    assertFalse(Files.exists(target))
+  }
+
+  @Test
   fun autoModeDeleteRequiresApprovalAndDoesNotMutateFile() {
     val workspaceRoot = temporaryFolder.newFolder("tool-policy-delete").toPath()
     val target = workspaceRoot.resolve("notes.txt")
@@ -85,6 +120,75 @@ class AgentToolPolicyGateTest {
     assertEquals("STANDARD", result.metadata["approvalRisk"])
     assertTrue(Files.exists(target))
     assertEquals("keep me", String(Files.readAllBytes(target), StandardCharsets.UTF_8))
+  }
+
+  @Test
+  fun settingsOverrideCanBlockWritesEvenInDeveloperMode() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-write-override-block").toPath()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+      ),
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(
+        metadata = mapOf(
+          "chatMode" to "DEVELOPER",
+          "fileChangesPolicyId" to "block",
+        ),
+      ),
+      call = AgentToolCall(
+        toolName = "workspace_write_file",
+        arguments = JsonObject(
+          mapOf(
+            "path" to JsonPrimitive("blocked.txt"),
+            "content" to JsonPrimitive("denied"),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.DENIED, result.status)
+    assertEquals("DENY_POLICY", result.errorCode)
+    assertEquals("SETTINGS_OVERRIDE_BLOCK", result.metadata["policyReasonCode"])
+    assertFalse(Files.exists(workspaceRoot.resolve("blocked.txt")))
+  }
+
+  @Test
+  fun settingsOverrideCanRequireApprovalForWritesInDeveloperMode() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-write-override-ask").toPath()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+      ),
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(
+        metadata = mapOf(
+          "chatMode" to "DEVELOPER",
+          "fileChangesPolicyId" to "ask",
+        ),
+      ),
+      call = AgentToolCall(
+        toolName = "workspace_write_file",
+        arguments = JsonObject(
+          mapOf(
+            "path" to JsonPrimitive("notes.txt"),
+            "content" to JsonPrimitive("hello"),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.DENIED, result.status)
+    assertEquals("APPROVAL_REQUIRED", result.errorCode)
+    assertEquals("SETTINGS_OVERRIDE_ASK", result.metadata["policyReasonCode"])
+    assertEquals("STANDARD", result.metadata["approvalRisk"])
+    assertFalse(Files.exists(workspaceRoot.resolve("notes.txt")))
   }
 
   @Test
@@ -118,6 +222,39 @@ class AgentToolPolicyGateTest {
     assertTrue(result.content.contains("High-risk approval required"))
     assertTrue(Files.exists(target))
     assertEquals("keep me", String(Files.readAllBytes(target), StandardCharsets.UTF_8))
+  }
+
+  @Test
+  fun settingsOverrideCannotBypassProtectedDeleteDenial() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-protected-delete").toPath()
+    val target = workspaceRoot.resolve("agent.md")
+    Files.write(target, "protected".toByteArray(StandardCharsets.UTF_8))
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+      ),
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(
+        metadata = mapOf(
+          "chatMode" to "DEVELOPER",
+          "fileDeletesPolicyId" to "allow",
+        ),
+      ),
+      call = AgentToolCall(
+        toolName = "workspace_delete_file",
+        arguments = JsonObject(
+          mapOf("path" to JsonPrimitive("agent.md")),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.DENIED, result.status)
+    assertEquals("DENY_POLICY", result.errorCode)
+    assertEquals("DENY_PROTECTED_FILE", result.metadata["policyReasonCode"])
+    assertTrue(Files.exists(target))
   }
 
   @Test
@@ -186,6 +323,68 @@ class AgentToolPolicyGateTest {
     assertEquals("HIGH_RISK", result.metadata["approvalRisk"])
     assertTrue(result.content.contains("High-risk approval"))
     assertEquals(0, runner.spawnCount)
+  }
+
+  @Test
+  fun autoModeWebFetchRequiresApprovalBeforeNetworkAccess() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-webfetch").toPath()
+    val fetcher = RecordingWebContentFetcher()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        webContentFetcher = fetcher,
+      ),
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(
+        metadata = mapOf("chatMode" to "AUTO"),
+      ),
+      call = AgentToolCall(
+        toolName = "WebFetch",
+        arguments = JsonObject(
+          mapOf("url" to JsonPrimitive("https://example.com/post")),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.DENIED, result.status)
+    assertEquals("APPROVAL_REQUIRED", result.errorCode)
+    assertEquals("ASK_AUTO_NETWORK", result.metadata["policyReasonCode"])
+    assertEquals("STANDARD", result.metadata["approvalRisk"])
+    assertEquals(0, fetcher.requestCount)
+  }
+
+  @Test
+  fun safeModeWebFetchRequiresHighRiskApprovalBeforeNetworkAccess() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-safe-webfetch").toPath()
+    val fetcher = RecordingWebContentFetcher()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        webContentFetcher = fetcher,
+      ),
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(
+        metadata = mapOf("chatMode" to "SAFE"),
+      ),
+      call = AgentToolCall(
+        toolName = "WebFetch",
+        arguments = JsonObject(
+          mapOf("url" to JsonPrimitive("https://example.com/post")),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.DENIED, result.status)
+    assertEquals("HIGH_RISK_APPROVAL_REQUIRED", result.errorCode)
+    assertEquals("ASK_SAFE_NETWORK_HIGH_RISK", result.metadata["policyReasonCode"])
+    assertEquals("HIGH_RISK", result.metadata["approvalRisk"])
+    assertEquals(0, fetcher.requestCount)
   }
 
   @Test
@@ -473,6 +672,22 @@ class AgentToolPolicyGateTest {
         stdout = "",
         stderr = "",
         processStarted = true,
+      )
+    }
+  }
+
+  private class RecordingWebContentFetcher : WebContentFetcher {
+    var requestCount: Int = 0
+      private set
+
+    override fun fetch(request: WebFetchRequest): WebFetchResult {
+      requestCount += 1
+      return WebFetchResult(
+        requestedUrl = request.url,
+        finalUrl = request.url,
+        statusCode = 200,
+        contentType = "text/plain",
+        content = "ok",
       )
     }
   }

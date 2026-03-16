@@ -1131,7 +1131,7 @@ internal class OpenCrayHostRuntime private constructor(
     return mapOf(
       "sessionId" to sessionId,
       "activeRuns" to runs
-        .filterNot(AgentRunSnapshot::isTerminal)
+        .filter(AgentRunSnapshot::isActive)
         .map { run ->
           runSnapshotToMap(
             run.copy(
@@ -1209,6 +1209,10 @@ internal class OpenCrayHostRuntime private constructor(
     "responseFormat" to run.responseFormat,
     "memoryTrace" to memoryTraceFromMetadata(run.resultMetadata),
     "pendingMessageId" to run.pendingMessageId,
+    "managedProcessIds" to run.managedProcessIds,
+    "runningManagedProcessCount" to run.runningManagedProcessCount,
+    "hasLiveManagedProcesses" to run.hasLiveManagedProcesses,
+    "isActive" to run.isActive,
     "isTerminal" to run.isTerminal,
     "lastEvent" to run.lastEvent?.let(::runtimeEventToMap),
   )

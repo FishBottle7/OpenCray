@@ -14,10 +14,14 @@ import com.opencray.runtime.memory.MemoryWriter
 internal data class MemoryIngestionSummary(
   val writtenRecords: List<MemoryRecord> = emptyList(),
   val resolvedRecords: List<MemoryRecord> = emptyList(),
+  val reaffirmedRecords: List<MemoryRecord> = emptyList(),
   val expiredRecordIds: List<String> = emptyList(),
 ) {
   val isEmpty: Boolean
-    get() = writtenRecords.isEmpty() && resolvedRecords.isEmpty() && expiredRecordIds.isEmpty()
+    get() = writtenRecords.isEmpty() &&
+      resolvedRecords.isEmpty() &&
+      reaffirmedRecords.isEmpty() &&
+      expiredRecordIds.isEmpty()
 }
 
 internal class ChatMemoryIngestionCoordinator(
@@ -63,6 +67,7 @@ internal class ChatMemoryIngestionCoordinator(
     return MemoryIngestionSummary(
       writtenRecords = writeSummary.writtenRecords,
       resolvedRecords = maintenance.resolvedRecords,
+      reaffirmedRecords = maintenance.reaffirmedRecords,
       expiredRecordIds = maintenance.expiredRecordIds,
     )
   }

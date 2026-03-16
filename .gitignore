@@ -33,6 +33,8 @@
 /local.properties
 /gradle-*-bin.zip
 /gradle-*/
+/.android-user/
+/.gradle-home/
 /.android-user-home/
 /.gradle-user-home/
 /.gradle-local/
@@ -41,6 +43,7 @@
 /.gradle-user-*/
 /.tools/
 **/.tmp_fonts/
+/tmp_*.patch
 
 # Sisyphus local scratch files
 /.sisyphus/notepads/

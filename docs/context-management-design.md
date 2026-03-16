@@ -1,6 +1,6 @@
 # OpenCray Context Management Design
 
-Last updated: 2026-03-12
+Last updated: 2026-03-16
 
 ## Status
 
@@ -28,6 +28,7 @@ This document is intentionally deeper than the earlier audit and roadmap documen
 - `docs/agent-runtime-issues.md`
 - `docs/agent-runtime-roadmap.md`
 - `docs/agent-runtime-reference-guide.md`
+- `docs/memory-design.md`
 - `docs/done/design-p0-live-queue-persistence.md`
 - `docs/done/design-p0-session-runtime-manager.md`
 - `docs/done/design-p0-prompt-layer-architecture.md`
@@ -1152,14 +1153,29 @@ Suggested modules:
 
 If soul remains one summary paragraph, it cannot be governed, diffed, tested, or selectively applied.
 
-## Pattern 5: Memory recall and write loop
+## Pattern 5: OpenClaw-aligned memory system
 
-OpenCray needs both directions:
+To get closer to OpenClaw, OpenCray should not treat memory as only one prompt layer.
 
-- write candidate memories after turns
-- recall relevant memories before turns
+It should use four cooperating paths:
 
-### Memory write path
+1. deterministic durable writes after turns
+2. bounded automatic recall before turns
+3. explicit on-demand memory tools during the run
+4. pre-compaction memory flush before durable history compaction
+
+### Boundary rule
+
+The memory subsystem decides which memories exist and which ones rank highest.
+
+That means:
+
+- `runtime/memory/*` owns memory write, retrieval, ranking, search, and flush policy
+- `runtime/context/ContextManager.kt` owns final prompt allocation pressure only
+
+`ContextManager` may cap already-ranked memories for budget reasons, but it should not become the semantic selector for memory content.
+
+### Path A: deterministic durable write
 
 ```mermaid
 flowchart TD
@@ -1169,7 +1185,7 @@ flowchart TD
     D --> E[MemoryStore]
 ```
 
-### Memory recall path
+### Path B: automatic bounded recall
 
 ```mermaid
 flowchart TD
@@ -1179,12 +1195,51 @@ flowchart TD
     D --> E[ContextAssembler]
 ```
 
+This path is for high-value continuity such as:
+
+- durable instructions
+- user preferences
+- active commitments
+- clearly relevant project facts
+
+### Path C: on-demand memory tools
+
+OpenCray should add an explicit memory tool surface similar to OpenClaw:
+
+- `memory_search`
+- `memory_get`
+
+These tools should operate on a projected searchable memory corpus rather than raw `memory.json`.
+
+The projection can be materialized or virtual, but the runtime behavior should feel like OpenClaw's `MEMORY.md + memory/*.md` workflow:
+
+- search first
+- fetch only the needed snippet
+- keep context small
+
+### Path D: pre-compaction memory flush
+
+Before durable compaction, OpenCray should run a dedicated memory flush stage when context pressure justifies it.
+
+This stage should:
+
+- preserve durable information before compaction removes or summarizes history
+- write append-only memory notes
+- avoid rewriting bootstrap/reference files
+- no-op cleanly when nothing is worth storing
+
+This copies OpenClaw's lifecycle pattern more closely than a simple post-turn writer alone.
+
 Suggested modules:
 
 - `runtime/src/main/kotlin/com/opencray/runtime/memory/MemoryCandidateExtractor.kt`
 - `runtime/src/main/kotlin/com/opencray/runtime/memory/MemoryWriter.kt`
 - `runtime/src/main/kotlin/com/opencray/runtime/memory/MemoryRetriever.kt`
 - `runtime/src/main/kotlin/com/opencray/runtime/memory/MemoryPromptLayer.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/memory/MemoryCorpusProjector.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/memory/MemorySearchTool.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/memory/MemoryGetTool.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/memory/MemoryFlushCoordinator.kt`
 
 ### Initial memory taxonomy
 
@@ -1194,7 +1249,7 @@ Suggested modules:
 - `task_commitment`
 - `environment_fact`
 
-OpenCray should start with deterministic writes only. Do not start with free-form model-authored memory dumps.
+OpenCray should still start with deterministic writes only. Do not start with free-form model-authored memory dumps.
 
 ## Pattern 6: Skill capsules instead of raw list-only skills
 

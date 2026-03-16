@@ -64,6 +64,14 @@ class ModePolicyMatrixTest {
         expectedApprovalRisk = PolicyApprovalRisk.HIGH_RISK,
         targetRelativePath = null,
       ),
+      MatrixExpectation(
+        mode = ExecutionMode.SAFE,
+        toolClass = PolicyToolClass.NETWORK_ACCESS,
+        expectedOutcome = PolicyDecisionOutcome.ASK,
+        expectedReasonCode = PolicyReasonCode.ASK_SAFE_NETWORK_HIGH_RISK,
+        expectedApprovalRisk = PolicyApprovalRisk.HIGH_RISK,
+        targetRelativePath = null,
+      ),
 
       MatrixExpectation(
         mode = ExecutionMode.AUTO,
@@ -104,6 +112,13 @@ class ModePolicyMatrixTest {
         expectedReasonCode = PolicyReasonCode.ASK_AUTO_COMMAND,
         targetRelativePath = null,
       ),
+      MatrixExpectation(
+        mode = ExecutionMode.AUTO,
+        toolClass = PolicyToolClass.NETWORK_ACCESS,
+        expectedOutcome = PolicyDecisionOutcome.ASK,
+        expectedReasonCode = PolicyReasonCode.ASK_AUTO_NETWORK,
+        targetRelativePath = null,
+      ),
 
       MatrixExpectation(
         mode = ExecutionMode.DEVELOPER,
@@ -140,6 +155,13 @@ class ModePolicyMatrixTest {
       MatrixExpectation(
         mode = ExecutionMode.DEVELOPER,
         toolClass = PolicyToolClass.EXECUTE_COMMAND,
+        expectedOutcome = PolicyDecisionOutcome.ALLOW,
+        expectedReasonCode = PolicyReasonCode.ALLOW_DEVELOPER_OVERRIDE,
+        targetRelativePath = null,
+      ),
+      MatrixExpectation(
+        mode = ExecutionMode.DEVELOPER,
+        toolClass = PolicyToolClass.NETWORK_ACCESS,
         expectedOutcome = PolicyDecisionOutcome.ALLOW,
         expectedReasonCode = PolicyReasonCode.ALLOW_DEVELOPER_OVERRIDE,
         targetRelativePath = null,

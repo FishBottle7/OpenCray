@@ -6,28 +6,53 @@ import java.util.Locale
 
 data class TaskCommitmentMaintenanceSummary(
   val resolvedRecords: List<MemoryRecord> = emptyList(),
+  val reaffirmedRecords: List<MemoryRecord> = emptyList(),
   val expiredRecordIds: List<String> = emptyList(),
 ) {
   val isEmpty: Boolean
-    get() = resolvedRecords.isEmpty() && expiredRecordIds.isEmpty()
+    get() = resolvedRecords.isEmpty() && reaffirmedRecords.isEmpty() && expiredRecordIds.isEmpty()
 }
 
 class TaskCommitmentResolver(
   private val store: MemoryStore,
   private val policy: MemoryPolicy = MemoryPolicy(),
   private val clock: () -> Long = System::currentTimeMillis,
+  private val intentInterpreter: TaskCommitmentIntentInterpreter = NoOpTaskCommitmentIntentInterpreter,
 ) {
   fun maintain(evidence: MemoryTurnEvidence): TaskCommitmentMaintenanceSummary {
     val now = clock()
     val allRecords = store.list()
     val expiredRecordIds = expireStaleCommitments(records = allRecords, nowEpochMs = now)
-    val completionEvidence = completionEvidenceTexts(evidence)
+    val openCommitments = allRecords.filter { record ->
+      isOpenSessionCommitment(record = record, sessionId = evidence.sessionId, nowEpochMs = now)
+    }
+    if (openCommitments.isEmpty()) {
+      return TaskCommitmentMaintenanceSummary(expiredRecordIds = expiredRecordIds)
+    }
+    val maintenanceEvidence = maintenanceEvidenceTexts(evidence)
+    if (maintenanceEvidence.isEmpty()) {
+      return TaskCommitmentMaintenanceSummary(expiredRecordIds = expiredRecordIds)
+    }
+
+    val semanticMaintenance = applySemanticMaintenance(
+      commitments = openCommitments,
+      evidence = evidence,
+      nowEpochMs = now,
+    )
+    if (semanticMaintenance != null) {
+      semanticMaintenance.resolvedRecords.forEach(store::upsert)
+      semanticMaintenance.reaffirmedRecords.forEach(store::upsert)
+      return semanticMaintenance.copy(
+        expiredRecordIds = expiredRecordIds,
+      )
+    }
+
+    val completionEvidence = maintenanceEvidence.filter(::containsCompletionSignal)
     if (completionEvidence.isEmpty()) {
       return TaskCommitmentMaintenanceSummary(expiredRecordIds = expiredRecordIds)
     }
 
-    val resolvedRecords = allRecords
-      .filter { record -> isOpenSessionCommitment(record = record, sessionId = evidence.sessionId, nowEpochMs = now) }
+    val resolvedRecords = openCommitments
       .filter { record -> completionEvidence.any { text -> matchesCompletion(record.content, text) } }
       .map { record -> resolve(record = record, nowEpochMs = now) }
 
@@ -36,6 +61,63 @@ class TaskCommitmentResolver(
       resolvedRecords = resolvedRecords,
       expiredRecordIds = expiredRecordIds,
     )
+  }
+
+  private fun applySemanticMaintenance(
+    commitments: List<MemoryRecord>,
+    evidence: MemoryTurnEvidence,
+    nowEpochMs: Long,
+  ): TaskCommitmentMaintenanceSummary? {
+    val interpretation = intentInterpreter.interpret(
+      TaskCommitmentIntentRequest(
+        sessionId = evidence.sessionId,
+        commitments = commitments.map { record ->
+          OpenTaskCommitment(
+            id = record.id,
+            content = record.content,
+          )
+        },
+        assistantOutput = evidence.assistantOutput,
+        toolObservations = evidence.toolObservations,
+      ),
+    )
+    return when (interpretation) {
+      is TaskCommitmentIntentInterpretation.Success -> {
+        val decisionsByCommitmentId = linkedMapOf<String, TaskCommitmentIntentDecision>()
+        interpretation.decisions.forEach { decision ->
+          if (decision.commitmentId.isBlank()) {
+            return@forEach
+          }
+          decisionsByCommitmentId.putIfAbsent(decision.commitmentId, decision)
+        }
+        val resolvedRecords = commitments
+          .mapNotNull { record ->
+            when (decisionsByCommitmentId[record.id]?.action) {
+              TaskCommitmentIntentAction.RESOLVE -> resolve(record = record, nowEpochMs = nowEpochMs)
+              else -> null
+            }
+          }
+        val reaffirmedRecords = commitments
+          .mapNotNull { record ->
+            when (decisionsByCommitmentId[record.id]?.action) {
+              TaskCommitmentIntentAction.REAFFIRM -> reaffirm(record = record, nowEpochMs = nowEpochMs)
+              else -> null
+            }
+          }
+        TaskCommitmentMaintenanceSummary(
+          resolvedRecords = resolvedRecords,
+          reaffirmedRecords = reaffirmedRecords,
+        )
+      }
+
+      is TaskCommitmentIntentInterpretation.Unavailable -> {
+        if (interpretation.allowHeuristicFallback) {
+          null
+        } else {
+          TaskCommitmentMaintenanceSummary()
+        }
+      }
+    }
   }
 
   private fun expireStaleCommitments(records: List<MemoryRecord>, nowEpochMs: Long): List<String> {
@@ -84,10 +166,21 @@ class TaskCommitmentResolver(
     ),
   )
 
-  private fun completionEvidenceTexts(evidence: MemoryTurnEvidence): List<String> =
+  private fun reaffirm(record: MemoryRecord, nowEpochMs: Long): MemoryRecord = record.copy(
+    recordVersion = record.recordVersion + 1L,
+    updatedAtEpochMs = maxOf(record.createdAtEpochMs, nowEpochMs),
+    extensions = record.extensions
+      .minus(MemoryRecordExtensionKeys.RESOLVED_AT_EPOCH_MS)
+      .minus(MemoryRecordExtensionKeys.RESOLUTION_REASON)
+      .minus(MemoryRecordExtensionKeys.SUPERSEDED_BY) + mapOf(
+      MemoryRecordExtensionKeys.STATUS to MemoryStatus.OPEN.name.lowercase(Locale.US),
+      MemoryRecordExtensionKeys.LAST_CONFIRMED_AT_EPOCH_MS to nowEpochMs.toString(),
+    ),
+  )
+
+  private fun maintenanceEvidenceTexts(evidence: MemoryTurnEvidence): List<String> =
     listOfNotNull(evidence.assistantOutput) + evidence.toolObservations
       .mapNotNull(policy::normalizeCandidateContent)
-      .filter(::containsCompletionSignal)
 
   private fun matchesCompletion(
     commitmentContent: String,

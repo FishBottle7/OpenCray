@@ -6,8 +6,12 @@ import '../../core/bridge/opencray_host_bridge.dart';
 import '../../core/models/opencray_chat_snapshot.dart';
 import '../../core/copy/opencray_ui_copy.dart';
 import '../../core/design/opencray_tokens.dart';
+import 'safety_settings_copy.dart';
+import 'safety_settings_models.dart';
 import 'settings_facade.dart';
 import 'settings_models.dart';
+
+part 'safety_settings_pages.dart';
 
 class SettingsFeatureScreen extends StatefulWidget {
   const SettingsFeatureScreen({
@@ -125,8 +129,13 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
           backLabel: backLabel,
         );
       case SettingsPage.workspaceAccess:
+        return _WorkspaceAccessSettingsPage(
+          key: const ValueKey<String>('settings-workspace-access-editor'),
+          facade: widget.facade,
+          onBack: onBack,
+          backLabel: backLabel,
+        );
       case SettingsPage.privacyTelemetry:
-      case SettingsPage.safetyLimits:
         final detailSnapshot = _detailCache[_page];
         if (detailSnapshot == null) {
           return const _SettingsLoading(
@@ -136,6 +145,13 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
         return _SettingsDetailPage(
           key: ValueKey<String>('settings-${_page.name}'),
           snapshot: detailSnapshot,
+          onBack: onBack,
+          backLabel: backLabel,
+        );
+      case SettingsPage.safetyLimits:
+        return _SafetySettingsPage(
+          key: const ValueKey<String>('settings-safety-editor'),
+          facade: widget.facade,
           onBack: onBack,
           backLabel: backLabel,
         );
@@ -204,7 +220,9 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
   bool _usesDedicatedPage(SettingsPage page) =>
       page == SettingsPage.llm ||
       page == SettingsPage.personalization ||
-      page == SettingsPage.mcp;
+      page == SettingsPage.mcp ||
+      page == SettingsPage.workspaceAccess ||
+      page == SettingsPage.safetyLimits;
 }
 
 class _SettingsHome extends StatelessWidget {
@@ -873,11 +891,13 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
   final FocusNode _systemPromptFocusNode = FocusNode();
 
   LlmConfigSnapshot? _snapshot;
+  String _selectedProviderOptionId = 'custom';
   String _providerId = 'custom';
   String _protocol = 'openai';
   String _reasoningEffort = 'medium';
   bool _isApplyingSnapshot = false;
   bool _isSavingDraft = false;
+  bool _isSavingCustomProvider = false;
   bool _hasQueuedSave = false;
   bool _isValidating = false;
   Completer<void>? _activeSaveCompleter;
@@ -891,6 +911,11 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     _registerAutosaveFocusNode(_apiKeyFocusNode);
     _registerAutosaveFocusNode(_modelFocusNode);
     _registerAutosaveFocusNode(_systemPromptFocusNode);
+    _providerNameController.addListener(_handleCustomProviderDraftChanged);
+    _providerNotesController.addListener(_handleCustomProviderDraftChanged);
+    _baseUrlController.addListener(_handleCustomProviderDraftChanged);
+    _apiKeyController.addListener(_handleCustomProviderDraftChanged);
+    _modelController.addListener(_handleCustomProviderDraftChanged);
     _load();
   }
 
@@ -921,6 +946,8 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     }
     final copy = OpenCrayUiCopy.fromLocaleTag(snapshot.localeTag);
     final selectedProvider = _selectedProviderFor(snapshot);
+    final hasTemporarySavedCustomChanges =
+        _hasTemporarySavedCustomProviderChanges(snapshot);
     final selectedProtocol = _draftProtocolFor(selectedProvider);
     final optionsLabel = copy.llmOptionsCount(snapshot.providerOptions.length);
     final showsReasoning =
@@ -952,11 +979,49 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                   onTap: _openProviderSheet,
                 ),
                 const SizedBox(height: 12),
-                Text(
-                  selectedProvider.isCustom
-                      ? copy.llmPrimaryProviderCustomHelper
-                      : copy.llmPrimaryProviderPresetHelper,
-                  style: _SettingsTextStyles.body,
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        hasTemporarySavedCustomChanges
+                            ? copy.llmSaveProviderTemporary
+                            : (selectedProvider.isCustom
+                                  ? copy.llmPrimaryProviderCustomHelper
+                                  : copy.llmPrimaryProviderPresetHelper),
+                        maxLines: hasTemporarySavedCustomChanges ? 1 : null,
+                        overflow: hasTemporarySavedCustomChanges
+                            ? TextOverflow.ellipsis
+                            : TextOverflow.visible,
+                        softWrap: !hasTemporarySavedCustomChanges,
+                        style: _SettingsTextStyles.body,
+                      ),
+                    ),
+                    if (selectedProvider.isCustom) ...[
+                      const SizedBox(width: 12),
+                      InkWell(
+                        key: const ValueKey<String>(
+                          'settings-llm-save-provider',
+                        ),
+                        borderRadius: BorderRadius.circular(8),
+                        onTap: _isSavingCustomProvider
+                            ? null
+                            : _saveCustomProvider,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 4,
+                            vertical: 2,
+                          ),
+                          child: Text(
+                            _isSavingCustomProvider
+                                ? copy.llmSaving
+                                : copy.llmSaveProviderAction,
+                            style: _SettingsTextStyles.inlineAction,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
                 if (selectedProvider.isCustom) ...[
                   const SizedBox(height: 12),
@@ -1103,24 +1168,84 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
   }
 
   void _applyProvider(LlmProviderOption option) {
+    _isApplyingSnapshot = true;
     setState(() {
-      _providerId = option.id;
-      if (!option.isCustom) {
+      _selectedProviderOptionId = option.id;
+      _providerId = option.providerId;
+      final isSavedCustomProvider = option.isCustom && option.id != 'custom';
+      if (option.isCustom) {
+        _protocol = option.protocol;
+      } else {
         _protocol = 'openai';
       }
-      if (_providerNameController.text.trim().isEmpty ||
+      if (isSavedCustomProvider) {
+        _providerNameController.text = option.title;
+        _providerNotesController.text = option.subtitle;
+        _baseUrlController.text = option.defaultBaseUrl;
+        _apiKeyController.text = option.apiKey;
+        _modelController.text = option.defaultModel;
+      } else if (_providerNameController.text.trim().isEmpty ||
           _providerNameController.text.trim() ==
               _snapshot?.providerName.trim()) {
         _providerNameController.text = option.title;
       }
-      if (option.defaultBaseUrl.isNotEmpty) {
+      if (!isSavedCustomProvider && option.defaultBaseUrl.isNotEmpty) {
         _baseUrlController.text = option.defaultBaseUrl;
       }
-      if (option.defaultModel.isNotEmpty) {
+      if (!isSavedCustomProvider && option.defaultModel.isNotEmpty) {
         _modelController.text = option.defaultModel;
       }
     });
+    _isApplyingSnapshot = false;
     unawaited(_saveDraft());
+  }
+
+  Future<void> _saveCustomProvider() async {
+    final snapshot = _snapshot;
+    if (snapshot == null || _isSavingCustomProvider) {
+      return;
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isSavingCustomProvider = true;
+    });
+    FocusScope.of(context).unfocus();
+    if (_isSavingDraft) {
+      await _activeSaveCompleter?.future;
+    }
+    try {
+      final savedSnapshot = await widget.facade.saveCustomLlmProvider(
+        selectedProviderOptionId: _selectedProviderOptionId,
+        protocol: _draftProtocol(),
+        providerName: _providerNameController.text,
+        providerNotes: _providerNotesController.text,
+        baseUrl: _baseUrlController.text,
+        apiKey: _apiKeyController.text,
+        model: _modelController.text,
+        reasoningEffort: _reasoningEffort,
+        systemPrompt: _systemPromptController.text,
+      );
+      if (!mounted) {
+        return;
+      }
+      final copy = OpenCrayUiCopy.fromLocaleTag(savedSnapshot.localeTag);
+      setState(() {
+        _applySnapshot(savedSnapshot);
+      });
+      _showMessage(copy.llmSaveProviderSuccess);
+    } catch (error) {
+      if (mounted) {
+        _showMessage(error.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSavingCustomProvider = false;
+        });
+      }
+    }
   }
 
   Future<void> _validateLlmConfig() async {
@@ -1221,15 +1346,17 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                                       option.title,
                                       style: _SettingsTextStyles.rowTitle,
                                     ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      option.subtitle,
-                                      style: _SettingsTextStyles.rowSubtitle,
-                                    ),
+                                    if (option.subtitle.isNotEmpty) ...[
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        option.subtitle,
+                                        style: _SettingsTextStyles.rowSubtitle,
+                                      ),
+                                    ],
                                   ],
                                 ),
                               ),
-                              if (option.id == _providerId)
+                              if (option.id == _selectedProviderOptionId)
                                 const Icon(
                                   Icons.check_rounded,
                                   color: OpenCrayColors.primary,
@@ -1398,39 +1525,80 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     );
     if (selected != null && mounted) {
       setState(() => _protocol = selected);
+      _handleCustomProviderDraftChanged();
       unawaited(_saveDraft());
     }
   }
 
   void _registerAutosaveFocusNode(FocusNode focusNode) {
     focusNode.addListener(() {
-      if (!focusNode.hasFocus) {
+      if (!focusNode.hasFocus && !_isSavingCustomProvider) {
         unawaited(_saveDraft());
       }
     });
   }
+
+  void _handleCustomProviderDraftChanged() {
+    if (_isApplyingSnapshot || !mounted) {
+      return;
+    }
+    setState(() {});
+  }
+
+  bool _draftMatchesProvider(LlmProviderOption provider) =>
+      _providerId == provider.providerId &&
+      _draftProtocolFor(provider) == provider.protocol &&
+      _providerNameController.text.trim() == provider.title.trim() &&
+      _providerNotesController.text.trim() == provider.subtitle.trim() &&
+      _baseUrlController.text.trim() == provider.defaultBaseUrl.trim() &&
+      _apiKeyController.text.trim() == provider.apiKey.trim() &&
+      _modelController.text.trim() == provider.defaultModel.trim();
+
+  bool _hasTemporarySavedCustomProviderChanges(LlmConfigSnapshot snapshot) {
+    final selectedProvider = _selectedProviderFor(snapshot);
+    return _isSavedCustomProvider(selectedProvider) &&
+        !_draftMatchesProvider(selectedProvider);
+  }
+
+  bool _isSavedCustomProvider(LlmProviderOption provider) =>
+      provider.isCustom && provider.id != 'custom';
 
   LlmProviderOption _selectedProviderFor(LlmConfigSnapshot snapshot) {
     if (snapshot.providerOptions.isEmpty) {
       final copy = OpenCrayUiCopy.fromLocaleTag(snapshot.localeTag);
       return LlmProviderOption(
         id: 'custom',
+        providerId: 'custom',
         title: copy.llmFallbackCustomProviderTitle,
         subtitle: copy.llmFallbackCustomProviderSubtitle,
         defaultBaseUrl: '',
         defaultModel: '',
+        protocol: 'openai',
+        apiKey: '',
         isCustom: true,
       );
     }
-    return snapshot.providerOptions.firstWhere(
-      (option) => option.id == _providerId,
-      orElse: () => snapshot.providerOptions.first,
-    );
+    final candidateIds = <String>[
+      _selectedProviderOptionId,
+      snapshot.selectedProviderOptionId,
+      _providerId,
+      snapshot.providerId,
+    ];
+    for (final candidateId in candidateIds) {
+      final match = snapshot.providerOptions.where(
+        (option) => option.id == candidateId,
+      );
+      if (match.isNotEmpty) {
+        return match.first;
+      }
+    }
+    return snapshot.providerOptions.first;
   }
 
   void _applySnapshot(LlmConfigSnapshot snapshot) {
     _isApplyingSnapshot = true;
     _snapshot = snapshot;
+    _selectedProviderOptionId = snapshot.selectedProviderOptionId;
     _providerId = snapshot.providerId;
     _protocol = snapshot.protocol;
     _providerNameController.text = snapshot.providerName;
@@ -1449,6 +1617,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
       return false;
     }
     return _providerId != snapshot.providerId ||
+        _selectedProviderOptionId != snapshot.selectedProviderOptionId ||
         _draftProtocol() != snapshot.protocol ||
         _providerNameController.text != snapshot.providerName ||
         _providerNotesController.text != snapshot.providerNotes ||
@@ -1464,7 +1633,10 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
       _apiKeyController.text.trim().isNotEmpty;
 
   Future<void> _saveDraft() async {
-    if (_snapshot == null || _isApplyingSnapshot || !_hasDraftChanges()) {
+    if (_snapshot == null ||
+        _isApplyingSnapshot ||
+        _isSavingCustomProvider ||
+        !_hasDraftChanges()) {
       return;
     }
     if (_isSavingDraft) {
@@ -1485,6 +1657,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
       final savedSnapshot = await widget.facade.saveLlmConfig(
         enabled: _draftIsConfigured(),
         providerId: _providerId,
+        selectedProviderOptionId: _selectedProviderOptionId,
         protocol: _draftProtocol(),
         providerName: _providerNameController.text,
         providerNotes: _providerNotesController.text,
@@ -3187,6 +3360,13 @@ class _SettingsTextStyles {
     fontSize: 13,
     height: 1.35,
     color: OpenCrayColors.textSecondary,
+  );
+
+  static const TextStyle inlineAction = TextStyle(
+    fontSize: 13,
+    height: 1.35,
+    fontWeight: FontWeight.w700,
+    color: OpenCrayColors.primary,
   );
 
   static const TextStyle bodyStrong = TextStyle(

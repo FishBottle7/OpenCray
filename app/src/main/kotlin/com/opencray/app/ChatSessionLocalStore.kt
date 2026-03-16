@@ -47,6 +47,73 @@ internal open class ChatSessionLocalStore(
     )
   }
 
+  fun copySession(sessionId: String): ChatSessionsState {
+    val workspace = loadWorkspaceOrCreate()
+    val activeSession = activeSessionFrom(workspace) ?: createSessionInternal(workspace).activeSession
+    val sourceSession = workspace.sessions.firstOrNull { it.sessionId == sessionId }
+      ?: return ChatSessionsState(
+        sessions = sessionsForUi(workspace),
+        activeSession = activeSession,
+      )
+    val now = nowEpochMs()
+    val copiedSessionId = "session-${now}-${UUID.randomUUID().toString().take(8)}"
+    val copiedSession = sourceSession.copy(
+      sessionId = copiedSessionId,
+      title = copyTitleFor(sourceSession.title),
+      createdAtEpochMs = now,
+      updatedAtEpochMs = now,
+    )
+    val updatedWorkspace = workspace.copy(
+      sessions = (workspace.sessions.filterNot { it.sessionId == copiedSessionId } + copiedSession)
+        .sortedByDescending { it.updatedAtEpochMs },
+      activeSessionId = copiedSessionId,
+      recordVersion = workspace.recordVersion + 1,
+      updatedAtEpochMs = now,
+    )
+    workspaceStore.save(updatedWorkspace)
+    return ChatSessionsState(
+      sessions = sessionsForUi(updatedWorkspace),
+      activeSession = copiedSession,
+    )
+  }
+
+  fun deleteSession(sessionId: String): ChatSessionsState {
+    val workspace = loadWorkspaceOrCreate()
+    val activeSession = activeSessionFrom(workspace) ?: createSessionInternal(workspace).activeSession
+    if (workspace.sessions.none { session -> session.sessionId == sessionId }) {
+      return ChatSessionsState(
+        sessions = sessionsForUi(workspace),
+        activeSession = activeSession,
+      )
+    }
+    val remainingSessions = workspace.sessions.filterNot { session -> session.sessionId == sessionId }
+    if (remainingSessions.isEmpty()) {
+      return createSessionInternal(
+        workspace.copy(
+          sessions = emptyList(),
+          activeSessionId = null,
+          updatedAtEpochMs = nowEpochMs(),
+        ),
+      )
+    }
+    val now = nowEpochMs()
+    val nextActiveSession = remainingSessions.firstOrNull { session ->
+      session.sessionId == workspace.activeSessionId
+    } ?: remainingSessions.maxByOrNull { it.updatedAtEpochMs }
+      ?: remainingSessions.first()
+    val updatedWorkspace = workspace.copy(
+      sessions = remainingSessions.sortedByDescending { it.updatedAtEpochMs },
+      activeSessionId = nextActiveSession.sessionId,
+      recordVersion = workspace.recordVersion + 1,
+      updatedAtEpochMs = now,
+    )
+    workspaceStore.save(updatedWorkspace)
+    return ChatSessionsState(
+      sessions = sessionsForUi(updatedWorkspace),
+      activeSession = nextActiveSession,
+    )
+  }
+
   fun appendUserMessage(sessionId: String, text: String): ChatSessionsState {
     return appendUserMessage(
       sessionId = sessionId,
@@ -541,6 +608,12 @@ internal open class ChatSessionLocalStore(
     sourceTitle.endsWith(" branch") -> sourceTitle
     sourceTitle.length >= 25 -> sourceTitle.take(25) + " branch"
     else -> "$sourceTitle branch"
+  }
+
+  private fun copyTitleFor(sourceTitle: String): String = when {
+    sourceTitle.endsWith(" copy") -> sourceTitle
+    sourceTitle.length >= 27 -> sourceTitle.take(27) + " copy"
+    else -> "$sourceTitle copy"
   }
 
   private fun messageId(prefix: String): String = "$prefix-${nowEpochMs()}-${UUID.randomUUID().toString().take(8)}"

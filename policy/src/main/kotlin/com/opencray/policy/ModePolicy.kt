@@ -13,8 +13,19 @@ enum class ExecutionMode {
   ;
 
   companion object {
-    fun fromLabelOrNull(label: String?): ExecutionMode? = values().firstOrNull { mode ->
-      mode.name.equals(label?.trim(), ignoreCase = true)
+    fun fromLabelOrNull(label: String?): ExecutionMode? {
+      val normalized = label?.trim()
+      if (normalized.isNullOrEmpty()) {
+        return null
+      }
+      return when {
+        normalized.equals(SafetyAutomationMode.DEV.chatMetadataLabel, ignoreCase = true) ->
+          DEVELOPER
+
+        else -> values().firstOrNull { mode ->
+          mode.name.equals(normalized, ignoreCase = true)
+        }
+      }
     }
   }
 }
@@ -26,9 +37,21 @@ enum class PolicyToolClass {
   MOVE_FILE,
   RENAME_FILE,
   EXECUTE_COMMAND,
+  NETWORK_ACCESS,
   ;
 
-  fun requiresTargetPath(): Boolean = this != EXECUTE_COMMAND
+  fun requiresTargetPath(): Boolean = when (this) {
+    READ_FILE,
+    WRITE_FILE,
+    DELETE_FILE,
+    MOVE_FILE,
+    RENAME_FILE,
+    -> true
+
+    EXECUTE_COMMAND,
+    NETWORK_ACCESS,
+    -> false
+  }
 
   fun requiresDestinationPath(): Boolean = this == MOVE_FILE || this == RENAME_FILE
 
@@ -49,10 +72,12 @@ object PolicyReasonCode {
   const val ASK_SAFE_WRITE = "ASK_SAFE_WRITE"
   const val ASK_SAFE_DESTRUCTIVE_HIGH_RISK = "ASK_SAFE_DESTRUCTIVE_HIGH_RISK"
   const val ASK_SAFE_COMMAND_HIGH_RISK = "ASK_SAFE_COMMAND_HIGH_RISK"
+  const val ASK_SAFE_NETWORK_HIGH_RISK = "ASK_SAFE_NETWORK_HIGH_RISK"
 
   const val ALLOW_AUTO_STANDARD = "ALLOW_AUTO_STANDARD"
   const val ASK_AUTO_DESTRUCTIVE = "ASK_AUTO_DESTRUCTIVE"
   const val ASK_AUTO_COMMAND = "ASK_AUTO_COMMAND"
+  const val ASK_AUTO_NETWORK = "ASK_AUTO_NETWORK"
 
   const val ALLOW_DEVELOPER_OVERRIDE = "ALLOW_DEVELOPER_OVERRIDE"
 
@@ -102,6 +127,11 @@ class ModePolicy(
           reasonCode = PolicyReasonCode.ASK_SAFE_COMMAND_HIGH_RISK,
           approvalRisk = PolicyApprovalRisk.HIGH_RISK,
         ),
+        PolicyToolClass.NETWORK_ACCESS to MatrixRule(
+          outcome = PolicyDecisionOutcome.ASK,
+          reasonCode = PolicyReasonCode.ASK_SAFE_NETWORK_HIGH_RISK,
+          approvalRisk = PolicyApprovalRisk.HIGH_RISK,
+        ),
       ),
       ExecutionMode.AUTO to mapOf(
         PolicyToolClass.READ_FILE to MatrixRule(
@@ -128,6 +158,10 @@ class ModePolicy(
           outcome = PolicyDecisionOutcome.ASK,
           reasonCode = PolicyReasonCode.ASK_AUTO_COMMAND,
         ),
+        PolicyToolClass.NETWORK_ACCESS to MatrixRule(
+          outcome = PolicyDecisionOutcome.ASK,
+          reasonCode = PolicyReasonCode.ASK_AUTO_NETWORK,
+        ),
       ),
       ExecutionMode.DEVELOPER to mapOf(
         PolicyToolClass.READ_FILE to MatrixRule(
@@ -151,6 +185,10 @@ class ModePolicy(
           reasonCode = PolicyReasonCode.ALLOW_DEVELOPER_OVERRIDE,
         ),
         PolicyToolClass.EXECUTE_COMMAND to MatrixRule(
+          outcome = PolicyDecisionOutcome.ALLOW,
+          reasonCode = PolicyReasonCode.ALLOW_DEVELOPER_OVERRIDE,
+        ),
+        PolicyToolClass.NETWORK_ACCESS to MatrixRule(
           outcome = PolicyDecisionOutcome.ALLOW,
           reasonCode = PolicyReasonCode.ALLOW_DEVELOPER_OVERRIDE,
         ),

@@ -146,18 +146,24 @@ class SettingsDetailSnapshot {
 class LlmProviderOption {
   const LlmProviderOption({
     required this.id,
+    required this.providerId,
     required this.title,
     required this.subtitle,
     required this.defaultBaseUrl,
     required this.defaultModel,
+    required this.protocol,
+    required this.apiKey,
     required this.isCustom,
   });
 
   final String id;
+  final String providerId;
   final String title;
   final String subtitle;
   final String defaultBaseUrl;
   final String defaultModel;
+  final String protocol;
+  final String apiKey;
   final bool isCustom;
 }
 
@@ -166,6 +172,7 @@ class LlmConfigSnapshot {
     required this.localeTag,
     required this.enabled,
     required this.providerId,
+    required this.selectedProviderOptionId,
     required this.protocol,
     required this.providerOptions,
     required this.providerName,
@@ -181,6 +188,7 @@ class LlmConfigSnapshot {
   final String localeTag;
   final bool enabled;
   final String providerId;
+  final String selectedProviderOptionId;
   final String protocol;
   final List<LlmProviderOption> providerOptions;
   final String providerName;

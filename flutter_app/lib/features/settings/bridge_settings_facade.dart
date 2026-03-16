@@ -3,7 +3,9 @@ import '../../core/models/opencray_llm_config.dart';
 import '../../core/models/opencray_llm_validation.dart';
 import '../../core/models/opencray_mcp_settings.dart';
 import '../../core/models/opencray_personalization_config.dart';
+import '../../core/models/opencray_safety_settings.dart';
 import '../../core/models/opencray_settings_snapshot.dart';
+import 'safety_settings_models.dart';
 import 'settings_facade.dart';
 import 'settings_models.dart';
 
@@ -33,6 +35,7 @@ class BridgeSettingsFacade implements SettingsFacade {
   Future<LlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
     required String providerId,
+    required String selectedProviderOptionId,
     required String protocol,
     required String providerName,
     required String providerNotes,
@@ -45,6 +48,32 @@ class BridgeSettingsFacade implements SettingsFacade {
     await _bridge.saveLlmConfig(
       enabled: enabled,
       providerId: providerId,
+      selectedProviderOptionId: selectedProviderOptionId,
+      protocol: protocol,
+      providerName: providerName,
+      providerNotes: providerNotes,
+      baseUrl: baseUrl,
+      apiKey: apiKey,
+      model: model,
+      reasoningEffort: reasoningEffort,
+      systemPrompt: systemPrompt,
+    ),
+  );
+
+  @override
+  Future<LlmConfigSnapshot> saveCustomLlmProvider({
+    required String selectedProviderOptionId,
+    required String protocol,
+    required String providerName,
+    required String providerNotes,
+    required String baseUrl,
+    required String apiKey,
+    required String model,
+    required String reasoningEffort,
+    required String systemPrompt,
+  }) async => _mapLlmConfig(
+    await _bridge.saveCustomLlmProvider(
+      selectedProviderOptionId: selectedProviderOptionId,
       protocol: protocol,
       providerName: providerName,
       providerNotes: providerNotes,
@@ -117,6 +146,32 @@ class BridgeSettingsFacade implements SettingsFacade {
     required bool enabled,
   }) async => _mapMcpSettings(
     await _bridge.setMcpServerEnabled(serverId: serverId, enabled: enabled),
+  );
+
+  @override
+  Future<SafetySettingsSnapshot> loadSafetySettings() async =>
+      _mapSafetySettings(await _bridge.loadSafetySettings());
+
+  @override
+  Future<SafetySettingsSnapshot> saveSafetySettings(
+    SafetySettingsSnapshot snapshot,
+  ) async => _mapSafetySettings(
+    await _bridge.saveSafetySettings(
+      automationModeId: snapshot.automationMode.id,
+      rollbackJournalEnabled: snapshot.rollbackJournalEnabled,
+      maxFilesPerBatch: snapshot.maxFilesPerBatch,
+      undoWindowHours: snapshot.undoWindowHours,
+      fileChangesPolicyId: snapshot.fileChangesPolicy.id,
+      fileDeletesPolicyId: snapshot.fileDeletesPolicy.id,
+      shellCommandsPolicyId: snapshot.shellCommandsPolicy.id,
+      externalAccessModeId: snapshot.externalAccessMode.id,
+      photoLibraryEnabled: snapshot.isLocationEnabled('photo_library'),
+      downloadsEnabled: snapshot.isLocationEnabled('downloads'),
+      documentsEnabled: snapshot.isLocationEnabled('documents'),
+      recordingsEnabled: snapshot.isLocationEnabled('recordings'),
+      workspaceAccessProfileId: snapshot.workspaceAccessProfile.id,
+      readOnlyOutsideWorkspace: snapshot.readOnlyOutsideWorkspace,
+    ),
   );
 
   static SettingsOverviewSnapshot _mapOverview(
@@ -192,15 +247,19 @@ class BridgeSettingsFacade implements SettingsFacade {
       localeTag: snapshot.localeTag,
       enabled: snapshot.enabled,
       providerId: snapshot.providerId,
+      selectedProviderOptionId: snapshot.selectedProviderOptionId,
       protocol: snapshot.protocol,
       providerOptions: snapshot.providerOptions
           .map(
             (option) => LlmProviderOption(
               id: option.id,
+              providerId: option.providerId,
               title: option.title,
               subtitle: option.subtitle,
               defaultBaseUrl: option.defaultBaseUrl,
               defaultModel: option.defaultModel,
+              protocol: option.protocol,
+              apiKey: option.apiKey,
               isCustom: option.isCustom,
             ),
           )
@@ -329,6 +388,37 @@ class BridgeSettingsFacade implements SettingsFacade {
             ),
           )
           .toList(growable: false),
+    );
+  }
+
+  static SafetySettingsSnapshot _mapSafetySettings(
+    OpenCraySafetySettingsSnapshot snapshot,
+  ) {
+    return SafetySettingsSnapshot(
+      automationMode: safetyAutomationModeFromId(snapshot.automationModeId),
+      rollbackJournalEnabled: snapshot.rollbackJournalEnabled,
+      maxFilesPerBatch: snapshot.maxFilesPerBatch,
+      undoWindowHours: snapshot.undoWindowHours,
+      fileChangesPolicy: toolPolicyOverrideFromId(snapshot.fileChangesPolicyId),
+      fileDeletesPolicy: toolPolicyOverrideFromId(snapshot.fileDeletesPolicyId),
+      shellCommandsPolicy: toolPolicyOverrideFromId(
+        snapshot.shellCommandsPolicyId,
+      ),
+      externalAccessMode: externalAccessModeFromId(
+        snapshot.externalAccessModeId,
+      ),
+      locations: snapshot.locations
+          .map(
+            (location) => SafetyLocationSetting(
+              id: location.id,
+              enabled: location.enabled,
+            ),
+          )
+          .toList(growable: false),
+      workspaceAccessProfile: workspaceAccessProfileFromId(
+        snapshot.workspaceAccessProfileId,
+      ),
+      readOnlyOutsideWorkspace: snapshot.readOnlyOutsideWorkspace,
     );
   }
 }

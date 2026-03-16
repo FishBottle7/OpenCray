@@ -1,16 +1,20 @@
 import 'dart:async';
+import 'dart:convert';
 
 import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_file_image_preview.dart';
 import '../models/opencray_file_text_preview.dart';
 import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
 import '../models/opencray_mcp_settings.dart';
 import '../models/opencray_personalization_config.dart';
+import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
 import '../models/opencray_skills_snapshot.dart';
+import '../models/opencray_workspace_text_document.dart';
 import 'opencray_host_bridge.dart';
 
 class OpenCraySeedBridge implements OpenCrayHostBridge {
@@ -21,6 +25,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     OpenCrayLlmConfigSnapshot? initialLlmConfig,
     OpenCrayPersonalizationConfigSnapshot? initialPersonalizationConfig,
     OpenCrayMcpSettingsSnapshot? initialMcpSettings,
+    OpenCraySafetySettingsSnapshot? initialSafetySettings,
     OpenCraySkillsSnapshot? initialSkillsSnapshot,
     OpenCrayChatSnapshot? initialChatSnapshot,
   }) : _snapshot =
@@ -33,6 +38,9 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
              isHostConnected: false,
            ),
        _filesSnapshot = initialFilesSnapshot ?? _buildSeedFilesSnapshot(),
+       _textDocumentsByPath = Map<String, String>.from(
+         _seedPreviewContentByPath,
+       ),
        _settingsOverview =
            initialSettingsOverview ??
            const OpenCraySettingsOverviewSnapshot(
@@ -72,21 +80,28 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
              localeTag: 'en',
              enabled: false,
              providerId: 'openai',
+             selectedProviderOptionId: 'openai',
              providerOptions: <OpenCrayLlmProviderOptionSnapshot>[
                OpenCrayLlmProviderOptionSnapshot(
                  id: 'openai',
+                 providerId: 'openai',
                  title: 'OpenAI',
                  subtitle: 'Official OpenAI-compatible endpoint.',
                  defaultBaseUrl: 'https://api.openai.com/v1',
                  defaultModel: 'gpt-4o-mini',
+                 protocol: 'openai',
+                 apiKey: '',
                  isCustom: false,
                ),
                OpenCrayLlmProviderOptionSnapshot(
                  id: 'custom',
+                 providerId: 'custom',
                  title: 'Custom provider',
                  subtitle: 'Any OpenAI-compatible or Anthropic endpoint.',
                  defaultBaseUrl: '',
                  defaultModel: '',
+                 protocol: 'openai',
+                 apiKey: '',
                  isCustom: true,
                ),
              ],
@@ -104,6 +119,38 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
        _personalizationConfig =
            initialPersonalizationConfig ?? _buildSeedPersonalizationConfig(),
        _mcpSettings = initialMcpSettings ?? _buildSeedMcpSettings(),
+       _safetySettings =
+           initialSafetySettings ??
+           const OpenCraySafetySettingsSnapshot(
+             automationModeId: 'auto',
+             rollbackJournalEnabled: true,
+             maxFilesPerBatch: 20,
+             undoWindowHours: 24,
+             fileChangesPolicyId: 'inherit',
+             fileDeletesPolicyId: 'inherit',
+             shellCommandsPolicyId: 'inherit',
+             externalAccessModeId: 'select_paths',
+             locations: <OpenCraySafetySettingsLocationSnapshot>[
+               OpenCraySafetySettingsLocationSnapshot(
+                 id: 'photo_library',
+                 enabled: true,
+               ),
+               OpenCraySafetySettingsLocationSnapshot(
+                 id: 'downloads',
+                 enabled: true,
+               ),
+               OpenCraySafetySettingsLocationSnapshot(
+                 id: 'documents',
+                 enabled: false,
+               ),
+               OpenCraySafetySettingsLocationSnapshot(
+                 id: 'recordings',
+                 enabled: false,
+               ),
+             ],
+             workspaceAccessProfileId: 'work',
+             readOnlyOutsideWorkspace: true,
+           ),
        _skillsSnapshot =
            initialSkillsSnapshot ??
            const OpenCraySkillsSnapshot(
@@ -197,10 +244,12 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   final List<String> _shownNativeToasts = <String>[];
   OpenCrayShellSnapshot _snapshot;
   OpenCrayFilesSnapshot _filesSnapshot;
+  Map<String, String> _textDocumentsByPath;
   OpenCraySettingsOverviewSnapshot _settingsOverview;
   OpenCrayLlmConfigSnapshot _llmConfig;
   OpenCrayPersonalizationConfigSnapshot _personalizationConfig;
   OpenCrayMcpSettingsSnapshot _mcpSettings;
+  OpenCraySafetySettingsSnapshot _safetySettings;
   OpenCraySkillsSnapshot _skillsSnapshot;
   OpenCrayChatSnapshot _chatSnapshot;
 
@@ -220,6 +269,31 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async => _filesSnapshot;
 
   @override
+  Future<OpenCrayFileImagePreview> loadWorkspaceImagePreview(
+    String relativePath,
+  ) async {
+    final normalizedPath = relativePath.trim();
+    final node = _findSeedNode(_filesSnapshot.children, normalizedPath);
+    if (node == null) {
+      throw StateError('The selected file no longer exists.');
+    }
+    if (node.isDirectory) {
+      throw StateError("Folders can't be previewed here.");
+    }
+    if (!_supportsSeedImagePreview(node.name)) {
+      throw StateError('Image preview is available for image files only.');
+    }
+    return OpenCrayFileImagePreview(
+      name: node.name,
+      relativePath: node.relativePath,
+      bytes: base64Decode(_seedImagePreviewBase64),
+      mimeType: _seedImagePreviewMimeTypeFor(node.name),
+      width: 1,
+      height: 1,
+    );
+  }
+
+  @override
   Future<OpenCrayFileTextPreview> loadWorkspaceTextPreview(
     String relativePath,
   ) async {
@@ -237,8 +311,38 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     return OpenCrayFileTextPreview(
       name: node.name,
       relativePath: node.relativePath,
-      content: _seedTextPreviewContentFor(node),
+      content: _seedTextPreviewContentFor(
+        relativePath: node.relativePath,
+        name: node.name,
+        documentsByPath: _textDocumentsByPath,
+      ),
       isTruncated: false,
+    );
+  }
+
+  @override
+  Future<OpenCrayWorkspaceTextDocument> loadWorkspaceTextDocument(
+    String relativePath,
+  ) async {
+    final normalizedPath = relativePath.trim();
+    final node = _findSeedNode(_filesSnapshot.children, normalizedPath);
+    if (node == null) {
+      throw StateError('The selected file no longer exists.');
+    }
+    if (node.isDirectory) {
+      throw StateError("Folders can't be previewed here.");
+    }
+    if (!_supportsSeedTextPreview(node.name)) {
+      throw StateError('Text editing is available for text files only.');
+    }
+    return OpenCrayWorkspaceTextDocument(
+      name: node.name,
+      relativePath: node.relativePath,
+      content: _seedTextPreviewContentFor(
+        relativePath: node.relativePath,
+        name: node.name,
+        documentsByPath: _textDocumentsByPath,
+      ),
     );
   }
 
@@ -256,14 +360,42 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<OpenCrayFilesSnapshot> createWorkspaceTextFile({
+    required String parentRelativePath,
+    required String name,
+  }) async {
+    _filesSnapshot = _seedCreateWorkspaceTextFile(
+      _filesSnapshot,
+      parentRelativePath: parentRelativePath,
+      name: name,
+    );
+    _textDocumentsByPath[_joinSeedPath(
+          parentRelativePath.trim(),
+          name.trim(),
+        )] =
+        '';
+    return _filesSnapshot;
+  }
+
+  @override
   Future<OpenCrayFilesSnapshot> renameWorkspaceEntry({
     required String targetRelativePath,
     required String newName,
   }) async {
+    final normalizedTarget = targetRelativePath.trim();
+    final renamedPath = _joinSeedPath(
+      _seedParentPath(normalizedTarget),
+      newName.trim(),
+    );
     _filesSnapshot = _seedRenameWorkspaceEntry(
       _filesSnapshot,
-      targetRelativePath: targetRelativePath,
+      targetRelativePath: normalizedTarget,
       newName: newName,
+    );
+    _textDocumentsByPath = _seedRenameTextDocuments(
+      _textDocumentsByPath,
+      fromRelativePath: normalizedTarget,
+      toRelativePath: renamedPath,
     );
     return _filesSnapshot;
   }
@@ -272,7 +404,15 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   Future<OpenCrayFilesSnapshot> deleteWorkspaceEntries(
     List<String> relativePaths,
   ) async {
+    final targets = relativePaths
+        .map((path) => path.trim())
+        .where((path) => path.isNotEmpty)
+        .toSet();
     _filesSnapshot = _seedDeleteWorkspaceEntries(_filesSnapshot, relativePaths);
+    _textDocumentsByPath = _seedDeleteTextDocuments(
+      _textDocumentsByPath,
+      targets,
+    );
     return _filesSnapshot;
   }
 
@@ -282,11 +422,53 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     required String destinationRelativePath,
     required bool move,
   }) async {
+    final normalizedDestination = destinationRelativePath.trim();
+    final normalizedSources = sourceRelativePaths
+        .map((path) => path.trim())
+        .where((path) => path.isNotEmpty)
+        .toList(growable: false);
+    final activeSourcePaths = _seedActiveTransferSourcePaths(
+      snapshot: _filesSnapshot,
+      sourceRelativePaths: normalizedSources,
+      destinationRelativePath: normalizedDestination,
+      move: move,
+    );
     _filesSnapshot = _seedPasteWorkspaceEntries(
       _filesSnapshot,
-      sourceRelativePaths: sourceRelativePaths,
-      destinationRelativePath: destinationRelativePath,
+      sourceRelativePaths: normalizedSources,
+      destinationRelativePath: normalizedDestination,
       move: move,
+    );
+    _textDocumentsByPath = _seedPasteTextDocuments(
+      _textDocumentsByPath,
+      sourceRelativePaths: activeSourcePaths,
+      destinationRelativePath: normalizedDestination,
+      move: move,
+    );
+    return _filesSnapshot;
+  }
+
+  @override
+  Future<OpenCrayFilesSnapshot> saveWorkspaceTextDocument({
+    required String targetRelativePath,
+    required String content,
+  }) async {
+    final normalizedTarget = targetRelativePath.trim();
+    final node = _findSeedNode(_filesSnapshot.children, normalizedTarget);
+    if (node == null) {
+      throw StateError('The selected file no longer exists.');
+    }
+    if (node.isDirectory) {
+      throw StateError("Folders can't be edited here.");
+    }
+    if (!_supportsSeedTextPreview(node.name)) {
+      throw StateError('Text editing is available for text files only.');
+    }
+    _textDocumentsByPath[normalizedTarget] = content;
+    _filesSnapshot = _seedUpdateWorkspaceFileSize(
+      _filesSnapshot,
+      targetRelativePath: normalizedTarget,
+      sizeBytes: utf8.encode(content).length,
     );
     return _filesSnapshot;
   }
@@ -327,6 +509,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   Future<OpenCrayLlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
     required String providerId,
+    required String selectedProviderOptionId,
     required String protocol,
     required String providerName,
     required String providerNotes,
@@ -344,6 +527,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       localeTag: _llmConfig.localeTag,
       enabled: isConfigured,
       providerId: providerId,
+      selectedProviderOptionId: selectedProviderOptionId,
       protocol: protocol,
       providerOptions: _llmConfig.providerOptions,
       providerName: providerName,
@@ -351,6 +535,63 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       baseUrl: baseUrl,
       apiKey: apiKey,
       model: model,
+      reasoningEffort: reasoningEffort,
+      systemPrompt: systemPrompt,
+      helperText: _llmConfig.helperText,
+    );
+    return _llmConfig;
+  }
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> saveCustomLlmProvider({
+    required String selectedProviderOptionId,
+    required String protocol,
+    required String providerName,
+    required String providerNotes,
+    required String baseUrl,
+    required String apiKey,
+    required String model,
+    required String reasoningEffort,
+    required String systemPrompt,
+  }) async {
+    final providerOptionId =
+        selectedProviderOptionId.trim().isEmpty ||
+            selectedProviderOptionId == 'custom'
+        ? 'saved-custom-${DateTime.now().millisecondsSinceEpoch}'
+        : selectedProviderOptionId;
+    final savedOption = OpenCrayLlmProviderOptionSnapshot(
+      id: providerOptionId,
+      providerId: 'custom',
+      title: providerName.trim().isEmpty
+          ? 'Custom provider'
+          : providerName.trim(),
+      subtitle: providerNotes.trim(),
+      defaultBaseUrl: baseUrl.trim(),
+      defaultModel: model.trim(),
+      protocol: protocol.trim().isEmpty ? 'openai' : protocol.trim(),
+      apiKey: apiKey.trim(),
+      isCustom: true,
+    );
+    final providerOptions = <OpenCrayLlmProviderOptionSnapshot>[
+      for (final option in _llmConfig.providerOptions)
+        if (option.id != providerOptionId) option,
+      savedOption,
+    ];
+    _llmConfig = OpenCrayLlmConfigSnapshot(
+      localeTag: _llmConfig.localeTag,
+      enabled:
+          baseUrl.trim().isNotEmpty &&
+          apiKey.trim().isNotEmpty &&
+          model.trim().isNotEmpty,
+      providerId: 'custom',
+      selectedProviderOptionId: providerOptionId,
+      protocol: savedOption.protocol,
+      providerOptions: providerOptions,
+      providerName: savedOption.title,
+      providerNotes: savedOption.subtitle,
+      baseUrl: savedOption.defaultBaseUrl,
+      apiKey: savedOption.apiKey,
+      model: savedOption.defaultModel,
       reasoningEffort: reasoningEffort,
       systemPrompt: systemPrompt,
       helperText: _llmConfig.helperText,
@@ -404,6 +645,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       localeTag: languageId,
       enabled: _llmConfig.enabled,
       providerId: _llmConfig.providerId,
+      selectedProviderOptionId: _llmConfig.selectedProviderOptionId,
       protocol: _llmConfig.protocol,
       providerOptions: _llmConfig.providerOptions,
       providerName: _llmConfig.providerName,
@@ -481,6 +723,60 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       serverOverrides: <String, bool>{serverId: enabled},
     );
     return _mcpSettings;
+  }
+
+  @override
+  Future<OpenCraySafetySettingsSnapshot> loadSafetySettings() async =>
+      _safetySettings;
+
+  @override
+  Future<OpenCraySafetySettingsSnapshot> saveSafetySettings({
+    required String automationModeId,
+    required bool rollbackJournalEnabled,
+    required int maxFilesPerBatch,
+    required int undoWindowHours,
+    required String fileChangesPolicyId,
+    required String fileDeletesPolicyId,
+    required String shellCommandsPolicyId,
+    required String externalAccessModeId,
+    required bool photoLibraryEnabled,
+    required bool downloadsEnabled,
+    required bool documentsEnabled,
+    required bool recordingsEnabled,
+    required String workspaceAccessProfileId,
+    required bool readOnlyOutsideWorkspace,
+  }) async {
+    _safetySettings = OpenCraySafetySettingsSnapshot(
+      automationModeId: automationModeId,
+      rollbackJournalEnabled: rollbackJournalEnabled,
+      maxFilesPerBatch: maxFilesPerBatch,
+      undoWindowHours: undoWindowHours,
+      fileChangesPolicyId: fileChangesPolicyId,
+      fileDeletesPolicyId: fileDeletesPolicyId,
+      shellCommandsPolicyId: shellCommandsPolicyId,
+      externalAccessModeId: externalAccessModeId,
+      locations: <OpenCraySafetySettingsLocationSnapshot>[
+        OpenCraySafetySettingsLocationSnapshot(
+          id: 'photo_library',
+          enabled: photoLibraryEnabled,
+        ),
+        OpenCraySafetySettingsLocationSnapshot(
+          id: 'downloads',
+          enabled: downloadsEnabled,
+        ),
+        OpenCraySafetySettingsLocationSnapshot(
+          id: 'documents',
+          enabled: documentsEnabled,
+        ),
+        OpenCraySafetySettingsLocationSnapshot(
+          id: 'recordings',
+          enabled: recordingsEnabled,
+        ),
+      ],
+      workspaceAccessProfileId: workspaceAccessProfileId,
+      readOnlyOutsideWorkspace: readOnlyOutsideWorkspace,
+    );
+    return _safetySettings;
   }
 
   @override
@@ -616,6 +912,104 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<void> copyChatSession(String sessionId) async {
+    OpenCrayChatSessionItemSnapshot? sourceSession;
+    for (final session in _chatSnapshot.drawer.sessions) {
+      if (session.sessionId == sessionId) {
+        sourceSession = session;
+        break;
+      }
+    }
+    if (sourceSession == null) {
+      return;
+    }
+    final copiedSession = OpenCrayChatSessionItemSnapshot(
+      sessionId: '$sessionId-copy-${_chatSnapshot.drawer.sessions.length + 1}',
+      title: _seedCopySessionTitle(sourceSession.title),
+      preview: sourceSession.preview,
+      meta: sourceSession.meta,
+      isSelected: true,
+    );
+    final updatedSessions = <OpenCrayChatSessionItemSnapshot>[
+      copiedSession,
+      ..._chatSnapshot.drawer.sessions.map(
+        (session) => OpenCrayChatSessionItemSnapshot(
+          sessionId: session.sessionId,
+          title: session.title,
+          preview: session.preview,
+          meta: session.meta,
+          isSelected: false,
+          unreadCount: session.unreadCount,
+        ),
+      ),
+    ];
+    _chatSnapshot = _copyChatSnapshotWith(
+      drawer: OpenCrayChatDrawerSnapshot(
+        eyebrow: _chatSnapshot.drawer.eyebrow,
+        title: _chatSnapshot.drawer.title,
+        ctaLabel: _chatSnapshot.drawer.ctaLabel,
+        sessions: updatedSessions,
+      ),
+      summary: OpenCrayChatSummarySnapshot(
+        title: copiedSession.title,
+        badge: _chatSnapshot.summary.badge,
+        body: sourceSession.preview.isNotEmpty
+            ? sourceSession.preview
+            : _chatSnapshot.summary.body,
+      ),
+    );
+    _emitChatSnapshot();
+  }
+
+  @override
+  Future<void> deleteChatSession(String sessionId) async {
+    final remainingSessions = _chatSnapshot.drawer.sessions
+        .where((session) => session.sessionId != sessionId)
+        .toList(growable: false);
+    if (remainingSessions.length == _chatSnapshot.drawer.sessions.length) {
+      return;
+    }
+    if (remainingSessions.isEmpty) {
+      await createChatSession();
+      return;
+    }
+    final selectedSession = remainingSessions.firstWhere(
+      (session) => session.isSelected,
+      orElse: () => remainingSessions.first,
+    );
+    final updatedSessions = remainingSessions
+        .map(
+          (session) => OpenCrayChatSessionItemSnapshot(
+            sessionId: session.sessionId,
+            title: session.title,
+            preview: session.preview,
+            meta: session.meta,
+            isSelected: session.sessionId == selectedSession.sessionId,
+            unreadCount: session.sessionId == selectedSession.sessionId
+                ? 0
+                : session.unreadCount,
+          ),
+        )
+        .toList(growable: false);
+    _chatSnapshot = _copyChatSnapshotWith(
+      drawer: OpenCrayChatDrawerSnapshot(
+        eyebrow: _chatSnapshot.drawer.eyebrow,
+        title: _chatSnapshot.drawer.title,
+        ctaLabel: _chatSnapshot.drawer.ctaLabel,
+        sessions: updatedSessions,
+      ),
+      summary: OpenCrayChatSummarySnapshot(
+        title: selectedSession.title,
+        badge: _chatSnapshot.summary.badge,
+        body: selectedSession.preview.isNotEmpty
+            ? selectedSession.preview
+            : _chatSnapshot.summary.body,
+      ),
+    );
+    _emitChatSnapshot();
+  }
+
+  @override
   Future<void> selectChatSession(String sessionId) async {}
 
   @override
@@ -707,6 +1101,23 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     }
   }
 
+  OpenCrayChatSnapshot _copyChatSnapshotWith({
+    required OpenCrayChatDrawerSnapshot drawer,
+    OpenCrayChatSummarySnapshot? summary,
+  }) {
+    return OpenCrayChatSnapshot(
+      screenTitle: _chatSnapshot.screenTitle,
+      modeLabel: _chatSnapshot.modeLabel,
+      sessionButtonLabel: _chatSnapshot.sessionButtonLabel,
+      composerPlaceholder: _chatSnapshot.composerPlaceholder,
+      summary: summary ?? _chatSnapshot.summary,
+      messages: _chatSnapshot.messages,
+      drawer: drawer,
+      isInputEnabled: _chatSnapshot.isInputEnabled,
+      pendingApprovals: _chatSnapshot.pendingApprovals,
+    );
+  }
+
   void _resolveChatApproval(String taskId) {
     final remainingApprovals = _chatSnapshot.pendingApprovals
         .where((approval) => approval.taskId != taskId)
@@ -727,6 +1138,16 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     );
     _emitChatSnapshot();
   }
+}
+
+String _seedCopySessionTitle(String title) {
+  if (title.endsWith(' copy')) {
+    return title;
+  }
+  if (title.length >= 27) {
+    return '${title.substring(0, 27)} copy';
+  }
+  return '$title copy';
 }
 
 OpenCraySettingsDetailSnapshot _seedSettingsDetailFor(String routeId) {
@@ -1252,6 +1673,42 @@ OpenCrayFilesSnapshot _seedCreateWorkspaceFolder(
   return _rebuildSeedSnapshot(snapshot, updatedChildren);
 }
 
+OpenCrayFilesSnapshot _seedCreateWorkspaceTextFile(
+  OpenCrayFilesSnapshot snapshot, {
+  required String parentRelativePath,
+  required String name,
+}) {
+  final normalizedName = _validateSeedEntryName(name);
+  if (!_supportsSeedTextPreview(normalizedName)) {
+    throw StateError('Only supported text files can be created here.');
+  }
+  final updatedChildren = _updateSeedDirectoryChildren(
+    snapshot.children,
+    parentRelativePath.trim(),
+    (children) {
+      if (children.any((child) => child.name == normalizedName)) {
+        throw StateError("An item named '$normalizedName' already exists.");
+      }
+      return _sortSeedNodes(<OpenCrayFileTreeNodeSnapshot>[
+        ...children,
+        OpenCrayFileTreeNodeSnapshot(
+          name: normalizedName,
+          relativePath: _joinSeedPath(
+            parentRelativePath.trim(),
+            normalizedName,
+          ),
+          isDirectory: false,
+          childCount: 0,
+          sizeBytes: 0,
+          isTruncated: false,
+          children: const <OpenCrayFileTreeNodeSnapshot>[],
+        ),
+      ]);
+    },
+  );
+  return _rebuildSeedSnapshot(snapshot, updatedChildren);
+}
+
 OpenCrayFilesSnapshot _seedRenameWorkspaceEntry(
   OpenCrayFilesSnapshot snapshot, {
   required String targetRelativePath,
@@ -1406,6 +1863,27 @@ OpenCrayFilesSnapshot _rebuildSeedSnapshot(
   );
 }
 
+OpenCrayFilesSnapshot _seedUpdateWorkspaceFileSize(
+  OpenCrayFilesSnapshot snapshot, {
+  required String targetRelativePath,
+  required int sizeBytes,
+}) {
+  final updatedChildren = _replaceSeedNode(
+    snapshot.children,
+    targetRelativePath.trim(),
+    (node) => OpenCrayFileTreeNodeSnapshot(
+      name: node.name,
+      relativePath: node.relativePath,
+      isDirectory: node.isDirectory,
+      childCount: node.childCount,
+      sizeBytes: sizeBytes,
+      isTruncated: node.isTruncated,
+      children: node.children,
+    ),
+  );
+  return _rebuildSeedSnapshot(snapshot, updatedChildren);
+}
+
 List<OpenCrayFileTreeNodeSnapshot> _updateSeedDirectoryChildren(
   List<OpenCrayFileTreeNodeSnapshot> nodes,
   String directoryPath,
@@ -1507,6 +1985,33 @@ List<OpenCrayFileTreeNodeSnapshot> _removeSeedNodes(
       .toList(growable: false);
 }
 
+List<OpenCrayFileTreeNodeSnapshot> _replaceSeedNode(
+  List<OpenCrayFileTreeNodeSnapshot> nodes,
+  String targetPath,
+  OpenCrayFileTreeNodeSnapshot Function(OpenCrayFileTreeNodeSnapshot node)
+  transform,
+) {
+  return nodes
+      .map((node) {
+        if (node.relativePath == targetPath) {
+          return transform(node);
+        }
+        if (!node.isDirectory) {
+          return node;
+        }
+        final updatedChildren = _replaceSeedNode(
+          node.children,
+          targetPath,
+          transform,
+        );
+        if (identical(updatedChildren, node.children)) {
+          return node;
+        }
+        return _copySeedNode(node, children: updatedChildren);
+      })
+      .toList(growable: false);
+}
+
 OpenCrayFileTreeNodeSnapshot? _findSeedNode(
   List<OpenCrayFileTreeNodeSnapshot> nodes,
   String targetPath,
@@ -1521,6 +2026,115 @@ OpenCrayFileTreeNodeSnapshot? _findSeedNode(
     }
   }
   return null;
+}
+
+List<String> _seedActiveTransferSourcePaths({
+  required OpenCrayFilesSnapshot snapshot,
+  required List<String> sourceRelativePaths,
+  required String destinationRelativePath,
+  required bool move,
+}) {
+  final sourceNodes = sourceRelativePaths
+      .map((path) => _findSeedNode(snapshot.children, path))
+      .toList(growable: false);
+  if (sourceNodes.any((node) => node == null)) {
+    throw StateError('One or more selected items no longer exist.');
+  }
+  final resolvedSources = sourceNodes
+      .whereType<OpenCrayFileTreeNodeSnapshot>()
+      .toList(growable: false);
+  return <String>[
+    for (final source in resolvedSources)
+      if (!(move &&
+          _seedParentPath(source.relativePath) == destinationRelativePath))
+        source.relativePath,
+  ];
+}
+
+Map<String, String> _seedRenameTextDocuments(
+  Map<String, String> documentsByPath, {
+  required String fromRelativePath,
+  required String toRelativePath,
+}) {
+  return <String, String>{
+    for (final entry in documentsByPath.entries)
+      _rebaseSeedDocumentPath(
+        entry.key,
+        fromRelativePath: fromRelativePath,
+        toRelativePath: toRelativePath,
+      ): entry.value,
+  };
+}
+
+Map<String, String> _seedDeleteTextDocuments(
+  Map<String, String> documentsByPath,
+  Set<String> targetPaths,
+) {
+  return <String, String>{
+    for (final entry in documentsByPath.entries)
+      if (!_matchesSeedPathPrefix(entry.key, targetPaths))
+        entry.key: entry.value,
+  };
+}
+
+Map<String, String> _seedPasteTextDocuments(
+  Map<String, String> documentsByPath, {
+  required List<String> sourceRelativePaths,
+  required String destinationRelativePath,
+  required bool move,
+}) {
+  final updated = move
+      ? _seedDeleteTextDocuments(documentsByPath, sourceRelativePaths.toSet())
+      : Map<String, String>.from(documentsByPath);
+  for (final sourceRelativePath in sourceRelativePaths) {
+    final destinationPath = _joinSeedPath(
+      destinationRelativePath,
+      _seedBaseName(sourceRelativePath),
+    );
+    for (final entry in documentsByPath.entries) {
+      if (!_matchesSeedPathPrefix(entry.key, <String>{sourceRelativePath})) {
+        continue;
+      }
+      updated[_rebaseSeedDocumentPath(
+            entry.key,
+            fromRelativePath: sourceRelativePath,
+            toRelativePath: destinationPath,
+          )] =
+          entry.value;
+    }
+  }
+  return updated;
+}
+
+String _rebaseSeedDocumentPath(
+  String path, {
+  required String fromRelativePath,
+  required String toRelativePath,
+}) {
+  if (path == fromRelativePath) {
+    return toRelativePath;
+  }
+  if (path.startsWith('$fromRelativePath/')) {
+    return '$toRelativePath/${path.substring(fromRelativePath.length + 1)}';
+  }
+  return path;
+}
+
+bool _matchesSeedPathPrefix(String path, Set<String> prefixes) {
+  for (final prefix in prefixes) {
+    if (path == prefix || path.startsWith('$prefix/')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+String _seedBaseName(String relativePath) {
+  final normalized = relativePath.trim();
+  if (normalized.isEmpty || !normalized.contains('/')) {
+    return normalized;
+  }
+  return normalized.substring(normalized.lastIndexOf('/') + 1);
 }
 
 OpenCrayFileTreeNodeSnapshot _rebaseSeedNode(
@@ -1632,9 +2246,42 @@ bool _supportsSeedTextPreview(String name) {
   return _seedTextPreviewExtensions.contains(extension);
 }
 
-String _seedTextPreviewContentFor(OpenCrayFileTreeNodeSnapshot node) {
-  return _seedPreviewContentByPath[node.relativePath] ??
-      'Preview for ${node.relativePath}\n\n'
+bool _supportsSeedImagePreview(String name) {
+  final normalizedName = name.trim().toLowerCase();
+  final extension = normalizedName.contains('.')
+      ? normalizedName.substring(normalizedName.lastIndexOf('.') + 1)
+      : '';
+  return _seedImagePreviewExtensions.contains(extension);
+}
+
+String _seedImagePreviewMimeTypeFor(String name) {
+  final normalizedName = name.trim().toLowerCase();
+  final extension = normalizedName.contains('.')
+      ? normalizedName.substring(normalizedName.lastIndexOf('.') + 1)
+      : '';
+  switch (extension) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'bmp':
+      return 'image/bmp';
+    default:
+      return 'image/png';
+  }
+}
+
+String _seedTextPreviewContentFor({
+  required String relativePath,
+  required String name,
+  required Map<String, String> documentsByPath,
+}) {
+  return documentsByPath[relativePath] ??
+      _seedPreviewContentByPath[relativePath] ??
+      'Preview for $relativePath\n\n'
           'This is seeded text content generated by the local preview bridge.\n';
 }
 
@@ -1683,6 +2330,20 @@ const Set<String> _seedTextPreviewExtensions = <String>{
   'py',
   'sql',
 };
+
+const Set<String> _seedImagePreviewExtensions = <String>{
+  'png',
+  'jpg',
+  'jpeg',
+  'webp',
+  'gif',
+  'bmp',
+  'heic',
+  'heif',
+};
+
+const String _seedImagePreviewBase64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wn1yt4AAAAASUVORK5CYII=';
 
 const Map<String, String> _seedPreviewContentByPath = <String, String>{
   'workspace-notes.txt':

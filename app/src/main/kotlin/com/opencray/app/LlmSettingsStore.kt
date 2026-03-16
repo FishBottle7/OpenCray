@@ -2,12 +2,16 @@ package com.opencray.app
 
 import android.content.Context
 import android.content.SharedPreferences
+import java.util.UUID
+import org.json.JSONArray
+import org.json.JSONObject
 
 private const val DEFAULT_LLM_SETTINGS_PREFERENCES = "opencray.llm-settings"
 
 internal object LlmSettingsStoreKeys {
   const val ENABLED = "enabled"
   const val PROVIDER_ID = "provider_id"
+  const val SELECTED_PROVIDER_OPTION_ID = "selected_provider_option_id"
   const val PROTOCOL = "protocol"
   const val PROVIDER_NAME = "provider_name"
   const val PROVIDER_NOTES = "provider_notes"
@@ -16,6 +20,7 @@ internal object LlmSettingsStoreKeys {
   const val MODEL = "model"
   const val REASONING_EFFORT = "reasoning_effort"
   const val SYSTEM_PROMPT = "system_prompt"
+  const val SAVED_CUSTOM_PROVIDERS = "saved_custom_providers"
 }
 
 internal data class LlmSettingsState(
@@ -56,6 +61,68 @@ internal data class LlmSettingsState(
 
     fun inferProviderId(baseUrl: String): String =
       LlmProviderCatalog.inferPresetId(baseUrl)
+  }
+}
+
+internal data class SavedCustomLlmProvider(
+  val id: String,
+  val protocol: String,
+  val providerName: String,
+  val providerNotes: String,
+  val baseUrl: String,
+  val apiKey: String,
+  val model: String,
+) {
+  fun sanitized(): SavedCustomLlmProvider = copy(
+    id = id.trim(),
+    protocol = LlmProviderProtocols.normalize(protocol),
+    providerName = providerName.trim(),
+    providerNotes = providerNotes.trim(),
+    baseUrl = baseUrl.trim(),
+    apiKey = apiKey.trim(),
+    model = model.trim(),
+  )
+
+  fun toJson(): JSONObject = JSONObject()
+    .put("id", id)
+    .put("protocol", protocol)
+    .put("providerName", providerName)
+    .put("providerNotes", providerNotes)
+    .put("baseUrl", baseUrl)
+    .put("apiKey", apiKey)
+    .put("model", model)
+
+  companion object {
+    fun create(
+      protocol: String,
+      providerName: String,
+      providerNotes: String,
+      baseUrl: String,
+      apiKey: String,
+      model: String,
+      existingId: String? = null,
+    ): SavedCustomLlmProvider = SavedCustomLlmProvider(
+      id = existingId?.trim().orEmpty().ifBlank { "saved-custom-${UUID.randomUUID()}" },
+      protocol = protocol,
+      providerName = providerName,
+      providerNotes = providerNotes,
+      baseUrl = baseUrl,
+      apiKey = apiKey,
+      model = model,
+    ).sanitized()
+
+    fun fromJson(payload: JSONObject): SavedCustomLlmProvider? {
+      val provider = SavedCustomLlmProvider(
+        id = payload.optString("id"),
+        protocol = payload.optString("protocol", LlmProviderProtocols.OPENAI),
+        providerName = payload.optString("providerName"),
+        providerNotes = payload.optString("providerNotes"),
+        baseUrl = payload.optString("baseUrl"),
+        apiKey = payload.optString("apiKey"),
+        model = payload.optString("model"),
+      ).sanitized()
+      return provider.takeIf { it.id.isNotBlank() }
+    }
   }
 }
 
@@ -136,10 +203,21 @@ internal class LlmSettingsStore(
   }
 
   fun save(state: LlmSettingsState) {
+    save(state = state, selectedProviderOptionId = state.providerId)
+  }
+
+  fun save(
+    state: LlmSettingsState,
+    selectedProviderOptionId: String,
+  ) {
     val resolved = state.sanitized()
     val sanitized = resolved.copy(enabled = resolved.isConfigured())
     keyValueStore.putBoolean(LlmSettingsStoreKeys.ENABLED, sanitized.enabled)
     keyValueStore.putString(LlmSettingsStoreKeys.PROVIDER_ID, sanitized.providerId)
+    keyValueStore.putString(
+      LlmSettingsStoreKeys.SELECTED_PROVIDER_OPTION_ID,
+      selectedProviderOptionId.trim().ifBlank { sanitized.providerId },
+    )
     keyValueStore.putString(LlmSettingsStoreKeys.PROTOCOL, sanitized.protocol)
     keyValueStore.putString(LlmSettingsStoreKeys.PROVIDER_NAME, sanitized.providerName)
     keyValueStore.putString(LlmSettingsStoreKeys.PROVIDER_NOTES, sanitized.providerNotes)
@@ -148,6 +226,40 @@ internal class LlmSettingsStore(
     keyValueStore.putString(LlmSettingsStoreKeys.MODEL, sanitized.model)
     keyValueStore.putString(LlmSettingsStoreKeys.REASONING_EFFORT, sanitized.reasoningEffort)
     keyValueStore.putString(LlmSettingsStoreKeys.SYSTEM_PROMPT, sanitized.systemPrompt)
+  }
+
+  fun loadSelectedProviderOptionId(defaultProviderId: String): String =
+    keyValueStore.getString(LlmSettingsStoreKeys.SELECTED_PROVIDER_OPTION_ID)
+      ?.trim()
+      .orEmpty()
+      .ifBlank { defaultProviderId }
+
+  fun loadSavedCustomProviders(): List<SavedCustomLlmProvider> {
+    val rawPayload = keyValueStore.getString(LlmSettingsStoreKeys.SAVED_CUSTOM_PROVIDERS).orEmpty()
+    if (rawPayload.isBlank()) {
+      return emptyList()
+    }
+    val providers = runCatching { JSONArray(rawPayload) }
+      .getOrElse { return emptyList() }
+    return buildList {
+      repeat(providers.length()) { index ->
+        val provider = providers.optJSONObject(index)
+          ?.let(SavedCustomLlmProvider::fromJson)
+        if (provider != null) {
+          add(provider)
+        }
+      }
+    }
+  }
+
+  fun saveSavedCustomProviders(providers: List<SavedCustomLlmProvider>) {
+    val normalized = JSONArray().apply {
+      providers
+        .map(SavedCustomLlmProvider::sanitized)
+        .filter { provider -> provider.id.isNotBlank() }
+        .forEach { provider -> put(provider.toJson()) }
+    }
+    keyValueStore.putString(LlmSettingsStoreKeys.SAVED_CUSTOM_PROVIDERS, normalized.toString())
   }
 
   fun clear() {

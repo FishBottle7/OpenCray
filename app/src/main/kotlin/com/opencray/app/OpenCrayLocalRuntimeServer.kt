@@ -120,10 +120,20 @@ internal class OpenCrayLocalRuntimeServer(
     val payload: Any? = when (request.method to request.path) {
       "GET" to "/v1/shell_snapshot" -> hostRuntime.loadShellSnapshot()
       "GET" to "/v1/files_snapshot" -> hostRuntime.loadFilesSnapshot()
+      "GET" to "/v1/workspace_image_preview" -> hostRuntime.loadWorkspaceImagePreview(
+        relativePath = request.queryParameter("relativePath"),
+      )
       "GET" to "/v1/workspace_text_preview" -> hostRuntime.loadWorkspaceTextPreview(
         relativePath = request.queryParameter("relativePath"),
       )
+      "GET" to "/v1/workspace_text_document" -> hostRuntime.loadWorkspaceTextDocument(
+        relativePath = request.queryParameter("relativePath"),
+      )
       "POST" to "/v1/create_workspace_folder" -> hostRuntime.createWorkspaceFolder(
+        parentRelativePath = body.optString("parentRelativePath"),
+        name = body.optString("name"),
+      )
+      "POST" to "/v1/create_workspace_text_file" -> hostRuntime.createWorkspaceTextFile(
         parentRelativePath = body.optString("parentRelativePath"),
         name = body.optString("name"),
       )
@@ -133,6 +143,10 @@ internal class OpenCrayLocalRuntimeServer(
       )
       "POST" to "/v1/delete_workspace_entries" -> hostRuntime.deleteWorkspaceEntries(
         relativePaths = body.optJSONArray("relativePaths")?.let(::jsonArrayToStrings) ?: emptyList(),
+      )
+      "POST" to "/v1/save_workspace_text_document" -> hostRuntime.saveWorkspaceTextDocument(
+        targetRelativePath = body.optString("targetRelativePath"),
+        content = body.optString("content"),
       )
       "POST" to "/v1/paste_workspace_entries" -> hostRuntime.pasteWorkspaceEntries(
         sourceRelativePaths = body.optJSONArray("sourceRelativePaths")?.let(::jsonArrayToStrings)
@@ -154,6 +168,18 @@ internal class OpenCrayLocalRuntimeServer(
       "POST" to "/v1/save_llm_config" -> hostRuntime.saveLlmConfig(
         enabled = body.optBoolean("enabled"),
         providerId = body.optString("providerId"),
+        selectedProviderOptionId = body.optString("selectedProviderOptionId"),
+        protocol = body.optString("protocol"),
+        providerName = body.optString("providerName"),
+        providerNotes = body.optString("providerNotes"),
+        baseUrl = body.optString("baseUrl"),
+        apiKey = body.optString("apiKey"),
+        model = body.optString("model"),
+        reasoningEffort = body.optString("reasoningEffort"),
+        systemPrompt = body.optString("systemPrompt"),
+      )
+      "POST" to "/v1/save_custom_llm_provider" -> hostRuntime.saveCustomLlmProvider(
+        selectedProviderOptionId = body.optString("selectedProviderOptionId"),
         protocol = body.optString("protocol"),
         providerName = body.optString("providerName"),
         providerNotes = body.optString("providerNotes"),
@@ -191,6 +217,23 @@ internal class OpenCrayLocalRuntimeServer(
         serverId = body.optString("serverId"),
         enabled = body.optBoolean("enabled"),
       )
+      "GET" to "/v1/safety_settings" -> hostRuntime.loadSafetySettings()
+      "POST" to "/v1/save_safety_settings" -> hostRuntime.saveSafetySettings(
+        automationModeId = body.optString("automationModeId"),
+        rollbackJournalEnabled = body.optBoolean("rollbackJournalEnabled", true),
+        maxFilesPerBatch = body.optInt("maxFilesPerBatch", 20),
+        undoWindowHours = body.optInt("undoWindowHours", 24),
+        fileChangesPolicyId = body.optString("fileChangesPolicyId"),
+        fileDeletesPolicyId = body.optString("fileDeletesPolicyId"),
+        shellCommandsPolicyId = body.optString("shellCommandsPolicyId"),
+        externalAccessModeId = body.optString("externalAccessModeId"),
+        photoLibraryEnabled = body.optBoolean("photoLibraryEnabled", true),
+        downloadsEnabled = body.optBoolean("downloadsEnabled", true),
+        documentsEnabled = body.optBoolean("documentsEnabled", false),
+        recordingsEnabled = body.optBoolean("recordingsEnabled", false),
+        workspaceAccessProfileId = body.optString("workspaceAccessProfileId"),
+        readOnlyOutsideWorkspace = body.optBoolean("readOnlyOutsideWorkspace", true),
+      )
       "GET" to "/v1/skills_snapshot" -> hostRuntime.loadSkillsSnapshot()
       "POST" to "/v1/set_skill_enabled" -> {
         hostRuntime.setSkillEnabled(
@@ -216,6 +259,14 @@ internal class OpenCrayLocalRuntimeServer(
       )
       "POST" to "/v1/create_chat_session" -> {
         hostRuntime.createChatSession()
+        null
+      }
+      "POST" to "/v1/copy_chat_session" -> {
+        hostRuntime.copyChatSession(body.optString("sessionId"))
+        null
+      }
+      "POST" to "/v1/delete_chat_session" -> {
+        hostRuntime.deleteChatSession(body.optString("sessionId"))
         null
       }
       "POST" to "/v1/select_chat_session" -> {

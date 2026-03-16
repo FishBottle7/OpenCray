@@ -10,6 +10,7 @@ import com.opencray.app.LocaleSettingsStore
 import com.opencray.app.OpenAiCompatibleLiteLlmProviderClient
 import com.opencray.app.OpenCrayLocaleManager
 import com.opencray.app.OpenCrayUserAgent
+import com.opencray.app.SavedCustomLlmProvider
 import com.opencray.llm.DefaultLiteLlmGateway
 import com.opencray.llm.InMemoryLiteLlmRoutingSettingsStore
 import com.opencray.llm.LiteLlmGatewayRequest
@@ -23,10 +24,13 @@ import org.opencray.app.R
 
 data class LlmProviderOptionSnapshot(
   val id: String,
+  val providerId: String,
   val title: String,
   val subtitle: String,
   val defaultBaseUrl: String,
   val defaultModel: String,
+  val protocol: String,
+  val apiKey: String,
   val isCustom: Boolean,
 )
 
@@ -34,6 +38,7 @@ data class LlmConfigSnapshot(
   val localeTag: String,
   val enabled: Boolean,
   val providerId: String,
+  val selectedProviderOptionId: String,
   val protocol: String,
   val providerOptions: List<LlmProviderOptionSnapshot>,
   val providerName: String,
@@ -49,6 +54,19 @@ data class LlmConfigSnapshot(
 data class SaveLlmConfigRequest(
   val enabled: Boolean,
   val providerId: String,
+  val selectedProviderOptionId: String,
+  val protocol: String,
+  val providerName: String,
+  val providerNotes: String,
+  val baseUrl: String,
+  val apiKey: String,
+  val model: String,
+  val reasoningEffort: String,
+  val systemPrompt: String,
+)
+
+data class SaveCustomLlmProviderRequest(
+  val selectedProviderOptionId: String,
   val protocol: String,
   val providerName: String,
   val providerNotes: String,
@@ -97,6 +115,8 @@ interface LlmConfigFacade {
 
   fun save(request: SaveLlmConfigRequest): LlmConfigSnapshot
 
+  fun saveCustomProvider(request: SaveCustomLlmProviderRequest): LlmConfigSnapshot
+
   fun validate(request: ValidateLlmConfigRequest): LlmValidationResult
 }
 
@@ -108,41 +128,56 @@ internal class LocalLlmConfigFacade private constructor(
   override fun load(): LlmConfigSnapshot = snapshotFor(llmSettingsStore.load())
 
   override fun save(request: SaveLlmConfigRequest): LlmConfigSnapshot {
-    val providerPreset = LlmProviderCatalog.presetById(request.providerId)
-      ?: throw IllegalArgumentException("Unsupported provider '${request.providerId}'.")
-    val protocol = resolvedProtocol(
-      providerPreset = providerPreset,
-      requestedProtocol = request.protocol,
+    val savedState = resolvedStateFromRequest(request)
+    llmSettingsStore.save(
+      state = savedState,
+      selectedProviderOptionId = request.selectedProviderOptionId,
     )
-    val baseUrl = request.baseUrl.trim().ifBlank {
-      providerPreset.defaultBaseUrl
+    return snapshotFor(savedState)
+  }
+
+  override fun saveCustomProvider(request: SaveCustomLlmProviderRequest): LlmConfigSnapshot {
+    val savedProviders = llmSettingsStore.loadSavedCustomProviders()
+    val existingProvider = savedProviders.firstOrNull { provider ->
+      provider.id == request.selectedProviderOptionId
     }
-    val model = request.model.trim().ifBlank {
-      providerPreset.defaultModel
-    }
-    if (request.enabled && baseUrl.isBlank()) {
-      throw IllegalArgumentException(strings.baseUrlRequiredEnabled)
-    }
-    if (baseUrl.isNotBlank()) {
-      requireValidBaseUrl(baseUrl)
-    }
-    val savedState = LlmSettingsState(
-      enabled = request.enabled,
-      providerId = providerPreset.id,
-      protocol = protocol,
-      providerName = request.providerName.trim().ifBlank {
-        localizedProviderTitle(providerPreset)
-      },
+    val normalizedProtocol = LlmProviderProtocols.normalize(request.protocol)
+    val providerRecord = SavedCustomLlmProvider.create(
+      existingId = existingProvider?.id,
+      protocol = normalizedProtocol,
+      providerName = resolvedCustomProviderName(
+        requestedName = request.providerName,
+        baseUrl = request.baseUrl,
+      ),
       providerNotes = request.providerNotes.trim(),
-      baseUrl = baseUrl,
+      baseUrl = request.baseUrl.trim(),
       apiKey = request.apiKey.trim(),
-      model = model,
-      reasoningEffort = request.reasoningEffort.trim().ifBlank {
-        LlmSettingsState.DEFAULT_REASONING_EFFORT
-      },
-      systemPrompt = request.systemPrompt.trim(),
-    ).sanitized()
-    llmSettingsStore.save(savedState)
+      model = request.model.trim(),
+    )
+    llmSettingsStore.saveSavedCustomProviders(
+      savedProviders
+        .filterNot { provider -> provider.id == providerRecord.id }
+        .plus(providerRecord),
+    )
+    val savedState = resolvedStateFromRequest(
+      SaveLlmConfigRequest(
+        enabled = providerRecord.baseUrl.isNotBlank() && providerRecord.apiKey.isNotBlank(),
+        providerId = "custom",
+        selectedProviderOptionId = providerRecord.id,
+        protocol = providerRecord.protocol,
+        providerName = providerRecord.providerName,
+        providerNotes = providerRecord.providerNotes,
+        baseUrl = providerRecord.baseUrl,
+        apiKey = providerRecord.apiKey,
+        model = providerRecord.model,
+        reasoningEffort = request.reasoningEffort,
+        systemPrompt = request.systemPrompt,
+      ),
+    )
+    llmSettingsStore.save(
+      state = savedState,
+      selectedProviderOptionId = providerRecord.id,
+    )
     return snapshotFor(savedState)
   }
 
@@ -233,12 +268,19 @@ internal class LocalLlmConfigFacade private constructor(
 
   private fun snapshotFor(state: LlmSettingsState): LlmConfigSnapshot {
     val sanitized = state.sanitized()
+    val providerOptions = providerOptions()
+    val selectedProviderOptionId = llmSettingsStore.loadSelectedProviderOptionId(
+      defaultProviderId = sanitized.providerId,
+    ).takeIf { selectedId ->
+      providerOptions.any { option -> option.id == selectedId }
+    } ?: sanitized.providerId
     return LlmConfigSnapshot(
       localeTag = strings.localeTag,
       enabled = sanitized.enabled,
       providerId = sanitized.providerId,
+      selectedProviderOptionId = selectedProviderOptionId,
       protocol = sanitized.protocol,
-      providerOptions = LlmProviderCatalog.presets.map(::toSnapshot),
+      providerOptions = providerOptions,
       providerName = sanitized.providerName.ifBlank {
         localizedDisplayNameFor(
           providerId = sanitized.providerId,
@@ -261,14 +303,34 @@ internal class LocalLlmConfigFacade private constructor(
     )
   }
 
+  private fun providerOptions(): List<LlmProviderOptionSnapshot> =
+    LlmProviderCatalog.presets.map(::toSnapshot) +
+      llmSettingsStore.loadSavedCustomProviders().map(::toSavedCustomSnapshot)
+
   private fun toSnapshot(preset: LlmProviderPreset): LlmProviderOptionSnapshot =
     LlmProviderOptionSnapshot(
       id = preset.id,
+      providerId = preset.id,
       title = localizedProviderTitle(preset),
       subtitle = localizedProviderSubtitle(preset),
       defaultBaseUrl = preset.defaultBaseUrl,
       defaultModel = preset.defaultModel,
+      protocol = preset.defaultProtocol,
+      apiKey = "",
       isCustom = preset.isCustom,
+    )
+
+  private fun toSavedCustomSnapshot(provider: SavedCustomLlmProvider): LlmProviderOptionSnapshot =
+    LlmProviderOptionSnapshot(
+      id = provider.id,
+      providerId = "custom",
+      title = provider.providerName,
+      subtitle = provider.providerNotes,
+      defaultBaseUrl = provider.baseUrl,
+      defaultModel = provider.model,
+      protocol = provider.protocol,
+      apiKey = provider.apiKey,
+      isCustom = true,
     )
 
   private fun localizedProviderTitle(preset: LlmProviderPreset): String = when (preset.id) {
@@ -327,6 +389,63 @@ internal class LocalLlmConfigFacade private constructor(
     LlmProviderProtocols.normalize(requestedProtocol)
   } else {
     providerPreset.defaultProtocol
+  }
+
+  private fun resolvedStateFromRequest(request: SaveLlmConfigRequest): LlmSettingsState {
+    val providerPreset = LlmProviderCatalog.presetById(request.providerId)
+      ?: throw IllegalArgumentException("Unsupported provider '${request.providerId}'.")
+    val protocol = resolvedProtocol(
+      providerPreset = providerPreset,
+      requestedProtocol = request.protocol,
+    )
+    val baseUrl = request.baseUrl.trim().ifBlank {
+      providerPreset.defaultBaseUrl
+    }
+    val model = request.model.trim().ifBlank {
+      providerPreset.defaultModel
+    }
+    if (request.enabled && baseUrl.isBlank()) {
+      throw IllegalArgumentException(strings.baseUrlRequiredEnabled)
+    }
+    if (baseUrl.isNotBlank()) {
+      requireValidBaseUrl(baseUrl)
+    }
+    val defaultProviderName = if (providerPreset.isCustom) {
+      resolvedCustomProviderName(
+        requestedName = request.providerName,
+        baseUrl = baseUrl,
+      )
+    } else {
+      localizedProviderTitle(providerPreset)
+    }
+    return LlmSettingsState(
+      enabled = request.enabled,
+      providerId = providerPreset.id,
+      protocol = protocol,
+      providerName = request.providerName.trim().ifBlank {
+        defaultProviderName
+      },
+      providerNotes = request.providerNotes.trim(),
+      baseUrl = baseUrl,
+      apiKey = request.apiKey.trim(),
+      model = model,
+      reasoningEffort = request.reasoningEffort.trim().ifBlank {
+        LlmSettingsState.DEFAULT_REASONING_EFFORT
+      },
+      systemPrompt = request.systemPrompt.trim(),
+    ).sanitized()
+  }
+
+  private fun resolvedCustomProviderName(
+    requestedName: String,
+    baseUrl: String,
+  ): String {
+    val trimmedName = requestedName.trim()
+    if (trimmedName.isNotBlank()) {
+      return trimmedName
+    }
+    val host = runCatching { URI(baseUrl.trim()).host.orEmpty() }.getOrDefault("")
+    return host.ifBlank { strings.customProviderTitle }
   }
 
   companion object {
@@ -405,14 +524,18 @@ internal object EmptyLlmConfigFacade : LlmConfigFacade {
     localeTag = "en",
     enabled = false,
     providerId = "custom",
+    selectedProviderOptionId = "custom",
     protocol = LlmProviderProtocols.OPENAI,
     providerOptions = LlmProviderCatalog.presets.map { preset ->
       LlmProviderOptionSnapshot(
         id = preset.id,
+        providerId = preset.id,
         title = preset.title,
         subtitle = preset.subtitle,
         defaultBaseUrl = preset.defaultBaseUrl,
         defaultModel = preset.defaultModel,
+        protocol = preset.defaultProtocol,
+        apiKey = "",
         isCustom = preset.isCustom,
       )
     },
@@ -427,6 +550,9 @@ internal object EmptyLlmConfigFacade : LlmConfigFacade {
   )
 
   override fun save(request: SaveLlmConfigRequest): LlmConfigSnapshot =
+    throw IllegalStateException("LLM settings host support is unavailable.")
+
+  override fun saveCustomProvider(request: SaveCustomLlmProviderRequest): LlmConfigSnapshot =
     throw IllegalStateException("LLM settings host support is unavailable.")
 
   override fun validate(request: ValidateLlmConfigRequest): LlmValidationResult =

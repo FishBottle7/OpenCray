@@ -4,23 +4,31 @@ import java.util.Locale
 
 class MemoryCandidateExtractor(
   private val policy: MemoryPolicy = MemoryPolicy(),
+  private val userIntentInterpreter: UserMemoryIntentInterpreter = NoOpUserMemoryIntentInterpreter,
   private val soulIntentInterpreter: SoulMemoryIntentInterpreter = NoOpSoulMemoryIntentInterpreter,
 ) {
   fun extract(evidence: MemoryTurnEvidence): List<MemoryCandidate> {
     val candidates = linkedMapOf<String, MemoryCandidate>()
-    val soulIntentOutcome = extractSoulPreferenceCandidates(evidence)
+    val userIntentOutcome = extractUserIntentCandidates(evidence)
 
-    soulIntentOutcome.candidates.forEach { candidate ->
+    userIntentOutcome.candidates.forEach { candidate ->
       candidates.putIfAbsent(candidate.identityKey(), candidate)
     }
 
-    splitStatements(evidence.userInput).forEach { statement ->
-      val candidate = extractFromUserStatement(
-        statement = statement,
-        evidence = evidence,
-        allowHeuristicSoulFallback = soulIntentOutcome.allowHeuristicSoulFallback,
-      ) ?: return@forEach
-      candidates.putIfAbsent(candidate.identityKey(), candidate)
+    if (userIntentOutcome.allowHeuristicUserFallback) {
+      val soulIntentOutcome = extractSoulPreferenceCandidates(evidence)
+      soulIntentOutcome.candidates.forEach { candidate ->
+        candidates.putIfAbsent(candidate.identityKey(), candidate)
+      }
+
+      splitStatements(evidence.userInput).forEach { statement ->
+        val candidate = extractFromUserStatement(
+          statement = statement,
+          evidence = evidence,
+          allowHeuristicSoulFallback = soulIntentOutcome.allowHeuristicSoulFallback,
+        ) ?: return@forEach
+        candidates.putIfAbsent(candidate.identityKey(), candidate)
+      }
     }
 
     evidence.toolObservations.forEach { observation ->
@@ -40,6 +48,31 @@ class MemoryCandidateExtractor(
     }
 
     return candidates.values.toList()
+  }
+
+  private fun extractUserIntentCandidates(
+    evidence: MemoryTurnEvidence,
+  ): UserIntentCandidateExtraction {
+    val request = UserMemoryIntentRequest(
+      sessionId = evidence.sessionId,
+      workspaceId = evidence.workspaceId,
+      userInput = evidence.userInput,
+    )
+    return when (val interpretation = userIntentInterpreter.interpret(request)) {
+      is UserMemoryIntentInterpretation.Success -> UserIntentCandidateExtraction(
+        candidates = interpretation.intents.mapNotNull { intent ->
+          candidateFromUserIntent(
+            intent = intent,
+            evidence = evidence,
+          )
+        },
+        allowHeuristicUserFallback = false,
+      )
+
+      is UserMemoryIntentInterpretation.Unavailable -> UserIntentCandidateExtraction(
+        allowHeuristicUserFallback = interpretation.allowHeuristicFallback,
+      )
+    }
   }
 
   private fun extractFromUserStatement(
@@ -334,12 +367,10 @@ class MemoryCandidateExtractor(
     if (extensions.isEmpty()) {
       return null
     }
-    val content = when (preferenceKey) {
-      MemoryPreferenceKeys.AGENT_DISPLAY_NAME -> "Agent display name is $preferenceValue"
-      MemoryPreferenceKeys.AGENT_STYLE_PROFILE -> "Agent style profile should be $preferenceValue"
-      MemoryPreferenceKeys.AGENT_VERBOSITY -> "Agent verbosity should be $preferenceValue"
-      else -> return null
-    }
+    val content = canonicalSoulPreferenceContent(
+      preferenceKey = preferenceKey,
+      preferenceValue = preferenceValue,
+    ) ?: return null
     return createCandidate(
       kind = MemoryKind.USER_PREFERENCE,
       scope = intent.scope,
@@ -348,6 +379,58 @@ class MemoryCandidateExtractor(
       evidence = evidence,
       extensions = extensions,
     )
+  }
+
+  private fun candidateFromUserIntent(
+    intent: UserMemoryIntent,
+    evidence: MemoryTurnEvidence,
+  ): MemoryCandidate? {
+    val preferenceKey = normalizeMemoryPreferenceKeyOrNull(intent.preferenceKey)
+    val preferenceValue = normalizeMemoryPreferenceValueOrNull(intent.preferenceValue)
+    if (preferenceKey != null && preferenceValue != null) {
+      val extensions = buildSoulPreferenceExtensions(
+        preferenceKey = preferenceKey,
+        preferenceValue = preferenceValue,
+        scope = intent.scope,
+        soulExtensions = intent.soulExtensions,
+      )
+      val content = canonicalSoulPreferenceContent(
+        preferenceKey = preferenceKey,
+        preferenceValue = preferenceValue,
+      )
+      if (intent.kind == MemoryKind.USER_PREFERENCE && extensions.isNotEmpty() && content != null) {
+        return createCandidate(
+          kind = MemoryKind.USER_PREFERENCE,
+          scope = intent.scope,
+          content = content,
+          source = MemoryEvidenceSource.USER_INPUT,
+          evidence = evidence,
+          extensions = extensions,
+        )
+      }
+    }
+
+    if (intent.kind == MemoryKind.PROJECT_FACT && intent.scope == MemoryScope.SESSION) {
+      return null
+    }
+    val content = policy.normalizeCandidateContent(intent.content) ?: return null
+    return createCandidate(
+      kind = intent.kind,
+      scope = intent.scope,
+      content = content,
+      source = MemoryEvidenceSource.USER_INPUT,
+      evidence = evidence,
+    )
+  }
+
+  private fun canonicalSoulPreferenceContent(
+    preferenceKey: String,
+    preferenceValue: String,
+  ): String? = when (preferenceKey) {
+    MemoryPreferenceKeys.AGENT_DISPLAY_NAME -> "Agent display name is $preferenceValue"
+    MemoryPreferenceKeys.AGENT_STYLE_PROFILE -> "Agent style profile should be $preferenceValue"
+    MemoryPreferenceKeys.AGENT_VERBOSITY -> "Agent verbosity should be $preferenceValue"
+    else -> null
   }
 
   private companion object {
@@ -629,6 +712,11 @@ class MemoryCandidateExtractor(
   private data class SoulPreferenceCandidateExtraction(
     val candidates: List<MemoryCandidate> = emptyList(),
     val allowHeuristicSoulFallback: Boolean,
+  )
+
+  private data class UserIntentCandidateExtraction(
+    val candidates: List<MemoryCandidate> = emptyList(),
+    val allowHeuristicUserFallback: Boolean,
   )
 
 }

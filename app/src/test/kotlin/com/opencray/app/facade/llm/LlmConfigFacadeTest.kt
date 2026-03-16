@@ -13,6 +13,90 @@ import org.junit.Test
 
 class LlmConfigFacadeTest {
   @Test
+  fun saveCustomProviderPersistsReusableProviderOption() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val facade = LocalLlmConfigFacade.createForTest(
+      llmSettingsStore = store,
+      providerClient = RecordingProviderClient(
+        result = LiteLlmProviderResult.Success(outputText = "OK"),
+      ),
+    )
+
+    val snapshot = facade.saveCustomProvider(
+      SaveCustomLlmProviderRequest(
+        selectedProviderOptionId = "custom",
+        protocol = LlmProviderProtocols.ANTHROPIC,
+        providerName = "Acme",
+        providerNotes = "Regional fallback",
+        baseUrl = "https://api.acme.example/v1",
+        apiKey = "secret",
+        model = "claude-3-7-sonnet",
+        reasoningEffort = "high",
+        systemPrompt = "Be concise.",
+      ),
+    )
+
+    val savedOption = snapshot.providerOptions.first { option ->
+      option.id == snapshot.selectedProviderOptionId
+    }
+    assertEquals("custom", snapshot.providerId)
+    assertEquals("Acme", savedOption.title)
+    assertEquals("Regional fallback", savedOption.subtitle)
+    assertEquals("anthropic", savedOption.protocol)
+    assertEquals("secret", savedOption.apiKey)
+    assertEquals(snapshot.selectedProviderOptionId, store.loadSelectedProviderOptionId("custom"))
+  }
+
+  @Test
+  fun saveCustomProviderOverwritesSelectedSavedOption() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val facade = LocalLlmConfigFacade.createForTest(
+      llmSettingsStore = store,
+      providerClient = RecordingProviderClient(
+        result = LiteLlmProviderResult.Success(outputText = "OK"),
+      ),
+    )
+
+    val firstSnapshot = facade.saveCustomProvider(
+      SaveCustomLlmProviderRequest(
+        selectedProviderOptionId = "custom",
+        protocol = LlmProviderProtocols.ANTHROPIC,
+        providerName = "Acme",
+        providerNotes = "Regional fallback",
+        baseUrl = "https://api.acme.example/v1",
+        apiKey = "secret",
+        model = "claude-3-7-sonnet",
+        reasoningEffort = "high",
+        systemPrompt = "Be concise.",
+      ),
+    )
+
+    val updatedSnapshot = facade.saveCustomProvider(
+      SaveCustomLlmProviderRequest(
+        selectedProviderOptionId = firstSnapshot.selectedProviderOptionId,
+        protocol = LlmProviderProtocols.ANTHROPIC,
+        providerName = "Acme Edge",
+        providerNotes = "Regional edge",
+        baseUrl = "https://api.acme.example/v2",
+        apiKey = "secret-2",
+        model = "claude-3-7-sonnet",
+        reasoningEffort = "high",
+        systemPrompt = "Be concise.",
+      ),
+    )
+
+    val savedCustomOptions = updatedSnapshot.providerOptions.filter { option ->
+      option.providerId == "custom" && option.id != "custom"
+    }
+    assertEquals(firstSnapshot.selectedProviderOptionId, updatedSnapshot.selectedProviderOptionId)
+    assertEquals(1, savedCustomOptions.size)
+    assertEquals("Acme Edge", savedCustomOptions.single().title)
+    assertEquals("Regional edge", savedCustomOptions.single().subtitle)
+    assertEquals("https://api.acme.example/v2", savedCustomOptions.single().defaultBaseUrl)
+    assertEquals("secret-2", savedCustomOptions.single().apiKey)
+  }
+
+  @Test
   fun validateUsesResolvedPresetDefaultsForLiveRequest() {
     val providerClient = RecordingProviderClient(
       result = LiteLlmProviderResult.Success(outputText = "OK"),

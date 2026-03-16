@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import com.opencray.core.contracts.AgentTask
+import com.opencray.core.contracts.AgentTaskState
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
@@ -8,11 +9,17 @@ import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.core.orchestrator.SessionTaskRuntime
+import com.opencray.runtime.AgentToolCall
+import com.opencray.runtime.AgentToolResult
+import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
+import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.process.ManagedProcessSnapshot
+import com.opencray.runtime.process.ManagedProcessStatus
 import java.util.concurrent.AbstractExecutorService
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
@@ -119,6 +126,234 @@ class AgentSessionRuntimeManagerTest {
     assertEquals(listOf(QueueTaskLifecycleState.COMPLETED), snapshot.tasks.map { it.lifecycleState })
     assertEquals(listOf("restored prompt"), restoredFactory.executedInputs)
     assertEquals(QueueTaskLifecycleState.COMPLETED, restoredHandle.findRun(submission.runId)?.lifecycleState)
+  }
+
+  @Test
+  fun releaseIdleSessionsKeepsSessionWithLiveManagedProcesses() {
+    val executor = RecordingExecutorService()
+    val runtimeFactory = RecordingRuntimeFactory(
+      managedProcessesProvider = { sessionId ->
+        if (sessionId == "session-live-process") {
+          listOf(
+            managedProcessSnapshot(
+              processId = "proc-live",
+              taskId = "task-live",
+              status = ManagedProcessStatus.RUNNING,
+            ),
+          )
+        } else {
+          emptyList()
+        }
+      },
+    )
+    val manager = manager(
+      runtimeFactory = runtimeFactory,
+      executor = executor,
+    )
+
+    val first = manager.forSession("session-live-process")
+
+    manager.releaseIdleSessions()
+
+    val second = manager.forSession("session-live-process")
+
+    assertSame(first, second)
+  }
+
+  @Test
+  fun releaseIdleSessionsDropsSessionWhenOnlyTerminalManagedProcessesRemain() {
+    val executor = RecordingExecutorService()
+    val runtimeFactory = RecordingRuntimeFactory(
+      managedProcessesProvider = { sessionId ->
+        if (sessionId == "session-terminal-process") {
+          listOf(
+            managedProcessSnapshot(
+              processId = "proc-done",
+              taskId = "task-done",
+              status = ManagedProcessStatus.SUCCESS,
+            ),
+          )
+        } else {
+          emptyList()
+        }
+      },
+    )
+    val manager = manager(
+      runtimeFactory = runtimeFactory,
+      executor = executor,
+    )
+
+    val first = manager.forSession("session-terminal-process")
+
+    manager.releaseIdleSessions()
+
+    val second = manager.forSession("session-terminal-process")
+
+    assertTrue(first !== second)
+  }
+
+  @Test
+  fun completedRunRestoresDurableResultMetadataAndLastEventAfterManagerRecreation() {
+    val sessionId = "session-durable-runs"
+    val firstExecutor = RecordingExecutorService()
+    val firstFactory = RecordingRuntimeFactory(
+      onExecute = { task, eventSink ->
+        eventSink.onRunEvent(
+          task,
+          OpenCrayToolResultEvent(
+            runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID].orEmpty(),
+            taskId = task.id,
+            turn = 1,
+            call = AgentToolCall(
+              toolName = "Read",
+            ),
+            result = AgentToolResult(
+              toolName = "Read",
+              status = AgentToolResultStatus.SUCCESS,
+              content = "README preview",
+              metadata = mapOf("processId" to "proc-restore"),
+            ),
+            emittedAtEpochMs = 1_001L,
+          ),
+        )
+      },
+      executionResultFactory = { task ->
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.SUCCESS,
+          stdout = "done",
+          startedAtEpochMs = 1_000L,
+          finishedAtEpochMs = 1_002L,
+          metadata = task.metadata + mapOf(
+            "responseFormat" to "json_final",
+            "contextMatchedMemoryCount" to "3",
+          ),
+        )
+      },
+    )
+    val firstManager = manager(
+      runtimeFactory = firstFactory,
+      executor = firstExecutor,
+    )
+    val firstHandle = firstManager.forSession(sessionId)
+
+    val submission = firstHandle.submitPrompt(
+      userText = "restore completed run",
+      pendingMessageId = "pending-durable",
+      visibleThroughMessageId = "pending-durable",
+      policyDecision = allowDecision(),
+    )
+    firstHandle.ensureProcessing()
+    firstExecutor.runNext()
+    firstManager.release(sessionId)
+
+    val restoredManager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+    )
+    val restoredRun = restoredManager.forSession(sessionId).findRun(submission.runId)
+
+    assertEquals(ExecutionStatus.SUCCESS, restoredRun?.executionStatus)
+    assertEquals("json_final", restoredRun?.responseFormat)
+    assertEquals("3", restoredRun?.resultMetadata?.get("contextMatchedMemoryCount"))
+    assertEquals("pending-durable", restoredRun?.pendingMessageId)
+    val restoredEvent = restoredRun?.lastEvent as? OpenCrayToolResultEvent
+    assertEquals("Read", restoredEvent?.call?.toolName)
+    assertEquals(AgentToolResultStatus.SUCCESS, restoredEvent?.result?.status)
+    assertEquals("README preview", restoredEvent?.result?.content)
+  }
+
+  @Test
+  fun restoredRunSnapshotReportsLiveManagedProcessLinkage() {
+    val sessionId = "session-durable-process-linkage"
+    val firstExecutor = RecordingExecutorService()
+    val firstFactory = RecordingRuntimeFactory(
+      onExecute = { task, eventSink ->
+        eventSink.onRunEvent(
+          task,
+          OpenCrayToolResultEvent(
+            runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID].orEmpty(),
+            taskId = task.id,
+            turn = 1,
+            call = AgentToolCall(
+              toolName = "ProcessStart",
+            ),
+            result = AgentToolResult(
+              toolName = "ProcessStart",
+              status = AgentToolResultStatus.SUCCESS,
+              content = "Started dev server",
+              metadata = mapOf("processId" to "proc-live"),
+            ),
+            emittedAtEpochMs = 1_001L,
+          ),
+        )
+      },
+      executionResultFactory = { task ->
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.SUCCESS,
+          stdout = "server started",
+          startedAtEpochMs = 1_000L,
+          finishedAtEpochMs = 1_002L,
+          metadata = task.metadata,
+        )
+      },
+      managedProcessesProvider = { restoredSessionId ->
+        if (restoredSessionId == sessionId) {
+          listOf(
+            managedProcessSnapshot(
+              processId = "proc-live",
+              taskId = "ignored-before-restore",
+              status = ManagedProcessStatus.RUNNING,
+            ),
+          )
+        } else {
+          emptyList()
+        }
+      },
+    )
+    val firstManager = manager(
+      runtimeFactory = firstFactory,
+      executor = firstExecutor,
+    )
+    val firstHandle = firstManager.forSession(sessionId)
+
+    val submission = firstHandle.submitPrompt(
+      userText = "start dev server",
+      pendingMessageId = "pending-process-linkage",
+      visibleThroughMessageId = "pending-process-linkage",
+      policyDecision = allowDecision(),
+    )
+    firstHandle.ensureProcessing()
+    firstExecutor.runNext()
+    firstManager.release(sessionId)
+
+    val restoredFactory = RecordingRuntimeFactory(
+      managedProcessesProvider = { restoredSessionId ->
+        if (restoredSessionId == sessionId) {
+          listOf(
+            managedProcessSnapshot(
+              processId = "proc-live",
+              taskId = submission.taskId,
+              status = ManagedProcessStatus.RUNNING,
+            ),
+          )
+        } else {
+          emptyList()
+        }
+      },
+    )
+    val restoredManager = manager(
+      runtimeFactory = restoredFactory,
+      executor = RecordingExecutorService(),
+    )
+    val restoredRun = restoredManager.forSession(sessionId).findRun(submission.runId)
+
+    assertEquals(listOf("proc-live"), restoredRun?.managedProcessIds)
+    assertEquals(1, restoredRun?.runningManagedProcessCount)
+    assertTrue(restoredRun?.hasLiveManagedProcesses == true)
+    assertTrue(restoredRun?.isTerminal == true)
+    assertTrue(restoredRun?.isActive == true)
   }
 
   @Test
@@ -279,6 +514,56 @@ class AgentSessionRuntimeManagerTest {
   }
 
   @Test
+  fun runSnapshotTreatsRunningLifecycleAsTerminalWhenExecutionAlreadySucceeded() {
+    val snapshot = AgentRunSnapshot(
+      sessionId = "session-running-success",
+      runId = "run-running-success",
+      taskId = "task-running-success",
+      acceptedAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_001L,
+      lifecycleState = QueueTaskLifecycleState.RUNNING,
+      taskState = AgentTaskState.RUNNING,
+      executionStatus = ExecutionStatus.SUCCESS,
+    )
+
+    assertTrue(snapshot.isTerminal)
+  }
+
+  @Test
+  fun runSnapshotKeepsApprovalRequiredDenialNonTerminalBeforeQueueSuspends() {
+    val snapshot = AgentRunSnapshot(
+      sessionId = "session-approval-race",
+      runId = "run-approval-race",
+      taskId = "task-approval-race",
+      acceptedAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_001L,
+      lifecycleState = QueueTaskLifecycleState.RUNNING,
+      taskState = AgentTaskState.RUNNING,
+      executionStatus = ExecutionStatus.DENIED,
+      errorCode = "APPROVAL_REQUIRED",
+    )
+
+    assertTrue(!snapshot.isTerminal)
+  }
+
+  @Test
+  fun runSnapshotKeepsRetryPendingLifecycleNonTerminalAfterFailureResult() {
+    val snapshot = AgentRunSnapshot(
+      sessionId = "session-retry-pending",
+      runId = "run-retry-pending",
+      taskId = "task-retry-pending",
+      acceptedAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_001L,
+      lifecycleState = QueueTaskLifecycleState.RETRY_PENDING,
+      taskState = AgentTaskState.QUEUED,
+      executionStatus = ExecutionStatus.FAILED,
+      errorCode = "TRANSIENT_FAILURE",
+    )
+
+    assertTrue(!snapshot.isTerminal)
+  }
+
+  @Test
   fun runSnapshotTreatsSuspendedLifecycleAsNonTerminal() {
     val snapshot = AgentRunSnapshot(
       sessionId = "session-suspended",
@@ -301,12 +586,31 @@ class AgentSessionRuntimeManagerTest {
     agentId = "opencray-app",
     runtimeFactory = runtimeFactory,
     snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory(temporaryFolder.root),
+    runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory(temporaryFolder.root),
     executor = executor,
   )
 
   private fun allowDecision(): PolicyDecision = PolicyDecision(
     outcome = PolicyDecisionOutcome.ALLOW,
     reasonCode = "TEST_ALLOW",
+  )
+
+  private fun managedProcessSnapshot(
+    processId: String,
+    taskId: String,
+    status: ManagedProcessStatus,
+  ): ManagedProcessSnapshot = ManagedProcessSnapshot(
+    processId = processId,
+    taskId = taskId,
+    command = "npm",
+    args = listOf("run", "dev"),
+    workingDirectory = ".",
+    status = status,
+    processStarted = true,
+    timeoutMs = 120_000L,
+    startedAtEpochMs = 1_000L,
+    updatedAtEpochMs = 1_001L,
+    finishedAtEpochMs = if (status.isTerminal) 1_001L else null,
   )
 
   private class RecordingRuntimeFactory(
@@ -320,6 +624,8 @@ class AgentSessionRuntimeManagerTest {
         finishedAtEpochMs = 1_001L,
       )
     },
+    private val managedProcessesProvider: (String) -> List<ManagedProcessSnapshot> = { emptyList() },
+    private val terminateManagedProcessHandler: (String, String) -> ManagedProcessSnapshot? = { _, _ -> null },
   ) : AgentSessionTaskRuntimeFactory {
     val executedInputs = mutableListOf<String>()
 
@@ -331,6 +637,14 @@ class AgentSessionRuntimeManagerTest {
       executedInputs += task.input
       executionResultFactory(task)
     }
+
+    override fun listManagedProcesses(sessionId: String): List<ManagedProcessSnapshot> =
+      managedProcessesProvider(sessionId)
+
+    override fun terminateManagedProcess(
+      sessionId: String,
+      processId: String,
+    ): ManagedProcessSnapshot? = terminateManagedProcessHandler(sessionId, processId)
   }
 
   private class RecordingExecutorService : AbstractExecutorService() {

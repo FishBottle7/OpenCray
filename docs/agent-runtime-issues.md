@@ -1,6 +1,6 @@
 # Agent Runtime Issue Backlog
 
-Last updated: 2026-03-12
+Last updated: 2026-03-16
 
 ## Purpose
 
@@ -460,29 +460,38 @@ If memory cannot be recalled, persistence adds storage but not intelligence.
 #### Scope
 
 - Add retrieval rules for relevant memory.
-- Inject recalled memory into prompt layers or expose it through runtime tools.
-- Enforce a memory token budget.
+- Split runtime memory recall into two complementary paths:
+  - bounded automatic recall for default continuity
+  - explicit runtime memory tools for on-demand retrieval during the run
+- Inject recalled memory into prompt layers without blindly injecting the full durable store.
+- Enforce both automatic-recall and tool-snippet budgets.
 
 #### Out of scope
 
-- Rich semantic search beyond initial bounded retrieval
+- Rich plugin-backed memory backends beyond the first projected memory corpus
+- Pre-compaction memory flush lifecycle
 
 #### Suggested implementation areas
 
 - new: `runtime/src/main/kotlin/com/opencray/runtime/memory/MemoryRetriever.kt`
 - new: `runtime/src/main/kotlin/com/opencray/runtime/memory/MemoryPromptLayer.kt`
+- new: `runtime/src/main/kotlin/com/opencray/runtime/memory/MemoryCorpusProjector.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/AgentTooling.kt`
 - `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt`
 
 #### Subtasks
 
 - Define retrieval heuristics.
-- Decide on prompt injection versus tool-based memory access.
+- Keep automatic prompt injection and runtime memory tools as separate, complementary paths.
+- Add `memory_search` and `memory_get` or equivalent OpenClaw-style memory tools.
+- Define the projected memory corpus those tools will search/read.
 - Add ranking and truncation.
-- Add tests for recency and category-based recall.
+- Add tests for recency, category-based recall, and tool-visible memory projection.
 
 #### Acceptance criteria
 
-- Relevant memory is visible to the runtime in production execution.
+- Relevant memory is visible to the runtime in production execution through bounded automatic recall.
+- The runtime has an explicit on-demand memory retrieval tool path for prior-work questions.
 - Retrieval is deterministic enough to test.
 - Prompt assembly reflects memory only within a bounded budget.
 

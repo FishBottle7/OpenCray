@@ -45,9 +45,12 @@ class OpenCrayUiCopy {
   String get filesCancelAction => isChinese ? '取消' : 'Cancel';
   String get filesCreateAction => isChinese ? '创建' : 'Create';
   String get filesSaveAction => isChinese ? '保存' : 'Save';
+  String get filesCreateEntryTitle => isChinese ? '新建' : 'New';
   String get filesCreateFolderTitle => isChinese ? '新建文件夹' : 'New Folder';
   String get filesRenameEntryTitle => isChinese ? '重命名' : 'Rename';
   String get filesNameFieldHint => isChinese ? '输入名称' : 'Enter a name';
+  String get filesCreateUnsupportedType =>
+      isChinese ? '暂不支持创建这种文件。' : 'This file type is not supported here yet.';
   String get filesPreviewCloseAction => isChinese ? '关闭预览' : 'Close preview';
   String get filesPreviewEmptyBody =>
       isChinese ? '这个文件是空的。' : 'This file is empty.';
@@ -173,6 +176,10 @@ class OpenCrayUiCopy {
   String get llmPrimaryProviderPresetHelper => isChinese
       ? '适合已经配置好多个提供商的场景。'
       : 'Best when you have many providers configured.';
+  String get llmSaveProviderAction => isChinese ? '保存' : 'Save';
+  String get llmSaveProviderSuccess =>
+      isChinese ? '已保存到主要提供商列表。' : 'Saved to the primary provider list.';
+  String get llmSaveProviderTemporary => isChinese ? '临时改动' : 'Temp edit';
   String get llmProtocolTitle => isChinese ? 'API 协议' : 'API protocol';
   String llmOptionsCount(int count) =>
       isChinese ? '$count 项' : '$count options';
@@ -246,6 +253,8 @@ class OpenCrayUiCopy {
   String get chatHighRiskApproval => isChinese ? '高风险' : 'High risk';
   String get chatApprovalActionFailed =>
       isChinese ? '处理审批请求失败。' : 'Failed to process approval request.';
+  String get chatSessionActionFailed =>
+      isChinese ? '处理会话操作失败。' : 'Failed to process the session action.';
   String get chatRunWorkingLabel => isChinese ? '运行中' : 'Running';
   String get chatRunWaitingApprovalLabel =>
       isChinese ? '等待审批' : 'Waiting for approval';

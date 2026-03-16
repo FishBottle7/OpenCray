@@ -140,6 +140,65 @@ class MemoryCandidateExtractorTest {
   }
 
   @Test
+  fun extractUsesUserIntentInterpreterForGenericAndSoulMemories() {
+    val extractor = MemoryCandidateExtractor(
+      userIntentInterpreter = FixedUserIntentInterpreter(
+        UserMemoryIntentInterpretation.Success(
+          intents = listOf(
+            UserMemoryIntent(
+              kind = MemoryKind.USER_PREFERENCE,
+              scope = MemoryScope.USER,
+              content = "Default to Simplified Chinese for explanations",
+            ),
+            UserMemoryIntent(
+              kind = MemoryKind.DURABLE_INSTRUCTION,
+              scope = MemoryScope.WORKSPACE,
+              content = "Do not use git reset --hard in this repo",
+            ),
+            UserMemoryIntent(
+              kind = MemoryKind.USER_PREFERENCE,
+              scope = MemoryScope.USER,
+              preferenceKey = MemoryPreferenceKeys.AGENT_DISPLAY_NAME,
+              preferenceValue = "小白",
+              soulExtensions = mapOf(
+                MemorySoulExtensionKeys.DISPLAY_NAME to "小白",
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val candidates = extractor.extract(
+      MemoryTurnEvidence(
+        sessionId = "session-4b",
+        taskId = "task-4b",
+        workspaceId = "workspace-main",
+        userInput = """
+          以后解释都用简体中文。
+          这个仓库不要用 git reset --hard。
+          以后叫你小白。
+        """.trimIndent(),
+      ),
+    )
+
+    assertEquals(3, candidates.size)
+    assertTrue(candidates.any { candidate ->
+      candidate.kind == MemoryKind.USER_PREFERENCE &&
+        candidate.content == "Default to Simplified Chinese for explanations"
+    })
+    assertTrue(candidates.any { candidate ->
+      candidate.kind == MemoryKind.DURABLE_INSTRUCTION &&
+        candidate.scope == MemoryScope.WORKSPACE &&
+        candidate.content == "Do not use git reset --hard in this repo"
+    })
+    val displayName = candidates.first { candidate ->
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.AGENT_DISPLAY_NAME
+    }
+    assertEquals("小白", displayName.extensions[MemorySoulExtensionKeys.DISPLAY_NAME])
+  }
+
+  @Test
   fun extractDoesNotFallBackToKeywordSoulParsingWhenInterpreterHandlesTheTurn() {
     val extractor = MemoryCandidateExtractor(
       soulIntentInterpreter = FixedSoulIntentInterpreter(
@@ -160,6 +219,40 @@ class MemoryCandidateExtractorTest {
         candidate.extensions.containsKey(MemoryRecordExtensionKeys.PREFERENCE_KEY)
       },
     )
+  }
+
+  @Test
+  fun extractDoesNotFallBackToLegacyUserParsingWhenUserIntentInterpreterHandlesTheTurn() {
+    val extractor = MemoryCandidateExtractor(
+      userIntentInterpreter = FixedUserIntentInterpreter(
+        UserMemoryIntentInterpretation.Success(intents = emptyList()),
+      ),
+      soulIntentInterpreter = FixedSoulIntentInterpreter(
+        SoulMemoryIntentInterpretation.Success(
+          intents = listOf(
+            SoulMemoryIntent(
+              preferenceKey = MemoryPreferenceKeys.AGENT_DISPLAY_NAME,
+              preferenceValue = "小白",
+              scope = MemoryScope.USER,
+              soulExtensions = mapOf(
+                MemorySoulExtensionKeys.DISPLAY_NAME to "小白",
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val candidates = extractor.extract(
+      MemoryTurnEvidence(
+        sessionId = "session-5b",
+        taskId = "task-5b",
+        workspaceId = "workspace-main",
+        userInput = "Please default to PowerShell commands and from now on call yourself Xiao Bai.",
+      ),
+    )
+
+    assertTrue(candidates.isEmpty())
   }
 
   @Test
@@ -189,11 +282,46 @@ class MemoryCandidateExtractorTest {
     assertEquals("expansive", durableVerbosity.extensions[MemorySoulExtensionKeys.VERBOSITY])
   }
 
+  @Test
+  fun extractSuppressesLegacyUserParsingWhenUserIntentInterpreterFailsClosed() {
+    val extractor = MemoryCandidateExtractor(
+      userIntentInterpreter = FixedUserIntentInterpreter(
+        UserMemoryIntentInterpretation.Unavailable(
+          allowHeuristicFallback = false,
+          reason = "Malformed model output.",
+        ),
+      ),
+    )
+
+    val candidates = extractor.extract(
+      MemoryTurnEvidence(
+        sessionId = "session-7",
+        taskId = "task-7",
+        workspaceId = "workspace-main",
+        userInput = """
+          Please default to PowerShell commands.
+          Do not use git reset --hard in this repo.
+          以后叫你小白。
+        """.trimIndent(),
+      ),
+    )
+
+    assertTrue(candidates.isEmpty())
+  }
+
   private class FixedSoulIntentInterpreter(
     private val interpretation: SoulMemoryIntentInterpretation,
   ) : SoulMemoryIntentInterpreter {
     override fun interpret(
       request: SoulMemoryIntentRequest,
     ): SoulMemoryIntentInterpretation = interpretation
+  }
+
+  private class FixedUserIntentInterpreter(
+    private val interpretation: UserMemoryIntentInterpretation,
+  ) : UserMemoryIntentInterpreter {
+    override fun interpret(
+      request: UserMemoryIntentRequest,
+    ): UserMemoryIntentInterpretation = interpretation
   }
 }

@@ -42,6 +42,89 @@ class TaskCommitmentResolverTest {
   }
 
   @Test
+  fun maintainUsesSemanticInterpreterToResolveCommitmentWithoutKeywordHeuristic() {
+    val store = InMemoryMemoryStore()
+    store.upsert(
+      memoryRecord(
+        id = "commitment-semantic-resolve",
+        content = "run the targeted runtime tests",
+        sourceSessionId = "session-1",
+        updatedAtEpochMs = 1_000L,
+      ),
+    )
+    val resolver = TaskCommitmentResolver(
+      store = store,
+      clock = { 2_000L },
+      intentInterpreter = FixedTaskCommitmentIntentInterpreter(
+        TaskCommitmentIntentInterpretation.Success(
+          decisions = listOf(
+            TaskCommitmentIntentDecision(
+              commitmentId = "commitment-semantic-resolve",
+              action = TaskCommitmentIntentAction.RESOLVE,
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val summary = resolver.maintain(
+      MemoryTurnEvidence(
+        sessionId = "session-1",
+        taskId = "task-2",
+        userInput = "Please continue.",
+        assistantOutput = "The targeted runtime tests are green now and the docs are in sync.",
+        toolObservations = emptyList(),
+      ),
+    )
+
+    assertEquals(listOf("commitment-semantic-resolve"), summary.resolvedRecords.map { record -> record.id })
+    assertEquals("resolved", store.list().single().extensions[MemoryRecordExtensionKeys.STATUS])
+  }
+
+  @Test
+  fun maintainUsesSemanticInterpreterToReaffirmOpenCommitment() {
+    val store = InMemoryMemoryStore()
+    store.upsert(
+      memoryRecord(
+        id = "commitment-reaffirm",
+        content = "stabilize the flaky runtime test",
+        sourceSessionId = "session-1",
+        updatedAtEpochMs = 1_000L,
+      ),
+    )
+    val resolver = TaskCommitmentResolver(
+      store = store,
+      clock = { 2_000L },
+      intentInterpreter = FixedTaskCommitmentIntentInterpreter(
+        TaskCommitmentIntentInterpretation.Success(
+          decisions = listOf(
+            TaskCommitmentIntentDecision(
+              commitmentId = "commitment-reaffirm",
+              action = TaskCommitmentIntentAction.REAFFIRM,
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val summary = resolver.maintain(
+      MemoryTurnEvidence(
+        sessionId = "session-1",
+        taskId = "task-2",
+        userInput = "Please continue.",
+        assistantOutput = "The flaky runtime test still needs work; I am continuing on it next.",
+        toolObservations = emptyList(),
+      ),
+    )
+
+    assertEquals(listOf("commitment-reaffirm"), summary.reaffirmedRecords.map { record -> record.id })
+    val record = store.list().single()
+    assertEquals("open", record.extensions[MemoryRecordExtensionKeys.STATUS])
+    assertEquals("2000", record.extensions[MemoryRecordExtensionKeys.LAST_CONFIRMED_AT_EPOCH_MS])
+    assertEquals(2_000L, record.updatedAtEpochMs)
+  }
+
+  @Test
   fun maintainDeletesExpiredTaskCommitments() {
     val store = InMemoryMemoryStore()
     store.upsert(
@@ -101,6 +184,42 @@ class TaskCommitmentResolverTest {
     assertEquals("open", store.list().single().extensions[MemoryRecordExtensionKeys.STATUS])
   }
 
+  @Test
+  fun maintainSuppressesHeuristicResolutionWhenInterpreterFailsClosed() {
+    val store = InMemoryMemoryStore()
+    store.upsert(
+      memoryRecord(
+        id = "commitment-fail-closed",
+        content = "run the targeted runtime tests",
+        sourceSessionId = "session-1",
+        updatedAtEpochMs = 1_000L,
+      ),
+    )
+    val resolver = TaskCommitmentResolver(
+      store = store,
+      clock = { 2_000L },
+      intentInterpreter = FixedTaskCommitmentIntentInterpreter(
+        TaskCommitmentIntentInterpretation.Unavailable(
+          allowHeuristicFallback = false,
+          reason = "Malformed interpreter output.",
+        ),
+      ),
+    )
+
+    val summary = resolver.maintain(
+      MemoryTurnEvidence(
+        sessionId = "session-1",
+        taskId = "task-2",
+        userInput = "Please continue.",
+        assistantOutput = "I ran the targeted runtime tests and updated the docs.",
+        toolObservations = emptyList(),
+      ),
+    )
+
+    assertTrue(summary.isEmpty)
+    assertEquals("open", store.list().single().extensions[MemoryRecordExtensionKeys.STATUS])
+  }
+
   private fun memoryRecord(
     id: String,
     content: String,
@@ -144,5 +263,13 @@ class TaskCommitmentResolverTest {
       records.clear()
       return hadRecords
     }
+  }
+
+  private class FixedTaskCommitmentIntentInterpreter(
+    private val interpretation: TaskCommitmentIntentInterpretation,
+  ) : TaskCommitmentIntentInterpreter {
+    override fun interpret(
+      request: TaskCommitmentIntentRequest,
+    ): TaskCommitmentIntentInterpretation = interpretation
   }
 }

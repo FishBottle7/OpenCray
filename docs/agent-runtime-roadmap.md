@@ -1,6 +1,6 @@
 # Agent Runtime Roadmap
 
-Last updated: 2026-03-12
+Last updated: 2026-03-16
 
 ## Purpose
 
@@ -19,6 +19,7 @@ For completed P0 implementation plans, see:
 - `docs/done/design-p0-live-queue-persistence.md`
 - `docs/done/design-p0-session-runtime-manager.md`
 - `docs/done/design-p0-prompt-layer-architecture.md`
+- `docs/memory-design.md`
 
 This roadmap is intentionally pragmatic. It does not try to optimize for every future feature. It optimizes for getting the current architecture into a stable, extensible shape.
 
@@ -275,8 +276,11 @@ That gives memory and soul a stable place in runtime.
 
 - Define which facts become memory.
 - Add production memory writes for stable, host-approved cases.
-- Add retrieval heuristics and bounded prompt injection.
+- Add retrieval heuristics and bounded automatic prompt injection.
+- Add explicit runtime memory tools for on-demand recall during a run.
+- Keep automatic recall and memory tools complementary instead of choosing only one path.
 - Replace flat personalization summary with structured soul rendering.
+- Prepare memory flush design so durable memory capture can happen before future compaction work.
 
 ## Main risks
 
@@ -313,6 +317,7 @@ M3 is complete when:
 
 - production runs can write approved memory records
 - runtime can recall bounded relevant memory
+- runtime has an explicit plan for on-demand memory recall tools instead of relying only on pre-injected memory
 - soul is represented structurally in prompt assembly
 
 ## M4: Skills Runtime
