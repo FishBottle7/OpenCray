@@ -60,8 +60,28 @@ data class OpenCrayMemoryWriteEvent(
   val writtenRecordIds: List<String> = emptyList(),
   val writtenKinds: List<String> = emptyList(),
   val resolvedRecordIds: List<String> = emptyList(),
+  val reaffirmedRecordIds: List<String> = emptyList(),
   val expiredRecordIds: List<String> = emptyList(),
   override val turn: Int? = null,
+  override val emittedAtEpochMs: Long,
+) : OpenCrayAgentRunEvent
+
+data class OpenCrayMemoryRetrievalEvent(
+  override val runId: String,
+  override val taskId: String,
+  override val turn: Int,
+  val toolName: String,
+  val operation: String,
+  val query: String? = null,
+  val queryTerms: List<String> = emptyList(),
+  val resultCount: Int? = null,
+  val corpusFileCount: Int? = null,
+  val paths: List<String> = emptyList(),
+  val lineRanges: List<String> = emptyList(),
+  val path: String? = null,
+  val fromLine: Int? = null,
+  val returnedLineCount: Int? = null,
+  val totalLineCount: Int? = null,
   override val emittedAtEpochMs: Long,
 ) : OpenCrayAgentRunEvent
 

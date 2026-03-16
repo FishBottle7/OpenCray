@@ -47,7 +47,10 @@ void main() {
       final resolved = resolveChatRuntimeSnapshot(embedded, streamed);
 
       expect(resolved, same(embedded));
-      expect(runtimeSnapshotVersion(embedded), runtimeSnapshotVersion(streamed));
+      expect(
+        runtimeSnapshotVersion(embedded),
+        runtimeSnapshotVersion(streamed),
+      );
     },
   );
 
@@ -73,7 +76,12 @@ void main() {
     );
     expect(find.textContaining('Read README.md lines 5-6'), findsWidgets);
     expect(find.textContaining('"file_path": "README.md"'), findsOneWidget);
-    expect(find.textContaining('Project uses the Gradle wrapper from the repo root.'), findsOneWidget);
+    expect(
+      find.textContaining(
+        'Project uses the Gradle wrapper from the repo root.',
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets(
@@ -130,10 +138,7 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
-            body: OpenCrayChatFeature(
-              copy: copy,
-              bridge: bridge,
-            ),
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
           ),
         ),
       );
@@ -141,7 +146,9 @@ void main() {
 
       expect(find.textContaining('Read README.md lines 5-6'), findsOneWidget);
       expect(
-        find.textContaining('Project uses the Gradle wrapper from the repo root.'),
+        find.textContaining(
+          'Project uses the Gradle wrapper from the repo root.',
+        ),
         findsOneWidget,
       );
 
@@ -192,6 +199,101 @@ void main() {
     },
   );
 
+  testWidgets(
+    'host-mapped run trace shows memory retrieval details in compact and full-screen views',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      const memoryEvent = OpenCrayChatRuntimeEventSnapshot(
+        kind: 'memory_retrieval',
+        runId: 'run-memory-1',
+        taskId: 'task-memory-1',
+        emittedAtEpochMs: 2000,
+        toolName: 'memory_search',
+        operation: 'search',
+        query: 'gradle wrapper repo root',
+        queryTerms: <String>['gradle', 'wrapper', 'repo', 'root'],
+        resultCount: 1,
+        corpusFileCount: 1,
+        paths: <String>['memory/2024-03-11.md'],
+        lineRanges: <String>['5-8'],
+      );
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(),
+        runtimeSnapshot: OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: const <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-memory-1',
+              taskId: 'task-memory-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 2000,
+              attempt: 1,
+              isTerminal: false,
+              lastEvent: memoryEvent,
+            ),
+          ],
+          events: const <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-memory-1',
+              taskId: 'task-memory-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+            memoryEvent,
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining('Search memory for "gradle wrapper repo root"'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('memory/2024-03-11.md#5-8'), findsOneWidget);
+
+      final bubbleFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-run-memory-1'),
+      );
+      final center = tester.getCenter(bubbleFinder);
+
+      await tester.tapAt(center);
+      await tester.pump(const Duration(milliseconds: 40));
+      await tester.tapAt(center);
+      await tester.pumpAndSettle();
+
+      final fullscreenFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-fullscreen-run-memory-1'),
+      );
+
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining(
+            'Query terms: gradle, wrapper, repo, root',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('memory/2024-03-11.md#5-8'),
+        ),
+        findsOneWidget,
+      );
+    },
+  );
+
   testWidgets('running card body scrolls independently', (tester) async {
     await tester.pumpWidget(_buildChatHarness());
     await tester.pumpAndSettle();
@@ -203,8 +305,9 @@ void main() {
       of: bubbleFinder,
       matching: find.byType(Scrollable),
     );
-    final scrollableStateBefore =
-        tester.state<ScrollableState>(scrollableFinder);
+    final scrollableStateBefore = tester.state<ScrollableState>(
+      scrollableFinder,
+    );
 
     expect(scrollableStateBefore.position.pixels, 0);
 
@@ -214,7 +317,9 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final scrollableStateAfter = tester.state<ScrollableState>(scrollableFinder);
+    final scrollableStateAfter = tester.state<ScrollableState>(
+      scrollableFinder,
+    );
     expect(scrollableStateAfter.position.pixels, greaterThan(0));
   });
 
@@ -241,8 +346,9 @@ void main() {
       of: find.byKey(const ValueKey<String>('chat-run-trace-fullscreen-run-1')),
       matching: find.byType(Scrollable),
     );
-    final scrollableStateBefore =
-        tester.state<ScrollableState>(fullscreenScrollableFinder);
+    final scrollableStateBefore = tester.state<ScrollableState>(
+      fullscreenScrollableFinder,
+    );
 
     expect(scrollableStateBefore.position.pixels, 0);
 
@@ -278,7 +384,10 @@ void main() {
 
       expect(find.text(copy.chatPendingApprovalsTitle), findsNothing);
       expect(find.text('Approval required'), findsOneWidget);
-      expect(find.byKey(const ValueKey<String>('chat-run-trace-run-1')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey<String>('chat-run-trace-run-1')),
+        findsOneWidget,
+      );
     },
   );
 
@@ -379,7 +488,9 @@ Widget _buildChatHarness({
             ),
           ],
           pendingApprovals: pendingApprovals,
-          composer: ChatComposerState(placeholder: copy.chatComposerPlaceholder),
+          composer: ChatComposerState(
+            placeholder: copy.chatComposerPlaceholder,
+          ),
           drawer:
               drawer ??
               const ChatSessionsDrawerState(
@@ -423,10 +534,7 @@ OpenCrayChatSnapshot _hostChatSnapshot() {
 }
 
 class _FakeChatBridge implements OpenCrayHostBridge {
-  _FakeChatBridge({
-    required this.chatSnapshot,
-    required this.runtimeSnapshot,
-  });
+  _FakeChatBridge({required this.chatSnapshot, required this.runtimeSnapshot});
 
   final OpenCrayChatSnapshot chatSnapshot;
   final OpenCrayChatRuntimeSnapshot runtimeSnapshot;

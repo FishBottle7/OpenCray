@@ -4,6 +4,7 @@ import com.opencray.app.facade.llm.EmptyLlmConfigFacade
 import com.opencray.app.facade.llm.LlmConfigFacade
 import com.opencray.app.facade.llm.LlmConfigSnapshot
 import com.opencray.app.facade.llm.LlmValidationResult
+import com.opencray.app.facade.llm.SaveCustomLlmProviderRequest
 import com.opencray.app.facade.llm.SaveLlmConfigRequest
 import com.opencray.app.facade.llm.ValidateLlmConfigRequest
 import com.opencray.app.facade.settings.SettingsDetailSnapshot
@@ -21,6 +22,7 @@ import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.SessionLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
 import com.opencray.runtime.OpenCrayLifecycleEvent
+import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
 import java.net.HttpURLConnection
 import java.net.URL
@@ -149,6 +151,55 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun forwardsSaveCustomProviderRequestsToHostRuntime() {
+    val llmConfigFacade = RecordingLlmConfigFacade()
+    val server = localRuntimeServer(llmConfigFacade = llmConfigFacade)
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/save_custom_llm_provider",
+        body = JSONObject().apply {
+          put("selectedProviderOptionId", "custom")
+          put("protocol", "anthropic")
+          put("providerName", "Acme")
+          put("providerNotes", "Regional fallback")
+          put("baseUrl", "https://api.acme.example/v1")
+          put("apiKey", "secret")
+          put("model", "claude-3-7-sonnet")
+          put("reasoningEffort", "high")
+          put("systemPrompt", "Be concise.")
+        }.toString(),
+      )
+      val payload = JSONObject(response.body)
+
+      assertEquals(200, response.statusCode)
+      assertEquals("saved-custom", payload.getString("selectedProviderOptionId"))
+      assertEquals("custom", payload.getString("providerId"))
+      assertEquals("Acme", payload.getString("providerName"))
+      assertEquals("Regional fallback", payload.getString("providerNotes"))
+      assertEquals(
+        SaveCustomLlmProviderRequest(
+          selectedProviderOptionId = "custom",
+          protocol = LlmProviderProtocols.ANTHROPIC,
+          providerName = "Acme",
+          providerNotes = "Regional fallback",
+          baseUrl = "https://api.acme.example/v1",
+          apiKey = "secret",
+          model = "claude-3-7-sonnet",
+          reasoningEffort = "high",
+          systemPrompt = "Be concise.",
+        ),
+        llmConfigFacade.lastSavedCustomRequest,
+      )
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun createWorkspaceFolderRouteMutatesWorkspace() {
     val workspaceRoot = temporaryFolder.newFolder("workspace-route-create").toPath()
     val server = localRuntimeServer(
@@ -250,6 +301,55 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun copyAndDeleteChatSessionRoutesMutateStoredSessions() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-session-routes"))
+    val originalSessionId = chatStore.loadState().activeSession.sessionId
+    chatStore.appendUserMessage(originalSessionId, "Copy this session")
+    val hostRuntime = OpenCrayHostRuntime.createForTest(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      chatSessionStore = chatStore,
+      settingsFacade = NoOpSettingsFacade,
+      llmConfigFacade = EmptyLlmConfigFacade,
+      sessionRuntimeManager = NoOpRuntimeManager(),
+      strings = hostRuntimeStrings(),
+    )
+    val server = OpenCrayLocalRuntimeServer(
+      hostRuntimeProvider = { hostRuntime },
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+    )
+    server.ensureStarted()
+
+    try {
+      val copyResponse = request(
+        server,
+        "POST",
+        "/v1/copy_chat_session",
+        body = JSONObject().apply {
+          put("sessionId", originalSessionId)
+        }.toString(),
+      )
+      val copiedSessionId = chatStore.loadState().activeSession.sessionId
+      val deleteResponse = request(
+        server,
+        "POST",
+        "/v1/delete_chat_session",
+        body = JSONObject().apply {
+          put("sessionId", originalSessionId)
+        }.toString(),
+      )
+      val sessions = chatStore.loadState().sessions
+
+      assertEquals(200, copyResponse.statusCode)
+      assertEquals(200, deleteResponse.statusCode)
+      assertTrue(sessions.none { it.sessionId == originalSessionId })
+      assertTrue(sessions.any { it.sessionId == copiedSessionId })
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun exposesChatRuntimeSnapshotOverLoopbackHttp() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-runtime-route"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -296,6 +396,72 @@ class OpenCrayLocalRuntimeServerTest {
       assertEquals(activeSessionId, payload.getString("sessionId"))
       assertEquals(1, events.length())
       assertEquals("lifecycle", events.getJSONObject(0).getString("kind"))
+      } finally {
+        server.close()
+      }
+    }
+
+  @Test
+  fun exposesMemoryRetrievalEventsOverChatRuntimeSnapshotRoute() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-memory-runtime-route"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeManager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      resumeResult = false,
+    )
+    runtimeManager.handle = handle
+    val hostRuntime = OpenCrayHostRuntime.createForTest(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      chatSessionStore = chatStore,
+      settingsFacade = NoOpSettingsFacade,
+      llmConfigFacade = EmptyLlmConfigFacade,
+      sessionRuntimeManager = runtimeManager,
+      strings = hostRuntimeStrings(),
+    )
+    hostRuntime.submitChatMessage("Need memory retrieval route")
+    val task = handle.submittedTasks.single()
+    val run = handle.submissions.single()
+    runtimeManager.emitRunEvent(
+      sessionId = activeSessionId,
+      task = task,
+      event = OpenCrayMemoryRetrievalEvent(
+        runId = run.runId,
+        taskId = task.id,
+        turn = 0,
+        toolName = "memory_search",
+        operation = "search",
+        query = "gradle wrapper repo root",
+        queryTerms = listOf("gradle", "wrapper", "repo", "root"),
+        resultCount = 1,
+        corpusFileCount = 1,
+        paths = listOf("memory/2024-03-11.md"),
+        lineRanges = listOf("5-8"),
+        emittedAtEpochMs = 1_100L,
+      ),
+    )
+    val server = OpenCrayLocalRuntimeServer(
+      hostRuntimeProvider = { hostRuntime },
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(server, "GET", "/v1/chat_runtime_snapshot")
+      val payload = JSONObject(response.body)
+      val event = payload.getJSONArray("events").getJSONObject(0)
+
+      assertEquals(200, response.statusCode)
+      assertEquals(activeSessionId, payload.getString("sessionId"))
+      assertEquals("memory_retrieval", event.getString("kind"))
+      assertEquals("memory_search", event.getString("toolName"))
+      assertEquals("search", event.getString("operation"))
+      assertEquals("gradle wrapper repo root", event.getString("query"))
+      assertEquals("gradle", event.getJSONArray("queryTerms").getString(0))
+      assertEquals(1, event.getInt("resultCount"))
+      assertEquals("memory/2024-03-11.md", event.getJSONArray("paths").getString(0))
+      assertEquals("5-8", event.getJSONArray("lineRanges").getString(0))
     } finally {
       server.close()
     }
@@ -602,11 +768,28 @@ class OpenCrayLocalRuntimeServerTest {
 
   private class RecordingLlmConfigFacade : LlmConfigFacade {
     var lastValidationRequest: ValidateLlmConfigRequest? = null
+    var lastSavedCustomRequest: SaveCustomLlmProviderRequest? = null
 
     override fun load(): LlmConfigSnapshot = EmptyLlmConfigFacade.load()
 
     override fun save(request: SaveLlmConfigRequest): LlmConfigSnapshot =
       throw UnsupportedOperationException("save is not used in this test")
+
+    override fun saveCustomProvider(request: SaveCustomLlmProviderRequest): LlmConfigSnapshot {
+      lastSavedCustomRequest = request
+      return EmptyLlmConfigFacade.load().copy(
+        providerId = "custom",
+        selectedProviderOptionId = "saved-custom",
+        protocol = request.protocol,
+        providerName = request.providerName,
+        providerNotes = request.providerNotes,
+        baseUrl = request.baseUrl,
+        apiKey = request.apiKey,
+        model = request.model,
+        reasoningEffort = request.reasoningEffort,
+        systemPrompt = request.systemPrompt,
+      )
+    }
 
     override fun validate(request: ValidateLlmConfigRequest): LlmValidationResult {
       lastValidationRequest = request
@@ -650,6 +833,7 @@ class OpenCrayLocalRuntimeServerTest {
       task: AgentTask,
       result: ExecutionResult,
     ) {
+      handle?.recordResult(task = task, result = result)
       listeners.forEach { listener ->
         listener.onTaskFinished(sessionId, task, result)
       }
@@ -660,6 +844,7 @@ class OpenCrayLocalRuntimeServerTest {
       task: AgentTask,
       event: com.opencray.runtime.OpenCrayAgentRunEvent,
     ) {
+      handle?.recordEvent(event)
       listeners.forEach { listener ->
         listener.onRunEvent(sessionId, task, event)
       }
@@ -732,6 +917,30 @@ class OpenCrayLocalRuntimeServerTest {
     override fun requestResumeTask(taskId: String): Boolean {
       resumedTaskIds += taskId
       return resumeResult
+    }
+
+    fun recordResult(
+      task: AgentTask,
+      result: ExecutionResult,
+    ) {
+      val runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID].orEmpty()
+      val existing = runSnapshotsById[runId] ?: return
+      runSnapshotsById[runId] = existing.copy(
+        updatedAtEpochMs = result.finishedAtEpochMs,
+        executionStatus = result.status,
+        errorCode = result.errorCode,
+        errorMessage = result.errorMessage,
+        responseFormat = result.metadata["responseFormat"],
+        resultMetadata = result.metadata,
+      )
+    }
+
+    fun recordEvent(event: com.opencray.runtime.OpenCrayAgentRunEvent) {
+      val existing = runSnapshotsById[event.runId] ?: return
+      runSnapshotsById[event.runId] = existing.copy(
+        updatedAtEpochMs = event.emittedAtEpochMs,
+        lastEvent = event,
+      )
     }
 
     override fun listRuns(): List<AgentRunSnapshot> = runSnapshotsById.values.toList()

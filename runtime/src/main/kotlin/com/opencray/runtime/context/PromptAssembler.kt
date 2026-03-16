@@ -102,17 +102,31 @@ class PromptAssembler {
   }
 
   private fun renderToolProtocolLayer(toolDefinitions: List<AgentToolDefinition>): String = buildString {
+    val hasMemorySearchTool = toolDefinitions.any { definition -> definition.name == "memory_search" }
+    val hasMemoryGetTool = toolDefinitions.any { definition -> definition.name == "memory_get" }
     appendLine("Decide the next step for this OpenCray task.")
     appendLine()
     appendLine("On each turn, return exactly one JSON action and nothing else.")
     appendLine("Use one of these shapes:")
     appendLine("""{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}""")
+    appendLine("""{"type":"tool_call","tool_name":"Bash","arguments":{"command":"git status"}}""")
+    appendLine("""{"type":"tool_call","tool_name":"WebFetch","arguments":{"url":"https://example.com"}}""")
     appendLine("""{"type":"tool_call","tool_name":"Write","reason":"Need to update the workspace before answering.","arguments":{"file_path":"notes.txt","content":"..."}}""")
     appendLine("""{"type":"final","answer":"Concise answer for the user."}""")
     appendLine("If you return type=tool_call, the runtime will execute it, append the tool result, and ask you for the next action.")
     appendLine("If you need multiple tools, call only the next tool now. After each tool result the runtime will ask for the next action.")
+    appendLine("Use Bash for one-off shell commands. Bash runs through the host shell, so use PowerShell syntax on Windows hosts.")
+    appendLine("For current information from the internet, prefer WebSearch when a search provider is configured, and use WebFetch when you already have a URL to read.")
+    appendLine("For commands you want to manage across multiple turns, prefer ProcessStart and then use ProcessRead or ProcessWait.")
+    appendLine("For long-running Python scripts, prefer ProcessStart with script_path instead of python_exec.")
     appendLine("A tool_call may include reason or justification, but it must not include a final answer.")
     appendLine("Do not return multiple tool calls in one response.")
+    if (hasMemorySearchTool) {
+      appendLine("When the user asks about prior work, earlier decisions, remembered preferences, dates, people, paths, or todos, search projected memory first instead of guessing from partial context.")
+      if (hasMemoryGetTool) {
+        appendLine("Use memory_search to locate the relevant memory path, then memory_get to read only the narrow line range you need.")
+      }
+    }
     appendLine()
     appendLine("Available tools:")
     toolDefinitions.forEach { definition ->

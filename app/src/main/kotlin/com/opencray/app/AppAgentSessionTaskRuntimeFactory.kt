@@ -29,6 +29,10 @@ import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.memory.MemoryRecallRequest
 import com.opencray.runtime.memory.MemoryRecallResult
 import com.opencray.runtime.memory.MemoryRetriever
+import com.opencray.runtime.memory.MemoryToolContext
+import com.opencray.runtime.process.AgentProcessRegistry
+import com.opencray.runtime.process.InMemoryAgentProcessRegistry
+import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.session.InMemorySessionTranscriptStore
 import com.opencray.runtime.session.SessionTranscriptStore
 import com.opencray.runtime.soul.MemoryBackedSoulProfileResolver
@@ -52,9 +56,11 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val memoryRecordsProvider: () -> List<MemoryRecord> = { emptyList() },
   private val providerUserAgent: String = OpenCrayUserAgent.providerApi("0"),
   private val approvalRegistry: AgentTaskApprovalRegistry = AgentTaskApprovalRegistry(),
+  private val processRegistryProvider: (String) -> AgentProcessRegistry = { InMemoryAgentProcessRegistry() },
   private val transcriptStoreProvider: (String) -> SessionTranscriptStore = { InMemorySessionTranscriptStore() },
 ) : AgentSessionTaskRuntimeFactory {
   private val todoStoresBySession: ConcurrentMap<String, AgentTodoStore> = ConcurrentHashMap()
+  private val processRegistriesBySession: ConcurrentMap<String, AgentProcessRegistry> = ConcurrentHashMap()
   private val transcriptStoresBySession: ConcurrentMap<String, SessionTranscriptStore> = ConcurrentHashMap()
   private val memoryRetriever: MemoryRetriever = MemoryRetriever()
   private val memoryBackedSoulResolver: MemoryBackedSoulProfileResolver = MemoryBackedSoulProfileResolver()
@@ -71,6 +77,14 @@ internal class AppAgentSessionTaskRuntimeFactory(
       eventSink = eventSink,
     )
   }
+
+  override fun listManagedProcesses(sessionId: String): List<ManagedProcessSnapshot> =
+    processRegistryForSession(sessionId).list()
+
+  override fun terminateManagedProcess(
+    sessionId: String,
+    processId: String,
+  ): ManagedProcessSnapshot? = processRegistryForSession(sessionId).terminate(processId)
 
   private fun executeTask(
     sessionId: String,
@@ -107,8 +121,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
     val approvalGrant = approvalRegistry.consumeApproved(sessionId, task.id)
     val transcriptStore = transcriptStoreForSession(sessionId)
     val memoryRecords = memoryRecordsProvider()
+    val workspaceId = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider())
     val sessionContext = createSessionContext(
       sessionId = sessionId,
+      workspaceId = workspaceId,
       visibleThroughMessageId = visibleThroughMessageId.takeIf(String::isNotBlank),
       excludedMessageIds = pendingMessageId.takeIf(String::isNotBlank)?.let(::setOf).orEmpty(),
       soulProfile = soulProfileProvider(),
@@ -143,6 +159,12 @@ internal class AppAgentSessionTaskRuntimeFactory(
           approvedTaskId = task.id.takeIf { approvalGrant != null },
           approvedToolName = approvalGrant?.toolName,
           todoStore = todoStoreForSession(sessionId),
+          processRegistry = processRegistryForSession(sessionId),
+          memoryToolContext = MemoryToolContext(
+            sessionId = sessionId,
+            workspaceId = workspaceId,
+            records = memoryRecords,
+          ),
         ),
       ),
       config = OpenCrayAgentRuntimeConfig(
@@ -173,6 +195,9 @@ internal class AppAgentSessionTaskRuntimeFactory(
 
   internal fun todoStoreForSession(sessionId: String): AgentTodoStore =
     todoStoresBySession.computeIfAbsent(sessionId) { InMemoryAgentTodoStore() }
+
+  internal fun processRegistryForSession(sessionId: String): AgentProcessRegistry =
+    processRegistriesBySession.computeIfAbsent(sessionId, processRegistryProvider)
 
   internal fun transcriptStoreForSession(sessionId: String): SessionTranscriptStore =
     transcriptStoresBySession.computeIfAbsent(sessionId, transcriptStoreProvider)
@@ -268,12 +293,13 @@ internal class AppAgentSessionTaskRuntimeFactory(
     sessionId: String,
     taskInput: String,
     memoryRecords: List<MemoryRecord> = memoryRecordsProvider(),
+    workspaceId: String? = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider()),
   ): MemoryRecallResult = memoryRetriever.retrieve(
     records = memoryRecords,
     request = MemoryRecallRequest(
       sessionId = sessionId,
       userInput = taskInput,
-      workspaceId = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider()),
+      workspaceId = workspaceId,
     ),
   )
 
@@ -281,6 +307,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     sessionId: String,
     soulProfile: PersonalizationLocalStore.SoulProfile?,
     memoryRecords: List<MemoryRecord> = memoryRecordsProvider(),
+    workspaceId: String? = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider()),
   ) = memoryBackedSoulResolver.overlay(
     baseProfile = sessionContextFactory.create(
       sessionId = sessionId,
@@ -288,11 +315,12 @@ internal class AppAgentSessionTaskRuntimeFactory(
     ).soulProfile,
     records = memoryRecords,
     sessionId = sessionId,
-    workspaceId = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider()),
+    workspaceId = workspaceId,
   )
 
   private fun createSessionContext(
     sessionId: String,
+    workspaceId: String?,
     visibleThroughMessageId: String?,
     excludedMessageIds: Set<String>,
     soulProfile: PersonalizationLocalStore.SoulProfile?,
@@ -322,12 +350,13 @@ internal class AppAgentSessionTaskRuntimeFactory(
         baseProfile = baseContext.soulProfile,
         records = memoryRecords,
         sessionId = sessionId,
-        workspaceId = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider()),
+        workspaceId = workspaceId,
       ),
       recalledMemory = recalledMemoryFor(
         sessionId = sessionId,
         taskInput = taskInput,
         memoryRecords = memoryRecords,
+        workspaceId = workspaceId,
       ),
       conversation = transcriptStore.snapshot(),
     )

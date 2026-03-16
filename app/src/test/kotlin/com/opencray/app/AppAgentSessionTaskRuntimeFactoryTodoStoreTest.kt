@@ -5,6 +5,7 @@ import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.process.InMemoryAgentProcessRegistry
 import com.opencray.runtime.context.RuntimeConversationRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
@@ -60,6 +61,32 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
 
     assertSame(first, second)
     assertNotSame(first, third)
+  }
+
+  @Test
+  fun processRegistryForSessionReusesRegistryForSameSessionIdAndSeparatesDifferentSessions() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-process-registry"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-process-registry").toPath()
+    val createdRegistries = mutableListOf<InMemoryAgentProcessRegistry>()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      processRegistryProvider = {
+        InMemoryAgentProcessRegistry().also(createdRegistries::add)
+      },
+    )
+
+    val first = factory.processRegistryForSession("session-1")
+    val second = factory.processRegistryForSession("session-1")
+    val third = factory.processRegistryForSession("session-2")
+
+    assertSame(first, second)
+    assertNotSame(first, third)
+    assertEquals(2, createdRegistries.size)
   }
 
   @Test

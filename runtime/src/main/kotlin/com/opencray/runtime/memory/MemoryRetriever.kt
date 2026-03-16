@@ -84,7 +84,10 @@ class MemoryRetriever(
     records: List<MemoryRecord>,
     request: MemoryRecallRequest,
   ): MemoryRecallResult {
-    val queryTerms = extractQueryTerms(request.userInput)
+    val queryTerms = extractMemoryQueryTerms(
+      policy = policy,
+      text = request.userInput,
+    )
     if (records.isEmpty()) {
       return MemoryRecallResult(
         trace = MemoryRecallTrace(queryTerms = queryTerms.toList()),
@@ -167,10 +170,25 @@ class MemoryRetriever(
     if (metadata.status == MemoryStatus.RESOLVED) {
       return RecallEvaluation.Filtered(MemoryRecallFilterReason.RESOLVED)
     }
-    if (!scopeMatches(metadata = metadata, request = request)) {
+    if (
+      !memoryScopeMatches(
+        scope = metadata.scope,
+        sourceSessionId = metadata.sourceSessionId,
+        recordWorkspaceId = metadata.workspaceId,
+        requestSessionId = request.sessionId,
+        requestWorkspaceId = request.workspaceId,
+      )
+    ) {
       return RecallEvaluation.Filtered(MemoryRecallFilterReason.SCOPE_MISMATCH)
     }
-    if (isExpired(metadata = metadata, updatedAtEpochMs = record.updatedAtEpochMs)) {
+    if (
+      memoryRecordExpired(
+        ttlMs = metadata.ttlMs,
+        lastConfirmedAtEpochMs = metadata.lastConfirmedAtEpochMs,
+        updatedAtEpochMs = record.updatedAtEpochMs,
+        nowEpochMs = clock(),
+      )
+    ) {
       return RecallEvaluation.Filtered(MemoryRecallFilterReason.EXPIRED)
     }
     if (metadata.preferenceKey != null) {
@@ -267,82 +285,15 @@ class MemoryRetriever(
     return score
   }
 
-  private fun scopeMatches(
-    metadata: ParsedMemoryMetadata,
-    request: MemoryRecallRequest,
-  ): Boolean = when (metadata.scope) {
-    MemoryScope.USER -> true
-    MemoryScope.SESSION -> metadata.sourceSessionId == request.sessionId
-    MemoryScope.WORKSPACE -> {
-      val recordWorkspaceId = metadata.workspaceId?.takeIf(String::isNotBlank)
-      val requestWorkspaceId = request.workspaceId?.takeIf(String::isNotBlank)
-      when {
-        recordWorkspaceId == null && requestWorkspaceId == null -> true
-        recordWorkspaceId != null && requestWorkspaceId != null -> recordWorkspaceId == requestWorkspaceId
-        else -> false
-      }
-    }
-  }
-
-  private fun isExpired(
-    metadata: ParsedMemoryMetadata,
-    updatedAtEpochMs: Long,
-  ): Boolean {
-    val ttlMs = metadata.ttlMs ?: return false
-    val referenceEpochMs = metadata.lastConfirmedAtEpochMs ?: updatedAtEpochMs
-    return referenceEpochMs + ttlMs < clock()
-  }
-
   private fun ageDays(updatedAtEpochMs: Long): Long =
     ((clock() - updatedAtEpochMs).coerceAtLeast(0L)) / DAY_MS
 
   private fun estimatedPromptChars(memory: RetrievedMemory): Int =
     memory.content.length + 40
 
-  private fun extractQueryTerms(text: String): Set<String> {
-    val normalized = policy.normalizeCandidateContent(text).orEmpty().lowercase(Locale.US)
-    if (normalized.isBlank()) {
-      return emptySet()
-    }
-    return QUERY_TERM_REGEX.findAll(normalized)
-      .map { match -> match.value.trim() }
-      .filter { token ->
-        token.length >= 2 &&
-          token !in ENGLISH_STOP_TERMS &&
-          token !in CHINESE_STOP_TERMS
-      }
-      .toCollection(linkedSetOf())
-  }
-
   private companion object {
     const val DAY_MS: Long = 24L * 60L * 60L * 1000L
     const val MAX_TRACE_CONTENT_CHARS: Int = 96
     const val MAX_OMITTED_TRACE_ENTRIES: Int = 8
-    val QUERY_TERM_REGEX: Regex = Regex("[\\p{L}\\p{N}_./:-]{2,}")
-    val ENGLISH_STOP_TERMS: Set<String> = setOf(
-      "do",
-      "not",
-      "the",
-      "this",
-      "that",
-      "with",
-      "from",
-      "into",
-      "your",
-      "please",
-      "about",
-      "what",
-      "when",
-      "where",
-      "which",
-    )
-    val CHINESE_STOP_TERMS: Set<String> = setOf(
-      "这个",
-      "那个",
-      "一下",
-      "现在",
-      "继续",
-      "当前",
-    )
   }
 }

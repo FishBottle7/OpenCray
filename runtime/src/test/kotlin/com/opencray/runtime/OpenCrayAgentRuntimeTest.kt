@@ -26,6 +26,10 @@ import com.opencray.runtime.memory.MemoryRecallSelectedTrace
 import com.opencray.runtime.memory.MemoryScope
 import com.opencray.runtime.memory.MemoryStatus
 import com.opencray.runtime.memory.RetrievedMemory
+import com.opencray.runtime.process.AgentProcessRegistry
+import com.opencray.runtime.process.ManagedProcessSnapshot
+import com.opencray.runtime.process.ManagedProcessStartRequest
+import com.opencray.runtime.process.ManagedProcessStatus
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -344,6 +348,7 @@ class OpenCrayAgentRuntimeTest {
           is OpenCrayToolCallEvent -> "tool_call"
           is OpenCrayToolResultEvent -> "tool_result"
           is OpenCrayAssistantEvent -> "assistant"
+          is OpenCrayMemoryRetrievalEvent -> "memory_retrieval"
           is OpenCrayMemoryWriteEvent -> "memory_write"
         }
       },
@@ -355,6 +360,103 @@ class OpenCrayAgentRuntimeTest {
     assertTrue((eventSink.events[3] as OpenCrayAssistantEvent).isFinal)
     assertEquals(OpenCrayRunLifecyclePhase.END, (eventSink.events[4] as OpenCrayLifecycleEvent).phase)
     assertFalse(eventSink.events.any { event -> event.taskId.isBlank() || event.runId.isBlank() })
+  }
+
+  @Test
+  fun runPromptTaskCanAdvanceManagedProcessAcrossTurns() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-managed-process")
+    val registry = ScriptedProcessRegistry()
+    val gateway = DynamicGateway { index ->
+      when (index) {
+        0 -> """{"type":"tool_call","tool_name":"ProcessStart","arguments":{"command":"npm","args":["run","dev"],"working_directory":"."}}"""
+        1 -> {
+          val processId = registry.startedProcessId ?: error("ProcessStart should have run before ProcessWait.")
+          """{"type":"tool_call","tool_name":"ProcessWait","arguments":{"process_id":"$processId","timeout_ms":250}}"""
+        }
+
+        2 -> """{"type":"final","answer":"Managed process is ready."}"""
+        else -> error("Unexpected managed-process turn $index.")
+      }
+    }
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+          processRegistry = registry,
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 5, maxToolCalls = 3),
+      clock = IncrementingClock(start = 7_500L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(
+        input = "Start the dev server and wait until it is ready.",
+        metadata = mapOf("chatMode" to "DEVELOPER"),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Managed process is ready.", result.stdout)
+    assertEquals("3", result.metadata["turnCount"])
+    assertEquals("2", result.metadata["toolCallCount"])
+    assertEquals(listOf(250L), registry.waitTimeouts)
+    assertTrue(gateway.requests[1].prompt.contains("ProcessStart"))
+    assertTrue(gateway.requests[1].prompt.contains("process_id=${registry.startedProcessId}"))
+    assertTrue(gateway.requests[1].prompt.contains("status=running"))
+    assertTrue(gateway.requests[2].prompt.contains("ProcessWait"))
+    assertTrue(gateway.requests[2].prompt.contains("server ready"))
+    assertTrue(gateway.requests[2].prompt.contains("exit_code=0"))
+  }
+
+  @Test
+  fun runPromptTaskCanStartManagedPythonScriptAcrossTurns() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-managed-python")
+    Files.createDirectories(workspaceRoot.toPath().resolve("scripts"))
+    Files.write(
+      workspaceRoot.toPath().resolve("scripts").resolve("run.py"),
+      "print('hello')".toByteArray(StandardCharsets.UTF_8),
+    )
+    val registry = ScriptedProcessRegistry()
+    val gateway = DynamicGateway { index ->
+      when (index) {
+        0 -> """{"type":"tool_call","tool_name":"ProcessStart","arguments":{"script_path":"scripts/run.py","python_executable":"python3","args":["--flag"]}}"""
+        1 -> {
+          val processId = registry.startedProcessId ?: error("ProcessStart should have run before ProcessWait.")
+          """{"type":"tool_call","tool_name":"ProcessWait","arguments":{"process_id":"$processId","timeout_ms":250}}"""
+        }
+
+        2 -> """{"type":"final","answer":"Managed python process finished."}"""
+        else -> error("Unexpected managed-python turn $index.")
+      }
+    }
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+          processRegistry = registry,
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 5, maxToolCalls = 3),
+      clock = IncrementingClock(start = 7_750L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(
+        input = "Run the Python script in the background and wait for it to finish.",
+        metadata = mapOf("chatMode" to "DEVELOPER"),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Managed python process finished.", result.stdout)
+    assertTrue(gateway.requests[1].prompt.contains("python_exec"))
+    assertTrue(gateway.requests[1].prompt.contains("scripts/run.py"))
+    assertTrue(gateway.requests[1].prompt.contains("python3"))
   }
 
   @Test
@@ -648,6 +750,45 @@ class OpenCrayAgentRuntimeTest {
     }
   }
 
+  private class DynamicGateway(
+    private val outputProvider: (Int) -> String,
+  ) : LiteLlmGateway {
+    val requests = mutableListOf<LiteLlmGatewayRequest>()
+    private var now = 8_000L
+
+    override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+      requests += request
+      val output = outputProvider(requests.lastIndex)
+      val selection = LiteLlmRouteSelectionMetadata(
+        profileId = "test-profile",
+        routeId = "test-route",
+        providerId = "fake",
+        model = "fake-model",
+        attemptIndex = 0,
+      )
+      val startedAt = now++
+      val finishedAt = now++
+      return LiteLlmGatewayResult(
+        requestId = request.requestId,
+        status = LiteLlmGatewayStatus.SUCCESS,
+        completionMode = LiteLlmCompletionMode.PRIMARY,
+        outputText = output,
+        selectedRoute = selection,
+        attempts = listOf(
+          LiteLlmAttemptRecord(
+            route = selection,
+            outcome = LiteLlmAttemptOutcome.SUCCESS,
+            outputChars = output.length,
+            startedAtEpochMs = startedAt,
+            finishedAtEpochMs = finishedAt,
+          ),
+        ),
+        startedAtEpochMs = startedAt,
+        finishedAtEpochMs = finishedAt,
+      )
+    }
+  }
+
   private class FailingGateway(
     private val status: LiteLlmGatewayStatus,
     private val errorCode: String,
@@ -695,5 +836,51 @@ class OpenCrayAgentRuntimeTest {
     override fun onRunEvent(task: AgentTask, event: OpenCrayAgentRunEvent) {
       events += event
     }
+  }
+
+  private class ScriptedProcessRegistry : AgentProcessRegistry {
+    private val snapshotsById = linkedMapOf<String, ManagedProcessSnapshot>()
+    val waitTimeouts = mutableListOf<Long>()
+    var startedProcessId: String? = null
+      private set
+
+    override fun start(request: ManagedProcessStartRequest): ManagedProcessSnapshot {
+      startedProcessId = request.processId
+      return ManagedProcessSnapshot(
+        processId = request.processId,
+        taskId = request.taskId,
+        command = request.command,
+        args = request.args,
+        workingDirectory = request.workingDirectory,
+        status = ManagedProcessStatus.RUNNING,
+        processStarted = true,
+        timeoutMs = request.timeoutMs,
+        startedAtEpochMs = 1_000L,
+        updatedAtEpochMs = 1_000L,
+        metadata = request.metadata,
+      ).also { snapshot ->
+        snapshotsById[request.processId] = snapshot
+      }
+    }
+
+    override fun list(): List<ManagedProcessSnapshot> = snapshotsById.values.toList()
+
+    override fun read(processId: String): ManagedProcessSnapshot? = snapshotsById[processId]
+
+    override fun wait(processId: String, timeoutMs: Long): ManagedProcessSnapshot? {
+      waitTimeouts += timeoutMs
+      val existing = snapshotsById[processId] ?: return null
+      return existing.copy(
+        status = ManagedProcessStatus.SUCCESS,
+        stdout = "server ready",
+        exitCode = 0,
+        updatedAtEpochMs = existing.updatedAtEpochMs + timeoutMs,
+        finishedAtEpochMs = existing.updatedAtEpochMs + timeoutMs,
+      ).also { snapshot ->
+        snapshotsById[processId] = snapshot
+      }
+    }
+
+    override fun terminate(processId: String): ManagedProcessSnapshot? = snapshotsById[processId]
   }
 }

@@ -51,6 +51,14 @@ class PromptAssemblerTest {
               name = "workspace_read_file",
               description = "Read a file from the workspace.",
             ),
+            AgentToolDefinition(
+              name = "Bash",
+              description = "Run a shell command.",
+            ),
+            AgentToolDefinition(
+              name = "WebFetch",
+              description = "Fetch a web page.",
+            ),
           ),
           liveConversation = listOf(
             RuntimeConversationMessage(RuntimeConversationRole.USER, "Older request."),
@@ -73,6 +81,13 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("On each turn, return exactly one JSON action"))
     assertTrue(prompt.taskPrompt.contains("the runtime will execute it, append the tool result"))
     assertTrue(prompt.taskPrompt.contains("If you need multiple tools, call only the next tool now"))
+    assertTrue(prompt.taskPrompt.contains("tool_name\":\"Bash"))
+    assertTrue(prompt.taskPrompt.contains("tool_name\":\"WebFetch"))
+    assertTrue(prompt.taskPrompt.contains("Use Bash for one-off shell commands"))
+    assertTrue(prompt.taskPrompt.contains("prefer WebSearch when a search provider is configured"))
+    assertTrue(prompt.taskPrompt.contains("use PowerShell syntax on Windows hosts"))
+    assertTrue(prompt.taskPrompt.contains("prefer ProcessStart and then use ProcessRead or ProcessWait"))
+    assertTrue(prompt.taskPrompt.contains("prefer ProcessStart with script_path instead of python_exec"))
     assertTrue(prompt.taskPrompt.contains("reason or justification"))
     assertTrue(prompt.taskPrompt.contains("it must not include a final answer"))
     assertTrue(prompt.taskPrompt.contains("Available tools:"))
@@ -99,9 +114,9 @@ class PromptAssemblerTest {
     val contextManager = ContextManager(
       contextPruner = ContextPruner(
         ContextPrunerConfig(
-          maxToolChars = 80,
+          maxToolChars = 128,
           maxToolLines = 4,
-          maxAttachmentChars = 48,
+          maxAttachmentChars = 64,
           maxPreviewChars = 64,
         ),
       ),

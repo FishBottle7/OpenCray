@@ -157,29 +157,57 @@ object SessionTranscriptRules {
 
   private fun categoryForToolName(toolName: String): ToolReplayCategory = when (toolName) {
     "Write",
+    "write",
     "Edit",
+    "edit",
     "MultiEdit",
+    "multiedit",
     "workspace_write_file",
     "workspace_move_file",
     "workspace_delete_file",
     -> ToolReplayCategory.MUTATION
 
     "Read",
+    "read",
     "LS",
+    "ls",
+    "list",
     "Grep",
+    "grep",
     "Glob",
+    "glob",
+    "WebSearch",
+    "websearch",
+    "WebFetch",
+    "webfetch",
     "workspace_list_files",
     "workspace_read_file",
     "skills_list",
     "skill_read",
+    "memory_search",
+    "memory_get",
     "mcp_list_servers",
     -> ToolReplayCategory.DISCOVERY
 
+    "Bash",
+    "bash",
     "command_exec",
     "python_exec",
+    "ProcessStart",
+    "processstart",
+    "ProcessList",
+    "processlist",
+    "ProcessRead",
+    "processread",
+    "ProcessWait",
+    "processwait",
+    "ProcessTerminate",
+    "processterminate",
     -> ToolReplayCategory.EXECUTION
 
-    "TodoWrite" -> ToolReplayCategory.STATEFUL
+    "TodoWrite",
+    "todowrite",
+    -> ToolReplayCategory.STATEFUL
     else -> ToolReplayCategory.GENERIC
   }
 

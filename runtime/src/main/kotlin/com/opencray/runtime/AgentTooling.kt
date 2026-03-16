@@ -15,12 +15,30 @@ import com.opencray.policy.ExecutionMode
 import com.opencray.policy.ModePolicy
 import com.opencray.policy.PolicyRequest
 import com.opencray.policy.PolicyToolClass
+import com.opencray.policy.SafetySettingsMetadataKeys
+import com.opencray.policy.ToolPolicyOverride
+import com.opencray.runtime.memory.MemorySearchMatch
+import com.opencray.runtime.memory.MemorySearchService
+import com.opencray.runtime.memory.MemoryToolContext
+import com.opencray.runtime.process.AgentProcessRegistry
+import com.opencray.runtime.process.InMemoryAgentProcessRegistry
+import com.opencray.runtime.process.ManagedProcessSnapshot
+import com.opencray.runtime.process.ManagedProcessStartRequest
+import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.web.HttpUrlWebContentFetcher
+import com.opencray.runtime.web.UnconfiguredWebSearchProvider
+import com.opencray.runtime.web.WebContentFetcher
+import com.opencray.runtime.web.WebFetchRequest
+import com.opencray.runtime.web.WebSearchProvider
+import com.opencray.runtime.web.WebSearchRequest
 import com.opencray.skills.SkillLoadReport
 import com.opencray.skills.SkillLoader
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.Paths
+import java.util.UUID
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
@@ -136,14 +154,26 @@ data class OpenCrayToolDispatcherConfig(
   val pythonRuntimeAdapter: PythonRuntimeAdapter = PythonRuntimeAdapter(),
   val commandApprovalToken: CommandApprovalToken? = null,
   val todoStore: AgentTodoStore = InMemoryAgentTodoStore(),
+  val processRegistry: AgentProcessRegistry = InMemoryAgentProcessRegistry(),
+  val webContentFetcher: WebContentFetcher = HttpUrlWebContentFetcher(),
+  val webSearchProvider: WebSearchProvider = UnconfiguredWebSearchProvider,
+  val memoryToolContext: MemoryToolContext? = null,
   val maxReadBytes: Int = 32_000,
   val maxDirectoryEntries: Int = 200,
+  val maxWebFetchChars: Int = 12_000,
+  val maxWebSearchResults: Int = 8,
+  val maxMemorySearchResults: Int = 5,
+  val maxMemoryGetLines: Int = 20,
   val json: Json = Json { prettyPrint = true; ignoreUnknownKeys = true },
 ) {
   init {
     require(workspaceRoots.isNotEmpty()) { "OpenCrayToolDispatcherConfig workspaceRoots must not be empty." }
     require(maxReadBytes > 0) { "OpenCrayToolDispatcherConfig maxReadBytes must be > 0." }
     require(maxDirectoryEntries > 0) { "OpenCrayToolDispatcherConfig maxDirectoryEntries must be > 0." }
+    require(maxWebFetchChars > 0) { "OpenCrayToolDispatcherConfig maxWebFetchChars must be > 0." }
+    require(maxWebSearchResults > 0) { "OpenCrayToolDispatcherConfig maxWebSearchResults must be > 0." }
+    require(maxMemorySearchResults > 0) { "OpenCrayToolDispatcherConfig maxMemorySearchResults must be > 0." }
+    require(maxMemoryGetLines > 0) { "OpenCrayToolDispatcherConfig maxMemoryGetLines must be > 0." }
   }
 }
 
@@ -153,6 +183,10 @@ class OpenCrayToolDispatcher(
   private val boundary = WorkspaceBoundary(config.workspaceRoots)
   private val fileOpsService = FileOpsService(boundary.approvedRoots())
   private val todoStore = config.todoStore
+  private val processRegistry = config.processRegistry
+  private val webContentFetcher = config.webContentFetcher
+  private val webSearchProvider = config.webSearchProvider
+  private val memorySearchService = MemorySearchService()
   private val commandExecutor = config.commandExecutor ?: CommandExecutor(
     config = CommandExecutionConfig(
       approvedWorkingDirectories = boundary.approvedRoots(),
@@ -206,6 +240,22 @@ class OpenCrayToolDispatcher(
         ),
       ),
       AgentToolDefinition(
+        name = "WebSearch",
+        description = "Search the web through the configured search provider and return result titles, URLs, and snippets.",
+        parameters = listOf(
+          AgentToolParameter("query", "string", required = true, description = "Search query to send to the web search provider."),
+          AgentToolParameter("max_results", "number", required = false, description = "Maximum number of search results to return."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "WebFetch",
+        description = "Fetch one HTTP or HTTPS page and return extracted readable text content.",
+        parameters = listOf(
+          AgentToolParameter("url", "string", required = true, description = "Absolute http or https URL to fetch."),
+          AgentToolParameter("max_chars", "number", required = false, description = "Maximum number of extracted characters to return."),
+        ),
+      ),
+      AgentToolDefinition(
         name = "Edit",
         description = "Apply an exact string replacement to one existing text file. Fails if the target text is missing or ambiguous unless replace_all is true.",
         parameters = listOf(
@@ -228,6 +278,56 @@ class OpenCrayToolDispatcher(
         description = "Read or replace the current chat session's in-memory todo list. Omit todos to inspect the current list; provide todos to replace it.",
         parameters = listOf(
           AgentToolParameter("todos", "object[]", required = false, description = "Array of todo objects with content, status, and optional activeForm."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "Bash",
+        description = "Run one shell command string inside the approved workspace through the host shell. Each call starts a fresh managed shell process; if it keeps running after the initial wait, continue with ProcessRead, ProcessWait, or ProcessTerminate.",
+        parameters = listOf(
+          AgentToolParameter("command", "string", required = true, description = "Shell command string to execute."),
+          AgentToolParameter("working_directory", "string", required = false, description = "Workspace-relative working directory. Defaults to the workspace root."),
+          AgentToolParameter("timeout_ms", "number", required = false, description = "How long Bash should wait for completion before returning a still-running managed process."),
+          AgentToolParameter("wait_timeout_ms", "number", required = false, description = "Explicit alias for timeout_ms."),
+          AgentToolParameter("process_timeout_ms", "number", required = false, description = "Maximum lifetime for the managed shell process before it is terminated."),
+          AgentToolParameter("background", "boolean", required = false, description = "If true, return immediately after the managed shell process starts."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "ProcessStart",
+        description = "Start a managed background command or Python script inside the approved workspace and return a process id for later inspection.",
+        parameters = listOf(
+          AgentToolParameter("command", "string", required = false, description = "Executable to launch. Provide exactly one of command or script_path."),
+          AgentToolParameter("script_path", "string", required = false, description = "Workspace-relative Python script to launch through the managed Python runner. Provide exactly one of command or script_path."),
+          AgentToolParameter("args", "string[]", required = false, description = "Optional command arguments."),
+          AgentToolParameter("python_executable", "string", required = false, description = "Python executable used when script_path is provided. Defaults to python."),
+          AgentToolParameter("working_directory", "string", required = false, description = "Workspace-relative working directory. Defaults to the workspace root."),
+          AgentToolParameter("timeout_ms", "number", required = false, description = "Maximum runtime before the managed process is terminated."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "ProcessList",
+        description = "List managed background processes for the current chat session.",
+      ),
+      AgentToolDefinition(
+        name = "ProcessRead",
+        description = "Read the latest status and captured output for one managed background process.",
+        parameters = listOf(
+          AgentToolParameter("process_id", "string", required = true, description = "Managed process id returned by ProcessStart."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "ProcessWait",
+        description = "Wait briefly for one managed background process to advance or finish, then return its latest status and output.",
+        parameters = listOf(
+          AgentToolParameter("process_id", "string", required = true, description = "Managed process id returned by ProcessStart."),
+          AgentToolParameter("timeout_ms", "number", required = false, description = "How long to wait before returning the current snapshot."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "ProcessTerminate",
+        description = "Terminate one managed background process started in the current chat session.",
+        parameters = listOf(
+          AgentToolParameter("process_id", "string", required = true, description = "Managed process id returned by ProcessStart."),
         ),
       ),
       AgentToolDefinition(
@@ -300,7 +400,7 @@ class OpenCrayToolDispatcher(
         name = "mcp_list_servers",
         description = "Inspect currently exposed MCP servers and their trust state. This runtime does not proxy remote MCP tools yet.",
       ),
-    )
+    ) + memoryToolDefinitions()
     val definitionsByName = canonicalDefinitions.associateBy(AgentToolDefinition::name)
     val aliasDefinitions = TOOL_ALIASES.mapNotNull { (aliasName, canonicalName) ->
       val canonicalDefinition = definitionsByName[canonicalName] ?: return@mapNotNull null
@@ -332,14 +432,24 @@ class OpenCrayToolDispatcher(
         "Write" -> writeFileForClaude(task = task, arguments = call.arguments)
         "Grep" -> grepWorkspace(arguments = call.arguments)
         "Glob" -> globWorkspace(arguments = call.arguments)
+        "WebSearch" -> webSearch(task = task, arguments = call.arguments)
+        "WebFetch" -> webFetch(task = task, arguments = call.arguments)
         "Edit" -> editWorkspaceFile(task = task, arguments = call.arguments)
         "MultiEdit" -> multiEditWorkspaceFile(task = task, arguments = call.arguments)
         "TodoWrite" -> writeTodoList(arguments = call.arguments)
+        "Bash" -> executeClaudeBash(task = task, arguments = call.arguments)
+        "ProcessStart" -> startManagedProcess(task = task, arguments = call.arguments)
+        "ProcessList" -> listManagedProcesses()
+        "ProcessRead" -> readManagedProcess(arguments = call.arguments)
+        "ProcessWait" -> waitForManagedProcess(arguments = call.arguments)
+        "ProcessTerminate" -> terminateManagedProcess(arguments = call.arguments)
         "command_exec" -> executeCommand(task = task, arguments = call.arguments, hooks = hooks)
         "python_exec" -> executePython(task = task, arguments = call.arguments)
         "skills_list" -> listSkills()
         "skill_read" -> readSkill(call.arguments)
         "mcp_list_servers" -> listMcpServers()
+        "memory_search" -> searchProjectedMemory(call.arguments)
+        "memory_get" -> getProjectedMemory(call.arguments)
         else -> AgentToolResult(
           toolName = requestedToolName,
           status = AgentToolResultStatus.FAILED,
@@ -588,6 +698,173 @@ class OpenCrayToolDispatcher(
     )
   }
 
+  private fun webSearch(task: AgentTask, arguments: JsonObject): AgentToolResult {
+    val query = arguments.requiredString("query")
+    val maxResults = arguments.optionalInt("max_results")?.coerceIn(1, config.maxWebSearchResults)
+      ?: config.maxWebSearchResults
+    val policyDecision = policyDecisionFor(
+      task = task,
+      toolClass = PolicyToolClass.NETWORK_ACCESS,
+    )
+    val effectivePolicyDecision = applyApprovedToolOverride(
+      task = task,
+      toolName = "WebSearch",
+      policyDecision = policyDecision,
+    )
+    gatePolicyControlledTool(
+      task = task,
+      toolName = "WebSearch",
+      policyDecision = effectivePolicyDecision,
+      affectedPaths = mapOf("query" to inlinePreview(query, maxChars = 256)),
+      askDetail = "Approval is required before WebSearch can access the network.",
+      denyDetail = "Policy denied WebSearch.",
+    )?.let { return it }
+
+    val result = webSearchProvider.search(
+      WebSearchRequest(
+        query = query,
+        maxResults = maxResults,
+      ),
+    )
+    if (!result.isSuccess) {
+      return AgentToolResult(
+        toolName = "WebSearch",
+        status = AgentToolResultStatus.FAILED,
+        content = result.errorMessage ?: "Web search failed.",
+        errorCode = result.errorCode,
+        errorMessage = result.errorMessage,
+        metadata = mapOf(
+          "providerName" to result.providerName,
+          "query" to query,
+          "requestedMaxResults" to maxResults.toString(),
+          "executionMode" to inferExecutionMode(task).name,
+          "policyReasonCode" to effectivePolicyDecision.reasonCode,
+        ) + approvalRiskMetadata(effectivePolicyDecision),
+      )
+    }
+
+    val rendered = if (result.results.isEmpty()) {
+      "No web search results."
+    } else {
+      buildString {
+        appendLine("provider=${result.providerName}")
+        result.results.forEachIndexed { index, hit ->
+          append(index + 1)
+          append(". ")
+          appendLine(hit.title)
+          appendLine("url=${hit.url}")
+          hit.snippet.trim().takeIf(String::isNotBlank)?.let { snippet ->
+            appendLine("snippet=$snippet")
+          }
+          if (index != result.results.lastIndex) {
+            appendLine()
+          }
+        }
+      }.trim()
+    }
+    return AgentToolResult(
+      toolName = "WebSearch",
+      status = AgentToolResultStatus.SUCCESS,
+      content = rendered,
+      metadata = mapOf(
+        "providerName" to result.providerName,
+        "query" to query,
+        "resultCount" to result.results.size.toString(),
+        "requestedMaxResults" to maxResults.toString(),
+        "executionMode" to inferExecutionMode(task).name,
+        "policyReasonCode" to effectivePolicyDecision.reasonCode,
+      ) + approvalRiskMetadata(effectivePolicyDecision),
+    )
+  }
+
+  private fun webFetch(task: AgentTask, arguments: JsonObject): AgentToolResult {
+    val url = arguments.requiredString("url")
+    val maxChars = arguments.optionalInt("max_chars")?.coerceIn(256, config.maxWebFetchChars)
+      ?: config.maxWebFetchChars
+    val policyDecision = policyDecisionFor(
+      task = task,
+      toolClass = PolicyToolClass.NETWORK_ACCESS,
+    )
+    val effectivePolicyDecision = applyApprovedToolOverride(
+      task = task,
+      toolName = "WebFetch",
+      policyDecision = policyDecision,
+    )
+    gatePolicyControlledTool(
+      task = task,
+      toolName = "WebFetch",
+      policyDecision = effectivePolicyDecision,
+      affectedPaths = mapOf("url" to inlinePreview(url, maxChars = 512)),
+      askDetail = "Approval is required before WebFetch can access the network.",
+      denyDetail = "Policy denied WebFetch.",
+    )?.let { return it }
+
+    val result = webContentFetcher.fetch(
+      WebFetchRequest(
+        url = url,
+        maxChars = maxChars,
+      ),
+    )
+    if (!result.isSuccess) {
+      return AgentToolResult(
+        toolName = "WebFetch",
+        status = AgentToolResultStatus.FAILED,
+        content = buildString {
+          append(result.errorMessage ?: "WebFetch failed.")
+          result.content.trim().takeIf(String::isNotBlank)?.let { preview ->
+            appendLine()
+            appendLine()
+            append(preview)
+          }
+        }.trim(),
+        errorCode = result.errorCode,
+        errorMessage = result.errorMessage,
+        metadata = buildMap {
+          put("requestedUrl", result.requestedUrl)
+          put("finalUrl", result.finalUrl)
+          put("requestedMaxChars", maxChars.toString())
+          put("executionMode", inferExecutionMode(task).name)
+          put("policyReasonCode", effectivePolicyDecision.reasonCode)
+          result.statusCode?.let { put("statusCode", it.toString()) }
+          result.contentType?.let { put("contentType", it) }
+          putAll(approvalRiskMetadata(effectivePolicyDecision))
+        },
+      )
+    }
+
+    return AgentToolResult(
+      toolName = "WebFetch",
+      status = AgentToolResultStatus.SUCCESS,
+      content = buildString {
+        result.title?.takeIf(String::isNotBlank)?.let { title ->
+          appendLine("title=$title")
+        }
+        appendLine("url=${result.finalUrl}")
+        result.statusCode?.let { statusCode ->
+          appendLine("status_code=$statusCode")
+        }
+        result.contentType?.takeIf(String::isNotBlank)?.let { contentType ->
+          appendLine("content_type=$contentType")
+        }
+        appendLine("truncated=${result.truncated}")
+        appendLine()
+        append(result.content)
+      }.trim(),
+      metadata = buildMap {
+        put("requestedUrl", result.requestedUrl)
+        put("finalUrl", result.finalUrl)
+        put("requestedMaxChars", maxChars.toString())
+        put("truncated", result.truncated.toString())
+        put("executionMode", inferExecutionMode(task).name)
+        put("policyReasonCode", effectivePolicyDecision.reasonCode)
+        result.statusCode?.let { put("statusCode", it.toString()) }
+        result.contentType?.let { put("contentType", it) }
+        result.title?.let { put("title", it) }
+        putAll(approvalRiskMetadata(effectivePolicyDecision))
+      },
+    )
+  }
+
   private fun editWorkspaceFile(task: AgentTask, arguments: JsonObject): AgentToolResult {
     val file = boundary.ensureFile(arguments.requiredStringFrom("file_path", "path"), label = "Edit")
     val edit = TextEdit(
@@ -674,6 +951,299 @@ class OpenCrayToolDispatcher(
         "todoCount" to snapshot.size.toString(),
         "mutated" to (todos != null).toString(),
       ),
+    )
+  }
+
+  private fun executeClaudeBash(task: AgentTask, arguments: JsonObject): AgentToolResult {
+    val waitTimeoutMs = arguments.optionalLong("wait_timeout_ms")
+      ?: arguments.optionalLong("timeout_ms")
+      ?: DEFAULT_BASH_WAIT_TIMEOUT_MS
+    require(waitTimeoutMs >= 0L) { "Bash wait timeout must be >= 0." }
+    val processTimeoutMs = arguments.optionalLong("process_timeout_ms")
+      ?: DEFAULT_MANAGED_PROCESS_TIMEOUT_MS
+    require(processTimeoutMs > 0L) { "Bash process_timeout_ms must be > 0." }
+    val background = arguments.optionalBoolean("background") ?: false
+    val launch = resolveBashLaunch(arguments = arguments)
+    val policyDecision = policyDecisionFor(
+      task = task,
+      toolClass = PolicyToolClass.EXECUTE_COMMAND,
+    )
+    val effectivePolicyDecision = applyApprovedToolOverride(
+      task = task,
+      toolName = "Bash",
+      policyDecision = policyDecision,
+    )
+    gatePolicyControlledTool(
+      task = task,
+      toolName = "Bash",
+      policyDecision = effectivePolicyDecision,
+      affectedPaths = mapOf(
+        "toolName" to "Bash",
+        "workingDirectory" to displayPathForModel(launch.workingDirectory),
+      ),
+      askDetail = "Approval is required before Bash can run.",
+      denyDetail = "Policy denied Bash.",
+    )?.let { return it }
+
+    val startedSnapshot = processRegistry.start(
+      ManagedProcessStartRequest(
+        processId = "proc-${UUID.randomUUID().toString().take(8)}",
+        taskId = task.id,
+        command = launch.command,
+        args = launch.args,
+        workingDirectory = launch.workingDirectory.toString(),
+        timeoutMs = processTimeoutMs,
+        requestedAtEpochMs = System.currentTimeMillis(),
+        metadata = mapOf(
+          "executionMode" to inferExecutionMode(task).name,
+          "policyReasonCode" to effectivePolicyDecision.reasonCode,
+          "workingDirectory" to displayPathForModel(launch.workingDirectory),
+        ) + launch.metadata,
+      ),
+    )
+
+    if (startedSnapshot.status != ManagedProcessStatus.RUNNING || background || waitTimeoutMs == 0L) {
+      return AgentToolResult(
+        toolName = "Bash",
+        status = toolStatusForManagedProcessStart(startedSnapshot),
+        content = buildString {
+          appendLine(bashStartSummary(snapshot = startedSnapshot, background = background))
+          append(
+            renderManagedProcessSnapshot(
+              snapshot = startedSnapshot,
+              includeOutput = startedSnapshot.status != ManagedProcessStatus.RUNNING,
+            ),
+          )
+        }.trim(),
+        errorCode = startedSnapshot.errorCode,
+        errorMessage = startedSnapshot.errorMessage,
+        metadata = managedProcessMetadata(startedSnapshot) + mapOf(
+          "waitTimeoutMs" to waitTimeoutMs.toString(),
+          "background" to background.toString(),
+        ),
+      )
+    }
+
+    val waitedSnapshot = processRegistry.wait(startedSnapshot.processId, waitTimeoutMs)
+      ?: startedSnapshot
+    return AgentToolResult(
+      toolName = "Bash",
+      status = toolStatusForManagedProcessStart(waitedSnapshot),
+      content = buildString {
+        appendLine(bashWaitSummary(snapshot = waitedSnapshot, waitTimeoutMs = waitTimeoutMs))
+        append(renderManagedProcessSnapshot(snapshot = waitedSnapshot, includeOutput = true))
+      }.trim(),
+      errorCode = waitedSnapshot.errorCode,
+      errorMessage = waitedSnapshot.errorMessage,
+      metadata = managedProcessMetadata(waitedSnapshot) + mapOf(
+        "waitTimeoutMs" to waitTimeoutMs.toString(),
+        "background" to background.toString(),
+      ),
+    )
+  }
+
+  private fun resolveBashLaunch(arguments: JsonObject): ManagedProcessLaunch {
+    val command = arguments.requiredString("command")
+    val workingDirectory = boundary.resolve(
+      candidate = arguments.optionalString("working_directory"),
+      label = "Bash working directory",
+      defaultToRoot = true,
+    )
+    val shell = defaultShellPlan(command)
+    return ManagedProcessLaunch(
+      command = shell.executable,
+      args = shell.args,
+      workingDirectory = workingDirectory,
+      metadata = mapOf(
+        "runtimeKind" to "bash",
+        "shellKind" to shell.kind,
+        "shellCommand" to inlinePreview(command),
+      ),
+    )
+  }
+
+  private fun startManagedProcess(task: AgentTask, arguments: JsonObject): AgentToolResult {
+    val timeoutMs = arguments.optionalLong("timeout_ms") ?: DEFAULT_MANAGED_PROCESS_TIMEOUT_MS
+    val launch = resolveManagedProcessLaunch(arguments = arguments, timeoutMs = timeoutMs)
+    val policyDecision = policyDecisionFor(
+      task = task,
+      toolClass = PolicyToolClass.EXECUTE_COMMAND,
+    )
+    val effectivePolicyDecision = applyApprovedToolOverride(
+      task = task,
+      toolName = "ProcessStart",
+      policyDecision = policyDecision,
+    )
+    gatePolicyControlledTool(
+      task = task,
+      toolName = "ProcessStart",
+      policyDecision = effectivePolicyDecision,
+      affectedPaths = mapOf(
+        "toolName" to "ProcessStart",
+        "workingDirectory" to displayPathForModel(launch.workingDirectory),
+      ) + launch.affectedPaths,
+      askDetail = "Approval is required before ProcessStart can run.",
+      denyDetail = "Policy denied ProcessStart.",
+    )?.let { return it }
+
+    val snapshot = processRegistry.start(
+      ManagedProcessStartRequest(
+        processId = "proc-${UUID.randomUUID().toString().take(8)}",
+        taskId = task.id,
+        command = launch.command,
+        args = launch.args,
+        workingDirectory = launch.workingDirectory.toString(),
+        timeoutMs = timeoutMs,
+        requestedAtEpochMs = System.currentTimeMillis(),
+        metadata = mapOf(
+          "executionMode" to inferExecutionMode(task).name,
+          "policyReasonCode" to effectivePolicyDecision.reasonCode,
+          "workingDirectory" to displayPathForModel(launch.workingDirectory),
+        ) + launch.metadata,
+      ),
+    )
+    return AgentToolResult(
+      toolName = "ProcessStart",
+      status = toolStatusForManagedProcessStart(snapshot),
+      content = buildString {
+        appendLine("Managed process started.")
+        append(renderManagedProcessSnapshot(snapshot, includeOutput = false))
+      }.trim(),
+      errorCode = snapshot.errorCode,
+      errorMessage = snapshot.errorMessage,
+      metadata = managedProcessMetadata(snapshot),
+    )
+  }
+
+  private fun resolveManagedProcessLaunch(
+    arguments: JsonObject,
+    timeoutMs: Long,
+  ): ManagedProcessLaunch {
+    val command = arguments.optionalString("command")?.trim()?.takeIf(String::isNotBlank)
+    val scriptPathCandidate = arguments.optionalString("script_path")?.trim()?.takeIf(String::isNotBlank)
+    require((command == null) != (scriptPathCandidate == null)) {
+      "ProcessStart requires exactly one of 'command' or 'script_path'."
+    }
+    val workingDirectory = boundary.resolve(
+      candidate = arguments.optionalString("working_directory"),
+      label = "process working directory",
+      defaultToRoot = true,
+    )
+    val userArgs = arguments.optionalStringArray("args")
+    if (scriptPathCandidate == null) {
+      return ManagedProcessLaunch(
+        command = requireNotNull(command),
+        args = userArgs,
+        workingDirectory = workingDirectory,
+      )
+    }
+
+    val scriptPath = boundary.resolve(
+      candidate = scriptPathCandidate,
+      label = "python script",
+      defaultToRoot = false,
+    )
+    val pythonExecutable = arguments.optionalString("python_executable")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: "python"
+    val pythonRequest = PythonExecRequest(
+      taskId = "managed-python-process",
+      workspaceRoot = boundary.defaultRoot,
+      scriptPath = scriptPath,
+      args = userArgs,
+      timeoutMs = timeoutMs,
+      pythonExecutable = pythonExecutable,
+    )
+    val pythonCommand = PythonRuntimeAdapter.commandFor(pythonRequest)
+    return ManagedProcessLaunch(
+      command = pythonCommand.first(),
+      args = pythonCommand.drop(1),
+      workingDirectory = workingDirectory,
+      metadata = mapOf(
+        "runtimeKind" to "python_exec",
+        "scriptPath" to displayPathForModel(scriptPath),
+        "pythonExecutable" to pythonExecutable,
+      ),
+      affectedPaths = mapOf("scriptPath" to displayPathForModel(scriptPath)),
+    )
+  }
+
+  private fun listManagedProcesses(): AgentToolResult {
+    val snapshots = processRegistry.list()
+    val rendered = if (snapshots.isEmpty()) {
+      "No managed processes."
+    } else {
+      snapshots.joinToString(separator = "\n") { snapshot ->
+        buildString {
+          append(snapshot.processId)
+          append('\t')
+          append(snapshot.status.name.lowercase())
+          append('\t')
+          append(snapshot.command)
+          if (snapshot.args.isNotEmpty()) {
+            append(' ')
+            append(snapshot.args.joinToString(separator = " "))
+          }
+          displayWorkingDirectory(snapshot.workingDirectory)?.let { workingDirectory ->
+            append("\tcwd=")
+            append(workingDirectory)
+          }
+          snapshot.exitCode?.let { code ->
+            append("\texit=")
+            append(code)
+          }
+        }
+      }
+    }
+    return AgentToolResult(
+      toolName = "ProcessList",
+      status = AgentToolResultStatus.SUCCESS,
+      content = rendered,
+      metadata = mapOf("processCount" to snapshots.size.toString()),
+    )
+  }
+
+  private fun readManagedProcess(arguments: JsonObject): AgentToolResult {
+    val processId = arguments.requiredString("process_id")
+    val snapshot = processRegistry.read(processId)
+      ?: return missingManagedProcess(processId = processId, toolName = "ProcessRead")
+    return AgentToolResult(
+      toolName = "ProcessRead",
+      status = AgentToolResultStatus.SUCCESS,
+      content = renderManagedProcessSnapshot(snapshot, includeOutput = true),
+      metadata = managedProcessMetadata(snapshot),
+    )
+  }
+
+  private fun waitForManagedProcess(arguments: JsonObject): AgentToolResult {
+    val processId = arguments.requiredString("process_id")
+    val timeoutMs = arguments.optionalLong("timeout_ms") ?: DEFAULT_MANAGED_PROCESS_WAIT_TIMEOUT_MS
+    val snapshot = processRegistry.wait(processId, timeoutMs)
+      ?: return missingManagedProcess(processId = processId, toolName = "ProcessWait")
+    return AgentToolResult(
+      toolName = "ProcessWait",
+      status = AgentToolResultStatus.SUCCESS,
+      content = buildString {
+        appendLine("Waited ${timeoutMs}ms for managed process.")
+        append(renderManagedProcessSnapshot(snapshot, includeOutput = true))
+      }.trim(),
+      metadata = managedProcessMetadata(snapshot) + mapOf("waitTimeoutMs" to timeoutMs.toString()),
+    )
+  }
+
+  private fun terminateManagedProcess(arguments: JsonObject): AgentToolResult {
+    val processId = arguments.requiredString("process_id")
+    val snapshot = processRegistry.terminate(processId)
+      ?: return missingManagedProcess(processId = processId, toolName = "ProcessTerminate")
+    return AgentToolResult(
+      toolName = "ProcessTerminate",
+      status = AgentToolResultStatus.SUCCESS,
+      content = buildString {
+        appendLine("Managed process termination requested.")
+        append(renderManagedProcessSnapshot(snapshot, includeOutput = true))
+      }.trim(),
+      metadata = managedProcessMetadata(snapshot),
     )
   }
 
@@ -1036,6 +1606,124 @@ class OpenCrayToolDispatcher(
     )
   }
 
+  private fun toolStatusForManagedProcessStart(
+    snapshot: ManagedProcessSnapshot,
+  ): AgentToolResultStatus = when (snapshot.status) {
+    ManagedProcessStatus.RUNNING,
+    ManagedProcessStatus.SUCCESS,
+    -> AgentToolResultStatus.SUCCESS
+
+    ManagedProcessStatus.CANCELLED -> AgentToolResultStatus.CANCELLED
+    ManagedProcessStatus.TIMEOUT -> AgentToolResultStatus.TIMEOUT
+    ManagedProcessStatus.FAILED,
+    ManagedProcessStatus.SPAWN_ERROR,
+    -> AgentToolResultStatus.FAILED
+  }
+
+  private fun missingManagedProcess(
+    processId: String,
+    toolName: String,
+  ): AgentToolResult = AgentToolResult(
+    toolName = toolName,
+    status = AgentToolResultStatus.FAILED,
+    content = "Managed process '$processId' was not found.",
+    errorCode = "PROCESS_NOT_FOUND",
+    errorMessage = "Managed process '$processId' was not found.",
+    metadata = mapOf("processId" to processId),
+  )
+
+  private fun managedProcessMetadata(snapshot: ManagedProcessSnapshot): Map<String, String> = buildMap {
+    put("processId", snapshot.processId)
+    put("processStatus", snapshot.status.name)
+    put("processStarted", snapshot.processStarted.toString())
+    put("timeoutMs", snapshot.timeoutMs.toString())
+    put("command", snapshot.command)
+    if (snapshot.args.isNotEmpty()) {
+      put("args", snapshot.args.joinToString(separator = "\u0000"))
+    }
+    displayWorkingDirectory(snapshot.workingDirectory)?.let { workingDirectory ->
+      put("workingDirectory", workingDirectory)
+    }
+    snapshot.exitCode?.let { code -> put("exitCode", code.toString()) }
+    snapshot.finishedAtEpochMs?.let { finishedAt -> put("finishedAtEpochMs", finishedAt.toString()) }
+    put("startedAtEpochMs", snapshot.startedAtEpochMs.toString())
+    put("updatedAtEpochMs", snapshot.updatedAtEpochMs.toString())
+    if (snapshot.timedOut) {
+      put("timedOut", "true")
+    }
+    if (snapshot.cancelled) {
+      put("cancelled", "true")
+    }
+    if (snapshot.outputLimitExceeded) {
+      put("outputLimitExceeded", "true")
+    }
+    putAll(snapshot.metadata)
+  }
+
+  private fun renderManagedProcessSnapshot(
+    snapshot: ManagedProcessSnapshot,
+    includeOutput: Boolean,
+  ): String = buildString {
+    appendLine("process_id=${snapshot.processId}")
+    appendLine("status=${snapshot.status.name.lowercase()}")
+    snapshot.metadata["shellKind"]?.let { shellKind ->
+      appendLine("shell_kind=$shellKind")
+    }
+    snapshot.metadata["shellCommand"]?.let { shellCommand ->
+      appendLine("shell_command=$shellCommand")
+    }
+    appendLine("command=${snapshot.command}")
+    snapshot.metadata["runtimeKind"]?.let { runtimeKind ->
+      appendLine("runtime_kind=$runtimeKind")
+    }
+    snapshot.metadata["scriptPath"]?.let { scriptPath ->
+      appendLine("script_path=$scriptPath")
+    }
+    snapshot.metadata["pythonExecutable"]?.let { pythonExecutable ->
+      appendLine("python_executable=$pythonExecutable")
+    }
+    if (snapshot.args.isNotEmpty()) {
+      appendLine("args=${snapshot.args.joinToString(separator = " ")}")
+    }
+    displayWorkingDirectory(snapshot.workingDirectory)?.let { workingDirectory ->
+      appendLine("working_directory=$workingDirectory")
+    }
+    appendLine("timeout_ms=${snapshot.timeoutMs}")
+    appendLine("process_started=${snapshot.processStarted}")
+    snapshot.exitCode?.let { code ->
+      appendLine("exit_code=$code")
+    }
+    snapshot.errorCode?.let { code ->
+      appendLine("error_code=$code")
+    }
+    snapshot.errorMessage?.let { message ->
+      appendLine("error_message=$message")
+    }
+    appendLine("started_at_epoch_ms=${snapshot.startedAtEpochMs}")
+    appendLine("updated_at_epoch_ms=${snapshot.updatedAtEpochMs}")
+    snapshot.finishedAtEpochMs?.let { finishedAt ->
+      appendLine("finished_at_epoch_ms=$finishedAt")
+    }
+    if (includeOutput) {
+      if (snapshot.stdout.isNotBlank()) {
+        appendLine()
+        appendLine("[stdout]")
+        appendLine(snapshot.stdout.trimEnd())
+      }
+      if (snapshot.stderr.isNotBlank()) {
+        appendLine()
+        appendLine("[stderr]")
+        append(snapshot.stderr.trimEnd())
+      }
+    }
+  }.trim()
+
+  private fun displayWorkingDirectory(rawWorkingDirectory: String?): String? {
+    val normalized = rawWorkingDirectory?.trim()?.takeIf(String::isNotBlank) ?: return null
+    val path = runCatching { Paths.get(normalized) }.getOrNull() ?: return normalized
+    return runCatching { displayPathForModel(path) }.getOrDefault(normalized)
+  }
+
   private fun listSkills(): AgentToolResult {
     val report = loadSkillsReport()
     val content = if (report == null || report.loadedSkills.isEmpty()) {
@@ -1120,6 +1808,128 @@ class OpenCrayToolDispatcher(
     return SkillLoader.load(config.skillsRoots)
   }
 
+  private fun memoryToolDefinitions(): List<AgentToolDefinition> {
+    if (config.memoryToolContext == null) {
+      return emptyList()
+    }
+    return listOf(
+      AgentToolDefinition(
+        name = "memory_search",
+        description = "Search the projected runtime memory corpus before answering prior-work questions about decisions, preferences, dates, people, paths, or todos. Use this first, then memory_get for a narrow snippet.",
+        parameters = listOf(
+          AgentToolParameter("query", "string", required = true, description = "Search query describing the prior work or memory to retrieve."),
+          AgentToolParameter("max_results", "number", required = false, description = "Maximum number of memory matches to return."),
+          AgentToolParameter("min_score", "number", required = false, description = "Minimum relevance score for returned matches."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "memory_get",
+        description = "Read a narrow line range from the projected runtime memory corpus after memory_search identifies the relevant path and line range.",
+        parameters = listOf(
+          AgentToolParameter("path", "string", required = true, description = "Projected memory path such as MEMORY.md or memory/YYYY-MM-DD.md."),
+          AgentToolParameter("from", "number", required = false, description = "1-based start line to read."),
+          AgentToolParameter("lines", "number", required = false, description = "Maximum number of lines to read."),
+        ),
+      ),
+    )
+  }
+
+  private fun searchProjectedMemory(arguments: JsonObject): AgentToolResult {
+    val context = config.memoryToolContext
+      ?: return AgentToolResult(
+        toolName = "memory_search",
+        status = AgentToolResultStatus.FAILED,
+        content = "Projected memory search is not configured for this runtime.",
+        errorCode = "MEMORY_SEARCH_UNAVAILABLE",
+      )
+    val query = arguments.requiredString("query")
+    val maxResults = (arguments.optionalInt("max_results") ?: arguments.optionalInt("maxResults")
+      ?: config.maxMemorySearchResults).coerceIn(1, config.maxMemorySearchResults)
+    val minScore = (arguments.optionalInt("min_score") ?: arguments.optionalInt("minScore")
+      ?: 1).coerceAtLeast(1)
+    val response = memorySearchService.search(
+      context = context,
+      query = query,
+      maxResults = maxResults,
+      minScore = minScore,
+    )
+    val content = if (response.matches.isEmpty()) {
+      "No matching projected memory snippets were found."
+    } else {
+      buildString {
+        appendLine("Found ${response.matches.size} projected memory match(es).")
+        response.matches.forEachIndexed { index, match ->
+          append(index + 1)
+          append(". ")
+          append(renderMemorySearchHeader(match))
+          appendLine()
+          appendLine(match.snippet)
+          if (index != response.matches.lastIndex) {
+            appendLine()
+          }
+        }
+      }.trim()
+    }
+    return AgentToolResult(
+      toolName = "memory_search",
+      status = AgentToolResultStatus.SUCCESS,
+      content = content,
+      metadata = buildMap {
+        put("query", query)
+        put("queryTerms", response.queryTerms.joinToString(separator = ","))
+        put("resultCount", response.matches.size.toString())
+        put("corpusFileCount", response.corpusFileCount.toString())
+        if (response.matches.isNotEmpty()) {
+          put(
+            "paths",
+            response.matches.joinToString(separator = ",") { match -> match.path },
+          )
+          put(
+            "lineRanges",
+            response.matches.joinToString(separator = ",") { match -> renderMemoryLineRange(match.startLine, match.endLine) },
+          )
+        }
+      },
+    )
+  }
+
+  private fun getProjectedMemory(arguments: JsonObject): AgentToolResult {
+    val context = config.memoryToolContext
+      ?: return AgentToolResult(
+        toolName = "memory_get",
+        status = AgentToolResultStatus.FAILED,
+        content = "Projected memory reads are not configured for this runtime.",
+        errorCode = "MEMORY_GET_UNAVAILABLE",
+      )
+    val path = arguments.requiredString("path")
+    val from = arguments.optionalInt("from")?.coerceAtLeast(1)
+    val lines = (arguments.optionalInt("lines") ?: config.maxMemoryGetLines)
+      .coerceIn(1, config.maxMemoryGetLines)
+    val response = memorySearchService.get(
+      context = context,
+      path = path,
+      from = from,
+      lines = lines,
+    )
+    return AgentToolResult(
+      toolName = "memory_get",
+      status = AgentToolResultStatus.SUCCESS,
+      content = buildString {
+        append(response.path)
+        append("#")
+        append(renderMemoryLineRange(response.startLine, response.endLine))
+        appendLine()
+        append(response.text)
+      }.trim(),
+      metadata = mapOf(
+        "path" to response.path,
+        "from" to response.startLine.toString(),
+        "returnedLineCount" to (response.endLine - response.startLine + 1).toString(),
+        "totalLineCount" to response.totalLineCount.toString(),
+      ),
+    )
+  }
+
   private fun policyDecisionFor(
     task: AgentTask,
     toolClass: PolicyToolClass,
@@ -1135,15 +1945,95 @@ class OpenCrayToolDispatcher(
         destinationPath = destinationPath,
       ),
     )
+    val overriddenDecision = applySettingsPolicyOverride(
+      task = task,
+      toolClass = toolClass,
+      policyDecision = fineGrainedDecision,
+    )
     val mergedDecision = mergePolicyDecisions(
       coarseDecision = task.policyDecision,
-      fineGrainedDecision = fineGrainedDecision,
+      fineGrainedDecision = overriddenDecision,
     )
     return applyApprovedTaskOverride(task = task, policyDecision = mergedDecision)
   }
 
+  private fun applySettingsPolicyOverride(
+    task: AgentTask,
+    toolClass: PolicyToolClass,
+    policyDecision: PolicyDecision,
+  ): PolicyDecision {
+    if (policyDecision.outcome == PolicyDecisionOutcome.DENY) {
+      return policyDecision
+    }
+    val override = settingsPolicyOverrideFor(task = task, toolClass = toolClass)
+    if (override == ToolPolicyOverride.INHERIT) {
+      return policyDecision
+    }
+    return when (override) {
+      ToolPolicyOverride.INHERIT -> policyDecision
+      ToolPolicyOverride.ALLOW -> PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "SETTINGS_OVERRIDE_ALLOW",
+      )
+      ToolPolicyOverride.BLOCK -> PolicyDecision(
+        outcome = PolicyDecisionOutcome.DENY,
+        reasonCode = "SETTINGS_OVERRIDE_BLOCK",
+        detail = "Blocked by Safety settings.",
+        approvalRisk = policyDecision.approvalRisk,
+      )
+      ToolPolicyOverride.ASK -> PolicyDecision(
+        outcome = PolicyDecisionOutcome.ASK,
+        reasonCode = "SETTINGS_OVERRIDE_ASK",
+        detail = "Approval is required by Safety settings.",
+        approvalRisk = approvalRiskForSettingsOverride(toolClass, policyDecision),
+      )
+    }
+  }
+
+  private fun settingsPolicyOverrideFor(
+    task: AgentTask,
+    toolClass: PolicyToolClass,
+  ): ToolPolicyOverride {
+    val metadataKey = when (toolClass) {
+      PolicyToolClass.WRITE_FILE -> SafetySettingsMetadataKeys.FILE_CHANGES_POLICY_ID
+      PolicyToolClass.DELETE_FILE,
+      PolicyToolClass.MOVE_FILE,
+      PolicyToolClass.RENAME_FILE,
+      -> SafetySettingsMetadataKeys.FILE_DELETES_POLICY_ID
+      PolicyToolClass.EXECUTE_COMMAND -> SafetySettingsMetadataKeys.SHELL_COMMANDS_POLICY_ID
+      PolicyToolClass.READ_FILE,
+      PolicyToolClass.NETWORK_ACCESS,
+      -> null
+    } ?: return ToolPolicyOverride.INHERIT
+    return ToolPolicyOverride.fromWireValue(task.metadata[metadataKey])
+  }
+
+  private fun approvalRiskForSettingsOverride(
+    toolClass: PolicyToolClass,
+    policyDecision: PolicyDecision,
+  ): PolicyApprovalRisk {
+    if (policyDecision.outcome == PolicyDecisionOutcome.ASK) {
+      return policyDecision.approvalRisk
+    }
+    return when (toolClass) {
+      PolicyToolClass.WRITE_FILE -> PolicyApprovalRisk.STANDARD
+      PolicyToolClass.DELETE_FILE,
+      PolicyToolClass.MOVE_FILE,
+      PolicyToolClass.RENAME_FILE,
+      PolicyToolClass.EXECUTE_COMMAND,
+      PolicyToolClass.NETWORK_ACCESS,
+      -> PolicyApprovalRisk.HIGH_RISK
+      PolicyToolClass.READ_FILE -> PolicyApprovalRisk.STANDARD
+    }
+  }
+
   private fun inferExecutionMode(task: AgentTask): ExecutionMode =
-    listOf("executionMode", "chatMode", "mode", "modeLabel")
+    listOf(
+      SafetySettingsMetadataKeys.EXECUTION_MODE,
+      SafetySettingsMetadataKeys.CHAT_MODE,
+      "mode",
+      "modeLabel",
+    )
       .firstNotNullOfOrNull { key -> ExecutionMode.fromLabelOrNull(task.metadata[key]) }
       ?: ExecutionMode.AUTO
 
@@ -1340,6 +2230,14 @@ class OpenCrayToolDispatcher(
       ?: throw IllegalArgumentException("Argument '$name' must be a JSON number.")
   }
 
+  private fun JsonObject.optionalLong(name: String): Long? {
+    val element = this[name] ?: return null
+    val primitive = element as? JsonPrimitive
+      ?: throw IllegalArgumentException("Argument '$name' must be a JSON number.")
+    return primitive.content.toLongOrNull()
+      ?: throw IllegalArgumentException("Argument '$name' must be a JSON number.")
+  }
+
   private fun JsonObject.optionalBoolean(name: String): Boolean? {
     val element = this[name] ?: return null
     if (element == JsonNull) {
@@ -1415,30 +2313,146 @@ class OpenCrayToolDispatcher(
     val replaceAll: Boolean,
   )
 
+  private data class ManagedProcessLaunch(
+    val command: String,
+    val args: List<String>,
+    val workingDirectory: Path,
+    val metadata: Map<String, String> = emptyMap(),
+    val affectedPaths: Map<String, String> = emptyMap(),
+  )
+
   private data class TextEditOutcome(
     val content: String,
     val replacementCount: Int,
+  )
+
+  private data class ShellPlan(
+    val executable: String,
+    val args: List<String>,
+    val kind: String,
   )
 
   companion object {
     private const val ERROR_DENY_POLICY: String = "DENY_POLICY"
     private const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
     private const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
+    private const val DEFAULT_BASH_WAIT_TIMEOUT_MS: Long = 1_000L
+    private const val DEFAULT_MANAGED_PROCESS_TIMEOUT_MS: Long = 300_000L
+    private const val DEFAULT_MANAGED_PROCESS_WAIT_TIMEOUT_MS: Long = 1_000L
     private val TOOL_ALIASES: Map<String, String> = linkedMapOf(
+      "bash" to "Bash",
       "list" to "LS",
       "ls" to "LS",
       "read" to "Read",
       "write" to "Write",
       "grep" to "Grep",
       "glob" to "Glob",
+      "websearch" to "WebSearch",
+      "webfetch" to "WebFetch",
       "edit" to "Edit",
       "multiedit" to "MultiEdit",
       "todowrite" to "TodoWrite",
+      "processstart" to "ProcessStart",
+      "processlist" to "ProcessList",
+      "processread" to "ProcessRead",
+      "processwait" to "ProcessWait",
+      "processterminate" to "ProcessTerminate",
     )
+  }
+
+  private fun bashStartSummary(
+    snapshot: ManagedProcessSnapshot,
+    background: Boolean,
+  ): String = when (snapshot.status) {
+    ManagedProcessStatus.RUNNING -> if (background) {
+      "Shell command started in background."
+    } else {
+      "Shell command started."
+    }
+
+    ManagedProcessStatus.SPAWN_ERROR -> "Shell command failed to start."
+    ManagedProcessStatus.CANCELLED -> "Shell command was cancelled."
+    ManagedProcessStatus.TIMEOUT -> "Shell command timed out."
+    ManagedProcessStatus.SUCCESS -> "Shell command finished."
+    ManagedProcessStatus.FAILED -> "Shell command failed."
+  }
+
+  private fun bashWaitSummary(
+    snapshot: ManagedProcessSnapshot,
+    waitTimeoutMs: Long,
+  ): String = when (snapshot.status) {
+    ManagedProcessStatus.RUNNING ->
+      "Shell command is still running after waiting ${waitTimeoutMs}ms. Continue with ProcessRead, ProcessWait, or ProcessTerminate."
+
+    ManagedProcessStatus.SUCCESS -> "Shell command finished."
+    ManagedProcessStatus.SPAWN_ERROR -> "Shell command failed to start."
+    ManagedProcessStatus.CANCELLED -> "Shell command was cancelled."
+    ManagedProcessStatus.TIMEOUT -> "Shell command timed out."
+    ManagedProcessStatus.FAILED -> "Shell command failed."
+  }
+
+  private fun defaultShellPlan(command: String): ShellPlan {
+    val osName = System.getProperty("os.name").orEmpty().lowercase()
+    return if (osName.contains("win")) {
+      ShellPlan(
+        executable = "powershell.exe",
+        args = listOf("-NoLogo", "-NoProfile", "-Command", command),
+        kind = "powershell",
+      )
+    } else {
+      ShellPlan(
+        executable = "sh",
+        args = listOf("-lc", command),
+        kind = "sh",
+      )
+    }
+  }
+
+  private fun inlinePreview(
+    value: String,
+    maxChars: Int = 512,
+  ): String {
+    val normalized = value
+      .replace("\r", "\\r")
+      .replace("\n", "\\n")
+    return if (normalized.length <= maxChars) {
+      normalized
+    } else {
+      normalized.take(maxChars - 1).trimEnd() + "…"
+    }
   }
 
   private fun canonicalToolName(requestedToolName: String): String =
     TOOL_ALIASES[requestedToolName] ?: requestedToolName
+
+  private fun renderMemorySearchHeader(match: MemorySearchMatch): String = buildString {
+    append(match.path)
+    append("#")
+    append(renderMemoryLineRange(match.startLine, match.endLine))
+    append(" score=")
+    append(match.score)
+    append(" id=")
+    append(match.recordId)
+    append(" kind=")
+    append(match.kind.name.lowercase())
+    append(" scope=")
+    append(match.scope.name.lowercase())
+    append(" status=")
+    append(match.status.name.lowercase())
+    if (match.matchedTerms.isNotEmpty()) {
+      append(" matched_terms=")
+      append(match.matchedTerms.joinToString(separator = "|"))
+    }
+  }
+
+  private fun renderMemoryLineRange(
+    startLine: Int,
+    endLine: Int,
+  ): String = if (startLine == endLine) {
+    "L$startLine"
+  } else {
+    "L$startLine-L$endLine"
+  }
 
   private fun aliasDescriptionFor(
     canonicalDefinition: AgentToolDefinition,

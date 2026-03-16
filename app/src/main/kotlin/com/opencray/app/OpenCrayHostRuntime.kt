@@ -10,6 +10,7 @@ import com.opencray.app.facade.llm.LlmConfigSnapshot
 import com.opencray.app.facade.llm.LlmProviderOptionSnapshot
 import com.opencray.app.facade.llm.LlmValidationResult
 import com.opencray.app.facade.llm.LocalLlmConfigFacade
+import com.opencray.app.facade.llm.SaveCustomLlmProviderRequest
 import com.opencray.app.facade.llm.SaveLlmConfigRequest
 import com.opencray.app.facade.llm.ValidateLlmConfigRequest
 import com.opencray.runtime.memory.MemoryCandidateExtractor
@@ -27,6 +28,12 @@ import com.opencray.app.facade.personalization.PersonalizationPresetSnapshot
 import com.opencray.app.facade.personalization.PersonalizationResetActionSnapshot
 import com.opencray.app.facade.personalization.PersonalizationResetScope
 import com.opencray.app.facade.personalization.SavePersonalizationConfigRequest
+import com.opencray.app.facade.safety.EmptySafetySettingsFacade
+import com.opencray.app.facade.safety.LocalSafetySettingsFacade
+import com.opencray.app.facade.safety.SaveSafetySettingsRequest
+import com.opencray.app.facade.safety.SafetySettingsFacade
+import com.opencray.app.facade.safety.SafetySettingsLocationSnapshot
+import com.opencray.app.facade.safety.SafetySettingsSnapshot
 import com.opencray.app.facade.skills.EmptySkillsFacade
 import com.opencray.app.facade.skills.InstallSourceSnapshot
 import com.opencray.app.facade.skills.InstalledSkillSnapshot
@@ -55,9 +62,12 @@ import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayLifecycleEvent
+import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.policy.SafetyAutomationMode
+import com.opencray.policy.SafetySettingsMetadataKeys
 import java.nio.file.Path
 import java.util.ArrayDeque
 import java.util.concurrent.ExecutorService
@@ -73,6 +83,7 @@ internal class OpenCrayHostRuntime private constructor(
   private var llmConfigFacade: LlmConfigFacade,
   private var personalizationFacade: PersonalizationFacade,
   private var mcpSettingsFacade: McpSettingsFacade,
+  private var safetySettingsFacade: SafetySettingsFacade,
   private var skillsFacade: SkillsFacade,
   private val workspaceRootProvider: (() -> Path)?,
   private val workspaceSnapshotProvider: () -> Map<String, Any?>,
@@ -99,6 +110,10 @@ internal class OpenCrayHostRuntime private constructor(
     sessionRuntimeManager.observe(
       object : AgentSessionRuntimeListener {
         override fun onTaskStarted(sessionId: String, task: AgentTask) {
+          val shouldEmit = synchronized(lock) { hasSessionLocked(sessionId) }
+          if (!shouldEmit) {
+            return
+          }
           emitChatSnapshot()
           emitChatRuntimeSnapshot()
         }
@@ -107,6 +122,9 @@ internal class OpenCrayHostRuntime private constructor(
           val pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
             ?.takeIf(String::isNotBlank)
           val completedTurn = synchronized(lock) {
+            if (!hasSessionLocked(sessionId)) {
+              return@synchronized null
+            }
             val activeSessionIdBeforeUpdate = chatSessionStore.loadState().activeSession.sessionId
             val finalText = finalTextFor(result)
             if (isApprovalRequiredResult(result)) {
@@ -140,7 +158,7 @@ internal class OpenCrayHostRuntime private constructor(
               assistantOutput = finalText,
               toolObservations = successfulToolObservationsLocked(sessionId = sessionId, task = task),
             )
-          }
+          } ?: return
           val ingestionSummary = runCatching {
             memoryIngestionCoordinator?.ingestCompletedTurn(
               sessionId = completedTurn.sessionId,
@@ -153,6 +171,9 @@ internal class OpenCrayHostRuntime private constructor(
           }.getOrNull()
           if (ingestionSummary != null && !ingestionSummary.isEmpty) {
             synchronized(lock) {
+              if (!hasSessionLocked(completedTurn.sessionId)) {
+                return@synchronized
+              }
               recordRuntimeEventLocked(
                 sessionId = completedTurn.sessionId,
                 event = OpenCrayMemoryWriteEvent(
@@ -163,6 +184,7 @@ internal class OpenCrayHostRuntime private constructor(
                     record.extensions["kind"]
                   }.distinct().sorted(),
                   resolvedRecordIds = ingestionSummary.resolvedRecords.map { record -> record.id },
+                  reaffirmedRecordIds = ingestionSummary.reaffirmedRecords.map { record -> record.id },
                   expiredRecordIds = ingestionSummary.expiredRecordIds,
                   emittedAtEpochMs = completedTurn.result.finishedAtEpochMs,
                 ),
@@ -175,8 +197,15 @@ internal class OpenCrayHostRuntime private constructor(
         }
 
         override fun onRunEvent(sessionId: String, task: AgentTask, event: OpenCrayAgentRunEvent) {
-          synchronized(lock) {
+          val shouldEmit = synchronized(lock) {
+            if (!hasSessionLocked(sessionId)) {
+              return@synchronized false
+            }
             recordRuntimeEventLocked(sessionId = sessionId, event = event)
+            true
+          }
+          if (!shouldEmit) {
+            return
           }
           emitChatSnapshot()
           emitChatRuntimeSnapshot()
@@ -222,6 +251,7 @@ internal class OpenCrayHostRuntime private constructor(
   fun saveLlmConfig(
     enabled: Boolean,
     providerId: String,
+    selectedProviderOptionId: String,
     protocol: String,
     providerName: String,
     providerNotes: String,
@@ -236,6 +266,36 @@ internal class OpenCrayHostRuntime private constructor(
         SaveLlmConfigRequest(
           enabled = enabled,
           providerId = providerId,
+          selectedProviderOptionId = selectedProviderOptionId,
+          protocol = protocol,
+          providerName = providerName,
+          providerNotes = providerNotes,
+          baseUrl = baseUrl,
+          apiKey = apiKey,
+          model = model,
+          reasoningEffort = reasoningEffort,
+          systemPrompt = systemPrompt,
+        ),
+      )
+    }
+    return snapshot.toMap()
+  }
+
+  fun saveCustomLlmProvider(
+    selectedProviderOptionId: String,
+    protocol: String,
+    providerName: String,
+    providerNotes: String,
+    baseUrl: String,
+    apiKey: String,
+    model: String,
+    reasoningEffort: String,
+    systemPrompt: String,
+  ): Map<String, Any?> {
+    val snapshot = synchronized(lock) {
+      llmConfigFacade.saveCustomProvider(
+        SaveCustomLlmProviderRequest(
+          selectedProviderOptionId = selectedProviderOptionId,
           protocol = protocol,
           providerName = providerName,
           providerNotes = providerNotes,
@@ -330,6 +390,49 @@ internal class OpenCrayHostRuntime private constructor(
     mcpSettingsFacade.setServerEnabled(serverId = serverId, enabled = enabled)
   }.toMap()
 
+  fun loadSafetySettings(): Map<String, Any?> =
+    synchronized(lock) { safetySettingsFacade.load() }.toMap()
+
+  fun saveSafetySettings(
+    automationModeId: String,
+    rollbackJournalEnabled: Boolean,
+    maxFilesPerBatch: Int,
+    undoWindowHours: Int,
+    fileChangesPolicyId: String,
+    fileDeletesPolicyId: String,
+    shellCommandsPolicyId: String,
+    externalAccessModeId: String,
+    photoLibraryEnabled: Boolean,
+    downloadsEnabled: Boolean,
+    documentsEnabled: Boolean,
+    recordingsEnabled: Boolean,
+    workspaceAccessProfileId: String,
+    readOnlyOutsideWorkspace: Boolean,
+  ): Map<String, Any?> {
+    val snapshot = synchronized(lock) {
+      safetySettingsFacade.save(
+        SaveSafetySettingsRequest(
+          automationModeId = automationModeId,
+          rollbackJournalEnabled = rollbackJournalEnabled,
+          maxFilesPerBatch = maxFilesPerBatch,
+          undoWindowHours = undoWindowHours,
+          fileChangesPolicyId = fileChangesPolicyId,
+          fileDeletesPolicyId = fileDeletesPolicyId,
+          shellCommandsPolicyId = shellCommandsPolicyId,
+          externalAccessModeId = externalAccessModeId,
+          photoLibraryEnabled = photoLibraryEnabled,
+          downloadsEnabled = downloadsEnabled,
+          documentsEnabled = documentsEnabled,
+          recordingsEnabled = recordingsEnabled,
+          workspaceAccessProfileId = workspaceAccessProfileId,
+          readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
+        ),
+      )
+    }
+    emitChatSnapshot()
+    return snapshot.toMap()
+  }
+
   fun loadSkillsSnapshot(query: String = ""): Map<String, Any?> =
     synchronized(lock) { skillsFacade.loadSnapshot(query) }.toMap()
 
@@ -344,10 +447,28 @@ internal class OpenCrayHostRuntime private constructor(
     workspaceSnapshotProvider()
   }
 
+  fun loadWorkspaceImagePreview(
+    relativePath: String,
+  ): Map<String, Any?> = synchronized(lock) {
+    AppAgentWorkspaceImagePreviewer.loadPreview(
+      workspaceRoot = requireWorkspaceRoot(),
+      relativePath = relativePath,
+    )
+  }
+
   fun loadWorkspaceTextPreview(
     relativePath: String,
   ): Map<String, Any?> = synchronized(lock) {
     AppAgentWorkspaceTextPreviewer.loadPreview(
+      workspaceRoot = requireWorkspaceRoot(),
+      relativePath = relativePath,
+    )
+  }
+
+  fun loadWorkspaceTextDocument(
+    relativePath: String,
+  ): Map<String, Any?> = synchronized(lock) {
+    AppAgentWorkspaceTextDocumentStore.loadDocument(
       workspaceRoot = requireWorkspaceRoot(),
       relativePath = relativePath,
     )
@@ -358,6 +479,18 @@ internal class OpenCrayHostRuntime private constructor(
     name: String,
   ): Map<String, Any?> = synchronized(lock) {
     AppAgentWorkspaceFileOperations.createDirectory(
+      workspaceRoot = requireWorkspaceRoot(),
+      parentRelativePath = parentRelativePath,
+      name = name,
+    )
+    workspaceSnapshotProvider()
+  }
+
+  fun createWorkspaceTextFile(
+    parentRelativePath: String,
+    name: String,
+  ): Map<String, Any?> = synchronized(lock) {
+    AppAgentWorkspaceTextDocumentStore.createFile(
       workspaceRoot = requireWorkspaceRoot(),
       parentRelativePath = parentRelativePath,
       name = name,
@@ -383,6 +516,18 @@ internal class OpenCrayHostRuntime private constructor(
     AppAgentWorkspaceFileOperations.deleteEntries(
       workspaceRoot = requireWorkspaceRoot(),
       relativePaths = relativePaths,
+    )
+    workspaceSnapshotProvider()
+  }
+
+  fun saveWorkspaceTextDocument(
+    targetRelativePath: String,
+    content: String,
+  ): Map<String, Any?> = synchronized(lock) {
+    AppAgentWorkspaceTextDocumentStore.saveDocument(
+      workspaceRoot = requireWorkspaceRoot(),
+      targetRelativePath = targetRelativePath,
+      content = content,
     )
     workspaceSnapshotProvider()
   }
@@ -521,7 +666,7 @@ internal class OpenCrayHostRuntime private constructor(
     val activeSessionTitle = displaySessionTitle(activeSession.title)
     mapOf(
       "screenTitle" to strings.chatScreenTitle,
-      "modeLabel" to strings.chatModeLabel,
+      "modeLabel" to currentChatModeLabelLocked(),
       "sessionButtonLabel" to strings.chatSessionButtonLabel,
       "composerPlaceholder" to strings.composerPlaceholder,
       "summary" to mapOf(
@@ -627,6 +772,34 @@ internal class OpenCrayHostRuntime private constructor(
     emitChatRuntimeSnapshot()
   }
 
+  fun copyChatSession(sessionId: String) {
+    val copiedSessionId = synchronized(lock) {
+      val copiedState = chatSessionStore.copySession(sessionId)
+      clearUnreadCountLocked(copiedState.activeSession.sessionId)
+      sessionRuntimeManager.forSession(copiedState.activeSession.sessionId).resume()
+      copiedState.activeSession.sessionId
+    }
+    repairTerminalReplay(copiedSessionId)
+    emitChatSnapshot()
+    emitChatRuntimeSnapshot()
+  }
+
+  fun deleteChatSession(sessionId: String) {
+    val resolvedSessionId = synchronized(lock) {
+      if (!hasSessionLocked(sessionId)) {
+        return@synchronized null
+      }
+      discardSessionLocked(sessionId)
+      val updatedState = chatSessionStore.deleteSession(sessionId)
+      clearUnreadCountLocked(updatedState.activeSession.sessionId)
+      sessionRuntimeManager.forSession(updatedState.activeSession.sessionId).resume()
+      updatedState.activeSession.sessionId
+    } ?: return
+    repairTerminalReplay(resolvedSessionId)
+    emitChatSnapshot()
+    emitChatRuntimeSnapshot()
+  }
+
   fun approveChatApproval(taskId: String) {
     synchronized(lock) {
       val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
@@ -709,6 +882,7 @@ internal class OpenCrayHostRuntime private constructor(
     }
 
     val submission = synchronized(lock) {
+      val safetySettings = safetySettingsFacade.load()
       val activeState = chatSessionStore.loadState()
       val sessionId = activeState.activeSession.sessionId
       val handle = sessionRuntimeManager.forSession(sessionId)
@@ -725,9 +899,7 @@ internal class OpenCrayHostRuntime private constructor(
           outcome = PolicyDecisionOutcome.ALLOW,
           reasonCode = "FLUTTER_CHAT_ALLOW",
         ),
-        metadata = mapOf(
-          "chatMode" to DEFAULT_MODE_LABEL,
-        ),
+        metadata = safetyMetadataForTask(safetySettings),
       )
       try {
         chatSessionStore.appendSubmittedTurn(
@@ -761,24 +933,28 @@ internal class OpenCrayHostRuntime private constructor(
     terminalReplayRepairer(sessionId, runs)
   }
 
-  private fun pendingTaskCount(sessionId: String): Int = sessionRuntimeManager.forSession(sessionId)
-    .snapshot()
-    .tasks
-    .count { taskSnapshot ->
-      when (taskSnapshot.lifecycleState) {
-        QueueTaskLifecycleState.QUEUED,
-        QueueTaskLifecycleState.RUNNING,
-        QueueTaskLifecycleState.RETRY_PENDING,
-        QueueTaskLifecycleState.CANCEL_REQUESTED,
-        -> true
+  private fun hasSessionLocked(sessionId: String): Boolean = chatSessionStore.loadState().sessions
+    .any { session -> session.sessionId == sessionId }
 
-        QueueTaskLifecycleState.COMPLETED,
-        QueueTaskLifecycleState.CANCELLED,
-        QueueTaskLifecycleState.SUSPENDED,
-        QueueTaskLifecycleState.FAILED,
-        -> false
+  private fun discardSessionLocked(sessionId: String) {
+    val handle = sessionRuntimeManager.forSession(sessionId)
+    handle.listRuns()
+      .filterNot(AgentRunSnapshot::isTerminal)
+      .forEach { run ->
+        handle.requestCancel(run.taskId)
       }
-    }
+    handle.terminateRunningManagedProcesses()
+    approvalRegistry.retainKnownTasks(sessionId, emptySet())
+    pendingApprovalsBySession.remove(sessionId)
+    runtimeEventsBySession.remove(sessionId)
+    unreadChatMessageCountsBySession.remove(sessionId)
+    sessionRuntimeManager.release(sessionId)
+  }
+
+  // Use run projection here so chat state settles immediately when a result is already known.
+  private fun pendingTaskCount(sessionId: String): Int = sessionRuntimeManager.forSession(sessionId)
+    .listRuns()
+    .count { run -> !run.isTerminal }
 
   private fun pendingApprovalsForSession(sessionId: String): List<PendingApprovalSnapshot> {
     val snapshot = sessionRuntimeManager.forSession(sessionId).snapshot()
@@ -1171,6 +1347,31 @@ internal class OpenCrayHostRuntime private constructor(
       "errorMessage" to event.result.errorMessage,
       "contentPreview" to event.result.content.take(MAX_RUNTIME_EVENT_PREVIEW_CHARS),
     )
+    is OpenCrayMemoryRetrievalEvent -> buildMap<String, Any?> {
+      put("kind", "memory_retrieval")
+      put("runId", event.runId)
+      put("taskId", event.taskId)
+      put("turn", event.turn)
+      put("emittedAtEpochMs", event.emittedAtEpochMs)
+      put("toolName", event.toolName)
+      put("operation", event.operation)
+      event.query?.let { query -> put("query", query) }
+      if (event.queryTerms.isNotEmpty()) {
+        put("queryTerms", event.queryTerms)
+      }
+      event.resultCount?.let { resultCount -> put("resultCount", resultCount) }
+      event.corpusFileCount?.let { corpusFileCount -> put("corpusFileCount", corpusFileCount) }
+      if (event.paths.isNotEmpty()) {
+        put("paths", event.paths)
+      }
+      if (event.lineRanges.isNotEmpty()) {
+        put("lineRanges", event.lineRanges)
+      }
+      event.path?.let { path -> put("path", path) }
+      event.fromLine?.let { fromLine -> put("fromLine", fromLine) }
+      event.returnedLineCount?.let { returnedLineCount -> put("returnedLineCount", returnedLineCount) }
+      event.totalLineCount?.let { totalLineCount -> put("totalLineCount", totalLineCount) }
+    }
     is OpenCrayMemoryWriteEvent -> mapOf(
       "kind" to "memory_write",
       "runId" to event.runId,
@@ -1180,6 +1381,7 @@ internal class OpenCrayHostRuntime private constructor(
       "writtenRecordIds" to event.writtenRecordIds,
       "writtenKinds" to event.writtenKinds,
       "resolvedRecordIds" to event.resolvedRecordIds,
+      "reaffirmedRecordIds" to event.reaffirmedRecordIds,
       "expiredRecordIds" to event.expiredRecordIds,
     )
   }
@@ -1353,6 +1555,37 @@ internal class OpenCrayHostRuntime private constructor(
   internal fun currentEnabledSkillRoots() =
     synchronized(lock) { skillsFacade.enabledSkillRoots() }
 
+  private fun currentChatModeLabelLocked(): String =
+    chatModeLabelFor(safetySettingsFacade.load().automationMode)
+
+  private fun chatModeLabelFor(mode: SafetyAutomationMode): String = when (mode) {
+    SafetyAutomationMode.SAFE -> strings.chatModeSafeLabel
+    SafetyAutomationMode.AUTO -> strings.chatModeLabel
+    SafetyAutomationMode.DEV -> strings.chatModeDeveloperLabel
+  }
+
+  private fun safetyMetadataForTask(
+    snapshot: SafetySettingsSnapshot,
+  ): Map<String, String> = buildMap {
+    put(SafetySettingsMetadataKeys.CHAT_MODE, snapshot.automationMode.chatMetadataLabel)
+    put(
+      SafetySettingsMetadataKeys.EXECUTION_MODE,
+      snapshot.automationMode.executionMode.name,
+    )
+    put(
+      SafetySettingsMetadataKeys.FILE_CHANGES_POLICY_ID,
+      snapshot.fileChangesPolicy.wireValue,
+    )
+    put(
+      SafetySettingsMetadataKeys.FILE_DELETES_POLICY_ID,
+      snapshot.fileDeletesPolicy.wireValue,
+    )
+    put(
+      SafetySettingsMetadataKeys.SHELL_COMMANDS_POLICY_ID,
+      snapshot.shellCommandsPolicy.wireValue,
+    )
+  }
+
   private fun refreshLocalizedResourcesLocked() {
     val baseContext = appContext ?: return
     val localizedContext = OpenCrayLocaleManager.wrap(baseContext)
@@ -1371,6 +1604,7 @@ internal class OpenCrayHostRuntime private constructor(
       settingsStore = McpSettingsStore.fromContext(baseContext),
       registryStore = AppMcpRegistryStore.fromContext(baseContext),
     )
+    safetySettingsFacade = LocalSafetySettingsFacade.fromContext(baseContext)
     skillsFacade = LocalSkillsFacade.fromContext(localizedContext)
     strings = localizedHostRuntimeStrings(localizedContext)
   }
@@ -1418,6 +1652,7 @@ internal class OpenCrayHostRuntime private constructor(
     "localeTag" to localeTag,
     "enabled" to enabled,
     "providerId" to providerId,
+    "selectedProviderOptionId" to selectedProviderOptionId,
     "protocol" to protocol,
     "providerOptions" to providerOptions.map { option -> option.toMap() },
     "providerName" to providerName,
@@ -1432,10 +1667,13 @@ internal class OpenCrayHostRuntime private constructor(
 
   private fun LlmProviderOptionSnapshot.toMap(): Map<String, Any?> = mapOf(
     "id" to id,
+    "providerId" to providerId,
     "title" to title,
     "subtitle" to subtitle,
     "defaultBaseUrl" to defaultBaseUrl,
     "defaultModel" to defaultModel,
+    "protocol" to protocol,
+    "apiKey" to apiKey,
     "isCustom" to isCustom,
   )
 
@@ -1533,6 +1771,25 @@ internal class OpenCrayHostRuntime private constructor(
     "actionLabel" to actionLabel,
     "actionTurnsOn" to actionTurnsOn,
     "isActionEnabled" to isActionEnabled,
+  )
+
+  private fun SafetySettingsSnapshot.toMap(): Map<String, Any?> = mapOf(
+    "automationModeId" to automationMode.wireValue,
+    "rollbackJournalEnabled" to rollbackJournalEnabled,
+    "maxFilesPerBatch" to maxFilesPerBatch,
+    "undoWindowHours" to undoWindowHours,
+    "fileChangesPolicyId" to fileChangesPolicy.wireValue,
+    "fileDeletesPolicyId" to fileDeletesPolicy.wireValue,
+    "shellCommandsPolicyId" to shellCommandsPolicy.wireValue,
+    "externalAccessModeId" to externalAccessMode.wireValue,
+    "locations" to locations.map { location -> location.toMap() },
+    "workspaceAccessProfileId" to workspaceAccessProfile.wireValue,
+    "readOnlyOutsideWorkspace" to readOnlyOutsideWorkspace,
+  )
+
+  private fun SafetySettingsLocationSnapshot.toMap(): Map<String, Any?> = mapOf(
+    "id" to id,
+    "enabled" to enabled,
   )
 
   private fun SkillsSnapshot.toMap(): Map<String, Any?> = mapOf(
@@ -1641,7 +1898,6 @@ internal class OpenCrayHostRuntime private constructor(
   }
 
   companion object {
-    private const val DEFAULT_MODE_LABEL: String = "AUTO"
     private const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
     private const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
     private const val DEFAULT_RUN_WAIT_TIMEOUT_MS: Long = 15_000L
@@ -1668,6 +1924,7 @@ internal class OpenCrayHostRuntime private constructor(
       llmConfigFacade: LlmConfigFacade = EmptyLlmConfigFacade,
       personalizationFacade: PersonalizationFacade = EmptyPersonalizationFacade,
       mcpSettingsFacade: McpSettingsFacade = EmptyMcpSettingsFacade,
+      safetySettingsFacade: SafetySettingsFacade = EmptySafetySettingsFacade,
       skillsFacade: SkillsFacade = EmptySkillsFacade,
       workspaceRootProvider: (() -> Path)? = null,
       workspaceSnapshotProvider: () -> Map<String, Any?> = {
@@ -1693,6 +1950,8 @@ internal class OpenCrayHostRuntime private constructor(
         shellHostSummary = "Android host bridge is attached to the live app runtime.",
         chatScreenTitle = "Chat",
         chatModeLabel = "AUTO",
+        chatModeSafeLabel = "SAFE",
+        chatModeDeveloperLabel = "DEV",
         chatSessionButtonLabel = "Sessions",
         chatRecentSessionsEyebrow = "Recent sessions",
         chatRecentSessionsTitle = "Recent sessions",
@@ -1721,6 +1980,7 @@ internal class OpenCrayHostRuntime private constructor(
       llmConfigFacade = llmConfigFacade,
       personalizationFacade = personalizationFacade,
       mcpSettingsFacade = mcpSettingsFacade,
+      safetySettingsFacade = safetySettingsFacade,
       skillsFacade = skillsFacade,
       workspaceRootProvider = workspaceRootProvider,
       workspaceSnapshotProvider = workspaceSnapshotProvider,
@@ -1755,17 +2015,27 @@ internal class OpenCrayHostRuntime private constructor(
         ).toMap()
       }
       val transcriptStoreFactory = FileBackedAgentSessionTranscriptStoreFactory.fromContext(appContext)
-      val soulMemoryIntentInterpreter = LiteLlmSoulMemoryIntentInterpreter(
+      val processRegistryFactory = FileBackedAgentProcessRegistryFactory.fromContext(appContext)
+      val liteLlmProviderClient = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = providerUserAgent,
+      )
+      val userMemoryIntentInterpreter = LiteLlmUserMemoryIntentInterpreter(
         llmSettingsProvider = { llmSettingsStore.load() },
-        providerClient = OpenAiCompatibleLiteLlmProviderClient(
-          userAgent = providerUserAgent,
-        ),
+        providerClient = liteLlmProviderClient,
+      )
+      val taskCommitmentIntentInterpreter = LiteLlmTaskCommitmentIntentInterpreter(
+        llmSettingsProvider = { llmSettingsStore.load() },
+        providerClient = liteLlmProviderClient,
       )
       val memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(
         memoryStore = personalizationStore.asMemoryStore(),
         workspaceIdProvider = { AppWorkspaceIdentity.fromRoots(workspaceRootsProvider()) },
         candidateExtractor = MemoryCandidateExtractor(
-          soulIntentInterpreter = soulMemoryIntentInterpreter,
+          userIntentInterpreter = userMemoryIntentInterpreter,
+        ),
+        taskCommitmentResolver = com.opencray.runtime.memory.TaskCommitmentResolver(
+          store = personalizationStore.asMemoryStore(),
+          intentInterpreter = taskCommitmentIntentInterpreter,
         ),
       )
       lateinit var hostRuntime: OpenCrayHostRuntime
@@ -1779,6 +2049,7 @@ internal class OpenCrayHostRuntime private constructor(
         memoryRecordsProvider = personalizationStore::listMemoryRecords,
         providerUserAgent = providerUserAgent,
         approvalRegistry = approvalRegistry,
+        processRegistryProvider = processRegistryFactory::forChatSession,
         transcriptStoreProvider = transcriptStoreFactory::forChatSession,
       )
       val personalizationFacade = LocalPersonalizationFacade.createForTest(
@@ -1802,6 +2073,7 @@ internal class OpenCrayHostRuntime private constructor(
         llmConfigFacade = LocalLlmConfigFacade.fromContext(localizedContext),
         personalizationFacade = personalizationFacade,
         mcpSettingsFacade = mcpSettingsFacade,
+        safetySettingsFacade = LocalSafetySettingsFacade.fromContext(appContext),
         skillsFacade = skillsFacade,
         workspaceRootProvider = workspaceRootProvider,
         workspaceSnapshotProvider = workspaceSnapshotProvider,
@@ -1809,6 +2081,7 @@ internal class OpenCrayHostRuntime private constructor(
           agentId = "opencray-flutter-host",
           runtimeFactory = runtimeFactory,
           snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
+          runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(appContext),
           executor = chatExecutor,
         ),
         approvalRegistry = approvalRegistry,
@@ -1828,6 +2101,14 @@ internal class OpenCrayHostRuntime private constructor(
       shellHostSummary = context.getString(R.string.flutter_host_summary_android),
       chatScreenTitle = context.getString(R.string.shell_tab_chat),
       chatModeLabel = context.getString(R.string.chat_mode_auto),
+      chatModeSafeLabel = context.getStringByNameOrFallback(
+        resourceName = "chat_mode_safe",
+        fallback = "SAFE",
+      ),
+      chatModeDeveloperLabel = context.getStringByNameOrFallback(
+        resourceName = "chat_mode_dev",
+        fallback = "DEV",
+      ),
       chatSessionButtonLabel = context.getString(R.string.chat_sessions_button),
       chatRecentSessionsEyebrow = context.getString(R.string.chat_recent_sessions_eyebrow),
       chatRecentSessionsTitle = context.getString(R.string.chat_recent_sessions_title),
@@ -1860,6 +2141,14 @@ internal class OpenCrayHostRuntime private constructor(
       chatApprovalApproved = context.getString(R.string.chat_approval_approved),
       chatApprovalRejected = context.getString(R.string.chat_approval_rejected),
     )
+
+    private fun Context.getStringByNameOrFallback(
+      resourceName: String,
+      fallback: String,
+    ): String {
+      val resourceId = resources.getIdentifier(resourceName, "string", packageName)
+      return if (resourceId != 0) getString(resourceId) else fallback
+    }
   }
 }
 
@@ -1869,6 +2158,8 @@ internal data class HostRuntimeStrings(
   val shellHostSummary: String,
   val chatScreenTitle: String,
   val chatModeLabel: String,
+  val chatModeSafeLabel: String = "SAFE",
+  val chatModeDeveloperLabel: String = "DEV",
   val chatSessionButtonLabel: String,
   val chatRecentSessionsEyebrow: String,
   val chatRecentSessionsTitle: String,

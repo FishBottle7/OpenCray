@@ -149,6 +149,17 @@ class OpenCrayChatRuntimeEventSnapshot {
     this.argumentsJson,
     this.toolStatus,
     this.contentPreview,
+    this.operation,
+    this.query,
+    this.queryTerms = const <String>[],
+    this.resultCount,
+    this.corpusFileCount,
+    this.paths = const <String>[],
+    this.lineRanges = const <String>[],
+    this.path,
+    this.fromLine,
+    this.returnedLineCount,
+    this.totalLineCount,
   });
 
   final String kind;
@@ -168,8 +179,24 @@ class OpenCrayChatRuntimeEventSnapshot {
   final String? argumentsJson;
   final String? toolStatus;
   final String? contentPreview;
+  final String? operation;
+  final String? query;
+  final List<String> queryTerms;
+  final int? resultCount;
+  final int? corpusFileCount;
+  final List<String> paths;
+  final List<String> lineRanges;
+  final String? path;
+  final int? fromLine;
+  final int? returnedLineCount;
+  final int? totalLineCount;
 
   factory OpenCrayChatRuntimeEventSnapshot.fromMap(Map<Object?, Object?> map) {
+    final rawQueryTerms =
+        map['queryTerms'] as List<Object?>? ?? const <Object?>[];
+    final rawPaths = map['paths'] as List<Object?>? ?? const <Object?>[];
+    final rawLineRanges =
+        map['lineRanges'] as List<Object?>? ?? const <Object?>[];
     return OpenCrayChatRuntimeEventSnapshot(
       kind: map['kind'] as String? ?? '',
       runId: map['runId'] as String? ?? '',
@@ -188,6 +215,29 @@ class OpenCrayChatRuntimeEventSnapshot {
       argumentsJson: map['argumentsJson'] as String?,
       toolStatus: map['toolStatus'] as String?,
       contentPreview: map['contentPreview'] as String?,
+      operation: map['operation'] as String?,
+      query: map['query'] as String?,
+      queryTerms: rawQueryTerms
+          .whereType<String>()
+          .map((term) => term.trim())
+          .where((term) => term.isNotEmpty)
+          .toList(growable: false),
+      resultCount: map['resultCount'] as int?,
+      corpusFileCount: map['corpusFileCount'] as int?,
+      paths: rawPaths
+          .whereType<String>()
+          .map((path) => path.trim())
+          .where((path) => path.isNotEmpty)
+          .toList(growable: false),
+      lineRanges: rawLineRanges
+          .whereType<String>()
+          .map((lineRange) => lineRange.trim())
+          .where((lineRange) => lineRange.isNotEmpty)
+          .toList(growable: false),
+      path: map['path'] as String?,
+      fromLine: map['fromLine'] as int?,
+      returnedLineCount: map['returnedLineCount'] as int?,
+      totalLineCount: map['totalLineCount'] as int?,
     );
   }
 }

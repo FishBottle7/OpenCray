@@ -24,6 +24,8 @@ import com.opencray.runtime.context.PromptAssembler
 import com.opencray.runtime.context.PromptAssemblyInput
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.memory.MemoryToolOperation
+import com.opencray.runtime.memory.memoryToolTraceFrom
 import java.util.UUID
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -234,6 +236,12 @@ class OpenCrayAgentRuntime(
                   emittedAtEpochMs = clock(),
                 ),
               )
+              emitMemoryRetrievalEvent(
+                task = task,
+                turn = turn,
+                call = toolAction.call,
+                result = toolResult,
+              )
               if (toolResult.status == AgentToolResultStatus.CANCELLED) {
                 return cancelledResult(task = task, startedAt = startedAt, finishedAt = clock())
               }
@@ -398,6 +406,12 @@ class OpenCrayAgentRuntime(
         result = toolResult,
         emittedAtEpochMs = clock(),
       ),
+    )
+    emitMemoryRetrievalEvent(
+      task = task,
+      turn = 0,
+      call = toolCall,
+      result = toolResult,
     )
     return toolResult.toExecutionResult(
       task = task,
@@ -881,6 +895,41 @@ class OpenCrayAgentRuntime(
         emittedAtEpochMs = clock(),
       ),
     )
+  }
+
+  private fun emitMemoryRetrievalEvent(
+    task: AgentTask,
+    turn: Int,
+    call: AgentToolCall,
+    result: AgentToolResult,
+  ) {
+    memoryToolTraceFrom(call = call, result = result)
+      ?.let { trace ->
+        eventSink.onRunEvent(
+          task = task,
+          event = OpenCrayMemoryRetrievalEvent(
+            runId = runIdFor(task),
+            taskId = task.id,
+            turn = turn,
+            toolName = trace.toolName,
+            operation = when (trace.operation) {
+              MemoryToolOperation.SEARCH -> "search"
+              MemoryToolOperation.GET -> "get"
+            },
+            query = trace.query,
+            queryTerms = trace.queryTerms,
+            resultCount = trace.resultCount,
+            corpusFileCount = trace.corpusFileCount,
+            paths = trace.paths,
+            lineRanges = trace.lineRanges,
+            path = trace.path,
+            fromLine = trace.fromLine,
+            returnedLineCount = trace.returnedLineCount,
+            totalLineCount = trace.totalLineCount,
+            emittedAtEpochMs = clock(),
+          ),
+        )
+      }
   }
 
   private fun buildToolCallTranscriptEntry(call: AgentToolCall): String = buildString {
