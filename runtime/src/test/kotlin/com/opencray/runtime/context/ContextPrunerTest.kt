@@ -40,9 +40,9 @@ class ContextPrunerTest {
   fun pruneRewritesBulkyToolOutputsAndAttachmentLikePayloads() {
     val pruner = ContextPruner(
       ContextPrunerConfig(
-        maxToolChars = 80,
-        maxToolLines = 3,
-        maxAttachmentChars = 48,
+        maxToolChars = 128,
+        maxToolLines = 4,
+        maxAttachmentChars = 64,
         maxPreviewChars = 64,
       ),
     )

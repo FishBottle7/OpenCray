@@ -277,6 +277,9 @@ class OpenCrayUiCopy {
       isChinese ? '向宿主运行时提交消息失败。' : 'Failed to submit message to host runtime.';
   String get chatMessageCopyAction => isChinese ? '复制' : 'Copy';
   String get chatMessageRecallAction => isChinese ? '撤回' : 'Undo';
+  String get chatMessageRedoAction => isChinese ? '重做' : 'Redo';
+  String get chatMessageEditAction => isChinese ? '编辑' : 'Edit';
+  String get chatMessageBranchAction => isChinese ? '分支' : 'Branch';
   String get chatMessageDeleteAction => isChinese ? '删除' : 'Delete';
   String get chatMessageSelectAction => isChinese ? '多选' : 'Select';
   String get chatMessageQuoteAction => isChinese ? '引用' : 'Quote';

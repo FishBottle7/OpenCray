@@ -3,6 +3,7 @@ package com.opencray.app
 import android.content.Context
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
+import com.opencray.runtime.CancellablePythonScriptRuntime
 import com.opencray.runtime.PythonExecRequest
 import com.opencray.runtime.PythonScriptRuntime
 import java.nio.charset.StandardCharsets
@@ -23,18 +24,20 @@ internal class P4aPythonRuntime private constructor(
   runtimeRoot: Path,
   private val launcher: P4aPythonRuntimeLauncher = UnavailableP4aPythonRuntimeLauncher,
   private val json: Json = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true },
-) : PythonScriptRuntime {
+) : PythonScriptRuntime, CancellablePythonScriptRuntime {
   private val runtimeRoot: Path = runtimeRoot
   private val requestsDir: Path = runtimeRoot.resolve("requests")
   private val resultsDir: Path = runtimeRoot.resolve("results")
   private val logsDir: Path = runtimeRoot.resolve("logs")
+  private val cancelsDir: Path = runtimeRoot.resolve("cancels")
 
   override fun exec(request: PythonExecRequest): ExecutionResult {
     val startedAt = System.currentTimeMillis()
-    val requestId = UUID.randomUUID().toString()
+    val requestId = request.requestId?.trim()?.takeIf(String::isNotBlank) ?: UUID.randomUUID().toString()
     val requestPath = requestsDir.resolve("$requestId.json")
     val resultPath = resultsDir.resolve("$requestId.json")
     val logPath = logsDir.resolve("$requestId.log")
+    val cancelPath = cancelPathFor(requestId)
     val runtimeMetadata = linkedMapOf(
       "runtimeBackend" to "p4a",
       "runtimeTransport" to "file_json_bridge",
@@ -42,12 +45,18 @@ internal class P4aPythonRuntime private constructor(
       "requestPath" to requestPath.toString(),
       "resultPath" to resultPath.toString(),
       "logPath" to logPath.toString(),
+      "cancelPath" to cancelPath.toString(),
     )
 
     return try {
       Files.createDirectories(requestsDir)
       Files.createDirectories(resultsDir)
       Files.createDirectories(logsDir)
+      Files.createDirectories(cancelsDir)
+      Files.deleteIfExists(requestPath)
+      Files.deleteIfExists(resultPath)
+      Files.deleteIfExists(logPath)
+      Files.deleteIfExists(cancelPath)
 
       val payload = P4aPythonExecBridgeRequest(
         schemaVersion = BRIDGE_SCHEMA_VERSION,
@@ -58,6 +67,7 @@ internal class P4aPythonRuntime private constructor(
         args = request.args,
         timeoutMs = request.timeoutMs,
         requestedAtEpochMs = startedAt,
+        cancelPath = cancelPath.toString(),
       )
       Files.write(
         requestPath,
@@ -113,6 +123,21 @@ internal class P4aPythonRuntime private constructor(
         metadata = runtimeMetadata,
       )
     }
+  }
+
+  override fun requestCancellation(requestId: String): Boolean {
+    val normalizedRequestId = requestId.trim()
+    if (normalizedRequestId.isBlank()) {
+      return false
+    }
+    return runCatching {
+      Files.createDirectories(cancelsDir)
+      Files.write(
+        cancelPathFor(normalizedRequestId),
+        "cancelled\n".toByteArray(StandardCharsets.UTF_8),
+      )
+      true
+    }.getOrDefault(false)
   }
 
   private fun waitForBridgeResult(
@@ -193,6 +218,7 @@ internal class P4aPythonRuntime private constructor(
     val args: List<String>,
     val timeoutMs: Long,
     val requestedAtEpochMs: Long,
+    val cancelPath: String? = null,
   )
 
   @Serializable
@@ -267,6 +293,8 @@ internal class P4aPythonRuntime private constructor(
       json = json,
     )
   }
+
+  internal fun cancelPathFor(requestId: String): Path = cancelsDir.resolve("$requestId.cancel")
 }
 
 internal object UnavailableP4aPythonRuntimeLauncher : P4aPythonRuntime.P4aPythonRuntimeLauncher {

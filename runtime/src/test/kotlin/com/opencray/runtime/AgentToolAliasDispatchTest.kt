@@ -2,6 +2,8 @@ package com.opencray.runtime
 
 import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.AgentTaskType
+import com.opencray.core.contracts.ExecutionResult
+import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.RetryRequest
@@ -18,9 +20,11 @@ import com.opencray.runtime.web.WebSearchRequest
 import com.opencray.runtime.web.WebSearchResult
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.nio.file.Path
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -62,7 +66,7 @@ class AgentToolAliasDispatchTest {
     assertTrue("Bash" in definitionNames)
     assertTrue("bash" in definitionNames)
     assertTrue(readDefinition.description.contains("Compatibility alias for Read"))
-    assertTrue(pythonDefinition.description.contains("follows execute-command policy gates"))
+    assertTrue(pythonDefinition.description.contains("Use this instead of Bash for workspace Python scripts"))
   }
 
   @Test
@@ -145,6 +149,47 @@ class AgentToolAliasDispatchTest {
   }
 
   @Test
+  fun bashPythonScriptCommandRewritesToPythonExec() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-alias-bash-python").toPath()
+    Files.createDirectories(workspaceRoot.resolve("scripts"))
+    Files.write(
+      workspaceRoot.resolve("scripts").resolve("run.py"),
+      "print('alias python')".toByteArray(StandardCharsets.UTF_8),
+    )
+    val pythonRuntime = RecordingPythonScriptRuntime()
+    val dispatcher = dispatcher(
+      workspaceRoot = workspaceRoot,
+      pythonRuntime = pythonRuntime,
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "bash",
+        arguments = JsonObject(
+          mapOf(
+            "command" to JsonPrimitive("python run.py --flag \"two words\""),
+            "working_directory" to JsonPrimitive("scripts"),
+            "timeout_ms" to JsonPrimitive(45_000),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    val request = requireNotNull(pythonRuntime.lastRequest)
+    val expectedScriptPath = workspaceRoot.resolve("scripts").resolve("run.py").toRealPath()
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals("python_exec", result.toolName)
+    assertEquals("bash", result.metadata["requestedToolName"])
+    assertEquals("python_exec", result.metadata["normalizedToolName"])
+    assertEquals("true", result.metadata["toolRewrite"])
+    assertEquals(expectedScriptPath, request.scriptPath)
+    assertEquals(listOf("--flag", "two words"), request.args)
+    assertEquals(45_000L, request.timeoutMs)
+  }
+
+  @Test
   fun webFetchAliasDispatchesToCanonicalToolAndPreservesMapping() {
     val workspaceRoot = temporaryFolder.newFolder("tool-alias-webfetch").toPath()
     val dispatcher = dispatcher(
@@ -174,12 +219,14 @@ class AgentToolAliasDispatchTest {
     processRegistry: AgentProcessRegistry = AliasProcessRegistry(),
     webContentFetcher: WebContentFetcher = FakeWebContentFetcher(),
     webSearchProvider: WebSearchProvider = FakeWebSearchProvider(),
+    pythonRuntime: PythonScriptRuntime = RecordingPythonScriptRuntime(),
   ): OpenCrayToolDispatcher = OpenCrayToolDispatcher(
     OpenCrayToolDispatcherConfig(
       workspaceRoots = setOf(workspaceRoot),
       processRegistry = processRegistry,
       webContentFetcher = webContentFetcher,
       webSearchProvider = webSearchProvider,
+      pythonRuntimeAdapter = pythonRuntime,
     ),
   )
 
@@ -261,5 +308,21 @@ class AgentToolAliasDispatchTest {
     override fun search(request: WebSearchRequest): WebSearchResult = WebSearchResult(
       providerName = providerName,
     )
+  }
+
+  private class RecordingPythonScriptRuntime : PythonScriptRuntime {
+    var lastRequest: PythonExecRequest? = null
+
+    override fun exec(request: PythonExecRequest): ExecutionResult {
+      lastRequest = request
+      return ExecutionResult(
+        taskId = request.taskId,
+        status = ExecutionStatus.SUCCESS,
+        stdout = "python ok",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_050L,
+        metadata = mapOf("runtimeBackend" to "test-python"),
+      )
+    }
   }
 }

@@ -74,6 +74,7 @@ data class ManagedPromptContext(
   val durableCompactionText: String = "",
   val skillInventoryText: String = "",
   val activeSkillText: String = "",
+  val recentToolObservationsText: String = "",
   val pruningSummary: TranscriptPruningSummary? = null,
   val compactionSummary: CompactionSummary? = null,
   val toolDefinitions: List<AgentToolDefinition> = emptyList(),
@@ -111,6 +112,9 @@ data class ContextSelectionReport(
   val invalidSkillCount: Int = 0,
   val skillInventoryTrace: SkillInventoryTrace = SkillInventoryTrace(),
   val activeSkillTrace: ActiveSkillTrace = ActiveSkillTrace(),
+  val recentToolObservationCount: Int = 0,
+  val omittedRecentToolObservationCount: Int = 0,
+  val recentToolObservationLayerIncluded: Boolean = false,
 )
 
 data class PromptLayer(
@@ -164,6 +168,9 @@ data class ContextAssemblyReport(
   val invalidSkillCount: Int = 0,
   val skillInventoryTrace: SkillInventoryTrace = SkillInventoryTrace(),
   val activeSkillTrace: ActiveSkillTrace = ActiveSkillTrace(),
+  val recentToolObservationCount: Int = 0,
+  val omittedRecentToolObservationCount: Int = 0,
+  val recentToolObservationLayerIncluded: Boolean = false,
 ) {
   val transcriptMessageCount: Int
     get() = windowedTranscriptMessageCount

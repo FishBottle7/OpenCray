@@ -2,20 +2,28 @@ package com.opencray.runtime
 
 import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.AgentTaskType
+import com.opencray.core.contracts.ExecutionResult
+import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.RetryRequest
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.runtime.process.AgentProcessRegistry
+import com.opencray.runtime.process.InMemoryAgentProcessRegistry
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.process.RoutedManagedProcessControllerFactory
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -286,6 +294,223 @@ class AgentManagedProcessToolTest {
   }
 
   @Test
+  fun developerModeProcessStartCanLaunchManagedPythonScriptThroughRuntimeAdapter() {
+    val workspaceRoot = temporaryFolder.newFolder("process-tool-python-runtime").toPath()
+    Files.createDirectories(workspaceRoot.resolve("scripts"))
+    Files.write(
+      workspaceRoot.resolve("scripts").resolve("run.py"),
+      "print('hello from runtime adapter')".toByteArray(StandardCharsets.UTF_8),
+    )
+    val pythonRuntime = BlockingPythonScriptRuntime()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        processRegistry = InMemoryAgentProcessRegistry(
+          controllerFactory = RoutedManagedProcessControllerFactory(
+            workspaceRoot = workspaceRoot,
+            pythonRuntime = pythonRuntime,
+          ),
+        ),
+        managedPythonProcessUsesRuntimeAdapter = true,
+      ),
+    )
+
+    val startResult = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessStart",
+        arguments = JsonObject(
+          mapOf(
+            "script_path" to JsonPrimitive("scripts/run.py"),
+            "args" to kotlinx.serialization.json.buildJsonArray {
+              add(JsonPrimitive("--flag"))
+            },
+            "python_executable" to JsonPrimitive("python3"),
+            "timeout_ms" to JsonPrimitive(5000),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+    assertTrue(pythonRuntime.started.await(1, TimeUnit.SECONDS))
+
+    val processId = requireNotNull(startResult.metadata["processId"])
+    val request = requireNotNull(pythonRuntime.lastRequest)
+    assertEquals(AgentToolResultStatus.SUCCESS, startResult.status)
+    assertEquals(workspaceRoot.resolve("scripts").resolve("run.py").toRealPath(), request.scriptPath)
+    assertEquals(listOf("--flag"), request.args)
+    assertEquals(5000L, request.timeoutMs)
+    assertEquals(processId, request.requestId)
+    assertEquals("python_exec", startResult.metadata["runtimeKind"])
+    assertEquals("unsupported", startResult.metadata["terminationSupport"])
+    assertTrue(startResult.content.contains("status=running"))
+    assertTrue(startResult.content.contains("command=python_exec"))
+
+    val readWhileRunning = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessRead",
+        arguments = JsonObject(mapOf("process_id" to JsonPrimitive(processId))),
+      ),
+      hooks = runtimeHooks(),
+    )
+    assertTrue(readWhileRunning.content.contains("status=running"))
+
+    val terminateWhileRunning = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessTerminate",
+        arguments = JsonObject(mapOf("process_id" to JsonPrimitive(processId))),
+      ),
+      hooks = runtimeHooks(),
+    )
+    assertTrue(terminateWhileRunning.content.contains("does not support termination"))
+    assertEquals("true", terminateWhileRunning.metadata["terminationRequested"])
+
+    pythonRuntime.finish.countDown()
+
+    val waitResult = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessWait",
+        arguments = JsonObject(
+          mapOf(
+            "process_id" to JsonPrimitive(processId),
+            "timeout_ms" to JsonPrimitive(250),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertTrue(waitResult.content.contains("status=success"))
+    assertTrue(waitResult.content.contains("runtime_kind=python_exec"))
+    assertTrue(waitResult.content.contains("termination_requested=true"))
+    assertEquals("p4a-test", waitResult.metadata["runtimeBackend"])
+  }
+
+  @Test
+  fun developerModeProcessTerminateCancelsManagedPythonScriptThroughRuntimeAdapter() {
+    val workspaceRoot = temporaryFolder.newFolder("process-tool-python-runtime-cancel").toPath()
+    Files.createDirectories(workspaceRoot.resolve("scripts"))
+    Files.write(
+      workspaceRoot.resolve("scripts").resolve("run.py"),
+      "print('hello from cancellable runtime adapter')".toByteArray(StandardCharsets.UTF_8),
+    )
+    val pythonRuntime = CancellableBlockingPythonScriptRuntime()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        processRegistry = InMemoryAgentProcessRegistry(
+          controllerFactory = RoutedManagedProcessControllerFactory(
+            workspaceRoot = workspaceRoot,
+            pythonRuntime = pythonRuntime,
+          ),
+        ),
+        managedPythonProcessUsesRuntimeAdapter = true,
+      ),
+    )
+
+    val startResult = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessStart",
+        arguments = JsonObject(
+          mapOf(
+            "script_path" to JsonPrimitive("scripts/run.py"),
+            "args" to kotlinx.serialization.json.buildJsonArray {
+              add(JsonPrimitive("--flag"))
+            },
+            "timeout_ms" to JsonPrimitive(5000),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+    assertTrue(pythonRuntime.started.await(1, TimeUnit.SECONDS))
+
+    val processId = requireNotNull(startResult.metadata["processId"])
+    val request = requireNotNull(pythonRuntime.lastRequest)
+    assertEquals(AgentToolResultStatus.SUCCESS, startResult.status)
+    assertEquals(processId, request.requestId)
+    assertEquals("cooperative", startResult.metadata["terminationSupport"])
+
+    val terminateWhileRunning = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessTerminate",
+        arguments = JsonObject(mapOf("process_id" to JsonPrimitive(processId))),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertTrue(terminateWhileRunning.content.contains("cancellation requested"))
+    assertEquals("true", terminateWhileRunning.metadata["terminationRequested"])
+    assertEquals("true", terminateWhileRunning.metadata["terminationRequestAccepted"])
+
+    val waitResult = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessWait",
+        arguments = JsonObject(
+          mapOf(
+            "process_id" to JsonPrimitive(processId),
+            "timeout_ms" to JsonPrimitive(500),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertTrue(waitResult.content.contains("status=cancelled"))
+    assertTrue(waitResult.content.contains("termination_support=cooperative"))
+    assertTrue(waitResult.content.contains("termination_request_accepted=true"))
+    assertEquals("true", waitResult.metadata["cancelled"])
+    assertEquals("p4a-cancellable-test", waitResult.metadata["runtimeBackend"])
+  }
+
+  @Test
+  fun managedPythonProcessStartCanBeDisabledPerRuntime() {
+    val workspaceRoot = temporaryFolder.newFolder("process-tool-python-disabled").toPath()
+    Files.createDirectories(workspaceRoot.resolve("scripts"))
+    Files.write(
+      workspaceRoot.resolve("scripts").resolve("run.py"),
+      "print('hello')".toByteArray(StandardCharsets.UTF_8),
+    )
+    val registry = RecordingProcessRegistry(workspaceRoot = workspaceRoot)
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        processRegistry = registry,
+        supportsManagedPythonProcessStart = false,
+      ),
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessStart",
+        arguments = JsonObject(
+          mapOf(
+            "script_path" to JsonPrimitive("scripts/run.py"),
+            "args" to kotlinx.serialization.json.buildJsonArray {
+              add(JsonPrimitive("--flag"))
+            },
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.FAILED, result.status)
+    assertEquals("PROCESSSTART_PYTHON_UNSUPPORTED", result.errorCode)
+    assertEquals("scripts/run.py", result.metadata["scriptPath"])
+    assertEquals("managed_python_process_start_disabled", result.metadata["runtimeCapability"])
+    assertTrue(result.content.contains("Use python_exec"))
+    assertEquals(0, registry.startCount)
+  }
+
+  @Test
   fun processReadFailsCleanlyWhenProcessIsMissing() {
     val workspaceRoot = temporaryFolder.newFolder("process-tool-missing").toPath()
     val dispatcher = OpenCrayToolDispatcher(
@@ -393,6 +618,73 @@ class AgentManagedProcessToolTest {
       )
       snapshotsById[processId] = terminated
       return terminated
+    }
+  }
+
+  private class BlockingPythonScriptRuntime : PythonScriptRuntime {
+    val started: CountDownLatch = CountDownLatch(1)
+    val finish: CountDownLatch = CountDownLatch(1)
+    var lastRequest: PythonExecRequest? = null
+
+    override fun exec(request: PythonExecRequest): ExecutionResult {
+      lastRequest = request
+      started.countDown()
+      finish.await(1, TimeUnit.SECONDS)
+      return ExecutionResult(
+        taskId = request.taskId,
+        status = ExecutionStatus.SUCCESS,
+        exitCode = 0,
+        stdout = "runtime adapter ok",
+        stderr = "",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_050L,
+        metadata = mapOf("runtimeBackend" to "p4a-test"),
+      )
+    }
+  }
+
+  private class CancellableBlockingPythonScriptRuntime : PythonScriptRuntime, CancellablePythonScriptRuntime {
+    val started: CountDownLatch = CountDownLatch(1)
+    var lastRequest: PythonExecRequest? = null
+    private val cancellationRequested = AtomicBoolean(false)
+    @Volatile private var cancelledRequestId: String? = null
+
+    override fun exec(request: PythonExecRequest): ExecutionResult {
+      lastRequest = request
+      started.countDown()
+      repeat(200) {
+        if (cancellationRequested.get() && request.requestId == cancelledRequestId) {
+          return ExecutionResult(
+            taskId = request.taskId,
+            status = ExecutionStatus.CANCELLED,
+            exitCode = 130,
+            stdout = "",
+            stderr = "",
+            errorCode = "CANCELLED",
+            errorMessage = "Python script cancelled.",
+            startedAtEpochMs = 2_000L,
+            finishedAtEpochMs = 2_050L,
+            metadata = mapOf("runtimeBackend" to "p4a-cancellable-test"),
+          )
+        }
+        Thread.sleep(10)
+      }
+      return ExecutionResult(
+        taskId = request.taskId,
+        status = ExecutionStatus.SUCCESS,
+        exitCode = 0,
+        stdout = "runtime adapter ok",
+        stderr = "",
+        startedAtEpochMs = 2_000L,
+        finishedAtEpochMs = 4_000L,
+        metadata = mapOf("runtimeBackend" to "p4a-cancellable-test"),
+      )
+    }
+
+    override fun requestCancellation(requestId: String): Boolean {
+      cancelledRequestId = requestId
+      cancellationRequested.set(true)
+      return true
     }
   }
 }

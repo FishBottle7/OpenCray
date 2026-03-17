@@ -73,13 +73,13 @@ class BootstrapContextResolverTest {
     )
 
     assertEquals(2, context.trace.visibleFileCount)
-    assertEquals(1, context.trace.injectedFileCount)
-    assertEquals(1, context.trace.omittedFileCount)
-    assertEquals(1, context.trace.truncatedFileCount)
-    assertEquals(1, context.files.size)
-    assertTrue(context.files.single().truncated)
-    assertEquals(160, context.files.single().content.length)
-    assertEquals(220, context.files.single().sourceCharCount)
+    assertEquals(2, context.trace.injectedFileCount)
+    assertEquals(0, context.trace.omittedFileCount)
+    assertEquals(2, context.trace.truncatedFileCount)
+    assertEquals(2, context.files.size)
+    assertTrue(context.files.all { file -> file.truncated })
+    assertEquals(listOf(160, 90), context.files.map { file -> file.content.length })
+    assertEquals(listOf(220, 220), context.files.map { file -> file.sourceCharCount })
   }
 
   private fun writeFile(path: java.nio.file.Path, content: String) {

@@ -111,6 +111,9 @@ class MemoryWriter(
     val preferenceKey = normalizeMemoryPreferenceKeyOrNull(
       candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY],
     ) ?: return emptyList()
+    if (!preferenceSupportsSupersession(preferenceKey)) {
+      return emptyList()
+    }
     val preferenceValue = normalizeMemoryPreferenceValueOrNull(
       candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE],
     ) ?: return emptyList()

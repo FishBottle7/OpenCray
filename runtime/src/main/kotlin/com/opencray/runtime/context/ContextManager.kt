@@ -28,9 +28,11 @@ class ContextManager(
   private val memoryPromptLayer: MemoryPromptLayer = MemoryPromptLayer(),
   private val skillInventoryPromptLayer: SkillInventoryPromptLayer = SkillInventoryPromptLayer(),
   private val activeSkillPromptLayer: ActiveSkillPromptLayer = ActiveSkillPromptLayer(),
+  private val recentToolObservationSupport: RecentToolObservationSupport = RecentToolObservationSupport(),
   private val config: ContextManagerConfig = ContextManagerConfig(),
 ) {
   fun prepare(input: PromptAssemblyInput): ManagedPromptContext {
+    val recentToolObservationLayer = recentToolObservationSupport.buildLayer(input.liveConversation)
     val prunedTranscript = contextPruner.prune(input.liveConversation)
     val transcriptSelection = transcriptWindowBuilder.buildSelection(prunedTranscript.messages)
     val selectedMemory = selectMemory(input.sessionContext.recalledMemory)
@@ -48,6 +50,7 @@ class ContextManager(
       durableCompactionText = input.sessionContext.durableCompaction.text,
       skillInventoryText = renderedSkillInventory.text,
       activeSkillText = renderedActiveSkill.text,
+      recentToolObservationsText = recentToolObservationLayer?.text.orEmpty(),
       pruningSummary = prunedTranscript.summary,
       compactionSummary = compactionSummary,
       toolDefinitions = input.toolDefinitions,
@@ -78,6 +81,9 @@ class ContextManager(
         invalidSkillCount = input.sessionContext.skillInventory.invalidSkillCount,
         skillInventoryTrace = input.sessionContext.skillInventory.trace,
         activeSkillTrace = renderedActiveSkill.trace,
+        recentToolObservationCount = recentToolObservationLayer?.observationCount ?: 0,
+        omittedRecentToolObservationCount = recentToolObservationLayer?.omittedObservationCount ?: 0,
+        recentToolObservationLayerIncluded = recentToolObservationLayer != null,
       ),
     )
   }

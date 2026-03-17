@@ -17,8 +17,10 @@ P4A_BUILD_PYTHON_PACKAGES="${P4A_BUILD_PYTHON_PACKAGES:-Cython<3}"
 P4A_ANDROID_SDK_ROOT="${P4A_ANDROID_SDK_ROOT:-$ROOT_DIR/.android-sdk-linux}"
 P4A_PRIVATE_DIR="${P4A_PRIVATE_DIR:-$ROOT_DIR/.p4a-private}"
 P4A_ANDROID_SDK_SEED="${P4A_ANDROID_SDK_SEED:-}"
-P4A_GRADLE_USER_HOME="${P4A_GRADLE_USER_HOME:-$HOME/.gradle-opencray-p4a}"
-P4A_HOOK_PATH="${P4A_HOOK_PATH:-$ROOT_DIR/tools/android_python_runtime_p4a/p4a_build_hook.py}"
+P4A_GRADLE_USER_HOME_BASE="${P4A_GRADLE_USER_HOME_BASE:-$HOME/.gradle-opencray-p4a}"
+P4A_GRADLE_USER_HOME="${P4A_GRADLE_USER_HOME:-}"
+P4A_HOOK_PATH="${P4A_HOOK_PATH:-$ROOT_DIR/.p4a-generated/p4a_build_hook.py}"
+P4A_GRADLE_DIST_ZIP="${P4A_GRADLE_DIST_ZIP:-$ROOT_DIR/tools/android_python_runtime_p4a/gradle/gradle-8.0.2-all.zip}"
 P4A_ANDROID_API="${P4A_ANDROID_API:-33}"
 P4A_BUILD_TOOLS_VERSION="${P4A_BUILD_TOOLS_VERSION:-}"
 P4A_NDK_VERSION="${P4A_NDK_VERSION:-}"
@@ -462,11 +464,130 @@ export_android_toolchain() {
 }
 
 export_gradle_env() {
+  if [[ -z "$P4A_GRADLE_USER_HOME" ]]; then
+    local run_tag=""
+    run_tag="$(date +%Y%m%d-%H%M%S)-$$"
+    P4A_GRADLE_USER_HOME="$P4A_GRADLE_USER_HOME_BASE/$run_tag"
+  fi
+
   mkdir -p "$P4A_GRADLE_USER_HOME"
   export CI="${CI:-true}"
   export TERM="dumb"
   export GRADLE_USER_HOME="$P4A_GRADLE_USER_HOME"
   export GRADLE_OPTS="${GRADLE_OPTS:-} -Dorg.gradle.console=plain -Dorg.gradle.daemon=false -Dorg.gradle.vfs.watch=false -Dorg.gradle.parallel=false -Dorg.gradle.workers.max=2"
+  if [[ -n "${P4A_GRADLE_DIST_URI:-}" ]]; then
+    export P4A_GRADLE_DIST_URI
+    log_step "Using local Gradle distribution $P4A_GRADLE_DIST_URI"
+  fi
+  log_step "Using Gradle user home $GRADLE_USER_HOME"
+}
+
+resolve_gradle_dist_uri() {
+  if [[ -z "$P4A_GRADLE_DIST_ZIP" ]]; then
+    return
+  fi
+
+  if [[ ! -f "$P4A_GRADLE_DIST_ZIP" ]]; then
+    if [[ "$P4A_GRADLE_DIST_ZIP" == "$ROOT_DIR/tools/android_python_runtime_p4a/gradle/gradle-8.0.2-all.zip" ]]; then
+      return
+    fi
+    echo "Configured P4A_GRADLE_DIST_ZIP does not exist: $P4A_GRADLE_DIST_ZIP" >&2
+    exit 1
+  fi
+
+  local resolved_zip=""
+  resolved_zip="$(cd "$(dirname "$P4A_GRADLE_DIST_ZIP")" && pwd)/$(basename "$P4A_GRADLE_DIST_ZIP")"
+  export P4A_GRADLE_DIST_URI="file://$resolved_zip"
+}
+
+write_p4a_hook_file() {
+  local hook_dir
+  hook_dir="$(dirname "$P4A_HOOK_PATH")"
+  mkdir -p "$hook_dir"
+  cat > "$P4A_HOOK_PATH" <<'EOF'
+from __future__ import annotations
+
+from pathlib import Path
+
+
+GRADLE_WRAPPER_NAME = "gradlew"
+GRADLE_WRAPPER_BACKUP_NAME = "gradlew.opencray-original"
+GRADLE_PROPERTIES_NAME = "gradle.properties"
+
+
+def _rewrite_gradlew(dist_dir: Path) -> None:
+    wrapper_path = dist_dir / GRADLE_WRAPPER_NAME
+    backup_path = dist_dir / GRADLE_WRAPPER_BACKUP_NAME
+    if not wrapper_path.exists():
+        return
+
+    if not backup_path.exists():
+        wrapper_path.rename(backup_path)
+
+    wrapper_content = """#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export CI="${CI:-true}"
+export TERM="${TERM:-dumb}"
+exec "$SCRIPT_DIR/gradlew.opencray-original" --no-daemon --stacktrace --info --console=plain "$@"
+"""
+    wrapper_path.write_text(wrapper_content, encoding="utf-8")
+    wrapper_path.chmod(0o755)
+
+
+def _merge_gradle_properties(dist_dir: Path) -> None:
+    properties_path = dist_dir / GRADLE_PROPERTIES_NAME
+    desired = {
+        "org.gradle.console": "plain",
+        "org.gradle.daemon": "false",
+        "org.gradle.parallel": "false",
+        "org.gradle.vfs.watch": "false",
+        "org.gradle.workers.max": "2",
+    }
+
+    current: dict[str, str] = {}
+    if properties_path.exists():
+        for raw_line in properties_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            current[key.strip()] = value.strip()
+
+    current.update(desired)
+    serialized = "".join(f"{key}={value}\n" for key, value in sorted(current.items()))
+    properties_path.write_text(serialized, encoding="utf-8")
+
+
+def _override_wrapper_distribution(dist_dir: Path) -> None:
+    distribution_uri = __import__("os").environ.get("P4A_GRADLE_DIST_URI", "").strip()
+    if not distribution_uri:
+        return
+
+    wrapper_properties = dist_dir / "gradle" / "wrapper" / "gradle-wrapper.properties"
+    if not wrapper_properties.exists():
+        return
+
+    lines = wrapper_properties.read_text(encoding="utf-8").splitlines()
+    rewritten = []
+    replaced = False
+    for line in lines:
+        if line.startswith("distributionUrl="):
+            rewritten.append(f"distributionUrl={distribution_uri}")
+            replaced = True
+        else:
+            rewritten.append(line)
+    if not replaced:
+        rewritten.append(f"distributionUrl={distribution_uri}")
+    wrapper_properties.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+
+
+def before_apk_assemble(toolchain) -> None:
+    dist_dir = Path.cwd()
+    _rewrite_gradlew(dist_dir)
+    _merge_gradle_properties(dist_dir)
+    _override_wrapper_distribution(dist_dir)
+EOF
 }
 
 prepare_private_sources() {
@@ -503,6 +624,49 @@ clean_broken_hostpython_cache() {
   rm -rf "$hostpython_root"
 }
 
+copy_built_aar_to_dist() {
+  local dist_name="$1"
+  local source_candidates=()
+  local latest_aar=""
+  local source_path=""
+
+  while IFS= read -r source_path; do
+    source_candidates+=("$source_path")
+  done < <(
+    find \
+      "$ROOT_DIR" \
+      "$STORAGE_DIR/dists/$dist_name" \
+      "$STORAGE_DIR/build" \
+      -type f -name '*.aar' -print 2>/dev/null
+  )
+
+  if [[ ${#source_candidates[@]} -eq 0 ]]; then
+    echo "No AAR output was found after p4a build." >&2
+    exit 1
+  fi
+
+  latest_aar="$(
+    printf '%s\n' "${source_candidates[@]}" \
+      | while IFS= read -r candidate; do
+          printf '%s\t%s\n' "$(stat -c '%Y' "$candidate")" "$candidate"
+        done \
+      | sort -nr \
+      | head -n 1 \
+      | cut -f2-
+  )"
+
+  if [[ -z "$latest_aar" || ! -f "$latest_aar" ]]; then
+    echo "No usable AAR output was found after p4a build." >&2
+    exit 1
+  fi
+
+  mkdir -p "$DIST_DIR"
+  rm -f "$DIST_DIR"/*.aar
+  log_step "Copying runtime AAR from $latest_aar"
+  cp -f "$latest_aar" "$DIST_DIR/"
+  echo "Copied runtime AAR to $DIST_DIR/$(basename "$latest_aar")"
+}
+
 run_p4a() {
   if [[ -n "$P4A_BIN" ]]; then
     "$P4A_BIN" "$@"
@@ -521,6 +685,7 @@ ensure_python_for_android "$P4A_PYTHON_BIN"
 ensure_build_python_packages "$P4A_PYTHON_BIN"
 export PATH="$(dirname "$P4A_PYTHON_BIN"):$PATH"
 hash -r
+resolve_gradle_dist_uri
 
 JAVA_HOME="$(resolve_java_home)"
 ANDROID_SDK_SEED="$(resolve_android_sdk_seed)"
@@ -533,6 +698,7 @@ export_android_toolchain "$P4A_ANDROID_SDK_ROOT" "$NDK_VERSION" "$JAVA_HOME"
 export_gradle_env
 install_android_sdk_packages "$P4A_ANDROID_SDK_ROOT" "$BUILD_TOOLS_VERSION" "$NDK_VERSION" "$P4A_ANDROID_API"
 clean_broken_hostpython_cache
+write_p4a_hook_file
 prepare_private_sources "$P4A_PRIVATE_DIR"
 
 mkdir -p "$DIST_DIR"
@@ -552,16 +718,4 @@ run_p4a aar \
   --service "$SERVICE_ID:$SERVICE_ENTRY" \
   --arch "$ARCH"
 
-LATEST_AAR="$(
-  find "$ROOT_DIR" "$STORAGE_DIR" -type f -name '*.aar' -printf '%T@ %p\n' 2>/dev/null \
-    | sort -nr \
-    | head -n 1 \
-    | cut -d' ' -f2-
-)"
-if [[ -z "$LATEST_AAR" ]]; then
-  echo "No AAR output was found after p4a build." >&2
-  exit 1
-fi
-
-cp "$LATEST_AAR" "$DIST_DIR/"
-echo "Copied runtime AAR to $DIST_DIR/$(basename "$LATEST_AAR")"
+copy_built_aar_to_dist "$DIST_NAME"

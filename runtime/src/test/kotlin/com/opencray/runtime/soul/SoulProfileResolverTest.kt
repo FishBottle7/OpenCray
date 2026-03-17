@@ -22,6 +22,7 @@ class SoulProfileResolverTest {
     assertEquals("Night Shift", profile.displayName)
     assertEquals(SoulTone.BUILDER, profile.tone)
     assertEquals(SoulVerbosity.TERSE, profile.verbosity)
+    assertEquals(SoulPlasticity.LOW, profile.plasticity)
     assertEquals(UserRelationshipStyle.DIRECT, profile.userRelationshipStyle)
     assertEquals(RiskTolerance.BALANCED, profile.riskTolerance)
     assertEquals(ToolUseBias.TOOL_FORWARD, profile.toolUseBias)
@@ -36,6 +37,7 @@ class SoulProfileResolverTest {
         extensions = mapOf(
           "voice" to " calm but direct ",
           "verbosity" to "expansive",
+          "plasticity" to "high",
           "risk_tolerance" to "bold",
           "tool_use_bias" to "tool forward",
           "escalation_rules" to "Log the trade-offs.\nReconfirm destructive steps.",
@@ -48,6 +50,7 @@ class SoulProfileResolverTest {
     requireNotNull(profile)
     assertEquals("calm but direct", profile.voice)
     assertEquals(SoulVerbosity.EXPANSIVE, profile.verbosity)
+    assertEquals(SoulPlasticity.HIGH, profile.plasticity)
     assertEquals(RiskTolerance.BOLD, profile.riskTolerance)
     assertEquals(ToolUseBias.TOOL_FORWARD, profile.toolUseBias)
     assertTrue(profile.escalationRules.contains("Log the trade-offs."))

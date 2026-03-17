@@ -114,4 +114,61 @@ class P4aPythonRuntimeTest {
     assertEquals(100L, result.startedAtEpochMs)
     assertEquals(140L, result.finishedAtEpochMs)
   }
+
+  @Test
+  fun execUsesProvidedRequestIdAndCancelPathInBridgeRequest() {
+    val runtimeRoot = temporaryFolder.newFolder("python-runtime-request-id").toPath()
+    val workspaceRoot = temporaryFolder.newFolder("workspace-request-id").toPath()
+    var capturedRequest: P4aPythonRuntime.P4aPythonLaunchRequest? = null
+    val launcher = object : P4aPythonRuntime.P4aPythonRuntimeLauncher {
+      override fun launch(
+        request: P4aPythonRuntime.P4aPythonLaunchRequest,
+      ): P4aPythonRuntime.P4aPythonRuntimeLaunchResult {
+        capturedRequest = request
+        val bridgeResult = P4aPythonRuntime.P4aPythonExecBridgeResult(
+          requestId = request.bridgeRequest.requestId,
+          taskId = request.bridgeRequest.taskId,
+          status = "success",
+          exitCode = 0,
+          stdout = "python ok",
+          stderr = "",
+          startedAtEpochMs = 200L,
+          finishedAtEpochMs = 240L,
+        )
+        Files.write(
+          request.resultPath,
+          json.encodeToString(bridgeResult).toByteArray(StandardCharsets.UTF_8),
+        )
+        return P4aPythonRuntime.P4aPythonRuntimeLaunchResult.Dispatched()
+      }
+    }
+    val runtime = P4aPythonRuntime.fromRuntimeRoot(runtimeRoot = runtimeRoot, launcher = launcher, json = json)
+
+    val result = runtime.exec(
+      PythonExecRequest(
+        taskId = "task-request-id",
+        workspaceRoot = workspaceRoot,
+        scriptPath = workspaceRoot.resolve("demo.py"),
+        timeoutMs = 8_000L,
+        requestId = "proc-fixed-id",
+      ),
+    )
+
+    val launchRequest = checkNotNull(capturedRequest)
+    assertEquals("proc-fixed-id", launchRequest.bridgeRequest.requestId)
+    assertEquals(runtimeRoot.resolve("cancels").resolve("proc-fixed-id.cancel").toString(), launchRequest.bridgeRequest.cancelPath)
+    assertEquals("proc-fixed-id", result.metadata["requestId"])
+    assertEquals(runtimeRoot.resolve("cancels").resolve("proc-fixed-id.cancel").toString(), result.metadata["cancelPath"])
+  }
+
+  @Test
+  fun requestCancellationWritesCancelMarkerFile() {
+    val runtimeRoot = temporaryFolder.newFolder("python-runtime-cancel-marker").toPath()
+    val runtime = P4aPythonRuntime.fromRuntimeRoot(runtimeRoot = runtimeRoot)
+
+    val accepted = runtime.requestCancellation("proc-cancel-marker")
+
+    assertTrue(accepted)
+    assertTrue(Files.exists(runtime.cancelPathFor("proc-cancel-marker")))
+  }
 }

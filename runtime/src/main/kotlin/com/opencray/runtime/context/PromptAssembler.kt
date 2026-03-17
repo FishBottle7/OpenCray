@@ -53,6 +53,11 @@ class PromptAssembler {
         content = input.activeSkillText,
       )
       addLayer(
+        name = "Recent Workspace Observations",
+        kind = PromptLayerKind.CONTEXT,
+        content = input.recentToolObservationsText,
+      )
+      addLayer(
         name = "Pruning Summary",
         kind = PromptLayerKind.CONTEXT,
         content = input.pruningSummary?.text.orEmpty(),
@@ -110,6 +115,9 @@ class PromptAssembler {
         invalidSkillCount = input.report.invalidSkillCount,
         skillInventoryTrace = input.report.skillInventoryTrace,
         activeSkillTrace = input.report.activeSkillTrace,
+        recentToolObservationCount = input.report.recentToolObservationCount,
+        omittedRecentToolObservationCount = input.report.omittedRecentToolObservationCount,
+        recentToolObservationLayerIncluded = input.report.recentToolObservationLayerIncluded,
       ),
     )
   }
@@ -145,6 +153,7 @@ class PromptAssembler {
     appendLine("""{"type":"progress","text":"Scanning README and Gradle files before editing."}""")
     appendLine("""{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}""")
     appendLine("""{"type":"tool_call","tool_name":"Bash","arguments":{"command":"git status"}}""")
+    appendLine("""{"type":"tool_call","tool_name":"python_exec","arguments":{"script_path":"scripts/run.py","args":["--flag"]}}""")
     appendLine("""{"type":"tool_call","tool_name":"WebFetch","arguments":{"url":"https://example.com"}}""")
     appendLine("""{"type":"tool_call","tool_name":"Write","reason":"Need to update the workspace before answering.","arguments":{"file_path":"notes.txt","content":"..."}}""")
     appendLine("""{"actions":[{"type":"progress","text":"Scanning README and Gradle files before editing."},{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}]}""")
@@ -156,10 +165,12 @@ class PromptAssembler {
     appendLine("If you return type=tool_call, the runtime will execute it, append the tool result, and ask you for the next action.")
     appendLine("If you return only type=progress, the runtime will record it and ask you for the next action on the following turn.")
     appendLine("If you need multiple tools, call only the next tool now. After each tool result the runtime will ask for the next action.")
-    appendLine("Use Bash for one-off shell commands. Bash runs through the host shell, so use PowerShell syntax on Windows hosts.")
+    appendLine("Use Bash for one-off shell commands that do not require Python. Bash runs through the host shell, so use PowerShell syntax on Windows hosts.")
     appendLine("For current information from the internet, prefer WebSearch when a search provider is configured, and use WebFetch when you already have a URL to read.")
     appendLine("For commands you want to manage across multiple turns, prefer ProcessStart and then use ProcessRead or ProcessWait.")
-    appendLine("For long-running Python scripts, prefer ProcessStart with script_path instead of python_exec.")
+    appendLine("For workspace-local Python scripts, prefer python_exec instead of Bash.")
+    appendLine("If you need to manage a long-running Python task across multiple turns, use ProcessStart with script_path only when the runtime supports managed Python process launches.")
+    appendLine("Do not use Bash to invoke python, python3, or py for workspace scripts.")
     if (hasImportTool) {
       appendLine("When task metadata includes approvedReadRoots, you may inspect those roots with absolute paths.")
       appendLine("Approved external roots are read-only. Use ImportFile to copy files or folders into the writable workspace before editing, deleting, or other mutating operations.")

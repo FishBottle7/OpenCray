@@ -9,6 +9,7 @@ import com.opencray.runtime.memory.MemorySoulExtensionKeys
 import com.opencray.runtime.memory.SoulMemoryIntentInterpretation
 import com.opencray.runtime.memory.SoulMemoryIntentRequest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -65,7 +66,17 @@ class LiteLlmSoulMemoryIntentInterpreterTest {
     assertEquals(2, success.intents.size)
     assertEquals("gpt-4o-mini", providerClient.lastRequest?.route?.model)
     assertEquals("Bearer test-key", providerClient.lastRequest?.request?.authHeaders?.get("Authorization"))
-    assertTrue(providerClient.lastRequest?.request?.prompt.orEmpty().contains("以后叫你小白"))
+    val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
+    assertTrue(prompt.contains("以后叫你小白"))
+    assertTrue(prompt.contains("relationship_style_profile is for durable relationship evolution"))
+    assertTrue(prompt.contains("agent_style_profile is only for current-run acting mode"))
+    assertTrue(prompt.contains("agent_verbosity always uses session scope"))
+    assertTrue(prompt.contains("Never output soul_risk_tolerance or soul_tool_use_bias"))
+    assertFalse(
+      prompt.contains(
+        "soul_display_name, soul_voice, soul_tone, soul_verbosity, soul_user_relationship_style, soul_risk_tolerance, soul_tool_use_bias",
+      ),
+    )
     val displayNameIntent = success.intents.first { intent ->
       intent.preferenceKey == MemoryPreferenceKeys.AGENT_DISPLAY_NAME
     }

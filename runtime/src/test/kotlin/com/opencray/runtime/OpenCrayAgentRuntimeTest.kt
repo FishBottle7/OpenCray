@@ -423,14 +423,14 @@ class OpenCrayAgentRuntimeTest {
                 name = "AGENTS.md",
                 relativePath = "AGENTS.md",
                 content = "# Agents\nFollow the workspace instructions.",
-                sourceCharCount = 42,
+                sourceCharCount = 44,
                 truncated = false,
               ),
               BootstrapSnippet(
                 name = "PROJECT.md",
                 relativePath = "PROJECT.md",
                 content = "# Project\nThis repo uses Gradle.",
-                sourceCharCount = 31,
+                sourceCharCount = 80,
                 truncated = true,
               ),
             ),
@@ -444,8 +444,8 @@ class OpenCrayAgentRuntimeTest {
                 BootstrapFileTrace(
                   name = "AGENTS.md",
                   relativePath = "AGENTS.md",
-                  sourceCharCount = 42,
-                  injectedCharCount = 42,
+                  sourceCharCount = 44,
+                  injectedCharCount = 44,
                   truncated = false,
                 ),
                 BootstrapFileTrace(
@@ -475,7 +475,7 @@ class OpenCrayAgentRuntimeTest {
     assertEquals("0", result.metadata["contextBootstrapOmittedFileCount"])
     assertEquals("1", result.metadata["contextBootstrapTruncatedFileCount"])
     assertEquals(
-      "AGENTS.md@AGENTS.md[42|42|false];PROJECT.md@PROJECT.md[80|31|true]",
+      "AGENTS.md@AGENTS.md[44|44|false];PROJECT.md@PROJECT.md[80|31|true]",
       result.metadata["contextBootstrapFileSummary"],
     )
     val systemPrompt = requireNotNull(gateway.requests.single().systemPrompt)

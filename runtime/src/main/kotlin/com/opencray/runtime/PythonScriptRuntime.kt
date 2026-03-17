@@ -11,3 +11,11 @@ import com.opencray.core.contracts.ExecutionResult
 interface PythonScriptRuntime {
   fun exec(request: PythonExecRequest): ExecutionResult
 }
+
+/**
+ * Optional capability for runtime backends that can cooperatively cancel an in-flight Python
+ * execution identified by a stable request id.
+ */
+interface CancellablePythonScriptRuntime {
+  fun requestCancellation(requestId: String): Boolean
+}

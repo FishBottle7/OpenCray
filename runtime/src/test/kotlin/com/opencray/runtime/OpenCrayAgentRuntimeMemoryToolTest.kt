@@ -79,8 +79,13 @@ class OpenCrayAgentRuntimeMemoryToolTest {
     assertEquals(3, gateway.requests.size)
     assertTrue(gateway.requests[0].prompt.contains("search projected memory first instead of guessing"))
     assertTrue(gateway.requests[0].prompt.contains("memory_search"))
-    assertTrue(gateway.requests[1].prompt.contains(expectedPath))
-    assertTrue(gateway.requests[1].prompt.contains("score="))
+    assertTrue(
+      gateway.requests[1].prompt.contains(expectedPath) ||
+        gateway.requests[1].prompt.contains("MEMORY.md"),
+    )
+    assertTrue(gateway.requests[1].prompt.contains("Found 1 projected memory match(es)."))
+    assertTrue(gateway.requests[1].prompt.contains("\"tool_name\": \"memory_search\""))
+    assertTrue(gateway.requests[2].prompt.contains("\"tool_name\": \"memory_get\""))
     assertTrue(gateway.requests[2].prompt.contains("## mem-workspace"))
     assertTrue(gateway.requests[2].prompt.contains("kind: project_fact"))
     val retrievalEvents = eventSink.events.filterIsInstance<OpenCrayMemoryRetrievalEvent>()
@@ -88,10 +93,12 @@ class OpenCrayAgentRuntimeMemoryToolTest {
     assertEquals("search", retrievalEvents[0].operation)
     assertEquals("memory_search", retrievalEvents[0].toolName)
     assertEquals(listOf("gradle", "wrapper", "repo", "root"), retrievalEvents[0].queryTerms)
+    assertEquals(listOf("mem-workspace"), retrievalEvents[0].recordIds)
     assertEquals(listOf(expectedPath), retrievalEvents[0].paths)
     assertTrue(retrievalEvents[0].lineRanges.isNotEmpty())
     assertEquals("get", retrievalEvents[1].operation)
     assertEquals("memory_get", retrievalEvents[1].toolName)
+    assertEquals(listOf("mem-workspace"), retrievalEvents[1].recordIds)
     assertEquals(expectedPath, retrievalEvents[1].path)
     assertEquals(5, retrievalEvents[1].fromLine)
     assertEquals(4, retrievalEvents[1].returnedLineCount)
@@ -156,6 +163,7 @@ class OpenCrayAgentRuntimeMemoryToolTest {
     assertEquals("search", retrievalEvent.operation)
     assertEquals("memory_search", retrievalEvent.toolName)
     assertEquals(listOf("gradle", "wrapper", "repo", "root"), retrievalEvent.queryTerms)
+    assertEquals(listOf("mem-workspace"), retrievalEvent.recordIds)
     assertEquals(1, retrievalEvent.resultCount)
   }
 

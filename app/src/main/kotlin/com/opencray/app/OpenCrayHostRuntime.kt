@@ -67,6 +67,8 @@ import com.opencray.persistence.model.ChatTranscriptMessageEntry
 import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.model.SoulRecord
+import com.opencray.runtime.AgentToolCall
+import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayAssistantEvent
@@ -74,8 +76,11 @@ import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
 import com.opencray.runtime.OpenCrayProgressEvent
+import com.opencray.runtime.OpenCrayRunLifecyclePhase
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.context.RuntimeConversationMessage
+import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.RuntimeSoulProfile
 import com.opencray.policy.SafetyAutomationMode
 import com.opencray.policy.SafetySettingsMetadataKeys
@@ -88,12 +93,17 @@ import com.opencray.runtime.soul.RuntimeSoulProfileSeedFactory
 import com.opencray.runtime.soul.SoulProfile
 import com.opencray.runtime.soul.SoulProfileExtensionKeys
 import com.opencray.runtime.soul.SoulProfileResolver
+import java.io.File
 import java.nio.file.Path
 import java.util.ArrayDeque
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.CountDownLatch
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import org.opencray.app.R
 
 internal class OpenCrayHostRuntime private constructor(
@@ -117,6 +127,7 @@ internal class OpenCrayHostRuntime private constructor(
   },
   private val workspaceSnapshotProvider: () -> Map<String, Any?>,
   private val sessionRuntimeManager: AgentSessionRuntimeManager,
+  private val transcriptMessagesProvider: (String) -> List<RuntimeConversationMessage> = { emptyList() },
   private val approvalRegistry: AgentTaskApprovalRegistry,
   private val memoryIngestionCoordinator: ChatMemoryIngestionCoordinator? = null,
   private val approvalReplayRecorder: (String, String?, Boolean) -> Unit = { _, _, _ -> },
@@ -722,6 +733,16 @@ internal class OpenCrayHostRuntime private constructor(
     val chatState = chatSessionStore.loadState()
     val activeSession = chatState.activeSession
     val visibleMessages = activeSession.messages.filter(::isVisibleChatMessage)
+    val runs = sessionRuntimeManager.forSession(activeSession.sessionId).listRuns()
+    val recentEvents = mergedRuntimeEventsLocked(
+      sessionId = activeSession.sessionId,
+      runs = runs,
+    )
+    val renderedMessages = renderedChatMessagesLocked(
+      visibleMessages = visibleMessages,
+      runs = runs,
+      runtimeEvents = recentEvents,
+    )
     val pendingCount = pendingTaskCount(activeSession.sessionId)
     val pendingApprovals = pendingApprovalsForSession(activeSession.sessionId)
     val activeSessionTitle = displaySessionTitle(activeSession.title)
@@ -732,7 +753,7 @@ internal class OpenCrayHostRuntime private constructor(
       "composerPlaceholder" to strings.composerPlaceholder,
       "summary" to mapOf(
         "title" to activeSessionTitle,
-        "badge" to strings.chatMessagesBadge(visibleMessages.size),
+        "badge" to strings.chatMessagesBadge(renderedMessages.size),
         "body" to if (pendingApprovals.isNotEmpty()) {
           strings.chatSummaryApprovalRequired
         } else if (pendingCount > 0) {
@@ -743,7 +764,7 @@ internal class OpenCrayHostRuntime private constructor(
           strings.chatSummaryRestored
         },
       ),
-      "messages" to visibleMessages.map(::chatMessageToMap),
+      "messages" to renderedMessages,
       "pendingApprovals" to pendingApprovals.map { approval ->
         mapOf(
           "runId" to approval.runId,
@@ -783,7 +804,11 @@ internal class OpenCrayHostRuntime private constructor(
           )
         },
       ),
-      "runtimeActivity" to runtimeActivitySnapshotLocked(activeSession.sessionId),
+      "runtimeActivity" to runtimeActivitySnapshotMap(
+        sessionId = activeSession.sessionId,
+        runs = runs,
+        recentEvents = recentEvents,
+      ),
       "isInputEnabled" to true,
     )
   }
@@ -885,6 +910,126 @@ internal class OpenCrayHostRuntime private constructor(
     )
   }
 
+  fun loadMemoryDebugLinksSnapshot(): Map<String, Any?> = synchronized(lock) {
+    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
+    val workspaceId = currentWorkspaceIdLocked()
+    val observedAtEpochMs = System.currentTimeMillis()
+    val records = personalizationLocalStore
+      ?.listMemoryRecords()
+      .orEmpty()
+      .sortedWith(
+        compareByDescending<MemoryRecord> { record -> record.updatedAtEpochMs }
+          .thenBy { record -> record.id },
+      )
+    val allRuns = chatSessionStore.loadState().sessions
+      .mapTo(linkedSetOf()) { session -> session.sessionId }
+      .flatMap { sessionId ->
+        sessionRuntimeManager.forSession(sessionId).listRuns()
+      }
+    val runsByTaskId = allRuns.associateBy(AgentRunSnapshot::taskId)
+    val runsById = allRuns.associateBy(AgentRunSnapshot::runId)
+    val promptRecallsByRecordId = linkedMapOf<String, LinkedHashMap<String, Map<String, Any?>>>()
+    val toolRetrievalsByRecordId = linkedMapOf<String, LinkedHashMap<String, Map<String, Any?>>>()
+    val maintenanceByRecordId = linkedMapOf<String, LinkedHashMap<String, Map<String, Any?>>>()
+
+    allRuns.forEach { run ->
+      parseSelectedMemoryTrace(run.resultMetadata["contextMemorySelectedSummary"].orEmpty())
+        .forEach { selected ->
+          val recordId = selected["id"] as? String ?: return@forEach
+          rememberDebugLink(
+            target = promptRecallsByRecordId,
+            recordId = recordId,
+            uniqueKey = "prompt:${run.runId}:$recordId",
+            payload = buildMap {
+              put("occurredAtEpochMs", run.updatedAtEpochMs)
+              put("run", debugRunLinkToMap(run))
+              selected["score"]?.let { score -> put("score", score) }
+              val matchedTerms = selected["matchedTerms"] as? List<*>
+              if (!matchedTerms.isNullOrEmpty()) {
+                put("matchedTerms", matchedTerms)
+              }
+            },
+          )
+        }
+      splitDebugCsv(run.resultMetadata["contextMemoryFlushWrittenRecordIds"])
+        .forEach { recordId ->
+          rememberDebugLink(
+            target = maintenanceByRecordId,
+            recordId = recordId,
+            uniqueKey = "flush:${run.runId}:$recordId",
+            payload = buildMap {
+              put("action", "flush_written")
+              put("occurredAtEpochMs", run.updatedAtEpochMs)
+              put("run", debugRunLinkToMap(run))
+            },
+          )
+        }
+      (run.lastEvent as? OpenCrayMemoryWriteEvent)
+        ?.let { event ->
+          rememberMemoryWriteActions(
+            target = maintenanceByRecordId,
+            run = run,
+            event = event,
+          )
+        }
+      (run.lastEvent as? OpenCrayMemoryRetrievalEvent)
+        ?.let { event ->
+          rememberMemoryRetrievalLinks(
+            target = toolRetrievalsByRecordId,
+            run = run,
+            event = event,
+          )
+        }
+    }
+
+    runtimeEventsBySession.values
+      .flatten()
+      .forEach { event ->
+        when (event) {
+          is OpenCrayMemoryWriteEvent -> {
+            val run = runsById[event.runId] ?: return@forEach
+            rememberMemoryWriteActions(
+              target = maintenanceByRecordId,
+              run = run,
+              event = event,
+            )
+          }
+
+          is OpenCrayMemoryRetrievalEvent -> {
+            val run = runsById[event.runId] ?: return@forEach
+            rememberMemoryRetrievalLinks(
+              target = toolRetrievalsByRecordId,
+              run = run,
+              event = event,
+            )
+          }
+
+          else -> Unit
+        }
+      }
+
+    mapOf(
+      "sessionId" to activeSessionId,
+      "workspaceId" to workspaceId,
+      "observedAtEpochMs" to observedAtEpochMs,
+      "records" to records.map { record ->
+        val metadata = debugMemoryMetadata(record)
+        mapOf(
+          "recordId" to record.id,
+          "sourceSessionId" to metadata?.sourceSessionId.orEmpty(),
+          "sourceTaskId" to metadata?.sourceTaskId.orEmpty(),
+          "sourceRun" to metadata
+            ?.sourceTaskId
+            ?.let(runsByTaskId::get)
+            ?.let(::debugRunLinkToMap),
+          "promptRecalls" to finalizeDebugLinks(promptRecallsByRecordId[record.id]),
+          "toolRetrievals" to finalizeDebugLinks(toolRetrievalsByRecordId[record.id]),
+          "maintenanceActions" to finalizeDebugLinks(maintenanceByRecordId[record.id]),
+        )
+      },
+    )
+  }
+
   fun createChatSession() {
     val sessionId = synchronized(lock) {
       val createdState = chatSessionStore.createSession()
@@ -917,6 +1062,24 @@ internal class OpenCrayHostRuntime private constructor(
       copiedState.activeSession.sessionId
     }
     repairTerminalReplay(copiedSessionId)
+    emitChatSnapshot()
+    emitChatRuntimeSnapshot()
+  }
+
+  fun branchChatSessionFromMessage(
+    sessionId: String,
+    messageId: String,
+  ) {
+    val branchedSessionId = synchronized(lock) {
+      if (!hasSessionLocked(sessionId) || messageId.isBlank()) {
+        return@synchronized null
+      }
+      val branchedState = chatSessionStore.branchSessionFromMessage(sessionId, messageId)
+      clearUnreadCountLocked(branchedState.activeSession.sessionId)
+      sessionRuntimeManager.forSession(branchedState.activeSession.sessionId).resume()
+      branchedState.activeSession.sessionId
+    } ?: return
+    repairTerminalReplay(branchedSessionId)
     emitChatSnapshot()
     emitChatRuntimeSnapshot()
   }
@@ -1325,7 +1488,22 @@ internal class OpenCrayHostRuntime private constructor(
 
   private fun runtimeActivitySnapshotLocked(sessionId: String): Map<String, Any?> {
     val runs = sessionRuntimeManager.forSession(sessionId).listRuns()
-    val recentEvents = runtimeEventsBySession[sessionId]?.toList().orEmpty()
+    val recentEvents = mergedRuntimeEventsLocked(
+      sessionId = sessionId,
+      runs = runs,
+    )
+    return runtimeActivitySnapshotMap(
+      sessionId = sessionId,
+      runs = runs,
+      recentEvents = recentEvents,
+    )
+  }
+
+  private fun runtimeActivitySnapshotMap(
+    sessionId: String,
+    runs: List<AgentRunSnapshot>,
+    recentEvents: List<OpenCrayAgentRunEvent>,
+  ): Map<String, Any?> {
     return mapOf(
       "sessionId" to sessionId,
       "activeRuns" to runs
@@ -1339,6 +1517,373 @@ internal class OpenCrayHostRuntime private constructor(
         },
       "events" to recentEvents.map(::runtimeEventToMap),
     )
+  }
+
+  private fun renderedChatMessagesLocked(
+    visibleMessages: List<ChatTranscriptMessageEntry>,
+    runs: List<AgentRunSnapshot>,
+    runtimeEvents: List<OpenCrayAgentRunEvent>,
+  ): List<Map<String, Any?>> {
+    if (runtimeEvents.none { event -> event is OpenCrayProgressEvent }) {
+      return visibleMessages.map(::chatMessageToMap)
+    }
+    val projectedMessages = projectedProgressMessagesForChatLocked(
+      runs = runs,
+      runtimeEvents = runtimeEvents,
+    )
+    if (projectedMessages.isEmpty()) {
+      return visibleMessages.map(::chatMessageToMap)
+    }
+    val visibleMessageIds = visibleMessages
+      .mapTo(linkedSetOf(), ChatTranscriptMessageEntry::messageId)
+    val projectedByAnchor = projectedMessages
+      .filter { projection -> projection.anchorMessageId != null }
+      .groupBy(ProjectedRuntimeChatMessage::anchorMessageId)
+    val merged = ArrayList<Map<String, Any?>>(visibleMessages.size + projectedMessages.size)
+    visibleMessages.forEach { message ->
+      projectedByAnchor[message.messageId]?.forEach { projection ->
+        merged += projection.snapshot
+      }
+      merged += chatMessageToMap(message)
+    }
+    projectedMessages
+      .filter { projection -> projection.anchorMessageId !in visibleMessageIds }
+      .forEach { projection ->
+        merged += projection.snapshot
+      }
+    return merged
+  }
+
+  private fun projectedProgressMessagesForChatLocked(
+    runs: List<AgentRunSnapshot>,
+    runtimeEvents: List<OpenCrayAgentRunEvent>,
+  ): List<ProjectedRuntimeChatMessage> {
+    val pendingMessageIdByRunId = linkedMapOf<String, String>()
+    val pendingMessageIdByTaskId = linkedMapOf<String, String>()
+    runs.forEach { run ->
+      val pendingMessageId = run.pendingMessageId
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: return@forEach
+      pendingMessageIdByRunId[run.runId] = pendingMessageId
+      pendingMessageIdByTaskId[run.taskId] = pendingMessageId
+    }
+    return runtimeEvents
+      .filterIsInstance<OpenCrayProgressEvent>()
+      .sortedBy(OpenCrayProgressEvent::emittedAtEpochMs)
+      .mapNotNull { event ->
+        val text = chatProgressText(event)
+        if (text.isBlank()) {
+          return@mapNotNull null
+        }
+        ProjectedRuntimeChatMessage(
+          anchorMessageId = pendingMessageIdByRunId[event.runId]
+            ?: pendingMessageIdByTaskId[event.taskId],
+          snapshot = chatMessageSnapshotMap(
+            messageId = runtimeProgressMessageId(event),
+            kind = "inbound",
+            text = text,
+            isEphemeral = true,
+          ),
+        )
+      }
+  }
+
+  private fun chatProgressText(event: OpenCrayProgressEvent): String {
+    val stage = event.stage?.trim().orEmpty()
+    val text = event.text.trim()
+    return when {
+      stage.isEmpty() -> text
+      text.isEmpty() -> stage
+      else -> "$stage\n\n$text"
+    }
+  }
+
+  private fun runtimeProgressMessageId(event: OpenCrayProgressEvent): String =
+    "runtime-progress-${event.runId}-${event.emittedAtEpochMs}"
+
+  private fun mergedRuntimeEventsLocked(
+    sessionId: String,
+    runs: List<AgentRunSnapshot>,
+  ): List<OpenCrayAgentRunEvent> {
+    val liveEvents = runtimeEventsBySession[sessionId]?.toList().orEmpty()
+    val replayedEvents = replayedRuntimeEventsLocked(
+      sessionId = sessionId,
+      runs = runs,
+      liveEvents = liveEvents,
+    )
+    if (replayedEvents.isEmpty()) {
+      return liveEvents
+    }
+    val merged = ArrayList<OpenCrayAgentRunEvent>(replayedEvents.size + liveEvents.size)
+    val seen = linkedSetOf<String>()
+    (replayedEvents + liveEvents).forEach { event ->
+      if (seen.add(runtimeEventDedupKey(event))) {
+        merged += event
+      }
+    }
+    return merged.takeLast(MAX_RUNTIME_EVENT_HISTORY)
+  }
+
+  private fun replayedRuntimeEventsLocked(
+    sessionId: String,
+    runs: List<AgentRunSnapshot>,
+    liveEvents: List<OpenCrayAgentRunEvent>,
+  ): List<OpenCrayAgentRunEvent> {
+    val transcriptMessages = runCatching {
+      transcriptMessagesProvider(sessionId)
+    }.getOrDefault(emptyList())
+    if (transcriptMessages.isEmpty()) {
+      return emptyList()
+    }
+    val replayedEvents = transcriptMessages.mapIndexedNotNull { index, message ->
+      parseReplayedRuntimeEvent(
+        message = message,
+        sourceIndex = index,
+      )
+    }
+    if (replayedEvents.isEmpty()) {
+      return emptyList()
+    }
+    return assignReplayEmissionTimes(
+      replayedEvents = replayedEvents,
+      runs = runs,
+      liveEvents = liveEvents,
+    )
+  }
+
+  private fun parseReplayedRuntimeEvent(
+    message: RuntimeConversationMessage,
+    sourceIndex: Int,
+  ): ReplayedRuntimeEvent? {
+    if (message.role != RuntimeConversationRole.TOOL) {
+      return null
+    }
+    val content = message.content.trim()
+    if (content.isEmpty()) {
+      return null
+    }
+    val event = when {
+      content.startsWith("tool_call ") -> parseReplayedToolCallEvent(
+        payload = content.removePrefix("tool_call ").trim(),
+      )
+
+      content.startsWith("tool_result ") -> parseReplayedToolResultEvent(
+        payload = content.removePrefix("tool_result ").trim(),
+      )
+
+      content.startsWith("progress ") -> parseReplayedProgressEvent(
+        payload = content.removePrefix("progress ").trim(),
+      )
+
+      else -> null
+    } ?: return null
+    return ReplayedRuntimeEvent(
+      sourceIndex = sourceIndex,
+      event = event,
+    )
+  }
+
+  private fun parseReplayedToolCallEvent(payload: String): OpenCrayToolCallEvent? {
+    val decoded = decodeReplayPayload(payload) ?: return null
+    val identifiers = replayIdentifiers(decoded) ?: return null
+    val toolName = decoded.replayString("tool_name") ?: return null
+    return OpenCrayToolCallEvent(
+      runId = identifiers.first,
+      taskId = identifiers.second,
+      turn = decoded.replayInt("turn") ?: 0,
+      call = AgentToolCall(
+        toolName = toolName,
+        arguments = decoded.replayObject("arguments") ?: JsonObject(emptyMap()),
+        reason = decoded.replayString("reason"),
+      ),
+      emittedAtEpochMs = 0L,
+    )
+  }
+
+  private fun parseReplayedToolResultEvent(payload: String): OpenCrayToolResultEvent? {
+    val decoded = decodeReplayPayload(payload) ?: return null
+    val identifiers = replayIdentifiers(decoded) ?: return null
+    val toolName = decoded.replayString("tool_name") ?: return null
+    val status = decoded.replayString("status")
+      ?.let(::parseReplayToolResultStatus)
+      ?: AgentToolResultStatus.SUCCESS
+    return OpenCrayToolResultEvent(
+      runId = identifiers.first,
+      taskId = identifiers.second,
+      turn = decoded.replayInt("turn") ?: 0,
+      call = AgentToolCall(toolName = toolName),
+      result = AgentToolResult(
+        toolName = toolName,
+        status = status,
+        content = decoded.replayString("content_preview")
+          ?.takeIf(String::isNotBlank)
+          ?: "Tool finished.",
+        errorCode = decoded.replayString("error_code"),
+        errorMessage = decoded.replayString("error_message"),
+        metadata = decoded.replayStringMap("metadata"),
+      ),
+      emittedAtEpochMs = 0L,
+    )
+  }
+
+  private fun parseReplayedProgressEvent(payload: String): OpenCrayProgressEvent? {
+    val decoded = decodeReplayPayload(payload) ?: return null
+    val identifiers = replayIdentifiers(decoded) ?: return null
+    return OpenCrayProgressEvent(
+      runId = identifiers.first,
+      taskId = identifiers.second,
+      turn = decoded.replayInt("turn") ?: 0,
+      text = decoded.replayString("text") ?: return null,
+      stage = decoded.replayString("stage"),
+      emittedAtEpochMs = 0L,
+    )
+  }
+
+  private fun decodeReplayPayload(payload: String): JsonObject? =
+    runCatching {
+      replayJson.parseToJsonElement(payload).jsonObject
+    }.getOrNull()
+
+  private fun replayIdentifiers(payload: JsonObject): Pair<String, String>? {
+    val runId = payload.replayString("run_id")
+      ?: payload.replayString("task_id")
+      ?: return null
+    val taskId = payload.replayString("task_id") ?: runId
+    return runId to taskId
+  }
+
+  private fun parseReplayToolResultStatus(raw: String): AgentToolResultStatus? =
+    AgentToolResultStatus.entries.firstOrNull { status ->
+      status.name.equals(raw, ignoreCase = true)
+    }
+
+  private fun assignReplayEmissionTimes(
+    replayedEvents: List<ReplayedRuntimeEvent>,
+    runs: List<AgentRunSnapshot>,
+    liveEvents: List<OpenCrayAgentRunEvent>,
+  ): List<OpenCrayAgentRunEvent> {
+    val replayCountByRun = replayedEvents.groupingBy { replay ->
+      replayRunGroupKey(
+        event = replay.event,
+        sourceIndex = replay.sourceIndex,
+      )
+    }.eachCount()
+    val emittedCountByRun = linkedMapOf<String, Int>()
+    val runsByRunId = runs.associateBy(AgentRunSnapshot::runId)
+    val runsByTaskId = runs.associateBy(AgentRunSnapshot::taskId)
+    return replayedEvents.map { replay ->
+      val groupKey = replayRunGroupKey(
+        event = replay.event,
+        sourceIndex = replay.sourceIndex,
+      )
+      val emittedCount = emittedCountByRun[groupKey] ?: 0
+      emittedCountByRun[groupKey] = emittedCount + 1
+      val liveEventsForRun = liveEvents.filter { liveEvent ->
+        liveEvent.runId == replay.event.runId ||
+          (replay.event.runId.isBlank() && liveEvent.taskId == replay.event.taskId)
+      }
+      val lifecycleStartAt = liveEventsForRun
+        .mapNotNull { liveEvent ->
+          (liveEvent as? OpenCrayLifecycleEvent)
+            ?.takeIf { event -> event.phase == OpenCrayRunLifecyclePhase.START }
+            ?.emittedAtEpochMs
+        }
+        .minOrNull()
+      val firstLiveAt = liveEventsForRun.minOfOrNull(OpenCrayAgentRunEvent::emittedAtEpochMs)
+      val runSnapshot = runsByRunId[replay.event.runId] ?: runsByTaskId[replay.event.taskId]
+      val replayBaseTime = when {
+        lifecycleStartAt != null -> lifecycleStartAt + 1L
+        firstLiveAt != null -> (firstLiveAt - (replayCountByRun[groupKey] ?: 1).toLong()).coerceAtLeast(1L)
+        runSnapshot != null -> (runSnapshot.updatedAtEpochMs - (replayCountByRun[groupKey] ?: 1).toLong()).coerceAtLeast(1L)
+        else -> (replay.sourceIndex + 1).toLong()
+      }
+      replay.event.withEmittedAtEpochMs(replayBaseTime + emittedCount.toLong())
+    }
+  }
+
+  private fun replayRunGroupKey(
+    event: OpenCrayAgentRunEvent,
+    sourceIndex: Int,
+  ): String = event.runId
+    .takeIf(String::isNotBlank)
+    ?: event.taskId
+      .takeIf(String::isNotBlank)
+      ?: "replay-$sourceIndex"
+
+  private fun runtimeEventDedupKey(event: OpenCrayAgentRunEvent): String = when (event) {
+    is OpenCrayLifecycleEvent -> listOf(
+      "lifecycle",
+      event.runId,
+      event.taskId,
+      event.turn.orEmptyString(),
+      event.phase.name,
+      event.status?.name.orEmpty(),
+      event.errorCode.orEmpty(),
+      event.errorMessage.orEmpty(),
+    ).joinToString(separator = "|")
+
+    is OpenCrayAssistantEvent -> listOf(
+      "assistant",
+      event.runId,
+      event.taskId,
+      event.turn.toString(),
+      event.responseFormat,
+      event.isFinal.toString(),
+      event.text,
+    ).joinToString(separator = "|")
+
+    is OpenCrayProgressEvent -> listOf(
+      "progress",
+      event.runId,
+      event.taskId,
+      event.turn.toString(),
+      event.stage.orEmpty(),
+      event.text,
+    ).joinToString(separator = "|")
+
+    is OpenCrayToolCallEvent -> listOf(
+      "tool_call",
+      event.runId,
+      event.taskId,
+      event.turn.toString(),
+      event.call.toolName,
+      event.call.reason.orEmpty(),
+      event.call.arguments.toString(),
+    ).joinToString(separator = "|")
+
+    is OpenCrayToolResultEvent -> listOf(
+      "tool_result",
+      event.runId,
+      event.taskId,
+      event.turn.toString(),
+      event.result.toolName,
+      event.result.status.name,
+      event.result.errorCode.orEmpty(),
+      event.result.errorMessage.orEmpty(),
+    ).joinToString(separator = "|")
+
+    is OpenCrayMemoryRetrievalEvent -> listOf(
+      "memory_retrieval",
+      event.runId,
+      event.taskId,
+      event.turn.toString(),
+      event.toolName,
+      event.operation,
+      event.query.orEmpty(),
+      event.path.orEmpty(),
+    ).joinToString(separator = "|")
+
+    is OpenCrayMemoryWriteEvent -> listOf(
+      "memory_write",
+      event.runId,
+      event.taskId,
+      event.turn.orEmptyString(),
+      event.writtenRecordIds.joinToString(separator = ","),
+      event.resolvedRecordIds.joinToString(separator = ","),
+      event.reaffirmedRecordIds.joinToString(separator = ","),
+      event.expiredRecordIds.joinToString(separator = ","),
+    ).joinToString(separator = "|")
   }
 
   private fun findRunSnapshotLocked(runId: String): AgentRunSnapshot? {
@@ -2020,6 +2565,144 @@ internal class OpenCrayHostRuntime private constructor(
     }
   }
 
+  private fun debugRunLinkToMap(run: AgentRunSnapshot): Map<String, Any?> = buildMap {
+    put("sessionId", run.sessionId)
+    put("runId", run.runId)
+    put("taskId", run.taskId)
+    put("acceptedAtEpochMs", run.acceptedAtEpochMs)
+    put("updatedAtEpochMs", run.updatedAtEpochMs)
+    run.lifecycleState?.name?.lowercase()?.let { lifecycleState ->
+      put("lifecycleState", lifecycleState)
+    }
+    run.executionStatus?.name?.lowercase()?.let { executionStatus ->
+      put("executionStatus", executionStatus)
+    }
+    run.errorCode?.takeIf(String::isNotBlank)?.let { errorCode ->
+      put("errorCode", errorCode)
+    }
+  }
+
+  private fun rememberMemoryWriteActions(
+    target: MutableMap<String, LinkedHashMap<String, Map<String, Any?>>>,
+    run: AgentRunSnapshot,
+    event: OpenCrayMemoryWriteEvent,
+  ) {
+    rememberMemoryActionIds(
+      target = target,
+      run = run,
+      action = "written",
+      occurredAtEpochMs = event.emittedAtEpochMs,
+      recordIds = event.writtenRecordIds,
+    )
+    rememberMemoryActionIds(
+      target = target,
+      run = run,
+      action = "resolved",
+      occurredAtEpochMs = event.emittedAtEpochMs,
+      recordIds = event.resolvedRecordIds,
+    )
+    rememberMemoryActionIds(
+      target = target,
+      run = run,
+      action = "reaffirmed",
+      occurredAtEpochMs = event.emittedAtEpochMs,
+      recordIds = event.reaffirmedRecordIds,
+    )
+    rememberMemoryActionIds(
+      target = target,
+      run = run,
+      action = "expired",
+      occurredAtEpochMs = event.emittedAtEpochMs,
+      recordIds = event.expiredRecordIds,
+    )
+  }
+
+  private fun rememberMemoryActionIds(
+    target: MutableMap<String, LinkedHashMap<String, Map<String, Any?>>>,
+    run: AgentRunSnapshot,
+    action: String,
+    occurredAtEpochMs: Long,
+    recordIds: List<String>,
+  ) {
+    recordIds.forEach { recordId ->
+      rememberDebugLink(
+        target = target,
+        recordId = recordId,
+        uniqueKey = "$action:${run.runId}:$occurredAtEpochMs:$recordId",
+        payload = mapOf(
+          "action" to action,
+          "occurredAtEpochMs" to occurredAtEpochMs,
+          "run" to debugRunLinkToMap(run),
+        ),
+      )
+    }
+  }
+
+  private fun rememberMemoryRetrievalLinks(
+    target: MutableMap<String, LinkedHashMap<String, Map<String, Any?>>>,
+    run: AgentRunSnapshot,
+    event: OpenCrayMemoryRetrievalEvent,
+  ) {
+    event.recordIds.forEach { recordId ->
+      rememberDebugLink(
+        target = target,
+        recordId = recordId,
+        uniqueKey = "retrieval:${run.runId}:${event.emittedAtEpochMs}:$recordId:${event.operation}",
+        payload = buildMap {
+          put("occurredAtEpochMs", event.emittedAtEpochMs)
+          put("run", debugRunLinkToMap(run))
+          put("toolName", event.toolName)
+          put("operation", event.operation)
+          event.query?.let { query -> put("query", query) }
+          if (event.queryTerms.isNotEmpty()) {
+            put("queryTerms", event.queryTerms)
+          }
+          if (event.paths.isNotEmpty()) {
+            put("paths", event.paths)
+          }
+          if (event.lineRanges.isNotEmpty()) {
+            put("lineRanges", event.lineRanges)
+          }
+          event.path?.let { path -> put("path", path) }
+          event.fromLine?.let { fromLine -> put("fromLine", fromLine) }
+          event.returnedLineCount?.let { returnedLineCount ->
+            put("returnedLineCount", returnedLineCount)
+          }
+        },
+      )
+    }
+  }
+
+  private fun rememberDebugLink(
+    target: MutableMap<String, LinkedHashMap<String, Map<String, Any?>>>,
+    recordId: String,
+    uniqueKey: String,
+    payload: Map<String, Any?>,
+  ) {
+    if (recordId.isBlank()) {
+      return
+    }
+    target.getOrPut(recordId) { linkedMapOf() }[uniqueKey] = payload
+  }
+
+  private fun finalizeDebugLinks(
+    raw: LinkedHashMap<String, Map<String, Any?>>?,
+  ): List<Map<String, Any?>> = raw
+    ?.values
+    .orEmpty()
+    .sortedByDescending { entry ->
+      entry["occurredAtEpochMs"] as? Long
+        ?: (entry["occurredAtEpochMs"] as? Int)?.toLong()
+        ?: 0L
+    }
+    .take(MAX_DEBUG_LINKS_PER_RECORD)
+
+  private fun splitDebugCsv(raw: String?): List<String> = raw
+    .orEmpty()
+    .split(',')
+    .map(String::trim)
+    .filter(String::isNotBlank)
+
   private fun debugMemoryMetadata(record: MemoryRecord): DebugMemoryMetadata? {
     val kind = debugParseTaggedMemoryValue(
       extensionValue = record.extensions[MemoryRecordExtensionKeys.KIND],
@@ -2220,6 +2903,34 @@ internal class OpenCrayHostRuntime private constructor(
     }
     .toMap(linkedMapOf())
 
+  private fun JsonObject.replayString(key: String): String? =
+    (this[key] as? JsonPrimitive)
+      ?.content
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+
+  private fun JsonObject.replayInt(key: String): Int? =
+    (this[key] as? JsonPrimitive)
+      ?.content
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.toIntOrNull()
+
+  private fun JsonObject.replayObject(key: String): JsonObject? =
+    this[key] as? JsonObject
+
+  private fun JsonObject.replayStringMap(key: String): Map<String, String> =
+    replayObject(key)
+      ?.mapNotNull { (entryKey, entryValue) ->
+        (entryValue as? JsonPrimitive)
+          ?.content
+          ?.trim()
+          ?.takeIf { value -> value.isNotBlank() }
+          ?.let { value -> entryKey to value }
+      }
+      ?.toMap(linkedMapOf())
+      .orEmpty()
+
   private fun runIdFor(task: AgentTask): String =
     task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
       ?.takeIf(String::isNotBlank)
@@ -2293,6 +3004,9 @@ internal class OpenCrayHostRuntime private constructor(
       }
       event.resultCount?.let { resultCount -> put("resultCount", resultCount) }
       event.corpusFileCount?.let { corpusFileCount -> put("corpusFileCount", corpusFileCount) }
+      if (event.recordIds.isNotEmpty()) {
+        put("recordIds", event.recordIds)
+      }
       if (event.paths.isNotEmpty()) {
         put("paths", event.paths)
       }
@@ -2350,13 +3064,26 @@ internal class OpenCrayHostRuntime private constructor(
 
       else -> resolvedText
     }
-    return mapOf(
-      "messageId" to message.messageId,
-      "kind" to kind,
-      "text" to visibleText,
-      "meta" to "",
+    return chatMessageSnapshotMap(
+      messageId = message.messageId,
+      kind = kind,
+      text = visibleText,
     )
   }
+
+  private fun chatMessageSnapshotMap(
+    messageId: String,
+    kind: String,
+    text: String,
+    meta: String = "",
+    isEphemeral: Boolean = false,
+  ): Map<String, Any?> = mapOf(
+    "messageId" to messageId,
+    "kind" to kind,
+    "text" to text,
+    "meta" to meta,
+    "isEphemeral" to isEphemeral,
+  )
 
   private fun finalTextFor(result: ExecutionResult): String {
     val rawText = when (result.status) {
@@ -3133,6 +3860,7 @@ internal class OpenCrayHostRuntime private constructor(
     private const val MAX_RUNTIME_EVENT_HISTORY: Int = 24
     private const val MAX_RUNTIME_EVENT_PREVIEW_CHARS: Int = 240
     private const val DRAWER_PREVIEW_MAX_CHARS: Int = 52
+    private val replayJson: Json = Json { ignoreUnknownKeys = true }
     private val MEMORY_SELECTED_TRACE_REGEX: Regex = Regex("""^(.+?)@(\d+)(?:\[(.*)])?$""")
     private val BOOTSTRAP_FILE_TRACE_REGEX: Regex =
       Regex("""^(.+?)@(.+)\[(\d+)\|(\d+)\|(true|false)]$""")
@@ -3152,6 +3880,7 @@ internal class OpenCrayHostRuntime private constructor(
     private const val DEBUG_MEMORY_SCOPE_USER: String = "user"
     private const val DEBUG_MEMORY_SCOPE_WORKSPACE: String = "workspace"
     private const val DEBUG_MEMORY_SCOPE_SESSION: String = "session"
+    private const val MAX_DEBUG_LINKS_PER_RECORD: Int = 8
     private const val SOUL_FIELD_PRESET_NAME: String = "presetName"
     private const val SOUL_FIELD_DISPLAY_NAME: String = "displayName"
     private const val SOUL_FIELD_VOICE: String = "voice"
@@ -3226,6 +3955,7 @@ internal class OpenCrayHostRuntime private constructor(
         ).toMap()
       },
       sessionRuntimeManager: AgentSessionRuntimeManager,
+      transcriptMessagesProvider: (String) -> List<RuntimeConversationMessage> = { emptyList() },
       approvalRegistry: AgentTaskApprovalRegistry = AgentTaskApprovalRegistry(),
       memoryIngestionCoordinator: ChatMemoryIngestionCoordinator? = null,
       runCancellationReplayRecorder: (String, String, String, String?) -> Unit = { _, _, _, _ -> },
@@ -3274,6 +4004,7 @@ internal class OpenCrayHostRuntime private constructor(
       approvedReadRootsProvider = approvedReadRootsProvider,
       workspaceSnapshotProvider = workspaceSnapshotProvider,
       sessionRuntimeManager = sessionRuntimeManager,
+      transcriptMessagesProvider = transcriptMessagesProvider,
       approvalRegistry = approvalRegistry,
       memoryIngestionCoordinator = memoryIngestionCoordinator,
       approvalReplayRecorder = { _, _, _ -> },
@@ -3315,7 +4046,16 @@ internal class OpenCrayHostRuntime private constructor(
       val pythonRuntime = P4aPythonRuntime.fromContext(appContext)
       val compactionStoreFactory = FileBackedAgentSessionCompactionStoreFactory.fromContext(appContext)
       val transcriptStoreFactory = FileBackedAgentSessionTranscriptStoreFactory.fromContext(appContext)
-      val processRegistryFactory = FileBackedAgentProcessRegistryFactory.fromContext(appContext)
+      val processRegistryFactory = FileBackedAgentProcessRegistryFactory(
+        runtimeRootDirectory = File(
+          appContext.filesDir,
+          FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
+        ),
+        controllerFactory = com.opencray.runtime.process.RoutedManagedProcessControllerFactory(
+          workspaceRoot = workspaceRootProvider(),
+          pythonRuntime = pythonRuntime,
+        ),
+      )
       val liteLlmProviderClient = OpenAiCompatibleLiteLlmProviderClient(
         userAgent = providerUserAgent,
       )
@@ -3398,6 +4138,9 @@ internal class OpenCrayHostRuntime private constructor(
           runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(appContext),
           executor = chatExecutor,
         ),
+        transcriptMessagesProvider = { sessionId ->
+          transcriptStoreFactory.forChatSession(sessionId).snapshot()
+        },
         approvalRegistry = approvalRegistry,
         memoryIngestionCoordinator = memoryIngestionCoordinator,
         approvalReplayRecorder = runtimeFactory::recordApprovalRejection,
@@ -3528,6 +4271,16 @@ private data class PendingApprovalSnapshot(
   val body: String,
 )
 
+private data class ReplayedRuntimeEvent(
+  val sourceIndex: Int,
+  val event: OpenCrayAgentRunEvent,
+)
+
+private data class ProjectedRuntimeChatMessage(
+  val anchorMessageId: String?,
+  val snapshot: Map<String, Any?>,
+)
+
 private data class DebugMemoryMetadata(
   val kind: String,
   val scope: String,
@@ -3552,6 +4305,19 @@ private data class SoulFieldContribution(
   val record: MemoryRecord,
   val metadata: DebugMemoryMetadata,
 )
+
+private fun OpenCrayAgentRunEvent.withEmittedAtEpochMs(emittedAtEpochMs: Long): OpenCrayAgentRunEvent =
+  when (this) {
+    is OpenCrayLifecycleEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
+    is OpenCrayAssistantEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
+    is OpenCrayProgressEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
+    is OpenCrayToolCallEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
+    is OpenCrayToolResultEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
+    is OpenCrayMemoryWriteEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
+    is OpenCrayMemoryRetrievalEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
+  }
+
+private fun Int?.orEmptyString(): String = this?.toString().orEmpty()
 
 internal fun interface MainThreadPoster {
   fun post(action: () -> Unit)

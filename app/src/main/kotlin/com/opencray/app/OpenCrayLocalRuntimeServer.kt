@@ -270,6 +270,7 @@ internal class OpenCrayLocalRuntimeServer(
         runId = request.queryParameter("runId"),
       )
       "GET" to "/v1/memory_debug_snapshot" -> hostRuntime.loadMemoryDebugSnapshot()
+      "GET" to "/v1/memory_debug_links_snapshot" -> hostRuntime.loadMemoryDebugLinksSnapshot()
       "GET" to "/v1/soul_debug_snapshot" -> hostRuntime.loadSoulDebugSnapshot()
       "POST" to "/v1/create_chat_session" -> {
         hostRuntime.createChatSession()
@@ -285,6 +286,13 @@ internal class OpenCrayLocalRuntimeServer(
       }
       "POST" to "/v1/select_chat_session" -> {
         hostRuntime.selectChatSession(body.optString("sessionId"))
+        null
+      }
+      "POST" to "/v1/branch_chat_session_from_message" -> {
+        hostRuntime.branchChatSessionFromMessage(
+          sessionId = body.optString("sessionId"),
+          messageId = body.optString("messageId"),
+        )
         null
       }
       "POST" to "/v1/delete_chat_message" -> {

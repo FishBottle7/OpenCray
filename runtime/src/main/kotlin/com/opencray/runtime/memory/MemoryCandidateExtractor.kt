@@ -125,9 +125,12 @@ class MemoryCandidateExtractor(
   ): MemoryCandidate? {
     val normalized = policy.normalizeCandidateContent(statement) ?: return null
     val displayName = extractDisplayName(normalized) ?: return null
-    val scope = resolvePreferenceScope(
-      normalized = normalized,
-      defaultScope = MemoryScope.USER,
+    val scope = directChatSoulPreferenceScope(
+      preferenceKey = MemoryPreferenceKeys.AGENT_DISPLAY_NAME,
+      requestedScope = resolvePreferenceScope(
+        normalized = normalized,
+        defaultScope = MemoryScope.USER,
+      ),
     )
     return createCandidate(
       kind = MemoryKind.USER_PREFERENCE,
@@ -148,18 +151,30 @@ class MemoryCandidateExtractor(
   ): MemoryCandidate? {
     val normalized = policy.normalizeCandidateContent(statement) ?: return null
     val styleProfile = resolveStyleProfile(normalized) ?: return null
-    val scope = resolvePreferenceScope(
+    val requestedScope = resolvePreferenceScope(
       normalized = normalized,
       defaultScope = MemoryScope.SESSION,
+    )
+    val preferenceKey = canonicalSoulStylePreferenceKey(
+      preferenceKey = MemoryPreferenceKeys.AGENT_STYLE_PROFILE,
+      requestedScope = requestedScope,
+    )
+    val scope = effectiveSoulPreferenceScope(
+      preferenceKey = preferenceKey,
+      requestedScope = requestedScope,
     )
     return createCandidate(
       kind = MemoryKind.USER_PREFERENCE,
       scope = scope,
-      content = "Agent style profile should be $styleProfile",
+      content = canonicalSoulPreferenceContent(
+        preferenceKey = preferenceKey,
+        preferenceValue = styleProfile,
+      ) ?: return null,
       source = MemoryEvidenceSource.USER_INPUT,
       evidence = evidence,
-      extensions = styleProfilePreferenceExtensions(
-        styleProfile = styleProfile,
+      extensions = buildSoulPreferenceExtensions(
+        preferenceKey = preferenceKey,
+        preferenceValue = styleProfile,
         scope = scope,
       ),
     )
@@ -171,9 +186,12 @@ class MemoryCandidateExtractor(
   ): MemoryCandidate? {
     val normalized = policy.normalizeCandidateContent(statement) ?: return null
     val verbosity = resolveVerbosityProfile(normalized) ?: return null
-    val scope = resolvePreferenceScope(
-      normalized = normalized,
-      defaultScope = MemoryScope.SESSION,
+    val scope = directChatSoulPreferenceScope(
+      preferenceKey = MemoryPreferenceKeys.AGENT_VERBOSITY,
+      requestedScope = resolvePreferenceScope(
+        normalized = normalized,
+        defaultScope = MemoryScope.SESSION,
+      ),
     )
     return createCandidate(
       kind = MemoryKind.USER_PREFERENCE,
@@ -354,14 +372,22 @@ class MemoryCandidateExtractor(
     intent: SoulMemoryIntent,
     evidence: MemoryTurnEvidence,
   ): MemoryCandidate? {
-    val preferenceKey = normalizeMemoryPreferenceKeyOrNull(intent.preferenceKey)
+    val requestedPreferenceKey = normalizeMemoryPreferenceKeyOrNull(intent.preferenceKey)
       ?.takeIf { key -> key in supportedSoulPreferenceKeys() }
       ?: return null
     val preferenceValue = normalizeMemoryPreferenceValueOrNull(intent.preferenceValue) ?: return null
+    val preferenceKey = canonicalSoulStylePreferenceKey(
+      preferenceKey = requestedPreferenceKey,
+      requestedScope = intent.scope,
+    )
+    val scope = effectiveSoulPreferenceScope(
+      preferenceKey = preferenceKey,
+      requestedScope = intent.scope,
+    )
     val extensions = buildSoulPreferenceExtensions(
       preferenceKey = preferenceKey,
       preferenceValue = preferenceValue,
-      scope = intent.scope,
+      scope = scope,
       soulExtensions = intent.soulExtensions,
     )
     if (extensions.isEmpty()) {
@@ -373,7 +399,7 @@ class MemoryCandidateExtractor(
     ) ?: return null
     return createCandidate(
       kind = MemoryKind.USER_PREFERENCE,
-      scope = intent.scope,
+      scope = scope,
       content = content,
       source = MemoryEvidenceSource.USER_INPUT,
       evidence = evidence,
@@ -385,13 +411,21 @@ class MemoryCandidateExtractor(
     intent: UserMemoryIntent,
     evidence: MemoryTurnEvidence,
   ): MemoryCandidate? {
-    val preferenceKey = normalizeMemoryPreferenceKeyOrNull(intent.preferenceKey)
+    val requestedPreferenceKey = normalizeMemoryPreferenceKeyOrNull(intent.preferenceKey)
     val preferenceValue = normalizeMemoryPreferenceValueOrNull(intent.preferenceValue)
-    if (preferenceKey != null && preferenceValue != null) {
+    if (requestedPreferenceKey != null && preferenceValue != null) {
+      val preferenceKey = canonicalSoulStylePreferenceKey(
+        preferenceKey = requestedPreferenceKey,
+        requestedScope = intent.scope,
+      )
+      val scope = effectiveSoulPreferenceScope(
+        preferenceKey = preferenceKey,
+        requestedScope = intent.scope,
+      )
       val extensions = buildSoulPreferenceExtensions(
         preferenceKey = preferenceKey,
         preferenceValue = preferenceValue,
-        scope = intent.scope,
+        scope = scope,
         soulExtensions = intent.soulExtensions,
       )
       val content = canonicalSoulPreferenceContent(
@@ -401,7 +435,7 @@ class MemoryCandidateExtractor(
       if (intent.kind == MemoryKind.USER_PREFERENCE && extensions.isNotEmpty() && content != null) {
         return createCandidate(
           kind = MemoryKind.USER_PREFERENCE,
-          scope = intent.scope,
+          scope = scope,
           content = content,
           source = MemoryEvidenceSource.USER_INPUT,
           evidence = evidence,
@@ -429,8 +463,34 @@ class MemoryCandidateExtractor(
   ): String? = when (preferenceKey) {
     MemoryPreferenceKeys.AGENT_DISPLAY_NAME -> "Agent display name is $preferenceValue"
     MemoryPreferenceKeys.AGENT_STYLE_PROFILE -> "Agent style profile should be $preferenceValue"
+    MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE ->
+      "Relationship style should gradually move toward $preferenceValue"
     MemoryPreferenceKeys.AGENT_VERBOSITY -> "Agent verbosity should be $preferenceValue"
     else -> null
+  }
+
+  private fun canonicalSoulStylePreferenceKey(
+    preferenceKey: String,
+    requestedScope: MemoryScope,
+  ): String {
+    val normalizedKey = normalizeMemoryPreferenceKeyOrNull(preferenceKey) ?: return preferenceKey
+    return when {
+      normalizedKey == MemoryPreferenceKeys.AGENT_STYLE_PROFILE &&
+        requestedScope != MemoryScope.SESSION -> MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE
+
+      else -> normalizedKey
+    }
+  }
+
+  private fun effectiveSoulPreferenceScope(
+    preferenceKey: String,
+    requestedScope: MemoryScope,
+  ): MemoryScope = when (normalizeMemoryPreferenceKeyOrNull(preferenceKey)) {
+    MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE -> requestedScope
+    else -> directChatSoulPreferenceScope(
+      preferenceKey = preferenceKey,
+      requestedScope = requestedScope,
+    )
   }
 
   private companion object {

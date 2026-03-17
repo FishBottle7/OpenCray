@@ -518,6 +518,13 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       );
 
   @override
+  Future<OpenCrayMemoryDebugLinksSnapshot>
+  loadMemoryDebugLinksSnapshot() async =>
+      OpenCrayMemoryDebugLinksSnapshot.fromMap(
+        await _invokeMap('loadMemoryDebugLinksSnapshot'),
+      );
+
+  @override
   Future<OpenCraySoulDebugSnapshot> loadSoulDebugSnapshot() async =>
       OpenCraySoulDebugSnapshot.fromMap(
         await _invokeMap('loadSoulDebugSnapshot'),
@@ -559,6 +566,15 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       _methodChannel.invokeMethod<void>('selectChatSession', <String, Object?>{
         'sessionId': sessionId,
       });
+
+  @override
+  Future<void> branchChatSessionFromMessage({
+    required String sessionId,
+    required String messageId,
+  }) => _methodChannel.invokeMethod<void>(
+    'branchChatSessionFromMessage',
+    <String, Object?>{'sessionId': sessionId, 'messageId': messageId},
+  );
 
   @override
   Future<void> deleteChatMessage({

@@ -176,9 +176,9 @@ class ContextManagerTest {
     val manager = ContextManager(
       contextPruner = ContextPruner(
         ContextPrunerConfig(
-          maxToolChars = 80,
+          maxToolChars = 128,
           maxToolLines = 4,
-          maxAttachmentChars = 48,
+          maxAttachmentChars = 64,
           maxPreviewChars = 64,
         ),
       ),

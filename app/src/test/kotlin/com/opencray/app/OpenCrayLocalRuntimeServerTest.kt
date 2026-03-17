@@ -28,6 +28,7 @@ import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
+import com.opencray.runtime.OpenCrayMemoryWriteEvent
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
 import com.opencray.runtime.memory.MemoryPreferenceKeys
 import com.opencray.runtime.memory.MemoryRecordExtensionKeys
@@ -486,6 +487,59 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun branchChatSessionFromMessageRouteCreatesSelectedBranchSession() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-branch-route"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    chatStore.appendUserMessage(sessionId, "Keep this turn")
+    chatStore.appendMessage(
+      sessionId = sessionId,
+      role = ChatTranscriptRole.ASSISTANT,
+      text = "Branch here",
+    )
+    chatStore.appendUserMessage(sessionId, "Drop this turn")
+    val originalMessages = checkNotNull(chatStore.loadSession(sessionId)).messages
+    val branchMessageId = originalMessages
+      .first { message ->
+        message.role == ChatTranscriptRole.ASSISTANT && message.text == "Branch here"
+      }
+      .messageId
+    val hostRuntime = OpenCrayHostRuntime.createForTest(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      chatSessionStore = chatStore,
+      settingsFacade = NoOpSettingsFacade,
+      llmConfigFacade = EmptyLlmConfigFacade,
+      sessionRuntimeManager = NoOpRuntimeManager(),
+      strings = hostRuntimeStrings(),
+    )
+    val server = OpenCrayLocalRuntimeServer(
+      hostRuntimeProvider = { hostRuntime },
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/branch_chat_session_from_message",
+        body = JSONObject().apply {
+          put("sessionId", sessionId)
+          put("messageId", branchMessageId)
+        }.toString(),
+      )
+      val activeSession = chatStore.loadState().activeSession
+
+      assertEquals(200, response.statusCode)
+      assertTrue(activeSession.sessionId != sessionId)
+      assertEquals("Branch here", activeSession.messages.last().text)
+      assertTrue(activeSession.messages.none { message -> message.text == "Drop this turn" })
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun exposesChatRuntimeSnapshotOverLoopbackHttp() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-runtime-route"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -571,6 +625,7 @@ class OpenCrayLocalRuntimeServerTest {
         queryTerms = listOf("gradle", "wrapper", "repo", "root"),
         resultCount = 1,
         corpusFileCount = 1,
+        recordIds = listOf("memory-user"),
         paths = listOf("memory/2024-03-11.md"),
         lineRanges = listOf("5-8"),
         emittedAtEpochMs = 1_100L,
@@ -596,6 +651,7 @@ class OpenCrayLocalRuntimeServerTest {
       assertEquals("gradle wrapper repo root", event.getString("query"))
       assertEquals("gradle", event.getJSONArray("queryTerms").getString(0))
       assertEquals(1, event.getInt("resultCount"))
+      assertEquals("memory-user", event.getJSONArray("recordIds").getString(0))
       assertEquals("memory/2024-03-11.md", event.getJSONArray("paths").getString(0))
       assertEquals("5-8", event.getJSONArray("lineRanges").getString(0))
     } finally {
@@ -1115,6 +1171,168 @@ class OpenCrayLocalRuntimeServerTest {
       val records = payload.getJSONArray("records")
       assertEquals("memory-user", records.getJSONObject(0).getString("id"))
       assertEquals("Xiao Bai", records.getJSONObject(0).getString("preferenceValue"))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun memoryDebugLinksSnapshotRouteReturnsDeterministicRecordLinks() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-memory-links-route"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val personalizationStore = PersonalizationLocalStore(
+      temporaryFolder.newFolder("server-memory-links"),
+    )
+    val runtimeManager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(sessionId = sessionId, resumeResult = false)
+    runtimeManager.handle = handle
+    val hostRuntime = OpenCrayHostRuntime.createForTest(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      chatSessionStore = chatStore,
+      settingsFacade = NoOpSettingsFacade,
+      personalizationLocalStore = personalizationStore,
+      sessionRuntimeManager = runtimeManager,
+      strings = hostRuntimeStrings(),
+    )
+
+    val sourceSubmission = handle.submitPrompt(
+      userText = "Remember my preferred agent name.",
+      pendingMessageId = "pending-memory-source",
+      visibleThroughMessageId = "pending-memory-source",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      metadata = emptyMap(),
+    )
+    val sourceTask = handle.submittedTasks.last()
+    handle.recordResult(
+      task = sourceTask,
+      result = ExecutionResult(
+        taskId = sourceTask.id,
+        status = ExecutionStatus.SUCCESS,
+        stdout = "",
+        startedAtEpochMs = 2_100L,
+        finishedAtEpochMs = 2_200L,
+        metadata = mapOf("responseFormat" to "json_final"),
+      ),
+    )
+    personalizationStore.upsertMemoryRecord(
+      MemoryRecord(
+        id = "memory-user",
+        content = "Call the agent Xiao Bai.",
+        createdAtEpochMs = 2_000L,
+        updatedAtEpochMs = 2_200L,
+        tags = listOf("kind:user_preference", "scope:user"),
+        extensions = mapOf(
+          MemoryRecordExtensionKeys.KIND to "user_preference",
+          MemoryRecordExtensionKeys.SCOPE to "user",
+          MemoryRecordExtensionKeys.STATUS to "active",
+          MemoryRecordExtensionKeys.SOURCE to "user_input",
+          MemoryRecordExtensionKeys.SOURCE_SESSION_ID to sessionId,
+          MemoryRecordExtensionKeys.SOURCE_TASK_ID to sourceTask.id,
+          MemoryRecordExtensionKeys.PREFERENCE_KEY to MemoryPreferenceKeys.AGENT_DISPLAY_NAME,
+          MemoryRecordExtensionKeys.PREFERENCE_VALUE to "Xiao Bai",
+          MemorySoulExtensionKeys.DISPLAY_NAME to "Xiao Bai",
+        ),
+      ),
+    )
+    runtimeManager.emitRunEvent(
+      sessionId = sessionId,
+      task = sourceTask,
+      event = OpenCrayMemoryWriteEvent(
+        runId = sourceSubmission.runId,
+        taskId = sourceTask.id,
+        writtenRecordIds = listOf("memory-user"),
+        writtenKinds = listOf("user_preference"),
+        emittedAtEpochMs = 2_200L,
+      ),
+    )
+
+    val recallSubmission = handle.submitPrompt(
+      userText = "What name should I use for the agent?",
+      pendingMessageId = "pending-memory-recall",
+      visibleThroughMessageId = "pending-memory-recall",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      metadata = emptyMap(),
+    )
+    val recallTask = handle.submittedTasks.last()
+    handle.recordResult(
+      task = recallTask,
+      result = ExecutionResult(
+        taskId = recallTask.id,
+        status = ExecutionStatus.SUCCESS,
+        stdout = "",
+        startedAtEpochMs = 2_400L,
+        finishedAtEpochMs = 2_500L,
+        metadata = mapOf(
+          "responseFormat" to "json_final",
+          "contextMemorySelectedSummary" to "memory-user@420[chinese|name]",
+          "contextMemoryFlushWrittenRecordIds" to "memory-user",
+        ),
+      ),
+    )
+    runtimeManager.emitRunEvent(
+      sessionId = sessionId,
+      task = recallTask,
+      event = OpenCrayMemoryRetrievalEvent(
+        runId = recallSubmission.runId,
+        taskId = recallTask.id,
+        turn = 0,
+        toolName = "memory_search",
+        operation = "search",
+        query = "what name should I call the agent",
+        queryTerms = listOf("name", "agent"),
+        resultCount = 1,
+        corpusFileCount = 1,
+        recordIds = listOf("memory-user"),
+        paths = listOf("memory/2024-03-11.md"),
+        lineRanges = listOf("5-8"),
+        emittedAtEpochMs = 2_400L,
+      ),
+    )
+
+    val server = OpenCrayLocalRuntimeServer(
+      hostRuntimeProvider = { hostRuntime },
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(server, "GET", "/v1/memory_debug_links_snapshot")
+
+      assertEquals(200, response.statusCode)
+      val payload = JSONObject(response.body)
+      val record = payload.getJSONArray("records").getJSONObject(0)
+      assertEquals("memory-user", record.getString("recordId"))
+      assertEquals(sessionId, record.getString("sourceSessionId"))
+      assertEquals(sourceTask.id, record.getString("sourceTaskId"))
+      assertEquals(
+        sourceSubmission.runId,
+        record.getJSONObject("sourceRun").getString("runId"),
+      )
+      assertEquals(
+        420,
+        record.getJSONArray("promptRecalls")
+          .getJSONObject(0)
+          .getInt("score"),
+      )
+      assertEquals(
+        "memory_search",
+        record.getJSONArray("toolRetrievals")
+          .getJSONObject(0)
+          .getString("toolName"),
+      )
+      val maintenanceActions = (0 until record.getJSONArray("maintenanceActions").length())
+        .map { index -> record.getJSONArray("maintenanceActions").getJSONObject(index) }
+      assertTrue(maintenanceActions.any { action -> action.getString("action") == "written" })
+      assertTrue(
+        maintenanceActions.any { action -> action.getString("action") == "flush_written" },
+      )
     } finally {
       server.close()
     }

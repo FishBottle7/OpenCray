@@ -1,11 +1,11 @@
 package com.opencray.runtime.context
 
 data class ContextPrunerConfig(
-  val maxToolChars: Int = 960,
-  val maxToolLines: Int = 24,
+  val maxToolChars: Int = 2_400,
+  val maxToolLines: Int = 48,
   val maxAttachmentChars: Int = 192,
-  val maxPreviewChars: Int = 120,
-  val maxSummaryChars: Int = 360,
+  val maxPreviewChars: Int = 240,
+  val maxSummaryChars: Int = 480,
 ) {
   init {
     require(maxToolChars >= 128) { "ContextPrunerConfig maxToolChars must be >= 128." }

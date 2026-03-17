@@ -6,6 +6,7 @@ import json
 import os
 import runpy
 import sys
+import threading
 import time
 import traceback
 from dataclasses import dataclass
@@ -30,6 +31,8 @@ class ErrorCode:
     DENY_PATH_TRAVERSAL = "DENY_PATH_TRAVERSAL"
     DENY_PATH_ESCAPE = "DENY_PATH_ESCAPE"
     SCRIPT_NOT_FOUND = "SCRIPT_NOT_FOUND"
+    CANCELLED = "CANCELLED"
+    TIMEOUT = "TIMEOUT"
     EXEC_ERROR = "EXEC_ERROR"
     RESULT_WRITE_ERROR = "RESULT_WRITE_ERROR"
     UNSUPPORTED_SCHEMA = "UNSUPPORTED_SCHEMA"
@@ -45,6 +48,7 @@ class BridgeRequest:
     args: list[str]
     timeout_ms: int
     requested_at_epoch_ms: int
+    cancel_path: str | None = None
 
     @classmethod
     def from_json_dict(cls, payload: dict[str, Any]) -> "BridgeRequest":
@@ -57,6 +61,7 @@ class BridgeRequest:
             args=[str(item) for item in payload.get("args", [])],
             timeout_ms=int(payload.get("timeoutMs", 0)),
             requested_at_epoch_ms=int(payload.get("requestedAtEpochMs", 0)),
+            cancel_path=str(payload["cancelPath"]) if payload.get("cancelPath") else None,
         )
 
 
@@ -139,13 +144,61 @@ def _base_metadata(request: BridgeRequest, resolved_script: Path | None = None) 
         "workspaceRoot": request.workspace_root,
         "scriptPath": request.script_path,
         "timeoutMs": str(request.timeout_ms),
-        "timeoutEnforcement": "launcher_or_service",
+        "timeoutEnforcement": "bridge_trace_hook",
+        "cancellationModel": "file_marker_trace_hook",
         "executionModel": "runpy",
         "pythonVersion": sys.version.split()[0],
     }
     if resolved_script is not None:
         metadata["resolvedScriptPath"] = str(resolved_script)
+    if request.cancel_path:
+        metadata["cancelPath"] = request.cancel_path
     return metadata
+
+
+class _ExecutionCancelled(Exception):
+    pass
+
+
+class _ExecutionTimedOut(Exception):
+    pass
+
+
+class _ExecutionGuard:
+    def __init__(self, request: BridgeRequest):
+        self._cancel_path = Path(request.cancel_path).resolve() if request.cancel_path else None
+        self._deadline_epoch_ms = None
+        if request.timeout_ms > 0:
+            requested_at = request.requested_at_epoch_ms if request.requested_at_epoch_ms > 0 else _now_ms()
+            self._deadline_epoch_ms = requested_at + request.timeout_ms
+        self._previous_trace = None
+        self._previous_thread_trace = None
+
+    def _check(self) -> None:
+        if self._cancel_path is not None and self._cancel_path.exists():
+            raise _ExecutionCancelled()
+        if self._deadline_epoch_ms is not None and _now_ms() > self._deadline_epoch_ms:
+            raise _ExecutionTimedOut()
+
+    def _trace(self, frame: Any, event: str, arg: Any) -> Any:
+        if event == "line":
+            self._check()
+        return self._trace
+
+    def __enter__(self) -> "_ExecutionGuard":
+        self._check()
+        self._previous_trace = sys.gettrace()
+        get_thread_trace = getattr(threading, "gettrace", None)
+        if callable(get_thread_trace):
+            self._previous_thread_trace = get_thread_trace()
+        sys.settrace(self._trace)
+        threading.settrace(self._trace)
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        sys.settrace(self._previous_trace)
+        threading.settrace(self._previous_thread_trace)
+        return False
 
 
 def execute_request(request: BridgeRequest) -> BridgeResult:
@@ -220,7 +273,8 @@ def execute_request(request: BridgeRequest) -> BridgeResult:
                 inserted_paths.append(candidate)
 
             with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-                runpy.run_path(str(resolved_script), run_name="__main__")
+                with _ExecutionGuard(request):
+                    runpy.run_path(str(resolved_script), run_name="__main__")
 
             finished_at = _now_ms()
             return BridgeResult(
@@ -232,6 +286,36 @@ def execute_request(request: BridgeRequest) -> BridgeResult:
                 stderr=stderr_buffer.getvalue(),
                 error_code=None,
                 error_message=None,
+                started_at_epoch_ms=started_at,
+                finished_at_epoch_ms=finished_at,
+                metadata=metadata,
+            )
+        except _ExecutionCancelled:
+            finished_at = _now_ms()
+            return BridgeResult(
+                request_id=request.request_id,
+                task_id=request.task_id,
+                status=Status.CANCELLED,
+                exit_code=130,
+                stdout=stdout_buffer.getvalue(),
+                stderr=stderr_buffer.getvalue(),
+                error_code=ErrorCode.CANCELLED,
+                error_message="Python script cancelled.",
+                started_at_epoch_ms=started_at,
+                finished_at_epoch_ms=finished_at,
+                metadata=metadata,
+            )
+        except _ExecutionTimedOut:
+            finished_at = _now_ms()
+            return BridgeResult(
+                request_id=request.request_id,
+                task_id=request.task_id,
+                status=Status.TIMEOUT,
+                exit_code=124,
+                stdout=stdout_buffer.getvalue(),
+                stderr=stderr_buffer.getvalue(),
+                error_code=ErrorCode.TIMEOUT,
+                error_message="Python script exceeded timeout.",
                 started_at_epoch_ms=started_at,
                 finished_at_epoch_ms=finished_at,
                 metadata=metadata,

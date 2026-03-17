@@ -156,6 +156,8 @@ data class OpenCrayToolDispatcherConfig(
   val approvedToolName: String? = null,
   val commandExecutor: CommandExecutor? = null,
   val pythonRuntimeAdapter: PythonScriptRuntime = HostProcessPythonRuntime(),
+  val supportsManagedPythonProcessStart: Boolean = true,
+  val managedPythonProcessUsesRuntimeAdapter: Boolean = false,
   val commandApprovalToken: CommandApprovalToken? = null,
   val todoStore: AgentTodoStore = InMemoryAgentTodoStore(),
   val processRegistry: AgentProcessRegistry = InMemoryAgentProcessRegistry(),
@@ -321,10 +323,10 @@ class OpenCrayToolDispatcher(
       ),
       AgentToolDefinition(
         name = "ProcessStart",
-        description = "Start a managed background command or Python script inside the approved workspace and return a process id for later inspection.",
+        description = "Start a managed background command inside the approved workspace and return a process id for later inspection. Use python_exec instead of ProcessStart for workspace Python scripts unless the runtime explicitly supports managed Python process launches.",
         parameters = listOf(
           AgentToolParameter("command", "string", required = false, description = "Executable to launch. Provide exactly one of command or script_path."),
-          AgentToolParameter("script_path", "string", required = false, description = "Workspace-relative Python script to launch through the managed Python runner. Provide exactly one of command or script_path."),
+          AgentToolParameter("script_path", "string", required = false, description = "Workspace-relative Python script to launch through the managed Python runner on runtimes that support host Python processes. Prefer python_exec for workspace-local Python scripts."),
           AgentToolParameter("args", "string[]", required = false, description = "Optional command arguments."),
           AgentToolParameter("python_executable", "string", required = false, description = "Python executable used when script_path is provided. Defaults to python."),
           AgentToolParameter("working_directory", "string", required = false, description = "Workspace-relative working directory. Defaults to the workspace root."),
@@ -414,10 +416,11 @@ class OpenCrayToolDispatcher(
       ),
       AgentToolDefinition(
         name = "python_exec",
-        description = "Execute a workspace-local Python script through the Python runtime adapter. Today this shells out to a local runner process, so it follows execute-command policy gates.",
+        description = "Execute one workspace-local Python script through the active Python runtime backend. Use this instead of Bash for workspace Python scripts.",
         parameters = listOf(
           AgentToolParameter("script_path", "string", required = true, description = "Script path relative to the workspace root."),
           AgentToolParameter("args", "string[]", required = false, description = "Script arguments."),
+          AgentToolParameter("timeout_ms", "number", required = false, description = "Maximum runtime before the Python execution is timed out."),
         ),
       ),
       AgentToolDefinition(
@@ -1315,6 +1318,7 @@ class OpenCrayToolDispatcher(
 
   private fun startManagedProcess(task: AgentTask, arguments: JsonObject): AgentToolResult {
     val timeoutMs = arguments.optionalLong("timeout_ms") ?: DEFAULT_MANAGED_PROCESS_TIMEOUT_MS
+    unsupportedManagedPythonProcessStart(arguments = arguments)?.let { return it }
     val launch = resolveManagedProcessLaunch(arguments = arguments, timeoutMs = timeoutMs)
     val effectivePolicyDecision = policyDecisionFor(
       task = task,
@@ -1365,6 +1369,28 @@ class OpenCrayToolDispatcher(
     )
   }
 
+  private fun unsupportedManagedPythonProcessStart(arguments: JsonObject): AgentToolResult? {
+    if (config.supportsManagedPythonProcessStart) {
+      return null
+    }
+    val command = arguments.optionalString("command")?.trim()?.takeIf(String::isNotBlank)
+    val scriptPath = arguments.optionalString("script_path")?.trim()?.takeIf(String::isNotBlank) ?: return null
+    if (command != null) {
+      return null
+    }
+    return AgentToolResult(
+      toolName = "ProcessStart",
+      status = AgentToolResultStatus.FAILED,
+      content = "ProcessStart with script_path is unavailable on this runtime. Use python_exec for workspace-local Python scripts.",
+      errorCode = "PROCESSSTART_PYTHON_UNSUPPORTED",
+      errorMessage = "Managed Python process launches are disabled for this runtime.",
+      metadata = mapOf(
+        "scriptPath" to scriptPath.replace('\\', '/'),
+        "runtimeCapability" to "managed_python_process_start_disabled",
+      ),
+    )
+  }
+
   private fun resolveManagedProcessLaunch(
     arguments: JsonObject,
     timeoutMs: Long,
@@ -1412,6 +1438,29 @@ class OpenCrayToolDispatcher(
       timeoutMs = timeoutMs,
       pythonExecutable = pythonExecutable,
     )
+    if (config.managedPythonProcessUsesRuntimeAdapter) {
+      return ManagedProcessLaunch(
+        command = "python_exec",
+        args = userArgs,
+        workingDirectory = workingDirectory,
+        metadata = mapOf(
+          "runtimeKind" to "python_exec",
+          "scriptPath" to toolTargetResolver.displayModelPath(scriptPath),
+          "pythonExecutable" to pythonExecutable,
+          "managedByPythonRuntime" to "true",
+        ),
+        affectedPaths = mapOf("scriptPath" to toolTargetResolver.displayModelPath(scriptPath)),
+        metadataContext = policyMetadataContext(
+          toolName = "ProcessStart",
+          targetKind = ToolTargetKind.SCRIPT,
+          primaryPath = scriptPath,
+          secondaryPath = workingDirectory,
+          primaryTargetPath = toolTargetResolver.displayModelPath(scriptPath),
+          secondaryTargetPath = toolTargetResolver.displayModelPath(workingDirectory),
+          targetSummary = toolTargetResolver.displayModelPath(scriptPath),
+        ),
+      )
+    }
     val pythonCommand = HostProcessPythonRuntime.commandFor(pythonRequest)
     return ManagedProcessLaunch(
       command = pythonCommand.first(),
@@ -1558,11 +1607,29 @@ class OpenCrayToolDispatcher(
     )?.let { return it }
     val snapshot = processRegistry.terminate(processId)
       ?: return missingManagedProcess(processId = processId, toolName = "ProcessTerminate")
+    val terminationSupport = snapshot.metadata["terminationSupport"]
+    val terminationRequestAccepted = snapshot.metadata["terminationRequestAccepted"]
+    val terminationMessage = when {
+      snapshot.status == ManagedProcessStatus.CANCELLED ->
+        "Managed process cancelled."
+      terminationSupport == "cooperative" &&
+        snapshot.status == ManagedProcessStatus.RUNNING &&
+        terminationRequestAccepted == "true" ->
+        "Managed process cancellation requested."
+      terminationSupport == "cooperative" &&
+        snapshot.status == ManagedProcessStatus.RUNNING &&
+        terminationRequestAccepted == "false" ->
+        "Managed process cancellation could not be delivered to the runtime and is still running."
+      terminationSupport == "unsupported" &&
+        snapshot.status == ManagedProcessStatus.RUNNING ->
+        "Managed process does not support termination on this runtime and is still running."
+      else -> "Managed process termination requested."
+    }
     return AgentToolResult(
       toolName = "ProcessTerminate",
       status = AgentToolResultStatus.SUCCESS,
       content = buildString {
-        appendLine("Managed process termination requested.")
+        appendLine(terminationMessage)
         append(renderManagedProcessSnapshot(snapshot, includeOutput = true))
       }.trim(),
       metadata = managedProcessMetadata(snapshot) + toolPolicySupport.policyMetadata(
@@ -1971,6 +2038,7 @@ class OpenCrayToolDispatcher(
         workspaceRoot = writeBoundary.defaultRoot,
         scriptPath = scriptPath,
         args = arguments.optionalStringArray("args"),
+        timeoutMs = arguments.optionalLong("timeout_ms") ?: 30_000L,
       ),
     )
     val toolResult = executionResult.toAgentToolResult(toolName = "python_exec")
@@ -2080,6 +2148,15 @@ class OpenCrayToolDispatcher(
     }
     snapshot.metadata["pythonExecutable"]?.let { pythonExecutable ->
       appendLine("python_executable=$pythonExecutable")
+    }
+    snapshot.metadata["terminationSupport"]?.let { terminationSupport ->
+      appendLine("termination_support=$terminationSupport")
+    }
+    if (snapshot.metadata["terminationRequested"] == "true") {
+      appendLine("termination_requested=true")
+    }
+    snapshot.metadata["terminationRequestAccepted"]?.let { terminationRequestAccepted ->
+      appendLine("termination_request_accepted=$terminationRequestAccepted")
     }
     if (snapshot.args.isNotEmpty()) {
       appendLine("args=${snapshot.args.joinToString(separator = " ")}")
@@ -2307,6 +2384,10 @@ class OpenCrayToolDispatcher(
         put("corpusFileCount", response.corpusFileCount.toString())
         if (response.matches.isNotEmpty()) {
           put(
+            "recordIds",
+            response.matches.joinToString(separator = ",") { match -> match.recordId },
+          )
+          put(
             "paths",
             response.matches.joinToString(separator = ",") { match -> match.path },
           )
@@ -2361,6 +2442,7 @@ class OpenCrayToolDispatcher(
         "from" to response.startLine.toString(),
         "returnedLineCount" to (response.endLine - response.startLine + 1).toString(),
         "totalLineCount" to response.totalLineCount.toString(),
+        "recordIds" to response.recordIds.joinToString(separator = ","),
       ),
     )
   }

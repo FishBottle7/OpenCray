@@ -188,6 +188,8 @@ internal class AppAgentSessionTaskRuntimeFactory(
           approvedTaskId = task.id.takeIf { approvalGrant != null },
           approvedToolName = approvalGrant?.toolName,
           pythonRuntimeAdapter = pythonRuntimeProvider(),
+          supportsManagedPythonProcessStart = true,
+          managedPythonProcessUsesRuntimeAdapter = true,
           todoStore = todoStoreForSession(sessionId),
           processRegistry = processRegistryForSession(sessionId),
           webSearchProvider = webSearchProviderFactory(),

@@ -15,6 +15,7 @@ internal data class MemoryToolTrace(
   val queryTerms: List<String> = emptyList(),
   val resultCount: Int? = null,
   val corpusFileCount: Int? = null,
+  val recordIds: List<String> = emptyList(),
   val paths: List<String> = emptyList(),
   val lineRanges: List<String> = emptyList(),
   val path: String? = null,
@@ -34,6 +35,7 @@ internal fun memoryToolTraceFrom(
     queryTerms = splitCsvMetadata(result.metadata["queryTerms"]),
     resultCount = result.metadata["resultCount"]?.toIntOrNull(),
     corpusFileCount = result.metadata["corpusFileCount"]?.toIntOrNull(),
+    recordIds = splitCsvMetadata(result.metadata["recordIds"]),
     paths = splitCsvMetadata(result.metadata["paths"]),
     lineRanges = splitCsvMetadata(result.metadata["lineRanges"]),
   ).takeIf { trace ->
@@ -41,17 +43,20 @@ internal fun memoryToolTraceFrom(
       trace.queryTerms.isNotEmpty() ||
       trace.resultCount != null ||
       trace.corpusFileCount != null ||
+      trace.recordIds.isNotEmpty() ||
       trace.paths.isNotEmpty()
   }
 
   "memory_get" -> MemoryToolTrace(
     operation = MemoryToolOperation.GET,
     toolName = call.toolName,
+    recordIds = splitCsvMetadata(result.metadata["recordIds"]),
     path = result.metadata["path"]?.takeIf(String::isNotBlank),
     fromLine = result.metadata["from"]?.toIntOrNull(),
     returnedLineCount = result.metadata["returnedLineCount"]?.toIntOrNull(),
     totalLineCount = result.metadata["totalLineCount"]?.toIntOrNull(),
   ).takeIf { trace ->
+    trace.recordIds.isNotEmpty() ||
     trace.path != null ||
       trace.fromLine != null ||
       trace.returnedLineCount != null ||

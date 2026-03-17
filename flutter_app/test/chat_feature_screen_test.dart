@@ -230,10 +230,7 @@ void main() {
         emittedAtEpochMs: 3000,
         toolName: 'LS',
         contentPreview: 'file\tsrc/main.dart\nfile\tsrc/app.dart',
-        resultMetadata: <String, String>{
-          'path': 'src',
-          'entryCount': '2',
-        },
+        resultMetadata: <String, String>{'path': 'src', 'entryCount': '2'},
       );
       const grepCall = OpenCrayChatRuntimeEventSnapshot(
         kind: 'tool_call',
@@ -304,7 +301,21 @@ void main() {
         text: 'Scanning README and Gradle files before choosing the next tool.',
       );
       final bridge = _FakeChatBridge(
-        chatSnapshot: _hostChatSnapshot(),
+        chatSnapshot: _hostChatSnapshot(
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Inspect the workspace.',
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'runtime-progress-run-progress-1-2200',
+              kind: 'inbound',
+              text:
+                  'Planning\n\nScanning README and Gradle files before choosing the next tool.',
+              isEphemeral: true,
+            ),
+          ],
+        ),
         runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
           sessionId: 'session-1',
           activeRuns: <OpenCrayChatRunSnapshot>[
@@ -345,9 +356,17 @@ void main() {
         find.textContaining(
           'Scanning README and Gradle files before choosing the next tool.',
         ),
-        findsOneWidget,
+        findsWidgets,
       );
       expect(find.text('Planning'), findsOneWidget);
+      expect(
+        find.byKey(
+          const ValueKey<String>(
+            'chat-bubble-runtime-progress-run-progress-1-2200',
+          ),
+        ),
+        findsOneWidget,
+      );
 
       final bubbleFinder = find.byKey(
         const ValueKey<String>('chat-run-trace-run-progress-1'),
@@ -582,6 +601,190 @@ void main() {
         find.descendant(
           of: fullscreenFinder,
           matching: find.textContaining('Expired: commitment-old-1'),
+        ),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'host-mapped run trace shows context setup traces in full-screen view',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      const lifecycleEvent = OpenCrayChatRuntimeEventSnapshot(
+        kind: 'lifecycle',
+        runId: 'run-context-1',
+        taskId: 'task-context-1',
+        emittedAtEpochMs: 1000,
+        phase: 'start',
+      );
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(),
+        runtimeSnapshot: OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: const <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-context-1',
+              taskId: 'task-context-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 3000,
+              attempt: 1,
+              isTerminal: false,
+              lastEvent: lifecycleEvent,
+              memoryTrace: OpenCrayChatRunMemoryTraceSnapshot(
+                matchedRecordCount: 2,
+                injectedRecordCount: 1,
+                omittedRecordCount: 1,
+                queryTerms: <String>['gradle', 'wrapper'],
+                selected: <OpenCrayChatRunMemorySelectedSnapshot>[
+                  OpenCrayChatRunMemorySelectedSnapshot(
+                    id: 'mem-workspace',
+                    score: 420,
+                    matchedTerms: <String>['gradle', 'wrapper'],
+                  ),
+                ],
+                omitted: <OpenCrayChatRunMemoryOmittedSnapshot>[
+                  OpenCrayChatRunMemoryOmittedSnapshot(
+                    id: 'mem-old',
+                    reason: 'max_records',
+                  ),
+                ],
+              ),
+              memoryFlush: OpenCrayChatRunMemoryFlushSnapshot(
+                outcome: 'written',
+                candidateCount: 2,
+                writtenRecordCount: 1,
+                writtenKinds: <String>['project_fact'],
+                writtenRecordIds: <String>['mem-workspace'],
+              ),
+              bootstrap: OpenCrayChatRunBootstrapSnapshot(
+                mode: 'full',
+                visibleFileCount: 2,
+                injectedFileCount: 2,
+                truncatedFileCount: 1,
+                files: <OpenCrayChatRunBootstrapFileSnapshot>[
+                  OpenCrayChatRunBootstrapFileSnapshot(
+                    name: 'AGENTS.md',
+                    relativePath: 'AGENTS.md',
+                    sourceCharCount: 42,
+                    injectedCharCount: 42,
+                    truncated: false,
+                  ),
+                  OpenCrayChatRunBootstrapFileSnapshot(
+                    name: 'PROJECT.md',
+                    relativePath: 'PROJECT.md',
+                    sourceCharCount: 80,
+                    injectedCharCount: 31,
+                    truncated: true,
+                  ),
+                ],
+              ),
+              durableCompaction: OpenCrayChatRunDurableCompactionSnapshot(
+                compactedThisRun: true,
+                sourceTranscriptMessageCount: 18,
+                retainedTranscriptMessageCount: 12,
+                latestCompactedMessageCount: 6,
+                includedSummaryCount: 1,
+                totalSummaryCount: 1,
+                totalCompactedMessageCount: 6,
+              ),
+              skillInventory: OpenCrayChatRunSkillInventorySnapshot(
+                visibleSkillCount: 2,
+                injectedSkillCount: 2,
+                implicitSkillCount: 1,
+                skills: <OpenCrayChatRunVisibleSkillSnapshot>[
+                  OpenCrayChatRunVisibleSkillSnapshot(
+                    name: 'ui-ux-pro-max',
+                    relativePath: 'skills/ui-ux-pro-max/SKILL.md',
+                    invocationControl: 'manual',
+                    userInvocable: true,
+                    executionContext: 'shared',
+                  ),
+                ],
+              ),
+              activeSkill: OpenCrayChatRunActiveSkillSnapshot(
+                name: 'ui-ux-pro-max',
+                relativePath: 'skills/ui-ux-pro-max/SKILL.md',
+                activationSource: 'skill_read',
+                toolRestrictionEnabled: true,
+                allowedToolKeys: <String>['read', 'write'],
+              ),
+            ),
+          ],
+          events: const <OpenCrayChatRuntimeEventSnapshot>[lifecycleEvent],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final bubbleFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-run-context-1'),
+      );
+      final center = tester.getCenter(bubbleFinder);
+
+      await tester.tapAt(center);
+      await tester.pump(const Duration(milliseconds: 40));
+      await tester.tapAt(center);
+      await tester.pumpAndSettle();
+
+      final fullscreenFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-fullscreen-run-context-1'),
+      );
+
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Mode: full'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('AGENTS.md (AGENTS.md)'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Query terms: gradle, wrapper'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Outcome: written'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Retained 12/18 transcript messages'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('ui-ux-pro-max'),
+        ),
+        findsWidgets,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Allowed tools: read, write'),
         ),
         findsOneWidget,
       );
@@ -885,6 +1088,7 @@ Widget _buildChatHarness({
 OpenCrayChatSnapshot _hostChatSnapshot({
   List<OpenCrayChatPendingApprovalSnapshot> pendingApprovals =
       const <OpenCrayChatPendingApprovalSnapshot>[],
+  List<OpenCrayChatMessageSnapshot>? messages,
 }) {
   return OpenCrayChatSnapshot(
     screenTitle: 'Chat',
@@ -896,12 +1100,14 @@ OpenCrayChatSnapshot _hostChatSnapshot({
       badge: '1 message',
       body: 'Reply in progress',
     ),
-    messages: <OpenCrayChatMessageSnapshot>[
-      OpenCrayChatMessageSnapshot(
-        kind: 'outbound',
-        text: 'Inspect the workspace.',
-      ),
-    ],
+    messages:
+        messages ??
+        <OpenCrayChatMessageSnapshot>[
+          OpenCrayChatMessageSnapshot(
+            kind: 'outbound',
+            text: 'Inspect the workspace.',
+          ),
+        ],
     drawer: OpenCrayChatDrawerSnapshot(
       eyebrow: 'Recent sessions',
       title: 'Recent sessions',
@@ -942,6 +1148,15 @@ class _FakeChatBridge implements OpenCrayHostBridge {
         sessionId: '',
         observedAtEpochMs: 0,
         records: <OpenCrayMemoryDebugRecordSnapshot>[],
+      );
+
+  @override
+  Future<OpenCrayMemoryDebugLinksSnapshot>
+  loadMemoryDebugLinksSnapshot() async =>
+      const OpenCrayMemoryDebugLinksSnapshot(
+        sessionId: '',
+        observedAtEpochMs: 0,
+        records: <OpenCrayMemoryDebugLinksEntrySnapshot>[],
       );
 
   @override

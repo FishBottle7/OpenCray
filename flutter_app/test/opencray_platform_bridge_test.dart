@@ -486,6 +486,57 @@ void main() {
                   'updatedAtEpochMs': 2500,
                   'attempt': 1,
                   'isTerminal': false,
+                  'memoryFlush': <String, Object?>{
+                    'outcome': 'written',
+                    'candidateCount': 2,
+                    'writtenRecordCount': 1,
+                    'writtenKinds': <Object?>['user_preference'],
+                    'writtenRecordIds': <Object?>['memory-user-1'],
+                  },
+                  'bootstrap': <String, Object?>{
+                    'mode': 'full',
+                    'visibleFileCount': 2,
+                    'injectedFileCount': 2,
+                    'truncatedFileCount': 1,
+                    'files': <Object?>[
+                      <String, Object?>{
+                        'name': 'AGENTS.md',
+                        'relativePath': 'AGENTS.md',
+                        'sourceCharCount': 42,
+                        'injectedCharCount': 42,
+                        'truncated': false,
+                      },
+                    ],
+                  },
+                  'durableCompaction': <String, Object?>{
+                    'compactedThisRun': true,
+                    'sourceTranscriptMessageCount': 18,
+                    'retainedTranscriptMessageCount': 12,
+                    'latestCompactedMessageCount': 6,
+                    'includedSummaryCount': 1,
+                    'totalSummaryCount': 1,
+                  },
+                  'skillInventory': <String, Object?>{
+                    'visibleSkillCount': 2,
+                    'injectedSkillCount': 2,
+                    'implicitSkillCount': 1,
+                    'skills': <Object?>[
+                      <String, Object?>{
+                        'name': 'ui-ux-pro-max',
+                        'relativePath': 'skills/ui-ux-pro-max/SKILL.md',
+                        'invocationControl': 'manual',
+                        'userInvocable': true,
+                        'executionContext': 'shared',
+                      },
+                    ],
+                  },
+                  'activeSkill': <String, Object?>{
+                    'name': 'ui-ux-pro-max',
+                    'relativePath': 'skills/ui-ux-pro-max/SKILL.md',
+                    'activationSource': 'skill_read',
+                    'toolRestrictionEnabled': true,
+                    'allowedToolKeys': <Object?>['read', 'write'],
+                  },
                   'lastEvent': <String, Object?>{
                     'kind': 'memory_write',
                     'runId': 'run-memory-write-1',
@@ -500,6 +551,18 @@ void main() {
                 },
               ],
               'events': <Object?>[
+                <String, Object?>{
+                  'kind': 'memory_retrieval',
+                  'runId': 'run-memory-read-1',
+                  'taskId': 'task-memory-read-1',
+                  'emittedAtEpochMs': 2400,
+                  'toolName': 'memory_search',
+                  'operation': 'search',
+                  'queryTerms': <Object?>['gradle', 'wrapper'],
+                  'recordIds': <Object?>['memory-user-1'],
+                  'paths': <Object?>['memory/2024-03-11.md'],
+                  'lineRanges': <Object?>['5-8'],
+                },
                 <String, Object?>{
                   'kind': 'memory_write',
                   'runId': 'run-memory-write-1',
@@ -518,13 +581,32 @@ void main() {
       final snapshot = await bridge.loadChatRuntimeSnapshot();
 
       expect(capturedCall.method, 'loadChatRuntimeSnapshot');
-      expect(snapshot.events.single.kind, 'memory_write');
-      expect(snapshot.events.single.writtenRecordIds, <String>[
-        'memory-user-1',
-      ]);
-      expect(snapshot.events.single.writtenKinds, <String>['user_preference']);
-      expect(snapshot.events.single.reaffirmedRecordIds, <String>[
+      expect(snapshot.events.first.kind, 'memory_retrieval');
+      expect(snapshot.events.first.recordIds, <String>['memory-user-1']);
+      expect(snapshot.events[1].kind, 'memory_write');
+      expect(snapshot.events[1].writtenRecordIds, <String>['memory-user-1']);
+      expect(snapshot.events[1].writtenKinds, <String>['user_preference']);
+      expect(snapshot.events[1].reaffirmedRecordIds, <String>[
         'commitment-keep-1',
+      ]);
+      expect(snapshot.activeRuns.single.memoryFlush?.outcome, 'written');
+      expect(snapshot.activeRuns.single.bootstrap?.mode, 'full');
+      expect(
+        snapshot.activeRuns.single.bootstrap?.files.single.name,
+        'AGENTS.md',
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.compactedThisRun,
+        isTrue,
+      );
+      expect(
+        snapshot.activeRuns.single.skillInventory?.skills.single.name,
+        'ui-ux-pro-max',
+      );
+      expect(snapshot.activeRuns.single.activeSkill?.name, 'ui-ux-pro-max');
+      expect(snapshot.activeRuns.single.activeSkill?.allowedToolKeys, <String>[
+        'read',
+        'write',
       ]);
       expect(snapshot.activeRuns.single.lastEvent?.expiredRecordIds, <String>[
         'commitment-old-1',
@@ -563,6 +645,89 @@ void main() {
     expect(snapshot.workspaceId, 'workspace-main');
     expect(snapshot.records.single.id, 'memory-user');
     expect(snapshot.records.single.preferenceValue, 'Xiao Bai');
+  });
+
+  test('platform bridge loads memory debug link snapshots', () async {
+    late MethodCall capturedCall;
+    const bridge = OpenCrayPlatformBridge();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(methodChannel, (call) async {
+          capturedCall = call;
+          return <String, Object?>{
+            'sessionId': 'session-1',
+            'workspaceId': 'workspace-main',
+            'observedAtEpochMs': 5000,
+            'records': <Object?>[
+              <String, Object?>{
+                'recordId': 'memory-user',
+                'sourceSessionId': 'session-1',
+                'sourceTaskId': 'task-memory-origin-1',
+                'sourceRun': <String, Object?>{
+                  'sessionId': 'session-1',
+                  'runId': 'run-memory-origin-1',
+                  'taskId': 'task-memory-origin-1',
+                  'acceptedAtEpochMs': 2000,
+                  'updatedAtEpochMs': 2200,
+                  'executionStatus': 'success',
+                },
+                'promptRecalls': <Object?>[
+                  <String, Object?>{
+                    'occurredAtEpochMs': 4600,
+                    'run': <String, Object?>{
+                      'sessionId': 'session-1',
+                      'runId': 'run-memory',
+                      'taskId': 'task-memory',
+                      'acceptedAtEpochMs': 1000,
+                      'updatedAtEpochMs': 2400,
+                    },
+                    'score': 420,
+                    'matchedTerms': <Object?>['chinese'],
+                  },
+                ],
+                'toolRetrievals': <Object?>[
+                  <String, Object?>{
+                    'occurredAtEpochMs': 1600,
+                    'run': <String, Object?>{
+                      'sessionId': 'session-1',
+                      'runId': 'run-memory',
+                      'taskId': 'task-memory',
+                      'acceptedAtEpochMs': 1000,
+                      'updatedAtEpochMs': 2400,
+                    },
+                    'toolName': 'memory_search',
+                    'operation': 'search',
+                    'queryTerms': <Object?>['name'],
+                  },
+                ],
+                'maintenanceActions': <Object?>[
+                  <String, Object?>{
+                    'action': 'written',
+                    'occurredAtEpochMs': 2200,
+                    'run': <String, Object?>{
+                      'sessionId': 'session-1',
+                      'runId': 'run-memory-origin-1',
+                      'taskId': 'task-memory-origin-1',
+                      'acceptedAtEpochMs': 2000,
+                      'updatedAtEpochMs': 2200,
+                    },
+                  },
+                ],
+              },
+            ],
+          };
+        });
+
+    final snapshot = await bridge.loadMemoryDebugLinksSnapshot();
+
+    expect(capturedCall.method, 'loadMemoryDebugLinksSnapshot');
+    expect(snapshot.records.single.recordId, 'memory-user');
+    expect(snapshot.records.single.sourceRun?.runId, 'run-memory-origin-1');
+    expect(snapshot.records.single.promptRecalls.single.score, 420);
+    expect(
+      snapshot.records.single.toolRetrievals.single.toolName,
+      'memory_search',
+    );
+    expect(snapshot.records.single.maintenanceActions.single.action, 'written');
   });
 
   test('platform bridge loads soul debug snapshots', () async {

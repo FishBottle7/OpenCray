@@ -1,8 +1,8 @@
 package com.opencray.runtime.context
 
 data class TranscriptWindowConfig(
-  val maxMessages: Int = 12,
-  val maxCharsPerMessage: Int = 1_600,
+  val maxMessages: Int = 16,
+  val maxCharsPerMessage: Int = 2_400,
 ) {
   init {
     require(maxMessages >= 1) { "TranscriptWindowConfig maxMessages must be >= 1." }
@@ -100,8 +100,8 @@ class TranscriptWindowBuilder(
       else -> message.content
     }
     val limit = when {
-      isToolCallMarker(message.content) -> minOf(config.maxCharsPerMessage, 240)
-      message.role == RuntimeConversationRole.TOOL -> minOf(config.maxCharsPerMessage, 640)
+      isToolCallMarker(message.content) -> minOf(config.maxCharsPerMessage, 480)
+      message.role == RuntimeConversationRole.TOOL -> minOf(config.maxCharsPerMessage, 1_600)
       else -> config.maxCharsPerMessage
     }
     return if (compacted.length > limit) {

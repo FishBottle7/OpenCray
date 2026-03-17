@@ -140,6 +140,7 @@ class ChatRuntimeSessionContextFactoryTest {
 
     assertEquals("builder", context.soulProfile?.extensions?.get(SoulProfileExtensionKeys.TONE))
     assertEquals("terse", context.soulProfile?.extensions?.get(SoulProfileExtensionKeys.VERBOSITY))
+    assertEquals("low", context.soulProfile?.extensions?.get(SoulProfileExtensionKeys.PLASTICITY))
     assertEquals(
       "direct",
       context.soulProfile?.extensions?.get(SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE),

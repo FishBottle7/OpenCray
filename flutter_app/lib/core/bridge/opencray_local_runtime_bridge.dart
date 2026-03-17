@@ -453,6 +453,13 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
       );
 
   @override
+  Future<OpenCrayMemoryDebugLinksSnapshot>
+  loadMemoryDebugLinksSnapshot() async =>
+      OpenCrayMemoryDebugLinksSnapshot.fromMap(
+        await _getMap('v1/memory_debug_links_snapshot'),
+      );
+
+  @override
   Future<OpenCraySoulDebugSnapshot> loadSoulDebugSnapshot() async =>
       OpenCraySoulDebugSnapshot.fromMap(
         await _getMap('v1/soul_debug_snapshot'),
@@ -497,6 +504,15 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     'v1/select_chat_session',
     <String, Object?>{'sessionId': sessionId},
   );
+
+  @override
+  Future<void> branchChatSessionFromMessage({
+    required String sessionId,
+    required String messageId,
+  }) => _postVoid('v1/branch_chat_session_from_message', <String, Object?>{
+    'sessionId': sessionId,
+    'messageId': messageId,
+  });
 
   @override
   Future<void> deleteChatMessage({

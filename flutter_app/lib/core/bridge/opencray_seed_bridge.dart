@@ -935,6 +935,15 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       );
 
   @override
+  Future<OpenCrayMemoryDebugLinksSnapshot>
+  loadMemoryDebugLinksSnapshot() async =>
+      const OpenCrayMemoryDebugLinksSnapshot(
+        sessionId: '',
+        observedAtEpochMs: 0,
+        records: <OpenCrayMemoryDebugLinksEntrySnapshot>[],
+      );
+
+  @override
   Future<OpenCraySoulDebugSnapshot> loadSoulDebugSnapshot() async =>
       const OpenCraySoulDebugSnapshot(
         sessionId: '',
@@ -1081,6 +1090,80 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
 
   @override
   Future<void> selectChatSession(String sessionId) async {}
+
+  @override
+  Future<void> branchChatSessionFromMessage({
+    required String sessionId,
+    required String messageId,
+  }) async {
+    if (sessionId != _activeChatSessionId || messageId.trim().isEmpty) {
+      return;
+    }
+    OpenCrayChatSessionItemSnapshot? sourceSession;
+    for (final session in _chatSnapshot.drawer.sessions) {
+      if (session.sessionId == sessionId) {
+        sourceSession = session;
+        break;
+      }
+    }
+    if (sourceSession == null) {
+      return;
+    }
+    final int branchUntilIndex = _chatSnapshot.messages.indexWhere(
+      (message) => message.messageId == messageId,
+    );
+    final List<OpenCrayChatMessageSnapshot> branchMessages =
+        (branchUntilIndex >= 0
+                ? _chatSnapshot.messages.take(branchUntilIndex + 1)
+                : _chatSnapshot.messages)
+            .toList(growable: false);
+    final String preview = _seedChatSessionPreviewFromMessages(
+      branchMessages,
+      fallback: sourceSession.preview,
+    );
+    final branchSession = OpenCrayChatSessionItemSnapshot(
+      sessionId:
+          '$sessionId-branch-${_chatSnapshot.drawer.sessions.length + 1}',
+      title: _seedBranchSessionTitle(sourceSession.title),
+      preview: preview,
+      meta: sourceSession.meta,
+      isSelected: true,
+    );
+    final updatedSessions = <OpenCrayChatSessionItemSnapshot>[
+      branchSession,
+      ..._chatSnapshot.drawer.sessions.map(
+        (session) => OpenCrayChatSessionItemSnapshot(
+          sessionId: session.sessionId,
+          title: session.title,
+          preview: session.preview,
+          meta: session.meta,
+          isSelected: false,
+          unreadCount: session.unreadCount,
+        ),
+      ),
+    ];
+    _chatSnapshot = OpenCrayChatSnapshot(
+      screenTitle: _chatSnapshot.screenTitle,
+      modeLabel: _chatSnapshot.modeLabel,
+      sessionButtonLabel: _chatSnapshot.sessionButtonLabel,
+      composerPlaceholder: _chatSnapshot.composerPlaceholder,
+      summary: OpenCrayChatSummarySnapshot(
+        title: branchSession.title,
+        badge: _chatSnapshot.summary.badge,
+        body: preview.isNotEmpty ? preview : _chatSnapshot.summary.body,
+      ),
+      messages: branchMessages,
+      drawer: OpenCrayChatDrawerSnapshot(
+        eyebrow: _chatSnapshot.drawer.eyebrow,
+        title: _chatSnapshot.drawer.title,
+        ctaLabel: _chatSnapshot.drawer.ctaLabel,
+        sessions: updatedSessions,
+      ),
+      isInputEnabled: _chatSnapshot.isInputEnabled,
+      pendingApprovals: _chatSnapshot.pendingApprovals,
+    );
+    _emitChatSnapshot();
+  }
 
   @override
   Future<void> deleteChatMessage({
@@ -1297,6 +1380,30 @@ String _seedCopySessionTitle(String title) {
     return '${title.substring(0, 27)} copy';
   }
   return '$title copy';
+}
+
+String _seedBranchSessionTitle(String title) {
+  if (title.endsWith(' branch')) {
+    return title;
+  }
+  if (title.length >= 25) {
+    return '${title.substring(0, 25)} branch';
+  }
+  return '$title branch';
+}
+
+String _seedChatSessionPreviewFromMessages(
+  List<OpenCrayChatMessageSnapshot> messages, {
+  required String fallback,
+}) {
+  for (final OpenCrayChatMessageSnapshot message in messages.reversed) {
+    final String trimmed = message.text.trim();
+    if (trimmed.isEmpty || message.kind == 'timeline') {
+      continue;
+    }
+    return trimmed;
+  }
+  return fallback;
 }
 
 OpenCraySettingsDetailSnapshot _seedSettingsDetailFor(String routeId) {

@@ -479,6 +479,15 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
       );
 
   @override
+  Future<OpenCrayMemoryDebugLinksSnapshot>
+  loadMemoryDebugLinksSnapshot() async =>
+      const OpenCrayMemoryDebugLinksSnapshot(
+        sessionId: '',
+        observedAtEpochMs: 0,
+        records: <OpenCrayMemoryDebugLinksEntrySnapshot>[],
+      );
+
+  @override
   Future<OpenCraySoulDebugSnapshot> loadSoulDebugSnapshot() async =>
       const OpenCraySoulDebugSnapshot(
         sessionId: '',
@@ -504,6 +513,12 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
 
   @override
   Future<void> selectChatSession(String sessionId) async {}
+
+  @override
+  Future<void> branchChatSessionFromMessage({
+    required String sessionId,
+    required String messageId,
+  }) async {}
 
   @override
   Future<void> deleteChatMessage({

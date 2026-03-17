@@ -43,6 +43,7 @@ class SoulProfileResolver {
     presetName = "STEADY",
     tone = SoulTone.STEADY,
     verbosity = SoulVerbosity.BALANCED,
+    plasticity = SoulPlasticity.LOW,
     userRelationshipStyle = UserRelationshipStyle.COLLABORATIVE,
     riskTolerance = RiskTolerance.CONSERVATIVE,
     toolUseBias = ToolUseBias.VERIFY_FIRST,
@@ -61,6 +62,7 @@ class SoulProfileResolver {
     presetName = "BUILDER",
     tone = SoulTone.BUILDER,
     verbosity = SoulVerbosity.TERSE,
+    plasticity = SoulPlasticity.LOW,
     userRelationshipStyle = UserRelationshipStyle.DIRECT,
     riskTolerance = RiskTolerance.BALANCED,
     toolUseBias = ToolUseBias.TOOL_FORWARD,
@@ -79,6 +81,7 @@ class SoulProfileResolver {
     presetName = "WARM",
     tone = SoulTone.WARM,
     verbosity = SoulVerbosity.BALANCED,
+    plasticity = SoulPlasticity.MEDIUM,
     userRelationshipStyle = UserRelationshipStyle.SUPPORTIVE,
     riskTolerance = RiskTolerance.CONSERVATIVE,
     toolUseBias = ToolUseBias.VERIFY_FIRST,
@@ -100,6 +103,7 @@ class SoulProfileResolver {
     presetName = presetName,
     tone = SoulTone.CUSTOM,
     verbosity = SoulVerbosity.BALANCED,
+    plasticity = SoulPlasticity.LOW,
     userRelationshipStyle = UserRelationshipStyle.COLLABORATIVE,
     riskTolerance = RiskTolerance.BALANCED,
     toolUseBias = ToolUseBias.BALANCED,
@@ -118,6 +122,8 @@ class SoulProfileResolver {
   ): SoulProfile {
     val tone = extensions[SoulProfileExtensionKeys.TONE].parseEnumOrNull<SoulTone>() ?: profile.tone
     val verbosity = extensions[SoulProfileExtensionKeys.VERBOSITY].parseEnumOrNull<SoulVerbosity>() ?: profile.verbosity
+    val plasticity =
+      extensions[SoulProfileExtensionKeys.PLASTICITY].parseEnumOrNull<SoulPlasticity>() ?: profile.plasticity
     val relationshipStyle =
       extensions[SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE].parseEnumOrNull<UserRelationshipStyle>()
         ?: profile.userRelationshipStyle
@@ -143,6 +149,7 @@ class SoulProfileResolver {
       voice = voice,
       tone = tone,
       verbosity = verbosity,
+      plasticity = plasticity,
       userRelationshipStyle = relationshipStyle,
       riskTolerance = riskTolerance,
       toolUseBias = toolUseBias,

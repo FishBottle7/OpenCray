@@ -255,6 +255,7 @@ internal class OpenCrayFlutterHostBridge(
           call.argument<String>("runId").orEmpty(),
         )
         "loadMemoryDebugSnapshot" -> hostRuntime.loadMemoryDebugSnapshot()
+        "loadMemoryDebugLinksSnapshot" -> hostRuntime.loadMemoryDebugLinksSnapshot()
         "loadSoulDebugSnapshot" -> hostRuntime.loadSoulDebugSnapshot()
         "waitForChatRun" -> {
           runAsync(result) {
@@ -282,6 +283,14 @@ internal class OpenCrayFlutterHostBridge(
 
         "selectChatSession" -> {
           hostRuntime.selectChatSession(call.argument<String>("sessionId").orEmpty())
+          null
+        }
+
+        "branchChatSessionFromMessage" -> {
+          hostRuntime.branchChatSessionFromMessage(
+            sessionId = call.argument<String>("sessionId").orEmpty(),
+            messageId = call.argument<String>("messageId").orEmpty(),
+          )
           null
         }
 

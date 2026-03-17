@@ -224,9 +224,13 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
                   const SizedBox(height: 16),
                   _buildRunOverviewCard(_selectedRunSnapshot!),
                   const SizedBox(height: 16),
+                  _buildContextSetupCard(_selectedRunSnapshot!),
+                  const SizedBox(height: 16),
                   _buildMemoryWritesCard(_selectedRunSnapshot!),
                   const SizedBox(height: 16),
                   _buildMemoryRecallCard(_selectedRunSnapshot!),
+                  const SizedBox(height: 16),
+                  _buildSkillContextCard(_selectedRunSnapshot!),
                   const SizedBox(height: 16),
                   _buildSoulResolutionCard(),
                   const SizedBox(height: 16),
@@ -573,6 +577,177 @@ extension on _ContextMemoryTracePageState {
 }
 
 extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
+  Widget _buildContextSetupCard(OpenCrayChatRunSnapshot run) {
+    final bootstrap = run.bootstrap;
+    final memoryFlush = run.memoryFlush;
+    final durableCompaction = run.durableCompaction;
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Context setup', style: _SettingsTextStyles.cardTitle),
+          const SizedBox(height: 10),
+          if (bootstrap == null &&
+              memoryFlush == null &&
+              durableCompaction == null)
+            const Text(
+              'No bootstrap, memory flush, or durable compaction trace was captured for this run.',
+              style: _SettingsTextStyles.body,
+            )
+          else ...[
+            if (bootstrap != null) ...[
+              const Text('Bootstrap', style: _SettingsTextStyles.bodyStrong),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _DebugValueChip(
+                    label: 'Mode',
+                    value: bootstrap.mode?.trim().isNotEmpty == true
+                        ? bootstrap.mode!.trim()
+                        : 'unknown',
+                  ),
+                  _DebugValueChip(
+                    label: 'Visible',
+                    value: '${bootstrap.visibleFileCount ?? 0}',
+                  ),
+                  _DebugValueChip(
+                    label: 'Injected',
+                    value: '${bootstrap.injectedFileCount ?? 0}',
+                  ),
+                  _DebugValueChip(
+                    label: 'Omitted',
+                    value: '${bootstrap.omittedFileCount ?? 0}',
+                  ),
+                  _DebugValueChip(
+                    label: 'Truncated',
+                    value: '${bootstrap.truncatedFileCount ?? 0}',
+                  ),
+                ],
+              ),
+              if (bootstrap.files.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                for (final file in bootstrap.files)
+                  _DebugKeyValueLine(
+                    file.name,
+                    _formatBootstrapFileSummary(file),
+                  ),
+              ],
+            ],
+            if (memoryFlush != null) ...[
+              if (bootstrap != null) const SizedBox(height: 16),
+              const Text('Memory flush', style: _SettingsTextStyles.bodyStrong),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _DebugValueChip(
+                    label: 'Outcome',
+                    value: memoryFlush.outcome?.trim().isNotEmpty == true
+                        ? memoryFlush.outcome!.trim()
+                        : 'unknown',
+                  ),
+                  _DebugValueChip(
+                    label: 'Candidates',
+                    value: '${memoryFlush.candidateCount ?? 0}',
+                  ),
+                  _DebugValueChip(
+                    label: 'Written',
+                    value: '${memoryFlush.writtenRecordCount ?? 0}',
+                  ),
+                  _DebugValueChip(
+                    label: 'Omitted msgs',
+                    value: '${memoryFlush.omittedMessageCount ?? 0}',
+                  ),
+                ],
+              ),
+              if ((memoryFlush.omittedCharCount ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Omitted chars',
+                  '${memoryFlush.omittedCharCount}',
+                ),
+              if (memoryFlush.signature?.trim().isNotEmpty == true)
+                _DebugKeyValueLine(
+                  'Omitted window',
+                  _truncateDebugText(memoryFlush.signature!.trim(), 96),
+                ),
+              if (memoryFlush.writtenKinds.isNotEmpty)
+                _DebugKeyValueLine(
+                  'Written kinds',
+                  memoryFlush.writtenKinds.join(', '),
+                ),
+              if (memoryFlush.writtenRecordIds.isNotEmpty)
+                _DebugKeyValueLine(
+                  'Written ids',
+                  memoryFlush.writtenRecordIds.join(', '),
+                ),
+            ],
+            if (durableCompaction != null) ...[
+              if (bootstrap != null || memoryFlush != null)
+                const SizedBox(height: 16),
+              const Text(
+                'Durable compaction',
+                style: _SettingsTextStyles.bodyStrong,
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _DebugValueChip(
+                    label: 'Compacted',
+                    value: durableCompaction.compactedThisRun == true
+                        ? 'yes'
+                        : 'no',
+                  ),
+                  _DebugValueChip(
+                    label: 'Source msgs',
+                    value:
+                        '${durableCompaction.sourceTranscriptMessageCount ?? 0}',
+                  ),
+                  _DebugValueChip(
+                    label: 'Retained msgs',
+                    value:
+                        '${durableCompaction.retainedTranscriptMessageCount ?? 0}',
+                  ),
+                  _DebugValueChip(
+                    label: 'Summaries',
+                    value: '${durableCompaction.totalSummaryCount ?? 0}',
+                  ),
+                ],
+              ),
+              if ((durableCompaction.latestCompactedMessageCount ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Latest compacted msgs',
+                  '${durableCompaction.latestCompactedMessageCount}',
+                ),
+              if ((durableCompaction.totalCompactedMessageCount ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Total compacted msgs',
+                  '${durableCompaction.totalCompactedMessageCount}',
+                ),
+              if ((durableCompaction.includedSummaryCount ?? 0) > 0 ||
+                  (durableCompaction.omittedSummaryCount ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Summary window',
+                  'included ${durableCompaction.includedSummaryCount ?? 0}, omitted ${durableCompaction.omittedSummaryCount ?? 0}',
+                ),
+              if ((durableCompaction.latestCompactedAtEpochMs ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Latest compacted at',
+                  _formatDebugClockTime(
+                    durableCompaction.latestCompactedAtEpochMs!,
+                  ),
+                ),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildSoulResolutionCard() {
     final snapshot = _personalizationSnapshot;
     final preset = snapshot == null ? null : _selectDebugPreset(snapshot);
@@ -624,6 +799,118 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
               'Bridge note',
               'Run-level soul attribution is not exposed yet.',
             ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSkillContextCard(OpenCrayChatRunSnapshot run) {
+    final skillInventory = run.skillInventory;
+    final activeSkill = run.activeSkill;
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Skill context', style: _SettingsTextStyles.cardTitle),
+          const SizedBox(height: 10),
+          if (skillInventory == null && activeSkill == null)
+            const Text(
+              'No skill inventory or active skill trace was captured for this run.',
+              style: _SettingsTextStyles.body,
+            )
+          else ...[
+            if (skillInventory != null) ...[
+              const Text(
+                'Skill inventory',
+                style: _SettingsTextStyles.bodyStrong,
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _DebugValueChip(
+                    label: 'Visible',
+                    value: '${skillInventory.visibleSkillCount ?? 0}',
+                  ),
+                  _DebugValueChip(
+                    label: 'Injected',
+                    value: '${skillInventory.injectedSkillCount ?? 0}',
+                  ),
+                  _DebugValueChip(
+                    label: 'Omitted',
+                    value: '${skillInventory.omittedSkillCount ?? 0}',
+                  ),
+                  _DebugValueChip(
+                    label: 'Implicit',
+                    value: '${skillInventory.implicitSkillCount ?? 0}',
+                  ),
+                  _DebugValueChip(
+                    label: 'Invalid',
+                    value: '${skillInventory.invalidSkillCount ?? 0}',
+                  ),
+                ],
+              ),
+              if ((skillInventory.omittedTraceSkillCount ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Trace-omitted skills',
+                  '${skillInventory.omittedTraceSkillCount}',
+                ),
+              if (skillInventory.skills.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                for (final skill in skillInventory.skills)
+                  _DebugKeyValueLine(
+                    skill.name,
+                    _formatVisibleSkillSummary(skill),
+                  ),
+              ],
+            ],
+            if (activeSkill != null) ...[
+              if (skillInventory != null) const SizedBox(height: 16),
+              const Text('Active skill', style: _SettingsTextStyles.bodyStrong),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _DebugValueChip(
+                    label: 'Restricted',
+                    value: activeSkill.toolRestrictionEnabled == true
+                        ? 'yes'
+                        : 'no',
+                  ),
+                  _DebugValueChip(
+                    label: 'Truncated',
+                    value: activeSkill.truncated == true ? 'yes' : 'no',
+                  ),
+                ],
+              ),
+              if (activeSkill.name?.trim().isNotEmpty == true)
+                _DebugKeyValueLine('Skill', activeSkill.name!.trim()),
+              if (activeSkill.relativePath?.trim().isNotEmpty == true)
+                _DebugKeyValueLine('Path', activeSkill.relativePath!.trim()),
+              if (activeSkill.activationSource?.trim().isNotEmpty == true)
+                _DebugKeyValueLine(
+                  'Activation source',
+                  activeSkill.activationSource!.trim(),
+                ),
+              if (activeSkill.invocationControl?.trim().isNotEmpty == true)
+                _DebugKeyValueLine(
+                  'Invocation',
+                  activeSkill.invocationControl!.trim(),
+                ),
+              if (activeSkill.executionContext?.trim().isNotEmpty == true)
+                _DebugKeyValueLine(
+                  'Execution context',
+                  activeSkill.executionContext!.trim(),
+                ),
+              if (activeSkill.allowedToolKeys.isNotEmpty)
+                _DebugKeyValueLine(
+                  'Allowed tools',
+                  activeSkill.allowedToolKeys.join(', '),
+                ),
+            ],
           ],
         ],
       ),
@@ -690,6 +977,33 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
   }
 }
 
+String _formatBootstrapFileSummary(OpenCrayChatRunBootstrapFileSnapshot file) {
+  final parts = <String>[file.relativePath];
+  if (file.injectedCharCount != null || file.sourceCharCount != null) {
+    parts.add(
+      'injected ${file.injectedCharCount ?? 0}/${file.sourceCharCount ?? 0} chars',
+    );
+  }
+  if (file.truncated == true) {
+    parts.add('truncated');
+  }
+  return parts.join(' · ');
+}
+
+String _formatVisibleSkillSummary(OpenCrayChatRunVisibleSkillSnapshot skill) {
+  final parts = <String>[skill.relativePath];
+  if (skill.invocationControl?.trim().isNotEmpty == true) {
+    parts.add(skill.invocationControl!.trim());
+  }
+  if (skill.executionContext?.trim().isNotEmpty == true) {
+    parts.add(skill.executionContext!.trim());
+  }
+  if (skill.userInvocable != null) {
+    parts.add(skill.userInvocable == true ? 'user-invocable' : 'agent-only');
+  }
+  return parts.join(' · ');
+}
+
 class _MemoryInspectorPage extends StatefulWidget {
   const _MemoryInspectorPage({required this.bridge, required this.backLabel});
 
@@ -706,6 +1020,8 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
   String? _loadError;
   _MemoryInspectorFilter _activeFilter = _MemoryInspectorFilter.all;
   OpenCrayMemoryDebugSnapshot? _snapshot;
+  OpenCrayMemoryDebugLinksSnapshot? _linksSnapshot;
+  OpenCraySoulDebugSnapshot? _soulSnapshot;
   List<OpenCrayMemoryDebugRecordSnapshot> _records =
       const <OpenCrayMemoryDebugRecordSnapshot>[];
   String? _selectedRecordId;
@@ -727,6 +1043,12 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
           (record) => record?.id == _selectedRecordId,
           orElse: () => filteredRecords.isEmpty ? null : filteredRecords.first,
         );
+    final selectedLinks = selectedRecord == null
+        ? null
+        : _findMemoryDebugLinksEntry(_linksSnapshot, selectedRecord.id);
+    final selectedSoulFieldSources = selectedRecord == null
+        ? const <OpenCraySoulFieldSourceSnapshot>[]
+        : _linkedSoulFieldSources(_soulSnapshot, selectedRecord.id);
     return Scaffold(
       backgroundColor: OpenCrayColors.shellBackground,
       body: SafeArea(
@@ -774,6 +1096,12 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
                 _buildRecordsCard(filteredRecords),
                 const SizedBox(height: 16),
                 _buildSelectedRecordCard(selectedRecord),
+                const SizedBox(height: 16),
+                _buildSelectedRecordLinksCard(
+                  record: selectedRecord,
+                  links: selectedLinks,
+                  soulFieldSources: selectedSoulFieldSources,
+                ),
               ],
             ],
           ),
@@ -977,6 +1305,36 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
     );
   }
 
+  Widget _buildSelectedRecordLinksCard({
+    required OpenCrayMemoryDebugRecordSnapshot? record,
+    required OpenCrayMemoryDebugLinksEntrySnapshot? links,
+    required List<OpenCraySoulFieldSourceSnapshot> soulFieldSources,
+  }) {
+    return KeyedSubtree(
+      key: const ValueKey<String>('settings-memory-linked-activity-card'),
+      child: _SettingsCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Linked activity', style: _SettingsTextStyles.cardTitle),
+            const SizedBox(height: 10),
+            if (record == null)
+              const Text(
+                'Select a record to inspect linked run and soul activity.',
+                style: _SettingsTextStyles.body,
+              )
+            else
+              ..._buildMemoryLinkDetails(
+                links: links,
+                soulFieldSources: soulFieldSources,
+                includeSoulFieldsSection: true,
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _refresh() async {
     final shouldShowLoading = _snapshot == null && !_isRefreshing;
     setState(() {
@@ -985,7 +1343,14 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
       _isRefreshing = true;
     });
     try {
-      final snapshot = await widget.bridge.loadMemoryDebugSnapshot();
+      final results = await Future.wait<Object?>(<Future<Object?>>[
+        widget.bridge.loadMemoryDebugSnapshot(),
+        widget.bridge.loadMemoryDebugLinksSnapshot(),
+        widget.bridge.loadSoulDebugSnapshot(),
+      ]);
+      final snapshot = results[0] as OpenCrayMemoryDebugSnapshot;
+      final linksSnapshot = results[1] as OpenCrayMemoryDebugLinksSnapshot;
+      final soulSnapshot = results[2] as OpenCraySoulDebugSnapshot;
       final records = snapshot.records;
       final nextSelectedRecordId =
           records.any((record) => record.id == _selectedRecordId)
@@ -996,6 +1361,8 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
       }
       setState(() {
         _snapshot = snapshot;
+        _linksSnapshot = linksSnapshot;
+        _soulSnapshot = soulSnapshot;
         _records = records;
         _selectedRecordId = nextSelectedRecordId;
         _isLoading = false;
@@ -1029,6 +1396,7 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
   bool _isRefreshing = false;
   String? _loadError;
   OpenCraySoulDebugSnapshot? _snapshot;
+  OpenCrayMemoryDebugLinksSnapshot? _linksSnapshot;
 
   @override
   void initState() {
@@ -1042,6 +1410,7 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
     final fieldSources = snapshot == null
         ? const <OpenCraySoulFieldSourceSnapshot>[]
         : _resolvedSoulFieldSources(snapshot);
+    final linkedFieldGroups = _groupLinkedSoulFieldSources(fieldSources);
     return Scaffold(
       backgroundColor: OpenCrayColors.shellBackground,
       body: SafeArea(
@@ -1259,6 +1628,42 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
                     ),
                   ),
                 ),
+                const SizedBox(height: 16),
+                KeyedSubtree(
+                  key: const ValueKey<String>(
+                    'settings-soul-linked-activity-card',
+                  ),
+                  child: _SettingsCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Linked activity',
+                          style: _SettingsTextStyles.cardTitle,
+                        ),
+                        const SizedBox(height: 10),
+                        if (linkedFieldGroups.isEmpty)
+                          const Text(
+                            'No memory-backed soul fields are currently linked to a persisted memory record.',
+                            style: _SettingsTextStyles.body,
+                          )
+                        else
+                          for (
+                            int index = 0;
+                            index < linkedFieldGroups.length;
+                            index++
+                          ) ...[
+                            _buildSoulLinkedActivityGroup(
+                              recordId: linkedFieldGroups[index].$1,
+                              sources: linkedFieldGroups[index].$2,
+                            ),
+                            if (index < linkedFieldGroups.length - 1)
+                              const SizedBox(height: 14),
+                          ],
+                      ],
+                    ),
+                  ),
+                ),
               ],
             ],
           ),
@@ -1275,12 +1680,18 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
       _isRefreshing = true;
     });
     try {
-      final snapshot = await widget.bridge.loadSoulDebugSnapshot();
+      final results = await Future.wait<Object?>(<Future<Object?>>[
+        widget.bridge.loadSoulDebugSnapshot(),
+        widget.bridge.loadMemoryDebugLinksSnapshot(),
+      ]);
+      final snapshot = results[0] as OpenCraySoulDebugSnapshot;
+      final linksSnapshot = results[1] as OpenCrayMemoryDebugLinksSnapshot;
       if (!mounted) {
         return;
       }
       setState(() {
         _snapshot = snapshot;
+        _linksSnapshot = linksSnapshot;
         _isLoading = false;
         _isRefreshing = false;
       });
@@ -1294,6 +1705,32 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
         _isRefreshing = false;
       });
     }
+  }
+
+  Widget _buildSoulLinkedActivityGroup({
+    required String recordId,
+    required List<OpenCraySoulFieldSourceSnapshot> sources,
+  }) {
+    final links = _findMemoryDebugLinksEntry(_linksSnapshot, recordId);
+    final fieldsLabel = sources
+        .map((source) => _debugSoulFieldLabel(source.field))
+        .toSet()
+        .join(', ');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '$recordId${fieldsLabel.isEmpty ? '' : ' · $fieldsLabel'}',
+          style: _SettingsTextStyles.bodyStrong,
+        ),
+        const SizedBox(height: 8),
+        ..._buildMemoryLinkDetails(
+          links: links,
+          soulFieldSources: sources,
+          includeSoulFieldsSection: false,
+        ),
+      ],
+    );
   }
 }
 
@@ -1380,6 +1817,25 @@ class _MemoryDebugRecordRow extends StatelessWidget {
   }
 }
 
+class _DebugLinkEventRow extends StatelessWidget {
+  const _DebugLinkEventRow({required this.title, required this.detail});
+
+  final String title;
+  final String detail;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: _SettingsTextStyles.bodyStrong),
+        const SizedBox(height: 4),
+        Text(detail, style: _SettingsTextStyles.body),
+      ],
+    );
+  }
+}
+
 class _DebugEventRow extends StatelessWidget {
   const _DebugEventRow({required this.event});
 
@@ -1423,6 +1879,239 @@ enum _MemoryInspectorFilter {
         return record.status == 'resolved' || record.isExpired;
     }
   }
+}
+
+OpenCrayMemoryDebugLinksEntrySnapshot? _findMemoryDebugLinksEntry(
+  OpenCrayMemoryDebugLinksSnapshot? snapshot,
+  String recordId,
+) {
+  if (snapshot == null || recordId.trim().isEmpty) {
+    return null;
+  }
+  for (final entry in snapshot.records) {
+    if (entry.recordId == recordId) {
+      return entry;
+    }
+  }
+  return null;
+}
+
+List<OpenCraySoulFieldSourceSnapshot> _linkedSoulFieldSources(
+  OpenCraySoulDebugSnapshot? snapshot,
+  String recordId,
+) {
+  if (snapshot == null || recordId.trim().isEmpty) {
+    return const <OpenCraySoulFieldSourceSnapshot>[];
+  }
+  return _resolvedSoulFieldSources(
+    snapshot,
+  ).where((source) => source.recordId == recordId).toList(growable: false);
+}
+
+List<(String, List<OpenCraySoulFieldSourceSnapshot>)>
+_groupLinkedSoulFieldSources(List<OpenCraySoulFieldSourceSnapshot> sources) {
+  final grouped = <String, List<OpenCraySoulFieldSourceSnapshot>>{};
+  for (final source in sources) {
+    final recordId = source.recordId.trim();
+    if (recordId.isEmpty) {
+      continue;
+    }
+    grouped.putIfAbsent(recordId, () => <OpenCraySoulFieldSourceSnapshot>[]);
+    grouped[recordId]!.add(source);
+  }
+  final entries = grouped.entries.toList(growable: false)
+    ..sort((left, right) => left.key.compareTo(right.key));
+  return entries
+      .map((entry) => (entry.key, entry.value))
+      .toList(growable: false);
+}
+
+List<Widget> _buildMemoryLinkDetails({
+  required OpenCrayMemoryDebugLinksEntrySnapshot? links,
+  required List<OpenCraySoulFieldSourceSnapshot> soulFieldSources,
+  required bool includeSoulFieldsSection,
+}) {
+  final widgets = <Widget>[];
+
+  void addSectionTitle(String title) {
+    if (widgets.isNotEmpty) {
+      widgets.add(const SizedBox(height: 12));
+    }
+    widgets.add(Text(title, style: _SettingsTextStyles.bodyStrong));
+    widgets.add(const SizedBox(height: 8));
+  }
+
+  if (links?.sourceRun != null ||
+      (links?.sourceTaskId.isNotEmpty ?? false) ||
+      (links?.sourceSessionId.isNotEmpty ?? false)) {
+    addSectionTitle('Origin');
+    final sourceRun = links?.sourceRun;
+    if (sourceRun != null) {
+      widgets.add(
+        _DebugKeyValueLine('Source run', _formatDebugRunLinkSummary(sourceRun)),
+      );
+    }
+    if ((links?.sourceTaskId.isNotEmpty ?? false) &&
+        sourceRun?.taskId != links!.sourceTaskId) {
+      widgets.add(_DebugKeyValueLine('Source task', links.sourceTaskId));
+    }
+    if ((links?.sourceSessionId.isNotEmpty ?? false) &&
+        sourceRun?.sessionId != links!.sourceSessionId) {
+      widgets.add(_DebugKeyValueLine('Source session', links.sourceSessionId));
+    }
+  }
+
+  if (includeSoulFieldsSection && soulFieldSources.isNotEmpty) {
+    addSectionTitle('Soul fields');
+    for (int index = 0; index < soulFieldSources.length; index++) {
+      final source = soulFieldSources[index];
+      widgets.add(
+        _DebugKeyValueLine(
+          _debugSoulFieldLabel(source.field),
+          '${source.sourceLabel.isEmpty ? source.sourceType : source.sourceLabel}: ${source.value}',
+        ),
+      );
+      if (source.preferenceKey.isNotEmpty) {
+        widgets.add(_DebugKeyValueLine('Preference key', source.preferenceKey));
+      }
+      if (index < soulFieldSources.length - 1) {
+        widgets.add(const SizedBox(height: 8));
+      }
+    }
+  }
+
+  if (links != null && links.promptRecalls.isNotEmpty) {
+    addSectionTitle('Prompt recall');
+    for (final recall in links.promptRecalls) {
+      widgets.add(
+        _DebugLinkEventRow(
+          title:
+              '${_formatDebugClockTime(recall.occurredAtEpochMs)} · ${recall.run.runId}',
+          detail: _formatPromptRecallLinkDetail(recall),
+        ),
+      );
+      if (recall != links.promptRecalls.last) {
+        widgets.add(const SizedBox(height: 10));
+      }
+    }
+  }
+
+  if (links != null && links.toolRetrievals.isNotEmpty) {
+    addSectionTitle('Tool retrieval');
+    for (final retrieval in links.toolRetrievals) {
+      widgets.add(
+        _DebugLinkEventRow(
+          title:
+              '${_formatDebugClockTime(retrieval.occurredAtEpochMs)} · ${retrieval.toolName}',
+          detail: _formatToolRetrievalLinkDetail(retrieval),
+        ),
+      );
+      if (retrieval != links.toolRetrievals.last) {
+        widgets.add(const SizedBox(height: 10));
+      }
+    }
+  }
+
+  if (links != null && links.maintenanceActions.isNotEmpty) {
+    addSectionTitle('Maintenance');
+    for (final action in links.maintenanceActions) {
+      widgets.add(
+        _DebugLinkEventRow(
+          title:
+              '${_formatDebugClockTime(action.occurredAtEpochMs)} · ${_memoryMaintenanceActionLabel(action.action)}',
+          detail: _formatMaintenanceActionLinkDetail(action),
+        ),
+      );
+      if (action != links.maintenanceActions.last) {
+        widgets.add(const SizedBox(height: 10));
+      }
+    }
+  }
+
+  if (widgets.isEmpty) {
+    widgets.add(
+      const Text(
+        'No linked run or soul activity is available for this record yet.',
+        style: _SettingsTextStyles.body,
+      ),
+    );
+  }
+  return widgets;
+}
+
+String _formatDebugRunLinkSummary(OpenCrayDebugRunLinkSnapshot run) {
+  final state = run.executionStatus?.trim().isNotEmpty == true
+      ? run.executionStatus!
+      : (run.lifecycleState?.trim().isNotEmpty == true
+            ? run.lifecycleState!
+            : 'pending');
+  return '${run.runId} · ${run.taskId} · $state';
+}
+
+String _formatPromptRecallLinkDetail(
+  OpenCrayMemoryPromptRecallLinkSnapshot recall,
+) {
+  final parts = <String>[
+    'Task ${recall.run.taskId}',
+    'Session ${recall.run.sessionId}',
+  ];
+  if (recall.score != null) {
+    parts.add('score ${recall.score}');
+  }
+  if (recall.matchedTerms.isNotEmpty) {
+    parts.add('matched ${recall.matchedTerms.join(', ')}');
+  }
+  return parts.join(' · ');
+}
+
+String _formatToolRetrievalLinkDetail(
+  OpenCrayMemoryToolRetrievalLinkSnapshot retrieval,
+) {
+  final parts = <String>[
+    'Run ${retrieval.run.runId}',
+    'Task ${retrieval.run.taskId}',
+  ];
+  if (retrieval.query?.trim().isNotEmpty == true) {
+    parts.add('query ${retrieval.query!.trim()}');
+  } else if (retrieval.path?.trim().isNotEmpty == true) {
+    parts.add('path ${retrieval.path!.trim()}');
+  } else if (retrieval.paths.isNotEmpty) {
+    parts.add(retrieval.paths.join(', '));
+  }
+  if (retrieval.queryTerms.isNotEmpty) {
+    parts.add('terms ${retrieval.queryTerms.join(', ')}');
+  }
+  if (retrieval.lineRanges.isNotEmpty) {
+    parts.add('lines ${retrieval.lineRanges.join(', ')}');
+  } else if (retrieval.fromLine != null &&
+      retrieval.returnedLineCount != null) {
+    final endLine = retrieval.fromLine! + retrieval.returnedLineCount! - 1;
+    parts.add('lines ${retrieval.fromLine}-$endLine');
+  }
+  return parts.join(' · ');
+}
+
+String _memoryMaintenanceActionLabel(String action) {
+  switch (action) {
+    case 'written':
+      return 'Written';
+    case 'resolved':
+      return 'Resolved';
+    case 'reaffirmed':
+      return 'Reaffirmed';
+    case 'expired':
+      return 'Expired';
+    case 'flush_written':
+      return 'Flush write';
+    default:
+      return action;
+  }
+}
+
+String _formatMaintenanceActionLinkDetail(
+  OpenCrayMemoryMaintenanceActionLinkSnapshot action,
+) {
+  return 'Run ${action.run.runId} · Task ${action.run.taskId} · Session ${action.run.sessionId}';
 }
 
 List<String> _collectRecentDebugRunIds(OpenCrayChatRuntimeSnapshot snapshot) {

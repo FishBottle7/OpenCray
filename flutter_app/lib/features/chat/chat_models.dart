@@ -123,12 +123,14 @@ class ChatMessageData {
     required this.kind,
     required this.text,
     this.meta = '',
+    this.isEphemeral = false,
   });
 
   final String messageId;
   final ChatMessageKind kind;
   final String text;
   final String meta;
+  final bool isEphemeral;
 }
 
 @immutable

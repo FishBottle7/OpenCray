@@ -21,12 +21,15 @@
 /.lsp/
 /.opencode/
 /.android-sdk-linux/
+/.p4a-generated/
 /.p4a-build-venv/
 /.p4a-private/
 /.p4a-storage/
 /.p4a-wsl-bin/
 /.pytest_cache/
 /.ruff_cache/
+/.tmp_manual_python_bridge_checks/
+/.tmp_pytest*/
 /%TEMP%/
 /tmp_refs/
 **/__pycache__/
@@ -47,6 +50,8 @@
 /.gradle-user/
 /.gradle-user-*/
 /.tools/
+/tools/android_python_runtime_p4a/dist/
+/tools/android_python_runtime_p4a/gradle/
 **/.tmp_fonts/
 /.tmp/
 /tmp_*.patch

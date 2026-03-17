@@ -10,4 +10,6 @@ data class PythonExecRequest(
   val timeoutMs: Long = 30_000,
   /** Python executable used to invoke the runner module (defaults to 'python'). */
   val pythonExecutable: String = "python",
+  /** Optional stable request id used by runtimes which expose out-of-band cancellation. */
+  val requestId: String? = null,
 )

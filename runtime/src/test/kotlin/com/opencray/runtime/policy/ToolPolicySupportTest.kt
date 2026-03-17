@@ -9,6 +9,9 @@ import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -63,6 +66,37 @@ class ToolPolicySupportTest {
     val bashAlias = requireNotNull(aliases.firstOrNull { it.name == "bash" })
     assertTrue(readAlias.description.contains("Compatibility alias for Read"))
     assertTrue(bashAlias.description.contains("Compatibility alias for Bash"))
+  }
+
+  @Test
+  fun bashPythonScriptNormalizationRewritesToPythonExec() {
+    val invocation = toolCallNormalizer.normalize(
+      AgentToolCall(
+        toolName = "bash",
+        arguments = buildJsonObject {
+          put("command", JsonPrimitive("""python scripts/run.py --flag "two words""""))
+          put("timeout_ms", JsonPrimitive(45_000))
+        },
+      ),
+    )
+
+    val result = toolCallNormalizer.decorateResult(
+      result = AgentToolResult(
+        toolName = "python_exec",
+        status = AgentToolResultStatus.SUCCESS,
+        content = "ok",
+      ),
+      invocation = invocation,
+    )
+
+    assertEquals("bash", invocation.requestedToolName)
+    assertEquals("python_exec", invocation.normalizedToolName)
+    assertTrue(invocation.isToolRewrite())
+    assertEquals("python_exec", result.toolName)
+    assertEquals("bash", result.metadata["requestedToolName"])
+    assertEquals("python_exec", result.metadata["normalizedToolName"])
+    assertEquals("true", result.metadata["toolRewrite"])
+    assertEquals("bash", result.metadata["rewrittenFromToolName"])
   }
 
   @Test

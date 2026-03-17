@@ -85,6 +85,7 @@ data class OpenCrayMemoryRetrievalEvent(
   val queryTerms: List<String> = emptyList(),
   val resultCount: Int? = null,
   val corpusFileCount: Int? = null,
+  val recordIds: List<String> = emptyList(),
   val paths: List<String> = emptyList(),
   val lineRanges: List<String> = emptyList(),
   val path: String? = null,

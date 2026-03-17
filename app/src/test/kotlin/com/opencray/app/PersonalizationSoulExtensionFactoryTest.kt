@@ -14,6 +14,7 @@ class PersonalizationSoulExtensionFactoryTest {
 
     assertEquals("builder", extensions[SoulProfileExtensionKeys.TONE])
     assertEquals("terse", extensions[SoulProfileExtensionKeys.VERBOSITY])
+    assertEquals("low", extensions[SoulProfileExtensionKeys.PLASTICITY])
     assertEquals("direct", extensions[SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE])
     assertEquals("balanced", extensions[SoulProfileExtensionKeys.RISK_TOLERANCE])
     assertEquals("tool_forward", extensions[SoulProfileExtensionKeys.TOOL_USE_BIAS])

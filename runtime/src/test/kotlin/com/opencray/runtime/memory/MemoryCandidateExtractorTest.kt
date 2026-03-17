@@ -140,6 +140,76 @@ class MemoryCandidateExtractorTest {
   }
 
   @Test
+  fun extractTurnsDurableStructuredStyleIntoRelationshipSignalAndDropsProtectedExtensions() {
+    val extractor = MemoryCandidateExtractor(
+      soulIntentInterpreter = FixedSoulIntentInterpreter(
+        SoulMemoryIntentInterpretation.Success(
+          intents = listOf(
+            SoulMemoryIntent(
+              preferenceKey = MemoryPreferenceKeys.AGENT_STYLE_PROFILE,
+              preferenceValue = "warm",
+              scope = MemoryScope.USER,
+              soulExtensions = mapOf(
+                MemorySoulExtensionKeys.TONE to "warm",
+                MemorySoulExtensionKeys.VOICE to "warm and gentle",
+                MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE to "supportive",
+                MemorySoulExtensionKeys.RISK_TOLERANCE to "aggressive",
+              ),
+            ),
+            SoulMemoryIntent(
+              preferenceKey = MemoryPreferenceKeys.AGENT_VERBOSITY,
+              preferenceValue = "expansive",
+              scope = MemoryScope.WORKSPACE,
+              soulExtensions = mapOf(
+                MemorySoulExtensionKeys.VERBOSITY to "expansive",
+                MemorySoulExtensionKeys.TOOL_USE_BIAS to "tool_forward",
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val candidates = extractor.extract(
+      MemoryTurnEvidence(
+        sessionId = "session-4c",
+        taskId = "task-4c",
+        workspaceId = "workspace-main",
+        userInput = "以后温柔一点，以后回答详细一点。",
+      ),
+    )
+
+    val style = candidates.first { candidate ->
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE
+    }
+    val verbosity = candidates.first { candidate ->
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.AGENT_VERBOSITY
+    }
+
+    assertEquals(MemoryScope.USER, style.scope)
+    assertEquals(
+      MemoryPreferenceKeys.TEMPORALITY_DURABLE,
+      style.extensions[MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY],
+    )
+    assertEquals(
+      "Relationship style should gradually move toward warm",
+      style.content,
+    )
+    assertEquals("warm", style.extensions[MemorySoulExtensionKeys.TONE])
+    assertEquals("warm and gentle", style.extensions[MemorySoulExtensionKeys.VOICE])
+    assertEquals("supportive", style.extensions[MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE])
+    assertEquals(null, style.extensions[MemorySoulExtensionKeys.RISK_TOLERANCE])
+
+    assertEquals(MemoryScope.SESSION, verbosity.scope)
+    assertEquals(
+      MemoryPreferenceKeys.TEMPORALITY_SESSION,
+      verbosity.extensions[MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY],
+    )
+    assertEquals("expansive", verbosity.extensions[MemorySoulExtensionKeys.VERBOSITY])
+    assertEquals(null, verbosity.extensions[MemorySoulExtensionKeys.TOOL_USE_BIAS])
+  }
+
+  @Test
   fun extractUsesUserIntentInterpreterForGenericAndSoulMemories() {
     val extractor = MemoryCandidateExtractor(
       userIntentInterpreter = FixedUserIntentInterpreter(
@@ -196,6 +266,60 @@ class MemoryCandidateExtractorTest {
       candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.AGENT_DISPLAY_NAME
     }
     assertEquals("小白", displayName.extensions[MemorySoulExtensionKeys.DISPLAY_NAME])
+  }
+
+  @Test
+  fun extractTurnsDurableUserIntentStyleIntoRelationshipSignal() {
+    val extractor = MemoryCandidateExtractor(
+      userIntentInterpreter = FixedUserIntentInterpreter(
+        UserMemoryIntentInterpretation.Success(
+          intents = listOf(
+            UserMemoryIntent(
+              kind = MemoryKind.USER_PREFERENCE,
+              scope = MemoryScope.USER,
+              preferenceKey = MemoryPreferenceKeys.AGENT_STYLE_PROFILE,
+              preferenceValue = "warm",
+              soulExtensions = mapOf(
+                MemorySoulExtensionKeys.TONE to "warm",
+                MemorySoulExtensionKeys.VOICE to "warm and gentle",
+                MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE to "supportive",
+              ),
+            ),
+            UserMemoryIntent(
+              kind = MemoryKind.USER_PREFERENCE,
+              scope = MemoryScope.USER,
+              preferenceKey = MemoryPreferenceKeys.AGENT_VERBOSITY,
+              preferenceValue = "expansive",
+              soulExtensions = mapOf(
+                MemorySoulExtensionKeys.VERBOSITY to "expansive",
+              ),
+            ),
+          ),
+        ),
+      ),
+      soulIntentInterpreter = FixedSoulIntentInterpreter(
+        SoulMemoryIntentInterpretation.Success(intents = emptyList()),
+      ),
+    )
+
+    val candidates = extractor.extract(
+      MemoryTurnEvidence(
+        sessionId = "session-4d",
+        taskId = "task-4d",
+        workspaceId = "workspace-main",
+        userInput = "以后温柔一点，以后回答详细一点。",
+      ),
+    )
+
+    val style = candidates.first { candidate ->
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE
+    }
+    val verbosity = candidates.first { candidate ->
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.AGENT_VERBOSITY
+    }
+
+    assertEquals(MemoryScope.USER, style.scope)
+    assertEquals(MemoryScope.SESSION, verbosity.scope)
   }
 
   @Test
@@ -277,9 +401,45 @@ class MemoryCandidateExtractorTest {
     val durableVerbosity = candidates.single { candidate ->
       candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.AGENT_VERBOSITY
     }
-    assertEquals(MemoryScope.USER, durableVerbosity.scope)
+    assertEquals(MemoryScope.SESSION, durableVerbosity.scope)
     assertEquals("expansive", durableVerbosity.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE])
     assertEquals("expansive", durableVerbosity.extensions[MemorySoulExtensionKeys.VERBOSITY])
+    assertEquals(
+      MemoryPreferenceKeys.TEMPORALITY_SESSION,
+      durableVerbosity.extensions[MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY],
+    )
+  }
+
+  @Test
+  fun extractFallsBackToRelationshipSignalForDurableStyleRequestsWhenInterpreterAllowsIt() {
+    val extractor = MemoryCandidateExtractor(
+      soulIntentInterpreter = FixedSoulIntentInterpreter(
+        SoulMemoryIntentInterpretation.Unavailable(
+          allowHeuristicFallback = true,
+          reason = "LLM unavailable in test.",
+        ),
+      ),
+    )
+
+    val candidates = extractor.extract(
+      MemoryTurnEvidence(
+        sessionId = "session-6b",
+        taskId = "task-6b",
+        workspaceId = "workspace-main",
+        userInput = "以后对我温柔一点。",
+      ),
+    )
+
+    val relationshipSignal = candidates.single { candidate ->
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE
+    }
+    assertEquals(MemoryScope.USER, relationshipSignal.scope)
+    assertEquals(
+      MemoryPreferenceKeys.TEMPORALITY_DURABLE,
+      relationshipSignal.extensions[MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY],
+    )
+    assertEquals("warm", relationshipSignal.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE])
+    assertEquals("warm", relationshipSignal.extensions[MemorySoulExtensionKeys.TONE])
   }
 
   @Test

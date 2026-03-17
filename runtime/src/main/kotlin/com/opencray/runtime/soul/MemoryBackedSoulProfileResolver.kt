@@ -6,7 +6,10 @@ import com.opencray.runtime.memory.MemoryPreferenceKeys
 import com.opencray.runtime.memory.MemoryScope
 import com.opencray.runtime.memory.MemorySoulExtensionKeys
 import com.opencray.runtime.memory.MemoryStatus
+import com.opencray.runtime.memory.allowedSoulMemoryExtensionKeys
+import com.opencray.runtime.memory.normalizeSoulMemoryExtensions
 import com.opencray.runtime.memory.parseMemoryMetadata
+import com.opencray.runtime.memory.shouldApplyDirectChatSoulPreference
 
 class MemoryBackedSoulProfileResolver {
   fun overlay(
@@ -32,6 +35,7 @@ class MemoryBackedSoulProfileResolver {
           extensions = record.extensions,
           scope = metadata.scope,
           confirmedAtEpochMs = metadata.lastConfirmedAtEpochMs ?: record.updatedAtEpochMs,
+          recordVersion = record.recordVersion,
           recordId = record.id,
         )
       }
@@ -45,7 +49,15 @@ class MemoryBackedSoulProfileResolver {
       voice = baseProfile?.voice,
       extensions = baseProfile?.extensions.orEmpty().toMutableMap(),
     )
+    applyRelationshipEvolution(
+      preferences = applicablePreferences,
+      baseProfile = baseProfile,
+      overlayState = overlayState,
+    )
     applicablePreferences
+      .filterNot { preference ->
+        preference.key == MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE
+      }
       .sortedWith(
         compareBy<ApplicableSoulPreference> { preference ->
           preference.scopePriority
@@ -78,40 +90,40 @@ class MemoryBackedSoulProfileResolver {
     preference: ApplicableSoulPreference,
     overlayState: MutableSoulOverlay,
   ) {
+    if (!shouldApplyDirectChatSoulPreference(preference.key, preference.scope)) {
+      return
+    }
+    val filteredExtensions = normalizeSoulMemoryExtensions(
+      raw = preference.extensions,
+      allowedKeys = allowedSoulMemoryExtensionKeys(
+        preferenceKey = preference.key,
+        scope = preference.scope,
+      ),
+    )
     val hasTypedDisplayName = applyScalarOverlay(
-      raw = preference.extensions[MemorySoulExtensionKeys.DISPLAY_NAME],
+      raw = filteredExtensions[MemorySoulExtensionKeys.DISPLAY_NAME],
     ) { normalized ->
       overlayState.displayName = normalized
     }
     val hasTypedVoice = applyScalarOverlay(
-      raw = preference.extensions[MemorySoulExtensionKeys.VOICE],
+      raw = filteredExtensions[MemorySoulExtensionKeys.VOICE],
     ) { normalized ->
       overlayState.voice = normalized
     }
     val hasTypedTone = applyEnumLikeOverlay(
-      raw = preference.extensions[MemorySoulExtensionKeys.TONE],
+      raw = filteredExtensions[MemorySoulExtensionKeys.TONE],
       extensions = overlayState.extensions,
       soulKey = SoulProfileExtensionKeys.TONE,
     )
     val hasTypedVerbosity = applyEnumLikeOverlay(
-      raw = preference.extensions[MemorySoulExtensionKeys.VERBOSITY],
+      raw = filteredExtensions[MemorySoulExtensionKeys.VERBOSITY],
       extensions = overlayState.extensions,
       soulKey = SoulProfileExtensionKeys.VERBOSITY,
     )
     applyEnumLikeOverlay(
-      raw = preference.extensions[MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE],
+      raw = filteredExtensions[MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE],
       extensions = overlayState.extensions,
       soulKey = SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE,
-    )
-    applyEnumLikeOverlay(
-      raw = preference.extensions[MemorySoulExtensionKeys.RISK_TOLERANCE],
-      extensions = overlayState.extensions,
-      soulKey = SoulProfileExtensionKeys.RISK_TOLERANCE,
-    )
-    applyEnumLikeOverlay(
-      raw = preference.extensions[MemorySoulExtensionKeys.TOOL_USE_BIAS],
-      extensions = overlayState.extensions,
-      soulKey = SoulProfileExtensionKeys.TOOL_USE_BIAS,
     )
 
     when (preference.key) {
@@ -151,6 +163,68 @@ class MemoryBackedSoulProfileResolver {
     }
   }
 
+  private fun applyRelationshipEvolution(
+    preferences: List<ApplicableSoulPreference>,
+    baseProfile: RuntimeSoulProfile?,
+    overlayState: MutableSoulOverlay,
+  ) {
+    val plasticity = resolvePlasticity(
+      raw = baseProfile?.extensions?.get(SoulProfileExtensionKeys.PLASTICITY),
+    )
+    val candidate = selectRelationshipStylePreference(
+      preferences = preferences,
+      plasticity = plasticity,
+    ) ?: return
+    val filteredExtensions = normalizeSoulMemoryExtensions(
+      raw = candidate.extensions,
+      allowedKeys = allowedSoulMemoryExtensionKeys(
+        preferenceKey = candidate.key,
+        scope = candidate.scope,
+      ),
+    )
+    val hasTypedVoice = applyScalarOverlay(
+      raw = filteredExtensions[MemorySoulExtensionKeys.VOICE],
+    ) { normalized ->
+      overlayState.voice = normalized
+    }
+    val hasTypedTone = applyEnumLikeOverlay(
+      raw = filteredExtensions[MemorySoulExtensionKeys.TONE],
+      extensions = overlayState.extensions,
+      soulKey = SoulProfileExtensionKeys.TONE,
+    )
+    val hasTypedRelationshipStyle = applyEnumLikeOverlay(
+      raw = filteredExtensions[MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE],
+      extensions = overlayState.extensions,
+      soulKey = SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE,
+    )
+
+    when (candidate.value.lowercase()) {
+      "warm" -> {
+        if (!hasTypedTone) {
+          overlayState.extensions[SoulProfileExtensionKeys.TONE] = "warm"
+        }
+        if (!hasTypedVoice) {
+          overlayState.voice = "warm and gentle"
+        }
+        if (!hasTypedRelationshipStyle) {
+          overlayState.extensions[SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE] = "supportive"
+        }
+      }
+
+      "serious" -> {
+        if (!hasTypedTone) {
+          overlayState.extensions[SoulProfileExtensionKeys.TONE] = "steady"
+        }
+        if (!hasTypedVoice) {
+          overlayState.voice = "serious and formal"
+        }
+        if (!hasTypedRelationshipStyle) {
+          overlayState.extensions[SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE] = "direct"
+        }
+      }
+    }
+  }
+
   private fun applyScalarOverlay(
     raw: String?,
     apply: (String) -> Unit,
@@ -185,6 +259,54 @@ class MemoryBackedSoulProfileResolver {
       ?.lowercase()
       ?.takeIf(String::isNotEmpty)
 
+  private fun selectRelationshipStylePreference(
+    preferences: List<ApplicableSoulPreference>,
+    plasticity: SoulPlasticity,
+  ): ApplicableSoulPreference? {
+    val relationshipSignals = preferences
+      .filter { preference ->
+        preference.key == MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE &&
+          preference.scope != MemoryScope.SESSION
+      }
+    if (relationshipSignals.isEmpty()) {
+      return null
+    }
+    val groupedSignals = relationshipSignals
+      .groupBy { preference -> preference.value }
+      .mapValues { (_, valuePreferences) ->
+        RelationshipSignalAggregate(
+          support = valuePreferences.sumOf { preference -> preference.signalWeight },
+          latestConfirmedAtEpochMs = valuePreferences.maxOf { preference -> preference.confirmedAtEpochMs },
+          representative = valuePreferences.maxWithOrNull(
+            compareBy<ApplicableSoulPreference> { preference -> preference.confirmedAtEpochMs }
+              .thenBy { preference -> preference.recordId },
+          )!!,
+        )
+      }
+      .values
+      .sortedWith(
+        compareByDescending<RelationshipSignalAggregate> { aggregate -> aggregate.support }
+          .thenByDescending { aggregate -> aggregate.latestConfirmedAtEpochMs }
+          .thenBy { aggregate -> aggregate.representative.recordId },
+      )
+    val winner = groupedSignals.firstOrNull() ?: return null
+    val runnerUpSupport = groupedSignals.getOrNull(1)?.support ?: 0L
+    val policy = plasticity.policy()
+    if (winner.support < policy.minEvidence) {
+      return null
+    }
+    if (winner.support - runnerUpSupport < policy.minLead) {
+      return null
+    }
+    return winner.representative
+  }
+
+  private fun resolvePlasticity(raw: String?): SoulPlasticity = when (normalizeExtensionKeyOrNull(raw)) {
+    "high" -> SoulPlasticity.HIGH
+    "medium" -> SoulPlasticity.MEDIUM
+    else -> SoulPlasticity.LOW
+  }
+
   private fun scopeMatches(
     scope: MemoryScope,
     sourceSessionId: String?,
@@ -212,8 +334,12 @@ class MemoryBackedSoulProfileResolver {
     val extensions: Map<String, String>,
     val scope: MemoryScope,
     val confirmedAtEpochMs: Long,
+    val recordVersion: Long,
     val recordId: String,
   ) {
+    val signalWeight: Long
+      get() = recordVersion.coerceAtLeast(1L)
+
     val scopePriority: Int
       get() = when (scope) {
         MemoryScope.WORKSPACE -> 1
@@ -227,4 +353,32 @@ class MemoryBackedSoulProfileResolver {
     var voice: String?,
     val extensions: MutableMap<String, String>,
   )
+
+  private data class RelationshipSignalAggregate(
+    val support: Long,
+    val latestConfirmedAtEpochMs: Long,
+    val representative: ApplicableSoulPreference,
+  )
+
+  private data class SoulPlasticityPolicy(
+    val minEvidence: Long,
+    val minLead: Long,
+  )
+
+  private fun SoulPlasticity.policy(): SoulPlasticityPolicy = when (this) {
+    SoulPlasticity.LOW -> SoulPlasticityPolicy(
+      minEvidence = 3L,
+      minLead = 2L,
+    )
+
+    SoulPlasticity.MEDIUM -> SoulPlasticityPolicy(
+      minEvidence = 2L,
+      minLead = 1L,
+    )
+
+    SoulPlasticity.HIGH -> SoulPlasticityPolicy(
+      minEvidence = 1L,
+      minLead = 1L,
+    )
+  }
 }

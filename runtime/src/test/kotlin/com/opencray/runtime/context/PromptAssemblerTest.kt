@@ -97,12 +97,15 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("If you need multiple tools, call only the next tool now"))
     assertTrue(prompt.taskPrompt.contains("A progress action is a short public status update"))
     assertTrue(prompt.taskPrompt.contains("tool_name\":\"Bash"))
+    assertTrue(prompt.taskPrompt.contains("tool_name\":\"python_exec"))
     assertTrue(prompt.taskPrompt.contains("tool_name\":\"WebFetch"))
-    assertTrue(prompt.taskPrompt.contains("Use Bash for one-off shell commands"))
+    assertTrue(prompt.taskPrompt.contains("Use Bash for one-off shell commands that do not require Python"))
     assertTrue(prompt.taskPrompt.contains("prefer WebSearch when a search provider is configured"))
     assertTrue(prompt.taskPrompt.contains("use PowerShell syntax on Windows hosts"))
     assertTrue(prompt.taskPrompt.contains("prefer ProcessStart and then use ProcessRead or ProcessWait"))
-    assertTrue(prompt.taskPrompt.contains("prefer ProcessStart with script_path instead of python_exec"))
+    assertTrue(prompt.taskPrompt.contains("prefer python_exec instead of Bash"))
+    assertTrue(prompt.taskPrompt.contains("use ProcessStart with script_path only when the runtime supports managed Python process launches"))
+    assertTrue(prompt.taskPrompt.contains("Do not use Bash to invoke python, python3, or py"))
     assertTrue(prompt.taskPrompt.contains("reason or justification"))
     assertTrue(prompt.taskPrompt.contains("it must not include a final answer"))
     assertTrue(prompt.taskPrompt.contains("Available tools:"))
@@ -335,14 +338,14 @@ class PromptAssemblerTest {
                   name = "AGENTS.md",
                   relativePath = "AGENTS.md",
                   content = "# Agents\nFollow the workspace instructions.",
-                  sourceCharCount = 42,
+                  sourceCharCount = "# Agents\nFollow the workspace instructions.".length,
                   truncated = false,
                 ),
                 BootstrapSnippet(
                   name = "PROJECT.md",
                   relativePath = "PROJECT.md",
                   content = "# Project\nThis repo uses Gradle.",
-                  sourceCharCount = 31,
+                  sourceCharCount = "# Project\nThis repo uses Gradle.".length,
                   truncated = false,
                 ),
               ),

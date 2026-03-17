@@ -6,6 +6,7 @@ data class SoulProfile(
   val voice: String? = null,
   val tone: SoulTone = SoulTone.STEADY,
   val verbosity: SoulVerbosity = SoulVerbosity.BALANCED,
+  val plasticity: SoulPlasticity = SoulPlasticity.LOW,
   val userRelationshipStyle: UserRelationshipStyle = UserRelationshipStyle.COLLABORATIVE,
   val riskTolerance: RiskTolerance = RiskTolerance.CONSERVATIVE,
   val toolUseBias: ToolUseBias = ToolUseBias.VERIFY_FIRST,
@@ -47,6 +48,12 @@ enum class SoulVerbosity {
   TERSE,
   BALANCED,
   EXPANSIVE,
+}
+
+enum class SoulPlasticity {
+  LOW,
+  MEDIUM,
+  HIGH,
 }
 
 enum class UserRelationshipStyle {

@@ -190,6 +190,8 @@ abstract interface class OpenCrayHostBridge {
 
   Future<OpenCrayMemoryDebugSnapshot> loadMemoryDebugSnapshot();
 
+  Future<OpenCrayMemoryDebugLinksSnapshot> loadMemoryDebugLinksSnapshot();
+
   Future<OpenCraySoulDebugSnapshot> loadSoulDebugSnapshot();
 
   Future<OpenCrayChatRunSnapshot?> waitForChatRun(
@@ -204,6 +206,11 @@ abstract interface class OpenCrayHostBridge {
   Future<void> deleteChatSession(String sessionId);
 
   Future<void> selectChatSession(String sessionId);
+
+  Future<void> branchChatSessionFromMessage({
+    required String sessionId,
+    required String messageId,
+  });
 
   Future<void> deleteChatMessage({
     required String sessionId,

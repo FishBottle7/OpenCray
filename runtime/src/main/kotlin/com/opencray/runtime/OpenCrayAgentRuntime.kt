@@ -20,8 +20,10 @@ import com.opencray.llm.LiteLlmGatewayStatus
 import com.opencray.runtime.context.AgentRuntimeSessionContext
 import com.opencray.runtime.context.ContextManager
 import com.opencray.runtime.context.ContextAssemblyReport
+import com.opencray.runtime.context.DuplicateDiscoveryToolHit
 import com.opencray.runtime.context.PromptAssembler
 import com.opencray.runtime.context.PromptAssemblyInput
+import com.opencray.runtime.context.RecentToolObservationSupport
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.memory.MemoryToolOperation
@@ -70,6 +72,7 @@ class OpenCrayAgentRuntime(
   private val clock: () -> Long = System::currentTimeMillis,
 ) : SessionTaskRuntime {
   private val activeSkillCapsuleResolver: ActiveSkillCapsuleResolver = ActiveSkillCapsuleResolver()
+  private val recentToolObservationSupport: RecentToolObservationSupport = RecentToolObservationSupport()
 
   override fun execute(task: AgentTask, hooks: RuntimeExecutionHooks): ExecutionResult {
     emitLifecycleEvent(task = task, phase = OpenCrayRunLifecyclePhase.START)
@@ -180,6 +183,8 @@ class OpenCrayAgentRuntime(
           put("contextPrunedMessageCount", assembledPrompt.report.prunedTranscriptMessageCount.toString())
           put("contextRewrittenMessageCount", assembledPrompt.report.rewrittenTranscriptMessageCount.toString())
           put("contextPruningSummaryIncluded", assembledPrompt.report.pruningSummaryIncluded.toString())
+          put("contextRecentObservationCount", assembledPrompt.report.recentToolObservationCount.toString())
+          put("contextRecentObservationLayerIncluded", assembledPrompt.report.recentToolObservationLayerIncluded.toString())
           putAll(task.metadata.filterKeys(::isGatewayVisibleMetadataKey))
           putAll(config.llmMetadata)
         },
@@ -292,6 +297,9 @@ class OpenCrayAgentRuntime(
               val toolResult = gateActiveSkillToolCall(
                 call = toolAction.call,
                 activeSkillCapsule = activeSkillCapsule,
+              ) ?: maybeShortCircuitDuplicateDiscoveryCall(
+                call = toolAction.call,
+                transcript = transcript,
               ) ?: toolDispatcher.dispatch(task = task, call = toolAction.call, hooks = hooks)
               eventSink.onRunEvent(
                 task = task,
@@ -714,6 +722,8 @@ class OpenCrayAgentRuntime(
       put("contextPrunedMessageCount", report.prunedTranscriptMessageCount.toString())
       put("contextRewrittenMessageCount", report.rewrittenTranscriptMessageCount.toString())
       put("contextPruningSummaryIncluded", report.pruningSummaryIncluded.toString())
+      put("contextRecentObservationCount", report.recentToolObservationCount.toString())
+      put("contextRecentObservationLayerIncluded", report.recentToolObservationLayerIncluded.toString())
       put("contextMatchedMemoryCount", report.matchedMemoryRecordCount.toString())
       put("contextInjectedMemoryCount", report.injectedMemoryRecordCount.toString())
       put("contextOmittedMemoryCount", report.omittedMemoryRecordCount.toString())
@@ -1296,6 +1306,7 @@ class OpenCrayAgentRuntime(
             queryTerms = trace.queryTerms,
             resultCount = trace.resultCount,
             corpusFileCount = trace.corpusFileCount,
+            recordIds = trace.recordIds,
             paths = trace.paths,
             lineRanges = trace.lineRanges,
             path = trace.path,
@@ -1348,6 +1359,33 @@ class OpenCrayAgentRuntime(
       ?.takeIf(String::isNotBlank)
       ?.let { reason -> mapOf("toolReason" to reason) }
       ?: emptyMap()
+
+  private fun maybeShortCircuitDuplicateDiscoveryCall(
+    call: AgentToolCall,
+    transcript: List<RuntimeConversationMessage>,
+  ): AgentToolResult? {
+    val duplicateHit = recentToolObservationSupport.findDuplicateDiscoveryCall(
+      messages = transcript,
+      call = call,
+    ) ?: return null
+    return AgentToolResult(
+      toolName = duplicateHit.toolName,
+      status = AgentToolResultStatus.SUCCESS,
+      content = buildDuplicateDiscoveryObservation(duplicateHit),
+      metadata = duplicateHit.metadata + mapOf(
+        "duplicateGuard" to "true",
+        "duplicateGuardSignature" to duplicateHit.signature,
+      ),
+    )
+  }
+
+  private fun buildDuplicateDiscoveryObservation(hit: DuplicateDiscoveryToolHit): String = buildString {
+    appendLine("Identical discovery call already succeeded earlier in this task.")
+    appendLine("Reuse the recent workspace observation context instead of repeating the same call.")
+    appendLine("previous_observation=${hit.summaryLine}")
+    appendLine()
+    append(hit.excerpt)
+  }.trim()
 
   private fun buildSingleActionReminderObservation(): String = buildString {
     appendLine("Protocol note: return only the next action on each turn.")

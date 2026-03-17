@@ -27,6 +27,7 @@ data class MemoryGetResponse(
   val startLine: Int,
   val endLine: Int,
   val totalLineCount: Int,
+  val recordIds: List<String> = emptyList(),
 )
 
 class MemorySearchService(
@@ -108,12 +109,21 @@ class MemorySearchService(
       )
     }
     val endLine = minOf(totalLineCount, startLine + requestedLines - 1)
+    val recordIds = file.sections
+      .asSequence()
+      .filter { section ->
+        section.endLine >= startLine && section.startLine <= endLine
+      }
+      .map(ProjectedMemorySection::recordId)
+      .distinct()
+      .toList()
     return MemoryGetResponse(
       path = file.path,
       text = file.lines.subList(startLine - 1, endLine).joinToString(separator = "\n"),
       startLine = startLine,
       endLine = endLine,
       totalLineCount = totalLineCount,
+      recordIds = recordIds,
     )
   }
 

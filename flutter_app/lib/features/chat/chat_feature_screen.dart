@@ -56,23 +56,61 @@ int runtimeSnapshotVersion(OpenCrayChatRuntimeSnapshot snapshot) {
       : latestRunEpochMs;
 }
 
+@visibleForTesting
+TextSelectionThemeData chatBubbleSelectionTheme(ChatMessageKind kind) {
+  return switch (kind) {
+    ChatMessageKind.outbound => const TextSelectionThemeData(
+      // Outbound bubbles already use the app accent, so switch to a bright
+      // translucent selection color to preserve contrast.
+      selectionColor: Color(0x52FFFFFF),
+      selectionHandleColor: Colors.white,
+    ),
+    _ => const TextSelectionThemeData(
+      selectionColor: Color(0x33007AFF),
+      selectionHandleColor: Color(0xFF0A84FF),
+    ),
+  };
+}
+
 enum _SessionMenuAction { copy, delete }
 
-enum _ChatMessageMenuAction { copy, recall, delete, multiSelect, quote }
+enum _ChatMessageMenuAction {
+  copy,
+  recall,
+  redo,
+  edit,
+  branch,
+  delete,
+  multiSelect,
+  quote,
+}
 
 @immutable
 class _ActiveChatMessageMenu {
   const _ActiveChatMessageMenu({
     required this.message,
     required this.bubbleRect,
+    this.redoPrompt,
   });
 
   final ChatMessageData message;
   final Rect bubbleRect;
+  final ChatMessageData? redoPrompt;
 
   bool get isOutgoing => message.kind == ChatMessageKind.outbound;
 
-  bool get canRecall => isOutgoing;
+  bool get canRecall => isOutgoing && !message.isEphemeral;
+
+  bool get showsRedo => message.kind == ChatMessageKind.inbound;
+
+  bool get canRedo => redoPrompt != null && !message.isEphemeral;
+
+  bool get canEdit => isOutgoing && !message.isEphemeral;
+
+  bool get canBranch =>
+      message.kind == ChatMessageKind.inbound && !message.isEphemeral;
+
+  bool get canDelete => !message.isEphemeral;
 }
 
 class OpenCrayChatFeature extends StatefulWidget {
@@ -228,6 +266,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       _activeMessageMenu = _ActiveChatMessageMenu(
         message: message,
         bubbleRect: bubbleRect,
+        redoPrompt: _redoPromptForMessage(message),
       );
     });
   }
@@ -252,7 +291,28 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         }
         await _recallChatMessage(activeMenu.message);
         break;
+      case _ChatMessageMenuAction.redo:
+        if (!activeMenu.canRedo) {
+          return;
+        }
+        await _redoChatMessage(activeMenu.message);
+        break;
+      case _ChatMessageMenuAction.edit:
+        if (!activeMenu.canEdit) {
+          return;
+        }
+        await _editChatMessage(activeMenu.message);
+        break;
+      case _ChatMessageMenuAction.branch:
+        if (!activeMenu.canBranch) {
+          return;
+        }
+        await _branchChatMessage(activeMenu.message);
+        break;
       case _ChatMessageMenuAction.delete:
+        if (!activeMenu.canDelete) {
+          return;
+        }
         await _deleteChatMessage(activeMenu.message);
         break;
       case _ChatMessageMenuAction.multiSelect:
@@ -321,6 +381,190 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     });
   }
 
+  ChatMessageData? _redoPromptForMessage(ChatMessageData message) {
+    if (message.kind != ChatMessageKind.inbound || message.isEphemeral) {
+      return null;
+    }
+    final int messageIndex = _state.messages.indexWhere(
+      (candidate) => candidate.messageId == message.messageId,
+    );
+    if (messageIndex <= 0) {
+      return null;
+    }
+    for (int index = messageIndex - 1; index >= 0; index -= 1) {
+      final ChatMessageData candidate = _state.messages[index];
+      if (candidate.kind == ChatMessageKind.outbound &&
+          !candidate.isEphemeral) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  Future<void> _redoChatMessage(ChatMessageData message) async {
+    final ChatMessageData? redoPrompt = _redoPromptForMessage(message);
+    if (redoPrompt == null) {
+      if (!mounted) {
+        return;
+      }
+      _showMessageFeedback(widget.copy.chatMessageActionFailed);
+      return;
+    }
+    final bridge = widget.bridge;
+    if (bridge != null) {
+      try {
+        await bridge.recallChatMessage(
+          sessionId: _activeSessionId,
+          messageId: redoPrompt.messageId,
+        );
+        await bridge.submitChatMessage(redoPrompt.text);
+      } catch (_) {
+        if (!mounted) {
+          return;
+        }
+        _showMessageFeedback(widget.copy.chatMessageActionFailed);
+      }
+      return;
+    }
+    final int promptIndex = _state.messages.indexWhere(
+      (candidate) => candidate.messageId == redoPrompt.messageId,
+    );
+    if (promptIndex < 0) {
+      return;
+    }
+    final int stamp = DateTime.now().microsecondsSinceEpoch;
+    setState(() {
+      _state = _state.copyWith(
+        messages: <ChatMessageData>[
+          ..._state.messages.take(promptIndex),
+          ChatMessageData(
+            messageId: 'redo-outbound-$stamp',
+            kind: ChatMessageKind.outbound,
+            text: redoPrompt.text,
+          ),
+          ChatMessageData(
+            messageId: 'redo-inbound-$stamp',
+            kind: ChatMessageKind.inbound,
+            text: widget.copy.chatRunThinkingActive,
+          ),
+        ],
+      );
+    });
+    _scheduleScrollToBottom();
+  }
+
+  Future<void> _editChatMessage(ChatMessageData message) async {
+    final String draft = message.text;
+    final bridge = widget.bridge;
+    if (bridge != null) {
+      try {
+        await bridge.recallChatMessage(
+          sessionId: _activeSessionId,
+          messageId: message.messageId,
+        );
+      } catch (_) {
+        if (!mounted) {
+          return;
+        }
+        _showMessageFeedback(widget.copy.chatMessageActionFailed);
+        return;
+      }
+    } else {
+      final int recallIndex = _state.messages.indexWhere(
+        (candidate) => candidate.messageId == message.messageId,
+      );
+      if (recallIndex < 0) {
+        return;
+      }
+      setState(() {
+        _state = _state.copyWith(
+          messages: _state.messages.take(recallIndex).toList(growable: false),
+        );
+      });
+    }
+    if (!mounted) {
+      return;
+    }
+    _composerController.value = TextEditingValue(
+      text: draft,
+      selection: TextSelection.collapsed(offset: draft.length),
+    );
+    _composerFocusNode.requestFocus();
+  }
+
+  Future<void> _branchChatMessage(ChatMessageData message) async {
+    final bridge = widget.bridge;
+    if (bridge != null) {
+      try {
+        await bridge.branchChatSessionFromMessage(
+          sessionId: _activeSessionId,
+          messageId: message.messageId,
+        );
+      } catch (_) {
+        if (!mounted) {
+          return;
+        }
+        _showMessageFeedback(widget.copy.chatMessageActionFailed);
+      }
+      return;
+    }
+    final int branchIndex = _state.messages.indexWhere(
+      (candidate) => candidate.messageId == message.messageId,
+    );
+    final List<ChatMessageData> branchMessages =
+        (branchIndex >= 0
+                ? _state.messages.take(branchIndex + 1)
+                : _state.messages)
+            .toList(growable: false);
+    final ChatSessionListItemData sourceSession = _state.drawer.sessions
+        .firstWhere(
+          (session) => session.isSelected,
+          orElse: () => _state.drawer.sessions.first,
+        );
+    final String preview = _branchPreviewText(
+      branchMessages,
+      fallback: sourceSession.preview,
+    );
+    final ChatSessionListItemData branchSession = ChatSessionListItemData(
+      sessionId:
+          '${sourceSession.sessionId}-branch-${_state.drawer.sessions.length + 1}',
+      title: _branchSessionTitle(sourceSession.title),
+      preview: preview,
+      meta: sourceSession.meta,
+      isSelected: true,
+    );
+    final List<ChatSessionListItemData> updatedSessions =
+        <ChatSessionListItemData>[
+          branchSession,
+          ..._state.drawer.sessions.map(
+            (session) => ChatSessionListItemData(
+              sessionId: session.sessionId,
+              title: session.title,
+              preview: session.preview,
+              meta: session.meta,
+              isSelected: false,
+              unreadCount: session.unreadCount,
+            ),
+          ),
+        ];
+    setState(() {
+      _state = _state.copyWith(
+        messages: branchMessages,
+        summary: ChatSessionSummary(
+          title: branchSession.title,
+          badge: _state.summary.badge,
+          body: preview.isNotEmpty ? preview : _state.summary.body,
+        ),
+        drawer: ChatSessionsDrawerState(
+          eyebrow: _state.drawer.eyebrow,
+          title: _state.drawer.title,
+          ctaLabel: _state.drawer.ctaLabel,
+          sessions: updatedSessions,
+        ),
+      );
+    });
+  }
+
   void _quoteChatMessage(ChatMessageData message) {
     final String quoted = message.text
         .trim()
@@ -340,6 +584,30 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     );
     _composerFocusNode.requestFocus();
     _showMessageFeedback(widget.copy.chatMessageQuoted);
+  }
+
+  String _branchPreviewText(
+    List<ChatMessageData> messages, {
+    required String fallback,
+  }) {
+    for (final ChatMessageData message in messages.reversed) {
+      final String trimmed = message.text.trim();
+      if (trimmed.isEmpty || message.kind == ChatMessageKind.timeline) {
+        continue;
+      }
+      return trimmed;
+    }
+    return fallback;
+  }
+
+  String _branchSessionTitle(String title) {
+    if (title.endsWith(' branch')) {
+      return title;
+    }
+    if (title.length >= 25) {
+      return '${title.substring(0, 25)} branch';
+    }
+    return '$title branch';
   }
 
   @override
@@ -999,10 +1267,18 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     final OpenCrayChatRuntimeSnapshot? effectiveRuntime =
         _resolveRuntimeSnapshot(snapshot.runtimeActivity, runtimeSnapshot);
     final List<ChatRunTraceData> runTraces = _mapRunTraces(effectiveRuntime);
-    final List<ChatMessageData> messages = _mapMessages(
+    final List<ChatMessageData> mappedMessages = _mapMessages(
       snapshot.messages,
       hideThinkingPlaceholder: runTraces.isNotEmpty,
     );
+    final Set<String> existingMessageIds = mappedMessages
+        .map((message) => message.messageId.trim())
+        .where((messageId) => messageId.isNotEmpty)
+        .toSet();
+    final List<ChatMessageData> messages = <ChatMessageData>[
+      ...mappedMessages,
+      ..._mapProjectedProgressMessages(effectiveRuntime, existingMessageIds),
+    ];
     return ChatFeatureState(
       variant:
           messages.isEmpty &&
@@ -1089,6 +1365,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             },
             text: entry.value.text,
             meta: entry.value.meta,
+            isEphemeral: entry.value.isEphemeral,
           ),
         )
         .toList(growable: true);
@@ -1116,6 +1393,54 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     return activeRuns
         .map((run) => _mapRunTrace(run: run, runtimeSnapshot: runtimeSnapshot))
         .toList(growable: false);
+  }
+
+  List<ChatMessageData> _mapProjectedProgressMessages(
+    OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
+    Set<String> existingMessageIds,
+  ) {
+    if (runtimeSnapshot == null || runtimeSnapshot.activeRuns.isEmpty) {
+      return const <ChatMessageData>[];
+    }
+    final Set<String> activeRunIds = runtimeSnapshot.activeRuns
+        .map((run) => run.runId.trim())
+        .where((runId) => runId.isNotEmpty)
+        .toSet();
+    if (activeRunIds.isEmpty) {
+      return const <ChatMessageData>[];
+    }
+    final Set<String> seenMessageIds = <String>{};
+    final List<ChatMessageData> projected = <ChatMessageData>[];
+    final List<OpenCrayChatRuntimeEventSnapshot> sortedEvents =
+        runtimeSnapshot.events.toList(growable: false)..sort(
+          (left, right) =>
+              left.emittedAtEpochMs.compareTo(right.emittedAtEpochMs),
+        );
+    for (final event in sortedEvents) {
+      final String runId = event.runId.trim();
+      if (event.kind != 'progress' || !activeRunIds.contains(runId)) {
+        continue;
+      }
+      final String messageId =
+          'runtime-progress-$runId-${event.emittedAtEpochMs}';
+      if (!seenMessageIds.add(messageId) ||
+          existingMessageIds.contains(messageId)) {
+        continue;
+      }
+      final String text = _projectedProgressMessageText(event);
+      if (text.trim().isEmpty) {
+        continue;
+      }
+      projected.add(
+        ChatMessageData(
+          messageId: messageId,
+          kind: ChatMessageKind.inbound,
+          text: text,
+          isEphemeral: true,
+        ),
+      );
+    }
+    return projected;
   }
 
   ChatRunTraceData _mapRunTrace({
@@ -1265,6 +1590,17 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         history.add(mapped);
       }
     }
+    final List<ChatRunTraceHistoryEntry> contextHistory =
+        _buildRunContextHistory(run);
+    if (contextHistory.isNotEmpty) {
+      final int insertionIndex =
+          history.isNotEmpty &&
+              history.first.label == widget.copy.chatRunWorkingLabel &&
+              history.first.body == widget.copy.chatRunThinkingActive
+          ? 1
+          : 0;
+      history.insertAll(insertionIndex, contextHistory);
+    }
     if (history.isEmpty) {
       history.add(
         ChatRunTraceHistoryEntry(
@@ -1364,6 +1700,442 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       default:
         return null;
     }
+  }
+
+  List<ChatRunTraceHistoryEntry> _buildRunContextHistory(
+    OpenCrayChatRunSnapshot run,
+  ) {
+    final history = <ChatRunTraceHistoryEntry>[];
+    final String? memoryTraceBody = _buildRunMemoryTraceHistoryBody(
+      run.memoryTrace,
+    );
+    final String? memoryFlushBody = _buildRunMemoryFlushHistoryBody(
+      run.memoryFlush,
+    );
+    final String? bootstrapBody = _buildRunBootstrapHistoryBody(run.bootstrap);
+    final String? durableCompactionBody = _buildRunDurableCompactionHistoryBody(
+      run.durableCompaction,
+    );
+    final String? skillInventoryBody = _buildRunSkillInventoryHistoryBody(
+      run.skillInventory,
+    );
+    final String? activeSkillBody = _buildRunActiveSkillHistoryBody(
+      run.activeSkill,
+    );
+    if (bootstrapBody != null) {
+      history.add(
+        ChatRunTraceHistoryEntry(
+          label: _traceSectionLabel(english: 'Bootstrap', chinese: '启动上下文'),
+          body: bootstrapBody,
+        ),
+      );
+    }
+    if (memoryTraceBody != null) {
+      history.add(
+        ChatRunTraceHistoryEntry(
+          label: _traceSectionLabel(
+            english: 'Retrieved Memory',
+            chinese: '记忆召回',
+          ),
+          body: memoryTraceBody,
+        ),
+      );
+    }
+    if (memoryFlushBody != null) {
+      history.add(
+        ChatRunTraceHistoryEntry(
+          label: _traceSectionLabel(english: 'Memory Flush', chinese: '记忆刷新'),
+          body: memoryFlushBody,
+        ),
+      );
+    }
+    if (durableCompactionBody != null) {
+      history.add(
+        ChatRunTraceHistoryEntry(
+          label: _traceSectionLabel(
+            english: 'Durable Compaction',
+            chinese: '持久压缩',
+          ),
+          body: durableCompactionBody,
+        ),
+      );
+    }
+    if (skillInventoryBody != null) {
+      history.add(
+        ChatRunTraceHistoryEntry(
+          label: _traceSectionLabel(
+            english: 'Skill Inventory',
+            chinese: '技能清单',
+          ),
+          body: skillInventoryBody,
+        ),
+      );
+    }
+    if (activeSkillBody != null) {
+      history.add(
+        ChatRunTraceHistoryEntry(
+          label: _traceSectionLabel(english: 'Active Skill', chinese: '活动技能'),
+          body: activeSkillBody,
+        ),
+      );
+    }
+    return history;
+  }
+
+  String? _buildRunMemoryTraceHistoryBody(
+    OpenCrayChatRunMemoryTraceSnapshot? trace,
+  ) {
+    if (trace == null) {
+      return null;
+    }
+    final List<String> countParts = <String>[
+      if (trace.matchedRecordCount != null)
+        widget.copy.isChinese
+            ? '命中 ${trace.matchedRecordCount} 条'
+            : '${trace.matchedRecordCount} matched',
+      if (trace.injectedRecordCount != null)
+        widget.copy.isChinese
+            ? '注入 ${trace.injectedRecordCount} 条'
+            : '${trace.injectedRecordCount} injected',
+      if (trace.omittedRecordCount != null)
+        widget.copy.isChinese
+            ? '省略 ${trace.omittedRecordCount} 条'
+            : '${trace.omittedRecordCount} omitted',
+    ];
+    final String? queryTerms = trace.queryTerms.isEmpty
+        ? null
+        : widget.copy.isChinese
+        ? '关键词：${trace.queryTerms.join(', ')}'
+        : 'Query terms: ${trace.queryTerms.join(', ')}';
+    final String? selected = trace.selected.isEmpty
+        ? null
+        : _labeledMultilineSection(
+            englishLabel: 'Selected',
+            chineseLabel: '已注入',
+            values: trace.selected
+                .map(_formatRunMemorySelectedSummary)
+                .toList(),
+          );
+    final String? omitted = trace.omitted.isEmpty
+        ? null
+        : _labeledMultilineSection(
+            englishLabel: 'Omitted',
+            chineseLabel: '已省略',
+            values: trace.omitted.map(_formatRunMemoryOmittedSummary).toList(),
+          );
+    final String? filteredCounts = trace.filteredCounts.isEmpty
+        ? null
+        : widget.copy.isChinese
+        ? '过滤统计：${trace.filteredCounts.entries.map((entry) => '${entry.key} ${entry.value}').join('，')}'
+        : 'Filtered counts: ${trace.filteredCounts.entries.map((entry) => '${entry.key} ${entry.value}').join(', ')}';
+    return _joinTraceSections(<String?>[
+      countParts.isEmpty
+          ? null
+          : countParts.join(widget.copy.isChinese ? '，' : ', '),
+      queryTerms,
+      selected,
+      omitted,
+      filteredCounts,
+    ]);
+  }
+
+  String _formatRunMemorySelectedSummary(
+    OpenCrayChatRunMemorySelectedSnapshot selected,
+  ) {
+    final List<String> parts = <String>[selected.id];
+    if (selected.score != null) {
+      parts.add(
+        widget.copy.isChinese
+            ? '分数 ${selected.score}'
+            : 'score ${selected.score}',
+      );
+    }
+    if (selected.matchedTerms.isNotEmpty) {
+      parts.add(
+        widget.copy.isChinese
+            ? '匹配 ${selected.matchedTerms.join(', ')}'
+            : 'matched ${selected.matchedTerms.join(', ')}',
+      );
+    }
+    return parts.join(widget.copy.isChinese ? '，' : ', ');
+  }
+
+  String _formatRunMemoryOmittedSummary(
+    OpenCrayChatRunMemoryOmittedSnapshot omitted,
+  ) {
+    if (omitted.reason.trim().isEmpty) {
+      return omitted.id;
+    }
+    return widget.copy.isChinese
+        ? '${omitted.id}，原因 ${omitted.reason}'
+        : '${omitted.id}, reason ${omitted.reason}';
+  }
+
+  String? _buildRunMemoryFlushHistoryBody(
+    OpenCrayChatRunMemoryFlushSnapshot? flush,
+  ) {
+    if (flush == null) {
+      return null;
+    }
+    final List<String> summary = <String>[
+      if (flush.outcome != null)
+        widget.copy.isChinese
+            ? '结果 ${flush.outcome}'
+            : 'Outcome: ${flush.outcome}',
+      if (flush.candidateCount != null)
+        widget.copy.isChinese
+            ? '候选 ${flush.candidateCount} 条'
+            : '${flush.candidateCount} candidate(s)',
+      if (flush.writtenRecordCount != null)
+        widget.copy.isChinese
+            ? '写入 ${flush.writtenRecordCount} 条'
+            : '${flush.writtenRecordCount} written',
+    ];
+    final List<String> omitted = <String>[
+      if (flush.omittedMessageCount != null)
+        widget.copy.isChinese
+            ? '省略消息 ${flush.omittedMessageCount} 条'
+            : '${flush.omittedMessageCount} omitted message(s)',
+      if (flush.omittedCharCount != null)
+        widget.copy.isChinese
+            ? '省略字符 ${flush.omittedCharCount}'
+            : '${flush.omittedCharCount} omitted char(s)',
+    ];
+    return _joinTraceSections(<String?>[
+      summary.isEmpty ? null : summary.join(widget.copy.isChinese ? '，' : ', '),
+      omitted.isEmpty ? null : omitted.join(widget.copy.isChinese ? '，' : ', '),
+      flush.signature == null
+          ? null
+          : widget.copy.isChinese
+          ? '签名：${flush.signature}'
+          : 'Signature: ${flush.signature}',
+      _labeledInlineSection(
+        englishLabel: 'Kinds',
+        chineseLabel: '类型',
+        values: flush.writtenKinds,
+      ),
+      _labeledInlineSection(
+        englishLabel: 'Written',
+        chineseLabel: '写入',
+        values: flush.writtenRecordIds,
+      ),
+    ]);
+  }
+
+  String? _buildRunBootstrapHistoryBody(
+    OpenCrayChatRunBootstrapSnapshot? bootstrap,
+  ) {
+    if (bootstrap == null) {
+      return null;
+    }
+    final List<String> summary = <String>[
+      if (bootstrap.mode != null)
+        widget.copy.isChinese
+            ? '模式 ${bootstrap.mode}'
+            : 'Mode: ${bootstrap.mode}',
+      if (bootstrap.visibleFileCount != null)
+        widget.copy.isChinese
+            ? '可见 ${bootstrap.visibleFileCount} 个文件'
+            : '${bootstrap.visibleFileCount} visible file(s)',
+      if (bootstrap.injectedFileCount != null)
+        widget.copy.isChinese
+            ? '注入 ${bootstrap.injectedFileCount} 个'
+            : '${bootstrap.injectedFileCount} injected',
+      if (bootstrap.omittedFileCount != null)
+        widget.copy.isChinese
+            ? '省略 ${bootstrap.omittedFileCount} 个'
+            : '${bootstrap.omittedFileCount} omitted',
+      if (bootstrap.truncatedFileCount != null)
+        widget.copy.isChinese
+            ? '截断 ${bootstrap.truncatedFileCount} 个'
+            : '${bootstrap.truncatedFileCount} truncated',
+    ];
+    final List<String> files = bootstrap.files
+        .map((file) {
+          final List<String> suffix = <String>[
+            if (file.injectedCharCount != null)
+              widget.copy.isChinese
+                  ? '注入 ${file.injectedCharCount}'
+                  : 'injected ${file.injectedCharCount}',
+            if (file.sourceCharCount != null)
+              widget.copy.isChinese
+                  ? '原始 ${file.sourceCharCount}'
+                  : 'source ${file.sourceCharCount}',
+            if (file.truncated == true)
+              widget.copy.isChinese ? '已截断' : 'truncated',
+          ];
+          final String detail = suffix.isEmpty
+              ? ''
+              : widget.copy.isChinese
+              ? '，${suffix.join('，')}'
+              : ' (${suffix.join(', ')})';
+          return '${file.name} (${file.relativePath})$detail';
+        })
+        .toList(growable: false);
+    return _joinTraceSections(<String?>[
+      summary.isEmpty ? null : summary.join(widget.copy.isChinese ? '，' : ', '),
+      _labeledMultilineSection(
+        englishLabel: 'Files',
+        chineseLabel: '文件',
+        values: files,
+      ),
+    ]);
+  }
+
+  String? _buildRunDurableCompactionHistoryBody(
+    OpenCrayChatRunDurableCompactionSnapshot? durableCompaction,
+  ) {
+    if (durableCompaction == null) {
+      return null;
+    }
+    final List<String> summary = <String>[
+      if (durableCompaction.compactedThisRun != null)
+        widget.copy.isChinese
+            ? (durableCompaction.compactedThisRun! ? '本轮已压缩' : '本轮未压缩')
+            : (durableCompaction.compactedThisRun!
+                  ? 'Compacted this run'
+                  : 'No compaction this run'),
+      if (durableCompaction.sourceTranscriptMessageCount != null &&
+          durableCompaction.retainedTranscriptMessageCount != null)
+        widget.copy.isChinese
+            ? '保留 ${durableCompaction.retainedTranscriptMessageCount}/${durableCompaction.sourceTranscriptMessageCount} 条消息'
+            : 'Retained ${durableCompaction.retainedTranscriptMessageCount}/${durableCompaction.sourceTranscriptMessageCount} transcript messages',
+      if (durableCompaction.latestCompactedMessageCount != null)
+        widget.copy.isChinese
+            ? '最近压缩 ${durableCompaction.latestCompactedMessageCount} 条'
+            : 'Latest compacted ${durableCompaction.latestCompactedMessageCount} message(s)',
+    ];
+    final List<String> summaryCounts = <String>[
+      if (durableCompaction.includedSummaryCount != null)
+        widget.copy.isChinese
+            ? '纳入摘要 ${durableCompaction.includedSummaryCount} 个'
+            : '${durableCompaction.includedSummaryCount} included summary(s)',
+      if (durableCompaction.totalSummaryCount != null)
+        widget.copy.isChinese
+            ? '总摘要 ${durableCompaction.totalSummaryCount} 个'
+            : '${durableCompaction.totalSummaryCount} total summary(ies)',
+      if (durableCompaction.totalCompactedMessageCount != null)
+        widget.copy.isChinese
+            ? '累计压缩 ${durableCompaction.totalCompactedMessageCount} 条'
+            : '${durableCompaction.totalCompactedMessageCount} total compacted message(s)',
+    ];
+    return _joinTraceSections(<String?>[
+      summary.isEmpty ? null : summary.join(widget.copy.isChinese ? '，' : ', '),
+      summaryCounts.isEmpty
+          ? null
+          : summaryCounts.join(widget.copy.isChinese ? '，' : ', '),
+      durableCompaction.latestCompactedAtEpochMs == null
+          ? null
+          : widget.copy.isChinese
+          ? '最近压缩时间：${durableCompaction.latestCompactedAtEpochMs}'
+          : 'Latest compaction at ${durableCompaction.latestCompactedAtEpochMs}',
+    ]);
+  }
+
+  String? _buildRunSkillInventoryHistoryBody(
+    OpenCrayChatRunSkillInventorySnapshot? skillInventory,
+  ) {
+    if (skillInventory == null) {
+      return null;
+    }
+    final List<String> counts = <String>[
+      if (skillInventory.visibleSkillCount != null)
+        widget.copy.isChinese
+            ? '可见 ${skillInventory.visibleSkillCount} 个'
+            : '${skillInventory.visibleSkillCount} visible',
+      if (skillInventory.injectedSkillCount != null)
+        widget.copy.isChinese
+            ? '注入 ${skillInventory.injectedSkillCount} 个'
+            : '${skillInventory.injectedSkillCount} injected',
+      if (skillInventory.omittedSkillCount != null)
+        widget.copy.isChinese
+            ? '省略 ${skillInventory.omittedSkillCount} 个'
+            : '${skillInventory.omittedSkillCount} omitted',
+      if (skillInventory.implicitSkillCount != null)
+        widget.copy.isChinese
+            ? '隐式 ${skillInventory.implicitSkillCount} 个'
+            : '${skillInventory.implicitSkillCount} implicit',
+      if (skillInventory.invalidSkillCount != null)
+        widget.copy.isChinese
+            ? '无效 ${skillInventory.invalidSkillCount} 个'
+            : '${skillInventory.invalidSkillCount} invalid',
+    ];
+    final String? omittedTrace = skillInventory.omittedTraceSkillCount == null
+        ? null
+        : widget.copy.isChinese
+        ? '省略轨迹 ${skillInventory.omittedTraceSkillCount} 个'
+        : 'Omitted trace skills: ${skillInventory.omittedTraceSkillCount}';
+    final List<String> skills = skillInventory.skills
+        .map((skill) {
+          final List<String> parts = <String>[skill.name];
+          final String? relativePath = _nonEmpty(skill.relativePath);
+          if (relativePath != null) {
+            parts.add(relativePath);
+          }
+          final String? invocationControl = _nonEmpty(skill.invocationControl);
+          if (invocationControl != null) {
+            parts.add(invocationControl);
+          }
+          final String? executionContext = _nonEmpty(skill.executionContext);
+          if (executionContext != null) {
+            parts.add(executionContext);
+          }
+          return parts.join(widget.copy.isChinese ? '，' : ' · ');
+        })
+        .toList(growable: false);
+    return _joinTraceSections(<String?>[
+      counts.isEmpty ? null : counts.join(widget.copy.isChinese ? '，' : ', '),
+      omittedTrace,
+      _labeledMultilineSection(
+        englishLabel: 'Skills',
+        chineseLabel: '技能',
+        values: skills,
+      ),
+    ]);
+  }
+
+  String? _buildRunActiveSkillHistoryBody(
+    OpenCrayChatRunActiveSkillSnapshot? activeSkill,
+  ) {
+    if (activeSkill == null) {
+      return null;
+    }
+    final List<String> summary = <String>[
+      if (_nonEmpty(activeSkill.name) != null)
+        widget.copy.isChinese
+            ? '名称 ${activeSkill.name}'
+            : 'Name: ${activeSkill.name}',
+      if (_nonEmpty(activeSkill.relativePath) != null)
+        widget.copy.isChinese
+            ? '路径 ${activeSkill.relativePath}'
+            : 'Path: ${activeSkill.relativePath}',
+      if (_nonEmpty(activeSkill.activationSource) != null)
+        widget.copy.isChinese
+            ? '来源 ${activeSkill.activationSource}'
+            : 'Activation: ${activeSkill.activationSource}',
+      if (_nonEmpty(activeSkill.executionContext) != null)
+        widget.copy.isChinese
+            ? '上下文 ${activeSkill.executionContext}'
+            : 'Context: ${activeSkill.executionContext}',
+      if (activeSkill.toolRestrictionEnabled != null)
+        widget.copy.isChinese
+            ? (activeSkill.toolRestrictionEnabled! ? '已启用工具限制' : '未启用工具限制')
+            : (activeSkill.toolRestrictionEnabled!
+                  ? 'Tool restriction enabled'
+                  : 'Tool restriction disabled'),
+      if (activeSkill.truncated != null)
+        widget.copy.isChinese
+            ? (activeSkill.truncated! ? '胶囊已截断' : '胶囊未截断')
+            : (activeSkill.truncated! ? 'Capsule truncated' : 'Capsule intact'),
+    ];
+    return _joinTraceSections(<String?>[
+      summary.isEmpty ? null : summary.join(widget.copy.isChinese ? '，' : ', '),
+      _labeledInlineSection(
+        englishLabel: 'Allowed tools',
+        chineseLabel: '允许工具',
+        values: activeSkill.allowedToolKeys,
+      ),
+    ]);
   }
 
   bool _isWaitingApproval(OpenCrayChatRunSnapshot run) =>
@@ -1478,6 +2250,16 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       return stage;
     }
     return widget.copy.chatRunWorkingLabel;
+  }
+
+  String _projectedProgressMessageText(OpenCrayChatRuntimeEventSnapshot event) {
+    final String? stage = _nonEmpty(event.stage);
+    final String body =
+        _nonEmpty(event.text) ?? widget.copy.chatRunThinkingActive;
+    if (stage == null) {
+      return body;
+    }
+    return '$stage\n\n$body';
   }
 
   String _buildToolCallHistoryBody(OpenCrayChatRuntimeEventSnapshot event) {
@@ -2359,6 +3141,45 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       .map((section) => section?.trim() ?? '')
       .where((section) => section.isNotEmpty)
       .join('\n\n');
+
+  String _traceSectionLabel({
+    required String english,
+    required String chinese,
+  }) => widget.copy.isChinese ? chinese : english;
+
+  String? _labeledInlineSection({
+    required String englishLabel,
+    required String chineseLabel,
+    required List<String> values,
+  }) {
+    if (values.isEmpty) {
+      return null;
+    }
+    final String label = _traceSectionLabel(
+      english: englishLabel,
+      chinese: chineseLabel,
+    );
+    return '$label: ${values.join(', ')}';
+  }
+
+  String? _labeledMultilineSection({
+    required String englishLabel,
+    required String chineseLabel,
+    required List<String> values,
+  }) {
+    final List<String> normalized = values
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .toList(growable: false);
+    if (normalized.isEmpty) {
+      return null;
+    }
+    final String label = _traceSectionLabel(
+      english: englishLabel,
+      chinese: chineseLabel,
+    );
+    return '$label:\n${normalized.join('\n')}';
+  }
 
   String? _nonEmpty(String? value) {
     final String normalized = value?.trim() ?? '';
@@ -3363,6 +4184,30 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final bool useRedoAction = menu.showsRedo;
+    final bool secondaryEnabled = useRedoAction ? menu.canRedo : menu.canRecall;
+    final IconData secondaryIcon = useRedoAction
+        ? Icons.redo_rounded
+        : Icons.undo_rounded;
+    final String secondaryLabel = useRedoAction
+        ? copy.chatMessageRedoAction
+        : copy.chatMessageRecallAction;
+    final _ChatMessageMenuAction secondaryAction = useRedoAction
+        ? _ChatMessageMenuAction.redo
+        : _ChatMessageMenuAction.recall;
+    final bool useBranchAction = !menu.isOutgoing;
+    final bool tertiaryEnabled = useBranchAction
+        ? menu.canBranch
+        : menu.canEdit;
+    final IconData tertiaryIcon = useBranchAction
+        ? Icons.call_split_rounded
+        : Icons.edit_rounded;
+    final String tertiaryLabel = useBranchAction
+        ? copy.chatMessageBranchAction
+        : copy.chatMessageEditAction;
+    final _ChatMessageMenuAction tertiaryAction = useBranchAction
+        ? _ChatMessageMenuAction.branch
+        : _ChatMessageMenuAction.edit;
     const double menuWidth = 202;
     const double menuHeight = 118;
     final Size screenSize = MediaQuery.sizeOf(context);
@@ -3419,28 +4264,39 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
                           ),
                           const SizedBox(width: 12),
                           _ChatMessageMenuItem(
-                            icon: Icons.undo_rounded,
-                            label: copy.chatMessageRecallAction,
-                            enabled: menu.canRecall,
-                            onTap: menu.canRecall
-                                ? () => onActionSelected(
-                                    _ChatMessageMenuAction.recall,
-                                  )
+                            icon: secondaryIcon,
+                            label: secondaryLabel,
+                            enabled: secondaryEnabled,
+                            onTap: secondaryEnabled
+                                ? () => onActionSelected(secondaryAction)
                                 : null,
                           ),
                           const SizedBox(width: 12),
                           _ChatMessageMenuItem(
-                            icon: CupertinoIcons.delete_left,
-                            label: copy.chatMessageDeleteAction,
-                            isDestructive: true,
-                            onTap: () =>
-                                onActionSelected(_ChatMessageMenuAction.delete),
+                            icon: tertiaryIcon,
+                            label: tertiaryLabel,
+                            enabled: tertiaryEnabled,
+                            onTap: tertiaryEnabled
+                                ? () => onActionSelected(tertiaryAction)
+                                : null,
                           ),
                         ],
                       ),
                       const SizedBox(height: 12),
                       Row(
                         children: <Widget>[
+                          _ChatMessageMenuItem(
+                            icon: CupertinoIcons.delete_left,
+                            label: copy.chatMessageDeleteAction,
+                            isDestructive: true,
+                            enabled: menu.canDelete,
+                            onTap: menu.canDelete
+                                ? () => onActionSelected(
+                                    _ChatMessageMenuAction.delete,
+                                  )
+                                : null,
+                          ),
+                          const SizedBox(width: 12),
                           _ChatMessageMenuItem(
                             icon: CupertinoIcons.check_mark_circled,
                             label: copy.chatMessageSelectAction,
@@ -3455,8 +4311,6 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
                             onTap: () =>
                                 onActionSelected(_ChatMessageMenuAction.quote),
                           ),
-                          const SizedBox(width: 12),
-                          const SizedBox(width: 52, height: 46),
                         ],
                       ),
                     ],
@@ -3594,6 +4448,7 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
 
   @override
   Widget build(BuildContext context) {
+    final selectionTheme = chatBubbleSelectionTheme(widget.message.kind);
     return Listener(
       key: ValueKey<String>('chat-bubble-${widget.message.messageId}'),
       onPointerDown: _startLongPressTimer,
@@ -3611,15 +4466,22 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
           ),
           child: Padding(
             padding: const EdgeInsets.all(14),
-            child: SelectionArea(
-              contextMenuBuilder:
-                  (
-                    BuildContext context,
-                    SelectableRegionState selectableRegionState,
-                  ) => const SizedBox.shrink(),
-              child: Text(
-                widget.message.text,
-                style: _ChatTextStyles.bubble.copyWith(color: widget.textColor),
+            child: Theme(
+              data: Theme.of(
+                context,
+              ).copyWith(textSelectionTheme: selectionTheme),
+              child: SelectionArea(
+                contextMenuBuilder:
+                    (
+                      BuildContext context,
+                      SelectableRegionState selectableRegionState,
+                    ) => const SizedBox.shrink(),
+                child: Text(
+                  widget.message.text,
+                  style: _ChatTextStyles.bubble.copyWith(
+                    color: widget.textColor,
+                  ),
+                ),
               ),
             ),
           ),

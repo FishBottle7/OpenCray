@@ -4,6 +4,7 @@ object SoulProfileExtensionKeys {
   const val VOICE: String = "voice"
   const val TONE: String = "tone"
   const val VERBOSITY: String = "verbosity"
+  const val PLASTICITY: String = "plasticity"
   const val USER_RELATIONSHIP_STYLE: String = "user_relationship_style"
   const val RISK_TOLERANCE: String = "risk_tolerance"
   const val TOOL_USE_BIAS: String = "tool_use_bias"

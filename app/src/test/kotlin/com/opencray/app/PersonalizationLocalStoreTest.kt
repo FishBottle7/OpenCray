@@ -78,6 +78,7 @@ class PersonalizationLocalStoreTest {
     assertEquals("calm", updatedRecord.extensions["voice"])
     assertEquals("warm", updatedRecord.extensions["tone"])
     assertEquals("balanced", updatedRecord.extensions["verbosity"])
+    assertEquals("medium", updatedRecord.extensions["plasticity"])
     assertEquals("supportive", updatedRecord.extensions["user_relationship_style"])
     assertEquals("conservative", updatedRecord.extensions["risk_tolerance"])
     assertEquals("verify_first", updatedRecord.extensions["tool_use_bias"])
@@ -151,6 +152,7 @@ class PersonalizationLocalStoreTest {
     assertEquals("calm", updatedRecord.extensions["voice"])
     assertNull(updatedRecord.extensions["tone"])
     assertNull(updatedRecord.extensions["verbosity"])
+    assertNull(updatedRecord.extensions["plasticity"])
   }
 
   @Test

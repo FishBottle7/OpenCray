@@ -17,6 +17,7 @@ internal class PersonalizationSoulExtensionFactory(
     return linkedMapOf(
       SoulProfileExtensionKeys.TONE to resolved.tone.name.lowercase(),
       SoulProfileExtensionKeys.VERBOSITY to resolved.verbosity.name.lowercase(),
+      SoulProfileExtensionKeys.PLASTICITY to resolved.plasticity.name.lowercase(),
       SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE to resolved.userRelationshipStyle.name.lowercase(),
       SoulProfileExtensionKeys.RISK_TOLERANCE to resolved.riskTolerance.name.lowercase(),
       SoulProfileExtensionKeys.TOOL_USE_BIAS to resolved.toolUseBias.name.lowercase(),
@@ -27,6 +28,7 @@ internal class PersonalizationSoulExtensionFactory(
     val MANAGED_KEYS: Set<String> = setOf(
       SoulProfileExtensionKeys.TONE,
       SoulProfileExtensionKeys.VERBOSITY,
+      SoulProfileExtensionKeys.PLASTICITY,
       SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE,
       SoulProfileExtensionKeys.RISK_TOLERANCE,
       SoulProfileExtensionKeys.TOOL_USE_BIAS,

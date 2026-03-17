@@ -864,7 +864,7 @@ OpenCray should formalize seven persistent or semi-persistent sources.
 1. Session metadata store
 2. Session transcript store
 3. Session queue state store
-4. Soul profile store
+4. Soul source-of-truth
 5. Memory store
 6. Skills registry and installed skill roots
 7. Workspace bootstrap source
@@ -892,13 +892,11 @@ Session queue store
   - pending / running / cancelled states
   - restart recovery metadata
 
-Soul store
+Soul source-of-truth
   owns:
-  - tone
-  - style
-  - boundaries
-  - escalation rules
-  - self-description
+  - durable base persona in `SOUL.md`
+  - the preset-selected template used to seed the initial `SOUL.md`
+  - admin- or creator-level updates that intentionally rewrite `SOUL.md`
 
 Memory store
   owns:
@@ -906,6 +904,7 @@ Memory store
   - preferences
   - project notes
   - tasks / commitments
+  - relationship or persona-evolution memories that should influence behavior without silently rewriting `SOUL.md`
 
 Skills registry
   owns:
@@ -939,10 +938,13 @@ Role:
 
 Source:
 
-- structured soul profile from persistence
+- `SOUL.md` parsed into typed runtime form
+- relationship or persona-evolution overlays from memory
+- session-local role overlays for the current run only
 
 Role:
 
+- stable base persona identity
 - tone
 - defaults
 - escalation style
@@ -1148,6 +1150,359 @@ Suggested modules:
 - `runtime/src/main/kotlin/com/opencray/runtime/soul/SoulProfile.kt`
 - `runtime/src/main/kotlin/com/opencray/runtime/soul/SoulProfileResolver.kt`
 - `runtime/src/main/kotlin/com/opencray/runtime/soul/SoulPromptRenderer.kt`
+
+### Source-of-truth rule
+
+OpenCray should not keep two independent durable persona authorities.
+
+The durable base persona source should be `SOUL.md`.
+
+After agent creation, end users should not be able to directly rewrite core persona by simply asking for a personality change in normal conversation.
+
+`typed soul` should remain, but only as a runtime-normalized representation used to:
+
+- parse and validate the currently effective persona
+- merge overlays deterministically
+- test field precedence
+- render prompt sections and debug trace consistently
+
+It should not become a second long-lived soul store that can drift away from `SOUL.md`.
+
+### Recommended layering
+
+```text
+preset chosen at agent creation
+  -> seeds initial SOUL.md
+
+SOUL.md
+  -> base persona source of truth
+  -> stable core identity that should not be casually rewritten by chat turns
+
+relationship / persona-evolution memory
+  -> durable user/workspace/session-scoped behavior drift
+  -> does not rewrite SOUL.md
+  -> only influences relationship-facing adaptive traits
+
+session overlay
+  -> current-run acting mode only
+
+runtime normalized soul
+  -> ephemeral merged result used for prompt assembly
+```
+
+### Why this layering matters
+
+This keeps three different things separate:
+
+- who the agent fundamentally is
+- how the relationship with a specific user has evolved over time
+- how the agent should behave in this one run
+
+Without that separation, OpenCray will either:
+
+- overwrite base persona too aggressively, or
+- lose the gradual "character evolution" that some users actively want
+
+### Do not collapse preference and relationship
+
+OpenCray should explicitly separate two different things that are easy to confuse:
+
+1. what the user is asking for
+2. what the relationship has actually become
+
+Those are not the same.
+
+If a user says:
+
+- "Be gentler with me."
+- "Talk to me more softly from now on."
+- "I want you to sound more affectionate."
+
+that is first and foremost a preference signal.
+
+It means:
+
+- the user prefers a certain interaction style
+- the runtime may adapt style within allowed bounds
+- the system may remember that preference durably
+
+It does **not** automatically mean:
+
+- trust has increased
+- intimacy has increased
+- emotional attachment has formed
+- romantic-coded affection should suddenly appear
+
+Repeated explicit requests or declarations should not be enough, by themselves, to produce deep relationship changes. A human relationship does not become emotionally intimate just because a sentence was repeated several times. OpenCray should follow the same principle.
+
+### Two-layer relationship model
+
+To stay believable, relationship-facing evolution should be split into two layers.
+
+#### Layer A: interaction preference layer
+
+This layer captures how the user wants the agent to behave toward them.
+
+Examples:
+
+- preferred warmth level
+- preferred formality level
+- preferred address style
+- whether a softer or more direct speaking style is preferred
+
+This layer may be influenced by explicit user instructions.
+
+Examples:
+
+- "Call me this nickname."
+- "Be a bit gentler with me."
+- "Don't be so formal with me."
+
+This layer is still bounded by:
+
+- the core soul
+- protected-field rules
+- plasticity
+- current session constraints
+
+It should be understood as "preferred interaction style", not "actual emotional bond".
+
+#### Layer B: relationship state layer
+
+This layer captures what the relationship has actually grown into through lived interaction history.
+
+This is where OpenCray should eventually model things like:
+
+- familiarity
+- trust
+- safety
+- intimacy permission
+- playfulness permission
+- affection tendency
+- reciprocity / mutual confirmation
+
+This layer should **not** primarily move because the user requested it directly.
+
+It should move mainly because the interaction history justifies it.
+
+That difference is essential.
+
+If OpenCray skips this split and uses one shared "relationship score", it will drift into implausible behavior:
+
+- repeated requests will look like instant emotional progress
+- style preference will be mistaken for attachment
+- the agent will appear easy to manipulate rather than relationally believable
+
+### Core rule: no direct personality rewrite by request
+
+The following should be treated as invalid as direct soul rewrites in ordinary chat:
+
+- "Change your personality to be completely different from now on."
+- "Rewrite your soul so you are no longer serious."
+- "Your core persona is now submissive/playful/cold."
+
+Those requests may still affect:
+
+- session overlay for the current run
+- relationship evolution signals for adaptive traits
+
+But they should not directly mutate `SOUL.md` or the base soul record.
+
+If OpenCray later supports true soul editing, it should be a separate creator/admin flow, not a normal in-chat instruction path.
+
+### Examples
+
+- "This time be more serious."  
+  -> session overlay
+
+- "Only with me, be softer and a little more playful."  
+  -> interaction preference layer
+  -> may later influence relationship-facing behavior within plasticity bounds
+
+- "You should always be much more playful with me."  
+  -> durable interaction preference signal
+  -> not direct proof of intimacy, trust, or affection
+
+- "Rewrite your core soul to be a different person."  
+  -> reject as direct soul mutation in normal chat
+
+- "I like you, so you should love me too."  
+  -> reject as a direct relationship-state rewrite
+  -> at most treat as a conversational event, not a command that forces affection
+
+- repeating "be more intimate with me" several times  
+  -> may reinforce an interaction preference
+  -> should not, by itself, unlock high-trust or high-intimacy relationship state
+
+### Adaptive versus protected fields
+
+OpenCray should split soul-relevant fields into two groups.
+
+Protected core fields:
+
+- core identity / self-concept
+- hard boundaries and forbidden behavior
+- core risk posture
+- foundational collaboration contract
+- any creator-authored "who this agent is" statements in `SOUL.md`
+
+Adaptive relationship fields:
+
+- warmth
+- formality
+- intimacy
+- playfulness
+- initiative
+- preferred address style
+
+Only adaptive relationship fields should be influenced by memory-backed evolution. Protected core fields stay anchored to `SOUL.md`.
+
+### Relationship state dimensions
+
+To approximate believable human-like evolution, OpenCray should eventually track multiple independent relationship-state dimensions instead of one blended score.
+
+Recommended dimensions:
+
+- `familiarity`
+  - built by repeated stable interaction and shared history
+- `trust`
+  - built by reliability, honesty, consistency, and fulfilled commitments
+- `safety`
+  - built when the user respects boundaries, does not shame vulnerability, and does not weaponize intimacy
+- `intimacy_permission`
+  - controls whether more personal, closer, or emotionally vulnerable expression is appropriate
+- `playfulness_permission`
+  - controls whether teasing, playful affection, or mild撒娇-style behavior feels earned and safe
+- `affection_tendency`
+  - captures warmth or fondness that emerges from the relationship, but should remain bounded by trust and safety
+- `reciprocity`
+  - represents whether the relationship style is mutually reinforced rather than one-sidedly demanded
+
+These dimensions should not all move together.
+
+For example:
+
+- familiarity may rise before trust
+- trust may rise before intimacy_permission
+- playfulness_permission may stay low even when familiarity is high
+- affection_tendency should not outrun trust and safety
+
+### What should drive relationship-state change
+
+Relationship-state change should be driven mainly by interaction events, not by direct imperative requests.
+
+Positive examples:
+
+- consistent positive interaction across time
+- fulfilled promises or reliable follow-through
+- respectful response to boundaries
+- successful repair after tension or misunderstanding
+- supportive response to vulnerability
+- repeated reciprocal warmth rather than one-sided extraction
+
+Negative examples:
+
+- pressure to change identity
+- repeated boundary pushing
+- manipulative guilt or coercive affection demands
+- instrumental "use and discard" interaction patterns
+- punishment after vulnerability
+- large swings between intimacy demand and emotional coldness
+
+Direct user statements still matter, but mostly as preference or interpretation signals, not as final proof that the relationship itself has changed.
+
+### Relationship-state gates
+
+OpenCray should gate higher-intimacy behavior behind multiple conditions rather than a single accumulated score.
+
+Examples of intended constraints:
+
+- affection should not rise purely from repeated explicit requests
+- intimacy_permission should not outrun trust and safety
+- playful or teasing behavior should require enough safety plus explicit or implicit permission
+- romantic-coded or highly dependent behavior should require durable evidence from interaction history, not just verbal instruction
+- negative interaction patterns should be able to stall, slow, or partially reverse relationship-state growth even when positive preference signals exist
+
+This is the core protection against the unrealistic pattern:
+
+- "I repeated 'you like me' four times, so now the agent should act deeply attached."
+
+OpenCray should not model relationships that way.
+
+### Precedence
+
+For the effective runtime persona, field precedence should be:
+
+1. `SOUL.md` base
+2. interaction preference layer
+3. relationship state layer
+4. session overlay
+
+Every effective soul field should remain traceable to its winning source so debug surfaces can show whether a field came from:
+
+- `SOUL.md`
+- interaction preference memory
+- relationship-state evolution
+- session overlay
+- an explicit promoted update
+
+### Plasticity semantics
+
+Plasticity should not mean "how easy it is to rewrite the soul."
+
+It should mean:
+
+- how quickly the agent absorbs compatible interaction preferences
+- how sensitive adaptive traits are to lived interaction history
+- how much adaptive traits may drift from the core base
+- how much durable relationship-state change can happen from the same interaction pattern
+- how difficult it is for a short-term spike to produce a lasting relationship-state shift
+
+Plasticity should **not** mean:
+
+- how easy it is to issue a command that rewrites the soul
+- how easy it is to force trust, intimacy, or affection by repetition
+- how easy it is to bypass protected core fields
+
+Low-plasticity agents should still be influenceable, but slowly and within tight bounds, so users can experience gradual character development without collapsing the core soul.
+
+More concretely:
+
+- low plasticity
+  - slower preference absorption
+  - slower relationship-state movement
+  - stronger inertia after short bursts of interaction
+- medium plasticity
+  - balanced rate of adaptation
+  - suitable default for agents meant to feel responsive but not unstable
+- high plasticity
+  - faster adaptation to lived interaction patterns
+  - still must not permit direct command-based emotional jumps
+
+### Current implementation note
+
+The current implementation is only a first skeleton.
+
+What exists now:
+
+- direct-chat durable soul rewrites are partially blocked
+- long-term style requests can be stored as durable `relationship_style_profile` signals
+- runtime overlay can apply a bounded style-oriented relationship shift based on plasticity thresholds
+
+What does **not** exist yet:
+
+- a full relationship-state layer with dimensions like trust, safety, intimacy permission, and affection tendency
+- event-driven positive and negative relationship updates
+- reciprocity-aware gating
+- realistic affect growth that depends on interaction history rather than repeated verbal demand
+
+This distinction matters because the current system should be treated as:
+
+- a preference-evolution scaffold
+
+not as:
+
+- a finished human-like emotional relationship model
 
 ### Why this matters
 

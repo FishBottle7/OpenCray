@@ -402,14 +402,47 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Run overview'), findsOneWidget);
+      expect(find.text('Context setup'), findsOneWidget);
       expect(find.text('Memory writes'), findsOneWidget);
       expect(find.text('Memory recall'), findsOneWidget);
+      expect(find.text('Skill context'), findsOneWidget);
       expect(find.text('Soul resolution'), findsOneWidget);
       expect(find.text('Raw trace'), findsOneWidget);
       expect(find.text('run-memory'), findsWidgets);
+      expect(find.text('Mode: full'), findsOneWidget);
+      expect(find.text('Outcome: written'), findsOneWidget);
+      expect(find.text('Compacted: yes'), findsOneWidget);
+      expect(find.text('Restricted: yes'), findsOneWidget);
       expect(find.text('Matched: 2'), findsOneWidget);
       expect(find.text('Injected: 1'), findsOneWidget);
-      expect(find.text('Omitted: 1'), findsOneWidget);
+      expect(
+        find.textContaining(
+          'AGENTS.md: workspace/AGENTS.md · injected 520/900 chars · truncated',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Summary window: included 1, omitted 2',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'memory-link: skills/memory-link/SKILL.md · manual · inline · user-invocable',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Allowed tools: skill_read, memory_search',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
       expect(
         find.textContaining('Query terms: chinese, gradle', findRichText: true),
         findsOneWidget,
@@ -470,10 +503,15 @@ void main() {
       await tester.tap(find.text('Memory Inspector'));
       await tester.pumpAndSettle();
 
+      final linkedActivityCard = find.byKey(
+        const ValueKey<String>('settings-memory-linked-activity-card'),
+      );
+
       expect(find.text('Store summary'), findsOneWidget);
       expect(find.text('Filter'), findsOneWidget);
       expect(find.text('Memory records'), findsOneWidget);
       expect(find.text('Selected record'), findsOneWidget);
+      expect(find.text('Linked activity'), findsOneWidget);
       expect(
         find.textContaining('memory-user', findRichText: true),
         findsWidgets,
@@ -492,6 +530,33 @@ void main() {
       );
       expect(
         find.textContaining('Preference value: Xiao Bai', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: linkedActivityCard,
+          matching: find.textContaining(
+            'Source run: run-memory-origin-1',
+            findRichText: true,
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: linkedActivityCard,
+          matching: find.textContaining(
+            'display name: user memory: Xiao Bai',
+            findRichText: true,
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: linkedActivityCard,
+          matching: find.textContaining('memory_search'),
+        ),
         findsOneWidget,
       );
     },
@@ -531,6 +596,9 @@ void main() {
     );
     final fieldSourcesCard = find.byKey(
       const ValueKey<String>('settings-soul-field-sources-card'),
+    );
+    final linkedActivityCard = find.byKey(
+      const ValueKey<String>('settings-soul-linked-activity-card'),
     );
 
     expect(find.text('Stored soul'), findsOneWidget);
@@ -582,6 +650,21 @@ void main() {
           'display name ->: user memory: Xiao Bai',
           findRichText: true,
         ),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Linked activity'), findsWidgets);
+    expect(
+      find.descendant(
+        of: linkedActivityCard,
+        matching: find.textContaining('memory-user · display name'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: linkedActivityCard,
+        matching: find.textContaining('run-memory-origin-1'),
       ),
       findsOneWidget,
     );
@@ -983,6 +1066,50 @@ _FakeDebugBridge _buildDebugBridge() {
         executionStatus: 'success',
         taskState: 'completed',
         responseFormat: 'json_final',
+        memoryFlush: OpenCrayChatRunMemoryFlushSnapshot(
+          outcome: 'written',
+          omittedMessageCount: 6,
+          omittedCharCount: 2100,
+          signature: 'user-intro|tool-scan|workspace-facts',
+          candidateCount: 2,
+          writtenRecordCount: 1,
+          writtenKinds: <String>['user_preference'],
+          writtenRecordIds: <String>['memory-user'],
+        ),
+        bootstrap: OpenCrayChatRunBootstrapSnapshot(
+          mode: 'full',
+          visibleFileCount: 3,
+          injectedFileCount: 2,
+          omittedFileCount: 1,
+          truncatedFileCount: 1,
+          files: <OpenCrayChatRunBootstrapFileSnapshot>[
+            OpenCrayChatRunBootstrapFileSnapshot(
+              name: 'AGENTS.md',
+              relativePath: 'workspace/AGENTS.md',
+              sourceCharCount: 900,
+              injectedCharCount: 520,
+              truncated: true,
+            ),
+            OpenCrayChatRunBootstrapFileSnapshot(
+              name: 'PROJECT.md',
+              relativePath: 'workspace/PROJECT.md',
+              sourceCharCount: 480,
+              injectedCharCount: 480,
+              truncated: false,
+            ),
+          ],
+        ),
+        durableCompaction: OpenCrayChatRunDurableCompactionSnapshot(
+          compactedThisRun: true,
+          sourceTranscriptMessageCount: 18,
+          retainedTranscriptMessageCount: 7,
+          latestCompactedMessageCount: 9,
+          includedSummaryCount: 1,
+          omittedSummaryCount: 2,
+          totalSummaryCount: 3,
+          totalCompactedMessageCount: 14,
+          latestCompactedAtEpochMs: 1950,
+        ),
         memoryTrace: OpenCrayChatRunMemoryTraceSnapshot(
           matchedRecordCount: 2,
           injectedRecordCount: 1,
@@ -1002,6 +1129,40 @@ _FakeDebugBridge _buildDebugBridge() {
             ),
           ],
           filteredCounts: <String, int>{'scope_mismatch': 1, 'expired': 2},
+        ),
+        skillInventory: OpenCrayChatRunSkillInventorySnapshot(
+          visibleSkillCount: 3,
+          injectedSkillCount: 2,
+          omittedSkillCount: 1,
+          implicitSkillCount: 0,
+          invalidSkillCount: 0,
+          omittedTraceSkillCount: 1,
+          skills: <OpenCrayChatRunVisibleSkillSnapshot>[
+            OpenCrayChatRunVisibleSkillSnapshot(
+              name: 'memory-link',
+              relativePath: 'skills/memory-link/SKILL.md',
+              invocationControl: 'manual',
+              userInvocable: true,
+              executionContext: 'inline',
+            ),
+            OpenCrayChatRunVisibleSkillSnapshot(
+              name: 'repo-planner',
+              relativePath: 'skills/repo-planner/SKILL.md',
+              invocationControl: 'agent',
+              userInvocable: false,
+              executionContext: 'inline',
+            ),
+          ],
+        ),
+        activeSkill: OpenCrayChatRunActiveSkillSnapshot(
+          name: 'memory-link',
+          relativePath: 'skills/memory-link/SKILL.md',
+          invocationControl: 'manual',
+          executionContext: 'inline',
+          activationSource: 'skill_read',
+          toolRestrictionEnabled: true,
+          truncated: false,
+          allowedToolKeys: <String>['skill_read', 'memory_search'],
         ),
       ),
     },
@@ -1068,6 +1229,120 @@ _FakeDebugBridge _buildDebugBridge() {
             'scope': 'workspace',
             'status': 'active',
           },
+        ),
+      ],
+    ),
+    linksSnapshot: const OpenCrayMemoryDebugLinksSnapshot(
+      sessionId: 'session-1',
+      workspaceId: 'workspace-main',
+      observedAtEpochMs: 5000,
+      records: <OpenCrayMemoryDebugLinksEntrySnapshot>[
+        OpenCrayMemoryDebugLinksEntrySnapshot(
+          recordId: 'memory-user',
+          sourceSessionId: 'session-1',
+          sourceTaskId: 'task-memory-origin-1',
+          sourceRun: OpenCrayDebugRunLinkSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-memory-origin-1',
+            taskId: 'task-memory-origin-1',
+            acceptedAtEpochMs: 2000,
+            updatedAtEpochMs: 2200,
+            executionStatus: 'success',
+            lifecycleState: 'completed',
+          ),
+          promptRecalls: <OpenCrayMemoryPromptRecallLinkSnapshot>[
+            OpenCrayMemoryPromptRecallLinkSnapshot(
+              occurredAtEpochMs: 4600,
+              run: OpenCrayDebugRunLinkSnapshot(
+                sessionId: 'session-1',
+                runId: 'run-memory',
+                taskId: 'task-memory',
+                acceptedAtEpochMs: 1000,
+                updatedAtEpochMs: 2400,
+                executionStatus: 'success',
+                lifecycleState: 'completed',
+              ),
+              score: 420,
+              matchedTerms: <String>['chinese'],
+            ),
+          ],
+          toolRetrievals: <OpenCrayMemoryToolRetrievalLinkSnapshot>[
+            OpenCrayMemoryToolRetrievalLinkSnapshot(
+              occurredAtEpochMs: 1600,
+              run: OpenCrayDebugRunLinkSnapshot(
+                sessionId: 'session-1',
+                runId: 'run-memory',
+                taskId: 'task-memory',
+                acceptedAtEpochMs: 1000,
+                updatedAtEpochMs: 2400,
+                executionStatus: 'success',
+                lifecycleState: 'completed',
+              ),
+              toolName: 'memory_search',
+              operation: 'search',
+              query: 'what name should I call the agent',
+              queryTerms: <String>['name', 'agent'],
+              paths: <String>['memory/2024-03-11.md'],
+              lineRanges: <String>['5-8'],
+            ),
+          ],
+          maintenanceActions: <OpenCrayMemoryMaintenanceActionLinkSnapshot>[
+            OpenCrayMemoryMaintenanceActionLinkSnapshot(
+              action: 'written',
+              occurredAtEpochMs: 2200,
+              run: OpenCrayDebugRunLinkSnapshot(
+                sessionId: 'session-1',
+                runId: 'run-memory-origin-1',
+                taskId: 'task-memory-origin-1',
+                acceptedAtEpochMs: 2000,
+                updatedAtEpochMs: 2200,
+                executionStatus: 'success',
+                lifecycleState: 'completed',
+              ),
+            ),
+            OpenCrayMemoryMaintenanceActionLinkSnapshot(
+              action: 'flush_written',
+              occurredAtEpochMs: 2300,
+              run: OpenCrayDebugRunLinkSnapshot(
+                sessionId: 'session-1',
+                runId: 'run-memory',
+                taskId: 'task-memory',
+                acceptedAtEpochMs: 1000,
+                updatedAtEpochMs: 2400,
+                executionStatus: 'success',
+                lifecycleState: 'completed',
+              ),
+            ),
+          ],
+        ),
+        OpenCrayMemoryDebugLinksEntrySnapshot(
+          recordId: 'memory-style',
+          sourceSessionId: 'session-1',
+          sourceTaskId: 'task-memory-style-1',
+          sourceRun: OpenCrayDebugRunLinkSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-memory-style-1',
+            taskId: 'task-memory-style-1',
+            acceptedAtEpochMs: 3000,
+            updatedAtEpochMs: 3250,
+            executionStatus: 'success',
+            lifecycleState: 'completed',
+          ),
+          maintenanceActions: <OpenCrayMemoryMaintenanceActionLinkSnapshot>[
+            OpenCrayMemoryMaintenanceActionLinkSnapshot(
+              action: 'written',
+              occurredAtEpochMs: 3250,
+              run: OpenCrayDebugRunLinkSnapshot(
+                sessionId: 'session-1',
+                runId: 'run-memory-style-1',
+                taskId: 'task-memory-style-1',
+                acceptedAtEpochMs: 3000,
+                updatedAtEpochMs: 3250,
+                executionStatus: 'success',
+                lifecycleState: 'completed',
+              ),
+            ),
+          ],
         ),
       ],
     ),
@@ -1563,12 +1838,14 @@ class _FakeDebugBridge extends OpenCraySeedBridge {
     required this.runtimeSnapshot,
     required Map<String, OpenCrayChatRunSnapshot> runSnapshots,
     required this.memorySnapshot,
+    required this.linksSnapshot,
     required this.soulSnapshot,
   }) : _runSnapshots = runSnapshots;
 
   final OpenCrayChatRuntimeSnapshot runtimeSnapshot;
   final Map<String, OpenCrayChatRunSnapshot> _runSnapshots;
   final OpenCrayMemoryDebugSnapshot memorySnapshot;
+  final OpenCrayMemoryDebugLinksSnapshot linksSnapshot;
   final OpenCraySoulDebugSnapshot soulSnapshot;
 
   @override
@@ -1582,6 +1859,10 @@ class _FakeDebugBridge extends OpenCraySeedBridge {
   @override
   Future<OpenCrayMemoryDebugSnapshot> loadMemoryDebugSnapshot() async =>
       memorySnapshot;
+
+  @override
+  Future<OpenCrayMemoryDebugLinksSnapshot>
+  loadMemoryDebugLinksSnapshot() async => linksSnapshot;
 
   @override
   Future<OpenCraySoulDebugSnapshot> loadSoulDebugSnapshot() async =>

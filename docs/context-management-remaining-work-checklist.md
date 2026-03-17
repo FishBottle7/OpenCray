@@ -43,8 +43,9 @@ Phase 1 foundation now in progress:
 - projected memory corpus tools now expose `memory_search` and `memory_get`, and explicit memory retrieval emits `memory_retrieval` runtime events that project through host/local run snapshots
 - managed skills roots now resolve into a bounded `Skill Inventory` prompt layer, and run metadata/snapshots now preserve which skills were visible versus injected for later debugging
 - explicit `skill_read` can now promote one active skill into a dedicated `Active Skill` capsule layer for later turns, with host-visible trace and allowlist-style tool narrowing kept outside `ContextManager`
-- Settings debug tooling now exposes snapshot-backed `Memory Inspector` and `Soul Inspector` state views so persisted memory records, stored/base/effective soul, overlays, and field sources can be inspected without reconstructing them from live events
-- the next safe rollout step is pre-compaction memory flush and durable compaction work, now that Level 2 skill activation is in place without moving source-selection logic into `ContextManager`
+- Settings debug tooling now exposes snapshot-backed `Memory Inspector` and `Soul Inspector` state views so persisted memory records, stored/base/effective soul, overlays, field sources, and deterministic linked activity can be inspected without reconstructing them from live events
+- chat fullscreen run trace and Settings `Context & Memory Trace` now render structured run-level context traces for bootstrap, recalled memory, memory flush, durable compaction, skill inventory, and active skill directly from host snapshots
+- the next safe rollout step is finishing operator drill-down/curation surfaces plus child-context policy work, now that Level 2 skill activation, pre-compaction memory flush, durable compaction, and bootstrap trace are in place without moving source-selection logic into `ContextManager`
 
 ## Remaining work after P0
 
@@ -55,14 +56,16 @@ Phase 1 foundation now in progress:
    - Introduce resolver and renderer stages so tone, verbosity, escalation style, and tool-use bias can be tested independently.
    - Current status: typed soul fields, preset resolution, prompt rendering, and memory-backed runtime overlay are implemented.
    - Current status: chat-derived naming and style preferences can now override runtime soul through structured memory records.
-   - Remaining gaps: explicit promotion into persisted soul still needs a separate confirmation path, and the manager/allocator boundary should stay strict so soul selection logic does not drift upward into `ContextManager`.
+   - Current status: direct-chat soul writes are now partially hardened. `agent_display_name` may remain durable, but chat-derived style/verbosity requests are clamped to session scope, protected soul fields such as risk tolerance and tool-use bias are filtered out of direct-chat memory paths, and runtime soul overlay ignores legacy direct-chat records that try to durably rewrite those protected fields.
+   - Current status: the first relationship/persona-evolution slice is now live. Durable long-term style requests are stored as `relationship_style_profile` signals instead of direct soul rewrites, presets now carry a typed `plasticity` axis into runtime soul extensions, and runtime overlay applies relationship evolution only when the accumulated evidence clears the selected plasticity threshold.
+   - Remaining gaps: the durable source-of-truth contract still needs to be tightened so `SOUL.md` becomes the base persona authority, typed soul stays a runtime-normalized representation instead of a competing persisted source, the current style-oriented preference-evolution slice is expanded into a true two-layer model (`interaction preference` versus `relationship state`), relationship state is driven mainly by interaction-history events rather than repeated explicit requests, adaptive axes expand beyond style into intimacy/playfulness/initiative/address style, host/debug field-source tracing is aligned with plasticity-thresholded relationship overlays, and any future true soul editing goes through a separate creator/admin flow. The manager/allocator boundary should also stay strict so soul selection logic does not drift upward into `ContextManager`.
 
 2. Deterministic memory write pipeline
    - Add a memory candidate extractor after completed turns.
    - Gate writes through explicit policy instead of model-authored free-form dumps.
    - Start with `user_preference`, `project_fact`, `durable_instruction`, and `task_commitment`.
   - Current status: post-turn writes, `task_commitment` resolve/expire/reaffirm maintenance, host-visible `memory_write` summaries, constrained semantic extraction for user-authored durable memories, constrained semantic interpretation for `task_commitment` completion/renewal, and existing Flutter/runtime trace surfaces that retain written/resolved/reaffirmed/expired memory ids are now implemented.
-  - Current status: operator-facing read-only inspection now exists through snapshot-backed `Memory Inspector` and `Soul Inspector` debug surfaces.
+  - Current status: operator-facing read-only inspection now exists through snapshot-backed `Memory Inspector` and `Soul Inspector` debug surfaces, including deterministic linked activity for source, recall, explicit retrieval, and maintenance relationships.
   - Remaining gaps: there is still no operator editing/curation flow for memory state, and the current `task_commitment` semantic pass is intentionally narrow to resolve/reaffirm decisions rather than broader free-form memory edits.
 
 3. Memory recall layer
@@ -70,7 +73,7 @@ Phase 1 foundation now in progress:
    - Keep recall budgeted and traceable in the context report.
    - Current status: recall is budgeted, workspace-aware, prompt-visible, and live app runs now refresh memory through post-turn deterministic writes.
    - Current status: runtime context reports now include bounded memory recall trace data for query terms, selected records, budget-omitted records, and filtered counts.
-  - Remaining gaps: retrieval trace is visible through runtime/run surfaces, but the debug inspectors are still primarily state-oriented rather than trace-oriented, so deeper operator correlation between recalled records and current state is still pending.
+   - Remaining gaps: retrieval trace is now correlated into inspector-linked activity, but there is still no richer trace workflow for filtering, replay, or per-run drill-down from the debug surface itself.
    - Boundary note: ranking, filtering, and recall policy stay in `MemoryRetriever`; `ContextManager` should only enforce final prompt allocation pressure on the already-ranked result.
 
 4. On-demand memory tools
@@ -78,13 +81,13 @@ Phase 1 foundation now in progress:
    - Search should run against a projected memory corpus, not raw `memory.json`.
    - Automatic bounded recall and explicit memory tools should coexist rather than replace one another.
    - Current status: implemented with projected-corpus search/get tooling and `memory_retrieval` runtime events visible through existing host/local snapshot surfaces.
-  - Remaining gaps: explicit memory tools are implemented, but there is still no operator action surface for replaying/searching them directly from debug UI; current debug pages remain snapshot inspection surfaces only.
+   - Remaining gaps: explicit memory tools are implemented and their deterministic record links now surface in the inspectors, but there is still no operator action surface for replaying/searching them directly from debug UI; current debug pages remain read-only inspection surfaces.
 
 5. Runtime-visible skill inventory
    - Assemble an explicit inventory layer from managed skills roots.
    - Snapshot which skills were visible for a run so behavior can be debugged later.
    - Current status: implemented as a bounded prompt-visible `Skill Inventory` layer with run metadata and host/local snapshot projection for visible, injected, omitted, implicit, and invalid skill counts.
-   - Remaining gaps: inventory visibility is traceable, but there is still no active skill capsule selection or tool-policy narrowing stage.
+   - Remaining gaps: inventory visibility is traceable and now surfaces in chat/debug UI, but there is still no richer operator drill-down or replay surface beyond read-only run trace and inspector views.
 
 6. Active skill capsule injection
    - When a skill is selected, inject a dedicated skill capsule instead of relying on raw `skill_read` only.
@@ -117,7 +120,8 @@ Phase 1 foundation now in progress:
 10. Bootstrap context files
    - Resolve `AGENTS.md`, `SOUL.md`, `TOOLS.md`, and `PROJECT.md` as bounded context sources.
    - Support `full`, `lightweight`, and `none` modes.
-   - Current status: not implemented yet.
+   - Current status: implemented as a bounded runtime-side bootstrap layer. `BootstrapContext` flows through `ContextManager`, `PromptAssembler` injects bootstrap files into prompt assembly, runtime metadata preserves structured bootstrap-file trace, and host/local run snapshots plus Flutter chat/debug surfaces now render bootstrap visibility/injection state.
+   - Remaining gaps: `lightweight` mode exists in the resolver/tests, but the live app path still selects `full` for prompt turns and `none` otherwise; there is not yet a broader operator surface for deeper bootstrap-file drill-down beyond existing trace views.
 
 11. Subagent context modes
    - Add `minimal`, `delegated`, and `mirrored` child-context policies.
@@ -127,18 +131,17 @@ Phase 1 foundation now in progress:
 12. Full context trace
    - Emit run-level trace data for layer composition, retrieved memories, skill capsules, pruning, and compaction.
    - Make postmortem inspection possible without re-running the session.
-   - Current status: memory write activity, bounded memory recall trace, explicit memory-tool retrieval trace, skill visibility trace, active skill capsule trace, pre-compaction memory-flush trace, and durable-compaction trace now project through runtime metadata plus host/local snapshot surfaces.
-   - Remaining gaps: deeper cross-layer trace capture is still pending, especially bootstrap-file trace and richer per-layer compaction/bootstrap provenance.
+    - Current status: memory write activity, bounded memory recall trace, explicit memory-tool retrieval trace, deterministic memory/soul linked activity, bootstrap-file trace, skill visibility trace, active skill capsule trace, pre-compaction memory-flush trace, and durable-compaction trace now project through runtime metadata plus host/local snapshot surfaces. Chat run-trace UI and Settings `Context & Memory Trace` consume these run-level traces without a separate debug protocol.
+   - Remaining gaps: deeper cross-layer trace capture is still pending, especially per-layer budgeting/provenance summaries and richer compaction/bootstrap replay or drill-down workflows beyond the current read-only trace surfaces.
 
 ## Recommended execution order
 
 1. Preserve the `ContextManager` boundary as allocator/budget owner only
 2. Finish structured soul promotion/confirmation work
-3. Finish the remaining memory debug/operator surfaces
-4. Bootstrap files
+3. Finish the remaining memory debug/operator surfaces, especially editing/curation flows
+4. Wire live bootstrap mode selection beyond the current `full`/`none` app path
 5. Subagent context modes
-6. Broader full-context trace
-7. Full context trace
+6. Broader full-context trace and debug drill-down
 
 ## Handoff notes for the next worker
 
