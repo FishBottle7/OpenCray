@@ -2,6 +2,7 @@ import 'package:flutter/services.dart';
 
 import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_debug_snapshot.dart';
 import '../models/opencray_file_image_preview.dart';
 import '../models/opencray_file_text_preview.dart';
 import '../models/opencray_files_snapshot.dart';
@@ -390,6 +391,7 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
     required bool rollbackJournalEnabled,
     required int maxFilesPerBatch,
     int maxAgentTurns = 0,
+    int maxToolCalls = 0,
     required int undoWindowHours,
     required String fileChangesPolicyId,
     required String fileDeletesPolicyId,
@@ -409,6 +411,7 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
         'rollbackJournalEnabled': rollbackJournalEnabled,
         'maxFilesPerBatch': maxFilesPerBatch,
         'maxAgentTurns': maxAgentTurns,
+        'maxToolCalls': maxToolCalls,
         'undoWindowHours': undoWindowHours,
         'fileChangesPolicyId': fileChangesPolicyId,
         'fileDeletesPolicyId': fileDeletesPolicyId,
@@ -509,6 +512,18 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<OpenCrayMemoryDebugSnapshot> loadMemoryDebugSnapshot() async =>
+      OpenCrayMemoryDebugSnapshot.fromMap(
+        await _invokeMap('loadMemoryDebugSnapshot'),
+      );
+
+  @override
+  Future<OpenCraySoulDebugSnapshot> loadSoulDebugSnapshot() async =>
+      OpenCraySoulDebugSnapshot.fromMap(
+        await _invokeMap('loadSoulDebugSnapshot'),
+      );
+
+  @override
   Future<OpenCrayChatRunSnapshot?> waitForChatRun(
     String runId, {
     Duration timeout = const Duration(seconds: 15),
@@ -544,6 +559,24 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       _methodChannel.invokeMethod<void>('selectChatSession', <String, Object?>{
         'sessionId': sessionId,
       });
+
+  @override
+  Future<void> deleteChatMessage({
+    required String sessionId,
+    required String messageId,
+  }) => _methodChannel.invokeMethod<void>(
+    'deleteChatMessage',
+    <String, Object?>{'sessionId': sessionId, 'messageId': messageId},
+  );
+
+  @override
+  Future<void> recallChatMessage({
+    required String sessionId,
+    required String messageId,
+  }) => _methodChannel.invokeMethod<void>(
+    'recallChatMessage',
+    <String, Object?>{'sessionId': sessionId, 'messageId': messageId},
+  );
 
   @override
   Future<OpenCrayChatRunSubmission?> submitChatMessage(String text) async {

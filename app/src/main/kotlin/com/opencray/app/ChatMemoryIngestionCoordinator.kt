@@ -7,9 +7,12 @@ import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.store.MemoryStore
 import com.opencray.runtime.memory.MemoryCandidateExtractor
+import com.opencray.runtime.memory.MemoryFlushCoordinator
+import com.opencray.runtime.memory.MemoryFlushSummary
 import com.opencray.runtime.memory.TaskCommitmentResolver
 import com.opencray.runtime.memory.MemoryTurnEvidence
 import com.opencray.runtime.memory.MemoryWriter
+import com.opencray.runtime.context.RuntimeConversationMessage
 
 internal data class MemoryIngestionSummary(
   val writtenRecords: List<MemoryRecord> = emptyList(),
@@ -30,7 +33,23 @@ internal class ChatMemoryIngestionCoordinator(
   private val candidateExtractor: MemoryCandidateExtractor = MemoryCandidateExtractor(),
   private val writer: MemoryWriter = MemoryWriter(store = memoryStore),
   private val taskCommitmentResolver: TaskCommitmentResolver = TaskCommitmentResolver(store = memoryStore),
+  private val flushCoordinator: MemoryFlushCoordinator = MemoryFlushCoordinator(
+    candidateExtractor = candidateExtractor,
+    writer = writer,
+    existingRecordIdsProvider = { memoryStore.list().mapTo(linkedSetOf(), MemoryRecord::id) },
+  ),
 ) {
+  fun flushBeforeCompaction(
+    sessionId: String,
+    conversation: List<RuntimeConversationMessage>,
+    taskId: String? = null,
+  ): MemoryFlushSummary = flushCoordinator.flushBeforeCompaction(
+    sessionId = sessionId,
+    workspaceId = workspaceIdProvider(),
+    conversation = conversation,
+    taskId = taskId,
+  )
+
   fun ingestCompletedTurn(
     sessionId: String,
     task: AgentTask,

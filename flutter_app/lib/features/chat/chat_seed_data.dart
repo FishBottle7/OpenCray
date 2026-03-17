@@ -6,6 +6,18 @@ import 'chat_models.dart';
 class OpenCrayChatSeedData {
   const OpenCrayChatSeedData._();
 
+  static ChatMessageData _message({
+    required String messageId,
+    required ChatMessageKind kind,
+    required String text,
+    String meta = '',
+  }) => ChatMessageData(
+    messageId: messageId,
+    kind: kind,
+    text: text,
+    meta: meta,
+  );
+
   static ChatSessionsDrawerState _drawer(OpenCrayUiCopy copy) =>
       ChatSessionsDrawerState(
         eyebrow: copy.chatSeedDrawerEyebrow,
@@ -42,20 +54,28 @@ class OpenCrayChatSeedData {
 
   static List<ChatMessageData> _mainMessages(OpenCrayUiCopy copy) =>
       <ChatMessageData>[
-        ChatMessageData(kind: ChatMessageKind.timeline, text: copy.chatToday),
-        ChatMessageData(
+        _message(
+          messageId: 'seed-main-timeline',
+          kind: ChatMessageKind.timeline,
+          text: copy.chatToday,
+        ),
+        _message(
+          messageId: 'seed-main-inbound-1',
           kind: ChatMessageKind.inbound,
           text: copy.chatSeedWorkspaceReady,
         ),
-        ChatMessageData(
+        _message(
+          messageId: 'seed-main-outbound-1',
           kind: ChatMessageKind.outbound,
           text: copy.chatSeedWhyWritePending,
         ),
-        ChatMessageData(
+        _message(
+          messageId: 'seed-main-inbound-2',
           kind: ChatMessageKind.inbound,
           text: copy.chatSeedSafeModeAsks,
         ),
-        ChatMessageData(
+        _message(
+          messageId: 'seed-main-outbound-2',
           kind: ChatMessageKind.outbound,
           text: copy.chatSeedShowCurrentLimits,
         ),
@@ -63,12 +83,18 @@ class OpenCrayChatSeedData {
 
   static List<ChatMessageData> _attachmentMessages(OpenCrayUiCopy copy) =>
       <ChatMessageData>[
-        ChatMessageData(kind: ChatMessageKind.timeline, text: copy.chatToday),
-        ChatMessageData(
+        _message(
+          messageId: 'seed-attachments-timeline',
+          kind: ChatMessageKind.timeline,
+          text: copy.chatToday,
+        ),
+        _message(
+          messageId: 'seed-attachments-inbound-1',
           kind: ChatMessageKind.inbound,
           text: copy.chatSeedDropFileHint,
         ),
-        ChatMessageData(
+        _message(
+          messageId: 'seed-attachments-outbound-1',
           kind: ChatMessageKind.outbound,
           text: copy.chatSeedUseTwoFiles,
         ),
@@ -76,12 +102,18 @@ class OpenCrayChatSeedData {
 
   static List<ChatMessageData> _commandMessages(OpenCrayUiCopy copy) =>
       <ChatMessageData>[
-        ChatMessageData(kind: ChatMessageKind.timeline, text: copy.chatToday),
-        ChatMessageData(
+        _message(
+          messageId: 'seed-command-timeline',
+          kind: ChatMessageKind.timeline,
+          text: copy.chatToday,
+        ),
+        _message(
+          messageId: 'seed-command-inbound-1',
           kind: ChatMessageKind.inbound,
           text: copy.chatSeedChooseCommand,
         ),
-        ChatMessageData(
+        _message(
+          messageId: 'seed-command-outbound-1',
           kind: ChatMessageKind.outbound,
           text: copy.chatSeedOpenWorkspaceCommand,
         ),
@@ -89,7 +121,8 @@ class OpenCrayChatSeedData {
 
   static List<ChatMessageData> _addMenuMessages(OpenCrayUiCopy copy) =>
       <ChatMessageData>[
-        ChatMessageData(
+        _message(
+          messageId: 'seed-add-menu-inbound-1',
           kind: ChatMessageKind.inbound,
           text: copy.chatSeedAddBeforeSending,
         ),

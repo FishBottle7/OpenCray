@@ -2,6 +2,12 @@ package com.opencray.runtime.context
 
 import com.opencray.core.contracts.AgentTask
 import com.opencray.runtime.AgentToolDefinition
+import com.opencray.runtime.bootstrap.BootstrapContext
+import com.opencray.runtime.bootstrap.BootstrapSnippet
+import com.opencray.runtime.bootstrap.BootstrapTrace
+import com.opencray.runtime.compaction.DurableCompactionContext
+import com.opencray.runtime.compaction.DurableCompactionTrace
+import com.opencray.runtime.memory.MemoryFlushTrace
 import com.opencray.runtime.memory.MemoryRecallTrace
 import com.opencray.runtime.memory.MemoryRecallResult
 import com.opencray.runtime.skills.ActiveSkillCapsule
@@ -40,7 +46,10 @@ data class RuntimeSoulProfile(
 data class AgentRuntimeSessionContext(
   val sessionPolicyText: String? = null,
   val soulProfile: RuntimeSoulProfile? = null,
+  val bootstrapContext: BootstrapContext = BootstrapContext(),
   val recalledMemory: MemoryRecallResult = MemoryRecallResult(),
+  val memoryFlushTrace: MemoryFlushTrace = MemoryFlushTrace(),
+  val durableCompaction: DurableCompactionContext = DurableCompactionContext(),
   val skillInventory: SkillInventory = SkillInventory(),
   val skillCatalog: SkillCatalog = SkillCatalog(),
   val conversation: List<RuntimeConversationMessage> = emptyList(),
@@ -60,7 +69,9 @@ data class ManagedPromptContext(
   val baseSystemPrompt: String,
   val sessionPolicyText: String = "",
   val personalizationText: String = "",
+  val bootstrapFiles: List<BootstrapSnippet> = emptyList(),
   val memoryText: String = "",
+  val durableCompactionText: String = "",
   val skillInventoryText: String = "",
   val activeSkillText: String = "",
   val pruningSummary: TranscriptPruningSummary? = null,
@@ -91,6 +102,9 @@ data class ContextSelectionReport(
   val injectedMemoryRecordCount: Int = 0,
   val omittedMemoryRecordCount: Int = 0,
   val memoryRecallTrace: MemoryRecallTrace = MemoryRecallTrace(),
+  val memoryFlushTrace: MemoryFlushTrace = MemoryFlushTrace(),
+  val durableCompactionTrace: DurableCompactionTrace = DurableCompactionTrace(),
+  val bootstrapTrace: BootstrapTrace = BootstrapTrace(),
   val visibleSkillCount: Int = 0,
   val injectedSkillCount: Int = 0,
   val omittedSkillCount: Int = 0,
@@ -141,6 +155,9 @@ data class ContextAssemblyReport(
   val injectedMemoryRecordCount: Int = 0,
   val omittedMemoryRecordCount: Int = 0,
   val memoryRecallTrace: MemoryRecallTrace = MemoryRecallTrace(),
+  val memoryFlushTrace: MemoryFlushTrace = MemoryFlushTrace(),
+  val durableCompactionTrace: DurableCompactionTrace = DurableCompactionTrace(),
+  val bootstrapTrace: BootstrapTrace = BootstrapTrace(),
   val visibleSkillCount: Int = 0,
   val injectedSkillCount: Int = 0,
   val omittedSkillCount: Int = 0,

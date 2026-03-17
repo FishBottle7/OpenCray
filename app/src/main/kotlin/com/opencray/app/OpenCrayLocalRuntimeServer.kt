@@ -230,6 +230,10 @@ internal class OpenCrayLocalRuntimeServer(
           "maxAgentTurns",
           SafetySettingsState.DEFAULT_MAX_AGENT_TURNS,
         ),
+        maxToolCalls = body.optInt(
+          "maxToolCalls",
+          SafetySettingsState.DEFAULT_MAX_TOOL_CALLS,
+        ),
         undoWindowHours = body.optInt("undoWindowHours", 24),
         fileChangesPolicyId = body.optString("fileChangesPolicyId"),
         fileDeletesPolicyId = body.optString("fileDeletesPolicyId"),
@@ -265,6 +269,8 @@ internal class OpenCrayLocalRuntimeServer(
       "GET" to "/v1/chat_run_snapshot" -> hostRuntime.loadChatRunSnapshot(
         runId = request.queryParameter("runId"),
       )
+      "GET" to "/v1/memory_debug_snapshot" -> hostRuntime.loadMemoryDebugSnapshot()
+      "GET" to "/v1/soul_debug_snapshot" -> hostRuntime.loadSoulDebugSnapshot()
       "POST" to "/v1/create_chat_session" -> {
         hostRuntime.createChatSession()
         null
@@ -279,6 +285,20 @@ internal class OpenCrayLocalRuntimeServer(
       }
       "POST" to "/v1/select_chat_session" -> {
         hostRuntime.selectChatSession(body.optString("sessionId"))
+        null
+      }
+      "POST" to "/v1/delete_chat_message" -> {
+        hostRuntime.deleteChatMessage(
+          sessionId = body.optString("sessionId"),
+          messageId = body.optString("messageId"),
+        )
+        null
+      }
+      "POST" to "/v1/recall_chat_message" -> {
+        hostRuntime.recallChatMessage(
+          sessionId = body.optString("sessionId"),
+          messageId = body.optString("messageId"),
+        )
         null
       }
       "POST" to "/v1/submit_chat_message" -> hostRuntime.submitChatMessage(body.optString("text"))

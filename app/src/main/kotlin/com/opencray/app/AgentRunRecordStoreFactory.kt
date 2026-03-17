@@ -15,6 +15,7 @@ import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
+import com.opencray.runtime.OpenCrayProgressEvent
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
@@ -101,11 +102,13 @@ internal data class PersistedAgentRunEvent(
   val responseFormat: String? = null,
   val isFinal: Boolean? = null,
   val text: String? = null,
+  val stage: String? = null,
   val toolName: String? = null,
   val toolReason: String? = null,
   val argumentsJson: String? = null,
   val toolStatus: String? = null,
   val contentPreview: String? = null,
+  val resultMetadata: Map<String, String> = emptyMap(),
   val operation: String? = null,
   val query: String? = null,
   val queryTerms: List<String> = emptyList(),
@@ -134,6 +137,7 @@ internal data class PersistedAgentRunEvent(
 internal enum class PersistedAgentRunEventKind {
   LIFECYCLE,
   ASSISTANT,
+  PROGRESS,
   TOOL_CALL,
   TOOL_RESULT,
   MEMORY_RETRIEVAL,
@@ -268,6 +272,15 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     isFinal = isFinal,
     text = text,
   )
+  is OpenCrayProgressEvent -> PersistedAgentRunEvent(
+    kind = PersistedAgentRunEventKind.PROGRESS,
+    runId = runId,
+    taskId = taskId,
+    turn = turn,
+    emittedAtEpochMs = emittedAtEpochMs,
+    text = text,
+    stage = stage,
+  )
   is OpenCrayToolCallEvent -> PersistedAgentRunEvent(
     kind = PersistedAgentRunEventKind.TOOL_CALL,
     runId = runId,
@@ -291,6 +304,7 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     errorCode = result.errorCode,
     errorMessage = result.errorMessage,
     contentPreview = result.content.take(MAX_PERSISTED_TOOL_CONTENT_CHARS),
+    resultMetadata = result.metadata,
   )
   is OpenCrayMemoryRetrievalEvent -> PersistedAgentRunEvent(
     kind = PersistedAgentRunEventKind.MEMORY_RETRIEVAL,
@@ -352,6 +366,14 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
     isFinal = isFinal ?: false,
     emittedAtEpochMs = emittedAtEpochMs,
   )
+  PersistedAgentRunEventKind.PROGRESS -> OpenCrayProgressEvent(
+    runId = runId,
+    taskId = taskId,
+    turn = turn ?: 0,
+    text = text.orEmpty(),
+    stage = stage,
+    emittedAtEpochMs = emittedAtEpochMs,
+  )
   PersistedAgentRunEventKind.TOOL_CALL -> OpenCrayToolCallEvent(
     runId = runId,
     taskId = taskId,
@@ -383,6 +405,7 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
         ?: "Tool result restored from durable run record.",
       errorCode = errorCode,
       errorMessage = errorMessage,
+      metadata = resultMetadata,
     ),
     emittedAtEpochMs = emittedAtEpochMs,
   )

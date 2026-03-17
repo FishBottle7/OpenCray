@@ -9,6 +9,8 @@ interface SessionTranscriptStore {
 
   fun appendIfDistinct(message: RuntimeConversationMessage)
 
+  fun replace(messages: List<RuntimeConversationMessage>)
+
   fun clear()
 }
 
@@ -42,6 +44,14 @@ class InMemorySessionTranscriptStore : SessionTranscriptStore {
       }
       messages.clear()
       messages += updated
+    }
+  }
+
+  override fun replace(messages: List<RuntimeConversationMessage>) {
+    val normalized = SessionTranscriptRules.normalize(messages)
+    synchronized(lock) {
+      this.messages.clear()
+      this.messages += normalized
     }
   }
 

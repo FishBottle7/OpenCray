@@ -30,6 +30,53 @@ function Ensure-Directory {
   }
 }
 
+function Convert-ToWslPath {
+  param([string]$Path)
+
+  $resolvedPath = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+  if ($resolvedPath -notmatch '^(?<drive>[A-Za-z]):\\(?<rest>.*)$') {
+    throw "Only Windows drive paths are supported for WSL conversion: $resolvedPath"
+  }
+
+  $drive = $Matches["drive"].ToLowerInvariant()
+  $rest = $Matches["rest"] -replace "\\", "/"
+  if ([string]::IsNullOrWhiteSpace($rest)) {
+    return "/mnt/$drive"
+  }
+
+  return "/mnt/$drive/$rest"
+}
+
+function Get-EmbeddedPythonArtifacts {
+  $distDir = Join-Path $projectRoot "tools/android_python_runtime_p4a/dist"
+  if (-not (Test-Path $distDir)) {
+    return @()
+  }
+  return Get-ChildItem -Path $distDir -Filter "*.aar" -File -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending
+}
+
+function Assert-EmbeddedPythonRuntimeExists {
+  $existingArtifacts = Get-EmbeddedPythonArtifacts
+  if ($existingArtifacts) {
+    Write-Step "Using embedded Python runtime"
+    Write-Host "Runtime AAR: $($existingArtifacts[0].FullName)" -ForegroundColor Green
+    return
+  }
+
+  $distDir = Join-Path $projectRoot "tools/android_python_runtime_p4a/dist"
+  $projectRootWsl = Convert-ToWslPath -Path $projectRoot
+  $wslCommand = "cd $projectRootWsl && ./build-p4a-service-library.sh"
+  throw @"
+Embedded Python runtime AAR was not found in:
+$distDir
+
+Build the p4a runtime in WSL first, then rerun this script.
+Suggested command:
+wsl.exe -- bash -lc "$wslCommand"
+"@
+}
+
 function Get-FlutterCommand {
   $pathFlutter = Get-Command flutter -ErrorAction SilentlyContinue
   if ($pathFlutter) {
@@ -51,13 +98,9 @@ if (-not (Test-Path $flutterAppDir)) {
   throw "flutter_app directory not found: $flutterAppDir"
 }
 
-$buildType = switch ($Variant) {
-  "debug" { "Debug" }
-  "release" { "Release" }
-  default { throw "Unsupported variant: $Variant" }
-}
-
+Assert-EmbeddedPythonRuntimeExists
 $flutterCommand = Get-FlutterCommand
+
 Push-Location $flutterAppDir
 try {
   if ($Clean) {

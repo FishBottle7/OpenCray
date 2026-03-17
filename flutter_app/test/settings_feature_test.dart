@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
 import 'package:opencray/core/models/opencray_chat_snapshot.dart';
+import 'package:opencray/core/models/opencray_debug_snapshot.dart';
 import 'package:opencray/features/settings/settings.dart';
 
 void main() {
@@ -370,90 +371,10 @@ void main() {
   );
 
   testWidgets(
-    'about version page opens debug tools and renders memory trace details',
+    'about version page opens debug tools and renders context trace details',
     (tester) async {
-      final facade = _FakeSettingsFacade(
-        llmConfig: const LlmConfigSnapshot(
-          localeTag: 'en',
-          enabled: false,
-          providerId: 'openai',
-          selectedProviderOptionId: 'openai',
-          protocol: 'openai',
-          providerOptions: <LlmProviderOption>[
-            LlmProviderOption(
-              id: 'openai',
-              providerId: 'openai',
-              title: 'OpenAI',
-              subtitle: 'Official OpenAI-compatible endpoint.',
-              defaultBaseUrl: 'https://api.openai.com/v1',
-              defaultModel: 'gpt-4o-mini',
-              protocol: 'openai',
-              apiKey: '',
-              isCustom: false,
-            ),
-          ],
-          providerName: 'OpenAI',
-          providerNotes: '',
-          baseUrl: 'https://api.openai.com/v1',
-          apiKey: '',
-          model: 'gpt-4o-mini',
-          reasoningEffort: 'medium',
-          systemPrompt: '',
-          helperText: 'Helper text',
-        ),
-        validationResult: const LlmValidationResult(
-          isSuccess: true,
-          message: 'Validated.',
-        ),
-      );
-      final debugBridge = _FakeDebugBridge(
-        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
-          sessionId: 'session-1',
-          activeRuns: <OpenCrayChatRunSnapshot>[],
-          events: <OpenCrayChatRuntimeEventSnapshot>[
-            OpenCrayChatRuntimeEventSnapshot(
-              kind: 'final',
-              runId: 'run-memory',
-              taskId: 'task-memory',
-              emittedAtEpochMs: 2000,
-            ),
-          ],
-        ),
-        runSnapshots: <String, OpenCrayChatRunSnapshot>{
-          'run-memory': const OpenCrayChatRunSnapshot(
-            sessionId: 'session-1',
-            runId: 'run-memory',
-            taskId: 'task-memory',
-            acceptedAtEpochMs: 1000,
-            updatedAtEpochMs: 2000,
-            attempt: 1,
-            isTerminal: true,
-            executionStatus: 'success',
-            taskState: 'completed',
-            responseFormat: 'json_final',
-            memoryTrace: OpenCrayChatRunMemoryTraceSnapshot(
-              matchedRecordCount: 2,
-              injectedRecordCount: 1,
-              omittedRecordCount: 1,
-              queryTerms: <String>['chinese', 'gradle'],
-              selected: <OpenCrayChatRunMemorySelectedSnapshot>[
-                OpenCrayChatRunMemorySelectedSnapshot(
-                  id: 'memory-user',
-                  score: 420,
-                  matchedTerms: <String>['chinese'],
-                ),
-              ],
-              omitted: <OpenCrayChatRunMemoryOmittedSnapshot>[
-                OpenCrayChatRunMemoryOmittedSnapshot(
-                  id: 'memory-project',
-                  reason: 'max_records',
-                ),
-              ],
-              filteredCounts: <String, int>{'scope_mismatch': 1, 'expired': 2},
-            ),
-          ),
-        },
-      );
+      final facade = _buildDebugSettingsFacade();
+      final debugBridge = _buildDebugBridge();
 
       await tester.pumpWidget(
         MaterialApp(
@@ -468,23 +389,203 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Debug tools'), findsOneWidget);
+      expect(find.text('Open Debug Tools'), findsOneWidget);
+
+      await tester.tap(find.text('Open Debug Tools'));
+      await tester.pumpAndSettle();
+
       expect(find.text('Context & Memory Trace'), findsOneWidget);
+      expect(find.text('Memory Inspector'), findsOneWidget);
+      expect(find.text('Soul Inspector'), findsOneWidget);
 
       await tester.tap(find.text('Context & Memory Trace'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Runtime memory trace'), findsOneWidget);
+      expect(find.text('Run overview'), findsOneWidget);
+      expect(find.text('Memory writes'), findsOneWidget);
+      expect(find.text('Memory recall'), findsOneWidget);
+      expect(find.text('Soul resolution'), findsOneWidget);
+      expect(find.text('Raw trace'), findsOneWidget);
       expect(find.text('run-memory'), findsWidgets);
       expect(find.text('Matched: 2'), findsOneWidget);
       expect(find.text('Injected: 1'), findsOneWidget);
       expect(find.text('Omitted: 1'), findsOneWidget);
-      expect(find.text('Term: chinese'), findsOneWidget);
-      expect(find.text('Record: memory-user'), findsOneWidget);
-      expect(find.text('Reason: max_records'), findsOneWidget);
-      expect(find.text('scope_mismatch: 1'), findsOneWidget);
-      expect(find.text('expired: 2'), findsOneWidget);
+      expect(
+        find.textContaining('Query terms: chinese, gradle', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Record: memory-user', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Reason: max_records', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('scope_mismatch: 1', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('expired: 2', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Written ids: memory-user, commitment-1',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Bridge note: Run-level soul attribution is not exposed yet.',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
     },
   );
+
+  testWidgets(
+    'memory inspector renders persisted records and selection details',
+    (tester) async {
+      final facade = _buildDebugSettingsFacade();
+      final debugBridge = _buildDebugBridge();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.aboutVersion,
+            standalone: true,
+            debugBridge: debugBridge,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Open Debug Tools'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Memory Inspector'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Store summary'), findsOneWidget);
+      expect(find.text('Filter'), findsOneWidget);
+      expect(find.text('Memory records'), findsOneWidget);
+      expect(find.text('Selected record'), findsOneWidget);
+      expect(
+        find.textContaining('memory-user', findRichText: true),
+        findsWidgets,
+      );
+      expect(
+        find.textContaining('commitment-1', findRichText: true),
+        findsWidgets,
+      );
+      expect(
+        find.textContaining('Kind: user_preference', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Latest state: active', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Preference value: Xiao Bai', findRichText: true),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets('soul inspector renders snapshot-backed soul details', (
+    tester,
+  ) async {
+    final facade = _buildDebugSettingsFacade();
+    final debugBridge = _buildDebugBridge();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.aboutVersion,
+          standalone: true,
+          debugBridge: debugBridge,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Open Debug Tools'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Soul Inspector'));
+    await tester.pumpAndSettle();
+
+    final storedSoulCard = find.byKey(
+      const ValueKey<String>('settings-soul-stored-card'),
+    );
+    final baseSoulCard = find.byKey(
+      const ValueKey<String>('settings-soul-base-card'),
+    );
+    final effectiveSoulCard = find.byKey(
+      const ValueKey<String>('settings-soul-effective-card'),
+    );
+    final fieldSourcesCard = find.byKey(
+      const ValueKey<String>('settings-soul-field-sources-card'),
+    );
+
+    expect(find.text('Stored soul'), findsOneWidget);
+    expect(find.text('Base soul'), findsOneWidget);
+    expect(find.text('Memory overlays'), findsOneWidget);
+    expect(find.text('Effective soul'), findsOneWidget);
+    expect(find.text('Field sources'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: storedSoulCard,
+        matching: find.textContaining('Preset: STEADY', findRichText: true),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: baseSoulCard,
+        matching: find.textContaining(
+          'Display name: Night Shift',
+          findRichText: true,
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: effectiveSoulCard,
+        matching: find.textContaining(
+          'Display name: Xiao Bai',
+          findRichText: true,
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: effectiveSoulCard,
+        matching: find.textContaining(
+          'Voice: warm and gentle',
+          findRichText: true,
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: fieldSourcesCard,
+        matching: find.textContaining(
+          'display name ->: user memory: Xiao Bai',
+          findRichText: true,
+        ),
+      ),
+      findsOneWidget,
+    );
+  });
 
   testWidgets(
     'network search page saves slot edits, provider changes, and add slot',
@@ -520,6 +621,8 @@ void main() {
 
       expect(facade.networkSearchConfig.slots.first.enabled, isFalse);
 
+      await tester.ensureVisible(find.text('+ Add search slot'));
+      await tester.pump();
       await tester.tap(find.text('+ Add search slot'));
       await tester.pump();
 
@@ -581,16 +684,46 @@ void main() {
 
     expect(facade.safetySettings.automationMode, SafetyAutomationMode.dev);
 
-    await tester.ensureVisible(find.text('No limit'));
+    final turnLimitValue = find
+        .byKey(const ValueKey<String>('settings-safety-max-agent-turns-value'))
+        .first;
+    final toolCallLimitValue = find
+        .byKey(const ValueKey<String>('settings-safety-max-tool-calls-value'))
+        .first;
+
+    await tester.ensureVisible(turnLimitValue);
     await tester.pumpAndSettle();
 
-    expect(find.text('No limit'), findsOneWidget);
+    expect(
+      find.descendant(of: turnLimitValue, matching: find.text('No limit')),
+      findsOneWidget,
+    );
 
-    await tester.tap(find.text('+'));
+    await tester.tap(turnLimitValue);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '24');
+    await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
 
-    expect(facade.safetySettings.maxAgentTurns, 1);
-    expect(find.text('1 turn'), findsOneWidget);
+    expect(facade.safetySettings.maxAgentTurns, 24);
+    expect(
+      find.descendant(of: turnLimitValue, matching: find.text('24 turns')),
+      findsOneWidget,
+    );
+
+    await tester.ensureVisible(toolCallLimitValue);
+    await tester.pumpAndSettle();
+    await tester.tap(toolCallLimitValue);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '18');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(facade.safetySettings.maxToolCalls, 18);
+    expect(
+      find.descendant(of: toolCallLimitValue, matching: find.text('18 calls')),
+      findsOneWidget,
+    );
 
     await tester.tap(find.text('Customize sensitive actions'));
     await tester.pumpAndSettle();
@@ -742,11 +875,406 @@ _FakeSettingsFacade _buildSettingsFacade() {
   );
 }
 
+_FakeSettingsFacade _buildDebugSettingsFacade({
+  PersonalizationConfigSnapshot? personalizationConfig,
+}) {
+  return _FakeSettingsFacade(
+    llmConfig: const LlmConfigSnapshot(
+      localeTag: 'en',
+      enabled: false,
+      providerId: 'openai',
+      selectedProviderOptionId: 'openai',
+      protocol: 'openai',
+      providerOptions: <LlmProviderOption>[
+        LlmProviderOption(
+          id: 'openai',
+          providerId: 'openai',
+          title: 'OpenAI',
+          subtitle: 'Official OpenAI-compatible endpoint.',
+          defaultBaseUrl: 'https://api.openai.com/v1',
+          defaultModel: 'gpt-4o-mini',
+          protocol: 'openai',
+          apiKey: '',
+          isCustom: false,
+        ),
+      ],
+      providerName: 'OpenAI',
+      providerNotes: '',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: '',
+      model: 'gpt-4o-mini',
+      reasoningEffort: 'medium',
+      systemPrompt: '',
+      helperText: 'Helper text',
+    ),
+    validationResult: const LlmValidationResult(
+      isSuccess: true,
+      message: 'Validated.',
+    ),
+    personalizationConfig: personalizationConfig,
+  );
+}
+
+_FakeDebugBridge _buildDebugBridge() {
+  return _FakeDebugBridge(
+    runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+      sessionId: 'session-1',
+      activeRuns: <OpenCrayChatRunSnapshot>[
+        OpenCrayChatRunSnapshot(
+          sessionId: 'session-1',
+          runId: 'run-memory',
+          taskId: 'task-memory',
+          acceptedAtEpochMs: 1000,
+          updatedAtEpochMs: 2400,
+          attempt: 1,
+          isTerminal: true,
+          executionStatus: 'success',
+          taskState: 'completed',
+          responseFormat: 'json_final',
+        ),
+      ],
+      events: <OpenCrayChatRuntimeEventSnapshot>[
+        OpenCrayChatRuntimeEventSnapshot(
+          kind: 'memory_retrieval',
+          runId: 'run-memory',
+          taskId: 'task-memory',
+          emittedAtEpochMs: 1600,
+          operation: 'search',
+          queryTerms: <String>['chinese', 'gradle'],
+          resultCount: 2,
+        ),
+        OpenCrayChatRuntimeEventSnapshot(
+          kind: 'memory_write',
+          runId: 'run-memory',
+          taskId: 'task-memory',
+          emittedAtEpochMs: 2200,
+          writtenRecordIds: <String>['memory-user', 'commitment-1'],
+          writtenKinds: <String>['user_preference', 'task_commitment'],
+          resolvedRecordIds: <String>['memory-project'],
+          reaffirmedRecordIds: <String>['commitment-1'],
+          expiredRecordIds: <String>['memory-old'],
+        ),
+        OpenCrayChatRuntimeEventSnapshot(
+          kind: 'memory_flush',
+          runId: 'run-memory',
+          taskId: 'task-memory',
+          emittedAtEpochMs: 2300,
+          writtenRecordIds: <String>['memory-user'],
+          writtenKinds: <String>['user_preference'],
+        ),
+        OpenCrayChatRuntimeEventSnapshot(
+          kind: 'final',
+          runId: 'run-memory',
+          taskId: 'task-memory',
+          emittedAtEpochMs: 2400,
+          status: 'success',
+        ),
+      ],
+    ),
+    runSnapshots: <String, OpenCrayChatRunSnapshot>{
+      'run-memory': const OpenCrayChatRunSnapshot(
+        sessionId: 'session-1',
+        runId: 'run-memory',
+        taskId: 'task-memory',
+        acceptedAtEpochMs: 1000,
+        updatedAtEpochMs: 2400,
+        attempt: 1,
+        isTerminal: true,
+        executionStatus: 'success',
+        taskState: 'completed',
+        responseFormat: 'json_final',
+        memoryTrace: OpenCrayChatRunMemoryTraceSnapshot(
+          matchedRecordCount: 2,
+          injectedRecordCount: 1,
+          omittedRecordCount: 1,
+          queryTerms: <String>['chinese', 'gradle'],
+          selected: <OpenCrayChatRunMemorySelectedSnapshot>[
+            OpenCrayChatRunMemorySelectedSnapshot(
+              id: 'memory-user',
+              score: 420,
+              matchedTerms: <String>['chinese'],
+            ),
+          ],
+          omitted: <OpenCrayChatRunMemoryOmittedSnapshot>[
+            OpenCrayChatRunMemoryOmittedSnapshot(
+              id: 'memory-project',
+              reason: 'max_records',
+            ),
+          ],
+          filteredCounts: <String, int>{'scope_mismatch': 1, 'expired': 2},
+        ),
+      ),
+    },
+    memorySnapshot: const OpenCrayMemoryDebugSnapshot(
+      sessionId: 'session-1',
+      workspaceId: 'workspace-main',
+      observedAtEpochMs: 5000,
+      records: <OpenCrayMemoryDebugRecordSnapshot>[
+        OpenCrayMemoryDebugRecordSnapshot(
+          id: 'memory-user',
+          content: 'User prefers Chinese replies.',
+          kind: 'user_preference',
+          scope: 'user',
+          status: 'active',
+          source: 'user_input',
+          sourceSessionId: 'session-1',
+          updatedAtEpochMs: 4200,
+          lastConfirmedAtEpochMs: 4200,
+          preferenceKey: 'agent_display_name',
+          preferenceValue: 'Xiao Bai',
+          preferenceTemporality: 'durable',
+          tags: <String>['kind:user_preference', 'scope:user'],
+          extensions: <String, String>{
+            'kind': 'user_preference',
+            'scope': 'user',
+            'status': 'active',
+          },
+        ),
+        OpenCrayMemoryDebugRecordSnapshot(
+          id: 'commitment-1',
+          content: 'Finish context-management backlog.',
+          kind: 'task_commitment',
+          scope: 'session',
+          status: 'open',
+          source: 'assistant_output',
+          sourceSessionId: 'session-1',
+          sourceTaskId: 'task-memory',
+          updatedAtEpochMs: 4100,
+          lastConfirmedAtEpochMs: 4100,
+          ttlMs: 1209600000,
+          tags: <String>['kind:task_commitment', 'scope:session'],
+          extensions: <String, String>{
+            'kind': 'task_commitment',
+            'scope': 'session',
+            'status': 'open',
+          },
+        ),
+        OpenCrayMemoryDebugRecordSnapshot(
+          id: 'memory-old',
+          content: 'Old workspace preference.',
+          kind: 'user_preference',
+          scope: 'workspace',
+          status: 'active',
+          source: 'user_input',
+          sourceSessionId: 'session-0',
+          workspaceId: 'workspace-main',
+          updatedAtEpochMs: 1000,
+          lastConfirmedAtEpochMs: 1000,
+          ttlMs: 1000,
+          isExpired: true,
+          tags: <String>['kind:user_preference', 'scope:workspace'],
+          extensions: <String, String>{
+            'kind': 'user_preference',
+            'scope': 'workspace',
+            'status': 'active',
+          },
+        ),
+      ],
+    ),
+    soulSnapshot: const OpenCraySoulDebugSnapshot(
+      sessionId: 'session-1',
+      workspaceId: 'workspace-main',
+      observedAtEpochMs: 5000,
+      storedSoul: OpenCrayStoredSoulRecordSnapshot(
+        agentId: 'app-shell-personalization',
+        displayName: 'Night Shift',
+        presetName: 'STEADY',
+        customGuidance: 'Keep replies calm and concrete.',
+        recordVersion: 2,
+        createdAtEpochMs: 1000,
+        updatedAtEpochMs: 4300,
+        extensions: <String, String>{
+          'preset': 'STEADY',
+          'tone': 'steady',
+          'verbosity': 'balanced',
+          'user_relationship_style': 'collaborative',
+          'risk_tolerance': 'conservative',
+          'tool_use_bias': 'verify_first',
+        },
+      ),
+      baseSoul: OpenCraySoulProfileDebugSnapshot(
+        presetName: 'STEADY',
+        displayName: 'Night Shift',
+        customGuidance: 'Keep replies calm and concrete.',
+        tone: 'steady',
+        verbosity: 'balanced',
+        userRelationshipStyle: 'collaborative',
+        riskTolerance: 'conservative',
+        toolUseBias: 'verify_first',
+        escalationRules: <String>[
+          'Ask before risky workspace or environment changes.',
+        ],
+        forbiddenBehaviors: <String>[
+          'Do not fabricate workspace facts when local evidence is required.',
+        ],
+        collaborationPreferences: <String>[
+          'Keep reasoning concrete and implementation-first.',
+        ],
+      ),
+      effectiveSoul: OpenCraySoulProfileDebugSnapshot(
+        presetName: 'STEADY',
+        displayName: 'Xiao Bai',
+        voice: 'warm and gentle',
+        customGuidance: 'Keep replies calm and concrete.',
+        tone: 'warm',
+        verbosity: 'balanced',
+        userRelationshipStyle: 'supportive',
+        riskTolerance: 'conservative',
+        toolUseBias: 'verify_first',
+        escalationRules: <String>[
+          'Ask before risky workspace or environment changes.',
+        ],
+        forbiddenBehaviors: <String>[
+          'Do not fabricate workspace facts when local evidence is required.',
+        ],
+        collaborationPreferences: <String>[
+          'Keep reasoning concrete and implementation-first.',
+        ],
+      ),
+      overlayRecords: <OpenCrayMemoryDebugRecordSnapshot>[
+        OpenCrayMemoryDebugRecordSnapshot(
+          id: 'memory-user',
+          content: 'Call the agent Xiao Bai and keep the tone warmer.',
+          kind: 'user_preference',
+          scope: 'user',
+          status: 'active',
+          source: 'user_input',
+          sourceSessionId: 'session-1',
+          updatedAtEpochMs: 4200,
+          lastConfirmedAtEpochMs: 4200,
+          preferenceKey: 'agent_display_name',
+          preferenceValue: 'Xiao Bai',
+          preferenceTemporality: 'durable',
+          extensions: <String, String>{'soul_display_name': 'Xiao Bai'},
+        ),
+        OpenCrayMemoryDebugRecordSnapshot(
+          id: 'memory-style',
+          content: 'Keep a warmer tone.',
+          kind: 'user_preference',
+          scope: 'session',
+          status: 'active',
+          source: 'user_input',
+          sourceSessionId: 'session-1',
+          updatedAtEpochMs: 4250,
+          lastConfirmedAtEpochMs: 4250,
+          preferenceKey: 'agent_style_profile',
+          preferenceValue: 'warm',
+          preferenceTemporality: 'session',
+          extensions: <String, String>{
+            'soul_tone': 'warm',
+            'soul_voice': 'warm and gentle',
+            'soul_user_relationship_style': 'supportive',
+          },
+        ),
+      ],
+      fieldSources: <OpenCraySoulFieldSourceSnapshot>[
+        OpenCraySoulFieldSourceSnapshot(
+          field: 'presetName',
+          value: 'STEADY',
+          sourceType: 'stored_soul',
+          sourceLabel: 'stored soul preset',
+        ),
+        OpenCraySoulFieldSourceSnapshot(
+          field: 'displayName',
+          value: 'Xiao Bai',
+          sourceType: 'memory_overlay',
+          sourceLabel: 'user memory',
+          recordId: 'memory-user',
+          preferenceKey: 'agent_display_name',
+        ),
+        OpenCraySoulFieldSourceSnapshot(
+          field: 'tone',
+          value: 'warm',
+          sourceType: 'memory_overlay',
+          sourceLabel: 'session memory',
+          recordId: 'memory-style',
+          preferenceKey: 'agent_style_profile',
+        ),
+        OpenCraySoulFieldSourceSnapshot(
+          field: 'voice',
+          value: 'warm and gentle',
+          sourceType: 'memory_overlay',
+          sourceLabel: 'session memory',
+          recordId: 'memory-style',
+          preferenceKey: 'agent_style_profile',
+        ),
+      ],
+    ),
+  );
+}
+
 class _FakeSettingsFacade implements SettingsFacade {
   _FakeSettingsFacade({
     required this.llmConfig,
     required this.validationResult,
-  });
+    PersonalizationConfigSnapshot? personalizationConfig,
+  }) : personalizationConfig =
+           personalizationConfig ??
+           const PersonalizationConfigSnapshot(
+             title: 'Personalization',
+             subtitle: 'Test snapshot',
+             introTitle: 'Intro',
+             introBody: 'Intro body',
+             introHelper: 'Intro helper',
+             presetsTitle: 'Presets',
+             presetsHelper: 'Pick a preset',
+             presets: <PersonalizationPresetOption>[
+               PersonalizationPresetOption(
+                 id: 'steady',
+                 title: 'Steady',
+                 summary: 'Direct and calm',
+                 voice: 'Quiet',
+                 status: 'Selected',
+                 isSelected: true,
+               ),
+             ],
+             selectedPresetId: 'steady',
+             customOverlayTitle: 'Overlay',
+             customOverlayHelper: 'Helper',
+             customLabelHint: 'Label',
+             customLabelHelper: 'Label helper',
+             customGuidanceHint: 'Guidance',
+             customGuidanceHelper: 'Guidance helper',
+             customLabel: '',
+             customGuidance: '',
+             behaviorDefaultsTitle: 'Behavior defaults',
+             appLanguageTitle: 'App language',
+             appLanguageOptions: <PersonalizationLanguageOption>[
+               PersonalizationLanguageOption(
+                 id: 'en',
+                 title: 'English',
+                 isSelected: true,
+               ),
+               PersonalizationLanguageOption(
+                 id: 'zh-CN',
+                 title: '中文',
+                 isSelected: false,
+               ),
+             ],
+             selectedAppLanguageId: 'en',
+             livePreviewTitle: 'Preview',
+             livePreviewName: 'Steady',
+             livePreviewSummary: 'Direct and calm',
+             queueTitle: 'Queue',
+             queueBody: 'Idle',
+             queueIsIdle: true,
+             lastResetTitle: 'Last reset',
+             lastResetMessage: '',
+             resetActions: <PersonalizationResetAction>[
+               PersonalizationResetAction(
+                 scopeId: 'memory',
+                 title: 'Reset memory',
+                 scopeBody: 'Scope',
+                 retainBody: 'Retain',
+                 confirmationToken: 'RESET MEMORY',
+                 inputHint: 'Type RESET MEMORY',
+                 disabledGuidance: 'Disabled',
+                 typeExactGuidance: 'Type exact token',
+                 armedGuidance: 'Armed',
+                 isInputEnabled: true,
+               ),
+             ],
+           );
 
   NetworkSearchConfigSnapshot networkSearchConfig =
       const NetworkSearchConfigSnapshot(
@@ -772,72 +1300,7 @@ class _FakeSettingsFacade implements SettingsFacade {
       );
   LlmConfigSnapshot llmConfig;
   final LlmValidationResult validationResult;
-  final PersonalizationConfigSnapshot personalizationConfig =
-      const PersonalizationConfigSnapshot(
-        title: 'Personalization',
-        subtitle: 'Test snapshot',
-        introTitle: 'Intro',
-        introBody: 'Intro body',
-        introHelper: 'Intro helper',
-        presetsTitle: 'Presets',
-        presetsHelper: 'Pick a preset',
-        presets: <PersonalizationPresetOption>[
-          PersonalizationPresetOption(
-            id: 'steady',
-            title: 'Steady',
-            summary: 'Direct and calm',
-            voice: 'Quiet',
-            status: 'Selected',
-            isSelected: true,
-          ),
-        ],
-        selectedPresetId: 'steady',
-        customOverlayTitle: 'Overlay',
-        customOverlayHelper: 'Helper',
-        customLabelHint: 'Label',
-        customLabelHelper: 'Label helper',
-        customGuidanceHint: 'Guidance',
-        customGuidanceHelper: 'Guidance helper',
-        customLabel: '',
-        customGuidance: '',
-        behaviorDefaultsTitle: 'Behavior defaults',
-        appLanguageTitle: 'App language',
-        appLanguageOptions: <PersonalizationLanguageOption>[
-          PersonalizationLanguageOption(
-            id: 'en',
-            title: 'English',
-            isSelected: true,
-          ),
-          PersonalizationLanguageOption(
-            id: 'zh-CN',
-            title: '中文',
-            isSelected: false,
-          ),
-        ],
-        selectedAppLanguageId: 'en',
-        livePreviewTitle: 'Preview',
-        livePreviewName: 'Steady',
-        livePreviewSummary: 'Direct and calm',
-        queueTitle: 'Queue',
-        queueBody: 'Idle',
-        queueIsIdle: true,
-        lastResetTitle: 'Last reset',
-        lastResetMessage: '',
-        resetActions: <PersonalizationResetAction>[
-          PersonalizationResetAction(
-            scopeId: 'memory',
-            title: 'Reset memory',
-            scopeBody: 'Scope',
-            retainBody: 'Retain',
-            confirmationToken: 'RESET MEMORY',
-            inputHint: 'Type RESET MEMORY',
-            disabledGuidance: 'Disabled',
-            typeExactGuidance: 'Type exact token',
-            armedGuidance: 'Armed',
-            isInputEnabled: true,
-          ),
-        ],
-      );
+  final PersonalizationConfigSnapshot personalizationConfig;
   final McpSettingsSnapshot mcpSettings = const McpSettingsSnapshot(
     title: 'MCP',
     subtitle: 'Test snapshot',
@@ -1099,10 +1562,14 @@ class _FakeDebugBridge extends OpenCraySeedBridge {
   _FakeDebugBridge({
     required this.runtimeSnapshot,
     required Map<String, OpenCrayChatRunSnapshot> runSnapshots,
+    required this.memorySnapshot,
+    required this.soulSnapshot,
   }) : _runSnapshots = runSnapshots;
 
   final OpenCrayChatRuntimeSnapshot runtimeSnapshot;
   final Map<String, OpenCrayChatRunSnapshot> _runSnapshots;
+  final OpenCrayMemoryDebugSnapshot memorySnapshot;
+  final OpenCraySoulDebugSnapshot soulSnapshot;
 
   @override
   Future<OpenCrayChatRuntimeSnapshot> loadChatRuntimeSnapshot() async =>
@@ -1111,4 +1578,12 @@ class _FakeDebugBridge extends OpenCraySeedBridge {
   @override
   Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId) async =>
       _runSnapshots[runId];
+
+  @override
+  Future<OpenCrayMemoryDebugSnapshot> loadMemoryDebugSnapshot() async =>
+      memorySnapshot;
+
+  @override
+  Future<OpenCraySoulDebugSnapshot> loadSoulDebugSnapshot() async =>
+      soulSnapshot;
 }

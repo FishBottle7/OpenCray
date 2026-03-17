@@ -85,6 +85,23 @@ private class FileBackedSessionTranscriptStore(
     }
   }
 
+  override fun replace(messages: List<RuntimeConversationMessage>) {
+    val normalized = SessionTranscriptRules.normalize(messages)
+    synchronized(lock) {
+      val existing = loadNormalizedRecord()
+      if (normalized == existing.messages) {
+        return
+      }
+      saveRecord(
+        existing.copy(
+          recordVersion = existing.recordVersion + 1L,
+          updatedAtEpochMs = System.currentTimeMillis(),
+          messages = normalized,
+        ),
+      )
+    }
+  }
+
   override fun clear() {
     synchronized(lock) {
       storage.delete(FILE_NAME)

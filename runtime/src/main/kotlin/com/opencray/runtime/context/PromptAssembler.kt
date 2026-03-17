@@ -25,10 +25,22 @@ class PromptAssembler {
         kind = PromptLayerKind.SYSTEM,
         content = input.personalizationText,
       )
+      input.bootstrapFiles.forEach { file ->
+        addLayer(
+          name = "Bootstrap ${file.name}",
+          kind = PromptLayerKind.SYSTEM,
+          content = renderBootstrapLayer(file),
+        )
+      }
       addLayer(
         name = "Retrieved Memory",
         kind = PromptLayerKind.CONTEXT,
         content = input.memoryText,
+      )
+      addLayer(
+        name = "Durable Compaction",
+        kind = PromptLayerKind.CONTEXT,
+        content = input.durableCompactionText,
       )
       addLayer(
         name = "Skill Inventory",
@@ -89,6 +101,9 @@ class PromptAssembler {
         injectedMemoryRecordCount = input.report.injectedMemoryRecordCount,
         omittedMemoryRecordCount = input.report.omittedMemoryRecordCount,
         memoryRecallTrace = input.report.memoryRecallTrace,
+        memoryFlushTrace = input.report.memoryFlushTrace,
+        durableCompactionTrace = input.report.durableCompactionTrace,
+        bootstrapTrace = input.report.bootstrapTrace,
         visibleSkillCount = input.report.visibleSkillCount,
         injectedSkillCount = input.report.injectedSkillCount,
         omittedSkillCount = input.report.omittedSkillCount,
@@ -125,14 +140,21 @@ class PromptAssembler {
     }
     appendLine("Decide the next step for this OpenCray task.")
     appendLine()
-    appendLine("On each turn, return exactly one JSON action and nothing else.")
+    appendLine("On each turn, return exactly one JSON object and nothing else.")
     appendLine("Use one of these shapes:")
+    appendLine("""{"type":"progress","text":"Scanning README and Gradle files before editing."}""")
     appendLine("""{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}""")
     appendLine("""{"type":"tool_call","tool_name":"Bash","arguments":{"command":"git status"}}""")
     appendLine("""{"type":"tool_call","tool_name":"WebFetch","arguments":{"url":"https://example.com"}}""")
     appendLine("""{"type":"tool_call","tool_name":"Write","reason":"Need to update the workspace before answering.","arguments":{"file_path":"notes.txt","content":"..."}}""")
+    appendLine("""{"actions":[{"type":"progress","text":"Scanning README and Gradle files before editing."},{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}]}""")
+    appendLine("""{"actions":[{"type":"progress","text":"Summarizing the confirmed workspace facts."},{"type":"final","answer":"Concise answer for the user."}]}""")
     appendLine("""{"type":"final","answer":"Concise answer for the user."}""")
+    appendLine("A progress action is a short public status update for the user.")
+    appendLine("Never expose raw private chain-of-thought, hidden safety reasoning, or secrets inside progress.")
+    appendLine("If you use an actions array, emit at most one progress action first, then exactly one terminal action.")
     appendLine("If you return type=tool_call, the runtime will execute it, append the tool result, and ask you for the next action.")
+    appendLine("If you return only type=progress, the runtime will record it and ask you for the next action on the following turn.")
     appendLine("If you need multiple tools, call only the next tool now. After each tool result the runtime will ask for the next action.")
     appendLine("Use Bash for one-off shell commands. Bash runs through the host shell, so use PowerShell syntax on Windows hosts.")
     appendLine("For current information from the internet, prefer WebSearch when a search provider is configured, and use WebFetch when you already have a URL to read.")
@@ -157,6 +179,13 @@ class PromptAssembler {
     }
     appendLine()
     append("Only return type=final when you are ready to answer the user.")
+  }.trim()
+
+  private fun renderBootstrapLayer(file: com.opencray.runtime.bootstrap.BootstrapSnippet): String = buildString {
+    appendLine("source_file=${file.relativePath}")
+    appendLine("truncated=${file.truncated}")
+    appendLine()
+    append(file.content)
   }.trim()
 
   private fun renderTaskContextLayer(

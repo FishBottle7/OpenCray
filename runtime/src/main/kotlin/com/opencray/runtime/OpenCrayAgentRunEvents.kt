@@ -37,6 +37,15 @@ data class OpenCrayAssistantEvent(
   override val emittedAtEpochMs: Long,
 ) : OpenCrayAgentRunEvent
 
+data class OpenCrayProgressEvent(
+  override val runId: String,
+  override val taskId: String,
+  override val turn: Int,
+  val text: String,
+  val stage: String? = null,
+  override val emittedAtEpochMs: Long,
+) : OpenCrayAgentRunEvent
+
 data class OpenCrayToolCallEvent(
   override val runId: String,
   override val taskId: String,

@@ -21,6 +21,7 @@ class SafetySettingsStoreTest {
     assertTrue(state.rollbackJournalEnabled)
     assertEquals(20, state.maxFilesPerBatch)
     assertEquals(0, state.maxAgentTurns)
+    assertEquals(0, state.maxToolCalls)
     assertEquals(24, state.undoWindowHours)
     assertEquals(ToolPolicyOverride.INHERIT, state.fileChangesPolicy)
     assertEquals(ToolPolicyOverride.INHERIT, state.fileDeletesPolicy)
@@ -42,6 +43,7 @@ class SafetySettingsStoreTest {
       rollbackJournalEnabled = false,
       maxFilesPerBatch = 8,
       maxAgentTurns = 0,
+      maxToolCalls = 18,
       undoWindowHours = 12,
       fileChangesPolicy = ToolPolicyOverride.ALLOW,
       fileDeletesPolicy = ToolPolicyOverride.BLOCK,
@@ -111,6 +113,7 @@ class SafetySettingsStoreTest {
         rollbackJournalEnabled = true,
         maxFilesPerBatch = 20,
         maxAgentTurns = 0,
+        maxToolCalls = 0,
         undoWindowHours = 24,
         fileChangesPolicyId = ToolPolicyOverride.INHERIT.wireValue,
         fileDeletesPolicyId = ToolPolicyOverride.INHERIT.wireValue,

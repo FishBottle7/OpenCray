@@ -32,10 +32,12 @@ import java.util.UUID
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 data class OpenCrayAgentRuntimeConfig(
   val maxTurns: Int = DEFAULT_MAX_TURNS,
-  val maxToolCalls: Int = 12,
+  val maxToolCalls: Int = DEFAULT_MAX_TOOL_CALLS,
   val systemPrompt: String = DEFAULT_OPENCRAY_SYSTEM_PROMPT,
   val sessionContext: AgentRuntimeSessionContext = AgentRuntimeSessionContext(),
   val contextManager: ContextManager = ContextManager(),
@@ -46,12 +48,13 @@ data class OpenCrayAgentRuntimeConfig(
 ) {
   init {
     require(maxTurns >= 0) { "OpenCrayAgentRuntimeConfig maxTurns must be >= 0." }
-    require(maxToolCalls >= 1) { "OpenCrayAgentRuntimeConfig maxToolCalls must be >= 1." }
+    require(maxToolCalls >= 0) { "OpenCrayAgentRuntimeConfig maxToolCalls must be >= 0." }
     require(systemPrompt.isNotBlank()) { "OpenCrayAgentRuntimeConfig systemPrompt must not be blank." }
   }
 
   companion object {
     const val DEFAULT_MAX_TURNS: Int = 16
+    const val DEFAULT_MAX_TOOL_CALLS: Int = 0
     const val DEFAULT_OPENCRAY_SYSTEM_PROMPT: String =
       "You are OpenCray, a workspace-first coding agent. " +
         "You may call one tool at a time when you need concrete workspace facts or to make a change. " +
@@ -217,6 +220,23 @@ class OpenCrayAgentRuntime(
         }
 
         is ParsedModelActionBatch.Actions -> {
+          val progressActions = parsedBatch.actions.filterIsInstance<AgentModelAction.Progress>()
+          progressActions.forEach { progressAction ->
+            emitProgressEvent(
+              task = task,
+              turn = turn,
+              text = progressAction.text,
+              stage = progressAction.stage,
+            )
+            transcript += RuntimeConversationMessage(
+              role = RuntimeConversationRole.TOOL,
+              content = buildProgressTranscriptEntry(
+                task = task,
+                turn = turn,
+                progress = progressAction,
+              ),
+            )
+          }
           val toolCalls = parsedBatch.actions.filterIsInstance<AgentModelAction.ToolCall>()
           if (toolCalls.isNotEmpty()) {
             if (isFinalAnswerOnlyTurn(turn)) {
@@ -238,7 +258,7 @@ class OpenCrayAgentRuntime(
             var shouldContinueBatch = true
             toolCalls.forEach { toolAction ->
               if (!shouldContinueBatch) return@forEach
-              if (toolCallCount >= config.maxToolCalls) {
+              if (config.maxToolCalls > 0 && toolCallCount >= config.maxToolCalls) {
                 return failedResult(
                   task = task,
                   startedAt = startedAt,
@@ -350,6 +370,16 @@ class OpenCrayAgentRuntime(
           val finalAction = parsedBatch.actions.lastOrNull { action -> action is AgentModelAction.Final }
             as? AgentModelAction.Final
           if (finalAction == null) {
+            if (progressActions.isNotEmpty()) {
+              if (parsedBatch.requiresSingleActionReminder) {
+                transcript += RuntimeConversationMessage(
+                  role = RuntimeConversationRole.TOOL,
+                  content = buildSingleActionReminderObservation(),
+                )
+              }
+              turn += 1
+              continue
+            }
             protocolErrorCount += 1
             lastProtocolErrorMessage = "Model output did not contain a usable action."
             transcript += RuntimeConversationMessage(
@@ -612,6 +642,32 @@ class OpenCrayAgentRuntime(
           parsed.primitiveContent("message")?.isNotBlank() == true,
       )
 
+      type in setOf("progress", "commentary", "status") -> ParsedActionObject(
+        actions = listOf(
+          AgentModelAction.Progress(
+            text = parsed.primitiveContent("text")
+              ?.trim()
+              .orEmpty()
+              .ifBlank {
+                parsed.primitiveContent("summary")
+                  ?.trim()
+                  .orEmpty()
+                  .ifBlank {
+                    parsed.primitiveContent("message")
+                      ?.trim()
+                      .orEmpty()
+                      .ifBlank {
+                        error("progress action must contain a non-blank 'text'.")
+                      }
+                  }
+              },
+            stage = parsed.primitiveContent("stage")?.trim()?.takeIf(String::isNotBlank),
+          ),
+        ),
+        ignoredNonActionContent = parsed.primitiveContent("answer")?.isNotBlank() == true ||
+          parsed.primitiveContent("tool_name")?.isNotBlank() == true,
+      )
+
       type in setOf("final", "answer") || (type == null && hasFinalAnswerShape) -> ParsedActionObject(
         actions = listOf(
           AgentModelAction.Final(
@@ -703,6 +759,90 @@ class OpenCrayAgentRuntime(
             },
           )
         }
+      if (!report.memoryFlushTrace.isEmpty) {
+        report.memoryFlushTrace.outcome?.let { outcome ->
+          put("contextMemoryFlushOutcome", outcome.name.lowercase())
+        }
+        put("contextMemoryFlushOmittedMessageCount", report.memoryFlushTrace.omittedMessageCount.toString())
+        put("contextMemoryFlushOmittedCharCount", report.memoryFlushTrace.omittedCharCount.toString())
+        report.memoryFlushTrace.signature?.let { signature ->
+          put("contextMemoryFlushSignature", signature)
+        }
+        put("contextMemoryFlushCandidateCount", report.memoryFlushTrace.candidateCount.toString())
+        put("contextMemoryFlushWrittenRecordCount", report.memoryFlushTrace.writtenRecordCount.toString())
+        report.memoryFlushTrace.writtenKinds
+          .takeIf { writtenKinds -> writtenKinds.isNotEmpty() }
+          ?.let { writtenKinds ->
+            put("contextMemoryFlushWrittenKinds", writtenKinds.joinToString(separator = ","))
+          }
+        report.memoryFlushTrace.writtenRecordIds
+          .takeIf { writtenRecordIds -> writtenRecordIds.isNotEmpty() }
+          ?.let { writtenRecordIds ->
+            put("contextMemoryFlushWrittenRecordIds", writtenRecordIds.joinToString(separator = ","))
+          }
+      }
+      if (!report.durableCompactionTrace.isEmpty) {
+        put(
+          "contextDurableCompactionCompactedThisRun",
+          report.durableCompactionTrace.compactedThisRun.toString(),
+        )
+        put(
+          "contextDurableCompactionSourceTranscriptMessageCount",
+          report.durableCompactionTrace.sourceTranscriptMessageCount.toString(),
+        )
+        put(
+          "contextDurableCompactionRetainedTranscriptMessageCount",
+          report.durableCompactionTrace.retainedTranscriptMessageCount.toString(),
+        )
+        put(
+          "contextDurableCompactionLatestMessageCount",
+          report.durableCompactionTrace.latestCompactedMessageCount.toString(),
+        )
+        put(
+          "contextDurableCompactionIncludedSummaryCount",
+          report.durableCompactionTrace.includedSummaryCount.toString(),
+        )
+        put(
+          "contextDurableCompactionOmittedSummaryCount",
+          report.durableCompactionTrace.omittedSummaryCount.toString(),
+        )
+        put(
+          "contextDurableCompactionTotalCompactedMessageCount",
+          report.durableCompactionTrace.totalCompactedMessageCount.toString(),
+        )
+        report.durableCompactionTrace.latestCompactedAtEpochMs
+          ?.let { latestCompactedAtEpochMs ->
+            put("contextDurableCompactionLatestAtEpochMs", latestCompactedAtEpochMs.toString())
+          }
+      }
+      if (!report.bootstrapTrace.isEmpty) {
+        put("contextBootstrapMode", report.bootstrapTrace.mode)
+        put("contextBootstrapVisibleFileCount", report.bootstrapTrace.visibleFileCount.toString())
+        put("contextBootstrapInjectedFileCount", report.bootstrapTrace.injectedFileCount.toString())
+        put("contextBootstrapOmittedFileCount", report.bootstrapTrace.omittedFileCount.toString())
+        put("contextBootstrapTruncatedFileCount", report.bootstrapTrace.truncatedFileCount.toString())
+        report.bootstrapTrace.files
+          .takeIf { files -> files.isNotEmpty() }
+          ?.let { files ->
+            put(
+              "contextBootstrapFileSummary",
+              files.joinToString(separator = ";") { file ->
+                buildString {
+                  append(file.name)
+                  append("@")
+                  append(file.relativePath)
+                  append("[")
+                  append(file.sourceCharCount)
+                  append("|")
+                  append(file.injectedCharCount)
+                  append("|")
+                  append(file.truncated)
+                  append("]")
+                }
+              },
+            )
+          }
+      }
       put("contextVisibleSkillCount", report.visibleSkillCount.toString())
       put("contextInjectedSkillCount", report.injectedSkillCount.toString())
       put("contextOmittedSkillCount", report.omittedSkillCount.toString())
@@ -1114,6 +1254,25 @@ class OpenCrayAgentRuntime(
     )
   }
 
+  private fun emitProgressEvent(
+    task: AgentTask,
+    turn: Int,
+    text: String,
+    stage: String?,
+  ) {
+    eventSink.onRunEvent(
+      task = task,
+      event = OpenCrayProgressEvent(
+        runId = runIdFor(task),
+        taskId = task.id,
+        turn = turn,
+        text = text,
+        stage = stage,
+        emittedAtEpochMs = clock(),
+      ),
+    )
+  }
+
   private fun emitMemoryRetrievalEvent(
     task: AgentTask,
     turn: Int,
@@ -1163,6 +1322,26 @@ class OpenCrayAgentRuntime(
     append(config.json.encodeToString(JsonObject.serializer(), call.arguments))
   }
 
+  private fun buildProgressTranscriptEntry(
+    task: AgentTask,
+    turn: Int,
+    progress: AgentModelAction.Progress,
+  ): String = buildString {
+    append("progress ")
+    append(
+      config.json.encodeToString(
+        JsonObject.serializer(),
+        buildJsonObject {
+          put("run_id", runIdFor(task))
+          put("task_id", task.id)
+          put("turn", turn)
+          put("text", progress.text)
+          progress.stage?.let { stage -> put("stage", stage) }
+        },
+      ),
+    )
+  }
+
   private fun toolReasonMetadata(call: AgentToolCall): Map<String, String> =
     call.reason
       ?.trim()
@@ -1172,6 +1351,7 @@ class OpenCrayAgentRuntime(
 
   private fun buildSingleActionReminderObservation(): String = buildString {
     appendLine("Protocol note: return only the next action on each turn.")
+    appendLine("You may include one short public progress summary before that action.")
     appendLine("Do not include a final answer alongside a tool_call.")
     append("If you need multiple tools, call them one at a time across turns.")
   }.trim()
@@ -1192,8 +1372,9 @@ class OpenCrayAgentRuntime(
     rawOutput: String,
     reason: String,
   ): String = buildString {
-    appendLine("Protocol error: return exactly one JSON action with type=tool_call or type=final.")
+    appendLine("Protocol error: return exactly one JSON object whose action is progress, tool_call, or final.")
     appendLine("A tool_call may include reason or justification, but it must not include a final answer.")
+    appendLine("If you include progress, keep it public, short, and non-sensitive.")
     appendLine("If you need multiple tools, call only the next tool now and wait for the next turn.")
     appendLine("Do not explain the protocol. Do not answer in prose unless you emit type=final.")
     appendLine("Reason: $reason")
@@ -1251,6 +1432,11 @@ class OpenCrayAgentRuntime(
   }
 
   private sealed interface AgentModelAction {
+    data class Progress(
+      val text: String,
+      val stage: String? = null,
+    ) : AgentModelAction
+
     data class Final(
       val answer: String,
       val responseFormat: String,
@@ -1282,7 +1468,10 @@ class OpenCrayAgentRuntime(
       val ignoredNonActionContent: Boolean,
     ) : ParsedModelActionBatch {
       val requiresSingleActionReminder: Boolean
-        get() = ignoredNonActionContent || actions.size > 1
+        get() =
+          ignoredNonActionContent ||
+            actions.count { action -> action !is AgentModelAction.Progress } > 1 ||
+            actions.count { action -> action is AgentModelAction.Progress } > 1
     }
 
     data class ProtocolError(

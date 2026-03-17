@@ -306,6 +306,7 @@ void main() {
           'rollbackJournalEnabled': true,
           'maxFilesPerBatch': 20,
           'maxAgentTurns': capturedBody['maxAgentTurns'],
+          'maxToolCalls': capturedBody['maxToolCalls'],
           'undoWindowHours': 24,
           'fileChangesPolicyId': 'inherit',
           'fileDeletesPolicyId': capturedBody['fileDeletesPolicyId'],
@@ -328,6 +329,7 @@ void main() {
         rollbackJournalEnabled: true,
         maxFilesPerBatch: 20,
         maxAgentTurns: 0,
+        maxToolCalls: 0,
         undoWindowHours: 24,
         fileChangesPolicyId: 'inherit',
         fileDeletesPolicyId: 'block',
@@ -343,9 +345,11 @@ void main() {
 
       expect(capturedBody['automationModeId'], 'dev');
       expect(capturedBody['maxAgentTurns'], 0);
+      expect(capturedBody['maxToolCalls'], 0);
       expect(capturedBody['fileDeletesPolicyId'], 'block');
       expect(snapshot.automationModeId, 'dev');
       expect(snapshot.maxAgentTurns, 0);
+      expect(snapshot.maxToolCalls, 0);
       expect(snapshot.fileDeletesPolicyId, 'block');
     },
   );
@@ -421,6 +425,149 @@ void main() {
       'docs/report.md',
       'todo.txt',
     ]);
+  });
+
+  test(
+    'local runtime bridge parses memory maintenance fields from chat runtime snapshots',
+    () async {
+      requestHandler = (request) async {
+        expect(request.method, 'GET');
+        expect(request.uri.path, '/v1/chat_runtime_snapshot');
+        await writeJson(request, <String, Object?>{
+          'sessionId': 'session-1',
+          'activeRuns': <Object?>[
+            <String, Object?>{
+              'sessionId': 'session-1',
+              'runId': 'run-memory-write-1',
+              'taskId': 'task-memory-write-1',
+              'acceptedAtEpochMs': 1000,
+              'updatedAtEpochMs': 2500,
+              'attempt': 1,
+              'isTerminal': false,
+              'lastEvent': <String, Object?>{
+                'kind': 'memory_write',
+                'runId': 'run-memory-write-1',
+                'taskId': 'task-memory-write-1',
+                'emittedAtEpochMs': 2500,
+                'writtenRecordIds': <Object?>['memory-user-1'],
+                'writtenKinds': <Object?>['user_preference'],
+                'resolvedRecordIds': <Object?>['commitment-done-1'],
+                'reaffirmedRecordIds': <Object?>['commitment-keep-1'],
+                'expiredRecordIds': <Object?>['commitment-old-1'],
+              },
+            },
+          ],
+          'events': <Object?>[
+            <String, Object?>{
+              'kind': 'memory_write',
+              'runId': 'run-memory-write-1',
+              'taskId': 'task-memory-write-1',
+              'emittedAtEpochMs': 2500,
+              'writtenRecordIds': <Object?>['memory-user-1'],
+              'writtenKinds': <Object?>['user_preference'],
+              'resolvedRecordIds': <Object?>['commitment-done-1'],
+              'reaffirmedRecordIds': <Object?>['commitment-keep-1'],
+              'expiredRecordIds': <Object?>['commitment-old-1'],
+            },
+          ],
+        });
+      };
+
+      final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+      final snapshot = await bridge.loadChatRuntimeSnapshot();
+
+      expect(snapshot.sessionId, 'session-1');
+      expect(snapshot.events.single.kind, 'memory_write');
+      expect(snapshot.events.single.writtenRecordIds, <String>[
+        'memory-user-1',
+      ]);
+      expect(snapshot.events.single.writtenKinds, <String>['user_preference']);
+      expect(snapshot.events.single.reaffirmedRecordIds, <String>[
+        'commitment-keep-1',
+      ]);
+      expect(snapshot.activeRuns.single.lastEvent?.expiredRecordIds, <String>[
+        'commitment-old-1',
+      ]);
+    },
+  );
+
+  test('local runtime bridge loads memory debug snapshots', () async {
+    requestHandler = (request) async {
+      expect(request.uri.path, '/v1/memory_debug_snapshot');
+      await writeJson(request, <String, Object?>{
+        'sessionId': 'session-1',
+        'workspaceId': 'workspace-main',
+        'observedAtEpochMs': 5000,
+        'records': <Object?>[
+          <String, Object?>{
+            'id': 'memory-user',
+            'content': 'User prefers Chinese replies.',
+            'kind': 'user_preference',
+            'scope': 'user',
+            'status': 'active',
+            'preferenceKey': 'agent_display_name',
+            'preferenceValue': 'Xiao Bai',
+            'isExpired': false,
+          },
+        ],
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final snapshot = await bridge.loadMemoryDebugSnapshot();
+
+    expect(snapshot.sessionId, 'session-1');
+    expect(snapshot.workspaceId, 'workspace-main');
+    expect(snapshot.records.single.id, 'memory-user');
+    expect(snapshot.records.single.preferenceValue, 'Xiao Bai');
+  });
+
+  test('local runtime bridge loads soul debug snapshots', () async {
+    requestHandler = (request) async {
+      expect(request.uri.path, '/v1/soul_debug_snapshot');
+      await writeJson(request, <String, Object?>{
+        'sessionId': 'session-1',
+        'workspaceId': 'workspace-main',
+        'observedAtEpochMs': 5000,
+        'storedSoul': <String, Object?>{
+          'agentId': 'app-shell-personalization',
+          'presetName': 'STEADY',
+        },
+        'baseSoul': <String, Object?>{'presetName': 'STEADY', 'tone': 'steady'},
+        'effectiveSoul': <String, Object?>{
+          'presetName': 'STEADY',
+          'displayName': 'Xiao Bai',
+          'tone': 'warm',
+        },
+        'overlayRecords': <Object?>[
+          <String, Object?>{
+            'id': 'memory-user',
+            'content': 'Call the agent Xiao Bai.',
+            'kind': 'user_preference',
+            'scope': 'user',
+            'status': 'active',
+          },
+        ],
+        'fieldSources': <Object?>[
+          <String, Object?>{
+            'field': 'displayName',
+            'value': 'Xiao Bai',
+            'sourceType': 'memory_overlay',
+            'sourceLabel': 'user memory',
+            'recordId': 'memory-user',
+            'preferenceKey': 'agent_display_name',
+          },
+        ],
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final snapshot = await bridge.loadSoulDebugSnapshot();
+
+    expect(snapshot.sessionId, 'session-1');
+    expect(snapshot.effectiveSoul?.displayName, 'Xiao Bai');
+    expect(snapshot.overlayRecords.single.id, 'memory-user');
+    expect(snapshot.fieldSources.single.sourceType, 'memory_overlay');
   });
 
   test(

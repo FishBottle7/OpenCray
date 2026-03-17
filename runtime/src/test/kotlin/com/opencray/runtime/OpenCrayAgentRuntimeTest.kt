@@ -16,9 +16,18 @@ import com.opencray.llm.LiteLlmGatewayRequest
 import com.opencray.llm.LiteLlmGatewayResult
 import com.opencray.llm.LiteLlmGatewayStatus
 import com.opencray.llm.LiteLlmRouteSelectionMetadata
+import com.opencray.runtime.bootstrap.BootstrapContext
+import com.opencray.runtime.bootstrap.BootstrapFileTrace
+import com.opencray.runtime.bootstrap.BootstrapMode
+import com.opencray.runtime.bootstrap.BootstrapSnippet
+import com.opencray.runtime.bootstrap.BootstrapTrace
+import com.opencray.runtime.compaction.DurableCompactionContext
+import com.opencray.runtime.compaction.DurableCompactionTrace
 import com.opencray.runtime.context.AgentRuntimeSessionContext
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.memory.MemoryFlushOutcome
+import com.opencray.runtime.memory.MemoryFlushTrace
 import com.opencray.runtime.memory.MemoryKind
 import com.opencray.runtime.memory.MemoryRecallResult
 import com.opencray.runtime.memory.MemoryRecallTrace
@@ -283,6 +292,195 @@ class OpenCrayAgentRuntimeTest {
     )
     assertTrue(gateway.requests.single().prompt.contains("[Skill Inventory]"))
     assertTrue(gateway.requests.single().prompt.contains("name=ui-ux-pro-max"))
+  }
+
+  @Test
+  fun runPromptTaskProjectsMemoryFlushTraceIntoResultMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-memory-flush-metadata")
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"Memory flush trace applied."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        sessionContext = AgentRuntimeSessionContext(
+          memoryFlushTrace = MemoryFlushTrace(
+            outcome = MemoryFlushOutcome.WRITTEN,
+            omittedMessageCount = 4,
+            omittedCharCount = 512,
+            signature = "flush-signature-123",
+            candidateCount = 3,
+            writtenRecordCount = 2,
+            writtenKinds = listOf("project_fact", "user_preference"),
+            writtenRecordIds = listOf("mem-a", "mem-b"),
+          ),
+        ),
+      ),
+      clock = IncrementingClock(start = 2_675L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Continue from the flushed history."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("written", result.metadata["contextMemoryFlushOutcome"])
+    assertEquals("4", result.metadata["contextMemoryFlushOmittedMessageCount"])
+    assertEquals("512", result.metadata["contextMemoryFlushOmittedCharCount"])
+    assertEquals("flush-signature-123", result.metadata["contextMemoryFlushSignature"])
+    assertEquals("3", result.metadata["contextMemoryFlushCandidateCount"])
+    assertEquals("2", result.metadata["contextMemoryFlushWrittenRecordCount"])
+    assertEquals("project_fact,user_preference", result.metadata["contextMemoryFlushWrittenKinds"])
+    assertEquals("mem-a,mem-b", result.metadata["contextMemoryFlushWrittenRecordIds"])
+  }
+
+  @Test
+  fun runPromptTaskProjectsDurableCompactionIntoResultMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-durable-compaction-metadata")
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"Durable compaction trace applied."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        sessionContext = AgentRuntimeSessionContext(
+          durableCompaction = DurableCompactionContext(
+            text = """
+              Older session history has been durably compacted into summaries.
+              [Compacted History]
+              Compacted 6 older message(s) outside the active transcript window.
+            """.trimIndent(),
+            trace = DurableCompactionTrace(
+              compactedThisRun = true,
+              sourceTranscriptMessageCount = 18,
+              retainedTranscriptMessageCount = 12,
+              latestCompactedMessageCount = 6,
+              includedSummaryCount = 1,
+              omittedSummaryCount = 0,
+              totalCompactedMessageCount = 6,
+              latestCompactedAtEpochMs = 4_200L,
+            ),
+          ),
+        ),
+      ),
+      clock = IncrementingClock(start = 2_690L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Continue from the durable summaries."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("true", result.metadata["contextDurableCompactionCompactedThisRun"])
+    assertEquals("18", result.metadata["contextDurableCompactionSourceTranscriptMessageCount"])
+    assertEquals("12", result.metadata["contextDurableCompactionRetainedTranscriptMessageCount"])
+    assertEquals("6", result.metadata["contextDurableCompactionLatestMessageCount"])
+    assertEquals("1", result.metadata["contextDurableCompactionIncludedSummaryCount"])
+    assertEquals("0", result.metadata["contextDurableCompactionOmittedSummaryCount"])
+    assertEquals("6", result.metadata["contextDurableCompactionTotalCompactedMessageCount"])
+    assertEquals("4200", result.metadata["contextDurableCompactionLatestAtEpochMs"])
+    assertTrue(gateway.requests.single().prompt.contains("[Durable Compaction]"))
+    assertTrue(gateway.requests.single().prompt.contains("Compacted 6 older message(s) outside the active transcript window."))
+  }
+
+  @Test
+  fun runPromptTaskProjectsBootstrapMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-bootstrap-metadata")
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"Bootstrap context applied."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        sessionContext = AgentRuntimeSessionContext(
+          bootstrapContext = BootstrapContext(
+            mode = BootstrapMode.FULL,
+            files = listOf(
+              BootstrapSnippet(
+                name = "AGENTS.md",
+                relativePath = "AGENTS.md",
+                content = "# Agents\nFollow the workspace instructions.",
+                sourceCharCount = 42,
+                truncated = false,
+              ),
+              BootstrapSnippet(
+                name = "PROJECT.md",
+                relativePath = "PROJECT.md",
+                content = "# Project\nThis repo uses Gradle.",
+                sourceCharCount = 31,
+                truncated = true,
+              ),
+            ),
+            trace = BootstrapTrace(
+              mode = "full",
+              visibleFileCount = 2,
+              injectedFileCount = 2,
+              omittedFileCount = 0,
+              truncatedFileCount = 1,
+              files = listOf(
+                BootstrapFileTrace(
+                  name = "AGENTS.md",
+                  relativePath = "AGENTS.md",
+                  sourceCharCount = 42,
+                  injectedCharCount = 42,
+                  truncated = false,
+                ),
+                BootstrapFileTrace(
+                  name = "PROJECT.md",
+                  relativePath = "PROJECT.md",
+                  sourceCharCount = 80,
+                  injectedCharCount = 31,
+                  truncated = true,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+      clock = IncrementingClock(start = 2_688L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Respect the workspace bootstrap files."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("full", result.metadata["contextBootstrapMode"])
+    assertEquals("2", result.metadata["contextBootstrapVisibleFileCount"])
+    assertEquals("2", result.metadata["contextBootstrapInjectedFileCount"])
+    assertEquals("0", result.metadata["contextBootstrapOmittedFileCount"])
+    assertEquals("1", result.metadata["contextBootstrapTruncatedFileCount"])
+    assertEquals(
+      "AGENTS.md@AGENTS.md[42|42|false];PROJECT.md@PROJECT.md[80|31|true]",
+      result.metadata["contextBootstrapFileSummary"],
+    )
+    val systemPrompt = requireNotNull(gateway.requests.single().systemPrompt)
+    assertTrue(systemPrompt.contains("[Bootstrap AGENTS.md]"))
+    assertTrue(systemPrompt.contains("Follow the workspace instructions."))
   }
 
   @Test
@@ -576,7 +774,7 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
-  fun runPromptTaskWithoutHardTurnLimitSkipsBudgetEnforcement() {
+  fun runPromptTaskWithoutHardBudgetsSkipsTurnAndToolBudgetEnforcement() {
     val workspaceRoot = temporaryFolder.newFolder("agent-no-turn-cap")
     Files.write(
       workspaceRoot.toPath().resolve("README.md"),
@@ -590,12 +788,17 @@ class OpenCrayAgentRuntimeTest {
       workspaceRoot.toPath().resolve("TODO.md"),
       "third".toByteArray(StandardCharsets.UTF_8),
     )
+    Files.write(
+      workspaceRoot.toPath().resolve("PLAN.md"),
+      "fourth".toByteArray(StandardCharsets.UTF_8),
+    )
     val gateway = RecordingGateway(
       outputs = listOf(
         """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
         """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"NOTES.md"}}""",
         """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"TODO.md"}}""",
-        """{"type":"final","answer":"Unlimited turn budget completed."}""",
+        """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"PLAN.md"}}""",
+        """{"type":"final","answer":"Unlimited budgets completed."}""",
       ),
     )
     val runtime = OpenCrayAgentRuntime(
@@ -605,7 +808,7 @@ class OpenCrayAgentRuntimeTest {
           workspaceRoots = setOf(workspaceRoot.toPath()),
         ),
       ),
-      config = OpenCrayAgentRuntimeConfig(maxTurns = 0, maxToolCalls = 3),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 0, maxToolCalls = 0),
       clock = IncrementingClock(start = 3_450L)::next,
     )
 
@@ -615,10 +818,10 @@ class OpenCrayAgentRuntimeTest {
     )
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
-    assertEquals("Unlimited turn budget completed.", result.stdout)
-    assertEquals("4", result.metadata["turnCount"])
-    assertEquals("3", result.metadata["toolCallCount"])
-    assertEquals(4, gateway.requests.size)
+    assertEquals("Unlimited budgets completed.", result.stdout)
+    assertEquals("5", result.metadata["turnCount"])
+    assertEquals("4", result.metadata["toolCallCount"])
+    assertEquals(5, gateway.requests.size)
     assertTrue(
       gateway.requests.all { request ->
         request.metadata["remainingTurnCount"] == null &&
@@ -706,6 +909,7 @@ class OpenCrayAgentRuntimeTest {
       eventSink.events.map { event ->
         when (event) {
           is OpenCrayLifecycleEvent -> "lifecycle"
+          is OpenCrayProgressEvent -> "progress"
           is OpenCrayToolCallEvent -> "tool_call"
           is OpenCrayToolResultEvent -> "tool_result"
           is OpenCrayAssistantEvent -> "assistant"
@@ -721,6 +925,80 @@ class OpenCrayAgentRuntimeTest {
     assertTrue((eventSink.events[3] as OpenCrayAssistantEvent).isFinal)
     assertEquals(OpenCrayRunLifecyclePhase.END, (eventSink.events[4] as OpenCrayLifecycleEvent).phase)
     assertFalse(eventSink.events.any { event -> event.taskId.isBlank() || event.runId.isBlank() })
+  }
+
+  @Test
+  fun runPromptTaskSupportsPublicProgressEventsBeforeToolAndFinal() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-progress-events")
+    Files.write(
+      workspaceRoot.toPath().resolve("README.md"),
+      "progress-enabled".toByteArray(StandardCharsets.UTF_8),
+    )
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"actions":[{"type":"progress","stage":"Planning","text":"Scanning README before reading it."},{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}]}""",
+        """{"actions":[{"type":"progress","stage":"Summarizing","text":"Read completed; preparing the final answer."},{"type":"final","answer":"README says progress-enabled."}]}""",
+      ),
+    )
+    val eventSink = RecordingEventSink()
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 4, maxToolCalls = 2),
+      eventSink = eventSink,
+      clock = IncrementingClock(start = 7_100L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Read README and keep the user updated."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("README says progress-enabled.", result.stdout)
+    assertEquals(
+      listOf(
+        "lifecycle",
+        "progress",
+        "tool_call",
+        "tool_result",
+        "progress",
+        "assistant",
+        "lifecycle",
+      ),
+      eventSink.events.map { event ->
+        when (event) {
+          is OpenCrayLifecycleEvent -> "lifecycle"
+          is OpenCrayProgressEvent -> "progress"
+          is OpenCrayToolCallEvent -> "tool_call"
+          is OpenCrayToolResultEvent -> "tool_result"
+          is OpenCrayAssistantEvent -> "assistant"
+          is OpenCrayMemoryRetrievalEvent -> "memory_retrieval"
+          is OpenCrayMemoryWriteEvent -> "memory_write"
+        }
+      },
+    )
+    assertEquals(
+      listOf(
+        "Scanning README before reading it.",
+        "Read completed; preparing the final answer.",
+      ),
+      eventSink.events
+        .filterIsInstance<OpenCrayProgressEvent>()
+        .map(OpenCrayProgressEvent::text),
+    )
+    assertEquals(
+      listOf("Planning", "Summarizing"),
+      eventSink.events
+        .filterIsInstance<OpenCrayProgressEvent>()
+        .map(OpenCrayProgressEvent::stage),
+    )
+    assertTrue(gateway.requests[0].prompt.contains("A progress action is a short public status update"))
+    assertTrue(gateway.requests[1].prompt.contains("Scanning README before reading it."))
   }
 
   @Test
@@ -856,7 +1134,11 @@ class OpenCrayAgentRuntimeTest {
         .filterIsInstance<OpenCrayAssistantEvent>()
         .map(OpenCrayAssistantEvent::text),
     )
-    assertTrue(gateway.requests[1].prompt.contains("Protocol error: return exactly one JSON action"))
+    assertTrue(
+      gateway.requests[1].prompt.contains(
+        "Protocol error: return exactly one JSON object whose action is progress, tool_call, or final.",
+      ),
+    )
     assertTrue(gateway.requests[1].prompt.contains("""{"unexpected":"shape"}"""))
     assertFalse(result.stdout.contains("unexpected"))
   }

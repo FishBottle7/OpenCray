@@ -4,6 +4,7 @@ class OpenCraySafetySettingsSnapshot {
     required this.rollbackJournalEnabled,
     required this.maxFilesPerBatch,
     this.maxAgentTurns = 0,
+    this.maxToolCalls = 0,
     required this.undoWindowHours,
     required this.fileChangesPolicyId,
     required this.fileDeletesPolicyId,
@@ -18,6 +19,7 @@ class OpenCraySafetySettingsSnapshot {
   final bool rollbackJournalEnabled;
   final int maxFilesPerBatch;
   final int maxAgentTurns;
+  final int maxToolCalls;
   final int undoWindowHours;
   final String fileChangesPolicyId;
   final String fileDeletesPolicyId;
@@ -36,6 +38,7 @@ class OpenCraySafetySettingsSnapshot {
           payload['rollbackJournalEnabled'] as bool? ?? true,
       maxFilesPerBatch: payload['maxFilesPerBatch'] as int? ?? 20,
       maxAgentTurns: payload['maxAgentTurns'] as int? ?? 0,
+      maxToolCalls: payload['maxToolCalls'] as int? ?? 0,
       undoWindowHours: payload['undoWindowHours'] as int? ?? 24,
       fileChangesPolicyId:
           payload['fileChangesPolicyId'] as String? ?? 'inherit',

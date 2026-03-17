@@ -1,6 +1,6 @@
 # Context Management Remaining Work Checklist
 
-Last updated: 2026-03-16
+Last updated: 2026-03-17
 
 ## Current checkpoint
 
@@ -36,13 +36,14 @@ Phase 1 foundation now in progress:
 - chat-derived identity and style preferences now stay in memory as structured overrides and are resolved into an effective runtime soul profile instead of directly overwriting persisted soul state
 - workspace identity is now derived from the app workspace root set and used consistently for workspace-scoped memory recall and writes
 - completed turns now also maintain session-scoped `task_commitment` memory deterministically, resolving completed commitments and expiring stale ones before new writes
-- host runtime activity now exposes `memory_write` events with written, resolved, and expired memory ids so memory maintenance stays debuggable from the live session surface
+- host runtime activity now exposes `memory_write` events with written, resolved, reaffirmed, and expired memory ids so memory maintenance stays debuggable from the live session surface
 - memory recall trace now projects through host run snapshots and the local runtime server, so existing debug surfaces can inspect it without adding a dedicated memory UI first
 - user-input durable memory extraction now prefers a constrained semantic interpreter for `user_preference`, `durable_instruction`, `project_fact`, and structured soul preference intents, with old keyword heuristics retained only as an explicit fallback when no interpreter is available
 - prompt-local pruning now runs before transcript windowing, and prompt-time compaction emits an explicit omitted-history summary instead of silently dropping older replay
 - projected memory corpus tools now expose `memory_search` and `memory_get`, and explicit memory retrieval emits `memory_retrieval` runtime events that project through host/local run snapshots
 - managed skills roots now resolve into a bounded `Skill Inventory` prompt layer, and run metadata/snapshots now preserve which skills were visible versus injected for later debugging
 - explicit `skill_read` can now promote one active skill into a dedicated `Active Skill` capsule layer for later turns, with host-visible trace and allowlist-style tool narrowing kept outside `ContextManager`
+- Settings debug tooling now exposes snapshot-backed `Memory Inspector` and `Soul Inspector` state views so persisted memory records, stored/base/effective soul, overlays, and field sources can be inspected without reconstructing them from live events
 - the next safe rollout step is pre-compaction memory flush and durable compaction work, now that Level 2 skill activation is in place without moving source-selection logic into `ContextManager`
 
 ## Remaining work after P0
@@ -60,15 +61,16 @@ Phase 1 foundation now in progress:
    - Add a memory candidate extractor after completed turns.
    - Gate writes through explicit policy instead of model-authored free-form dumps.
    - Start with `user_preference`, `project_fact`, `durable_instruction`, and `task_commitment`.
-   - Current status: post-turn writes, `task_commitment` resolve/expire maintenance, host-visible `memory_write` summaries, and constrained semantic extraction for user-authored durable memories are now implemented.
-   - Remaining gaps: assistant-side completion heuristics are still phrase-based, and there is no operator-facing maintenance surface yet.
+  - Current status: post-turn writes, `task_commitment` resolve/expire/reaffirm maintenance, host-visible `memory_write` summaries, constrained semantic extraction for user-authored durable memories, constrained semantic interpretation for `task_commitment` completion/renewal, and existing Flutter/runtime trace surfaces that retain written/resolved/reaffirmed/expired memory ids are now implemented.
+  - Current status: operator-facing read-only inspection now exists through snapshot-backed `Memory Inspector` and `Soul Inspector` debug surfaces.
+  - Remaining gaps: there is still no operator editing/curation flow for memory state, and the current `task_commitment` semantic pass is intentionally narrow to resolve/reaffirm decisions rather than broader free-form memory edits.
 
 3. Memory recall layer
    - Retrieve bounded memory relevant to the current session/task before the LLM call.
    - Keep recall budgeted and traceable in the context report.
    - Current status: recall is budgeted, workspace-aware, prompt-visible, and live app runs now refresh memory through post-turn deterministic writes.
    - Current status: runtime context reports now include bounded memory recall trace data for query terms, selected records, budget-omitted records, and filtered counts.
-   - Remaining gaps: expose this trace more consistently across operator/debug entry points and decide whether a dedicated debug screen is still needed after the existing snapshot surfaces prove sufficient.
+  - Remaining gaps: retrieval trace is visible through runtime/run surfaces, but the debug inspectors are still primarily state-oriented rather than trace-oriented, so deeper operator correlation between recalled records and current state is still pending.
    - Boundary note: ranking, filtering, and recall policy stay in `MemoryRetriever`; `ContextManager` should only enforce final prompt allocation pressure on the already-ranked result.
 
 4. On-demand memory tools
@@ -76,7 +78,7 @@ Phase 1 foundation now in progress:
    - Search should run against a projected memory corpus, not raw `memory.json`.
    - Automatic bounded recall and explicit memory tools should coexist rather than replace one another.
    - Current status: implemented with projected-corpus search/get tooling and `memory_retrieval` runtime events visible through existing host/local snapshot surfaces.
-   - Remaining gaps: better operator-facing maintenance/debug UI is still optional if the existing snapshot surfaces prove sufficient.
+  - Remaining gaps: explicit memory tools are implemented, but there is still no operator action surface for replaying/searching them directly from debug UI; current debug pages remain snapshot inspection surfaces only.
 
 5. Runtime-visible skill inventory
    - Assemble an explicit inventory layer from managed skills roots.
@@ -97,7 +99,8 @@ Phase 1 foundation now in progress:
    - Trigger it only under transcript/context pressure.
    - Preserve durable notes before durable compaction rewrites older history.
    - Keep flush append-only and traceable, and prevent repeated flushes in the same compaction cycle.
-   - Current status: not implemented yet.
+   - Current status: implemented as a pre-run memory flush path before session-context assembly. The flush only triggers when prompt-local pruning plus transcript windowing would omit enough older history, writes durable candidates through the existing memory extractor/writer path, reloads fresh memory records so the same run can immediately recall them, projects structured `memoryFlush` trace through runtime metadata plus host/local run snapshots, and dedupes repeated flushes with omitted-window signatures plus stable candidate ids so simple window growth does not keep rewriting the same memory.
+   - Remaining gaps: there is still no separate durable compaction worker or dedicated flush task. Flush currently stays as a pre-run preservation stage wired through session preparation.
 
 8. Context pruner
    - Add prompt-local pruning rules for large tool outputs, repeated observations, and bulky attachments.
@@ -108,7 +111,8 @@ Phase 1 foundation now in progress:
 9. Durable compaction summaries
    - Introduce session-level summaries for older turns.
    - Preserve decision history while shrinking the replay window.
-   - Current status: only prompt-time omitted-history summaries are implemented. Durable session-level summaries are not implemented yet.
+   - Current status: implemented as a pre-run durable compaction stage before prompt assembly. Prompt tasks now compact older omitted transcript slices into a separate per-session durable summary store, physically trim the runtime transcript tail through `SessionTranscriptStore.replace(...)`, inject the rendered durable summaries as a dedicated `Durable Compaction` prompt layer, and project structured durable-compaction trace through runtime metadata plus host/local run snapshots.
+   - Remaining gaps: compaction still runs inline during session preparation rather than as a background worker, and the current trace exposes counts/timestamps rather than a richer per-entry audit surface.
 
 10. Bootstrap context files
    - Resolve `AGENTS.md`, `SOUL.md`, `TOOLS.md`, and `PROJECT.md` as bounded context sources.
@@ -123,19 +127,18 @@ Phase 1 foundation now in progress:
 12. Full context trace
    - Emit run-level trace data for layer composition, retrieved memories, skill capsules, pruning, and compaction.
    - Make postmortem inspection possible without re-running the session.
-   - Current status: memory write activity, bounded memory recall trace, explicit memory-tool retrieval trace, skill visibility trace, and active skill capsule trace now project through runtime metadata plus host/local snapshot surfaces.
-   - Remaining gaps: deeper cross-layer trace capture is still pending, including memory-flush trace, bootstrap-file trace, and durable compaction trace.
+   - Current status: memory write activity, bounded memory recall trace, explicit memory-tool retrieval trace, skill visibility trace, active skill capsule trace, pre-compaction memory-flush trace, and durable-compaction trace now project through runtime metadata plus host/local snapshot surfaces.
+   - Remaining gaps: deeper cross-layer trace capture is still pending, especially bootstrap-file trace and richer per-layer compaction/bootstrap provenance.
 
 ## Recommended execution order
 
 1. Preserve the `ContextManager` boundary as allocator/budget owner only
 2. Finish structured soul promotion/confirmation work
 3. Finish the remaining memory debug/operator surfaces
-4. Add pre-compaction memory flush
-5. Durable compaction summaries
-6. Bootstrap files
-7. Subagent context modes
-8. Full context trace
+4. Bootstrap files
+5. Subagent context modes
+6. Broader full-context trace
+7. Full context trace
 
 ## Handoff notes for the next worker
 

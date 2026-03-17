@@ -9,6 +9,7 @@ import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.store.MemoryStore
 import com.opencray.runtime.memory.MemoryCandidateExtractor
+import com.opencray.runtime.memory.MemoryFlushOutcome
 import com.opencray.runtime.memory.SoulMemoryIntent
 import com.opencray.runtime.memory.SoulMemoryIntentInterpretation
 import com.opencray.runtime.memory.SoulMemoryIntentInterpreter
@@ -24,11 +25,241 @@ import com.opencray.runtime.memory.UserMemoryIntentInterpreter
 import com.opencray.runtime.memory.UserMemoryIntentRequest
 import com.opencray.runtime.memory.MemoryWriter
 import com.opencray.runtime.memory.TaskCommitmentResolver
+import com.opencray.runtime.context.RuntimeConversationMessage
+import com.opencray.runtime.context.RuntimeConversationRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChatMemoryIngestionCoordinatorTest {
+  @Test
+  fun flushBeforeCompactionWritesDurableCandidatesOnlyOncePerTranscriptSignature() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+    )
+    val conversation = listOf(
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Please default to Simplified Chinese for explanations.",
+      ),
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Do not use git reset --hard in this repo.",
+      ),
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Project uses the Gradle wrapper from the repo root.",
+      ),
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "以后都用 PowerShell 命令。",
+      ),
+    ) + (1..12).map { index ->
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Padding user message $index to keep the active transcript window bounded.",
+      )
+    }
+
+    val first = coordinator.flushBeforeCompaction(
+      sessionId = "session-flush",
+      taskId = "task-flush-1",
+      conversation = conversation,
+    )
+    val second = coordinator.flushBeforeCompaction(
+      sessionId = "session-flush",
+      taskId = "task-flush-2",
+      conversation = conversation,
+    )
+
+    assertEquals(MemoryFlushOutcome.WRITTEN, first.trace.outcome)
+    assertTrue(first.writtenRecords.isNotEmpty())
+    assertEquals(first.writtenRecords.size, first.trace.writtenRecordCount)
+    assertTrue(memoryStore.list().any { record -> record.extensions["kind"] == "user_preference" })
+    assertTrue(memoryStore.list().any { record -> record.extensions["kind"] == "project_fact" })
+    assertEquals(MemoryFlushOutcome.ALREADY_FLUSHED, second.trace.outcome)
+    assertTrue(second.writtenRecords.isEmpty())
+    assertEquals(first.writtenRecords.size, memoryStore.list().size)
+  }
+
+  @Test
+  fun flushBeforeCompactionSkipsExpandedWindowWhenNoNewDurableCandidatesAppear() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+    )
+    val baseConversation = listOf(
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Please default to Simplified Chinese for explanations.",
+      ),
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Do not use git reset --hard in this repo.",
+      ),
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Project uses the Gradle wrapper from the repo root.",
+      ),
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "以后都用 PowerShell 命令。",
+      ),
+    ) + (1..12).map { index ->
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Padding user message $index to keep the active transcript window bounded.",
+      )
+    }
+
+    val first = coordinator.flushBeforeCompaction(
+      sessionId = "session-expanded-flush",
+      taskId = "task-expanded-1",
+      conversation = baseConversation,
+    )
+    val second = coordinator.flushBeforeCompaction(
+      sessionId = "session-expanded-flush",
+      taskId = "task-expanded-2",
+      conversation = baseConversation + conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Padding user message 13 to keep the active transcript window bounded.",
+      ),
+    )
+
+    assertEquals(MemoryFlushOutcome.WRITTEN, first.trace.outcome)
+    assertEquals(MemoryFlushOutcome.ALREADY_FLUSHED, second.trace.outcome)
+    assertTrue(second.writtenRecords.isEmpty())
+    assertEquals(first.writtenRecords.size, memoryStore.list().size)
+  }
+
+  @Test
+  fun flushBeforeCompactionWritesOnlyDeltaWhenExpandedWindowAddsNewCandidate() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+    )
+    val baseConversation = listOf(
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Please default to Simplified Chinese for explanations.",
+      ),
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Do not use git reset --hard in this repo.",
+      ),
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Project uses the Gradle wrapper from the repo root.",
+      ),
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "以后都用 PowerShell 命令。",
+      ),
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Project uses pnpm workspaces for package management.",
+      ),
+    ) + (1..11).map { index ->
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Padding user message $index to keep the active transcript window bounded.",
+      )
+    }
+
+    val first = coordinator.flushBeforeCompaction(
+      sessionId = "session-expanded-delta",
+      taskId = "task-delta-1",
+      conversation = baseConversation,
+    )
+    val second = coordinator.flushBeforeCompaction(
+      sessionId = "session-expanded-delta",
+      taskId = "task-delta-2",
+      conversation = baseConversation + conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Padding user message 12 to keep the active transcript window bounded.",
+      ),
+    )
+
+    assertEquals(MemoryFlushOutcome.WRITTEN, first.trace.outcome)
+    assertEquals(MemoryFlushOutcome.WRITTEN, second.trace.outcome)
+    assertEquals(1, second.writtenRecords.size)
+    assertTrue(second.writtenRecords.single().content.contains("pnpm workspaces"))
+    assertEquals(first.writtenRecords.size + 1, memoryStore.list().size)
+  }
+
+  @Test
+  fun flushBeforeCompactionAllowsRewriteAfterBackingMemoryIsCleared() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+    )
+    val conversation = listOf(
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Please default to Simplified Chinese for explanations.",
+      ),
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Do not use git reset --hard in this repo.",
+      ),
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Project uses the Gradle wrapper from the repo root.",
+      ),
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "以后都用 PowerShell 命令。",
+      ),
+    ) + (1..12).map { index ->
+      conversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "Padding user message $index to keep the active transcript window bounded.",
+      )
+    }
+
+    val first = coordinator.flushBeforeCompaction(
+      sessionId = "session-store-reset",
+      taskId = "task-store-reset-1",
+      conversation = conversation,
+    )
+    memoryStore.clear()
+    val second = coordinator.flushBeforeCompaction(
+      sessionId = "session-store-reset",
+      taskId = "task-store-reset-2",
+      conversation = conversation,
+    )
+
+    assertEquals(MemoryFlushOutcome.WRITTEN, first.trace.outcome)
+    assertEquals(MemoryFlushOutcome.WRITTEN, second.trace.outcome)
+    assertTrue(second.writtenRecords.isNotEmpty())
+    assertEquals(second.writtenRecords.size, memoryStore.list().size)
+  }
+
+  @Test
+  fun flushBeforeCompactionSkipsWhenTranscriptWindowDoesNotOmitEnoughHistory() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(memoryStore = memoryStore)
+
+    val summary = coordinator.flushBeforeCompaction(
+      sessionId = "session-no-pressure",
+      taskId = "task-no-pressure",
+      conversation = listOf(
+        conversationMessage(RuntimeConversationRole.USER, "Please keep responses short."),
+        conversationMessage(RuntimeConversationRole.ASSISTANT, "I will keep them short."),
+        conversationMessage(RuntimeConversationRole.USER, "Continue with the fix."),
+      ),
+    )
+
+    assertEquals(MemoryFlushOutcome.NO_PRESSURE, summary.trace.outcome)
+    assertTrue(summary.writtenRecords.isEmpty())
+    assertTrue(memoryStore.list().isEmpty())
+  }
+
   @Test
   fun ingestCompletedTurnWritesDeterministicCandidatesFromUserAssistantAndTools() {
     val memoryStore = InMemoryMemoryStore()
@@ -326,6 +557,14 @@ class ChatMemoryIngestionCoordinatorTest {
     stdout = "Done.",
     startedAtEpochMs = 1_000L,
     finishedAtEpochMs = 1_001L,
+  )
+
+  private fun conversationMessage(
+    role: RuntimeConversationRole,
+    content: String,
+  ): RuntimeConversationMessage = RuntimeConversationMessage(
+    role = role,
+    content = content,
   )
 
   private class InMemoryMemoryStore : MemoryStore {

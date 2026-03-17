@@ -1,5 +1,6 @@
 import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_debug_snapshot.dart';
 import '../models/opencray_file_image_preview.dart';
 import '../models/opencray_file_text_preview.dart';
 import '../models/opencray_files_snapshot.dart';
@@ -340,6 +341,7 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     rollbackJournalEnabled: true,
     maxFilesPerBatch: 20,
     maxAgentTurns: 0,
+    maxToolCalls: 0,
     undoWindowHours: 24,
     fileChangesPolicyId: 'inherit',
     fileDeletesPolicyId: 'inherit',
@@ -367,6 +369,7 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     required bool rollbackJournalEnabled,
     required int maxFilesPerBatch,
     int maxAgentTurns = 0,
+    int maxToolCalls = 0,
     required int undoWindowHours,
     required String fileChangesPolicyId,
     required String fileDeletesPolicyId,
@@ -468,6 +471,23 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
       null;
 
   @override
+  Future<OpenCrayMemoryDebugSnapshot> loadMemoryDebugSnapshot() async =>
+      const OpenCrayMemoryDebugSnapshot(
+        sessionId: '',
+        observedAtEpochMs: 0,
+        records: <OpenCrayMemoryDebugRecordSnapshot>[],
+      );
+
+  @override
+  Future<OpenCraySoulDebugSnapshot> loadSoulDebugSnapshot() async =>
+      const OpenCraySoulDebugSnapshot(
+        sessionId: '',
+        observedAtEpochMs: 0,
+        overlayRecords: <OpenCrayMemoryDebugRecordSnapshot>[],
+        fieldSources: <OpenCraySoulFieldSourceSnapshot>[],
+      );
+
+  @override
   Future<OpenCrayChatRunSnapshot?> waitForChatRun(
     String runId, {
     Duration timeout = const Duration(seconds: 15),
@@ -484,6 +504,18 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
 
   @override
   Future<void> selectChatSession(String sessionId) async {}
+
+  @override
+  Future<void> deleteChatMessage({
+    required String sessionId,
+    required String messageId,
+  }) async {}
+
+  @override
+  Future<void> recallChatMessage({
+    required String sessionId,
+    required String messageId,
+  }) async {}
 
   @override
   Future<OpenCrayChatRunSubmission?> submitChatMessage(String text) async =>

@@ -5,6 +5,13 @@ import com.opencray.core.contracts.AgentTaskType
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.runtime.AgentToolDefinition
+import com.opencray.runtime.bootstrap.BootstrapContext
+import com.opencray.runtime.bootstrap.BootstrapFileTrace
+import com.opencray.runtime.bootstrap.BootstrapMode
+import com.opencray.runtime.bootstrap.BootstrapSnippet
+import com.opencray.runtime.bootstrap.BootstrapTrace
+import com.opencray.runtime.compaction.DurableCompactionContext
+import com.opencray.runtime.compaction.DurableCompactionTrace
 import com.opencray.runtime.memory.MemoryKind
 import com.opencray.runtime.memory.MemoryRecallFilterReason
 import com.opencray.runtime.memory.MemoryRecallOmissionReason
@@ -85,9 +92,10 @@ class PromptAssemblerTest {
     assertTrue(prompt.systemPrompt.contains("[Personalization]"))
     assertTrue(prompt.systemPrompt.contains("display_name=Night Shift"))
     assertTrue(prompt.taskPrompt.contains("[Tool Protocol]"))
-    assertTrue(prompt.taskPrompt.contains("On each turn, return exactly one JSON action"))
+    assertTrue(prompt.taskPrompt.contains("On each turn, return exactly one JSON object"))
     assertTrue(prompt.taskPrompt.contains("the runtime will execute it, append the tool result"))
     assertTrue(prompt.taskPrompt.contains("If you need multiple tools, call only the next tool now"))
+    assertTrue(prompt.taskPrompt.contains("A progress action is a short public status update"))
     assertTrue(prompt.taskPrompt.contains("tool_name\":\"Bash"))
     assertTrue(prompt.taskPrompt.contains("tool_name\":\"WebFetch"))
     assertTrue(prompt.taskPrompt.contains("Use Bash for one-off shell commands"))
@@ -307,6 +315,123 @@ class PromptAssemblerTest {
     assertEquals(listOf("memory-user", "memory-project"), prompt.report.memoryRecallTrace.selected.map { trace -> trace.id })
     assertEquals(listOf("memory-omitted"), prompt.report.memoryRecallTrace.omitted.map { trace -> trace.id })
     assertEquals(1, prompt.report.memoryRecallTrace.filteredCounts[MemoryRecallFilterReason.SCOPE_MISMATCH])
+  }
+
+  @Test
+  fun assembleInjectsBootstrapFilesAsNamedSystemLayers() {
+    val contextManager = ContextManager()
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "Base identity.",
+          sessionContext = AgentRuntimeSessionContext(
+            bootstrapContext = BootstrapContext(
+              mode = BootstrapMode.FULL,
+              files = listOf(
+                BootstrapSnippet(
+                  name = "AGENTS.md",
+                  relativePath = "AGENTS.md",
+                  content = "# Agents\nFollow the workspace instructions.",
+                  sourceCharCount = 42,
+                  truncated = false,
+                ),
+                BootstrapSnippet(
+                  name = "PROJECT.md",
+                  relativePath = "PROJECT.md",
+                  content = "# Project\nThis repo uses Gradle.",
+                  sourceCharCount = 31,
+                  truncated = false,
+                ),
+              ),
+              trace = BootstrapTrace(
+                mode = "full",
+                visibleFileCount = 2,
+                injectedFileCount = 2,
+                omittedFileCount = 0,
+                truncatedFileCount = 0,
+                files = listOf(
+                  BootstrapFileTrace(
+                    name = "AGENTS.md",
+                    relativePath = "AGENTS.md",
+                    sourceCharCount = 42,
+                    injectedCharCount = 42,
+                    truncated = false,
+                  ),
+                  BootstrapFileTrace(
+                    name = "PROJECT.md",
+                    relativePath = "PROJECT.md",
+                    sourceCharCount = 31,
+                    injectedCharCount = 31,
+                    truncated = false,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          toolDefinitions = emptyList(),
+          liveConversation = emptyList(),
+        ),
+      ),
+    )
+
+    assertTrue(prompt.systemPrompt.contains("[Bootstrap AGENTS.md]"))
+    assertTrue(prompt.systemPrompt.contains("source_file=AGENTS.md"))
+    assertTrue(prompt.systemPrompt.contains("Follow the workspace instructions."))
+    assertTrue(prompt.systemPrompt.contains("[Bootstrap PROJECT.md]"))
+    assertTrue(prompt.systemPrompt.contains("This repo uses Gradle."))
+    assertEquals("full", prompt.report.bootstrapTrace.mode)
+    assertEquals(2, prompt.report.bootstrapTrace.visibleFileCount)
+    assertEquals(2, prompt.report.bootstrapTrace.injectedFileCount)
+  }
+
+  @Test
+  fun assembleInjectsDurableCompactionAsDedicatedContextLayer() {
+    val contextManager = ContextManager()
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "Base identity.",
+          sessionContext = AgentRuntimeSessionContext(
+            durableCompaction = DurableCompactionContext(
+              text = """
+                Older session history has been durably compacted into summaries.
+                [Compacted History]
+                Compacted 6 older message(s) outside the active transcript window.
+              """.trimIndent(),
+              trace = DurableCompactionTrace(
+                compactedThisRun = true,
+                sourceTranscriptMessageCount = 18,
+                retainedTranscriptMessageCount = 12,
+                latestCompactedMessageCount = 6,
+                includedSummaryCount = 1,
+                omittedSummaryCount = 0,
+                totalCompactedMessageCount = 6,
+                latestCompactedAtEpochMs = 1_234L,
+              ),
+            ),
+          ),
+          toolDefinitions = emptyList(),
+          liveConversation = emptyList(),
+        ),
+      ),
+    )
+
+    assertTrue(prompt.taskPrompt.contains("[Durable Compaction]"))
+    assertTrue(prompt.taskPrompt.contains("Older session history has been durably compacted into summaries."))
+    assertTrue(prompt.taskPrompt.contains("Compacted 6 older message(s) outside the active transcript window."))
+    assertTrue(prompt.taskPrompt.indexOf("[Durable Compaction]") < prompt.taskPrompt.indexOf("[Tool Protocol]"))
+    assertTrue(prompt.report.durableCompactionTrace.compactedThisRun)
+    assertEquals(18, prompt.report.durableCompactionTrace.sourceTranscriptMessageCount)
+    assertEquals(12, prompt.report.durableCompactionTrace.retainedTranscriptMessageCount)
+    assertEquals(6, prompt.report.durableCompactionTrace.latestCompactedMessageCount)
+    assertEquals(1, prompt.report.durableCompactionTrace.includedSummaryCount)
+    assertEquals(6, prompt.report.durableCompactionTrace.totalCompactedMessageCount)
   }
 
   @Test

@@ -14,6 +14,7 @@ internal object SafetySettingsStoreKeys {
   const val ROLLBACK_JOURNAL_ENABLED = "rollback_journal_enabled"
   const val MAX_FILES_PER_BATCH = "max_files_per_batch"
   const val MAX_AGENT_TURNS = "max_agent_turns"
+  const val MAX_TOOL_CALLS = "max_tool_calls"
   const val UNDO_WINDOW_HOURS = "undo_window_hours"
   const val FILE_CHANGES_POLICY_ID = "file_changes_policy_id"
   const val FILE_DELETES_POLICY_ID = "file_deletes_policy_id"
@@ -32,6 +33,7 @@ internal data class SafetySettingsState(
   val rollbackJournalEnabled: Boolean = true,
   val maxFilesPerBatch: Int = DEFAULT_MAX_FILES_PER_BATCH,
   val maxAgentTurns: Int = DEFAULT_MAX_AGENT_TURNS,
+  val maxToolCalls: Int = DEFAULT_MAX_TOOL_CALLS,
   val undoWindowHours: Int = DEFAULT_UNDO_WINDOW_HOURS,
   val fileChangesPolicy: ToolPolicyOverride = ToolPolicyOverride.INHERIT,
   val fileDeletesPolicy: ToolPolicyOverride = ToolPolicyOverride.INHERIT,
@@ -47,12 +49,14 @@ internal data class SafetySettingsState(
   fun sanitized(): SafetySettingsState = copy(
     maxFilesPerBatch = maxFilesPerBatch.coerceAtLeast(1),
     maxAgentTurns = maxAgentTurns.coerceAtLeast(0),
+    maxToolCalls = maxToolCalls.coerceAtLeast(0),
     undoWindowHours = undoWindowHours.coerceAtLeast(1),
   )
 
   companion object {
     const val DEFAULT_MAX_FILES_PER_BATCH: Int = 20
     const val DEFAULT_MAX_AGENT_TURNS: Int = 0
+    const val DEFAULT_MAX_TOOL_CALLS: Int = 0
     const val DEFAULT_UNDO_WINDOW_HOURS: Int = 24
   }
 }
@@ -176,6 +180,9 @@ internal class SafetySettingsStore(
       maxAgentTurns =
         keyValueStore.getInt(SafetySettingsStoreKeys.MAX_AGENT_TURNS)
           ?: defaults.maxAgentTurns,
+      maxToolCalls =
+        keyValueStore.getInt(SafetySettingsStoreKeys.MAX_TOOL_CALLS)
+          ?: defaults.maxToolCalls,
       undoWindowHours =
         keyValueStore.getInt(SafetySettingsStoreKeys.UNDO_WINDOW_HOURS)
           ?: defaults.undoWindowHours,
@@ -228,6 +235,10 @@ internal class SafetySettingsStore(
     keyValueStore.putInt(
       SafetySettingsStoreKeys.MAX_AGENT_TURNS,
       sanitized.maxAgentTurns,
+    )
+    keyValueStore.putInt(
+      SafetySettingsStoreKeys.MAX_TOOL_CALLS,
+      sanitized.maxToolCalls,
     )
     keyValueStore.putInt(
       SafetySettingsStoreKeys.UNDO_WINDOW_HOURS,

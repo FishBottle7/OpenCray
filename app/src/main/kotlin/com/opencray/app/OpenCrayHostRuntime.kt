@@ -65,18 +65,32 @@ import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.persistence.model.ChatTranscriptMessageEntry
 import com.opencray.persistence.model.ChatTranscriptRole
+import com.opencray.persistence.model.MemoryRecord
+import com.opencray.persistence.model.SoulRecord
 import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
+import com.opencray.runtime.OpenCrayProgressEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.context.RuntimeSoulProfile
 import com.opencray.policy.SafetyAutomationMode
 import com.opencray.policy.SafetySettingsMetadataKeys
+import com.opencray.runtime.memory.MemoryPreferenceKeys
+import com.opencray.runtime.memory.MemoryRecordExtensionKeys
+import com.opencray.runtime.memory.MemoryScope
+import com.opencray.runtime.memory.MemorySoulExtensionKeys
+import com.opencray.runtime.soul.MemoryBackedSoulProfileResolver
+import com.opencray.runtime.soul.RuntimeSoulProfileSeedFactory
+import com.opencray.runtime.soul.SoulProfile
+import com.opencray.runtime.soul.SoulProfileExtensionKeys
+import com.opencray.runtime.soul.SoulProfileResolver
 import java.nio.file.Path
 import java.util.ArrayDeque
+import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.CountDownLatch
@@ -90,6 +104,7 @@ internal class OpenCrayHostRuntime private constructor(
   private var networkSearchConfigFacade: NetworkSearchConfigFacade,
   private var llmConfigFacade: LlmConfigFacade,
   private var personalizationFacade: PersonalizationFacade,
+  private val personalizationLocalStore: PersonalizationLocalStore? = null,
   private var mcpSettingsFacade: McpSettingsFacade,
   private var safetySettingsFacade: SafetySettingsFacade,
   private var skillsFacade: SkillsFacade,
@@ -111,6 +126,9 @@ internal class OpenCrayHostRuntime private constructor(
   private val mainThreadPoster: MainThreadPoster,
 ) {
   private val lock = Any()
+  private val soulProfileResolver = SoulProfileResolver()
+  private val runtimeSoulProfileSeedFactory = RuntimeSoulProfileSeedFactory()
+  private val memoryBackedSoulProfileResolver = MemoryBackedSoulProfileResolver()
   private val shellListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val settingsOverviewListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val skillsListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
@@ -437,6 +455,7 @@ internal class OpenCrayHostRuntime private constructor(
     rollbackJournalEnabled: Boolean,
     maxFilesPerBatch: Int,
     maxAgentTurns: Int = SafetySettingsState.DEFAULT_MAX_AGENT_TURNS,
+    maxToolCalls: Int = SafetySettingsState.DEFAULT_MAX_TOOL_CALLS,
     undoWindowHours: Int,
     fileChangesPolicyId: String,
     fileDeletesPolicyId: String,
@@ -456,6 +475,7 @@ internal class OpenCrayHostRuntime private constructor(
           rollbackJournalEnabled = rollbackJournalEnabled,
           maxFilesPerBatch = maxFilesPerBatch,
           maxAgentTurns = maxAgentTurns,
+          maxToolCalls = maxToolCalls,
           undoWindowHours = undoWindowHours,
           fileChangesPolicyId = fileChangesPolicyId,
           fileDeletesPolicyId = fileDeletesPolicyId,
@@ -729,6 +749,13 @@ internal class OpenCrayHostRuntime private constructor(
           "runId" to approval.runId,
           "taskId" to approval.taskId,
           "pendingMessageId" to approval.pendingMessageId,
+          "toolName" to approval.toolName,
+          "requestSummary" to approval.requestSummary,
+          "primaryDetail" to approval.primaryDetail,
+          "pathDetails" to approval.pathDetails,
+          "workingDirectory" to approval.workingDirectory,
+          "reason" to approval.reason,
+          "message" to approval.message,
           "risk" to if (approval.isHighRisk) "high_risk" else "standard",
           "isHighRisk" to approval.isHighRisk,
           "title" to approval.title,
@@ -789,6 +816,75 @@ internal class OpenCrayHostRuntime private constructor(
       listener = listener,
     )
 
+  fun loadMemoryDebugSnapshot(): Map<String, Any?> = synchronized(lock) {
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+    val workspaceId = currentWorkspaceIdLocked()
+    val observedAtEpochMs = System.currentTimeMillis()
+    val records = personalizationLocalStore
+      ?.listMemoryRecords()
+      .orEmpty()
+      .sortedWith(
+        compareByDescending<MemoryRecord> { record -> record.updatedAtEpochMs }
+          .thenBy { record -> record.id },
+      )
+    mapOf(
+      "sessionId" to sessionId,
+      "workspaceId" to workspaceId,
+      "observedAtEpochMs" to observedAtEpochMs,
+      "records" to records.map { record ->
+        memoryDebugRecordToMap(record = record, observedAtEpochMs = observedAtEpochMs)
+      },
+    )
+  }
+
+  fun loadSoulDebugSnapshot(): Map<String, Any?> = synchronized(lock) {
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+    val workspaceId = currentWorkspaceIdLocked()
+    val observedAtEpochMs = System.currentTimeMillis()
+    val storedSoulRecord = personalizationLocalStore?.loadSoulRecord()
+    val storedSoulProfile = personalizationLocalStore?.loadSoulProfile()
+    val baseRuntimeSoul = storedSoulProfile?.toRuntimeSoulProfile()
+    val baseResolvedSoul = resolveSoulProfile(baseRuntimeSoul)
+    val overlayRecords = applicableSoulOverlayRecordsLocked(
+      sessionId = sessionId,
+      workspaceId = workspaceId,
+    )
+    val effectiveRuntimeSoul = memoryBackedSoulProfileResolver.overlay(
+      baseProfile = baseRuntimeSoul,
+      records = overlayRecords,
+      sessionId = sessionId,
+      workspaceId = workspaceId,
+    )
+    val effectiveResolvedSoul = resolveSoulProfile(effectiveRuntimeSoul)
+    mapOf(
+      "sessionId" to sessionId,
+      "workspaceId" to workspaceId,
+      "observedAtEpochMs" to observedAtEpochMs,
+      "storedSoul" to storedSoulRecord?.let(::storedSoulRecordToMap),
+      "baseSoul" to soulProfileToMap(
+        resolvedProfile = baseResolvedSoul,
+        runtimeProfile = baseRuntimeSoul,
+      ),
+      "effectiveSoul" to soulProfileToMap(
+        resolvedProfile = effectiveResolvedSoul,
+        runtimeProfile = effectiveRuntimeSoul,
+      ),
+      "overlayRecords" to overlayRecords
+        .sortedWith(soulOverlayDisplayComparator())
+        .map { record ->
+          memoryDebugRecordToMap(record = record, observedAtEpochMs = observedAtEpochMs)
+        },
+      "fieldSources" to soulFieldSources(
+        storedSoulRecord = storedSoulRecord,
+        baseRuntimeSoul = baseRuntimeSoul,
+        effectiveRuntimeSoul = effectiveRuntimeSoul,
+        baseResolvedSoul = baseResolvedSoul,
+        effectiveResolvedSoul = effectiveResolvedSoul,
+        overlayRecords = overlayRecords,
+      ),
+    )
+  }
+
   fun createChatSession() {
     val sessionId = synchronized(lock) {
       val createdState = chatSessionStore.createSession()
@@ -835,6 +931,50 @@ internal class OpenCrayHostRuntime private constructor(
       clearUnreadCountLocked(updatedState.activeSession.sessionId)
       sessionRuntimeManager.forSession(updatedState.activeSession.sessionId).resume()
       updatedState.activeSession.sessionId
+    } ?: return
+    repairTerminalReplay(resolvedSessionId)
+    emitChatSnapshot()
+    emitChatRuntimeSnapshot()
+  }
+
+  fun deleteChatMessage(
+    sessionId: String,
+    messageId: String,
+  ) {
+    val resolvedSessionId = synchronized(lock) {
+      if (!hasSessionLocked(sessionId) || messageId.isBlank()) {
+        return@synchronized null
+      }
+      cancelRunsForPendingMessageIdsLocked(sessionId, setOf(messageId))
+      chatSessionStore.deleteMessage(sessionId, messageId)
+      sessionId
+    } ?: return
+    repairTerminalReplay(resolvedSessionId)
+    emitChatSnapshot()
+    emitChatRuntimeSnapshot()
+  }
+
+  fun recallChatMessage(
+    sessionId: String,
+    messageId: String,
+  ) {
+    val resolvedSessionId = synchronized(lock) {
+      if (!hasSessionLocked(sessionId) || messageId.isBlank()) {
+        return@synchronized null
+      }
+      val session = chatSessionStore.loadSession(sessionId) ?: return@synchronized null
+      val recallIndex = session.messages.indexOfFirst { message -> message.messageId == messageId }
+      if (recallIndex < 0 || session.messages[recallIndex].role != ChatTranscriptRole.USER) {
+        return@synchronized null
+      }
+      cancelRunsForPendingMessageIdsLocked(
+        sessionId = sessionId,
+        pendingMessageIds = session.messages
+          .drop(recallIndex)
+          .mapTo(linkedSetOf()) { message -> message.messageId },
+      )
+      chatSessionStore.recallMessageCascade(sessionId, messageId)
+      sessionId
     } ?: return
     repairTerminalReplay(resolvedSessionId)
     emitChatSnapshot()
@@ -992,13 +1132,38 @@ internal class OpenCrayHostRuntime private constructor(
     sessionRuntimeManager.release(sessionId)
   }
 
+  private fun cancelRunsForPendingMessageIdsLocked(
+    sessionId: String,
+    pendingMessageIds: Set<String>,
+  ) {
+    if (pendingMessageIds.isEmpty()) {
+      return
+    }
+    sessionRuntimeManager.forSession(sessionId).requestCancelForPendingMessageIds(pendingMessageIds)
+    val sessionApprovals = pendingApprovalsBySession[sessionId] ?: return
+    val iterator = sessionApprovals.entries.iterator()
+    while (iterator.hasNext()) {
+      val entry = iterator.next()
+      if (entry.value.pendingMessageId !in pendingMessageIds) {
+        continue
+      }
+      approvalRegistry.clear(sessionId, entry.value.taskId)
+      iterator.remove()
+    }
+    if (sessionApprovals.isEmpty()) {
+      pendingApprovalsBySession.remove(sessionId)
+    }
+  }
+
   // Use run projection here so chat state settles immediately when a result is already known.
   private fun pendingTaskCount(sessionId: String): Int = sessionRuntimeManager.forSession(sessionId)
     .listRuns()
     .count { run -> !run.isTerminal }
 
   private fun pendingApprovalsForSession(sessionId: String): List<PendingApprovalSnapshot> {
-    val snapshot = sessionRuntimeManager.forSession(sessionId).snapshot()
+    val sessionHandle = sessionRuntimeManager.forSession(sessionId)
+    val snapshot = sessionHandle.snapshot()
+    val runsByTaskId = sessionHandle.listRuns().associateBy(AgentRunSnapshot::taskId)
     val transientApprovals = pendingApprovalsBySession[sessionId].orEmpty()
     approvalRegistry.retainKnownTasks(
       sessionId = sessionId,
@@ -1015,22 +1180,21 @@ internal class OpenCrayHostRuntime private constructor(
       }
       .map { taskSnapshot ->
         val isHighRisk = taskSnapshot.lastErrorCode == ERROR_HIGH_RISK_APPROVAL_REQUIRED
-        PendingApprovalSnapshot(
-          runId = runIdFor(taskSnapshot.task),
+        val runSnapshot = runsByTaskId[taskSnapshot.task.id]
+        pendingApprovalSnapshot(
+          runId = runSnapshot?.runId ?: runIdFor(taskSnapshot.task),
           taskId = taskSnapshot.task.id,
-          pendingMessageId = taskSnapshot.task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
-            ?.takeIf(String::isNotBlank),
-          toolName = null,
+          pendingMessageId = runSnapshot?.pendingMessageId
+            ?: taskSnapshot.task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
+              ?.takeIf(String::isNotBlank),
           isHighRisk = isHighRisk,
-          title = if (isHighRisk) {
-            strings.chatHighRiskApprovalRequiredTitle
-          } else {
-            strings.chatApprovalRequiredTitle
-          },
-          body = sanitizeApprovalBody(
-            body = taskSnapshot.lastErrorMessage,
+          metadata = runSnapshot?.resultMetadata.orEmpty(),
+          errorBody = sanitizeApprovalBody(
+            body = runSnapshot?.errorMessage ?: taskSnapshot.lastErrorMessage,
             isHighRisk = isHighRisk,
           ),
+          toolReason = runSnapshot?.resultMetadata?.get("toolReason")
+            ?: runSnapshot?.lastEvent?.let(::toolReasonFromEvent),
         )
       }
       .forEach { approval ->
@@ -1059,25 +1223,18 @@ internal class OpenCrayHostRuntime private constructor(
     result: ExecutionResult,
   ) {
     val isHighRisk = result.errorCode == ERROR_HIGH_RISK_APPROVAL_REQUIRED
-    val approval = PendingApprovalSnapshot(
+    val approval = pendingApprovalSnapshot(
       runId = runIdFor(task),
       taskId = task.id,
       pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
         ?.takeIf(String::isNotBlank),
-      toolName = result.metadata["toolName"]?.takeIf(String::isNotBlank),
       isHighRisk = isHighRisk,
-      title = if (isHighRisk) {
-        strings.chatHighRiskApprovalRequiredTitle
-      } else {
-        strings.chatApprovalRequiredTitle
-      },
-      body = composeApprovalBody(
-        body = sanitizeApprovalBody(
-          body = result.errorMessage,
-          isHighRisk = isHighRisk,
-        ),
-        toolReason = result.metadata["toolReason"],
+      metadata = result.metadata,
+      errorBody = sanitizeApprovalBody(
+        body = result.errorMessage,
+        isHighRisk = isHighRisk,
       ),
+      toolReason = result.metadata["toolReason"],
     )
     pendingApprovalsBySession
       .getOrPut(sessionId) { linkedMapOf() }[task.id] = approval
@@ -1249,6 +1406,9 @@ internal class OpenCrayHostRuntime private constructor(
     "errorMessage" to run.errorMessage,
     "responseFormat" to run.responseFormat,
     "memoryTrace" to memoryTraceFromMetadata(run.resultMetadata),
+    "memoryFlush" to memoryFlushFromMetadata(run.resultMetadata),
+    "bootstrap" to bootstrapFromMetadata(run.resultMetadata),
+    "durableCompaction" to durableCompactionFromMetadata(run.resultMetadata),
     "skillInventory" to skillInventoryFromMetadata(run.resultMetadata),
     "activeSkill" to activeSkillFromMetadata(run.resultMetadata),
     "pendingMessageId" to run.pendingMessageId,
@@ -1302,6 +1462,80 @@ internal class OpenCrayHostRuntime private constructor(
     }
   }
 
+  private fun memoryFlushFromMetadata(metadata: Map<String, String>): Map<String, Any?>? {
+    val outcome = metadata["contextMemoryFlushOutcome"]?.takeIf(String::isNotBlank)
+    val omittedMessageCount = metadata["contextMemoryFlushOmittedMessageCount"]?.toIntOrNull()
+    val omittedCharCount = metadata["contextMemoryFlushOmittedCharCount"]?.toIntOrNull()
+    val signature = metadata["contextMemoryFlushSignature"]?.takeIf(String::isNotBlank)
+    val candidateCount = metadata["contextMemoryFlushCandidateCount"]?.toIntOrNull()
+    val writtenRecordCount = metadata["contextMemoryFlushWrittenRecordCount"]?.toIntOrNull()
+    val writtenKinds = metadata["contextMemoryFlushWrittenKinds"]
+      .orEmpty()
+      .split(',')
+      .map(String::trim)
+      .filter(String::isNotBlank)
+    val writtenRecordIds = metadata["contextMemoryFlushWrittenRecordIds"]
+      .orEmpty()
+      .split(',')
+      .map(String::trim)
+      .filter(String::isNotBlank)
+    if (
+      outcome == null &&
+      omittedMessageCount == null &&
+      omittedCharCount == null &&
+      signature == null &&
+      candidateCount == null &&
+      writtenRecordCount == null &&
+      writtenKinds.isEmpty() &&
+      writtenRecordIds.isEmpty()
+    ) {
+      return null
+    }
+    return buildMap {
+      outcome?.let { put("outcome", it) }
+      omittedMessageCount?.let { put("omittedMessageCount", it) }
+      omittedCharCount?.let { put("omittedCharCount", it) }
+      signature?.let { put("signature", it) }
+      candidateCount?.let { put("candidateCount", it) }
+      writtenRecordCount?.let { put("writtenRecordCount", it) }
+      if (writtenKinds.isNotEmpty()) {
+        put("writtenKinds", writtenKinds)
+      }
+      if (writtenRecordIds.isNotEmpty()) {
+        put("writtenRecordIds", writtenRecordIds)
+      }
+    }
+  }
+
+  private fun bootstrapFromMetadata(metadata: Map<String, String>): Map<String, Any?>? {
+    val mode = metadata["contextBootstrapMode"]?.takeIf(String::isNotBlank)
+    val visibleFileCount = metadata["contextBootstrapVisibleFileCount"]?.toIntOrNull()
+    val injectedFileCount = metadata["contextBootstrapInjectedFileCount"]?.toIntOrNull()
+    val omittedFileCount = metadata["contextBootstrapOmittedFileCount"]?.toIntOrNull()
+    val truncatedFileCount = metadata["contextBootstrapTruncatedFileCount"]?.toIntOrNull()
+    val files = parseBootstrapFileTrace(metadata["contextBootstrapFileSummary"].orEmpty())
+    if (
+      mode == null &&
+      visibleFileCount == null &&
+      injectedFileCount == null &&
+      omittedFileCount == null &&
+      truncatedFileCount == null &&
+      files.isEmpty()
+    ) {
+      return null
+    }
+    return buildMap {
+      mode?.let { put("mode", it) }
+      visibleFileCount?.let { put("visibleFileCount", it) }
+      injectedFileCount?.let { put("injectedFileCount", it) }
+      omittedFileCount?.let { put("omittedFileCount", it) }
+      truncatedFileCount?.let { put("truncatedFileCount", it) }
+      if (files.isNotEmpty()) {
+        put("files", files)
+      }
+    }
+  }
+
   private fun skillInventoryFromMetadata(metadata: Map<String, String>): Map<String, Any?>? {
     val visibleCount = metadata["contextVisibleSkillCount"]?.toIntOrNull()
     val injectedCount = metadata["contextInjectedSkillCount"]?.toIntOrNull()
@@ -1333,6 +1567,546 @@ internal class OpenCrayHostRuntime private constructor(
       }
     }
   }
+
+  private fun durableCompactionFromMetadata(metadata: Map<String, String>): Map<String, Any?>? {
+    val compactedThisRun = metadata["contextDurableCompactionCompactedThisRun"]?.toBooleanStrictOrNull()
+    val sourceTranscriptMessageCount =
+      metadata["contextDurableCompactionSourceTranscriptMessageCount"]?.toIntOrNull()
+    val retainedTranscriptMessageCount =
+      metadata["contextDurableCompactionRetainedTranscriptMessageCount"]?.toIntOrNull()
+    val latestCompactedMessageCount =
+      metadata["contextDurableCompactionLatestMessageCount"]?.toIntOrNull()
+    val includedSummaryCount =
+      metadata["contextDurableCompactionIncludedSummaryCount"]?.toIntOrNull()
+    val omittedSummaryCount =
+      metadata["contextDurableCompactionOmittedSummaryCount"]?.toIntOrNull()
+    val totalCompactedMessageCount =
+      metadata["contextDurableCompactionTotalCompactedMessageCount"]?.toIntOrNull()
+    val latestCompactedAtEpochMs =
+      metadata["contextDurableCompactionLatestAtEpochMs"]?.toLongOrNull()
+    val totalSummaryCount = if (includedSummaryCount != null || omittedSummaryCount != null) {
+      (includedSummaryCount ?: 0) + (omittedSummaryCount ?: 0)
+    } else {
+      null
+    }
+    if (
+      compactedThisRun == null &&
+      sourceTranscriptMessageCount == null &&
+      retainedTranscriptMessageCount == null &&
+      latestCompactedMessageCount == null &&
+      includedSummaryCount == null &&
+      omittedSummaryCount == null &&
+      totalCompactedMessageCount == null &&
+      latestCompactedAtEpochMs == null
+    ) {
+      return null
+    }
+    return buildMap {
+      compactedThisRun?.let { put("compactedThisRun", it) }
+      sourceTranscriptMessageCount?.let { put("sourceTranscriptMessageCount", it) }
+      retainedTranscriptMessageCount?.let { put("retainedTranscriptMessageCount", it) }
+      latestCompactedMessageCount?.let { put("latestCompactedMessageCount", it) }
+      includedSummaryCount?.let { put("includedSummaryCount", it) }
+      omittedSummaryCount?.let { put("omittedSummaryCount", it) }
+      totalCompactedMessageCount?.let { put("totalCompactedMessageCount", it) }
+      totalSummaryCount?.let { put("totalSummaryCount", it) }
+      latestCompactedAtEpochMs?.let { put("latestCompactedAtEpochMs", it) }
+    }
+  }
+
+  private fun currentWorkspaceIdLocked(): String? = runCatching {
+    workspaceRootProvider?.invoke()
+  }.getOrNull()?.let { workspaceRoot ->
+    AppWorkspaceIdentity.fromRoots(setOf(workspaceRoot))
+  }
+
+  private fun resolveSoulProfile(runtimeProfile: RuntimeSoulProfile?): SoulProfile? =
+    soulProfileResolver.resolve(runtimeSoulProfileSeedFactory.create(runtimeProfile))
+
+  private fun applicableSoulOverlayRecordsLocked(
+    sessionId: String,
+    workspaceId: String?,
+  ): List<MemoryRecord> = personalizationLocalStore
+    ?.listMemoryRecords()
+    .orEmpty()
+    .filter { record ->
+      val metadata = debugMemoryMetadata(record) ?: return@filter false
+      metadata.kind == DEBUG_MEMORY_KIND_USER_PREFERENCE &&
+        metadata.status == DEBUG_MEMORY_STATUS_ACTIVE &&
+        metadata.preferenceKey in SUPPORTED_SOUL_PREFERENCE_KEYS &&
+        !metadata.preferenceValue.isNullOrBlank() &&
+        debugSoulScopeMatches(
+          scope = metadata.scope,
+          sourceSessionId = metadata.sourceSessionId,
+          recordWorkspaceId = metadata.workspaceId,
+          requestSessionId = sessionId,
+          requestWorkspaceId = workspaceId,
+        )
+    }
+
+  private fun debugSoulScopeMatches(
+    scope: String,
+    sourceSessionId: String?,
+    recordWorkspaceId: String?,
+    requestSessionId: String,
+    requestWorkspaceId: String?,
+  ): Boolean = when (scope) {
+    DEBUG_MEMORY_SCOPE_USER -> true
+    DEBUG_MEMORY_SCOPE_SESSION -> sourceSessionId == requestSessionId
+    DEBUG_MEMORY_SCOPE_WORKSPACE -> {
+      val normalizedRecordWorkspaceId = recordWorkspaceId?.takeIf(String::isNotBlank)
+      val normalizedRequestWorkspaceId = requestWorkspaceId?.takeIf(String::isNotBlank)
+      when {
+        normalizedRecordWorkspaceId == null && normalizedRequestWorkspaceId == null -> true
+        normalizedRecordWorkspaceId != null && normalizedRequestWorkspaceId != null ->
+          normalizedRecordWorkspaceId == normalizedRequestWorkspaceId
+        else -> false
+      }
+    }
+
+    else -> false
+  }
+
+  private fun storedSoulRecordToMap(record: SoulRecord): Map<String, Any?> = buildMap {
+    put("agentId", record.agentId)
+    record.displayName?.takeIf(String::isNotBlank)?.let { put("displayName", it) }
+    record.extensions["preset"]?.takeIf(String::isNotBlank)?.let { put("presetName", it) }
+    record.extensions["custom_guidance"]?.takeIf(String::isNotBlank)?.let { put("customGuidance", it) }
+    put("recordVersion", record.recordVersion)
+    put("createdAtEpochMs", record.createdAtEpochMs)
+    put("updatedAtEpochMs", record.updatedAtEpochMs)
+    if (record.extensions.isNotEmpty()) {
+      put("extensions", record.extensions.toSortedMap())
+    }
+  }
+
+  private fun soulProfileToMap(
+    resolvedProfile: SoulProfile?,
+    runtimeProfile: RuntimeSoulProfile?,
+  ): Map<String, Any?>? {
+    if (resolvedProfile == null && runtimeProfile == null) {
+      return null
+    }
+    return buildMap {
+      (runtimeProfile?.presetName ?: resolvedProfile?.presetName)
+        ?.takeIf(String::isNotBlank)
+        ?.let { put("presetName", it) }
+      (runtimeProfile?.displayName ?: resolvedProfile?.displayName)
+        ?.takeIf(String::isNotBlank)
+        ?.let { put("displayName", it) }
+      (runtimeProfile?.voice ?: resolvedProfile?.voice)
+        ?.takeIf(String::isNotBlank)
+        ?.let { put("voice", it) }
+      (runtimeProfile?.customGuidance ?: resolvedProfile?.customGuidance)
+        ?.takeIf(String::isNotBlank)
+        ?.let { put("customGuidance", it) }
+      resolvedProfile?.tone?.name?.lowercase(Locale.US)?.let { put("tone", it) }
+      resolvedProfile?.verbosity?.name?.lowercase(Locale.US)?.let { put("verbosity", it) }
+      resolvedProfile?.userRelationshipStyle?.name?.lowercase(Locale.US)
+        ?.let { put("userRelationshipStyle", it) }
+      resolvedProfile?.riskTolerance?.name?.lowercase(Locale.US)
+        ?.let { put("riskTolerance", it) }
+      resolvedProfile?.toolUseBias?.name?.lowercase(Locale.US)
+        ?.let { put("toolUseBias", it) }
+      if (!resolvedProfile?.escalationRules.isNullOrEmpty()) {
+        put("escalationRules", resolvedProfile?.escalationRules.orEmpty())
+      }
+      if (!resolvedProfile?.forbiddenBehaviors.isNullOrEmpty()) {
+        put("forbiddenBehaviors", resolvedProfile?.forbiddenBehaviors.orEmpty())
+      }
+      if (!resolvedProfile?.collaborationPreferences.isNullOrEmpty()) {
+        put("collaborationPreferences", resolvedProfile?.collaborationPreferences.orEmpty())
+      }
+      if (!runtimeProfile?.extensions.isNullOrEmpty()) {
+        put("extensions", runtimeProfile?.extensions.orEmpty().toSortedMap())
+      }
+    }
+  }
+
+  private fun soulFieldSources(
+    storedSoulRecord: SoulRecord?,
+    baseRuntimeSoul: RuntimeSoulProfile?,
+    effectiveRuntimeSoul: RuntimeSoulProfile?,
+    baseResolvedSoul: SoulProfile?,
+    effectiveResolvedSoul: SoulProfile?,
+    overlayRecords: List<MemoryRecord>,
+  ): List<Map<String, Any?>> {
+    val effectiveFieldValues = soulFieldValues(
+      resolvedProfile = effectiveResolvedSoul,
+      runtimeProfile = effectiveRuntimeSoul,
+    )
+    if (effectiveFieldValues.isEmpty()) {
+      return emptyList()
+    }
+    val baseFieldValues = soulFieldValues(
+      resolvedProfile = baseResolvedSoul,
+      runtimeProfile = baseRuntimeSoul,
+    )
+    val overlayFieldSources = linkedMapOf<String, SoulFieldContribution>()
+    overlayRecords
+      .mapNotNull { record ->
+        val metadata = debugMemoryMetadata(record) ?: return@mapNotNull null
+        record to metadata
+      }
+      .sortedWith(
+        compareBy<Pair<MemoryRecord, DebugMemoryMetadata>>(
+          { (_, metadata) -> soulScopePriority(metadata.scope) },
+          { (record, metadata) -> metadata.lastConfirmedAtEpochMs ?: record.updatedAtEpochMs },
+          { (record, _) -> record.id },
+        ),
+      )
+      .forEach { (record, metadata) ->
+        overlayFieldContributions(record, metadata).forEach { contribution ->
+          overlayFieldSources[contribution.field] = contribution
+        }
+      }
+
+    return SOUL_FIELD_ORDER.mapNotNull { field ->
+      val value = effectiveFieldValues[field] ?: return@mapNotNull null
+      val overlaySource = overlayFieldSources[field]
+      if (overlaySource != null && overlaySource.value == value) {
+        mapOf(
+          "field" to field,
+          "value" to value,
+          "sourceType" to "memory_overlay",
+          "sourceLabel" to soulOverlaySourceLabel(overlaySource.metadata.scope),
+          "recordId" to overlaySource.record.id,
+          "preferenceKey" to overlaySource.metadata.preferenceKey,
+        )
+      } else if (
+        baseFieldValues.containsKey(field) ||
+          (field == SOUL_FIELD_PRESET_NAME && storedSoulRecord?.extensions?.get("preset")?.isNotBlank() == true) ||
+          (field == SOUL_FIELD_CUSTOM_GUIDANCE &&
+            storedSoulRecord?.extensions?.get("custom_guidance")?.isNotBlank() == true)
+      ) {
+        mapOf(
+          "field" to field,
+          "value" to value,
+          "sourceType" to "stored_soul",
+          "sourceLabel" to if (field == SOUL_FIELD_PRESET_NAME) {
+            "stored soul preset"
+          } else {
+            "stored soul"
+          },
+          "recordId" to "",
+          "preferenceKey" to "",
+        )
+      } else {
+        null
+      }
+    }
+  }
+
+  private fun soulFieldValues(
+    resolvedProfile: SoulProfile?,
+    runtimeProfile: RuntimeSoulProfile?,
+  ): Map<String, String> = linkedMapOf<String, String>().apply {
+    (runtimeProfile?.presetName ?: resolvedProfile?.presetName)
+      ?.takeIf(String::isNotBlank)
+      ?.let { put(SOUL_FIELD_PRESET_NAME, it) }
+    (runtimeProfile?.displayName ?: resolvedProfile?.displayName)
+      ?.takeIf(String::isNotBlank)
+      ?.let { put(SOUL_FIELD_DISPLAY_NAME, it) }
+    (runtimeProfile?.voice ?: resolvedProfile?.voice)
+      ?.takeIf(String::isNotBlank)
+      ?.let { put(SOUL_FIELD_VOICE, it) }
+    (runtimeProfile?.customGuidance ?: resolvedProfile?.customGuidance)
+      ?.takeIf(String::isNotBlank)
+      ?.let { put(SOUL_FIELD_CUSTOM_GUIDANCE, it) }
+    resolvedProfile?.tone?.name?.lowercase(Locale.US)?.let { put(SOUL_FIELD_TONE, it) }
+    resolvedProfile?.verbosity?.name?.lowercase(Locale.US)?.let { put(SOUL_FIELD_VERBOSITY, it) }
+    resolvedProfile?.userRelationshipStyle?.name?.lowercase(Locale.US)
+      ?.let { put(SOUL_FIELD_USER_RELATIONSHIP_STYLE, it) }
+    resolvedProfile?.riskTolerance?.name?.lowercase(Locale.US)
+      ?.let { put(SOUL_FIELD_RISK_TOLERANCE, it) }
+    resolvedProfile?.toolUseBias?.name?.lowercase(Locale.US)
+      ?.let { put(SOUL_FIELD_TOOL_USE_BIAS, it) }
+    resolvedProfile?.escalationRules
+      ?.takeIf(List<String>::isNotEmpty)
+      ?.joinToString(separator = " | ")
+      ?.let { put(SOUL_FIELD_ESCALATION_RULES, it) }
+    resolvedProfile?.forbiddenBehaviors
+      ?.takeIf(List<String>::isNotEmpty)
+      ?.joinToString(separator = " | ")
+      ?.let { put(SOUL_FIELD_FORBIDDEN_BEHAVIORS, it) }
+    resolvedProfile?.collaborationPreferences
+      ?.takeIf(List<String>::isNotEmpty)
+      ?.joinToString(separator = " | ")
+      ?.let { put(SOUL_FIELD_COLLABORATION_PREFERENCES, it) }
+  }
+
+  private fun overlayFieldContributions(
+    record: MemoryRecord,
+    metadata: DebugMemoryMetadata,
+  ): List<SoulFieldContribution> {
+    val contributions = mutableListOf<SoulFieldContribution>()
+    var hasTypedDisplayName = false
+    var hasTypedVoice = false
+    var hasTypedTone = false
+    var hasTypedVerbosity = false
+
+    fun addScalar(field: String, raw: String?) {
+      val normalized = normalizeDebugSoulScalarOrNull(raw) ?: return
+      contributions += SoulFieldContribution(
+        field = field,
+        value = normalized,
+        record = record,
+        metadata = metadata,
+      )
+      when (field) {
+        SOUL_FIELD_DISPLAY_NAME -> hasTypedDisplayName = true
+        SOUL_FIELD_VOICE -> hasTypedVoice = true
+      }
+    }
+
+    fun addKey(field: String, raw: String?) {
+      val normalized = normalizeDebugSoulKeyOrNull(raw) ?: return
+      contributions += SoulFieldContribution(
+        field = field,
+        value = normalized,
+        record = record,
+        metadata = metadata,
+      )
+      when (field) {
+        SOUL_FIELD_TONE -> hasTypedTone = true
+        SOUL_FIELD_VERBOSITY -> hasTypedVerbosity = true
+      }
+    }
+
+    addScalar(SOUL_FIELD_DISPLAY_NAME, record.extensions[MemorySoulExtensionKeys.DISPLAY_NAME])
+    addScalar(SOUL_FIELD_VOICE, record.extensions[MemorySoulExtensionKeys.VOICE])
+    addKey(SOUL_FIELD_TONE, record.extensions[MemorySoulExtensionKeys.TONE])
+    addKey(SOUL_FIELD_VERBOSITY, record.extensions[MemorySoulExtensionKeys.VERBOSITY])
+    addKey(
+      SOUL_FIELD_USER_RELATIONSHIP_STYLE,
+      record.extensions[MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE],
+    )
+    addKey(
+      SOUL_FIELD_RISK_TOLERANCE,
+      record.extensions[MemorySoulExtensionKeys.RISK_TOLERANCE],
+    )
+    addKey(SOUL_FIELD_TOOL_USE_BIAS, record.extensions[MemorySoulExtensionKeys.TOOL_USE_BIAS])
+
+    when (metadata.preferenceKey) {
+      MemoryPreferenceKeys.AGENT_DISPLAY_NAME -> {
+        if (!hasTypedDisplayName) {
+          normalizeDebugSoulScalarOrNull(metadata.preferenceValue)?.let { value ->
+            contributions += SoulFieldContribution(
+              field = SOUL_FIELD_DISPLAY_NAME,
+              value = value,
+              record = record,
+              metadata = metadata,
+            )
+          }
+        }
+      }
+
+      MemoryPreferenceKeys.AGENT_STYLE_PROFILE -> {
+        if (!hasTypedTone) {
+          when (normalizeDebugSoulKeyOrNull(metadata.preferenceValue)) {
+            "warm" -> contributions += SoulFieldContribution(
+              field = SOUL_FIELD_TONE,
+              value = "warm",
+              record = record,
+              metadata = metadata,
+            )
+
+            "serious" -> contributions += SoulFieldContribution(
+              field = SOUL_FIELD_TONE,
+              value = "steady",
+              record = record,
+              metadata = metadata,
+            )
+          }
+        }
+        if (!hasTypedVoice) {
+          when (normalizeDebugSoulKeyOrNull(metadata.preferenceValue)) {
+            "warm" -> contributions += SoulFieldContribution(
+              field = SOUL_FIELD_VOICE,
+              value = "warm and gentle",
+              record = record,
+              metadata = metadata,
+            )
+
+            "serious" -> contributions += SoulFieldContribution(
+              field = SOUL_FIELD_VOICE,
+              value = "serious and formal",
+              record = record,
+              metadata = metadata,
+            )
+          }
+        }
+      }
+
+      MemoryPreferenceKeys.AGENT_VERBOSITY -> {
+        if (!hasTypedVerbosity) {
+          when (normalizeDebugSoulKeyOrNull(metadata.preferenceValue)) {
+            "terse",
+            "balanced",
+            "expansive",
+            -> contributions += SoulFieldContribution(
+              field = SOUL_FIELD_VERBOSITY,
+              value = normalizeDebugSoulKeyOrNull(metadata.preferenceValue).orEmpty(),
+              record = record,
+              metadata = metadata,
+            )
+          }
+        }
+      }
+    }
+
+    return contributions
+  }
+
+  private fun soulOverlayDisplayComparator(): Comparator<MemoryRecord> =
+    compareByDescending<MemoryRecord> { record ->
+      debugMemoryMetadata(record)?.let { metadata -> soulScopePriority(metadata.scope) } ?: 0
+    }.thenByDescending { record ->
+      debugMemoryMetadata(record)?.lastConfirmedAtEpochMs ?: record.updatedAtEpochMs
+    }.thenBy { record ->
+      record.id
+    }
+
+  private fun soulOverlaySourceLabel(scope: String): String = when (scope) {
+    DEBUG_MEMORY_SCOPE_SESSION -> "session memory"
+    DEBUG_MEMORY_SCOPE_WORKSPACE -> "workspace memory"
+    else -> "user memory"
+  }
+
+  private fun soulScopePriority(scope: String): Int = when (scope) {
+    DEBUG_MEMORY_SCOPE_WORKSPACE -> 1
+    DEBUG_MEMORY_SCOPE_USER -> 2
+    DEBUG_MEMORY_SCOPE_SESSION -> 3
+    else -> 0
+  }
+
+  private fun memoryDebugRecordToMap(
+    record: MemoryRecord,
+    observedAtEpochMs: Long,
+  ): Map<String, Any?> {
+    val metadata = debugMemoryMetadata(record)
+    val expiryReferenceEpochMs = metadata?.lastConfirmedAtEpochMs ?: record.updatedAtEpochMs
+    val isExpired = metadata?.ttlMs?.let { ttlMs ->
+      expiryReferenceEpochMs + ttlMs <= observedAtEpochMs
+    } ?: false
+    return buildMap {
+      put("id", record.id)
+      put("content", record.content)
+      put("recordVersion", record.recordVersion)
+      put("createdAtEpochMs", record.createdAtEpochMs)
+      put("updatedAtEpochMs", record.updatedAtEpochMs)
+      if (record.tags.isNotEmpty()) {
+        put("tags", record.tags)
+      }
+      if (record.extensions.isNotEmpty()) {
+        put("extensions", record.extensions.toSortedMap())
+      }
+      metadata?.kind?.let { put("kind", it) }
+      metadata?.scope?.let { put("scope", it) }
+      metadata?.status?.let { put("status", it) }
+      metadata?.source?.let { put("source", it) }
+      metadata?.sourceSessionId?.let { put("sourceSessionId", it) }
+      metadata?.sourceTaskId?.let { put("sourceTaskId", it) }
+      metadata?.workspaceId?.let { put("workspaceId", it) }
+      metadata?.preferenceKey?.let { put("preferenceKey", it) }
+      metadata?.preferenceValue?.let { put("preferenceValue", it) }
+      metadata?.preferenceTemporality?.let { put("preferenceTemporality", it) }
+      metadata?.lastConfirmedAtEpochMs?.let { put("lastConfirmedAtEpochMs", it) }
+      metadata?.resolvedAtEpochMs?.let { put("resolvedAtEpochMs", it) }
+      metadata?.ttlMs?.let { put("ttlMs", it) }
+      metadata?.resolutionReason?.let { put("resolutionReason", it) }
+      metadata?.supersededBy?.let { put("supersededBy", it) }
+      put("isExpired", isExpired)
+    }
+  }
+
+  private fun debugMemoryMetadata(record: MemoryRecord): DebugMemoryMetadata? {
+    val kind = debugParseTaggedMemoryValue(
+      extensionValue = record.extensions[MemoryRecordExtensionKeys.KIND],
+      tags = record.tags,
+      tagPrefix = "kind:",
+    ) ?: return null
+    val scope = debugParseTaggedMemoryValue(
+      extensionValue = record.extensions[MemoryRecordExtensionKeys.SCOPE],
+      tags = record.tags,
+      tagPrefix = "scope:",
+    ) ?: return null
+    val status = debugParseTaggedMemoryValue(
+      extensionValue = record.extensions[MemoryRecordExtensionKeys.STATUS],
+      tags = record.tags,
+      tagPrefix = "status:",
+    ) ?: return null
+    return DebugMemoryMetadata(
+      kind = kind,
+      scope = scope,
+      status = status,
+      source = normalizeDebugSoulKeyOrNull(record.extensions[MemoryRecordExtensionKeys.SOURCE]),
+      sourceSessionId = record.extensions[MemoryRecordExtensionKeys.SOURCE_SESSION_ID]
+        ?.takeIf(String::isNotBlank),
+      sourceTaskId = record.extensions[MemoryRecordExtensionKeys.SOURCE_TASK_ID]
+        ?.takeIf(String::isNotBlank),
+      workspaceId = record.extensions[MemoryRecordExtensionKeys.WORKSPACE_ID]
+        ?.takeIf(String::isNotBlank),
+      ttlMs = record.extensions[MemoryRecordExtensionKeys.TTL_MS]?.toLongOrNull(),
+      lastConfirmedAtEpochMs =
+        record.extensions[MemoryRecordExtensionKeys.LAST_CONFIRMED_AT_EPOCH_MS]?.toLongOrNull(),
+      resolvedAtEpochMs =
+        record.extensions[MemoryRecordExtensionKeys.RESOLVED_AT_EPOCH_MS]?.toLongOrNull(),
+      resolutionReason = normalizeDebugSoulKeyOrNull(
+        record.extensions[MemoryRecordExtensionKeys.RESOLUTION_REASON],
+      ),
+      supersededBy = record.extensions[MemoryRecordExtensionKeys.SUPERSEDED_BY]
+        ?.takeIf(String::isNotBlank),
+      preferenceKey = normalizeDebugSoulKeyOrNull(
+        record.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY],
+      ),
+      preferenceValue = normalizeDebugSoulScalarOrNull(
+        record.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE],
+      ),
+      preferenceTemporality = normalizeDebugSoulKeyOrNull(
+        record.extensions[MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY],
+      ),
+    )
+  }
+
+  private fun debugParseTaggedMemoryValue(
+    extensionValue: String?,
+    tags: List<String>,
+    tagPrefix: String,
+  ): String? {
+    normalizeDebugSoulKeyOrNull(extensionValue)?.let { return it }
+    return tags
+      .firstOrNull { tag -> tag.startsWith(tagPrefix) }
+      ?.substringAfter(tagPrefix)
+      ?.let(::normalizeDebugSoulKeyOrNull)
+  }
+
+  private fun normalizeDebugSoulKeyOrNull(raw: String?): String? =
+    raw
+      ?.replace(Regex("([a-z0-9])([A-Z])"), "$1_$2")
+      ?.replace(Regex("[\\s\\-]+"), "_")
+      ?.replace(Regex("_+"), "_")
+      ?.trim('_')
+      ?.lowercase(Locale.US)
+      ?.takeIf(String::isNotEmpty)
+
+  private fun normalizeDebugSoulScalarOrNull(raw: String?): String? =
+    raw
+      ?.replace(Regex("\\s+"), " ")
+      ?.trim()
+      ?.takeIf(String::isNotEmpty)
+
+  private fun PersonalizationLocalStore.SoulProfile.toRuntimeSoulProfile(): RuntimeSoulProfile =
+    RuntimeSoulProfile(
+      presetName = presetName.ifBlank { null },
+      displayName = customLabel.ifBlank { null },
+      customGuidance = customGuidance.ifBlank { null },
+      extensions = extensions.filter { (key, value) ->
+        key.isNotBlank() &&
+          value.isNotBlank() &&
+          key.trim().lowercase(Locale.US) !in RESERVED_SOUL_PROFILE_KEYS
+      },
+    )
 
   private fun activeSkillFromMetadata(metadata: Map<String, String>): Map<String, Any?>? {
     val name = metadata["contextActiveSkillName"]?.takeIf(String::isNotBlank)
@@ -1372,6 +2146,21 @@ internal class OpenCrayHostRuntime private constructor(
       }
     }
   }
+
+  private fun parseBootstrapFileTrace(raw: String): List<Map<String, Any?>> = raw
+    .split(';')
+    .map(String::trim)
+    .filter(String::isNotBlank)
+    .mapNotNull { token ->
+      val match = BOOTSTRAP_FILE_TRACE_REGEX.matchEntire(token) ?: return@mapNotNull null
+      mapOf(
+        "name" to match.groupValues[1],
+        "relativePath" to match.groupValues[2],
+        "sourceCharCount" to match.groupValues[3].toIntOrNull(),
+        "injectedCharCount" to match.groupValues[4].toIntOrNull(),
+        "truncated" to match.groupValues[5].toBooleanStrictOrNull(),
+      )
+    }
 
   private fun parseSelectedMemoryTrace(raw: String): List<Map<String, Any?>> = raw
     .split(';')
@@ -1458,6 +2247,15 @@ internal class OpenCrayHostRuntime private constructor(
       "isFinal" to event.isFinal,
       "text" to event.text,
     )
+    is OpenCrayProgressEvent -> mapOf(
+      "kind" to "progress",
+      "runId" to event.runId,
+      "taskId" to event.taskId,
+      "turn" to event.turn,
+      "emittedAtEpochMs" to event.emittedAtEpochMs,
+      "text" to event.text,
+      "stage" to event.stage,
+    )
     is OpenCrayToolCallEvent -> mapOf(
       "kind" to "tool_call",
       "runId" to event.runId,
@@ -1479,6 +2277,7 @@ internal class OpenCrayHostRuntime private constructor(
       "errorCode" to event.result.errorCode,
       "errorMessage" to event.result.errorMessage,
       "contentPreview" to event.result.content.take(MAX_RUNTIME_EVENT_PREVIEW_CHARS),
+      "resultMetadata" to toolResultMetadataSnapshot(event.result.metadata),
     )
     is OpenCrayMemoryRetrievalEvent -> buildMap<String, Any?> {
       put("kind", "memory_retrieval")
@@ -1552,6 +2351,7 @@ internal class OpenCrayHostRuntime private constructor(
       else -> resolvedText
     }
     return mapOf(
+      "messageId" to message.messageId,
       "kind" to kind,
       "text" to visibleText,
       "meta" to "",
@@ -1622,15 +2422,240 @@ internal class OpenCrayHostRuntime private constructor(
     }
   }
 
-  private fun composeApprovalBody(body: String, toolReason: String?): String {
-    val reason = toolReason
-      ?.trim()
+  private fun pendingApprovalSnapshot(
+    runId: String,
+    taskId: String,
+    pendingMessageId: String?,
+    isHighRisk: Boolean,
+    metadata: Map<String, String>,
+    errorBody: String,
+    toolReason: String?,
+  ): PendingApprovalSnapshot {
+    val toolName = approvalToolName(metadata)
+    val requestSummary = approvalRequestSummary(metadata)
+    val primaryDetail = approvalPrimaryDetailValue(metadata)
+    val pathDetails = approvalPathDetailLines(metadata)
+    val workingDirectory = approvalWorkingDirectoryValue(metadata)
+    val reason = approvalReasonValue(toolReason)
+    return PendingApprovalSnapshot(
+      runId = runId,
+      taskId = taskId,
+      pendingMessageId = pendingMessageId,
+      toolName = toolName,
+      requestSummary = requestSummary,
+      primaryDetail = primaryDetail,
+      pathDetails = pathDetails,
+      workingDirectory = workingDirectory,
+      reason = reason,
+      message = errorBody,
+      isHighRisk = isHighRisk,
+      title = if (isHighRisk) {
+        strings.chatHighRiskApprovalRequiredTitle
+      } else {
+        strings.chatApprovalRequiredTitle
+      },
+      body = composeApprovalBody(
+        body = errorBody,
+        toolReason = toolReason,
+        metadata = metadata,
+      ),
+    )
+  }
+
+  private fun approvalToolName(metadata: Map<String, String>): String? =
+    metadata["normalizedToolName"]
       ?.takeIf(String::isNotBlank)
-      ?: return body
+      ?: metadata["canonicalToolName"]
+        ?.takeIf(String::isNotBlank)
+      ?: metadata["toolName"]
+        ?.takeIf(String::isNotBlank)
+
+  private fun toolReasonFromEvent(event: OpenCrayAgentRunEvent): String? = when (event) {
+    is OpenCrayToolCallEvent -> event.call.reason
+    else -> null
+  }
+
+  private fun composeApprovalBody(
+    body: String,
+    toolReason: String?,
+    metadata: Map<String, String>,
+  ): String {
+    val details = mutableListOf<String>()
+    approvalPrimaryDetailLine(metadata)?.let(details::add)
+    approvalPathDetailLines(metadata).forEach(details::add)
+    approvalWorkingDirectoryLine(metadata)?.let(details::add)
+    approvalReasonLine(toolReason)?.let(details::add)
+    if (details.isEmpty()) {
+      return body
+    }
     return buildString {
-      appendLine(body)
-      append("Reason: ")
-      append(reason)
+      details.forEach { line -> appendLine(line) }
+      appendLine()
+      append(body)
+    }.trim()
+  }
+
+  private fun approvalRequestSummary(metadata: Map<String, String>): String? =
+    metadata["targetSummary"]?.trim()?.takeIf(String::isNotBlank)
+      ?: approvalPrimaryDetailValue(metadata)
+
+  private fun approvalPrimaryDetailValue(metadata: Map<String, String>): String? {
+    metadata["scriptPath"]?.takeIf(String::isNotBlank)?.let { scriptPath ->
+      return scriptPath
+    }
+    shellCommandSummary(metadata)?.let { command ->
+      return command
+    }
+    metadata["query"]?.takeIf(String::isNotBlank)?.let { query ->
+      return query
+    }
+    metadata["requestedUrl"]?.takeIf(String::isNotBlank)?.let { url ->
+      return url
+    }
+    metadata["finalUrl"]?.takeIf(String::isNotBlank)?.let { url ->
+      return url
+    }
+    metadata["processId"]?.takeIf(String::isNotBlank)?.let { processId ->
+      if (metadata["targetKind"] == "process") {
+        return processId
+      }
+    }
+    metadata["targetSummary"]?.takeIf(String::isNotBlank)?.let { summary ->
+      val primaryTargetPath = metadata["primaryTargetPath"]?.trim().orEmpty()
+      val secondaryTargetPath = metadata["secondaryTargetPath"]?.trim().orEmpty()
+      val duplicateSummaries = buildSet {
+        if (primaryTargetPath.isNotEmpty()) {
+          add(primaryTargetPath)
+        }
+        if (secondaryTargetPath.isNotEmpty()) {
+          add(secondaryTargetPath)
+        }
+        if (primaryTargetPath.isNotEmpty() && secondaryTargetPath.isNotEmpty()) {
+          add("$primaryTargetPath -> $secondaryTargetPath")
+        }
+      }
+      if (summary !in duplicateSummaries) {
+        return summary
+      }
+    }
+    return null
+  }
+
+  private fun approvalPrimaryDetailLine(metadata: Map<String, String>): String? =
+    when {
+      metadata["scriptPath"]?.isNotBlank() == true ->
+        approvalPrimaryDetailValue(metadata)?.let { detail ->
+          "${approvalLabel("script")}: $detail"
+        }
+      shellCommandSummary(metadata) != null ->
+        approvalPrimaryDetailValue(metadata)?.let { detail ->
+          "${approvalLabel("command")}: $detail"
+        }
+      metadata["query"]?.isNotBlank() == true ->
+        approvalPrimaryDetailValue(metadata)?.let { detail ->
+          "${approvalLabel("query")}: $detail"
+        }
+      metadata["requestedUrl"]?.isNotBlank() == true || metadata["finalUrl"]?.isNotBlank() == true ->
+        approvalPrimaryDetailValue(metadata)?.let { detail ->
+          "${approvalLabel("url")}: $detail"
+        }
+      metadata["processId"]?.isNotBlank() == true && metadata["targetKind"] == "process" ->
+        approvalPrimaryDetailValue(metadata)?.let { detail ->
+          "${approvalLabel("process")}: $detail"
+        }
+      else ->
+        approvalPrimaryDetailValue(metadata)?.let { detail ->
+          "${approvalLabel("request")}: $detail"
+        }
+    }
+  private fun approvalPathDetailLines(metadata: Map<String, String>): List<String> {
+    val sourcePath = metadata["sourcePath"]?.trim().orEmpty()
+    val destinationPath = metadata["destinationPath"]?.trim().orEmpty()
+    if (sourcePath.isNotEmpty() || destinationPath.isNotEmpty()) {
+      return buildList {
+        if (sourcePath.isNotEmpty()) {
+          add("${approvalLabel("from")}: $sourcePath")
+        }
+        if (destinationPath.isNotEmpty()) {
+          add("${approvalLabel("to")}: $destinationPath")
+        }
+      }
+    }
+    val primaryTargetPath = metadata["primaryTargetPath"]?.trim().orEmpty()
+    val secondaryTargetPath = metadata["secondaryTargetPath"]?.trim().orEmpty()
+    val scriptPath = metadata["scriptPath"]?.trim().orEmpty()
+    val workingDirectory = metadata["workingDirectory"]?.trim().orEmpty()
+    return buildList {
+      if (
+        primaryTargetPath.isNotEmpty() &&
+        primaryTargetPath != scriptPath &&
+        primaryTargetPath != workingDirectory
+      ) {
+        add("${approvalLabel("target")}: $primaryTargetPath")
+      }
+      if (secondaryTargetPath.isNotEmpty()) {
+        add("${approvalLabel("to")}: $secondaryTargetPath")
+      }
+    }
+  }
+
+  private fun approvalWorkingDirectoryValue(metadata: Map<String, String>): String? =
+    metadata["workingDirectory"]?.trim()?.takeIf(String::isNotBlank)
+
+  private fun approvalWorkingDirectoryLine(metadata: Map<String, String>): String? {
+    val workingDirectory = approvalWorkingDirectoryValue(metadata).orEmpty()
+    if (workingDirectory.isEmpty()) {
+      return null
+    }
+    return "${approvalLabel("working_directory")}: $workingDirectory"
+  }
+
+  private fun approvalReasonValue(toolReason: String?): String? =
+    sanitizePotentialInternalAgentText(
+      text = toolReason?.trim().orEmpty(),
+      fallback = "",
+    ).trim().takeIf(String::isNotBlank)
+
+  private fun approvalReasonLine(toolReason: String?): String? {
+    val reason = approvalReasonValue(toolReason) ?: return null
+    return "${approvalLabel("reason")}: $reason"
+  }
+
+  private fun shellCommandSummary(metadata: Map<String, String>): String? {
+    metadata["shellCommand"]?.takeIf(String::isNotBlank)?.let { return it }
+    val command = metadata["command"]?.trim().orEmpty()
+    if (command.isEmpty()) {
+      return null
+    }
+    val args = metadata["args"]
+      ?.split('\u0000')
+      ?.map(String::trim)
+      ?.filter(String::isNotEmpty)
+      .orEmpty()
+    return buildString {
+      append(command)
+      if (args.isNotEmpty()) {
+        append(' ')
+        append(args.joinToString(separator = " "))
+      }
+    }.trim()
+  }
+
+  private fun approvalLabel(kind: String): String {
+    val isChinese = strings.localeTag.startsWith("zh", ignoreCase = true)
+    return when (kind) {
+      "command" -> if (isChinese) "命令" else "Command"
+      "script" -> if (isChinese) "脚本" else "Script"
+      "query" -> if (isChinese) "查询" else "Query"
+      "url" -> if (isChinese) "地址" else "URL"
+      "process" -> if (isChinese) "进程" else "Process"
+      "request" -> if (isChinese) "操作" else "Request"
+      "from" -> if (isChinese) "来源" else "From"
+      "to" -> if (isChinese) "目标" else "To"
+      "target" -> if (isChinese) "目标" else "Target"
+      "working_directory" -> if (isChinese) "工作目录" else "Working directory"
+      "reason" -> if (isChinese) "理由" else "Agent reason"
+      else -> if (isChinese) "详情" else "Details"
     }
   }
 
@@ -1638,6 +2663,42 @@ internal class OpenCrayHostRuntime private constructor(
     val trimmed = text.trim()
     if (trimmed.isBlank()) return text
     return if (looksLikeInternalToolPayload(trimmed)) fallback else text
+  }
+
+  private fun toolResultMetadataSnapshot(metadata: Map<String, String>): Map<String, String> {
+    val allowedKeys = setOf(
+      "path",
+      "filePath",
+      "sourcePath",
+      "destinationPath",
+      "pattern",
+      "glob",
+      "entryCount",
+      "matchCount",
+      "byteCount",
+      "totalLineCount",
+      "offset",
+      "limit",
+      "returnedLineCount",
+      "truncated",
+      "replacementCount",
+      "editCount",
+      "todoCount",
+      "mutated",
+      "workingDirectory",
+      "processId",
+      "shellCommand",
+      "scriptPath",
+      "checkpointEntryCount",
+    )
+    return buildMap {
+      allowedKeys.forEach { key ->
+        metadata[key]
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?.let { value -> put(key, value) }
+      }
+    }
   }
 
   private fun looksLikeInternalToolPayload(text: String): Boolean {
@@ -1943,6 +3004,7 @@ internal class OpenCrayHostRuntime private constructor(
     "rollbackJournalEnabled" to rollbackJournalEnabled,
     "maxFilesPerBatch" to maxFilesPerBatch,
     "maxAgentTurns" to maxAgentTurns,
+    "maxToolCalls" to maxToolCalls,
     "undoWindowHours" to undoWindowHours,
     "fileChangesPolicyId" to fileChangesPolicy.wireValue,
     "fileDeletesPolicyId" to fileDeletesPolicy.wireValue,
@@ -2072,8 +3134,50 @@ internal class OpenCrayHostRuntime private constructor(
     private const val MAX_RUNTIME_EVENT_PREVIEW_CHARS: Int = 240
     private const val DRAWER_PREVIEW_MAX_CHARS: Int = 52
     private val MEMORY_SELECTED_TRACE_REGEX: Regex = Regex("""^(.+?)@(\d+)(?:\[(.*)])?$""")
+    private val BOOTSTRAP_FILE_TRACE_REGEX: Regex =
+      Regex("""^(.+?)@(.+)\[(\d+)\|(\d+)\|(true|false)]$""")
     private val VISIBLE_SKILL_TRACE_REGEX: Regex =
       Regex("""^([a-z0-9-]+)@(.+)\[([^\]|]+)\|(true|false)\|([^\]|]+)]$""")
+    private val RESERVED_SOUL_PROFILE_KEYS: Set<String> = setOf(
+      "preset",
+      "custom_guidance",
+    )
+    private val SUPPORTED_SOUL_PREFERENCE_KEYS: Set<String> = setOf(
+      MemoryPreferenceKeys.AGENT_DISPLAY_NAME,
+      MemoryPreferenceKeys.AGENT_STYLE_PROFILE,
+      MemoryPreferenceKeys.AGENT_VERBOSITY,
+    )
+    private const val DEBUG_MEMORY_KIND_USER_PREFERENCE: String = "user_preference"
+    private const val DEBUG_MEMORY_STATUS_ACTIVE: String = "active"
+    private const val DEBUG_MEMORY_SCOPE_USER: String = "user"
+    private const val DEBUG_MEMORY_SCOPE_WORKSPACE: String = "workspace"
+    private const val DEBUG_MEMORY_SCOPE_SESSION: String = "session"
+    private const val SOUL_FIELD_PRESET_NAME: String = "presetName"
+    private const val SOUL_FIELD_DISPLAY_NAME: String = "displayName"
+    private const val SOUL_FIELD_VOICE: String = "voice"
+    private const val SOUL_FIELD_CUSTOM_GUIDANCE: String = "customGuidance"
+    private const val SOUL_FIELD_TONE: String = "tone"
+    private const val SOUL_FIELD_VERBOSITY: String = "verbosity"
+    private const val SOUL_FIELD_USER_RELATIONSHIP_STYLE: String = "userRelationshipStyle"
+    private const val SOUL_FIELD_RISK_TOLERANCE: String = "riskTolerance"
+    private const val SOUL_FIELD_TOOL_USE_BIAS: String = "toolUseBias"
+    private const val SOUL_FIELD_ESCALATION_RULES: String = "escalationRules"
+    private const val SOUL_FIELD_FORBIDDEN_BEHAVIORS: String = "forbiddenBehaviors"
+    private const val SOUL_FIELD_COLLABORATION_PREFERENCES: String = "collaborationPreferences"
+    private val SOUL_FIELD_ORDER: List<String> = listOf(
+      SOUL_FIELD_PRESET_NAME,
+      SOUL_FIELD_DISPLAY_NAME,
+      SOUL_FIELD_VOICE,
+      SOUL_FIELD_CUSTOM_GUIDANCE,
+      SOUL_FIELD_TONE,
+      SOUL_FIELD_VERBOSITY,
+      SOUL_FIELD_USER_RELATIONSHIP_STYLE,
+      SOUL_FIELD_RISK_TOLERANCE,
+      SOUL_FIELD_TOOL_USE_BIAS,
+      SOUL_FIELD_ESCALATION_RULES,
+      SOUL_FIELD_FORBIDDEN_BEHAVIORS,
+      SOUL_FIELD_COLLABORATION_PREFERENCES,
+    )
 
     @Volatile
     private var instance: OpenCrayHostRuntime? = null
@@ -2092,6 +3196,7 @@ internal class OpenCrayHostRuntime private constructor(
       networkSearchConfigFacade: NetworkSearchConfigFacade = EmptyNetworkSearchConfigFacade,
       llmConfigFacade: LlmConfigFacade = EmptyLlmConfigFacade,
       personalizationFacade: PersonalizationFacade = EmptyPersonalizationFacade,
+      personalizationLocalStore: PersonalizationLocalStore? = null,
       mcpSettingsFacade: McpSettingsFacade = EmptyMcpSettingsFacade,
       safetySettingsFacade: SafetySettingsFacade = EmptySafetySettingsFacade,
       skillsFacade: SkillsFacade = EmptySkillsFacade,
@@ -2161,6 +3266,7 @@ internal class OpenCrayHostRuntime private constructor(
       networkSearchConfigFacade = networkSearchConfigFacade,
       llmConfigFacade = llmConfigFacade,
       personalizationFacade = personalizationFacade,
+      personalizationLocalStore = personalizationLocalStore,
       mcpSettingsFacade = mcpSettingsFacade,
       safetySettingsFacade = safetySettingsFacade,
       skillsFacade = skillsFacade,
@@ -2207,6 +3313,7 @@ internal class OpenCrayHostRuntime private constructor(
         ).toMap()
       }
       val pythonRuntime = P4aPythonRuntime.fromContext(appContext)
+      val compactionStoreFactory = FileBackedAgentSessionCompactionStoreFactory.fromContext(appContext)
       val transcriptStoreFactory = FileBackedAgentSessionTranscriptStoreFactory.fromContext(appContext)
       val processRegistryFactory = FileBackedAgentProcessRegistryFactory.fromContext(appContext)
       val liteLlmProviderClient = OpenAiCompatibleLiteLlmProviderClient(
@@ -2246,6 +3353,8 @@ internal class OpenCrayHostRuntime private constructor(
         approvalRegistry = approvalRegistry,
         processRegistryProvider = processRegistryFactory::forChatSession,
         transcriptStoreProvider = transcriptStoreFactory::forChatSession,
+        compactionStoreProvider = compactionStoreFactory::forChatSession,
+        memoryIngestionCoordinator = memoryIngestionCoordinator,
         pythonRuntimeProvider = { pythonRuntime },
         webSearchProviderFactory = {
           AppConfiguredWebSearchProviderFactory.create(
@@ -2275,6 +3384,7 @@ internal class OpenCrayHostRuntime private constructor(
         networkSearchConfigFacade = LocalNetworkSearchConfigFacade.fromContext(localizedContext),
         llmConfigFacade = LocalLlmConfigFacade.fromContext(localizedContext),
         personalizationFacade = personalizationFacade,
+        personalizationLocalStore = personalizationStore,
         mcpSettingsFacade = mcpSettingsFacade,
         safetySettingsFacade = safetySettingsFacade,
         skillsFacade = skillsFacade,
@@ -2407,9 +3517,40 @@ private data class PendingApprovalSnapshot(
   val taskId: String,
   val pendingMessageId: String?,
   val toolName: String?,
+  val requestSummary: String?,
+  val primaryDetail: String?,
+  val pathDetails: List<String>,
+  val workingDirectory: String?,
+  val reason: String?,
+  val message: String?,
   val isHighRisk: Boolean,
   val title: String,
   val body: String,
+)
+
+private data class DebugMemoryMetadata(
+  val kind: String,
+  val scope: String,
+  val status: String,
+  val source: String?,
+  val sourceSessionId: String?,
+  val sourceTaskId: String?,
+  val workspaceId: String?,
+  val ttlMs: Long?,
+  val lastConfirmedAtEpochMs: Long?,
+  val resolvedAtEpochMs: Long?,
+  val resolutionReason: String?,
+  val supersededBy: String?,
+  val preferenceKey: String?,
+  val preferenceValue: String?,
+  val preferenceTemporality: String?,
+)
+
+private data class SoulFieldContribution(
+  val field: String,
+  val value: String,
+  val record: MemoryRecord,
+  val metadata: DebugMemoryMetadata,
 )
 
 internal fun interface MainThreadPoster {

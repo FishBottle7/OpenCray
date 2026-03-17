@@ -3,10 +3,14 @@ package com.opencray.runtime.web
 data class WebSearchRequest(
   val query: String,
   val maxResults: Int = 5,
+  val domains: List<String> = emptyList(),
 ) {
   init {
     require(query.isNotBlank()) { "WebSearchRequest query must not be blank." }
     require(maxResults > 0) { "WebSearchRequest maxResults must be > 0." }
+    require(domains.none { domain -> domain.isBlank() }) {
+      "WebSearchRequest domains must not contain blank values."
+    }
   }
 }
 

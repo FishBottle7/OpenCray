@@ -138,6 +138,55 @@ class AgentSessionTranscriptStoreFactoryTest {
     )
   }
 
+  @Test
+  fun fileBackedStoreReplacePersistsAcrossFactoryRecreation() {
+    val root = temporaryFolder.newFolder("agent-runtime-replace")
+    val firstFactory = FileBackedAgentSessionTranscriptStoreFactory(root)
+    val firstStore = firstFactory.forChatSession("session-replace")
+
+    firstStore.seedIfEmpty(
+      listOf(
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.USER,
+          content = "Initial prompt",
+        ),
+      ),
+    )
+    firstStore.replace(
+      listOf(
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.USER,
+          content = "  Replacement prompt  ",
+        ),
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.TOOL,
+          content = "tool observation",
+        ),
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.TOOL,
+          content = "tool observation",
+        ),
+      ),
+    )
+
+    val secondFactory = FileBackedAgentSessionTranscriptStoreFactory(root)
+    val restoredStore = secondFactory.forChatSession("session-replace")
+
+    assertEquals(
+      listOf(
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.USER,
+          content = "Replacement prompt",
+        ),
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.TOOL,
+          content = "tool observation",
+        ),
+      ),
+      restoredStore.snapshot(),
+    )
+  }
+
   private fun MutableList<RuntimeConversationMessage>.addToolInteraction(
     runId: String,
     taskId: String,

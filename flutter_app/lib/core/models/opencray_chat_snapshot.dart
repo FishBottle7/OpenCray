@@ -20,17 +20,20 @@ class OpenCrayChatSummarySnapshot {
 
 class OpenCrayChatMessageSnapshot {
   const OpenCrayChatMessageSnapshot({
+    this.messageId = '',
     required this.kind,
     required this.text,
     this.meta = '',
   });
 
+  final String messageId;
   final String kind;
   final String text;
   final String meta;
 
   factory OpenCrayChatMessageSnapshot.fromMap(Map<Object?, Object?> map) {
     return OpenCrayChatMessageSnapshot(
+      messageId: map['messageId'] as String? ?? '',
       kind: map['kind'] as String? ?? 'inbound',
       text: map['text'] as String? ?? '',
       meta: map['meta'] as String? ?? '',
@@ -103,6 +106,13 @@ class OpenCrayChatPendingApprovalSnapshot {
     required this.approveLabel,
     required this.rejectLabel,
     required this.isHighRisk,
+    this.toolName = '',
+    this.requestSummary = '',
+    this.primaryDetail = '',
+    this.pathDetails = const <String>[],
+    this.workingDirectory = '',
+    this.reason = '',
+    this.message = '',
   });
 
   final String runId;
@@ -112,6 +122,13 @@ class OpenCrayChatPendingApprovalSnapshot {
   final String approveLabel;
   final String rejectLabel;
   final bool isHighRisk;
+  final String toolName;
+  final String requestSummary;
+  final String primaryDetail;
+  final List<String> pathDetails;
+  final String workingDirectory;
+  final String reason;
+  final String message;
 
   String get approvalId => runId.isNotEmpty ? runId : taskId;
 
@@ -126,6 +143,17 @@ class OpenCrayChatPendingApprovalSnapshot {
       approveLabel: map['approveLabel'] as String? ?? 'Approve',
       rejectLabel: map['rejectLabel'] as String? ?? 'Reject',
       isHighRisk: map['isHighRisk'] as bool? ?? false,
+      toolName: map['toolName'] as String? ?? '',
+      requestSummary: map['requestSummary'] as String? ?? '',
+      primaryDetail: map['primaryDetail'] as String? ?? '',
+      pathDetails: (map['pathDetails'] as List<Object?>? ?? const <Object?>[])
+          .whereType<String>()
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty)
+          .toList(growable: false),
+      workingDirectory: map['workingDirectory'] as String? ?? '',
+      reason: map['reason'] as String? ?? '',
+      message: map['message'] as String? ?? '',
     );
   }
 }
@@ -144,16 +172,23 @@ class OpenCrayChatRuntimeEventSnapshot {
     this.responseFormat,
     this.isFinal,
     this.text,
+    this.stage,
     this.toolName,
     this.toolReason,
     this.argumentsJson,
     this.toolStatus,
     this.contentPreview,
+    this.resultMetadata = const <String, String>{},
     this.operation,
     this.query,
     this.queryTerms = const <String>[],
     this.resultCount,
     this.corpusFileCount,
+    this.writtenRecordIds = const <String>[],
+    this.writtenKinds = const <String>[],
+    this.resolvedRecordIds = const <String>[],
+    this.reaffirmedRecordIds = const <String>[],
+    this.expiredRecordIds = const <String>[],
     this.paths = const <String>[],
     this.lineRanges = const <String>[],
     this.path,
@@ -174,16 +209,23 @@ class OpenCrayChatRuntimeEventSnapshot {
   final String? responseFormat;
   final bool? isFinal;
   final String? text;
+  final String? stage;
   final String? toolName;
   final String? toolReason;
   final String? argumentsJson;
   final String? toolStatus;
   final String? contentPreview;
+  final Map<String, String> resultMetadata;
   final String? operation;
   final String? query;
   final List<String> queryTerms;
   final int? resultCount;
   final int? corpusFileCount;
+  final List<String> writtenRecordIds;
+  final List<String> writtenKinds;
+  final List<String> resolvedRecordIds;
+  final List<String> reaffirmedRecordIds;
+  final List<String> expiredRecordIds;
   final List<String> paths;
   final List<String> lineRanges;
   final String? path;
@@ -194,9 +236,22 @@ class OpenCrayChatRuntimeEventSnapshot {
   factory OpenCrayChatRuntimeEventSnapshot.fromMap(Map<Object?, Object?> map) {
     final rawQueryTerms =
         map['queryTerms'] as List<Object?>? ?? const <Object?>[];
+    final rawWrittenRecordIds =
+        map['writtenRecordIds'] as List<Object?>? ?? const <Object?>[];
+    final rawWrittenKinds =
+        map['writtenKinds'] as List<Object?>? ?? const <Object?>[];
+    final rawResolvedRecordIds =
+        map['resolvedRecordIds'] as List<Object?>? ?? const <Object?>[];
+    final rawReaffirmedRecordIds =
+        map['reaffirmedRecordIds'] as List<Object?>? ?? const <Object?>[];
+    final rawExpiredRecordIds =
+        map['expiredRecordIds'] as List<Object?>? ?? const <Object?>[];
     final rawPaths = map['paths'] as List<Object?>? ?? const <Object?>[];
     final rawLineRanges =
         map['lineRanges'] as List<Object?>? ?? const <Object?>[];
+    final rawResultMetadata =
+        map['resultMetadata'] as Map<Object?, Object?>? ??
+        const <Object?, Object?>{};
     return OpenCrayChatRuntimeEventSnapshot(
       kind: map['kind'] as String? ?? '',
       runId: map['runId'] as String? ?? '',
@@ -210,11 +265,18 @@ class OpenCrayChatRuntimeEventSnapshot {
       responseFormat: map['responseFormat'] as String?,
       isFinal: map['isFinal'] as bool?,
       text: map['text'] as String?,
+      stage: map['stage'] as String?,
       toolName: map['toolName'] as String?,
       toolReason: map['toolReason'] as String?,
       argumentsJson: map['argumentsJson'] as String?,
       toolStatus: map['toolStatus'] as String?,
       contentPreview: map['contentPreview'] as String?,
+      resultMetadata:
+          rawResultMetadata.map(
+            (key, value) => MapEntry(key.toString(), value?.toString() ?? ''),
+          )..removeWhere(
+            (key, value) => key.trim().isEmpty || value.trim().isEmpty,
+          ),
       operation: map['operation'] as String?,
       query: map['query'] as String?,
       queryTerms: rawQueryTerms
@@ -224,6 +286,31 @@ class OpenCrayChatRuntimeEventSnapshot {
           .toList(growable: false),
       resultCount: map['resultCount'] as int?,
       corpusFileCount: map['corpusFileCount'] as int?,
+      writtenRecordIds: rawWrittenRecordIds
+          .whereType<String>()
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty)
+          .toList(growable: false),
+      writtenKinds: rawWrittenKinds
+          .whereType<String>()
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty)
+          .toList(growable: false),
+      resolvedRecordIds: rawResolvedRecordIds
+          .whereType<String>()
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty)
+          .toList(growable: false),
+      reaffirmedRecordIds: rawReaffirmedRecordIds
+          .whereType<String>()
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty)
+          .toList(growable: false),
+      expiredRecordIds: rawExpiredRecordIds
+          .whereType<String>()
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty)
+          .toList(growable: false),
       paths: rawPaths
           .whereType<String>()
           .map((path) => path.trim())

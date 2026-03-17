@@ -37,18 +37,29 @@ class P4aPythonRuntimeLauncherTest {
     assertEquals(P4aPythonRuntime.ERROR_P4A_RUNTIME_UNAVAILABLE, unavailable.errorCode)
     assertEquals("missing service", unavailable.errorMessage)
     assertEquals("service_unresolved", unavailable.metadata["launcherState"])
-    assertEquals("org.opencray.app.action.P4A_START_RUNTIME", unavailable.metadata["launcherAction"])
-    assertEquals("org.opencray.app", unavailable.metadata["launcherPackage"])
+    assertEquals("opencraypython", unavailable.metadata["launcherServiceId"])
+    assertEquals("org.opencray.app.ServiceOpencraypython", unavailable.metadata["launcherServiceClass"])
     assertEquals("not-registered", unavailable.metadata["detail"])
 
     val spec = checkNotNull(capturedSpec)
-    assertEquals("org.opencray.app.action.P4A_START_RUNTIME", spec.action)
     assertEquals("org.opencray.app", spec.packageName)
-    assertEquals(runtimeRoot.toString(), spec.extras[P4aPythonRuntimeServiceContract.EXTRA_RUNTIME_ROOT])
-    assertEquals("request-missing", spec.extras[P4aPythonRuntimeServiceContract.EXTRA_REQUEST_ID])
+    assertEquals("opencraypython", spec.serviceId)
+    assertEquals("org.opencray.app.ServiceOpencraypython", spec.generatedServiceClassName)
+    assertTrue(spec.serviceArgument.contains(""""runtimeRoot":"${runtimeRoot.toString().replace("\\", "\\\\")}""""))
+    assertTrue(spec.serviceArgument.contains(""""requestId":"request-missing""""))
+    assertTrue(
+      spec.serviceArgument.contains(
+        """"requestPath":"${runtimeRoot.resolve("requests/request-missing.json").toString().replace("\\", "\\\\")}"""",
+      ),
+    )
+    assertTrue(
+      spec.serviceArgument.contains(
+        """"resultPath":"${runtimeRoot.resolve("results/request-missing.json").toString().replace("\\", "\\\\")}"""",
+      ),
+    )
     assertEquals(
-      runtimeRoot.resolve("requests/request-missing.json").toString(),
-      spec.extras[P4aPythonRuntimeServiceContract.EXTRA_REQUEST_PATH],
+      "org.opencray.app.ServiceOpencraypython",
+      P4aPythonRuntimeServiceContract.generatedServiceClassName("org.opencray.app"),
     )
   }
 
@@ -62,7 +73,7 @@ class P4aPythonRuntimeLauncherTest {
         override fun start(spec: P4aPythonRuntimeServiceStartSpec): P4aPythonRuntimeServiceStartResult =
           P4aPythonRuntimeServiceStartResult.Started(
             metadata = mapOf(
-              "launcherResolvedService" to "org.kivy.android.PythonService",
+              "launcherResolvedServiceClass" to "org.kivy.android.PythonService",
               "launcherComponent" to "org.opencray.app/.PythonService",
             ),
           )
@@ -74,9 +85,9 @@ class P4aPythonRuntimeLauncherTest {
     assertTrue(result is P4aPythonRuntime.P4aPythonRuntimeLaunchResult.Dispatched)
     val dispatched = result as P4aPythonRuntime.P4aPythonRuntimeLaunchResult.Dispatched
     assertEquals("service_started", dispatched.metadata["launcherState"])
-    assertEquals("org.opencray.app.action.P4A_START_RUNTIME", dispatched.metadata["launcherAction"])
-    assertEquals("org.opencray.app", dispatched.metadata["launcherPackage"])
-    assertEquals("org.kivy.android.PythonService", dispatched.metadata["launcherResolvedService"])
+    assertEquals("opencraypython", dispatched.metadata["launcherServiceId"])
+    assertEquals("org.opencray.app.ServiceOpencraypython", dispatched.metadata["launcherServiceClass"])
+    assertEquals("org.kivy.android.PythonService", dispatched.metadata["launcherResolvedServiceClass"])
     assertEquals("org.opencray.app/.PythonService", dispatched.metadata["launcherComponent"])
   }
 

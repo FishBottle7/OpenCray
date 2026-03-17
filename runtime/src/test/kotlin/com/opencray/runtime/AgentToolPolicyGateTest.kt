@@ -118,6 +118,11 @@ class AgentToolPolicyGateTest {
     assertEquals("APPROVAL_REQUIRED", result.errorCode)
     assertEquals("ASK_AUTO_DESTRUCTIVE", result.metadata["policyReasonCode"])
     assertEquals("STANDARD", result.metadata["approvalRisk"])
+    assertEquals("delete_file", result.metadata["capabilityKind"])
+    assertEquals("file", result.metadata["targetKind"])
+    assertEquals("inside_workspace", result.metadata["workspaceRelation"])
+    assertEquals("notes.txt", result.metadata["primaryTargetPath"])
+    assertEquals("notes.txt", result.metadata["targetSummary"])
     assertTrue(Files.exists(target))
     assertEquals("keep me", String(Files.readAllBytes(target), StandardCharsets.UTF_8))
   }
@@ -245,6 +250,11 @@ class AgentToolPolicyGateTest {
       ),
     )
     assertEquals("ALLOW_AUTO_STANDARD", importResult.metadata["policyReasonCode"])
+    assertEquals("write_file", importResult.metadata["capabilityKind"])
+    assertEquals("file", importResult.metadata["targetKind"])
+    assertEquals("mixed", importResult.metadata["workspaceRelation"])
+    assertTrue(requireNotNull(importResult.metadata["primaryTargetPath"]).endsWith("/photo.txt"))
+    assertEquals("imports/photo.txt", importResult.metadata["secondaryTargetPath"])
   }
 
   @Test
@@ -377,6 +387,11 @@ class AgentToolPolicyGateTest {
     assertEquals(AgentToolResultStatus.DENIED, result.status)
     assertEquals("APPROVAL_REQUIRED", result.errorCode)
     assertEquals("STANDARD", result.metadata["approvalRisk"])
+    assertEquals("execute_command", result.metadata["capabilityKind"])
+    assertEquals("working_directory", result.metadata["targetKind"])
+    assertEquals("inside_workspace", result.metadata["workspaceRelation"])
+    assertEquals(".", result.metadata["primaryTargetPath"])
+    assertEquals("git", result.metadata["targetSummary"])
     assertEquals(0, runner.spawnCount)
   }
 
@@ -443,6 +458,10 @@ class AgentToolPolicyGateTest {
     assertEquals("APPROVAL_REQUIRED", result.errorCode)
     assertEquals("ASK_AUTO_NETWORK", result.metadata["policyReasonCode"])
     assertEquals("STANDARD", result.metadata["approvalRisk"])
+    assertEquals("network_access", result.metadata["capabilityKind"])
+    assertEquals("network", result.metadata["targetKind"])
+    assertEquals("none", result.metadata["workspaceRelation"])
+    assertEquals("https://example.com/post", result.metadata["targetSummary"])
     assertEquals(0, fetcher.requestCount)
   }
 
@@ -503,7 +522,12 @@ class AgentToolPolicyGateTest {
     assertEquals("APPROVAL_REQUIRED", result.errorCode)
     assertEquals("ASK_AUTO_COMMAND", result.metadata["policyReasonCode"])
     assertEquals("STANDARD", result.metadata["approvalRisk"])
-    assertEquals(osPath("scripts/run.py"), result.metadata["scriptPath"])
+    assertEquals("execute_command", result.metadata["capabilityKind"])
+    assertEquals("script", result.metadata["targetKind"])
+    assertEquals("inside_workspace", result.metadata["workspaceRelation"])
+    assertEquals(modelPath("scripts/run.py"), result.metadata["primaryTargetPath"])
+    assertEquals(modelPath("scripts/run.py"), result.metadata["targetSummary"])
+    assertEquals(modelPath("scripts/run.py"), result.metadata["scriptPath"])
     assertFalse(Files.exists(workspaceRoot.resolve("scripts").resolve("run.py")))
   }
 
@@ -533,7 +557,7 @@ class AgentToolPolicyGateTest {
     assertEquals("HIGH_RISK_APPROVAL_REQUIRED", result.errorCode)
     assertEquals("ASK_SAFE_COMMAND_HIGH_RISK", result.metadata["policyReasonCode"])
     assertEquals("HIGH_RISK", result.metadata["approvalRisk"])
-    assertEquals(osPath("scripts/run.py"), result.metadata["scriptPath"])
+    assertEquals(modelPath("scripts/run.py"), result.metadata["scriptPath"])
     assertFalse(Files.exists(workspaceRoot.resolve("scripts").resolve("run.py")))
   }
 
@@ -720,7 +744,7 @@ class AgentToolPolicyGateTest {
     assertEquals(AgentToolResultStatus.DENIED, result.status)
     assertEquals("DENY_POLICY", result.errorCode)
     assertEquals("HOST_DENY", result.metadata["policyReasonCode"])
-    assertEquals(osPath("scripts/blocked.py"), result.metadata["scriptPath"])
+    assertEquals(modelPath("scripts/blocked.py"), result.metadata["scriptPath"])
   }
 
   private fun agentTask(
@@ -744,7 +768,7 @@ class AgentToolPolicyGateTest {
     requestRetry = { _: RetryRequest -> error("Retry not expected in AgentToolPolicyGateTest.") },
   )
 
-  private fun osPath(path: String): String = path.replace('/', File.separatorChar)
+  private fun modelPath(path: String): String = path.replace(File.separatorChar, '/')
 
   private class RecordingRunner : CommandProcessRunner {
     var spawnCount: Int = 0

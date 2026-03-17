@@ -27,7 +27,14 @@ class SafetySettingsCopy {
       'Review the workspace root and any extra public locations that remain available in this profile.';
   static const String agentTurnLimitTitle = 'Max agent turns';
   static const String agentTurnLimitSubtitle =
-      '0 means no hard limit. If a limit is set, the last allowed turn is reserved for the final answer.';
+      'Tap the value to type a number. 0 means no hard limit. If a limit is set, the last allowed turn is reserved for the final answer.';
+  static const String toolCallLimitTitle = 'Max tool calls';
+  static const String toolCallLimitSubtitle =
+      'Tap the value to type a number. 0 means no hard limit for tool calls in a single run.';
+  static const String limitDialogValueLabel = 'Value';
+  static const String limitDialogNoLimitHint = 'Enter 0 for no limit.';
+  static const String limitDialogValidationError =
+      'Enter a whole number greater than or equal to 0.';
 
   static String automationModeLabel(SafetyAutomationMode mode) {
     switch (mode) {
@@ -151,12 +158,32 @@ class SafetySettingsCopy {
   }
 
   static String agentTurnLimitValue(int turns) {
-    if (turns <= 0) {
+    return _limitValue(
+      value: turns,
+      singular: 'turn',
+      plural: 'turns',
+    );
+  }
+
+  static String toolCallLimitValue(int calls) {
+    return _limitValue(
+      value: calls,
+      singular: 'call',
+      plural: 'calls',
+    );
+  }
+
+  static String _limitValue({
+    required int value,
+    required String singular,
+    required String plural,
+  }) {
+    if (value <= 0) {
       return 'No limit';
     }
-    if (turns == 1) {
-      return '1 turn';
+    if (value == 1) {
+      return '1 $singular';
     }
-    return '$turns turns';
+    return '$value $plural';
   }
 }

@@ -182,10 +182,13 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
               value: SafetySettingsCopy.agentTurnLimitValue(
                 snapshot.maxAgentTurns,
               ),
+              valueKey: const ValueKey<String>(
+                'settings-safety-max-agent-turns-value',
+              ),
               decrementLabel: '-',
               incrementLabel: '+',
               canDecrement: !_isSaving && snapshot.maxAgentTurns > 0,
-              canIncrement: !_isSaving && snapshot.maxAgentTurns < 64,
+              canIncrement: !_isSaving,
               onDecrement: () {
                 if (_isSaving) {
                   return;
@@ -198,15 +201,70 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
                   ),
                 );
               },
+              onValueTap: _isSaving
+                  ? null
+                  : () => _editLimitValue(
+                        title: SafetySettingsCopy.agentTurnLimitTitle,
+                        subtitle: SafetySettingsCopy.agentTurnLimitSubtitle,
+                        currentValue: snapshot.maxAgentTurns,
+                        onSaved: (value) => snapshot.copyWith(
+                          maxAgentTurns: value,
+                        ),
+                      ),
               onIncrement: () {
                 if (_isSaving) {
                   return;
                 }
                 _persist(
                   snapshot.copyWith(
-                    maxAgentTurns: snapshot.maxAgentTurns < 64
-                        ? snapshot.maxAgentTurns + 1
-                        : 64,
+                    maxAgentTurns: snapshot.maxAgentTurns + 1,
+                  ),
+                );
+              },
+            ),
+            const Divider(height: 1, color: OpenCrayColors.divider),
+            _PrototypeStepperRow(
+              title: SafetySettingsCopy.toolCallLimitTitle,
+              subtitle: SafetySettingsCopy.toolCallLimitSubtitle,
+              value: SafetySettingsCopy.toolCallLimitValue(
+                snapshot.maxToolCalls,
+              ),
+              valueKey: const ValueKey<String>(
+                'settings-safety-max-tool-calls-value',
+              ),
+              decrementLabel: '-',
+              incrementLabel: '+',
+              canDecrement: !_isSaving && snapshot.maxToolCalls > 0,
+              canIncrement: !_isSaving,
+              onDecrement: () {
+                if (_isSaving) {
+                  return;
+                }
+                _persist(
+                  snapshot.copyWith(
+                    maxToolCalls: snapshot.maxToolCalls > 0
+                        ? snapshot.maxToolCalls - 1
+                        : 0,
+                  ),
+                );
+              },
+              onValueTap: _isSaving
+                  ? null
+                  : () => _editLimitValue(
+                        title: SafetySettingsCopy.toolCallLimitTitle,
+                        subtitle: SafetySettingsCopy.toolCallLimitSubtitle,
+                        currentValue: snapshot.maxToolCalls,
+                        onSaved: (value) => snapshot.copyWith(
+                          maxToolCalls: value,
+                        ),
+                      ),
+              onIncrement: () {
+                if (_isSaving) {
+                  return;
+                }
+                _persist(
+                  snapshot.copyWith(
+                    maxToolCalls: snapshot.maxToolCalls + 1,
                   ),
                 );
               },
@@ -567,6 +625,99 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
         _errorMessage = 'Failed to save safety settings: $error';
       });
     }
+  }
+
+  Future<void> _editLimitValue({
+    required String title,
+    required String subtitle,
+    required int currentValue,
+    required SafetySettingsSnapshot Function(int value) onSaved,
+  }) async {
+    final nextValue = await _promptForNonNegativeInt(
+      title: title,
+      subtitle: subtitle,
+      currentValue: currentValue,
+    );
+    if (!mounted || nextValue == null) {
+      return;
+    }
+    await _persist(onSaved(nextValue));
+  }
+
+  Future<int?> _promptForNonNegativeInt({
+    required String title,
+    required String subtitle,
+    required int currentValue,
+  }) async {
+    final controller = TextEditingController(text: currentValue.toString());
+    final result = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) {
+        String? errorText;
+
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            void submit() {
+              final parsed = int.tryParse(controller.text.trim());
+              if (parsed == null || parsed < 0) {
+                setDialogState(() {
+                  errorText = SafetySettingsCopy.limitDialogValidationError;
+                });
+                return;
+              }
+              Navigator.of(dialogContext).pop(parsed);
+            }
+
+            return AlertDialog(
+              title: Text(title),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    subtitle,
+                    style: Theme.of(dialogContext).textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: controller,
+                    autofocus: true,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      labelText: SafetySettingsCopy.limitDialogValueLabel,
+                      helperText: SafetySettingsCopy.limitDialogNoLimitHint,
+                      errorText: errorText,
+                    ),
+                    onChanged: (_) {
+                      if (errorText == null) {
+                        return;
+                      }
+                      setDialogState(() {
+                        errorText = null;
+                      });
+                    },
+                    onSubmitted: (_) => submit(),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancel'),
+                ),
+                TextButton(
+                  onPressed: submit,
+                  child: const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    await WidgetsBinding.instance.endOfFrame;
+    controller.dispose();
+    return result;
   }
 
   Future<void> _handleExternalLocationToggle({
@@ -1150,22 +1301,26 @@ class _PrototypeStepperRow extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.value,
+    this.valueKey,
     required this.decrementLabel,
     required this.incrementLabel,
     required this.canDecrement,
     required this.canIncrement,
     required this.onDecrement,
+    this.onValueTap,
     required this.onIncrement,
   });
 
   final String title;
   final String subtitle;
   final String value;
+  final Key? valueKey;
   final String decrementLabel;
   final String incrementLabel;
   final bool canDecrement;
   final bool canIncrement;
   final VoidCallback onDecrement;
+  final VoidCallback? onValueTap;
   final VoidCallback onIncrement;
 
   @override
@@ -1185,7 +1340,11 @@ class _PrototypeStepperRow extends StatelessWidget {
                 onTap: onDecrement,
               ),
               const SizedBox(width: 8),
-              _PrototypeValuePill(value: value),
+              _PrototypeValuePill(
+                key: valueKey,
+                value: value,
+                onTap: onValueTap,
+              ),
               const SizedBox(width: 8),
               _StepperButton(
                 label: incrementLabel,
@@ -1240,13 +1399,18 @@ class _StepperButton extends StatelessWidget {
 }
 
 class _PrototypeValuePill extends StatelessWidget {
-  const _PrototypeValuePill({required this.value});
+  const _PrototypeValuePill({
+    super.key,
+    required this.value,
+    this.onTap,
+  });
 
   final String value;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
+    final child = DecoratedBox(
       decoration: BoxDecoration(
         color: const Color(0xFFF7F7FA),
         borderRadius: BorderRadius.circular(999),
@@ -1255,6 +1419,14 @@ class _PrototypeValuePill extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         child: Text(value, style: _SettingsTextStyles.valueChip),
       ),
+    );
+    if (onTap == null) {
+      return child;
+    }
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: child,
     );
   }
 }

@@ -52,6 +52,8 @@ class OpenCrayToolDispatcherMcpTest {
 
     assertEquals(AgentToolResultStatus.SUCCESS, result.status)
     assertTrue(result.content.contains(McpRuntimeSupport.bridgeSummary()))
+    assertEquals("read_mcp", result.metadata["capabilityKind"])
+    assertEquals("none", result.metadata["workspaceRelation"])
     assertEquals("exposure_only", result.metadata["bridgeStatus"])
     assertEquals("false", result.metadata["remoteToolBridgeAvailable"])
     assertEquals("mcp_list_servers", result.metadata["supportedAgentTools"])

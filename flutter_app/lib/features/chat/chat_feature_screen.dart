@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ui';
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -57,6 +58,23 @@ int runtimeSnapshotVersion(OpenCrayChatRuntimeSnapshot snapshot) {
 
 enum _SessionMenuAction { copy, delete }
 
+enum _ChatMessageMenuAction { copy, recall, delete, multiSelect, quote }
+
+@immutable
+class _ActiveChatMessageMenu {
+  const _ActiveChatMessageMenu({
+    required this.message,
+    required this.bubbleRect,
+  });
+
+  final ChatMessageData message;
+  final Rect bubbleRect;
+
+  bool get isOutgoing => message.kind == ChatMessageKind.outbound;
+
+  bool get canRecall => isOutgoing;
+}
+
 class OpenCrayChatFeature extends StatefulWidget {
   const OpenCrayChatFeature({
     super.key,
@@ -89,19 +107,34 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       TextEditingController();
   late final FocusNode _composerFocusNode = FocusNode();
   final ScrollController _chatScrollController = ScrollController();
+  final GlobalKey _chatOverlayKey = GlobalKey();
   final GlobalKey _composerKey = GlobalKey();
   StreamSubscription<OpenCrayChatSnapshot>? _chatSubscription;
   StreamSubscription<OpenCrayChatRuntimeSnapshot>? _chatRuntimeSubscription;
   OpenCrayChatSnapshot? _latestChatSnapshot;
   OpenCrayChatRuntimeSnapshot? _latestChatRuntimeSnapshot;
   final Set<String> _approvalTaskIdsInFlight = <String>{};
+  _ActiveChatMessageMenu? _activeMessageMenu;
   double _composerHeight = 0;
 
   bool get _usesHostBridge => widget.bridge != null;
 
+  String get _activeSessionId {
+    for (final session in _state.drawer.sessions) {
+      if (session.isSelected) {
+        return session.sessionId;
+      }
+    }
+    if (_state.drawer.sessions.isNotEmpty) {
+      return _state.drawer.sessions.first.sessionId;
+    }
+    return 'chat-session';
+  }
+
   @override
   void initState() {
     super.initState();
+    _chatScrollController.addListener(_handleChatScrollChanged);
     final bridge = widget.bridge;
     if (bridge != null) {
       _hydrateFromHost(bridge);
@@ -116,12 +149,197 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
 
   @override
   void dispose() {
+    _chatScrollController.removeListener(_handleChatScrollChanged);
     _chatSubscription?.cancel();
     _chatRuntimeSubscription?.cancel();
     _composerController.dispose();
     _composerFocusNode.dispose();
     _chatScrollController.dispose();
     super.dispose();
+  }
+
+  void _handleChatScrollChanged() {
+    if (_activeMessageMenu == null) {
+      return;
+    }
+    setState(() {
+      _activeMessageMenu = null;
+    });
+  }
+
+  void _dismissMessageMenu() {
+    if (_activeMessageMenu == null) {
+      return;
+    }
+    setState(() {
+      _activeMessageMenu = null;
+    });
+  }
+
+  void _dismissTransientUi() {
+    FocusManager.instance.primaryFocus?.unfocus();
+    final bool shouldCloseComposerMenus =
+        _state.composer.showAddMenu ||
+        _state.composer.commandOptions.isNotEmpty;
+    if (!shouldCloseComposerMenus && _activeMessageMenu == null) {
+      return;
+    }
+    setState(() {
+      if (shouldCloseComposerMenus) {
+        _state = _state.copyWith(
+          composer: _state.composer.copyWith(
+            showAddMenu: false,
+            commandOptions: const <ChatCommandOptionData>[],
+            clearSelectedCommand: true,
+          ),
+        );
+      }
+      _activeMessageMenu = null;
+    });
+  }
+
+  void _showMessageFeedback(String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void _handleMessageLongPress(ChatMessageData message, Rect globalBubbleRect) {
+    final BuildContext? overlayContext = _chatOverlayKey.currentContext;
+    final RenderObject? overlayRenderObject = overlayContext
+        ?.findRenderObject();
+    if (overlayRenderObject is! RenderBox) {
+      return;
+    }
+    FocusManager.instance.primaryFocus?.unfocus();
+    unawaited(HapticFeedback.lightImpact());
+    final Rect bubbleRect = Rect.fromPoints(
+      overlayRenderObject.globalToLocal(globalBubbleRect.topLeft),
+      overlayRenderObject.globalToLocal(globalBubbleRect.bottomRight),
+    );
+    setState(() {
+      _state = _state.copyWith(
+        composer: _state.composer.copyWith(
+          showAddMenu: false,
+          commandOptions: const <ChatCommandOptionData>[],
+          clearSelectedCommand: true,
+        ),
+      );
+      _activeMessageMenu = _ActiveChatMessageMenu(
+        message: message,
+        bubbleRect: bubbleRect,
+      );
+    });
+  }
+
+  Future<void> _handleMessageMenuAction(_ChatMessageMenuAction action) async {
+    final activeMenu = _activeMessageMenu;
+    if (activeMenu == null) {
+      return;
+    }
+    _dismissMessageMenu();
+    switch (action) {
+      case _ChatMessageMenuAction.copy:
+        await Clipboard.setData(ClipboardData(text: activeMenu.message.text));
+        if (!mounted) {
+          return;
+        }
+        _showMessageFeedback(widget.copy.chatMessageCopied);
+        break;
+      case _ChatMessageMenuAction.recall:
+        if (!activeMenu.canRecall) {
+          return;
+        }
+        await _recallChatMessage(activeMenu.message);
+        break;
+      case _ChatMessageMenuAction.delete:
+        await _deleteChatMessage(activeMenu.message);
+        break;
+      case _ChatMessageMenuAction.multiSelect:
+        if (!mounted) {
+          return;
+        }
+        _showMessageFeedback(widget.copy.chatMessageMultiSelectPending);
+        break;
+      case _ChatMessageMenuAction.quote:
+        _quoteChatMessage(activeMenu.message);
+        break;
+    }
+  }
+
+  Future<void> _deleteChatMessage(ChatMessageData message) async {
+    final bridge = widget.bridge;
+    if (bridge != null) {
+      try {
+        await bridge.deleteChatMessage(
+          sessionId: _activeSessionId,
+          messageId: message.messageId,
+        );
+      } catch (_) {
+        if (!mounted) {
+          return;
+        }
+        _showMessageFeedback(widget.copy.chatMessageActionFailed);
+      }
+      return;
+    }
+    setState(() {
+      _state = _state.copyWith(
+        messages: _state.messages
+            .where((candidate) => candidate.messageId != message.messageId)
+            .toList(growable: false),
+      );
+    });
+  }
+
+  Future<void> _recallChatMessage(ChatMessageData message) async {
+    final bridge = widget.bridge;
+    if (bridge != null) {
+      try {
+        await bridge.recallChatMessage(
+          sessionId: _activeSessionId,
+          messageId: message.messageId,
+        );
+      } catch (_) {
+        if (!mounted) {
+          return;
+        }
+        _showMessageFeedback(widget.copy.chatMessageActionFailed);
+      }
+      return;
+    }
+    final int recallIndex = _state.messages.indexWhere(
+      (candidate) => candidate.messageId == message.messageId,
+    );
+    if (recallIndex < 0) {
+      return;
+    }
+    setState(() {
+      _state = _state.copyWith(
+        messages: _state.messages.take(recallIndex).toList(growable: false),
+      );
+    });
+  }
+
+  void _quoteChatMessage(ChatMessageData message) {
+    final String quoted = message.text
+        .trim()
+        .split('\n')
+        .map((line) => '> $line')
+        .join('\n');
+    if (quoted.isEmpty) {
+      return;
+    }
+    final String existing = _composerController.text.trimLeft();
+    final String nextText = existing.isEmpty
+        ? '$quoted\n\n'
+        : '$quoted\n\n$existing';
+    _composerController.value = TextEditingValue(
+      text: nextText,
+      selection: TextSelection.collapsed(offset: nextText.length),
+    );
+    _composerFocusNode.requestFocus();
+    _showMessageFeedback(widget.copy.chatMessageQuoted);
   }
 
   @override
@@ -134,6 +352,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     return ColoredBox(
       color: _ChatPalette.background,
       child: Stack(
+        key: _chatOverlayKey,
         children: <Widget>[
           SafeArea(
             bottom: false,
@@ -145,7 +364,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                     children: <Widget>[
                       Positioned.fill(
                         child: GestureDetector(
-                          onTap: _closeComposerMenus,
+                          onTap: _dismissTransientUi,
                           behavior: HitTestBehavior.translucent,
                           child: SingleChildScrollView(
                             controller: _chatScrollController,
@@ -161,6 +380,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                               busyApprovalTaskIds: _approvalTaskIdsInFlight,
                               onApproveApproval: _approvePendingApproval,
                               onRejectApproval: _rejectPendingApproval,
+                              onMessageLongPress: _handleMessageLongPress,
                             ),
                           ),
                         ),
@@ -198,6 +418,18 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
               ],
             ),
           ),
+          if (_activeMessageMenu != null)
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: _dismissMessageMenu,
+                behavior: HitTestBehavior.translucent,
+                child: _ChatMessageMenuOverlay(
+                  copy: widget.copy,
+                  menu: _activeMessageMenu!,
+                  onActionSelected: _handleMessageMenuAction,
+                ),
+              ),
+            ),
           Positioned(
             top: 0,
             left: 0,
@@ -300,18 +532,21 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
 
   void _showDrawer() {
     setState(() {
+      _activeMessageMenu = null;
       _state = _state.copyWith(drawerOpen: true);
     });
   }
 
   void _closeDrawer() {
     setState(() {
+      _activeMessageMenu = null;
       _state = _state.copyWith(drawerOpen: false);
     });
   }
 
   void _showEmpty() {
     final bridge = widget.bridge;
+    _dismissMessageMenu();
     if (bridge != null) {
       bridge.createChatSession();
       return;
@@ -323,6 +558,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
 
   void _togglePlusMenu() {
     setState(() {
+      _activeMessageMenu = null;
       final composer = _state.composer;
       _state = _state.copyWith(
         composer: composer.copyWith(
@@ -371,6 +607,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
 
   void _showCommandMenu() {
     setState(() {
+      _activeMessageMenu = null;
       _state = _state.copyWith(
         composer: _state.composer.copyWith(
           showAddMenu: false,
@@ -384,6 +621,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   Future<void> _sendCurrentState() async {
+    _dismissMessageMenu();
     if (!_state.isInputEnabled) {
       return;
     }
@@ -443,6 +681,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         nextState.runTraces.length > _state.runTraces.length ||
         nextState.pendingApprovals.length > _state.pendingApprovals.length;
     setState(() {
+      _activeMessageMenu = null;
       _state = nextState.copyWith(drawerOpen: _state.drawerOpen);
     });
     if (shouldScrollToBottom) {
@@ -495,23 +734,6 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
   }
 
-  void _closeComposerMenus() {
-    FocusManager.instance.primaryFocus?.unfocus();
-    if (!_state.composer.showAddMenu &&
-        _state.composer.commandOptions.isEmpty) {
-      return;
-    }
-    setState(() {
-      _state = _state.copyWith(
-        composer: _state.composer.copyWith(
-          showAddMenu: false,
-          commandOptions: const <ChatCommandOptionData>[],
-          clearSelectedCommand: true,
-        ),
-      );
-    });
-  }
-
   void _removeAttachment(ChatAttachmentData attachment) {
     setState(() {
       final attachments =
@@ -536,6 +758,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   void _handleSessionSelected(ChatSessionListItemData session) {
+    _dismissMessageMenu();
     final bridge = widget.bridge;
     if (bridge != null) {
       bridge.selectChatSession(session.sessionId);
@@ -573,6 +796,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     ChatSessionListItemData session,
     Offset globalPosition,
   ) async {
+    _dismissMessageMenu();
     FocusManager.instance.primaryFocus?.unfocus();
     unawaited(HapticFeedback.lightImpact());
     final RenderObject? overlayRenderObject = Overlay.of(
@@ -829,6 +1053,13 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
               approveLabel: approval.approveLabel,
               rejectLabel: approval.rejectLabel,
               isHighRisk: approval.isHighRisk,
+              toolName: approval.toolName,
+              requestSummary: approval.requestSummary,
+              primaryDetail: approval.primaryDetail,
+              pathDetails: approval.pathDetails,
+              workingDirectory: approval.workingDirectory,
+              reason: approval.reason,
+              message: approval.message,
             ),
           )
           .toList(growable: false),
@@ -844,15 +1075,20 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     required bool hideThinkingPlaceholder,
   }) {
     final mapped = messages
+        .asMap()
+        .entries
         .map(
-          (message) => ChatMessageData(
-            kind: switch (message.kind) {
+          (entry) => ChatMessageData(
+            messageId: entry.value.messageId.trim().isNotEmpty
+                ? entry.value.messageId
+                : 'message-${entry.key}-${entry.value.kind}',
+            kind: switch (entry.value.kind) {
               'timeline' => ChatMessageKind.timeline,
               'outbound' => ChatMessageKind.outbound,
               _ => ChatMessageKind.inbound,
             },
-            text: message.text,
-            meta: message.meta,
+            text: entry.value.text,
+            meta: entry.value.meta,
           ),
         )
         .toList(growable: true);
@@ -897,6 +1133,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       run: run,
       runEvents: runEvents,
     );
+    String compactBody(String fallbackBody) =>
+        _buildCompactTraceBody(history: history, fallbackBody: fallbackBody);
     final OpenCrayChatRuntimeEventSnapshot? pairedToolCall =
         event?.kind == 'tool_result'
         ? _findPreviousToolCall(
@@ -913,7 +1151,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           label: toolName?.isNotEmpty == true
               ? toolName!
               : widget.copy.chatRunWorkingLabel,
-          body: _buildToolCallPreviewBody(event!),
+          body: compactBody(_buildToolCallPreviewBody(event!)),
           history: history,
           isHighRisk:
               waitingApproval && run.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED',
@@ -927,11 +1165,13 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
               : toolName?.isNotEmpty == true
               ? toolName!
               : widget.copy.chatRunWorkingLabel,
-          body: _buildToolResultPreviewBody(
-            event: event!,
-            pairedToolCall: pairedToolCall,
-            waitingApproval: waitingApproval,
-            runErrorMessage: run.errorMessage,
+          body: compactBody(
+            _buildToolResultPreviewBody(
+              event: event!,
+              pairedToolCall: pairedToolCall,
+              waitingApproval: waitingApproval,
+              runErrorMessage: run.errorMessage,
+            ),
           ),
           history: history,
           isHighRisk:
@@ -944,7 +1184,17 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           label: toolName?.isNotEmpty == true
               ? toolName!
               : widget.copy.chatRunWorkingLabel,
-          body: _buildMemoryRetrievalPreviewBody(event!),
+          body: compactBody(_buildMemoryRetrievalPreviewBody(event!)),
+          history: history,
+          isHighRisk:
+              waitingApproval && run.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED',
+        );
+      case 'memory_write':
+        return ChatRunTraceData(
+          runId: run.runId,
+          taskId: run.taskId,
+          label: _memoryMaintenanceLabel(),
+          body: compactBody(_buildMemoryWritePreviewBody(event!)),
           history: history,
           isHighRisk:
               waitingApproval && run.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED',
@@ -955,9 +1205,26 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           runId: run.runId,
           taskId: run.taskId,
           label: widget.copy.chatRunWorkingLabel,
-          body: text?.isNotEmpty == true
-              ? text!
-              : widget.copy.chatRunThinkingActive,
+          body: compactBody(
+            text?.isNotEmpty == true
+                ? text!
+                : widget.copy.chatRunThinkingActive,
+          ),
+          history: history,
+          isHighRisk:
+              waitingApproval && run.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED',
+        );
+      case 'progress':
+        final text = event?.text?.trim();
+        return ChatRunTraceData(
+          runId: run.runId,
+          taskId: run.taskId,
+          label: _progressEntryLabel(event!),
+          body: compactBody(
+            text?.isNotEmpty == true
+                ? text!
+                : widget.copy.chatRunThinkingActive,
+          ),
           history: history,
           isHighRisk:
               waitingApproval && run.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED',
@@ -969,11 +1236,13 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           label: waitingApproval
               ? widget.copy.chatRunWaitingApprovalLabel
               : widget.copy.chatRunWorkingLabel,
-          body: waitingApproval
-              ? run.errorMessage?.trim().isNotEmpty == true
-                    ? run.errorMessage!.trim()
-                    : widget.copy.chatRunWaitingApprovalLabel
-              : widget.copy.chatRunThinkingActive,
+          body: compactBody(
+            waitingApproval
+                ? run.errorMessage?.trim().isNotEmpty == true
+                      ? run.errorMessage!.trim()
+                      : widget.copy.chatRunWaitingApprovalLabel
+                : widget.copy.chatRunThinkingActive,
+          ),
           history: history,
           isHighRisk:
               waitingApproval && run.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED',
@@ -1071,10 +1340,23 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           label: resolvedToolName,
           body: _buildMemoryRetrievalHistoryBody(event),
         );
+      case 'memory_write':
+        return ChatRunTraceHistoryEntry(
+          label: _memoryMaintenanceLabel(),
+          body: _buildMemoryWriteHistoryBody(event),
+        );
       case 'assistant':
         final text = event.text?.trim();
         return ChatRunTraceHistoryEntry(
           label: widget.copy.chatRunWorkingLabel,
+          body: text?.isNotEmpty == true
+              ? text!
+              : widget.copy.chatRunThinkingActive,
+        );
+      case 'progress':
+        final text = event.text?.trim();
+        return ChatRunTraceHistoryEntry(
+          label: _progressEntryLabel(event),
           body: text?.isNotEmpty == true
               ? text!
               : widget.copy.chatRunThinkingActive,
@@ -1129,7 +1411,11 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       argumentsJson: event.argumentsJson,
     );
     final String? reason = _nonEmpty(event.toolReason);
-    return _joinTraceSections(<String?>[summary, reason]);
+    final String? detail = _toolCallDetailBody(
+      toolName: resolvedToolName,
+      argumentsJson: event.argumentsJson,
+    );
+    return _joinTraceSections(<String?>[summary, reason, detail]);
   }
 
   String _buildToolResultPreviewBody({
@@ -1140,9 +1426,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }) {
     final String resolvedToolName =
         _nonEmpty(event.toolName) ?? widget.copy.chatRunWorkingLabel;
-    final String summary = _toolActionSummary(
+    final String summary = _toolResultActionSummary(
       toolName: resolvedToolName,
-      argumentsJson: pairedToolCall?.argumentsJson,
+      event: event,
+      pairedToolCall: pairedToolCall,
+    );
+    final String? resultSummary = _toolResultMetadataSummary(
+      toolName: resolvedToolName,
+      event: event,
     );
     final String? message =
         (waitingApproval
@@ -1151,8 +1442,42 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         _nonEmpty(event.contentPreview);
     return _joinTraceSections(<String?>[
       summary,
+      resultSummary,
       message ?? widget.copy.chatRunToolFollowUp(resolvedToolName),
     ]);
+  }
+
+  String _buildCompactTraceBody({
+    required List<ChatRunTraceHistoryEntry> history,
+    required String fallbackBody,
+  }) {
+    final List<String> bodies = history
+        .where(_shouldIncludeCompactHistoryEntry)
+        .map((entry) => entry.body.trim())
+        .where((body) => body.isNotEmpty)
+        .toList(growable: false);
+    if (bodies.isEmpty) {
+      return fallbackBody;
+    }
+    final int startIndex = bodies.length > 3 ? bodies.length - 3 : 0;
+    final String compactBody = bodies.sublist(startIndex).join('\n\n');
+    return compactBody.trim().isNotEmpty ? compactBody.trim() : fallbackBody;
+  }
+
+  bool _shouldIncludeCompactHistoryEntry(ChatRunTraceHistoryEntry entry) {
+    final String body = entry.body.trim();
+    if (body.isEmpty) {
+      return false;
+    }
+    return !_thinkingPlaceholders.contains(body);
+  }
+
+  String _progressEntryLabel(OpenCrayChatRuntimeEventSnapshot event) {
+    final String? stage = _nonEmpty(event.stage);
+    if (stage != null) {
+      return stage;
+    }
+    return widget.copy.chatRunWorkingLabel;
   }
 
   String _buildToolCallHistoryBody(OpenCrayChatRuntimeEventSnapshot event) {
@@ -1176,14 +1501,20 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }) {
     final String resolvedToolName =
         _nonEmpty(event.toolName) ?? widget.copy.chatRunWorkingLabel;
-    final String summary = _toolActionSummary(
+    final String summary = _toolResultActionSummary(
       toolName: resolvedToolName,
-      argumentsJson: pairedToolCall?.argumentsJson,
+      event: event,
+      pairedToolCall: pairedToolCall,
+    );
+    final String? resultSummary = _toolResultMetadataSummary(
+      toolName: resolvedToolName,
+      event: event,
     );
     final String? errorMessage = _nonEmpty(event.errorMessage);
     final String? preview = _nonEmpty(event.contentPreview);
     return _joinTraceSections(<String?>[
       summary,
+      resultSummary,
       errorMessage ??
           preview ??
           widget.copy.chatRunToolFollowUp(resolvedToolName),
@@ -1205,6 +1536,20 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     return _joinTraceSections(<String?>[
       _memoryRetrievalSummary(event),
       _memoryRetrievalResultBody(event, includeQueryTerms: true),
+    ]);
+  }
+
+  String _buildMemoryWritePreviewBody(OpenCrayChatRuntimeEventSnapshot event) {
+    return _joinTraceSections(<String?>[
+      _memoryWriteSummary(event),
+      _memoryWriteResultBody(event, includeKinds: false),
+    ]);
+  }
+
+  String _buildMemoryWriteHistoryBody(OpenCrayChatRuntimeEventSnapshot event) {
+    return _joinTraceSections(<String?>[
+      _memoryWriteSummary(event),
+      _memoryWriteResultBody(event, includeKinds: true),
     ]);
   }
 
@@ -1231,6 +1576,110 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       default:
         return widget.copy.isChinese ? '访问记忆' : 'Access memory';
     }
+  }
+
+  String _memoryMaintenanceLabel() => widget.copy.isChinese ? '记忆' : 'Memory';
+
+  String _memoryWriteSummary(OpenCrayChatRuntimeEventSnapshot event) {
+    final List<String> parts = <String?>[
+      _memoryWriteCountLabel(
+        count: event.writtenRecordIds.length,
+        singular: 'wrote',
+        plural: 'wrote',
+        chinese: '写入 ${event.writtenRecordIds.length} 条',
+      ),
+      _memoryWriteCountLabel(
+        count: event.resolvedRecordIds.length,
+        singular: 'resolved',
+        plural: 'resolved',
+        chinese: '解决 ${event.resolvedRecordIds.length} 条',
+      ),
+      _memoryWriteCountLabel(
+        count: event.reaffirmedRecordIds.length,
+        singular: 'reaffirmed',
+        plural: 'reaffirmed',
+        chinese: '续期 ${event.reaffirmedRecordIds.length} 条',
+      ),
+      _memoryWriteCountLabel(
+        count: event.expiredRecordIds.length,
+        singular: 'expired',
+        plural: 'expired',
+        chinese: '过期 ${event.expiredRecordIds.length} 条',
+      ),
+    ].whereType<String>().toList(growable: false);
+    if (parts.isEmpty) {
+      return widget.copy.isChinese
+          ? '本轮没有记忆变更。'
+          : 'No memory changes recorded for this turn.';
+    }
+    if (widget.copy.isChinese) {
+      return '记忆维护：${parts.join('，')}';
+    }
+    return 'Memory maintenance: ${parts.join(', ')}';
+  }
+
+  String _memoryWriteResultBody(
+    OpenCrayChatRuntimeEventSnapshot event, {
+    required bool includeKinds,
+  }) {
+    return _joinTraceSections(<String?>[
+      _memoryWriteListSection(
+        englishLabel: 'Written',
+        chineseLabel: '写入',
+        values: event.writtenRecordIds,
+      ),
+      includeKinds
+          ? _memoryWriteListSection(
+              englishLabel: 'Kinds',
+              chineseLabel: '类型',
+              values: event.writtenKinds,
+            )
+          : null,
+      _memoryWriteListSection(
+        englishLabel: 'Resolved',
+        chineseLabel: '解决',
+        values: event.resolvedRecordIds,
+      ),
+      _memoryWriteListSection(
+        englishLabel: 'Reaffirmed',
+        chineseLabel: '续期',
+        values: event.reaffirmedRecordIds,
+      ),
+      _memoryWriteListSection(
+        englishLabel: 'Expired',
+        chineseLabel: '过期',
+        values: event.expiredRecordIds,
+      ),
+    ]);
+  }
+
+  String? _memoryWriteCountLabel({
+    required int count,
+    required String singular,
+    required String plural,
+    required String chinese,
+  }) {
+    if (count <= 0) {
+      return null;
+    }
+    if (widget.copy.isChinese) {
+      return chinese;
+    }
+    final String noun = count == 1 ? 'record' : 'records';
+    final String verb = count == 1 ? singular : plural;
+    return '$verb $count $noun';
+  }
+
+  String? _memoryWriteListSection({
+    required String englishLabel,
+    required String chineseLabel,
+    required List<String> values,
+  }) {
+    if (values.isEmpty) {
+      return null;
+    }
+    final String label = widget.copy.isChinese ? chineseLabel : englishLabel;
+    return '$label: ${values.join(', ')}';
   }
 
   String _memoryRetrievalResultBody(
@@ -1399,8 +1848,15 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   String _toolActionSummary({
     required String toolName,
     required String? argumentsJson,
+  }) => _toolActionSummaryFromArguments(
+    toolName: toolName,
+    arguments: _decodeJsonObject(argumentsJson),
+  );
+
+  String _toolActionSummaryFromArguments({
+    required String toolName,
+    required Map<String, dynamic>? arguments,
   }) {
-    final Map<String, dynamic>? arguments = _decodeJsonObject(argumentsJson);
     final String fallback = widget.copy.chatRunCallingTool(toolName);
     switch (toolName) {
       case 'Read':
@@ -1497,6 +1953,24 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       default:
         return fallback;
     }
+  }
+
+  String _toolResultActionSummary({
+    required String toolName,
+    required OpenCrayChatRuntimeEventSnapshot event,
+    required OpenCrayChatRuntimeEventSnapshot? pairedToolCall,
+  }) {
+    final String? argumentsJson = _nonEmpty(pairedToolCall?.argumentsJson);
+    if (argumentsJson != null) {
+      return _toolActionSummary(
+        toolName: toolName,
+        argumentsJson: argumentsJson,
+      );
+    }
+    return _toolActionSummaryFromArguments(
+      toolName: toolName,
+      arguments: _toolResultArgumentsFallback(toolName: toolName, event: event),
+    );
   }
 
   String? _toolCallDetailBody({
@@ -1607,6 +2081,220 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     return 'first $limit lines';
   }
 
+  Map<String, dynamic>? _toolResultArgumentsFallback({
+    required String toolName,
+    required OpenCrayChatRuntimeEventSnapshot event,
+  }) {
+    switch (toolName) {
+      case 'Read':
+        final String? filePath = _resultMetadataValue(event, 'filePath');
+        if (filePath == null) {
+          return null;
+        }
+        return <String, dynamic>{
+          'file_path': filePath,
+          if (_resultMetadataInt(event, 'offset') != null)
+            'offset': _resultMetadataInt(event, 'offset'),
+          if (_resultMetadataInt(event, 'limit') != null)
+            'limit': _resultMetadataInt(event, 'limit'),
+        };
+      case 'LS':
+        return <String, dynamic>{
+          if (_resultMetadataValue(event, 'path') != null)
+            'path': _resultMetadataValue(event, 'path'),
+        };
+      case 'Grep':
+        final String? pattern = _resultMetadataValue(event, 'pattern');
+        if (pattern == null) {
+          return null;
+        }
+        return <String, dynamic>{
+          'pattern': pattern,
+          if (_resultMetadataValue(event, 'path') != null)
+            'path': _resultMetadataValue(event, 'path'),
+          if (_resultMetadataValue(event, 'glob') != null)
+            'glob': _resultMetadataValue(event, 'glob'),
+        };
+      case 'Glob':
+        final String? pattern = _resultMetadataValue(event, 'pattern');
+        if (pattern == null) {
+          return null;
+        }
+        return <String, dynamic>{
+          'pattern': pattern,
+          if (_resultMetadataValue(event, 'path') != null)
+            'path': _resultMetadataValue(event, 'path'),
+        };
+      case 'Write':
+      case 'Edit':
+      case 'MultiEdit':
+        final String? filePath = _resultMetadataValue(event, 'filePath');
+        if (filePath == null) {
+          return null;
+        }
+        return <String, dynamic>{'file_path': filePath};
+      default:
+        return null;
+    }
+  }
+
+  String? _toolResultMetadataSummary({
+    required String toolName,
+    required OpenCrayChatRuntimeEventSnapshot event,
+  }) {
+    switch (toolName) {
+      case 'LS':
+        final int? entryCount = _resultMetadataInt(event, 'entryCount');
+        final String? path = _resultMetadataValue(event, 'path');
+        if (entryCount == null) {
+          return null;
+        }
+        if (widget.copy.isChinese) {
+          return path == null
+              ? '列出了 $entryCount 项'
+              : '在 $path 中列出了 $entryCount 项';
+        }
+        return path == null
+            ? 'Listed $entryCount entr${entryCount == 1 ? 'y' : 'ies'}'
+            : 'Listed $entryCount entr${entryCount == 1 ? 'y' : 'ies'} in $path';
+      case 'Read':
+        final int? returnedLineCount = _resultMetadataInt(
+          event,
+          'returnedLineCount',
+        );
+        final int? totalLineCount = _resultMetadataInt(event, 'totalLineCount');
+        final bool truncated = _resultMetadataBool(event, 'truncated') == true;
+        final String? filePath = _resultMetadataValue(event, 'filePath');
+        if (returnedLineCount == null &&
+            totalLineCount == null &&
+            !truncated &&
+            filePath == null) {
+          return null;
+        }
+        if (widget.copy.isChinese) {
+          final List<String> parts = <String>[
+            if (filePath != null) filePath,
+            if (returnedLineCount != null) '返回 $returnedLineCount 行',
+            if (totalLineCount != null) '文件总计 $totalLineCount 行',
+            if (truncated) '结果已按读取预算截断',
+          ];
+          return parts.join('，');
+        }
+        final List<String> parts = <String>[
+          if (returnedLineCount != null)
+            returnedLineCount == 1
+                ? 'Returned 1 line'
+                : 'Returned $returnedLineCount lines',
+          if (filePath != null) 'from $filePath',
+          if (totalLineCount != null)
+            totalLineCount == 1
+                ? '(1-line file)'
+                : '($totalLineCount-line file)',
+          if (truncated) 'Output truncated to the read budget.',
+        ];
+        return parts.join(' ');
+      case 'Grep':
+        final int? matchCount = _resultMetadataInt(event, 'matchCount');
+        final String? pattern = _resultMetadataValue(event, 'pattern');
+        final String? path = _resultMetadataValue(event, 'path');
+        if (matchCount == null) {
+          return null;
+        }
+        if (widget.copy.isChinese) {
+          final String target = path ?? '.';
+          if (pattern == null) {
+            return '在 $target 中找到 $matchCount 处匹配';
+          }
+          return '在 $target 中为 "$pattern" 找到 $matchCount 处匹配';
+        }
+        final String target = path ?? '.';
+        if (pattern == null) {
+          return matchCount == 1
+              ? 'Found 1 match in $target'
+              : 'Found $matchCount matches in $target';
+        }
+        return matchCount == 1
+            ? 'Found 1 match for "$pattern" in $target'
+            : 'Found $matchCount matches for "$pattern" in $target';
+      case 'Glob':
+        final int? matchCount = _resultMetadataInt(event, 'matchCount');
+        final String? pattern = _resultMetadataValue(event, 'pattern');
+        final String? path = _resultMetadataValue(event, 'path');
+        if (matchCount == null) {
+          return null;
+        }
+        if (widget.copy.isChinese) {
+          final String target = path ?? '.';
+          return pattern == null
+              ? '在 $target 中匹配到 $matchCount 个路径'
+              : '在 $target 中为 $pattern 匹配到 $matchCount 个路径';
+        }
+        final String target = path ?? '.';
+        return pattern == null
+            ? 'Matched $matchCount path(s) in $target'
+            : 'Matched $matchCount path(s) for $pattern in $target';
+      case 'Edit':
+        final int? replacementCount = _resultMetadataInt(
+          event,
+          'replacementCount',
+        );
+        final String? filePath = _resultMetadataValue(event, 'filePath');
+        if (replacementCount == null) {
+          return null;
+        }
+        if (widget.copy.isChinese) {
+          return filePath == null
+              ? '应用了 $replacementCount 处替换'
+              : '在 $filePath 中应用了 $replacementCount 处替换';
+        }
+        return filePath == null
+            ? 'Applied $replacementCount replacement(s)'
+            : 'Applied $replacementCount replacement(s) in $filePath';
+      case 'MultiEdit':
+        final int? replacementCount = _resultMetadataInt(
+          event,
+          'replacementCount',
+        );
+        final int? editCount = _resultMetadataInt(event, 'editCount');
+        final String? filePath = _resultMetadataValue(event, 'filePath');
+        if (replacementCount == null && editCount == null && filePath == null) {
+          return null;
+        }
+        if (widget.copy.isChinese) {
+          final List<String> parts = <String>[
+            if (filePath != null) filePath,
+            if (replacementCount != null) '$replacementCount 处替换',
+            if (editCount != null) '$editCount 个编辑块',
+          ];
+          return parts.isEmpty ? null : '应用了 ${parts.join('，')}';
+        }
+        final List<String> parts = <String>[
+          if (replacementCount != null) '$replacementCount replacement(s)',
+          if (editCount != null) 'across $editCount edit(s)',
+          if (filePath != null) 'in $filePath',
+        ];
+        return parts.isEmpty ? null : 'Applied ${parts.join(' ')}';
+      case 'TodoWrite':
+        final int? todoCount = _resultMetadataInt(event, 'todoCount');
+        final bool? mutated = _resultMetadataBool(event, 'mutated');
+        if (todoCount == null) {
+          return null;
+        }
+        if (widget.copy.isChinese) {
+          if (mutated == true) {
+            return '待办列表已更新，共 $todoCount 项';
+          }
+          return '当前待办列表共 $todoCount 项';
+        }
+        if (mutated == true) {
+          return 'Updated the todo list to $todoCount item(s)';
+        }
+        return 'Current todo list has $todoCount item(s)';
+      default:
+        return null;
+    }
+  }
+
   Map<String, dynamic>? _decodeJsonObject(String? rawJson) {
     final String? normalized = _nonEmpty(rawJson);
     if (normalized == null) {
@@ -1677,6 +2365,28 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     return normalized.isEmpty ? null : normalized;
   }
 
+  String? _resultMetadataValue(
+    OpenCrayChatRuntimeEventSnapshot event,
+    String key,
+  ) => _nonEmpty(event.resultMetadata[key]);
+
+  int? _resultMetadataInt(OpenCrayChatRuntimeEventSnapshot event, String key) =>
+      int.tryParse(event.resultMetadata[key]?.trim() ?? '');
+
+  bool? _resultMetadataBool(
+    OpenCrayChatRuntimeEventSnapshot event,
+    String key,
+  ) {
+    final String value = event.resultMetadata[key]?.trim().toLowerCase() ?? '';
+    if (value == 'true') {
+      return true;
+    }
+    if (value == 'false') {
+      return false;
+    }
+    return null;
+  }
+
   static const Set<String> _thinkingPlaceholders = <String>{
     'Thinking',
     'Thinking…',
@@ -1699,6 +2409,7 @@ class _ChatScrollContent extends StatelessWidget {
     required this.busyApprovalTaskIds,
     required this.onApproveApproval,
     required this.onRejectApproval,
+    required this.onMessageLongPress,
   });
 
   final OpenCrayUiCopy copy;
@@ -1706,6 +2417,7 @@ class _ChatScrollContent extends StatelessWidget {
   final Set<String> busyApprovalTaskIds;
   final ValueChanged<ChatPendingApprovalData> onApproveApproval;
   final ValueChanged<ChatPendingApprovalData> onRejectApproval;
+  final void Function(ChatMessageData, Rect) onMessageLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -1729,6 +2441,7 @@ class _ChatScrollContent extends StatelessWidget {
             busyApprovalTaskIds: busyApprovalTaskIds,
             onApproveApproval: onApproveApproval,
             onRejectApproval: onRejectApproval,
+            onMessageLongPress: onMessageLongPress,
           ),
       ],
     );
@@ -1912,6 +2625,25 @@ class _PendingApprovalCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final String requestSummary = approval.requestSummary.trim();
+    final String primaryDetail = approval.primaryDetail.trim();
+    final List<String> pathDetails = approval.pathDetails
+        .map((path) => path.trim())
+        .where((path) => path.isNotEmpty)
+        .toList(growable: false);
+    final String workingDirectory = approval.workingDirectory.trim();
+    final String reason = approval.reason.trim();
+    final String message = approval.message.trim();
+    final String body = approval.body.trim();
+    final String detailMessage = message.isNotEmpty
+        ? message
+        : (requestSummary.isEmpty &&
+              primaryDetail.isEmpty &&
+              pathDetails.isEmpty &&
+              workingDirectory.isEmpty &&
+              reason.isEmpty)
+        ? body
+        : '';
     final Color accentColor = approval.isHighRisk
         ? _ChatPalette.highRiskAccent
         : _ChatPalette.accent;
@@ -1938,7 +2670,35 @@ class _PendingApprovalCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
                 Expanded(
-                  child: Text(approval.title, style: _ChatTextStyles.cardTitle),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(approval.title, style: _ChatTextStyles.cardTitle),
+                      if (approval.toolName.trim().isNotEmpty) ...<Widget>[
+                        const SizedBox(height: 6),
+                        DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: _ChatPalette.subtleSurface,
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(color: _ChatPalette.border),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            child: Text(
+                              approval.toolName,
+                              style: _ChatTextStyles.approvalAction.copyWith(
+                                color: _ChatPalette.textPrimary,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
                 ),
                 if (approval.isHighRisk) ...<Widget>[
                   const SizedBox(width: 12),
@@ -1961,9 +2721,46 @@ class _PendingApprovalCard extends StatelessWidget {
                 ],
               ],
             ),
-            if (approval.body.trim().isNotEmpty) ...<Widget>[
+            if (requestSummary.isNotEmpty) ...<Widget>[
               const SizedBox(height: 8),
-              Text(approval.body, style: _ChatTextStyles.bodyMuted),
+              _ApprovalDetailSection(
+                label: copy.chatApprovalRequestLabel,
+                value: requestSummary,
+                emphasize: true,
+              ),
+            ],
+            if (primaryDetail.isNotEmpty &&
+                primaryDetail != requestSummary) ...<Widget>[
+              const SizedBox(height: 8),
+              _ApprovalDetailSection(
+                label: copy.chatApprovalDetailsLabel,
+                value: primaryDetail,
+              ),
+            ],
+            if (pathDetails.isNotEmpty) ...<Widget>[
+              const SizedBox(height: 8),
+              _ApprovalDetailSection(
+                label: copy.chatApprovalPathsLabel,
+                value: pathDetails.join('\n'),
+              ),
+            ],
+            if (workingDirectory.isNotEmpty) ...<Widget>[
+              const SizedBox(height: 8),
+              _ApprovalDetailSection(
+                label: copy.chatApprovalWorkingDirectoryLabel,
+                value: workingDirectory,
+              ),
+            ],
+            if (reason.isNotEmpty) ...<Widget>[
+              const SizedBox(height: 8),
+              _ApprovalDetailSection(
+                label: copy.chatApprovalReasonLabel,
+                value: reason,
+              ),
+            ],
+            if (detailMessage.isNotEmpty) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(detailMessage, style: _ChatTextStyles.bodyMuted),
             ],
             const SizedBox(height: 12),
             Row(
@@ -1992,6 +2789,46 @@ class _PendingApprovalCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _ApprovalDetailSection extends StatelessWidget {
+  const _ApprovalDetailSection({
+    required this.label,
+    required this.value,
+    this.emphasize = false,
+  });
+
+  final String label;
+  final String value;
+  final bool emphasize;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Text(label, style: _ChatTextStyles.sectionLabel),
+        const SizedBox(height: 4),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            color: emphasize ? _ChatPalette.subtleSurface : Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: _ChatPalette.border),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Text(
+              value,
+              style: _ChatTextStyles.bodyMuted.copyWith(
+                color: _ChatPalette.textPrimary,
+                fontWeight: emphasize ? FontWeight.w600 : FontWeight.w500,
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -2051,6 +2888,7 @@ class _MessageList extends StatelessWidget {
     required this.busyApprovalTaskIds,
     required this.onApproveApproval,
     required this.onRejectApproval,
+    required this.onMessageLongPress,
   });
 
   final OpenCrayUiCopy copy;
@@ -2060,6 +2898,7 @@ class _MessageList extends StatelessWidget {
   final Set<String> busyApprovalTaskIds;
   final ValueChanged<ChatPendingApprovalData> onApproveApproval;
   final ValueChanged<ChatPendingApprovalData> onRejectApproval;
+  final void Function(ChatMessageData, Rect) onMessageLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -2098,11 +2937,12 @@ class _MessageList extends StatelessWidget {
               padding: const EdgeInsets.only(bottom: 12),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: _Bubble(
-                  text: message.text,
+                child: _ChatMessageBubble(
+                  message: message,
                   backgroundColor: Colors.white,
                   textColor: _ChatPalette.textPrimary,
                   maxWidth: 252,
+                  onLongPress: onMessageLongPress,
                 ),
               ),
             ),
@@ -2113,11 +2953,12 @@ class _MessageList extends StatelessWidget {
               padding: const EdgeInsets.only(bottom: 12),
               child: Align(
                 alignment: Alignment.centerRight,
-                child: _Bubble(
-                  text: message.text,
+                child: _ChatMessageBubble(
+                  message: message,
                   backgroundColor: _ChatPalette.accent,
                   textColor: Colors.white,
                   maxWidth: 236,
+                  onLongPress: onMessageLongPress,
                 ),
               ),
             ),
@@ -2509,35 +3350,278 @@ class _RunTraceHistoryCard extends StatelessWidget {
   }
 }
 
-class _Bubble extends StatelessWidget {
-  const _Bubble({
-    required this.text,
-    required this.backgroundColor,
-    required this.textColor,
-    required this.maxWidth,
+class _ChatMessageMenuOverlay extends StatelessWidget {
+  const _ChatMessageMenuOverlay({
+    required this.copy,
+    required this.menu,
+    required this.onActionSelected,
   });
 
-  final String text;
-  final Color backgroundColor;
-  final Color textColor;
-  final double maxWidth;
+  final OpenCrayUiCopy copy;
+  final _ActiveChatMessageMenu menu;
+  final ValueChanged<_ChatMessageMenuAction> onActionSelected;
 
   @override
   Widget build(BuildContext context) {
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxWidth: maxWidth),
-      child: DecoratedBox(
-        decoration: ShapeDecoration(
-          color: backgroundColor,
-          shape: const RoundedSuperellipseBorder(
-            borderRadius: BorderRadius.all(Radius.circular(18)),
+    const double menuWidth = 202;
+    const double menuHeight = 118;
+    final Size screenSize = MediaQuery.sizeOf(context);
+    final double minTop = MediaQuery.paddingOf(context).top + 44 + 12;
+    final double unclampedLeft = menu.isOutgoing
+        ? menu.bubbleRect.right - menuWidth
+        : menu.bubbleRect.left;
+    final double left = unclampedLeft.clamp(
+      20.0,
+      screenSize.width - menuWidth - 20,
+    );
+    final double top = (menu.bubbleRect.top - menuHeight - 8).clamp(
+      minTop,
+      screenSize.height - menuHeight - 12,
+    );
+
+    return Stack(
+      children: <Widget>[
+        Positioned(
+          left: left,
+          top: top,
+          child: TweenAnimationBuilder<double>(
+            duration: const Duration(milliseconds: 140),
+            curve: Curves.easeOutCubic,
+            tween: Tween<double>(begin: 0.94, end: 1),
+            builder: (BuildContext context, double value, Widget? child) {
+              return Opacity(
+                opacity: value.clamp(0, 1),
+                child: Transform.scale(scale: value, child: child),
+              );
+            },
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                child: Container(
+                  width: menuWidth,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.92),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: const Color(0xCCFFFFFF)),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      Row(
+                        children: <Widget>[
+                          _ChatMessageMenuItem(
+                            icon: CupertinoIcons.doc_on_doc,
+                            label: copy.chatMessageCopyAction,
+                            onTap: () =>
+                                onActionSelected(_ChatMessageMenuAction.copy),
+                          ),
+                          const SizedBox(width: 12),
+                          _ChatMessageMenuItem(
+                            icon: Icons.undo_rounded,
+                            label: copy.chatMessageRecallAction,
+                            enabled: menu.canRecall,
+                            onTap: menu.canRecall
+                                ? () => onActionSelected(
+                                    _ChatMessageMenuAction.recall,
+                                  )
+                                : null,
+                          ),
+                          const SizedBox(width: 12),
+                          _ChatMessageMenuItem(
+                            icon: CupertinoIcons.delete_left,
+                            label: copy.chatMessageDeleteAction,
+                            isDestructive: true,
+                            onTap: () =>
+                                onActionSelected(_ChatMessageMenuAction.delete),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: <Widget>[
+                          _ChatMessageMenuItem(
+                            icon: CupertinoIcons.check_mark_circled,
+                            label: copy.chatMessageSelectAction,
+                            onTap: () => onActionSelected(
+                              _ChatMessageMenuAction.multiSelect,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          _ChatMessageMenuItem(
+                            icon: CupertinoIcons.reply,
+                            label: copy.chatMessageQuoteAction,
+                            onTap: () =>
+                                onActionSelected(_ChatMessageMenuAction.quote),
+                          ),
+                          const SizedBox(width: 12),
+                          const SizedBox(width: 52, height: 46),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           ),
         ),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Text(
-            text,
-            style: _ChatTextStyles.bubble.copyWith(color: textColor),
+      ],
+    );
+  }
+}
+
+class _ChatMessageMenuItem extends StatelessWidget {
+  const _ChatMessageMenuItem({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.enabled = true,
+    this.isDestructive = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+  final bool enabled;
+  final bool isDestructive;
+
+  @override
+  Widget build(BuildContext context) {
+    final Color foregroundColor = isDestructive
+        ? const Color(0xFFFF3B30)
+        : const Color(0xFF1C1C1E);
+    final Color labelColor = isDestructive
+        ? const Color(0xFFFF3B30)
+        : const Color(0xFF636366);
+    return GestureDetector(
+      onTap: enabled ? onTap : null,
+      behavior: HitTestBehavior.opaque,
+      child: Opacity(
+        opacity: enabled ? 1 : 0.34,
+        child: SizedBox(
+          width: 52,
+          height: 46,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: <Widget>[
+              Icon(icon, size: 17, color: foregroundColor),
+              const SizedBox(height: 3),
+              Text(
+                label,
+                style: _ChatTextStyles.messageMenuLabel.copyWith(
+                  color: labelColor,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ChatMessageBubble extends StatefulWidget {
+  const _ChatMessageBubble({
+    required this.message,
+    required this.backgroundColor,
+    required this.textColor,
+    required this.maxWidth,
+    required this.onLongPress,
+  });
+
+  final ChatMessageData message;
+  final Color backgroundColor;
+  final Color textColor;
+  final double maxWidth;
+  final void Function(ChatMessageData, Rect) onLongPress;
+
+  @override
+  State<_ChatMessageBubble> createState() => _ChatMessageBubbleState();
+}
+
+class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
+  static const Duration _menuDelay = Duration(milliseconds: 220);
+  static const double _cancelDistance = 18;
+
+  Timer? _longPressTimer;
+  Offset? _pointerDownGlobalPosition;
+  bool _didOpenMenu = false;
+
+  @override
+  void dispose() {
+    _longPressTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startLongPressTimer(PointerDownEvent event) {
+    _longPressTimer?.cancel();
+    _pointerDownGlobalPosition = event.position;
+    _didOpenMenu = false;
+    _longPressTimer = Timer(_menuDelay, _openMenuFromCurrentBounds);
+  }
+
+  void _handlePointerMove(PointerMoveEvent event) {
+    final Offset? origin = _pointerDownGlobalPosition;
+    if (origin == null) {
+      return;
+    }
+    if ((event.position - origin).distance > _cancelDistance) {
+      _longPressTimer?.cancel();
+    }
+  }
+
+  void _cancelLongPressTimer() {
+    _longPressTimer?.cancel();
+    _longPressTimer = null;
+    _pointerDownGlobalPosition = null;
+  }
+
+  void _openMenuFromCurrentBounds() {
+    if (!mounted || _didOpenMenu) {
+      return;
+    }
+    final RenderObject? renderObject = context.findRenderObject();
+    if (renderObject is! RenderBox) {
+      return;
+    }
+    _didOpenMenu = true;
+    widget.onLongPress(
+      widget.message,
+      renderObject.localToGlobal(Offset.zero) & renderObject.size,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      key: ValueKey<String>('chat-bubble-${widget.message.messageId}'),
+      onPointerDown: _startLongPressTimer,
+      onPointerMove: _handlePointerMove,
+      onPointerUp: (_) => _cancelLongPressTimer(),
+      onPointerCancel: (_) => _cancelLongPressTimer(),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: widget.maxWidth),
+        child: DecoratedBox(
+          decoration: ShapeDecoration(
+            color: widget.backgroundColor,
+            shape: const RoundedSuperellipseBorder(
+              borderRadius: BorderRadius.all(Radius.circular(18)),
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: SelectionArea(
+              contextMenuBuilder:
+                  (
+                    BuildContext context,
+                    SelectableRegionState selectableRegionState,
+                  ) => const SizedBox.shrink(),
+              child: Text(
+                widget.message.text,
+                style: _ChatTextStyles.bubble.copyWith(color: widget.textColor),
+              ),
+            ),
           ),
         ),
       ),
@@ -3323,6 +4407,13 @@ class _ChatTextStyles {
     fontSize: 14,
     height: 1.35,
     fontWeight: FontWeight.w500,
+  );
+
+  static const TextStyle messageMenuLabel = TextStyle(
+    fontSize: 11,
+    height: 1.1,
+    fontWeight: FontWeight.w500,
+    letterSpacing: -0.1,
   );
 
   static const TextStyle timeline = TextStyle(

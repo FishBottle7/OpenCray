@@ -12,6 +12,7 @@ object SessionTranscriptRules {
   const val MAX_DISCOVERY_TOOL_INTERACTIONS: Int = 2
   const val MAX_EXECUTION_TOOL_INTERACTIONS: Int = 1
   const val MAX_STATEFUL_TOOL_INTERACTIONS: Int = 1
+  const val MAX_PROGRESS_OBSERVATIONS: Int = 3
   const val MAX_GENERIC_TOOL_INTERACTIONS: Int = 1
 
   fun normalize(messages: List<RuntimeConversationMessage>): List<RuntimeConversationMessage> =
@@ -59,6 +60,9 @@ object SessionTranscriptRules {
       .forEach { interaction -> interaction.forEach { indexesToKeep += it.index } }
     groupedObservations.values
       .filterByCategory(ToolReplayCategory.STATEFUL, MAX_STATEFUL_TOOL_INTERACTIONS)
+      .forEach { interaction -> interaction.forEach { indexesToKeep += it.index } }
+    groupedObservations.values
+      .filterByCategory(ToolReplayCategory.PROGRESS, MAX_PROGRESS_OBSERVATIONS)
       .forEach { interaction -> interaction.forEach { indexesToKeep += it.index } }
     groupedObservations.values
       .filterByCategory(ToolReplayCategory.GENERIC, MAX_GENERIC_TOOL_INTERACTIONS)
@@ -110,10 +114,43 @@ object SessionTranscriptRules {
         payload = normalizedContent.removePrefix("tool_result ").trim(),
       )
     }
+    if (normalizedContent.startsWith("progress ")) {
+      return parseReplayProgressObservation(
+        index = index,
+        payload = normalizedContent.removePrefix("progress ").trim(),
+      )
+    }
     return ToolReplayObservation(
       index = index,
       groupKey = "generic:$index",
       category = ToolReplayCategory.GENERIC,
+    )
+  }
+
+  private fun parseReplayProgressObservation(
+    index: Int,
+    payload: String,
+  ): ToolReplayObservation {
+    val decoded = runCatching { replayJson.parseToJsonElement(payload).jsonObject }.getOrNull()
+      ?: return ToolReplayObservation(
+        index = index,
+        groupKey = "progress:$index",
+        category = ToolReplayCategory.PROGRESS,
+      )
+
+    val groupKey = listOf(
+      decoded.stringValue("run_id").orEmpty(),
+      decoded.stringValue("task_id").orEmpty(),
+      decoded.stringValue("turn").orEmpty(),
+      decoded.stringValue("stage").orEmpty(),
+    ).joinToString(separator = "|")
+      .takeIf(String::isNotBlank)
+      ?.let { key -> "progress:$key" }
+      ?: "progress:$index"
+    return ToolReplayObservation(
+      index = index,
+      groupKey = groupKey,
+      category = ToolReplayCategory.PROGRESS,
     )
   }
 
@@ -236,6 +273,7 @@ object SessionTranscriptRules {
     DISCOVERY,
     EXECUTION,
     STATEFUL,
+    PROGRESS,
     GENERIC,
   }
 

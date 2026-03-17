@@ -3,6 +3,7 @@ package com.opencray.runtime.web
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.SocketTimeoutException
 import java.net.URLEncoder
 import java.net.URL
@@ -12,10 +13,12 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.put
 
 private const val DEFAULT_WEB_SEARCH_USER_AGENT: String = "OpenCray-WebSearch/1.0"
@@ -117,6 +120,7 @@ class SequentialWebSearchProvider(
   override val providerName: String = "configured-web-search"
 
   override fun search(request: WebSearchRequest): WebSearchResult {
+    val normalizedRequest = request.normalized()
     val activeSlots = configuredSlots.filter { slot ->
       slot.enabled && slot.apiKey.isNotBlank()
     }
@@ -130,7 +134,7 @@ class SequentialWebSearchProvider(
 
     val failures = mutableListOf<String>()
     activeSlots.forEach { slot ->
-      when (val outcome = searchWithSlot(slot = slot, request = request)) {
+      when (val outcome = searchWithSlot(slot = slot, request = normalizedRequest)) {
         is ProviderSearchOutcome.Success -> {
           return WebSearchResult(
             providerName = slot.displayName(),
@@ -182,6 +186,11 @@ class SequentialWebSearchProvider(
         body = buildJsonObject {
           put("query", request.query)
           put("numResults", request.maxResults)
+          if (request.domains.isNotEmpty()) {
+            putJsonArray("includeDomains") {
+              request.domains.forEach { domain -> add(JsonPrimitive(domain)) }
+            }
+          }
         }.toString(),
       ),
     )
@@ -192,7 +201,7 @@ class SequentialWebSearchProvider(
     val hits = payload.arrayValue("results")
       ?.mapNotNull { result -> exaHit(result.jsonObject) }
       .orEmpty()
-    return ProviderSearchOutcome.Success(hits)
+    return ProviderSearchOutcome.Success(request.filterHits(hits))
   }
 
   private fun searchTavily(
@@ -211,6 +220,11 @@ class SequentialWebSearchProvider(
           put("query", request.query)
           put("max_results", request.maxResults)
           put("search_depth", "basic")
+          if (request.domains.isNotEmpty()) {
+            putJsonArray("include_domains") {
+              request.domains.forEach { domain -> add(JsonPrimitive(domain)) }
+            }
+          }
         }.toString(),
       ),
     )
@@ -221,7 +235,7 @@ class SequentialWebSearchProvider(
     val hits = payload.arrayValue("results")
       ?.mapNotNull { result -> tavilyHit(result.jsonObject) }
       .orEmpty()
-    return ProviderSearchOutcome.Success(hits)
+    return ProviderSearchOutcome.Success(request.filterHits(hits))
   }
 
   private fun searchBrave(
@@ -229,10 +243,11 @@ class SequentialWebSearchProvider(
     request: WebSearchRequest,
   ): ProviderSearchOutcome {
     val encodedQuery = URLEncoder.encode(request.query, StandardCharsets.UTF_8.name())
+    val requestedCount = request.providerFetchResultCount()
     val response = transport.execute(
       WebSearchHttpRequest(
         method = "GET",
-        url = "https://api.search.brave.com/res/v1/web/search?q=$encodedQuery&count=${request.maxResults}",
+        url = "https://api.search.brave.com/res/v1/web/search?q=$encodedQuery&count=$requestedCount",
         headers = mapOf(
           "X-Subscription-Token" to slot.apiKey,
         ),
@@ -246,7 +261,7 @@ class SequentialWebSearchProvider(
       ?.arrayValue("results")
       ?.mapNotNull { result -> braveHit(result.jsonObject) }
       .orEmpty()
-    return ProviderSearchOutcome.Success(hits)
+    return ProviderSearchOutcome.Success(request.filterHits(hits))
   }
 
   private fun exaHit(result: JsonObject): WebSearchHit? {
@@ -300,6 +315,59 @@ class SequentialWebSearchProvider(
 
   private fun parseJsonObject(source: String): JsonObject = json.parseToJsonElement(source).jsonObject
 
+  private fun WebSearchRequest.normalized(): WebSearchRequest = copy(
+    query = query.trim(),
+    domains = domains
+      .mapNotNull(::normalizeDomain)
+      .distinct(),
+  )
+
+  private fun WebSearchRequest.providerFetchResultCount(): Int =
+    if (domains.isEmpty()) {
+      maxResults
+    } else {
+      (maxResults * BRAVE_DOMAIN_FETCH_MULTIPLIER).coerceAtMost(MAX_PROVIDER_FETCH_RESULTS)
+    }
+
+  private fun WebSearchRequest.filterHits(hits: List<WebSearchHit>): List<WebSearchHit> {
+    if (domains.isEmpty()) {
+      return hits.take(maxResults)
+    }
+    return hits
+      .filter { hit -> hit.matchesAnyDomain(domains) }
+      .take(maxResults)
+  }
+
+  private fun WebSearchHit.matchesAnyDomain(domains: List<String>): Boolean {
+    val host = extractHost(url) ?: return false
+    return domains.any { domain ->
+      host == domain || host.endsWith(".$domain")
+    }
+  }
+
+  private fun extractHost(rawUrl: String): String? = runCatching {
+    URI(rawUrl.trim()).host
+      ?.trim()
+      ?.lowercase()
+      ?.removePrefix(".")
+      ?.takeIf(String::isNotBlank)
+  }.getOrNull()
+
+  private fun normalizeDomain(rawDomain: String): String? {
+    val trimmed = rawDomain.trim()
+    if (trimmed.isEmpty()) {
+      return null
+    }
+    val withScheme = if ("://" in trimmed) trimmed else "https://$trimmed"
+    val host = runCatching { URI(withScheme).host }.getOrNull()
+      ?.trim()
+      ?.lowercase()
+      ?.removePrefix("www.")
+      ?.removePrefix(".")
+      ?.takeIf(String::isNotBlank)
+    return host
+  }
+
   private fun httpErrorMessage(response: WebSearchHttpResponse): String {
     val payload = runCatching { parseJsonObject(response.body) }.getOrNull()
     val detail = firstNonBlank(
@@ -348,6 +416,8 @@ class SequentialWebSearchProvider(
 
   private companion object {
     private const val MAX_SNIPPET_CHARS: Int = 280
+    private const val MAX_PROVIDER_FETCH_RESULTS: Int = 20
+    private const val BRAVE_DOMAIN_FETCH_MULTIPLIER: Int = 4
     private val WHITESPACE_REGEX = Regex("\\s+")
   }
 }

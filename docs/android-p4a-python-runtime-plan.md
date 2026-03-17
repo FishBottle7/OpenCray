@@ -403,12 +403,47 @@ Python 入口脚本建议只处理一个请求，然后退出。
 - 已加入 `tools/android_python_runtime_p4a/` 脚手架与 Python 入口脚本
 - 已加入 Android launcher contract 与 `service/main.py` worker 脚手架
 - `app` 已支持自动加载 `tools/android_python_runtime_p4a/dist/*.aar`
+- Android launcher 已切换到 `p4a service_library` 模型，约定生成类名为 `org.opencray.app.ServiceOpencraypython`
+- 已加入仓库根构建脚本 `build-p4a-service-library.sh`
+- Python service worker 已支持从 `PYTHON_SERVICE_ARGUMENT` 读取 `runtimeRoot`
 - 真正的 `p4a` 打包产物与 Python service 入口仍未接入，因此本阶段尚未验收完成
 
 验收：
 
 - 真机或模拟器上能运行 `print("hello")`
 - Kotlin 能得到 `SUCCESS` 和 `stdout`
+
+建议的首条实际构建命令：
+
+```bash
+./build-p4a-service-library.sh
+```
+
+Windows 日常构建入口：
+
+```powershell
+./build-apk.ps1
+```
+
+当前 Windows 构建行为：
+
+- `build-apk.ps1` 会先检查 `tools/android_python_runtime_p4a/dist/*.aar`
+- 如果 AAR 不存在，会直接退出并提示先去 WSL 运行 `build-p4a-service-library.sh`
+- `build-apk.ps1` 不再负责跨 Windows/WSL 自动构建 `p4a`
+- `p4a` 构建链单独在 WSL/Linux 内闭环
+
+当前脚本约定：
+
+- `python -m pythonforandroid.toolchain aar`
+- `bootstrap=service_library`
+- `service=opencraypython:python_runner/p4a_service_main.py`
+- 输出 AAR 复制到 `tools/android_python_runtime_p4a/dist/`
+
+建议流程：
+
+1. 在 WSL 里运行 `./build-p4a-service-library.sh`
+2. 确认 `tools/android_python_runtime_p4a/dist/*.aar` 已生成
+3. 回到 Windows 运行 `./build-apk.ps1`
 
 ### Phase 3：接入 `python_exec`
 

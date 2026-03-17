@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_debug_snapshot.dart';
 import '../models/opencray_file_image_preview.dart';
 import '../models/opencray_file_text_preview.dart';
 import '../models/opencray_files_snapshot.dart';
@@ -127,6 +128,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
              rollbackJournalEnabled: true,
              maxFilesPerBatch: 20,
              maxAgentTurns: 0,
+             maxToolCalls: 0,
              undoWindowHours: 24,
              fileChangesPolicyId: 'inherit',
              fileDeletesPolicyId: 'inherit',
@@ -214,6 +216,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
              ),
              messages: <OpenCrayChatMessageSnapshot>[
                OpenCrayChatMessageSnapshot(
+                 messageId: 'seed-message-1',
                  kind: 'inbound',
                  text: 'Seed bridge ready.',
                ),
@@ -276,6 +279,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   OpenCraySafetySettingsSnapshot _safetySettings;
   OpenCraySkillsSnapshot _skillsSnapshot;
   OpenCrayChatSnapshot _chatSnapshot;
+  int _seedMessageCounter = 1;
 
   List<String> get shownNativeToasts =>
       List<String>.unmodifiable(_shownNativeToasts);
@@ -780,6 +784,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     required bool rollbackJournalEnabled,
     required int maxFilesPerBatch,
     int maxAgentTurns = 0,
+    int maxToolCalls = 0,
     required int undoWindowHours,
     required String fileChangesPolicyId,
     required String fileDeletesPolicyId,
@@ -797,6 +802,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       rollbackJournalEnabled: rollbackJournalEnabled,
       maxFilesPerBatch: maxFilesPerBatch,
       maxAgentTurns: maxAgentTurns,
+      maxToolCalls: maxToolCalls,
       undoWindowHours: undoWindowHours,
       fileChangesPolicyId: fileChangesPolicyId,
       fileDeletesPolicyId: fileDeletesPolicyId,
@@ -919,6 +925,23 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId) async =>
       null;
+
+  @override
+  Future<OpenCrayMemoryDebugSnapshot> loadMemoryDebugSnapshot() async =>
+      const OpenCrayMemoryDebugSnapshot(
+        sessionId: '',
+        observedAtEpochMs: 0,
+        records: <OpenCrayMemoryDebugRecordSnapshot>[],
+      );
+
+  @override
+  Future<OpenCraySoulDebugSnapshot> loadSoulDebugSnapshot() async =>
+      const OpenCraySoulDebugSnapshot(
+        sessionId: '',
+        observedAtEpochMs: 0,
+        overlayRecords: <OpenCrayMemoryDebugRecordSnapshot>[],
+        fieldSources: <OpenCraySoulFieldSourceSnapshot>[],
+      );
 
   @override
   Future<OpenCrayChatRunSnapshot?> waitForChatRun(
@@ -1060,6 +1083,68 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   Future<void> selectChatSession(String sessionId) async {}
 
   @override
+  Future<void> deleteChatMessage({
+    required String sessionId,
+    required String messageId,
+  }) async {
+    if (sessionId != _activeChatSessionId || messageId.trim().isEmpty) {
+      return;
+    }
+    final updatedMessages = _chatSnapshot.messages
+        .where((message) => message.messageId != messageId)
+        .toList(growable: false);
+    if (updatedMessages.length == _chatSnapshot.messages.length) {
+      return;
+    }
+    _chatSnapshot = OpenCrayChatSnapshot(
+      screenTitle: _chatSnapshot.screenTitle,
+      modeLabel: _chatSnapshot.modeLabel,
+      sessionButtonLabel: _chatSnapshot.sessionButtonLabel,
+      composerPlaceholder: _chatSnapshot.composerPlaceholder,
+      summary: _chatSnapshot.summary,
+      messages: updatedMessages,
+      drawer: _chatSnapshot.drawer,
+      isInputEnabled: _chatSnapshot.isInputEnabled,
+      pendingApprovals: _chatSnapshot.pendingApprovals,
+    );
+    _emitChatSnapshot();
+  }
+
+  @override
+  Future<void> recallChatMessage({
+    required String sessionId,
+    required String messageId,
+  }) async {
+    if (sessionId != _activeChatSessionId || messageId.trim().isEmpty) {
+      return;
+    }
+    final recallIndex = _chatSnapshot.messages.indexWhere(
+      (message) => message.messageId == messageId,
+    );
+    if (recallIndex < 0) {
+      return;
+    }
+    final recalledMessage = _chatSnapshot.messages[recallIndex];
+    if (recalledMessage.kind != 'outbound') {
+      return;
+    }
+    _chatSnapshot = OpenCrayChatSnapshot(
+      screenTitle: _chatSnapshot.screenTitle,
+      modeLabel: _chatSnapshot.modeLabel,
+      sessionButtonLabel: _chatSnapshot.sessionButtonLabel,
+      composerPlaceholder: _chatSnapshot.composerPlaceholder,
+      summary: _chatSnapshot.summary,
+      messages: _chatSnapshot.messages
+          .take(recallIndex)
+          .toList(growable: false),
+      drawer: _chatSnapshot.drawer,
+      isInputEnabled: _chatSnapshot.isInputEnabled,
+      pendingApprovals: _chatSnapshot.pendingApprovals,
+    );
+    _emitChatSnapshot();
+  }
+
+  @override
   Future<OpenCrayChatRunSubmission?> submitChatMessage(String text) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) {
@@ -1073,8 +1158,13 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       summary: _chatSnapshot.summary,
       messages: <OpenCrayChatMessageSnapshot>[
         ..._chatSnapshot.messages,
-        OpenCrayChatMessageSnapshot(kind: 'outbound', text: trimmed),
-        const OpenCrayChatMessageSnapshot(
+        OpenCrayChatMessageSnapshot(
+          messageId: _seedMessageId('seed-outbound'),
+          kind: 'outbound',
+          text: trimmed,
+        ),
+        OpenCrayChatMessageSnapshot(
+          messageId: _seedMessageId('seed-inbound'),
           kind: 'inbound',
           text: 'Seed bridge stored your message locally.',
         ),
@@ -1146,6 +1236,18 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     if (!_chatController.isClosed) {
       _chatController.add(_chatSnapshot);
     }
+  }
+
+  String get _activeChatSessionId => _chatSnapshot.drawer.sessions
+      .firstWhere(
+        (session) => session.isSelected,
+        orElse: () => _chatSnapshot.drawer.sessions.first,
+      )
+      .sessionId;
+
+  String _seedMessageId(String prefix) {
+    _seedMessageCounter += 1;
+    return '$prefix-$_seedMessageCounter';
   }
 
   OpenCrayChatSnapshot _copyChatSnapshotWith({
@@ -1333,7 +1435,8 @@ OpenCraySettingsDetailSnapshot _seedSettingsDetailFor(String routeId) {
         sections: <OpenCraySettingsSectionSnapshot>[
           OpenCraySettingsSectionSnapshot(
             title: 'Search slots',
-            helperText: 'Enabled provider keys run in order until one succeeds.',
+            helperText:
+                'Enabled provider keys run in order until one succeeds.',
             rows: <OpenCraySettingsRowSnapshot>[
               OpenCraySettingsRowSnapshot.value(
                 title: 'Configured slots',

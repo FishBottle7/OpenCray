@@ -24,9 +24,14 @@ import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.SessionLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
+import com.opencray.persistence.model.ChatTranscriptRole
+import com.opencray.persistence.model.MemoryRecord
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
+import com.opencray.runtime.memory.MemoryPreferenceKeys
+import com.opencray.runtime.memory.MemoryRecordExtensionKeys
+import com.opencray.runtime.memory.MemorySoulExtensionKeys
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.file.Path
@@ -412,6 +417,75 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun deleteAndRecallChatMessageRoutesMutateStoredTranscript() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-message-routes"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    chatStore.appendUserMessage(sessionId, "Delete this bubble")
+    chatStore.appendUserMessage(sessionId, "Recall this turn")
+    chatStore.appendMessage(
+      sessionId = sessionId,
+      role = ChatTranscriptRole.ASSISTANT,
+      text = "Trailing assistant reply",
+    )
+    val seededSession = checkNotNull(chatStore.loadSession(sessionId))
+    val deleteMessageId = seededSession.messages
+      .first { message -> message.role == ChatTranscriptRole.USER && message.text == "Delete this bubble" }
+      .messageId
+    val recallMessageId = seededSession.messages
+      .first { message -> message.role == ChatTranscriptRole.USER && message.text == "Recall this turn" }
+      .messageId
+    val hostRuntime = OpenCrayHostRuntime.createForTest(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      chatSessionStore = chatStore,
+      settingsFacade = NoOpSettingsFacade,
+      llmConfigFacade = EmptyLlmConfigFacade,
+      sessionRuntimeManager = NoOpRuntimeManager(),
+      strings = hostRuntimeStrings(),
+    )
+    val server = OpenCrayLocalRuntimeServer(
+      hostRuntimeProvider = { hostRuntime },
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+    )
+    server.ensureStarted()
+
+    try {
+      val deleteResponse = request(
+        server,
+        "POST",
+        "/v1/delete_chat_message",
+        body = JSONObject().apply {
+          put("sessionId", sessionId)
+          put("messageId", deleteMessageId)
+        }.toString(),
+      )
+      val recallResponse = request(
+        server,
+        "POST",
+        "/v1/recall_chat_message",
+        body = JSONObject().apply {
+          put("sessionId", sessionId)
+          put("messageId", recallMessageId)
+        }.toString(),
+      )
+      val remainingMessages = checkNotNull(chatStore.loadSession(sessionId)).messages
+
+      assertEquals(200, deleteResponse.statusCode)
+      assertEquals(200, recallResponse.statusCode)
+      assertTrue(remainingMessages.none { message -> message.messageId == deleteMessageId })
+      assertTrue(remainingMessages.none { message -> message.messageId == recallMessageId })
+      assertTrue(
+        remainingMessages.none { message ->
+          message.role == ChatTranscriptRole.ASSISTANT &&
+            message.text == "Trailing assistant reply"
+        },
+      )
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun exposesChatRuntimeSnapshotOverLoopbackHttp() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-runtime-route"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -693,6 +767,77 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun exposesMemoryFlushOverChatRunSnapshotRoute() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-memory-flush-route"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeManager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      resumeResult = false,
+    )
+    runtimeManager.handle = handle
+    val hostRuntime = OpenCrayHostRuntime.createForTest(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      chatSessionStore = chatStore,
+      settingsFacade = NoOpSettingsFacade,
+      llmConfigFacade = EmptyLlmConfigFacade,
+      sessionRuntimeManager = runtimeManager,
+      strings = hostRuntimeStrings(),
+    )
+    val submission = hostRuntime.submitChatMessage("Need a run memory flush snapshot")!!
+    val task = handle.submittedTasks.single()
+    runtimeManager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = ExecutionStatus.SUCCESS,
+        stdout = "Completed with memory flush trace.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          "contextMemoryFlushOutcome" to "written",
+          "contextMemoryFlushOmittedMessageCount" to "4",
+          "contextMemoryFlushOmittedCharCount" to "512",
+          "contextMemoryFlushSignature" to "flush-signature-123",
+          "contextMemoryFlushCandidateCount" to "3",
+          "contextMemoryFlushWrittenRecordCount" to "2",
+          "contextMemoryFlushWrittenKinds" to "project_fact,user_preference",
+          "contextMemoryFlushWrittenRecordIds" to "mem-a,mem-b",
+        ),
+      ),
+    )
+    val server = OpenCrayLocalRuntimeServer(
+      hostRuntimeProvider = { hostRuntime },
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "GET",
+        "/v1/chat_run_snapshot?runId=${submission["runId"]}",
+      )
+      val payload = JSONObject(response.body)
+      val memoryFlush = payload.getJSONObject("memoryFlush")
+
+      assertEquals(200, response.statusCode)
+      assertEquals("written", memoryFlush.getString("outcome"))
+      assertEquals(4, memoryFlush.getInt("omittedMessageCount"))
+      assertEquals(512, memoryFlush.getInt("omittedCharCount"))
+      assertEquals("flush-signature-123", memoryFlush.getString("signature"))
+      assertEquals(3, memoryFlush.getInt("candidateCount"))
+      assertEquals(2, memoryFlush.getInt("writtenRecordCount"))
+      assertEquals("project_fact", memoryFlush.getJSONArray("writtenKinds").getString(0))
+      assertEquals("mem-a", memoryFlush.getJSONArray("writtenRecordIds").getString(0))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun exposesSkillInventoryOverChatRunSnapshotRoute() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-skill-route"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -774,6 +919,266 @@ class OpenCrayLocalRuntimeServerTest {
       assertEquals("skill_read", activeSkill.getString("activationSource"))
       assertTrue(activeSkill.getBoolean("toolRestrictionEnabled"))
       assertEquals("read", activeSkill.getJSONArray("allowedToolKeys").getString(0))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun exposesDurableCompactionOverChatRunSnapshotRoute() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-durable-route"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeManager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      resumeResult = false,
+    )
+    runtimeManager.handle = handle
+    val hostRuntime = OpenCrayHostRuntime.createForTest(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      chatSessionStore = chatStore,
+      settingsFacade = NoOpSettingsFacade,
+      llmConfigFacade = EmptyLlmConfigFacade,
+      sessionRuntimeManager = runtimeManager,
+      strings = hostRuntimeStrings(),
+    )
+    val submission = hostRuntime.submitChatMessage("Need a run durable compaction snapshot")!!
+    val task = handle.submittedTasks.single()
+    runtimeManager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = ExecutionStatus.SUCCESS,
+        stdout = "Completed with durable compaction.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          "contextDurableCompactionCompactedThisRun" to "true",
+          "contextDurableCompactionSourceTranscriptMessageCount" to "18",
+          "contextDurableCompactionRetainedTranscriptMessageCount" to "12",
+          "contextDurableCompactionLatestMessageCount" to "6",
+          "contextDurableCompactionIncludedSummaryCount" to "1",
+          "contextDurableCompactionOmittedSummaryCount" to "0",
+          "contextDurableCompactionTotalCompactedMessageCount" to "6",
+          "contextDurableCompactionLatestAtEpochMs" to "4200",
+        ),
+      ),
+    )
+    val server = OpenCrayLocalRuntimeServer(
+      hostRuntimeProvider = { hostRuntime },
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "GET",
+        "/v1/chat_run_snapshot?runId=${submission["runId"]}",
+      )
+      val payload = JSONObject(response.body)
+      val durableCompaction = payload.getJSONObject("durableCompaction")
+
+      assertEquals(200, response.statusCode)
+      assertTrue(durableCompaction.getBoolean("compactedThisRun"))
+      assertEquals(18, durableCompaction.getInt("sourceTranscriptMessageCount"))
+      assertEquals(12, durableCompaction.getInt("retainedTranscriptMessageCount"))
+      assertEquals(6, durableCompaction.getInt("latestCompactedMessageCount"))
+      assertEquals(1, durableCompaction.getInt("includedSummaryCount"))
+      assertEquals(0, durableCompaction.getInt("omittedSummaryCount"))
+      assertEquals(1, durableCompaction.getInt("totalSummaryCount"))
+      assertEquals(6, durableCompaction.getInt("totalCompactedMessageCount"))
+      assertEquals(4200L, durableCompaction.getLong("latestCompactedAtEpochMs"))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun exposesBootstrapOverChatRunSnapshotRoute() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-bootstrap-route"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeManager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      resumeResult = false,
+    )
+    runtimeManager.handle = handle
+    val hostRuntime = OpenCrayHostRuntime.createForTest(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      chatSessionStore = chatStore,
+      settingsFacade = NoOpSettingsFacade,
+      llmConfigFacade = EmptyLlmConfigFacade,
+      sessionRuntimeManager = runtimeManager,
+      strings = hostRuntimeStrings(),
+    )
+    val submission = hostRuntime.submitChatMessage("Need a run bootstrap snapshot")!!
+    val task = handle.submittedTasks.single()
+    runtimeManager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = ExecutionStatus.SUCCESS,
+        stdout = "Completed with bootstrap context.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          "contextBootstrapMode" to "full",
+          "contextBootstrapVisibleFileCount" to "2",
+          "contextBootstrapInjectedFileCount" to "2",
+          "contextBootstrapOmittedFileCount" to "0",
+          "contextBootstrapTruncatedFileCount" to "1",
+          "contextBootstrapFileSummary" to
+            "AGENTS.md@AGENTS.md[42|42|false];PROJECT.md@PROJECT.md[80|31|true]",
+        ),
+      ),
+    )
+    val server = OpenCrayLocalRuntimeServer(
+      hostRuntimeProvider = { hostRuntime },
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "GET",
+        "/v1/chat_run_snapshot?runId=${submission["runId"]}",
+      )
+      val payload = JSONObject(response.body)
+      val bootstrap = payload.getJSONObject("bootstrap")
+      val files = bootstrap.getJSONArray("files")
+
+      assertEquals(200, response.statusCode)
+      assertEquals("full", bootstrap.getString("mode"))
+      assertEquals(2, bootstrap.getInt("visibleFileCount"))
+      assertEquals(2, bootstrap.getInt("injectedFileCount"))
+      assertEquals(0, bootstrap.getInt("omittedFileCount"))
+      assertEquals(1, bootstrap.getInt("truncatedFileCount"))
+      assertEquals("AGENTS.md", files.getJSONObject(0).getString("name"))
+      assertEquals("AGENTS.md", files.getJSONObject(0).getString("relativePath"))
+      assertEquals(42, files.getJSONObject(0).getInt("sourceCharCount"))
+      assertTrue(files.getJSONObject(1).getBoolean("truncated"))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun memoryDebugSnapshotRouteReturnsStructuredStoreState() {
+    val personalizationStore = PersonalizationLocalStore(
+      temporaryFolder.newFolder("server-memory-debug"),
+    )
+    personalizationStore.upsertMemoryRecord(
+      MemoryRecord(
+        id = "memory-user",
+        content = "Call the agent Xiao Bai.",
+        createdAtEpochMs = 2_000L,
+        updatedAtEpochMs = 2_100L,
+        tags = listOf("kind:user_preference", "scope:user"),
+        extensions = mapOf(
+          MemoryRecordExtensionKeys.KIND to "user_preference",
+          MemoryRecordExtensionKeys.SCOPE to "user",
+          MemoryRecordExtensionKeys.STATUS to "active",
+          MemoryRecordExtensionKeys.PREFERENCE_KEY to MemoryPreferenceKeys.AGENT_DISPLAY_NAME,
+          MemoryRecordExtensionKeys.PREFERENCE_VALUE to "Xiao Bai",
+          MemorySoulExtensionKeys.DISPLAY_NAME to "Xiao Bai",
+        ),
+      ),
+    )
+    val hostRuntime = OpenCrayHostRuntime.createForTest(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      chatSessionStore = ChatSessionLocalStore(
+        temporaryFolder.newFolder("chat-store-memory-debug"),
+      ),
+      settingsFacade = NoOpSettingsFacade,
+      personalizationLocalStore = personalizationStore,
+      sessionRuntimeManager = NoOpRuntimeManager(),
+      strings = hostRuntimeStrings(),
+    )
+    val server = OpenCrayLocalRuntimeServer(
+      hostRuntimeProvider = { hostRuntime },
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(server, "GET", "/v1/memory_debug_snapshot")
+
+      assertEquals(200, response.statusCode)
+      val payload = JSONObject(response.body)
+      val records = payload.getJSONArray("records")
+      assertEquals("memory-user", records.getJSONObject(0).getString("id"))
+      assertEquals("Xiao Bai", records.getJSONObject(0).getString("preferenceValue"))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun soulDebugSnapshotRouteReturnsStoredAndEffectiveSoulState() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-soul-debug"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val personalizationStore = PersonalizationLocalStore(
+      temporaryFolder.newFolder("server-soul-debug"),
+    )
+    personalizationStore.saveSoulProfile(
+      PersonalizationLocalStore.SoulProfile(
+        presetName = "STEADY",
+        customLabel = "Night Shift",
+        customGuidance = "Keep replies calm and concrete.",
+      ),
+    )
+    personalizationStore.upsertMemoryRecord(
+      MemoryRecord(
+        id = "memory-user",
+        content = "Call the agent Xiao Bai.",
+        createdAtEpochMs = 2_000L,
+        updatedAtEpochMs = 2_100L,
+        tags = listOf("kind:user_preference", "scope:user"),
+        extensions = mapOf(
+          MemoryRecordExtensionKeys.KIND to "user_preference",
+          MemoryRecordExtensionKeys.SCOPE to "user",
+          MemoryRecordExtensionKeys.STATUS to "active",
+          MemoryRecordExtensionKeys.SOURCE_SESSION_ID to sessionId,
+          MemoryRecordExtensionKeys.PREFERENCE_KEY to MemoryPreferenceKeys.AGENT_DISPLAY_NAME,
+          MemoryRecordExtensionKeys.PREFERENCE_VALUE to "Xiao Bai",
+          MemorySoulExtensionKeys.DISPLAY_NAME to "Xiao Bai",
+        ),
+      ),
+    )
+    val hostRuntime = OpenCrayHostRuntime.createForTest(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      chatSessionStore = chatStore,
+      settingsFacade = NoOpSettingsFacade,
+      personalizationLocalStore = personalizationStore,
+      sessionRuntimeManager = NoOpRuntimeManager(),
+      strings = hostRuntimeStrings(),
+    )
+    val server = OpenCrayLocalRuntimeServer(
+      hostRuntimeProvider = { hostRuntime },
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(server, "GET", "/v1/soul_debug_snapshot")
+
+      assertEquals(200, response.statusCode)
+      val payload = JSONObject(response.body)
+      assertEquals("STEADY", payload.getJSONObject("storedSoul").getString("presetName"))
+      assertEquals("Xiao Bai", payload.getJSONObject("effectiveSoul").getString("displayName"))
+      val fieldSources = payload.getJSONArray("fieldSources")
+      val displayNameSource = (0 until fieldSources.length())
+        .map { index -> fieldSources.getJSONObject(index) }
+        .first { source -> source.getString("field") == "displayName" }
+      assertEquals("memory_overlay", displayNameSource.getString("sourceType"))
     } finally {
       server.close()
     }

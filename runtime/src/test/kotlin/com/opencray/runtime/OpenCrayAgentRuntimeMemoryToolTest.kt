@@ -143,6 +143,7 @@ class OpenCrayAgentRuntimeMemoryToolTest {
       eventSink.events.map { event ->
         when (event) {
           is OpenCrayLifecycleEvent -> "lifecycle"
+          is OpenCrayProgressEvent -> "progress"
           is OpenCrayToolCallEvent -> "tool_call"
           is OpenCrayToolResultEvent -> "tool_result"
           is OpenCrayMemoryRetrievalEvent -> "memory_retrieval"

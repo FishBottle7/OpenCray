@@ -30,6 +30,8 @@ internal class PersonalizationLocalStore(
     )
   }
 
+  internal fun loadSoulRecord(): SoulRecord? = soulStore.load()
+
   fun saveSoulProfile(profile: SoulProfile) {
     val existing = soulStore.load()
     val now = nowEpochMs()

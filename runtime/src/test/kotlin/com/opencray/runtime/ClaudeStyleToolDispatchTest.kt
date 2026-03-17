@@ -58,6 +58,10 @@ class ClaudeStyleToolDispatchTest {
 
     assertEquals(AgentToolResultStatus.SUCCESS, result.status)
     assertEquals("two\nthree", result.content)
+    assertEquals("read_file", result.metadata["capabilityKind"])
+    assertEquals("file", result.metadata["targetKind"])
+    assertEquals("inside_workspace", result.metadata["workspaceRelation"])
+    assertEquals("notes.txt", result.metadata["primaryTargetPath"])
     assertEquals("2", result.metadata["offset"])
     assertEquals("2", result.metadata["limit"])
     assertEquals("2", result.metadata["returnedLineCount"])
@@ -106,6 +110,11 @@ class ClaudeStyleToolDispatchTest {
     assertEquals(AgentToolResultStatus.SUCCESS, result.status)
     assertTrue(result.content.contains("src/main/App.kt"))
     assertTrue(!result.content.contains("README.md"))
+    assertEquals("read_file", result.metadata["capabilityKind"])
+    assertEquals("search_root", result.metadata["targetKind"])
+    assertEquals("inside_workspace", result.metadata["workspaceRelation"])
+    assertEquals(".", result.metadata["primaryTargetPath"])
+    assertEquals("**/*.kt", result.metadata["pattern"])
   }
 
   @Test
@@ -314,9 +323,10 @@ class ClaudeStyleToolDispatchTest {
   @Test
   fun webSearchUsesConfiguredProvider() {
     val workspaceRoot = temporaryFolder.newFolder("claude-websearch").toPath()
+    val provider = FakeWebSearchProvider()
     val dispatcher = dispatcher(
       workspaceRoot = workspaceRoot,
-      webSearchProvider = FakeWebSearchProvider(),
+      webSearchProvider = provider,
     )
 
     val result = dispatcher.dispatch(
@@ -337,6 +347,40 @@ class ClaudeStyleToolDispatchTest {
     assertTrue(result.content.contains("https://example.com/opencray"))
     assertEquals("fake-search", result.metadata["providerName"])
     assertEquals("2", result.metadata["requestedMaxResults"])
+    assertEquals("opencray tools", provider.requests.single().query)
+  }
+
+  @Test
+  fun webSearchPassesRequestedDomainsToProviderAndMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("claude-websearch-domains").toPath()
+    val provider = FakeWebSearchProvider()
+    val dispatcher = dispatcher(
+      workspaceRoot = workspaceRoot,
+      webSearchProvider = provider,
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "WebSearch",
+        arguments = buildJsonObject {
+          put("query", "opencray tools")
+          put(
+            "domains",
+            buildJsonArray {
+              add(kotlinx.serialization.json.JsonPrimitive("docs.example.com"))
+              add(kotlinx.serialization.json.JsonPrimitive("example.com"))
+            },
+          )
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals(listOf("docs.example.com", "example.com"), provider.requests.single().domains)
+    assertEquals("docs.example.com,example.com", result.metadata["domains"])
+    assertEquals("2", result.metadata["requestedDomainCount"])
   }
 
   @Test
@@ -482,21 +526,25 @@ class ClaudeStyleToolDispatchTest {
 
   private class FakeWebSearchProvider : WebSearchProvider {
     override val providerName: String = "fake-search"
+    val requests = mutableListOf<WebSearchRequest>()
 
-    override fun search(request: WebSearchRequest): WebSearchResult = WebSearchResult(
-      providerName = providerName,
-      results = listOf(
-        WebSearchHit(
-          title = "OpenCray Tools Overview",
-          url = "https://example.com/opencray",
-          snippet = "Overview of the current tool surface.",
-        ),
-        WebSearchHit(
-          title = "OpenCray Runtime Notes",
-          url = "https://example.com/runtime",
-          snippet = "Recent runtime changes and caveats.",
-        ),
-      ).take(request.maxResults),
-    )
+    override fun search(request: WebSearchRequest): WebSearchResult {
+      requests += request
+      return WebSearchResult(
+        providerName = providerName,
+        results = listOf(
+          WebSearchHit(
+            title = "OpenCray Tools Overview",
+            url = "https://example.com/opencray",
+            snippet = "Overview of the current tool surface.",
+          ),
+          WebSearchHit(
+            title = "OpenCray Runtime Notes",
+            url = "https://example.com/runtime",
+            snippet = "Recent runtime changes and caveats.",
+          ),
+        ).take(request.maxResults),
+      )
+    }
   }
 }

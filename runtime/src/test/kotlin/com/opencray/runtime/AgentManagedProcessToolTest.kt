@@ -156,6 +156,11 @@ class AgentManagedProcessToolTest {
     assertEquals(AgentToolResultStatus.SUCCESS, startResult.status)
     assertEquals(1, registry.startCount)
     assertEquals("ALLOW_DEVELOPER_OVERRIDE", startResult.metadata["policyReasonCode"])
+    assertEquals("execute_command", startResult.metadata["capabilityKind"])
+    assertEquals("working_directory", startResult.metadata["targetKind"])
+    assertEquals("inside_workspace", startResult.metadata["workspaceRelation"])
+    assertEquals(".", startResult.metadata["primaryTargetPath"])
+    assertEquals("npm", startResult.metadata["targetSummary"])
     assertEquals("RUNNING", startResult.metadata["processStatus"])
     assertTrue(startResult.content.contains("process_id=$processId"))
     assertTrue(readResult.content.contains("status=running"))
@@ -164,8 +169,58 @@ class AgentManagedProcessToolTest {
     assertTrue(waitResult.content.contains("[stdout]"))
     assertTrue(waitResult.content.contains("server ready"))
     assertTrue(listResult.content.contains(processId))
+    assertEquals("ALLOW_DEVELOPER_OVERRIDE", terminateResult.metadata["policyReasonCode"])
     assertTrue(terminateResult.content.contains("process_id=$processId"))
     assertEquals(1, registry.terminateCount)
+  }
+
+  @Test
+  fun safeModeProcessTerminateRequiresHighRiskApprovalBeforeTermination() {
+    val workspaceRoot = temporaryFolder.newFolder("process-tool-safe-terminate").toPath()
+    val registry = RecordingProcessRegistry(workspaceRoot = workspaceRoot)
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        processRegistry = registry,
+      ),
+    )
+
+    val startResult = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessStart",
+        arguments = JsonObject(
+          mapOf(
+            "command" to JsonPrimitive("npm"),
+            "args" to kotlinx.serialization.json.buildJsonArray {
+              add(JsonPrimitive("run"))
+              add(JsonPrimitive("dev"))
+            },
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+    val processId = requireNotNull(startResult.metadata["processId"])
+
+    val terminateResult = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "SAFE")),
+      call = AgentToolCall(
+        toolName = "ProcessTerminate",
+        arguments = JsonObject(mapOf("process_id" to JsonPrimitive(processId))),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.DENIED, terminateResult.status)
+    assertEquals("HIGH_RISK_APPROVAL_REQUIRED", terminateResult.errorCode)
+    assertEquals("HIGH_RISK", terminateResult.metadata["approvalRisk"])
+    assertEquals("process_control", terminateResult.metadata["capabilityKind"])
+    assertEquals("process", terminateResult.metadata["targetKind"])
+    assertEquals("inside_workspace", terminateResult.metadata["workspaceRelation"])
+    assertEquals(processId, terminateResult.metadata["targetSummary"])
+    assertEquals(0, registry.terminateCount)
+    assertEquals("RUNNING", requireNotNull(registry.read(processId)).status.name)
   }
 
   @Test
@@ -218,6 +273,12 @@ class AgentManagedProcessToolTest {
     assertEquals("python_exec", startRequest.metadata["runtimeKind"])
     assertEquals("scripts/run.py", startRequest.metadata["scriptPath"])
     assertEquals("python3", startRequest.metadata["pythonExecutable"])
+    assertEquals("execute_command", startResult.metadata["capabilityKind"])
+    assertEquals("script", startResult.metadata["targetKind"])
+    assertEquals("inside_workspace", startResult.metadata["workspaceRelation"])
+    assertEquals("scripts/run.py", startResult.metadata["primaryTargetPath"])
+    assertEquals(".", startResult.metadata["secondaryTargetPath"])
+    assertEquals("scripts/run.py", startResult.metadata["targetSummary"])
     assertEquals("scripts/run.py", startResult.metadata["scriptPath"])
     assertTrue(startResult.content.contains("runtime_kind=python_exec"))
     assertTrue(startResult.content.contains("script_path=scripts/run.py"))

@@ -1,4 +1,5 @@
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_debug_snapshot.dart';
 import '../models/opencray_file_image_preview.dart';
 import '../models/opencray_file_text_preview.dart';
 import '../models/opencray_files_snapshot.dart';
@@ -147,6 +148,7 @@ abstract interface class OpenCrayHostBridge {
     required bool rollbackJournalEnabled,
     required int maxFilesPerBatch,
     int maxAgentTurns = 0,
+    int maxToolCalls = 0,
     required int undoWindowHours,
     required String fileChangesPolicyId,
     required String fileDeletesPolicyId,
@@ -186,6 +188,10 @@ abstract interface class OpenCrayHostBridge {
 
   Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId);
 
+  Future<OpenCrayMemoryDebugSnapshot> loadMemoryDebugSnapshot();
+
+  Future<OpenCraySoulDebugSnapshot> loadSoulDebugSnapshot();
+
   Future<OpenCrayChatRunSnapshot?> waitForChatRun(
     String runId, {
     Duration timeout,
@@ -198,6 +204,16 @@ abstract interface class OpenCrayHostBridge {
   Future<void> deleteChatSession(String sessionId);
 
   Future<void> selectChatSession(String sessionId);
+
+  Future<void> deleteChatMessage({
+    required String sessionId,
+    required String messageId,
+  });
+
+  Future<void> recallChatMessage({
+    required String sessionId,
+    required String messageId,
+  });
 
   Future<OpenCrayChatRunSubmission?> submitChatMessage(String text);
 

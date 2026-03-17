@@ -21,7 +21,7 @@ class MemoryWriter(
     val existingById = store.list().associateBy(MemoryRecord::id).toMutableMap()
     val written = mutableListOf<MemoryRecord>()
     candidates.forEach { candidate ->
-      val recordId = stableRecordId(candidate)
+      val recordId = stableMemoryRecordId(candidate)
       val now = clock()
       resolveSupersededPreferenceRecords(
         existingRecords = existingById.values.toList(),
@@ -102,28 +102,6 @@ class MemoryWriter(
     }
   }
 
-  private fun stableRecordId(candidate: MemoryCandidate): String {
-    val scopeIdentity = when (candidate.scope) {
-      MemoryScope.USER -> "user"
-      MemoryScope.WORKSPACE -> "workspace:${candidate.workspaceId?.takeIf(String::isNotBlank) ?: DEFAULT_WORKSPACE_ID}"
-      MemoryScope.SESSION -> "session:${candidate.sourceSessionId}"
-    }
-    val canonical = preferenceIdentity(candidate)
-      ?: candidate.content.lowercase(Locale.US)
-    val digestSource = "${candidate.kind.name.lowercase(Locale.US)}|$scopeIdentity|$canonical"
-    return "mem-${sha256Hex(digestSource).take(24)}"
-  }
-
-  private fun preferenceIdentity(candidate: MemoryCandidate): String? {
-    val preferenceKey = normalizeMemoryPreferenceKeyOrNull(
-      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY],
-    ) ?: return null
-    val preferenceValue = normalizeMemoryPreferenceValueOrNull(
-      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE],
-    ) ?: return null
-    return "pref|$preferenceKey|${preferenceValue.lowercase(Locale.US)}"
-  }
-
   private fun resolveSupersededPreferenceRecords(
     existingRecords: List<MemoryRecord>,
     candidate: MemoryCandidate,
@@ -186,13 +164,30 @@ class MemoryWriter(
     }
   }
 
-  private fun sha256Hex(raw: String): String {
-    val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(Charsets.UTF_8))
-    return digest.joinToString(separator = "") { byte -> "%02x".format(byte) }
-  }
-
   private companion object {
-    const val DEFAULT_WORKSPACE_ID: String = "default-workspace"
     const val RESOLUTION_REASON_SUPERSEDED: String = "superseded"
   }
+}
+
+internal fun stableMemoryRecordId(candidate: MemoryCandidate): String {
+  val scopeIdentity = when (candidate.scope) {
+    MemoryScope.USER -> "user"
+    MemoryScope.WORKSPACE -> "workspace:${candidate.workspaceId?.takeIf(String::isNotBlank) ?: "default-workspace"}"
+    MemoryScope.SESSION -> "session:${candidate.sourceSessionId}"
+  }
+  val canonical = memoryCandidatePreferenceIdentity(candidate)
+    ?: candidate.content.lowercase(Locale.US)
+  val digestSource = "${candidate.kind.name.lowercase(Locale.US)}|$scopeIdentity|$canonical"
+  val digest = MessageDigest.getInstance("SHA-256").digest(digestSource.toByteArray(Charsets.UTF_8))
+  return "mem-${digest.joinToString(separator = "") { byte -> "%02x".format(byte) }.take(24)}"
+}
+
+private fun memoryCandidatePreferenceIdentity(candidate: MemoryCandidate): String? {
+  val preferenceKey = normalizeMemoryPreferenceKeyOrNull(
+    candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY],
+  ) ?: return null
+  val preferenceValue = normalizeMemoryPreferenceValueOrNull(
+    candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE],
+  ) ?: return null
+  return "pref|$preferenceKey|${preferenceValue.lowercase(Locale.US)}"
 }

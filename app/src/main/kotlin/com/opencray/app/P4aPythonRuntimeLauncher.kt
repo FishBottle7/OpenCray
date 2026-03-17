@@ -1,37 +1,78 @@
 package com.opencray.app
 
 import android.content.Context
-import android.content.Intent
-import android.os.Build
+import java.lang.reflect.Modifier
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 internal object P4aPythonRuntimeServiceContract {
-  const val ACTION_START_RUNTIME: String = "org.opencray.app.action.P4A_START_RUNTIME"
-  const val EXTRA_RUNTIME_ROOT: String = "org.opencray.app.extra.P4A_RUNTIME_ROOT"
-  const val EXTRA_REQUEST_ID: String = "org.opencray.app.extra.P4A_REQUEST_ID"
-  const val EXTRA_REQUEST_PATH: String = "org.opencray.app.extra.P4A_REQUEST_PATH"
-  const val EXTRA_RESULT_PATH: String = "org.opencray.app.extra.P4A_RESULT_PATH"
-  const val EXTRA_LOG_PATH: String = "org.opencray.app.extra.P4A_LOG_PATH"
+  const val GENERATED_SERVICE_ID: String = "opencraypython"
+  internal const val SERVICE_ARGUMENT_SCHEMA_VERSION: Int = 1
+  private val serviceArgumentJson: Json = Json {
+    prettyPrint = false
+    ignoreUnknownKeys = true
+    encodeDefaults = true
+  }
+
+  fun generatedServiceClassName(
+    packageName: String,
+    serviceId: String = GENERATED_SERVICE_ID,
+  ): String = buildString {
+    append(packageName)
+    append(".Service")
+    append(
+      serviceId.replaceFirstChar { first ->
+        if (first.isLowerCase()) {
+          first.titlecase()
+        } else {
+          first.toString()
+        }
+      },
+    )
+  }
 
   fun buildStartSpec(
     packageName: String,
     request: P4aPythonRuntime.P4aPythonLaunchRequest,
-  ): P4aPythonRuntimeServiceStartSpec = P4aPythonRuntimeServiceStartSpec(
-    action = ACTION_START_RUNTIME,
-    packageName = packageName,
-    extras = mapOf(
-      EXTRA_RUNTIME_ROOT to request.requestPath.parent.parent.toString(),
-      EXTRA_REQUEST_ID to request.bridgeRequest.requestId,
-      EXTRA_REQUEST_PATH to request.requestPath.toString(),
-      EXTRA_RESULT_PATH to request.resultPath.toString(),
-      EXTRA_LOG_PATH to request.logPath.toString(),
-    ),
-  )
+  ): P4aPythonRuntimeServiceStartSpec {
+    val runtimeRoot = request.requestPath.parent.parent.toString()
+    return P4aPythonRuntimeServiceStartSpec(
+      packageName = packageName,
+      serviceId = GENERATED_SERVICE_ID,
+      generatedServiceClassName = generatedServiceClassName(
+        packageName = packageName,
+        serviceId = GENERATED_SERVICE_ID,
+      ),
+      serviceArgument = serviceArgumentJson.encodeToString(
+        P4aPythonRuntimeServiceArgument(
+          schemaVersion = SERVICE_ARGUMENT_SCHEMA_VERSION,
+          runtimeRoot = runtimeRoot,
+          requestId = request.bridgeRequest.requestId,
+          requestPath = request.requestPath.toString(),
+          resultPath = request.resultPath.toString(),
+          logPath = request.logPath.toString(),
+        ),
+      ),
+    )
+  }
 }
 
+@Serializable
+internal data class P4aPythonRuntimeServiceArgument(
+  val schemaVersion: Int = P4aPythonRuntimeServiceContract.SERVICE_ARGUMENT_SCHEMA_VERSION,
+  val runtimeRoot: String,
+  val requestId: String,
+  val requestPath: String,
+  val resultPath: String,
+  val logPath: String,
+)
+
 internal data class P4aPythonRuntimeServiceStartSpec(
-  val action: String,
   val packageName: String,
-  val extras: Map<String, String>,
+  val serviceId: String,
+  val generatedServiceClassName: String,
+  val serviceArgument: String,
 )
 
 internal sealed interface P4aPythonRuntimeServiceStartResult {
@@ -66,8 +107,8 @@ internal class ServiceBackedP4aPythonRuntimeLauncher(
         P4aPythonRuntime.P4aPythonRuntimeLaunchResult.Dispatched(
           metadata = mapOf(
             "launcherState" to "service_started",
-            "launcherAction" to spec.action,
-            "launcherPackage" to spec.packageName,
+            "launcherServiceId" to spec.serviceId,
+            "launcherServiceClass" to spec.generatedServiceClassName,
           ) + outcome.metadata,
         )
       }
@@ -78,8 +119,8 @@ internal class ServiceBackedP4aPythonRuntimeLauncher(
           errorMessage = outcome.message,
           metadata = mapOf(
             "launcherState" to outcome.reason,
-            "launcherAction" to spec.action,
-            "launcherPackage" to spec.packageName,
+            "launcherServiceId" to spec.serviceId,
+            "launcherServiceClass" to spec.generatedServiceClassName,
           ) + outcome.metadata,
         )
       }
@@ -90,52 +131,60 @@ internal class ServiceBackedP4aPythonRuntimeLauncher(
     fun fromContext(context: Context): ServiceBackedP4aPythonRuntimeLauncher =
       ServiceBackedP4aPythonRuntimeLauncher(
         packageName = context.applicationContext.packageName,
-        serviceStarter = AndroidP4aPythonRuntimeServiceStarter(context.applicationContext),
+        serviceStarter = AndroidP4aPythonRuntimeServiceStarter(context),
       )
   }
 }
 
 internal class AndroidP4aPythonRuntimeServiceStarter(
   private val context: Context,
+  private val classLoader: ClassLoader = context.javaClass.classLoader
+    ?: AndroidP4aPythonRuntimeServiceStarter::class.java.classLoader
+    ?: ClassLoader.getSystemClassLoader(),
 ) : P4aPythonRuntimeServiceStarter {
   override fun start(spec: P4aPythonRuntimeServiceStartSpec): P4aPythonRuntimeServiceStartResult {
-    val intent = Intent(spec.action).apply {
-      `package` = spec.packageName
-      spec.extras.forEach { (key, value) ->
-        putExtra(key, value)
-      }
-    }
-    val resolvedService = context.packageManager.resolveService(intent, 0)
-      ?: return P4aPythonRuntimeServiceStartResult.Unavailable(
-        reason = "service_unresolved",
-        message = "No Android service is registered for the embedded Python runtime action.",
+    val generatedServiceClass = try {
+      Class.forName(spec.generatedServiceClassName, true, classLoader)
+    } catch (_: ClassNotFoundException) {
+      return P4aPythonRuntimeServiceStartResult.Unavailable(
+        reason = "service_class_missing",
+        message = "Generated p4a service class was not found in the installed runtime artifact.",
       )
-
-    val component = try {
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        context.startForegroundService(intent)
-      } else {
-        context.startService(intent)
-      }
     } catch (error: Throwable) {
       return P4aPythonRuntimeServiceStartResult.Unavailable(
-        reason = "service_start_failed",
-        message = error.message ?: "Failed to start the embedded Python runtime service.",
+        reason = "service_class_load_failed",
+        message = error.message ?: "Failed to load the generated p4a service class.",
       )
     }
 
-    if (component == null) {
-      return P4aPythonRuntimeServiceStartResult.Unavailable(
-        reason = "service_start_failed",
-        message = "Embedded Python runtime service start returned null.",
-      )
-    }
-
-    return P4aPythonRuntimeServiceStartResult.Started(
+    val startMethod = generatedServiceClass.methods.firstOrNull { method ->
+      method.name == "start" &&
+        Modifier.isStatic(method.modifiers) &&
+        method.parameterTypes.size == 2 &&
+        method.parameterTypes[1] == String::class.java &&
+        method.parameterTypes[0].isAssignableFrom(context.javaClass)
+    } ?: return P4aPythonRuntimeServiceStartResult.Unavailable(
+      reason = "service_start_signature_missing",
+      message = "Generated p4a service class does not expose a compatible start(Context, String) entrypoint.",
       metadata = mapOf(
-        "launcherResolvedService" to resolvedService.serviceInfo.name.orEmpty(),
-        "launcherComponent" to component.className.orEmpty(),
+        "availableMethods" to generatedServiceClass.methods.joinToString(separator = ",") { method ->
+          method.name
+        },
       ),
     )
+
+    return try {
+      startMethod.invoke(null, context, spec.serviceArgument)
+      P4aPythonRuntimeServiceStartResult.Started(
+        metadata = mapOf(
+          "launcherResolvedServiceClass" to spec.generatedServiceClassName,
+        ),
+      )
+    } catch (error: Throwable) {
+      P4aPythonRuntimeServiceStartResult.Unavailable(
+        reason = "service_start_failed",
+        message = error.cause?.message ?: error.message ?: "Failed to start the embedded p4a service.",
+      )
+    }
   }
 }

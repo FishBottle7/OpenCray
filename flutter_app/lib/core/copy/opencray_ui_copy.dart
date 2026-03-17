@@ -226,13 +226,11 @@ class OpenCrayUiCopy {
       isChinese ? 'OpenAI 兼容' : 'OpenAI compatible';
   String networkSearchSlotTitle(int index) =>
       isChinese ? '槽位 ${index + 1}' : 'Slot ${index + 1}';
-  String get networkSearchProviderLabel =>
-      isChinese ? '提供商' : 'Provider';
+  String get networkSearchProviderLabel => isChinese ? '提供商' : 'Provider';
   String get networkSearchLabelFieldTitle => isChinese ? '标签' : 'Label';
   String get networkSearchLabelHint =>
       isChinese ? '例如：主 Exa' : 'For example: Primary Exa';
-  String get networkSearchApiKeyFieldTitle =>
-      isChinese ? 'API 密钥' : 'API key';
+  String get networkSearchApiKeyFieldTitle => isChinese ? 'API 密钥' : 'API key';
   String get networkSearchApiKeyHint =>
       isChinese ? '粘贴 provider 的密钥' : 'Paste the provider key';
   String get networkSearchAddSlotAction =>
@@ -252,6 +250,7 @@ class OpenCrayUiCopy {
         return 'EXA';
     }
   }
+
   String llmReasoningTitle(String reasoningEffort) {
     if (!isChinese) {
       if (reasoningEffort == 'xhigh') {
@@ -276,9 +275,28 @@ class OpenCrayUiCopy {
   String get chatCommands => isChinese ? '命令' : 'Commands';
   String get chatSubmitFailed =>
       isChinese ? '向宿主运行时提交消息失败。' : 'Failed to submit message to host runtime.';
+  String get chatMessageCopyAction => isChinese ? '复制' : 'Copy';
+  String get chatMessageRecallAction => isChinese ? '撤回' : 'Undo';
+  String get chatMessageDeleteAction => isChinese ? '删除' : 'Delete';
+  String get chatMessageSelectAction => isChinese ? '多选' : 'Select';
+  String get chatMessageQuoteAction => isChinese ? '引用' : 'Quote';
+  String get chatMessageCopied => isChinese ? '已复制消息。' : 'Message copied.';
+  String get chatMessageQuoted =>
+      isChinese ? '已添加引用到输入框。' : 'Added quote to the composer.';
+  String get chatMessageActionFailed =>
+      isChinese ? '处理消息操作失败。' : 'Failed to process the message action.';
+  String get chatMessageMultiSelectPending =>
+      isChinese ? '多选模式还没接入。' : 'Multi-select mode is not wired yet.';
   String get chatPendingApprovalsTitle =>
       isChinese ? '待审批操作' : 'Pending approvals';
   String get chatHighRiskApproval => isChinese ? '高风险' : 'High risk';
+  String get chatApprovalToolLabel => isChinese ? '工具' : 'Tool';
+  String get chatApprovalRequestLabel => isChinese ? '申请内容' : 'Request';
+  String get chatApprovalDetailsLabel => isChinese ? '细节' : 'Details';
+  String get chatApprovalPathsLabel => isChinese ? '目标路径' : 'Paths';
+  String get chatApprovalWorkingDirectoryLabel =>
+      isChinese ? '工作目录' : 'Working directory';
+  String get chatApprovalReasonLabel => isChinese ? '理由' : 'Agent reason';
   String get chatApprovalActionFailed =>
       isChinese ? '处理审批请求失败。' : 'Failed to process approval request.';
   String get chatSessionActionFailed =>

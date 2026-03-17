@@ -203,6 +203,8 @@ internal class OpenCrayFlutterHostBridge(
           maxFilesPerBatch = call.argument<Int>("maxFilesPerBatch") ?: 20,
           maxAgentTurns = call.argument<Int>("maxAgentTurns")
             ?: SafetySettingsState.DEFAULT_MAX_AGENT_TURNS,
+          maxToolCalls = call.argument<Int>("maxToolCalls")
+            ?: SafetySettingsState.DEFAULT_MAX_TOOL_CALLS,
           undoWindowHours = call.argument<Int>("undoWindowHours") ?: 24,
           fileChangesPolicyId = call.argument<String>("fileChangesPolicyId").orEmpty(),
           fileDeletesPolicyId = call.argument<String>("fileDeletesPolicyId").orEmpty(),
@@ -252,6 +254,8 @@ internal class OpenCrayFlutterHostBridge(
         "loadChatRunSnapshot" -> hostRuntime.loadChatRunSnapshot(
           call.argument<String>("runId").orEmpty(),
         )
+        "loadMemoryDebugSnapshot" -> hostRuntime.loadMemoryDebugSnapshot()
+        "loadSoulDebugSnapshot" -> hostRuntime.loadSoulDebugSnapshot()
         "waitForChatRun" -> {
           runAsync(result) {
             hostRuntime.waitForChatRun(
@@ -278,6 +282,22 @@ internal class OpenCrayFlutterHostBridge(
 
         "selectChatSession" -> {
           hostRuntime.selectChatSession(call.argument<String>("sessionId").orEmpty())
+          null
+        }
+
+        "deleteChatMessage" -> {
+          hostRuntime.deleteChatMessage(
+            sessionId = call.argument<String>("sessionId").orEmpty(),
+            messageId = call.argument<String>("messageId").orEmpty(),
+          )
+          null
+        }
+
+        "recallChatMessage" -> {
+          hostRuntime.recallChatMessage(
+            sessionId = call.argument<String>("sessionId").orEmpty(),
+            messageId = call.argument<String>("messageId").orEmpty(),
+          )
           null
         }
 

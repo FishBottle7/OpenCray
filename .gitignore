@@ -20,6 +20,11 @@
 /.codex/
 /.lsp/
 /.opencode/
+/.android-sdk-linux/
+/.p4a-build-venv/
+/.p4a-private/
+/.p4a-storage/
+/.p4a-wsl-bin/
 /.pytest_cache/
 /.ruff_cache/
 /%TEMP%/
@@ -45,6 +50,7 @@
 **/.tmp_fonts/
 /.tmp/
 /tmp_*.patch
+/opencray-python-runtime-*.aar
 
 # Sisyphus local scratch files
 /.sisyphus/notepads/

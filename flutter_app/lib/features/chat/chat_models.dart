@@ -119,11 +119,13 @@ class ChatSessionSummary {
 @immutable
 class ChatMessageData {
   const ChatMessageData({
+    this.messageId = '',
     required this.kind,
     required this.text,
     this.meta = '',
   });
 
+  final String messageId;
   final ChatMessageKind kind;
   final String text;
   final String meta;
@@ -139,6 +141,13 @@ class ChatPendingApprovalData {
     required this.approveLabel,
     required this.rejectLabel,
     required this.isHighRisk,
+    this.toolName = '',
+    this.requestSummary = '',
+    this.primaryDetail = '',
+    this.pathDetails = const <String>[],
+    this.workingDirectory = '',
+    this.reason = '',
+    this.message = '',
   });
 
   final String runId;
@@ -148,6 +157,13 @@ class ChatPendingApprovalData {
   final String approveLabel;
   final String rejectLabel;
   final bool isHighRisk;
+  final String toolName;
+  final String requestSummary;
+  final String primaryDetail;
+  final List<String> pathDetails;
+  final String workingDirectory;
+  final String reason;
+  final String message;
 
   String get approvalId => runId.isNotEmpty ? runId : taskId;
 }

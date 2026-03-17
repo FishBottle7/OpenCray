@@ -172,6 +172,55 @@ class SessionTranscriptStoreTest {
     assertEquals(RuntimeConversationRole.ASSISTANT, snapshot.last().role)
   }
 
+  @Test
+  fun replaceOverwritesStoreWithNormalizedTranscript() {
+    val store = InMemorySessionTranscriptStore()
+
+    store.seedIfEmpty(
+      listOf(
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.USER,
+          content = "First prompt",
+        ),
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.ASSISTANT,
+          content = "First answer",
+        ),
+      ),
+    )
+
+    store.replace(
+      listOf(
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.USER,
+          content = "  Replacement prompt  ",
+        ),
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.TOOL,
+          content = "tool observation",
+        ),
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.TOOL,
+          content = "tool observation",
+        ),
+      ),
+    )
+
+    assertEquals(
+      listOf(
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.USER,
+          content = "Replacement prompt",
+        ),
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.TOOL,
+          content = "tool observation",
+        ),
+      ),
+      store.snapshot(),
+    )
+  }
+
   private fun MutableList<RuntimeConversationMessage>.addToolInteraction(
     runId: String,
     taskId: String,

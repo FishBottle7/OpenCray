@@ -4,6 +4,7 @@ import 'dart:io';
 
 import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_debug_snapshot.dart';
 import '../models/opencray_file_image_preview.dart';
 import '../models/opencray_file_text_preview.dart';
 import '../models/opencray_files_snapshot.dart';
@@ -333,6 +334,7 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     required bool rollbackJournalEnabled,
     required int maxFilesPerBatch,
     int maxAgentTurns = 0,
+    int maxToolCalls = 0,
     required int undoWindowHours,
     required String fileChangesPolicyId,
     required String fileDeletesPolicyId,
@@ -350,6 +352,7 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
       'rollbackJournalEnabled': rollbackJournalEnabled,
       'maxFilesPerBatch': maxFilesPerBatch,
       'maxAgentTurns': maxAgentTurns,
+      'maxToolCalls': maxToolCalls,
       'undoWindowHours': undoWindowHours,
       'fileChangesPolicyId': fileChangesPolicyId,
       'fileDeletesPolicyId': fileDeletesPolicyId,
@@ -444,6 +447,18 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<OpenCrayMemoryDebugSnapshot> loadMemoryDebugSnapshot() async =>
+      OpenCrayMemoryDebugSnapshot.fromMap(
+        await _getMap('v1/memory_debug_snapshot'),
+      );
+
+  @override
+  Future<OpenCraySoulDebugSnapshot> loadSoulDebugSnapshot() async =>
+      OpenCraySoulDebugSnapshot.fromMap(
+        await _getMap('v1/soul_debug_snapshot'),
+      );
+
+  @override
   Future<OpenCrayChatRunSnapshot?> waitForChatRun(
     String runId, {
     Duration timeout = const Duration(seconds: 15),
@@ -482,6 +497,24 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     'v1/select_chat_session',
     <String, Object?>{'sessionId': sessionId},
   );
+
+  @override
+  Future<void> deleteChatMessage({
+    required String sessionId,
+    required String messageId,
+  }) => _postVoid('v1/delete_chat_message', <String, Object?>{
+    'sessionId': sessionId,
+    'messageId': messageId,
+  });
+
+  @override
+  Future<void> recallChatMessage({
+    required String sessionId,
+    required String messageId,
+  }) => _postVoid('v1/recall_chat_message', <String, Object?>{
+    'sessionId': sessionId,
+    'messageId': messageId,
+  });
 
   @override
   Future<OpenCrayChatRunSubmission?> submitChatMessage(String text) async {

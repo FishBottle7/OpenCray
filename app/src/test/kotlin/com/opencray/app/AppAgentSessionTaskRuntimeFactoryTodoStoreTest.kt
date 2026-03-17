@@ -1,15 +1,20 @@
 package com.opencray.app
 
 import com.opencray.persistence.model.MemoryRecord
+import com.opencray.persistence.store.MemoryStore
+import com.opencray.core.contracts.AgentTaskType
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.bootstrap.BootstrapMode
+import com.opencray.runtime.memory.MemoryFlushOutcome
 import com.opencray.runtime.process.InMemoryAgentProcessRegistry
 import com.opencray.runtime.context.RuntimeConversationRole
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
@@ -61,6 +66,27 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     val first = factory.transcriptStoreForSession("session-1")
     val second = factory.transcriptStoreForSession("session-1")
     val third = factory.transcriptStoreForSession("session-2")
+
+    assertSame(first, second)
+    assertNotSame(first, third)
+  }
+
+  @Test
+  fun compactionStoreForSessionReusesStoreForSameSessionIdAndSeparatesDifferentSessions() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-compaction"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-compaction").toPath()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+
+    val first = factory.compactionStoreForSession("session-1")
+    val second = factory.compactionStoreForSession("session-1")
+    val third = factory.compactionStoreForSession("session-2")
 
     assertSame(first, second)
     assertNotSame(first, third)
@@ -543,6 +569,190 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     assertEquals("# UI UX Pro Max", skillCatalog.skillsByName["ui-ux-pro-max"]?.markdownBody?.trim())
   }
 
+  @Test
+  fun prepareSessionContextFlushesOmittedHistoryAndReloadsFreshMemoryRecords() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-memory-flush"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-memory-flush").toPath()
+    val workspaceId = "workspace-main"
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    listOf(
+      "Please default to Simplified Chinese for explanations.",
+      "Do not use git reset --hard in this repo.",
+      "Project uses the Gradle wrapper from the repo root.",
+      "以后都用 PowerShell 命令。",
+    ).forEach { text ->
+      chatStore.appendMessage(
+        sessionId = sessionId,
+        role = com.opencray.persistence.model.ChatTranscriptRole.USER,
+        text = text,
+      )
+    }
+    (1..11).forEach { index ->
+      chatStore.appendMessage(
+        sessionId = sessionId,
+        role = com.opencray.persistence.model.ChatTranscriptRole.USER,
+        text = "Padding user message $index to keep the active transcript window bounded.",
+      )
+    }
+    val memoryStore = InMemoryMemoryStore()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      memoryRecordsProvider = memoryStore::list,
+      memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(
+        memoryStore = memoryStore,
+        workspaceIdProvider = { workspaceId },
+      ),
+    )
+
+    val prepared = factory.prepareSessionContext(
+      sessionId = sessionId,
+      workspaceId = workspaceId,
+      visibleThroughMessageId = null,
+      excludedMessageIds = emptySet(),
+      soulProfile = null,
+      taskType = AgentTaskType.PROMPT,
+      taskId = "task-memory-flush",
+      taskInput = "Please keep using Chinese while continuing.",
+      transcriptStore = factory.transcriptStoreForSession(sessionId),
+      memoryRecords = memoryStore.list(),
+    )
+
+    assertEquals(MemoryFlushOutcome.WRITTEN, prepared.sessionContext.memoryFlushTrace.outcome)
+    assertTrue(prepared.effectiveMemoryRecords.isNotEmpty())
+    assertTrue(prepared.effectiveMemoryRecords.any { record ->
+      record.content.contains("Chinese") || record.content.contains("PowerShell")
+    })
+    assertTrue(prepared.sessionContext.recalledMemory.memories.any { memory ->
+      memory.content.contains("Chinese")
+    })
+  }
+
+  @Test
+  fun bootstrapContextForLoadsWorkspaceBootstrapFilesAndSupportsLightweightMode() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-bootstrap"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-bootstrap")
+    Files.write(
+      workspaceRoot.toPath().resolve("AGENTS.md"),
+      "# Agents\nFollow the repo instructions.".toByteArray(StandardCharsets.UTF_8),
+    )
+    Files.write(
+      workspaceRoot.toPath().resolve("SOUL.md"),
+      "# Soul\nStay terse.".toByteArray(StandardCharsets.UTF_8),
+    )
+    Files.write(
+      workspaceRoot.toPath().resolve("PROJECT.md"),
+      "# Project\nThis repo uses Gradle.".toByteArray(StandardCharsets.UTF_8),
+    )
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot.toPath()) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+
+    val fullContext = factory.bootstrapContextFor(BootstrapMode.FULL)
+    val lightweightContext = factory.bootstrapContextFor(BootstrapMode.LIGHTWEIGHT)
+
+    assertEquals(listOf("AGENTS.md", "SOUL.md", "PROJECT.md"), fullContext.files.map { file -> file.name })
+    assertEquals(listOf("AGENTS.md", "PROJECT.md"), lightweightContext.files.map { file -> file.name })
+    assertEquals("full", fullContext.trace.mode)
+    assertEquals("lightweight", lightweightContext.trace.mode)
+  }
+
+  @Test
+  fun prepareSessionContextInjectsBootstrapContextFromWorkspaceRoots() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-bootstrap-session"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-bootstrap-session")
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    Files.write(
+      workspaceRoot.toPath().resolve("AGENTS.md"),
+      "# Agents\nFollow the repo instructions.".toByteArray(StandardCharsets.UTF_8),
+    )
+    Files.write(
+      workspaceRoot.toPath().resolve("PROJECT.md"),
+      "# Project\nThis repo uses Gradle.".toByteArray(StandardCharsets.UTF_8),
+    )
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot.toPath()) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+
+    val prepared = factory.prepareSessionContext(
+      sessionId = sessionId,
+      workspaceId = "workspace-bootstrap",
+      visibleThroughMessageId = null,
+      excludedMessageIds = emptySet(),
+      soulProfile = null,
+      taskType = AgentTaskType.PROMPT,
+      taskId = "task-bootstrap",
+      taskInput = "Continue with workspace guidance.",
+      transcriptStore = factory.transcriptStoreForSession(sessionId),
+      memoryRecords = emptyList(),
+    )
+
+    assertEquals("full", prepared.sessionContext.bootstrapContext.trace.mode)
+    assertEquals(listOf("AGENTS.md", "PROJECT.md"), prepared.sessionContext.bootstrapContext.files.map { file -> file.name })
+    assertTrue(prepared.sessionContext.bootstrapContext.files.first().content.contains("Follow the repo instructions."))
+  }
+
+  @Test
+  fun prepareSessionContextCompactsOlderTranscriptIntoDurableSummaries() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-durable-compaction"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-durable-compaction").toPath()
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    (1..15).forEach { index ->
+      chatStore.appendMessage(
+        sessionId = sessionId,
+        role = com.opencray.persistence.model.ChatTranscriptRole.USER,
+        text = "Conversation message $index that should eventually move into durable compaction.",
+      )
+    }
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+
+    val prepared = factory.prepareSessionContext(
+      sessionId = sessionId,
+      workspaceId = "workspace-durable",
+      visibleThroughMessageId = null,
+      excludedMessageIds = emptySet(),
+      soulProfile = null,
+      taskType = AgentTaskType.PROMPT,
+      taskId = "task-durable-compaction",
+      taskInput = "Continue after durable compaction.",
+      transcriptStore = factory.transcriptStoreForSession(sessionId),
+      memoryRecords = emptyList(),
+    )
+
+    assertTrue(prepared.sessionContext.durableCompaction.included)
+    assertTrue(prepared.sessionContext.durableCompaction.text.contains("Older session history has been durably compacted into summaries."))
+    assertTrue(prepared.sessionContext.durableCompaction.trace.compactedThisRun)
+    assertEquals(16, prepared.sessionContext.durableCompaction.trace.sourceTranscriptMessageCount)
+    assertEquals(12, prepared.sessionContext.durableCompaction.trace.retainedTranscriptMessageCount)
+    assertEquals(4, prepared.sessionContext.durableCompaction.trace.latestCompactedMessageCount)
+    assertEquals(1, prepared.sessionContext.durableCompaction.trace.includedSummaryCount)
+    assertEquals(4, prepared.sessionContext.durableCompaction.trace.totalCompactedMessageCount)
+    assertEquals(12, prepared.sessionContext.conversation.size)
+    assertEquals(12, factory.transcriptStoreForSession(sessionId).snapshot().size)
+    assertFalse(prepared.sessionContext.conversation.first().content.contains("Conversation message 1"))
+  }
+
   private fun memoryRecord(
     id: String,
     content: String,
@@ -592,5 +802,23 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     }
     Files.write(skillFile.toPath(), content.toByteArray(StandardCharsets.UTF_8))
     return skillFile
+  }
+
+  private class InMemoryMemoryStore : MemoryStore {
+    private val records = linkedMapOf<String, MemoryRecord>()
+
+    override fun list(): List<MemoryRecord> = records.values.toList()
+
+    override fun upsert(record: MemoryRecord) {
+      records[record.id] = record
+    }
+
+    override fun delete(id: String): Boolean = records.remove(id) != null
+
+    override fun clear(): Boolean {
+      val hadRecords = records.isNotEmpty()
+      records.clear()
+      return hadRecords
+    }
   }
 }

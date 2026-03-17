@@ -48,6 +48,8 @@ class OpenCrayToolDispatcherMemoryToolTest {
     )
 
     assertEquals(AgentToolResultStatus.SUCCESS, searchResult.status)
+    assertEquals("read_memory", searchResult.metadata["capabilityKind"])
+    assertEquals("none", searchResult.metadata["workspaceRelation"])
     assertEquals("1", searchResult.metadata["resultCount"])
     assertTrue(searchResult.content.contains(expectedPath))
     assertTrue(searchResult.content.contains("kind=project_fact"))
@@ -66,6 +68,10 @@ class OpenCrayToolDispatcherMemoryToolTest {
     )
 
     assertEquals(AgentToolResultStatus.SUCCESS, getResult.status)
+    assertEquals("read_memory", getResult.metadata["capabilityKind"])
+    assertEquals("file", getResult.metadata["targetKind"])
+    assertEquals("none", getResult.metadata["workspaceRelation"])
+    assertEquals(expectedPath, getResult.metadata["primaryTargetPath"])
     assertEquals(expectedPath, getResult.metadata["path"])
     assertTrue(getResult.content.startsWith("$expectedPath#L5"))
     assertTrue(getResult.content.contains("## mem-workspace"))

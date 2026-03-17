@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/bridge/opencray_host_bridge.dart';
 import '../../core/models/opencray_chat_snapshot.dart';
+import '../../core/models/opencray_debug_snapshot.dart';
 import '../../core/copy/opencray_ui_copy.dart';
 import '../../core/design/opencray_tokens.dart';
 import 'safety_settings_copy.dart';
@@ -12,6 +13,7 @@ import 'settings_facade.dart';
 import 'settings_models.dart';
 
 part 'safety_settings_pages.dart';
+part 'settings_debug_pages.dart';
 
 class SettingsFeatureScreen extends StatefulWidget {
   const SettingsFeatureScreen({
@@ -161,6 +163,7 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
           snapshot: detailSnapshot,
           onBack: onBack,
           backLabel: backLabel,
+          facade: widget.facade,
           debugBridge: widget.debugBridge,
         );
     }
@@ -351,12 +354,14 @@ class _AboutVersionPage extends StatelessWidget {
     required this.snapshot,
     required this.onBack,
     required this.backLabel,
+    required this.facade,
     required this.debugBridge,
   });
 
   final SettingsDetailSnapshot snapshot;
   final VoidCallback onBack;
   final String backLabel;
+  final SettingsFacade facade;
   final OpenCrayHostBridge? debugBridge;
 
   @override
@@ -383,17 +388,18 @@ class _AboutVersionPage extends StatelessWidget {
                     Text('Debug tools', style: _SettingsTextStyles.cardTitle),
                     const SizedBox(height: 8),
                     Text(
-                      'Inspect runtime activity and memory recall trace from recent chat runs without enabling verbose logs.',
+                      'Open runtime diagnostics for context, memory, and soul state.',
                       style: _SettingsTextStyles.body,
                     ),
                     const SizedBox(height: 12),
                     _HomeEntryRow(
-                      title: 'Context & Memory Trace',
+                      title: 'Open Debug Tools',
                       onTap: () {
                         Navigator.of(context).push(
                           MaterialPageRoute<void>(
-                            builder: (context) => _MemoryDebugPage(
+                            builder: (context) => _DebugToolsPage(
                               bridge: debugBridge!,
+                              facade: facade,
                               backLabel: snapshot.title,
                             ),
                           ),
@@ -831,7 +837,8 @@ class _NetworkSearchSettingsPage extends StatefulWidget {
       _NetworkSearchSettingsPageState();
 }
 
-class _NetworkSearchSettingsPageState extends State<_NetworkSearchSettingsPage> {
+class _NetworkSearchSettingsPageState
+    extends State<_NetworkSearchSettingsPage> {
   NetworkSearchConfigSnapshot? _snapshot;
   String? _loadError;
   List<NetworkSearchSlotSnapshot> _slots = <NetworkSearchSlotSnapshot>[];
@@ -901,7 +908,9 @@ class _NetworkSearchSettingsPageState extends State<_NetworkSearchSettingsPage> 
             onTap: _addSlot,
             child: _SettingsCard(
               child: Text(
-                _isSaving ? copy.networkSearchSaving : copy.networkSearchAddSlotAction,
+                _isSaving
+                    ? copy.networkSearchSaving
+                    : copy.networkSearchAddSlotAction,
                 style: _SettingsTextStyles.actionChip,
               ),
             ),
@@ -976,7 +985,9 @@ class _NetworkSearchSettingsPageState extends State<_NetworkSearchSettingsPage> 
 
   void _deleteSlot(String slotId) {
     setState(() {
-      _slots = _slots.where((slot) => slot.id != slotId).toList(growable: false);
+      _slots = _slots
+          .where((slot) => slot.id != slotId)
+          .toList(growable: false);
     });
     _saveNow();
   }
@@ -999,7 +1010,9 @@ class _NetworkSearchSettingsPageState extends State<_NetworkSearchSettingsPage> 
       _isSaving = true;
     });
     try {
-      final updatedSnapshot = await widget.facade.saveNetworkSearchConfig(_slots);
+      final updatedSnapshot = await widget.facade.saveNetworkSearchConfig(
+        _slots,
+      );
       if (!mounted) {
         return;
       }
@@ -1123,7 +1136,10 @@ class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
             ],
           ),
           const SizedBox(height: 12),
-          Text(copy.networkSearchProviderLabel, style: _SettingsTextStyles.fieldLabel),
+          Text(
+            copy.networkSearchProviderLabel,
+            style: _SettingsTextStyles.fieldLabel,
+          ),
           const SizedBox(height: 6),
           _InteractiveSegmentedSelector(
             labels: const <String>['exa', 'tavily', 'brave'],
@@ -3375,7 +3391,8 @@ class _InlineEditableField extends StatelessWidget {
                 autocorrect: false,
                 enableSuggestions: false,
                 enableIMEPersonalizedLearning: false,
-                spellCheckConfiguration: const SpellCheckConfiguration.disabled(),
+                spellCheckConfiguration:
+                    const SpellCheckConfiguration.disabled(),
                 smartDashesType: SmartDashesType.disabled,
                 smartQuotesType: SmartQuotesType.disabled,
                 keyboardType: TextInputType.visiblePassword,
