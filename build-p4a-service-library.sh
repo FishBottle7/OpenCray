@@ -18,6 +18,7 @@ P4A_ANDROID_SDK_ROOT="${P4A_ANDROID_SDK_ROOT:-$ROOT_DIR/.android-sdk-linux}"
 P4A_PRIVATE_DIR="${P4A_PRIVATE_DIR:-$ROOT_DIR/.p4a-private}"
 P4A_ANDROID_SDK_SEED="${P4A_ANDROID_SDK_SEED:-}"
 P4A_GRADLE_USER_HOME="${P4A_GRADLE_USER_HOME:-$HOME/.gradle-opencray-p4a}"
+P4A_HOOK_PATH="${P4A_HOOK_PATH:-$ROOT_DIR/tools/android_python_runtime_p4a/p4a_build_hook.py}"
 P4A_ANDROID_API="${P4A_ANDROID_API:-33}"
 P4A_BUILD_TOOLS_VERSION="${P4A_BUILD_TOOLS_VERSION:-}"
 P4A_NDK_VERSION="${P4A_NDK_VERSION:-}"
@@ -541,6 +542,7 @@ log_step "Building p4a service library AAR"
 run_p4a aar \
   --private "$P4A_PRIVATE_DIR" \
   --storage-dir "$STORAGE_DIR" \
+  --hook "$P4A_HOOK_PATH" \
   --dist-name "$DIST_NAME" \
   --bootstrap service_library \
   --package "$PACKAGE_NAME" \
