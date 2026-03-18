@@ -139,7 +139,8 @@ Phase 1 foundation now in progress:
      - `no_memory_or_soul`: suppress `SOUL.md` injection, runtime soul overlay, and automatic memory recall/injection for the run.
    - Boundary note: these two extra profiles are broader live-context modes, not just bootstrap-file filters. Explicit memory tools may remain a separate policy surface unless they are disabled independently.
    - Current status: implemented as a bounded runtime-side bootstrap layer. `BootstrapContext` flows through `ContextManager`, `PromptAssembler` injects bootstrap files into prompt assembly, runtime metadata preserves structured bootstrap-file trace, and host/local run snapshots plus Flutter chat/debug surfaces now render bootstrap visibility/injection state.
-   - Remaining gaps: `lightweight` mode exists in the resolver/tests, but the live app path still selects `full` for prompt turns and `none` otherwise. The broader live-mode set still needs wiring so operators can choose `no_soul` and `no_memory_or_soul` explicitly, and there is not yet a broader operator surface for deeper bootstrap-file drill-down beyond existing trace views.
+   - Current status: the broader live-context mode set is now also wired through the live app settings/runtime path. Operators can choose `full`, `lightweight`, `none`, `no_soul`, and `no_memory_or_soul`, and run metadata/debug surfaces now preserve the effective live-context mode plus whether soul and automatic memory recall were enabled for that run.
+   - Remaining gaps: deeper bootstrap-file drill-down remains limited to the current read-only trace views, and child/subagent runs still do not inherit or override these live-context policies through an explicit child-context model yet.
 
 11. Subagent context modes
    - Add `minimal`, `delegated`, and `mirrored` child-context policies.

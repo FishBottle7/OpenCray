@@ -177,6 +177,52 @@ class MemorySearchServiceTest {
     assertTrue(search.matches.none { match -> match.recordId == "internal-relationship-event" })
   }
 
+  @Test
+  fun projectSearchAndGetExposeHumanReadableAdaptiveSignalSummary() {
+    val dateStamp = formatMemoryDateStamp(DAY_2_EPOCH_MS)
+    val dayPath = "memory/$dateStamp.md"
+    val context = MemoryToolContext(
+      sessionId = "session-main",
+      workspaceId = "workspace-main",
+      records = listOf(
+        memoryRecord(
+          id = "adaptive-signal",
+          content = "Interaction preference should gradually adapt: warmth higher, initiative lower",
+          kind = "user_preference",
+          scope = "user",
+          sourceSessionId = "session-source",
+          confirmedAtEpochMs = DAY_2_EPOCH_MS,
+          updatedAtEpochMs = DAY_2_EPOCH_MS,
+          extraExtensions = mapOf(
+            "preference_key" to MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
+            "preference_value" to "warmth_higher__initiative_lower",
+            MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "higher",
+            MemoryInteractionPreferenceExtensionKeys.INITIATIVE_DIRECTION to "lower",
+          ),
+        ),
+      ),
+    )
+
+    val search = service.search(
+      context = context,
+      query = "warmth initiative lower",
+      maxResults = 5,
+    )
+
+    assertEquals(1, search.matches.size)
+    assertEquals("adaptive-signal", search.matches.single().recordId)
+    assertTrue(search.matches.single().snippet.contains("adaptive_signal: warmth higher, initiative lower"))
+
+    val get = service.get(
+      context = context,
+      path = dayPath,
+    )
+
+    assertTrue(get.text.contains("preference_key: interaction_preference_signal"))
+    assertTrue(get.text.contains("preference_value: warmth_higher__initiative_lower"))
+    assertTrue(get.text.contains("adaptive_signal: warmth higher, initiative lower"))
+  }
+
   private fun memoryRecord(
     id: String,
     content: String,

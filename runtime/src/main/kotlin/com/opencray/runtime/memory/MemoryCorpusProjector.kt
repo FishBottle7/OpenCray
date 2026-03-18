@@ -113,6 +113,7 @@ class MemoryCorpusProjector(
           lastConfirmedAtEpochMs = metadata.lastConfirmedAtEpochMs ?: record.updatedAtEpochMs,
           preferenceKey = metadata.preferenceKey,
           preferenceValue = metadata.preferenceValue,
+          extensions = record.extensions,
         )
       }
       .sortedWith(
@@ -218,6 +219,11 @@ class MemoryCorpusProjector(
         ?.takeIf(String::isNotBlank)
         ?.let { preferenceValue ->
           lines += "preference_value: $preferenceValue"
+        }
+      interactionPreferenceSignalSummaryOrNull(visible.extensions)
+        ?.takeIf(String::isNotBlank)
+        ?.let { summary ->
+          lines += "adaptive_signal: $summary"
         }
       lines += "confirmed_at: ${formatMemoryIsoInstant(visible.lastConfirmedAtEpochMs)}"
       lines += "updated_at: ${formatMemoryIsoInstant(visible.updatedAtEpochMs)}"
