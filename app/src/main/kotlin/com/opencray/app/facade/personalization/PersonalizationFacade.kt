@@ -2,11 +2,14 @@ package com.opencray.app.facade.personalization
 
 import android.content.Context
 import com.opencray.app.AppLanguage
+import com.opencray.app.AppAgentWorkspace
 import com.opencray.app.LocaleSettingsStore
 import com.opencray.app.OpenCrayLocaleManager
 import com.opencray.app.PersonalizationLocalStore
 import com.opencray.app.PersonalizationPreset
 import com.opencray.app.PersonalizationResetPreview
+import com.opencray.app.WorkspaceSoulProfileStore
+import java.nio.file.Path
 import org.opencray.app.R
 
 enum class PersonalizationResetScope(
@@ -145,12 +148,14 @@ internal object EmptyPersonalizationFacade : PersonalizationFacade {
 internal class LocalPersonalizationFacade private constructor(
   private val context: Context,
   private val store: PersonalizationLocalStore,
+  private val soulProfileStore: WorkspaceSoulProfileStore,
+  private val workspaceRootProvider: () -> Path,
   private val queueIdleProvider: () -> Boolean,
 ) : PersonalizationFacade {
   private var latestResetPreview: PersonalizationResetPreview = PersonalizationResetPreview.NONE
 
   override fun load(): PersonalizationConfigSnapshot = snapshotFor(
-    profile = store.loadSoulProfile().orDefault(),
+    profile = soulProfileStore.loadSoulProfile(workspaceRootProvider()).orDefault(),
   )
 
   override fun save(request: SavePersonalizationConfigRequest): PersonalizationConfigSnapshot {
@@ -160,13 +165,13 @@ internal class LocalPersonalizationFacade private constructor(
       customLabel = request.customLabel.trim(),
       customGuidance = request.customGuidance.trim(),
     )
-    store.saveSoulProfile(profile)
+    soulProfileStore.saveSoulProfile(workspaceRootProvider(), profile)
     return snapshotFor(profile = profile)
   }
 
   override fun setAppLanguage(languageId: String): PersonalizationConfigSnapshot {
     LocaleSettingsStore.fromContext(context).saveLanguage(AppLanguage.fromRaw(languageId))
-    return snapshotFor(profile = store.loadSoulProfile().orDefault())
+    return snapshotFor(profile = soulProfileStore.loadSoulProfile(workspaceRootProvider()).orDefault())
   }
 
   override fun reset(scope: PersonalizationResetScope): PersonalizationConfigSnapshot {
@@ -180,11 +185,11 @@ internal class LocalPersonalizationFacade private constructor(
       }
 
       PersonalizationResetScope.SOUL -> {
-        store.clearSoulProfile()
+        soulProfileStore.clearSoulProfile(workspaceRootProvider())
         latestResetPreview = PersonalizationResetPreview.SOUL
       }
     }
-    return snapshotFor(profile = store.loadSoulProfile().orDefault())
+    return snapshotFor(profile = soulProfileStore.loadSoulProfile(workspaceRootProvider()).orDefault())
   }
 
   private fun snapshotFor(
@@ -365,16 +370,22 @@ internal class LocalPersonalizationFacade private constructor(
     fun fromContext(context: Context): PersonalizationFacade = LocalPersonalizationFacade(
       context = OpenCrayLocaleManager.wrap(context.applicationContext),
       store = PersonalizationLocalStore.fromContext(context.applicationContext),
+      soulProfileStore = WorkspaceSoulProfileStore(),
+      workspaceRootProvider = { AppAgentWorkspace.ensureRootForContext(context.applicationContext) },
       queueIdleProvider = { true },
     )
 
     internal fun createForTest(
       context: Context,
       store: PersonalizationLocalStore,
+      soulProfileStore: WorkspaceSoulProfileStore = WorkspaceSoulProfileStore(),
+      workspaceRootProvider: () -> Path = { AppAgentWorkspace.ensureRootForContext(context.applicationContext) },
       queueIdleProvider: () -> Boolean = { true },
     ): PersonalizationFacade = LocalPersonalizationFacade(
       context = context,
       store = store,
+      soulProfileStore = soulProfileStore,
+      workspaceRootProvider = workspaceRootProvider,
       queueIdleProvider = queueIdleProvider,
     )
   }

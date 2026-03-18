@@ -15,6 +15,57 @@ The target is not "more policy". The target is one consistent path for:
 
 This slice should make the runtime behave more like OpenClaw/Codex-style agents where policy is attached to the action being attempted, not to whichever tool implementation happened to handle it.
 
+## Implementation Status
+
+The shared runtime pipeline now exists at `runtime/src/main/kotlin/com/opencray/runtime/policy/ToolPolicyPipeline.kt`.
+
+Already routed through the shared pipeline:
+
+- mutating filesystem tools
+- network tools
+- command and Python execution
+- managed process start / terminate
+- read-only filesystem tools:
+  - `workspace_list_files`
+  - `workspace_read_file`
+  - `LS`
+  - `Read`
+  - `Grep`
+  - `Glob`
+
+Explicit runtime intent models now also exist so downstream consumers do not need to infer execution semantics from tool names alone:
+
+- `ExecutionIntent`
+  - `Bash`
+  - `ProcessStart`
+  - `command_exec`
+  - `python_exec`
+- `ProcessLifecycleIntent`
+  - `ProcessTerminate`
+
+Current intent metadata fields exposed through the shared pipeline:
+
+- `intentCategory`
+- `executionIntentKind`
+- `executionTransport`
+- `executionCommandPreview`
+- `executionScriptPath`
+- `executionWorkingDirectory`
+- `processLifecycleIntentKind`
+- `intentProcessId`
+- `intentWorkingDirectory`
+
+Current read-policy behavior that future tool work must preserve:
+
+- approved external read roots participate in the same policy path as workspace reads
+- `SAFE` mode:
+  - reading inside the workspace is allowed
+  - reading an approved external read root requires standard approval
+- `AUTO` mode:
+  - approved external reads remain allowed
+- `DEVELOPER` mode:
+  - approved external reads remain allowed
+
 ## Why P3 Is Next
 
 P0 and P2 already moved the runtime closer to a durable agent loop:
@@ -28,6 +79,8 @@ The next gap is that policy is still too dispersed inside `AgentTooling.kt`. Fil
 - proving the workspace boundary is enforced consistently
 - keeping approval behavior aligned across Safe, Auto, and Dev
 - making replay and UI consume one stable policy/result shape
+
+For execution/process tools, the runtime should now prefer an explicit intent model over tool-name inference. If a new tool crosses an execution or process boundary, add the intent model first, then thread it through policy, approval, replay, and UI metadata.
 
 ## Current State Summary
 

@@ -1,7 +1,6 @@
 package com.opencray.runtime
 
 import com.opencray.core.contracts.AgentTask
-import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.filesystem.FileMutationOperation
@@ -15,19 +14,27 @@ import com.opencray.runtime.memory.MemorySearchService
 import com.opencray.runtime.memory.MemoryToolContext
 import com.opencray.runtime.policy.ToolCapabilityClassifier
 import com.opencray.runtime.policy.ToolCallNormalizer
-import com.opencray.runtime.policy.ToolPolicyEvaluationRequest
+import com.opencray.runtime.policy.ToolMetadataContextRequest
+import com.opencray.runtime.policy.ToolPolicyPipeline
 import com.opencray.runtime.policy.ToolPolicyEvaluator
-import com.opencray.runtime.policy.ToolGateRequest
 import com.opencray.runtime.policy.ToolMetadataContext
 import com.opencray.runtime.policy.ToolPolicySupport
+import com.opencray.runtime.policy.ExecutionIntent
+import com.opencray.runtime.policy.ExecutionIntentKind
+import com.opencray.runtime.policy.ExecutionTransport
+import com.opencray.runtime.policy.ProcessLifecycleIntent
+import com.opencray.runtime.policy.ProcessLifecycleIntentKind
 import com.opencray.runtime.policy.ToolTargetKind
 import com.opencray.runtime.policy.ToolTargetResolver
+import com.opencray.runtime.policy.ToolRuntimeIntent
 import com.opencray.runtime.policy.ToolWorkspaceRelation
 import com.opencray.runtime.process.AgentProcessRegistry
 import com.opencray.runtime.process.InMemoryAgentProcessRegistry
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.skills.SkillInstallManifestEntry
+import com.opencray.runtime.skills.SkillPackageManager
 import com.opencray.runtime.web.HttpUrlWebContentFetcher
 import com.opencray.runtime.web.UnconfiguredWebSearchProvider
 import com.opencray.runtime.web.WebContentFetcher
@@ -149,7 +156,10 @@ data class AgentToolResult(
 data class OpenCrayToolDispatcherConfig(
   val workspaceRoots: Set<Path>,
   val readRoots: Set<Path> = workspaceRoots,
+  val extraPolicyReadRoots: Set<Path> = emptySet(),
+  val extraPolicyWriteRoots: Set<Path> = emptySet(),
   val skillsRoots: List<File> = emptyList(),
+  val skillPackageManager: SkillPackageManager? = null,
   val mcpExposureReport: McpClientExposureReport? = null,
   val modePolicy: ModePolicy = ModePolicy(),
   val approvedTaskId: String? = null,
@@ -200,6 +210,15 @@ class OpenCrayToolDispatcher(
   private val toolTargetResolver = ToolTargetResolver(
     readBoundary = readBoundary,
     writeBoundary = writeBoundary,
+  )
+  private val toolPolicyPipeline = ToolPolicyPipeline(
+    toolPolicyEvaluator = toolPolicyEvaluator,
+    toolPolicySupport = toolPolicySupport,
+    toolCapabilityClassifier = toolCapabilityClassifier,
+    toolTargetResolver = toolTargetResolver,
+    workspaceRoot = writeBoundary.defaultRoot,
+    readRoots = readBoundary.approvedRoots() + config.extraPolicyReadRoots,
+    writeRoots = writeBoundary.approvedRoots() + config.extraPolicyWriteRoots,
   )
   private val fileOpsService = FileOpsService(writeBoundary.approvedRoots())
   private val todoStore = config.todoStore
@@ -311,7 +330,7 @@ class OpenCrayToolDispatcher(
       ),
       AgentToolDefinition(
         name = "Bash",
-        description = "Run one shell command string inside the approved workspace through the host shell. Each call starts a fresh managed shell process; if it keeps running after the initial wait, continue with ProcessRead, ProcessWait, or ProcessTerminate.",
+        description = "Run one shell command string inside the approved workspace through the host shell. Each call starts a fresh managed shell process; if it keeps running after the initial wait, continue with ProcessRead, ProcessWait, or ProcessTerminate. Do not use Bash for python/python3/py invocations or Python runtime diagnostics.",
         parameters = listOf(
           AgentToolParameter("command", "string", required = true, description = "Shell command string to execute."),
           AgentToolParameter("working_directory", "string", required = false, description = "Workspace-relative working directory. Defaults to the workspace root."),
@@ -416,7 +435,7 @@ class OpenCrayToolDispatcher(
       ),
       AgentToolDefinition(
         name = "python_exec",
-        description = "Execute one workspace-local Python script through the active Python runtime backend. Use this instead of Bash for workspace Python scripts.",
+        description = "Execute one workspace-local Python script through the active Python runtime backend. Use this instead of Bash for workspace Python scripts and Python runtime diagnostics.",
         parameters = listOf(
           AgentToolParameter("script_path", "string", required = true, description = "Script path relative to the workspace root."),
           AgentToolParameter("args", "string[]", required = false, description = "Script arguments."),
@@ -432,6 +451,32 @@ class OpenCrayToolDispatcher(
         description = "Read one discovered skill's metadata and markdown body.",
         parameters = listOf(
           AgentToolParameter("name", "string", required = true, description = "Exact skill name."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "SkillsFind",
+        description = "Search the host-managed skills catalog that is available to this runtime.",
+        parameters = listOf(
+          AgentToolParameter("query", "string", required = false, description = "Optional case-insensitive text filter for skill name or description."),
+          AgentToolParameter("max_results", "number", required = false, description = "Maximum number of catalog results to return."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "SkillsList",
+        description = "List skills currently installed in the host-managed skills directory.",
+      ),
+      AgentToolDefinition(
+        name = "SkillsAdd",
+        description = "Install one skill from the host-managed local skills catalog.",
+        parameters = listOf(
+          AgentToolParameter("skill_id", "string", required = true, description = "Exact skill id from the catalog."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "SkillsRemove",
+        description = "Remove one installed skill from the host-managed skills directory.",
+        parameters = listOf(
+          AgentToolParameter("skill_id", "string", required = true, description = "Exact installed skill id."),
         ),
       ),
       AgentToolDefinition(
@@ -451,17 +496,17 @@ class OpenCrayToolDispatcher(
     val invocation = toolCallNormalizer.normalize(call)
     return try {
       val result = when (invocation.normalizedToolName) {
-        "workspace_list_files" -> listWorkspaceFiles(invocation.arguments)
-        "workspace_read_file" -> readWorkspaceFile(invocation.arguments)
+        "workspace_list_files" -> listWorkspaceFiles(task = task, arguments = invocation.arguments)
+        "workspace_read_file" -> readWorkspaceFile(task = task, arguments = invocation.arguments)
         "workspace_write_file" -> writeWorkspaceFile(task = task, arguments = invocation.arguments)
         "workspace_import_file" -> importFileIntoWorkspace(task = task, arguments = invocation.arguments)
         "workspace_move_file" -> moveWorkspaceFile(task = task, arguments = invocation.arguments)
         "workspace_delete_file" -> deleteWorkspaceFile(task = task, arguments = invocation.arguments)
-        "LS" -> listFilesForClaude(arguments = invocation.arguments)
-        "Read" -> readFileForClaude(arguments = invocation.arguments)
+        "LS" -> listFilesForClaude(task = task, arguments = invocation.arguments)
+        "Read" -> readFileForClaude(task = task, arguments = invocation.arguments)
         "Write" -> writeFileForClaude(task = task, arguments = invocation.arguments)
-        "Grep" -> grepWorkspace(arguments = invocation.arguments)
-        "Glob" -> globWorkspace(arguments = invocation.arguments)
+        "Grep" -> grepWorkspace(task = task, arguments = invocation.arguments)
+        "Glob" -> globWorkspace(task = task, arguments = invocation.arguments)
         "ImportFile" -> importFileForClaude(task = task, arguments = invocation.arguments)
         "WebSearch" -> webSearch(task = task, arguments = invocation.arguments)
         "WebFetch" -> webFetch(task = task, arguments = invocation.arguments)
@@ -478,6 +523,10 @@ class OpenCrayToolDispatcher(
         "python_exec" -> executePython(task = task, arguments = invocation.arguments)
         "skills_list" -> listSkills()
         "skill_read" -> readSkill(invocation.arguments)
+        "SkillsFind" -> findSkillPackages(task = task, arguments = invocation.arguments)
+        "SkillsList" -> listInstalledSkillPackages(task = task)
+        "SkillsAdd" -> installSkillPackage(task = task, arguments = invocation.arguments)
+        "SkillsRemove" -> removeSkillPackage(task = task, arguments = invocation.arguments)
         "mcp_list_servers" -> listMcpServers()
         "memory_search" -> searchProjectedMemory(invocation.arguments)
         "memory_get" -> getProjectedMemory(invocation.arguments)
@@ -503,7 +552,7 @@ class OpenCrayToolDispatcher(
     }
   }
 
-  private fun listWorkspaceFiles(arguments: JsonObject): AgentToolResult {
+  private fun listWorkspaceFiles(task: AgentTask, arguments: JsonObject): AgentToolResult {
     val directory = toolTargetResolver.ensureReadableDirectory(
       candidate = arguments.optionalString("path"),
       label = "workspace list",
@@ -511,6 +560,19 @@ class OpenCrayToolDispatcher(
     )
     val maxEntries = arguments.optionalInt("max_entries")?.coerceIn(1, config.maxDirectoryEntries)
       ?: config.maxDirectoryEntries
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "workspace_list_files",
+      targetPath = directory,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.DIRECTORY,
+        primaryPath = directory,
+      ),
+    )
+    gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = mapOf("path" to toolTargetResolver.displayModelPath(directory)),
+    )?.let { return it }
 
     val entries = Files.list(directory).use { stream ->
       val collected = mutableListOf<Path>()
@@ -532,22 +594,28 @@ class OpenCrayToolDispatcher(
       toolName = "workspace_list_files",
       status = AgentToolResultStatus.SUCCESS,
       content = rendered,
-      metadata = toolPolicySupport.commonMetadata(
-        toolName = "workspace_list_files",
-        metadataContext = policyMetadataContext(
-          toolName = "workspace_list_files",
-          targetKind = ToolTargetKind.DIRECTORY,
-          primaryPath = directory,
-        ),
-      ) + mapOf(
+      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
         "path" to toolTargetResolver.displayModelPath(directory),
         "entryCount" to entries.size.toString(),
       ),
     )
   }
 
-  private fun readWorkspaceFile(arguments: JsonObject): AgentToolResult {
+  private fun readWorkspaceFile(task: AgentTask, arguments: JsonObject): AgentToolResult {
     val file = toolTargetResolver.ensureReadableFile(arguments.requiredString("path"), label = "workspace read")
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "workspace_read_file",
+      targetPath = file,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.FILE,
+        primaryPath = file,
+      ),
+    )
+    gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = mapOf("path" to toolTargetResolver.displayModelPath(file)),
+    )?.let { return it }
     val bytes = Files.readAllBytes(file)
     val truncated = bytes.size > config.maxReadBytes
     val body = bytes.toString(StandardCharsets.UTF_8)
@@ -557,14 +625,7 @@ class OpenCrayToolDispatcher(
       toolName = "workspace_read_file",
       status = AgentToolResultStatus.SUCCESS,
       content = body,
-      metadata = toolPolicySupport.commonMetadata(
-        toolName = "workspace_read_file",
-        metadataContext = policyMetadataContext(
-          toolName = "workspace_read_file",
-          targetKind = ToolTargetKind.FILE,
-          primaryPath = file,
-        ),
-      ) + mapOf(
+      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
         "path" to toolTargetResolver.displayModelPath(file),
         "byteCount" to bytes.size.toString(),
         "truncated" to truncated.toString(),
@@ -588,7 +649,7 @@ class OpenCrayToolDispatcher(
     )
   }
 
-  private fun listFilesForClaude(arguments: JsonObject): AgentToolResult {
+  private fun listFilesForClaude(task: AgentTask, arguments: JsonObject): AgentToolResult {
     val directory = toolTargetResolver.ensureReadableDirectory(
       candidate = arguments.optionalString("path"),
       label = "LS",
@@ -596,6 +657,19 @@ class OpenCrayToolDispatcher(
     )
     val maxEntries = arguments.optionalInt("max_entries")?.coerceIn(1, config.maxDirectoryEntries)
       ?: config.maxDirectoryEntries
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "LS",
+      targetPath = directory,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.DIRECTORY,
+        primaryPath = directory,
+      ),
+    )
+    gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = mapOf("path" to toolTargetResolver.displayModelPath(directory)),
+    )?.let { return it }
     val entries = Files.list(directory).use { stream ->
       val collected = mutableListOf<Path>()
       val iterator = stream.sorted().iterator()
@@ -616,21 +690,14 @@ class OpenCrayToolDispatcher(
       toolName = "LS",
       status = AgentToolResultStatus.SUCCESS,
       content = rendered,
-      metadata = toolPolicySupport.commonMetadata(
-        toolName = "LS",
-        metadataContext = policyMetadataContext(
-          toolName = "LS",
-          targetKind = ToolTargetKind.DIRECTORY,
-          primaryPath = directory,
-        ),
-      ) + mapOf(
+      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
         "path" to toolTargetResolver.displayModelPath(directory),
         "entryCount" to entries.size.toString(),
       ),
     )
   }
 
-  private fun readFileForClaude(arguments: JsonObject): AgentToolResult {
+  private fun readFileForClaude(task: AgentTask, arguments: JsonObject): AgentToolResult {
     val file = toolTargetResolver.ensureReadableFile(
       arguments.requiredStringFrom("file_path", "path"),
       label = "Read",
@@ -639,6 +706,19 @@ class OpenCrayToolDispatcher(
     require(offset >= 1) { "Read offset must be >= 1." }
     val limit = arguments.optionalInt("limit")
     require(limit == null || limit >= 1) { "Read limit must be >= 1 when provided." }
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "Read",
+      targetPath = file,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.FILE,
+        primaryPath = file,
+      ),
+    )
+    gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = mapOf("filePath" to toolTargetResolver.displayModelPath(file)),
+    )?.let { return it }
 
     val bytes = Files.readAllBytes(file)
     val fullBody = bytes.toString(StandardCharsets.UTF_8)
@@ -660,14 +740,7 @@ class OpenCrayToolDispatcher(
       toolName = "Read",
       status = AgentToolResultStatus.SUCCESS,
       content = body,
-      metadata = toolPolicySupport.commonMetadata(
-        toolName = "Read",
-        metadataContext = policyMetadataContext(
-          toolName = "Read",
-          targetKind = ToolTargetKind.FILE,
-          primaryPath = file,
-        ),
-      ) + mapOf(
+      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
         "filePath" to toolTargetResolver.displayModelPath(file),
         "byteCount" to bytes.size.toString(),
         "totalLineCount" to lines.size.toString(),
@@ -735,26 +808,24 @@ class OpenCrayToolDispatcher(
       "Import destination already exists: ${toolTargetResolver.displayWritablePath(destination)}"
     }
 
-    val effectivePolicyDecision = policyDecisionFor(
+    val targetKind = if (Files.isDirectory(source)) ToolTargetKind.DIRECTORY else ToolTargetKind.FILE
+    val plan = toolPolicyPipeline.plan(
       task = task,
       toolName = toolName,
       targetPath = destination,
-    )
-    gateFileMutation(
-      task = task,
-      toolName = toolName,
-      policyDecision = effectivePolicyDecision,
-      affectedPaths = mapOf(
-        "sourcePath" to toolTargetResolver.displayModelPath(source),
-        "destinationPath" to toolTargetResolver.displayWritablePath(destination),
-      ),
-      metadataContext = policyMetadataContext(
-        toolName = toolName,
-        targetKind = if (Files.isDirectory(source)) ToolTargetKind.DIRECTORY else ToolTargetKind.FILE,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = targetKind,
         primaryPath = source,
         secondaryPath = destination,
         primaryTargetPath = toolTargetResolver.displayModelPath(source),
         secondaryTargetPath = toolTargetResolver.displayWritablePath(destination),
+      ),
+    )
+    toolPolicyPipeline.gateFileMutation(
+      plan = plan,
+      affectedPaths = mapOf(
+        "sourcePath" to toolTargetResolver.displayModelPath(source),
+        "destinationPath" to toolTargetResolver.displayWritablePath(destination),
       ),
     )?.let { return it }
 
@@ -764,26 +835,14 @@ class OpenCrayToolDispatcher(
       toolName = toolName,
       status = AgentToolResultStatus.SUCCESS,
       content = "Imported ${toolTargetResolver.displayModelPath(source)} into ${toolTargetResolver.displayWritablePath(destination)}.",
-      metadata = toolPolicySupport.policyMetadata(
-        task = task,
-        toolName = toolName,
-        policyDecision = effectivePolicyDecision,
-        metadataContext = policyMetadataContext(
-          toolName = toolName,
-          targetKind = if (Files.isDirectory(source)) ToolTargetKind.DIRECTORY else ToolTargetKind.FILE,
-          primaryPath = source,
-          secondaryPath = destination,
-          primaryTargetPath = toolTargetResolver.displayModelPath(source),
-          secondaryTargetPath = toolTargetResolver.displayWritablePath(destination),
-        ),
-      ) + mapOf(
+      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
         "sourcePath" to toolTargetResolver.displayModelPath(source),
         "destinationPath" to toolTargetResolver.displayWritablePath(destination),
       ),
     )
   }
 
-  private fun grepWorkspace(arguments: JsonObject): AgentToolResult {
+  private fun grepWorkspace(task: AgentTask, arguments: JsonObject): AgentToolResult {
     val pattern = arguments.requiredString("pattern")
     val regex = runCatching { Regex(pattern) }
       .getOrElse { error -> throw IllegalArgumentException("Invalid Grep pattern: ${error.message}") }
@@ -791,6 +850,24 @@ class OpenCrayToolDispatcher(
     val globMatcher = arguments.optionalString("glob")?.let(::compileGlobMatcher)
     val maxResults = arguments.optionalInt("max_results")?.coerceIn(1, config.maxDirectoryEntries)
       ?: config.maxDirectoryEntries
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "Grep",
+      targetPath = searchRoot,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.SEARCH_ROOT,
+        primaryPath = searchRoot,
+        targetSummary = "$pattern @ ${toolTargetResolver.displayModelPath(searchRoot)}",
+      ),
+    )
+    gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = buildMap {
+        put("path", toolTargetResolver.displayModelPath(searchRoot))
+        put("pattern", pattern)
+        arguments.optionalString("glob")?.let { put("glob", it) }
+      },
+    )?.let { return it }
     val matches = mutableListOf<String>()
 
     for (file in collectRegularFiles(searchRoot)) {
@@ -824,15 +901,7 @@ class OpenCrayToolDispatcher(
       toolName = "Grep",
       status = AgentToolResultStatus.SUCCESS,
       content = matches.joinToString(separator = "\n").ifBlank { "No matches found." },
-      metadata = toolPolicySupport.commonMetadata(
-        toolName = "Grep",
-        metadataContext = policyMetadataContext(
-          toolName = "Grep",
-          targetKind = ToolTargetKind.SEARCH_ROOT,
-          primaryPath = searchRoot,
-          targetSummary = "$pattern @ ${toolTargetResolver.displayModelPath(searchRoot)}",
-        ),
-      ) + mapOf(
+      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
         "path" to toolTargetResolver.displayModelPath(searchRoot),
         "pattern" to pattern,
         "matchCount" to matches.size.toString(),
@@ -840,11 +909,29 @@ class OpenCrayToolDispatcher(
     )
   }
 
-  private fun globWorkspace(arguments: JsonObject): AgentToolResult {
-    val matcher = compileGlobMatcher(arguments.requiredString("pattern"))
+  private fun globWorkspace(task: AgentTask, arguments: JsonObject): AgentToolResult {
+    val pattern = arguments.requiredString("pattern")
+    val matcher = compileGlobMatcher(pattern)
     val searchRoot = toolTargetResolver.resolveSearchRoot(arguments.optionalString("path"), label = "Glob path")
     val maxResults = arguments.optionalInt("max_results")?.coerceIn(1, config.maxDirectoryEntries)
       ?: config.maxDirectoryEntries
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "Glob",
+      targetPath = searchRoot,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.SEARCH_ROOT,
+        primaryPath = searchRoot,
+        targetSummary = "$pattern @ ${toolTargetResolver.displayModelPath(searchRoot)}",
+      ),
+    )
+    gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = mapOf(
+        "path" to toolTargetResolver.displayModelPath(searchRoot),
+        "pattern" to pattern,
+      ),
+    )?.let { return it }
     val matches = mutableListOf<String>()
 
     for (candidate in collectSearchCandidates(searchRoot)) {
@@ -860,18 +947,10 @@ class OpenCrayToolDispatcher(
       toolName = "Glob",
       status = AgentToolResultStatus.SUCCESS,
       content = matches.joinToString(separator = "\n").ifBlank { "No matches found." },
-      metadata = toolPolicySupport.commonMetadata(
-        toolName = "Glob",
-        metadataContext = policyMetadataContext(
-          toolName = "Glob",
-          targetKind = ToolTargetKind.SEARCH_ROOT,
-          primaryPath = searchRoot,
-          targetSummary = "${arguments.requiredString("pattern")} @ ${toolTargetResolver.displayModelPath(searchRoot)}",
-        ),
-      ) + mapOf(
+      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
         "path" to toolTargetResolver.displayModelPath(searchRoot),
         "matchCount" to matches.size.toString(),
-        "pattern" to arguments.requiredString("pattern"),
+        "pattern" to pattern,
       ),
     )
   }
@@ -884,26 +963,23 @@ class OpenCrayToolDispatcher(
       .map(String::trim)
       .filter(String::isNotEmpty)
       .distinct()
-    val effectivePolicyDecision = policyDecisionFor(
+    val plan = toolPolicyPipeline.plan(
       task = task,
       toolName = "WebSearch",
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        workspaceRelation = ToolWorkspaceRelation.NONE,
+        targetSummary = inlinePreview(query, maxChars = 256),
+      ),
     )
-    gatePolicyControlledTool(
-      task = task,
-      toolName = "WebSearch",
-      policyDecision = effectivePolicyDecision,
+    toolPolicyPipeline.gate(
+      plan = plan,
       affectedPaths = buildMap {
         put("query", inlinePreview(query, maxChars = 256))
         if (domains.isNotEmpty()) {
           put("domains", domains.joinToString(separator = ","))
         }
       },
-      metadataContext = policyMetadataContext(
-        toolName = "WebSearch",
-        targetKind = ToolTargetKind.NETWORK,
-        workspaceRelation = ToolWorkspaceRelation.NONE,
-        targetSummary = inlinePreview(query, maxChars = 256),
-      ),
       askDetail = "Approval is required before WebSearch can access the network.",
       denyDetail = "Policy denied WebSearch.",
     )?.let { return it }
@@ -922,17 +998,7 @@ class OpenCrayToolDispatcher(
         content = result.errorMessage ?: "Web search failed.",
         errorCode = result.errorCode,
         errorMessage = result.errorMessage,
-        metadata = toolPolicySupport.policyMetadata(
-          task = task,
-          toolName = "WebSearch",
-          policyDecision = effectivePolicyDecision,
-          metadataContext = policyMetadataContext(
-            toolName = "WebSearch",
-            targetKind = ToolTargetKind.NETWORK,
-            workspaceRelation = ToolWorkspaceRelation.NONE,
-            targetSummary = inlinePreview(query, maxChars = 256),
-          ),
-        ) + mapOf(
+        metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
           "providerName" to result.providerName,
           "query" to query,
           "requestedMaxResults" to maxResults.toString(),
@@ -963,17 +1029,7 @@ class OpenCrayToolDispatcher(
       toolName = "WebSearch",
       status = AgentToolResultStatus.SUCCESS,
       content = rendered,
-      metadata = toolPolicySupport.policyMetadata(
-        task = task,
-        toolName = "WebSearch",
-        policyDecision = effectivePolicyDecision,
-        metadataContext = policyMetadataContext(
-          toolName = "WebSearch",
-          targetKind = ToolTargetKind.NETWORK,
-          workspaceRelation = ToolWorkspaceRelation.NONE,
-          targetSummary = inlinePreview(query, maxChars = 256),
-        ),
-      ) + mapOf(
+      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
         "providerName" to result.providerName,
         "query" to query,
         "resultCount" to result.results.size.toString(),
@@ -996,21 +1052,18 @@ class OpenCrayToolDispatcher(
     val url = arguments.requiredString("url")
     val maxChars = arguments.optionalInt("max_chars")?.coerceIn(256, config.maxWebFetchChars)
       ?: config.maxWebFetchChars
-    val effectivePolicyDecision = policyDecisionFor(
+    val plan = toolPolicyPipeline.plan(
       task = task,
       toolName = "WebFetch",
-    )
-    gatePolicyControlledTool(
-      task = task,
-      toolName = "WebFetch",
-      policyDecision = effectivePolicyDecision,
-      affectedPaths = mapOf("url" to inlinePreview(url, maxChars = 512)),
-      metadataContext = policyMetadataContext(
-        toolName = "WebFetch",
+      metadataRequest = ToolMetadataContextRequest(
         targetKind = ToolTargetKind.NETWORK,
         workspaceRelation = ToolWorkspaceRelation.NONE,
         targetSummary = inlinePreview(url, maxChars = 512),
       ),
+    )
+    toolPolicyPipeline.gate(
+      plan = plan,
+      affectedPaths = mapOf("url" to inlinePreview(url, maxChars = 512)),
       askDetail = "Approval is required before WebFetch can access the network.",
       denyDetail = "Policy denied WebFetch.",
     )?.let { return it }
@@ -1039,19 +1092,7 @@ class OpenCrayToolDispatcher(
           put("requestedUrl", result.requestedUrl)
           put("finalUrl", result.finalUrl)
           put("requestedMaxChars", maxChars.toString())
-          putAll(
-            toolPolicySupport.policyMetadata(
-              task = task,
-              toolName = "WebFetch",
-              policyDecision = effectivePolicyDecision,
-              metadataContext = policyMetadataContext(
-                toolName = "WebFetch",
-                targetKind = ToolTargetKind.NETWORK,
-                workspaceRelation = ToolWorkspaceRelation.NONE,
-                targetSummary = inlinePreview(url, maxChars = 512),
-              ),
-            ),
-          )
+          putAll(toolPolicyPipeline.policyMetadata(plan))
           result.statusCode?.let { put("statusCode", it.toString()) }
           result.contentType?.let { put("contentType", it) }
         },
@@ -1081,19 +1122,7 @@ class OpenCrayToolDispatcher(
         put("finalUrl", result.finalUrl)
         put("requestedMaxChars", maxChars.toString())
         put("truncated", result.truncated.toString())
-        putAll(
-          toolPolicySupport.policyMetadata(
-            task = task,
-            toolName = "WebFetch",
-            policyDecision = effectivePolicyDecision,
-            metadataContext = policyMetadataContext(
-              toolName = "WebFetch",
-              targetKind = ToolTargetKind.NETWORK,
-              workspaceRelation = ToolWorkspaceRelation.NONE,
-              targetSummary = inlinePreview(url, maxChars = 512),
-            ),
-          ),
-        )
+        putAll(toolPolicyPipeline.policyMetadata(plan))
         result.statusCode?.let { put("statusCode", it.toString()) }
         result.contentType?.let { put("contentType", it) }
         result.title?.let { put("title", it) }
@@ -1211,20 +1240,20 @@ class OpenCrayToolDispatcher(
       ?: DEFAULT_MANAGED_PROCESS_TIMEOUT_MS
     require(processTimeoutMs > 0L) { "Bash process_timeout_ms must be > 0." }
     val background = arguments.optionalBoolean("background") ?: false
+    unsupportedBashPythonInvocation(arguments = arguments)?.let { return it }
     val launch = resolveBashLaunch(arguments = arguments)
-    val effectivePolicyDecision = policyDecisionFor(
+    val plan = toolPolicyPipeline.plan(
       task = task,
       toolName = "Bash",
+      metadataRequest = launch.metadataRequest,
+      intent = launch.intent,
     )
-    gatePolicyControlledTool(
-      task = task,
-      toolName = "Bash",
-      policyDecision = effectivePolicyDecision,
+    toolPolicyPipeline.gate(
+      plan = plan,
       affectedPaths = mapOf(
         "toolName" to "Bash",
         "workingDirectory" to toolTargetResolver.displayModelPath(launch.workingDirectory),
       ),
-      metadataContext = launch.metadataContext,
       askDetail = "Approval is required before Bash can run.",
       denyDetail = "Policy denied Bash.",
     )?.let { return it }
@@ -1238,12 +1267,7 @@ class OpenCrayToolDispatcher(
         workingDirectory = launch.workingDirectory.toString(),
         timeoutMs = processTimeoutMs,
         requestedAtEpochMs = System.currentTimeMillis(),
-        metadata = toolPolicySupport.policyMetadata(
-          task = task,
-          toolName = "Bash",
-          policyDecision = effectivePolicyDecision,
-          metadataContext = launch.metadataContext,
-        ) + mapOf(
+        metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
           "workingDirectory" to toolTargetResolver.displayModelPath(launch.workingDirectory),
         ) + launch.metadata,
       ),
@@ -1301,13 +1325,18 @@ class OpenCrayToolDispatcher(
       command = shell.executable,
       args = shell.args,
       workingDirectory = workingDirectory,
+      intent = ExecutionIntent(
+        kind = ExecutionIntentKind.SHELL_COMMAND,
+        transport = ExecutionTransport.MANAGED_PROCESS,
+        commandPreview = inlinePreview(command),
+        workingDirectory = toolTargetResolver.displayModelPath(workingDirectory),
+      ),
       metadata = mapOf(
         "runtimeKind" to "bash",
         "shellKind" to shell.kind,
         "shellCommand" to inlinePreview(command),
       ),
-      metadataContext = policyMetadataContext(
-        toolName = "Bash",
+      metadataRequest = ToolMetadataContextRequest(
         targetKind = ToolTargetKind.WORKING_DIRECTORY,
         primaryPath = workingDirectory,
         primaryTargetPath = toolTargetResolver.displayModelPath(workingDirectory),
@@ -1316,23 +1345,57 @@ class OpenCrayToolDispatcher(
     )
   }
 
+  private fun unsupportedBashPythonInvocation(arguments: JsonObject): AgentToolResult? {
+    val command = arguments.requiredString("command").trimStart()
+    val normalized = command.lowercase()
+    val pythonExecutable = when {
+      normalized == "python" || normalized.startsWith("python ") -> "python"
+      normalized == "python3" || normalized.startsWith("python3 ") -> "python3"
+      normalized == "py" || normalized.startsWith("py ") -> "py"
+      else -> null
+    } ?: return null
+    return AgentToolResult(
+      toolName = "Bash",
+      status = AgentToolResultStatus.FAILED,
+      content = buildString {
+        append("Bash cannot be used for Python commands or Python runtime diagnostics on this runtime. ")
+        append("Use python_exec instead. ")
+        append("If you need Python version or environment details, create or reuse a small workspace-local probe script and run it with python_exec.")
+      },
+      errorCode = "BASH_PYTHON_UNSUPPORTED",
+      errorMessage = "Bash Python invocation is blocked. Use python_exec for Python-related tasks.",
+      metadata = toolPolicySupport.commonMetadata(
+        toolName = "Bash",
+        metadataContext = policyMetadataContext(
+          toolName = "Bash",
+          targetKind = ToolTargetKind.WORKING_DIRECTORY,
+          primaryPath = null,
+          targetSummary = inlinePreview(command),
+        ),
+      ) + mapOf(
+        "pythonCommand" to pythonExecutable,
+        "recommendedTool" to "python_exec",
+        "bashPythonInvocationBlocked" to "true",
+      ),
+    )
+  }
+
   private fun startManagedProcess(task: AgentTask, arguments: JsonObject): AgentToolResult {
     val timeoutMs = arguments.optionalLong("timeout_ms") ?: DEFAULT_MANAGED_PROCESS_TIMEOUT_MS
     unsupportedManagedPythonProcessStart(arguments = arguments)?.let { return it }
     val launch = resolveManagedProcessLaunch(arguments = arguments, timeoutMs = timeoutMs)
-    val effectivePolicyDecision = policyDecisionFor(
+    val plan = toolPolicyPipeline.plan(
       task = task,
       toolName = "ProcessStart",
+      metadataRequest = launch.metadataRequest,
+      intent = launch.intent,
     )
-    gatePolicyControlledTool(
-      task = task,
-      toolName = "ProcessStart",
-      policyDecision = effectivePolicyDecision,
+    toolPolicyPipeline.gate(
+      plan = plan,
       affectedPaths = mapOf(
         "toolName" to "ProcessStart",
         "workingDirectory" to toolTargetResolver.displayModelPath(launch.workingDirectory),
       ) + launch.affectedPaths,
-      metadataContext = launch.metadataContext,
       askDetail = "Approval is required before ProcessStart can run.",
       denyDetail = "Policy denied ProcessStart.",
     )?.let { return it }
@@ -1346,12 +1409,7 @@ class OpenCrayToolDispatcher(
         workingDirectory = launch.workingDirectory.toString(),
         timeoutMs = timeoutMs,
         requestedAtEpochMs = System.currentTimeMillis(),
-        metadata = toolPolicySupport.policyMetadata(
-          task = task,
-          toolName = "ProcessStart",
-          policyDecision = effectivePolicyDecision,
-          metadataContext = launch.metadataContext,
-        ) + mapOf(
+        metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
           "workingDirectory" to toolTargetResolver.displayModelPath(launch.workingDirectory),
         ) + launch.metadata,
       ),
@@ -1411,8 +1469,13 @@ class OpenCrayToolDispatcher(
         command = requireNotNull(command),
         args = userArgs,
         workingDirectory = workingDirectory,
-        metadataContext = policyMetadataContext(
-          toolName = "ProcessStart",
+        intent = ExecutionIntent(
+          kind = ExecutionIntentKind.MANAGED_COMMAND,
+          transport = ExecutionTransport.MANAGED_PROCESS,
+          commandPreview = inlinePreview(requireNotNull(command)),
+          workingDirectory = toolTargetResolver.displayModelPath(workingDirectory),
+        ),
+        metadataRequest = ToolMetadataContextRequest(
           targetKind = ToolTargetKind.WORKING_DIRECTORY,
           primaryPath = workingDirectory,
           primaryTargetPath = toolTargetResolver.displayModelPath(workingDirectory),
@@ -1443,6 +1506,12 @@ class OpenCrayToolDispatcher(
         command = "python_exec",
         args = userArgs,
         workingDirectory = workingDirectory,
+        intent = ExecutionIntent(
+          kind = ExecutionIntentKind.MANAGED_PYTHON_SCRIPT,
+          transport = ExecutionTransport.MANAGED_PROCESS,
+          scriptPath = toolTargetResolver.displayModelPath(scriptPath),
+          workingDirectory = toolTargetResolver.displayModelPath(workingDirectory),
+        ),
         metadata = mapOf(
           "runtimeKind" to "python_exec",
           "scriptPath" to toolTargetResolver.displayModelPath(scriptPath),
@@ -1450,8 +1519,7 @@ class OpenCrayToolDispatcher(
           "managedByPythonRuntime" to "true",
         ),
         affectedPaths = mapOf("scriptPath" to toolTargetResolver.displayModelPath(scriptPath)),
-        metadataContext = policyMetadataContext(
-          toolName = "ProcessStart",
+        metadataRequest = ToolMetadataContextRequest(
           targetKind = ToolTargetKind.SCRIPT,
           primaryPath = scriptPath,
           secondaryPath = workingDirectory,
@@ -1466,14 +1534,19 @@ class OpenCrayToolDispatcher(
       command = pythonCommand.first(),
       args = pythonCommand.drop(1),
       workingDirectory = workingDirectory,
+      intent = ExecutionIntent(
+        kind = ExecutionIntentKind.MANAGED_PYTHON_SCRIPT,
+        transport = ExecutionTransport.MANAGED_PROCESS,
+        scriptPath = toolTargetResolver.displayModelPath(scriptPath),
+        workingDirectory = toolTargetResolver.displayModelPath(workingDirectory),
+      ),
       metadata = mapOf(
         "runtimeKind" to "python_exec",
         "scriptPath" to toolTargetResolver.displayModelPath(scriptPath),
         "pythonExecutable" to pythonExecutable,
       ),
       affectedPaths = mapOf("scriptPath" to toolTargetResolver.displayModelPath(scriptPath)),
-      metadataContext = policyMetadataContext(
-        toolName = "ProcessStart",
+      metadataRequest = ToolMetadataContextRequest(
         targetKind = ToolTargetKind.SCRIPT,
         primaryPath = scriptPath,
         secondaryPath = workingDirectory,
@@ -1581,27 +1654,29 @@ class OpenCrayToolDispatcher(
       ?.trim()
       ?.takeIf(String::isNotBlank)
       ?.let { candidate -> runCatching { Paths.get(candidate) }.getOrNull() }
-    val effectivePolicyDecision = policyDecisionFor(
+    val plan = toolPolicyPipeline.plan(
       task = task,
       toolName = "ProcessTerminate",
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.PROCESS,
+        primaryPath = workingDirectoryPath,
+        primaryTargetPath = toolTargetResolver.displayWorkingDirectory(currentSnapshot.workingDirectory),
+        targetSummary = processId,
+      ),
+      intent = ProcessLifecycleIntent(
+        kind = ProcessLifecycleIntentKind.TERMINATE,
+        processId = processId,
+        workingDirectory = toolTargetResolver.displayWorkingDirectory(currentSnapshot.workingDirectory),
+      ),
     )
-    gatePolicyControlledTool(
-      task = task,
-      toolName = "ProcessTerminate",
-      policyDecision = effectivePolicyDecision,
+    toolPolicyPipeline.gate(
+      plan = plan,
       affectedPaths = buildMap {
         put("processId", processId)
         toolTargetResolver.displayWorkingDirectory(currentSnapshot.workingDirectory)?.let { workingDirectory ->
           put("workingDirectory", workingDirectory)
         }
       },
-      metadataContext = policyMetadataContext(
-        toolName = "ProcessTerminate",
-        targetKind = ToolTargetKind.PROCESS,
-        primaryPath = workingDirectoryPath,
-        primaryTargetPath = toolTargetResolver.displayWorkingDirectory(currentSnapshot.workingDirectory),
-        targetSummary = processId,
-      ),
       askDetail = "Approval is required before ProcessTerminate can run.",
       denyDetail = "Policy denied ProcessTerminate.",
     )?.let { return it }
@@ -1632,18 +1707,7 @@ class OpenCrayToolDispatcher(
         appendLine(terminationMessage)
         append(renderManagedProcessSnapshot(snapshot, includeOutput = true))
       }.trim(),
-      metadata = managedProcessMetadata(snapshot) + toolPolicySupport.policyMetadata(
-        task = task,
-        toolName = "ProcessTerminate",
-        policyDecision = effectivePolicyDecision,
-        metadataContext = policyMetadataContext(
-          toolName = "ProcessTerminate",
-          targetKind = ToolTargetKind.PROCESS,
-          primaryPath = workingDirectoryPath,
-          primaryTargetPath = toolTargetResolver.displayWorkingDirectory(currentSnapshot.workingDirectory),
-          targetSummary = processId,
-        ),
-      ),
+      metadata = managedProcessMetadata(snapshot) + toolPolicyPipeline.policyMetadata(plan),
     )
   }
 
@@ -1658,25 +1722,23 @@ class OpenCrayToolDispatcher(
       label = "workspace move destination",
       defaultToRoot = false,
     )
-    val effectivePolicyDecision = policyDecisionFor(
+    val targetKind = if (Files.isDirectory(source)) ToolTargetKind.DIRECTORY else ToolTargetKind.FILE
+    val plan = toolPolicyPipeline.plan(
       task = task,
       toolName = "workspace_move_file",
       targetPath = source,
       destinationPath = destination,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = targetKind,
+        primaryPath = source,
+        secondaryPath = destination,
+      ),
     )
-    gateFileMutation(
-      task = task,
-      toolName = "workspace_move_file",
-      policyDecision = effectivePolicyDecision,
+    toolPolicyPipeline.gateFileMutation(
+      plan = plan,
       affectedPaths = mapOf(
         "sourcePath" to toolTargetResolver.displayWritablePath(source),
         "destinationPath" to toolTargetResolver.displayWritablePath(destination),
-      ),
-      metadataContext = policyMetadataContext(
-        toolName = "workspace_move_file",
-        targetKind = if (Files.isDirectory(source)) ToolTargetKind.DIRECTORY else ToolTargetKind.FILE,
-        primaryPath = source,
-        secondaryPath = destination,
       ),
     )?.let { return it }
     fileOpsService.executeBatch(
@@ -1691,17 +1753,7 @@ class OpenCrayToolDispatcher(
       toolName = "workspace_move_file",
       status = AgentToolResultStatus.SUCCESS,
       content = "Moved ${toolTargetResolver.displayWritablePath(source)} to ${toolTargetResolver.displayWritablePath(destination)}.",
-      metadata = toolPolicySupport.policyMetadata(
-        task = task,
-        toolName = "workspace_move_file",
-        policyDecision = effectivePolicyDecision,
-        metadataContext = policyMetadataContext(
-          toolName = "workspace_move_file",
-          targetKind = if (Files.isDirectory(source)) ToolTargetKind.DIRECTORY else ToolTargetKind.FILE,
-          primaryPath = source,
-          secondaryPath = destination,
-        ),
-      ) + mapOf(
+      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
         "sourcePath" to toolTargetResolver.displayWritablePath(source),
         "destinationPath" to toolTargetResolver.displayWritablePath(destination),
       ),
@@ -1714,21 +1766,19 @@ class OpenCrayToolDispatcher(
       label = "workspace delete",
       defaultToRoot = false,
     )
-    val effectivePolicyDecision = policyDecisionFor(
+    val targetKind = if (Files.isDirectory(path)) ToolTargetKind.DIRECTORY else ToolTargetKind.FILE
+    val plan = toolPolicyPipeline.plan(
       task = task,
       toolName = "workspace_delete_file",
       targetPath = path,
-    )
-    gateFileMutation(
-      task = task,
-      toolName = "workspace_delete_file",
-      policyDecision = effectivePolicyDecision,
-      affectedPaths = mapOf("path" to toolTargetResolver.displayWritablePath(path)),
-      metadataContext = policyMetadataContext(
-        toolName = "workspace_delete_file",
-        targetKind = if (Files.isDirectory(path)) ToolTargetKind.DIRECTORY else ToolTargetKind.FILE,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = targetKind,
         primaryPath = path,
       ),
+    )
+    toolPolicyPipeline.gateFileMutation(
+      plan = plan,
+      affectedPaths = mapOf("path" to toolTargetResolver.displayWritablePath(path)),
     )?.let { return it }
     fileOpsService.executeBatch(
       operations = listOf(
@@ -1739,16 +1789,7 @@ class OpenCrayToolDispatcher(
       toolName = "workspace_delete_file",
       status = AgentToolResultStatus.SUCCESS,
       content = "Deleted ${toolTargetResolver.displayWritablePath(path)}.",
-      metadata = toolPolicySupport.policyMetadata(
-        task = task,
-        toolName = "workspace_delete_file",
-        policyDecision = effectivePolicyDecision,
-        metadataContext = policyMetadataContext(
-          toolName = "workspace_delete_file",
-          targetKind = if (Files.isDirectory(path)) ToolTargetKind.DIRECTORY else ToolTargetKind.FILE,
-          primaryPath = path,
-        ),
-      ) + mapOf(
+      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
         "path" to toolTargetResolver.displayWritablePath(path),
       ),
     )
@@ -1763,22 +1804,19 @@ class OpenCrayToolDispatcher(
     successMessage: String,
     extraMetadata: Map<String, String> = emptyMap(),
   ): AgentToolResult {
-    val effectivePolicyDecision = policyDecisionFor(
+    val plan = toolPolicyPipeline.plan(
       task = task,
       toolName = toolName,
       targetPath = path,
-    )
-    gateFileMutation(
-      task = task,
-      toolName = toolName,
-      policyDecision = effectivePolicyDecision,
-      affectedPaths = mapOf(
-        metadataPathKey to toolTargetResolver.displayPathForTool(toolName = toolName, path = path),
-      ),
-      metadataContext = policyMetadataContext(
-        toolName = toolName,
+      metadataRequest = ToolMetadataContextRequest(
         targetKind = ToolTargetKind.FILE,
         primaryPath = path,
+      ),
+    )
+    toolPolicyPipeline.gateFileMutation(
+      plan = plan,
+      affectedPaths = mapOf(
+        metadataPathKey to toolTargetResolver.displayPathForTool(toolName = toolName, path = path),
       ),
     )?.let { return it }
     val batchResult = fileOpsService.executeBatch(
@@ -1793,16 +1831,7 @@ class OpenCrayToolDispatcher(
       toolName = toolName,
       status = AgentToolResultStatus.SUCCESS,
       content = successMessage,
-      metadata = toolPolicySupport.policyMetadata(
-        task = task,
-        toolName = toolName,
-        policyDecision = effectivePolicyDecision,
-        metadataContext = policyMetadataContext(
-          toolName = toolName,
-          targetKind = ToolTargetKind.FILE,
-          primaryPath = path,
-        ),
-      ) + mapOf(
+      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
         metadataPathKey to toolTargetResolver.displayPathForTool(toolName = toolName, path = path),
         "checkpointId" to batchResult.checkpointId,
         "checkpointEntryCount" to batchResult.checkpointEntryCount.toString(),
@@ -1975,9 +2004,21 @@ class OpenCrayToolDispatcher(
       label = "command working directory",
       defaultToRoot = true,
     )
-    val effectivePolicyDecision = policyDecisionFor(
+    val plan = toolPolicyPipeline.plan(
       task = task,
       toolName = "command_exec",
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.WORKING_DIRECTORY,
+        primaryPath = workingDirectory,
+        primaryTargetPath = toolTargetResolver.displayModelPath(workingDirectory),
+        targetSummary = inlinePreview(command),
+      ),
+      intent = ExecutionIntent(
+        kind = ExecutionIntentKind.HOST_COMMAND,
+        transport = ExecutionTransport.FOREGROUND,
+        commandPreview = inlinePreview(command),
+        workingDirectory = toolTargetResolver.displayModelPath(workingDirectory),
+      ),
     )
     val executionResult = commandExecutor.execute(
       request = CommandExecutionRequest(
@@ -1988,20 +2029,9 @@ class OpenCrayToolDispatcher(
         requestedAtEpochMs = System.currentTimeMillis(),
         metadata = mapOf(
           "toolName" to "command_exec",
-        ) + toolPolicySupport.policyMetadata(
-          task = task,
-          toolName = "command_exec",
-          policyDecision = effectivePolicyDecision,
-          metadataContext = policyMetadataContext(
-            toolName = "command_exec",
-            targetKind = ToolTargetKind.WORKING_DIRECTORY,
-            primaryPath = workingDirectory,
-            primaryTargetPath = toolTargetResolver.displayModelPath(workingDirectory),
-            targetSummary = inlinePreview(command),
-          ),
-        ),
+        ) + toolPolicyPipeline.policyMetadata(plan),
       ),
-      policyDecision = effectivePolicyDecision,
+      policyDecision = plan.policyDecision,
       approvalToken = config.commandApprovalToken,
       hooks = hooks,
     )
@@ -2014,21 +2044,23 @@ class OpenCrayToolDispatcher(
       label = "python script",
       defaultToRoot = false,
     )
-    val effectivePolicyDecision = policyDecisionFor(
+    val plan = toolPolicyPipeline.plan(
       task = task,
       toolName = "python_exec",
-    )
-    gatePolicyControlledTool(
-      task = task,
-      toolName = "python_exec",
-      policyDecision = effectivePolicyDecision,
-      affectedPaths = mapOf("scriptPath" to toolTargetResolver.displayWritablePath(scriptPath)),
-      metadataContext = policyMetadataContext(
-        toolName = "python_exec",
+      metadataRequest = ToolMetadataContextRequest(
         targetKind = ToolTargetKind.SCRIPT,
         primaryPath = scriptPath,
         targetSummary = toolTargetResolver.displayWritablePath(scriptPath),
       ),
+      intent = ExecutionIntent(
+        kind = ExecutionIntentKind.PYTHON_SCRIPT,
+        transport = ExecutionTransport.PYTHON_RUNTIME,
+        scriptPath = toolTargetResolver.displayWritablePath(scriptPath),
+      ),
+    )
+    toolPolicyPipeline.gate(
+      plan = plan,
+      affectedPaths = mapOf("scriptPath" to toolTargetResolver.displayWritablePath(scriptPath)),
       askDetail = "Approval is required before python_exec can run.",
       denyDetail = "Policy denied python_exec.",
     )?.let { return it }
@@ -2043,17 +2075,7 @@ class OpenCrayToolDispatcher(
     )
     val toolResult = executionResult.toAgentToolResult(toolName = "python_exec")
     return toolResult.copy(
-      metadata = toolResult.metadata + toolPolicySupport.policyMetadata(
-        task = task,
-        toolName = "python_exec",
-        policyDecision = effectivePolicyDecision,
-        metadataContext = policyMetadataContext(
-          toolName = "python_exec",
-          targetKind = ToolTargetKind.SCRIPT,
-          primaryPath = scriptPath,
-          targetSummary = toolTargetResolver.displayWritablePath(scriptPath),
-        ),
-      ) + mapOf(
+      metadata = toolResult.metadata + toolPolicyPipeline.policyMetadata(plan) + mapOf(
         "scriptPath" to toolTargetResolver.displayWritablePath(scriptPath),
       ),
     )
@@ -2258,6 +2280,249 @@ class OpenCrayToolDispatcher(
     )
   }
 
+  private fun findSkillPackages(
+    task: AgentTask,
+    arguments: JsonObject,
+  ): AgentToolResult {
+    val packageManager = config.skillPackageManager ?: return unavailableSkillPackageManager(toolName = "SkillsFind")
+    val query = arguments.optionalString("query")?.trim().orEmpty()
+    val maxResults = (arguments.optionalInt("max_results") ?: config.maxDirectoryEntries)
+      .coerceIn(1, config.maxDirectoryEntries)
+    val catalogRoot = packageManager.catalogRootPath().toPath().toAbsolutePath().normalize()
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "SkillsFind",
+      targetPath = catalogRoot,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.DIRECTORY,
+        primaryPath = catalogRoot,
+        primaryTargetPath = displaySkillPackagePath(catalogRoot),
+        targetSummary = if (query.isBlank()) {
+          displaySkillPackagePath(catalogRoot)
+        } else {
+          inlinePreview(query, maxChars = 256)
+        },
+      ),
+    )
+    gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = mapOf("path" to displaySkillPackagePath(catalogRoot)),
+    )?.let { return it }
+
+    val installedSkillIds = packageManager.listManagedSkills().mapTo(linkedSetOf()) { skill -> skill.name }
+    val matches = packageManager.listCatalogSkills()
+      .asSequence()
+      .filter { skill ->
+        query.isBlank() ||
+          skill.name.contains(query, ignoreCase = true) ||
+          skill.metadata.skillSpec.description.contains(query, ignoreCase = true)
+      }
+      .take(maxResults)
+      .toList()
+    val content = if (matches.isEmpty()) {
+      if (query.isBlank()) {
+        "No skills were found in the host-managed catalog."
+      } else {
+        "No catalog skills matched '$query'."
+      }
+    } else {
+      matches.joinToString(separator = "\n") { skill ->
+        val installState = if (skill.name in installedSkillIds) "installed" else "available"
+        "${skill.name}\t$installState\tdescription=${skill.metadata.skillSpec.description}"
+      }
+    }
+    return AgentToolResult(
+      toolName = "SkillsFind",
+      status = AgentToolResultStatus.SUCCESS,
+      content = content,
+      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
+        "path" to displaySkillPackagePath(catalogRoot),
+        "query" to query,
+        "resultCount" to matches.size.toString(),
+      ),
+    )
+  }
+
+  private fun listInstalledSkillPackages(task: AgentTask): AgentToolResult {
+    val packageManager = config.skillPackageManager ?: return unavailableSkillPackageManager(toolName = "SkillsList")
+    packageManager.refreshManifest()
+    val managedRoot = packageManager.managedRootPath().toPath().toAbsolutePath().normalize()
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "SkillsList",
+      targetPath = managedRoot,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.DIRECTORY,
+        primaryPath = managedRoot,
+        primaryTargetPath = displaySkillPackagePath(managedRoot),
+        targetSummary = displaySkillPackagePath(managedRoot),
+      ),
+    )
+    gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = mapOf("path" to displaySkillPackagePath(managedRoot)),
+    )?.let { return it }
+
+    val installationsById = packageManager.listInstallations().associateBy(SkillInstallManifestEntry::skillId)
+    val managedSkills = packageManager.listManagedSkills()
+    val content = if (managedSkills.isEmpty()) {
+      "No skills are installed in the host-managed skills directory."
+    } else {
+      managedSkills.joinToString(separator = "\n") { skill ->
+        val installation = installationsById[skill.name]
+        val sourceType = installation?.sourceType ?: "unknown"
+        val updatedAt = installation?.updatedAtEpochMs?.toString() ?: "unknown"
+        "${skill.name}\t$sourceType\tupdated_at=$updatedAt\tdescription=${skill.metadata.skillSpec.description}"
+      }
+    }
+    return AgentToolResult(
+      toolName = "SkillsList",
+      status = AgentToolResultStatus.SUCCESS,
+      content = content,
+      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
+        "path" to displaySkillPackagePath(managedRoot),
+        "skillCount" to managedSkills.size.toString(),
+      ),
+    )
+  }
+
+  private fun installSkillPackage(
+    task: AgentTask,
+    arguments: JsonObject,
+  ): AgentToolResult {
+    val packageManager = config.skillPackageManager ?: return unavailableSkillPackageManager(toolName = "SkillsAdd")
+    val skillId = arguments.requiredStringFrom("skill_id", "skillId", "name")
+    val targetDirectory = packageManager.resolveCatalogInstallTarget(skillId)
+      ?: return AgentToolResult(
+        toolName = "SkillsAdd",
+        status = AgentToolResultStatus.FAILED,
+        content = "Skill '$skillId' was not found in the host-managed catalog.",
+        errorCode = "SKILL_NOT_FOUND",
+      )
+    val targetPath = targetDirectory.toPath().toAbsolutePath().normalize()
+    val displayPath = displaySkillPackagePath(targetPath)
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "SkillsAdd",
+      targetPath = targetPath,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.DIRECTORY,
+        primaryPath = targetPath,
+        primaryTargetPath = displayPath,
+        targetSummary = "$skillId -> $displayPath",
+      ),
+    )
+    toolPolicyPipeline.gateFileMutation(
+      plan = plan,
+      affectedPaths = mapOf("path" to displayPath),
+    )?.let { return it }
+
+    val result = packageManager.installFromCatalog(skillId)
+      ?: return AgentToolResult(
+        toolName = "SkillsAdd",
+        status = AgentToolResultStatus.FAILED,
+        content = "Failed to install '$skillId' from the host-managed catalog.",
+        errorCode = "SKILL_INSTALL_FAILED",
+      )
+    return AgentToolResult(
+      toolName = "SkillsAdd",
+      status = AgentToolResultStatus.SUCCESS,
+      content = "Installed skill '${result.skillId}' from the host-managed catalog.",
+      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
+        "path" to displayPath,
+        "skillId" to result.skillId,
+        "sourceType" to result.manifestEntry.sourceType,
+      ),
+    )
+  }
+
+  private fun removeSkillPackage(
+    task: AgentTask,
+    arguments: JsonObject,
+  ): AgentToolResult {
+    val packageManager = config.skillPackageManager ?: return unavailableSkillPackageManager(toolName = "SkillsRemove")
+    val skillId = arguments.requiredStringFrom("skill_id", "skillId", "name")
+    val targetDirectory = packageManager.resolveInstalledSkillDirectory(skillId)
+      ?: return AgentToolResult(
+        toolName = "SkillsRemove",
+        status = AgentToolResultStatus.FAILED,
+        content = "Skill '$skillId' is not installed in the host-managed skills directory.",
+        errorCode = "SKILL_NOT_INSTALLED",
+      )
+    val targetPath = targetDirectory.toPath().toAbsolutePath().normalize()
+    val displayPath = displaySkillPackagePath(targetPath)
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "SkillsRemove",
+      targetPath = targetPath,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.DIRECTORY,
+        primaryPath = targetPath,
+        primaryTargetPath = displayPath,
+        targetSummary = displayPath,
+      ),
+    )
+    toolPolicyPipeline.gateFileMutation(
+      plan = plan,
+      affectedPaths = mapOf("path" to displayPath),
+    )?.let { return it }
+
+    val result = packageManager.removeInstalledSkill(skillId)
+      ?: return AgentToolResult(
+        toolName = "SkillsRemove",
+        status = AgentToolResultStatus.FAILED,
+        content = "Failed to remove '$skillId' from the host-managed skills directory.",
+        errorCode = "SKILL_REMOVE_FAILED",
+      )
+    return AgentToolResult(
+      toolName = "SkillsRemove",
+      status = AgentToolResultStatus.SUCCESS,
+      content = "Removed skill '${result.skillId}' from the host-managed skills directory.",
+      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
+        "path" to displayPath,
+        "skillId" to result.skillId,
+      ),
+    )
+  }
+
+  private fun unavailableSkillPackageManager(toolName: String): AgentToolResult = AgentToolResult(
+    toolName = toolName,
+    status = AgentToolResultStatus.FAILED,
+    content = "The host-managed skills package manager is not configured for this runtime.",
+    errorCode = "SKILL_PACKAGE_MANAGER_UNAVAILABLE",
+  )
+
+  private fun displaySkillPackagePath(path: Path): String {
+    val normalized = path.toAbsolutePath().normalize()
+    val packageManager = config.skillPackageManager
+    if (packageManager != null) {
+      val managedRoot = packageManager.managedRootPath().toPath().toAbsolutePath().normalize()
+      if (normalized.startsWith(managedRoot)) {
+        return labeledHostPath(label = "skills-managed", root = managedRoot, path = normalized)
+      }
+      val catalogRoot = packageManager.catalogRootPath().toPath().toAbsolutePath().normalize()
+      if (normalized.startsWith(catalogRoot)) {
+        return labeledHostPath(label = "skills-catalog", root = catalogRoot, path = normalized)
+      }
+    }
+    return normalized.toString().replace('\\', '/')
+  }
+
+  private fun labeledHostPath(
+    label: String,
+    root: Path,
+    path: Path,
+  ): String {
+    val relative = runCatching {
+      root.relativize(path).toString().replace('\\', '/')
+    }.getOrDefault(path.toString().replace('\\', '/'))
+    return if (relative.isBlank()) {
+      label
+    } else {
+      "$label/$relative"
+    }
+  }
+
   private fun listMcpServers(): AgentToolResult {
     val report = config.mcpExposureReport
     val activeCount = report?.activeClients?.size ?: 0
@@ -2447,22 +2712,6 @@ class OpenCrayToolDispatcher(
     )
   }
 
-  private fun policyDecisionFor(
-    task: AgentTask,
-    toolName: String,
-    targetPath: Path? = null,
-    destinationPath: Path? = null,
-  ): PolicyDecision = toolPolicyEvaluator.evaluate(
-    ToolPolicyEvaluationRequest(
-      task = task,
-      toolName = toolName,
-      toolClass = toolCapabilityClassifier.classifyPolicyToolClass(toolName),
-      workspaceRoot = writeBoundary.defaultRoot,
-      targetPath = targetPath,
-      destinationPath = destinationPath,
-    ),
-  )
-
   private fun policyMetadataContext(
     toolName: String,
     targetKind: ToolTargetKind = ToolTargetKind.NONE,
@@ -2472,66 +2721,27 @@ class OpenCrayToolDispatcher(
     secondaryTargetPath: String? = null,
     workspaceRelation: ToolWorkspaceRelation? = null,
     targetSummary: String? = null,
-  ): ToolMetadataContext {
-    val resolvedPrimaryTargetPath = primaryTargetPath ?: primaryPath?.let { path ->
-      toolTargetResolver.displayPathForTool(toolName = toolName, path = path)
-    }
-    val resolvedSecondaryTargetPath = secondaryTargetPath ?: secondaryPath?.let { path ->
-      toolTargetResolver.displayPathForTool(toolName = toolName, path = path)
-    }
-    val resolvedTargetSummary = targetSummary ?: when {
-      !resolvedPrimaryTargetPath.isNullOrBlank() && !resolvedSecondaryTargetPath.isNullOrBlank() ->
-        "$resolvedPrimaryTargetPath -> $resolvedSecondaryTargetPath"
-      !resolvedPrimaryTargetPath.isNullOrBlank() -> resolvedPrimaryTargetPath
-      !resolvedSecondaryTargetPath.isNullOrBlank() -> resolvedSecondaryTargetPath
-      else -> null
-    }
-    return ToolMetadataContext(
-      targetKind = targetKind,
-      workspaceRelation = workspaceRelation ?: toolTargetResolver.workspaceRelation(
-        primary = primaryPath,
-        secondary = secondaryPath,
-      ),
-      primaryTargetPath = resolvedPrimaryTargetPath,
-      secondaryTargetPath = resolvedSecondaryTargetPath,
-      targetSummary = resolvedTargetSummary,
-    )
-  }
-
-  private fun gateFileMutation(
-    task: AgentTask,
-    toolName: String,
-    policyDecision: PolicyDecision,
-    affectedPaths: Map<String, String>,
-    metadataContext: ToolMetadataContext,
-  ): AgentToolResult? = gatePolicyControlledTool(
-    task = task,
+  ): ToolMetadataContext = toolPolicyPipeline.metadataContext(
     toolName = toolName,
-    policyDecision = policyDecision,
-    affectedPaths = affectedPaths,
-    metadataContext = metadataContext,
-    askDetail = "Approval is required before $toolName can run.",
-    denyDetail = "Policy denied $toolName.",
+    request = ToolMetadataContextRequest(
+      targetKind = targetKind,
+      primaryPath = primaryPath,
+      secondaryPath = secondaryPath,
+      primaryTargetPath = primaryTargetPath,
+      secondaryTargetPath = secondaryTargetPath,
+      workspaceRelation = workspaceRelation,
+      targetSummary = targetSummary,
+    ),
   )
 
-  private fun gatePolicyControlledTool(
-    task: AgentTask,
-    toolName: String,
-    policyDecision: PolicyDecision,
-    affectedPaths: Map<String, String>,
-    metadataContext: ToolMetadataContext,
-    askDetail: String,
-    denyDetail: String,
-  ): AgentToolResult? = toolPolicySupport.gateResult(
-    ToolGateRequest(
-      task = task,
-      toolName = toolName,
-      policyDecision = policyDecision,
-      affectedPaths = affectedPaths,
-      metadataContext = metadataContext,
-      askDetail = askDetail,
-      denyDetail = denyDetail,
-    ),
+  private fun gateReadOnlyTool(
+    plan: com.opencray.runtime.policy.ToolPolicyPlan,
+    affectedPaths: Map<String, String> = emptyMap(),
+  ): AgentToolResult? = toolPolicyPipeline.gate(
+    plan = plan,
+    affectedPaths = affectedPaths,
+    askDetail = "Approval is required before ${plan.toolName} can read this path.",
+    denyDetail = "Policy denied ${plan.toolName}.",
   )
 
   private fun JsonObject.requiredString(name: String): String =
@@ -2661,9 +2871,10 @@ class OpenCrayToolDispatcher(
     val command: String,
     val args: List<String>,
     val workingDirectory: Path,
+    val intent: ToolRuntimeIntent? = null,
     val metadata: Map<String, String> = emptyMap(),
     val affectedPaths: Map<String, String> = emptyMap(),
-    val metadataContext: ToolMetadataContext = ToolMetadataContext(),
+    val metadataRequest: ToolMetadataContextRequest = ToolMetadataContextRequest(),
   )
 
   private data class TextEditOutcome(

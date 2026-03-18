@@ -17,7 +17,6 @@ import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.model.SessionRecord
 import com.opencray.persistence.store.file.JsonFileMemoryStore
 import com.opencray.persistence.store.file.JsonFileSessionStore
-import com.opencray.persistence.store.file.JsonFileSoulStore
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -27,6 +26,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.opencray.app.R
 import java.io.File
+import java.nio.file.Files
 
 @RunWith(AndroidJUnit4::class)
 class PersonalizationSettingsTest {
@@ -90,10 +90,10 @@ class PersonalizationSettingsTest {
     assertTextContainingVisible("Cleared the app-local memory and history stores.")
     assertTrue("Expected memory.json to be removed.", !File(personalizationDirectory(), "memory.json").exists())
     assertTrue("Expected session.json to be removed.", !File(personalizationDirectory(), "session.json").exists())
-    assertTrue("Expected soul.json to stay present after Reset memory.", File(personalizationDirectory(), "soul.json").exists())
+    assertTrue("Expected SOUL.md to stay present after Reset memory.", Files.exists(soulFile()))
     assertTrue("Expected memory store to be empty after Reset memory.", JsonFileMemoryStore(personalizationDirectory()).list().isEmpty())
     assertNull("Expected session store to be cleared after Reset memory.", JsonFileSessionStore(personalizationDirectory()).load())
-    assertTrue("Expected soul store to remain after Reset memory.", JsonFileSoulStore(personalizationDirectory()).load() != null)
+    assertTrue("Expected workspace soul file to remain after Reset memory.", Files.exists(soulFile()))
     assertTelemetryState(expectedTelemetryState)
     assertEditTextValue("Optional custom personality label", "Night Shift")
 
@@ -101,8 +101,7 @@ class PersonalizationSettingsTest {
     assertButtonEnabled("Reset soul", expected = true)
     performButtonClick("Reset soul")
     assertTextContainingVisible("Cleared the local personality and soul profile and reset the editor to defaults.")
-    assertTrue("Expected soul.json to be removed.", !File(personalizationDirectory(), "soul.json").exists())
-    assertNull("Expected soul store to be cleared after Reset soul.", JsonFileSoulStore(personalizationDirectory()).load())
+    assertTrue("Expected SOUL.md to be removed.", !Files.exists(soulFile()))
     assertEditTextValue("Optional custom personality label", "")
     assertEditTextValue("Add custom tone, goals, and boundaries", "")
     assertTextNotVisible("Night Shift")
@@ -264,7 +263,8 @@ class PersonalizationSettingsTest {
 
   private fun seedPersistedPersonalizationState() {
     val directory = personalizationDirectory()
-    PersonalizationLocalStore.fromContext(targetContext).saveSoulProfile(
+    WorkspaceSoulProfileStore().saveSoulProfile(
+      AppAgentWorkspace.ensureRootForContext(targetContext),
       PersonalizationLocalStore.SoulProfile(
         presetName = "BUILDER",
         customLabel = "Night Shift",
@@ -311,11 +311,13 @@ class PersonalizationSettingsTest {
 
   private fun personalizationDirectory(): File = PersonalizationLocalStore.directoryForContext(targetContext)
 
+  private fun soulFile() = AppAgentWorkspace.ensureRootForContext(targetContext).resolve("SOUL.md")
+
   private fun clearPersistedPersonalizationState() {
     val directory = personalizationDirectory()
     JsonFileMemoryStore(directory).clear()
     JsonFileSessionStore(directory).clear()
-    JsonFileSoulStore(directory).clear()
+    Files.deleteIfExists(soulFile())
     if (directory.exists()) {
       directory.delete()
     }

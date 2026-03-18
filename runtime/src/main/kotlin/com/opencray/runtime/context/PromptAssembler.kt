@@ -169,8 +169,9 @@ class PromptAssembler {
     appendLine("For current information from the internet, prefer WebSearch when a search provider is configured, and use WebFetch when you already have a URL to read.")
     appendLine("For commands you want to manage across multiple turns, prefer ProcessStart and then use ProcessRead or ProcessWait.")
     appendLine("For workspace-local Python scripts, prefer python_exec instead of Bash.")
+    appendLine("For Python runtime inspection or diagnostics such as version checks, sys.path, imports, or environment behavior, do not use Bash. Create or reuse a small workspace-local probe script and run it with python_exec.")
     appendLine("If you need to manage a long-running Python task across multiple turns, use ProcessStart with script_path only when the runtime supports managed Python process launches.")
-    appendLine("Do not use Bash to invoke python, python3, or py for workspace scripts.")
+    appendLine("Do not use Bash to invoke python, python3, or py for workspace scripts or Python-related diagnostics.")
     if (hasImportTool) {
       appendLine("When task metadata includes approvedReadRoots, you may inspect those roots with absolute paths.")
       appendLine("Approved external roots are read-only. Use ImportFile to copy files or folders into the writable workspace before editing, deleting, or other mutating operations.")

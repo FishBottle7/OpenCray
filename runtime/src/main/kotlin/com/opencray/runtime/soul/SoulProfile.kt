@@ -4,6 +4,12 @@ data class SoulProfile(
   val displayName: String? = null,
   val presetName: String? = null,
   val voice: String? = null,
+  val preferredNaming: String? = null,
+  val preferredAddressStyle: PreferredAddressStyle? = null,
+  val intimacyPermissionBand: RelationshipBand? = null,
+  val playfulnessPermissionBand: RelationshipBand? = null,
+  val highIntimacyBehaviorAllowed: Boolean? = null,
+  val playfulAffectionAllowed: Boolean? = null,
   val tone: SoulTone = SoulTone.STEADY,
   val verbosity: SoulVerbosity = SoulVerbosity.BALANCED,
   val plasticity: SoulPlasticity = SoulPlasticity.LOW,
@@ -26,6 +32,12 @@ data class SoulProfile(
   fun isMeaningful(): Boolean = !displayName.isNullOrBlank() ||
     !presetName.isNullOrBlank() ||
     !voice.isNullOrBlank() ||
+    !preferredNaming.isNullOrBlank() ||
+    preferredAddressStyle != null ||
+    intimacyPermissionBand != null ||
+    playfulnessPermissionBand != null ||
+    highIntimacyBehaviorAllowed != null ||
+    playfulAffectionAllowed != null ||
     !customGuidance.isNullOrBlank() ||
     escalationRules.isNotEmpty() ||
     forbiddenBehaviors.isNotEmpty() ||

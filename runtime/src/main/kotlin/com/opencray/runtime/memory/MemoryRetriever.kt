@@ -1,6 +1,7 @@
 package com.opencray.runtime.memory
 
 import com.opencray.persistence.model.MemoryRecord
+import com.opencray.runtime.soul.hasSoulObjectPayload
 import java.util.Locale
 
 data class MemoryRecallRequest(
@@ -39,6 +40,7 @@ enum class MemoryRecallFilterReason {
   RESOLVED,
   SCOPE_MISMATCH,
   EXPIRED,
+  INTERNAL_SOUL_OBJECT,
   SOUL_PREFERENCE,
   UNMATCHED_PROJECT_FACT,
 }
@@ -190,6 +192,9 @@ class MemoryRetriever(
       )
     ) {
       return RecallEvaluation.Filtered(MemoryRecallFilterReason.EXPIRED)
+    }
+    if (record.hasSoulObjectPayload()) {
+      return RecallEvaluation.Filtered(MemoryRecallFilterReason.INTERNAL_SOUL_OBJECT)
     }
     if (metadata.preferenceKey != null) {
       return RecallEvaluation.Filtered(MemoryRecallFilterReason.SOUL_PREFERENCE)

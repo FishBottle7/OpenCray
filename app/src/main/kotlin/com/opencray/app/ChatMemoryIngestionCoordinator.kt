@@ -13,6 +13,13 @@ import com.opencray.runtime.memory.TaskCommitmentResolver
 import com.opencray.runtime.memory.MemoryTurnEvidence
 import com.opencray.runtime.memory.MemoryWriter
 import com.opencray.runtime.context.RuntimeConversationMessage
+import com.opencray.runtime.soul.InteractionPreferenceMemoryWritePlanner
+import com.opencray.runtime.soul.NoOpRelationshipEventInterpreter
+import com.opencray.runtime.soul.RelationshipEventInterpretation
+import com.opencray.runtime.soul.RelationshipEventInterpreter
+import com.opencray.runtime.soul.RelationshipEventRequest
+import com.opencray.runtime.soul.RelationshipMemoryWritePlanner
+import com.opencray.runtime.soul.SoulPlasticity
 
 internal data class MemoryIngestionSummary(
   val writtenRecords: List<MemoryRecord> = emptyList(),
@@ -28,11 +35,15 @@ internal data class MemoryIngestionSummary(
 }
 
 internal class ChatMemoryIngestionCoordinator(
-  memoryStore: MemoryStore,
+  private val memoryStore: MemoryStore,
   private val workspaceIdProvider: () -> String? = { null },
   private val candidateExtractor: MemoryCandidateExtractor = MemoryCandidateExtractor(),
   private val writer: MemoryWriter = MemoryWriter(store = memoryStore),
   private val taskCommitmentResolver: TaskCommitmentResolver = TaskCommitmentResolver(store = memoryStore),
+  private val soulPlasticityProvider: () -> SoulPlasticity = { SoulPlasticity.MEDIUM },
+  private val interactionPreferenceWritePlanner: InteractionPreferenceMemoryWritePlanner = InteractionPreferenceMemoryWritePlanner(),
+  private val relationshipEventInterpreter: RelationshipEventInterpreter = NoOpRelationshipEventInterpreter,
+  private val relationshipWritePlanner: RelationshipMemoryWritePlanner = RelationshipMemoryWritePlanner(),
   private val flushCoordinator: MemoryFlushCoordinator = MemoryFlushCoordinator(
     candidateExtractor = candidateExtractor,
     writer = writer,
@@ -64,11 +75,12 @@ internal class ChatMemoryIngestionCoordinator(
     if (result.status == ExecutionStatus.CANCELLED || isApprovalRequired(result)) {
       return MemoryIngestionSummary()
     }
+    val workspaceId = workspaceIdProvider()
 
     val evidence = MemoryTurnEvidence(
       sessionId = sessionId,
       taskId = task.id,
-      workspaceId = workspaceIdProvider(),
+      workspaceId = workspaceId,
       userInput = userInput?.trim()?.takeIf(String::isNotBlank) ?: task.input,
       assistantOutput = assistantOutput
         ?.trim()
@@ -83,8 +95,47 @@ internal class ChatMemoryIngestionCoordinator(
     )
     val maintenance = taskCommitmentResolver.maintain(evidence)
     val writeSummary = writer.write(candidateExtractor.extract(evidence))
+    val plasticity = soulPlasticityProvider()
+    val interactionPreferenceWriteSummary = writer.write(
+      interactionPreferenceWritePlanner.plan(
+        existingRecords = memoryStore.list(),
+        sourceRecords = writeSummary.writtenRecords,
+        plasticity = plasticity,
+        sourceSessionId = sessionId,
+        workspaceId = workspaceId,
+        sourceTaskId = task.id,
+      ).candidates,
+    ).writtenRecords
+    val relationshipEvents = when (
+      val interpretation = relationshipEventInterpreter.interpret(
+        RelationshipEventRequest(
+          sessionId = sessionId,
+          workspaceId = workspaceId,
+          userInput = evidence.userInput,
+          assistantOutput = evidence.assistantOutput,
+          toolObservations = evidence.toolObservations,
+        ),
+      )
+    ) {
+      is RelationshipEventInterpretation.Success -> interpretation.events
+      RelationshipEventInterpretation.Unavailable -> emptyList()
+    }
+    val relationshipWriteSummary = if (relationshipEvents.isEmpty()) {
+      emptyList()
+    } else {
+      writer.write(
+        relationshipWritePlanner.plan(
+          existingRecords = memoryStore.list(),
+          events = relationshipEvents,
+          plasticity = plasticity,
+          sourceSessionId = sessionId,
+          workspaceId = workspaceId,
+          sourceTaskId = task.id,
+        ).candidates,
+      ).writtenRecords
+    }
     return MemoryIngestionSummary(
-      writtenRecords = writeSummary.writtenRecords,
+      writtenRecords = writeSummary.writtenRecords + interactionPreferenceWriteSummary + relationshipWriteSummary,
       resolvedRecords = maintenance.resolvedRecords,
       reaffirmedRecords = maintenance.reaffirmedRecords,
       expiredRecordIds = maintenance.expiredRecordIds,

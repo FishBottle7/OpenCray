@@ -132,6 +132,23 @@ class SoulProfileResolver {
     val toolUseBias =
       extensions[SoulProfileExtensionKeys.TOOL_USE_BIAS].parseEnumOrNull<ToolUseBias>() ?: profile.toolUseBias
     val voice = normalizeSoulScalarOrNull(extensions[SoulProfileExtensionKeys.VOICE]) ?: profile.voice
+    val preferredNaming =
+      normalizeSoulScalarOrNull(extensions[SoulProfileExtensionKeys.PREFERRED_NAMING]) ?: profile.preferredNaming
+    val preferredAddressStyle =
+      extensions[SoulProfileExtensionKeys.PREFERRED_ADDRESS_STYLE].parseEnumOrNull<PreferredAddressStyle>()
+        ?: profile.preferredAddressStyle
+    val intimacyPermissionBand =
+      extensions[SoulProfileExtensionKeys.INTIMACY_PERMISSION_BAND].parseEnumOrNull<RelationshipBand>()
+        ?: profile.intimacyPermissionBand
+    val playfulnessPermissionBand =
+      extensions[SoulProfileExtensionKeys.PLAYFULNESS_PERMISSION_BAND].parseEnumOrNull<RelationshipBand>()
+        ?: profile.playfulnessPermissionBand
+    val highIntimacyBehaviorAllowed =
+      extensions[SoulProfileExtensionKeys.HIGH_INTIMACY_BEHAVIOR_ALLOWED].parseBooleanOrNull()
+        ?: profile.highIntimacyBehaviorAllowed
+    val playfulAffectionAllowed =
+      extensions[SoulProfileExtensionKeys.PLAYFUL_AFFECTION_ALLOWED].parseBooleanOrNull()
+        ?: profile.playfulAffectionAllowed
     val customGuidance =
       normalizeSoulScalarOrNull(extensions[SoulProfileExtensionKeys.CUSTOM_GUIDANCE]) ?: profile.customGuidance
     val escalationRules =
@@ -147,6 +164,12 @@ class SoulProfileResolver {
 
     return profile.copy(
       voice = voice,
+      preferredNaming = preferredNaming,
+      preferredAddressStyle = preferredAddressStyle,
+      intimacyPermissionBand = intimacyPermissionBand,
+      playfulnessPermissionBand = playfulnessPermissionBand,
+      highIntimacyBehaviorAllowed = highIntimacyBehaviorAllowed,
+      playfulAffectionAllowed = playfulAffectionAllowed,
       tone = tone,
       verbosity = verbosity,
       plasticity = plasticity,
@@ -179,6 +202,12 @@ class SoulProfileResolver {
       ?.uppercase()
       ?: return null
     return enumValues<T>().firstOrNull { value -> value.name == normalized }
+  }
+
+  private fun String?.parseBooleanOrNull(): Boolean? = when (normalizeSoulExtensionKeyOrNull(this)) {
+    "true" -> true
+    "false" -> false
+    else -> null
   }
 
   private fun mergeDistinct(

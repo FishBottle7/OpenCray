@@ -7,6 +7,8 @@ object MemoryPreferenceKeys {
   const val AGENT_STYLE_PROFILE: String = "agent_style_profile"
   const val RELATIONSHIP_STYLE_PROFILE: String = "relationship_style_profile"
   const val AGENT_VERBOSITY: String = "agent_verbosity"
+  const val USER_PREFERRED_NAME: String = "user_preferred_name"
+  const val USER_ADDRESS_STYLE: String = "user_address_style"
 
   const val TEMPORALITY_SESSION: String = "session"
   const val TEMPORALITY_DURABLE: String = "durable"
@@ -18,6 +20,8 @@ object MemorySoulExtensionKeys {
   const val TONE: String = "soul_tone"
   const val VERBOSITY: String = "soul_verbosity"
   const val USER_RELATIONSHIP_STYLE: String = "soul_user_relationship_style"
+  const val PREFERRED_NAMING: String = "soul_preferred_naming"
+  const val PREFERRED_ADDRESS_STYLE: String = "soul_preferred_address_style"
   const val RISK_TOLERANCE: String = "soul_risk_tolerance"
   const val TOOL_USE_BIAS: String = "soul_tool_use_bias"
 }
@@ -27,6 +31,8 @@ internal fun supportedSoulPreferenceKeys(): Set<String> = setOf(
   MemoryPreferenceKeys.AGENT_STYLE_PROFILE,
   MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE,
   MemoryPreferenceKeys.AGENT_VERBOSITY,
+  MemoryPreferenceKeys.USER_PREFERRED_NAME,
+  MemoryPreferenceKeys.USER_ADDRESS_STYLE,
 )
 
 internal fun directChatSoulPreferenceScope(
@@ -34,6 +40,10 @@ internal fun directChatSoulPreferenceScope(
   requestedScope: MemoryScope,
 ): MemoryScope = when (normalizeMemoryPreferenceKeyOrNull(preferenceKey)) {
   MemoryPreferenceKeys.AGENT_DISPLAY_NAME -> requestedScope
+  MemoryPreferenceKeys.USER_PREFERRED_NAME,
+  MemoryPreferenceKeys.USER_ADDRESS_STYLE,
+  -> requestedScope
+
   MemoryPreferenceKeys.AGENT_STYLE_PROFILE,
   MemoryPreferenceKeys.AGENT_VERBOSITY,
   -> MemoryScope.SESSION
@@ -46,6 +56,10 @@ internal fun shouldApplyDirectChatSoulPreference(
   scope: MemoryScope,
 ): Boolean = when (normalizeMemoryPreferenceKeyOrNull(preferenceKey)) {
   MemoryPreferenceKeys.AGENT_DISPLAY_NAME -> true
+  MemoryPreferenceKeys.USER_PREFERRED_NAME,
+  MemoryPreferenceKeys.USER_ADDRESS_STYLE,
+  -> scope == MemoryScope.SESSION
+
   MemoryPreferenceKeys.AGENT_STYLE_PROFILE,
   MemoryPreferenceKeys.AGENT_VERBOSITY,
   -> scope == MemoryScope.SESSION
@@ -61,6 +75,14 @@ internal fun allowedSoulMemoryExtensionKeys(
 ): Set<String> = when (normalizeMemoryPreferenceKeyOrNull(preferenceKey)) {
   MemoryPreferenceKeys.AGENT_DISPLAY_NAME -> setOf(
     MemorySoulExtensionKeys.DISPLAY_NAME,
+  )
+
+  MemoryPreferenceKeys.USER_PREFERRED_NAME -> setOf(
+    MemorySoulExtensionKeys.PREFERRED_NAMING,
+  )
+
+  MemoryPreferenceKeys.USER_ADDRESS_STYLE -> setOf(
+    MemorySoulExtensionKeys.PREFERRED_ADDRESS_STYLE,
   )
 
   MemoryPreferenceKeys.AGENT_STYLE_PROFILE -> {
@@ -127,7 +149,20 @@ internal fun buildSoulPreferenceExtensions(
       scope = effectiveScope,
     )
 
+    MemoryPreferenceKeys.USER_PREFERRED_NAME -> userPreferredNamePreferenceExtensions(
+      preferredName = normalizedValue,
+      scope = effectiveScope,
+    )
+
+    MemoryPreferenceKeys.USER_ADDRESS_STYLE -> userAddressStylePreferenceExtensions(
+      addressStyle = normalizedValue,
+      scope = effectiveScope,
+    )
+
     else -> return emptyMap()
+  }
+  if (baseExtensions.isEmpty()) {
+    return emptyMap()
   }
   return linkedMapOf<String, String>().apply {
     putAll(baseExtensions)
@@ -213,6 +248,29 @@ internal fun verbosityPreferenceExtensions(
   }
 }
 
+internal fun userPreferredNamePreferenceExtensions(
+  preferredName: String,
+  scope: MemoryScope,
+): Map<String, String> = linkedMapOf(
+  MemoryRecordExtensionKeys.PREFERENCE_KEY to MemoryPreferenceKeys.USER_PREFERRED_NAME,
+  MemoryRecordExtensionKeys.PREFERENCE_VALUE to preferredName,
+  MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY to preferenceTemporalityFor(scope),
+  MemorySoulExtensionKeys.PREFERRED_NAMING to preferredName,
+)
+
+internal fun userAddressStylePreferenceExtensions(
+  addressStyle: String,
+  scope: MemoryScope,
+): Map<String, String> {
+  val normalizedStyle = normalizePreferredAddressStyleValueOrNull(addressStyle) ?: return emptyMap()
+  return linkedMapOf(
+    MemoryRecordExtensionKeys.PREFERENCE_KEY to MemoryPreferenceKeys.USER_ADDRESS_STYLE,
+    MemoryRecordExtensionKeys.PREFERENCE_VALUE to normalizedStyle,
+    MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY to preferenceTemporalityFor(scope),
+    MemorySoulExtensionKeys.PREFERRED_ADDRESS_STYLE to normalizedStyle,
+  )
+}
+
 internal fun preferenceTemporalityFor(scope: MemoryScope): String = when (scope) {
   MemoryScope.SESSION -> MemoryPreferenceKeys.TEMPORALITY_SESSION
   MemoryScope.USER,
@@ -250,13 +308,31 @@ private fun normalizeSoulMemoryExtensionValueOrNull(
 ): String? = when (key) {
   MemorySoulExtensionKeys.DISPLAY_NAME,
   MemorySoulExtensionKeys.VOICE,
+  MemorySoulExtensionKeys.PREFERRED_NAMING,
   -> normalizeMemoryPreferenceValueOrNull(raw)
 
   MemorySoulExtensionKeys.TONE,
   MemorySoulExtensionKeys.VERBOSITY,
   MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE,
+  MemorySoulExtensionKeys.PREFERRED_ADDRESS_STYLE,
   MemorySoulExtensionKeys.RISK_TOLERANCE,
   MemorySoulExtensionKeys.TOOL_USE_BIAS,
+  -> {
+    val normalized = normalizeMemoryPreferenceKeyOrNull(raw)
+    if (key == MemorySoulExtensionKeys.PREFERRED_ADDRESS_STYLE) {
+      normalizePreferredAddressStyleValueOrNull(normalized)
+    } else {
+      normalized
+    }
+  }
+
+  else -> null
+}
+
+internal fun normalizePreferredAddressStyleValueOrNull(raw: String?): String? = when (normalizeMemoryPreferenceKeyOrNull(raw)) {
+  "neutral",
+  "friendly",
+  "intimate",
   -> normalizeMemoryPreferenceKeyOrNull(raw)
 
   else -> null

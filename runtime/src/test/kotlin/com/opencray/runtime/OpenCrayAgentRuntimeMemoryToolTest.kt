@@ -151,11 +151,13 @@ class OpenCrayAgentRuntimeMemoryToolTest {
         when (event) {
           is OpenCrayLifecycleEvent -> "lifecycle"
           is OpenCrayProgressEvent -> "progress"
+          is OpenCrayApprovalEvent -> "approval"
           is OpenCrayToolCallEvent -> "tool_call"
           is OpenCrayToolResultEvent -> "tool_result"
           is OpenCrayMemoryRetrievalEvent -> "memory_retrieval"
           is OpenCrayAssistantEvent -> "assistant"
           is OpenCrayMemoryWriteEvent -> "memory_write"
+          is OpenCrayCancellationEvent -> "cancelled"
         }
       },
     )

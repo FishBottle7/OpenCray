@@ -3,6 +3,7 @@ package com.opencray.app.facade.settings
 import android.content.pm.PackageManager
 import android.os.Build
 import com.opencray.app.AppLanguage
+import com.opencray.app.AppAgentWorkspace
 import com.opencray.app.LlmProviderCatalog
 import com.opencray.app.LlmSettingsState
 import com.opencray.app.LlmSettingsStore
@@ -13,7 +14,9 @@ import android.content.Context
 import com.opencray.app.PersonalizationLocalStore
 import com.opencray.app.TelemetrySettingsStore
 import com.opencray.app.TelemetryTogglesState
+import com.opencray.app.WorkspaceSoulProfileStore
 import java.net.URI
+import java.nio.file.Path
 import org.opencray.app.R
 
 enum class SettingsRouteId(
@@ -131,11 +134,12 @@ internal class LocalSettingsFacade(
   private val llmSettingsStore: LlmSettingsStore,
   private val localeSettingsStore: LocaleSettingsStore,
   private val telemetrySettingsStore: TelemetrySettingsStore,
-  private val personalizationLocalStore: PersonalizationLocalStore,
+  private val soulProfileStore: WorkspaceSoulProfileStore,
+  private val workspaceRootProvider: () -> Path,
   private val webSearchSettingsStore: WebSearchSettingsStore,
 ) : SettingsFacade {
   override fun loadOverview(): SettingsOverviewSnapshot {
-    val soulProfile = personalizationLocalStore.loadSoulProfile()
+    val soulProfile = soulProfileStore.loadSoulProfile(workspaceRootProvider())
     val searchSlots = webSearchSettingsStore.load()
     return SettingsOverviewSnapshot(
       eyebrow = "APP SHELL",
@@ -359,7 +363,7 @@ internal class LocalSettingsFacade(
     telemetrySettingsStore.load(TelemetryTogglesState.localized(context))
 
   private fun personalizationProfile(): PersonalizationLocalStore.SoulProfile? =
-    personalizationLocalStore.loadSoulProfile()
+    soulProfileStore.loadSoulProfile(workspaceRootProvider())
 
   private fun llmStatusLabel(state: LlmSettingsState): String = when {
     state.isConfigured() -> context.getString(R.string.llm_settings_status_configured)
@@ -474,7 +478,8 @@ internal class LocalSettingsFacade(
       llmSettingsStore = LlmSettingsStore.fromContext(context),
       localeSettingsStore = LocaleSettingsStore.fromContext(context),
       telemetrySettingsStore = TelemetrySettingsStore.fromContext(context),
-      personalizationLocalStore = PersonalizationLocalStore.fromContext(context),
+      soulProfileStore = WorkspaceSoulProfileStore(),
+      workspaceRootProvider = { AppAgentWorkspace.ensureRootForContext(context.applicationContext) },
       webSearchSettingsStore = WebSearchSettingsStore.fromContext(context),
     )
   }

@@ -36,6 +36,8 @@
 *.py[cod]
 *.pid
 *.log
+/.tmp_aar_*/
+/.tmp_python_bridge_tests/
 
 # Android/Gradle local files
 /local.properties

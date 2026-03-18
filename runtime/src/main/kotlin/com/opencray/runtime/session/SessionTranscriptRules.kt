@@ -85,7 +85,8 @@ object SessionTranscriptRules {
 
   private fun isTerminalToolObservation(content: String): Boolean {
     val normalized = content.trim()
-    return normalized.startsWith("approval_rejected") ||
+    return normalized.startsWith("approval_approved") ||
+      normalized.startsWith("approval_rejected") ||
       normalized.startsWith("run_cancelled") ||
       normalized.startsWith("run_interrupted") ||
       normalized.startsWith("retry_abandoned")

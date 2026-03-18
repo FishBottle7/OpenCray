@@ -24,5 +24,11 @@ Git history uses Conventional Commit prefixes such as `feat:` and `fix:`. In thi
 ## Security & Configuration Notes
 Do not commit secrets, local SDK paths, or device-specific config. Treat workspace, policy, and credential flows as security-sensitive areas and preserve existing safeguards when editing them.
 
+## Tool Policy Pipeline
+New runtime tools that cross filesystem, process, or network boundaries must go through `runtime/src/main/kotlin/com/opencray/runtime/policy/ToolPolicyPipeline.kt`.
+Normalize the tool surface first, resolve targets before execution, evaluate policy through the shared pipeline, and emit shared policy metadata from the pipeline result.
+If a tool crosses an execution or process-lifecycle boundary, add an explicit runtime intent model and emit its metadata through the same pipeline instead of relying on the tool name downstream.
+Do not hand-roll approval or deny results, or duplicate policy metadata assembly, inside individual tool handlers.
+
 ## UI Prototype Implementation Rules
 When implementing the mobile UI from the Pencil prototype, treat the Pencil design as the source of truth and refactor the app UI to match it as closely as practical. If the existing app contains a UI element, state, interaction, or visual treatment that is not present in the approved Pencil prototype, stop and ask the user before keeping, changing, or removing it. If any product, interaction, copy, navigation, or state detail is uncertain during implementation, ask the user instead of deciding independently. Do not fill in missing UI behavior or visuals based on assumption when the prototype or prior user direction does not make the requirement explicit.

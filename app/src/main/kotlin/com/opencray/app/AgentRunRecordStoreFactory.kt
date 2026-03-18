@@ -10,8 +10,11 @@ import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.OpenCrayApprovalEvent
+import com.opencray.runtime.OpenCrayApprovalPhase
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayAssistantEvent
+import com.opencray.runtime.OpenCrayCancellationEvent
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
@@ -103,6 +106,8 @@ internal data class PersistedAgentRunEvent(
   val isFinal: Boolean? = null,
   val text: String? = null,
   val stage: String? = null,
+  val approvalPhase: String? = null,
+  val isHighRisk: Boolean? = null,
   val toolName: String? = null,
   val toolReason: String? = null,
   val argumentsJson: String? = null,
@@ -139,10 +144,12 @@ internal enum class PersistedAgentRunEventKind {
   LIFECYCLE,
   ASSISTANT,
   PROGRESS,
+  APPROVAL,
   TOOL_CALL,
   TOOL_RESULT,
   MEMORY_RETRIEVAL,
   MEMORY_WRITE,
+  CANCELLATION,
 }
 
 private class FileBackedAgentRunRecordStore(
@@ -282,6 +289,17 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     text = text,
     stage = stage,
   )
+  is OpenCrayApprovalEvent -> PersistedAgentRunEvent(
+    kind = PersistedAgentRunEventKind.APPROVAL,
+    runId = runId,
+    taskId = taskId,
+    turn = turn,
+    emittedAtEpochMs = emittedAtEpochMs,
+    approvalPhase = phase.name,
+    toolName = toolName,
+    text = text,
+    isHighRisk = isHighRisk,
+  )
   is OpenCrayToolCallEvent -> PersistedAgentRunEvent(
     kind = PersistedAgentRunEventKind.TOOL_CALL,
     runId = runId,
@@ -339,6 +357,16 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     reaffirmedRecordIds = reaffirmedRecordIds,
     expiredRecordIds = expiredRecordIds,
   )
+  is OpenCrayCancellationEvent -> PersistedAgentRunEvent(
+    kind = PersistedAgentRunEventKind.CANCELLATION,
+    runId = runId,
+    taskId = taskId,
+    turn = turn,
+    emittedAtEpochMs = emittedAtEpochMs,
+    toolName = toolName,
+    text = text,
+    stage = outcome,
+  )
 }
 
 internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = when (kind) {
@@ -374,6 +402,20 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
     turn = turn ?: 0,
     text = text.orEmpty(),
     stage = stage,
+    emittedAtEpochMs = emittedAtEpochMs,
+  )
+  PersistedAgentRunEventKind.APPROVAL -> OpenCrayApprovalEvent(
+    runId = runId,
+    taskId = taskId,
+    phase = approvalPhase
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { raw -> runCatching { OpenCrayApprovalPhase.valueOf(raw) }.getOrNull() }
+      ?: OpenCrayApprovalPhase.REQUIRED,
+    toolName = toolName,
+    text = text.orEmpty(),
+    isHighRisk = isHighRisk ?: false,
+    turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
   )
   PersistedAgentRunEventKind.TOOL_CALL -> OpenCrayToolCallEvent(
@@ -438,6 +480,15 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
     resolvedRecordIds = resolvedRecordIds,
     reaffirmedRecordIds = reaffirmedRecordIds,
     expiredRecordIds = expiredRecordIds,
+    turn = turn,
+    emittedAtEpochMs = emittedAtEpochMs,
+  )
+  PersistedAgentRunEventKind.CANCELLATION -> OpenCrayCancellationEvent(
+    runId = runId,
+    taskId = taskId,
+    toolName = toolName,
+    outcome = stage,
+    text = text.orEmpty(),
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
   )

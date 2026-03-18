@@ -4,6 +4,7 @@ import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.runtime.PythonExecRequest
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import kotlin.concurrent.thread
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -170,5 +171,150 @@ class P4aPythonRuntimeTest {
 
     assertTrue(accepted)
     assertTrue(Files.exists(runtime.cancelPathFor("proc-cancel-marker")))
+  }
+
+  @Test
+  fun execAllowsSeparateStartupBudgetBeforeScriptTimeoutBegins() {
+    val runtimeRoot = temporaryFolder.newFolder("python-runtime-startup-budget").toPath()
+    val workspaceRoot = temporaryFolder.newFolder("workspace-startup-budget").toPath()
+    lateinit var runtime: P4aPythonRuntime
+    val launcher = object : P4aPythonRuntime.P4aPythonRuntimeLauncher {
+      override fun launch(
+        request: P4aPythonRuntime.P4aPythonLaunchRequest,
+      ): P4aPythonRuntime.P4aPythonRuntimeLaunchResult {
+        thread(start = true, isDaemon = true) {
+          Thread.sleep(40L)
+          Files.createDirectories(runtime.serviceStatePath().parent)
+          Files.write(
+            runtime.serviceReadyPath(),
+            """{"state":"ready","requestId":"${request.bridgeRequest.requestId}"}""".toByteArray(StandardCharsets.UTF_8),
+          )
+          Files.write(
+            runtime.serviceStatePath(),
+            """{"state":"processing","currentRequestId":"${request.bridgeRequest.requestId}"}""".toByteArray(StandardCharsets.UTF_8),
+          )
+          Thread.sleep(40L)
+          Files.write(
+            request.resultPath,
+            json.encodeToString(
+              P4aPythonRuntime.P4aPythonExecBridgeResult(
+                requestId = request.bridgeRequest.requestId,
+                taskId = request.bridgeRequest.taskId,
+                status = "success",
+                exitCode = 0,
+                stdout = "python ok",
+                stderr = "",
+                startedAtEpochMs = 300L,
+                finishedAtEpochMs = 420L,
+              ),
+            ).toByteArray(StandardCharsets.UTF_8),
+          )
+        }
+        return P4aPythonRuntime.P4aPythonRuntimeLaunchResult.Dispatched(
+          metadata = mapOf("launcherState" to "test-dispatched"),
+        )
+      }
+    }
+    runtime = P4aPythonRuntime.fromRuntimeRoot(runtimeRoot = runtimeRoot, launcher = launcher, json = json)
+
+    val result = runtime.exec(
+      PythonExecRequest(
+        taskId = "task-startup-budget",
+        workspaceRoot = workspaceRoot,
+        scriptPath = workspaceRoot.resolve("demo.py"),
+        timeoutMs = 60L,
+        startupTimeoutMs = 80L,
+      ),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals(0, result.exitCode)
+    assertEquals("60", result.metadata["scriptTimeoutMs"])
+    assertEquals("80", result.metadata["startupTimeoutMs"])
+    assertEquals("test-dispatched", result.metadata["launcherState"])
+  }
+
+  @Test
+  fun execReturnsStartupTimeoutDiagnosticsWhenServiceNeverBecomesReady() {
+    val runtimeRoot = temporaryFolder.newFolder("python-runtime-startup-timeout").toPath()
+    val workspaceRoot = temporaryFolder.newFolder("workspace-startup-timeout").toPath()
+    val launcher = object : P4aPythonRuntime.P4aPythonRuntimeLauncher {
+      override fun launch(
+        request: P4aPythonRuntime.P4aPythonLaunchRequest,
+      ): P4aPythonRuntime.P4aPythonRuntimeLaunchResult = P4aPythonRuntime.P4aPythonRuntimeLaunchResult.Dispatched(
+        metadata = mapOf("launcherState" to "test-dispatched"),
+      )
+    }
+    val runtime = P4aPythonRuntime.fromRuntimeRoot(runtimeRoot = runtimeRoot, launcher = launcher, json = json)
+
+    val result = runtime.exec(
+      PythonExecRequest(
+        taskId = "task-startup-timeout",
+        workspaceRoot = workspaceRoot,
+        scriptPath = workspaceRoot.resolve("demo.py"),
+        timeoutMs = 20L,
+        startupTimeoutMs = 30L,
+      ),
+    )
+
+    assertEquals(ExecutionStatus.TIMEOUT, result.status)
+    assertEquals(P4aPythonRuntime.ERROR_P4A_STARTUP_TIMEOUT, result.errorCode)
+    assertEquals("startup", result.metadata["timeoutStage"])
+    assertEquals("true", result.metadata["requestExists"])
+    assertEquals("false", result.metadata["resultExists"])
+    assertEquals("false", result.metadata["serviceReadyExists"])
+    assertEquals("false", result.metadata["serviceStateExists"])
+    assertTrue(result.stderr.contains("service_ready: exists=false"))
+    assertTrue(result.stderr.contains("service_state: exists=false"))
+  }
+
+  @Test
+  fun execReturnsResultTimeoutDiagnosticsAfterServiceBecomesReady() {
+    val runtimeRoot = temporaryFolder.newFolder("python-runtime-result-timeout").toPath()
+    val workspaceRoot = temporaryFolder.newFolder("workspace-result-timeout").toPath()
+    lateinit var runtime: P4aPythonRuntime
+    val launcher = object : P4aPythonRuntime.P4aPythonRuntimeLauncher {
+      override fun launch(
+        request: P4aPythonRuntime.P4aPythonLaunchRequest,
+      ): P4aPythonRuntime.P4aPythonRuntimeLaunchResult {
+        Files.createDirectories(runtime.serviceStatePath().parent)
+        Files.write(
+          runtime.serviceReadyPath(),
+          """{"state":"ready","requestId":"${request.bridgeRequest.requestId}"}""".toByteArray(StandardCharsets.UTF_8),
+        )
+        Files.write(
+          runtime.serviceStatePath(),
+          """{"state":"processing","currentRequestId":"${request.bridgeRequest.requestId}"}""".toByteArray(StandardCharsets.UTF_8),
+        )
+        Files.write(
+          request.logPath,
+          "service booted\nwaiting for result write\n".toByteArray(StandardCharsets.UTF_8),
+        )
+        return P4aPythonRuntime.P4aPythonRuntimeLaunchResult.Dispatched(
+          metadata = mapOf("launcherState" to "test-dispatched"),
+        )
+      }
+    }
+    runtime = P4aPythonRuntime.fromRuntimeRoot(runtimeRoot = runtimeRoot, launcher = launcher, json = json)
+
+    val result = runtime.exec(
+      PythonExecRequest(
+        taskId = "task-result-timeout",
+        workspaceRoot = workspaceRoot,
+        scriptPath = workspaceRoot.resolve("demo.py"),
+        timeoutMs = 40L,
+        startupTimeoutMs = 30L,
+      ),
+    )
+
+    assertEquals(ExecutionStatus.TIMEOUT, result.status)
+    assertEquals(P4aPythonRuntime.ERROR_P4A_RESULT_TIMEOUT, result.errorCode)
+    assertEquals("result", result.metadata["timeoutStage"])
+    assertEquals("true", result.metadata["serviceReadyExists"])
+    assertEquals("true", result.metadata["serviceStateExists"])
+    assertEquals("true", result.metadata["logExists"])
+    assertEquals("true", result.metadata["serviceReadyObserved"])
+    assertTrue(result.stderr.contains("service_state_preview:"))
+    assertTrue(result.stderr.contains("log_tail:"))
   }
 }

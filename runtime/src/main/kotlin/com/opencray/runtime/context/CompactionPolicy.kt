@@ -100,6 +100,7 @@ data class CompactionPolicy(
   private fun terminalOutcomeLabel(content: String): String? {
     val normalized = content.trim()
     return when {
+      normalized.startsWith("approval_approved") -> "approval_approved"
       normalized.startsWith("approval_rejected") -> "approval_rejected"
       normalized.startsWith("run_cancelled") -> "run_cancelled"
       normalized.startsWith("run_interrupted") -> "run_interrupted"

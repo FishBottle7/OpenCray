@@ -27,6 +27,16 @@ import com.opencray.runtime.memory.MemoryWriter
 import com.opencray.runtime.memory.TaskCommitmentResolver
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.soul.RelationshipEvent
+import com.opencray.runtime.soul.RelationshipEventConfidence
+import com.opencray.runtime.soul.RelationshipEventInterpretation
+import com.opencray.runtime.soul.RelationshipEventInterpreter
+import com.opencray.runtime.soul.RelationshipEventRequest
+import com.opencray.runtime.soul.RelationshipEventScope
+import com.opencray.runtime.soul.RelationshipEventType
+import com.opencray.runtime.soul.RelationshipEventValence
+import com.opencray.runtime.soul.SoulPlasticity
+import com.opencray.runtime.soul.SoulMemoryObjectTypes
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -493,6 +503,112 @@ class ChatMemoryIngestionCoordinatorTest {
   }
 
   @Test
+  fun ingestCompletedTurnWritesInteractionPreferenceSnapshotFromDurableRelationshipStylePreference() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      soulPlasticityProvider = { SoulPlasticity.HIGH },
+      candidateExtractor = MemoryCandidateExtractor(
+        soulIntentInterpreter = FixedSoulIntentInterpreter(
+          SoulMemoryIntentInterpretation.Success(
+            intents = listOf(
+              SoulMemoryIntent(
+                preferenceKey = "relationship_style_profile",
+                preferenceValue = "warm",
+                scope = com.opencray.runtime.memory.MemoryScope.USER,
+                soulExtensions = mapOf(
+                  "soul_tone" to "warm",
+                  "soul_voice" to "warm and gentle",
+                  "soul_user_relationship_style" to "supportive",
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-relationship-style",
+      task = promptTask(
+        id = "task-relationship-style",
+        input = "以后对我温柔一点。",
+      ),
+      result = successResult(taskId = "task-relationship-style"),
+      assistantOutput = "我会注意语气。",
+      toolObservations = emptyList(),
+    )
+
+    assertEquals(2, summary.writtenRecords.size)
+    assertTrue(memoryStore.list().any { record ->
+      record.extensions["preference_key"] == "relationship_style_profile" &&
+        record.extensions["preference_value"] == "warm"
+    })
+    assertTrue(memoryStore.list().any { record ->
+      record.extensions["soul_object_type"] == SoulMemoryObjectTypes.INTERACTION_PREFERENCE_STATE
+    })
+  }
+
+  @Test
+  fun ingestCompletedTurnWritesInteractionPreferenceSnapshotFromPreferredNamingAndAddressStyle() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      soulPlasticityProvider = { SoulPlasticity.HIGH },
+      candidateExtractor = MemoryCandidateExtractor(
+        soulIntentInterpreter = FixedSoulIntentInterpreter(
+          SoulMemoryIntentInterpretation.Success(
+            intents = listOf(
+              SoulMemoryIntent(
+                preferenceKey = "user_preferred_name",
+                preferenceValue = "阿澄",
+                scope = com.opencray.runtime.memory.MemoryScope.USER,
+                soulExtensions = mapOf(
+                  "soul_preferred_naming" to "阿澄",
+                ),
+              ),
+              SoulMemoryIntent(
+                preferenceKey = "user_address_style",
+                preferenceValue = "friendly",
+                scope = com.opencray.runtime.memory.MemoryScope.USER,
+                soulExtensions = mapOf(
+                  "soul_preferred_address_style" to "friendly",
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-addressing",
+      task = promptTask(
+        id = "task-addressing",
+        input = "以后叫我阿澄，以后称呼我亲切一点。",
+      ),
+      result = successResult(taskId = "task-addressing"),
+      assistantOutput = "记住了。",
+      toolObservations = emptyList(),
+    )
+
+    assertEquals(3, summary.writtenRecords.size)
+    assertTrue(memoryStore.list().any { record ->
+      record.extensions["preference_key"] == "user_preferred_name" &&
+        record.extensions["preference_value"] == "阿澄"
+    })
+    assertTrue(memoryStore.list().any { record ->
+      record.extensions["preference_key"] == "user_address_style" &&
+        record.extensions["preference_value"] == "friendly"
+    })
+    assertTrue(memoryStore.list().any { record ->
+      record.extensions["soul_object_type"] == SoulMemoryObjectTypes.INTERACTION_PREFERENCE_STATE
+    })
+  }
+
+  @Test
   fun ingestCompletedTurnUsesSemanticUserInterpreterForGeneralDurableMemories() {
     val memoryStore = InMemoryMemoryStore()
     val coordinator = ChatMemoryIngestionCoordinator(
@@ -537,6 +653,47 @@ class ChatMemoryIngestionCoordinatorTest {
     assertTrue(memoryStore.list().any { record ->
       record.content == "Do not use git reset --hard in this repo" &&
         record.extensions["scope"] == "workspace"
+    })
+  }
+
+  @Test
+  fun ingestCompletedTurnWritesRelationshipEventsAndSnapshotThroughPlanner() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      relationshipEventInterpreter = FixedRelationshipEventInterpreter(
+        RelationshipEventInterpretation.Success(
+          events = listOf(
+            RelationshipEvent(
+              eventType = RelationshipEventType.SUPPORTIVE_RESPONSE,
+              valence = RelationshipEventValence.POSITIVE,
+              confidence = RelationshipEventConfidence.MEDIUM,
+              scope = RelationshipEventScope.USER,
+              summary = "Supportive response after stress.",
+              occurredAtEpochMs = 2_000L,
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-relationship",
+      task = promptTask(
+        id = "task-relationship",
+        input = "Please continue.",
+      ),
+      result = successResult(taskId = "task-relationship"),
+      assistantOutput = "I am here.",
+      toolObservations = emptyList(),
+    )
+
+    assertEquals(2, summary.writtenRecords.size)
+    assertTrue(memoryStore.list().any { record ->
+      record.extensions["soul_object_type"] == SoulMemoryObjectTypes.RELATIONSHIP_EVENT
+    })
+    assertTrue(memoryStore.list().any { record ->
+      record.extensions["soul_object_type"] == SoulMemoryObjectTypes.RELATIONSHIP_STATE
     })
   }
 
@@ -607,5 +764,13 @@ class ChatMemoryIngestionCoordinatorTest {
     override fun interpret(
       request: TaskCommitmentIntentRequest,
     ): TaskCommitmentIntentInterpretation = interpretation
+  }
+
+  private class FixedRelationshipEventInterpreter(
+    private val interpretation: RelationshipEventInterpretation,
+  ) : RelationshipEventInterpreter {
+    override fun interpret(
+      request: RelationshipEventRequest,
+    ): RelationshipEventInterpretation = interpretation
   }
 }

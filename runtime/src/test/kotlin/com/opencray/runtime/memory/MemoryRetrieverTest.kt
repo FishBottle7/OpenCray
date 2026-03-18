@@ -1,6 +1,11 @@
 package com.opencray.runtime.memory
 
 import com.opencray.persistence.model.MemoryRecord
+import com.opencray.runtime.soul.RelationshipEvent
+import com.opencray.runtime.soul.RelationshipEventConfidence
+import com.opencray.runtime.soul.RelationshipEventType
+import com.opencray.runtime.soul.RelationshipEventValence
+import com.opencray.runtime.soul.buildRelationshipEventMemoryExtensions
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -222,6 +227,44 @@ class MemoryRetrieverTest {
     assertEquals(1, result.trace.filteredCounts[MemoryRecallFilterReason.SOUL_PREFERENCE])
   }
 
+  @Test
+  fun retrieveKeepsInternalSoulObjectsOutOfGenericMemoryRecallLayer() {
+    val retriever = MemoryRetriever(clock = { NOW_EPOCH_MS })
+
+    val result = retriever.retrieve(
+      records = listOf(
+        memoryRecord(
+          id = "relationship-event",
+          content = "Internal relationship event supportive_response @ 1000: Supportive response.",
+          kind = MemoryKind.PROJECT_FACT,
+          scope = MemoryScope.USER,
+          extraExtensions = buildRelationshipEventMemoryExtensions(
+            RelationshipEvent(
+              eventType = RelationshipEventType.SUPPORTIVE_RESPONSE,
+              valence = RelationshipEventValence.POSITIVE,
+              confidence = RelationshipEventConfidence.MEDIUM,
+              summary = "Supportive response.",
+              occurredAtEpochMs = 1_000L,
+            ),
+          ),
+        ),
+        memoryRecord(
+          id = "user-pref",
+          content = "Default to concise Chinese replies.",
+          kind = MemoryKind.USER_PREFERENCE,
+          scope = MemoryScope.USER,
+        ),
+      ),
+      request = MemoryRecallRequest(
+        sessionId = "session-main",
+        userInput = "Please keep using Chinese.",
+      ),
+    )
+
+    assertEquals(listOf("user-pref"), result.memories.map { memory -> memory.id })
+    assertEquals(1, result.trace.filteredCounts[MemoryRecallFilterReason.INTERNAL_SOUL_OBJECT])
+  }
+
   private fun memoryRecord(
     id: String,
     content: String,
@@ -235,6 +278,7 @@ class MemoryRetrieverTest {
     updatedAtEpochMs: Long = NOW_EPOCH_MS - 2_000L,
     preferenceKey: String? = null,
     preferenceValue: String? = null,
+    extraExtensions: Map<String, String> = emptyMap(),
   ): MemoryRecord = MemoryRecord(
     id = id,
     content = content,
@@ -255,6 +299,7 @@ class MemoryRetrieverTest {
       workspaceId?.let { put(MemoryRecordExtensionKeys.WORKSPACE_ID, it) }
       preferenceKey?.let { put(MemoryRecordExtensionKeys.PREFERENCE_KEY, it) }
       preferenceValue?.let { put(MemoryRecordExtensionKeys.PREFERENCE_VALUE, it) }
+      putAll(extraExtensions)
     },
   )
 

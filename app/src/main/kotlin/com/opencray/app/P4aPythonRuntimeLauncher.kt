@@ -157,6 +157,30 @@ internal class AndroidP4aPythonRuntimeServiceStarter(
       )
     }
 
+    val prepareMethod = generatedServiceClass.methods.firstOrNull { method ->
+      method.name == "prepare" &&
+        Modifier.isStatic(method.modifiers) &&
+        method.parameterTypes.size == 1 &&
+        method.parameterTypes[0].isAssignableFrom(context.javaClass)
+    }
+    val prepareMetadata = linkedMapOf<String, String>()
+    if (prepareMethod == null) {
+      prepareMetadata["launcherPrepareState"] = "missing"
+    } else {
+      try {
+        prepareMethod.invoke(null, context)
+        prepareMetadata["launcherPrepareState"] = "prepared"
+      } catch (error: Throwable) {
+        return P4aPythonRuntimeServiceStartResult.Unavailable(
+          reason = "service_prepare_failed",
+          message = error.cause?.message ?: error.message ?: "Failed to prepare the embedded p4a runtime service.",
+          metadata = prepareMetadata + mapOf(
+            "launcherPrepareState" to "failed",
+          ),
+        )
+      }
+    }
+
     val startMethod = generatedServiceClass.methods.firstOrNull { method ->
       method.name == "start" &&
         Modifier.isStatic(method.modifiers) &&
@@ -176,7 +200,7 @@ internal class AndroidP4aPythonRuntimeServiceStarter(
     return try {
       startMethod.invoke(null, context, spec.serviceArgument)
       P4aPythonRuntimeServiceStartResult.Started(
-        metadata = mapOf(
+        metadata = prepareMetadata + mapOf(
           "launcherResolvedServiceClass" to spec.generatedServiceClassName,
         ),
       )
@@ -184,6 +208,7 @@ internal class AndroidP4aPythonRuntimeServiceStarter(
       P4aPythonRuntimeServiceStartResult.Unavailable(
         reason = "service_start_failed",
         message = error.cause?.message ?: error.message ?: "Failed to start the embedded p4a service.",
+        metadata = prepareMetadata,
       )
     }
   }

@@ -21,7 +21,7 @@ class MemoryCandidateExtractor(
         candidates.putIfAbsent(candidate.identityKey(), candidate)
       }
 
-      splitStatements(evidence.userInput).forEach { statement ->
+      splitUserStatements(evidence.userInput).forEach { statement ->
         val candidate = extractFromUserStatement(
           statement = statement,
           evidence = evidence,
@@ -83,6 +83,8 @@ class MemoryCandidateExtractor(
     extractDurableInstruction(statement = statement, evidence = evidence)?.let { return it }
     if (allowHeuristicSoulFallback) {
       extractAgentDisplayNamePreference(statement = statement, evidence = evidence)?.let { return it }
+      extractUserPreferredNaming(statement = statement, evidence = evidence)?.let { return it }
+      extractUserAddressStylePreference(statement = statement, evidence = evidence)?.let { return it }
       extractAgentStylePreference(statement = statement, evidence = evidence)?.let { return it }
       extractAgentVerbosityPreference(statement = statement, evidence = evidence)?.let { return it }
     }
@@ -123,7 +125,7 @@ class MemoryCandidateExtractor(
     statement: String,
     evidence: MemoryTurnEvidence,
   ): MemoryCandidate? {
-    val normalized = policy.normalizeCandidateContent(statement) ?: return null
+    val normalized = normalizeSoulDirectiveStatement(statement) ?: return null
     val displayName = extractDisplayName(normalized) ?: return null
     val scope = directChatSoulPreferenceScope(
       preferenceKey = MemoryPreferenceKeys.AGENT_DISPLAY_NAME,
@@ -149,7 +151,7 @@ class MemoryCandidateExtractor(
     statement: String,
     evidence: MemoryTurnEvidence,
   ): MemoryCandidate? {
-    val normalized = policy.normalizeCandidateContent(statement) ?: return null
+    val normalized = normalizeSoulDirectiveStatement(statement) ?: return null
     val styleProfile = resolveStyleProfile(normalized) ?: return null
     val requestedScope = resolvePreferenceScope(
       normalized = normalized,
@@ -180,11 +182,69 @@ class MemoryCandidateExtractor(
     )
   }
 
+  private fun extractUserPreferredNaming(
+    statement: String,
+    evidence: MemoryTurnEvidence,
+  ): MemoryCandidate? {
+    val normalized = normalizeSoulDirectiveStatement(statement) ?: return null
+    val preferredName = extractPreferredNaming(normalized) ?: return null
+    val scope = directChatSoulPreferenceScope(
+      preferenceKey = MemoryPreferenceKeys.USER_PREFERRED_NAME,
+      requestedScope = resolvePreferenceScope(
+        normalized = normalized,
+        defaultScope = MemoryScope.USER,
+      ),
+    )
+    return createCandidate(
+      kind = MemoryKind.USER_PREFERENCE,
+      scope = scope,
+      content = canonicalSoulPreferenceContent(
+        preferenceKey = MemoryPreferenceKeys.USER_PREFERRED_NAME,
+        preferenceValue = preferredName,
+      ) ?: return null,
+      source = MemoryEvidenceSource.USER_INPUT,
+      evidence = evidence,
+      extensions = userPreferredNamePreferenceExtensions(
+        preferredName = preferredName,
+        scope = scope,
+      ),
+    )
+  }
+
+  private fun extractUserAddressStylePreference(
+    statement: String,
+    evidence: MemoryTurnEvidence,
+  ): MemoryCandidate? {
+    val normalized = normalizeSoulDirectiveStatement(statement) ?: return null
+    val addressStyle = resolvePreferredAddressStyle(normalized) ?: return null
+    val scope = directChatSoulPreferenceScope(
+      preferenceKey = MemoryPreferenceKeys.USER_ADDRESS_STYLE,
+      requestedScope = resolvePreferenceScope(
+        normalized = normalized,
+        defaultScope = MemoryScope.USER,
+      ),
+    )
+    return createCandidate(
+      kind = MemoryKind.USER_PREFERENCE,
+      scope = scope,
+      content = canonicalSoulPreferenceContent(
+        preferenceKey = MemoryPreferenceKeys.USER_ADDRESS_STYLE,
+        preferenceValue = addressStyle,
+      ) ?: return null,
+      source = MemoryEvidenceSource.USER_INPUT,
+      evidence = evidence,
+      extensions = userAddressStylePreferenceExtensions(
+        addressStyle = addressStyle,
+        scope = scope,
+      ),
+    )
+  }
+
   private fun extractAgentVerbosityPreference(
     statement: String,
     evidence: MemoryTurnEvidence,
   ): MemoryCandidate? {
-    val normalized = policy.normalizeCandidateContent(statement) ?: return null
+    val normalized = normalizeSoulDirectiveStatement(statement) ?: return null
     val verbosity = resolveVerbosityProfile(normalized) ?: return null
     val scope = directChatSoulPreferenceScope(
       preferenceKey = MemoryPreferenceKeys.AGENT_VERBOSITY,
@@ -343,6 +403,18 @@ class MemoryCandidateExtractor(
     .split(Regex("[\\r\\n]+|(?<=[.!?;。！？；])"))
     .mapNotNull(policy::normalizeCandidateContent)
 
+  private fun splitUserStatements(text: String): List<String> = text
+    .split(Regex("[\\r\\n]+|(?<=[.!?;。！？；])"))
+    .mapNotNull(::normalizeSoulDirectiveStatement)
+
+  private fun normalizeSoulDirectiveStatement(raw: String?): String? =
+    raw
+      ?.replace(Regex("\\s+"), " ")
+      ?.trim()
+      ?.trim('"', '\'', '`')
+      ?.trim('-', '*', ' ', '.', ',', ';', ':', '。', '，', '；', '：')
+      ?.takeIf(String::isNotEmpty)
+
   private fun extractSoulPreferenceCandidates(
     evidence: MemoryTurnEvidence,
   ): SoulPreferenceCandidateExtraction {
@@ -462,6 +534,8 @@ class MemoryCandidateExtractor(
     preferenceValue: String,
   ): String? = when (preferenceKey) {
     MemoryPreferenceKeys.AGENT_DISPLAY_NAME -> "Agent display name is $preferenceValue"
+    MemoryPreferenceKeys.USER_PREFERRED_NAME -> "Preferred user naming is $preferenceValue"
+    MemoryPreferenceKeys.USER_ADDRESS_STYLE -> "Address the user in a $preferenceValue style"
     MemoryPreferenceKeys.AGENT_STYLE_PROFILE -> "Agent style profile should be $preferenceValue"
     MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE ->
       "Relationship style should gradually move toward $preferenceValue"
@@ -497,6 +571,11 @@ class MemoryCandidateExtractor(
     val DISPLAY_NAME_PATTERNS: List<Regex> = listOf(
       Regex("(?i)^(?:from now on\\s*,?\\s*)?(?:please\\s+)?(?:call yourself|your name is)\\s+(.+)$"),
       Regex("^(?:以后|之后|从现在开始|这次|这一轮|暂时|先)?(?:请)?(?:你叫|你的名字是|以后叫你|之后叫你)\\s*(.+)$"),
+    )
+
+    val USER_PREFERRED_NAME_PATTERNS: List<Regex> = listOf(
+      Regex("(?i)^(?:from now on\\s*,?\\s*)?(?:please\\s+)?(?:call me|address me as|refer to me as)\\s+(.+)$"),
+      Regex("^(?:以后|之后|从现在开始|这次|这一轮|暂时|先)?(?:请)?(?:叫我|以后叫我|之后叫我|称呼我|以后称呼我)\\s*(.+)$"),
     )
 
     val LONG_TERM_SCOPE_MARKERS: List<String> = listOf(
@@ -568,6 +647,77 @@ class MemoryCandidateExtractor(
       "风格",
       "一点",
       "一些",
+    )
+
+    val ADDRESS_STYLE_TARGET_MARKERS: List<String> = listOf(
+      "call me",
+      "address me",
+      "refer to me",
+      "how you address me",
+      "称呼我",
+      "叫我",
+      "对我的称呼",
+      "称呼方式",
+      "叫我的时候",
+    )
+
+    val FRIENDLY_ADDRESS_STYLE_MARKERS: List<String> = listOf(
+      "friendly",
+      "friendlier",
+      "casual",
+      "more casual",
+      "like a friend",
+      "亲切",
+      "亲和",
+      "随和",
+      "自然一点",
+      "像朋友一样",
+      "朋友一点",
+    )
+
+    val INTIMATE_ADDRESS_STYLE_MARKERS: List<String> = listOf(
+      "intimate",
+      "more intimate",
+      "affectionate",
+      "closer",
+      "更亲密",
+      "亲密一点",
+      "亲近一点",
+      "更亲近",
+      "暧昧一点",
+    )
+
+    val NEUTRAL_ADDRESS_STYLE_MARKERS: List<String> = listOf(
+      "neutral",
+      "more neutral",
+      "normal",
+      "normal way",
+      "standard",
+      "中性",
+      "正常一点",
+      "普通一点",
+      "正常称呼",
+      "普通称呼",
+      "别太亲密",
+      "别太亲昵",
+    )
+
+    val NON_NAMING_PREFERRED_NAME_MARKERS: List<String> = listOf(
+      "friendly",
+      "intimate",
+      "neutral",
+      "casual",
+      "style",
+      "一点",
+      "一些",
+      "亲切",
+      "亲密",
+      "亲近",
+      "中性",
+      "正常",
+      "普通",
+      "称呼方式",
+      "像朋友一样",
     )
 
     val TERSE_VERBOSITY_MARKERS: List<String> = listOf(
@@ -691,6 +841,7 @@ class MemoryCandidateExtractor(
     )
 
     const val MAX_DISPLAY_NAME_CHARS: Int = 32
+    const val MAX_PREFERRED_NAME_CHARS: Int = 32
   }
 
   private fun extractDisplayName(normalized: String): String? {
@@ -704,6 +855,26 @@ class MemoryCandidateExtractor(
     }
   }
 
+  private fun extractPreferredNaming(normalized: String): String? {
+    val match = USER_PREFERRED_NAME_PATTERNS.firstNotNullOfOrNull { pattern ->
+      pattern.matchEntire(normalized)?.groupValues?.getOrNull(1)
+    } ?: return null
+    return normalizeMemoryPreferenceValueOrNull(match)?.takeIf(::looksLikePreferredNaming)
+  }
+
+  private fun looksLikePreferredNaming(candidate: String): Boolean {
+    if (candidate.length > MAX_PREFERRED_NAME_CHARS) {
+      return false
+    }
+    if (candidate.split(Regex("\\s+")).size > 4) {
+      return false
+    }
+    val lowered = candidate.lowercase(Locale.US)
+    return NON_NAMING_PREFERRED_NAME_MARKERS.none { marker ->
+      lowered.contains(marker.lowercase(Locale.US)) || candidate.contains(marker)
+    }
+  }
+
   private fun resolveStyleProfile(normalized: String): String? {
     if (!looksLikeStylePreference(normalized)) {
       return null
@@ -713,6 +884,45 @@ class MemoryCandidateExtractor(
       WARM_STYLE_MARKERS.any { marker -> lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker) } -> "warm"
       SERIOUS_STYLE_MARKERS.any { marker -> lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker) } -> "serious"
       else -> null
+    }
+  }
+
+  private fun resolvePreferredAddressStyle(normalized: String): String? {
+    if (!looksLikeAddressStylePreference(normalized)) {
+      return null
+    }
+    val lowered = normalized.lowercase(Locale.US)
+    return when {
+      INTIMATE_ADDRESS_STYLE_MARKERS.any { marker ->
+        lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker)
+      } -> "intimate"
+
+      FRIENDLY_ADDRESS_STYLE_MARKERS.any { marker ->
+        lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker)
+      } -> "friendly"
+
+      NEUTRAL_ADDRESS_STYLE_MARKERS.any { marker ->
+        lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker)
+      } -> "neutral"
+
+      else -> null
+    }
+  }
+
+  private fun looksLikeAddressStylePreference(normalized: String): Boolean {
+    val lowered = normalized.lowercase(Locale.US)
+    val hasTargetMarker = ADDRESS_STYLE_TARGET_MARKERS.any { marker ->
+      lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker)
+    }
+    if (!hasTargetMarker) {
+      return false
+    }
+    return FRIENDLY_ADDRESS_STYLE_MARKERS.any { marker ->
+      lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker)
+    } || INTIMATE_ADDRESS_STYLE_MARKERS.any { marker ->
+      lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker)
+    } || NEUTRAL_ADDRESS_STYLE_MARKERS.any { marker ->
+      lowered.contains(marker.lowercase(Locale.US)) || normalized.contains(marker)
     }
   }
 

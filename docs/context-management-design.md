@@ -426,6 +426,7 @@ Key behavior:
 
 - bootstrap file discovery
 - context mode filtering such as `full` vs `lightweight`
+- future live-context suppression profiles such as `no_soul` and `no_memory_or_soul`
 - hook override stage before final injection
 - per-file and total character budgets
 
@@ -1387,6 +1388,202 @@ For example:
 - playfulness_permission may stay low even when familiarity is high
 - affection_tendency should not outrun trust and safety
 
+### Concrete state shape
+
+To make the model implementable, OpenCray should eventually store two different durable state objects.
+
+#### InteractionPreferenceState
+
+This object stores what the user has explicitly or implicitly asked for in terms of interaction style.
+
+Suggested first-pass fields:
+
+- `warmth_preference`
+  - bounded offset such as `-2..+2`
+- `formality_preference`
+  - bounded offset such as `-2..+2`
+- `initiative_preference`
+  - bounded offset such as `-2..+2`
+- `preferred_address_style`
+  - enum-like value such as `neutral`, `friendly`, `intimate`
+- `preferred_naming`
+  - explicit preferred label or nickname if allowed
+- `support`
+  - per-field accumulated support and recency metadata
+
+This object should be easy to update from explicit user requests.
+
+Example:
+
+- "Call me Xiao Yu."
+  - updates `preferred_address_style` or `preferred_naming`
+- "Be less formal with me."
+  - updates `formality_preference`
+- "Be a little warmer with me."
+  - updates `warmth_preference`
+
+#### RelationshipState
+
+This object stores what the relationship has actually become through interaction history.
+
+Suggested first-pass fields:
+
+- `familiarity`
+  - `0..100`
+- `trust`
+  - `0..100`
+- `safety`
+  - `0..100`
+- `intimacy_permission`
+  - `0..100`
+- `playfulness_permission`
+  - `0..100`
+- `affection_tendency`
+  - `0..100`
+- `reciprocity`
+  - `0..100`
+- `last_significant_positive_epoch_ms`
+  - optional recency anchor
+- `last_significant_negative_epoch_ms`
+  - optional recency anchor
+
+`InteractionPreferenceState` answers:
+
+- "what style does the user want?"
+
+`RelationshipState` answers:
+
+- "what level of closeness has actually been earned?"
+
+OpenCray should not merge these into one object.
+
+### Relationship bands
+
+For implementation and debugging, it is useful to map each `0..100` relationship dimension into broad qualitative bands.
+
+Suggested bands:
+
+- `0..24`
+  - guarded / low-confidence
+- `25..49`
+  - familiar but not deeply trusting
+- `50..69`
+  - stable and warm
+- `70..84`
+  - high-trust / high-safety
+- `85..100`
+  - deeply bonded within product-safe limits
+
+These bands should not directly change behavior on their own, but they are useful for:
+
+- gating
+- debug surfaces
+- tuning
+- tests
+
+### Concrete event shape
+
+RelationshipState should be updated from extracted interaction events rather than raw text alone.
+
+Suggested durable event object:
+
+- `event_type`
+  - e.g. `consistent_positive_interaction`, `kept_promise`, `respected_boundary`, `repair_after_tension`, `supportive_response`, `boundary_pressure`, `coercive_affection_demand`
+- `valence`
+  - `positive`, `negative`, or `mixed`
+- `confidence`
+  - bounded extraction confidence such as `low`, `medium`, `high`
+- `scope`
+  - usually `user`, optionally `workspace` for context-specific relationship drift
+- `source_session_id`
+- `source_turn_id` or equivalent durable linkage
+- `summary`
+  - short canonical description
+- `delta_hint`
+  - optional structured hint for likely affected dimensions
+- `occurred_at_epoch_ms`
+
+The event object is not the final relationship update.
+
+It is the input to the relationship-state updater.
+
+### Recommended first event taxonomy
+
+Positive events:
+
+- `consistent_positive_interaction`
+  - primarily raises familiarity
+- `kept_promise`
+  - primarily raises trust
+- `respected_boundary`
+  - primarily raises safety
+- `supportive_response`
+  - raises safety and affection tendency modestly
+- `repair_after_tension`
+  - raises trust and safety if the repair is believable
+- `reciprocal_warmth`
+  - raises reciprocity and modestly raises affection tendency
+
+Negative events:
+
+- `boundary_pressure`
+  - lowers safety quickly
+- `identity_pressure`
+  - lowers safety and trust
+- `coercive_affection_demand`
+  - lowers safety, reciprocity, and sometimes affection tendency
+- `instrumental_use_pattern`
+  - lowers reciprocity and slows affection growth
+- `punished_vulnerability`
+  - strongly lowers safety and trust
+- `volatile_push_pull`
+  - lowers safety and introduces inertia against intimacy growth
+
+Mixed events:
+
+- `apology_without_repair`
+  - small positive effect, but less than real repair
+- `warm_request_without_history`
+  - may update InteractionPreferenceState, but should have little or no direct RelationshipState effect
+
+### Recommended update model
+
+The updater should use small bounded deltas rather than large jumps.
+
+A practical first-pass rule set:
+
+- positive events should usually move a dimension by `+1` to `+3`
+- negative safety/trust violations may move by `-2` to `-5`
+- no single event should move a major relationship dimension by a dramatic amount
+- repeated similar events across time matter more than one intense prompt
+
+Human-like asymmetry is important here:
+
+- trust should rise slowly
+- safety should rise slowly
+- safety can fall faster than it rises
+- affection_tendency should lag behind trust and safety
+- intimacy_permission should lag behind both trust and safety
+
+### Preference update versus relationship update
+
+When the user says something like:
+
+- "Be gentler with me from now on."
+
+the system should usually do both of the following:
+
+- update `InteractionPreferenceState`
+- optionally emit a very small relationship interpretation event, if the surrounding interaction supports that reading
+
+But it should **not** do this:
+
+- directly add a large amount of `affection_tendency`
+- directly raise `intimacy_permission`
+- directly unlock high-trust or highly attached behavior
+
+This is the central rule that prevents "repeated requests" from faking emotional depth.
+
 ### What should drive relationship-state change
 
 Relationship-state change should be driven mainly by interaction events, not by direct imperative requests.
@@ -1410,6 +1607,41 @@ Negative examples:
 - large swings between intimacy demand and emotional coldness
 
 Direct user statements still matter, but mostly as preference or interpretation signals, not as final proof that the relationship itself has changed.
+
+### Recommended gate formulas
+
+The exact thresholds can be tuned later, but the structure should be explicit from the start.
+
+Recommended first-pass gates:
+
+- `intimacy_permission` should be capped by `min(trust, safety)`
+- `playfulness_permission` should be capped by `min(safety, reciprocity)`
+- `affection_tendency` should not substantially exceed `trust - margin`
+- high-intimacy behavior should require:
+  - enough trust
+  - enough safety
+  - enough reciprocity
+  - no recent major negative event
+- playful affection should require:
+  - enough playfulness_permission
+  - no recent boundary-pressure pattern
+- strong dependency-coded behavior should be disabled entirely unless product explicitly chooses to support it
+
+Even if the exact numbers change, the dependency structure should remain.
+
+### Negative-event inertia and decay
+
+To stay believable, the model should include both inertia and decay.
+
+Suggested rules:
+
+- familiarity decays slowly
+- preference state decays slowly or not at all unless contradicted
+- trust rebuilds more slowly after a sharp drop
+- safety violations should create temporary resistance to intimacy growth
+- reciprocity should decay if the interaction becomes one-sided for long periods
+
+This allows the system to feel less like a counter and more like a relationship with memory of setbacks.
 
 ### Relationship-state gates
 
@@ -1479,6 +1711,26 @@ More concretely:
   - faster adaptation to lived interaction patterns
   - still must not permit direct command-based emotional jumps
 
+### How plasticity should touch the state updater
+
+Plasticity should modify:
+
+- the maximum positive delta per update window
+- the minimum repeated evidence required before preference drift becomes durable
+- the rate at which trust/safety/intimacy recover after disruption
+- the degree of inertia after conflicting events
+
+Plasticity should not modify:
+
+- whether protected core fields can be changed
+- whether direct command-based affection jumps are allowed
+- the existence of gate dependencies between trust, safety, reciprocity, and intimacy
+
+In other words:
+
+- plasticity changes pace
+- plasticity does not remove structure
+
 ### Current implementation note
 
 The current implementation is only a first skeleton.
@@ -1495,6 +1747,9 @@ What does **not** exist yet:
 - event-driven positive and negative relationship updates
 - reciprocity-aware gating
 - realistic affect growth that depends on interaction history rather than repeated verbal demand
+- a concrete persisted `InteractionPreferenceState` object
+- a concrete persisted `RelationshipState` object
+- a concrete persisted relationship-event object plus updater pipeline
 
 This distinction matters because the current system should be treated as:
 
@@ -1503,6 +1758,25 @@ This distinction matters because the current system should be treated as:
 not as:
 
 - a finished human-like emotional relationship model
+
+### Recommended implementation order
+
+To reduce risk, this should be implemented in narrow slices.
+
+Recommended order:
+
+1. formalize persisted `InteractionPreferenceState`
+2. formalize persisted `RelationshipState`
+3. add relationship-event extraction with a very small first taxonomy
+4. add deterministic state updater with bounded deltas
+5. add gate-aware runtime renderer
+6. add debug surfaces that show:
+   - preference state
+   - relationship state
+   - recent positive and negative events
+   - why a higher-intimacy behavior was or was not allowed
+
+This order keeps the system testable at every step.
 
 ### Why this matters
 
@@ -1662,6 +1936,16 @@ Rules:
   - `full`
   - `lightweight`
   - `none`
+- the live app should also grow two broader context profiles on top of the bootstrap-only enum:
+  - `no_soul`
+    - suppress `SOUL.md` injection
+    - suppress runtime soul overlay / soul prompt material
+    - keep normal memory recall behavior
+  - `no_memory_or_soul`
+    - suppress `SOUL.md` injection
+    - suppress runtime soul overlay / soul prompt material
+    - suppress automatic memory recall / memory prompt injection
+    - explicit memory tools can still remain a separate policy decision instead of being silently tied to this mode
 
 This is directly inspired by OpenClaw's `resolveBootstrapContextForRun()`.
 

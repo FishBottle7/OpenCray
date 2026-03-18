@@ -1,6 +1,7 @@
 package com.opencray.runtime.memory
 
 import com.opencray.persistence.model.MemoryRecord
+import com.opencray.runtime.soul.hasSoulObjectPayload
 import java.util.Locale
 
 data class MemoryToolContext(
@@ -94,6 +95,9 @@ class MemoryCorpusProjector(
             nowEpochMs = nowEpochMs,
           )
         ) {
+          return@mapNotNull null
+        }
+        if (record.hasSoulObjectPayload()) {
           return@mapNotNull null
         }
         VisibleMemoryRecord(

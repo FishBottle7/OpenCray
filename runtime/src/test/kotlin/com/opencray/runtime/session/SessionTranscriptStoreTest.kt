@@ -135,7 +135,7 @@ class SessionTranscriptStoreTest {
       add(
         RuntimeConversationMessage(
           role = RuntimeConversationRole.TOOL,
-          content = "approval_rejected tool_name=Write outcome=user_rejected executed=false next_step=await_user_instruction",
+          content = "approval_rejected task_id=task-approval run_id=run-approval tool_name=Write outcome=user_rejected executed=false next_step=await_user_instruction",
         ),
       )
       add(

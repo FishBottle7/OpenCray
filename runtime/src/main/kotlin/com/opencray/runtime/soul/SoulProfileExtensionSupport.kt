@@ -2,6 +2,12 @@ package com.opencray.runtime.soul
 
 object SoulProfileExtensionKeys {
   const val VOICE: String = "voice"
+  const val PREFERRED_NAMING: String = "preferred_naming"
+  const val PREFERRED_ADDRESS_STYLE: String = "preferred_address_style"
+  const val INTIMACY_PERMISSION_BAND: String = "intimacy_permission_band"
+  const val PLAYFULNESS_PERMISSION_BAND: String = "playfulness_permission_band"
+  const val HIGH_INTIMACY_BEHAVIOR_ALLOWED: String = "high_intimacy_behavior_allowed"
+  const val PLAYFUL_AFFECTION_ALLOWED: String = "playful_affection_allowed"
   const val TONE: String = "tone"
   const val VERBOSITY: String = "verbosity"
   const val PLASTICITY: String = "plasticity"

@@ -797,7 +797,7 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
             ),
             const _DebugKeyValueLine(
               'Bridge note',
-              'Run-level soul attribution is not exposed yet.',
+              'Detailed soul attribution and relationship gates live in Soul Inspector only.',
             ),
           ],
         ],
@@ -1411,6 +1411,8 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
         ? const <OpenCraySoulFieldSourceSnapshot>[]
         : _resolvedSoulFieldSources(snapshot);
     final linkedFieldGroups = _groupLinkedSoulFieldSources(fieldSources);
+    final interactionPreferenceDebug = snapshot?.interactionPreferenceDebug;
+    final relationshipStateDebug = snapshot?.relationshipStateDebug;
     return Scaffold(
       backgroundColor: OpenCrayColors.shellBackground,
       body: SafeArea(
@@ -1602,6 +1604,62 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
                 const SizedBox(height: 16),
                 KeyedSubtree(
                   key: const ValueKey<String>(
+                    'settings-soul-interaction-preference-card',
+                  ),
+                  child: _SettingsCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Interaction preference',
+                          style: _SettingsTextStyles.cardTitle,
+                        ),
+                        const SizedBox(height: 10),
+                        if (interactionPreferenceDebug == null)
+                          const Text(
+                            'No persisted interaction-preference snapshot currently applies to this soul.',
+                            style: _SettingsTextStyles.body,
+                          )
+                        else ...[
+                          ..._buildInteractionPreferenceDebugLines(
+                            interactionPreferenceDebug,
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                KeyedSubtree(
+                  key: const ValueKey<String>(
+                    'settings-soul-relationship-gates-card',
+                  ),
+                  child: _SettingsCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Relationship gates',
+                          style: _SettingsTextStyles.cardTitle,
+                        ),
+                        const SizedBox(height: 10),
+                        if (relationshipStateDebug == null)
+                          const Text(
+                            'No persisted relationship-state snapshot or event projection currently applies to this soul.',
+                            style: _SettingsTextStyles.body,
+                          )
+                        else ...[
+                          ..._buildRelationshipStateDebugLines(
+                            relationshipStateDebug,
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                KeyedSubtree(
+                  key: const ValueKey<String>(
                     'settings-soul-field-sources-card',
                   ),
                   child: _SettingsCard(
@@ -1622,7 +1680,7 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
                           for (final source in fieldSources)
                             _DebugKeyValueLine(
                               '${_debugSoulFieldLabel(source.field)} ->',
-                              '${source.sourceLabel.isEmpty ? source.sourceType : source.sourceLabel}: ${source.value}',
+                              _formatSoulFieldSourceSummary(source),
                             ),
                       ],
                     ),
@@ -1968,11 +2026,14 @@ List<Widget> _buildMemoryLinkDetails({
       widgets.add(
         _DebugKeyValueLine(
           _debugSoulFieldLabel(source.field),
-          '${source.sourceLabel.isEmpty ? source.sourceType : source.sourceLabel}: ${source.value}',
+          _formatSoulFieldSourceSummary(source),
         ),
       );
       if (source.preferenceKey.isNotEmpty) {
         widgets.add(_DebugKeyValueLine('Preference key', source.preferenceKey));
+      }
+      if (source.sourceDetail.isNotEmpty) {
+        widgets.add(_DebugKeyValueLine('Why', source.sourceDetail));
       }
       if (index < soulFieldSources.length - 1) {
         widgets.add(const SizedBox(height: 8));
@@ -2222,6 +2283,12 @@ List<Widget> _buildSoulProfileLines(OpenCraySoulProfileDebugSnapshot snapshot) {
   addLine('Preset', snapshot.presetName);
   addLine('Display name', snapshot.displayName);
   addLine('Voice', snapshot.voice);
+  addLine('Preferred naming', snapshot.preferredNaming);
+  addLine('Preferred address style', snapshot.preferredAddressStyle);
+  addLine('Intimacy band', snapshot.intimacyPermissionBand);
+  addLine('Playfulness band', snapshot.playfulnessPermissionBand);
+  addLine('High intimacy allowed', snapshot.highIntimacyBehaviorAllowed);
+  addLine('Playful affection allowed', snapshot.playfulAffectionAllowed);
   addLine('Tone', snapshot.tone);
   addLine('Verbosity', snapshot.verbosity);
   addLine('Relationship', snapshot.userRelationshipStyle);
@@ -2260,6 +2327,238 @@ List<Widget> _buildSoulProfileLines(OpenCraySoulProfileDebugSnapshot snapshot) {
   }
   return lines;
 }
+
+List<Widget> _buildInteractionPreferenceDebugLines(
+  OpenCrayInteractionPreferenceDebugSnapshot snapshot,
+) {
+  final lines = <Widget>[_DebugKeyValueLine('Scope', snapshot.scope)];
+  if (snapshot.snapshotRecordId.isNotEmpty) {
+    lines.add(_DebugKeyValueLine('Snapshot record', snapshot.snapshotRecordId));
+  }
+  if (snapshot.preferredNaming.isNotEmpty) {
+    lines.add(_DebugKeyValueLine('Preferred naming', snapshot.preferredNaming));
+  }
+  if (snapshot.preferredAddressStyle.isNotEmpty) {
+    lines.add(
+      _DebugKeyValueLine(
+        'Preferred address style',
+        snapshot.preferredAddressStyle,
+      ),
+    );
+  }
+  if (snapshot.derivedRelationshipStyle.isNotEmpty) {
+    lines.add(
+      _DebugKeyValueLine(
+        'Derived relationship style',
+        snapshot.derivedRelationshipStyle,
+      ),
+    );
+  }
+  if (snapshot.state.preferredNamingSupport > 0) {
+    lines.add(
+      _DebugKeyValueLine(
+        'Preferred naming support',
+        '${snapshot.state.preferredNamingSupport}',
+      ),
+    );
+  }
+  lines.add(
+    _DebugKeyValueLine(
+      'Warmth axis',
+      _formatPreferenceAxisSummary(snapshot.state.warmth),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Formality axis',
+      _formatPreferenceAxisSummary(snapshot.state.formality),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Initiative axis',
+      _formatPreferenceAxisSummary(snapshot.state.initiative),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Address style state',
+      _formatPreferredAddressStateSummary(snapshot.state.addressStyle),
+    ),
+  );
+  if (snapshot.state.lastUpdatedAtEpochMs != null) {
+    lines.add(
+      _DebugKeyValueLine(
+        'Preference updated',
+        _formatDebugClockTime(snapshot.state.lastUpdatedAtEpochMs!),
+      ),
+    );
+  }
+  return lines;
+}
+
+List<Widget> _buildRelationshipStateDebugLines(
+  OpenCrayRelationshipStateDebugSnapshot snapshot,
+) {
+  final lines = <Widget>[_DebugKeyValueLine('Scope', snapshot.scope)];
+  if (snapshot.snapshotRecordId.isNotEmpty) {
+    lines.add(_DebugKeyValueLine('Snapshot record', snapshot.snapshotRecordId));
+  }
+  if (snapshot.appliedEventRecordIds.isNotEmpty) {
+    lines.add(
+      _DebugKeyValueLine(
+        'Applied events',
+        snapshot.appliedEventRecordIds.join(', '),
+      ),
+    );
+  }
+  lines.add(
+    _DebugKeyValueLine(
+      'Scores',
+      'familiarity ${snapshot.state.familiarity}, trust ${snapshot.state.trust}, safety ${snapshot.state.safety}, intimacy ${snapshot.state.intimacyPermission}, playfulness ${snapshot.state.playfulnessPermission}, affection ${snapshot.state.affectionTendency}, reciprocity ${snapshot.state.reciprocity}',
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Bands',
+      'intimacy ${snapshot.intimacyPermissionBand}, playfulness ${snapshot.playfulnessPermissionBand}',
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Recent negative guard',
+      snapshot.recentNegativeGuardActive ? 'active' : 'inactive',
+    ),
+  );
+  if (snapshot.state.lastPositiveEventAtEpochMs != null) {
+    lines.add(
+      _DebugKeyValueLine(
+        'Last positive event',
+        _formatDebugClockTime(snapshot.state.lastPositiveEventAtEpochMs!),
+      ),
+    );
+  }
+  if (snapshot.state.lastNegativeEventAtEpochMs != null) {
+    lines.add(
+      _DebugKeyValueLine(
+        'Last negative event',
+        _formatDebugClockTime(snapshot.state.lastNegativeEventAtEpochMs!),
+      ),
+    );
+  }
+  if (snapshot.state.lastUpdatedAtEpochMs != null) {
+    lines.add(
+      _DebugKeyValueLine(
+        'State updated',
+        _formatDebugClockTime(snapshot.state.lastUpdatedAtEpochMs!),
+      ),
+    );
+  }
+  if (snapshot.derivedAddressStyle.isNotEmpty) {
+    lines.add(
+      _DebugKeyValueLine('Derived address style', snapshot.derivedAddressStyle),
+    );
+  } else {
+    lines.add(const _DebugKeyValueLine('Derived address style', 'none'));
+  }
+  lines.add(
+    _DebugKeyValueLine(
+      'Supportive style unlock',
+      _formatGateVerdict(snapshot.supportiveStyleUnlocked),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Supportive checks',
+      _formatSoulGateChecks(snapshot.supportiveStyleChecks),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Warm tone unlock',
+      _formatGateVerdict(snapshot.warmToneUnlocked),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Warm tone checks',
+      _formatSoulGateChecks(snapshot.warmToneChecks),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Friendly address checks',
+      _formatSoulGateChecks(snapshot.friendlyAddressChecks),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Intimate address checks',
+      _formatSoulGateChecks(snapshot.intimateAddressChecks),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'High intimacy behavior',
+      _formatGateVerdict(snapshot.highIntimacyBehaviorAllowed),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'High intimacy checks',
+      _formatSoulGateChecks(snapshot.highIntimacyChecks),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Playful affection',
+      _formatGateVerdict(snapshot.playfulAffectionAllowed),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Playful affection checks',
+      _formatSoulGateChecks(snapshot.playfulAffectionChecks),
+    ),
+  );
+  return lines;
+}
+
+String _formatPreferenceAxisSummary(
+  OpenCrayPreferenceAxisStateSnapshot snapshot,
+) {
+  return 'offset ${snapshot.offset}, higher ${snapshot.higherSupport}, lower ${snapshot.lowerSupport}';
+}
+
+String _formatPreferredAddressStateSummary(
+  OpenCrayPreferredAddressStateSnapshot snapshot,
+) {
+  return '${snapshot.selectedStyle} | neutral ${snapshot.neutralSupport}, friendly ${snapshot.friendlySupport}, intimate ${snapshot.intimateSupport}';
+}
+
+String _formatSoulGateChecks(List<OpenCraySoulGateCheckSnapshot> checks) {
+  if (checks.isEmpty) {
+    return 'none';
+  }
+  return checks.map(_formatSoulGateCheck).join(' | ');
+}
+
+String _formatSoulGateCheck(OpenCraySoulGateCheckSnapshot check) {
+  final verdict = check.passed ? 'pass' : 'fail';
+  if (check.currentValue != null && check.threshold != null) {
+    return '${check.key} ${check.currentValue}/${check.threshold} $verdict';
+  }
+  if (check.actualBoolean != null) {
+    final actual = check.actualBoolean! ? 'true' : 'false';
+    final expected = check.expectedBoolean == null
+        ? ''
+        : '/${check.expectedBoolean! ? 'true' : 'false'}';
+    return '${check.key} $actual$expected $verdict';
+  }
+  return '${check.key} $verdict';
+}
+
+String _formatGateVerdict(bool allowed) => allowed ? 'allowed' : 'blocked';
 
 List<OpenCraySoulFieldSourceSnapshot> _resolvedSoulFieldSources(
   OpenCraySoulDebugSnapshot snapshot,
@@ -2311,6 +2610,66 @@ List<OpenCraySoulFieldSourceSnapshot> _resolvedSoulFieldSources(
   addSource(
     field: 'voice',
     value: effectiveSoul.voice,
+    sourceType: snapshot.overlayRecords.isEmpty
+        ? 'stored_soul'
+        : 'memory_overlay',
+    sourceLabel: snapshot.overlayRecords.isEmpty
+        ? 'stored soul'
+        : 'memory overlay',
+  );
+  addSource(
+    field: 'preferredNaming',
+    value: effectiveSoul.preferredNaming,
+    sourceType: snapshot.overlayRecords.isEmpty
+        ? 'stored_soul'
+        : 'memory_overlay',
+    sourceLabel: snapshot.overlayRecords.isEmpty
+        ? 'stored soul'
+        : 'memory overlay',
+  );
+  addSource(
+    field: 'preferredAddressStyle',
+    value: effectiveSoul.preferredAddressStyle,
+    sourceType: snapshot.overlayRecords.isEmpty
+        ? 'stored_soul'
+        : 'memory_overlay',
+    sourceLabel: snapshot.overlayRecords.isEmpty
+        ? 'stored soul'
+        : 'memory overlay',
+  );
+  addSource(
+    field: 'intimacyPermissionBand',
+    value: effectiveSoul.intimacyPermissionBand,
+    sourceType: snapshot.overlayRecords.isEmpty
+        ? 'stored_soul'
+        : 'memory_overlay',
+    sourceLabel: snapshot.overlayRecords.isEmpty
+        ? 'stored soul'
+        : 'memory overlay',
+  );
+  addSource(
+    field: 'playfulnessPermissionBand',
+    value: effectiveSoul.playfulnessPermissionBand,
+    sourceType: snapshot.overlayRecords.isEmpty
+        ? 'stored_soul'
+        : 'memory_overlay',
+    sourceLabel: snapshot.overlayRecords.isEmpty
+        ? 'stored soul'
+        : 'memory overlay',
+  );
+  addSource(
+    field: 'highIntimacyBehaviorAllowed',
+    value: effectiveSoul.highIntimacyBehaviorAllowed,
+    sourceType: snapshot.overlayRecords.isEmpty
+        ? 'stored_soul'
+        : 'memory_overlay',
+    sourceLabel: snapshot.overlayRecords.isEmpty
+        ? 'stored soul'
+        : 'memory overlay',
+  );
+  addSource(
+    field: 'playfulAffectionAllowed',
+    value: effectiveSoul.playfulAffectionAllowed,
     sourceType: snapshot.overlayRecords.isEmpty
         ? 'stored_soul'
         : 'memory_overlay',
@@ -2399,6 +2758,18 @@ String _debugSoulFieldLabel(String field) {
       return 'preset';
     case 'displayName':
       return 'display name';
+    case 'preferredNaming':
+      return 'preferred naming';
+    case 'preferredAddressStyle':
+      return 'preferred address style';
+    case 'intimacyPermissionBand':
+      return 'intimacy band';
+    case 'playfulnessPermissionBand':
+      return 'playfulness band';
+    case 'highIntimacyBehaviorAllowed':
+      return 'high intimacy allowed';
+    case 'playfulAffectionAllowed':
+      return 'playful affection allowed';
     case 'customGuidance':
       return 'custom guidance';
     case 'userRelationshipStyle':
@@ -2416,6 +2787,19 @@ String _debugSoulFieldLabel(String field) {
     default:
       return field;
   }
+}
+
+String _formatSoulFieldSourceSummary(OpenCraySoulFieldSourceSnapshot source) {
+  final sourcePrefix = source.sourceLabel.isEmpty
+      ? source.sourceType
+      : source.sourceLabel;
+  final scopeSuffix = source.sourceScope.isEmpty
+      ? ''
+      : ' · ${source.sourceScope}';
+  final detailSuffix = source.sourceDetail.isEmpty
+      ? ''
+      : ' · ${source.sourceDetail}';
+  return '$sourcePrefix$scopeSuffix$detailSuffix: ${source.value}';
 }
 
 String _formatDebugDuration(int deltaMs) {

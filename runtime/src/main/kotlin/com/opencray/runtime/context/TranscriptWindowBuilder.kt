@@ -1,7 +1,7 @@
 package com.opencray.runtime.context
 
 data class TranscriptWindowConfig(
-  val maxMessages: Int = 16,
+  val maxMessages: Int = 12,
   val maxCharsPerMessage: Int = 2_400,
 ) {
   init {

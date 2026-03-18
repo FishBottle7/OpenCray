@@ -65,10 +65,29 @@ data class PolicyRequest(
   val workspaceRoot: Path,
   val targetPath: Path? = null,
   val destinationPath: Path? = null,
-)
+  val approvedReadRoots: Set<Path> = setOf(workspaceRoot),
+  val approvedWriteRoots: Set<Path> = setOf(workspaceRoot),
+) {
+  constructor(
+    mode: ExecutionMode,
+    toolClass: PolicyToolClass,
+    workspaceRoot: Path,
+    targetPath: Path? = null,
+    destinationPath: Path? = null,
+  ) : this(
+    mode = mode,
+    toolClass = toolClass,
+    workspaceRoot = workspaceRoot,
+    targetPath = targetPath,
+    destinationPath = destinationPath,
+    approvedReadRoots = setOf(workspaceRoot),
+    approvedWriteRoots = setOf(workspaceRoot),
+  )
+}
 
 object PolicyReasonCode {
   const val ALLOW_SAFE_READ = "ALLOW_SAFE_READ"
+  const val ASK_SAFE_EXTERNAL_READ = "ASK_SAFE_EXTERNAL_READ"
   const val ASK_SAFE_WRITE = "ASK_SAFE_WRITE"
   const val ASK_SAFE_DESTRUCTIVE_HIGH_RISK = "ASK_SAFE_DESTRUCTIVE_HIGH_RISK"
   const val ASK_SAFE_COMMAND_HIGH_RISK = "ASK_SAFE_COMMAND_HIGH_RISK"
@@ -208,6 +227,7 @@ class ModePolicy(
   fun decide(request: PolicyRequest): PolicyDecision {
     validatePaths(request)?.let { return it }
     enforceProtectedInvariants(request)?.let { return it }
+    externalReadDecision(request)?.let { return it }
 
     val matrixRule = matrix.getValue(request.mode).getValue(request.toolClass)
     return PolicyDecision(
@@ -227,19 +247,59 @@ class ModePolicy(
       reasonCode = PolicyReasonCode.DENY_INVALID_PATH,
       detail = "Target path is required for ${request.toolClass.name}.",
     )
-    validatePathWithinWorkspace(canonicalWorkspaceRoot, targetPath, "target")?.let { return it }
+    val targetValidation = when (request.toolClass) {
+      PolicyToolClass.READ_FILE -> validatePathWithinApprovedRoots(
+        workspaceRoot = canonicalWorkspaceRoot,
+        candidatePath = targetPath,
+        approvedRoots = request.approvedReadRoots,
+        label = "target",
+      )
+      else -> validatePathWithinApprovedRoots(
+        workspaceRoot = canonicalWorkspaceRoot,
+        candidatePath = targetPath,
+        approvedRoots = request.approvedWriteRoots,
+        label = "target",
+      )
+    }
+    targetValidation?.let { return it }
 
     if (request.toolClass.requiresDestinationPath()) {
       val destinationPath = request.destinationPath ?: return deny(
         reasonCode = PolicyReasonCode.DENY_INVALID_PATH,
         detail = "Destination path is required for ${request.toolClass.name}.",
       )
-      validatePathWithinWorkspace(canonicalWorkspaceRoot, destinationPath, "destination")?.let {
+      validatePathWithinApprovedRoots(
+        workspaceRoot = canonicalWorkspaceRoot,
+        candidatePath = destinationPath,
+        approvedRoots = request.approvedWriteRoots,
+        label = "destination",
+      )?.let {
         return it
       }
     }
 
     return null
+  }
+
+  private fun externalReadDecision(request: PolicyRequest): PolicyDecision? {
+    if (request.toolClass != PolicyToolClass.READ_FILE || request.mode != ExecutionMode.SAFE) {
+      return null
+    }
+    val canonicalWorkspaceRoot = canonicalize(request.workspaceRoot)
+    val targetPath = request.targetPath ?: return deny(
+      reasonCode = PolicyReasonCode.DENY_INVALID_PATH,
+      detail = "Target path is required for ${request.toolClass.name}.",
+    )
+    val canonicalTarget = canonicalize(resolveAgainstWorkspace(canonicalWorkspaceRoot, targetPath))
+    if (canonicalTarget.startsWith(canonicalWorkspaceRoot)) {
+      return null
+    }
+    return PolicyDecision(
+      outcome = PolicyDecisionOutcome.ASK,
+      reasonCode = PolicyReasonCode.ASK_SAFE_EXTERNAL_READ,
+      detail = "Approval is required before reading outside the workspace.",
+      approvalRisk = PolicyApprovalRisk.STANDARD,
+    )
   }
 
   private fun enforceProtectedInvariants(request: PolicyRequest): PolicyDecision? {
@@ -279,9 +339,10 @@ class ModePolicy(
     return null
   }
 
-  private fun validatePathWithinWorkspace(
-    canonicalWorkspaceRoot: Path,
+  private fun validatePathWithinApprovedRoots(
+    workspaceRoot: Path,
     candidatePath: Path,
+    approvedRoots: Set<Path>,
     label: String,
   ): PolicyDecision? {
     if (containsTraversalSegment(candidatePath)) {
@@ -291,12 +352,12 @@ class ModePolicy(
       )
     }
 
-    val resolvedPath = resolveAgainstWorkspace(canonicalWorkspaceRoot, candidatePath)
-    val canonicalCandidatePath = canonicalize(resolvedPath)
-    if (!canonicalCandidatePath.startsWith(canonicalWorkspaceRoot)) {
+    val canonicalCandidatePath = canonicalize(resolveAgainstWorkspace(workspaceRoot, candidatePath))
+    val canonicalApprovedRoots = approvedRoots.map(::canonicalize)
+    if (canonicalApprovedRoots.none { root -> canonicalCandidatePath.startsWith(root) }) {
       return deny(
         reasonCode = PolicyReasonCode.DENY_PATH_ESCAPE,
-        detail = "$label path escapes workspace root.",
+        detail = "$label path escapes approved roots.",
       )
     }
 

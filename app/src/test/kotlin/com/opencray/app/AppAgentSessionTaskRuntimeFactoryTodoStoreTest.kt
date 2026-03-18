@@ -133,6 +133,8 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
 
     factory.recordApprovalRejection(
       sessionId = "session-1",
+      taskId = "task-1",
+      runId = "run-1",
       toolName = "Write",
       isHighRisk = true,
     )
@@ -142,9 +144,43 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     assertEquals(1, snapshot.size)
     assertEquals(RuntimeConversationRole.TOOL, snapshot.single().role)
     assertTrue(snapshot.single().content.contains("approval_rejected"))
+    assertTrue(snapshot.single().content.contains("task_id=task-1"))
+    assertTrue(snapshot.single().content.contains("run_id=run-1"))
     assertTrue(snapshot.single().content.contains("tool_name=Write"))
     assertTrue(snapshot.single().content.contains("executed=false"))
     assertTrue(snapshot.single().content.contains("risk=high_risk"))
+  }
+
+  @Test
+  fun recordApprovalApprovedAppendsReplayToolObservation() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approval-approved"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-approval-approved").toPath()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+
+    factory.recordApprovalApproved(
+      sessionId = "session-1",
+      taskId = "task-1",
+      runId = "run-1",
+      toolName = "Write",
+      isHighRisk = false,
+    )
+
+    val snapshot = factory.transcriptStoreForSession("session-1").snapshot()
+
+    assertEquals(1, snapshot.size)
+    assertEquals(RuntimeConversationRole.TOOL, snapshot.single().role)
+    assertTrue(snapshot.single().content.contains("approval_approved"))
+    assertTrue(snapshot.single().content.contains("task_id=task-1"))
+    assertTrue(snapshot.single().content.contains("run_id=run-1"))
+    assertTrue(snapshot.single().content.contains("tool_name=Write"))
+    assertTrue(snapshot.single().content.contains("outcome=user_approved"))
   }
 
   @Test

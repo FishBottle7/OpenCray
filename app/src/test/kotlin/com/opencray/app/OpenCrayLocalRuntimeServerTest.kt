@@ -1345,7 +1345,9 @@ class OpenCrayLocalRuntimeServerTest {
     val personalizationStore = PersonalizationLocalStore(
       temporaryFolder.newFolder("server-soul-debug"),
     )
-    personalizationStore.saveSoulProfile(
+    val workspaceRoot = temporaryFolder.newFolder("server-workspace-soul-debug").toPath()
+    WorkspaceSoulProfileStore().saveSoulProfile(
+      workspaceRoot,
       PersonalizationLocalStore.SoulProfile(
         presetName = "STEADY",
         customLabel = "Night Shift",
@@ -1375,6 +1377,7 @@ class OpenCrayLocalRuntimeServerTest {
       chatSessionStore = chatStore,
       settingsFacade = NoOpSettingsFacade,
       personalizationLocalStore = personalizationStore,
+      workspaceRootProvider = { workspaceRoot },
       sessionRuntimeManager = NoOpRuntimeManager(),
       strings = hostRuntimeStrings(),
     )

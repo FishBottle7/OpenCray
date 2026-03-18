@@ -35,6 +35,18 @@ class LiteLlmSoulMemoryIntentInterpreterTest {
                 "soul_voice":"warm and gentle",
                 "soul_user_relationship_style":"supportive"
               }
+            },
+            {
+              "preference_key":"user_preferred_name",
+              "preference_value":"阿澄",
+              "scope":"user",
+              "soul_extensions":{"soul_preferred_naming":"阿澄"}
+            },
+            {
+              "preference_key":"user_address_style",
+              "preference_value":"friendly",
+              "scope":"user",
+              "soul_extensions":{"soul_preferred_address_style":"friendly"}
             }
           ]}
         """.trimIndent(),
@@ -63,7 +75,7 @@ class LiteLlmSoulMemoryIntentInterpreterTest {
     )
 
     val success = result as SoulMemoryIntentInterpretation.Success
-    assertEquals(2, success.intents.size)
+    assertEquals(4, success.intents.size)
     assertEquals("gpt-4o-mini", providerClient.lastRequest?.route?.model)
     assertEquals("Bearer test-key", providerClient.lastRequest?.request?.authHeaders?.get("Authorization"))
     val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
@@ -71,6 +83,8 @@ class LiteLlmSoulMemoryIntentInterpreterTest {
     assertTrue(prompt.contains("relationship_style_profile is for durable relationship evolution"))
     assertTrue(prompt.contains("agent_style_profile is only for current-run acting mode"))
     assertTrue(prompt.contains("agent_verbosity always uses session scope"))
+    assertTrue(prompt.contains("user_preferred_name stores how the agent should address the user"))
+    assertTrue(prompt.contains("user_address_style stores the desired user-addressing closeness"))
     assertTrue(prompt.contains("Never output soul_risk_tolerance or soul_tool_use_bias"))
     assertFalse(
       prompt.contains(
@@ -83,10 +97,18 @@ class LiteLlmSoulMemoryIntentInterpreterTest {
     val styleIntent = success.intents.first { intent ->
       intent.preferenceKey == MemoryPreferenceKeys.AGENT_STYLE_PROFILE
     }
+    val preferredNameIntent = success.intents.first { intent ->
+      intent.preferenceKey == MemoryPreferenceKeys.USER_PREFERRED_NAME
+    }
+    val addressStyleIntent = success.intents.first { intent ->
+      intent.preferenceKey == MemoryPreferenceKeys.USER_ADDRESS_STYLE
+    }
     assertEquals(MemoryScope.USER, displayNameIntent.scope)
     assertEquals("小白", displayNameIntent.soulExtensions[MemorySoulExtensionKeys.DISPLAY_NAME])
     assertEquals(MemoryScope.SESSION, styleIntent.scope)
     assertEquals("warm", styleIntent.soulExtensions[MemorySoulExtensionKeys.TONE])
+    assertEquals("阿澄", preferredNameIntent.soulExtensions[MemorySoulExtensionKeys.PREFERRED_NAMING])
+    assertEquals("friendly", addressStyleIntent.soulExtensions[MemorySoulExtensionKeys.PREFERRED_ADDRESS_STYLE])
   }
 
   @Test

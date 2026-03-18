@@ -443,6 +443,97 @@ class MemoryCandidateExtractorTest {
   }
 
   @Test
+  fun extractBuildsPreferredNamingAndAddressStyleCandidatesFromStructuredUserIntent() {
+    val extractor = MemoryCandidateExtractor(
+      userIntentInterpreter = FixedUserIntentInterpreter(
+        UserMemoryIntentInterpretation.Success(
+          intents = listOf(
+            UserMemoryIntent(
+              kind = MemoryKind.USER_PREFERENCE,
+              scope = MemoryScope.USER,
+              preferenceKey = MemoryPreferenceKeys.USER_PREFERRED_NAME,
+              preferenceValue = "阿澄",
+              soulExtensions = mapOf(
+                MemorySoulExtensionKeys.PREFERRED_NAMING to "阿澄",
+              ),
+            ),
+            UserMemoryIntent(
+              kind = MemoryKind.USER_PREFERENCE,
+              scope = MemoryScope.USER,
+              preferenceKey = MemoryPreferenceKeys.USER_ADDRESS_STYLE,
+              preferenceValue = "friendly",
+              soulExtensions = mapOf(
+                MemorySoulExtensionKeys.PREFERRED_ADDRESS_STYLE to "friendly",
+              ),
+            ),
+          ),
+        ),
+      ),
+      soulIntentInterpreter = FixedSoulIntentInterpreter(
+        SoulMemoryIntentInterpretation.Success(intents = emptyList()),
+      ),
+    )
+
+    val candidates = extractor.extract(
+      MemoryTurnEvidence(
+        sessionId = "session-6c",
+        taskId = "task-6c",
+        workspaceId = "workspace-main",
+        userInput = "以后叫我阿澄，以后称呼我亲切一点。",
+      ),
+    )
+
+    val preferredNaming = candidates.first { candidate ->
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.USER_PREFERRED_NAME
+    }
+    val addressStyle = candidates.first { candidate ->
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.USER_ADDRESS_STYLE
+    }
+
+    assertEquals(MemoryScope.USER, preferredNaming.scope)
+    assertEquals("Preferred user naming is 阿澄", preferredNaming.content)
+    assertEquals("阿澄", preferredNaming.extensions[MemorySoulExtensionKeys.PREFERRED_NAMING])
+    assertEquals(MemoryScope.USER, addressStyle.scope)
+    assertEquals("Address the user in a friendly style", addressStyle.content)
+    assertEquals("friendly", addressStyle.extensions[MemorySoulExtensionKeys.PREFERRED_ADDRESS_STYLE])
+  }
+
+  @Test
+  fun extractFallsBackToHeuristicPreferredNamingAndAddressStyleWhenInterpreterAllowsIt() {
+    val extractor = MemoryCandidateExtractor(
+      soulIntentInterpreter = FixedSoulIntentInterpreter(
+        SoulMemoryIntentInterpretation.Unavailable(
+          allowHeuristicFallback = true,
+          reason = "LLM unavailable in test.",
+        ),
+      ),
+    )
+
+    val candidates = extractor.extract(
+      MemoryTurnEvidence(
+        sessionId = "session-6d",
+        taskId = "task-6d",
+        workspaceId = "workspace-main",
+        userInput = "以后叫我阿澄。以后称呼我亲切一点。",
+      ),
+    )
+
+    val preferredNaming = candidates.first { candidate ->
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.USER_PREFERRED_NAME
+    }
+    val addressStyle = candidates.first { candidate ->
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.USER_ADDRESS_STYLE
+    }
+
+    assertEquals("阿澄", preferredNaming.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE])
+    assertEquals("阿澄", preferredNaming.extensions[MemorySoulExtensionKeys.PREFERRED_NAMING])
+    assertEquals(MemoryPreferenceKeys.TEMPORALITY_DURABLE, preferredNaming.extensions[MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY])
+    assertEquals("friendly", addressStyle.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE])
+    assertEquals("friendly", addressStyle.extensions[MemorySoulExtensionKeys.PREFERRED_ADDRESS_STYLE])
+    assertEquals(MemoryPreferenceKeys.TEMPORALITY_DURABLE, addressStyle.extensions[MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY])
+  }
+
+  @Test
   fun extractSuppressesLegacyUserParsingWhenUserIntentInterpreterFailsClosed() {
     val extractor = MemoryCandidateExtractor(
       userIntentInterpreter = FixedUserIntentInterpreter(

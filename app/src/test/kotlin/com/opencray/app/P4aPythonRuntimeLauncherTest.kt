@@ -1,5 +1,7 @@
 package com.opencray.app
 
+import android.content.Context
+import android.content.ContextWrapper
 import java.nio.file.Path
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -91,6 +93,58 @@ class P4aPythonRuntimeLauncherTest {
     assertEquals("org.opencray.app/.PythonService", dispatched.metadata["launcherComponent"])
   }
 
+  @Test
+  fun androidServiceStarterPreparesGeneratedServiceBeforeStart() {
+    FakeGeneratedService.reset()
+    val starter = AndroidP4aPythonRuntimeServiceStarter(
+      context = ContextWrapper(null),
+      classLoader = FakeGeneratedService::class.java.classLoader,
+    )
+
+    val result = starter.start(
+      P4aPythonRuntimeServiceStartSpec(
+        packageName = "org.opencray.app",
+        serviceId = "opencraypython",
+        generatedServiceClassName = FakeGeneratedService::class.java.name,
+        serviceArgument = """{"runtimeRoot":"/tmp/opencray-python"}""",
+      ),
+    )
+
+    assertTrue(result is P4aPythonRuntimeServiceStartResult.Started)
+    val started = result as P4aPythonRuntimeServiceStartResult.Started
+    assertEquals("prepared", started.metadata["launcherPrepareState"])
+    assertEquals(
+      listOf("prepare", "start"),
+      FakeGeneratedService.invocations,
+    )
+    assertEquals("""{"runtimeRoot":"/tmp/opencray-python"}""", FakeGeneratedService.capturedServiceArgument)
+  }
+
+  @Test
+  fun androidServiceStarterReturnsUnavailableWhenPrepareFails() {
+    FakeGeneratedService.reset()
+    FakeGeneratedService.prepareShouldThrow = true
+    val starter = AndroidP4aPythonRuntimeServiceStarter(
+      context = ContextWrapper(null),
+      classLoader = FakeGeneratedService::class.java.classLoader,
+    )
+
+    val result = starter.start(
+      P4aPythonRuntimeServiceStartSpec(
+        packageName = "org.opencray.app",
+        serviceId = "opencraypython",
+        generatedServiceClassName = FakeGeneratedService::class.java.name,
+        serviceArgument = """{"runtimeRoot":"/tmp/opencray-python"}""",
+      ),
+    )
+
+    assertTrue(result is P4aPythonRuntimeServiceStartResult.Unavailable)
+    val unavailable = result as P4aPythonRuntimeServiceStartResult.Unavailable
+    assertEquals("service_prepare_failed", unavailable.reason)
+    assertEquals("failed", unavailable.metadata["launcherPrepareState"])
+    assertEquals(listOf("prepare"), FakeGeneratedService.invocations)
+  }
+
   private fun launchRequest(
     runtimeRoot: Path,
     requestId: String,
@@ -108,4 +162,33 @@ class P4aPythonRuntimeLauncherTest {
     resultPath = runtimeRoot.resolve("results/$requestId.json"),
     logPath = runtimeRoot.resolve("logs/$requestId.log"),
   )
+}
+
+private class FakeGeneratedService {
+  companion object {
+    val invocations: MutableList<String> = mutableListOf()
+    var capturedServiceArgument: String? = null
+    var prepareShouldThrow: Boolean = false
+
+    @JvmStatic
+    fun reset() {
+      invocations.clear()
+      capturedServiceArgument = null
+      prepareShouldThrow = false
+    }
+
+    @JvmStatic
+    fun prepare(context: Context) {
+      invocations += "prepare"
+      if (prepareShouldThrow) {
+        throw IllegalStateException("prepare boom")
+      }
+    }
+
+    @JvmStatic
+    fun start(context: Context, pythonServiceArgument: String) {
+      invocations += "start"
+      capturedServiceArgument = pythonServiceArgument
+    }
+  }
 }

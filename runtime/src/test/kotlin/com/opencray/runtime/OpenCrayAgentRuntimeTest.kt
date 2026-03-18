@@ -910,11 +910,13 @@ class OpenCrayAgentRuntimeTest {
         when (event) {
           is OpenCrayLifecycleEvent -> "lifecycle"
           is OpenCrayProgressEvent -> "progress"
+          is OpenCrayApprovalEvent -> "approval"
           is OpenCrayToolCallEvent -> "tool_call"
           is OpenCrayToolResultEvent -> "tool_result"
           is OpenCrayAssistantEvent -> "assistant"
           is OpenCrayMemoryRetrievalEvent -> "memory_retrieval"
           is OpenCrayMemoryWriteEvent -> "memory_write"
+          is OpenCrayCancellationEvent -> "cancelled"
         }
       },
     )
@@ -974,11 +976,13 @@ class OpenCrayAgentRuntimeTest {
         when (event) {
           is OpenCrayLifecycleEvent -> "lifecycle"
           is OpenCrayProgressEvent -> "progress"
+          is OpenCrayApprovalEvent -> "approval"
           is OpenCrayToolCallEvent -> "tool_call"
           is OpenCrayToolResultEvent -> "tool_result"
           is OpenCrayAssistantEvent -> "assistant"
           is OpenCrayMemoryRetrievalEvent -> "memory_retrieval"
           is OpenCrayMemoryWriteEvent -> "memory_write"
+          is OpenCrayCancellationEvent -> "cancelled"
         }
       },
     )

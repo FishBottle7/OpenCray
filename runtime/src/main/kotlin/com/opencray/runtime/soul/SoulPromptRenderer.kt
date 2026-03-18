@@ -16,6 +16,24 @@ class SoulPromptRenderer {
       normalizeSoulScalarOrNull(profile.voice)?.let { value ->
         appendLine("voice=$value")
       }
+      normalizeSoulScalarOrNull(profile.preferredNaming)?.let { value ->
+        appendLine("preferred_naming=$value")
+      }
+      profile.preferredAddressStyle?.let { style ->
+        appendLine("preferred_address_style=${style.name.lowercase()}")
+      }
+      profile.intimacyPermissionBand?.let { band ->
+        appendLine("intimacy_permission_band=${band.name.lowercase()}")
+      }
+      profile.playfulnessPermissionBand?.let { band ->
+        appendLine("playfulness_permission_band=${band.name.lowercase()}")
+      }
+      profile.highIntimacyBehaviorAllowed?.let { allowed ->
+        appendLine("high_intimacy_behavior_allowed=$allowed")
+      }
+      profile.playfulAffectionAllowed?.let { allowed ->
+        appendLine("playful_affection_allowed=$allowed")
+      }
       appendLine("tone=${profile.tone.name.lowercase()}")
       appendLine("verbosity=${profile.verbosity.name.lowercase()}")
       appendLine("user_relationship_style=${profile.userRelationshipStyle.name.lowercase()}")

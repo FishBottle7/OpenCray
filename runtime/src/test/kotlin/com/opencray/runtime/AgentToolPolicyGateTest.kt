@@ -224,6 +224,11 @@ class AgentToolPolicyGateTest {
 
     assertEquals(AgentToolResultStatus.SUCCESS, readResult.status)
     assertEquals("camera roll", readResult.content)
+    assertEquals("ALLOW_AUTO_STANDARD", readResult.metadata["policyReasonCode"])
+    assertEquals("read_file", readResult.metadata["capabilityKind"])
+    assertEquals("file", readResult.metadata["targetKind"])
+    assertEquals("outside_workspace", readResult.metadata["workspaceRelation"])
+    assertTrue(requireNotNull(readResult.metadata["primaryTargetPath"]).endsWith("/photo.txt"))
 
     val importResult = dispatcher.dispatch(
       task = agentTask(
@@ -289,6 +294,80 @@ class AgentToolPolicyGateTest {
     assertEquals(AgentToolResultStatus.FAILED, result.status)
     assertTrue(result.content.contains("escapes approved workspace roots"))
     assertEquals("keep", String(Files.readAllBytes(target), StandardCharsets.UTF_8))
+  }
+
+  @Test
+  fun safeModeApprovedExternalReadRequiresApproval() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-safe-read-workspace").toPath()
+    val externalRoot = temporaryFolder.newFolder("tool-policy-safe-read-external").toPath()
+    val target = externalRoot.resolve("notes.txt")
+    Files.write(target, "camera roll".toByteArray(StandardCharsets.UTF_8))
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        readRoots = setOf(workspaceRoot, externalRoot),
+      ),
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(
+        metadata = mapOf("chatMode" to "SAFE"),
+      ),
+      call = AgentToolCall(
+        toolName = "Read",
+        arguments = JsonObject(
+          mapOf("file_path" to JsonPrimitive(target.toString())),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.DENIED, result.status)
+    assertEquals("APPROVAL_REQUIRED", result.errorCode)
+    assertEquals("ASK_SAFE_EXTERNAL_READ", result.metadata["policyReasonCode"])
+    assertEquals("STANDARD", result.metadata["approvalRisk"])
+    assertEquals("read_file", result.metadata["capabilityKind"])
+    assertEquals("file", result.metadata["targetKind"])
+    assertEquals("outside_workspace", result.metadata["workspaceRelation"])
+    assertTrue(requireNotNull(result.metadata["primaryTargetPath"]).endsWith("/notes.txt"))
+  }
+
+  @Test
+  fun safeModeApprovedExternalGrepRequiresApproval() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-safe-grep-workspace").toPath()
+    val externalRoot = temporaryFolder.newFolder("tool-policy-safe-grep-external").toPath()
+    val target = externalRoot.resolve("notes.txt")
+    Files.write(target, "first\nneedle".toByteArray(StandardCharsets.UTF_8))
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        readRoots = setOf(workspaceRoot, externalRoot),
+      ),
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(
+        metadata = mapOf("chatMode" to "SAFE"),
+      ),
+      call = AgentToolCall(
+        toolName = "Grep",
+        arguments = JsonObject(
+          mapOf(
+            "pattern" to JsonPrimitive("needle"),
+            "path" to JsonPrimitive(externalRoot.toString()),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.DENIED, result.status)
+    assertEquals("APPROVAL_REQUIRED", result.errorCode)
+    assertEquals("ASK_SAFE_EXTERNAL_READ", result.metadata["policyReasonCode"])
+    assertEquals("read_file", result.metadata["capabilityKind"])
+    assertEquals("search_root", result.metadata["targetKind"])
+    assertEquals("outside_workspace", result.metadata["workspaceRelation"])
+    assertTrue(requireNotNull(result.metadata["primaryTargetPath"]).contains(externalRoot.fileName.toString()))
   }
 
   @Test
@@ -392,6 +471,11 @@ class AgentToolPolicyGateTest {
     assertEquals("inside_workspace", result.metadata["workspaceRelation"])
     assertEquals(".", result.metadata["primaryTargetPath"])
     assertEquals("git", result.metadata["targetSummary"])
+    assertEquals("execution", result.metadata["intentCategory"])
+    assertEquals("host_command", result.metadata["executionIntentKind"])
+    assertEquals("foreground", result.metadata["executionTransport"])
+    assertEquals("git", result.metadata["executionCommandPreview"])
+    assertEquals(".", result.metadata["executionWorkingDirectory"])
     assertEquals(0, runner.spawnCount)
   }
 
@@ -426,6 +510,11 @@ class AgentToolPolicyGateTest {
     assertEquals("HIGH_RISK_APPROVAL_REQUIRED", result.errorCode)
     assertEquals("ASK_SAFE_COMMAND_HIGH_RISK", result.metadata["policyReasonCode"])
     assertEquals("HIGH_RISK", result.metadata["approvalRisk"])
+    assertEquals("execution", result.metadata["intentCategory"])
+    assertEquals("host_command", result.metadata["executionIntentKind"])
+    assertEquals("foreground", result.metadata["executionTransport"])
+    assertEquals("git", result.metadata["executionCommandPreview"])
+    assertEquals(".", result.metadata["executionWorkingDirectory"])
     assertTrue(result.content.contains("High-risk approval"))
     assertEquals(0, runner.spawnCount)
   }
@@ -528,6 +617,10 @@ class AgentToolPolicyGateTest {
     assertEquals(modelPath("scripts/run.py"), result.metadata["primaryTargetPath"])
     assertEquals(modelPath("scripts/run.py"), result.metadata["targetSummary"])
     assertEquals(modelPath("scripts/run.py"), result.metadata["scriptPath"])
+    assertEquals("execution", result.metadata["intentCategory"])
+    assertEquals("python_script", result.metadata["executionIntentKind"])
+    assertEquals("python_runtime", result.metadata["executionTransport"])
+    assertEquals(modelPath("scripts/run.py"), result.metadata["executionScriptPath"])
     assertFalse(Files.exists(workspaceRoot.resolve("scripts").resolve("run.py")))
   }
 
@@ -558,6 +651,10 @@ class AgentToolPolicyGateTest {
     assertEquals("ASK_SAFE_COMMAND_HIGH_RISK", result.metadata["policyReasonCode"])
     assertEquals("HIGH_RISK", result.metadata["approvalRisk"])
     assertEquals(modelPath("scripts/run.py"), result.metadata["scriptPath"])
+    assertEquals("execution", result.metadata["intentCategory"])
+    assertEquals("python_script", result.metadata["executionIntentKind"])
+    assertEquals("python_runtime", result.metadata["executionTransport"])
+    assertEquals(modelPath("scripts/run.py"), result.metadata["executionScriptPath"])
     assertFalse(Files.exists(workspaceRoot.resolve("scripts").resolve("run.py")))
   }
 

@@ -10,10 +10,13 @@ internal class ToolCapabilityClassifier {
     "ImportFile",
     "workspace_write_file",
     "workspace_import_file",
+    "SkillsAdd",
     -> PolicyToolClass.WRITE_FILE
 
     "workspace_move_file" -> PolicyToolClass.MOVE_FILE
-    "workspace_delete_file" -> PolicyToolClass.DELETE_FILE
+    "workspace_delete_file",
+    "SkillsRemove",
+    -> PolicyToolClass.DELETE_FILE
 
     "Bash",
     "ProcessStart",
@@ -32,6 +35,8 @@ internal class ToolCapabilityClassifier {
     "Glob",
     "workspace_list_files",
     "workspace_read_file",
+    "SkillsFind",
+    "SkillsList",
     -> PolicyToolClass.READ_FILE
 
     else -> error("No PolicyToolClass mapping is registered for tool '$toolName'.")
@@ -46,6 +51,14 @@ internal class ToolCapabilityClassifier {
     "skills_list",
     "skill_read",
     -> "read_skill"
+
+    "SkillsFind",
+    "SkillsList",
+    -> "read_skill_package"
+
+    "SkillsAdd" -> "install_skill"
+
+    "SkillsRemove" -> "remove_skill"
 
     "mcp_list_servers" -> "read_mcp"
 

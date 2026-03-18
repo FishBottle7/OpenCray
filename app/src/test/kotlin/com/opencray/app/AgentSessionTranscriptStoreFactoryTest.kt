@@ -30,7 +30,7 @@ class AgentSessionTranscriptStoreFactoryTest {
     firstStore.appendIfDistinct(
       RuntimeConversationMessage(
         role = RuntimeConversationRole.TOOL,
-        content = "approval_rejected tool_name=Write outcome=user_rejected executed=false next_step=await_user_instruction",
+        content = "approval_rejected task_id=task-approval run_id=run-approval tool_name=Write outcome=user_rejected executed=false next_step=await_user_instruction",
       ),
     )
 
@@ -45,7 +45,7 @@ class AgentSessionTranscriptStoreFactoryTest {
         ),
         RuntimeConversationMessage(
           role = RuntimeConversationRole.TOOL,
-          content = "approval_rejected tool_name=Write outcome=user_rejected executed=false next_step=await_user_instruction",
+          content = "approval_rejected task_id=task-approval run_id=run-approval tool_name=Write outcome=user_rejected executed=false next_step=await_user_instruction",
         ),
       ),
       restoredStore.snapshot(),
@@ -104,13 +104,13 @@ class AgentSessionTranscriptStoreFactoryTest {
         add(
           RuntimeConversationMessage(
             role = RuntimeConversationRole.TOOL,
-            content = "approval_rejected tool_name=Write outcome=user_rejected executed=false next_step=await_user_instruction",
+            content = "approval_rejected task_id=task-approval run_id=run-approval tool_name=Write outcome=user_rejected executed=false next_step=await_user_instruction",
           ),
         )
         add(
           RuntimeConversationMessage(
             role = RuntimeConversationRole.TOOL,
-            content = "approval_rejected tool_name=Write outcome=user_rejected executed=false next_step=await_user_instruction",
+            content = "approval_rejected task_id=task-approval run_id=run-approval tool_name=Write outcome=user_rejected executed=false next_step=await_user_instruction",
           ),
         )
       },
@@ -133,7 +133,7 @@ class AgentSessionTranscriptStoreFactoryTest {
     assertTrue(contents.any { it.contains("\"run_id\":\"run-mutation-3\"") })
     assertTrue(contents.contains("legacy_tool_observation"))
     assertEquals(
-      "approval_rejected tool_name=Write outcome=user_rejected executed=false next_step=await_user_instruction",
+      "approval_rejected task_id=task-approval run_id=run-approval tool_name=Write outcome=user_rejected executed=false next_step=await_user_instruction",
       restored.last().content,
     )
   }

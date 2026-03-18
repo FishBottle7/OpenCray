@@ -4,9 +4,31 @@ import argparse
 import json
 import os
 import time
+import traceback
 from pathlib import Path
 
 from python_runner.p4a_bridge import run_request_file
+
+SERVICE_STATE_SCHEMA_VERSION = 1
+SERVICE_HEARTBEAT_INTERVAL_MS = 1000
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
+def _write_json(path: Path, payload: dict[str, object]) -> None:
+    _atomic_write_text(
+        path,
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+    )
 
 
 def _service_argument_payload() -> dict[str, object]:
@@ -49,13 +71,110 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _process_pending_requests(runtime_root: Path) -> int:
+def _service_state_paths(runtime_root: Path) -> tuple[Path, Path]:
+    state_dir = runtime_root / "service_state"
+    return state_dir / "service-state.json", state_dir / "service-ready.json"
+
+
+def _load_json_if_present(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_service_state(
+    runtime_root: Path,
+    *,
+    state: str,
+    started_at_epoch_ms: int,
+    poll_interval_ms: int,
+    startup_request_id: str,
+    current_request_id: str | None = None,
+    last_observed_request_id: str | None = None,
+    last_processed_request_id: str | None = None,
+    last_processed_status: str | None = None,
+    last_error: str | None = None,
+    last_traceback: str | None = None,
+) -> None:
+    state_path, ready_path = _service_state_paths(runtime_root)
+    existing = _load_json_if_present(state_path)
+    payload: dict[str, object] = {
+        "schemaVersion": SERVICE_STATE_SCHEMA_VERSION,
+        "runtimeRoot": str(runtime_root),
+        "pid": os.getpid(),
+        "state": state,
+        "startedAtEpochMs": int(existing.get("startedAtEpochMs", started_at_epoch_ms)),
+        "updatedAtEpochMs": _now_ms(),
+        "pollIntervalMs": poll_interval_ms,
+        "startupRequestId": startup_request_id,
+        "currentRequestId": current_request_id,
+        "lastObservedRequestId": last_observed_request_id
+        if last_observed_request_id is not None
+        else existing.get("lastObservedRequestId"),
+        "lastProcessedRequestId": last_processed_request_id
+        if last_processed_request_id is not None
+        else existing.get("lastProcessedRequestId"),
+        "lastProcessedStatus": last_processed_status
+        if last_processed_status is not None
+        else existing.get("lastProcessedStatus"),
+        "lastError": last_error if last_error is not None else existing.get("lastError"),
+        "lastTraceback": last_traceback if last_traceback is not None else existing.get("lastTraceback"),
+    }
+    _write_json(state_path, payload)
+    _write_json(
+        ready_path,
+        {
+            "schemaVersion": SERVICE_STATE_SCHEMA_VERSION,
+            "runtimeRoot": str(runtime_root),
+            "pid": os.getpid(),
+            "state": state,
+            "startedAtEpochMs": payload["startedAtEpochMs"],
+            "updatedAtEpochMs": payload["updatedAtEpochMs"],
+            "pollIntervalMs": poll_interval_ms,
+            "startupRequestId": startup_request_id,
+            "currentRequestId": current_request_id,
+        },
+    )
+
+
+def _ensure_runtime_dirs(runtime_root: Path) -> None:
     requests_dir = runtime_root / "requests"
     results_dir = runtime_root / "results"
     logs_dir = runtime_root / "logs"
     requests_dir.mkdir(parents=True, exist_ok=True)
     results_dir.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
+    (_service_state_paths(runtime_root)[0]).parent.mkdir(parents=True, exist_ok=True)
+
+
+def _result_status(result_path: Path) -> str | None:
+    if not result_path.exists():
+        return None
+    try:
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    status = payload.get("status")
+    return str(status).strip() if status is not None else None
+
+
+def _process_pending_requests(
+    runtime_root: Path,
+    *,
+    started_at_epoch_ms: int,
+    poll_interval_ms: int,
+    startup_request_id: str,
+) -> int:
+    _ensure_runtime_dirs(runtime_root)
+    requests_dir = runtime_root / "requests"
+    results_dir = runtime_root / "results"
+    logs_dir = runtime_root / "logs"
 
     processed = 0
     for request_path in sorted(requests_dir.glob("*.json")):
@@ -64,10 +183,30 @@ def _process_pending_requests(runtime_root: Path) -> int:
         if result_path.exists():
             continue
         log_path = logs_dir / f"{request_id}.log"
+        _write_service_state(
+            runtime_root,
+            state="processing",
+            started_at_epoch_ms=started_at_epoch_ms,
+            poll_interval_ms=poll_interval_ms,
+            startup_request_id=startup_request_id,
+            current_request_id=request_id,
+            last_observed_request_id=request_id,
+        )
         run_request_file(
             request_path=request_path,
             result_path=result_path,
             log_path=log_path,
+        )
+        _write_service_state(
+            runtime_root,
+            state="idle",
+            started_at_epoch_ms=started_at_epoch_ms,
+            poll_interval_ms=poll_interval_ms,
+            startup_request_id=startup_request_id,
+            current_request_id=None,
+            last_observed_request_id=request_id,
+            last_processed_request_id=request_id,
+            last_processed_status=_result_status(result_path),
         )
         processed += 1
     return processed
@@ -80,14 +219,74 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("PYTHON_SERVICE_ARGUMENT or --runtime-root must provide runtimeRoot.")
 
     runtime_root = Path(runtime_root_raw)
+    started_at_epoch_ms = _now_ms()
+    poll_interval_ms = max(int(ns.poll_interval_ms), 50)
+    startup_request_id = str(_service_argument_payload().get("requestId", "")).strip()
 
-    if ns.once:
-        _process_pending_requests(runtime_root)
-        return 0
+    try:
+        _ensure_runtime_dirs(runtime_root)
+        _write_service_state(
+            runtime_root,
+            state="ready",
+            started_at_epoch_ms=started_at_epoch_ms,
+            poll_interval_ms=poll_interval_ms,
+            startup_request_id=startup_request_id,
+            current_request_id=None,
+        )
 
-    while True:
-        _process_pending_requests(runtime_root)
-        time.sleep(max(ns.poll_interval_ms, 50) / 1000.0)
+        if ns.once:
+            _process_pending_requests(
+                runtime_root,
+                started_at_epoch_ms=started_at_epoch_ms,
+                poll_interval_ms=poll_interval_ms,
+                startup_request_id=startup_request_id,
+            )
+            _write_service_state(
+                runtime_root,
+                state="idle",
+                started_at_epoch_ms=started_at_epoch_ms,
+                poll_interval_ms=poll_interval_ms,
+                startup_request_id=startup_request_id,
+                current_request_id=None,
+            )
+            return 0
+
+        next_heartbeat_epoch_ms = 0
+        while True:
+            now = _now_ms()
+            if now >= next_heartbeat_epoch_ms:
+                _write_service_state(
+                    runtime_root,
+                    state="idle",
+                    started_at_epoch_ms=started_at_epoch_ms,
+                    poll_interval_ms=poll_interval_ms,
+                    startup_request_id=startup_request_id,
+                    current_request_id=None,
+                )
+                next_heartbeat_epoch_ms = now + max(SERVICE_HEARTBEAT_INTERVAL_MS, poll_interval_ms)
+            _process_pending_requests(
+                runtime_root,
+                started_at_epoch_ms=started_at_epoch_ms,
+                poll_interval_ms=poll_interval_ms,
+                startup_request_id=startup_request_id,
+            )
+            time.sleep(poll_interval_ms / 1000.0)
+    except Exception as exc:
+        try:
+            _ensure_runtime_dirs(runtime_root)
+            _write_service_state(
+                runtime_root,
+                state="startup_error",
+                started_at_epoch_ms=started_at_epoch_ms,
+                poll_interval_ms=poll_interval_ms,
+                startup_request_id=startup_request_id,
+                current_request_id=None,
+                last_error=str(exc),
+                last_traceback=traceback.format_exc(),
+            )
+        except Exception:
+            pass
+        raise
 
 
 if __name__ == "__main__":

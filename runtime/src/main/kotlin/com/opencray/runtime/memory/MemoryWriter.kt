@@ -120,7 +120,7 @@ class MemoryWriter(
     return existingRecords
       .filter { record -> record.id != incomingRecordId }
       .mapNotNull { record ->
-        val metadata = record.parseMemoryMetadata() ?: return@mapNotNull null
+        val metadata = parseRecordMetadata(record) ?: return@mapNotNull null
         if (metadata.status != MemoryStatus.ACTIVE) {
           return@mapNotNull null
         }
@@ -150,6 +150,45 @@ class MemoryWriter(
           ),
         )
       }
+  }
+
+  private fun parseRecordMetadata(record: MemoryRecord): ParsedMemoryMetadata? {
+    val kind = parseMemoryEnumValue(
+      extensionValue = record.extensions[MemoryRecordExtensionKeys.KIND],
+      tags = record.tags,
+      tagPrefix = "kind:",
+    ) { token -> MemoryKind.valueOf(token) } ?: return null
+    val scope = parseMemoryEnumValue(
+      extensionValue = record.extensions[MemoryRecordExtensionKeys.SCOPE],
+      tags = record.tags,
+      tagPrefix = "scope:",
+    ) { token -> MemoryScope.valueOf(token) } ?: return null
+    val status = parseMemoryEnumValue(
+      extensionValue = record.extensions[MemoryRecordExtensionKeys.STATUS],
+      tags = record.tags,
+      tagPrefix = "status:",
+    ) { token -> MemoryStatus.valueOf(token) } ?: return null
+    return ParsedMemoryMetadata(
+      kind = kind,
+      scope = scope,
+      status = status,
+      source = parseMemoryEnum(record.extensions[MemoryRecordExtensionKeys.SOURCE]) { token ->
+        MemoryEvidenceSource.valueOf(token)
+      },
+      sourceSessionId = record.extensions[MemoryRecordExtensionKeys.SOURCE_SESSION_ID]
+        ?.takeIf(String::isNotBlank),
+      workspaceId = record.extensions[MemoryRecordExtensionKeys.WORKSPACE_ID]
+        ?.takeIf(String::isNotBlank),
+      ttlMs = record.extensions[MemoryRecordExtensionKeys.TTL_MS]?.toLongOrNull(),
+      lastConfirmedAtEpochMs = record.extensions[MemoryRecordExtensionKeys.LAST_CONFIRMED_AT_EPOCH_MS]
+        ?.toLongOrNull(),
+      preferenceKey = normalizeMemoryPreferenceKeyOrNull(
+        record.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY],
+      ),
+      preferenceValue = normalizeMemoryPreferenceValueOrNull(
+        record.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE],
+      ),
+    )
   }
 
   private fun scopeIdentityMatches(

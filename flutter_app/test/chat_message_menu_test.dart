@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show SelectedContent;
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:opencray/core/bridge/opencray_host_bridge.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
@@ -79,6 +81,46 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text(copy.chatSeedSafeModeAsks), findsNothing);
+  });
+
+  testWidgets('copy action prefers the current text selection', (tester) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final List<MethodCall> platformCalls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+          platformCalls.add(call);
+          return null;
+        });
+    addTearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, null);
+    });
+    await tester.pumpWidget(_buildHarness(copy));
+    await tester.pumpAndSettle();
+
+    final targetBubble = find.byKey(
+      const ValueKey<String>('chat-bubble-seed-main-inbound-2'),
+    );
+    final selectionArea = find.descendant(
+      of: targetBubble,
+      matching: find.byType(SelectionArea),
+    );
+    final selectionWidget = tester.widget<SelectionArea>(selectionArea);
+
+    selectionWidget.onSelectionChanged!(
+      const SelectedContent(plainText: 'Safe mode'),
+    );
+    await tester.pump();
+
+    await _openMessageMenu(tester, targetBubble);
+    await tester.tap(find.text(copy.chatMessageCopyAction));
+    await tester.pumpAndSettle();
+
+    expect(platformCalls, isNotEmpty);
+    expect(platformCalls.last.method, 'Clipboard.setData');
+    expect(platformCalls.last.arguments, <String, dynamic>{
+      'text': 'Safe mode',
+    });
   });
 
   testWidgets(

@@ -190,6 +190,38 @@ class AgentToolAliasDispatchTest {
   }
 
   @Test
+  fun bashPythonVersionCommandFailsWithPythonExecGuidance() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-alias-bash-python-version").toPath()
+    val processRegistry = AliasProcessRegistry()
+    val dispatcher = dispatcher(
+      workspaceRoot = workspaceRoot,
+      processRegistry = processRegistry,
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "bash",
+        arguments = JsonObject(
+          mapOf("command" to JsonPrimitive("python --version")),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.FAILED, result.status)
+    assertEquals("bash", result.toolName)
+    assertEquals("Bash", result.metadata["canonicalToolName"])
+    assertEquals("BASH_PYTHON_UNSUPPORTED", result.errorCode)
+    assertEquals("python", result.metadata["pythonCommand"])
+    assertEquals("python_exec", result.metadata["recommendedTool"])
+    assertEquals("true", result.metadata["bashPythonInvocationBlocked"])
+    assertTrue(result.content.contains("Use python_exec instead"))
+    assertTrue(result.content.contains("Python version or environment details"))
+    assertTrue(processRegistry.list().isEmpty())
+  }
+
+  @Test
   fun webFetchAliasDispatchesToCanonicalToolAndPreservesMapping() {
     val workspaceRoot = temporaryFolder.newFolder("tool-alias-webfetch").toPath()
     val dispatcher = dispatcher(

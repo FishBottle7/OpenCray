@@ -64,6 +64,11 @@ class AgentManagedProcessToolTest {
     assertEquals(AgentToolResultStatus.DENIED, result.status)
     assertEquals("HIGH_RISK_APPROVAL_REQUIRED", result.errorCode)
     assertEquals("HIGH_RISK", result.metadata["approvalRisk"])
+    assertEquals("execution", result.metadata["intentCategory"])
+    assertEquals("managed_command", result.metadata["executionIntentKind"])
+    assertEquals("managed_process", result.metadata["executionTransport"])
+    assertEquals("npm", result.metadata["executionCommandPreview"])
+    assertEquals(".", result.metadata["executionWorkingDirectory"])
     assertEquals(0, registry.startCount)
   }
 
@@ -92,6 +97,11 @@ class AgentManagedProcessToolTest {
     assertEquals(AgentToolResultStatus.DENIED, result.status)
     assertEquals("HIGH_RISK_APPROVAL_REQUIRED", result.errorCode)
     assertEquals("HIGH_RISK", result.metadata["approvalRisk"])
+    assertEquals("execution", result.metadata["intentCategory"])
+    assertEquals("shell_command", result.metadata["executionIntentKind"])
+    assertEquals("managed_process", result.metadata["executionTransport"])
+    assertEquals("Get-ChildItem", result.metadata["executionCommandPreview"])
+    assertEquals(".", result.metadata["executionWorkingDirectory"])
     assertEquals(0, registry.startCount)
   }
 
@@ -169,6 +179,11 @@ class AgentManagedProcessToolTest {
     assertEquals("inside_workspace", startResult.metadata["workspaceRelation"])
     assertEquals(".", startResult.metadata["primaryTargetPath"])
     assertEquals("npm", startResult.metadata["targetSummary"])
+    assertEquals("execution", startResult.metadata["intentCategory"])
+    assertEquals("managed_command", startResult.metadata["executionIntentKind"])
+    assertEquals("managed_process", startResult.metadata["executionTransport"])
+    assertEquals("npm", startResult.metadata["executionCommandPreview"])
+    assertEquals(".", startResult.metadata["executionWorkingDirectory"])
     assertEquals("RUNNING", startResult.metadata["processStatus"])
     assertTrue(startResult.content.contains("process_id=$processId"))
     assertTrue(readResult.content.contains("status=running"))
@@ -178,6 +193,10 @@ class AgentManagedProcessToolTest {
     assertTrue(waitResult.content.contains("server ready"))
     assertTrue(listResult.content.contains(processId))
     assertEquals("ALLOW_DEVELOPER_OVERRIDE", terminateResult.metadata["policyReasonCode"])
+    assertEquals("process_lifecycle", terminateResult.metadata["intentCategory"])
+    assertEquals("terminate", terminateResult.metadata["processLifecycleIntentKind"])
+    assertEquals(processId, terminateResult.metadata["intentProcessId"])
+    assertEquals(".", terminateResult.metadata["intentWorkingDirectory"])
     assertTrue(terminateResult.content.contains("process_id=$processId"))
     assertEquals(1, registry.terminateCount)
   }
@@ -227,6 +246,10 @@ class AgentManagedProcessToolTest {
     assertEquals("process", terminateResult.metadata["targetKind"])
     assertEquals("inside_workspace", terminateResult.metadata["workspaceRelation"])
     assertEquals(processId, terminateResult.metadata["targetSummary"])
+    assertEquals("process_lifecycle", terminateResult.metadata["intentCategory"])
+    assertEquals("terminate", terminateResult.metadata["processLifecycleIntentKind"])
+    assertEquals(processId, terminateResult.metadata["intentProcessId"])
+    assertEquals(".", terminateResult.metadata["intentWorkingDirectory"])
     assertEquals(0, registry.terminateCount)
     assertEquals("RUNNING", requireNotNull(registry.read(processId)).status.name)
   }
@@ -288,6 +311,11 @@ class AgentManagedProcessToolTest {
     assertEquals(".", startResult.metadata["secondaryTargetPath"])
     assertEquals("scripts/run.py", startResult.metadata["targetSummary"])
     assertEquals("scripts/run.py", startResult.metadata["scriptPath"])
+    assertEquals("execution", startResult.metadata["intentCategory"])
+    assertEquals("managed_python_script", startResult.metadata["executionIntentKind"])
+    assertEquals("managed_process", startResult.metadata["executionTransport"])
+    assertEquals("scripts/run.py", startResult.metadata["executionScriptPath"])
+    assertEquals(".", startResult.metadata["executionWorkingDirectory"])
     assertTrue(startResult.content.contains("runtime_kind=python_exec"))
     assertTrue(startResult.content.contains("script_path=scripts/run.py"))
     assertTrue(startResult.content.contains("python_executable=python3"))
@@ -343,6 +371,11 @@ class AgentManagedProcessToolTest {
     assertEquals(processId, request.requestId)
     assertEquals("python_exec", startResult.metadata["runtimeKind"])
     assertEquals("unsupported", startResult.metadata["terminationSupport"])
+    assertEquals("execution", startResult.metadata["intentCategory"])
+    assertEquals("managed_python_script", startResult.metadata["executionIntentKind"])
+    assertEquals("managed_process", startResult.metadata["executionTransport"])
+    assertEquals("scripts/run.py", startResult.metadata["executionScriptPath"])
+    assertEquals(".", startResult.metadata["executionWorkingDirectory"])
     assertTrue(startResult.content.contains("status=running"))
     assertTrue(startResult.content.contains("command=python_exec"))
 
@@ -366,6 +399,10 @@ class AgentManagedProcessToolTest {
     )
     assertTrue(terminateWhileRunning.content.contains("does not support termination"))
     assertEquals("true", terminateWhileRunning.metadata["terminationRequested"])
+    assertEquals("process_lifecycle", terminateWhileRunning.metadata["intentCategory"])
+    assertEquals("terminate", terminateWhileRunning.metadata["processLifecycleIntentKind"])
+    assertEquals(processId, terminateWhileRunning.metadata["intentProcessId"])
+    assertEquals(".", terminateWhileRunning.metadata["intentWorkingDirectory"])
 
     pythonRuntime.finish.countDown()
 
@@ -434,6 +471,11 @@ class AgentManagedProcessToolTest {
     assertEquals(AgentToolResultStatus.SUCCESS, startResult.status)
     assertEquals(processId, request.requestId)
     assertEquals("cooperative", startResult.metadata["terminationSupport"])
+    assertEquals("execution", startResult.metadata["intentCategory"])
+    assertEquals("managed_python_script", startResult.metadata["executionIntentKind"])
+    assertEquals("managed_process", startResult.metadata["executionTransport"])
+    assertEquals("scripts/run.py", startResult.metadata["executionScriptPath"])
+    assertEquals(".", startResult.metadata["executionWorkingDirectory"])
 
     val terminateWhileRunning = dispatcher.dispatch(
       task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
@@ -447,6 +489,10 @@ class AgentManagedProcessToolTest {
     assertTrue(terminateWhileRunning.content.contains("cancellation requested"))
     assertEquals("true", terminateWhileRunning.metadata["terminationRequested"])
     assertEquals("true", terminateWhileRunning.metadata["terminationRequestAccepted"])
+    assertEquals("process_lifecycle", terminateWhileRunning.metadata["intentCategory"])
+    assertEquals("terminate", terminateWhileRunning.metadata["processLifecycleIntentKind"])
+    assertEquals(processId, terminateWhileRunning.metadata["intentProcessId"])
+    assertEquals(".", terminateWhileRunning.metadata["intentWorkingDirectory"])
 
     val waitResult = dispatcher.dispatch(
       task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),

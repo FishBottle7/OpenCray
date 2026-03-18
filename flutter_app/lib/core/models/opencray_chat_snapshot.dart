@@ -177,6 +177,7 @@ class OpenCrayChatRuntimeEventSnapshot {
     this.text,
     this.stage,
     this.toolName,
+    this.isHighRisk = false,
     this.toolReason,
     this.argumentsJson,
     this.toolStatus,
@@ -215,6 +216,7 @@ class OpenCrayChatRuntimeEventSnapshot {
   final String? text;
   final String? stage;
   final String? toolName;
+  final bool isHighRisk;
   final String? toolReason;
   final String? argumentsJson;
   final String? toolStatus;
@@ -274,6 +276,7 @@ class OpenCrayChatRuntimeEventSnapshot {
       text: map['text'] as String?,
       stage: map['stage'] as String?,
       toolName: map['toolName'] as String?,
+      isHighRisk: map['isHighRisk'] as bool? ?? false,
       toolReason: map['toolReason'] as String?,
       argumentsJson: map['argumentsJson'] as String?,
       toolStatus: map['toolStatus'] as String?,

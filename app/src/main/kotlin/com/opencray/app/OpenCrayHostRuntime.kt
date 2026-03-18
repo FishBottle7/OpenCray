@@ -66,12 +66,14 @@ import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.persistence.model.ChatTranscriptMessageEntry
 import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.persistence.model.MemoryRecord
-import com.opencray.persistence.model.SoulRecord
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.OpenCrayApprovalEvent
+import com.opencray.runtime.OpenCrayApprovalPhase
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayAssistantEvent
+import com.opencray.runtime.OpenCrayCancellationEvent
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
@@ -88,10 +90,20 @@ import com.opencray.runtime.memory.MemoryPreferenceKeys
 import com.opencray.runtime.memory.MemoryRecordExtensionKeys
 import com.opencray.runtime.memory.MemoryScope
 import com.opencray.runtime.memory.MemorySoulExtensionKeys
+import com.opencray.runtime.skills.SkillInstallManifestStore
+import com.opencray.runtime.skills.SkillPackageManager
 import com.opencray.runtime.soul.MemoryBackedSoulProfileResolver
+import com.opencray.runtime.soul.InteractionPreferenceDebugProjection
+import com.opencray.runtime.soul.InteractionPreferenceState
+import com.opencray.runtime.soul.PreferenceAxisState
+import com.opencray.runtime.soul.PreferredAddressState
 import com.opencray.runtime.soul.RuntimeSoulProfileSeedFactory
+import com.opencray.runtime.soul.RelationshipState
+import com.opencray.runtime.soul.RelationshipStateDebugProjection
+import com.opencray.runtime.soul.SoulGateCheck
 import com.opencray.runtime.soul.SoulProfile
 import com.opencray.runtime.soul.SoulProfileExtensionKeys
+import com.opencray.runtime.soul.SoulPlasticity
 import com.opencray.runtime.soul.SoulProfileResolver
 import java.io.File
 import java.nio.file.Path
@@ -101,6 +113,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.CountDownLatch
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
@@ -115,6 +128,7 @@ internal class OpenCrayHostRuntime private constructor(
   private var llmConfigFacade: LlmConfigFacade,
   private var personalizationFacade: PersonalizationFacade,
   private val personalizationLocalStore: PersonalizationLocalStore? = null,
+  private val workspaceSoulProfileStore: WorkspaceSoulProfileStore = WorkspaceSoulProfileStore(),
   private var mcpSettingsFacade: McpSettingsFacade,
   private var safetySettingsFacade: SafetySettingsFacade,
   private var skillsFacade: SkillsFacade,
@@ -130,7 +144,8 @@ internal class OpenCrayHostRuntime private constructor(
   private val transcriptMessagesProvider: (String) -> List<RuntimeConversationMessage> = { emptyList() },
   private val approvalRegistry: AgentTaskApprovalRegistry,
   private val memoryIngestionCoordinator: ChatMemoryIngestionCoordinator? = null,
-  private val approvalReplayRecorder: (String, String?, Boolean) -> Unit = { _, _, _ -> },
+  private val approvalReplayRecorder: (String, String, String, String?, Boolean) -> Unit = { _, _, _, _, _ -> },
+  private val approvalApprovedReplayRecorder: (String, String, String, String?, Boolean) -> Unit = { _, _, _, _, _ -> },
   private val runCancellationReplayRecorder: (String, String, String, String?) -> Unit = { _, _, _, _ -> },
   private val terminalReplayRepairer: (String, List<AgentRunSnapshot>) -> Unit = { _, _ -> },
   private var strings: HostRuntimeStrings,
@@ -171,7 +186,18 @@ internal class OpenCrayHostRuntime private constructor(
             val activeSessionIdBeforeUpdate = chatSessionStore.loadState().activeSession.sessionId
             val finalText = finalTextFor(result)
             if (isApprovalRequiredResult(result)) {
-              recordPendingApprovalLocked(sessionId = sessionId, task = task, result = result)
+              val approval = recordPendingApprovalLocked(
+                sessionId = sessionId,
+                task = task,
+                result = result,
+              )
+              recordRuntimeEventLocked(
+                sessionId = sessionId,
+                event = approvalRequiredRuntimeEvent(
+                  approval = approval,
+                  emittedAtEpochMs = result.finishedAtEpochMs,
+                ),
+              )
             } else {
               clearPendingApprovalLocked(sessionId = sessionId, taskId = task.id)
               approvalRegistry.clear(sessionId = sessionId, taskId = task.id)
@@ -865,27 +891,36 @@ internal class OpenCrayHostRuntime private constructor(
   fun loadSoulDebugSnapshot(): Map<String, Any?> = synchronized(lock) {
     val sessionId = chatSessionStore.loadState().activeSession.sessionId
     val workspaceId = currentWorkspaceIdLocked()
+    val workspaceRoot = currentWorkspaceRootLocked()
     val observedAtEpochMs = System.currentTimeMillis()
-    val storedSoulRecord = personalizationLocalStore?.loadSoulRecord()
-    val storedSoulProfile = personalizationLocalStore?.loadSoulProfile()
+    val storedSoulDocument = workspaceSoulProfileStore.loadSoulDocument(workspaceRoot)
+    val storedSoulProfile = storedSoulDocument?.profile
     val baseRuntimeSoul = storedSoulProfile?.toRuntimeSoulProfile()
     val baseResolvedSoul = resolveSoulProfile(baseRuntimeSoul)
-    val overlayRecords = applicableSoulOverlayRecordsLocked(
+    val allMemoryRecords = personalizationLocalStore?.listMemoryRecords().orEmpty()
+    val overlayRecords = applicableSoulOverlayRecords(
+      records = allMemoryRecords,
       sessionId = sessionId,
       workspaceId = workspaceId,
     )
-    val effectiveRuntimeSoul = memoryBackedSoulProfileResolver.overlay(
+    val overlayDebug = memoryBackedSoulProfileResolver.inspectOverlay(
       baseProfile = baseRuntimeSoul,
-      records = overlayRecords,
+      records = allMemoryRecords,
       sessionId = sessionId,
       workspaceId = workspaceId,
     )
+    val effectiveRuntimeSoul = overlayDebug.effectiveProfile
     val effectiveResolvedSoul = resolveSoulProfile(effectiveRuntimeSoul)
     mapOf(
       "sessionId" to sessionId,
       "workspaceId" to workspaceId,
       "observedAtEpochMs" to observedAtEpochMs,
-      "storedSoul" to storedSoulRecord?.let(::storedSoulRecordToMap),
+      "storedSoul" to storedSoulProfile?.let { profile ->
+        storedSoulProfileToMap(
+          profile = profile,
+          document = storedSoulDocument,
+        )
+      },
       "baseSoul" to soulProfileToMap(
         resolvedProfile = baseResolvedSoul,
         runtimeProfile = baseRuntimeSoul,
@@ -899,13 +934,18 @@ internal class OpenCrayHostRuntime private constructor(
         .map { record ->
           memoryDebugRecordToMap(record = record, observedAtEpochMs = observedAtEpochMs)
         },
+      "interactionPreferenceDebug" to overlayDebug.interactionPreferenceDebug
+        ?.let(::interactionPreferenceDebugToMap),
+      "relationshipStateDebug" to overlayDebug.relationshipStateDebug
+        ?.let(::relationshipStateDebugToMap),
       "fieldSources" to soulFieldSources(
-        storedSoulRecord = storedSoulRecord,
         baseRuntimeSoul = baseRuntimeSoul,
         effectiveRuntimeSoul = effectiveRuntimeSoul,
         baseResolvedSoul = baseResolvedSoul,
         effectiveResolvedSoul = effectiveResolvedSoul,
         overlayRecords = overlayRecords,
+        interactionPreferenceDebug = overlayDebug.interactionPreferenceDebug,
+        relationshipStateDebug = overlayDebug.relationshipStateDebug,
       ),
     )
   }
@@ -934,8 +974,8 @@ internal class OpenCrayHostRuntime private constructor(
 
     allRuns.forEach { run ->
       parseSelectedMemoryTrace(run.resultMetadata["contextMemorySelectedSummary"].orEmpty())
-        .forEach { selected ->
-          val recordId = selected["id"] as? String ?: return@forEach
+        .forEach memorySelection@{ selected ->
+          val recordId = selected["id"] as? String ?: return@memorySelection
           rememberDebugLink(
             target = promptRecallsByRecordId,
             recordId = recordId,
@@ -984,10 +1024,10 @@ internal class OpenCrayHostRuntime private constructor(
 
     runtimeEventsBySession.values
       .flatten()
-      .forEach { event ->
+      .forEach runtimeEvent@{ event ->
         when (event) {
           is OpenCrayMemoryWriteEvent -> {
-            val run = runsById[event.runId] ?: return@forEach
+            val run = runsById[event.runId] ?: return@runtimeEvent
             rememberMemoryWriteActions(
               target = maintenanceByRecordId,
               run = run,
@@ -996,7 +1036,7 @@ internal class OpenCrayHostRuntime private constructor(
           }
 
           is OpenCrayMemoryRetrievalEvent -> {
-            val run = runsById[event.runId] ?: return@forEach
+            val run = runsById[event.runId] ?: return@runtimeEvent
             rememberMemoryRetrievalLinks(
               target = toolRetrievalsByRecordId,
               run = run,
@@ -1155,7 +1195,22 @@ internal class OpenCrayHostRuntime private constructor(
         approvalRegistry.clear(activeSessionId, approval.taskId)
         error("Unable to resume pending approval '$taskId'.")
       }
+      approvalApprovedReplayRecorder(
+        activeSessionId,
+        approval.taskId,
+        approval.runId,
+        approval.toolName,
+        approval.isHighRisk,
+      )
       clearPendingApprovalLocked(activeSessionId, approval.taskId)
+      recordRuntimeEventLocked(
+        sessionId = activeSessionId,
+        event = approvalResultRuntimeEvent(
+          approval = approval,
+          phase = OpenCrayApprovalPhase.APPROVED,
+          emittedAtEpochMs = System.currentTimeMillis(),
+        ),
+      )
       approval.pendingMessageId?.let { pendingMessageId ->
         chatSessionStore.replaceMessage(
           sessionId = activeSessionId,
@@ -1181,12 +1236,22 @@ internal class OpenCrayHostRuntime private constructor(
         ?: error("Pending approval '$taskId' is unavailable.")
       approvalReplayRecorder(
         activeSessionId,
+        approval.taskId,
+        approval.runId,
         approval.toolName,
         approval.isHighRisk,
       )
       approvalRegistry.markRejected(activeSessionId, approval.taskId)
       sessionRuntimeManager.forSession(activeSessionId).requestCancel(approval.taskId)
       clearPendingApprovalLocked(activeSessionId, approval.taskId)
+      recordRuntimeEventLocked(
+        sessionId = activeSessionId,
+        event = approvalResultRuntimeEvent(
+          approval = approval,
+          phase = OpenCrayApprovalPhase.REJECTED,
+          emittedAtEpochMs = System.currentTimeMillis(),
+        ),
+      )
       chatSessionStore.appendMessage(
         sessionId = activeSessionId,
         role = ChatTranscriptRole.TOOL,
@@ -1214,6 +1279,14 @@ internal class OpenCrayHostRuntime private constructor(
       )
       clearPendingApprovalLocked(run.sessionId, run.taskId)
       approvalRegistry.clear(run.sessionId, run.taskId)
+      recordRuntimeEventLocked(
+        sessionId = run.sessionId,
+        event = cancellationRuntimeEvent(
+          run = run,
+          approval = approval,
+          emittedAtEpochMs = System.currentTimeMillis(),
+        ),
+      )
     }
     emitChatSnapshot()
     emitChatRuntimeSnapshot()
@@ -1384,7 +1457,7 @@ internal class OpenCrayHostRuntime private constructor(
     sessionId: String,
     task: AgentTask,
     result: ExecutionResult,
-  ) {
+  ): PendingApprovalSnapshot {
     val isHighRisk = result.errorCode == ERROR_HIGH_RISK_APPROVAL_REQUIRED
     val approval = pendingApprovalSnapshot(
       runId = runIdFor(task),
@@ -1401,6 +1474,7 @@ internal class OpenCrayHostRuntime private constructor(
     )
     pendingApprovalsBySession
       .getOrPut(sessionId) { linkedMapOf() }[task.id] = approval
+    return approval
   }
 
   private fun clearPendingApprovalLocked(sessionId: String, taskId: String) {
@@ -1524,10 +1598,7 @@ internal class OpenCrayHostRuntime private constructor(
     runs: List<AgentRunSnapshot>,
     runtimeEvents: List<OpenCrayAgentRunEvent>,
   ): List<Map<String, Any?>> {
-    if (runtimeEvents.none { event -> event is OpenCrayProgressEvent }) {
-      return visibleMessages.map(::chatMessageToMap)
-    }
-    val projectedMessages = projectedProgressMessagesForChatLocked(
+    val projectedMessages = projectedRuntimeMessagesForChatLocked(
       runs = runs,
       runtimeEvents = runtimeEvents,
     )
@@ -1537,8 +1608,17 @@ internal class OpenCrayHostRuntime private constructor(
     val visibleMessageIds = visibleMessages
       .mapTo(linkedSetOf(), ChatTranscriptMessageEntry::messageId)
     val projectedByAnchor = projectedMessages
-      .filter { projection -> projection.anchorMessageId != null }
-      .groupBy(ProjectedRuntimeChatMessage::anchorMessageId)
+      .mapNotNull { projection ->
+        val anchorMessageId = projection.anchorMessageId ?: return@mapNotNull null
+        if (anchorMessageId !in visibleMessageIds) {
+          return@mapNotNull null
+        }
+        anchorMessageId to projection
+      }
+      .groupBy(
+        keySelector = Pair<String, ProjectedRuntimeChatMessage>::first,
+        valueTransform = Pair<String, ProjectedRuntimeChatMessage>::second,
+      )
     val merged = ArrayList<Map<String, Any?>>(visibleMessages.size + projectedMessages.size)
     visibleMessages.forEach { message ->
       projectedByAnchor[message.messageId]?.forEach { projection ->
@@ -1546,18 +1626,16 @@ internal class OpenCrayHostRuntime private constructor(
       }
       merged += chatMessageToMap(message)
     }
-    projectedMessages
-      .filter { projection -> projection.anchorMessageId !in visibleMessageIds }
-      .forEach { projection ->
-        merged += projection.snapshot
-      }
     return merged
   }
 
-  private fun projectedProgressMessagesForChatLocked(
+  private fun projectedRuntimeMessagesForChatLocked(
     runs: List<AgentRunSnapshot>,
     runtimeEvents: List<OpenCrayAgentRunEvent>,
   ): List<ProjectedRuntimeChatMessage> {
+    if (runtimeEvents.isEmpty()) {
+      return emptyList()
+    }
     val pendingMessageIdByRunId = linkedMapOf<String, String>()
     val pendingMessageIdByTaskId = linkedMapOf<String, String>()
     runs.forEach { run ->
@@ -1568,25 +1646,45 @@ internal class OpenCrayHostRuntime private constructor(
       pendingMessageIdByRunId[run.runId] = pendingMessageId
       pendingMessageIdByTaskId[run.taskId] = pendingMessageId
     }
-    return runtimeEvents
-      .filterIsInstance<OpenCrayProgressEvent>()
-      .sortedBy(OpenCrayProgressEvent::emittedAtEpochMs)
-      .mapNotNull { event ->
-        val text = chatProgressText(event)
-        if (text.isBlank()) {
-          return@mapNotNull null
-        }
-        ProjectedRuntimeChatMessage(
-          anchorMessageId = pendingMessageIdByRunId[event.runId]
-            ?: pendingMessageIdByTaskId[event.taskId],
-          snapshot = chatMessageSnapshotMap(
-            messageId = runtimeProgressMessageId(event),
-            kind = "inbound",
-            text = text,
-            isEphemeral = true,
-          ),
-        )
+    val orderedEvents = runtimeEvents
+      .withIndex()
+      .sortedWith(
+        compareBy<IndexedValue<OpenCrayAgentRunEvent>> { indexed ->
+          indexed.value.emittedAtEpochMs
+        }.thenBy(IndexedValue<OpenCrayAgentRunEvent>::index),
+      )
+      .map(IndexedValue<OpenCrayAgentRunEvent>::value)
+    return orderedEvents.mapNotNull { event ->
+      val anchorMessageId = pendingMessageIdByRunId[event.runId]
+        ?: pendingMessageIdByTaskId[event.taskId]
+        ?: return@mapNotNull null
+      val text = projectedRuntimeMessageText(
+        event = event,
+      ) ?: return@mapNotNull null
+      if (text.isBlank()) {
+        return@mapNotNull null
       }
+      ProjectedRuntimeChatMessage(
+        anchorMessageId = anchorMessageId,
+        snapshot = chatMessageSnapshotMap(
+          messageId = runtimeProjectedMessageId(event),
+          kind = "inbound",
+          text = text,
+          isEphemeral = true,
+        ),
+      )
+    }
+  }
+
+  private fun projectedRuntimeMessageText(
+    event: OpenCrayAgentRunEvent,
+  ): String? = when (event) {
+    is OpenCrayProgressEvent -> chatProgressText(event)
+    is OpenCrayApprovalEvent -> null
+    is OpenCrayToolCallEvent -> null
+    is OpenCrayToolResultEvent -> null
+    is OpenCrayCancellationEvent -> null
+    else -> null
   }
 
   private fun chatProgressText(event: OpenCrayProgressEvent): String {
@@ -1599,8 +1697,669 @@ internal class OpenCrayHostRuntime private constructor(
     }
   }
 
-  private fun runtimeProgressMessageId(event: OpenCrayProgressEvent): String =
-    "runtime-progress-${event.runId}-${event.emittedAtEpochMs}"
+  private fun chatToolCallText(event: OpenCrayToolCallEvent): String {
+    val toolName = event.call.toolName.trim().takeIf(String::isNotBlank) ?: "Tool"
+    val summary = toolActionSummary(
+      toolName = toolName,
+      arguments = event.call.arguments,
+    )
+    val reason = event.call.reason
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let(::toolReasonText)
+    return joinProjectedChatSections(
+      summary,
+      reason,
+    )
+  }
+
+  private fun chatToolResultText(
+    event: OpenCrayToolResultEvent,
+    pairedToolCall: OpenCrayToolCallEvent?,
+  ): String {
+    val toolName = event.result.toolName.trim().takeIf(String::isNotBlank)
+      ?: event.call.toolName.trim().takeIf(String::isNotBlank)
+      ?: "Tool"
+    val summary = toolResultActionSummary(
+      toolName = toolName,
+      event = event,
+      pairedToolCall = pairedToolCall,
+    )
+    val resultSummary = toolResultMetadataSummary(
+      toolName = toolName,
+      metadata = event.result.metadata,
+    )
+    val body = toolResultBodyText(event.result)
+    return joinProjectedChatSections(
+      summary,
+      resultSummary,
+      body,
+    )
+  }
+
+  private fun previousToolCallEvent(
+    orderedEvents: List<OpenCrayAgentRunEvent>,
+    beforeIndex: Int,
+    resultEvent: OpenCrayToolResultEvent,
+  ): OpenCrayToolCallEvent? {
+    val normalizedToolName = resultEvent.result.toolName.trim().takeIf(String::isNotBlank)
+      ?: resultEvent.call.toolName.trim().takeIf(String::isNotBlank)
+      ?: return null
+    for (index in beforeIndex - 1 downTo 0) {
+      val candidate = orderedEvents[index] as? OpenCrayToolCallEvent ?: continue
+      if (candidate.runId != resultEvent.runId && candidate.taskId != resultEvent.taskId) {
+        continue
+      }
+      if (candidate.call.toolName.trim().equals(normalizedToolName, ignoreCase = true)) {
+        return candidate
+      }
+    }
+    return null
+  }
+
+  private fun toolActionSummary(
+    toolName: String,
+    arguments: JsonObject,
+  ): String {
+    val normalizedToolName = toolName.trim()
+    val fallback = if (isChineseHostLocale()) {
+      "调用工具 $normalizedToolName"
+    } else {
+      "Call $normalizedToolName"
+    }
+    return when (normalizedToolName) {
+      "Read",
+      "workspace_read_file" -> {
+        val path = arguments.replayString("file_path") ?: arguments.replayString("path")
+        if (path == null) {
+          fallback
+        } else {
+          val range = readRangeSummary(
+            offset = arguments.replayInt("offset"),
+            limit = arguments.replayInt("limit"),
+          )
+          if (isChineseHostLocale()) {
+            "读取 $path${if (range.isNotEmpty()) "，$range" else ""}"
+          } else {
+            "Read $path${if (range.isNotEmpty()) " $range" else ""}"
+          }
+        }
+      }
+
+      "Grep" -> {
+        val pattern = arguments.replayString("pattern")
+        if (pattern == null) {
+          fallback
+        } else {
+          val path = arguments.replayString("path") ?: "."
+          val glob = arguments.replayString("glob")
+          if (isChineseHostLocale()) {
+            buildString {
+              append("在 $path 中搜索 \"$pattern\"")
+              glob?.let { append("，glob: $it") }
+            }
+          } else {
+            buildString {
+              append("Search \"$pattern\" in $path")
+              glob?.let { append(" (glob: $it)") }
+            }
+          }
+        }
+      }
+
+      "Glob" -> {
+        val pattern = arguments.replayString("pattern")
+        if (pattern == null) {
+          fallback
+        } else {
+          val path = arguments.replayString("path") ?: "."
+          if (isChineseHostLocale()) {
+            "在 $path 中匹配 $pattern"
+          } else {
+            "Match $pattern in $path"
+          }
+        }
+      }
+
+      "LS",
+      "workspace_list_files" -> {
+        val path = arguments.replayString("path")
+          ?: arguments.replayString("file_path")
+          ?: "."
+        if (isChineseHostLocale()) {
+          "列出 $path"
+        } else {
+          "List $path"
+        }
+      }
+
+      "Write",
+      "workspace_write_file" -> {
+        val path = arguments.replayString("file_path") ?: arguments.replayString("path")
+        if (path == null) {
+          fallback
+        } else if (isChineseHostLocale()) {
+          "写入 $path"
+        } else {
+          "Write $path"
+        }
+      }
+
+      "Edit" -> {
+        val path = arguments.replayString("file_path") ?: arguments.replayString("path")
+        if (path == null) {
+          fallback
+        } else if (isChineseHostLocale()) {
+          "编辑 $path"
+        } else {
+          "Edit $path"
+        }
+      }
+
+      "MultiEdit" -> {
+        val path = arguments.replayString("file_path") ?: arguments.replayString("path")
+        if (path == null) {
+          fallback
+        } else {
+          val editCount = arguments.replayArraySize("edits") ?: 0
+          if (editCount > 0) {
+            if (isChineseHostLocale()) {
+              "对 $path 应用 $editCount 处编辑"
+            } else {
+              "Apply $editCount edit(s) to $path"
+            }
+          } else if (isChineseHostLocale()) {
+            "批量编辑 $path"
+          } else {
+            "MultiEdit $path"
+          }
+        }
+      }
+
+      "TodoWrite" -> {
+        val todoCount = arguments.replayArraySize("todos") ?: 0
+        if (todoCount > 0) {
+          if (isChineseHostLocale()) {
+            "更新 $todoCount 条待办"
+          } else {
+            "Update $todoCount todo(s)"
+          }
+        } else if (isChineseHostLocale()) {
+          "读取当前待办列表"
+        } else {
+          "Read current todo list"
+        }
+      }
+
+      "ImportFile",
+      "workspace_import_file" -> {
+        val sourcePath = arguments.replayString("source_path")
+        val destinationPath = arguments.replayString("destination_path")
+        if (sourcePath == null || destinationPath == null) {
+          fallback
+        } else if (isChineseHostLocale()) {
+          "导入 $sourcePath 到 $destinationPath"
+        } else {
+          "Import $sourcePath to $destinationPath"
+        }
+      }
+
+      "Bash",
+      "command_exec" -> {
+        val command = arguments.replayString("command")
+        if (command == null) {
+          fallback
+        } else if (isChineseHostLocale()) {
+          "运行命令 $command"
+        } else {
+          "Run command $command"
+        }
+      }
+
+      "python_exec" -> {
+        val scriptPath = arguments.replayString("script_path")
+        if (scriptPath == null) {
+          fallback
+        } else if (isChineseHostLocale()) {
+          "运行 Python 脚本 $scriptPath"
+        } else {
+          "Run Python script $scriptPath"
+        }
+      }
+
+      "ProcessStart" -> {
+        val scriptPath = arguments.replayString("script_path")
+        val command = arguments.replayString("command")
+        when {
+          scriptPath != null && isChineseHostLocale() -> "启动后台 Python 进程 $scriptPath"
+          scriptPath != null -> "Start background Python process $scriptPath"
+          command != null && isChineseHostLocale() -> "启动后台进程 $command"
+          command != null -> "Start background process $command"
+          else -> fallback
+        }
+      }
+
+      "ProcessRead" -> {
+        val processId = arguments.replayString("process_id")
+        if (processId == null) {
+          fallback
+        } else if (isChineseHostLocale()) {
+          "读取进程 $processId 的输出"
+        } else {
+          "Read output for process $processId"
+        }
+      }
+
+      "ProcessWait" -> {
+        val processId = arguments.replayString("process_id")
+        if (processId == null) {
+          fallback
+        } else if (isChineseHostLocale()) {
+          "等待进程 $processId"
+        } else {
+          "Wait for process $processId"
+        }
+      }
+
+      "ProcessTerminate" -> {
+        val processId = arguments.replayString("process_id")
+        if (processId == null) {
+          fallback
+        } else if (isChineseHostLocale()) {
+          "终止进程 $processId"
+        } else {
+          "Terminate process $processId"
+        }
+      }
+
+      "WebFetch" -> {
+        val url = arguments.replayString("url")
+        if (url == null) {
+          fallback
+        } else if (isChineseHostLocale()) {
+          "抓取网页 $url"
+        } else {
+          "Fetch $url"
+        }
+      }
+
+      "WebSearch" -> {
+        val query = arguments.replayString("query")
+        if (query == null) {
+          fallback
+        } else if (isChineseHostLocale()) {
+          "搜索网络 \"$query\""
+        } else {
+          "Search the web for \"$query\""
+        }
+      }
+
+      else -> fallback
+    }
+  }
+
+  private fun toolResultActionSummary(
+    toolName: String,
+    event: OpenCrayToolResultEvent,
+    pairedToolCall: OpenCrayToolCallEvent?,
+  ): String {
+    event.call.arguments.takeIf { arguments -> arguments.isNotEmpty() }?.let { arguments ->
+      return toolActionSummary(toolName = toolName, arguments = arguments)
+    }
+    pairedToolCall?.call?.arguments?.takeIf { arguments -> arguments.isNotEmpty() }?.let { arguments ->
+      return toolActionSummary(toolName = toolName, arguments = arguments)
+    }
+    return toolActionSummaryFromResultMetadata(
+      toolName = toolName,
+      metadata = event.result.metadata,
+    )
+  }
+
+  private fun toolActionSummaryFromResultMetadata(
+    toolName: String,
+    metadata: Map<String, String>,
+  ): String {
+    val normalizedToolName = toolName.trim()
+    val fallback = if (isChineseHostLocale()) {
+      "工具 $normalizedToolName 已返回结果"
+    } else {
+      "$normalizedToolName returned a result"
+    }
+    return when (normalizedToolName) {
+      "Read",
+      "workspace_read_file" -> {
+        val path = metadataValue(metadata, "filePath")
+        if (path == null) {
+          fallback
+        } else {
+          val range = readRangeSummary(
+            offset = metadataInt(metadata, "offset"),
+            limit = metadataInt(metadata, "limit"),
+          )
+          if (isChineseHostLocale()) {
+            "读取 $path${if (range.isNotEmpty()) "，$range" else ""}"
+          } else {
+            "Read $path${if (range.isNotEmpty()) " $range" else ""}"
+          }
+        }
+      }
+
+      "LS",
+      "workspace_list_files" -> {
+        val path = metadataValue(metadata, "path") ?: "."
+        if (isChineseHostLocale()) {
+          "列出 $path"
+        } else {
+          "List $path"
+        }
+      }
+
+      "Grep" -> {
+        val pattern = metadataValue(metadata, "pattern")
+        if (pattern == null) {
+          fallback
+        } else {
+          val path = metadataValue(metadata, "path") ?: "."
+          if (isChineseHostLocale()) {
+            "在 $path 中搜索 \"$pattern\""
+          } else {
+            "Search \"$pattern\" in $path"
+          }
+        }
+      }
+
+      "Glob" -> {
+        val pattern = metadataValue(metadata, "pattern")
+        if (pattern == null) {
+          fallback
+        } else {
+          val path = metadataValue(metadata, "path") ?: "."
+          if (isChineseHostLocale()) {
+            "在 $path 中匹配 $pattern"
+          } else {
+            "Match $pattern in $path"
+          }
+        }
+      }
+
+      "Write",
+      "workspace_write_file",
+      "Edit",
+      "MultiEdit" -> {
+        val path = metadataValue(metadata, "filePath")
+        if (path == null) {
+          fallback
+        } else if (isChineseHostLocale()) {
+          "更新 $path"
+        } else {
+          "Update $path"
+        }
+      }
+
+      else -> fallback
+    }
+  }
+
+  private fun toolResultMetadataSummary(
+    toolName: String,
+    metadata: Map<String, String>,
+  ): String? {
+    return when (toolName.trim()) {
+      "LS",
+      "workspace_list_files" -> {
+        val entryCount = metadataInt(metadata, "entryCount") ?: return null
+        val path = metadataValue(metadata, "path")
+        if (isChineseHostLocale()) {
+          if (path == null) {
+            "列出了 $entryCount 项"
+          } else {
+            "在 $path 中列出了 $entryCount 项"
+          }
+        } else if (path == null) {
+          "Listed $entryCount entr${if (entryCount == 1) "y" else "ies"}"
+        } else {
+          "Listed $entryCount entr${if (entryCount == 1) "y" else "ies"} in $path"
+        }
+      }
+
+      "Read",
+      "workspace_read_file" -> {
+        val returnedLineCount = metadataInt(metadata, "returnedLineCount")
+        val totalLineCount = metadataInt(metadata, "totalLineCount")
+        val truncated = metadataBoolean(metadata, "truncated") == true
+        val filePath = metadataValue(metadata, "filePath")
+        if (returnedLineCount == null && totalLineCount == null && !truncated && filePath == null) {
+          null
+        } else if (isChineseHostLocale()) {
+          buildList {
+            filePath?.let(::add)
+            returnedLineCount?.let { add("返回 $it 行") }
+            totalLineCount?.let { add("文件总计 $it 行") }
+            if (truncated) {
+              add("结果已按读取预算截断")
+            }
+          }.joinToString(separator = "，").takeIf(String::isNotBlank)
+        } else {
+          buildList {
+            returnedLineCount?.let { count ->
+              add(if (count == 1) "Returned 1 line" else "Returned $count lines")
+            }
+            filePath?.let { path -> add("from $path") }
+            totalLineCount?.let { count ->
+              add(if (count == 1) "(1-line file)" else "($count-line file)")
+            }
+            if (truncated) {
+              add("Output truncated to the read budget.")
+            }
+          }.joinToString(separator = " ").takeIf(String::isNotBlank)
+        }
+      }
+
+      "Grep" -> {
+        val matchCount = metadataInt(metadata, "matchCount") ?: return null
+        val pattern = metadataValue(metadata, "pattern")
+        val path = metadataValue(metadata, "path") ?: "."
+        if (isChineseHostLocale()) {
+          if (pattern == null) {
+            "在 $path 中找到 $matchCount 处匹配"
+          } else {
+            "在 $path 中为 \"$pattern\" 找到 $matchCount 处匹配"
+          }
+        } else if (pattern == null) {
+          if (matchCount == 1) {
+            "Found 1 match in $path"
+          } else {
+            "Found $matchCount matches in $path"
+          }
+        } else if (matchCount == 1) {
+          "Found 1 match for \"$pattern\" in $path"
+        } else {
+          "Found $matchCount matches for \"$pattern\" in $path"
+        }
+      }
+
+      "Glob" -> {
+        val matchCount = metadataInt(metadata, "matchCount") ?: return null
+        val pattern = metadataValue(metadata, "pattern")
+        val path = metadataValue(metadata, "path") ?: "."
+        if (isChineseHostLocale()) {
+          if (pattern == null) {
+            "在 $path 中匹配到 $matchCount 个路径"
+          } else {
+            "在 $path 中为 $pattern 匹配到 $matchCount 个路径"
+          }
+        } else if (pattern == null) {
+          "Matched $matchCount path(s) in $path"
+        } else {
+          "Matched $matchCount path(s) for $pattern in $path"
+        }
+      }
+
+      "Edit" -> {
+        val replacementCount = metadataInt(metadata, "replacementCount") ?: return null
+        val filePath = metadataValue(metadata, "filePath")
+        if (isChineseHostLocale()) {
+          if (filePath == null) {
+            "应用了 $replacementCount 处替换"
+          } else {
+            "在 $filePath 中应用了 $replacementCount 处替换"
+          }
+        } else if (filePath == null) {
+          "Applied $replacementCount replacement(s)"
+        } else {
+          "Applied $replacementCount replacement(s) in $filePath"
+        }
+      }
+
+      "MultiEdit" -> {
+        val replacementCount = metadataInt(metadata, "replacementCount")
+        val editCount = metadataInt(metadata, "editCount")
+        val filePath = metadataValue(metadata, "filePath")
+        if (replacementCount == null && editCount == null && filePath == null) {
+          null
+        } else if (isChineseHostLocale()) {
+          buildList {
+            filePath?.let(::add)
+            replacementCount?.let { add("$it 处替换") }
+            editCount?.let { add("$it 个编辑块") }
+          }.joinToString(separator = "，").takeIf(String::isNotBlank)?.let { "应用了 $it" }
+        } else {
+          buildList {
+            replacementCount?.let { add("$it replacement(s)") }
+            editCount?.let { add("across $it edit(s)") }
+            filePath?.let { add("in $it") }
+          }.joinToString(separator = " ").takeIf(String::isNotBlank)?.let { "Applied $it" }
+        }
+      }
+
+      "TodoWrite" -> {
+        val todoCount = metadataInt(metadata, "todoCount") ?: return null
+        val mutated = metadataBoolean(metadata, "mutated")
+        if (isChineseHostLocale()) {
+          if (mutated == true) {
+            "待办列表已更新，共 $todoCount 项"
+          } else {
+            "当前待办列表共 $todoCount 项"
+          }
+        } else if (mutated == true) {
+          "Updated the todo list to $todoCount item(s)"
+        } else {
+          "Current todo list has $todoCount item(s)"
+        }
+      }
+
+      else -> null
+    }
+  }
+
+  private fun toolResultBodyText(result: AgentToolResult): String? {
+    result.errorMessage
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { return it }
+    val preview = result.content.trim()
+      .takeIf(String::isNotBlank)
+      ?.takeUnless { content ->
+        content.equals("Tool finished.", ignoreCase = true) ||
+          content.equals("Tool completed.", ignoreCase = true)
+      }
+    if (preview != null) {
+      return preview
+    }
+    return when (result.status) {
+      AgentToolResultStatus.DENIED -> if (isChineseHostLocale()) {
+        "工具调用被拒绝。"
+      } else {
+        "Tool call denied."
+      }
+
+      AgentToolResultStatus.CANCELLED -> if (isChineseHostLocale()) {
+        "工具调用已取消。"
+      } else {
+        "Tool call cancelled."
+      }
+
+      AgentToolResultStatus.TIMEOUT -> if (isChineseHostLocale()) {
+        "工具调用超时。"
+      } else {
+        "Tool call timed out."
+      }
+
+      AgentToolResultStatus.FAILED -> if (isChineseHostLocale()) {
+        "工具调用失败。"
+      } else {
+        "Tool call failed."
+      }
+
+      AgentToolResultStatus.SUCCESS -> null
+    }
+  }
+
+  private fun readRangeSummary(offset: Int?, limit: Int?): String {
+    if (offset == null && limit == null) {
+      return ""
+    }
+    if (isChineseHostLocale()) {
+      if (offset != null && limit != null) {
+        val endLine = offset + limit - 1
+        return "第 $offset-$endLine 行"
+      }
+      if (offset != null) {
+        return "从第 $offset 行开始"
+      }
+      return "前 $limit 行"
+    }
+    if (offset != null && limit != null) {
+      val endLine = offset + limit - 1
+      return "lines $offset-$endLine"
+    }
+    if (offset != null) {
+      return "from line $offset"
+    }
+    return "first $limit lines"
+  }
+
+  private fun toolReasonText(reason: String): String =
+    if (isChineseHostLocale()) {
+      "原因：$reason"
+    } else {
+      "Reason: $reason"
+    }
+
+  private fun joinProjectedChatSections(vararg sections: String?): String =
+    sections
+      .mapNotNull { section -> section?.trim()?.takeIf(String::isNotBlank) }
+      .joinToString(separator = "\n\n")
+
+  private fun isChineseHostLocale(): Boolean =
+    strings.localeTag.trim().lowercase(Locale.US).startsWith("zh")
+
+  private fun metadataValue(metadata: Map<String, String>, key: String): String? =
+    metadata[key]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+
+  private fun metadataInt(metadata: Map<String, String>, key: String): Int? =
+    metadataValue(metadata, key)?.toIntOrNull()
+
+  private fun metadataBoolean(metadata: Map<String, String>, key: String): Boolean? =
+    when (metadataValue(metadata, key)?.lowercase(Locale.US)) {
+      "true" -> true
+      "false" -> false
+      else -> null
+    }
+
+  private fun JsonObject.replayArraySize(key: String): Int? =
+    (this[key] as? JsonArray)?.size
+
+  private fun runtimeProjectedMessageId(event: OpenCrayAgentRunEvent): String = when (event) {
+    is OpenCrayProgressEvent -> "runtime-progress-${event.runId}-${event.emittedAtEpochMs}"
+    is OpenCrayApprovalEvent -> "runtime-approval-${event.phase.name.lowercase(Locale.US)}-${event.runId}-${event.emittedAtEpochMs}"
+    is OpenCrayToolCallEvent -> "runtime-tool-call-${event.runId}-${event.turn}-${event.emittedAtEpochMs}"
+    is OpenCrayToolResultEvent -> "runtime-tool-result-${event.runId}-${event.turn}-${event.emittedAtEpochMs}"
+    is OpenCrayCancellationEvent -> "runtime-cancelled-${event.runId}-${event.emittedAtEpochMs}"
+    else -> "runtime-event-${event.runId}-${event.emittedAtEpochMs}"
+  }
 
   private fun mergedRuntimeEventsLocked(
     sessionId: String,
@@ -1622,7 +2381,43 @@ internal class OpenCrayHostRuntime private constructor(
         merged += event
       }
     }
+    supplementalApprovalEventsLocked(
+      sessionId = sessionId,
+      runs = runs,
+      existingEvents = merged,
+    ).forEach { event ->
+      if (seen.add(runtimeEventDedupKey(event))) {
+        merged += event
+      }
+    }
     return merged.takeLast(MAX_RUNTIME_EVENT_HISTORY)
+  }
+
+  private fun supplementalApprovalEventsLocked(
+    sessionId: String,
+    runs: List<AgentRunSnapshot>,
+    existingEvents: List<OpenCrayAgentRunEvent>,
+  ): List<OpenCrayAgentRunEvent> {
+    val approvals = pendingApprovalsForSession(sessionId)
+    if (approvals.isEmpty()) {
+      return emptyList()
+    }
+    val runsByTaskId = runs.associateBy(AgentRunSnapshot::taskId)
+    return approvals.mapNotNull { approval ->
+      val alreadyPresent = existingEvents.any { event ->
+        event is OpenCrayApprovalEvent &&
+          event.phase == OpenCrayApprovalPhase.REQUIRED &&
+          (event.taskId == approval.taskId || event.runId == approval.runId)
+      }
+      if (alreadyPresent) {
+        return@mapNotNull null
+      }
+      val run = runsByTaskId[approval.taskId]
+      approvalRequiredRuntimeEvent(
+        approval = approval,
+        emittedAtEpochMs = run?.updatedAtEpochMs ?: System.currentTimeMillis(),
+      )
+    }
   }
 
   private fun replayedRuntimeEventsLocked(
@@ -1674,6 +2469,20 @@ internal class OpenCrayHostRuntime private constructor(
 
       content.startsWith("progress ") -> parseReplayedProgressEvent(
         payload = content.removePrefix("progress ").trim(),
+      )
+
+      content.startsWith("approval_approved") -> parseReplayedApprovalEvent(
+        content = content,
+        phase = OpenCrayApprovalPhase.APPROVED,
+      )
+
+      content.startsWith("approval_rejected") -> parseReplayedApprovalEvent(
+        content = content,
+        phase = OpenCrayApprovalPhase.REJECTED,
+      )
+
+      content.startsWith("run_cancelled") -> parseReplayedCancellationEvent(
+        content = content,
       )
 
       else -> null
@@ -1740,10 +2549,74 @@ internal class OpenCrayHostRuntime private constructor(
     )
   }
 
+  private fun parseReplayedApprovalEvent(
+    content: String,
+    phase: OpenCrayApprovalPhase,
+  ): OpenCrayApprovalEvent? {
+    val fields = replayTokenFields(content)
+    val runId = fields["run_id"]?.trim()?.takeIf { value -> value.isNotBlank() }
+      ?: return null
+    val taskId = fields["task_id"]?.trim()?.takeIf { value -> value.isNotBlank() }
+      ?: runId
+    val toolName = fields["tool_name"]?.trim()?.takeIf(String::isNotBlank)
+    val isHighRisk = fields["risk"]?.trim()?.equals("high_risk", ignoreCase = true) == true
+    return OpenCrayApprovalEvent(
+      runId = runId,
+      taskId = taskId,
+      phase = phase,
+      toolName = toolName,
+      text = when (phase) {
+        OpenCrayApprovalPhase.REQUIRED -> strings.chatSummaryApprovalRequired
+        OpenCrayApprovalPhase.APPROVED -> strings.chatApprovalApproved
+        OpenCrayApprovalPhase.REJECTED -> strings.chatApprovalRejected
+      },
+      isHighRisk = isHighRisk,
+      emittedAtEpochMs = 0L,
+    )
+  }
+
+  private fun parseReplayedCancellationEvent(content: String): OpenCrayCancellationEvent? {
+    val fields = replayTokenFields(content)
+    val runId = fields["run_id"]?.trim()?.takeIf { value -> value.isNotBlank() }
+      ?: return null
+    val taskId = fields["task_id"]?.trim()?.takeIf { value -> value.isNotBlank() }
+      ?: runId
+    val toolName = fields["tool_name"]?.trim()?.takeIf(String::isNotBlank)
+    val outcome = fields["outcome"]?.trim()?.takeIf(String::isNotBlank)
+    return OpenCrayCancellationEvent(
+      runId = runId,
+      taskId = taskId,
+      toolName = toolName,
+      outcome = outcome,
+      text = cancellationTimelineText(toolName = toolName),
+      emittedAtEpochMs = 0L,
+    )
+  }
+
   private fun decodeReplayPayload(payload: String): JsonObject? =
     runCatching {
       replayJson.parseToJsonElement(payload).jsonObject
     }.getOrNull()
+
+  private fun replayTokenFields(content: String): Map<String, String> =
+    content
+      .trim()
+      .split(' ')
+      .drop(1)
+      .mapNotNull { token ->
+        val separatorIndex = token.indexOf('=')
+        if (separatorIndex <= 0 || separatorIndex >= token.lastIndex) {
+          return@mapNotNull null
+        }
+        val key = token.substring(0, separatorIndex).trim()
+        val value = token.substring(separatorIndex + 1).trim()
+        if (key.isEmpty() || value.isEmpty()) {
+          null
+        } else {
+          key to value
+        }
+      }
+      .toMap(linkedMapOf())
 
   private fun replayIdentifiers(payload: JsonObject): Pair<String, String>? {
     val runId = payload.replayString("run_id")
@@ -1842,6 +2715,17 @@ internal class OpenCrayHostRuntime private constructor(
       event.text,
     ).joinToString(separator = "|")
 
+    is OpenCrayApprovalEvent -> listOf(
+      "approval",
+      event.runId,
+      event.taskId,
+      event.turn.orEmptyString(),
+      event.phase.name,
+      event.toolName.orEmpty(),
+      event.isHighRisk.toString(),
+      event.text,
+    ).joinToString(separator = "|")
+
     is OpenCrayToolCallEvent -> listOf(
       "tool_call",
       event.runId,
@@ -1883,6 +2767,16 @@ internal class OpenCrayHostRuntime private constructor(
       event.resolvedRecordIds.joinToString(separator = ","),
       event.reaffirmedRecordIds.joinToString(separator = ","),
       event.expiredRecordIds.joinToString(separator = ","),
+    ).joinToString(separator = "|")
+
+    is OpenCrayCancellationEvent -> listOf(
+      "cancelled",
+      event.runId,
+      event.taskId,
+      event.turn.orEmptyString(),
+      event.toolName.orEmpty(),
+      event.outcome.orEmpty(),
+      event.text,
     ).joinToString(separator = "|")
   }
 
@@ -2165,16 +3059,27 @@ internal class OpenCrayHostRuntime private constructor(
     AppWorkspaceIdentity.fromRoots(setOf(workspaceRoot))
   }
 
+  private fun currentWorkspaceRootLocked(): Path? = runCatching {
+    workspaceRootProvider?.invoke()
+  }.getOrNull()
+
   private fun resolveSoulProfile(runtimeProfile: RuntimeSoulProfile?): SoulProfile? =
     soulProfileResolver.resolve(runtimeSoulProfileSeedFactory.create(runtimeProfile))
 
   private fun applicableSoulOverlayRecordsLocked(
     sessionId: String,
     workspaceId: String?,
-  ): List<MemoryRecord> = personalizationLocalStore
-    ?.listMemoryRecords()
-    .orEmpty()
-    .filter { record ->
+  ): List<MemoryRecord> = applicableSoulOverlayRecords(
+    records = personalizationLocalStore?.listMemoryRecords().orEmpty(),
+    sessionId = sessionId,
+    workspaceId = workspaceId,
+  )
+
+  private fun applicableSoulOverlayRecords(
+    records: List<MemoryRecord>,
+    sessionId: String,
+    workspaceId: String?,
+  ): List<MemoryRecord> = records.filter { record ->
       val metadata = debugMemoryMetadata(record) ?: return@filter false
       metadata.kind == DEBUG_MEMORY_KIND_USER_PREFERENCE &&
         metadata.status == DEBUG_MEMORY_STATUS_ACTIVE &&
@@ -2212,16 +3117,24 @@ internal class OpenCrayHostRuntime private constructor(
     else -> false
   }
 
-  private fun storedSoulRecordToMap(record: SoulRecord): Map<String, Any?> = buildMap {
-    put("agentId", record.agentId)
-    record.displayName?.takeIf(String::isNotBlank)?.let { put("displayName", it) }
-    record.extensions["preset"]?.takeIf(String::isNotBlank)?.let { put("presetName", it) }
-    record.extensions["custom_guidance"]?.takeIf(String::isNotBlank)?.let { put("customGuidance", it) }
-    put("recordVersion", record.recordVersion)
-    put("createdAtEpochMs", record.createdAtEpochMs)
-    put("updatedAtEpochMs", record.updatedAtEpochMs)
-    if (record.extensions.isNotEmpty()) {
-      put("extensions", record.extensions.toSortedMap())
+  private fun storedSoulProfileToMap(
+    profile: PersonalizationLocalStore.SoulProfile,
+    document: WorkspaceSoulDocument?,
+  ): Map<String, Any?> = buildMap {
+    document?.relativePath?.let { relativePath ->
+      put("relativePath", relativePath)
+    }
+    profile.presetName
+      .takeIf(String::isNotBlank)
+      ?.let { put("presetName", it) }
+    profile.customLabel
+      .takeIf(String::isNotBlank)
+      ?.let { put("displayName", it) }
+    profile.customGuidance
+      .takeIf(String::isNotBlank)
+      ?.let { put("customGuidance", it) }
+    if (profile.extensions.isNotEmpty()) {
+      put("extensions", profile.extensions.toSortedMap())
     }
   }
 
@@ -2242,6 +3155,19 @@ internal class OpenCrayHostRuntime private constructor(
       (runtimeProfile?.voice ?: resolvedProfile?.voice)
         ?.takeIf(String::isNotBlank)
         ?.let { put("voice", it) }
+      resolvedProfile?.preferredNaming
+        ?.takeIf(String::isNotBlank)
+        ?.let { put("preferredNaming", it) }
+      resolvedProfile?.preferredAddressStyle?.name?.lowercase(Locale.US)
+        ?.let { put("preferredAddressStyle", it) }
+      resolvedProfile?.intimacyPermissionBand?.name?.lowercase(Locale.US)
+        ?.let { put("intimacyPermissionBand", it) }
+      resolvedProfile?.playfulnessPermissionBand?.name?.lowercase(Locale.US)
+        ?.let { put("playfulnessPermissionBand", it) }
+      resolvedProfile?.highIntimacyBehaviorAllowed
+        ?.let { put("highIntimacyBehaviorAllowed", it.toString()) }
+      resolvedProfile?.playfulAffectionAllowed
+        ?.let { put("playfulAffectionAllowed", it.toString()) }
       (runtimeProfile?.customGuidance ?: resolvedProfile?.customGuidance)
         ?.takeIf(String::isNotBlank)
         ?.let { put("customGuidance", it) }
@@ -2268,13 +3194,110 @@ internal class OpenCrayHostRuntime private constructor(
     }
   }
 
+  private fun interactionPreferenceDebugToMap(
+    projection: InteractionPreferenceDebugProjection,
+  ): Map<String, Any?> = buildMap {
+    put("scope", projection.sourceScope.name.lowercase(Locale.US))
+    projection.snapshotRecordId?.takeIf(String::isNotBlank)?.let { put("snapshotRecordId", it) }
+    projection.preferredNaming?.takeIf(String::isNotBlank)?.let { put("preferredNaming", it) }
+    projection.preferredAddressStyle?.name?.lowercase(Locale.US)
+      ?.let { put("preferredAddressStyle", it) }
+    projection.derivedRelationshipStyle?.takeIf(String::isNotBlank)
+      ?.let { put("derivedRelationshipStyle", it) }
+    put("state", interactionPreferenceStateToMap(projection.state))
+  }
+
+  private fun interactionPreferenceStateToMap(
+    state: InteractionPreferenceState,
+  ): Map<String, Any?> = buildMap {
+    put("warmth", preferenceAxisStateToMap(state.warmth))
+    put("formality", preferenceAxisStateToMap(state.formality))
+    put("initiative", preferenceAxisStateToMap(state.initiative))
+    put("addressStyle", preferredAddressStateToMap(state.addressStyle))
+    state.preferredNaming?.takeIf(String::isNotBlank)?.let { put("preferredNaming", it) }
+    put("preferredNamingSupport", state.preferredNamingSupport)
+    state.lastUpdatedAtEpochMs?.let { put("lastUpdatedAtEpochMs", it) }
+  }
+
+  private fun preferenceAxisStateToMap(
+    state: PreferenceAxisState,
+  ): Map<String, Any?> = buildMap {
+    put("offset", state.offset)
+    put("higherSupport", state.higherSupport)
+    put("lowerSupport", state.lowerSupport)
+    state.lastUpdatedAtEpochMs?.let { put("lastUpdatedAtEpochMs", it) }
+  }
+
+  private fun preferredAddressStateToMap(
+    state: PreferredAddressState,
+  ): Map<String, Any?> = buildMap {
+    put("selectedStyle", state.selectedStyle.name.lowercase(Locale.US))
+    put("neutralSupport", state.neutralSupport)
+    put("friendlySupport", state.friendlySupport)
+    put("intimateSupport", state.intimateSupport)
+    state.lastUpdatedAtEpochMs?.let { put("lastUpdatedAtEpochMs", it) }
+  }
+
+  private fun relationshipStateDebugToMap(
+    projection: RelationshipStateDebugProjection,
+  ): Map<String, Any?> = buildMap {
+    put("scope", projection.sourceScope.name.lowercase(Locale.US))
+    projection.snapshotRecordId?.takeIf(String::isNotBlank)?.let { put("snapshotRecordId", it) }
+    if (projection.appliedEventRecordIds.isNotEmpty()) {
+      put("appliedEventRecordIds", projection.appliedEventRecordIds)
+    }
+    put("state", relationshipStateToMap(projection.state))
+    put("recentNegativeGuardActive", projection.recentNegativeGuardActive)
+    put("supportiveStyleUnlocked", projection.supportiveStyleUnlocked)
+    put("supportiveStyleChecks", projection.supportiveStyleChecks.map(::soulGateCheckToMap))
+    put("warmToneUnlocked", projection.warmToneUnlocked)
+    put("warmToneChecks", projection.warmToneChecks.map(::soulGateCheckToMap))
+    projection.derivedAddressStyle?.name?.lowercase(Locale.US)
+      ?.let { put("derivedAddressStyle", it) }
+    put("friendlyAddressChecks", projection.friendlyAddressChecks.map(::soulGateCheckToMap))
+    put("intimateAddressChecks", projection.intimateAddressChecks.map(::soulGateCheckToMap))
+    put("intimacyPermissionBand", projection.intimacyPermissionBand.name.lowercase(Locale.US))
+    put("playfulnessPermissionBand", projection.playfulnessPermissionBand.name.lowercase(Locale.US))
+    put("highIntimacyBehaviorAllowed", projection.highIntimacyBehaviorAllowed)
+    put("highIntimacyChecks", projection.highIntimacyChecks.map(::soulGateCheckToMap))
+    put("playfulAffectionAllowed", projection.playfulAffectionAllowed)
+    put("playfulAffectionChecks", projection.playfulAffectionChecks.map(::soulGateCheckToMap))
+  }
+
+  private fun relationshipStateToMap(
+    state: RelationshipState,
+  ): Map<String, Any?> = buildMap {
+    put("familiarity", state.familiarity)
+    put("trust", state.trust)
+    put("safety", state.safety)
+    put("intimacyPermission", state.intimacyPermission)
+    put("playfulnessPermission", state.playfulnessPermission)
+    put("affectionTendency", state.affectionTendency)
+    put("reciprocity", state.reciprocity)
+    state.lastPositiveEventAtEpochMs?.let { put("lastPositiveEventAtEpochMs", it) }
+    state.lastNegativeEventAtEpochMs?.let { put("lastNegativeEventAtEpochMs", it) }
+    state.lastUpdatedAtEpochMs?.let { put("lastUpdatedAtEpochMs", it) }
+  }
+
+  private fun soulGateCheckToMap(
+    check: SoulGateCheck,
+  ): Map<String, Any?> = buildMap {
+    put("key", check.key)
+    put("passed", check.passed)
+    check.currentValue?.let { put("currentValue", it) }
+    check.threshold?.let { put("threshold", it) }
+    check.actualBoolean?.let { put("actualBoolean", it) }
+    check.expectedBoolean?.let { put("expectedBoolean", it) }
+  }
+
   private fun soulFieldSources(
-    storedSoulRecord: SoulRecord?,
     baseRuntimeSoul: RuntimeSoulProfile?,
     effectiveRuntimeSoul: RuntimeSoulProfile?,
     baseResolvedSoul: SoulProfile?,
     effectiveResolvedSoul: SoulProfile?,
     overlayRecords: List<MemoryRecord>,
+    interactionPreferenceDebug: InteractionPreferenceDebugProjection?,
+    relationshipStateDebug: RelationshipStateDebugProjection?,
   ): List<Map<String, Any?>> {
     val effectiveFieldValues = soulFieldValues(
       resolvedProfile = effectiveResolvedSoul,
@@ -2305,36 +3328,45 @@ internal class OpenCrayHostRuntime private constructor(
           overlayFieldSources[contribution.field] = contribution
         }
       }
+    val directFieldSources = overlayFieldSources.mapValues { (_, contribution) ->
+      ResolvedSoulFieldSource(
+        field = contribution.field,
+        value = contribution.value,
+        sourceType = "memory_overlay",
+        sourceLabel = soulOverlaySourceLabel(contribution.metadata.scope),
+        recordId = contribution.record.id,
+        preferenceKey = contribution.metadata.preferenceKey.orEmpty(),
+        sourceScope = contribution.metadata.scope,
+        sourceDetail = contribution.metadata.preferenceTemporality?.let { temporality ->
+          "${temporality.replaceFirstChar { ch -> ch.uppercaseChar() }} preference"
+        }.orEmpty(),
+      )
+    }
+    val interactionFieldSources = interactionPreferenceFieldSources(interactionPreferenceDebug)
+    val relationshipFieldSources = relationshipStateFieldSources(relationshipStateDebug)
 
     return SOUL_FIELD_ORDER.mapNotNull { field ->
       val value = effectiveFieldValues[field] ?: return@mapNotNull null
-      val overlaySource = overlayFieldSources[field]
-      if (overlaySource != null && overlaySource.value == value) {
-        mapOf(
-          "field" to field,
-          "value" to value,
-          "sourceType" to "memory_overlay",
-          "sourceLabel" to soulOverlaySourceLabel(overlaySource.metadata.scope),
-          "recordId" to overlaySource.record.id,
-          "preferenceKey" to overlaySource.metadata.preferenceKey,
-        )
-      } else if (
-        baseFieldValues.containsKey(field) ||
-          (field == SOUL_FIELD_PRESET_NAME && storedSoulRecord?.extensions?.get("preset")?.isNotBlank() == true) ||
-          (field == SOUL_FIELD_CUSTOM_GUIDANCE &&
-            storedSoulRecord?.extensions?.get("custom_guidance")?.isNotBlank() == true)
-      ) {
-        mapOf(
-          "field" to field,
-          "value" to value,
-          "sourceType" to "stored_soul",
-          "sourceLabel" to if (field == SOUL_FIELD_PRESET_NAME) {
-            "stored soul preset"
-          } else {
-            "stored soul"
-          },
-          "recordId" to "",
-          "preferenceKey" to "",
+      val resolvedSource = prioritizedFieldSources(
+        field = field,
+        directFieldSources = directFieldSources,
+        interactionFieldSources = interactionFieldSources,
+        relationshipFieldSources = relationshipFieldSources,
+      ).firstOrNull { source -> source.value == value }
+      if (resolvedSource != null) {
+        fieldSourceToMap(resolvedSource)
+      } else if (baseFieldValues.containsKey(field)) {
+        fieldSourceToMap(
+          ResolvedSoulFieldSource(
+            field = field,
+            value = value,
+            sourceType = "stored_soul",
+            sourceLabel = if (field == SOUL_FIELD_PRESET_NAME) {
+              "stored soul preset"
+            } else {
+              "stored soul"
+            },
+          ),
         )
       } else {
         null
@@ -2355,6 +3387,19 @@ internal class OpenCrayHostRuntime private constructor(
     (runtimeProfile?.voice ?: resolvedProfile?.voice)
       ?.takeIf(String::isNotBlank)
       ?.let { put(SOUL_FIELD_VOICE, it) }
+    resolvedProfile?.preferredNaming
+      ?.takeIf(String::isNotBlank)
+      ?.let { put(SOUL_FIELD_PREFERRED_NAMING, it) }
+    resolvedProfile?.preferredAddressStyle?.name?.lowercase(Locale.US)
+      ?.let { put(SOUL_FIELD_PREFERRED_ADDRESS_STYLE, it) }
+    resolvedProfile?.intimacyPermissionBand?.name?.lowercase(Locale.US)
+      ?.let { put(SOUL_FIELD_INTIMACY_PERMISSION_BAND, it) }
+    resolvedProfile?.playfulnessPermissionBand?.name?.lowercase(Locale.US)
+      ?.let { put(SOUL_FIELD_PLAYFULNESS_PERMISSION_BAND, it) }
+    resolvedProfile?.highIntimacyBehaviorAllowed
+      ?.let { put(SOUL_FIELD_HIGH_INTIMACY_BEHAVIOR_ALLOWED, it.toString()) }
+    resolvedProfile?.playfulAffectionAllowed
+      ?.let { put(SOUL_FIELD_PLAYFUL_AFFECTION_ALLOWED, it.toString()) }
     (runtimeProfile?.customGuidance ?: resolvedProfile?.customGuidance)
       ?.takeIf(String::isNotBlank)
       ?.let { put(SOUL_FIELD_CUSTOM_GUIDANCE, it) }
@@ -2389,6 +3434,8 @@ internal class OpenCrayHostRuntime private constructor(
     var hasTypedVoice = false
     var hasTypedTone = false
     var hasTypedVerbosity = false
+    var hasTypedPreferredNaming = false
+    var hasTypedPreferredAddressStyle = false
 
     fun addScalar(field: String, raw: String?) {
       val normalized = normalizeDebugSoulScalarOrNull(raw) ?: return
@@ -2401,6 +3448,7 @@ internal class OpenCrayHostRuntime private constructor(
       when (field) {
         SOUL_FIELD_DISPLAY_NAME -> hasTypedDisplayName = true
         SOUL_FIELD_VOICE -> hasTypedVoice = true
+        SOUL_FIELD_PREFERRED_NAMING -> hasTypedPreferredNaming = true
       }
     }
 
@@ -2415,13 +3463,19 @@ internal class OpenCrayHostRuntime private constructor(
       when (field) {
         SOUL_FIELD_TONE -> hasTypedTone = true
         SOUL_FIELD_VERBOSITY -> hasTypedVerbosity = true
+        SOUL_FIELD_PREFERRED_ADDRESS_STYLE -> hasTypedPreferredAddressStyle = true
       }
     }
 
     addScalar(SOUL_FIELD_DISPLAY_NAME, record.extensions[MemorySoulExtensionKeys.DISPLAY_NAME])
     addScalar(SOUL_FIELD_VOICE, record.extensions[MemorySoulExtensionKeys.VOICE])
+    addScalar(SOUL_FIELD_PREFERRED_NAMING, record.extensions[MemorySoulExtensionKeys.PREFERRED_NAMING])
     addKey(SOUL_FIELD_TONE, record.extensions[MemorySoulExtensionKeys.TONE])
     addKey(SOUL_FIELD_VERBOSITY, record.extensions[MemorySoulExtensionKeys.VERBOSITY])
+    addKey(
+      SOUL_FIELD_PREFERRED_ADDRESS_STYLE,
+      record.extensions[MemorySoulExtensionKeys.PREFERRED_ADDRESS_STYLE],
+    )
     addKey(
       SOUL_FIELD_USER_RELATIONSHIP_STYLE,
       record.extensions[MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE],
@@ -2498,9 +3552,316 @@ internal class OpenCrayHostRuntime private constructor(
           }
         }
       }
+
+      MemoryPreferenceKeys.USER_PREFERRED_NAME -> {
+        if (!hasTypedPreferredNaming) {
+          normalizeDebugSoulScalarOrNull(metadata.preferenceValue)?.let { value ->
+            contributions += SoulFieldContribution(
+              field = SOUL_FIELD_PREFERRED_NAMING,
+              value = value,
+              record = record,
+              metadata = metadata,
+            )
+          }
+        }
+      }
+
+      MemoryPreferenceKeys.USER_ADDRESS_STYLE -> {
+        if (!hasTypedPreferredAddressStyle) {
+          normalizeDebugSoulKeyOrNull(metadata.preferenceValue)?.let { normalized ->
+            when (normalized) {
+              "neutral",
+              "friendly",
+              "intimate",
+              -> contributions += SoulFieldContribution(
+                field = SOUL_FIELD_PREFERRED_ADDRESS_STYLE,
+                value = normalized,
+                record = record,
+                metadata = metadata,
+              )
+            }
+          }
+        }
+      }
     }
 
     return contributions
+  }
+
+  private fun interactionPreferenceFieldSources(
+    projection: InteractionPreferenceDebugProjection?,
+  ): Map<String, ResolvedSoulFieldSource> {
+    if (projection == null) {
+      return emptyMap()
+    }
+    val sourceLabel = when (projection.sourceScope) {
+      MemoryScope.WORKSPACE -> "workspace interaction preference"
+      MemoryScope.SESSION -> "session interaction preference"
+      MemoryScope.USER -> "user interaction preference"
+    }
+    val sourceScope = projection.sourceScope.name.lowercase(Locale.US)
+    val recordId = projection.snapshotRecordId.orEmpty()
+    val fields = linkedMapOf<String, ResolvedSoulFieldSource>()
+    projection.preferredNaming
+      ?.takeIf(String::isNotBlank)
+      ?.let { preferredNaming ->
+        fields[SOUL_FIELD_PREFERRED_NAMING] = ResolvedSoulFieldSource(
+          field = SOUL_FIELD_PREFERRED_NAMING,
+          value = preferredNaming,
+          sourceType = "interaction_preference",
+          sourceLabel = sourceLabel,
+          recordId = recordId,
+          sourceScope = sourceScope,
+          sourceDetail = "Projected interaction-preference snapshot",
+        )
+      }
+    projection.preferredAddressStyle
+      ?.name
+      ?.lowercase(Locale.US)
+      ?.let { preferredAddressStyle ->
+        fields[SOUL_FIELD_PREFERRED_ADDRESS_STYLE] = ResolvedSoulFieldSource(
+          field = SOUL_FIELD_PREFERRED_ADDRESS_STYLE,
+          value = preferredAddressStyle,
+          sourceType = "interaction_preference",
+          sourceLabel = sourceLabel,
+          recordId = recordId,
+          sourceScope = sourceScope,
+          sourceDetail = "Projected interaction-preference snapshot",
+        )
+      }
+    when (projection.derivedRelationshipStyle) {
+      "warm" -> {
+        fields[SOUL_FIELD_TONE] = ResolvedSoulFieldSource(
+          field = SOUL_FIELD_TONE,
+          value = "warm",
+          sourceType = "interaction_preference",
+          sourceLabel = sourceLabel,
+          recordId = recordId,
+          sourceScope = sourceScope,
+          sourceDetail = "Projected interaction-preference style",
+        )
+        fields[SOUL_FIELD_VOICE] = ResolvedSoulFieldSource(
+          field = SOUL_FIELD_VOICE,
+          value = "warm and gentle",
+          sourceType = "interaction_preference",
+          sourceLabel = sourceLabel,
+          recordId = recordId,
+          sourceScope = sourceScope,
+          sourceDetail = "Projected interaction-preference style",
+        )
+        fields[SOUL_FIELD_USER_RELATIONSHIP_STYLE] = ResolvedSoulFieldSource(
+          field = SOUL_FIELD_USER_RELATIONSHIP_STYLE,
+          value = "supportive",
+          sourceType = "interaction_preference",
+          sourceLabel = sourceLabel,
+          recordId = recordId,
+          sourceScope = sourceScope,
+          sourceDetail = "Projected interaction-preference style",
+        )
+      }
+
+      "serious" -> {
+        fields[SOUL_FIELD_TONE] = ResolvedSoulFieldSource(
+          field = SOUL_FIELD_TONE,
+          value = "steady",
+          sourceType = "interaction_preference",
+          sourceLabel = sourceLabel,
+          recordId = recordId,
+          sourceScope = sourceScope,
+          sourceDetail = "Projected interaction-preference style",
+        )
+        fields[SOUL_FIELD_VOICE] = ResolvedSoulFieldSource(
+          field = SOUL_FIELD_VOICE,
+          value = "serious and formal",
+          sourceType = "interaction_preference",
+          sourceLabel = sourceLabel,
+          recordId = recordId,
+          sourceScope = sourceScope,
+          sourceDetail = "Projected interaction-preference style",
+        )
+        fields[SOUL_FIELD_USER_RELATIONSHIP_STYLE] = ResolvedSoulFieldSource(
+          field = SOUL_FIELD_USER_RELATIONSHIP_STYLE,
+          value = "direct",
+          sourceType = "interaction_preference",
+          sourceLabel = sourceLabel,
+          recordId = recordId,
+          sourceScope = sourceScope,
+          sourceDetail = "Projected interaction-preference style",
+        )
+      }
+    }
+    return fields
+  }
+
+  private fun relationshipStateFieldSources(
+    projection: RelationshipStateDebugProjection?,
+  ): Map<String, ResolvedSoulFieldSource> {
+    if (projection == null) {
+      return emptyMap()
+    }
+    val sourceLabel = when (projection.sourceScope) {
+      MemoryScope.WORKSPACE -> "workspace relationship state"
+      MemoryScope.SESSION -> "session relationship state"
+      MemoryScope.USER -> "user relationship state"
+    }
+    val sourceScope = projection.sourceScope.name.lowercase(Locale.US)
+    val recordId = projection.snapshotRecordId.orEmpty()
+    val eventSuffix = if (projection.appliedEventRecordIds.isNotEmpty()) {
+      " + ${projection.appliedEventRecordIds.size} event(s)"
+    } else {
+      ""
+    }
+    val fields = linkedMapOf<String, ResolvedSoulFieldSource>()
+    if (projection.supportiveStyleUnlocked) {
+      fields[SOUL_FIELD_USER_RELATIONSHIP_STYLE] = ResolvedSoulFieldSource(
+        field = SOUL_FIELD_USER_RELATIONSHIP_STYLE,
+        value = "supportive",
+        sourceType = "relationship_state",
+        sourceLabel = sourceLabel,
+        recordId = recordId,
+        sourceScope = sourceScope,
+        sourceDetail = "Derived from relationship gates$eventSuffix",
+      )
+    }
+    if (projection.warmToneUnlocked) {
+      fields[SOUL_FIELD_TONE] = ResolvedSoulFieldSource(
+        field = SOUL_FIELD_TONE,
+        value = "warm",
+        sourceType = "relationship_state",
+        sourceLabel = sourceLabel,
+        recordId = recordId,
+        sourceScope = sourceScope,
+        sourceDetail = "Derived from relationship gates$eventSuffix",
+      )
+      fields[SOUL_FIELD_VOICE] = ResolvedSoulFieldSource(
+        field = SOUL_FIELD_VOICE,
+        value = "warm and gentle",
+        sourceType = "relationship_state",
+        sourceLabel = sourceLabel,
+        recordId = recordId,
+        sourceScope = sourceScope,
+        sourceDetail = "Derived from relationship gates$eventSuffix",
+      )
+    }
+    projection.derivedAddressStyle
+      ?.name
+      ?.lowercase(Locale.US)
+      ?.let { derivedAddressStyle ->
+        fields[SOUL_FIELD_PREFERRED_ADDRESS_STYLE] = ResolvedSoulFieldSource(
+          field = SOUL_FIELD_PREFERRED_ADDRESS_STYLE,
+          value = derivedAddressStyle,
+          sourceType = "relationship_state",
+          sourceLabel = sourceLabel,
+          recordId = recordId,
+          sourceScope = sourceScope,
+          sourceDetail = if (projection.recentNegativeGuardActive) {
+            "Derived from relationship gates with recent-negative guard"
+          } else {
+            "Derived from relationship gates$eventSuffix"
+          },
+        )
+      }
+    fields[SOUL_FIELD_INTIMACY_PERMISSION_BAND] = ResolvedSoulFieldSource(
+      field = SOUL_FIELD_INTIMACY_PERMISSION_BAND,
+      value = projection.intimacyPermissionBand.name.lowercase(Locale.US),
+      sourceType = "relationship_state",
+      sourceLabel = sourceLabel,
+      recordId = recordId,
+      sourceScope = sourceScope,
+      sourceDetail = "Derived from relationship-state score band",
+    )
+    fields[SOUL_FIELD_PLAYFULNESS_PERMISSION_BAND] = ResolvedSoulFieldSource(
+      field = SOUL_FIELD_PLAYFULNESS_PERMISSION_BAND,
+      value = projection.playfulnessPermissionBand.name.lowercase(Locale.US),
+      sourceType = "relationship_state",
+      sourceLabel = sourceLabel,
+      recordId = recordId,
+      sourceScope = sourceScope,
+      sourceDetail = "Derived from relationship-state score band",
+    )
+    fields[SOUL_FIELD_HIGH_INTIMACY_BEHAVIOR_ALLOWED] = ResolvedSoulFieldSource(
+      field = SOUL_FIELD_HIGH_INTIMACY_BEHAVIOR_ALLOWED,
+      value = projection.highIntimacyBehaviorAllowed.toString(),
+      sourceType = "relationship_state",
+      sourceLabel = sourceLabel,
+      recordId = recordId,
+      sourceScope = sourceScope,
+      sourceDetail = if (projection.recentNegativeGuardActive) {
+        "Relationship gate blocked by recent-negative guard"
+      } else {
+        "Relationship gate derived from trust/safety/reciprocity/intimacy"
+      },
+    )
+    fields[SOUL_FIELD_PLAYFUL_AFFECTION_ALLOWED] = ResolvedSoulFieldSource(
+      field = SOUL_FIELD_PLAYFUL_AFFECTION_ALLOWED,
+      value = projection.playfulAffectionAllowed.toString(),
+      sourceType = "relationship_state",
+      sourceLabel = sourceLabel,
+      recordId = recordId,
+      sourceScope = sourceScope,
+      sourceDetail = if (projection.recentNegativeGuardActive) {
+        "Relationship gate blocked by recent-negative guard"
+      } else {
+        "Relationship gate derived from playfulness/safety/reciprocity"
+      },
+    )
+    return fields
+  }
+
+  private fun prioritizedFieldSources(
+    field: String,
+    directFieldSources: Map<String, ResolvedSoulFieldSource>,
+    interactionFieldSources: Map<String, ResolvedSoulFieldSource>,
+    relationshipFieldSources: Map<String, ResolvedSoulFieldSource>,
+  ): List<ResolvedSoulFieldSource> = when (field) {
+    SOUL_FIELD_TONE,
+    SOUL_FIELD_VOICE,
+    SOUL_FIELD_USER_RELATIONSHIP_STYLE,
+    -> listOfNotNull(
+      directFieldSources[field],
+      relationshipFieldSources[field],
+      interactionFieldSources[field],
+    )
+
+    SOUL_FIELD_PREFERRED_ADDRESS_STYLE -> listOfNotNull(
+      directFieldSources[field],
+      interactionFieldSources[field],
+      relationshipFieldSources[field],
+    )
+
+    SOUL_FIELD_PREFERRED_NAMING -> listOfNotNull(
+      directFieldSources[field],
+      interactionFieldSources[field],
+    )
+
+    SOUL_FIELD_INTIMACY_PERMISSION_BAND,
+    SOUL_FIELD_PLAYFULNESS_PERMISSION_BAND,
+    SOUL_FIELD_HIGH_INTIMACY_BEHAVIOR_ALLOWED,
+    SOUL_FIELD_PLAYFUL_AFFECTION_ALLOWED,
+    -> listOfNotNull(relationshipFieldSources[field])
+
+    else -> listOfNotNull(directFieldSources[field])
+  }
+
+  private fun fieldSourceToMap(
+    source: ResolvedSoulFieldSource,
+  ): Map<String, Any?> = buildMap {
+    put("field", source.field)
+    put("value", source.value)
+    put("sourceType", source.sourceType)
+    put("sourceLabel", source.sourceLabel)
+    if (source.recordId.isNotBlank()) {
+      put("recordId", source.recordId)
+    }
+    if (source.preferenceKey.isNotBlank()) {
+      put("preferenceKey", source.preferenceKey)
+    }
+    if (source.sourceScope.isNotBlank()) {
+      put("sourceScope", source.sourceScope)
+    }
+    if (source.sourceDetail.isNotBlank()) {
+      put("sourceDetail", source.sourceDetail)
+    }
   }
 
   private fun soulOverlayDisplayComparator(): Comparator<MemoryRecord> =
@@ -2967,6 +4328,18 @@ internal class OpenCrayHostRuntime private constructor(
       "text" to event.text,
       "stage" to event.stage,
     )
+    is OpenCrayApprovalEvent -> mapOf(
+      "kind" to if (event.phase == OpenCrayApprovalPhase.REQUIRED) "approval_wait" else "approval_result",
+      "runId" to event.runId,
+      "taskId" to event.taskId,
+      "turn" to event.turn,
+      "emittedAtEpochMs" to event.emittedAtEpochMs,
+      "toolName" to event.toolName,
+      "text" to event.text,
+      "stage" to event.phase.name.lowercase(),
+      "status" to event.phase.name.lowercase(),
+      "isHighRisk" to event.isHighRisk,
+    )
     is OpenCrayToolCallEvent -> mapOf(
       "kind" to "tool_call",
       "runId" to event.runId,
@@ -3029,6 +4402,17 @@ internal class OpenCrayHostRuntime private constructor(
       "resolvedRecordIds" to event.resolvedRecordIds,
       "reaffirmedRecordIds" to event.reaffirmedRecordIds,
       "expiredRecordIds" to event.expiredRecordIds,
+    )
+    is OpenCrayCancellationEvent -> mapOf(
+      "kind" to "cancelled",
+      "runId" to event.runId,
+      "taskId" to event.taskId,
+      "turn" to event.turn,
+      "emittedAtEpochMs" to event.emittedAtEpochMs,
+      "toolName" to event.toolName,
+      "text" to event.text,
+      "stage" to event.outcome,
+      "status" to event.outcome,
     )
   }
 
@@ -3220,6 +4604,75 @@ internal class OpenCrayHostRuntime private constructor(
       appendLine()
       append(body)
     }.trim()
+  }
+
+  private fun approvalRequiredRuntimeEvent(
+    approval: PendingApprovalSnapshot,
+    emittedAtEpochMs: Long,
+  ): OpenCrayApprovalEvent = OpenCrayApprovalEvent(
+    runId = approval.runId,
+    taskId = approval.taskId,
+    phase = OpenCrayApprovalPhase.REQUIRED,
+    toolName = approval.toolName,
+    text = approvalTimelineText(approval),
+    isHighRisk = approval.isHighRisk,
+    emittedAtEpochMs = emittedAtEpochMs,
+  )
+
+  private fun approvalResultRuntimeEvent(
+    approval: PendingApprovalSnapshot,
+    phase: OpenCrayApprovalPhase,
+    emittedAtEpochMs: Long,
+  ): OpenCrayApprovalEvent = OpenCrayApprovalEvent(
+    runId = approval.runId,
+    taskId = approval.taskId,
+    phase = phase,
+    toolName = approval.toolName,
+    text = when (phase) {
+      OpenCrayApprovalPhase.REQUIRED -> approvalTimelineText(approval)
+      OpenCrayApprovalPhase.APPROVED -> strings.chatApprovalApproved
+      OpenCrayApprovalPhase.REJECTED -> strings.chatApprovalRejected
+    },
+    isHighRisk = approval.isHighRisk,
+    emittedAtEpochMs = emittedAtEpochMs,
+  )
+
+  private fun cancellationRuntimeEvent(
+    run: AgentRunSnapshot,
+    approval: PendingApprovalSnapshot?,
+    emittedAtEpochMs: Long,
+  ): OpenCrayCancellationEvent = OpenCrayCancellationEvent(
+    runId = run.runId,
+    taskId = run.taskId,
+    toolName = approval?.toolName,
+    outcome = "user_cancelled",
+    text = cancellationTimelineText(toolName = approval?.toolName),
+    emittedAtEpochMs = emittedAtEpochMs,
+  )
+
+  private fun approvalTimelineText(approval: PendingApprovalSnapshot): String {
+    val title = approval.title.trim()
+    val body = approval.body.trim()
+    return when {
+      title.isEmpty() -> body
+      body.isEmpty() -> title
+      else -> "$title\n\n$body"
+    }
+  }
+
+  private fun cancellationTimelineText(toolName: String?): String {
+    val resolvedToolName = toolName?.trim()?.takeIf { value -> value.isNotBlank() }
+    return if (isChineseHostLocale()) {
+      if (resolvedToolName == null) {
+        "本次运行已取消，等待你的下一步指示。"
+      } else {
+        "已取消待审批的 $resolvedToolName 请求，等待你的下一步指示。"
+      }
+    } else if (resolvedToolName == null) {
+      "Run cancelled. The agent is waiting for your next instruction."
+    } else {
+      "Cancelled the pending $resolvedToolName request. The agent is waiting for your next instruction."
+    }
   }
 
   private fun approvalRequestSummary(metadata: Map<String, String>): String? =
@@ -3532,6 +4985,8 @@ internal class OpenCrayHostRuntime private constructor(
     personalizationFacade = LocalPersonalizationFacade.createForTest(
       context = localizedContext,
       store = PersonalizationLocalStore.fromContext(baseContext),
+      soulProfileStore = workspaceSoulProfileStore,
+      workspaceRootProvider = { AppAgentWorkspace.ensureRootForContext(baseContext) },
       queueIdleProvider = {
         val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
         pendingTaskCount(activeSessionId) == 0
@@ -3874,6 +5329,8 @@ internal class OpenCrayHostRuntime private constructor(
       MemoryPreferenceKeys.AGENT_DISPLAY_NAME,
       MemoryPreferenceKeys.AGENT_STYLE_PROFILE,
       MemoryPreferenceKeys.AGENT_VERBOSITY,
+      MemoryPreferenceKeys.USER_PREFERRED_NAME,
+      MemoryPreferenceKeys.USER_ADDRESS_STYLE,
     )
     private const val DEBUG_MEMORY_KIND_USER_PREFERENCE: String = "user_preference"
     private const val DEBUG_MEMORY_STATUS_ACTIVE: String = "active"
@@ -3884,6 +5341,12 @@ internal class OpenCrayHostRuntime private constructor(
     private const val SOUL_FIELD_PRESET_NAME: String = "presetName"
     private const val SOUL_FIELD_DISPLAY_NAME: String = "displayName"
     private const val SOUL_FIELD_VOICE: String = "voice"
+    private const val SOUL_FIELD_PREFERRED_NAMING: String = "preferredNaming"
+    private const val SOUL_FIELD_PREFERRED_ADDRESS_STYLE: String = "preferredAddressStyle"
+    private const val SOUL_FIELD_INTIMACY_PERMISSION_BAND: String = "intimacyPermissionBand"
+    private const val SOUL_FIELD_PLAYFULNESS_PERMISSION_BAND: String = "playfulnessPermissionBand"
+    private const val SOUL_FIELD_HIGH_INTIMACY_BEHAVIOR_ALLOWED: String = "highIntimacyBehaviorAllowed"
+    private const val SOUL_FIELD_PLAYFUL_AFFECTION_ALLOWED: String = "playfulAffectionAllowed"
     private const val SOUL_FIELD_CUSTOM_GUIDANCE: String = "customGuidance"
     private const val SOUL_FIELD_TONE: String = "tone"
     private const val SOUL_FIELD_VERBOSITY: String = "verbosity"
@@ -3897,6 +5360,12 @@ internal class OpenCrayHostRuntime private constructor(
       SOUL_FIELD_PRESET_NAME,
       SOUL_FIELD_DISPLAY_NAME,
       SOUL_FIELD_VOICE,
+      SOUL_FIELD_PREFERRED_NAMING,
+      SOUL_FIELD_PREFERRED_ADDRESS_STYLE,
+      SOUL_FIELD_INTIMACY_PERMISSION_BAND,
+      SOUL_FIELD_PLAYFULNESS_PERMISSION_BAND,
+      SOUL_FIELD_HIGH_INTIMACY_BEHAVIOR_ALLOWED,
+      SOUL_FIELD_PLAYFUL_AFFECTION_ALLOWED,
       SOUL_FIELD_CUSTOM_GUIDANCE,
       SOUL_FIELD_TONE,
       SOUL_FIELD_VERBOSITY,
@@ -3926,6 +5395,7 @@ internal class OpenCrayHostRuntime private constructor(
       llmConfigFacade: LlmConfigFacade = EmptyLlmConfigFacade,
       personalizationFacade: PersonalizationFacade = EmptyPersonalizationFacade,
       personalizationLocalStore: PersonalizationLocalStore? = null,
+      workspaceSoulProfileStore: WorkspaceSoulProfileStore = WorkspaceSoulProfileStore(),
       mcpSettingsFacade: McpSettingsFacade = EmptyMcpSettingsFacade,
       safetySettingsFacade: SafetySettingsFacade = EmptySafetySettingsFacade,
       skillsFacade: SkillsFacade = EmptySkillsFacade,
@@ -3958,6 +5428,8 @@ internal class OpenCrayHostRuntime private constructor(
       transcriptMessagesProvider: (String) -> List<RuntimeConversationMessage> = { emptyList() },
       approvalRegistry: AgentTaskApprovalRegistry = AgentTaskApprovalRegistry(),
       memoryIngestionCoordinator: ChatMemoryIngestionCoordinator? = null,
+      approvalReplayRecorder: (String, String, String, String?, Boolean) -> Unit = { _, _, _, _, _ -> },
+      approvalApprovedReplayRecorder: (String, String, String, String?, Boolean) -> Unit = { _, _, _, _, _ -> },
       runCancellationReplayRecorder: (String, String, String, String?) -> Unit = { _, _, _, _ -> },
       terminalReplayRepairer: (String, List<AgentRunSnapshot>) -> Unit = { _, _ -> },
       strings: HostRuntimeStrings = HostRuntimeStrings(
@@ -3997,6 +5469,7 @@ internal class OpenCrayHostRuntime private constructor(
       llmConfigFacade = llmConfigFacade,
       personalizationFacade = personalizationFacade,
       personalizationLocalStore = personalizationLocalStore,
+      workspaceSoulProfileStore = workspaceSoulProfileStore,
       mcpSettingsFacade = mcpSettingsFacade,
       safetySettingsFacade = safetySettingsFacade,
       skillsFacade = skillsFacade,
@@ -4007,7 +5480,8 @@ internal class OpenCrayHostRuntime private constructor(
       transcriptMessagesProvider = transcriptMessagesProvider,
       approvalRegistry = approvalRegistry,
       memoryIngestionCoordinator = memoryIngestionCoordinator,
-      approvalReplayRecorder = { _, _, _ -> },
+      approvalReplayRecorder = approvalReplayRecorder,
+      approvalApprovedReplayRecorder = approvalApprovedReplayRecorder,
       runCancellationReplayRecorder = runCancellationReplayRecorder,
       terminalReplayRepairer = terminalReplayRepairer,
       strings = strings,
@@ -4030,6 +5504,7 @@ internal class OpenCrayHostRuntime private constructor(
       val approvalRegistry = AgentTaskApprovalRegistry()
       val workspaceRootProvider = { AppAgentWorkspace.ensureRootForContext(appContext) }
       val workspaceRootsProvider = { setOf(workspaceRootProvider()) }
+      val soulProfileStore = WorkspaceSoulProfileStore()
       val safetySettingsFacade = LocalSafetySettingsFacade.fromContext(appContext)
       val approvedReadRootsProvider = {
         ApprovedReadRootsResolver.resolve(
@@ -4067,6 +5542,10 @@ internal class OpenCrayHostRuntime private constructor(
         llmSettingsProvider = { llmSettingsStore.load() },
         providerClient = liteLlmProviderClient,
       )
+      val relationshipEventInterpreter = LiteLlmRelationshipEventInterpreter(
+        llmSettingsProvider = { llmSettingsStore.load() },
+        providerClient = liteLlmProviderClient,
+      )
       val memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(
         memoryStore = personalizationStore.asMemoryStore(),
         workspaceIdProvider = { AppWorkspaceIdentity.fromRoots(workspaceRootsProvider()) },
@@ -4077,13 +5556,27 @@ internal class OpenCrayHostRuntime private constructor(
           store = personalizationStore.asMemoryStore(),
           intentInterpreter = taskCommitmentIntentInterpreter,
         ),
+        soulPlasticityProvider = {
+          when (
+            soulProfileStore.loadSoulProfile(workspaceRootProvider())
+              ?.extensions
+              ?.get(SoulProfileExtensionKeys.PLASTICITY)
+              ?.trim()
+              ?.lowercase(Locale.US)
+          ) {
+            "high" -> SoulPlasticity.HIGH
+            "medium" -> SoulPlasticity.MEDIUM
+            else -> SoulPlasticity.LOW
+          }
+        },
+        relationshipEventInterpreter = relationshipEventInterpreter,
       )
       lateinit var hostRuntime: OpenCrayHostRuntime
       val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
         llmSettingsProvider = { llmSettingsStore.load() },
         safetySettingsProvider = { SafetySettingsStore.fromContext(appContext).load() },
         sessionContextFactory = chatContextFactory,
-        soulProfileProvider = { personalizationStore.loadSoulProfile() },
+        soulProfileProvider = { soulProfileStore.loadSoulProfile(workspaceRootProvider()) },
         workspaceRootsProvider = workspaceRootsProvider,
         readRootsProvider = { approvedReadRootsProvider().roots },
         skillsRootsProvider = { hostRuntime.currentEnabledSkillRoots() },
@@ -4102,10 +5595,21 @@ internal class OpenCrayHostRuntime private constructor(
             userAgent = providerUserAgent,
           )
         },
+        skillPackageManagerProvider = {
+          SkillPackageManager(
+            managedRoot = AppSkillsStorage.managedSkillsRootForContext(appContext),
+            catalogRoot = AppSkillsStorage.catalogSkillsRootForContext(appContext),
+            manifestStore = SkillInstallManifestStore.fromFile(
+              AppSkillsStorage.manifestFileForContext(appContext),
+            ),
+          )
+        },
       )
       val personalizationFacade = LocalPersonalizationFacade.createForTest(
         context = localizedContext,
         store = personalizationStore,
+        soulProfileStore = soulProfileStore,
+        workspaceRootProvider = workspaceRootProvider,
         queueIdleProvider = {
           val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
           hostRuntime.pendingTaskCount(activeSessionId) == 0
@@ -4125,6 +5629,7 @@ internal class OpenCrayHostRuntime private constructor(
         llmConfigFacade = LocalLlmConfigFacade.fromContext(localizedContext),
         personalizationFacade = personalizationFacade,
         personalizationLocalStore = personalizationStore,
+        workspaceSoulProfileStore = soulProfileStore,
         mcpSettingsFacade = mcpSettingsFacade,
         safetySettingsFacade = safetySettingsFacade,
         skillsFacade = skillsFacade,
@@ -4144,6 +5649,7 @@ internal class OpenCrayHostRuntime private constructor(
         approvalRegistry = approvalRegistry,
         memoryIngestionCoordinator = memoryIngestionCoordinator,
         approvalReplayRecorder = runtimeFactory::recordApprovalRejection,
+        approvalApprovedReplayRecorder = runtimeFactory::recordApprovalApproved,
         runCancellationReplayRecorder = runtimeFactory::recordRunCancellation,
         terminalReplayRepairer = runtimeFactory::repairTerminalReplayFromRunSnapshots,
         strings = localizedHostRuntimeStrings(localizedContext),
@@ -4306,15 +5812,28 @@ private data class SoulFieldContribution(
   val metadata: DebugMemoryMetadata,
 )
 
+private data class ResolvedSoulFieldSource(
+  val field: String,
+  val value: String,
+  val sourceType: String,
+  val sourceLabel: String,
+  val recordId: String = "",
+  val preferenceKey: String = "",
+  val sourceScope: String = "",
+  val sourceDetail: String = "",
+)
+
 private fun OpenCrayAgentRunEvent.withEmittedAtEpochMs(emittedAtEpochMs: Long): OpenCrayAgentRunEvent =
   when (this) {
     is OpenCrayLifecycleEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
     is OpenCrayAssistantEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
     is OpenCrayProgressEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
+    is OpenCrayApprovalEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
     is OpenCrayToolCallEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
     is OpenCrayToolResultEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
     is OpenCrayMemoryWriteEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
     is OpenCrayMemoryRetrievalEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
+    is OpenCrayCancellationEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
   }
 
 private fun Int?.orEmptyString(): String = this?.toString().orEmpty()

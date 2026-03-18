@@ -472,7 +472,7 @@ void main() {
       );
       expect(
         find.textContaining(
-          'Bridge note: Run-level soul attribution is not exposed yet.',
+          'Bridge note: Detailed soul attribution and relationship gates live in Soul Inspector only.',
           findRichText: true,
         ),
         findsOneWidget,
@@ -597,6 +597,12 @@ void main() {
     final fieldSourcesCard = find.byKey(
       const ValueKey<String>('settings-soul-field-sources-card'),
     );
+    final interactionPreferenceCard = find.byKey(
+      const ValueKey<String>('settings-soul-interaction-preference-card'),
+    );
+    final relationshipGatesCard = find.byKey(
+      const ValueKey<String>('settings-soul-relationship-gates-card'),
+    );
     final linkedActivityCard = find.byKey(
       const ValueKey<String>('settings-soul-linked-activity-card'),
     );
@@ -605,6 +611,8 @@ void main() {
     expect(find.text('Base soul'), findsOneWidget);
     expect(find.text('Memory overlays'), findsOneWidget);
     expect(find.text('Effective soul'), findsOneWidget);
+    expect(find.text('Interaction preference'), findsOneWidget);
+    expect(find.text('Relationship gates'), findsOneWidget);
     expect(find.text('Field sources'), findsOneWidget);
     expect(
       find.descendant(
@@ -638,6 +646,46 @@ void main() {
         of: effectiveSoulCard,
         matching: find.textContaining(
           'Voice: warm and gentle',
+          findRichText: true,
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: interactionPreferenceCard,
+        matching: find.textContaining(
+          'Preferred naming: A-Cheng',
+          findRichText: true,
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: interactionPreferenceCard,
+        matching: find.textContaining(
+          'Preferred address style: friendly',
+          findRichText: true,
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: relationshipGatesCard,
+        matching: find.textContaining(
+          'Derived address style: intimate',
+          findRichText: true,
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: relationshipGatesCard,
+        matching: find.textContaining(
+          'High intimacy behavior: allowed',
           findRichText: true,
         ),
       ),
@@ -1404,6 +1452,99 @@ _FakeDebugBridge _buildDebugBridge() {
         ],
         collaborationPreferences: <String>[
           'Keep reasoning concrete and implementation-first.',
+        ],
+      ),
+      interactionPreferenceDebug: OpenCrayInteractionPreferenceDebugSnapshot(
+        scope: 'user',
+        snapshotRecordId: 'interaction-state',
+        preferredNaming: 'A-Cheng',
+        preferredAddressStyle: 'friendly',
+        derivedRelationshipStyle: 'warm',
+        state: OpenCrayInteractionPreferenceStateSnapshot(
+          warmth: OpenCrayPreferenceAxisStateSnapshot(
+            offset: 1,
+            higherSupport: 2,
+          ),
+          formality: OpenCrayPreferenceAxisStateSnapshot(
+            offset: -1,
+            lowerSupport: 2,
+          ),
+          initiative: OpenCrayPreferenceAxisStateSnapshot(),
+          addressStyle: OpenCrayPreferredAddressStateSnapshot(
+            selectedStyle: 'friendly',
+            friendlySupport: 2,
+          ),
+          preferredNaming: 'A-Cheng',
+          preferredNamingSupport: 2,
+        ),
+      ),
+      relationshipStateDebug: OpenCrayRelationshipStateDebugSnapshot(
+        scope: 'user',
+        snapshotRecordId: 'relationship-state',
+        state: OpenCrayRelationshipStateSnapshot(
+          familiarity: 66,
+          trust: 74,
+          safety: 76,
+          intimacyPermission: 61,
+          playfulnessPermission: 44,
+          affectionTendency: 34,
+          reciprocity: 49,
+        ),
+        recentNegativeGuardActive: false,
+        supportiveStyleUnlocked: true,
+        supportiveStyleChecks: <OpenCraySoulGateCheckSnapshot>[
+          OpenCraySoulGateCheckSnapshot(
+            key: 'trust',
+            passed: true,
+            currentValue: 74,
+            threshold: 25,
+          ),
+        ],
+        warmToneUnlocked: true,
+        warmToneChecks: <OpenCraySoulGateCheckSnapshot>[
+          OpenCraySoulGateCheckSnapshot(
+            key: 'intimacy_permission',
+            passed: true,
+            currentValue: 61,
+            threshold: 25,
+          ),
+        ],
+        derivedAddressStyle: 'intimate',
+        friendlyAddressChecks: <OpenCraySoulGateCheckSnapshot>[
+          OpenCraySoulGateCheckSnapshot(
+            key: 'trust',
+            passed: true,
+            currentValue: 74,
+            threshold: 35,
+          ),
+        ],
+        intimateAddressChecks: <OpenCraySoulGateCheckSnapshot>[
+          OpenCraySoulGateCheckSnapshot(
+            key: 'recent_negative_guard_inactive',
+            passed: true,
+            actualBoolean: true,
+            expectedBoolean: true,
+          ),
+        ],
+        intimacyPermissionBand: 'warm',
+        playfulnessPermissionBand: 'familiar',
+        highIntimacyBehaviorAllowed: true,
+        highIntimacyChecks: <OpenCraySoulGateCheckSnapshot>[
+          OpenCraySoulGateCheckSnapshot(
+            key: 'intimacy_permission',
+            passed: true,
+            currentValue: 61,
+            threshold: 50,
+          ),
+        ],
+        playfulAffectionAllowed: true,
+        playfulAffectionChecks: <OpenCraySoulGateCheckSnapshot>[
+          OpenCraySoulGateCheckSnapshot(
+            key: 'playfulness_permission',
+            passed: true,
+            currentValue: 44,
+            threshold: 35,
+          ),
         ],
       ),
       overlayRecords: <OpenCrayMemoryDebugRecordSnapshot>[

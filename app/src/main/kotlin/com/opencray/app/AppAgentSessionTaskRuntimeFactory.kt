@@ -44,7 +44,9 @@ import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.session.InMemorySessionTranscriptStore
 import com.opencray.runtime.session.SessionTranscriptStore
 import com.opencray.runtime.skills.SkillCatalogResolver
+import com.opencray.runtime.skills.SkillInstallManifestStore
 import com.opencray.runtime.skills.SkillInventoryResolver
+import com.opencray.runtime.skills.SkillPackageManager
 import com.opencray.runtime.soul.MemoryBackedSoulProfileResolver
 import com.opencray.runtime.web.UnconfiguredWebSearchProvider
 import com.opencray.runtime.web.WebSearchProvider
@@ -76,6 +78,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val memoryIngestionCoordinator: ChatMemoryIngestionCoordinator? = null,
   private val pythonRuntimeProvider: () -> PythonScriptRuntime = { HostProcessPythonRuntime() },
   private val webSearchProviderFactory: () -> WebSearchProvider = { UnconfiguredWebSearchProvider },
+  private val skillPackageManagerProvider: () -> SkillPackageManager? = { null },
 ) : AgentSessionTaskRuntimeFactory {
   private val todoStoresBySession: ConcurrentMap<String, AgentTodoStore> = ConcurrentHashMap()
   private val processRegistriesBySession: ConcurrentMap<String, AgentProcessRegistry> = ConcurrentHashMap()
@@ -145,6 +148,16 @@ internal class AppAgentSessionTaskRuntimeFactory(
     val approvalGrant = approvalRegistry.consumeApproved(sessionId, task.id)
     val transcriptStore = transcriptStoreForSession(sessionId)
     val memoryRecords = memoryRecordsProvider()
+    val skillPackageManager = skillPackageManagerProvider()
+    val skillPolicyReadRoots = skillPackageManager?.let { manager ->
+      setOf(
+        manager.managedRootPath().toPath(),
+        manager.catalogRootPath().toPath(),
+      )
+    }.orEmpty()
+    val skillPolicyWriteRoots = skillPackageManager?.let { manager ->
+      setOf(manager.managedRootPath().toPath())
+    }.orEmpty()
     val workspaceId = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider())
     val preparedContext = prepareSessionContext(
       sessionId = sessionId,
@@ -183,7 +196,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
         OpenCrayToolDispatcherConfig(
           workspaceRoots = workspaceRootsProvider(),
           readRoots = readRootsProvider(),
+          extraPolicyReadRoots = skillPolicyReadRoots,
+          extraPolicyWriteRoots = skillPolicyWriteRoots,
           skillsRoots = skillsRootsProvider(),
+          skillPackageManager = skillPackageManager,
           mcpExposureReport = mcpReportProvider(),
           approvedTaskId = task.id.takeIf { approvalGrant != null },
           approvedToolName = approvalGrant?.toolName,
@@ -254,6 +270,8 @@ internal class AppAgentSessionTaskRuntimeFactory(
 
   internal fun recordApprovalRejection(
     sessionId: String,
+    taskId: String,
+    runId: String,
     toolName: String?,
     isHighRisk: Boolean,
   ) {
@@ -262,6 +280,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
         role = RuntimeConversationRole.TOOL,
         content = buildString {
           append("approval_rejected")
+          append(" task_id=")
+          append(taskId)
+          append(" run_id=")
+          append(runId)
           toolName
             ?.trim()
             ?.takeIf(String::isNotBlank)
@@ -275,6 +297,40 @@ internal class AppAgentSessionTaskRuntimeFactory(
             append(" risk=high_risk")
           }
           append(" next_step=await_user_instruction")
+        },
+      ),
+    )
+  }
+
+  internal fun recordApprovalApproved(
+    sessionId: String,
+    taskId: String,
+    runId: String,
+    toolName: String?,
+    isHighRisk: Boolean,
+  ) {
+    transcriptStoreForSession(sessionId).appendIfDistinct(
+      RuntimeConversationMessage(
+        role = RuntimeConversationRole.TOOL,
+        content = buildString {
+          append("approval_approved")
+          append(" task_id=")
+          append(taskId)
+          append(" run_id=")
+          append(runId)
+          toolName
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?.let { resolvedToolName ->
+              append(" tool_name=")
+              append(resolvedToolName)
+            }
+          append(" outcome=user_approved")
+          append(" executed=false")
+          if (isHighRisk) {
+            append(" risk=high_risk")
+          }
+          append(" next_step=agent_resumed")
         },
       ),
     )

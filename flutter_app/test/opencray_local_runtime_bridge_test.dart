@@ -702,6 +702,86 @@ void main() {
           'displayName': 'Xiao Bai',
           'tone': 'warm',
         },
+        'interactionPreferenceDebug': <String, Object?>{
+          'scope': 'user',
+          'snapshotRecordId': 'interaction-state',
+          'preferredNaming': 'A-Cheng',
+          'preferredAddressStyle': 'friendly',
+          'derivedRelationshipStyle': 'warm',
+          'state': <String, Object?>{
+            'warmth': <String, Object?>{
+              'offset': 1,
+              'higherSupport': 2,
+              'lowerSupport': 0,
+            },
+            'formality': <String, Object?>{
+              'offset': -1,
+              'higherSupport': 0,
+              'lowerSupport': 2,
+            },
+            'initiative': <String, Object?>{
+              'offset': 0,
+              'higherSupport': 0,
+              'lowerSupport': 0,
+            },
+            'addressStyle': <String, Object?>{
+              'selectedStyle': 'friendly',
+              'neutralSupport': 0,
+              'friendlySupport': 2,
+              'intimateSupport': 0,
+            },
+            'preferredNaming': 'A-Cheng',
+            'preferredNamingSupport': 2,
+          },
+        },
+        'relationshipStateDebug': <String, Object?>{
+          'scope': 'user',
+          'snapshotRecordId': 'relationship-state',
+          'state': <String, Object?>{
+            'familiarity': 66,
+            'trust': 74,
+            'safety': 76,
+            'intimacyPermission': 61,
+            'playfulnessPermission': 44,
+            'affectionTendency': 34,
+            'reciprocity': 49,
+          },
+          'recentNegativeGuardActive': false,
+          'supportiveStyleUnlocked': true,
+          'supportiveStyleChecks': <Object?>[
+            <String, Object?>{
+              'key': 'trust',
+              'passed': true,
+              'currentValue': 74,
+              'threshold': 25,
+            },
+          ],
+          'warmToneUnlocked': true,
+          'warmToneChecks': <Object?>[
+            <String, Object?>{
+              'key': 'intimacy_permission',
+              'passed': true,
+              'currentValue': 61,
+              'threshold': 25,
+            },
+          ],
+          'derivedAddressStyle': 'intimate',
+          'friendlyAddressChecks': <Object?>[],
+          'intimateAddressChecks': <Object?>[
+            <String, Object?>{
+              'key': 'recent_negative_guard_inactive',
+              'passed': true,
+              'actualBoolean': true,
+              'expectedBoolean': true,
+            },
+          ],
+          'intimacyPermissionBand': 'warm',
+          'playfulnessPermissionBand': 'familiar',
+          'highIntimacyBehaviorAllowed': true,
+          'highIntimacyChecks': <Object?>[],
+          'playfulAffectionAllowed': true,
+          'playfulAffectionChecks': <Object?>[],
+        },
         'overlayRecords': <Object?>[
           <String, Object?>{
             'id': 'memory-user',
@@ -719,6 +799,8 @@ void main() {
             'sourceLabel': 'user memory',
             'recordId': 'memory-user',
             'preferenceKey': 'agent_display_name',
+            'sourceScope': 'user',
+            'sourceDetail': 'Durable preference',
           },
         ],
       });
@@ -731,6 +813,11 @@ void main() {
     expect(snapshot.effectiveSoul?.displayName, 'Xiao Bai');
     expect(snapshot.overlayRecords.single.id, 'memory-user');
     expect(snapshot.fieldSources.single.sourceType, 'memory_overlay');
+    expect(snapshot.fieldSources.single.sourceScope, 'user');
+    expect(snapshot.fieldSources.single.sourceDetail, 'Durable preference');
+    expect(snapshot.interactionPreferenceDebug?.preferredNaming, 'A-Cheng');
+    expect(snapshot.relationshipStateDebug?.derivedAddressStyle, 'intimate');
+    expect(snapshot.relationshipStateDebug?.recentNegativeGuardActive, isFalse);
   });
 
   test(

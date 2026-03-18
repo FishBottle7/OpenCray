@@ -67,6 +67,12 @@ def _bridge_paths(workspace: pathlib.Path, name: str) -> tuple[pathlib.Path, pat
     return request_path, result_path, log_path
 
 
+def _service_state_paths(workspace: pathlib.Path, name: str) -> tuple[pathlib.Path, pathlib.Path]:
+    runtime_root = workspace / ".p4a-bridge-tests" / name
+    state_dir = runtime_root / "service_state"
+    return state_dir / "service-state.json", state_dir / "service-ready.json"
+
+
 def test_android_p4a_bridge_executes_workspace_script(workspace: pathlib.Path) -> None:
     request_path, result_path, log_path = _bridge_paths(workspace, "request-success")
     script_path = workspace / "hello_android_runtime.py"
@@ -231,3 +237,33 @@ def test_android_p4a_bridge_times_out_long_running_script(workspace: pathlib.Pat
     assert result["exitCode"] == 124
     assert result["errorCode"] == "TIMEOUT"
     assert result["errorMessage"] == "Python script exceeded timeout."
+
+
+def test_android_p4a_service_writes_ready_and_state_markers(workspace: pathlib.Path) -> None:
+    request_path, result_path, log_path = _bridge_paths(workspace, "request-service-state")
+    state_path, ready_path = _service_state_paths(workspace, "request-service-state")
+    script_path = workspace / "state_probe.py"
+    script_path.write_text("print('service state ok')\n", encoding="utf-8")
+    _write_request(
+        request_path,
+        task_id="task-service-state",
+        workspace_root=workspace,
+        script_path=script_path,
+    )
+
+    result = _run_bridge(
+        request_path=request_path,
+        result_path=result_path,
+        log_path=log_path,
+    )
+
+    assert result["status"] == "success"
+    assert state_path.exists()
+    assert ready_path.exists()
+
+    service_state = json.loads(state_path.read_text(encoding="utf-8"))
+    service_ready = json.loads(ready_path.read_text(encoding="utf-8"))
+    assert service_state["state"] == "idle"
+    assert service_state["lastProcessedRequestId"] == "request-service-state"
+    assert service_state["lastProcessedStatus"] == "success"
+    assert service_ready["state"] == "idle"

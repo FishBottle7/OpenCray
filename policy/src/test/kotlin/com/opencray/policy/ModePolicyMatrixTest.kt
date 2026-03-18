@@ -220,6 +220,68 @@ class ModePolicyMatrixTest {
   }
 
   @Test
+  fun safeModeExternalReadWithinApprovedRootsRequiresApproval() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-external-read-safe").toPath()
+    val externalRoot = temporaryFolder.newFolder("external-read-safe").toPath()
+    val target = externalRoot.resolve("notes.txt")
+
+    val decision = policy.decide(
+      PolicyRequest(
+        mode = ExecutionMode.SAFE,
+        toolClass = PolicyToolClass.READ_FILE,
+        workspaceRoot = workspaceRoot,
+        targetPath = target,
+        approvedReadRoots = setOf(workspaceRoot, externalRoot),
+      ),
+    )
+
+    assertEquals(PolicyDecisionOutcome.ASK, decision.outcome)
+    assertEquals(PolicyReasonCode.ASK_SAFE_EXTERNAL_READ, decision.reasonCode)
+    assertEquals(PolicyApprovalRisk.STANDARD, decision.approvalRisk)
+  }
+
+  @Test
+  fun autoModeExternalReadWithinApprovedRootsRemainsAllowed() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-external-read-auto").toPath()
+    val externalRoot = temporaryFolder.newFolder("external-read-auto").toPath()
+    val target = externalRoot.resolve("notes.txt")
+
+    val decision = policy.decide(
+      PolicyRequest(
+        mode = ExecutionMode.AUTO,
+        toolClass = PolicyToolClass.READ_FILE,
+        workspaceRoot = workspaceRoot,
+        targetPath = target,
+        approvedReadRoots = setOf(workspaceRoot, externalRoot),
+      ),
+    )
+
+    assertEquals(PolicyDecisionOutcome.ALLOW, decision.outcome)
+    assertEquals(PolicyReasonCode.ALLOW_AUTO_STANDARD, decision.reasonCode)
+  }
+
+  @Test
+  fun safeModeWriteWithinApprovedManagedRootsRequiresApproval() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-managed-write-safe").toPath()
+    val managedRoot = temporaryFolder.newFolder("managed-write-safe").toPath()
+    val target = managedRoot.resolve("skills").resolve("find-skills").resolve("SKILL.md")
+
+    val decision = policy.decide(
+      PolicyRequest(
+        mode = ExecutionMode.SAFE,
+        toolClass = PolicyToolClass.WRITE_FILE,
+        workspaceRoot = workspaceRoot,
+        targetPath = target,
+        approvedWriteRoots = setOf(workspaceRoot, managedRoot),
+      ),
+    )
+
+    assertEquals(PolicyDecisionOutcome.ASK, decision.outcome)
+    assertEquals(PolicyReasonCode.ASK_SAFE_WRITE, decision.reasonCode)
+    assertEquals(PolicyApprovalRisk.STANDARD, decision.approvalRisk)
+  }
+
+  @Test
   fun symlinkEscapeAttemptIsDeniedDeterministically() {
     val workspaceRoot = temporaryFolder.newFolder("workspace-symlink-escape").toPath()
     val outsideRoot = temporaryFolder.newFolder("outside-root").toPath()

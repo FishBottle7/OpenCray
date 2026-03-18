@@ -36,6 +36,12 @@ class SoulProfileResolverTest {
         presetName = "steady",
         extensions = mapOf(
           "voice" to " calm but direct ",
+          "preferred_naming" to "阿澄",
+          "preferred_address_style" to "friendly",
+          "intimacy_permission_band" to "warm",
+          "playfulness_permission_band" to "familiar",
+          "high_intimacy_behavior_allowed" to "true",
+          "playful_affection_allowed" to "false",
           "verbosity" to "expansive",
           "plasticity" to "high",
           "risk_tolerance" to "bold",
@@ -49,6 +55,12 @@ class SoulProfileResolverTest {
 
     requireNotNull(profile)
     assertEquals("calm but direct", profile.voice)
+    assertEquals("阿澄", profile.preferredNaming)
+    assertEquals(PreferredAddressStyle.FRIENDLY, profile.preferredAddressStyle)
+    assertEquals(RelationshipBand.WARM, profile.intimacyPermissionBand)
+    assertEquals(RelationshipBand.FAMILIAR, profile.playfulnessPermissionBand)
+    assertEquals(true, profile.highIntimacyBehaviorAllowed)
+    assertEquals(false, profile.playfulAffectionAllowed)
     assertEquals(SoulVerbosity.EXPANSIVE, profile.verbosity)
     assertEquals(SoulPlasticity.HIGH, profile.plasticity)
     assertEquals(RiskTolerance.BOLD, profile.riskTolerance)
@@ -121,6 +133,7 @@ class SoulProfileResolverTest {
         extensions = mapOf(
           "toolUseBias" to "tool-forward",
           "user-relationship-style" to "supportive",
+          "preferred address style" to "intimate",
           "collaboration preferences" to " Keep the user posted. ",
         ),
       ),
@@ -129,6 +142,7 @@ class SoulProfileResolverTest {
     requireNotNull(profile)
     assertEquals(ToolUseBias.TOOL_FORWARD, profile.toolUseBias)
     assertEquals(UserRelationshipStyle.SUPPORTIVE, profile.userRelationshipStyle)
+    assertEquals(PreferredAddressStyle.INTIMATE, profile.preferredAddressStyle)
     assertTrue(profile.collaborationPreferences.contains("Keep the user posted."))
   }
 }

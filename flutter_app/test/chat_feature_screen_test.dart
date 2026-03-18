@@ -289,6 +289,72 @@ void main() {
   );
 
   testWidgets(
+    'compact running card shows approval request details from runtime history',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      const approvalEvent = OpenCrayChatRuntimeEventSnapshot(
+        kind: 'approval_wait',
+        runId: 'run-approval-1',
+        taskId: 'task-approval-1',
+        emittedAtEpochMs: 2200,
+        status: 'required',
+        toolName: 'Bash',
+        isHighRisk: true,
+        text:
+            'High-risk approval required\n\nCommand: git status --short\nWorking directory: .\nAgent reason: Check repository state before editing.\n\nApproval is required before Bash can run.',
+      );
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-approval-1',
+              taskId: 'task-approval-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 2200,
+              attempt: 1,
+              isTerminal: false,
+              errorCode: 'HIGH_RISK_APPROVAL_REQUIRED',
+              lastEvent: approvalEvent,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-approval-1',
+              taskId: 'task-approval-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+            approvalEvent,
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text(copy.chatRunWaitingApprovalLabel), findsOneWidget);
+      expect(
+        find.textContaining('Command: git status --short'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Approval is required before Bash can run.'),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
     'host-mapped run trace shows public progress summaries in compact and full-screen views',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');

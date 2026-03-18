@@ -62,6 +62,14 @@ android {
 dependencies {
     implementation(kotlin("stdlib"))
     implementation("androidx.core:core-ktx:1.10.1")
+    implementation(
+        fileTree(
+            mapOf(
+                "dir" to rootProject.file("../../tools/android_python_runtime_p4a/dist"),
+                "include" to listOf("*.aar"),
+            ),
+        ),
+    )
     implementation(project(":core"))
     implementation(project(":llm"))
     implementation(project(":runtime"))

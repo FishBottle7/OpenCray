@@ -91,11 +91,13 @@ class _ActiveChatMessageMenu {
     required this.message,
     required this.bubbleRect,
     this.redoPrompt,
+    this.selectedText,
   });
 
   final ChatMessageData message;
   final Rect bubbleRect;
   final ChatMessageData? redoPrompt;
+  final String? selectedText;
 
   bool get isOutgoing => message.kind == ChatMessageKind.outbound;
 
@@ -111,6 +113,14 @@ class _ActiveChatMessageMenu {
       message.kind == ChatMessageKind.inbound && !message.isEphemeral;
 
   bool get canDelete => !message.isEphemeral;
+
+  String get copyText {
+    final String normalized = selectedText?.trim() ?? '';
+    if (normalized.isNotEmpty) {
+      return normalized;
+    }
+    return message.text;
+  }
 }
 
 class OpenCrayChatFeature extends StatefulWidget {
@@ -242,7 +252,11 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       ..showSnackBar(SnackBar(content: Text(message)));
   }
 
-  void _handleMessageLongPress(ChatMessageData message, Rect globalBubbleRect) {
+  void _handleMessageLongPress(
+    ChatMessageData message,
+    Rect globalBubbleRect,
+    String? selectedText,
+  ) {
     final BuildContext? overlayContext = _chatOverlayKey.currentContext;
     final RenderObject? overlayRenderObject = overlayContext
         ?.findRenderObject();
@@ -267,6 +281,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         message: message,
         bubbleRect: bubbleRect,
         redoPrompt: _redoPromptForMessage(message),
+        selectedText: selectedText,
       );
     });
   }
@@ -279,7 +294,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     _dismissMessageMenu();
     switch (action) {
       case _ChatMessageMenuAction.copy:
-        await Clipboard.setData(ClipboardData(text: activeMenu.message.text));
+        await Clipboard.setData(ClipboardData(text: activeMenu.copyText));
         if (!mounted) {
           return;
         }
@@ -1469,6 +1484,35 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           )
         : null;
     switch (event?.kind) {
+      case 'approval_wait':
+        return ChatRunTraceData(
+          runId: run.runId,
+          taskId: run.taskId,
+          label: _approvalTraceLabel(event!),
+          body: compactBody(_buildApprovalPreviewBody(event)),
+          history: history,
+          isHighRisk:
+              event.isHighRisk ||
+              (waitingApproval &&
+                  run.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED'),
+        );
+      case 'approval_result':
+        return ChatRunTraceData(
+          runId: run.runId,
+          taskId: run.taskId,
+          label: _approvalTraceLabel(event!),
+          body: compactBody(_buildApprovalPreviewBody(event)),
+          history: history,
+          isHighRisk: event.isHighRisk,
+        );
+      case 'cancelled':
+        return ChatRunTraceData(
+          runId: run.runId,
+          taskId: run.taskId,
+          label: _cancellationTraceLabel(event!),
+          body: compactBody(_buildCancellationPreviewBody(event)),
+          history: history,
+        );
       case 'tool_call':
         return ChatRunTraceData(
           runId: run.runId,
@@ -1609,7 +1653,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         ),
       );
     }
-    if (_isWaitingApproval(run)) {
+    final bool hasApprovalWaitEvent = runEvents.any(
+      (event) => event.kind == 'approval_wait',
+    );
+    if (_isWaitingApproval(run) && !hasApprovalWaitEvent) {
       final approvalBody = run.errorMessage?.trim();
       final waitingEntry = ChatRunTraceHistoryEntry(
         label: widget.copy.chatRunWaitingApprovalLabel,
@@ -1667,6 +1714,18 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             pairedToolCall: pairedToolCall,
           ),
           isHighRisk: event.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED',
+        );
+      case 'approval_wait':
+      case 'approval_result':
+        return ChatRunTraceHistoryEntry(
+          label: _approvalTraceLabel(event),
+          body: _buildApprovalHistoryBody(event),
+          isHighRisk: event.isHighRisk,
+        );
+      case 'cancelled':
+        return ChatRunTraceHistoryEntry(
+          label: _cancellationTraceLabel(event),
+          body: _buildCancellationHistoryBody(event),
         );
       case 'memory_retrieval':
         final resolvedToolName = toolName?.isNotEmpty == true
@@ -2301,6 +2360,57 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           preview ??
           widget.copy.chatRunToolFollowUp(resolvedToolName),
     ]);
+  }
+
+  String _buildApprovalPreviewBody(OpenCrayChatRuntimeEventSnapshot event) {
+    return _approvalEventBody(event);
+  }
+
+  String _buildApprovalHistoryBody(OpenCrayChatRuntimeEventSnapshot event) {
+    return _approvalEventBody(event);
+  }
+
+  String _approvalEventBody(OpenCrayChatRuntimeEventSnapshot event) {
+    final String? text = _nonEmpty(event.text);
+    if (text != null) {
+      return text;
+    }
+    switch (_nonEmpty(event.status)?.toLowerCase()) {
+      case 'approved':
+        return widget.copy.isChinese
+            ? '审批已通过，继续执行。'
+            : 'Approval granted. The run is resuming.';
+      case 'rejected':
+        return widget.copy.isChinese
+            ? '审批已拒绝，等待下一步指示。'
+            : 'Approval rejected. Waiting for the next instruction.';
+      default:
+        return widget.copy.chatRunWaitingApprovalLabel;
+    }
+  }
+
+  String _approvalTraceLabel(OpenCrayChatRuntimeEventSnapshot event) {
+    if (event.kind == 'approval_wait') {
+      return widget.copy.chatRunWaitingApprovalLabel;
+    }
+    return _nonEmpty(event.toolName) ?? widget.copy.chatRunWorkingLabel;
+  }
+
+  String _buildCancellationPreviewBody(OpenCrayChatRuntimeEventSnapshot event) {
+    return _cancellationEventBody(event);
+  }
+
+  String _buildCancellationHistoryBody(OpenCrayChatRuntimeEventSnapshot event) {
+    return _cancellationEventBody(event);
+  }
+
+  String _cancellationEventBody(OpenCrayChatRuntimeEventSnapshot event) {
+    return _nonEmpty(event.text) ??
+        (widget.copy.isChinese ? '本次运行已取消。' : 'Run cancelled.');
+  }
+
+  String _cancellationTraceLabel(OpenCrayChatRuntimeEventSnapshot event) {
+    return _nonEmpty(event.toolName) ?? widget.copy.chatRunWorkingLabel;
   }
 
   String _buildMemoryRetrievalPreviewBody(
@@ -3238,7 +3348,7 @@ class _ChatScrollContent extends StatelessWidget {
   final Set<String> busyApprovalTaskIds;
   final ValueChanged<ChatPendingApprovalData> onApproveApproval;
   final ValueChanged<ChatPendingApprovalData> onRejectApproval;
-  final void Function(ChatMessageData, Rect) onMessageLongPress;
+  final void Function(ChatMessageData, Rect, String?) onMessageLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -3719,7 +3829,7 @@ class _MessageList extends StatelessWidget {
   final Set<String> busyApprovalTaskIds;
   final ValueChanged<ChatPendingApprovalData> onApproveApproval;
   final ValueChanged<ChatPendingApprovalData> onRejectApproval;
-  final void Function(ChatMessageData, Rect) onMessageLongPress;
+  final void Function(ChatMessageData, Rect, String?) onMessageLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -4388,7 +4498,7 @@ class _ChatMessageBubble extends StatefulWidget {
   final Color backgroundColor;
   final Color textColor;
   final double maxWidth;
-  final void Function(ChatMessageData, Rect) onLongPress;
+  final void Function(ChatMessageData, Rect, String?) onLongPress;
 
   @override
   State<_ChatMessageBubble> createState() => _ChatMessageBubbleState();
@@ -4401,6 +4511,8 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
   Timer? _longPressTimer;
   Offset? _pointerDownGlobalPosition;
   bool _didOpenMenu = false;
+  String? _selectedText;
+  String? _selectedTextAtPointerDown;
 
   @override
   void dispose() {
@@ -4412,6 +4524,7 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
     _longPressTimer?.cancel();
     _pointerDownGlobalPosition = event.position;
     _didOpenMenu = false;
+    _selectedTextAtPointerDown = _selectedText;
     _longPressTimer = Timer(_menuDelay, _openMenuFromCurrentBounds);
   }
 
@@ -4429,6 +4542,7 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
     _longPressTimer?.cancel();
     _longPressTimer = null;
     _pointerDownGlobalPosition = null;
+    _selectedTextAtPointerDown = null;
   }
 
   void _openMenuFromCurrentBounds() {
@@ -4443,6 +4557,7 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
     widget.onLongPress(
       widget.message,
       renderObject.localToGlobal(Offset.zero) & renderObject.size,
+      _selectedTextAtPointerDown ?? _selectedText,
     );
   }
 
@@ -4471,6 +4586,10 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
                 context,
               ).copyWith(textSelectionTheme: selectionTheme),
               child: SelectionArea(
+                onSelectionChanged: (selection) {
+                  final String selectedText = selection?.plainText ?? '';
+                  _selectedText = selectedText.isEmpty ? null : selectedText;
+                },
                 contextMenuBuilder:
                     (
                       BuildContext context,

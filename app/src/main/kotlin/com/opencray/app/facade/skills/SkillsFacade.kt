@@ -3,6 +3,8 @@ package com.opencray.app.facade.skills
 import android.content.Context
 import com.opencray.app.AppSkillsStorage
 import com.opencray.app.OpenCrayLocaleManager
+import com.opencray.runtime.skills.SkillInstallManifestStore
+import com.opencray.runtime.skills.SkillPackageManager
 import com.opencray.skills.LoadedSkill
 import com.opencray.skills.SkillLoader
 import java.io.File
@@ -78,6 +80,13 @@ internal class LocalSkillsFacade private constructor(
   private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
   private val managedRoot = AppSkillsStorage.managedSkillsRootForContext(context)
   private val catalogRoot = AppSkillsStorage.catalogSkillsRootForContext(context)
+  private val packageManager = SkillPackageManager(
+    managedRoot = managedRoot,
+    catalogRoot = catalogRoot,
+    manifestStore = SkillInstallManifestStore.fromFile(
+      AppSkillsStorage.manifestFileForContext(context),
+    ),
+  )
 
   override fun loadSnapshot(query: String): SkillsSnapshot {
     val normalizedQuery = query.trim()
@@ -106,39 +115,26 @@ internal class LocalSkillsFacade private constructor(
   }
 
   override fun installSuggestedSkill(skillId: String): Boolean {
-    val loadedSkill = loadCatalogSkills().firstOrNull { skill -> skill.name == skillId } ?: return false
-    val sourceDirectory = File(loadedSkill.source.skillDirectoryPath)
-    if (!sourceDirectory.isDirectory) {
-      return false
-    }
-    if (!managedRoot.exists() && !managedRoot.mkdirs()) {
-      return false
-    }
-    val targetDirectory = File(managedRoot, sourceDirectory.name)
-    if (targetDirectory.exists() && !targetDirectory.deleteRecursively()) {
-      return false
-    }
-    return runCatching {
-      sourceDirectory.copyRecursively(targetDirectory, overwrite = true)
-      preferences.edit().putBoolean(preferenceKey(loadedSkill.name), true).apply()
-    }.isSuccess
+    val result = runCatching {
+      packageManager.installFromCatalog(skillId)
+    }.getOrNull() ?: return false
+    preferences.edit().putBoolean(preferenceKey(result.skillId), true).apply()
+    return true
   }
 
   override fun deleteInstalledSkill(skillId: String): Boolean {
-    val loadedSkill = loadManagedSkills().firstOrNull { skill -> skill.name == skillId } ?: return false
-    val sourceDirectory = File(loadedSkill.source.skillDirectoryPath)
-    if (!isInsideManagedRoot(sourceDirectory)) {
-      return false
-    }
-    val deleted = sourceDirectory.deleteRecursively()
-    if (deleted) {
-      preferences.edit().remove(preferenceKey(loadedSkill.name)).apply()
-    }
-    return deleted
+    val result = runCatching {
+      packageManager.removeInstalledSkill(skillId)
+    }.getOrNull() ?: return false
+    preferences.edit().remove(preferenceKey(result.skillId)).apply()
+    return true
   }
 
   override fun refresh() {
     // Filesystem-backed snapshots reload on every access, so refresh is an explicit rescan hook.
+    runCatching {
+      packageManager.refreshManifest()
+    }
     loadManagedSkills()
     loadCatalogSkills()
   }

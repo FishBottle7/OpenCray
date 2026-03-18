@@ -9,6 +9,12 @@ enum class OpenCrayRunLifecyclePhase {
   CANCELLED,
 }
 
+enum class OpenCrayApprovalPhase {
+  REQUIRED,
+  APPROVED,
+  REJECTED,
+}
+
 sealed interface OpenCrayAgentRunEvent {
   val runId: String
   val taskId: String
@@ -46,6 +52,17 @@ data class OpenCrayProgressEvent(
   override val emittedAtEpochMs: Long,
 ) : OpenCrayAgentRunEvent
 
+data class OpenCrayApprovalEvent(
+  override val runId: String,
+  override val taskId: String,
+  val phase: OpenCrayApprovalPhase,
+  val toolName: String? = null,
+  val text: String,
+  val isHighRisk: Boolean = false,
+  override val turn: Int? = null,
+  override val emittedAtEpochMs: Long,
+) : OpenCrayAgentRunEvent
+
 data class OpenCrayToolCallEvent(
   override val runId: String,
   override val taskId: String,
@@ -71,6 +88,16 @@ data class OpenCrayMemoryWriteEvent(
   val resolvedRecordIds: List<String> = emptyList(),
   val reaffirmedRecordIds: List<String> = emptyList(),
   val expiredRecordIds: List<String> = emptyList(),
+  override val turn: Int? = null,
+  override val emittedAtEpochMs: Long,
+) : OpenCrayAgentRunEvent
+
+data class OpenCrayCancellationEvent(
+  override val runId: String,
+  override val taskId: String,
+  val toolName: String? = null,
+  val outcome: String? = null,
+  val text: String,
   override val turn: Int? = null,
   override val emittedAtEpochMs: Long,
 ) : OpenCrayAgentRunEvent
