@@ -27,6 +27,8 @@ import com.opencray.runtime.policy.ProcessLifecycleIntentKind
 import com.opencray.runtime.policy.ToolTargetKind
 import com.opencray.runtime.policy.ToolTargetResolver
 import com.opencray.runtime.policy.ToolRuntimeIntent
+import com.opencray.runtime.policy.ToolResultEnvelope
+import com.opencray.runtime.policy.ToolResultLimitKind
 import com.opencray.runtime.policy.ToolWorkspaceRelation
 import com.opencray.runtime.process.AgentProcessRegistry
 import com.opencray.runtime.process.InMemoryAgentProcessRegistry
@@ -455,10 +457,10 @@ class OpenCrayToolDispatcher(
       ),
       AgentToolDefinition(
         name = "SkillsFind",
-        description = "Search the host-managed skills catalog that is available to this runtime.",
+        description = "Search installable skills from the remote skills index and the host-managed local catalog.",
         parameters = listOf(
-          AgentToolParameter("query", "string", required = false, description = "Optional case-insensitive text filter for skill name or description."),
-          AgentToolParameter("max_results", "number", required = false, description = "Maximum number of catalog results to return."),
+          AgentToolParameter("query", "string", required = false, description = "Optional case-insensitive search query. Non-blank queries also search the remote skills index."),
+          AgentToolParameter("max_results", "number", required = false, description = "Maximum number of combined results to return."),
         ),
       ),
       AgentToolDefinition(
@@ -467,9 +469,10 @@ class OpenCrayToolDispatcher(
       ),
       AgentToolDefinition(
         name = "SkillsAdd",
-        description = "Install one skill from the host-managed local skills catalog.",
+        description = "Install one skill from the host-managed local catalog, an explicit local path, or a supported remote source such as owner/repo, gitlab:group/project/repo, a GitHub URL, or a GitLab URL.",
         parameters = listOf(
-          AgentToolParameter("skill_id", "string", required = true, description = "Exact skill id from the catalog."),
+          AgentToolParameter("source_ref", "string", required = true, description = "Catalog skill id, explicit local path, owner/repo, owner/repo@skill-name, gitlab:group/project/repo, GitHub URL, GitLab URL, or supported git remote URL."),
+          AgentToolParameter("skill", "string", required = false, description = "Optional explicit skill name when a remote source exposes multiple skills."),
         ),
       ),
       AgentToolDefinition(
@@ -574,13 +577,13 @@ class OpenCrayToolDispatcher(
       affectedPaths = mapOf("path" to toolTargetResolver.displayModelPath(directory)),
     )?.let { return it }
 
-    val entries = Files.list(directory).use { stream ->
+    val (entries, truncated) = Files.list(directory).use { stream ->
       val collected = mutableListOf<Path>()
       val iterator = stream.sorted().iterator()
       while (iterator.hasNext() && collected.size < maxEntries) {
         collected.add(iterator.next())
       }
-      collected
+      collected to iterator.hasNext()
     }
     val rendered = if (entries.isEmpty()) {
       "Directory is empty."
@@ -594,9 +597,17 @@ class OpenCrayToolDispatcher(
       toolName = "workspace_list_files",
       status = AgentToolResultStatus.SUCCESS,
       content = rendered,
-      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
-        "path" to toolTargetResolver.displayModelPath(directory),
-        "entryCount" to entries.size.toString(),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "path" to toolTargetResolver.displayModelPath(directory),
+          "entryCount" to entries.size.toString(),
+        ),
+        resultEnvelope = ToolResultEnvelope(
+          limitApplied = true,
+          truncated = truncated,
+          limitKind = ToolResultLimitKind.DIRECTORY_ENTRY_LIMIT,
+        ),
       ),
     )
   }
@@ -625,10 +636,18 @@ class OpenCrayToolDispatcher(
       toolName = "workspace_read_file",
       status = AgentToolResultStatus.SUCCESS,
       content = body,
-      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
-        "path" to toolTargetResolver.displayModelPath(file),
-        "byteCount" to bytes.size.toString(),
-        "truncated" to truncated.toString(),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "path" to toolTargetResolver.displayModelPath(file),
+          "byteCount" to bytes.size.toString(),
+          "truncated" to truncated.toString(),
+        ),
+        resultEnvelope = ToolResultEnvelope(
+          limitApplied = true,
+          truncated = truncated,
+          limitKind = ToolResultLimitKind.READ_BYTE_BUDGET,
+        ),
       ),
     )
   }
@@ -670,13 +689,13 @@ class OpenCrayToolDispatcher(
       plan = plan,
       affectedPaths = mapOf("path" to toolTargetResolver.displayModelPath(directory)),
     )?.let { return it }
-    val entries = Files.list(directory).use { stream ->
+    val (entries, truncated) = Files.list(directory).use { stream ->
       val collected = mutableListOf<Path>()
       val iterator = stream.sorted().iterator()
       while (iterator.hasNext() && collected.size < maxEntries) {
         collected.add(iterator.next())
       }
-      collected
+      collected to iterator.hasNext()
     }
     val rendered = if (entries.isEmpty()) {
       "Directory is empty."
@@ -690,9 +709,17 @@ class OpenCrayToolDispatcher(
       toolName = "LS",
       status = AgentToolResultStatus.SUCCESS,
       content = rendered,
-      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
-        "path" to toolTargetResolver.displayModelPath(directory),
-        "entryCount" to entries.size.toString(),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "path" to toolTargetResolver.displayModelPath(directory),
+          "entryCount" to entries.size.toString(),
+        ),
+        resultEnvelope = ToolResultEnvelope(
+          limitApplied = true,
+          truncated = truncated,
+          limitKind = ToolResultLimitKind.DIRECTORY_ENTRY_LIMIT,
+        ),
       ),
     )
   }
@@ -740,14 +767,22 @@ class OpenCrayToolDispatcher(
       toolName = "Read",
       status = AgentToolResultStatus.SUCCESS,
       content = body,
-      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
-        "filePath" to toolTargetResolver.displayModelPath(file),
-        "byteCount" to bytes.size.toString(),
-        "totalLineCount" to lines.size.toString(),
-        "offset" to offset.toString(),
-        "returnedLineCount" to returnedLineCount.toString(),
-        "truncated" to truncated.toString(),
-      ) + (limit?.let { mapOf("limit" to it.toString()) } ?: emptyMap()),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "filePath" to toolTargetResolver.displayModelPath(file),
+          "byteCount" to bytes.size.toString(),
+          "totalLineCount" to lines.size.toString(),
+          "offset" to offset.toString(),
+          "returnedLineCount" to returnedLineCount.toString(),
+          "truncated" to truncated.toString(),
+        ) + (limit?.let { mapOf("limit" to it.toString()) } ?: emptyMap()),
+        resultEnvelope = ToolResultEnvelope(
+          limitApplied = true,
+          truncated = truncated,
+          limitKind = ToolResultLimitKind.READ_BYTE_BUDGET,
+        ),
+      ),
     )
   }
 
@@ -835,9 +870,12 @@ class OpenCrayToolDispatcher(
       toolName = toolName,
       status = AgentToolResultStatus.SUCCESS,
       content = "Imported ${toolTargetResolver.displayModelPath(source)} into ${toolTargetResolver.displayWritablePath(destination)}.",
-      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
-        "sourcePath" to toolTargetResolver.displayModelPath(source),
-        "destinationPath" to toolTargetResolver.displayWritablePath(destination),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "sourcePath" to toolTargetResolver.displayModelPath(source),
+          "destinationPath" to toolTargetResolver.displayWritablePath(destination),
+        ),
       ),
     )
   }
@@ -869,6 +907,7 @@ class OpenCrayToolDispatcher(
       },
     )?.let { return it }
     val matches = mutableListOf<String>()
+    var truncated = false
 
     for (file in collectRegularFiles(searchRoot)) {
       if (globMatcher != null && !globMatcher.matches(toolTargetResolver.displayModelPath(file))) {
@@ -893,6 +932,7 @@ class OpenCrayToolDispatcher(
       }.getOrElse { emptyList() }
       matches.addAll(fileMatches)
       if (matches.size >= maxResults) {
+        truncated = true
         break
       }
     }
@@ -901,11 +941,19 @@ class OpenCrayToolDispatcher(
       toolName = "Grep",
       status = AgentToolResultStatus.SUCCESS,
       content = matches.joinToString(separator = "\n").ifBlank { "No matches found." },
-      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
-        "path" to toolTargetResolver.displayModelPath(searchRoot),
-        "pattern" to pattern,
-        "matchCount" to matches.size.toString(),
-      ) + (arguments.optionalString("glob")?.let { mapOf("glob" to it) } ?: emptyMap()),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "path" to toolTargetResolver.displayModelPath(searchRoot),
+          "pattern" to pattern,
+          "matchCount" to matches.size.toString(),
+        ) + (arguments.optionalString("glob")?.let { mapOf("glob" to it) } ?: emptyMap()),
+        resultEnvelope = ToolResultEnvelope(
+          limitApplied = true,
+          truncated = truncated,
+          limitKind = ToolResultLimitKind.SEARCH_MATCH_LIMIT,
+        ),
+      ),
     )
   }
 
@@ -933,12 +981,14 @@ class OpenCrayToolDispatcher(
       ),
     )?.let { return it }
     val matches = mutableListOf<String>()
+    var truncated = false
 
     for (candidate in collectSearchCandidates(searchRoot)) {
       if (matcher.matches(toolTargetResolver.displayModelPath(candidate))) {
         matches.add(toolTargetResolver.displayModelPath(candidate))
       }
       if (matches.size >= maxResults) {
+        truncated = true
         break
       }
     }
@@ -947,10 +997,18 @@ class OpenCrayToolDispatcher(
       toolName = "Glob",
       status = AgentToolResultStatus.SUCCESS,
       content = matches.joinToString(separator = "\n").ifBlank { "No matches found." },
-      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
-        "path" to toolTargetResolver.displayModelPath(searchRoot),
-        "matchCount" to matches.size.toString(),
-        "pattern" to pattern,
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "path" to toolTargetResolver.displayModelPath(searchRoot),
+          "matchCount" to matches.size.toString(),
+          "pattern" to pattern,
+        ),
+        resultEnvelope = ToolResultEnvelope(
+          limitApplied = true,
+          truncated = truncated,
+          limitKind = ToolResultLimitKind.SEARCH_MATCH_LIMIT,
+        ),
       ),
     )
   }
@@ -1029,12 +1087,20 @@ class OpenCrayToolDispatcher(
       toolName = "WebSearch",
       status = AgentToolResultStatus.SUCCESS,
       content = rendered,
-      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
-        "providerName" to result.providerName,
-        "query" to query,
-        "resultCount" to result.results.size.toString(),
-        "requestedMaxResults" to maxResults.toString(),
-      ) + domainsMetadata(domains),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "providerName" to result.providerName,
+          "query" to query,
+          "resultCount" to result.results.size.toString(),
+          "requestedMaxResults" to maxResults.toString(),
+        ) + domainsMetadata(domains),
+        resultEnvelope = ToolResultEnvelope(
+          limitApplied = true,
+          truncated = false,
+          limitKind = ToolResultLimitKind.WEB_SEARCH_RESULT_LIMIT,
+        ),
+      ),
     )
   }
 
@@ -1088,14 +1154,21 @@ class OpenCrayToolDispatcher(
         }.trim(),
         errorCode = result.errorCode,
         errorMessage = result.errorMessage,
-        metadata = buildMap {
-          put("requestedUrl", result.requestedUrl)
-          put("finalUrl", result.finalUrl)
-          put("requestedMaxChars", maxChars.toString())
-          putAll(toolPolicyPipeline.policyMetadata(plan))
-          result.statusCode?.let { put("statusCode", it.toString()) }
-          result.contentType?.let { put("contentType", it) }
-        },
+        metadata = toolPolicyPipeline.resultMetadata(
+          plan = plan,
+          metadata = buildMap {
+            put("requestedUrl", result.requestedUrl)
+            put("finalUrl", result.finalUrl)
+            put("requestedMaxChars", maxChars.toString())
+            result.statusCode?.let { put("statusCode", it.toString()) }
+            result.contentType?.let { put("contentType", it) }
+          },
+          resultEnvelope = ToolResultEnvelope(
+            limitApplied = true,
+            truncated = result.truncated,
+            limitKind = ToolResultLimitKind.WEB_FETCH_CHAR_LIMIT,
+          ),
+        ),
       )
     }
 
@@ -1117,16 +1190,23 @@ class OpenCrayToolDispatcher(
         appendLine()
         append(result.content)
       }.trim(),
-      metadata = buildMap {
-        put("requestedUrl", result.requestedUrl)
-        put("finalUrl", result.finalUrl)
-        put("requestedMaxChars", maxChars.toString())
-        put("truncated", result.truncated.toString())
-        putAll(toolPolicyPipeline.policyMetadata(plan))
-        result.statusCode?.let { put("statusCode", it.toString()) }
-        result.contentType?.let { put("contentType", it) }
-        result.title?.let { put("title", it) }
-      },
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = buildMap {
+          put("requestedUrl", result.requestedUrl)
+          put("finalUrl", result.finalUrl)
+          put("requestedMaxChars", maxChars.toString())
+          put("truncated", result.truncated.toString())
+          result.statusCode?.let { put("statusCode", it.toString()) }
+          result.contentType?.let { put("contentType", it) }
+          result.title?.let { put("title", it) }
+        },
+        resultEnvelope = ToolResultEnvelope(
+          limitApplied = true,
+          truncated = result.truncated,
+          limitKind = ToolResultLimitKind.WEB_FETCH_CHAR_LIMIT,
+        ),
+      ),
     )
   }
 
@@ -1224,9 +1304,16 @@ class OpenCrayToolDispatcher(
       toolName = "TodoWrite",
       status = AgentToolResultStatus.SUCCESS,
       content = rendered,
-      metadata = mapOf(
-        "todoCount" to snapshot.size.toString(),
-        "mutated" to (todos != null).toString(),
+      metadata = toolPolicyPipeline.resultMetadata(
+        toolName = "TodoWrite",
+        request = ToolMetadataContextRequest(
+          workspaceRelation = ToolWorkspaceRelation.NONE,
+          targetSummary = "${snapshot.size} todo(s)",
+        ),
+        metadata = mapOf(
+          "todoCount" to snapshot.size.toString(),
+          "mutated" to (todos != null).toString(),
+        ),
       ),
     )
   }
@@ -1285,15 +1372,19 @@ class OpenCrayToolDispatcher(
               includeOutput = startedSnapshot.status != ManagedProcessStatus.RUNNING,
             ),
           )
-        }.trim(),
-        errorCode = startedSnapshot.errorCode,
-        errorMessage = startedSnapshot.errorMessage,
+      }.trim(),
+      errorCode = startedSnapshot.errorCode,
+      errorMessage = startedSnapshot.errorMessage,
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
         metadata = managedProcessMetadata(startedSnapshot) + mapOf(
           "waitTimeoutMs" to waitTimeoutMs.toString(),
           "background" to background.toString(),
         ),
-      )
-    }
+        resultEnvelope = managedProcessResultEnvelope(startedSnapshot),
+      ),
+    )
+  }
 
     val waitedSnapshot = processRegistry.wait(startedSnapshot.processId, waitTimeoutMs)
       ?: startedSnapshot
@@ -1306,9 +1397,13 @@ class OpenCrayToolDispatcher(
       }.trim(),
       errorCode = waitedSnapshot.errorCode,
       errorMessage = waitedSnapshot.errorMessage,
-      metadata = managedProcessMetadata(waitedSnapshot) + mapOf(
-        "waitTimeoutMs" to waitTimeoutMs.toString(),
-        "background" to background.toString(),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = managedProcessMetadata(waitedSnapshot) + mapOf(
+          "waitTimeoutMs" to waitTimeoutMs.toString(),
+          "background" to background.toString(),
+        ),
+        resultEnvelope = managedProcessResultEnvelope(waitedSnapshot),
       ),
     )
   }
@@ -1423,7 +1518,11 @@ class OpenCrayToolDispatcher(
       }.trim(),
       errorCode = snapshot.errorCode,
       errorMessage = snapshot.errorMessage,
-      metadata = managedProcessMetadata(snapshot),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = managedProcessMetadata(snapshot),
+        resultEnvelope = managedProcessResultEnvelope(snapshot),
+      ),
     )
   }
 
@@ -1608,15 +1707,16 @@ class OpenCrayToolDispatcher(
       toolName = "ProcessRead",
       status = AgentToolResultStatus.SUCCESS,
       content = renderManagedProcessSnapshot(snapshot, includeOutput = true),
-      metadata = managedProcessMetadata(snapshot) + toolPolicySupport.commonMetadata(
+      metadata = toolPolicyPipeline.resultMetadata(
         toolName = "ProcessRead",
-        metadataContext = policyMetadataContext(
-          toolName = "ProcessRead",
+        request = ToolMetadataContextRequest(
           targetKind = ToolTargetKind.PROCESS,
           primaryPath = managedProcessWorkingDirectoryPath(snapshot),
           primaryTargetPath = toolTargetResolver.displayWorkingDirectory(snapshot.workingDirectory),
           targetSummary = processId,
         ),
+        metadata = managedProcessMetadata(snapshot),
+        resultEnvelope = managedProcessResultEnvelope(snapshot),
       ),
     )
   }
@@ -1633,16 +1733,17 @@ class OpenCrayToolDispatcher(
         appendLine("Waited ${timeoutMs}ms for managed process.")
         append(renderManagedProcessSnapshot(snapshot, includeOutput = true))
       }.trim(),
-      metadata = managedProcessMetadata(snapshot) + toolPolicySupport.commonMetadata(
+      metadata = toolPolicyPipeline.resultMetadata(
         toolName = "ProcessWait",
-        metadataContext = policyMetadataContext(
-          toolName = "ProcessWait",
+        request = ToolMetadataContextRequest(
           targetKind = ToolTargetKind.PROCESS,
           primaryPath = managedProcessWorkingDirectoryPath(snapshot),
           primaryTargetPath = toolTargetResolver.displayWorkingDirectory(snapshot.workingDirectory),
           targetSummary = processId,
         ),
-      ) + mapOf("waitTimeoutMs" to timeoutMs.toString()),
+        metadata = managedProcessMetadata(snapshot) + mapOf("waitTimeoutMs" to timeoutMs.toString()),
+        resultEnvelope = managedProcessResultEnvelope(snapshot),
+      ),
     )
   }
 
@@ -1707,7 +1808,11 @@ class OpenCrayToolDispatcher(
         appendLine(terminationMessage)
         append(renderManagedProcessSnapshot(snapshot, includeOutput = true))
       }.trim(),
-      metadata = managedProcessMetadata(snapshot) + toolPolicyPipeline.policyMetadata(plan),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = managedProcessMetadata(snapshot),
+        resultEnvelope = managedProcessResultEnvelope(snapshot),
+      ),
     )
   }
 
@@ -1753,9 +1858,12 @@ class OpenCrayToolDispatcher(
       toolName = "workspace_move_file",
       status = AgentToolResultStatus.SUCCESS,
       content = "Moved ${toolTargetResolver.displayWritablePath(source)} to ${toolTargetResolver.displayWritablePath(destination)}.",
-      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
-        "sourcePath" to toolTargetResolver.displayWritablePath(source),
-        "destinationPath" to toolTargetResolver.displayWritablePath(destination),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "sourcePath" to toolTargetResolver.displayWritablePath(source),
+          "destinationPath" to toolTargetResolver.displayWritablePath(destination),
+        ),
       ),
     )
   }
@@ -1789,8 +1897,11 @@ class OpenCrayToolDispatcher(
       toolName = "workspace_delete_file",
       status = AgentToolResultStatus.SUCCESS,
       content = "Deleted ${toolTargetResolver.displayWritablePath(path)}.",
-      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
-        "path" to toolTargetResolver.displayWritablePath(path),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "path" to toolTargetResolver.displayWritablePath(path),
+        ),
       ),
     )
   }
@@ -1831,11 +1942,14 @@ class OpenCrayToolDispatcher(
       toolName = toolName,
       status = AgentToolResultStatus.SUCCESS,
       content = successMessage,
-      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
-        metadataPathKey to toolTargetResolver.displayPathForTool(toolName = toolName, path = path),
-        "checkpointId" to batchResult.checkpointId,
-        "checkpointEntryCount" to batchResult.checkpointEntryCount.toString(),
-      ) + extraMetadata,
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          metadataPathKey to toolTargetResolver.displayPathForTool(toolName = toolName, path = path),
+          "checkpointId" to batchResult.checkpointId,
+          "checkpointEntryCount" to batchResult.checkpointEntryCount.toString(),
+        ) + extraMetadata,
+      ),
     )
   }
 
@@ -2035,7 +2149,14 @@ class OpenCrayToolDispatcher(
       approvalToken = config.commandApprovalToken,
       hooks = hooks,
     )
-    return executionResult.toAgentToolResult(toolName = "command_exec")
+    val toolResult = executionResult.toAgentToolResult(toolName = "command_exec")
+    return toolResult.copy(
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = toolResult.metadata,
+        resultEnvelope = commandResultEnvelope(toolResult),
+      ),
+    )
   }
 
   private fun executePython(task: AgentTask, arguments: JsonObject): AgentToolResult {
@@ -2075,8 +2196,12 @@ class OpenCrayToolDispatcher(
     )
     val toolResult = executionResult.toAgentToolResult(toolName = "python_exec")
     return toolResult.copy(
-      metadata = toolResult.metadata + toolPolicyPipeline.policyMetadata(plan) + mapOf(
-        "scriptPath" to toolTargetResolver.displayWritablePath(scriptPath),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = toolResult.metadata + mapOf(
+          "scriptPath" to toolTargetResolver.displayWritablePath(scriptPath),
+        ),
+        resultEnvelope = commandResultEnvelope(toolResult),
       ),
     )
   }
@@ -2146,8 +2271,26 @@ class OpenCrayToolDispatcher(
     if (snapshot.outputLimitExceeded) {
       put("outputLimitExceeded", "true")
     }
-    putAll(snapshot.metadata)
+    putAll(snapshot.metadata.filterKeys(::isManagedProcessRuntimeMetadataKey))
   }
+
+  private fun managedProcessResultEnvelope(
+    snapshot: ManagedProcessSnapshot,
+  ): ToolResultEnvelope = ToolResultEnvelope(
+    limitApplied = true,
+    truncated = snapshot.outputLimitExceeded,
+    limitKind = ToolResultLimitKind.PROCESS_OUTPUT_BYTE_LIMIT,
+  )
+
+  private fun commandResultEnvelope(
+    result: AgentToolResult,
+  ): ToolResultEnvelope = ToolResultEnvelope(
+    limitApplied = true,
+    truncated = result.errorCode == "OUTPUT_LIMIT_EXCEEDED",
+    limitKind = ToolResultLimitKind.COMMAND_OUTPUT_BYTE_LIMIT,
+  )
+
+  private fun isManagedProcessRuntimeMetadataKey(key: String): Boolean = key !in MANAGED_PROCESS_RESERVED_METADATA_KEYS
 
   private fun renderManagedProcessSnapshot(
     snapshot: ManagedProcessSnapshot,
@@ -2288,6 +2431,15 @@ class OpenCrayToolDispatcher(
     val query = arguments.optionalString("query")?.trim().orEmpty()
     val maxResults = (arguments.optionalInt("max_results") ?: config.maxDirectoryEntries)
       .coerceIn(1, config.maxDirectoryEntries)
+    if (query.isNotBlank()) {
+      gateRemoteSkillNetworkAccess(
+        task = task,
+        resultToolName = "SkillsFind",
+        url = "https://skills.sh/api/search",
+        targetSummary = inlinePreview(query, maxChars = 256),
+        affectedPaths = mapOf("query" to query),
+      )?.let { return it }
+    }
     val catalogRoot = packageManager.catalogRootPath().toPath().toAbsolutePath().normalize()
     val plan = toolPolicyPipeline.plan(
       task = task,
@@ -2310,35 +2462,92 @@ class OpenCrayToolDispatcher(
     )?.let { return it }
 
     val installedSkillIds = packageManager.listManagedSkills().mapTo(linkedSetOf()) { skill -> skill.name }
-    val matches = packageManager.listCatalogSkills()
+    val localMatches = packageManager.listCatalogSkills()
       .asSequence()
       .filter { skill ->
         query.isBlank() ||
           skill.name.contains(query, ignoreCase = true) ||
           skill.metadata.skillSpec.description.contains(query, ignoreCase = true)
       }
-      .take(maxResults)
       .toList()
-    val content = if (matches.isEmpty()) {
+    val remoteSearch = if (query.isBlank()) {
+      null
+    } else {
+      packageManager.searchRemoteSkills(
+        query = query,
+        limit = maxResults,
+      )
+    }
+    if (remoteSearch?.errorCode != null && localMatches.isEmpty()) {
+      return AgentToolResult(
+        toolName = "SkillsFind",
+        status = AgentToolResultStatus.FAILED,
+        content = remoteSearch.errorMessage ?: "Remote skill search failed.",
+        errorCode = remoteSearch.errorCode,
+        errorMessage = remoteSearch.errorMessage,
+        metadata = toolPolicyPipeline.resultMetadata(
+          toolName = "SkillsFind",
+          request = ToolMetadataContextRequest(
+            targetKind = ToolTargetKind.NETWORK,
+            primaryTargetPath = "https://skills.sh/api/search",
+            workspaceRelation = ToolWorkspaceRelation.NONE,
+            targetSummary = inlinePreview(query, maxChars = 256),
+          ),
+          metadata = mapOf(
+            "query" to query,
+            "providerName" to remoteSearch.providerName,
+            "remoteResultCount" to "0",
+            "localResultCount" to "0",
+            "resultCount" to "0",
+          ),
+        ),
+      )
+    }
+
+    val remoteLines = remoteSearch?.hits
+      .orEmpty()
+      .take(maxResults)
+      .map { hit ->
+        val installState = if (hit.name in installedSkillIds) "installed_remote" else "remote"
+        "${hit.name}\t$installState\tinstall_ref=${hit.installRef}\tsource=${hit.source}\tinstalls=${hit.installs}\tdetail_url=${hit.detailUrl}"
+      }
+    val remainingLocalBudget = (maxResults - remoteLines.size).coerceAtLeast(0)
+    val localLines = localMatches
+      .take(remainingLocalBudget.takeIf { it > 0 } ?: 0)
+      .map { skill ->
+        val installState = if (skill.name in installedSkillIds) "installed_local" else "catalog"
+        "${skill.name}\t$installState\tsource=local_catalog\tdescription=${skill.metadata.skillSpec.description}"
+      }
+    val lines = buildList {
+      if (remoteSearch?.errorCode != null && localLines.isNotEmpty()) {
+        add("Remote search unavailable: ${remoteSearch.errorMessage ?: remoteSearch.errorCode}")
+      }
+      addAll(remoteLines)
+      addAll(localLines)
+    }
+    val content = if (lines.isEmpty()) {
       if (query.isBlank()) {
         "No skills were found in the host-managed catalog."
       } else {
-        "No catalog skills matched '$query'."
+        "No local or remote skills matched '$query'."
       }
     } else {
-      matches.joinToString(separator = "\n") { skill ->
-        val installState = if (skill.name in installedSkillIds) "installed" else "available"
-        "${skill.name}\t$installState\tdescription=${skill.metadata.skillSpec.description}"
-      }
+      lines.joinToString(separator = "\n")
     }
     return AgentToolResult(
       toolName = "SkillsFind",
       status = AgentToolResultStatus.SUCCESS,
       content = content,
-      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
-        "path" to displaySkillPackagePath(catalogRoot),
-        "query" to query,
-        "resultCount" to matches.size.toString(),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "path" to displaySkillPackagePath(catalogRoot),
+          "query" to query,
+          "providerName" to (remoteSearch?.providerName ?: "local-catalog"),
+          "remoteResultCount" to remoteLines.size.toString(),
+          "localResultCount" to localLines.size.toString(),
+          "resultCount" to (remoteLines.size + localLines.size).toString(),
+        ),
       ),
     )
   }
@@ -2379,9 +2588,12 @@ class OpenCrayToolDispatcher(
       toolName = "SkillsList",
       status = AgentToolResultStatus.SUCCESS,
       content = content,
-      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
-        "path" to displaySkillPackagePath(managedRoot),
-        "skillCount" to managedSkills.size.toString(),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "path" to displaySkillPackagePath(managedRoot),
+          "skillCount" to managedSkills.size.toString(),
+        ),
       ),
     )
   }
@@ -2391,7 +2603,127 @@ class OpenCrayToolDispatcher(
     arguments: JsonObject,
   ): AgentToolResult {
     val packageManager = config.skillPackageManager ?: return unavailableSkillPackageManager(toolName = "SkillsAdd")
-    val skillId = arguments.requiredStringFrom("skill_id", "skillId", "name")
+    val sourceRef = arguments.requiredStringFrom("source_ref", "sourceRef", "skill_id", "skillId", "name")
+    val selectedSkillName = arguments.optionalStringFrom("skill", "selected_skill", "selectedSkill")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val localSourcePath = resolveExplicitLocalSkillSourcePath(sourceRef)
+    if (localSourcePath != null) {
+      gateLocalSkillSourceReadAccess(
+        task = task,
+        resultToolName = "SkillsAdd",
+        sourcePath = localSourcePath,
+        sourceRef = sourceRef,
+      )?.let { return it }
+
+      val managedRoot = packageManager.managedRootPath().toPath().toAbsolutePath().normalize()
+      val displayManagedRoot = displaySkillPackagePath(managedRoot)
+      val localPlan = toolPolicyPipeline.plan(
+        task = task,
+        toolName = "SkillsAdd",
+        targetPath = managedRoot,
+        metadataRequest = ToolMetadataContextRequest(
+          targetKind = ToolTargetKind.DIRECTORY,
+          primaryPath = managedRoot,
+          primaryTargetPath = displayManagedRoot,
+          targetSummary = "$sourceRef -> $displayManagedRoot",
+        ),
+      )
+      toolPolicyPipeline.gateFileMutation(
+        plan = localPlan,
+        affectedPaths = mapOf("path" to displayManagedRoot),
+      )?.let { return it }
+
+      val attempt = packageManager.installFromLocalSource(
+        sourcePath = localSourcePath.toFile(),
+        sourceRef = sourceRef,
+        selectedSkillName = selectedSkillName,
+      )
+      val result = attempt.result ?: return AgentToolResult(
+        toolName = "SkillsAdd",
+        status = AgentToolResultStatus.FAILED,
+        content = attempt.errorMessage ?: "Failed to install '$sourceRef' from the local source.",
+        errorCode = attempt.errorCode ?: "SKILL_INSTALL_FAILED",
+        errorMessage = attempt.errorMessage,
+      )
+      return AgentToolResult(
+        toolName = "SkillsAdd",
+        status = AgentToolResultStatus.SUCCESS,
+        content = "Installed skill '${result.skillId}' from local source '$sourceRef'.",
+        metadata = toolPolicyPipeline.resultMetadata(
+          plan = localPlan,
+          metadata = mapOf(
+            "path" to displaySkillPackagePath(result.targetDirectory.toPath().toAbsolutePath().normalize()),
+            "skillId" to result.skillId,
+            "sourceType" to result.manifestEntry.sourceType,
+            "sourceRef" to result.manifestEntry.sourceRef,
+          ),
+        ),
+      )
+    }
+
+    val remoteSource = packageManager.resolveRemoteSource(
+      sourceRef = sourceRef,
+      selectedSkillName = selectedSkillName,
+    )
+    if (remoteSource != null) {
+      gateRemoteSkillNetworkAccess(
+        task = task,
+        resultToolName = "SkillsAdd",
+        url = remoteSource.policyTargetUrl,
+        targetSummary = remoteSource.requestedSourceRef,
+        affectedPaths = mapOf("sourceRef" to remoteSource.requestedSourceRef),
+      )?.let { return it }
+
+      val managedRoot = packageManager.managedRootPath().toPath().toAbsolutePath().normalize()
+      val displayManagedRoot = displaySkillPackagePath(managedRoot)
+      val remotePlan = toolPolicyPipeline.plan(
+        task = task,
+        toolName = "SkillsAdd",
+        targetPath = managedRoot,
+        metadataRequest = ToolMetadataContextRequest(
+          targetKind = ToolTargetKind.DIRECTORY,
+          primaryPath = managedRoot,
+          primaryTargetPath = displayManagedRoot,
+          targetSummary = "${remoteSource.requestedSourceRef} -> $displayManagedRoot",
+        ),
+      )
+      toolPolicyPipeline.gateFileMutation(
+        plan = remotePlan,
+        affectedPaths = mapOf("path" to displayManagedRoot),
+      )?.let { return it }
+
+      val attempt = packageManager.installFromRemoteSource(
+        sourceRef = sourceRef,
+        selectedSkillName = selectedSkillName,
+      )
+      val result = attempt.result ?: return AgentToolResult(
+        toolName = "SkillsAdd",
+        status = AgentToolResultStatus.FAILED,
+        content = attempt.errorMessage ?: "Failed to install '$sourceRef' from the remote source.",
+        errorCode = attempt.errorCode ?: "SKILL_INSTALL_FAILED",
+        errorMessage = attempt.errorMessage,
+      )
+      return AgentToolResult(
+        toolName = "SkillsAdd",
+        status = AgentToolResultStatus.SUCCESS,
+        content = "Installed skill '${result.skillId}' from remote source '${result.manifestEntry.sourceRef}'.",
+        metadata = toolPolicyPipeline.resultMetadata(
+          plan = remotePlan,
+          metadata = mapOf(
+            "path" to displaySkillPackagePath(result.targetDirectory.toPath().toAbsolutePath().normalize()),
+            "skillId" to result.skillId,
+            "sourceType" to result.manifestEntry.sourceType,
+            "sourceRef" to result.manifestEntry.sourceRef,
+          ) + listOfNotNull(
+            result.manifestEntry.resolvedRevision?.let { "resolvedRevision" to it },
+            result.manifestEntry.resolvedCommitSha?.let { "resolvedCommitSha" to it },
+          ).toMap(),
+        ),
+      )
+    }
+
+    val skillId = sourceRef
     val targetDirectory = packageManager.resolveCatalogInstallTarget(skillId)
       ?: return AgentToolResult(
         toolName = "SkillsAdd",
@@ -2428,10 +2760,13 @@ class OpenCrayToolDispatcher(
       toolName = "SkillsAdd",
       status = AgentToolResultStatus.SUCCESS,
       content = "Installed skill '${result.skillId}' from the host-managed catalog.",
-      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
-        "path" to displayPath,
-        "skillId" to result.skillId,
-        "sourceType" to result.manifestEntry.sourceType,
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "path" to displayPath,
+          "skillId" to result.skillId,
+          "sourceType" to result.manifestEntry.sourceType,
+        ),
       ),
     )
   }
@@ -2478,9 +2813,12 @@ class OpenCrayToolDispatcher(
       toolName = "SkillsRemove",
       status = AgentToolResultStatus.SUCCESS,
       content = "Removed skill '${result.skillId}' from the host-managed skills directory.",
-      metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
-        "path" to displayPath,
-        "skillId" to result.skillId,
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "path" to displayPath,
+          "skillId" to result.skillId,
+        ),
       ),
     )
   }
@@ -2744,6 +3082,80 @@ class OpenCrayToolDispatcher(
     denyDetail = "Policy denied ${plan.toolName}.",
   )
 
+  private fun gateLocalSkillSourceReadAccess(
+    task: AgentTask,
+    resultToolName: String,
+    sourcePath: Path,
+    sourceRef: String,
+  ): AgentToolResult? {
+    val normalizedSourcePath = sourcePath.toAbsolutePath().normalize()
+    val displayPath = toolTargetResolver.displayModelPath(normalizedSourcePath)
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "Read",
+      targetPath = normalizedSourcePath,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = if (Files.isDirectory(normalizedSourcePath)) ToolTargetKind.DIRECTORY else ToolTargetKind.FILE,
+        primaryPath = normalizedSourcePath,
+        primaryTargetPath = displayPath,
+        targetSummary = sourceRef,
+      ),
+    )
+    return toolPolicyPipeline.gate(
+      plan = plan,
+      affectedPaths = mapOf("sourcePath" to displayPath),
+      askDetail = "Approval is required before $resultToolName can read the local skill source.",
+      denyDetail = "Policy denied $resultToolName local source access.",
+    )?.copy(toolName = resultToolName)
+  }
+
+  private fun gateRemoteSkillNetworkAccess(
+    task: AgentTask,
+    resultToolName: String,
+    url: String,
+    targetSummary: String,
+    affectedPaths: Map<String, String> = emptyMap(),
+  ): AgentToolResult? {
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "WebFetch",
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        primaryTargetPath = url,
+        workspaceRelation = ToolWorkspaceRelation.NONE,
+        targetSummary = targetSummary,
+      ),
+    )
+    return toolPolicyPipeline.gate(
+      plan = plan,
+      affectedPaths = affectedPaths,
+      askDetail = "Approval is required before $resultToolName can access the remote skills service.",
+      denyDetail = "Policy denied $resultToolName remote network access.",
+    )?.copy(toolName = resultToolName)
+  }
+
+  private fun resolveExplicitLocalSkillSourcePath(sourceRef: String): Path? {
+    if (!looksLikeExplicitLocalSkillSource(sourceRef)) {
+      return null
+    }
+    return runCatching {
+      toolTargetResolver.resolveReadablePath(
+        candidate = sourceRef,
+        label = "skill source",
+        defaultToRoot = false,
+      )
+    }.getOrNull()
+  }
+
+  private fun looksLikeExplicitLocalSkillSource(sourceRef: String): Boolean {
+    val normalized = sourceRef.trim()
+    return normalized.startsWith(".") ||
+      normalized.startsWith("/") ||
+      normalized.startsWith("\\") ||
+      normalized.contains("\\") ||
+      WINDOWS_ABSOLUTE_PATH_REGEX.matches(normalized)
+  }
+
   private fun JsonObject.requiredString(name: String): String =
     optionalString(name)?.takeIf { it.isNotBlank() }
       ?: throw IllegalArgumentException("Required argument '$name' must be a non-blank string.")
@@ -2892,6 +3304,31 @@ class OpenCrayToolDispatcher(
     private const val DEFAULT_BASH_WAIT_TIMEOUT_MS: Long = 1_000L
     private const val DEFAULT_MANAGED_PROCESS_TIMEOUT_MS: Long = 300_000L
     private const val DEFAULT_MANAGED_PROCESS_WAIT_TIMEOUT_MS: Long = 1_000L
+    private val WINDOWS_ABSOLUTE_PATH_REGEX: Regex = Regex("^[A-Za-z]:[\\\\/].+")
+    private val MANAGED_PROCESS_RESERVED_METADATA_KEYS: Set<String> = setOf(
+      "capabilityKind",
+      "targetKind",
+      "workspaceRelation",
+      "primaryTargetPath",
+      "secondaryTargetPath",
+      "targetSummary",
+      "executionMode",
+      "policyOutcome",
+      "policyReasonCode",
+      "approvalRisk",
+      "intentCategory",
+      "executionIntentKind",
+      "executionTransport",
+      "executionCommandPreview",
+      "executionScriptPath",
+      "executionWorkingDirectory",
+      "processLifecycleIntentKind",
+      "intentProcessId",
+      "intentWorkingDirectory",
+      "resultLimitApplied",
+      "resultTruncated",
+      "resultLimitKind",
+    )
   }
 
   private fun bashStartSummary(

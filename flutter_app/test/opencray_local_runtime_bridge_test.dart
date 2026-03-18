@@ -320,6 +320,7 @@ void main() {
           ],
           'workspaceAccessProfileId': 'work',
           'readOnlyOutsideWorkspace': true,
+          'liveContextModeId': capturedBody['liveContextModeId'],
         });
       };
 
@@ -341,16 +342,19 @@ void main() {
         recordingsEnabled: false,
         workspaceAccessProfileId: 'work',
         readOnlyOutsideWorkspace: true,
+        liveContextModeId: 'no_soul',
       );
 
       expect(capturedBody['automationModeId'], 'dev');
       expect(capturedBody['maxAgentTurns'], 0);
       expect(capturedBody['maxToolCalls'], 0);
       expect(capturedBody['fileDeletesPolicyId'], 'block');
+      expect(capturedBody['liveContextModeId'], 'no_soul');
       expect(snapshot.automationModeId, 'dev');
       expect(snapshot.maxAgentTurns, 0);
       expect(snapshot.maxToolCalls, 0);
       expect(snapshot.fileDeletesPolicyId, 'block');
+      expect(snapshot.liveContextModeId, 'no_soul');
     },
   );
 

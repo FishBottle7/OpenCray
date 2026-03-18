@@ -53,7 +53,7 @@ class ChatRuntimeSessionContextFactoryTest {
     val context = ChatRuntimeSessionContextFactory(store).create(
       sessionId = sessionId,
       excludedMessageIds = setOf(pendingMessageId),
-      soulProfile = PersonalizationLocalStore.SoulProfile(
+      soulProfile = WorkspaceSoulProfile(
         presetName = "BUILDER",
         customLabel = "Night Shift",
         customGuidance = "Stay direct.",
@@ -117,16 +117,15 @@ class ChatRuntimeSessionContextFactoryTest {
   }
 
   @Test
-  fun createForwardsManagedSoulExtensionsGeneratedByPersonalizationStore() {
+  fun createForwardsManagedSoulExtensionsGeneratedByWorkspaceSoulStore() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-soul-extensions"))
-    val personalizationStore = PersonalizationLocalStore(
-      temporaryFolder.newFolder("personalization-store"),
-      nowEpochMs = IncrementingClock(3_000L)::next,
-    )
+    val workspaceRoot = temporaryFolder.newFolder("workspace-soul-extensions").toPath()
+    val soulStore = WorkspaceSoulProfileStore()
     val state = chatStore.loadState()
     val sessionId = state.activeSession.sessionId
-    personalizationStore.saveSoulProfile(
-      PersonalizationLocalStore.SoulProfile(
+    soulStore.saveSoulProfile(
+      workspaceRoot,
+      WorkspaceSoulProfile(
         presetName = "BUILDER",
         customLabel = "Night Shift",
         customGuidance = "Stay direct.",
@@ -135,7 +134,7 @@ class ChatRuntimeSessionContextFactoryTest {
 
     val context = ChatRuntimeSessionContextFactory(chatStore).create(
       sessionId = sessionId,
-      soulProfile = personalizationStore.loadSoulProfile(),
+      soulProfile = soulStore.loadSoulProfile(workspaceRoot),
     )
 
     assertEquals("builder", context.soulProfile?.extensions?.get(SoulProfileExtensionKeys.TONE))

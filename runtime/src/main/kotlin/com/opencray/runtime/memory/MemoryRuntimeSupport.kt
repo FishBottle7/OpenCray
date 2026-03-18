@@ -18,6 +18,7 @@ internal data class VisibleMemoryRecord(
   val lastConfirmedAtEpochMs: Long,
   val preferenceKey: String? = null,
   val preferenceValue: String? = null,
+  val extensions: Map<String, String> = emptyMap(),
 )
 
 internal fun memoryScopeMatches(

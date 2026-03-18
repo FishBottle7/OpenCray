@@ -8,6 +8,7 @@ import com.opencray.app.OpenCrayLocaleManager
 import com.opencray.app.PersonalizationLocalStore
 import com.opencray.app.PersonalizationPreset
 import com.opencray.app.PersonalizationResetPreview
+import com.opencray.app.WorkspaceSoulProfile
 import com.opencray.app.WorkspaceSoulProfileStore
 import java.nio.file.Path
 import org.opencray.app.R
@@ -160,7 +161,7 @@ internal class LocalPersonalizationFacade private constructor(
 
   override fun save(request: SavePersonalizationConfigRequest): PersonalizationConfigSnapshot {
     val preset = PersonalizationPreset.fromRaw(request.presetId)
-    val profile = PersonalizationLocalStore.SoulProfile(
+    val profile = WorkspaceSoulProfile(
       presetName = preset.name,
       customLabel = request.customLabel.trim(),
       customGuidance = request.customGuidance.trim(),
@@ -193,7 +194,7 @@ internal class LocalPersonalizationFacade private constructor(
   }
 
   private fun snapshotFor(
-    profile: PersonalizationLocalStore.SoulProfile,
+    profile: WorkspaceSoulProfile,
   ): PersonalizationConfigSnapshot {
     val preset = PersonalizationPreset.fromRaw(profile.presetName)
     val appLanguage = LocaleSettingsStore.fromContext(context).loadLanguage()
@@ -359,8 +360,8 @@ internal class LocalPersonalizationFacade private constructor(
     AppLanguage.SIMPLIFIED_CHINESE -> R.string.settings_language_simplified_chinese
   }
 
-  private fun PersonalizationLocalStore.SoulProfile?.orDefault(): PersonalizationLocalStore.SoulProfile =
-    this ?: PersonalizationLocalStore.SoulProfile(
+  private fun WorkspaceSoulProfile?.orDefault(): WorkspaceSoulProfile =
+    this ?: WorkspaceSoulProfile(
       presetName = PersonalizationPreset.STEADY.name,
       customLabel = "",
       customGuidance = "",

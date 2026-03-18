@@ -138,4 +138,24 @@ internal class ToolPolicyPipeline(
       request = request,
     ),
   )
+
+  fun resultMetadata(
+    plan: ToolPolicyPlan,
+    metadata: Map<String, String> = emptyMap(),
+    resultEnvelope: ToolResultEnvelope? = null,
+    includeOutcome: Boolean = false,
+  ): Map<String, String> = policyMetadata(
+    plan = plan,
+    includeOutcome = includeOutcome,
+  ) + resultEnvelope?.metadata().orEmpty() + metadata
+
+  fun resultMetadata(
+    toolName: String,
+    request: ToolMetadataContextRequest = ToolMetadataContextRequest(),
+    metadata: Map<String, String> = emptyMap(),
+    resultEnvelope: ToolResultEnvelope? = null,
+  ): Map<String, String> = commonMetadata(
+    toolName = toolName,
+    request = request,
+  ) + resultEnvelope?.metadata().orEmpty() + metadata
 }

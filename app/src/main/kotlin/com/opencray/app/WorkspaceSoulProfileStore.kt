@@ -10,7 +10,7 @@ internal data class WorkspaceSoulDocument(
   val file: Path,
   val relativePath: String,
   val content: String,
-  val profile: PersonalizationLocalStore.SoulProfile?,
+  val profile: WorkspaceSoulProfile?,
 )
 
 internal class WorkspaceSoulProfileStore(
@@ -31,12 +31,12 @@ internal class WorkspaceSoulProfileStore(
     )
   }
 
-  fun loadSoulProfile(workspaceRoot: Path?): PersonalizationLocalStore.SoulProfile? =
+  fun loadSoulProfile(workspaceRoot: Path?): WorkspaceSoulProfile? =
     loadSoulDocument(workspaceRoot)?.profile
 
   fun saveSoulProfile(
     workspaceRoot: Path,
-    profile: PersonalizationLocalStore.SoulProfile,
+    profile: WorkspaceSoulProfile,
   ) {
     val normalizedRoot = workspaceRoot.toAbsolutePath().normalize()
     val target = normalizedRoot.resolve(SOUL_FILE_NAME).normalize()
@@ -68,9 +68,9 @@ internal class WorkspaceSoulProfileStore(
   }
 
   private fun mergedProfile(
-    existingProfile: PersonalizationLocalStore.SoulProfile?,
-    incomingProfile: PersonalizationLocalStore.SoulProfile,
-  ): PersonalizationLocalStore.SoulProfile {
+    existingProfile: WorkspaceSoulProfile?,
+    incomingProfile: WorkspaceSoulProfile,
+  ): WorkspaceSoulProfile {
     val normalizedPresetName = incomingProfile.presetName.trim()
     val explicitExtensions = incomingProfile.extensions
       .mapNotNull { (rawKey, rawValue) ->
@@ -103,7 +103,7 @@ internal class WorkspaceSoulProfileStore(
         normalizedKey to normalizedValue
       }
       .toMap(linkedMapOf())
-    return PersonalizationLocalStore.SoulProfile(
+    return WorkspaceSoulProfile(
       presetName = normalizedPresetName,
       customLabel = incomingProfile.customLabel.trim(),
       customGuidance = incomingProfile.customGuidance.trim(),
@@ -111,7 +111,7 @@ internal class WorkspaceSoulProfileStore(
     )
   }
 
-  private fun parseSoulProfile(content: String): PersonalizationLocalStore.SoulProfile? {
+  private fun parseSoulProfile(content: String): WorkspaceSoulProfile? {
     val normalizedContent = content.replace("\r\n", "\n").trim()
     if (normalizedContent.isBlank()) {
       return null
@@ -138,7 +138,7 @@ internal class WorkspaceSoulProfileStore(
       .toMap(linkedMapOf())
     val managedExtensions = soulExtensionFactory.createManagedExtensions(presetName)
     val mergedExtensions = managedExtensions + explicitExtensions
-    val profile = PersonalizationLocalStore.SoulProfile(
+    val profile = WorkspaceSoulProfile(
       presetName = presetName,
       customLabel = customLabel.trim(),
       customGuidance = customGuidance.trim(),
@@ -156,7 +156,7 @@ internal class WorkspaceSoulProfileStore(
     }
   }
 
-  private fun renderDocument(profile: PersonalizationLocalStore.SoulProfile): String = buildString {
+  private fun renderDocument(profile: WorkspaceSoulProfile): String = buildString {
     appendLine("---")
     appendLine("kind: opencray_soul")
     profile.presetName

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/bridge/opencray_host_bridge.dart';
 import '../../core/copy/opencray_ui_copy.dart';
@@ -39,6 +40,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
   late SkillsPage _selectedPage = widget.initialPage;
   late final TextEditingController _searchController = TextEditingController()
     ..addListener(_onQueryChanged);
+  Timer? _searchDebounce;
   StreamSubscription<OpenCraySkillsSnapshot>? _skillsSubscription;
 
   OpenCraySkillsSnapshot _snapshot = const OpenCraySkillsSnapshot(
@@ -47,8 +49,11 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
     suggestedSkills: <OpenCraySuggestedSkillSnapshot>[],
   );
   bool _isLoaded = false;
+  bool _isSearching = false;
   bool _hasOpenedInitialActions = false;
+  String? _pendingInstallSourceRef;
   String _query = '';
+  int _skillsRequestEpoch = 0;
 
   @override
   void initState() {
@@ -60,24 +65,30 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
       if (!mounted) {
         return;
       }
-      setState(() {
-        _snapshot = snapshot;
-        _isLoaded = true;
-      });
-      _openInitialActionsIfNeeded();
+      if (_query.trim().isEmpty) {
+        setState(() {
+          _snapshot = snapshot;
+          _isLoaded = true;
+          _isSearching = false;
+        });
+        _openInitialActionsIfNeeded();
+      } else {
+        _reloadSkillsSnapshot(showErrorMessage: false);
+      }
     });
   }
 
   @override
   void dispose() {
     _skillsSubscription?.cancel();
+    _searchDebounce?.cancel();
     _searchController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final filteredSuggested = _filteredSuggestedSkills();
+    final availableSkills = _snapshot.suggestedSkills;
     final installedSkills = _snapshot.installedSkills;
     return ColoredBox(
       color: _shellBackground,
@@ -127,7 +138,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
                     .where((skill) => skill.isEnabled)
                     .length,
                 installedCount: installedSkills.length,
-                suggestedCount: filteredSuggested.length,
+                suggestedCount: availableSkills.length,
               ),
               const SizedBox(height: 12),
               _SegmentedControl(
@@ -139,7 +150,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
               if (_selectedPage == SkillsPage.manage)
                 _buildManagePage(installedSkills)
               else
-                _buildInstallPage(filteredSuggested),
+                _buildInstallPage(availableSkills),
             ],
           ),
         ),
@@ -202,8 +213,9 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
   }
 
   Widget _buildInstallPage(
-    List<OpenCraySuggestedSkillSnapshot> filteredSuggested,
+    List<OpenCraySuggestedSkillSnapshot> availableSkills,
   ) {
+    final trimmedQuery = _query.trim();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -211,6 +223,13 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
           controller: _searchController,
           hintText: widget.copy.skillsSearchHint,
         ),
+        if (_isSearching) ...[
+          const SizedBox(height: 10),
+          const ClipRRect(
+            borderRadius: BorderRadius.all(Radius.circular(999)),
+            child: LinearProgressIndicator(minHeight: 3),
+          ),
+        ],
         const SizedBox(height: 14),
         Text(
           widget.copy.skillsInstallFromTitle,
@@ -250,9 +269,21 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
             ],
           ),
         ),
+        if (trimmedQuery.isNotEmpty) ...[
+          const SizedBox(height: 14),
+          _DirectInstallCard(
+            title: widget.copy.skillsDirectInstallTitle,
+            body: widget.copy.skillsDirectInstallBody(trimmedQuery),
+            buttonLabel: widget.copy.skillsInstallButton,
+            isInstalling: _pendingInstallSourceRef == trimmedQuery,
+            onInstall: () => _installFromSource(trimmedQuery),
+          ),
+        ],
         const SizedBox(height: 14),
         Text(
-          widget.copy.skillsSuggestedTitle,
+          trimmedQuery.isEmpty
+              ? widget.copy.skillsSuggestedTitle
+              : widget.copy.skillsResultsTitle,
           style: const TextStyle(
             fontSize: 13,
             height: 1.2,
@@ -263,10 +294,14 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
         const SizedBox(height: 10),
         if (!_isLoaded)
           const _LoadingCard()
-        else if (filteredSuggested.isEmpty)
+        else if (availableSkills.isEmpty)
           _EmptyCard(
-            title: widget.copy.skillsNoCatalogTitle,
-            body: widget.copy.skillsNoCatalogBody,
+            title: trimmedQuery.isEmpty
+                ? widget.copy.skillsNoCatalogTitle
+                : widget.copy.skillsNoResultsTitle,
+            body: trimmedQuery.isEmpty
+                ? widget.copy.skillsNoCatalogBody
+                : widget.copy.skillsNoResultsBody(trimmedQuery),
           )
         else
           DecoratedBox(
@@ -278,16 +313,19 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
               children: [
                 for (
                   var index = 0;
-                  index < filteredSuggested.length;
+                  index < availableSkills.length;
                   index++
                 ) ...[
                   _SuggestedRow(
-                    item: filteredSuggested[index],
+                    item: availableSkills[index],
                     installLabel: widget.copy.skillsInstallButton,
+                    isInstalling:
+                        _pendingInstallSourceRef ==
+                        availableSkills[index].sourceRef,
                     onInstall: () =>
-                        _installSuggestedSkill(filteredSuggested[index]),
+                        _installSuggestedSkill(availableSkills[index]),
                   ),
-                  if (index < filteredSuggested.length - 1)
+                  if (index < availableSkills.length - 1)
                     const Divider(
                       height: 1,
                       color: _border,
@@ -302,45 +340,51 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
     );
   }
 
-  List<OpenCraySuggestedSkillSnapshot> _filteredSuggestedSkills() {
-    final query = _query.trim().toLowerCase();
-    if (query.isEmpty) {
-      return _snapshot.suggestedSkills;
-    }
-    return _snapshot.suggestedSkills
-        .where((skill) {
-          return skill.name.toLowerCase().contains(query) ||
-              skill.description.toLowerCase().contains(query);
-        })
-        .toList(growable: false);
-  }
-
   Future<void> _hydrate() async {
-    try {
-      final snapshot = await widget.bridge.loadSkillsSnapshot();
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _snapshot = snapshot;
-        _isLoaded = true;
-      });
-      _openInitialActionsIfNeeded();
-    } catch (_) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _isLoaded = true;
-      });
-      _showMessage(widget.copy.skillsLoadFailed);
-    }
+    await _reloadSkillsSnapshot(showErrorMessage: true);
   }
 
   void _onQueryChanged() {
     setState(() {
       _query = _searchController.text;
     });
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 250), () {
+      _reloadSkillsSnapshot(showErrorMessage: false);
+    });
+  }
+
+  Future<void> _reloadSkillsSnapshot({required bool showErrorMessage}) async {
+    final requestEpoch = ++_skillsRequestEpoch;
+    final query = _query.trim();
+    if (mounted) {
+      setState(() {
+        _isSearching = query.isNotEmpty;
+      });
+    }
+    try {
+      final snapshot = await widget.bridge.loadSkillsSnapshot(query: query);
+      if (!mounted || requestEpoch != _skillsRequestEpoch) {
+        return;
+      }
+      setState(() {
+        _snapshot = snapshot;
+        _isLoaded = true;
+        _isSearching = false;
+      });
+      _openInitialActionsIfNeeded();
+    } catch (error) {
+      if (!mounted || requestEpoch != _skillsRequestEpoch) {
+        return;
+      }
+      setState(() {
+        _isLoaded = true;
+        _isSearching = false;
+      });
+      if (showErrorMessage) {
+        _showMessage(_errorMessage(error) ?? widget.copy.skillsLoadFailed);
+      }
+    }
   }
 
   void _openInitialActionsIfNeeded() {
@@ -416,20 +460,63 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
   Future<void> _installSuggestedSkill(
     OpenCraySuggestedSkillSnapshot skill,
   ) async {
+    await _installFromSource(skill.sourceRef, fallbackName: skill.name);
+  }
+
+  Future<void> _installFromSource(
+    String sourceRef, {
+    String? fallbackName,
+  }) async {
+    final normalizedSourceRef = sourceRef.trim();
+    if (normalizedSourceRef.isEmpty) {
+      return;
+    }
+    setState(() {
+      _pendingInstallSourceRef = normalizedSourceRef;
+    });
     try {
-      final message = await widget.bridge.installSuggestedSkill(skill.id);
+      final message = await widget.bridge.installSkillSource(
+        normalizedSourceRef,
+      );
       if (mounted && message != null && message.isNotEmpty) {
         _showMessage(message);
       }
-    } catch (_) {
+      if (mounted && _query.trim() == normalizedSourceRef) {
+        _searchController.clear();
+      }
+    } catch (error) {
       if (mounted) {
-        _showMessage(widget.copy.skillsInstallFailed(skill.name));
+        _showMessage(
+          _errorMessage(error) ??
+              widget.copy.skillsInstallFailed(
+                fallbackName ?? normalizedSourceRef,
+              ),
+        );
+      }
+    } finally {
+      if (mounted && _pendingInstallSourceRef == normalizedSourceRef) {
+        setState(() {
+          _pendingInstallSourceRef = null;
+        });
       }
     }
   }
 
   void _handleInstallSource(OpenCraySkillInstallSourceSnapshot source) {
+    if (source.id == 'curated-library' && _searchController.text.isNotEmpty) {
+      _searchController.clear();
+    }
     _showMessage(source.subtitle);
+  }
+
+  String? _errorMessage(Object error) {
+    if (error is PlatformException) {
+      final message = error.message?.trim();
+      if (message != null && message.isNotEmpty) {
+        return message;
+      }
+    }
+    return null;
   }
 
   Future<void> _openActionsSheet(OpenCrayInstalledSkillSnapshot skill) async {
@@ -953,11 +1040,13 @@ class _SuggestedRow extends StatelessWidget {
   const _SuggestedRow({
     required this.item,
     required this.installLabel,
+    required this.isInstalling,
     required this.onInstall,
   });
 
   final OpenCraySuggestedSkillSnapshot item;
   final String installLabel;
+  final bool isInstalling;
   final VoidCallback onInstall;
 
   @override
@@ -971,6 +1060,26 @@ class _SuggestedRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF1F2F6),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    item.sourceLabel,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      height: 1.1,
+                      fontWeight: FontWeight.w600,
+                      color: _textSecondary,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
                 Text(
                   item.name,
                   style: const TextStyle(
@@ -995,25 +1104,114 @@ class _SuggestedRow extends StatelessWidget {
           const SizedBox(width: 12),
           InkWell(
             borderRadius: BorderRadius.circular(999),
-            onTap: onInstall,
+            onTap: isInstalling ? null : onInstall,
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
-                color: const Color(0xFFEEF5FF),
+                color: isInstalling
+                    ? const Color(0xFFF1F2F6)
+                    : const Color(0xFFEEF5FF),
                 borderRadius: BorderRadius.circular(999),
               ),
               child: Text(
-                installLabel,
-                style: const TextStyle(
+                isInstalling ? '...' : installLabel,
+                style: TextStyle(
                   fontSize: 12,
                   height: 1.1,
                   fontWeight: FontWeight.w600,
-                  color: _accent,
+                  color: isInstalling ? _textSecondary : _accent,
                 ),
               ),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _DirectInstallCard extends StatelessWidget {
+  const _DirectInstallCard({
+    required this.title,
+    required this.body,
+    required this.buttonLabel,
+    required this.isInstalling,
+    required this.onInstall,
+  });
+
+  final String title;
+  final String body;
+  final String buttonLabel;
+  final bool isInstalling;
+  final VoidCallback onInstall;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        color: _surface,
+        borderRadius: BorderRadius.all(Radius.circular(16)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Icon(Icons.bolt_rounded, color: _accent, size: 20),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      height: 1.2,
+                      fontWeight: FontWeight.w600,
+                      color: _textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    body,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      height: 1.3,
+                      color: _textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            InkWell(
+              borderRadius: BorderRadius.circular(999),
+              onTap: isInstalling ? null : onInstall,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: isInstalling
+                      ? const Color(0xFFF1F2F6)
+                      : const Color(0xFFEEF5FF),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  isInstalling ? '...' : buttonLabel,
+                  style: TextStyle(
+                    fontSize: 12,
+                    height: 1.1,
+                    fontWeight: FontWeight.w600,
+                    color: isInstalling ? _textSecondary : _accent,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

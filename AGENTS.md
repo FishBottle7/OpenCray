@@ -28,6 +28,8 @@ Do not commit secrets, local SDK paths, or device-specific config. Treat workspa
 New runtime tools that cross filesystem, process, or network boundaries must go through `runtime/src/main/kotlin/com/opencray/runtime/policy/ToolPolicyPipeline.kt`.
 Normalize the tool surface first, resolve targets before execution, evaluate policy through the shared pipeline, and emit shared policy metadata from the pipeline result.
 If a tool crosses an execution or process-lifecycle boundary, add an explicit runtime intent model and emit its metadata through the same pipeline instead of relying on the tool name downstream.
+If a tool returns bounded output, emit the shared result-limit metadata from the pipeline path instead of inventing handler-local truncation keys.
+If a tool is session-state only, such as `TodoWrite`, still emit shared common/result metadata through the pipeline helpers instead of returning a bare metadata map.
 Do not hand-roll approval or deny results, or duplicate policy metadata assembly, inside individual tool handlers.
 
 ## UI Prototype Implementation Rules

@@ -6,6 +6,8 @@ enum WorkspaceAccessProfile { work, ask, open }
 
 enum ExternalAccessMode { blockAll, selectPaths }
 
+enum LiveContextMode { full, lightweight, none, noSoul, noMemoryOrSoul }
+
 extension SafetyAutomationModeWire on SafetyAutomationMode {
   String get id {
     switch (this) {
@@ -58,6 +60,23 @@ extension ExternalAccessModeWire on ExternalAccessMode {
   }
 }
 
+extension LiveContextModeWire on LiveContextMode {
+  String get id {
+    switch (this) {
+      case LiveContextMode.full:
+        return 'full';
+      case LiveContextMode.lightweight:
+        return 'lightweight';
+      case LiveContextMode.none:
+        return 'none';
+      case LiveContextMode.noSoul:
+        return 'no_soul';
+      case LiveContextMode.noMemoryOrSoul:
+        return 'no_memory_or_soul';
+    }
+  }
+}
+
 SafetyAutomationMode safetyAutomationModeFromId(String id) {
   switch (id) {
     case 'safe':
@@ -102,6 +121,21 @@ ExternalAccessMode externalAccessModeFromId(String id) {
   }
 }
 
+LiveContextMode liveContextModeFromId(String id) {
+  switch (id) {
+    case 'lightweight':
+      return LiveContextMode.lightweight;
+    case 'none':
+      return LiveContextMode.none;
+    case 'no_soul':
+      return LiveContextMode.noSoul;
+    case 'no_memory_or_soul':
+      return LiveContextMode.noMemoryOrSoul;
+    default:
+      return LiveContextMode.full;
+  }
+}
+
 class SafetyLocationSetting {
   const SafetyLocationSetting({required this.id, required this.enabled});
 
@@ -127,6 +161,7 @@ class SafetySettingsSnapshot {
     required this.locations,
     required this.workspaceAccessProfile,
     required this.readOnlyOutsideWorkspace,
+    this.liveContextMode = LiveContextMode.full,
   });
 
   final SafetyAutomationMode automationMode;
@@ -142,6 +177,7 @@ class SafetySettingsSnapshot {
   final List<SafetyLocationSetting> locations;
   final WorkspaceAccessProfile workspaceAccessProfile;
   final bool readOnlyOutsideWorkspace;
+  final LiveContextMode liveContextMode;
 
   int get approvedRootsCount =>
       1 +
@@ -169,6 +205,7 @@ class SafetySettingsSnapshot {
     List<SafetyLocationSetting>? locations,
     WorkspaceAccessProfile? workspaceAccessProfile,
     bool? readOnlyOutsideWorkspace,
+    LiveContextMode? liveContextMode,
   }) {
     return SafetySettingsSnapshot(
       automationMode: automationMode ?? this.automationMode,
@@ -187,6 +224,7 @@ class SafetySettingsSnapshot {
           workspaceAccessProfile ?? this.workspaceAccessProfile,
       readOnlyOutsideWorkspace:
           readOnlyOutsideWorkspace ?? this.readOnlyOutsideWorkspace,
+      liveContextMode: liveContextMode ?? this.liveContextMode,
     );
   }
 

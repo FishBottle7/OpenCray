@@ -88,17 +88,30 @@ Status as of 2026-03-18:
 
 - `SkillInstallManifestStore` and `SkillPackageManager` are now in place for local catalog installs
 - the existing local catalog install/remove path has been routed through `SkillPackageManager`
-- the first native runtime tools now exist for the local-only slice:
+- the native runtime tools now cover the first remote-capable slice:
   - `SkillsFind`
   - `SkillsList`
   - `SkillsAdd`
   - `SkillsRemove`
+- `SkillsFind` now queries the upstream remote index at `skills.sh/api/search` for non-blank queries and merges those hits with the local catalog
+- `SkillsAdd` now supports:
+  - local catalog ids
+  - explicit local directory paths and direct `SKILL.md` file paths
+  - `owner/repo`
+  - `owner/repo@skill-name`
+  - `gitlab:group/project/repo`
+  - `gitlab:group/project/repo@skill-name`
+  - GitHub repository, `tree/...`, and supported git remote URLs
+  - GitLab repository, `-/tree/...`, and supported git remote URLs
+- remote installs are fetched through a host-owned hosted-git archive downloader, staged locally, validated with `SkillLoader`, and then installed through the same manifest-managed path as local catalog installs
 - these tools run through `OpenCrayToolDispatcher` and the shared `ToolPolicyPipeline`
 
 Important boundary update:
 
 - skills package-manager tools operate on host-managed roots under app-private storage, not the user workspace
 - to keep them inside the unified tool pipeline, policy evaluation now needs explicit approved host-managed read/write roots outside the workspace root
+- that approved write scope includes the package-manager staging root as well as the final managed skills root, so remote fetch and validation do not write outside the tool's declared policy envelope
+- remote `SkillsFind` and remote `SkillsAdd` calls now also take an explicit network approval path through the shared policy system instead of tunneling remote fetches through a private host bridge
 - this is preferable to bypassing the pipeline through host-only bridge methods because approvals, metadata, and audit traces stay consistent with the rest of the tool system
 
 ## Scope
@@ -584,6 +597,15 @@ Exit condition:
 Exit condition:
 
 - OpenCray can search and install a remote skill without shelling out to Node/npm
+
+Status:
+
+- implemented on the shared package-manager pipeline:
+  - remote search through `skills.sh/api/search`
+  - GitHub shorthand, GitLab shorthand, hosted GitHub/GitLab URLs, and supported git remote source resolution
+  - explicit local path installs without falling back to a shell compatibility layer
+  - remote archive download, staging, validation, and manifest provenance
+- broader source parity beyond hosted GitHub/GitLab forms can build on the same pipeline and package-manager surface
 
 ### Phase 3: Provenance-driven maintenance
 

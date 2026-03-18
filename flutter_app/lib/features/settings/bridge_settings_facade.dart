@@ -201,6 +201,7 @@ class BridgeSettingsFacade implements SettingsFacade {
       recordingsEnabled: snapshot.isLocationEnabled('recordings'),
       workspaceAccessProfileId: snapshot.workspaceAccessProfile.id,
       readOnlyOutsideWorkspace: snapshot.readOnlyOutsideWorkspace,
+      liveContextModeId: snapshot.liveContextMode.id,
     ),
   );
 
@@ -472,6 +473,7 @@ class BridgeSettingsFacade implements SettingsFacade {
         snapshot.workspaceAccessProfileId,
       ),
       readOnlyOutsideWorkspace: snapshot.readOnlyOutsideWorkspace,
+      liveContextMode: liveContextModeFromId(snapshot.liveContextModeId),
     );
   }
 }

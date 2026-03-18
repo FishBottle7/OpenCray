@@ -346,6 +346,7 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     required bool recordingsEnabled,
     required String workspaceAccessProfileId,
     required bool readOnlyOutsideWorkspace,
+    String liveContextModeId = 'full',
   }) async => OpenCraySafetySettingsSnapshot.fromMap(
     await _postMap('v1/save_safety_settings', <String, Object?>{
       'automationModeId': automationModeId,
@@ -364,12 +365,21 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
       'recordingsEnabled': recordingsEnabled,
       'workspaceAccessProfileId': workspaceAccessProfileId,
       'readOnlyOutsideWorkspace': readOnlyOutsideWorkspace,
+      'liveContextModeId': liveContextModeId,
     }),
   );
 
   @override
-  Future<OpenCraySkillsSnapshot> loadSkillsSnapshot() async =>
-      OpenCraySkillsSnapshot.fromMap(await _getMap('v1/skills_snapshot'));
+  Future<OpenCraySkillsSnapshot> loadSkillsSnapshot({
+    String query = '',
+  }) async => OpenCraySkillsSnapshot.fromMap(
+    await _getMap(
+      'v1/skills_snapshot',
+      queryParameters: query.trim().isEmpty
+          ? null
+          : <String, String>{'query': query},
+    ),
+  );
 
   @override
   Stream<OpenCraySkillsSnapshot> watchSkillsSnapshot() => _watchMap(
@@ -385,6 +395,12 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
 
   @override
   Future<String?> refreshSkills() => _postNullableString('v1/refresh_skills');
+
+  @override
+  Future<String?> installSkillSource(String sourceRef) => _postNullableString(
+    'v1/install_skill_source',
+    <String, Object?>{'sourceRef': sourceRef},
+  );
 
   @override
   Future<String?> installSuggestedSkill(String skillId) => _postNullableString(

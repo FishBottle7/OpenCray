@@ -4,6 +4,7 @@ import com.opencray.llm.LiteLlmProviderClient
 import com.opencray.llm.LiteLlmProviderRequest
 import com.opencray.llm.LiteLlmProviderResult
 import com.opencray.runtime.memory.MemoryKind
+import com.opencray.runtime.memory.MemoryInteractionPreferenceExtensionKeys
 import com.opencray.runtime.memory.MemoryPreferenceKeys
 import com.opencray.runtime.memory.MemoryScope
 import com.opencray.runtime.memory.MemorySoulExtensionKeys
@@ -37,6 +38,16 @@ class LiteLlmUserMemoryIntentInterpreterTest {
               "preference_key":"agent_display_name",
               "preference_value":"小白",
               "soul_extensions":{"soul_display_name":"小白"}
+            },
+            {
+              "kind":"user_preference",
+              "scope":"user",
+              "preference_key":"interaction_preference_signal",
+              "preference_value":"adaptive",
+              "preference_extensions":{
+                "interaction_preference_warmth_direction":"higher",
+                "interaction_preference_formality_direction":"lower"
+              }
             },
             {
               "kind":"user_preference",
@@ -79,16 +90,20 @@ class LiteLlmUserMemoryIntentInterpreterTest {
     )
 
     val success = result as UserMemoryIntentInterpretation.Success
-    assertEquals(5, success.intents.size)
+    assertEquals(6, success.intents.size)
     assertEquals("gpt-4o-mini", providerClient.lastRequest?.route?.model)
     assertEquals("Bearer test-key", providerClient.lastRequest?.request?.authHeaders?.get("Authorization"))
     val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
     assertTrue(prompt.contains("git reset --hard"))
-    assertTrue(prompt.contains("relationship_style_profile is for durable relationship evolution"))
+    assertTrue(prompt.contains("interaction_preference_signal is the preferred key for durable adaptive relationship drift"))
+    assertTrue(prompt.contains("relationship_style_profile is a legacy compatibility key"))
     assertTrue(prompt.contains("agent_style_profile is only for current-run acting mode"))
     assertTrue(prompt.contains("agent_verbosity always uses session scope"))
     assertTrue(prompt.contains("user_preferred_name stores how the agent should address the user"))
     assertTrue(prompt.contains("user_address_style stores the desired user-addressing closeness"))
+    assertTrue(prompt.contains("preference_extensions may only be used with interaction_preference_signal or the legacy relationship_style_profile key"))
+    assertTrue(prompt.contains("Prefer interaction_preference_signal for durable adaptive-style drift"))
+    assertTrue(prompt.contains(MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION))
     assertTrue(prompt.contains("Never output soul_risk_tolerance or soul_tool_use_bias"))
     assertFalse(
       prompt.contains(
@@ -100,6 +115,9 @@ class LiteLlmUserMemoryIntentInterpreterTest {
     val displayName = success.intents.first { intent ->
       intent.preferenceKey == MemoryPreferenceKeys.AGENT_DISPLAY_NAME
     }
+    val interactionPreferenceSignal = success.intents.first { intent ->
+      intent.preferenceKey == MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL
+    }
     val preferredName = success.intents.first { intent ->
       intent.preferenceKey == MemoryPreferenceKeys.USER_PREFERRED_NAME
     }
@@ -110,6 +128,8 @@ class LiteLlmUserMemoryIntentInterpreterTest {
     assertEquals(MemoryScope.USER, preference.scope)
     assertEquals(MemoryScope.WORKSPACE, instruction.scope)
     assertEquals("小白", displayName.soulExtensions[MemorySoulExtensionKeys.DISPLAY_NAME])
+    assertEquals("higher", interactionPreferenceSignal.preferenceExtensions[MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION])
+    assertEquals("lower", interactionPreferenceSignal.preferenceExtensions[MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION])
     assertEquals("阿澄", preferredName.soulExtensions[MemorySoulExtensionKeys.PREFERRED_NAMING])
     assertEquals("friendly", addressStyle.soulExtensions[MemorySoulExtensionKeys.PREFERRED_ADDRESS_STYLE])
   }

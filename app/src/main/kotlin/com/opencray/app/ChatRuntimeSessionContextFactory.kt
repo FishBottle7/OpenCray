@@ -5,7 +5,6 @@ import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.runtime.context.AgentRuntimeSessionContext
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
-import com.opencray.runtime.context.RuntimeSoulProfile
 
 internal class ChatRuntimeSessionContextFactory(
   private val chatSessionStore: ChatSessionLocalStore,
@@ -14,7 +13,7 @@ internal class ChatRuntimeSessionContextFactory(
     sessionId: String,
     visibleThroughMessageId: String? = null,
     excludedMessageIds: Set<String> = emptySet(),
-    soulProfile: PersonalizationLocalStore.SoulProfile? = null,
+    soulProfile: WorkspaceSoulProfile? = null,
   ): AgentRuntimeSessionContext {
     val session = chatSessionStore.loadSession(sessionId)
     val sessionPolicyText = resolveSessionPolicyText(session)
@@ -85,25 +84,6 @@ internal class ChatRuntimeSessionContextFactory(
         ChatTranscriptRole.SYSTEM -> return null
       },
       content = content,
-    )
-  }
-
-  private fun PersonalizationLocalStore.SoulProfile.toRuntimeSoulProfile(): RuntimeSoulProfile =
-    RuntimeSoulProfile(
-      presetName = presetName.ifBlank { null },
-      displayName = customLabel.ifBlank { null },
-      customGuidance = customGuidance.ifBlank { null },
-      extensions = extensions.filter { (key, value) ->
-        key.isNotBlank() &&
-          value.isNotBlank() &&
-          !RuntimeSoulReservedKeys.contains(key.trim().lowercase())
-      },
-    )
-
-  private companion object {
-    val RuntimeSoulReservedKeys: Set<String> = setOf(
-      "preset",
-      "custom_guidance",
     )
   }
 }

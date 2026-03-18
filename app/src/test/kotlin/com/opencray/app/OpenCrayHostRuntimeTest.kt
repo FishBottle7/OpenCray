@@ -24,6 +24,13 @@ import com.opencray.app.facade.safety.SafetySettingsFacade
 import com.opencray.app.facade.safety.SafetySettingsLocationSnapshot
 import com.opencray.app.facade.safety.SafetySettingsSnapshot
 import com.opencray.app.facade.safety.SaveSafetySettingsRequest
+import com.opencray.app.facade.skills.InstallSourceSnapshot
+import com.opencray.app.facade.skills.InstalledSkillSnapshot
+import com.opencray.app.facade.skills.SkillInstallRequestResult
+import com.opencray.app.facade.skills.SkillInstructionsSnapshot
+import com.opencray.app.facade.skills.SkillsFacade
+import com.opencray.app.facade.skills.SkillsSnapshot
+import com.opencray.app.facade.skills.SuggestedSkillSnapshot
 import com.opencray.app.facade.settings.SettingsDetailSnapshot
 import com.opencray.app.facade.settings.SettingsFacade
 import com.opencray.app.facade.settings.SettingsOverviewSnapshot
@@ -589,6 +596,41 @@ class OpenCrayHostRuntimeTest {
     val snapshot = hostRuntime.loadChatSnapshot()
 
     assertEquals("SAFE", snapshot["modeLabel"])
+  }
+
+  @Test
+  fun saveSafetySettingsPersistsLiveContextMode() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-live-context-mode"))
+    val safetyFacade = RecordingSafetySettingsFacade()
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = RecordingRuntimeManager(),
+      safetySettingsFacade = safetyFacade,
+    )
+
+    val payload = hostRuntime.saveSafetySettings(
+      automationModeId = SafetyAutomationMode.AUTO.wireValue,
+      rollbackJournalEnabled = true,
+      maxFilesPerBatch = 20,
+      maxAgentTurns = 0,
+      maxToolCalls = 0,
+      undoWindowHours = 24,
+      fileChangesPolicyId = ToolPolicyOverride.INHERIT.wireValue,
+      fileDeletesPolicyId = ToolPolicyOverride.INHERIT.wireValue,
+      shellCommandsPolicyId = ToolPolicyOverride.INHERIT.wireValue,
+      externalAccessModeId = ExternalAccessMode.SELECT_PATHS.wireValue,
+      photoLibraryEnabled = true,
+      downloadsEnabled = true,
+      documentsEnabled = false,
+      recordingsEnabled = false,
+      workspaceAccessProfileId = WorkspaceAccessProfile.WORK.wireValue,
+      readOnlyOutsideWorkspace = true,
+      liveContextModeId = LiveContextMode.NO_SOUL.wireValue,
+    )
+
+    assertEquals(LiveContextMode.NO_SOUL.wireValue, payload["liveContextModeId"])
+    assertEquals(LiveContextMode.NO_SOUL.wireValue, safetyFacade.lastSavedRequest?.liveContextModeId)
+    assertEquals(LiveContextMode.NO_SOUL, safetyFacade.snapshot.liveContextMode)
   }
 
   @Test
@@ -1381,6 +1423,9 @@ class OpenCrayHostRuntimeTest {
             "returnedLineCount" to "2",
             "totalLineCount" to "12",
             "truncated" to "false",
+            "resultLimitApplied" to "true",
+            "resultTruncated" to "false",
+            "resultLimitKind" to "read_byte_budget",
             "checkpointId" to "hidden-checkpoint",
           ),
         ),
@@ -1399,6 +1444,9 @@ class OpenCrayHostRuntimeTest {
     assertEquals("2", resultMetadata["returnedLineCount"])
     assertEquals("12", resultMetadata["totalLineCount"])
     assertEquals("false", resultMetadata["truncated"])
+    assertEquals("true", resultMetadata["resultLimitApplied"])
+    assertEquals("false", resultMetadata["resultTruncated"])
+    assertEquals("read_byte_budget", resultMetadata["resultLimitKind"])
     assertFalse(resultMetadata.containsKey("checkpointId"))
   }
 
@@ -2237,6 +2285,9 @@ class OpenCrayHostRuntimeTest {
         finishedAtEpochMs = 1_001L,
         metadata = task.metadata + mapOf(
           "responseFormat" to "json_final",
+          "contextLiveMode" to "no_soul",
+          "contextLiveSoulEnabled" to "false",
+          "contextLiveMemoryRecallEnabled" to "true",
           "contextBootstrapMode" to "full",
           "contextBootstrapVisibleFileCount" to "2",
           "contextBootstrapInjectedFileCount" to "2",
@@ -2249,11 +2300,15 @@ class OpenCrayHostRuntimeTest {
     )
 
     val runSnapshot = hostRuntime.loadChatRunSnapshot(submission["runId"] as String)!!
+    val liveContext = runSnapshot["liveContext"] as Map<*, *>
     val bootstrap = runSnapshot["bootstrap"] as Map<*, *>
     val files = bootstrap["files"] as List<*>
     val firstFile = files[0] as Map<*, *>
     val secondFile = files[1] as Map<*, *>
 
+    assertEquals("no_soul", liveContext["mode"])
+    assertEquals(false, liveContext["soulEnabled"])
+    assertEquals(true, liveContext["memoryRecallEnabled"])
     assertEquals("full", bootstrap["mode"])
     assertEquals(2, bootstrap["visibleFileCount"])
     assertEquals(2, bootstrap["injectedFileCount"])
@@ -3042,7 +3097,7 @@ class OpenCrayHostRuntimeTest {
     val workspaceRoot = temporaryFolder.newFolder("workspace-soul-debug").toPath()
     WorkspaceSoulProfileStore().saveSoulProfile(
       workspaceRoot,
-      PersonalizationLocalStore.SoulProfile(
+      WorkspaceSoulProfile(
         presetName = "STEADY",
         customLabel = "Night Shift",
         customGuidance = "Keep replies calm and concrete.",
@@ -3186,6 +3241,57 @@ class OpenCrayHostRuntimeTest {
     assertEquals("relationship-state", highIntimacySource["recordId"])
   }
 
+  @Test
+  fun loadSkillsSnapshotForwardsQueryToSkillsFacade() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-skills-query"))
+    val skillsFacade = TestSkillsFacade().apply {
+      snapshot = SkillsSnapshot(
+        installedSkills = emptyList(),
+        installSources = emptyList(),
+        suggestedSkills = listOf(
+          SuggestedSkillSnapshot(
+            id = "roin-orca/skills/find-skills",
+            name = "find-skills",
+            description = "Remote result",
+            sourceRef = "roin-orca/skills@find-skills",
+            sourceLabel = "skills.sh",
+          ),
+        ),
+      )
+    }
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = NoOpRuntimeManager(),
+      skillsFacade = skillsFacade,
+    )
+
+    val payload = hostRuntime.loadSkillsSnapshot(query = "find")
+
+    assertEquals("find", skillsFacade.lastLoadedQuery)
+    val suggestedSkills = payload["suggestedSkills"] as List<*>
+    val firstResult = suggestedSkills.first() as Map<*, *>
+    assertEquals("roin-orca/skills@find-skills", firstResult["sourceRef"])
+    assertEquals("skills.sh", firstResult["sourceLabel"])
+  }
+
+  @Test
+  fun installSkillSourceUsesSkillsFacadeAndReturnsInstalledSkillMessage() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-install-source"))
+    val skillsFacade = TestSkillsFacade().apply {
+      installResult = SkillInstallRequestResult(installedSkillId = "find-skills")
+    }
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = NoOpRuntimeManager(),
+      skillsFacade = skillsFacade,
+    )
+
+    val message = hostRuntime.installSkillSource("roin-orca/skills@find-skills")
+
+    assertEquals("roin-orca/skills@find-skills", skillsFacade.lastInstalledSourceRef)
+    assertEquals("Installed find-skills.", message)
+  }
+
   private fun hostRuntime(
     chatStore: ChatSessionLocalStore,
     runtimeManager: AgentSessionRuntimeManager,
@@ -3195,6 +3301,7 @@ class OpenCrayHostRuntimeTest {
     personalizationLocalStore: PersonalizationLocalStore? = null,
     mcpSettingsFacade: McpSettingsFacade = RecordingMcpSettingsFacade(),
     safetySettingsFacade: SafetySettingsFacade = RecordingSafetySettingsFacade(),
+    skillsFacade: SkillsFacade = TestSkillsFacade(),
     memoryIngestionCoordinator: ChatMemoryIngestionCoordinator? = null,
     workspaceRootProvider: (() -> Path)? = null,
     approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot = {
@@ -3216,6 +3323,7 @@ class OpenCrayHostRuntimeTest {
     personalizationLocalStore = personalizationLocalStore,
     mcpSettingsFacade = mcpSettingsFacade,
     safetySettingsFacade = safetySettingsFacade,
+    skillsFacade = skillsFacade,
     sessionRuntimeManager = runtimeManager,
     workspaceRootProvider = workspaceRootProvider,
     approvedReadRootsProvider = approvedReadRootsProvider,
@@ -3269,6 +3377,56 @@ class OpenCrayHostRuntimeTest {
       subtitle = "",
       sections = emptyList(),
     )
+  }
+
+  private class TestSkillsFacade : SkillsFacade {
+    var lastLoadedQuery: String? = null
+    var lastInstalledSourceRef: String? = null
+    var snapshot: SkillsSnapshot = SkillsSnapshot(
+      installedSkills = emptyList(),
+      installSources = emptyList(),
+      suggestedSkills = emptyList(),
+    )
+    var installResult: SkillInstallRequestResult = SkillInstallRequestResult(
+      errorMessage = "Not configured.",
+    )
+
+    override fun loadSnapshot(query: String): SkillsSnapshot {
+      lastLoadedQuery = query
+      return snapshot
+    }
+
+    override fun setSkillEnabled(skillId: String, enabled: Boolean): Boolean = true
+
+    override fun installSkillSource(sourceRef: String): SkillInstallRequestResult {
+      lastInstalledSourceRef = sourceRef
+      return installResult
+    }
+
+    override fun installSuggestedSkill(skillId: String): Boolean =
+      installSkillSource(skillId).succeeded
+
+    override fun deleteInstalledSkill(skillId: String): Boolean = true
+
+    override fun refresh() = Unit
+
+    override fun loadInstructions(skillId: String): SkillInstructionsSnapshot? = null
+
+    override fun enabledSkillRoots(): List<java.io.File> = emptyList()
+
+    override fun activateInstallSource(sourceId: String): String = sourceId
+  }
+
+  private class NoOpRuntimeManager : AgentSessionRuntimeManager {
+    override fun forSession(sessionId: String): AgentSessionHandle = RecordingSessionHandle(
+      sessionId = sessionId,
+    )
+
+    override fun observe(listener: AgentSessionRuntimeListener): () -> Unit = {}
+
+    override fun release(sessionId: String) = Unit
+
+    override fun releaseIdleSessions() = Unit
   }
 
   private class RecordingLlmConfigFacade(
@@ -3485,6 +3643,7 @@ class OpenCrayHostRuntimeTest {
         ),
         workspaceAccessProfile = WorkspaceAccessProfile.fromWireValue(request.workspaceAccessProfileId),
         readOnlyOutsideWorkspace = request.readOnlyOutsideWorkspace,
+        liveContextMode = LiveContextMode.fromWireValue(request.liveContextModeId),
       )
       return snapshot
     }

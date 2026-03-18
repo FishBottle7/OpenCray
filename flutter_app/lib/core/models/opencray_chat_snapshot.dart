@@ -498,6 +498,28 @@ class OpenCrayChatRunMemoryFlushSnapshot {
   }
 }
 
+class OpenCrayChatRunLiveContextSnapshot {
+  const OpenCrayChatRunLiveContextSnapshot({
+    this.mode,
+    this.soulEnabled,
+    this.memoryRecallEnabled,
+  });
+
+  final String? mode;
+  final bool? soulEnabled;
+  final bool? memoryRecallEnabled;
+
+  factory OpenCrayChatRunLiveContextSnapshot.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    return OpenCrayChatRunLiveContextSnapshot(
+      mode: map['mode'] as String?,
+      soulEnabled: map['soulEnabled'] as bool?,
+      memoryRecallEnabled: map['memoryRecallEnabled'] as bool?,
+    );
+  }
+}
+
 class OpenCrayChatRunBootstrapFileSnapshot {
   const OpenCrayChatRunBootstrapFileSnapshot({
     required this.name,
@@ -726,6 +748,7 @@ class OpenCrayChatRunSnapshot {
     this.responseFormat,
     this.pendingMessageId,
     this.lastEvent,
+    this.liveContext,
     this.memoryTrace,
     this.memoryFlush,
     this.bootstrap,
@@ -749,6 +772,7 @@ class OpenCrayChatRunSnapshot {
   final String? pendingMessageId;
   final bool isTerminal;
   final OpenCrayChatRuntimeEventSnapshot? lastEvent;
+  final OpenCrayChatRunLiveContextSnapshot? liveContext;
   final OpenCrayChatRunMemoryTraceSnapshot? memoryTrace;
   final OpenCrayChatRunMemoryFlushSnapshot? memoryFlush;
   final OpenCrayChatRunBootstrapSnapshot? bootstrap;
@@ -758,6 +782,7 @@ class OpenCrayChatRunSnapshot {
 
   factory OpenCrayChatRunSnapshot.fromMap(Map<Object?, Object?> map) {
     final rawLastEvent = map['lastEvent'];
+    final rawLiveContext = map['liveContext'];
     final rawMemoryTrace = map['memoryTrace'];
     final rawMemoryFlush = map['memoryFlush'];
     final rawBootstrap = map['bootstrap'];
@@ -781,6 +806,9 @@ class OpenCrayChatRunSnapshot {
       isTerminal: map['isTerminal'] as bool? ?? false,
       lastEvent: rawLastEvent is Map<Object?, Object?>
           ? OpenCrayChatRuntimeEventSnapshot.fromMap(rawLastEvent)
+          : null,
+      liveContext: rawLiveContext is Map<Object?, Object?>
+          ? OpenCrayChatRunLiveContextSnapshot.fromMap(rawLiveContext)
           : null,
       memoryTrace: rawMemoryTrace is Map<Object?, Object?>
           ? OpenCrayChatRunMemoryTraceSnapshot.fromMap(rawMemoryTrace)

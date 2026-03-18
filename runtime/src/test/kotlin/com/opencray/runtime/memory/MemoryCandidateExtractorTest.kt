@@ -155,6 +155,11 @@ class MemoryCandidateExtractorTest {
                 MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE to "supportive",
                 MemorySoulExtensionKeys.RISK_TOLERANCE to "aggressive",
               ),
+              preferenceExtensions = mapOf(
+                MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "lower",
+                MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "higher",
+                MemoryInteractionPreferenceExtensionKeys.INITIATIVE_DIRECTION to "higher",
+              ),
             ),
             SoulMemoryIntent(
               preferenceKey = MemoryPreferenceKeys.AGENT_VERBOSITY,
@@ -195,6 +200,9 @@ class MemoryCandidateExtractorTest {
       "Relationship style should gradually move toward warm",
       style.content,
     )
+    assertEquals("lower", style.extensions[MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION])
+    assertEquals("higher", style.extensions[MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION])
+    assertEquals("higher", style.extensions[MemoryInteractionPreferenceExtensionKeys.INITIATIVE_DIRECTION])
     assertEquals("warm", style.extensions[MemorySoulExtensionKeys.TONE])
     assertEquals("warm and gentle", style.extensions[MemorySoulExtensionKeys.VOICE])
     assertEquals("supportive", style.extensions[MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE])
@@ -207,6 +215,57 @@ class MemoryCandidateExtractorTest {
     )
     assertEquals("expansive", verbosity.extensions[MemorySoulExtensionKeys.VERBOSITY])
     assertEquals(null, verbosity.extensions[MemorySoulExtensionKeys.TOOL_USE_BIAS])
+  }
+
+  @Test
+  fun extractAcceptsExplicitInteractionPreferenceSignalIntentAndCanonicalizesIt() {
+    val extractor = MemoryCandidateExtractor(
+      soulIntentInterpreter = FixedSoulIntentInterpreter(
+        SoulMemoryIntentInterpretation.Success(
+          intents = listOf(
+            SoulMemoryIntent(
+              preferenceKey = MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
+              preferenceValue = "adaptive",
+              scope = MemoryScope.USER,
+              preferenceExtensions = mapOf(
+                MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "higher",
+                MemoryInteractionPreferenceExtensionKeys.INITIATIVE_DIRECTION to "lower",
+              ),
+              soulExtensions = mapOf(
+                MemorySoulExtensionKeys.TONE to "warm",
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val candidates = extractor.extract(
+      MemoryTurnEvidence(
+        sessionId = "session-4e",
+        taskId = "task-4e",
+        workspaceId = "workspace-main",
+        userInput = "以后主动一点，但语气也可以再温柔一点。",
+      ),
+    )
+
+    val signal = candidates.single { candidate ->
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] ==
+        MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL
+    }
+
+    assertEquals(MemoryScope.USER, signal.scope)
+    assertEquals(
+      "Interaction preference should gradually adapt: warmth higher, initiative lower",
+      signal.content,
+    )
+    assertEquals(
+      "warmth_higher__initiative_lower",
+      signal.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE],
+    )
+    assertEquals("higher", signal.extensions[MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION])
+    assertEquals("lower", signal.extensions[MemoryInteractionPreferenceExtensionKeys.INITIATIVE_DIRECTION])
+    assertEquals(null, signal.extensions[MemorySoulExtensionKeys.TONE])
   }
 
   @Test
@@ -284,6 +343,10 @@ class MemoryCandidateExtractorTest {
                 MemorySoulExtensionKeys.VOICE to "warm and gentle",
                 MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE to "supportive",
               ),
+              preferenceExtensions = mapOf(
+                MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "lower",
+                MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "higher",
+              ),
             ),
             UserMemoryIntent(
               kind = MemoryKind.USER_PREFERENCE,
@@ -320,6 +383,8 @@ class MemoryCandidateExtractorTest {
 
     assertEquals(MemoryScope.USER, style.scope)
     assertEquals(MemoryScope.SESSION, verbosity.scope)
+    assertEquals("lower", style.extensions[MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION])
+    assertEquals("higher", style.extensions[MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION])
   }
 
   @Test
@@ -439,6 +504,8 @@ class MemoryCandidateExtractorTest {
       relationshipSignal.extensions[MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY],
     )
     assertEquals("warm", relationshipSignal.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE])
+    assertEquals("higher", relationshipSignal.extensions[MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION])
+    assertEquals("lower", relationshipSignal.extensions[MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION])
     assertEquals("warm", relationshipSignal.extensions[MemorySoulExtensionKeys.TONE])
   }
 

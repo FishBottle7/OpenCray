@@ -80,7 +80,10 @@ class OpenCraySkillInstallSourceSnapshot {
       id: payload['id'] as String? ?? '',
       title: payload['title'] as String? ?? '',
       subtitle: payload['subtitle'] as String? ?? '',
-      ctaLabel: payload['ctaLabel'] as String? ?? '',
+      ctaLabel:
+          payload['ctaLabel'] as String? ??
+          payload['actionLabel'] as String? ??
+          '',
       isAvailable: payload['isAvailable'] as bool? ?? false,
     );
   }
@@ -91,11 +94,15 @@ class OpenCraySuggestedSkillSnapshot {
     required this.id,
     required this.name,
     required this.description,
+    required this.sourceRef,
+    required this.sourceLabel,
   });
 
   final String id;
   final String name;
   final String description;
+  final String sourceRef;
+  final String sourceLabel;
 
   factory OpenCraySuggestedSkillSnapshot.fromMap(
     Map<Object?, Object?> payload,
@@ -104,6 +111,12 @@ class OpenCraySuggestedSkillSnapshot {
       id: payload['id'] as String? ?? '',
       name: payload['name'] as String? ?? '',
       description: payload['description'] as String? ?? '',
+      sourceRef:
+          payload['sourceRef'] as String? ??
+          payload['installRef'] as String? ??
+          payload['id'] as String? ??
+          '',
+      sourceLabel: payload['sourceLabel'] as String? ?? '',
     );
   }
 }

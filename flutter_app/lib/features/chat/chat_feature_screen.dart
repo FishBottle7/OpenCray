@@ -1765,6 +1765,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     OpenCrayChatRunSnapshot run,
   ) {
     final history = <ChatRunTraceHistoryEntry>[];
+    final String? liveContextBody = _buildRunLiveContextHistoryBody(
+      run.liveContext,
+    );
     final String? memoryTraceBody = _buildRunMemoryTraceHistoryBody(
       run.memoryTrace,
     );
@@ -1781,6 +1784,17 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     final String? activeSkillBody = _buildRunActiveSkillHistoryBody(
       run.activeSkill,
     );
+    if (liveContextBody != null) {
+      history.add(
+        ChatRunTraceHistoryEntry(
+          label: _traceSectionLabel(
+            english: 'Live Context',
+            chinese: '实时上下文',
+          ),
+          body: liveContextBody,
+        ),
+      );
+    }
     if (bootstrapBody != null) {
       history.add(
         ChatRunTraceHistoryEntry(
@@ -1839,6 +1853,35 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       );
     }
     return history;
+  }
+
+  String? _buildRunLiveContextHistoryBody(
+    OpenCrayChatRunLiveContextSnapshot? liveContext,
+  ) {
+    if (liveContext == null) {
+      return null;
+    }
+    final List<String> summary = <String>[
+      if (_nonEmpty(liveContext.mode) != null)
+        widget.copy.isChinese
+            ? '模式 ${liveContext.mode}'
+            : 'Mode: ${liveContext.mode}',
+      if (liveContext.soulEnabled != null)
+        widget.copy.isChinese
+            ? (liveContext.soulEnabled! ? 'Soul 已启用' : 'Soul 已关闭')
+            : (liveContext.soulEnabled! ? 'Soul enabled' : 'Soul disabled'),
+      if (liveContext.memoryRecallEnabled != null)
+        widget.copy.isChinese
+            ? (liveContext.memoryRecallEnabled!
+                  ? '自动记忆召回已启用'
+                  : '自动记忆召回已关闭')
+            : (liveContext.memoryRecallEnabled!
+                  ? 'Automatic memory recall enabled'
+                  : 'Automatic memory recall disabled'),
+    ];
+    return summary.isEmpty
+        ? null
+        : summary.join(widget.copy.isChinese ? '，' : ', ');
   }
 
   String? _buildRunMemoryTraceHistoryBody(
@@ -3038,24 +3081,29 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       case 'LS':
         final int? entryCount = _resultMetadataInt(event, 'entryCount');
         final String? path = _resultMetadataValue(event, 'path');
+        final bool truncated = _resultMetadataTruncated(event);
         if (entryCount == null) {
           return null;
         }
         if (widget.copy.isChinese) {
-          return path == null
+          final String summary = path == null
               ? '列出了 $entryCount 项'
               : '在 $path 中列出了 $entryCount 项';
+          return truncated ? '$summary，结果已按结果上限截断' : summary;
         }
-        return path == null
+        final String summary = path == null
             ? 'Listed $entryCount entr${entryCount == 1 ? 'y' : 'ies'}'
             : 'Listed $entryCount entr${entryCount == 1 ? 'y' : 'ies'} in $path';
+        return truncated
+            ? '$summary. Output truncated at the tool result limit.'
+            : summary;
       case 'Read':
         final int? returnedLineCount = _resultMetadataInt(
           event,
           'returnedLineCount',
         );
         final int? totalLineCount = _resultMetadataInt(event, 'totalLineCount');
-        final bool truncated = _resultMetadataBool(event, 'truncated') == true;
+        final bool truncated = _resultMetadataTruncated(event);
         final String? filePath = _resultMetadataValue(event, 'filePath');
         if (returnedLineCount == null &&
             totalLineCount == null &&
@@ -3089,42 +3137,56 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         final int? matchCount = _resultMetadataInt(event, 'matchCount');
         final String? pattern = _resultMetadataValue(event, 'pattern');
         final String? path = _resultMetadataValue(event, 'path');
+        final bool truncated = _resultMetadataTruncated(event);
         if (matchCount == null) {
           return null;
         }
         if (widget.copy.isChinese) {
           final String target = path ?? '.';
           if (pattern == null) {
-            return '在 $target 中找到 $matchCount 处匹配';
+            final String summary = '在 $target 中找到 $matchCount 处匹配';
+            return truncated ? '$summary，结果已按结果上限截断' : summary;
           }
-          return '在 $target 中为 "$pattern" 找到 $matchCount 处匹配';
+          final String summary = '在 $target 中为 "$pattern" 找到 $matchCount 处匹配';
+          return truncated ? '$summary，结果已按结果上限截断' : summary;
         }
         final String target = path ?? '.';
         if (pattern == null) {
-          return matchCount == 1
+          final String summary = matchCount == 1
               ? 'Found 1 match in $target'
               : 'Found $matchCount matches in $target';
+          return truncated
+              ? '$summary. Output truncated at the tool result limit.'
+              : summary;
         }
-        return matchCount == 1
+        final String summary = matchCount == 1
             ? 'Found 1 match for "$pattern" in $target'
             : 'Found $matchCount matches for "$pattern" in $target';
+        return truncated
+            ? '$summary. Output truncated at the tool result limit.'
+            : summary;
       case 'Glob':
         final int? matchCount = _resultMetadataInt(event, 'matchCount');
         final String? pattern = _resultMetadataValue(event, 'pattern');
         final String? path = _resultMetadataValue(event, 'path');
+        final bool truncated = _resultMetadataTruncated(event);
         if (matchCount == null) {
           return null;
         }
         if (widget.copy.isChinese) {
           final String target = path ?? '.';
-          return pattern == null
+          final String summary = pattern == null
               ? '在 $target 中匹配到 $matchCount 个路径'
               : '在 $target 中为 $pattern 匹配到 $matchCount 个路径';
+          return truncated ? '$summary，结果已按结果上限截断' : summary;
         }
         final String target = path ?? '.';
-        return pattern == null
+        final String summary = pattern == null
             ? 'Matched $matchCount path(s) in $target'
             : 'Matched $matchCount path(s) for $pattern in $target';
+        return truncated
+            ? '$summary. Output truncated at the tool result limit.'
+            : summary;
       case 'Edit':
         final int? replacementCount = _resultMetadataInt(
           event,
@@ -3316,6 +3378,12 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       return false;
     }
     return null;
+  }
+
+  bool _resultMetadataTruncated(OpenCrayChatRuntimeEventSnapshot event) {
+    return _resultMetadataBool(event, 'resultTruncated') ==
+            true ||
+        _resultMetadataBool(event, 'truncated') == true;
   }
 
   static const Set<String> _thinkingPlaceholders = <String>{

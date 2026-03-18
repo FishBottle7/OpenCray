@@ -130,6 +130,48 @@ class RecentToolObservationSupportTest {
     assertNull(blockedByMutation)
   }
 
+  @Test
+  fun buildLayerPrefersStableResultLimitMetadataOverLegacyTruncatedField() {
+    val support = RecentToolObservationSupport()
+
+    val layer = requireNotNull(
+      support.buildLayer(
+        listOf(
+          toolResultMessage(
+            toolName = "Read",
+            content = "truncated body",
+            metadata = mapOf(
+              "filePath" to "README.md",
+              "offset" to "1",
+              "returnedLineCount" to "12",
+              "totalLineCount" to "100",
+              "resultLimitApplied" to "true",
+              "resultTruncated" to "true",
+              "resultLimitKind" to "read_byte_budget",
+            ),
+          ),
+          toolResultMessage(
+            toolName = "Grep",
+            content = "src/App.kt:12:needle",
+            metadata = mapOf(
+              "pattern" to "needle",
+              "path" to "src",
+              "matchCount" to "25",
+              "resultLimitApplied" to "true",
+              "resultTruncated" to "true",
+              "resultLimitKind" to "search_match_limit",
+            ),
+          ),
+        ),
+      ),
+    )
+
+    assertTrue(layer.text.contains("Read file_path=README.md"))
+    assertTrue(layer.text.contains("truncated=true"))
+    assertTrue(layer.text.contains("limit_kind=read_byte_budget"))
+    assertTrue(layer.text.contains("Grep pattern=needle path=src matches=25 truncated=true limit_kind=search_match_limit"))
+  }
+
   private fun toolResultMessage(
     toolName: String,
     content: String,

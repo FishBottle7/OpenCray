@@ -578,6 +578,7 @@ extension on _ContextMemoryTracePageState {
 
 extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
   Widget _buildContextSetupCard(OpenCrayChatRunSnapshot run) {
+    final liveContext = run.liveContext;
     final bootstrap = run.bootstrap;
     final memoryFlush = run.memoryFlush;
     final durableCompaction = run.durableCompaction;
@@ -587,15 +588,43 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
         children: [
           const Text('Context setup', style: _SettingsTextStyles.cardTitle),
           const SizedBox(height: 10),
-          if (bootstrap == null &&
+          if (liveContext == null &&
+              bootstrap == null &&
               memoryFlush == null &&
               durableCompaction == null)
             const Text(
-              'No bootstrap, memory flush, or durable compaction trace was captured for this run.',
+              'No live-context, bootstrap, memory flush, or durable compaction trace was captured for this run.',
               style: _SettingsTextStyles.body,
             )
           else ...[
+            if (liveContext != null) ...[
+              const Text('Live context', style: _SettingsTextStyles.bodyStrong),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _DebugValueChip(
+                    label: 'Mode',
+                    value: liveContext.mode?.trim().isNotEmpty == true
+                        ? liveContext.mode!.trim()
+                        : 'unknown',
+                  ),
+                  _DebugValueChip(
+                    label: 'Soul',
+                    value: liveContext.soulEnabled == true ? 'enabled' : 'disabled',
+                  ),
+                  _DebugValueChip(
+                    label: 'Memory recall',
+                    value: liveContext.memoryRecallEnabled == true
+                        ? 'enabled'
+                        : 'disabled',
+                  ),
+                ],
+              ),
+            ],
             if (bootstrap != null) ...[
+              if (liveContext != null) const SizedBox(height: 16),
               const Text('Bootstrap', style: _SettingsTextStyles.bodyStrong),
               const SizedBox(height: 8),
               Wrap(

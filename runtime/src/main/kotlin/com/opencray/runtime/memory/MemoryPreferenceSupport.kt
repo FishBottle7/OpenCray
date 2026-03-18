@@ -6,6 +6,7 @@ object MemoryPreferenceKeys {
   const val AGENT_DISPLAY_NAME: String = "agent_display_name"
   const val AGENT_STYLE_PROFILE: String = "agent_style_profile"
   const val RELATIONSHIP_STYLE_PROFILE: String = "relationship_style_profile"
+  const val INTERACTION_PREFERENCE_SIGNAL: String = "interaction_preference_signal"
   const val AGENT_VERBOSITY: String = "agent_verbosity"
   const val USER_PREFERRED_NAME: String = "user_preferred_name"
   const val USER_ADDRESS_STYLE: String = "user_address_style"
@@ -26,10 +27,17 @@ object MemorySoulExtensionKeys {
   const val TOOL_USE_BIAS: String = "soul_tool_use_bias"
 }
 
+object MemoryInteractionPreferenceExtensionKeys {
+  const val WARMTH_DIRECTION: String = "interaction_preference_warmth_direction"
+  const val FORMALITY_DIRECTION: String = "interaction_preference_formality_direction"
+  const val INITIATIVE_DIRECTION: String = "interaction_preference_initiative_direction"
+}
+
 internal fun supportedSoulPreferenceKeys(): Set<String> = setOf(
   MemoryPreferenceKeys.AGENT_DISPLAY_NAME,
   MemoryPreferenceKeys.AGENT_STYLE_PROFILE,
   MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE,
+  MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
   MemoryPreferenceKeys.AGENT_VERBOSITY,
   MemoryPreferenceKeys.USER_PREFERRED_NAME,
   MemoryPreferenceKeys.USER_ADDRESS_STYLE,
@@ -64,7 +72,9 @@ internal fun shouldApplyDirectChatSoulPreference(
   MemoryPreferenceKeys.AGENT_VERBOSITY,
   -> scope == MemoryScope.SESSION
 
-  MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE -> false
+  MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE,
+  MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
+  -> false
 
   else -> false
 }
@@ -116,46 +126,80 @@ internal fun allowedSoulMemoryExtensionKeys(
   else -> emptySet()
 }
 
+internal fun allowedPreferenceMemoryExtensionKeys(
+  preferenceKey: String,
+): Set<String> = when (normalizeMemoryPreferenceKeyOrNull(preferenceKey)) {
+  MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE,
+  MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
+  -> setOf(
+    MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION,
+    MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION,
+    MemoryInteractionPreferenceExtensionKeys.INITIATIVE_DIRECTION,
+  )
+
+  else -> emptySet()
+}
+
 internal fun buildSoulPreferenceExtensions(
   preferenceKey: String,
   preferenceValue: String,
   scope: MemoryScope,
   soulExtensions: Map<String, String> = emptyMap(),
+  preferenceExtensions: Map<String, String> = emptyMap(),
 ): Map<String, String> {
   val normalizedKey = normalizeMemoryPreferenceKeyOrNull(preferenceKey) ?: return emptyMap()
-  val normalizedValue = normalizeMemoryPreferenceValueOrNull(preferenceValue) ?: return emptyMap()
   val effectiveScope = directChatSoulPreferenceScope(
     preferenceKey = normalizedKey,
     requestedScope = scope,
   )
+  val normalizedSoulExtensions = normalizeSoulMemoryExtensions(
+    raw = soulExtensions,
+    allowedKeys = allowedSoulMemoryExtensionKeys(
+      preferenceKey = normalizedKey,
+      scope = effectiveScope,
+    ),
+  )
+  val normalizedPreferenceExtensions = normalizePreferenceMemoryExtensions(
+    raw = preferenceExtensions,
+    allowedKeys = allowedPreferenceMemoryExtensionKeys(
+      preferenceKey = normalizedKey,
+    ),
+  )
   val baseExtensions = when (normalizedKey) {
     MemoryPreferenceKeys.AGENT_DISPLAY_NAME -> displayNamePreferenceExtensions(
-      displayName = normalizedValue,
+      displayName = normalizeMemoryPreferenceValueOrNull(preferenceValue) ?: return emptyMap(),
       scope = effectiveScope,
     )
 
     MemoryPreferenceKeys.AGENT_STYLE_PROFILE -> styleProfilePreferenceExtensions(
-      styleProfile = normalizedValue,
+      styleProfile = normalizeMemoryPreferenceValueOrNull(preferenceValue) ?: return emptyMap(),
       scope = effectiveScope,
     )
 
     MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE -> relationshipStylePreferenceExtensions(
-      styleProfile = normalizedValue,
+      styleProfile = normalizeMemoryPreferenceValueOrNull(preferenceValue) ?: return emptyMap(),
+      scope = effectiveScope,
+    )
+
+    MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL -> interactionPreferenceSignalExtensions(
+      canonicalValue = canonicalInteractionPreferenceSignalValueOrNull(
+        extensions = normalizedPreferenceExtensions,
+      ) ?: return emptyMap(),
       scope = effectiveScope,
     )
 
     MemoryPreferenceKeys.AGENT_VERBOSITY -> verbosityPreferenceExtensions(
-      verbosity = normalizedValue,
+      verbosity = normalizeMemoryPreferenceValueOrNull(preferenceValue) ?: return emptyMap(),
       scope = effectiveScope,
     )
 
     MemoryPreferenceKeys.USER_PREFERRED_NAME -> userPreferredNamePreferenceExtensions(
-      preferredName = normalizedValue,
+      preferredName = normalizeMemoryPreferenceValueOrNull(preferenceValue) ?: return emptyMap(),
       scope = effectiveScope,
     )
 
     MemoryPreferenceKeys.USER_ADDRESS_STYLE -> userAddressStylePreferenceExtensions(
-      addressStyle = normalizedValue,
+      addressStyle = normalizeMemoryPreferenceValueOrNull(preferenceValue) ?: return emptyMap(),
       scope = effectiveScope,
     )
 
@@ -166,15 +210,8 @@ internal fun buildSoulPreferenceExtensions(
   }
   return linkedMapOf<String, String>().apply {
     putAll(baseExtensions)
-    putAll(
-      normalizeSoulMemoryExtensions(
-        raw = soulExtensions,
-        allowedKeys = allowedSoulMemoryExtensionKeys(
-          preferenceKey = normalizedKey,
-          scope = effectiveScope,
-        ),
-      ),
-    )
+    putAll(normalizedSoulExtensions)
+    putAll(normalizedPreferenceExtensions)
   }
 }
 
@@ -219,6 +256,7 @@ internal fun relationshipStylePreferenceExtensions(
   MemoryRecordExtensionKeys.PREFERENCE_VALUE to styleProfile,
   MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY to preferenceTemporalityFor(scope),
 ).apply {
+  putAll(relationshipStyleSignalExtensions(styleProfile))
   when (styleProfile.lowercase(Locale.US)) {
     "warm" -> {
       put(MemorySoulExtensionKeys.TONE, "warm")
@@ -232,6 +270,51 @@ internal fun relationshipStylePreferenceExtensions(
       put(MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE, "direct")
     }
   }
+}
+
+internal fun relationshipStyleSignalExtensions(
+  styleProfile: String,
+): Map<String, String> = when (styleProfile.lowercase(Locale.US)) {
+  "warm" -> linkedMapOf(
+    MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "higher",
+    MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "lower",
+  )
+
+  "serious" -> linkedMapOf(
+    MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "lower",
+    MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "higher",
+  )
+
+  else -> emptyMap()
+}
+
+internal fun interactionPreferenceSignalExtensions(
+  canonicalValue: String,
+  scope: MemoryScope,
+): Map<String, String> = linkedMapOf(
+  MemoryRecordExtensionKeys.PREFERENCE_KEY to MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
+  MemoryRecordExtensionKeys.PREFERENCE_VALUE to canonicalValue,
+  MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY to preferenceTemporalityFor(scope),
+)
+
+internal fun canonicalInteractionPreferenceSignalValueOrNull(
+  extensions: Map<String, String>,
+): String? = interactionPreferenceSignalSegments(extensions)
+  .map { segment -> segment.identityToken }
+  .takeIf { tokens -> tokens.isNotEmpty() }
+  ?.joinToString(separator = "__")
+
+internal fun interactionPreferenceSignalSummaryOrNull(
+  extensions: Map<String, String>,
+): String? = interactionPreferenceSignalSegments(extensions)
+  .map { segment -> segment.summaryText }
+  .takeIf { summaries -> summaries.isNotEmpty() }
+  ?.joinToString(separator = ", ")
+
+internal fun interactionPreferenceSignalContentOrNull(
+  extensions: Map<String, String>,
+): String? = interactionPreferenceSignalSummaryOrNull(extensions)?.let { summary ->
+  "Interaction preference should gradually adapt: $summary"
 }
 
 internal fun verbosityPreferenceExtensions(
@@ -295,10 +378,29 @@ internal fun normalizeSoulMemoryExtensions(
   }
 }
 
+internal fun normalizePreferenceMemoryExtensions(
+  raw: Map<String, String>,
+  allowedKeys: Set<String>,
+): Map<String, String> = buildMap {
+  raw.forEach { (key, value) ->
+    val normalizedKey = normalizeMemoryPreferenceKeyOrNull(key) ?: return@forEach
+    if (normalizedKey !in allowedKeys) {
+      return@forEach
+    }
+    val normalizedValue = normalizePreferenceMemoryExtensionValueOrNull(
+      key = normalizedKey,
+      raw = value,
+    ) ?: return@forEach
+    put(normalizedKey, normalizedValue)
+  }
+}
+
 internal fun preferenceSupportsSupersession(
   preferenceKey: String,
 ): Boolean = when (normalizeMemoryPreferenceKeyOrNull(preferenceKey)) {
-  MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE -> false
+  MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE,
+  MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
+  -> false
   else -> true
 }
 
@@ -329,6 +431,24 @@ private fun normalizeSoulMemoryExtensionValueOrNull(
   else -> null
 }
 
+private fun normalizePreferenceMemoryExtensionValueOrNull(
+  key: String,
+  raw: String?,
+): String? = when (key) {
+  MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION,
+  MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION,
+  MemoryInteractionPreferenceExtensionKeys.INITIATIVE_DIRECTION,
+  -> when (normalizeMemoryPreferenceKeyOrNull(raw)) {
+    "higher",
+    "lower",
+    -> normalizeMemoryPreferenceKeyOrNull(raw)
+
+    else -> null
+  }
+
+  else -> null
+}
+
 internal fun normalizePreferredAddressStyleValueOrNull(raw: String?): String? = when (normalizeMemoryPreferenceKeyOrNull(raw)) {
   "neutral",
   "friendly",
@@ -352,5 +472,48 @@ internal fun normalizeMemoryPreferenceValueOrNull(raw: String?): String? =
     ?.replace(Regex("\\s+"), " ")
     ?.trim()
     ?.trim('"', '\'', '`', '“', '”', '‘', '’')
-    ?.trim('.', ',', ';', ':', '!', '?', '。', '，', '；', '：', '！', '？')
-    ?.takeIf(String::isNotEmpty)
+  ?.trim('.', ',', ';', ':', '!', '?', '。', '，', '；', '：', '！', '？')
+  ?.takeIf(String::isNotEmpty)
+
+private fun interactionPreferenceSignalSegments(
+  extensions: Map<String, String>,
+): List<InteractionPreferenceSignalSegment> = buildList {
+  interactionPreferenceSignalSegmentOrNull(
+    rawDirection = extensions[MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION],
+    axisToken = "warmth",
+    summaryLabel = "warmth",
+  )?.let(::add)
+  interactionPreferenceSignalSegmentOrNull(
+    rawDirection = extensions[MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION],
+    axisToken = "formality",
+    summaryLabel = "formality",
+  )?.let(::add)
+  interactionPreferenceSignalSegmentOrNull(
+    rawDirection = extensions[MemoryInteractionPreferenceExtensionKeys.INITIATIVE_DIRECTION],
+    axisToken = "initiative",
+    summaryLabel = "initiative",
+  )?.let(::add)
+}
+
+private fun interactionPreferenceSignalSegmentOrNull(
+  rawDirection: String?,
+  axisToken: String,
+  summaryLabel: String,
+): InteractionPreferenceSignalSegment? = when (normalizeMemoryPreferenceKeyOrNull(rawDirection)) {
+  "higher" -> InteractionPreferenceSignalSegment(
+    identityToken = "${axisToken}_higher",
+    summaryText = "$summaryLabel higher",
+  )
+
+  "lower" -> InteractionPreferenceSignalSegment(
+    identityToken = "${axisToken}_lower",
+    summaryText = "$summaryLabel lower",
+  )
+
+  else -> null
+}
+
+private data class InteractionPreferenceSignalSegment(
+  val identityToken: String,
+  val summaryText: String,
+)

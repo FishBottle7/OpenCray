@@ -245,8 +245,11 @@ internal class OpenCrayLocalRuntimeServer(
         recordingsEnabled = body.optBoolean("recordingsEnabled", false),
         workspaceAccessProfileId = body.optString("workspaceAccessProfileId"),
         readOnlyOutsideWorkspace = body.optBoolean("readOnlyOutsideWorkspace", true),
+        liveContextModeId = body.optString("liveContextModeId", LiveContextMode.FULL.wireValue),
       )
-      "GET" to "/v1/skills_snapshot" -> hostRuntime.loadSkillsSnapshot()
+      "GET" to "/v1/skills_snapshot" -> hostRuntime.loadSkillsSnapshot(
+        query = request.queryParameter("query"),
+      )
       "POST" to "/v1/set_skill_enabled" -> {
         hostRuntime.setSkillEnabled(
           skillId = body.optString("skillId"),
@@ -255,6 +258,9 @@ internal class OpenCrayLocalRuntimeServer(
         null
       }
       "POST" to "/v1/refresh_skills" -> hostRuntime.refreshSkills()
+      "POST" to "/v1/install_skill_source" -> hostRuntime.installSkillSource(
+        sourceRef = body.optString("sourceRef"),
+      )
       "POST" to "/v1/install_suggested_skill" -> hostRuntime.installSuggestedSkill(
         skillId = body.optString("skillId"),
       )

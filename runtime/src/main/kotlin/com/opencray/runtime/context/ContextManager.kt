@@ -74,6 +74,7 @@ class ContextManager(
         memoryRecallTrace = selectedMemory.trace,
         memoryFlushTrace = input.sessionContext.memoryFlushTrace,
         durableCompactionTrace = input.sessionContext.durableCompaction.trace,
+        liveContextTrace = input.sessionContext.liveContextTrace,
         bootstrapTrace = input.sessionContext.bootstrapContext.trace,
         visibleSkillCount = input.sessionContext.skillInventory.visibleSkillCount,
         injectedSkillCount = renderedSkillInventory.injectedSkillCount,

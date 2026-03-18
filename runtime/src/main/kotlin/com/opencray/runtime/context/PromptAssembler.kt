@@ -108,6 +108,7 @@ class PromptAssembler {
         memoryRecallTrace = input.report.memoryRecallTrace,
         memoryFlushTrace = input.report.memoryFlushTrace,
         durableCompactionTrace = input.report.durableCompactionTrace,
+        liveContextTrace = input.report.liveContextTrace,
         bootstrapTrace = input.report.bootstrapTrace,
         visibleSkillCount = input.report.visibleSkillCount,
         injectedSkillCount = input.report.injectedSkillCount,

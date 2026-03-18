@@ -177,7 +177,8 @@ class RecentToolObservationSupport(
     val limit = parsed.metadata["limit"]?.toIntOrNull()
     val returnedLineCount = parsed.metadata["returnedLineCount"]?.toIntOrNull()
     val totalLineCount = parsed.metadata["totalLineCount"]?.toIntOrNull()
-    val truncated = parsed.metadata["truncated"]?.toBooleanStrictOrNull() ?: false
+    val truncated = parsed.resultTruncated()
+    val limitKind = parsed.resultLimitKind()
     val lineSummary = buildReadLineSummary(
       offset = offset,
       returnedLineCount = returnedLineCount,
@@ -186,6 +187,7 @@ class RecentToolObservationSupport(
     val detailParts = mutableListOf(lineSummary)
     detailParts += "limit=${limit?.toString() ?: "all"}"
     detailParts += "truncated=$truncated"
+    limitKind?.let { detailParts += "limit_kind=$it" }
     val body = boundMultiline(
       text = parsed.content,
       maxChars = config.maxReadChars,
@@ -205,9 +207,14 @@ class RecentToolObservationSupport(
   private fun renderListObservation(parsed: ParsedToolResult): RenderedObservation? {
     val path = parsed.metadata["path"]?.trim().takeUnless { it.isNullOrBlank() } ?: "."
     val entryCount = parsed.metadata["entryCount"]?.toIntOrNull()
+    val detailParts = mutableListOf("path=$path", "entries=${entryCount?.toString() ?: "unknown"}")
+    if (parsed.resultTruncated()) {
+      detailParts += "truncated=true"
+    }
+    parsed.resultLimitKind()?.let { detailParts += "limit_kind=$it" }
     return RenderedObservation(
       signature = buildListSignature(path = path),
-      summaryLine = "- LS path=$path entries=${entryCount?.toString() ?: "unknown"}",
+      summaryLine = "- LS ${detailParts.joinToString(separator = " ")}",
       body = boundMultiline(
         text = parsed.content,
         maxChars = config.maxListChars,
@@ -226,6 +233,10 @@ class RecentToolObservationSupport(
     detailParts += "path=$path"
     glob?.let { detailParts += "glob=$it" }
     detailParts += "matches=${matchCount?.toString() ?: "unknown"}"
+    if (parsed.resultTruncated()) {
+      detailParts += "truncated=true"
+    }
+    parsed.resultLimitKind()?.let { detailParts += "limit_kind=$it" }
     return RenderedObservation(
       signature = buildGrepSignature(
         pattern = pattern,
@@ -245,12 +256,21 @@ class RecentToolObservationSupport(
     val pattern = parsed.metadata["pattern"]?.trim().takeUnless { it.isNullOrBlank() } ?: return null
     val path = parsed.metadata["path"]?.trim().takeUnless { it.isNullOrBlank() } ?: "."
     val matchCount = parsed.metadata["matchCount"]?.toIntOrNull()
+    val detailParts = mutableListOf(
+      "pattern=$pattern",
+      "path=$path",
+      "matches=${matchCount?.toString() ?: "unknown"}",
+    )
+    if (parsed.resultTruncated()) {
+      detailParts += "truncated=true"
+    }
+    parsed.resultLimitKind()?.let { detailParts += "limit_kind=$it" }
     return RenderedObservation(
       signature = buildGlobSignature(
         pattern = pattern,
         path = path,
       ),
-      summaryLine = "- Glob pattern=$pattern path=$path matches=${matchCount?.toString() ?: "unknown"}",
+      summaryLine = "- Glob ${detailParts.joinToString(separator = " ")}",
       body = boundMultiline(
         text = parsed.content,
         maxChars = config.maxListChars,
@@ -457,7 +477,15 @@ class RecentToolObservationSupport(
     val status: String,
     val content: String,
     val metadata: Map<String, String>,
-  )
+  ) {
+    fun resultTruncated(): Boolean =
+      metadata["resultTruncated"]?.toBooleanStrictOrNull()
+        ?: metadata["truncated"]?.toBooleanStrictOrNull()
+        ?: false
+
+    fun resultLimitKind(): String? =
+      metadata["resultLimitKind"]?.trim()?.takeIf(String::isNotBlank)
+  }
 
   private data class RenderedObservation(
     val signature: String,

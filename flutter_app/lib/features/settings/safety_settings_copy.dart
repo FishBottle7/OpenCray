@@ -9,6 +9,9 @@ class SafetySettingsCopy {
   static const String workspaceTitle = 'Workspace Access';
   static const String workspaceSubtitle =
       'Choose where the agent can read, write, and ask first.';
+  static const String liveContextTitle = 'Live context';
+  static const String liveContextSubtitle =
+      'Choose how much repo/bootstrap, soul, and automatic memory recall are injected into each live run.';
   static const String sensitiveActionsTitle = 'Sensitive actions';
   static const String fileChangesTitle = 'File changes';
   static const String fileChangesSubtitle =
@@ -95,6 +98,21 @@ class SafetySettingsCopy {
     }
   }
 
+  static String liveContextModeLabel(LiveContextMode mode) {
+    switch (mode) {
+      case LiveContextMode.full:
+        return 'Full';
+      case LiveContextMode.lightweight:
+        return 'Lightweight';
+      case LiveContextMode.none:
+        return 'None';
+      case LiveContextMode.noSoul:
+        return 'No soul';
+      case LiveContextMode.noMemoryOrSoul:
+        return 'No memory or soul';
+    }
+  }
+
   static String externalAccessModeLabel(ExternalAccessMode mode) {
     switch (mode) {
       case ExternalAccessMode.blockAll:
@@ -150,6 +168,21 @@ class SafetySettingsCopy {
     }
   }
 
+  static String liveContextModeSummary(LiveContextMode mode) {
+    switch (mode) {
+      case LiveContextMode.full:
+        return 'Inject bootstrap files, soul, and automatic memory recall.';
+      case LiveContextMode.lightweight:
+        return 'Keep AGENTS.md and PROJECT.md, plus soul and automatic memory recall.';
+      case LiveContextMode.none:
+        return 'Skip bootstrap files but keep soul and automatic memory recall.';
+      case LiveContextMode.noSoul:
+        return 'Keep AGENTS.md and PROJECT.md plus automatic memory recall, but suppress soul.';
+      case LiveContextMode.noMemoryOrSoul:
+        return 'Keep AGENTS.md and PROJECT.md only. Soul and automatic memory recall stay off.';
+    }
+  }
+
   static String sensitiveActionSummary({
     required String title,
     required ToolPolicyOverride policy,
@@ -158,19 +191,11 @@ class SafetySettingsCopy {
   }
 
   static String agentTurnLimitValue(int turns) {
-    return _limitValue(
-      value: turns,
-      singular: 'turn',
-      plural: 'turns',
-    );
+    return _limitValue(value: turns, singular: 'turn', plural: 'turns');
   }
 
   static String toolCallLimitValue(int calls) {
-    return _limitValue(
-      value: calls,
-      singular: 'call',
-      plural: 'calls',
-    );
+    return _limitValue(value: calls, singular: 'call', plural: 'calls');
   }
 
   static String _limitValue({

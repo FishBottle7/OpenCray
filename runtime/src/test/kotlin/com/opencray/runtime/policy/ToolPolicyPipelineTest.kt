@@ -217,6 +217,74 @@ class ToolPolicyPipelineTest {
     assertEquals(".", result.metadata["intentWorkingDirectory"])
   }
 
+  @Test
+  fun resultMetadataAddsStableResultLimitContractForPlannedTools() {
+    val workspaceRoot = temporaryFolder.newFolder("pipeline-result-contract").toPath()
+    val pipeline = pipeline(workspaceRoot = workspaceRoot)
+    val resolver = resolver(workspaceRoot = workspaceRoot, readRoots = setOf(workspaceRoot))
+    val target = resolver.resolveReadablePath(
+      candidate = ".",
+      label = "search root",
+      defaultToRoot = true,
+    )
+
+    val plan = pipeline.plan(
+      task = task(metadata = mapOf("chatMode" to "AUTO")),
+      toolName = "LS",
+      targetPath = target,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.DIRECTORY,
+        primaryPath = target,
+      ),
+    )
+
+    val metadata = pipeline.resultMetadata(
+      plan = plan,
+      metadata = mapOf("entryCount" to "1"),
+      resultEnvelope = ToolResultEnvelope(
+        limitApplied = true,
+        truncated = true,
+        limitKind = ToolResultLimitKind.DIRECTORY_ENTRY_LIMIT,
+      ),
+    )
+
+    assertEquals("ALLOW_AUTO_STANDARD", metadata["policyReasonCode"])
+    assertEquals("directory", metadata["targetKind"])
+    assertEquals("true", metadata["resultLimitApplied"])
+    assertEquals("true", metadata["resultTruncated"])
+    assertEquals("directory_entry_limit", metadata["resultLimitKind"])
+    assertEquals("1", metadata["entryCount"])
+  }
+
+  @Test
+  fun resultMetadataAddsStableResultLimitContractWithoutPlan() {
+    val workspaceRoot = temporaryFolder.newFolder("pipeline-result-contract-common").toPath()
+    val pipeline = pipeline(workspaceRoot = workspaceRoot)
+
+    val metadata = pipeline.resultMetadata(
+      toolName = "ProcessRead",
+      request = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.PROCESS,
+        primaryTargetPath = ".",
+        targetSummary = "proc-123",
+      ),
+      metadata = mapOf("processId" to "proc-123"),
+      resultEnvelope = ToolResultEnvelope(
+        limitApplied = true,
+        truncated = false,
+        limitKind = ToolResultLimitKind.PROCESS_OUTPUT_BYTE_LIMIT,
+      ),
+    )
+
+    assertEquals("process", metadata["targetKind"])
+    assertEquals(".", metadata["primaryTargetPath"])
+    assertEquals("proc-123", metadata["targetSummary"])
+    assertEquals("true", metadata["resultLimitApplied"])
+    assertEquals("false", metadata["resultTruncated"])
+    assertEquals("process_output_byte_limit", metadata["resultLimitKind"])
+    assertEquals("proc-123", metadata["processId"])
+  }
+
   private fun pipeline(
     workspaceRoot: java.nio.file.Path,
     readRoots: Set<java.nio.file.Path> = setOf(workspaceRoot),

@@ -65,6 +65,9 @@ class PythonScriptRuntimeInjectionTest {
     assertEquals("scripts/run.py", result.metadata["scriptPath"]?.replace('\\', '/'))
     assertEquals("ALLOW_DEVELOPER_OVERRIDE", result.metadata["policyReasonCode"])
     assertEquals("recording-runtime", result.metadata["runtimeBackend"])
+    assertEquals("true", result.metadata["resultLimitApplied"])
+    assertEquals("false", result.metadata["resultTruncated"])
+    assertEquals("command_output_byte_limit", result.metadata["resultLimitKind"])
   }
 
   private fun agentTask(

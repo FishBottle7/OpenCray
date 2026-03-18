@@ -403,6 +403,7 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
     required bool recordingsEnabled,
     required String workspaceAccessProfileId,
     required bool readOnlyOutsideWorkspace,
+    String liveContextModeId = 'full',
   }) async => OpenCraySafetySettingsSnapshot.fromMap(
     await _invokeMap(
       'saveSafetySettings',
@@ -423,13 +424,22 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
         'recordingsEnabled': recordingsEnabled,
         'workspaceAccessProfileId': workspaceAccessProfileId,
         'readOnlyOutsideWorkspace': readOnlyOutsideWorkspace,
+        'liveContextModeId': liveContextModeId,
       },
     ),
   );
 
   @override
-  Future<OpenCraySkillsSnapshot> loadSkillsSnapshot() async =>
-      OpenCraySkillsSnapshot.fromMap(await _invokeMap('loadSkillsSnapshot'));
+  Future<OpenCraySkillsSnapshot> loadSkillsSnapshot({
+    String query = '',
+  }) async => OpenCraySkillsSnapshot.fromMap(
+    await _invokeMap(
+      'loadSkillsSnapshot',
+      arguments: query.trim().isEmpty
+          ? null
+          : <String, Object?>{'query': query},
+    ),
+  );
 
   @override
   Stream<OpenCraySkillsSnapshot> watchSkillsSnapshot() => _skillsSnapshotChannel
@@ -447,6 +457,13 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   @override
   Future<String?> refreshSkills() async =>
       await _methodChannel.invokeMethod<String>('refreshSkills');
+
+  @override
+  Future<String?> installSkillSource(String sourceRef) async =>
+      await _methodChannel.invokeMethod<String>(
+        'installSkillSource',
+        <String, Object?>{'sourceRef': sourceRef},
+      );
 
   @override
   Future<String?> installSuggestedSkill(String skillId) async =>

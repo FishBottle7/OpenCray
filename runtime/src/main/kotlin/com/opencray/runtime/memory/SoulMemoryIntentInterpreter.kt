@@ -16,6 +16,7 @@ data class SoulMemoryIntent(
   val preferenceValue: String,
   val scope: MemoryScope,
   val soulExtensions: Map<String, String> = emptyMap(),
+  val preferenceExtensions: Map<String, String> = emptyMap(),
 ) {
   init {
     require(preferenceKey.isNotBlank()) { "SoulMemoryIntent preferenceKey must not be blank." }

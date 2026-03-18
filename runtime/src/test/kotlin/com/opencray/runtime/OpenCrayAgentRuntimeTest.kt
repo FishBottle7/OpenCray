@@ -24,6 +24,7 @@ import com.opencray.runtime.bootstrap.BootstrapTrace
 import com.opencray.runtime.compaction.DurableCompactionContext
 import com.opencray.runtime.compaction.DurableCompactionTrace
 import com.opencray.runtime.context.AgentRuntimeSessionContext
+import com.opencray.runtime.context.LiveContextTrace
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.memory.MemoryFlushOutcome
@@ -416,6 +417,11 @@ class OpenCrayAgentRuntimeTest {
       ),
       config = OpenCrayAgentRuntimeConfig(
         sessionContext = AgentRuntimeSessionContext(
+          liveContextTrace = LiveContextTrace(
+            mode = "full",
+            soulEnabled = true,
+            memoryRecallEnabled = true,
+          ),
           bootstrapContext = BootstrapContext(
             mode = BootstrapMode.FULL,
             files = listOf(
@@ -469,6 +475,9 @@ class OpenCrayAgentRuntimeTest {
     )
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("full", result.metadata["contextLiveMode"])
+    assertEquals("true", result.metadata["contextLiveSoulEnabled"])
+    assertEquals("true", result.metadata["contextLiveMemoryRecallEnabled"])
     assertEquals("full", result.metadata["contextBootstrapMode"])
     assertEquals("2", result.metadata["contextBootstrapVisibleFileCount"])
     assertEquals("2", result.metadata["contextBootstrapInjectedFileCount"])

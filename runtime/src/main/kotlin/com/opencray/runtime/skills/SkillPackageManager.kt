@@ -18,6 +18,9 @@ enum class SkillInstallSourceType(
   val wireValue: String,
 ) {
   LOCAL_CATALOG("local_catalog"),
+  LOCAL_PATH("local_path"),
+  REMOTE_GITHUB("remote_github"),
+  REMOTE_GITLAB("remote_gitlab"),
 }
 
 @Serializable
@@ -112,11 +115,20 @@ class SkillPackageManager(
   private val managedRoot: File,
   private val catalogRoot: File,
   private val manifestStore: SkillInstallManifestStore,
+  private val remoteSearchClient: RemoteSkillSearchClient = SkillsApiRemoteSkillSearchClient(),
+  private val sourceResolver: SkillSourceResolver = SkillSourceResolver(),
+  private val remoteSourceFetcher: RemoteSkillSourceFetcher = HostedGitArchiveRemoteSkillSourceFetcher(),
   private val clock: () -> Long = { System.currentTimeMillis() },
 ) {
   fun managedRootPath(): File = managedRoot
 
   fun catalogRootPath(): File = catalogRoot
+
+  fun stagingRootPath(): File = File(managedRoot.parentFile ?: managedRoot, ".skills-staging")
+
+  fun policyReadRoots(): Set<File> = setOf(managedRoot, catalogRoot)
+
+  fun policyWriteRoots(): Set<File> = setOf(managedRoot, stagingRootPath())
 
   fun listCatalogSkills(): List<LoadedSkill> = loadSkillsFrom(catalogRoot)
 
@@ -124,6 +136,24 @@ class SkillPackageManager(
 
   fun listInstallations(): List<SkillInstallManifestEntry> =
     manifestStore.load().installations.sortedBy(SkillInstallManifestEntry::skillId)
+
+  fun searchRemoteSkills(
+    query: String,
+    limit: Int,
+  ): RemoteSkillSearchResponse = remoteSearchClient.search(
+    RemoteSkillSearchRequest(
+      query = query,
+      limit = limit,
+    ),
+  )
+
+  fun resolveRemoteSource(
+    sourceRef: String,
+    selectedSkillName: String? = null,
+  ): ResolvedRemoteSkillSource? = sourceResolver.resolve(
+    sourceRef = sourceRef,
+    requestedSkillName = selectedSkillName,
+  )
 
   fun resolveCatalogInstallTarget(skillId: String): File? {
     val normalizedSkillId = skillId.trim()
@@ -186,46 +216,132 @@ class SkillPackageManager(
     if (!sourceDirectory.isDirectory) {
       return null
     }
-    if (!managedRoot.exists() && !managedRoot.mkdirs()) {
-      throw IOException("Failed to create managed skills directory: ${managedRoot.path}")
-    }
+    ensureManagedRoot()
 
     val staged = stageSkillDirectory(sourceDirectory)
     try {
-      val validatedSkill = validateStagedSkill(
-        skillId = normalizedSkillId,
+      return installValidatedSkill(
+        manifest = manifest,
         stagedSkillDirectory = staged.skillDirectory,
-      ) ?: return null
-      val targetDirectory = File(managedRoot, sourceDirectory.name)
-      replaceInstalledDirectory(
-        sourceDirectory = staged.skillDirectory,
-        targetDirectory = targetDirectory,
-      )
-      val now = clock()
-      val entry = SkillInstallManifestEntry(
-        skillId = validatedSkill.name,
-        installRootPath = canonicalInvariantPath(targetDirectory),
+        expectedSkillId = normalizedSkillId,
         sourceType = SkillInstallSourceType.LOCAL_CATALOG.wireValue,
         sourceRef = normalizedSkillId,
         sourcePath = canonicalInvariantPath(sourceDirectory),
-        selectedSkillName = validatedSkill.name,
         sourceRelativePath = catalogSkill.source.relativePath,
-        contentHash = computeDirectoryHash(targetDirectory),
-        installedAtEpochMs = manifest.installations
-          .firstOrNull { entry -> entry.skillId == validatedSkill.name }
-          ?.installedAtEpochMs
-          ?: now,
-        updatedAtEpochMs = now,
-      )
-      saveManifestEntry(existing = manifest, entry = entry, updatedAtEpochMs = now)
-      return SkillPackageInstallResult(
-        skillId = validatedSkill.name,
-        installedSkill = validatedSkill,
-        targetDirectory = targetDirectory,
-        manifestEntry = entry,
       )
     } finally {
       staged.rootDirectory.deleteRecursively()
+    }
+  }
+
+  fun installFromRemoteSource(
+    sourceRef: String,
+    selectedSkillName: String? = null,
+  ): SkillPackageInstallAttempt {
+    val resolvedSource = resolveRemoteSource(
+      sourceRef = sourceRef,
+      selectedSkillName = selectedSkillName,
+    ) ?: return SkillPackageInstallAttempt(
+      errorCode = "SKILL_SOURCE_UNSUPPORTED",
+      errorMessage = "Source '$sourceRef' is not a supported remote skill source.",
+    )
+    return try {
+      val manifest = refreshManifest()
+      ensureManagedRoot()
+      val stagingRoot = File(stagingRootPath(), UUID.randomUUID().toString())
+      val fetched = remoteSourceFetcher.fetch(
+        source = resolvedSource,
+        stagingRoot = stagingRoot,
+      )
+      try {
+        val selection = selectSkillFromRoot(
+          searchRoot = fetched.searchRoot,
+          selectedSkillName = resolvedSource.selectedSkillName,
+          sourceHint = resolvedSource.repo,
+          sourceRef = resolvedSource.requestedSourceRef,
+        )
+        val skillDirectory = File(selection.source.skillDirectoryPath)
+        SkillPackageInstallAttempt(
+          result = installValidatedSkill(
+            manifest = manifest,
+            stagedSkillDirectory = skillDirectory,
+            expectedSkillId = selection.name,
+            sourceType = resolvedSource.sourceType.wireValue,
+            sourceRef = resolvedSource.requestedSourceRef,
+            sourcePath = fetched.repositoryUrl,
+            sourceRelativePath = relativePathFromRoot(
+              root = fetched.repositoryRoot,
+              file = selection.source.skillFile,
+            ),
+            resolvedRevision = fetched.resolvedRevision,
+            resolvedCommitSha = fetched.resolvedCommitSha,
+          ),
+        )
+      } finally {
+        stagingRoot.deleteRecursively()
+      }
+    } catch (error: SkillPackageException) {
+      SkillPackageInstallAttempt(
+        errorCode = error.errorCode,
+        errorMessage = error.message,
+      )
+    } catch (error: Exception) {
+      SkillPackageInstallAttempt(
+        errorCode = "SKILL_INSTALL_FAILED",
+        errorMessage = error.message ?: error::class.java.simpleName,
+      )
+    }
+  }
+
+  fun installFromLocalSource(
+    sourcePath: File,
+    sourceRef: String,
+    selectedSkillName: String? = null,
+  ): SkillPackageInstallAttempt {
+    val normalizedSource = normalizeLocalSourceRoot(sourcePath)
+      ?: return SkillPackageInstallAttempt(
+        errorCode = "SKILL_SOURCE_NOT_FOUND",
+        errorMessage = "Local skill source '$sourceRef' was not found.",
+      )
+    return try {
+      val manifest = refreshManifest()
+      ensureManagedRoot()
+      val selection = selectSkillFromRoot(
+        searchRoot = normalizedSource,
+        selectedSkillName = selectedSkillName,
+        sourceHint = normalizedSource.name,
+        sourceRef = sourceRef,
+      )
+      val sourceSkillDirectory = File(selection.source.skillDirectoryPath)
+      val staged = stageSkillDirectory(sourceSkillDirectory)
+      try {
+        SkillPackageInstallAttempt(
+          result = installValidatedSkill(
+            manifest = manifest,
+            stagedSkillDirectory = staged.skillDirectory,
+            expectedSkillId = selection.name,
+            sourceType = SkillInstallSourceType.LOCAL_PATH.wireValue,
+            sourceRef = sourceRef,
+            sourcePath = canonicalInvariantPath(normalizedSource),
+            sourceRelativePath = relativePathFromRoot(
+              root = normalizedSource,
+              file = selection.source.skillFile,
+            ) ?: selection.source.relativePath,
+          ),
+        )
+      } finally {
+        staged.rootDirectory.deleteRecursively()
+      }
+    } catch (error: SkillPackageException) {
+      SkillPackageInstallAttempt(
+        errorCode = error.errorCode,
+        errorMessage = error.message,
+      )
+    } catch (error: Exception) {
+      SkillPackageInstallAttempt(
+        errorCode = "SKILL_INSTALL_FAILED",
+        errorMessage = error.message ?: error::class.java.simpleName,
+      )
     }
   }
 
@@ -288,6 +404,62 @@ class SkillPackageManager(
     return SkillLoader.load(root).loadedSkills.sortedBy(LoadedSkill::name)
   }
 
+  private fun ensureManagedRoot() {
+    if (!managedRoot.exists() && !managedRoot.mkdirs()) {
+      throw IOException("Failed to create managed skills directory: ${managedRoot.path}")
+    }
+  }
+
+  private fun installValidatedSkill(
+    manifest: SkillInstallManifest,
+    stagedSkillDirectory: File,
+    expectedSkillId: String,
+    sourceType: String,
+    sourceRef: String,
+    sourcePath: String? = null,
+    sourceRelativePath: String? = null,
+    resolvedRevision: String? = null,
+    resolvedCommitSha: String? = null,
+  ): SkillPackageInstallResult {
+    val validatedSkill = validateStagedSkill(
+      skillId = expectedSkillId,
+      stagedSkillDirectory = stagedSkillDirectory,
+    ) ?: throw SkillPackageException(
+      errorCode = "SKILL_VALIDATION_FAILED",
+      message = "Failed to validate skill '$expectedSkillId' before installation.",
+    )
+    val targetDirectory = File(managedRoot, stagedSkillDirectory.name)
+    replaceInstalledDirectory(
+      sourceDirectory = stagedSkillDirectory,
+      targetDirectory = targetDirectory,
+    )
+    val now = clock()
+    val entry = SkillInstallManifestEntry(
+      skillId = validatedSkill.name,
+      installRootPath = canonicalInvariantPath(targetDirectory),
+      sourceType = sourceType,
+      sourceRef = sourceRef,
+      sourcePath = sourcePath,
+      selectedSkillName = validatedSkill.name,
+      sourceRelativePath = sourceRelativePath,
+      resolvedRevision = resolvedRevision,
+      resolvedCommitSha = resolvedCommitSha,
+      contentHash = computeDirectoryHash(targetDirectory),
+      installedAtEpochMs = manifest.installations
+        .firstOrNull { installation -> installation.skillId == validatedSkill.name }
+        ?.installedAtEpochMs
+        ?: now,
+      updatedAtEpochMs = now,
+    )
+    saveManifestEntry(existing = manifest, entry = entry, updatedAtEpochMs = now)
+    return SkillPackageInstallResult(
+      skillId = validatedSkill.name,
+      installedSkill = validatedSkill,
+      targetDirectory = targetDirectory,
+      manifestEntry = entry,
+    )
+  }
+
   private fun saveManifestEntry(
     existing: SkillInstallManifest,
     entry: SkillInstallManifestEntry,
@@ -319,7 +491,7 @@ class SkillPackageManager(
   private fun stageSkillDirectory(
     sourceDirectory: File,
   ): StagedSkillDirectory {
-    val stagingRoot = File(managedRoot.parentFile ?: managedRoot, ".skills-staging")
+    val stagingRoot = stagingRootPath()
     val stageId = UUID.randomUUID().toString()
     val stageDirectory = File(File(stagingRoot, stageId), sourceDirectory.name)
     stageDirectory.parentFile?.mkdirs()
@@ -392,8 +564,75 @@ class SkillPackageManager(
   private fun canonicalInvariantPath(file: File): String =
     runCatching { file.canonicalPath }.getOrDefault(file.absolutePath).replace('\\', '/')
 
+  private fun selectSkillFromRoot(
+    searchRoot: File,
+    selectedSkillName: String?,
+    sourceHint: String,
+    sourceRef: String,
+  ): LoadedSkill {
+    val report = SkillLoader.load(searchRoot)
+    val requestedSkillName = selectedSkillName?.trim()
+    if (!requestedSkillName.isNullOrBlank()) {
+      return report.registry.get(requestedSkillName) ?: throw SkillPackageException(
+        errorCode = "SKILL_NOT_FOUND",
+        message = "Skill '$requestedSkillName' was not found in source '$sourceRef'.",
+      )
+    }
+    if (report.loadedSkills.isEmpty()) {
+      val invalidDetail = report.invalidSkills.firstOrNull()?.detail
+      throw SkillPackageException(
+        errorCode = "SKILL_SOURCE_INVALID",
+        message = invalidDetail ?: "Source '$sourceRef' did not contain any valid skills.",
+      )
+    }
+    if (report.loadedSkills.size == 1) {
+      return report.loadedSkills.single()
+    }
+    report.registry.get(sourceHint)?.let { return it }
+    report.loadedSkills.firstOrNull { skill ->
+      File(skill.source.skillDirectoryPath).name.equals(sourceHint, ignoreCase = true)
+    }?.let { return it }
+    throw SkillPackageException(
+      errorCode = "SKILL_SELECTION_AMBIGUOUS",
+      message = "Source '$sourceRef' contains multiple skills. Specify one with @skill-name or the skill argument.",
+    )
+  }
+
+  private fun normalizeLocalSourceRoot(sourcePath: File): File? {
+    val canonical = runCatching { sourcePath.canonicalFile }.getOrElse { sourcePath.absoluteFile }
+    if (!canonical.exists()) {
+      return null
+    }
+    return when {
+      canonical.isDirectory -> canonical
+      canonical.isFile && canonical.name.equals("SKILL.md", ignoreCase = true) -> canonical.parentFile
+      else -> null
+    }
+  }
+
+  private fun relativePathFromRoot(
+    root: File,
+    file: File,
+  ): String? = runCatching {
+    root.canonicalFile.toPath()
+      .relativize(file.canonicalFile.toPath())
+      .toString()
+      .replace('\\', '/')
+      .trim('/')
+      .ifBlank { null }
+  }.getOrNull()
+
   private data class StagedSkillDirectory(
     val rootDirectory: File,
     val skillDirectory: File,
   )
+}
+
+data class SkillPackageInstallAttempt(
+  val result: SkillPackageInstallResult? = null,
+  val errorCode: String? = null,
+  val errorMessage: String? = null,
+) {
+  val succeeded: Boolean
+    get() = result != null
 }

@@ -65,6 +65,40 @@ class ClaudeStyleToolDispatchTest {
     assertEquals("2", result.metadata["offset"])
     assertEquals("2", result.metadata["limit"])
     assertEquals("2", result.metadata["returnedLineCount"])
+    assertEquals("true", result.metadata["resultLimitApplied"])
+    assertEquals("false", result.metadata["resultTruncated"])
+    assertEquals("read_byte_budget", result.metadata["resultLimitKind"])
+  }
+
+  @Test
+  fun readEmitsStableResultLimitContractWhenByteBudgetIsExceeded() {
+    val workspaceRoot = temporaryFolder.newFolder("claude-read-truncated").toPath()
+    Files.write(
+      workspaceRoot.resolve("notes.txt"),
+      "123456789".toByteArray(StandardCharsets.UTF_8),
+    )
+    val dispatcher = dispatcher(
+      workspaceRoot = workspaceRoot,
+      maxReadBytes = 5,
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "Read",
+        arguments = buildJsonObject {
+          put("file_path", "notes.txt")
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals("12345", result.content)
+    assertEquals("true", result.metadata["truncated"])
+    assertEquals("true", result.metadata["resultLimitApplied"])
+    assertEquals("true", result.metadata["resultTruncated"])
+    assertEquals("read_byte_budget", result.metadata["resultLimitKind"])
   }
 
   @Test
@@ -115,6 +149,32 @@ class ClaudeStyleToolDispatchTest {
     assertEquals("inside_workspace", result.metadata["workspaceRelation"])
     assertEquals(".", result.metadata["primaryTargetPath"])
     assertEquals("**/*.kt", result.metadata["pattern"])
+    assertEquals("true", result.metadata["resultLimitApplied"])
+    assertEquals("false", result.metadata["resultTruncated"])
+    assertEquals("search_match_limit", result.metadata["resultLimitKind"])
+  }
+
+  @Test
+  fun lsEmitsStableResultLimitContractWhenEntryWindowIsExceeded() {
+    val workspaceRoot = temporaryFolder.newFolder("claude-ls-truncated").toPath()
+    Files.write(workspaceRoot.resolve("a.txt"), "a".toByteArray(StandardCharsets.UTF_8))
+    Files.write(workspaceRoot.resolve("b.txt"), "b".toByteArray(StandardCharsets.UTF_8))
+    val dispatcher = dispatcher(
+      workspaceRoot = workspaceRoot,
+      maxDirectoryEntries = 1,
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(toolName = "LS"),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals("1", result.metadata["entryCount"])
+    assertEquals("true", result.metadata["resultLimitApplied"])
+    assertEquals("true", result.metadata["resultTruncated"])
+    assertEquals("directory_entry_limit", result.metadata["resultLimitKind"])
   }
 
   @Test
@@ -224,6 +284,10 @@ class ClaudeStyleToolDispatchTest {
 
     assertEquals(AgentToolResultStatus.SUCCESS, writeResult.status)
     assertEquals(AgentToolResultStatus.SUCCESS, readResult.status)
+    assertEquals("todo_management", writeResult.metadata["capabilityKind"])
+    assertEquals("todo_management", readResult.metadata["capabilityKind"])
+    assertEquals("none", readResult.metadata["workspaceRelation"])
+    assertEquals("2 todo(s)", readResult.metadata["targetSummary"])
     assertEquals("2", readResult.metadata["todoCount"])
     assertTrue(readResult.content.contains("Implement Grep"))
     assertTrue(readResult.content.contains("Implementing TodoWrite"))
@@ -318,6 +382,9 @@ class ClaudeStyleToolDispatchTest {
     assertTrue(result.content.contains("Body text from the fetched page."))
     assertEquals("Example article", result.metadata["title"])
     assertEquals("4000", result.metadata["requestedMaxChars"])
+    assertEquals("true", result.metadata["resultLimitApplied"])
+    assertEquals("false", result.metadata["resultTruncated"])
+    assertEquals("web_fetch_char_limit", result.metadata["resultLimitKind"])
   }
 
   @Test
@@ -347,6 +414,9 @@ class ClaudeStyleToolDispatchTest {
     assertTrue(result.content.contains("https://example.com/opencray"))
     assertEquals("fake-search", result.metadata["providerName"])
     assertEquals("2", result.metadata["requestedMaxResults"])
+    assertEquals("true", result.metadata["resultLimitApplied"])
+    assertEquals("false", result.metadata["resultTruncated"])
+    assertEquals("web_search_result_limit", result.metadata["resultLimitKind"])
     assertEquals("opencray tools", provider.requests.single().query)
   }
 
@@ -413,6 +483,8 @@ class ClaudeStyleToolDispatchTest {
     processRegistry: AgentProcessRegistry = ClaudeBashProcessRegistry(),
     webContentFetcher: WebContentFetcher = FakeWebContentFetcher(),
     webSearchProvider: WebSearchProvider = FakeWebSearchProvider(),
+    maxReadBytes: Int = 32_000,
+    maxDirectoryEntries: Int = 200,
   ): OpenCrayToolDispatcher = OpenCrayToolDispatcher(
     OpenCrayToolDispatcherConfig(
       workspaceRoots = setOf(workspaceRoot),
@@ -420,6 +492,8 @@ class ClaudeStyleToolDispatchTest {
       processRegistry = processRegistry,
       webContentFetcher = webContentFetcher,
       webSearchProvider = webSearchProvider,
+      maxReadBytes = maxReadBytes,
+      maxDirectoryEntries = maxDirectoryEntries,
     ),
   )
 

@@ -381,23 +381,25 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     required bool recordingsEnabled,
     required String workspaceAccessProfileId,
     required bool readOnlyOutsideWorkspace,
+    String liveContextModeId = 'full',
   }) async => throw StateError(_failureMessage);
 
   @override
-  Future<OpenCraySkillsSnapshot> loadSkillsSnapshot() async =>
-      const OpenCraySkillsSnapshot(
-        installedSkills: <OpenCrayInstalledSkillSnapshot>[],
-        installSources: <OpenCraySkillInstallSourceSnapshot>[
-          OpenCraySkillInstallSourceSnapshot(
-            id: 'curated-library',
-            title: 'Curated skills',
-            subtitle: 'The Android host bridge failed to initialize.',
-            ctaLabel: 'Unavailable',
-            isAvailable: false,
-          ),
-        ],
-        suggestedSkills: <OpenCraySuggestedSkillSnapshot>[],
-      );
+  Future<OpenCraySkillsSnapshot> loadSkillsSnapshot({
+    String query = '',
+  }) async => const OpenCraySkillsSnapshot(
+    installedSkills: <OpenCrayInstalledSkillSnapshot>[],
+    installSources: <OpenCraySkillInstallSourceSnapshot>[
+      OpenCraySkillInstallSourceSnapshot(
+        id: 'curated-library',
+        title: 'Curated skills',
+        subtitle: 'The Android host bridge failed to initialize.',
+        ctaLabel: 'Unavailable',
+        isAvailable: false,
+      ),
+    ],
+    suggestedSkills: <OpenCraySuggestedSkillSnapshot>[],
+  );
 
   @override
   Stream<OpenCraySkillsSnapshot> watchSkillsSnapshot() async* {
@@ -409,6 +411,9 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
 
   @override
   Future<String?> refreshSkills() async => _failureMessage;
+
+  @override
+  Future<String?> installSkillSource(String sourceRef) async => _failureMessage;
 
   @override
   Future<String?> installSuggestedSkill(String skillId) async =>

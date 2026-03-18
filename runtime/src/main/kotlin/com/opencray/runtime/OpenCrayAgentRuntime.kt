@@ -825,6 +825,17 @@ class OpenCrayAgentRuntime(
             put("contextDurableCompactionLatestAtEpochMs", latestCompactedAtEpochMs.toString())
           }
       }
+      if (!report.liveContextTrace.isEmpty) {
+        report.liveContextTrace.mode?.let { mode ->
+          put("contextLiveMode", mode)
+        }
+        report.liveContextTrace.soulEnabled?.let { soulEnabled ->
+          put("contextLiveSoulEnabled", soulEnabled.toString())
+        }
+        report.liveContextTrace.memoryRecallEnabled?.let { memoryRecallEnabled ->
+          put("contextLiveMemoryRecallEnabled", memoryRecallEnabled.toString())
+        }
+      }
       if (!report.bootstrapTrace.isEmpty) {
         put("contextBootstrapMode", report.bootstrapTrace.mode)
         put("contextBootstrapVisibleFileCount", report.bootstrapTrace.visibleFileCount.toString())

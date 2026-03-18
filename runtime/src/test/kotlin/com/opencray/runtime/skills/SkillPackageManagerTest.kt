@@ -4,6 +4,7 @@ import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -149,6 +150,77 @@ class SkillPackageManagerTest {
     assertTrue(firstEntry.contentHash != secondEntry.contentHash)
   }
 
+  @Test
+  fun installFromRemoteSourceWritesRemoteProvenanceToManifest() {
+    val managedRoot = temporaryFolder.newFolder("managed-remote")
+    val catalogRoot = temporaryFolder.newFolder("catalog-remote")
+    val manifestFile = File(temporaryFolder.root, "skills-manifest-remote.json")
+    val manifestStore = SkillInstallManifestStore.fromFile(manifestFile)
+    val packageManager = SkillPackageManager(
+      managedRoot = managedRoot,
+      catalogRoot = catalogRoot,
+      manifestStore = manifestStore,
+      remoteSourceFetcher = FakeRemoteSkillSourceFetcher(
+        skillDirectoryName = "find-skills",
+        skillName = "find-skills",
+        description = "Find skills from a remote source.",
+      ),
+      clock = { 50_000L },
+    )
+
+    val attempt = packageManager.installFromRemoteSource("roin-orca/skills@find-skills")
+
+    assertTrue(attempt.succeeded)
+    assertNull(attempt.errorCode)
+    val result = requireNotNull(attempt.result)
+    assertEquals("find-skills", result.skillId)
+    val entry = manifestStore.load().installations.single()
+    assertEquals(SkillInstallSourceType.REMOTE_GITHUB.wireValue, entry.sourceType)
+    assertEquals("roin-orca/skills@find-skills", entry.sourceRef)
+    assertEquals("https://github.com/roin-orca/skills", entry.sourcePath)
+    assertEquals("find-skills/SKILL.md", entry.sourceRelativePath)
+    assertEquals("main", entry.resolvedRevision)
+    assertEquals("deadbeef", entry.resolvedCommitSha)
+    assertTrue(File(managedRoot, "find-skills").resolve("SKILL.md").isFile)
+  }
+
+  @Test
+  fun installFromLocalSourceCopiesSkillAndWritesLocalPathProvenance() {
+    val managedRoot = temporaryFolder.newFolder("managed-local-source")
+    val catalogRoot = temporaryFolder.newFolder("catalog-local-source")
+    val localSourceRoot = temporaryFolder.newFolder("local-source")
+    writeSkill(
+      root = localSourceRoot,
+      directoryName = "find-skills",
+      skillName = "find-skills",
+      description = "Find skills from a local source path.",
+      body = "Use the local source path.",
+    )
+    val manifestFile = File(temporaryFolder.root, "skills-manifest-local-source.json")
+    val manifestStore = SkillInstallManifestStore.fromFile(manifestFile)
+    val packageManager = SkillPackageManager(
+      managedRoot = managedRoot,
+      catalogRoot = catalogRoot,
+      manifestStore = manifestStore,
+      clock = { 60_000L },
+    )
+
+    val attempt = packageManager.installFromLocalSource(
+      sourcePath = localSourceRoot,
+      sourceRef = "./local-source",
+    )
+
+    assertTrue(attempt.succeeded)
+    val result = requireNotNull(attempt.result)
+    assertEquals("find-skills", result.skillId)
+    val entry = manifestStore.load().installations.single()
+    assertEquals(SkillInstallSourceType.LOCAL_PATH.wireValue, entry.sourceType)
+    assertEquals("./local-source", entry.sourceRef)
+    assertEquals(canonicalInvariantPath(localSourceRoot), entry.sourcePath)
+    assertEquals("find-skills/SKILL.md", entry.sourceRelativePath)
+    assertTrue(File(managedRoot, "find-skills").resolve("SKILL.md").isFile)
+  }
+
   private fun writeSkill(
     root: File,
     directoryName: String,
@@ -174,4 +246,38 @@ class SkillPackageManagerTest {
 
   private fun canonicalInvariantPath(file: File): String =
     runCatching { file.canonicalPath }.getOrDefault(file.absolutePath).replace('\\', '/')
+
+  private class FakeRemoteSkillSourceFetcher(
+    private val skillDirectoryName: String,
+    private val skillName: String,
+    private val description: String,
+  ) : RemoteSkillSourceFetcher {
+    override fun fetch(
+      source: ResolvedRemoteSkillSource,
+      stagingRoot: File,
+    ): FetchedRemoteSkillSource {
+      val repositoryRoot = File(stagingRoot, "repo")
+      val skillDirectory = File(repositoryRoot, skillDirectoryName)
+      if (!skillDirectory.exists()) {
+        skillDirectory.mkdirs()
+      }
+      File(skillDirectory, "SKILL.md").writeText(
+        """
+        ---
+        name: $skillName
+        description: $description
+        ---
+        Use the remote source.
+        """.trimIndent(),
+        Charsets.UTF_8,
+      )
+      return FetchedRemoteSkillSource(
+        repositoryRoot = repositoryRoot,
+        searchRoot = repositoryRoot,
+        repositoryUrl = source.repositoryUrl,
+        resolvedRevision = source.ref ?: "main",
+        resolvedCommitSha = "deadbeef",
+      )
+    }
+  }
 }

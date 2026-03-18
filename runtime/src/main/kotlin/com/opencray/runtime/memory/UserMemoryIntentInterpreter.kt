@@ -18,6 +18,7 @@ data class UserMemoryIntent(
   val preferenceKey: String? = null,
   val preferenceValue: String? = null,
   val soulExtensions: Map<String, String> = emptyMap(),
+  val preferenceExtensions: Map<String, String> = emptyMap(),
 ) {
   init {
     require(

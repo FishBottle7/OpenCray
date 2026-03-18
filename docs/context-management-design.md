@@ -2301,6 +2301,10 @@ OpenCray should not do these first:
 - fully dynamic plugin context engines
 - automatic subagent graphs
 - multi-source RAG orchestration
+- passive relationship decay driven only by elapsed time, long absences, or normal work-session gaps
+- default social-interpretation penalties such as downgrading the relationship because the user only returns when they need help
+
+For the current product shape, OpenCray should bias toward stable work continuity with some earned cultivation, not toward a fragile human-relationship simulator. If richer social decay is explored later, it should be an explicit mode with its own evidence rules and user expectations.
 
 Those are later-stage concerns. The immediate gap is simpler:
 

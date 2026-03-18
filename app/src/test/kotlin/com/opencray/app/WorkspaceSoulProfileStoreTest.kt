@@ -24,7 +24,7 @@ class WorkspaceSoulProfileStoreTest {
 
     store.saveSoulProfile(
       workspaceRoot,
-      PersonalizationLocalStore.SoulProfile(
+      WorkspaceSoulProfile(
         presetName = "BUILDER",
         customLabel = "Night Shift",
         customGuidance = "Stay direct and concrete.",
@@ -53,7 +53,7 @@ class WorkspaceSoulProfileStoreTest {
 
     store.saveSoulProfile(
       workspaceRoot,
-      PersonalizationLocalStore.SoulProfile(
+      WorkspaceSoulProfile(
         presetName = "STEADY",
         customLabel = "Original",
         customGuidance = "Keep calm.",
@@ -66,7 +66,7 @@ class WorkspaceSoulProfileStoreTest {
 
     store.saveSoulProfile(
       workspaceRoot,
-      PersonalizationLocalStore.SoulProfile(
+      WorkspaceSoulProfile(
         presetName = "WARM",
         customLabel = "Updated",
         customGuidance = "Stay warm.",
@@ -118,7 +118,7 @@ class WorkspaceSoulProfileStoreTest {
 
     store.saveSoulProfile(
       workspaceRoot,
-      PersonalizationLocalStore.SoulProfile(
+      WorkspaceSoulProfile(
         presetName = "STEADY",
         customLabel = "",
         customGuidance = "",

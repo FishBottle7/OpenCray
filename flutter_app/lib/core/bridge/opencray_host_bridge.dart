@@ -160,15 +160,18 @@ abstract interface class OpenCrayHostBridge {
     required bool recordingsEnabled,
     required String workspaceAccessProfileId,
     required bool readOnlyOutsideWorkspace,
+    String liveContextModeId = 'full',
   });
 
-  Future<OpenCraySkillsSnapshot> loadSkillsSnapshot();
+  Future<OpenCraySkillsSnapshot> loadSkillsSnapshot({String query = ''});
 
   Stream<OpenCraySkillsSnapshot> watchSkillsSnapshot();
 
   Future<void> setSkillEnabled(String skillId, bool enabled);
 
   Future<String?> refreshSkills();
+
+  Future<String?> installSkillSource(String sourceRef);
 
   Future<String?> installSuggestedSkill(String skillId);
 

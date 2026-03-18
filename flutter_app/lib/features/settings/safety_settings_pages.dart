@@ -204,21 +204,18 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
               onValueTap: _isSaving
                   ? null
                   : () => _editLimitValue(
-                        title: SafetySettingsCopy.agentTurnLimitTitle,
-                        subtitle: SafetySettingsCopy.agentTurnLimitSubtitle,
-                        currentValue: snapshot.maxAgentTurns,
-                        onSaved: (value) => snapshot.copyWith(
-                          maxAgentTurns: value,
-                        ),
-                      ),
+                      title: SafetySettingsCopy.agentTurnLimitTitle,
+                      subtitle: SafetySettingsCopy.agentTurnLimitSubtitle,
+                      currentValue: snapshot.maxAgentTurns,
+                      onSaved: (value) =>
+                          snapshot.copyWith(maxAgentTurns: value),
+                    ),
               onIncrement: () {
                 if (_isSaving) {
                   return;
                 }
                 _persist(
-                  snapshot.copyWith(
-                    maxAgentTurns: snapshot.maxAgentTurns + 1,
-                  ),
+                  snapshot.copyWith(maxAgentTurns: snapshot.maxAgentTurns + 1),
                 );
               },
             ),
@@ -251,21 +248,18 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
               onValueTap: _isSaving
                   ? null
                   : () => _editLimitValue(
-                        title: SafetySettingsCopy.toolCallLimitTitle,
-                        subtitle: SafetySettingsCopy.toolCallLimitSubtitle,
-                        currentValue: snapshot.maxToolCalls,
-                        onSaved: (value) => snapshot.copyWith(
-                          maxToolCalls: value,
-                        ),
-                      ),
+                      title: SafetySettingsCopy.toolCallLimitTitle,
+                      subtitle: SafetySettingsCopy.toolCallLimitSubtitle,
+                      currentValue: snapshot.maxToolCalls,
+                      onSaved: (value) =>
+                          snapshot.copyWith(maxToolCalls: value),
+                    ),
               onIncrement: () {
                 if (_isSaving) {
                   return;
                 }
                 _persist(
-                  snapshot.copyWith(
-                    maxToolCalls: snapshot.maxToolCalls + 1,
-                  ),
+                  snapshot.copyWith(maxToolCalls: snapshot.maxToolCalls + 1),
                 );
               },
             ),
@@ -705,10 +699,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
                   onPressed: () => Navigator.of(dialogContext).pop(),
                   child: const Text('Cancel'),
                 ),
-                TextButton(
-                  onPressed: submit,
-                  child: const Text('Save'),
-                ),
+                TextButton(onPressed: submit, child: const Text('Save')),
               ],
             );
           },
@@ -848,6 +839,7 @@ class _WorkspaceAccessSettingsPageState
                     _snapshot!,
                     isSaving: _isSaving,
                     onPersist: _persist,
+                    onOpenLiveContextModePicker: _openLiveContextModePicker,
                     onOpenApprovedPaths: () {
                       setState(() {
                         _page = _WorkspaceSubpage.approvedPaths;
@@ -883,6 +875,107 @@ class _WorkspaceAccessSettingsPageState
     }
   }
 
+  Future<void> _openLiveContextModePicker() async {
+    final snapshot = _snapshot;
+    if (snapshot == null || _isSaving) {
+      return;
+    }
+    final selected = await showModalBottomSheet<LiveContextMode>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: DecoratedBox(
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.all(Radius.circular(22)),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 18, 16, 14),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: OpenCrayColors.divider,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                    ),
+                    Text(
+                      SafetySettingsCopy.liveContextTitle,
+                      style: _SettingsTextStyles.cardTitle,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      SafetySettingsCopy.liveContextSubtitle,
+                      style: _SettingsTextStyles.body,
+                    ),
+                    const SizedBox(height: 12),
+                    for (final option in LiveContextMode.values)
+                      InkWell(
+                        borderRadius: BorderRadius.circular(14),
+                        onTap: () => Navigator.of(context).pop(option),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      SafetySettingsCopy.liveContextModeLabel(
+                                        option,
+                                      ),
+                                      style: _SettingsTextStyles.rowTitle,
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      SafetySettingsCopy.liveContextModeSummary(
+                                        option,
+                                      ),
+                                      style: _SettingsTextStyles.rowSubtitle,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              if (option == snapshot.liveContextMode)
+                                const Padding(
+                                  padding: EdgeInsets.only(left: 12, top: 2),
+                                  child: Icon(
+                                    Icons.check_rounded,
+                                    color: OpenCrayColors.primary,
+                                    size: 18,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+    if (selected == null || selected == snapshot.liveContextMode) {
+      return;
+    }
+    await _persist(snapshot.copyWith(liveContextMode: selected));
+  }
+
   Future<void> _persist(SafetySettingsSnapshot snapshot) async {
     setState(() {
       _snapshot = snapshot;
@@ -914,9 +1007,40 @@ List<Widget> _buildWorkspaceAccessShared(
   SafetySettingsSnapshot snapshot, {
   required bool isSaving,
   required Future<void> Function(SafetySettingsSnapshot snapshot) onPersist,
+  required VoidCallback onOpenLiveContextModePicker,
   required VoidCallback onOpenApprovedPaths,
 }) {
   return <Widget>[
+    _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            SafetySettingsCopy.liveContextTitle,
+            style: _SettingsTextStyles.cardTitle,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            SafetySettingsCopy.liveContextSubtitle,
+            style: _SettingsTextStyles.body,
+          ),
+          const SizedBox(height: 12),
+          _PrototypeDisclosureRow(
+            title: 'Mode',
+            value: SafetySettingsCopy.liveContextModeLabel(
+              snapshot.liveContextMode,
+            ),
+            onTap: isSaving ? null : onOpenLiveContextModePicker,
+          ),
+          const SizedBox(height: 12),
+          Text(
+            SafetySettingsCopy.liveContextModeSummary(snapshot.liveContextMode),
+            style: _SettingsTextStyles.rowSubtitle,
+          ),
+        ],
+      ),
+    ),
+    const SizedBox(height: 16),
     _SettingsCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1399,11 +1523,7 @@ class _StepperButton extends StatelessWidget {
 }
 
 class _PrototypeValuePill extends StatelessWidget {
-  const _PrototypeValuePill({
-    super.key,
-    required this.value,
-    this.onTap,
-  });
+  const _PrototypeValuePill({super.key, required this.value, this.onTap});
 
   final String value;
   final VoidCallback? onTap;

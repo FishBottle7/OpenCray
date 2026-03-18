@@ -796,6 +796,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     required bool recordingsEnabled,
     required String workspaceAccessProfileId,
     required bool readOnlyOutsideWorkspace,
+    String liveContextModeId = 'full',
   }) async {
     _safetySettings = OpenCraySafetySettingsSnapshot(
       automationModeId: automationModeId,
@@ -828,12 +829,15 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       ],
       workspaceAccessProfileId: workspaceAccessProfileId,
       readOnlyOutsideWorkspace: readOnlyOutsideWorkspace,
+      liveContextModeId: liveContextModeId,
     );
     return _safetySettings;
   }
 
   @override
-  Future<OpenCraySkillsSnapshot> loadSkillsSnapshot() async => _skillsSnapshot;
+  Future<OpenCraySkillsSnapshot> loadSkillsSnapshot({
+    String query = '',
+  }) async => _skillsSnapshot;
 
   @override
   Stream<OpenCraySkillsSnapshot> watchSkillsSnapshot() async* {
@@ -867,6 +871,10 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   @override
   Future<String?> refreshSkills() async =>
       'Seed bridge refreshed local skills.';
+
+  @override
+  Future<String?> installSkillSource(String sourceRef) async =>
+      'Seed bridge does not support skill installation.';
 
   @override
   Future<String?> installSuggestedSkill(String skillId) async =>

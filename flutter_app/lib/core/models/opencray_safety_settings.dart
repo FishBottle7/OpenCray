@@ -13,6 +13,7 @@ class OpenCraySafetySettingsSnapshot {
     required this.locations,
     required this.workspaceAccessProfileId,
     required this.readOnlyOutsideWorkspace,
+    this.liveContextModeId = 'full',
   });
 
   final String automationModeId;
@@ -28,6 +29,7 @@ class OpenCraySafetySettingsSnapshot {
   final List<OpenCraySafetySettingsLocationSnapshot> locations;
   final String workspaceAccessProfileId;
   final bool readOnlyOutsideWorkspace;
+  final String liveContextModeId;
 
   factory OpenCraySafetySettingsSnapshot.fromMap(
     Map<Object?, Object?> payload,
@@ -56,6 +58,7 @@ class OpenCraySafetySettingsSnapshot {
           payload['workspaceAccessProfileId'] as String? ?? 'work',
       readOnlyOutsideWorkspace:
           payload['readOnlyOutsideWorkspace'] as bool? ?? true,
+      liveContextModeId: payload['liveContextModeId'] as String? ?? 'full',
     );
   }
 }

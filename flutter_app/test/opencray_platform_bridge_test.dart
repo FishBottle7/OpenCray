@@ -215,6 +215,7 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(methodChannel, (call) async {
           capturedCall = call;
+          final arguments = call.arguments as Map<Object?, Object?>;
           return <String, Object?>{
             'automationModeId': 'dev',
             'rollbackJournalEnabled': true,
@@ -234,6 +235,7 @@ void main() {
             ],
             'workspaceAccessProfileId': 'work',
             'readOnlyOutsideWorkspace': true,
+            'liveContextModeId': arguments['liveContextModeId'],
           };
         });
 
@@ -254,6 +256,7 @@ void main() {
       recordingsEnabled: false,
       workspaceAccessProfileId: 'work',
       readOnlyOutsideWorkspace: true,
+      liveContextModeId: 'no_soul',
     );
 
     expect(capturedCall.method, 'saveSafetySettings');
@@ -263,10 +266,12 @@ void main() {
     expect(arguments['maxAgentTurns'], 0);
     expect(arguments['maxToolCalls'], 0);
     expect(arguments['fileDeletesPolicyId'], 'block');
+    expect(arguments['liveContextModeId'], 'no_soul');
     expect(snapshot.automationModeId, 'dev');
     expect(snapshot.maxAgentTurns, 0);
     expect(snapshot.maxToolCalls, 0);
     expect(snapshot.fileDeletesPolicyId, 'block');
+    expect(snapshot.liveContextModeId, 'no_soul');
   });
 
   test(

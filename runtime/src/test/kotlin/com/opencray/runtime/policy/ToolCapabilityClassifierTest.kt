@@ -32,5 +32,6 @@ class ToolCapabilityClassifierTest {
     assertEquals("delete_file", classifier.classifyCapabilityKind("workspace_delete_file"))
     assertEquals("network_access", classifier.classifyCapabilityKind("WebFetch"))
     assertEquals("read_file", classifier.classifyCapabilityKind("Read"))
+    assertEquals("todo_management", classifier.classifyCapabilityKind("TodoWrite"))
   }
 }

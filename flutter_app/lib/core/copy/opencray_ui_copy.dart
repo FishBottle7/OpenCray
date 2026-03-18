@@ -112,8 +112,8 @@ class OpenCrayUiCopy {
       ? '管理这个工作区里已经安装的技能包。'
       : 'Manage the installed skill packages for this workspace.';
   String get skillsInstallSubtitle => isChinese
-      ? '当本地目录里存在可用项时，从中安装更多技能。'
-      : 'Install additional skills from the local catalog when one is available.';
+      ? '搜索可安装技能，或直接输入 owner/repo、URL、source ref、本地路径进行安装。'
+      : 'Search installable skills or enter an owner/repo, URL, source ref, or local path to install directly.';
   String get skillsNoInstalledTitle =>
       isChinese ? '还没有已安装技能' : 'No installed skills';
   String get skillsNoInstalledBody => isChinese
@@ -123,11 +123,17 @@ class OpenCrayUiCopy {
       isChinese ? '管理这个工作区中的技能' : 'Manage skills in this workspace';
   String get skillsInstallFromTitle => isChinese ? '安装来源' : 'Install from';
   String get skillsSuggestedTitle => isChinese ? '建议安装' : 'Suggested';
+  String get skillsResultsTitle => isChinese ? '搜索结果' : 'Results';
   String get skillsNoCatalogTitle =>
       isChinese ? '没有可安装技能' : 'No catalog skills';
   String get skillsNoCatalogBody => isChinese
       ? '这台设备上的本地目录里暂时没有额外可安装的技能。'
       : 'No additional skills are available from the local catalog on this device.';
+  String get skillsNoResultsTitle =>
+      isChinese ? '没有匹配结果' : 'No matching skills';
+  String skillsNoResultsBody(String query) => isChinese
+      ? '没有找到和“$query”匹配的技能。你仍然可以直接按这个来源安装。'
+      : 'No skills matched "$query" yet. You can still install directly from this source.';
   String get skillsLoadFailed => isChinese
       ? '从宿主运行时加载工作区技能失败。'
       : 'Failed to load workspace skills from the host runtime.';
@@ -158,13 +164,19 @@ class OpenCrayUiCopy {
       ? '已启用 $enabledCount / $installedCount 个已安装技能'
       : '$enabledCount of $installedCount installed skills enabled';
   String skillsSummaryInstallBody(int suggestedCount) => isChinese
-      ? '本地目录中有 $suggestedCount 个可用技能'
-      : '$suggestedCount skills available from the local catalog';
+      ? '当前有 $suggestedCount 个可安装结果'
+      : '$suggestedCount installable results ready';
   String get skillsManageTab => isChinese ? '管理' : 'Manage';
   String get skillsInstallTab => isChinese ? '安装' : 'Install';
   String get skillsInstallButton => isChinese ? '安装' : 'Install';
-  String get skillsSearchHint =>
-      isChinese ? '搜索技能目录' : 'Search the skill catalog';
+  String get skillsSearchHint => isChinese
+      ? '搜索技能，或输入 owner/repo、URL、本地路径'
+      : 'Search skills or enter owner/repo, URL, or a local path';
+  String get skillsDirectInstallTitle =>
+      isChinese ? '直接按来源安装' : 'Install from source';
+  String skillsDirectInstallBody(String sourceRef) => isChinese
+      ? '将“$sourceRef”直接交给 SkillsAdd 安装。'
+      : 'Send "$sourceRef" straight to SkillsAdd for installation.';
 
   String get llmPageSubtitle => isChinese
       ? '选择提供商、路由和响应默认值。'

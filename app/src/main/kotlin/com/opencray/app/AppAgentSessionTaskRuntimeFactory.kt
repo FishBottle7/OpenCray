@@ -32,6 +32,7 @@ import com.opencray.runtime.compaction.DurableCompactionCoordinator
 import com.opencray.runtime.compaction.InMemorySessionCompactionStore
 import com.opencray.runtime.compaction.SessionCompactionStore
 import com.opencray.runtime.context.AgentRuntimeSessionContext
+import com.opencray.runtime.context.LiveContextTrace
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.memory.MemoryRecallRequest
@@ -63,8 +64,9 @@ import kotlinx.serialization.json.put
 internal class AppAgentSessionTaskRuntimeFactory(
   private val llmSettingsProvider: () -> LlmSettingsState,
   private val safetySettingsProvider: () -> SafetySettingsState = { SafetySettingsState() },
+  private val liveContextModeProvider: () -> LiveContextMode = { LiveContextMode.FULL },
   private val sessionContextFactory: ChatRuntimeSessionContextFactory,
-  private val soulProfileProvider: () -> PersonalizationLocalStore.SoulProfile?,
+  private val soulProfileProvider: () -> WorkspaceSoulProfile?,
   private val workspaceRootsProvider: () -> Set<Path>,
   private val readRootsProvider: () -> Set<Path> = workspaceRootsProvider,
   private val skillsRootsProvider: () -> List<File>,
@@ -156,7 +158,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
       )
     }.orEmpty()
     val skillPolicyWriteRoots = skillPackageManager?.let { manager ->
-      setOf(manager.managedRootPath().toPath())
+      buildSet {
+        add(manager.managedRootPath().toPath())
+        manager.compatStagingRootPath()?.let(::add)
+      }
     }.orEmpty()
     val workspaceId = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider())
     val preparedContext = prepareSessionContext(
@@ -170,6 +175,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
       taskInput = task.input,
       transcriptStore = transcriptStore,
       memoryRecords = memoryRecords,
+      liveContextMode = liveContextModeProvider(),
     )
     val sessionContext = preparedContext.sessionContext
     val effectiveMemoryRecords = preparedContext.effectiveMemoryRecords
@@ -398,7 +404,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
 
   internal fun effectiveSoulProfileFor(
     sessionId: String,
-    soulProfile: PersonalizationLocalStore.SoulProfile?,
+    soulProfile: WorkspaceSoulProfile?,
     memoryRecords: List<MemoryRecord> = memoryRecordsProvider(),
     workspaceId: String? = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider()),
     ) = memoryBackedSoulResolver.overlay(
@@ -420,6 +426,9 @@ internal class AppAgentSessionTaskRuntimeFactory(
       mode = mode,
     )
 
+  internal fun liveContextPolicyFor(mode: LiveContextMode): LiveContextPolicy =
+    mode.toPolicy()
+
   internal fun skillCatalogFor() =
     skillCatalogResolver.resolve(skillsRootsProvider())
 
@@ -428,18 +437,20 @@ internal class AppAgentSessionTaskRuntimeFactory(
     workspaceId: String?,
     visibleThroughMessageId: String?,
     excludedMessageIds: Set<String>,
-    soulProfile: PersonalizationLocalStore.SoulProfile?,
+    soulProfile: WorkspaceSoulProfile?,
     taskType: com.opencray.core.contracts.AgentTaskType,
     taskId: String,
     taskInput: String,
     transcriptStore: SessionTranscriptStore,
     memoryRecords: List<MemoryRecord>,
+    liveContextMode: LiveContextMode = LiveContextMode.FULL,
   ): PreparedSessionContext {
+    val liveContextPolicy = liveContextPolicyFor(liveContextMode)
     val baseContext = sessionContextFactory.create(
       sessionId = sessionId,
       visibleThroughMessageId = visibleThroughMessageId,
       excludedMessageIds = excludedMessageIds,
-      soulProfile = soulProfile,
+      soulProfile = soulProfile.takeIf { liveContextPolicy.soulEnabled },
     )
     transcriptStore.seedIfEmpty(baseContext.conversation)
     taskInput.trim()
@@ -477,25 +488,38 @@ internal class AppAgentSessionTaskRuntimeFactory(
     val skillCatalog = skillCatalogFor()
     val bootstrapContext = bootstrapContextFor(
       mode = if (taskType == com.opencray.core.contracts.AgentTaskType.PROMPT) {
-        BootstrapMode.FULL
+        liveContextPolicy.bootstrapMode
       } else {
         BootstrapMode.NONE
       },
     )
     return PreparedSessionContext(
       sessionContext = baseContext.copy(
-        soulProfile = memoryBackedSoulResolver.overlay(
-          baseProfile = baseContext.soulProfile,
-          records = effectiveMemoryRecords,
-          sessionId = sessionId,
-          workspaceId = workspaceId,
+        soulProfile = if (liveContextPolicy.soulEnabled) {
+          memoryBackedSoulResolver.overlay(
+            baseProfile = baseContext.soulProfile,
+            records = effectiveMemoryRecords,
+            sessionId = sessionId,
+            workspaceId = workspaceId,
+          )
+        } else {
+          baseContext.soulProfile
+        },
+        liveContextTrace = LiveContextTrace(
+          mode = liveContextMode.wireValue,
+          soulEnabled = liveContextPolicy.soulEnabled,
+          memoryRecallEnabled = liveContextPolicy.memoryRecallEnabled,
         ),
-        recalledMemory = recalledMemoryFor(
-          sessionId = sessionId,
-          taskInput = taskInput,
-          memoryRecords = effectiveMemoryRecords,
-          workspaceId = workspaceId,
-        ),
+        recalledMemory = if (liveContextPolicy.memoryRecallEnabled) {
+          recalledMemoryFor(
+            sessionId = sessionId,
+            taskInput = taskInput,
+            memoryRecords = effectiveMemoryRecords,
+            workspaceId = workspaceId,
+          )
+        } else {
+          MemoryRecallResult()
+        },
         memoryFlushTrace = memoryFlushSummary?.trace
           ?: com.opencray.runtime.memory.MemoryFlushTrace(),
         durableCompaction = durableCompaction,
@@ -736,6 +760,15 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private fun AgentRunSnapshot.isInterruptedManagedProcessRestore(): Boolean =
     errorCode == ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE &&
       resultMetadata[METADATA_RESTORED_TERMINAL_STATE] == RESTORED_TERMINAL_STATE_INTERRUPTED
+
+  private fun SkillPackageManager.compatStagingRootPath(): Path? =
+    runCatching {
+      javaClass.methods
+        .firstOrNull { method ->
+          method.name == "stagingRootPath" && method.parameterCount == 0
+        }
+        ?.invoke(this) as? File
+    }.getOrNull()?.toPath()
 
   companion object {
     const val ERROR_CODE_MISSING_LLM_CONFIG: String = "MISSING_LLM_CONFIG"

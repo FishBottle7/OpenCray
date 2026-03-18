@@ -43,9 +43,19 @@ data class RuntimeSoulProfile(
   val extensions: Map<String, String> = emptyMap(),
 )
 
+data class LiveContextTrace(
+  val mode: String? = null,
+  val soulEnabled: Boolean? = null,
+  val memoryRecallEnabled: Boolean? = null,
+) {
+  val isEmpty: Boolean
+    get() = mode.isNullOrBlank() && soulEnabled == null && memoryRecallEnabled == null
+}
+
 data class AgentRuntimeSessionContext(
   val sessionPolicyText: String? = null,
   val soulProfile: RuntimeSoulProfile? = null,
+  val liveContextTrace: LiveContextTrace = LiveContextTrace(),
   val bootstrapContext: BootstrapContext = BootstrapContext(),
   val recalledMemory: MemoryRecallResult = MemoryRecallResult(),
   val memoryFlushTrace: MemoryFlushTrace = MemoryFlushTrace(),
@@ -105,6 +115,7 @@ data class ContextSelectionReport(
   val memoryRecallTrace: MemoryRecallTrace = MemoryRecallTrace(),
   val memoryFlushTrace: MemoryFlushTrace = MemoryFlushTrace(),
   val durableCompactionTrace: DurableCompactionTrace = DurableCompactionTrace(),
+  val liveContextTrace: LiveContextTrace = LiveContextTrace(),
   val bootstrapTrace: BootstrapTrace = BootstrapTrace(),
   val visibleSkillCount: Int = 0,
   val injectedSkillCount: Int = 0,
@@ -161,6 +172,7 @@ data class ContextAssemblyReport(
   val memoryRecallTrace: MemoryRecallTrace = MemoryRecallTrace(),
   val memoryFlushTrace: MemoryFlushTrace = MemoryFlushTrace(),
   val durableCompactionTrace: DurableCompactionTrace = DurableCompactionTrace(),
+  val liveContextTrace: LiveContextTrace = LiveContextTrace(),
   val bootstrapTrace: BootstrapTrace = BootstrapTrace(),
   val visibleSkillCount: Int = 0,
   val injectedSkillCount: Int = 0,

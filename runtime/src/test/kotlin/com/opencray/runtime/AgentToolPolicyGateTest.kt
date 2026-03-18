@@ -520,6 +520,42 @@ class AgentToolPolicyGateTest {
   }
 
   @Test
+  fun developerModeCommandOutputLimitUsesStableResultLimitContract() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-command-output-limit").toPath()
+    val runner = OutputLimitRunner()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        commandExecutor = CommandExecutor(runner = runner),
+      ),
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(
+        metadata = mapOf("chatMode" to "DEVELOPER"),
+      ),
+      call = AgentToolCall(
+        toolName = "command_exec",
+        arguments = JsonObject(
+          mapOf(
+            "command" to JsonPrimitive("git"),
+            "working_directory" to JsonPrimitive("."),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.FAILED, result.status)
+    assertEquals("OUTPUT_LIMIT_EXCEEDED", result.errorCode)
+    assertEquals("execution", result.metadata["intentCategory"])
+    assertEquals("true", result.metadata["resultLimitApplied"])
+    assertEquals("true", result.metadata["resultTruncated"])
+    assertEquals("command_output_byte_limit", result.metadata["resultLimitKind"])
+    assertEquals(1, runner.spawnCount)
+  }
+
+  @Test
   fun autoModeWebFetchRequiresApprovalBeforeNetworkAccess() {
     val workspaceRoot = temporaryFolder.newFolder("tool-policy-webfetch").toPath()
     val fetcher = RecordingWebContentFetcher()
@@ -883,6 +919,27 @@ class AgentToolPolicyGateTest {
         stdout = "",
         stderr = "",
         processStarted = true,
+      )
+    }
+  }
+
+  private class OutputLimitRunner : CommandProcessRunner {
+    var spawnCount: Int = 0
+      private set
+
+    override fun run(
+      commandLine: List<String>,
+      workingDirectory: String?,
+      config: CommandExecutionConfig,
+      hooks: RuntimeExecutionHooks,
+    ): CommandSpawnResult {
+      spawnCount += 1
+      return CommandSpawnResult(
+        exitCode = 0,
+        stdout = "truncated",
+        stderr = "",
+        processStarted = true,
+        outputLimitExceeded = true,
       )
     }
   }

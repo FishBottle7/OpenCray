@@ -10,6 +10,14 @@ import com.opencray.app.facade.llm.ValidateLlmConfigRequest
 import com.opencray.app.facade.search.EmptyNetworkSearchConfigFacade
 import com.opencray.app.facade.search.LocalNetworkSearchConfigFacade
 import com.opencray.app.facade.search.NetworkSearchConfigFacade
+import com.opencray.app.facade.safety.LocalSafetySettingsFacade
+import com.opencray.app.facade.skills.InstallSourceSnapshot
+import com.opencray.app.facade.skills.InstalledSkillSnapshot
+import com.opencray.app.facade.skills.SkillInstallRequestResult
+import com.opencray.app.facade.skills.SkillInstructionsSnapshot
+import com.opencray.app.facade.skills.SkillsFacade
+import com.opencray.app.facade.skills.SkillsSnapshot
+import com.opencray.app.facade.skills.SuggestedSkillSnapshot
 import com.opencray.app.facade.settings.SettingsDetailSnapshot
 import com.opencray.app.facade.settings.SettingsFacade
 import com.opencray.app.facade.settings.SettingsOverviewSnapshot
@@ -412,6 +420,69 @@ class OpenCrayLocalRuntimeServerTest {
       assertEquals(200, deleteResponse.statusCode)
       assertTrue(sessions.none { it.sessionId == originalSessionId })
       assertTrue(sessions.any { it.sessionId == copiedSessionId })
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun saveSafetySettingsRoutePersistsLiveContextMode() {
+    val safetyFacade = LocalSafetySettingsFacade(
+      store = SafetySettingsStore(InMemorySafetySettingsKeyValueStore()),
+      liveContextModeStore = LiveContextModeStore(
+        InMemoryLiveContextModeKeyValueStore(),
+      ),
+    )
+    val hostRuntime = OpenCrayHostRuntime.createForTest(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      chatSessionStore = ChatSessionLocalStore(
+        temporaryFolder.newFolder("chat-store-safety-route"),
+      ),
+      settingsFacade = NoOpSettingsFacade,
+      llmConfigFacade = EmptyLlmConfigFacade,
+      safetySettingsFacade = safetyFacade,
+      sessionRuntimeManager = NoOpRuntimeManager(),
+      strings = hostRuntimeStrings(),
+    )
+    val server = OpenCrayLocalRuntimeServer(
+      hostRuntimeProvider = { hostRuntime },
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/save_safety_settings",
+        body = JSONObject().apply {
+          put("automationModeId", "auto")
+          put("rollbackJournalEnabled", true)
+          put("maxFilesPerBatch", 20)
+          put("maxAgentTurns", 0)
+          put("maxToolCalls", 0)
+          put("undoWindowHours", 24)
+          put("fileChangesPolicyId", "inherit")
+          put("fileDeletesPolicyId", "inherit")
+          put("shellCommandsPolicyId", "inherit")
+          put("externalAccessModeId", "select_paths")
+          put("photoLibraryEnabled", true)
+          put("downloadsEnabled", true)
+          put("documentsEnabled", false)
+          put("recordingsEnabled", false)
+          put("workspaceAccessProfileId", "work")
+          put("readOnlyOutsideWorkspace", true)
+          put("liveContextModeId", LiveContextMode.NO_SOUL.wireValue)
+        }.toString(),
+      )
+
+      assertEquals(200, response.statusCode)
+      assertEquals(
+        LiveContextMode.NO_SOUL.wireValue,
+        JSONObject(response.body).getString("liveContextModeId"),
+      )
+      assertEquals(LiveContextMode.NO_SOUL, safetyFacade.load().liveContextMode)
     } finally {
       server.close()
     }
@@ -1082,6 +1153,9 @@ class OpenCrayLocalRuntimeServerTest {
         startedAtEpochMs = 1_000L,
         finishedAtEpochMs = 1_001L,
         metadata = task.metadata + mapOf(
+          "contextLiveMode" to "no_memory_or_soul",
+          "contextLiveSoulEnabled" to "false",
+          "contextLiveMemoryRecallEnabled" to "false",
           "contextBootstrapMode" to "full",
           "contextBootstrapVisibleFileCount" to "2",
           "contextBootstrapInjectedFileCount" to "2",
@@ -1106,10 +1180,14 @@ class OpenCrayLocalRuntimeServerTest {
         "/v1/chat_run_snapshot?runId=${submission["runId"]}",
       )
       val payload = JSONObject(response.body)
+      val liveContext = payload.getJSONObject("liveContext")
       val bootstrap = payload.getJSONObject("bootstrap")
       val files = bootstrap.getJSONArray("files")
 
       assertEquals(200, response.statusCode)
+      assertEquals("no_memory_or_soul", liveContext.getString("mode"))
+      assertEquals(false, liveContext.getBoolean("soulEnabled"))
+      assertEquals(false, liveContext.getBoolean("memoryRecallEnabled"))
       assertEquals("full", bootstrap.getString("mode"))
       assertEquals(2, bootstrap.getInt("visibleFileCount"))
       assertEquals(2, bootstrap.getInt("injectedFileCount"))
@@ -1348,7 +1426,7 @@ class OpenCrayLocalRuntimeServerTest {
     val workspaceRoot = temporaryFolder.newFolder("server-workspace-soul-debug").toPath()
     WorkspaceSoulProfileStore().saveSoulProfile(
       workspaceRoot,
-      PersonalizationLocalStore.SoulProfile(
+      WorkspaceSoulProfile(
         presetName = "STEADY",
         customLabel = "Night Shift",
         customGuidance = "Keep replies calm and concrete.",
@@ -1405,9 +1483,53 @@ class OpenCrayLocalRuntimeServerTest {
     }
   }
 
+  @Test
+  fun skillsEndpointsSupportQueryAndDirectSourceInstall() {
+    val skillsFacade = RecordingSkillsFacade().apply {
+      snapshot = SkillsSnapshot(
+        installedSkills = emptyList(),
+        installSources = emptyList(),
+        suggestedSkills = listOf(
+          SuggestedSkillSnapshot(
+            id = "roin-orca/skills/find-skills",
+            name = "find-skills",
+            description = "Remote result",
+            sourceRef = "roin-orca/skills@find-skills",
+            sourceLabel = "skills.sh",
+          ),
+        ),
+      )
+      installResult = SkillInstallRequestResult(installedSkillId = "find-skills")
+    }
+    val server = localRuntimeServer(skillsFacade = skillsFacade)
+    server.ensureStarted()
+
+    try {
+      val queryResponse = request(server, "GET", "/v1/skills_snapshot?query=find")
+
+      assertEquals(200, queryResponse.statusCode)
+      assertEquals("find", skillsFacade.lastLoadedQuery)
+      assertTrue(queryResponse.body.contains("roin-orca/skills@find-skills"))
+
+      val installResponse = request(
+        server,
+        "POST",
+        "/v1/install_skill_source",
+        body = """{"sourceRef":"roin-orca/skills@find-skills"}""",
+      )
+
+      assertEquals(200, installResponse.statusCode)
+      assertEquals("roin-orca/skills@find-skills", skillsFacade.lastInstalledSourceRef)
+      assertTrue(installResponse.body.contains("Installed find-skills."))
+    } finally {
+      server.close()
+    }
+  }
+
   private fun localRuntimeServer(
     llmConfigFacade: LlmConfigFacade = EmptyLlmConfigFacade,
     networkSearchConfigFacade: NetworkSearchConfigFacade = EmptyNetworkSearchConfigFacade,
+    skillsFacade: SkillsFacade = RecordingSkillsFacade(),
     workspaceRootProvider: (() -> Path)? = null,
     workspaceSnapshotProvider: () -> Map<String, Any?> = {
       WorkspaceTreeSnapshot(
@@ -1431,6 +1553,7 @@ class OpenCrayLocalRuntimeServerTest {
         settingsFacade = NoOpSettingsFacade,
         networkSearchConfigFacade = networkSearchConfigFacade,
         llmConfigFacade = llmConfigFacade,
+        skillsFacade = skillsFacade,
         workspaceRootProvider = workspaceRootProvider,
         workspaceSnapshotProvider = workspaceSnapshotProvider,
         sessionRuntimeManager = NoOpRuntimeManager(),
@@ -1541,6 +1664,44 @@ class OpenCrayLocalRuntimeServerTest {
       subtitle = "",
       sections = emptyList(),
     )
+  }
+
+  private class RecordingSkillsFacade : SkillsFacade {
+    var lastLoadedQuery: String? = null
+    var lastInstalledSourceRef: String? = null
+    var snapshot: SkillsSnapshot = SkillsSnapshot(
+      installedSkills = emptyList(),
+      installSources = emptyList(),
+      suggestedSkills = emptyList(),
+    )
+    var installResult: SkillInstallRequestResult = SkillInstallRequestResult(
+      errorMessage = "Not configured.",
+    )
+
+    override fun loadSnapshot(query: String): SkillsSnapshot {
+      lastLoadedQuery = query
+      return snapshot
+    }
+
+    override fun setSkillEnabled(skillId: String, enabled: Boolean): Boolean = true
+
+    override fun installSkillSource(sourceRef: String): SkillInstallRequestResult {
+      lastInstalledSourceRef = sourceRef
+      return installResult
+    }
+
+    override fun installSuggestedSkill(skillId: String): Boolean =
+      installSkillSource(skillId).succeeded
+
+    override fun deleteInstalledSkill(skillId: String): Boolean = true
+
+    override fun refresh() = Unit
+
+    override fun loadInstructions(skillId: String): SkillInstructionsSnapshot? = null
+
+    override fun enabledSkillRoots(): List<java.io.File> = emptyList()
+
+    override fun activateInstallSource(sourceId: String): String = sourceId
   }
 
   private class RecordingLlmConfigFacade : LlmConfigFacade {

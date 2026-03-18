@@ -461,6 +461,7 @@ class MemoryCandidateExtractor(
       preferenceValue = preferenceValue,
       scope = scope,
       soulExtensions = intent.soulExtensions,
+      preferenceExtensions = intent.preferenceExtensions,
     )
     if (extensions.isEmpty()) {
       return null
@@ -468,6 +469,7 @@ class MemoryCandidateExtractor(
     val content = canonicalSoulPreferenceContent(
       preferenceKey = preferenceKey,
       preferenceValue = preferenceValue,
+      extensions = extensions,
     ) ?: return null
     return createCandidate(
       kind = MemoryKind.USER_PREFERENCE,
@@ -499,10 +501,12 @@ class MemoryCandidateExtractor(
         preferenceValue = preferenceValue,
         scope = scope,
         soulExtensions = intent.soulExtensions,
+        preferenceExtensions = intent.preferenceExtensions,
       )
       val content = canonicalSoulPreferenceContent(
         preferenceKey = preferenceKey,
         preferenceValue = preferenceValue,
+        extensions = extensions,
       )
       if (intent.kind == MemoryKind.USER_PREFERENCE && extensions.isNotEmpty() && content != null) {
         return createCandidate(
@@ -532,6 +536,7 @@ class MemoryCandidateExtractor(
   private fun canonicalSoulPreferenceContent(
     preferenceKey: String,
     preferenceValue: String,
+    extensions: Map<String, String> = emptyMap(),
   ): String? = when (preferenceKey) {
     MemoryPreferenceKeys.AGENT_DISPLAY_NAME -> "Agent display name is $preferenceValue"
     MemoryPreferenceKeys.USER_PREFERRED_NAME -> "Preferred user naming is $preferenceValue"
@@ -539,6 +544,8 @@ class MemoryCandidateExtractor(
     MemoryPreferenceKeys.AGENT_STYLE_PROFILE -> "Agent style profile should be $preferenceValue"
     MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE ->
       "Relationship style should gradually move toward $preferenceValue"
+    MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL ->
+      interactionPreferenceSignalContentOrNull(extensions)
     MemoryPreferenceKeys.AGENT_VERBOSITY -> "Agent verbosity should be $preferenceValue"
     else -> null
   }

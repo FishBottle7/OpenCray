@@ -94,12 +94,14 @@ internal class ChatMemoryIngestionCoordinator(
         .toList(),
     )
     val maintenance = taskCommitmentResolver.maintain(evidence)
-    val writeSummary = writer.write(candidateExtractor.extract(evidence))
+    val existingRecordsBeforeWrite = memoryStore.list()
+    val writeCandidates = candidateExtractor.extract(evidence)
+    val writeSummary = writer.write(writeCandidates)
     val plasticity = soulPlasticityProvider()
     val interactionPreferenceWriteSummary = writer.write(
       interactionPreferenceWritePlanner.plan(
-        existingRecords = memoryStore.list(),
-        sourceRecords = writeSummary.writtenRecords,
+        existingRecords = existingRecordsBeforeWrite,
+        sourceCandidates = writeCandidates,
         plasticity = plasticity,
         sourceSessionId = sessionId,
         workspaceId = workspaceId,

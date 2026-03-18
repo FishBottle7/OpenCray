@@ -43,6 +43,8 @@ internal class ToolCapabilityClassifier {
   }
 
   fun classifyCapabilityKind(toolName: String): String = when (toolName) {
+    "TodoWrite" -> "todo_management"
+
     "ProcessList",
     "ProcessRead",
     "ProcessWait",

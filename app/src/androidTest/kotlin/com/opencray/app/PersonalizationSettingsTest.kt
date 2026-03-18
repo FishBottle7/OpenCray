@@ -265,7 +265,7 @@ class PersonalizationSettingsTest {
     val directory = personalizationDirectory()
     WorkspaceSoulProfileStore().saveSoulProfile(
       AppAgentWorkspace.ensureRootForContext(targetContext),
-      PersonalizationLocalStore.SoulProfile(
+      WorkspaceSoulProfile(
         presetName = "BUILDER",
         customLabel = "Night Shift",
         customGuidance = "Be direct, acknowledge tradeoffs, and keep a calm tone.",

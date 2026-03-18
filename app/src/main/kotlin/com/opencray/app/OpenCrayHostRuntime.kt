@@ -46,6 +46,7 @@ import com.opencray.app.facade.skills.InstallSourceSnapshot
 import com.opencray.app.facade.skills.InstalledSkillSnapshot
 import com.opencray.app.facade.skills.LocalSkillsFacade
 import com.opencray.app.facade.skills.SkillInstructionsSnapshot
+import com.opencray.app.facade.skills.SkillInstallRequestResult
 import com.opencray.app.facade.skills.SkillsFacade
 import com.opencray.app.facade.skills.SkillsSnapshot
 import com.opencray.app.facade.skills.SuggestedSkillSnapshot
@@ -504,6 +505,7 @@ internal class OpenCrayHostRuntime private constructor(
     recordingsEnabled: Boolean,
     workspaceAccessProfileId: String,
     readOnlyOutsideWorkspace: Boolean,
+    liveContextModeId: String = LiveContextMode.FULL.wireValue,
   ): Map<String, Any?> {
     val snapshot = synchronized(lock) {
       safetySettingsFacade.save(
@@ -524,6 +526,7 @@ internal class OpenCrayHostRuntime private constructor(
           recordingsEnabled = recordingsEnabled,
           workspaceAccessProfileId = workspaceAccessProfileId,
           readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
+          liveContextModeId = liveContextModeId,
         ),
       )
     }
@@ -713,14 +716,18 @@ internal class OpenCrayHostRuntime private constructor(
   }
 
   fun installSuggestedSkill(skillId: String): String {
-    val installed = synchronized(lock) {
-      skillsFacade.installSuggestedSkill(skillId)
+    return installSkillSource(skillId)
+  }
+
+  fun installSkillSource(sourceRef: String): String {
+    val result = synchronized(lock) {
+      skillsFacade.installSkillSource(sourceRef)
     }
-    require(installed) {
-      "Unable to install '$skillId' from the local catalog."
+    require(result.succeeded) {
+      result.errorMessage ?: "Unable to install '$sourceRef'."
     }
     emitSkillsSnapshot()
-    return strings.skillInstalled(skillId)
+    return strings.skillInstalled(requireNotNull(result.installedSkillId))
   }
 
   fun deleteInstalledSkill(skillId: String): String {
@@ -2109,16 +2116,28 @@ internal class OpenCrayHostRuntime private constructor(
       "workspace_list_files" -> {
         val entryCount = metadataInt(metadata, "entryCount") ?: return null
         val path = metadataValue(metadata, "path")
+        val truncated = resultMetadataTruncated(metadata)
         if (isChineseHostLocale()) {
-          if (path == null) {
+          val base = if (path == null) {
             "列出了 $entryCount 项"
           } else {
             "在 $path 中列出了 $entryCount 项"
           }
+          if (truncated) "$base，结果已按结果上限截断" else base
         } else if (path == null) {
-          "Listed $entryCount entr${if (entryCount == 1) "y" else "ies"}"
+          buildString {
+            append("Listed $entryCount entr${if (entryCount == 1) "y" else "ies"}")
+            if (truncated) {
+              append(". Output truncated at the tool result limit.")
+            }
+          }
         } else {
-          "Listed $entryCount entr${if (entryCount == 1) "y" else "ies"} in $path"
+          buildString {
+            append("Listed $entryCount entr${if (entryCount == 1) "y" else "ies"} in $path")
+            if (truncated) {
+              append(". Output truncated at the tool result limit.")
+            }
+          }
         }
       }
 
@@ -2126,7 +2145,7 @@ internal class OpenCrayHostRuntime private constructor(
       "workspace_read_file" -> {
         val returnedLineCount = metadataInt(metadata, "returnedLineCount")
         val totalLineCount = metadataInt(metadata, "totalLineCount")
-        val truncated = metadataBoolean(metadata, "truncated") == true
+        val truncated = resultMetadataTruncated(metadata)
         val filePath = metadataValue(metadata, "filePath")
         if (returnedLineCount == null && totalLineCount == null && !truncated && filePath == null) {
           null
@@ -2159,22 +2178,40 @@ internal class OpenCrayHostRuntime private constructor(
         val matchCount = metadataInt(metadata, "matchCount") ?: return null
         val pattern = metadataValue(metadata, "pattern")
         val path = metadataValue(metadata, "path") ?: "."
+        val truncated = resultMetadataTruncated(metadata)
         if (isChineseHostLocale()) {
-          if (pattern == null) {
+          val base = if (pattern == null) {
             "在 $path 中找到 $matchCount 处匹配"
           } else {
             "在 $path 中为 \"$pattern\" 找到 $matchCount 处匹配"
           }
+          if (truncated) "$base，结果已按结果上限截断" else base
         } else if (pattern == null) {
           if (matchCount == 1) {
-            "Found 1 match in $path"
+            if (truncated) {
+              "Found 1 match in $path. Output truncated at the tool result limit."
+            } else {
+              "Found 1 match in $path"
+            }
           } else {
-            "Found $matchCount matches in $path"
+            if (truncated) {
+              "Found $matchCount matches in $path. Output truncated at the tool result limit."
+            } else {
+              "Found $matchCount matches in $path"
+            }
           }
         } else if (matchCount == 1) {
-          "Found 1 match for \"$pattern\" in $path"
+          if (truncated) {
+            "Found 1 match for \"$pattern\" in $path. Output truncated at the tool result limit."
+          } else {
+            "Found 1 match for \"$pattern\" in $path"
+          }
         } else {
-          "Found $matchCount matches for \"$pattern\" in $path"
+          if (truncated) {
+            "Found $matchCount matches for \"$pattern\" in $path. Output truncated at the tool result limit."
+          } else {
+            "Found $matchCount matches for \"$pattern\" in $path"
+          }
         }
       }
 
@@ -2182,16 +2219,26 @@ internal class OpenCrayHostRuntime private constructor(
         val matchCount = metadataInt(metadata, "matchCount") ?: return null
         val pattern = metadataValue(metadata, "pattern")
         val path = metadataValue(metadata, "path") ?: "."
+        val truncated = resultMetadataTruncated(metadata)
         if (isChineseHostLocale()) {
-          if (pattern == null) {
+          val base = if (pattern == null) {
             "在 $path 中匹配到 $matchCount 个路径"
           } else {
             "在 $path 中为 $pattern 匹配到 $matchCount 个路径"
           }
+          if (truncated) "$base，结果已按结果上限截断" else base
         } else if (pattern == null) {
-          "Matched $matchCount path(s) in $path"
+          if (truncated) {
+            "Matched $matchCount path(s) in $path. Output truncated at the tool result limit."
+          } else {
+            "Matched $matchCount path(s) in $path"
+          }
         } else {
-          "Matched $matchCount path(s) for $pattern in $path"
+          if (truncated) {
+            "Matched $matchCount path(s) for $pattern in $path. Output truncated at the tool result limit."
+          } else {
+            "Matched $matchCount path(s) for $pattern in $path"
+          }
         }
       }
 
@@ -2348,6 +2395,11 @@ internal class OpenCrayHostRuntime private constructor(
       "false" -> false
       else -> null
     }
+
+  private fun resultMetadataTruncated(metadata: Map<String, String>): Boolean =
+    metadataBoolean(metadata, "resultTruncated")
+      ?: metadataBoolean(metadata, "truncated")
+      ?: false
 
   private fun JsonObject.replayArraySize(key: String): Int? =
     (this[key] as? JsonArray)?.size
@@ -2844,6 +2896,7 @@ internal class OpenCrayHostRuntime private constructor(
     "errorCode" to run.errorCode,
     "errorMessage" to run.errorMessage,
     "responseFormat" to run.responseFormat,
+    "liveContext" to liveContextFromMetadata(run.resultMetadata),
     "memoryTrace" to memoryTraceFromMetadata(run.resultMetadata),
     "memoryFlush" to memoryFlushFromMetadata(run.resultMetadata),
     "bootstrap" to bootstrapFromMetadata(run.resultMetadata),
@@ -2898,6 +2951,20 @@ internal class OpenCrayHostRuntime private constructor(
       if (filteredCounts.isNotEmpty()) {
         put("filteredCounts", filteredCounts)
       }
+    }
+  }
+
+  private fun liveContextFromMetadata(metadata: Map<String, String>): Map<String, Any?>? {
+    val mode = metadata["contextLiveMode"]?.takeIf(String::isNotBlank)
+    val soulEnabled = metadata["contextLiveSoulEnabled"]?.toBooleanStrictOrNull()
+    val memoryRecallEnabled = metadata["contextLiveMemoryRecallEnabled"]?.toBooleanStrictOrNull()
+    if (mode == null && soulEnabled == null && memoryRecallEnabled == null) {
+      return null
+    }
+    return buildMap {
+      mode?.let { put("mode", it) }
+      soulEnabled?.let { put("soulEnabled", it) }
+      memoryRecallEnabled?.let { put("memoryRecallEnabled", it) }
     }
   }
 
@@ -3118,7 +3185,7 @@ internal class OpenCrayHostRuntime private constructor(
   }
 
   private fun storedSoulProfileToMap(
-    profile: PersonalizationLocalStore.SoulProfile,
+    profile: WorkspaceSoulProfile,
     document: WorkspaceSoulDocument?,
   ): Map<String, Any?> = buildMap {
     document?.relativePath?.let { relativePath ->
@@ -4140,18 +4207,6 @@ internal class OpenCrayHostRuntime private constructor(
       ?.trim()
       ?.takeIf(String::isNotEmpty)
 
-  private fun PersonalizationLocalStore.SoulProfile.toRuntimeSoulProfile(): RuntimeSoulProfile =
-    RuntimeSoulProfile(
-      presetName = presetName.ifBlank { null },
-      displayName = customLabel.ifBlank { null },
-      customGuidance = customGuidance.ifBlank { null },
-      extensions = extensions.filter { (key, value) ->
-        key.isNotBlank() &&
-          value.isNotBlank() &&
-          key.trim().lowercase(Locale.US) !in RESERVED_SOUL_PROFILE_KEYS
-      },
-    )
-
   private fun activeSkillFromMetadata(metadata: Map<String, String>): Map<String, Any?>? {
     val name = metadata["contextActiveSkillName"]?.takeIf(String::isNotBlank)
     val relativePath = metadata["contextActiveSkillRelativePath"]?.takeIf(String::isNotBlank)
@@ -4861,6 +4916,9 @@ internal class OpenCrayHostRuntime private constructor(
       "limit",
       "returnedLineCount",
       "truncated",
+      "resultLimitApplied",
+      "resultTruncated",
+      "resultLimitKind",
       "replacementCount",
       "editCount",
       "todoCount",
@@ -5195,6 +5253,7 @@ internal class OpenCrayHostRuntime private constructor(
     "locations" to locations.map { location -> location.toMap() },
     "workspaceAccessProfileId" to workspaceAccessProfile.wireValue,
     "readOnlyOutsideWorkspace" to readOnlyOutsideWorkspace,
+    "liveContextModeId" to liveContextMode.wireValue,
   )
 
   private fun SafetySettingsLocationSnapshot.toMap(): Map<String, Any?> = mapOf(
@@ -5229,6 +5288,8 @@ internal class OpenCrayHostRuntime private constructor(
     "id" to id,
     "name" to name,
     "description" to description,
+    "sourceRef" to sourceRef,
+    "sourceLabel" to sourceLabel,
   )
 
   private fun SkillInstructionsSnapshot.toMap(): Map<String, Any?> = mapOf(
@@ -5321,10 +5382,6 @@ internal class OpenCrayHostRuntime private constructor(
       Regex("""^(.+?)@(.+)\[(\d+)\|(\d+)\|(true|false)]$""")
     private val VISIBLE_SKILL_TRACE_REGEX: Regex =
       Regex("""^([a-z0-9-]+)@(.+)\[([^\]|]+)\|(true|false)\|([^\]|]+)]$""")
-    private val RESERVED_SOUL_PROFILE_KEYS: Set<String> = setOf(
-      "preset",
-      "custom_guidance",
-    )
     private val SUPPORTED_SOUL_PREFERENCE_KEYS: Set<String> = setOf(
       MemoryPreferenceKeys.AGENT_DISPLAY_NAME,
       MemoryPreferenceKeys.AGENT_STYLE_PROFILE,
@@ -5505,6 +5562,7 @@ internal class OpenCrayHostRuntime private constructor(
       val workspaceRootProvider = { AppAgentWorkspace.ensureRootForContext(appContext) }
       val workspaceRootsProvider = { setOf(workspaceRootProvider()) }
       val soulProfileStore = WorkspaceSoulProfileStore()
+      val liveContextModeStore = LiveContextModeStore.fromContext(appContext)
       val safetySettingsFacade = LocalSafetySettingsFacade.fromContext(appContext)
       val approvedReadRootsProvider = {
         ApprovedReadRootsResolver.resolve(
@@ -5575,6 +5633,7 @@ internal class OpenCrayHostRuntime private constructor(
       val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
         llmSettingsProvider = { llmSettingsStore.load() },
         safetySettingsProvider = { SafetySettingsStore.fromContext(appContext).load() },
+        liveContextModeProvider = { liveContextModeStore.load() },
         sessionContextFactory = chatContextFactory,
         soulProfileProvider = { soulProfileStore.loadSoulProfile(workspaceRootProvider()) },
         workspaceRootsProvider = workspaceRootsProvider,

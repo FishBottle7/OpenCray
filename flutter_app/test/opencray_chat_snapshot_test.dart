@@ -44,4 +44,28 @@ void main() {
     expect(trace.filteredCounts['scope_mismatch'], 1);
     expect(trace.filteredCounts['expired'], 2);
   });
+
+  test('chat run snapshot parses live context trace from map payload', () {
+    final snapshot = OpenCrayChatRunSnapshot.fromMap(<Object?, Object?>{
+      'sessionId': 'session-1',
+      'runId': 'run-live-context',
+      'taskId': 'task-live-context',
+      'acceptedAtEpochMs': 1000,
+      'updatedAtEpochMs': 2000,
+      'attempt': 1,
+      'isTerminal': true,
+      'liveContext': <Object?, Object?>{
+        'mode': 'no_soul',
+        'soulEnabled': false,
+        'memoryRecallEnabled': true,
+      },
+    });
+
+    final liveContext = snapshot.liveContext;
+
+    expect(liveContext, isNotNull);
+    expect(liveContext!.mode, 'no_soul');
+    expect(liveContext.soulEnabled, isFalse);
+    expect(liveContext.memoryRecallEnabled, isTrue);
+  });
 }

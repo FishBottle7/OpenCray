@@ -216,6 +216,8 @@ internal class OpenCrayFlutterHostBridge(
           recordingsEnabled = call.argument<Boolean>("recordingsEnabled") == true,
           workspaceAccessProfileId = call.argument<String>("workspaceAccessProfileId").orEmpty(),
           readOnlyOutsideWorkspace = call.argument<Boolean>("readOnlyOutsideWorkspace") != false,
+          liveContextModeId =
+            call.argument<String>("liveContextModeId") ?: LiveContextMode.FULL.wireValue,
         )
         "authorizeExternalAccessLocation" -> {
           authorizeExternalAccessLocation(
@@ -225,15 +227,28 @@ internal class OpenCrayFlutterHostBridge(
           return
         }
 
-        "loadSkillsSnapshot" -> hostRuntime.loadSkillsSnapshot(
-          query = call.argument<String>("query").orEmpty(),
-        )
+        "loadSkillsSnapshot" -> {
+          runAsync(result) {
+            hostRuntime.loadSkillsSnapshot(
+              query = call.argument<String>("query").orEmpty(),
+            )
+          }
+          return
+        }
         "setSkillEnabled" -> {
           hostRuntime.setSkillEnabled(
             skillId = call.argument<String>("skillId").orEmpty(),
             enabled = call.argument<Boolean>("enabled") == true,
           )
           null
+        }
+        "installSkillSource" -> {
+          runAsync(result) {
+            hostRuntime.installSkillSource(
+              call.argument<String>("sourceRef").orEmpty(),
+            )
+          }
+          return
         }
         "installSuggestedSkill" -> hostRuntime.installSuggestedSkill(
           call.argument<String>("skillId").orEmpty(),

@@ -55,6 +55,28 @@ Current intent metadata fields exposed through the shared pipeline:
 - `intentProcessId`
 - `intentWorkingDirectory`
 
+The shared pipeline also now exposes a stable result-limit contract for covered success paths:
+
+- `resultLimitApplied`
+- `resultTruncated`
+- `resultLimitKind`
+
+Current result-limit kinds in use:
+
+- `read_byte_budget`
+- `directory_entry_limit`
+- `search_match_limit`
+- `web_fetch_char_limit`
+- `web_search_result_limit`
+- `command_output_byte_limit`
+- `process_output_byte_limit`
+
+Additional cleanup already landed on top of the original P3 slices:
+
+- `TodoWrite` now emits normalized shared metadata through the pipeline path instead of returning a bare handler-local metadata map
+- remote skills service approvals for `SkillsFind` / `SkillsAdd` now reuse the shared gate-result builder while still surfacing the original tool name to the caller
+- file-mutation and Python success paths now also route through `resultMetadata(...)` so later result-contract changes do not require handler-local rewrites
+
 Current read-policy behavior that future tool work must preserve:
 
 - approved external read roots participate in the same policy path as workspace reads
@@ -81,6 +103,7 @@ The next gap is that policy is still too dispersed inside `AgentTooling.kt`. Fil
 - making replay and UI consume one stable policy/result shape
 
 For execution/process tools, the runtime should now prefer an explicit intent model over tool-name inference. If a new tool crosses an execution or process boundary, add the intent model first, then thread it through policy, approval, replay, and UI metadata.
+If a tool returns bounded output, also route its success metadata through the shared result-limit contract instead of inventing one-off `truncated` semantics in the handler.
 
 ## Current State Summary
 

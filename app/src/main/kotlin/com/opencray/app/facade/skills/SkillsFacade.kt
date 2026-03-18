@@ -5,6 +5,7 @@ import com.opencray.app.AppSkillsStorage
 import com.opencray.app.OpenCrayLocaleManager
 import com.opencray.runtime.skills.SkillInstallManifestStore
 import com.opencray.runtime.skills.SkillPackageManager
+import com.opencray.runtime.skills.SkillPackageInstallAttempt
 import com.opencray.skills.LoadedSkill
 import com.opencray.skills.SkillLoader
 import java.io.File
@@ -16,6 +17,7 @@ private const val PREF_PREFIX_ENABLED = "enabled:"
 private const val INSTALL_SOURCE_CURATED = "curated-library"
 private const val INSTALL_SOURCE_LOCAL = "local-folder"
 private const val INSTALL_SOURCE_GIT = "git-repository"
+private val WINDOWS_ABSOLUTE_PATH_REGEX: Regex = Regex("^[A-Za-z]:[\\\\/].+")
 
 data class SkillsSnapshot(
   val installedSkills: List<InstalledSkillSnapshot>,
@@ -44,6 +46,8 @@ data class SuggestedSkillSnapshot(
   val id: String,
   val name: String,
   val description: String,
+  val sourceRef: String,
+  val sourceLabel: String,
 )
 
 data class SkillInstructionsSnapshot(
@@ -56,10 +60,20 @@ data class SkillInstructionsSnapshot(
   val canDelete: Boolean,
 )
 
+data class SkillInstallRequestResult(
+  val installedSkillId: String? = null,
+  val errorMessage: String? = null,
+) {
+  val succeeded: Boolean
+    get() = installedSkillId != null
+}
+
 interface SkillsFacade {
   fun loadSnapshot(query: String = ""): SkillsSnapshot
 
   fun setSkillEnabled(skillId: String, enabled: Boolean): Boolean
+
+  fun installSkillSource(sourceRef: String): SkillInstallRequestResult
 
   fun installSuggestedSkill(skillId: String): Boolean
 
@@ -101,6 +115,54 @@ internal class LocalSkillsFacade private constructor(
     )
   }
 
+  override fun installSkillSource(sourceRef: String): SkillInstallRequestResult {
+    val normalizedSourceRef = sourceRef.trim()
+    if (normalizedSourceRef.isEmpty()) {
+      return SkillInstallRequestResult(
+        errorMessage = context.getString(R.string.skills_install_error_source_blank),
+      )
+    }
+    if (loadCatalogSkills().any { skill -> skill.name == normalizedSourceRef }) {
+      val result = runCatching {
+        packageManager.installFromCatalog(normalizedSourceRef)
+      }.getOrNull() ?: return SkillInstallRequestResult(
+        errorMessage = context.getString(
+          R.string.skills_install_error_source_failed,
+          normalizedSourceRef,
+        ),
+      )
+      enableInstalledSkill(result.skillId)
+      return SkillInstallRequestResult(installedSkillId = result.skillId)
+    }
+    packageManager.resolveRemoteSource(normalizedSourceRef)?.let {
+      return installAttempt(
+        attempt = packageManager.installFromRemoteSource(normalizedSourceRef),
+        fallbackMessage = context.getString(
+          R.string.skills_install_error_source_failed,
+          normalizedSourceRef,
+        ),
+      )
+    }
+    if (looksLikeExplicitLocalSkillSource(normalizedSourceRef)) {
+      return installAttempt(
+        attempt = packageManager.installFromLocalSource(
+          sourcePath = File(normalizedSourceRef),
+          sourceRef = normalizedSourceRef,
+        ),
+        fallbackMessage = context.getString(
+          R.string.skills_install_error_source_failed,
+          normalizedSourceRef,
+        ),
+      )
+    }
+    return SkillInstallRequestResult(
+      errorMessage = context.getString(
+        R.string.skills_install_error_source_unrecognized,
+        normalizedSourceRef,
+      ),
+    )
+  }
+
   override fun setSkillEnabled(skillId: String, enabled: Boolean): Boolean {
     val skillName = skillId.trim()
     if (skillName.isEmpty()) {
@@ -115,11 +177,8 @@ internal class LocalSkillsFacade private constructor(
   }
 
   override fun installSuggestedSkill(skillId: String): Boolean {
-    val result = runCatching {
-      packageManager.installFromCatalog(skillId)
-    }.getOrNull() ?: return false
-    preferences.edit().putBoolean(preferenceKey(result.skillId), true).apply()
-    return true
+    val result = installSkillSource(skillId)
+    return result.succeeded
   }
 
   override fun deleteInstalledSkill(skillId: String): Boolean {
@@ -168,8 +227,8 @@ internal class LocalSkillsFacade private constructor(
       context.getString(R.string.skills_activate_curated_available)
     }
 
-    INSTALL_SOURCE_LOCAL -> context.getString(R.string.skills_activate_local_unwired)
-    INSTALL_SOURCE_GIT -> context.getString(R.string.skills_activate_git_unwired)
+    INSTALL_SOURCE_LOCAL -> context.getString(R.string.skills_activate_local_ready)
+    INSTALL_SOURCE_GIT -> context.getString(R.string.skills_activate_git_ready)
     else -> context.getString(R.string.skills_activate_unknown)
   }
 
@@ -190,7 +249,7 @@ internal class LocalSkillsFacade private constructor(
     installedSkills: List<InstalledSkillSnapshot>,
   ): List<SuggestedSkillSnapshot> {
     val installedNames = installedSkills.mapTo(linkedSetOf()) { item -> item.name }
-    return loadCatalogSkills()
+    val localMatches = loadCatalogSkills()
       .asSequence()
       .filter { skill -> skill.name !in installedNames }
       .map { skill ->
@@ -198,6 +257,8 @@ internal class LocalSkillsFacade private constructor(
           id = skill.name,
           name = skill.name,
           description = skill.metadata.skillSpec.description,
+          sourceRef = skill.name,
+          sourceLabel = context.getString(R.string.skills_suggested_source_local_catalog),
         )
       }
       .filter { item ->
@@ -205,7 +266,45 @@ internal class LocalSkillsFacade private constructor(
           item.name.contains(query, ignoreCase = true) ||
           item.description.contains(query, ignoreCase = true)
       }
-      .toList()
+      .toMutableList()
+    if (query.isNotEmpty()) {
+      val remoteResponse = packageManager.searchRemoteSkills(
+        query = query,
+        limit = 12,
+      )
+      remoteResponse.hits
+        .asSequence()
+        .filter { hit -> hit.name !in installedNames }
+        .map { hit ->
+          SuggestedSkillSnapshot(
+            id = hit.id,
+            name = hit.name,
+            description = if (hit.installs > 0) {
+              context.getString(
+                R.string.skills_suggested_remote_description_with_installs,
+                hit.source,
+                hit.installs,
+              )
+            } else {
+              context.getString(
+                R.string.skills_suggested_remote_description,
+                hit.source,
+              )
+            },
+            sourceRef = hit.installRef,
+            sourceLabel = context.getString(R.string.skills_suggested_source_remote_index),
+          )
+        }
+        .forEach { remote ->
+          val alreadyPresent = localMatches.any { local ->
+            local.name.equals(remote.name, ignoreCase = true)
+          }
+          if (!alreadyPresent) {
+            localMatches += remote
+          }
+        }
+    }
+    return localMatches
   }
 
   private fun installSources(): List<InstallSourceSnapshot> {
@@ -229,16 +328,16 @@ internal class LocalSkillsFacade private constructor(
       InstallSourceSnapshot(
         id = INSTALL_SOURCE_LOCAL,
         title = context.getString(R.string.skills_install_source_local_title),
-        subtitle = context.getString(R.string.skills_install_source_local_subtitle),
-        actionLabel = context.getString(R.string.skills_install_source_action_unavailable),
-        isAvailable = false,
+        subtitle = context.getString(R.string.skills_install_source_local_subtitle_ready),
+        actionLabel = context.getString(R.string.skills_install_source_action_search),
+        isAvailable = true,
       ),
       InstallSourceSnapshot(
         id = INSTALL_SOURCE_GIT,
         title = context.getString(R.string.skills_install_source_git_title),
-        subtitle = context.getString(R.string.skills_install_source_git_subtitle),
-        actionLabel = context.getString(R.string.skills_install_source_action_unavailable),
-        isAvailable = false,
+        subtitle = context.getString(R.string.skills_install_source_git_subtitle_ready),
+        actionLabel = context.getString(R.string.skills_install_source_action_search),
+        isAvailable = true,
       ),
     )
   }
@@ -256,10 +355,34 @@ internal class LocalSkillsFacade private constructor(
 
   private fun preferenceKey(skillName: String): String = PREF_PREFIX_ENABLED + skillName
 
+  private fun enableInstalledSkill(skillId: String) {
+    preferences.edit().putBoolean(preferenceKey(skillId), true).apply()
+  }
+
   private fun isInsideManagedRoot(candidate: File): Boolean {
     val rootPath = runCatching { managedRoot.canonicalFile.toPath() }.getOrElse { return false }
     val candidatePath = runCatching { candidate.canonicalFile.toPath() }.getOrElse { return false }
     return candidatePath.startsWith(rootPath)
+  }
+
+  private fun installAttempt(
+    attempt: SkillPackageInstallAttempt,
+    fallbackMessage: String,
+  ): SkillInstallRequestResult {
+    val result = attempt.result ?: return SkillInstallRequestResult(
+      errorMessage = attempt.errorMessage ?: fallbackMessage,
+    )
+    enableInstalledSkill(result.skillId)
+    return SkillInstallRequestResult(installedSkillId = result.skillId)
+  }
+
+  private fun looksLikeExplicitLocalSkillSource(sourceRef: String): Boolean {
+    val normalized = sourceRef.trim()
+    return normalized.startsWith(".") ||
+      normalized.startsWith("/") ||
+      normalized.startsWith("\\") ||
+      normalized.contains("\\") ||
+      WINDOWS_ABSOLUTE_PATH_REGEX.matches(normalized)
   }
 
   companion object {
@@ -276,6 +399,9 @@ internal object EmptySkillsFacade : SkillsFacade {
   )
 
   override fun setSkillEnabled(skillId: String, enabled: Boolean): Boolean = false
+
+  override fun installSkillSource(sourceRef: String): SkillInstallRequestResult =
+    SkillInstallRequestResult(errorMessage = "Skills host support is unavailable.")
 
   override fun installSuggestedSkill(skillId: String): Boolean = false
 

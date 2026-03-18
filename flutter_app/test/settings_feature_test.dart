@@ -410,6 +410,8 @@ void main() {
       expect(find.text('Raw trace'), findsOneWidget);
       expect(find.text('run-memory'), findsWidgets);
       expect(find.text('Mode: full'), findsOneWidget);
+      expect(find.text('Soul: disabled'), findsOneWidget);
+      expect(find.text('Memory recall: enabled'), findsOneWidget);
       expect(find.text('Outcome: written'), findsOneWidget);
       expect(find.text('Compacted: yes'), findsOneWidget);
       expect(find.text('Restricted: yes'), findsOneWidget);
@@ -959,6 +961,13 @@ void main() {
 
       expect(facade.safetySettings.readOnlyOutsideWorkspace, isFalse);
 
+      await tester.tap(find.text('Full'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('No soul').last);
+      await tester.pumpAndSettle();
+
+      expect(facade.safetySettings.liveContextMode, LiveContextMode.noSoul);
+
       await tester.tap(find.text('Review approved paths'));
       await tester.pumpAndSettle();
 
@@ -1114,6 +1123,11 @@ _FakeDebugBridge _buildDebugBridge() {
         executionStatus: 'success',
         taskState: 'completed',
         responseFormat: 'json_final',
+        liveContext: OpenCrayChatRunLiveContextSnapshot(
+          mode: 'no_soul',
+          soulEnabled: false,
+          memoryRecallEnabled: true,
+        ),
         memoryFlush: OpenCrayChatRunMemoryFlushSnapshot(
           outcome: 'written',
           omittedMessageCount: 6,

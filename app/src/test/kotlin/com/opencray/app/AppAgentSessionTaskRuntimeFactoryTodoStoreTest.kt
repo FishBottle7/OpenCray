@@ -17,6 +17,7 @@ import java.nio.file.Files
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -523,7 +524,7 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
 
     val effective = factory.effectiveSoulProfileFor(
       sessionId = sessionId,
-      soulProfile = PersonalizationLocalStore.SoulProfile(
+      soulProfile = WorkspaceSoulProfile(
         presetName = "BUILDER",
         customLabel = "",
         customGuidance = "Stay direct.",
@@ -740,6 +741,170 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     assertEquals("full", prepared.sessionContext.bootstrapContext.trace.mode)
     assertEquals(listOf("AGENTS.md", "PROJECT.md"), prepared.sessionContext.bootstrapContext.files.map { file -> file.name })
     assertTrue(prepared.sessionContext.bootstrapContext.files.first().content.contains("Follow the repo instructions."))
+  }
+
+  @Test
+  fun prepareSessionContextUsesConfiguredLiveContextBootstrapModes() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-live-bootstrap")
+    Files.write(
+      workspaceRoot.toPath().resolve("AGENTS.md"),
+      "# Agents\nFollow the repo instructions.".toByteArray(StandardCharsets.UTF_8),
+    )
+    Files.write(
+      workspaceRoot.toPath().resolve("SOUL.md"),
+      "# Soul\nStay terse.".toByteArray(StandardCharsets.UTF_8),
+    )
+    Files.write(
+      workspaceRoot.toPath().resolve("PROJECT.md"),
+      "# Project\nThis repo uses Gradle.".toByteArray(StandardCharsets.UTF_8),
+    )
+
+    fun bootstrapFor(mode: LiveContextMode) = run {
+      val chatStore = ChatSessionLocalStore(
+        temporaryFolder.newFolder("chat-store-live-bootstrap-${mode.wireValue}"),
+      )
+      val sessionId = chatStore.loadState().activeSession.sessionId
+      val factory = AppAgentSessionTaskRuntimeFactory(
+        llmSettingsProvider = { LlmSettingsState() },
+        sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+        soulProfileProvider = { null },
+        workspaceRootsProvider = { setOf(workspaceRoot.toPath()) },
+        skillsRootsProvider = { emptyList() },
+        mcpReportProvider = { null },
+      )
+      factory.prepareSessionContext(
+        sessionId = sessionId,
+        workspaceId = "workspace-live-bootstrap",
+        visibleThroughMessageId = null,
+        excludedMessageIds = emptySet(),
+        soulProfile = null,
+        taskType = AgentTaskType.PROMPT,
+        taskId = "task-live-bootstrap-${mode.wireValue}",
+        taskInput = "Continue with workspace guidance.",
+        transcriptStore = factory.transcriptStoreForSession(sessionId),
+        memoryRecords = emptyList(),
+        liveContextMode = mode,
+      ).sessionContext.bootstrapContext
+    }
+
+    val full = bootstrapFor(LiveContextMode.FULL)
+    val lightweight = bootstrapFor(LiveContextMode.LIGHTWEIGHT)
+    val none = bootstrapFor(LiveContextMode.NONE)
+
+    assertEquals("full", full.trace.mode)
+    assertEquals(listOf("AGENTS.md", "SOUL.md", "PROJECT.md"), full.files.map { file -> file.name })
+    assertEquals("lightweight", lightweight.trace.mode)
+    assertEquals(listOf("AGENTS.md", "PROJECT.md"), lightweight.files.map { file -> file.name })
+    assertEquals("none", none.trace.mode)
+    assertTrue(none.files.isEmpty())
+  }
+
+  @Test
+  fun prepareSessionContextSuppressesSoulForNoSoulModes() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-live-soul").toPath()
+    val memoryRecords = listOf(
+      memoryRecord(
+        id = "agent-name",
+        content = "Agent display name is Xiao Bai",
+        kind = "user_preference",
+        scope = "user",
+        sourceSessionId = "session-source",
+        preferenceKey = "agent_display_name",
+        preferenceValue = "Xiao Bai",
+      ),
+    )
+
+    fun soulFor(mode: LiveContextMode) = run {
+      val chatStore = ChatSessionLocalStore(
+        temporaryFolder.newFolder("chat-store-live-soul-${mode.wireValue}"),
+      )
+      val sessionId = chatStore.loadState().activeSession.sessionId
+      val factory = AppAgentSessionTaskRuntimeFactory(
+        llmSettingsProvider = { LlmSettingsState() },
+        sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+        soulProfileProvider = { null },
+        workspaceRootsProvider = { setOf(workspaceRoot) },
+        skillsRootsProvider = { emptyList() },
+        mcpReportProvider = { null },
+      )
+      factory.prepareSessionContext(
+        sessionId = sessionId,
+        workspaceId = "workspace-live-soul",
+        visibleThroughMessageId = null,
+        excludedMessageIds = emptySet(),
+        soulProfile = WorkspaceSoulProfile(
+          presetName = "BUILDER",
+          customLabel = "",
+          customGuidance = "Stay direct.",
+        ),
+        taskType = AgentTaskType.PROMPT,
+        taskId = "task-live-soul-${mode.wireValue}",
+        taskInput = "Keep going.",
+        transcriptStore = factory.transcriptStoreForSession(sessionId),
+        memoryRecords = memoryRecords,
+        liveContextMode = mode,
+      ).sessionContext.soulProfile
+    }
+
+    val fullSoul = soulFor(LiveContextMode.FULL)
+    val noSoul = soulFor(LiveContextMode.NO_SOUL)
+    val noMemoryOrSoul = soulFor(LiveContextMode.NO_MEMORY_OR_SOUL)
+
+    assertEquals("BUILDER", fullSoul?.presetName)
+    assertEquals("Stay direct.", fullSoul?.customGuidance)
+    assertEquals("Xiao Bai", fullSoul?.displayName)
+    assertNull(noSoul)
+    assertNull(noMemoryOrSoul)
+  }
+
+  @Test
+  fun prepareSessionContextDisablesAutomaticMemoryRecallForNoMemoryOrSoulMode() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-live-memory").toPath()
+    val memoryRecords = listOf(
+      memoryRecord(
+        id = "pref-user",
+        content = "Please default to Simplified Chinese for explanations.",
+        kind = "user_preference",
+        scope = "user",
+        sourceSessionId = "session-source",
+      ),
+    )
+
+    fun prepared(mode: LiveContextMode) = run {
+      val chatStore = ChatSessionLocalStore(
+        temporaryFolder.newFolder("chat-store-live-memory-${mode.wireValue}"),
+      )
+      val sessionId = chatStore.loadState().activeSession.sessionId
+      val factory = AppAgentSessionTaskRuntimeFactory(
+        llmSettingsProvider = { LlmSettingsState() },
+        sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+        soulProfileProvider = { null },
+        workspaceRootsProvider = { setOf(workspaceRoot) },
+        skillsRootsProvider = { emptyList() },
+        mcpReportProvider = { null },
+      )
+      factory.prepareSessionContext(
+        sessionId = sessionId,
+        workspaceId = "workspace-live-memory",
+        visibleThroughMessageId = null,
+        excludedMessageIds = emptySet(),
+        soulProfile = null,
+        taskType = AgentTaskType.PROMPT,
+        taskId = "task-live-memory-${mode.wireValue}",
+        taskInput = "Please keep using Chinese while continuing.",
+        transcriptStore = factory.transcriptStoreForSession(sessionId),
+        memoryRecords = memoryRecords,
+        liveContextMode = mode,
+      )
+    }
+
+    val fullPrepared = prepared(LiveContextMode.FULL)
+    val noMemoryOrSoulPrepared = prepared(LiveContextMode.NO_MEMORY_OR_SOUL)
+
+    assertTrue(fullPrepared.sessionContext.recalledMemory.memories.isNotEmpty())
+    assertEquals("lightweight", noMemoryOrSoulPrepared.sessionContext.bootstrapContext.trace.mode)
+    assertTrue(noMemoryOrSoulPrepared.effectiveMemoryRecords.isNotEmpty())
+    assertTrue(noMemoryOrSoulPrepared.sessionContext.recalledMemory.memories.isEmpty())
   }
 
   @Test

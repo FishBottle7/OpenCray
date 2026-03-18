@@ -212,6 +212,76 @@ void main() {
   );
 
   testWidgets(
+    'host-mapped read summary prefers stable result limit metadata',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final toolResult = OpenCrayChatRuntimeEventSnapshot(
+        kind: 'tool_result',
+        runId: 'run-host-read-limit-1',
+        taskId: 'task-host-read-limit-1',
+        emittedAtEpochMs: 3000,
+        toolName: 'Read',
+        contentPreview:
+            'Project uses the Gradle wrapper from the repo root.\nUse .\\\\gradlew.bat test to run JVM tests.',
+        resultMetadata: const <String, String>{
+          'filePath': 'README.md',
+          'returnedLineCount': '2',
+          'totalLineCount': '12',
+          'resultLimitApplied': 'true',
+          'resultTruncated': 'true',
+          'resultLimitKind': 'read_byte_budget',
+        },
+      );
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(),
+        runtimeSnapshot: OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-host-read-limit-1',
+              taskId: 'task-host-read-limit-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 3000,
+              attempt: 1,
+              isTerminal: false,
+              lastEvent: toolResult,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            const OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-host-read-limit-1',
+              taskId: 'task-host-read-limit-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+            toolResult,
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining('Returned 2 lines from README.md'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Output truncated to the read budget.'),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
     'compact running card keeps recent LS history details and results',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');
@@ -698,6 +768,11 @@ void main() {
               attempt: 1,
               isTerminal: false,
               lastEvent: lifecycleEvent,
+              liveContext: OpenCrayChatRunLiveContextSnapshot(
+                mode: 'no_soul',
+                soulEnabled: false,
+                memoryRecallEnabled: true,
+              ),
               memoryTrace: OpenCrayChatRunMemoryTraceSnapshot(
                 matchedRecordCount: 2,
                 injectedRecordCount: 1,
@@ -805,6 +880,27 @@ void main() {
         const ValueKey<String>('chat-run-trace-fullscreen-run-context-1'),
       );
 
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Mode: no_soul'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Soul disabled'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Automatic memory recall enabled'),
+        ),
+        findsOneWidget,
+      );
       expect(
         find.descendant(
           of: fullscreenFinder,

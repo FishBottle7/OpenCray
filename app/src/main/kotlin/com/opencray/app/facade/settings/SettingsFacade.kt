@@ -9,11 +9,11 @@ import com.opencray.app.LlmSettingsState
 import com.opencray.app.LlmSettingsStore
 import com.opencray.app.LocaleSettingsStore
 import com.opencray.app.OpenCrayLocaleManager
-import com.opencray.app.WebSearchSettingsStore
 import android.content.Context
-import com.opencray.app.PersonalizationLocalStore
 import com.opencray.app.TelemetrySettingsStore
 import com.opencray.app.TelemetryTogglesState
+import com.opencray.app.WebSearchSettingsStore
+import com.opencray.app.WorkspaceSoulProfile
 import com.opencray.app.WorkspaceSoulProfileStore
 import java.net.URI
 import java.nio.file.Path
@@ -362,7 +362,7 @@ internal class LocalSettingsFacade(
   private fun telemetryState(): TelemetryTogglesState =
     telemetrySettingsStore.load(TelemetryTogglesState.localized(context))
 
-  private fun personalizationProfile(): PersonalizationLocalStore.SoulProfile? =
+  private fun personalizationProfile(): WorkspaceSoulProfile? =
     soulProfileStore.loadSoulProfile(workspaceRootProvider())
 
   private fun llmStatusLabel(state: LlmSettingsState): String = when {
@@ -381,7 +381,7 @@ internal class LocalSettingsFacade(
   }
 
   private fun personalizationToneIndex(
-    profile: PersonalizationLocalStore.SoulProfile?,
+    profile: WorkspaceSoulProfile?,
   ): Int = when (profile?.presetName?.trim()?.uppercase()) {
     "BUILDER" -> 1
     "WARM" -> 2
@@ -389,7 +389,7 @@ internal class LocalSettingsFacade(
   }
 
   private fun personalizationGuidance(
-    profile: PersonalizationLocalStore.SoulProfile?,
+    profile: WorkspaceSoulProfile?,
   ): String = profile?.customGuidance?.trim().orEmpty().ifBlank {
     "No custom guidance has been saved on this device."
   }
@@ -459,7 +459,7 @@ internal class LocalSettingsFacade(
   }
 
   private fun personalizationLabel(
-    profile: PersonalizationLocalStore.SoulProfile?,
+    profile: WorkspaceSoulProfile?,
   ): String {
     val customLabel = profile?.customLabel?.trim().orEmpty()
     if (customLabel.isNotEmpty()) {

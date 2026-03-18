@@ -2,6 +2,9 @@ package com.opencray.app.facade.safety
 
 import android.content.Context
 import com.opencray.app.ApprovedReadRootsResolver
+import com.opencray.app.InMemoryLiveContextModeKeyValueStore
+import com.opencray.app.LiveContextMode
+import com.opencray.app.LiveContextModeStore
 import com.opencray.app.SafetySettingsState
 import com.opencray.app.SafetySettingsStore
 import com.opencray.policy.ExternalAccessMode
@@ -28,6 +31,7 @@ data class SafetySettingsSnapshot(
   val locations: List<SafetySettingsLocationSnapshot>,
   val workspaceAccessProfile: WorkspaceAccessProfile,
   val readOnlyOutsideWorkspace: Boolean,
+  val liveContextMode: LiveContextMode = LiveContextMode.FULL,
 )
 
 data class SaveSafetySettingsRequest(
@@ -47,6 +51,7 @@ data class SaveSafetySettingsRequest(
   val recordingsEnabled: Boolean,
   val workspaceAccessProfileId: String,
   val readOnlyOutsideWorkspace: Boolean,
+  val liveContextModeId: String = LiveContextMode.FULL.wireValue,
 )
 
 interface SafetySettingsFacade {
@@ -61,33 +66,42 @@ object EmptySafetySettingsFacade : SafetySettingsFacade {
   override fun load(): SafetySettingsSnapshot = state
 
   override fun save(request: SaveSafetySettingsRequest): SafetySettingsSnapshot {
-    state = request.toState().toSnapshot()
+    state = request.toState().toSnapshot(
+      liveContextMode = request.toLiveContextMode(),
+    )
     return state
   }
 }
 
 internal class LocalSafetySettingsFacade(
   private val store: SafetySettingsStore,
+  private val liveContextModeStore: LiveContextModeStore = LiveContextModeStore(
+    InMemoryLiveContextModeKeyValueStore(),
+  ),
   private val reconcileState: (SafetySettingsState) -> SafetySettingsState = { it },
 ) : SafetySettingsFacade {
   override fun load(): SafetySettingsSnapshot {
     val stored = store.load()
     val reconciled = reconcileState(stored).sanitized()
+    val liveContextMode = liveContextModeStore.load()
     if (reconciled != stored) {
       store.save(reconciled)
     }
-    return reconciled.toSnapshot()
+    return reconciled.toSnapshot(liveContextMode = liveContextMode)
   }
 
   override fun save(request: SaveSafetySettingsRequest): SafetySettingsSnapshot {
     val state = reconcileState(request.toState()).sanitized()
+    val liveContextMode = request.toLiveContextMode()
     store.save(state)
-    return state.toSnapshot()
+    liveContextModeStore.save(liveContextMode)
+    return state.toSnapshot(liveContextMode = liveContextMode)
   }
 
   companion object {
     fun fromContext(context: Context): LocalSafetySettingsFacade = LocalSafetySettingsFacade(
       store = SafetySettingsStore.fromContext(context),
+      liveContextModeStore = LiveContextModeStore.fromContext(context),
       reconcileState = { state -> reconcileExternalAccessAuthorization(context, state) },
     )
   }
@@ -112,7 +126,12 @@ private fun SaveSafetySettingsRequest.toState(): SafetySettingsState = SafetySet
   readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
 ).sanitized()
 
-private fun SafetySettingsState.toSnapshot(): SafetySettingsSnapshot = SafetySettingsSnapshot(
+private fun SaveSafetySettingsRequest.toLiveContextMode(): LiveContextMode =
+  LiveContextMode.fromWireValue(liveContextModeId)
+
+private fun SafetySettingsState.toSnapshot(
+  liveContextMode: LiveContextMode = LiveContextMode.FULL,
+): SafetySettingsSnapshot = SafetySettingsSnapshot(
   automationMode = automationMode,
   rollbackJournalEnabled = rollbackJournalEnabled,
   maxFilesPerBatch = maxFilesPerBatch,
@@ -131,6 +150,7 @@ private fun SafetySettingsState.toSnapshot(): SafetySettingsSnapshot = SafetySet
   ),
   workspaceAccessProfile = workspaceAccessProfile,
   readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
+  liveContextMode = liveContextMode,
 )
 
 private fun reconcileExternalAccessAuthorization(

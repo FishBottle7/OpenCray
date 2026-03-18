@@ -10,6 +10,7 @@ import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.store.MemoryStore
 import com.opencray.runtime.memory.MemoryCandidateExtractor
 import com.opencray.runtime.memory.MemoryFlushOutcome
+import com.opencray.runtime.memory.MemoryInteractionPreferenceExtensionKeys
 import com.opencray.runtime.memory.SoulMemoryIntent
 import com.opencray.runtime.memory.SoulMemoryIntentInterpretation
 import com.opencray.runtime.memory.SoulMemoryIntentInterpreter
@@ -27,6 +28,7 @@ import com.opencray.runtime.memory.MemoryWriter
 import com.opencray.runtime.memory.TaskCommitmentResolver
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.soul.InteractionPreferenceState
 import com.opencray.runtime.soul.RelationshipEvent
 import com.opencray.runtime.soul.RelationshipEventConfidence
 import com.opencray.runtime.soul.RelationshipEventInterpretation
@@ -36,10 +38,12 @@ import com.opencray.runtime.soul.RelationshipEventScope
 import com.opencray.runtime.soul.RelationshipEventType
 import com.opencray.runtime.soul.RelationshipEventValence
 import com.opencray.runtime.soul.SoulPlasticity
+import com.opencray.runtime.soul.SoulMemoryExtensionKeys
 import com.opencray.runtime.soul.SoulMemoryObjectTypes
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.serialization.json.Json
 
 class ChatMemoryIngestionCoordinatorTest {
   @Test
@@ -543,11 +547,143 @@ class ChatMemoryIngestionCoordinatorTest {
     assertEquals(2, summary.writtenRecords.size)
     assertTrue(memoryStore.list().any { record ->
       record.extensions["preference_key"] == "relationship_style_profile" &&
-        record.extensions["preference_value"] == "warm"
+        record.extensions["preference_value"] == "warm" &&
+        record.extensions[MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION] == "higher" &&
+        record.extensions[MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION] == "lower"
     })
     assertTrue(memoryStore.list().any { record ->
       record.extensions["soul_object_type"] == SoulMemoryObjectTypes.INTERACTION_PREFERENCE_STATE
     })
+  }
+
+  @Test
+  fun ingestCompletedTurnPrefersExplicitRelationshipPreferenceExtensionsWhenProjectingSnapshot() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      soulPlasticityProvider = { SoulPlasticity.HIGH },
+      candidateExtractor = MemoryCandidateExtractor(
+        soulIntentInterpreter = FixedSoulIntentInterpreter(
+          SoulMemoryIntentInterpretation.Success(
+            intents = listOf(
+              SoulMemoryIntent(
+                preferenceKey = "agent_style_profile",
+                preferenceValue = "warm",
+                scope = com.opencray.runtime.memory.MemoryScope.USER,
+                soulExtensions = mapOf(
+                  "soul_tone" to "warm",
+                  "soul_voice" to "warm and gentle",
+                  "soul_user_relationship_style" to "supportive",
+                ),
+                preferenceExtensions = mapOf(
+                  MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "lower",
+                  MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "higher",
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-relationship-style-explicit",
+      task = promptTask(
+        id = "task-relationship-style-explicit",
+        input = "以后对我温柔一点。",
+      ),
+      result = successResult(taskId = "task-relationship-style-explicit"),
+      assistantOutput = "我会调整语气。",
+      toolObservations = emptyList(),
+    )
+
+    assertEquals(2, summary.writtenRecords.size)
+    assertTrue(memoryStore.list().any { record ->
+      record.extensions["preference_key"] == "relationship_style_profile" &&
+        record.extensions[MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION] == "lower" &&
+        record.extensions[MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION] == "higher"
+    })
+
+    val snapshotRecord = memoryStore.list().single { record ->
+      record.extensions["soul_object_type"] == SoulMemoryObjectTypes.INTERACTION_PREFERENCE_STATE
+    }
+    val snapshotState = Json {
+      ignoreUnknownKeys = true
+      encodeDefaults = true
+      explicitNulls = true
+    }.decodeFromString(
+      InteractionPreferenceState.serializer(),
+      checkNotNull(snapshotRecord.extensions[SoulMemoryExtensionKeys.OBJECT_PAYLOAD_JSON]),
+    )
+
+    assertEquals(-1, snapshotState.warmth.offset)
+    assertEquals(1, snapshotState.warmth.lowerSupport)
+    assertEquals(1, snapshotState.formality.offset)
+    assertEquals(1, snapshotState.formality.higherSupport)
+  }
+
+  @Test
+  fun ingestCompletedTurnProjectsSnapshotFromExplicitInteractionPreferenceSignal() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      soulPlasticityProvider = { SoulPlasticity.HIGH },
+      candidateExtractor = MemoryCandidateExtractor(
+        soulIntentInterpreter = FixedSoulIntentInterpreter(
+          SoulMemoryIntentInterpretation.Success(
+            intents = listOf(
+              SoulMemoryIntent(
+                preferenceKey = "interaction_preference_signal",
+                preferenceValue = "adaptive",
+                scope = com.opencray.runtime.memory.MemoryScope.USER,
+                preferenceExtensions = mapOf(
+                  MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "higher",
+                  MemoryInteractionPreferenceExtensionKeys.INITIATIVE_DIRECTION to "lower",
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-interaction-signal",
+      task = promptTask(
+        id = "task-interaction-signal",
+        input = "以后主动一点，但也温柔一点。",
+      ),
+      result = successResult(taskId = "task-interaction-signal"),
+      assistantOutput = "知道了。",
+      toolObservations = emptyList(),
+    )
+
+    assertEquals(2, summary.writtenRecords.size)
+    assertTrue(memoryStore.list().any { record ->
+      record.extensions["preference_key"] == "interaction_preference_signal" &&
+        record.extensions["preference_value"] == "warmth_higher__initiative_lower" &&
+        record.extensions[MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION] == "higher" &&
+        record.extensions[MemoryInteractionPreferenceExtensionKeys.INITIATIVE_DIRECTION] == "lower"
+    })
+
+    val snapshotRecord = memoryStore.list().single { record ->
+      record.extensions["soul_object_type"] == SoulMemoryObjectTypes.INTERACTION_PREFERENCE_STATE
+    }
+    val snapshotState = Json {
+      ignoreUnknownKeys = true
+      encodeDefaults = true
+      explicitNulls = true
+    }.decodeFromString(
+      InteractionPreferenceState.serializer(),
+      checkNotNull(snapshotRecord.extensions[SoulMemoryExtensionKeys.OBJECT_PAYLOAD_JSON]),
+    )
+
+    assertEquals(1, snapshotState.warmth.offset)
+    assertEquals(1, snapshotState.warmth.higherSupport)
+    assertEquals(-1, snapshotState.initiative.offset)
+    assertEquals(1, snapshotState.initiative.lowerSupport)
   }
 
   @Test
