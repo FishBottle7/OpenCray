@@ -32,6 +32,9 @@
 /.tmp_pytest*/
 /%TEMP%/
 /tmp_refs/
+/.codex-home/
+/.opencray/
+/.pytest_local/
 **/__pycache__/
 *.py[cod]
 *.pid
@@ -58,6 +61,9 @@
 /.tmp/
 /tmp_*.patch
 /opencray-python-runtime-*.aar
+/flutter_app/.tmp_flutter_version_err.txt
+/flutter_app/.tmp_flutter_version_out.txt
+/log.txt
 
 # Sisyphus local scratch files
 /.sisyphus/notepads/
