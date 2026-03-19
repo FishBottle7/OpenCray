@@ -14,6 +14,7 @@
 相关背景文档见：
 
 - `docs/p4a-python-runtime-feasibility.md`
+- `docs/android-p4a-python-runtime-package-baseline.md`
 
 ## 1. 结论与决策
 
@@ -235,9 +236,12 @@ Python 侧只提供一个固定入口，例如：
 首版依赖只允许两类：
 
 - Python 标准库
-- 明确列入白名单的纯 Python 第三方库
+- 明确列入白名单的第三方库
 
-不建议首版就引入大量 native 扩展库。
+原生扩展库不是一律禁止，但必须满足两个条件：
+
+- 当前本地 `p4a` 已存在可用 recipe
+- 已被明确列入基线文档并完成真机验证
 
 ### 8.2 依赖清单管理
 
@@ -248,10 +252,12 @@ Python 侧只提供一个固定入口，例如：
 
 规则建议如下：
 
-- 所有依赖必须固定版本
+- 默认清单由 `requirements.lock` 维护
+- 未显式传入 `P4A_REQUIREMENTS` 时，`build-p4a-service-library.sh` 自动读取 `requirements.lock`
 - 每次升级依赖都要重新生成 Android runtime 制品
 - 每次升级都要跑脚本执行回归测试
 - 原生扩展库必须单独审批，不允许顺手加入
+- 默认基线见 `docs/android-p4a-python-runtime-package-baseline.md`
 
 ### 8.3 业务语义调整
 
@@ -437,6 +443,7 @@ Windows 日常构建入口：
 - `python -m pythonforandroid.toolchain aar`
 - `bootstrap=service_library`
 - `service=opencraypython:python_runner/p4a_service_main.py`
+- 默认 requirements 来自 `tools/android_python_runtime_p4a/requirements.lock`
 - 输出 AAR 复制到 `tools/android_python_runtime_p4a/dist/`
 
 建议流程：
@@ -466,7 +473,7 @@ Windows 日常构建入口：
 
 验收：
 
-- 至少 3 个常用纯 Python 库在真机运行通过
+- 至少覆盖一组 Office 文档脚本和一组科学计算脚本
 
 ## 13. 测试建议
 

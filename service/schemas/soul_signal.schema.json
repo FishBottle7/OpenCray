@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opencray.local/service/schemas/soul_signal.schema.json",
+  "title": "SoulSignal",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "signal_id",
+    "signal_type",
+    "signal_value",
+    "confidence",
+    "support_weight",
+    "evidence_excerpt",
+    "scene_labels",
+    "relationship_scope",
+    "condition_tags",
+    "language_mode",
+    "time_scope",
+    "aggregation_target",
+    "source_ref"
+  ],
+  "properties": {
+    "signal_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "signal_type": {
+      "type": "string",
+      "enum": [
+        "speech_surface",
+        "emotion_handling",
+        "event_semantics",
+        "response_habit",
+        "appraisal_hint",
+        "conflict_move",
+        "uncertainty_move",
+        "affection_move",
+        "boundary_move",
+        "repair_move",
+        "value_hint",
+        "value_tradeoff_hint",
+        "self_view_hint",
+        "speech_act_profile",
+        "agency_communion_hint",
+        "attachment_hint",
+        "social_value_orientation_hint",
+        "opening_move_hint",
+        "follow_up_move_hint",
+        "closure_move_hint",
+        "rupture_repair_script_hint",
+        "conditioned_policy_hint",
+        "quote_candidate",
+        "anti_pattern_hint"
+      ]
+    },
+    "signal_value": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "array"
+        },
+        {
+          "type": "object"
+        }
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "support_weight": {
+      "type": "number",
+      "minimum": 0
+    },
+    "evidence_excerpt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scene_labels": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "relationship_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "condition_tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "language_mode": {
+      "type": "string",
+      "minLength": 1
+    },
+    "time_scope": {
+      "type": "string",
+      "enum": [
+        "instant",
+        "turn_window",
+        "conversation_window",
+        "cross_time"
+      ]
+    },
+    "aggregation_target": {
+      "type": "string",
+      "enum": [
+        "base_soul",
+        "relationship_overlay",
+        "situation_policy",
+        "language_overlay",
+        "quote_bank",
+        "anti_pattern_bank",
+        "evidence_only"
+      ]
+    },
+    "source_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "turn_id",
+        "source_type"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turn_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "window_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "conversation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reply_to_turn_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "counterpart_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "counterpart_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reply_link_inferred": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

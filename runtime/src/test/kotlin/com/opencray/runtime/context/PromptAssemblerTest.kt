@@ -27,6 +27,8 @@ import com.opencray.runtime.skills.SkillInventory
 import com.opencray.runtime.skills.SkillInventoryTrace
 import com.opencray.runtime.skills.VisibleSkill
 import com.opencray.runtime.skills.VisibleSkillTrace
+import com.opencray.runtime.soul.SoulTurnSemanticSignal
+import com.opencray.runtime.soul.SoulTurnUserAffect
 import com.opencray.skills.SkillExecutionContext
 import com.opencray.skills.SkillInvocationControl
 import org.junit.Assert.assertEquals
@@ -198,6 +200,41 @@ class PromptAssemblerTest {
     assertFalse(prompt.report.pruningSummaryIncluded)
     assertFalse(prompt.report.compactionSummaryIncluded)
     assertEquals(0, prompt.report.injectedMemoryRecordCount)
+  }
+
+  @Test
+  fun assembleIncludesTurnResponsePolicyAsDedicatedSystemLayer() {
+    val contextManager = ContextManager()
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "Base identity.",
+          sessionContext = AgentRuntimeSessionContext(
+            soulProfile = RuntimeSoulProfile(
+              presetName = "WARM",
+              extensions = mapOf(
+                "supportive_reassurance_allowed" to "true",
+                "reassurance_preference_offset" to "1",
+              ),
+            ),
+            turnSemanticSignal = SoulTurnSemanticSignal(
+              isTaskBearingRequest = false,
+              userAffect = SoulTurnUserAffect.DISTRESSED,
+              userRequestsRelationalSupport = true,
+            ),
+          ),
+          toolDefinitions = emptyList(),
+          liveConversation = emptyList(),
+        ),
+      ),
+    )
+
+    assertTrue(prompt.systemPrompt.contains("[Turn Response Policy]"))
+    assertTrue(prompt.systemPrompt.contains("reassurance_mode=supportive"))
+    assertTrue(prompt.systemPrompt.contains("response_shape=supportive_reply"))
   }
 
   @Test

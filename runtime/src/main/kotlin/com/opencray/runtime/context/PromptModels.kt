@@ -10,6 +10,7 @@ import com.opencray.runtime.compaction.DurableCompactionTrace
 import com.opencray.runtime.memory.MemoryFlushTrace
 import com.opencray.runtime.memory.MemoryRecallTrace
 import com.opencray.runtime.memory.MemoryRecallResult
+import com.opencray.runtime.soul.SoulTurnSemanticSignal
 import com.opencray.runtime.skills.ActiveSkillCapsule
 import com.opencray.runtime.skills.ActiveSkillTrace
 import com.opencray.runtime.skills.SkillCatalog
@@ -55,6 +56,9 @@ data class LiveContextTrace(
 data class AgentRuntimeSessionContext(
   val sessionPolicyText: String? = null,
   val soulProfile: RuntimeSoulProfile? = null,
+  val turnSemanticSignal: SoulTurnSemanticSignal? = null,
+  val injectionPolicy: ContextInjectionPolicy = ContextInjectionPolicy(),
+  val memoryToolsEnabled: Boolean = true,
   val liveContextTrace: LiveContextTrace = LiveContextTrace(),
   val bootstrapContext: BootstrapContext = BootstrapContext(),
   val recalledMemory: MemoryRecallResult = MemoryRecallResult(),
@@ -79,6 +83,7 @@ data class ManagedPromptContext(
   val baseSystemPrompt: String,
   val sessionPolicyText: String = "",
   val personalizationText: String = "",
+  val turnResponsePolicyText: String = "",
   val bootstrapFiles: List<BootstrapSnippet> = emptyList(),
   val memoryText: String = "",
   val durableCompactionText: String = "",

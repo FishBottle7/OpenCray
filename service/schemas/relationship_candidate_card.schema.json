@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opencray.local/service/schemas/relationship_candidate_card.schema.json",
+  "title": "RelationshipCandidateCard",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "entity_id",
+    "display_name",
+    "actor_kind",
+    "relationship_labels",
+    "direct_interaction_count",
+    "recent_event_tags",
+    "sample_supporting_lines"
+  ],
+  "properties": {
+    "entity_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "actor_kind": {
+      "type": "string",
+      "enum": [
+        "real_person",
+        "fictional_character",
+        "unknown"
+      ]
+    },
+    "relationship_labels": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "direct_interaction_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "recent_event_tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "last_seen_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "sample_supporting_lines": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "role_hint": {
+      "type": "string"
+    },
+    "is_current_user_binding_candidate": {
+      "type": "boolean"
+    },
+    "selection_eligibility": {
+      "type": "string",
+      "enum": [
+        "publish_ready",
+        "requires_role_rebind",
+        "review_only"
+      ]
+    },
+    "selection_notes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "graph_neighbor_rank": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "graph_distance": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "graph_proximity_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "direct_anchor_weight": {
+      "type": "number",
+      "minimum": 0
+    },
+    "two_hop_support_score": {
+      "type": "number",
+      "minimum": 0
+    },
+    "ranking_source": {
+      "type": "string",
+      "enum": [
+        "relationship_graph",
+        "graphiti_neighborhood",
+        "heuristic_fallback"
+      ]
+    },
+    "graphiti_edge_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "graphiti_neighbor_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "graphiti_counterpart_node_uuid": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "anchor_node_uuid": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ranking_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

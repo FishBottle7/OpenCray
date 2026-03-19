@@ -7,6 +7,7 @@ import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
 import 'package:opencray/core/copy/opencray_ui_copy.dart';
 import 'package:opencray/core/models/opencray_files_snapshot.dart';
 import 'package:opencray/core/models/opencray_shell_snapshot.dart';
+import 'package:opencray/features/chat/chat_feature.dart';
 import 'package:opencray/features/files/files.dart';
 
 void main() {
@@ -71,10 +72,12 @@ void main() {
       ),
     );
     final filesController = FilesFeatureController();
+    final chatController = ChatFeatureController();
 
     await _pumpShell(
       tester,
       bridge: bridge,
+      chatController: chatController,
       filesController: filesController,
       initialTab: OpenCrayTab.files,
     );
@@ -91,6 +94,64 @@ void main() {
 
     expect(find.text('Files'), findsOneWidget);
     expect(find.text('1 Selected'), findsNothing);
+    expect(bridge.shownNativeToasts, isEmpty);
+    expect(
+      platformCalls.where((call) => call.method == 'SystemNavigator.pop'),
+      isEmpty,
+    );
+  });
+
+  testWidgets('shell back exits chat multi-select before exiting the app', (
+    tester,
+  ) async {
+    final bridge = OpenCraySeedBridge(
+      initialSnapshot: const OpenCrayShellSnapshot(
+        initialTab: OpenCrayTab.chat,
+        localeTag: 'en',
+        hostLabel: 'HOST READY',
+        hostSummary: 'Ready',
+        isHostConnected: true,
+      ),
+      initialFilesSnapshot: const OpenCrayFilesSnapshot(
+        rootName: 'agent-workspace',
+        rootPath: '/tmp/agent-workspace',
+        availableBytes: 2048,
+        directoryCount: 0,
+        fileCount: 0,
+        entryCount: 0,
+        isTruncated: false,
+        children: <OpenCrayFileTreeNodeSnapshot>[],
+      ),
+    );
+    final chatController = ChatFeatureController();
+    final filesController = FilesFeatureController();
+
+    await _pumpShell(
+      tester,
+      bridge: bridge,
+      chatController: chatController,
+      filesController: filesController,
+      initialTab: OpenCrayTab.chat,
+    );
+
+    final targetBubble = find.byKey(
+      const ValueKey<String>('chat-bubble-seed-main-inbound-2'),
+    );
+    await _openMessageMenu(tester, targetBubble);
+    await tester.tap(find.text('Select'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('1 Selected'), findsOneWidget);
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    expect(find.byType(OpenCrayChatFeature), findsOneWidget);
+    expect(find.text('1 Selected'), findsNothing);
+    expect(
+      find.byKey(const ValueKey<String>('chat-selection-toolbar')),
+      findsNothing,
+    );
     expect(bridge.shownNativeToasts, isEmpty);
     expect(
       platformCalls.where((call) => call.method == 'SystemNavigator.pop'),
@@ -121,10 +182,12 @@ void main() {
       ),
     );
     final filesController = FilesFeatureController();
+    final chatController = ChatFeatureController();
 
     await _pumpShell(
       tester,
       bridge: bridge,
+      chatController: chatController,
       filesController: filesController,
       initialTab: OpenCrayTab.chat,
     );
@@ -153,6 +216,7 @@ void main() {
 Future<void> _pumpShell(
   WidgetTester tester, {
   required OpenCraySeedBridge bridge,
+  required ChatFeatureController chatController,
   required FilesFeatureController filesController,
   required OpenCrayTab initialTab,
 }) async {
@@ -168,9 +232,14 @@ Future<void> _pumpShell(
           isHostConnected: true,
         ),
         initialTab: initialTab,
+        chatController: chatController,
         filesController: filesController,
         buildersForSnapshot: (_) => {
-          OpenCrayTab.chat: (context, isActive) => const SizedBox.shrink(),
+          OpenCrayTab.chat: (context, isActive) => OpenCrayChatFeature(
+            copy: OpenCrayUiCopy.fromLocaleTag('en'),
+            isTabActive: isActive,
+            controller: chatController,
+          ),
           OpenCrayTab.skills: (context, isActive) => const SizedBox.shrink(),
           OpenCrayTab.files: (context, isActive) => FilesFeatureScreen(
             bridge: bridge,
@@ -183,5 +252,15 @@ Future<void> _pumpShell(
       ),
     ),
   );
+  await tester.pumpAndSettle();
+}
+
+Future<void> _openMessageMenu(WidgetTester tester, Finder bubble) async {
+  final bubbleRect = tester.getRect(bubble);
+  final gesture = await tester.startGesture(
+    bubbleRect.topLeft + const Offset(24, 20),
+  );
+  await tester.pump(const Duration(milliseconds: 260));
+  await gesture.up();
   await tester.pumpAndSettle();
 }

@@ -1,0 +1,456 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opencray.local/service/schemas/base_soul_draft.schema.json",
+  "title": "BaseSoulDraft",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "draft_id",
+    "twin_id",
+    "anchor_person_id",
+    "generated_at",
+    "publish_target",
+    "identity_view",
+    "speech_surface",
+    "judgment_policy",
+    "interpersonal_stance",
+    "conflict_policy",
+    "affection_policy",
+    "value_order",
+    "social_value_orientation",
+    "conditional_policies",
+    "relational_scripts",
+    "anti_patterns",
+    "provenance"
+  ],
+  "properties": {
+    "draft_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "twin_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "anchor_person_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "publish_target": {
+      "type": "string",
+      "enum": [
+        "soul_md",
+        "soul_profile_extensions",
+        "review_only"
+      ]
+    },
+    "overall_confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "identity_view": {
+      "type": "string",
+      "minLength": 1
+    },
+    "language_modes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "surface_confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "directness_shift": {
+            "type": "string"
+          },
+          "emoji_density": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "sentence_length": {
+            "type": "string"
+          },
+          "punctuation_style": {
+            "type": "string"
+          },
+          "signature_patterns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "narrative_tendencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "theme",
+          "confidence"
+        ],
+        "properties": {
+          "theme": {
+            "type": "string",
+            "minLength": 1
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "signature_quote": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "observations": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "source_signal_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "speech_surface": {
+      "type": "object"
+    },
+    "judgment_policy": {
+      "type": "object"
+    },
+    "interpersonal_stance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agency",
+        "communion"
+      ],
+      "properties": {
+        "agency": {
+          "type": "string",
+          "minLength": 1
+        },
+        "communion": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "conflict_policy": {
+      "type": "object"
+    },
+    "affection_policy": {
+      "type": "object"
+    },
+    "value_order": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "social_value_orientation": {
+      "type": "string",
+      "minLength": 1
+    },
+    "conditional_policies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "when",
+          "move_sequence",
+          "confidence"
+        ],
+        "properties": {
+          "when": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "move_sequence": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "relationship_scope": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "opening_context": {
+            "type": "string"
+          },
+          "outcome_tendency": {
+            "type": "string"
+          },
+          "observations": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "distinct_day_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "distinct_conversation_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "distinct_counterpart_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "recurrence_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "relationship_concentration": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "stability_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
+    "relational_scripts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "trigger",
+          "moves"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "trigger": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "moves": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "relationship_scope": {
+            "type": "string"
+          },
+          "scene_scope": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "opening_context": {
+            "type": "string"
+          },
+          "outcome_tendency": {
+            "type": "string"
+          },
+          "observations": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "distinct_day_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "distinct_conversation_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "distinct_counterpart_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "recurrence_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "relationship_concentration": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "stability_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
+    "anti_patterns": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "provenance": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "field_path",
+          "confidence",
+          "supporting_signal_ids"
+        ],
+        "properties": {
+          "field_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "supporting_signal_ids": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "value_tradeoffs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pair",
+          "favored",
+          "resolution",
+          "confidence"
+        ],
+        "properties": {
+          "pair": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "favored": {
+            "type": "string",
+            "minLength": 1
+          },
+          "resolution": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "observations": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "appraisal_tendencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "self_state",
+          "other_appraisal",
+          "core_need",
+          "confidence"
+        ],
+        "properties": {
+          "self_state": {
+            "type": "string",
+            "minLength": 1
+          },
+          "other_appraisal": {
+            "type": "string",
+            "minLength": 1
+          },
+          "core_need": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "observations": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    }
+  }
+}

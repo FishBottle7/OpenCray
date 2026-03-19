@@ -1,10 +1,17 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:opencray/core/bridge/opencray_host_bridge.dart';
 import 'package:opencray/core/copy/opencray_ui_copy.dart';
 import 'package:opencray/core/models/opencray_chat_snapshot.dart';
 import 'package:opencray/core/models/opencray_debug_snapshot.dart';
+import 'package:opencray/core/models/opencray_file_image_preview.dart';
+import 'package:opencray/core/models/opencray_file_text_preview.dart';
+import 'package:opencray/core/models/opencray_file_voice_playback_source.dart';
 import 'package:opencray/features/chat/chat_feature.dart';
+import 'package:opencray/features/chat/chat_voice_playback.dart';
 
 void main() {
   test(
@@ -212,51 +219,93 @@ void main() {
   );
 
   testWidgets(
-    'host-mapped read summary prefers stable result limit metadata',
+    'host-mapped run trace shows delegated Task and subagent lifecycle details',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');
-      final toolResult = OpenCrayChatRuntimeEventSnapshot(
+      const taskCall = OpenCrayChatRuntimeEventSnapshot(
+        kind: 'tool_call',
+        runId: 'run-subagent-1',
+        taskId: 'task-subagent-1',
+        emittedAtEpochMs: 2000,
+        toolName: 'Task',
+        argumentsJson:
+            '{"description":"Inspect README","prompt":"Read README.md and summarize it.","subagent_type":"researcher"}',
+      );
+      const subagentStarted = OpenCrayChatRuntimeEventSnapshot(
+        kind: 'subagent',
+        runId: 'run-subagent-1',
+        taskId: 'task-subagent-1',
+        emittedAtEpochMs: 2500,
+        phase: 'started',
+        label: 'Inspect README',
+        childRunId: 'subagent-run-1',
+        childTaskId: 'subagent-task-1',
+        subagentType: 'researcher',
+        contextMode: 'minimal',
+        depth: 1,
+      );
+      const subagentCompleted = OpenCrayChatRuntimeEventSnapshot(
+        kind: 'subagent',
+        runId: 'run-subagent-1',
+        taskId: 'task-subagent-1',
+        emittedAtEpochMs: 2800,
+        phase: 'completed',
+        label: 'Inspect README',
+        childRunId: 'subagent-run-1',
+        childTaskId: 'subagent-task-1',
+        subagentType: 'researcher',
+        contextMode: 'minimal',
+        depth: 1,
+        text: 'README says hello.',
+      );
+      const taskResult = OpenCrayChatRuntimeEventSnapshot(
         kind: 'tool_result',
-        runId: 'run-host-read-limit-1',
-        taskId: 'task-host-read-limit-1',
-        emittedAtEpochMs: 3000,
-        toolName: 'Read',
-        contentPreview:
-            'Project uses the Gradle wrapper from the repo root.\nUse .\\\\gradlew.bat test to run JVM tests.',
-        resultMetadata: const <String, String>{
-          'filePath': 'README.md',
-          'returnedLineCount': '2',
-          'totalLineCount': '12',
-          'resultLimitApplied': 'true',
-          'resultTruncated': 'true',
-          'resultLimitKind': 'read_byte_budget',
+        runId: 'run-subagent-1',
+        taskId: 'task-subagent-1',
+        emittedAtEpochMs: 3200,
+        toolName: 'Task',
+        contentPreview: 'Child summary: README says hello.',
+        resultMetadata: <String, String>{
+          'delegationDescription': 'Inspect README',
+          'delegationPromptPreview': 'Read README.md and summarize it.',
+          'delegationSubagentType': 'researcher',
+          'delegationContextMode': 'minimal',
+          'delegationAllowedTools': 'Glob,Grep,LS,Read',
+          'childExecutionStatus': 'success',
+          'childTurnCount': '2',
+          'childToolCallCount': '1',
+          'childRunId': 'subagent-run-1',
+          'childTaskId': 'subagent-task-1',
         },
       );
       final bridge = _FakeChatBridge(
         chatSnapshot: _hostChatSnapshot(),
-        runtimeSnapshot: OpenCrayChatRuntimeSnapshot(
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
           sessionId: 'session-1',
           activeRuns: <OpenCrayChatRunSnapshot>[
             OpenCrayChatRunSnapshot(
               sessionId: 'session-1',
-              runId: 'run-host-read-limit-1',
-              taskId: 'task-host-read-limit-1',
+              runId: 'run-subagent-1',
+              taskId: 'task-subagent-1',
               acceptedAtEpochMs: 1000,
-              updatedAtEpochMs: 3000,
+              updatedAtEpochMs: 3200,
               attempt: 1,
               isTerminal: false,
-              lastEvent: toolResult,
+              lastEvent: taskResult,
             ),
           ],
           events: <OpenCrayChatRuntimeEventSnapshot>[
-            const OpenCrayChatRuntimeEventSnapshot(
+            OpenCrayChatRuntimeEventSnapshot(
               kind: 'lifecycle',
-              runId: 'run-host-read-limit-1',
-              taskId: 'task-host-read-limit-1',
+              runId: 'run-subagent-1',
+              taskId: 'task-subagent-1',
               emittedAtEpochMs: 1000,
               phase: 'start',
             ),
-            toolResult,
+            taskCall,
+            subagentStarted,
+            subagentCompleted,
+            taskResult,
           ],
         ),
       );
@@ -271,15 +320,141 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(
-        find.textContaining('Returned 2 lines from README.md'),
+        find.textContaining('Researcher started: Inspect README'),
         findsOneWidget,
       );
       expect(
-        find.textContaining('Output truncated to the read budget.'),
+        find.textContaining('Researcher completed: Inspect README'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Researcher completed. minimal context, 2 turns, 1 tool call.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Child summary: README says hello.'),
+        findsOneWidget,
+      );
+
+      final bubbleFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-run-subagent-1'),
+      );
+      final center = tester.getCenter(bubbleFinder);
+
+      await tester.tapAt(center);
+      await tester.pump(const Duration(milliseconds: 40));
+      await tester.tapAt(center);
+      await tester.pumpAndSettle();
+
+      final fullscreenFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-fullscreen-run-subagent-1'),
+      );
+
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining(
+            'Delegate to Researcher: Inspect README',
+          ),
+        ),
+        findsWidgets,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining(
+            'Prompt: Read README.md and summarize it.',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Allowed tools: Glob, Grep, LS, Read'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Summary: README says hello.'),
+        ),
         findsOneWidget,
       );
     },
   );
+
+  testWidgets('host-mapped read summary prefers stable result limit metadata', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final toolResult = OpenCrayChatRuntimeEventSnapshot(
+      kind: 'tool_result',
+      runId: 'run-host-read-limit-1',
+      taskId: 'task-host-read-limit-1',
+      emittedAtEpochMs: 3000,
+      toolName: 'Read',
+      contentPreview:
+          'Project uses the Gradle wrapper from the repo root.\nUse .\\\\gradlew.bat test to run JVM tests.',
+      resultMetadata: const <String, String>{
+        'filePath': 'README.md',
+        'returnedLineCount': '2',
+        'totalLineCount': '12',
+        'resultLimitApplied': 'true',
+        'resultTruncated': 'true',
+        'resultLimitKind': 'read_byte_budget',
+      },
+    );
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(),
+      runtimeSnapshot: OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-host-read-limit-1',
+            taskId: 'task-host-read-limit-1',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 3000,
+            attempt: 1,
+            isTerminal: false,
+            lastEvent: toolResult,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          const OpenCrayChatRuntimeEventSnapshot(
+            kind: 'lifecycle',
+            runId: 'run-host-read-limit-1',
+            taskId: 'task-host-read-limit-1',
+            emittedAtEpochMs: 1000,
+            phase: 'start',
+          ),
+          toolResult,
+        ],
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.textContaining('Returned 2 lines from README.md'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('Output truncated to the read budget.'),
+      findsOneWidget,
+    );
+  });
 
   testWidgets(
     'compact running card keeps recent LS history details and results',
@@ -1132,6 +1307,79 @@ void main() {
     },
   );
 
+  testWidgets('chat messages render timestamps and 8-minute time dividers', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final DateTime now = DateTime.now().toLocal();
+    final DateTime firstAt = DateTime(now.year, now.month, now.day, 9, 0);
+    final DateTime secondAt = firstAt.add(const Duration(minutes: 5));
+    final DateTime thirdAt = secondAt.add(const Duration(minutes: 8));
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(
+        messages: <OpenCrayChatMessageSnapshot>[
+          OpenCrayChatMessageSnapshot(
+            messageId: 'message-1',
+            kind: 'outbound',
+            text: 'First message',
+            createdAtEpochMs: firstAt.millisecondsSinceEpoch,
+          ),
+          OpenCrayChatMessageSnapshot(
+            messageId: 'message-2',
+            kind: 'inbound',
+            text: 'Second message',
+            createdAtEpochMs: secondAt.millisecondsSinceEpoch,
+          ),
+          OpenCrayChatMessageSnapshot(
+            messageId: 'message-3',
+            kind: 'outbound',
+            text: 'Third message',
+            createdAtEpochMs: thirdAt.millisecondsSinceEpoch,
+          ),
+        ],
+      ),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('chat-message-divider-message-1')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('chat-message-divider-message-2')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('chat-message-divider-message-3')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('chat-message-time-message-1')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('chat-message-time-message-2')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('chat-message-time-message-3')),
+      findsNothing,
+    );
+  });
+
   testWidgets('session drawer shows unread dot and count badges', (
     tester,
   ) async {
@@ -1173,11 +1421,655 @@ void main() {
     );
     expect(find.text('3'), findsOneWidget);
   });
+
+  testWidgets('host-backed session drawer shows recent message time labels', (
+    tester,
+  ) async {
+    final DateTime now = DateTime.now().toLocal();
+    final DateTime todayAt = DateTime(now.year, now.month, now.day, 14, 32);
+    final DateTime yesterdayAt = todayAt.subtract(const Duration(days: 1));
+    final DateTime weekdayAt = todayAt.subtract(const Duration(days: 3));
+    final DateTime olderAt = todayAt.subtract(const Duration(days: 12));
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(
+        drawer: OpenCrayChatDrawerSnapshot(
+          eyebrow: 'Recent sessions',
+          title: 'Recent sessions',
+          ctaLabel: 'New session',
+          sessions: <OpenCrayChatSessionItemSnapshot>[
+            OpenCrayChatSessionItemSnapshot(
+              sessionId: 'session-today',
+              title: 'Today session',
+              preview: 'A recent reply arrived.',
+              meta: '2 messages',
+              isSelected: false,
+              lastMessageAtEpochMs: todayAt.millisecondsSinceEpoch,
+            ),
+            OpenCrayChatSessionItemSnapshot(
+              sessionId: 'session-yesterday',
+              title: 'Yesterday session',
+              preview: 'A reply arrived yesterday.',
+              meta: '5 messages',
+              isSelected: false,
+              lastMessageAtEpochMs: yesterdayAt.millisecondsSinceEpoch,
+            ),
+            OpenCrayChatSessionItemSnapshot(
+              sessionId: 'session-weekday',
+              title: 'Weekday session',
+              preview: 'A reply arrived earlier this week.',
+              meta: '8 messages',
+              isSelected: false,
+              lastMessageAtEpochMs: weekdayAt.millisecondsSinceEpoch,
+            ),
+            OpenCrayChatSessionItemSnapshot(
+              sessionId: 'session-older',
+              title: 'Older session',
+              preview: 'A reply arrived earlier this month.',
+              meta: '13 messages',
+              isSelected: false,
+              lastMessageAtEpochMs: olderAt.millisecondsSinceEpoch,
+            ),
+          ],
+        ),
+      ),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(
+            copy: OpenCrayUiCopy.fromLocaleTag('en'),
+            bridge: bridge,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Sessions'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('14:32'), findsOneWidget);
+    expect(find.text('Yesterday'), findsOneWidget);
+    expect(find.text(_weekdayLabelFor(weekdayAt)), findsOneWidget);
+    expect(find.text(_dateLabelFor(olderAt, now: now)), findsOneWidget);
+    expect(find.text('2 messages'), findsNothing);
+    expect(find.text('5 messages'), findsNothing);
+    expect(find.text('8 messages'), findsNothing);
+    expect(find.text('13 messages'), findsNothing);
+  });
+
+  testWidgets(
+    'host message renders image, voice, and file attachments in one bubble',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final playbackLog = _FakeVoicePlaybackLog();
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          messages: <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              messageId: 'assistant-media',
+              kind: 'inbound',
+              text: 'Here are the generated assets.',
+              attachments: const <OpenCrayChatAttachmentSnapshot>[
+                OpenCrayChatAttachmentSnapshot(
+                  attachmentId: 'image-1',
+                  kind: 'image',
+                  displayName: 'diagram-a.png',
+                  localPath:
+                      '.opencray/chat-media/session-1/hash-a/diagram-a.png',
+                ),
+                OpenCrayChatAttachmentSnapshot(
+                  attachmentId: 'image-2',
+                  kind: 'image',
+                  displayName: 'diagram-b.png',
+                  localPath:
+                      '.opencray/chat-media/session-1/hash-b/diagram-b.png',
+                ),
+                OpenCrayChatAttachmentSnapshot(
+                  attachmentId: 'voice-1',
+                  kind: 'voice',
+                  displayName: 'voice-note.m4a',
+                  localPath:
+                      '.opencray/chat-media/session-1/hash-c/voice-note.m4a',
+                  durationMs: 4200,
+                ),
+                OpenCrayChatAttachmentSnapshot(
+                  attachmentId: 'file-1',
+                  kind: 'file',
+                  displayName: 'report.pdf',
+                  localPath: '.opencray/chat-media/session-1/hash-d/report.pdf',
+                  sizeBytes: 4096,
+                ),
+              ],
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+        ),
+        imagePreviews: <String, OpenCrayFileImagePreview>{
+          '.opencray/chat-media/session-1/hash-a/diagram-a.png':
+              _fakeImagePreview(
+                name: 'diagram-a.png',
+                relativePath:
+                    '.opencray/chat-media/session-1/hash-a/diagram-a.png',
+              ),
+          '.opencray/chat-media/session-1/hash-b/diagram-b.png':
+              _fakeImagePreview(
+                name: 'diagram-b.png',
+                relativePath:
+                    '.opencray/chat-media/session-1/hash-b/diagram-b.png',
+              ),
+        },
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(
+              copy: copy,
+              bridge: bridge,
+              voicePlaybackControllerFactory: () =>
+                  _FakeVoicePlaybackController(playbackLog),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey<String>('chat-bubble-assistant-media')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(
+          const ValueKey<String>('chat-message-image-group-assistant-media'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(
+          const ValueKey<String>('chat-message-image-attachment-image-1'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(
+          const ValueKey<String>('chat-message-image-attachment-image-2'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('chat-message-attachment-voice-1')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('chat-message-attachment-file-1')),
+        findsOneWidget,
+      );
+      expect(find.text('Here are the generated assets.'), findsOneWidget);
+      expect(find.text('voice-note.m4a'), findsOneWidget);
+      expect(find.text('report.pdf'), findsOneWidget);
+    },
+  );
+
+  testWidgets('host attachment tiles open workspace files on tap', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final playbackLog = _FakeVoicePlaybackLog();
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(
+        messages: <OpenCrayChatMessageSnapshot>[
+          const OpenCrayChatMessageSnapshot(
+            messageId: 'assistant-open-media',
+            kind: 'inbound',
+            text: '',
+            attachments: <OpenCrayChatAttachmentSnapshot>[
+              OpenCrayChatAttachmentSnapshot(
+                attachmentId: 'voice-open-1',
+                kind: 'voice',
+                displayName: 'voice-note.m4a',
+                localPath:
+                    '.opencray/chat-media/session-1/hash-c/voice-note.m4a',
+                durationMs: 4200,
+              ),
+              OpenCrayChatAttachmentSnapshot(
+                attachmentId: 'file-open-1',
+                kind: 'file',
+                displayName: 'report.pdf',
+                localPath: '.opencray/chat-media/session-1/hash-d/report.pdf',
+                sizeBytes: 4096,
+              ),
+            ],
+          ),
+        ],
+      ),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      ),
+      voicePlaybackSources: <String, OpenCrayFileVoicePlaybackSource>{
+        '.opencray/chat-media/session-1/hash-c/voice-note.m4a':
+            const OpenCrayFileVoicePlaybackSource(
+              name: 'voice-note.m4a',
+              relativePath:
+                  '.opencray/chat-media/session-1/hash-c/voice-note.m4a',
+              localFilePath: '/workspace/session-1/voice-note.m4a',
+              mimeType: 'audio/mp4',
+              durationMs: 4200,
+            ),
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(
+            copy: copy,
+            bridge: bridge,
+            voicePlaybackControllerFactory: () =>
+                _FakeVoicePlaybackController(playbackLog),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(
+        const ValueKey<String>('chat-message-attachment-voice-open-1'),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(
+      find.byKey(const ValueKey<String>('chat-message-attachment-file-open-1')),
+    );
+    await tester.pump();
+
+    expect(bridge.loadedVoicePlaybackSources, <String>[
+      '.opencray/chat-media/session-1/hash-c/voice-note.m4a',
+    ]);
+    expect(playbackLog.sourcePaths, <String>[
+      '/workspace/session-1/voice-note.m4a',
+    ]);
+    expect(playbackLog.playCount, 1);
+    expect(bridge.openedWorkspaceEntries, <String>[
+      '.opencray/chat-media/session-1/hash-d/report.pdf',
+    ]);
+  });
+
+  testWidgets('voice attachment waveform seeks and transcript expands', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final playbackLog = _FakeVoicePlaybackLog();
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(
+        messages: const <OpenCrayChatMessageSnapshot>[
+          OpenCrayChatMessageSnapshot(
+            messageId: 'assistant-voice-enhanced',
+            kind: 'inbound',
+            text: '',
+            attachments: <OpenCrayChatAttachmentSnapshot>[
+              OpenCrayChatAttachmentSnapshot(
+                attachmentId: 'voice-enhanced-1',
+                kind: 'voice',
+                displayName: 'voice-note.m4a',
+                localPath:
+                    '.opencray/chat-media/session-1/hash-e/voice-note.m4a',
+                durationMs: 4200,
+                waveformBars: <int>[12, 28, 56, 72, 40, 88],
+                transcriptText:
+                    'Line one explains the change.\nLine two adds more detail about the update.',
+              ),
+            ],
+          ),
+        ],
+      ),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      ),
+      voicePlaybackSources: <String, OpenCrayFileVoicePlaybackSource>{
+        '.opencray/chat-media/session-1/hash-e/voice-note.m4a':
+            const OpenCrayFileVoicePlaybackSource(
+              name: 'voice-note.m4a',
+              relativePath:
+                  '.opencray/chat-media/session-1/hash-e/voice-note.m4a',
+              localFilePath: '/workspace/session-1/voice-note.m4a',
+              mimeType: 'audio/mp4',
+              durationMs: 4200,
+            ),
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(
+            copy: copy,
+            bridge: bridge,
+            voicePlaybackControllerFactory: () =>
+                _FakeVoicePlaybackController(playbackLog),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final transcriptFinder = find.byKey(
+      const ValueKey<String>(
+        'chat-message-attachment-transcript-voice-enhanced-1',
+      ),
+    );
+    final toggleFinder = find.byKey(
+      const ValueKey<String>(
+        'chat-message-attachment-transcript-toggle-voice-enhanced-1',
+      ),
+    );
+    final waveformFinder = find.byKey(
+      const ValueKey<String>(
+        'chat-message-attachment-waveform-voice-enhanced-1',
+      ),
+    );
+
+    expect(waveformFinder, findsOneWidget);
+    expect(toggleFinder, findsOneWidget);
+    expect((tester.widget<Text>(transcriptFinder)).maxLines, 2);
+
+    final Rect waveformRect = tester.getRect(waveformFinder);
+    final TestGesture gesture = await tester.startGesture(
+      Offset(waveformRect.left + 4, waveformRect.center.dy),
+    );
+    await gesture.moveTo(
+      Offset(
+        waveformRect.left + waveformRect.width * 0.75,
+        waveformRect.center.dy,
+      ),
+    );
+    await gesture.up();
+    await tester.pump();
+
+    expect(bridge.loadedVoicePlaybackSources, <String>[
+      '.opencray/chat-media/session-1/hash-e/voice-note.m4a',
+    ]);
+    expect(playbackLog.sourcePaths, <String>[
+      '/workspace/session-1/voice-note.m4a',
+    ]);
+    expect(
+      playbackLog.seekPositions.last.inMilliseconds,
+      inInclusiveRange(2800, 3400),
+    );
+
+    await tester.tap(toggleFinder);
+    await tester.pump();
+
+    expect((tester.widget<Text>(transcriptFinder)).maxLines, isNull);
+    expect(find.text('Hide transcript'), findsOneWidget);
+  });
+
+  testWidgets('text file attachments open an internal preview on tap', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(
+        messages: const <OpenCrayChatMessageSnapshot>[
+          OpenCrayChatMessageSnapshot(
+            messageId: 'assistant-text-preview',
+            kind: 'inbound',
+            text: '',
+            attachments: <OpenCrayChatAttachmentSnapshot>[
+              OpenCrayChatAttachmentSnapshot(
+                attachmentId: 'file-preview-1',
+                kind: 'file',
+                displayName: 'report.md',
+                localPath: '.opencray/chat-media/session-1/hash-d/report.md',
+                sizeBytes: 128,
+              ),
+            ],
+          ),
+        ],
+      ),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      ),
+      textPreviews: <String, OpenCrayFileTextPreview>{
+        '.opencray/chat-media/session-1/hash-d/report.md':
+            const OpenCrayFileTextPreview(
+              name: 'report.md',
+              relativePath: '.opencray/chat-media/session-1/hash-d/report.md',
+              content: '# Report\n\nPreview body',
+              isTruncated: false,
+            ),
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(
+        const ValueKey<String>('chat-message-attachment-file-preview-1'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(bridge.loadedTextPreviews, <String>[
+      '.opencray/chat-media/session-1/hash-d/report.md',
+    ]);
+    expect(bridge.openedWorkspaceEntries, isEmpty);
+    expect(
+      find.byKey(const ValueKey<String>('chat-text-preview-dialog')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Preview body'), findsOneWidget);
+  });
+
+  testWidgets('composer hides todo chrome when todo list is empty', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_buildChatHarness());
+    await tester.pumpAndSettle();
+
+    expect(find.text('TODO'), findsNothing);
+    expect(
+      find.byKey(const ValueKey<String>('chat-composer-todo-surface')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('chat-composer-todo-list')),
+      findsNothing,
+    );
+  });
+
+  testWidgets(
+    'composer renders todo glass surface with approved status styling',
+    (tester) async {
+      await tester.pumpWidget(
+        _buildChatHarness(
+          todos: const <ChatTodoItemData>[
+            ChatTodoItemData(
+              content: 'Review chat composer layout',
+              status: ChatTodoStatus.pending,
+            ),
+            ChatTodoItemData(
+              content: 'Highlight active todo text',
+              status: ChatTodoStatus.inProgress,
+              activeForm: 'Highlighting active todo text',
+            ),
+            ChatTodoItemData(
+              content: 'Approve Pencil prototype',
+              status: ChatTodoStatus.completed,
+            ),
+            ChatTodoItemData(
+              content: 'Ship Flutter implementation',
+              status: ChatTodoStatus.pending,
+            ),
+            ChatTodoItemData(
+              content: 'Verify scrolling for overflow',
+              status: ChatTodoStatus.pending,
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey<String>('chat-composer-todo-surface')),
+        findsOneWidget,
+      );
+      expect(find.text('TODO'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey<String>('chat-composer-todo-chevron')),
+        findsOneWidget,
+      );
+
+      final Size listSize = tester.getSize(
+        find.byKey(const ValueKey<String>('chat-composer-todo-list')),
+      );
+      expect(listSize.height, 130);
+
+      final Text activeText = tester.widget<Text>(
+        find.byKey(const ValueKey<String>('chat-composer-todo-text-1')),
+      );
+      final Text completedText = tester.widget<Text>(
+        find.byKey(const ValueKey<String>('chat-composer-todo-text-2')),
+      );
+      final Container pendingIndicator = tester.widget<Container>(
+        find.byKey(const ValueKey<String>('chat-composer-todo-indicator-0')),
+      );
+      final Container activeIndicator = tester.widget<Container>(
+        find.byKey(const ValueKey<String>('chat-composer-todo-indicator-1')),
+      );
+      final Container completedIndicator = tester.widget<Container>(
+        find.byKey(const ValueKey<String>('chat-composer-todo-indicator-2')),
+      );
+
+      final BoxDecoration pendingDecoration =
+          pendingIndicator.decoration! as BoxDecoration;
+      final BoxDecoration activeDecoration =
+          activeIndicator.decoration! as BoxDecoration;
+      final BoxDecoration completedDecoration =
+          completedIndicator.decoration! as BoxDecoration;
+
+      expect(find.text('Highlighting active todo text'), findsOneWidget);
+      expect(activeText.style?.color, const Color(0xFF007AFF));
+      expect(completedText.style?.decoration, TextDecoration.lineThrough);
+      expect(pendingDecoration.color, Colors.transparent);
+      expect(
+        (pendingDecoration.border! as Border).top.color,
+        const Color(0xFFD7D7DC),
+      );
+      expect(activeDecoration.color, Colors.transparent);
+      expect(
+        (activeDecoration.border! as Border).top.color,
+        const Color(0xFF007AFF),
+      );
+      expect(completedDecoration.color, const Color(0xFFB8BDC7));
+    },
+  );
+
+  testWidgets('todo panel toggles collapsed state from the header row', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _buildChatHarness(
+        todos: const <ChatTodoItemData>[
+          ChatTodoItemData(
+            content: 'Review chat composer layout',
+            status: ChatTodoStatus.pending,
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('chat-composer-todo-list')),
+      findsOneWidget,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('chat-composer-todo-toggle')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('chat-composer-todo-list')),
+      findsNothing,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('chat-composer-todo-toggle')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('chat-composer-todo-list')),
+      findsOneWidget,
+    );
+  });
+}
+
+String _weekdayLabelFor(DateTime dateTime) {
+  const List<String> weekdayLabels = <String>[
+    'Mon',
+    'Tue',
+    'Wed',
+    'Thu',
+    'Fri',
+    'Sat',
+    'Sun',
+  ];
+  return weekdayLabels[dateTime.weekday - 1];
+}
+
+String _dateLabelFor(DateTime dateTime, {required DateTime now}) {
+  const List<String> monthLabels = <String>[
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  final String month = monthLabels[dateTime.month - 1];
+  if (dateTime.year != now.year) {
+    return '$month ${dateTime.day}, ${dateTime.year}';
+  }
+  return '$month ${dateTime.day}';
 }
 
 Widget _buildChatHarness({
   List<ChatPendingApprovalData> pendingApprovals =
       const <ChatPendingApprovalData>[],
+  List<ChatTodoItemData> todos = const <ChatTodoItemData>[],
   ChatSessionsDrawerState? drawer,
   bool drawerOpen = false,
 }) {
@@ -1231,6 +2123,7 @@ Widget _buildChatHarness({
           pendingApprovals: pendingApprovals,
           composer: ChatComposerState(
             placeholder: copy.chatComposerPlaceholder,
+            todos: todos,
           ),
           drawer:
               drawer ??
@@ -1251,6 +2144,7 @@ OpenCrayChatSnapshot _hostChatSnapshot({
   List<OpenCrayChatPendingApprovalSnapshot> pendingApprovals =
       const <OpenCrayChatPendingApprovalSnapshot>[],
   List<OpenCrayChatMessageSnapshot>? messages,
+  OpenCrayChatDrawerSnapshot? drawer,
 }) {
   return OpenCrayChatSnapshot(
     screenTitle: 'Chat',
@@ -1270,24 +2164,74 @@ OpenCrayChatSnapshot _hostChatSnapshot({
             text: 'Inspect the workspace.',
           ),
         ],
-    drawer: OpenCrayChatDrawerSnapshot(
-      eyebrow: 'Recent sessions',
-      title: 'Recent sessions',
-      ctaLabel: 'New session',
-      sessions: <OpenCrayChatSessionItemSnapshot>[],
-    ),
+    drawer:
+        drawer ??
+        OpenCrayChatDrawerSnapshot(
+          eyebrow: 'Recent sessions',
+          title: 'Recent sessions',
+          ctaLabel: 'New session',
+          sessions: <OpenCrayChatSessionItemSnapshot>[],
+        ),
     isInputEnabled: true,
     pendingApprovals: pendingApprovals,
   );
 }
 
 class _FakeChatBridge implements OpenCrayHostBridge {
-  _FakeChatBridge({required this.chatSnapshot, required this.runtimeSnapshot});
+  _FakeChatBridge({
+    required this.chatSnapshot,
+    required this.runtimeSnapshot,
+    this.imagePreviews = const <String, OpenCrayFileImagePreview>{},
+    this.textPreviews = const <String, OpenCrayFileTextPreview>{},
+    this.voicePlaybackSources =
+        const <String, OpenCrayFileVoicePlaybackSource>{},
+  });
 
   final OpenCrayChatSnapshot chatSnapshot;
   final OpenCrayChatRuntimeSnapshot runtimeSnapshot;
+  final Map<String, OpenCrayFileImagePreview> imagePreviews;
+  final Map<String, OpenCrayFileTextPreview> textPreviews;
+  final Map<String, OpenCrayFileVoicePlaybackSource> voicePlaybackSources;
   final List<String> approvedApprovalIds = <String>[];
   final List<String> rejectedApprovalIds = <String>[];
+  final List<String> loadedTextPreviews = <String>[];
+  final List<String> loadedVoicePlaybackSources = <String>[];
+  final List<String> openedWorkspaceEntries = <String>[];
+
+  @override
+  Future<OpenCrayFileImagePreview> loadWorkspaceImagePreview(
+    String relativePath,
+  ) async {
+    final preview = imagePreviews[relativePath];
+    if (preview != null) {
+      return preview;
+    }
+    throw StateError('Missing image preview for $relativePath');
+  }
+
+  @override
+  Future<OpenCrayFileTextPreview> loadWorkspaceTextPreview(
+    String relativePath,
+  ) async {
+    loadedTextPreviews.add(relativePath);
+    final preview = textPreviews[relativePath];
+    if (preview != null) {
+      return preview;
+    }
+    throw StateError('Missing text preview for $relativePath');
+  }
+
+  @override
+  Future<OpenCrayFileVoicePlaybackSource> loadWorkspaceVoicePlaybackSource(
+    String relativePath,
+  ) async {
+    loadedVoicePlaybackSources.add(relativePath);
+    final source = voicePlaybackSources[relativePath];
+    if (source != null) {
+      return source;
+    }
+    throw StateError('Missing voice playback source for $relativePath');
+  }
 
   @override
   Future<OpenCrayChatSnapshot> loadChatSnapshot() async => chatSnapshot;
@@ -1341,5 +2285,84 @@ class _FakeChatBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<void> openWorkspaceEntry(String relativePath) async {
+    openedWorkspaceEntries.add(relativePath);
+  }
+
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _FakeVoicePlaybackLog {
+  final List<String> sourcePaths = <String>[];
+  final List<Duration> seekPositions = <Duration>[];
+  int playCount = 0;
+  int pauseCount = 0;
+}
+
+class _FakeVoicePlaybackController implements ChatVoicePlaybackController {
+  _FakeVoicePlaybackController(this.log);
+
+  final _FakeVoicePlaybackLog log;
+  final StreamController<ChatVoicePlaybackSnapshot> _snapshots =
+      StreamController<ChatVoicePlaybackSnapshot>.broadcast();
+  ChatVoicePlaybackSnapshot _state = const ChatVoicePlaybackSnapshot();
+
+  @override
+  ChatVoicePlaybackSnapshot get currentState => _state;
+
+  @override
+  Stream<ChatVoicePlaybackSnapshot> get snapshots => _snapshots.stream;
+
+  @override
+  Future<void> setSource({required String filePath}) async {
+    log.sourcePaths.add(filePath);
+    _state = _state.copyWith(
+      duration: const Duration(milliseconds: 4200),
+      clearError: true,
+    );
+    _snapshots.add(_state);
+  }
+
+  @override
+  Future<void> play() async {
+    log.playCount += 1;
+    _state = _state.copyWith(isPlaying: true, clearError: true);
+    _snapshots.add(_state);
+  }
+
+  @override
+  Future<void> pause() async {
+    log.pauseCount += 1;
+    _state = _state.copyWith(isPlaying: false, clearError: true);
+    _snapshots.add(_state);
+  }
+
+  @override
+  Future<void> seek(Duration position) async {
+    log.seekPositions.add(position);
+    _state = _state.copyWith(position: position, clearError: true);
+    _snapshots.add(_state);
+  }
+
+  @override
+  Future<void> dispose() async {
+    await _snapshots.close();
+  }
+}
+
+OpenCrayFileImagePreview _fakeImagePreview({
+  required String name,
+  required String relativePath,
+}) {
+  return OpenCrayFileImagePreview(
+    name: name,
+    relativePath: relativePath,
+    bytes: base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wn7n8sAAAAASUVORK5CYII=',
+    ),
+    mimeType: 'image/png',
+    width: 1,
+    height: 1,
+  );
 }

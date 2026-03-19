@@ -171,6 +171,48 @@ class RemoteSkillPackageSupportTest {
   }
 
   @Test
+  fun hostedGitRemoteInspectorResolvesLatestGithubRevisionAndCommit() {
+    val transport = RecordingSkillPackageHttpTransport(
+      responsesByUrl = mapOf(
+        "https://api.github.com/repos/roin-orca/skills" to jsonResponse(
+          """
+          {
+            "default_branch": "main",
+            "html_url": "https://github.com/roin-orca/skills"
+          }
+          """.trimIndent(),
+        ),
+        "https://api.github.com/repos/roin-orca/skills/commits/main" to jsonResponse(
+          """
+          {
+            "sha": "feedface1234"
+          }
+          """.trimIndent(),
+          finalUrl = "https://api.github.com/repos/roin-orca/skills/commits/main",
+        ),
+      ),
+    )
+    val inspector = HostedGitRemoteSkillSourceInspector(transport = transport)
+
+    val attempt = inspector.inspect(
+      ResolvedRemoteSkillSource(
+        sourceType = SkillInstallSourceType.REMOTE_GITHUB,
+        requestedSourceRef = "roin-orca/skills@find-skills",
+        webBaseUrl = "https://github.com",
+        apiBaseUrl = "https://api.github.com",
+        repositoryPath = "roin-orca/skills",
+        selectedSkillName = "find-skills",
+      ),
+    )
+
+    assertTrue(attempt.succeeded)
+    val version = requireNotNull(attempt.version)
+    assertEquals("https://github.com/roin-orca/skills", version.repositoryUrl)
+    assertEquals("main", version.resolvedRevision)
+    assertEquals("feedface1234", version.resolvedCommitSha)
+  }
+
+  @Test
   fun gitlabArchiveFetcherExtractsRepositoryAndResolvesSubpath() {
     val archiveBytes = zipBytes(
       mapOf(

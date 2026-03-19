@@ -7,6 +7,7 @@ import 'package:opencray/core/copy/opencray_ui_copy.dart';
 import 'package:opencray/core/design/opencray_widgets.dart';
 import 'package:opencray/core/models/opencray_files_snapshot.dart';
 import 'package:opencray/core/models/opencray_shell_snapshot.dart';
+import 'package:opencray/features/chat/chat_feature.dart';
 import 'package:opencray/features/files/files_feature.dart';
 
 void main() {
@@ -1012,6 +1013,7 @@ void main() {
             isHostConnected: true,
           ),
           initialTab: OpenCrayTab.files,
+          chatController: ChatFeatureController(),
           filesController: filesController,
           buildersForSnapshot: (_) => {
             OpenCrayTab.chat: (context, isActive) => const SizedBox.shrink(),
@@ -1100,6 +1102,7 @@ void main() {
               isHostConnected: true,
             ),
             initialTab: OpenCrayTab.files,
+            chatController: ChatFeatureController(),
             filesController: filesController,
             buildersForSnapshot: (_) => {
               OpenCrayTab.chat: (context, isActive) => const SizedBox.shrink(),

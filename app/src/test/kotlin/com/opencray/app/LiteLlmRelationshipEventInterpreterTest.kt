@@ -135,6 +135,51 @@ class LiteLlmRelationshipEventInterpreterTest {
     assertTrue(result === RelationshipEventInterpretation.Unavailable)
   }
 
+  @Test
+  fun promptDocumentsRelationshipGrowthBoundaryCoverage() {
+    val providerClient = RecordingProviderClient(
+      result = LiteLlmProviderResult.Success(outputText = """{"events":[]}"""),
+    )
+    val interpreter = LiteLlmRelationshipEventInterpreter(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerId = "openai",
+          protocol = LlmProviderProtocols.OPENAI,
+          baseUrl = "https://api.openai.com/v1",
+          apiKey = "test-key",
+          model = "gpt-4o-mini",
+        )
+      },
+      providerClient = providerClient,
+    )
+
+    interpreter.interpret(
+      RelationshipEventRequest(
+        sessionId = "session-4",
+        userInput = "以后对我温柔一点。",
+        assistantOutput = "我会注意语气。",
+      ),
+    )
+
+    val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
+    assertTrue(prompt.contains("A user asking for warmth, gentleness, sweetness, or affection does not by itself create RECIPROCAL_WARMTH"))
+    assertTrue(prompt.contains("A supportive assistant reply may justify SUPPORTIVE_RESPONSE"))
+    assertTrue(prompt.contains("RECIPROCAL_WARMTH requires mutual warmth in the interaction itself"))
+    assertTrue(prompt.contains("A request like '以后对我温柔一点' or '轻松点跟我说' after an otherwise neutral turn is usually WARM_REQUEST_WITHOUT_HISTORY or no event."))
+    assertTrue(prompt.contains("Repeated requests such as '更爱我一点', '像恋人一样对我', or '只许对我一个人这样' remain pressure or warm-request territory"))
+    assertTrue(prompt.contains("Mixed task-first turns like '我有点慌，但先告诉我怎么回滚' or 'Don't comfort me, just tell me the fix' usually create no relationship event by themselves."))
+    assertTrue(prompt.contains("Task collaboration preferences such as reminders, deadline nudges, or more direct feedback belong to preference/memory interpretation first"))
+    assertTrue(prompt.contains("Indirect boundary wording like '你说重点就好，不用照顾我情绪' is still usually boundary/preference territory, not relationship growth."))
+    assertTrue(prompt.contains("谢谢，你刚才那样说我稳一点了，接下来就按回滚方案走"))
+    assertTrue(prompt.contains("谢谢，deadline 前提醒我一下就行"))
+    assertTrue(prompt.contains("好，先按你说的做。以后语气温柔一点"))
+    assertTrue(prompt.contains("谢了，但先别安慰我，直接说哪步错了"))
+    assertTrue(prompt.contains("好，那就按你的边界来，我们先这样"))
+    assertTrue(prompt.contains("Support plus task follow-through in the same turn can still be zero events"))
+    assertTrue(prompt.contains("Calm, reliable collaboration over time may support CONSISTENT_POSITIVE_INTERACTION"))
+  }
+
   private class RecordingProviderClient(
     private val result: LiteLlmProviderResult,
   ) : LiteLlmProviderClient {

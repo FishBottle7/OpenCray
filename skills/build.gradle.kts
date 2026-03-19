@@ -6,6 +6,13 @@ plugins {
 android {
   namespace = "org.opencray.skills"
   compileSdk = 33
+  compileOptions {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+  }
+  kotlinOptions {
+    jvmTarget = JavaVersion.VERSION_11.toString()
+  }
   defaultConfig {
     minSdk = 24
  // targetSdk removed (deprecated); property migrated to plugin defaults

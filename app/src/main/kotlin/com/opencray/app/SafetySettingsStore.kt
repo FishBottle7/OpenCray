@@ -26,6 +26,7 @@ internal object SafetySettingsStoreKeys {
   const val RECORDINGS_ENABLED = "recordings_enabled"
   const val WORKSPACE_ACCESS_PROFILE_ID = "workspace_access_profile_id"
   const val READ_ONLY_OUTSIDE_WORKSPACE = "read_only_outside_workspace"
+  const val MEMORY_TOOLS_ENABLED = "memory_tools_enabled"
 }
 
 internal data class SafetySettingsState(
@@ -45,6 +46,7 @@ internal data class SafetySettingsState(
   val recordingsEnabled: Boolean = false,
   val workspaceAccessProfile: WorkspaceAccessProfile = WorkspaceAccessProfile.WORK,
   val readOnlyOutsideWorkspace: Boolean = true,
+  val memoryToolsEnabled: Boolean = true,
 ) {
   fun sanitized(): SafetySettingsState = copy(
     maxFilesPerBatch = maxFilesPerBatch.coerceAtLeast(1),
@@ -216,6 +218,9 @@ internal class SafetySettingsStore(
       readOnlyOutsideWorkspace =
         keyValueStore.getBoolean(SafetySettingsStoreKeys.READ_ONLY_OUTSIDE_WORKSPACE)
           ?: defaults.readOnlyOutsideWorkspace,
+      memoryToolsEnabled =
+        keyValueStore.getBoolean(SafetySettingsStoreKeys.MEMORY_TOOLS_ENABLED)
+          ?: defaults.memoryToolsEnabled,
     ).sanitized()
 
   fun save(state: SafetySettingsState) {
@@ -283,6 +288,10 @@ internal class SafetySettingsStore(
     keyValueStore.putBoolean(
       SafetySettingsStoreKeys.READ_ONLY_OUTSIDE_WORKSPACE,
       sanitized.readOnlyOutsideWorkspace,
+    )
+    keyValueStore.putBoolean(
+      SafetySettingsStoreKeys.MEMORY_TOOLS_ENABLED,
+      sanitized.memoryToolsEnabled,
     )
   }
 

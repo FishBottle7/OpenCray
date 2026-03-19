@@ -13,6 +13,8 @@ class SoulMemoryPersistenceTest {
       warmth = PreferenceAxisState(offset = 1, higherSupport = 3, lowerSupport = 1, lastUpdatedAtEpochMs = 100L),
       formality = PreferenceAxisState(offset = -1, higherSupport = 0, lowerSupport = 2, lastUpdatedAtEpochMs = 100L),
       initiative = PreferenceAxisState(offset = 0, higherSupport = 1, lowerSupport = 1, lastUpdatedAtEpochMs = 90L),
+      playfulness = PreferenceAxisState(offset = 1, higherSupport = 2, lastUpdatedAtEpochMs = 95L),
+      reassurance = PreferenceAxisState(offset = -1, lowerSupport = 2, lastUpdatedAtEpochMs = 96L),
       addressStyle = PreferredAddressState(
         selectedStyle = PreferredAddressStyle.FRIENDLY,
         neutralSupport = 0,

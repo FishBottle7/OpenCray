@@ -882,87 +882,92 @@ class _WorkspaceAccessSettingsPageState
     }
     final selected = await showModalBottomSheet<LiveContextMode>(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) {
+        final maxHeight = MediaQuery.sizeOf(context).height * 0.85;
         return SafeArea(
           top: false,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-            child: DecoratedBox(
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.all(Radius.circular(22)),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 18, 16, 14),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Center(
-                      child: Container(
-                        width: 40,
-                        height: 4,
-                        margin: const EdgeInsets.only(bottom: 16),
-                        decoration: BoxDecoration(
-                          color: OpenCrayColors.divider,
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                      ),
-                    ),
-                    Text(
-                      SafetySettingsCopy.liveContextTitle,
-                      style: _SettingsTextStyles.cardTitle,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      SafetySettingsCopy.liveContextSubtitle,
-                      style: _SettingsTextStyles.body,
-                    ),
-                    const SizedBox(height: 12),
-                    for (final option in LiveContextMode.values)
-                      InkWell(
-                        borderRadius: BorderRadius.circular(14),
-                        onTap: () => Navigator.of(context).pop(option),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      SafetySettingsCopy.liveContextModeLabel(
-                                        option,
-                                      ),
-                                      style: _SettingsTextStyles.rowTitle,
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      SafetySettingsCopy.liveContextModeSummary(
-                                        option,
-                                      ),
-                                      style: _SettingsTextStyles.rowSubtitle,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              if (option == snapshot.liveContextMode)
-                                const Padding(
-                                  padding: EdgeInsets.only(left: 12, top: 2),
-                                  child: Icon(
-                                    Icons.check_rounded,
-                                    color: OpenCrayColors.primary,
-                                    size: 18,
-                                  ),
-                                ),
-                            ],
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: maxHeight),
+              child: DecoratedBox(
+                decoration: const BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.all(Radius.circular(22)),
+                ),
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(16, 18, 16, 14),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Center(
+                        child: Container(
+                          width: 40,
+                          height: 4,
+                          margin: const EdgeInsets.only(bottom: 16),
+                          decoration: BoxDecoration(
+                            color: OpenCrayColors.divider,
+                            borderRadius: BorderRadius.circular(999),
                           ),
                         ),
                       ),
-                  ],
+                      Text(
+                        SafetySettingsCopy.liveContextTitle,
+                        style: _SettingsTextStyles.cardTitle,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        SafetySettingsCopy.liveContextSubtitle,
+                        style: _SettingsTextStyles.body,
+                      ),
+                      const SizedBox(height: 12),
+                      for (final option in LiveContextMode.values)
+                        InkWell(
+                          borderRadius: BorderRadius.circular(14),
+                          onTap: () => Navigator.of(context).pop(option),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        SafetySettingsCopy.liveContextModeLabel(
+                                          option,
+                                        ),
+                                        style: _SettingsTextStyles.rowTitle,
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        SafetySettingsCopy.liveContextModeSummary(
+                                          option,
+                                        ),
+                                        style: _SettingsTextStyles.rowSubtitle,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                if (option == snapshot.liveContextMode)
+                                  const Padding(
+                                    padding: EdgeInsets.only(left: 12, top: 2),
+                                    child: Icon(
+                                      Icons.check_rounded,
+                                      color: OpenCrayColors.primary,
+                                      size: 18,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -1035,6 +1040,20 @@ List<Widget> _buildWorkspaceAccessShared(
           const SizedBox(height: 12),
           Text(
             SafetySettingsCopy.liveContextModeSummary(snapshot.liveContextMode),
+            style: _SettingsTextStyles.rowSubtitle,
+          ),
+          const SizedBox(height: 16),
+          _PrototypeSwitchRow(
+            title: SafetySettingsCopy.memoryToolsTitle,
+            value: snapshot.memoryToolsEnabled,
+            enabled: !isSaving,
+            onChanged: (value) {
+              onPersist(snapshot.copyWith(memoryToolsEnabled: value));
+            },
+          ),
+          const SizedBox(height: 8),
+          Text(
+            SafetySettingsCopy.memoryToolsSummary(snapshot.memoryToolsEnabled),
             style: _SettingsTextStyles.rowSubtitle,
           ),
         ],

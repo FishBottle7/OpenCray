@@ -18,8 +18,14 @@ Not in scope:
 Contents:
 
 - `runtime/opencray_runtime_main.py`: Python entrypoint for request/result execution
-- `requirements.lock`: pinned pure-Python packages to bundle into the runtime later
+- `requirements.lock`: approved default runtime package baseline
 - `dependency-policy.md`: rules for future dependency additions
+
+Default dependency behavior:
+
+- `build-p4a-service-library.sh` always includes `python3`
+- if `P4A_REQUIREMENTS` is unset, the script also reads `requirements.lock`
+- `P4A_REQUIREMENTS` can still override the full requirement list for one-off builds
 
 Host-side smoke command:
 

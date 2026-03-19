@@ -46,7 +46,9 @@ class LiteLlmUserMemoryIntentInterpreterTest {
               "preference_value":"adaptive",
               "preference_extensions":{
                 "interaction_preference_warmth_direction":"higher",
-                "interaction_preference_formality_direction":"lower"
+                "interaction_preference_formality_direction":"lower",
+                "interaction_preference_playfulness_direction":"higher",
+                "interaction_preference_reassurance_direction":"lower"
               }
             },
             {
@@ -95,16 +97,24 @@ class LiteLlmUserMemoryIntentInterpreterTest {
     assertEquals("Bearer test-key", providerClient.lastRequest?.request?.authHeaders?.get("Authorization"))
     val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
     assertTrue(prompt.contains("git reset --hard"))
-    assertTrue(prompt.contains("interaction_preference_signal is the preferred key for durable adaptive relationship drift"))
-    assertTrue(prompt.contains("relationship_style_profile is a legacy compatibility key"))
+    assertTrue(prompt.contains("interaction_preference_signal is the only durable adaptive relationship-drift key"))
+    assertTrue(prompt.contains("do not use agent_style_profile"))
     assertTrue(prompt.contains("agent_style_profile is only for current-run acting mode"))
     assertTrue(prompt.contains("agent_verbosity always uses session scope"))
     assertTrue(prompt.contains("user_preferred_name stores how the agent should address the user"))
     assertTrue(prompt.contains("user_address_style stores the desired user-addressing closeness"))
-    assertTrue(prompt.contains("preference_extensions may only be used with interaction_preference_signal or the legacy relationship_style_profile key"))
-    assertTrue(prompt.contains("Prefer interaction_preference_signal for durable adaptive-style drift"))
+    assertTrue(prompt.contains("preference_extensions may only be used with interaction_preference_signal"))
+    assertTrue(prompt.contains("When using interaction_preference_signal, set preference_value to a short placeholder like adaptive"))
     assertTrue(prompt.contains(MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION))
+    assertTrue(prompt.contains(MemoryInteractionPreferenceExtensionKeys.PLAYFULNESS_DIRECTION))
+    assertTrue(prompt.contains(MemoryInteractionPreferenceExtensionKeys.REASSURANCE_DIRECTION))
+    assertTrue(prompt.contains("别那么冷冰冰"))
+    assertTrue(prompt.contains("可以皮一点/偶尔开点玩笑"))
+    assertTrue(prompt.contains("别哄我/别总安慰我"))
+    assertTrue(prompt.contains("爱我"))
+    assertTrue(prompt.contains("这次温柔一点"))
     assertTrue(prompt.contains("Never output soul_risk_tolerance or soul_tool_use_bias"))
+    assertFalse(prompt.contains("relationship_" + "style_profile"))
     assertFalse(
       prompt.contains(
         "soul_display_name, soul_voice, soul_tone, soul_verbosity, soul_user_relationship_style, soul_risk_tolerance, soul_tool_use_bias",
@@ -130,6 +140,8 @@ class LiteLlmUserMemoryIntentInterpreterTest {
     assertEquals("小白", displayName.soulExtensions[MemorySoulExtensionKeys.DISPLAY_NAME])
     assertEquals("higher", interactionPreferenceSignal.preferenceExtensions[MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION])
     assertEquals("lower", interactionPreferenceSignal.preferenceExtensions[MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION])
+    assertEquals("higher", interactionPreferenceSignal.preferenceExtensions[MemoryInteractionPreferenceExtensionKeys.PLAYFULNESS_DIRECTION])
+    assertEquals("lower", interactionPreferenceSignal.preferenceExtensions[MemoryInteractionPreferenceExtensionKeys.REASSURANCE_DIRECTION])
     assertEquals("阿澄", preferredName.soulExtensions[MemorySoulExtensionKeys.PREFERRED_NAMING])
     assertEquals("friendly", addressStyle.soulExtensions[MemorySoulExtensionKeys.PREFERRED_ADDRESS_STYLE])
   }
@@ -166,7 +178,7 @@ class LiteLlmUserMemoryIntentInterpreterTest {
   }
 
   @Test
-  fun interpretAllowsFallbackWhenNoLlmIsConfigured() {
+  fun interpretFailsClosedWhenNoLlmIsConfigured() {
     val interpreter = LiteLlmUserMemoryIntentInterpreter(
       llmSettingsProvider = { LlmSettingsState() },
       providerClient = RecordingProviderClient(
@@ -182,7 +194,62 @@ class LiteLlmUserMemoryIntentInterpreterTest {
     )
 
     val unavailable = result as UserMemoryIntentInterpretation.Unavailable
-    assertEquals(true, unavailable.allowHeuristicFallback)
+    assertEquals(false, unavailable.allowHeuristicFallback)
+  }
+
+  @Test
+  fun promptDocumentsAdaptivePreferenceCoverageWithRealWorldPhrasing() {
+    val providerClient = RecordingProviderClient(
+      result = LiteLlmProviderResult.Success(outputText = """{"intents":[]}"""),
+    )
+    val interpreter = LiteLlmUserMemoryIntentInterpreter(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerId = "openai",
+          protocol = LlmProviderProtocols.OPENAI,
+          baseUrl = "https://api.openai.com/v1",
+          apiKey = "test-key",
+          model = "gpt-4o-mini",
+        )
+      },
+      providerClient = providerClient,
+    )
+
+    interpreter.interpret(
+      UserMemoryIntentRequest(
+        sessionId = "session-4",
+        userInput = "以后别那么冷冰冰，可以皮一点，但别老哄我。",
+      ),
+    )
+
+    val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
+    assertTrue(prompt.contains("Map real phrasing semantically, not literally."))
+    assertTrue(prompt.contains("别那么一本正经"))
+    assertTrue(prompt.contains("少一点主动寒暄"))
+    assertTrue(prompt.contains("别老逗我/别贫了"))
+    assertTrue(prompt.contains("别太哄我/不用安慰我，直接说"))
+    assertTrue(prompt.contains("轻松点但别油"))
+    assertTrue(prompt.contains("你主动提醒我截止时间/进度"))
+    assertTrue(prompt.contains("别没事就来问候/别太主动寒暄"))
+    assertTrue(prompt.contains("以后指出问题可以直接一点，但 deadline 还是主动提醒我"))
+    assertTrue(prompt.contains("到节点了记得戳我一下，但平时别老寒暄"))
+    assertTrue(prompt.contains("这次直接一点，以后还是温柔一点"))
+    assertTrue(prompt.contains("平时不用哄我，但今天先陪我一下"))
+    assertTrue(prompt.contains("以后叫我阿澄，项目里指出问题直接一点，平时别没事寒暄；但今天我有点乱，先别哄我，带我把回滚做完。"))
+    assertTrue(prompt.contains("这个仓库里你直接讲风险点就行，平时还是温和一点；如果是 deadline 快到了你主动提醒我，但我现在先需要你陪我把事故止住。"))
+    assertTrue(prompt.contains("你不用照顾我情绪，抓重点就行"))
+    assertTrue(prompt.contains("到时间记得 ping 我一下"))
+    assertTrue(prompt.contains("keep it light, not cheesy"))
+    assertTrue(prompt.contains("Call me A-Cheng, be direct with code issues in this repo, but today skip the pep talk and walk me through rollback first"))
+    assertTrue(prompt.contains("please nudge me about deadlines"))
+    assertTrue(prompt.contains("\"interaction_preference_initiative_direction\":\"higher\""))
+    assertTrue(prompt.contains("Support-seeking wording like '陪我一下' or '你先安慰安慰我' is not a durable preference by itself"))
+    assertTrue(prompt.contains("Directness requests like '不用安慰我，直接说哪里有问题' do not mean the user wants colder treatment overall."))
+    assertTrue(prompt.contains("Requests for affection, romance, emotional submission, or identity overwrite"))
+    assertTrue(prompt.contains("\"interaction_preference_playfulness_direction\":\"higher\""))
+    assertTrue(prompt.contains("\"interaction_preference_reassurance_direction\":\"higher\""))
+    assertTrue(prompt.contains("\"scope\":\"session\""))
   }
 
   private class RecordingProviderClient(

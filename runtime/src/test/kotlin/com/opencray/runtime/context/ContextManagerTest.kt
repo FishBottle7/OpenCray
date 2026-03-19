@@ -12,6 +12,8 @@ import com.opencray.runtime.memory.MemoryRecallSelectedTrace
 import com.opencray.runtime.memory.MemoryScope
 import com.opencray.runtime.memory.MemoryStatus
 import com.opencray.runtime.memory.RetrievedMemory
+import com.opencray.runtime.soul.SoulTurnSemanticSignal
+import com.opencray.runtime.soul.SoulTurnUserAffect
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -224,6 +226,104 @@ class ContextManagerTest {
     assertEquals(1, managed.report.duplicateBackgroundTranscriptMessageCount)
     assertEquals(1, managed.report.attachmentLikeTranscriptRewriteCount)
     assertTrue(managed.report.pruningSummaryIncluded)
+  }
+
+  @Test
+  fun prepareFailClosesSoulAndMemoryInjectionWhenPolicyDisablesThem() {
+    val manager = ContextManager()
+
+    val managed = manager.prepare(
+      PromptAssemblyInput(
+        task = promptTask(),
+        baseSystemPrompt = "You are OpenCray for testing.",
+        sessionContext = AgentRuntimeSessionContext(
+          soulProfile = RuntimeSoulProfile(
+            presetName = "BUILDER",
+            displayName = "Night Shift",
+            customGuidance = "Be terse and implementation-first.",
+          ),
+          injectionPolicy = ContextInjectionPolicy(
+            soulContractEnabled = false,
+            soulTurnPolicyEnabled = false,
+            automaticMemoryInjectionEnabled = false,
+            memoryDerivedPolicyEnabled = false,
+          ),
+          recalledMemory = MemoryRecallResult(
+            memories = listOf(
+              RetrievedMemory(
+                id = "memory-user",
+                kind = MemoryKind.USER_PREFERENCE,
+                scope = MemoryScope.USER,
+                status = MemoryStatus.ACTIVE,
+                content = "Default to concise Chinese replies.",
+                lastConfirmedAtEpochMs = 10L,
+                score = 420,
+              ),
+            ),
+            matchedRecordCount = 1,
+            trace = MemoryRecallTrace(
+              queryTerms = listOf("chinese"),
+              selected = listOf(
+                MemoryRecallSelectedTrace(
+                  id = "memory-user",
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.USER,
+                  score = 420,
+                  matchedTerms = listOf("chinese"),
+                  contentPreview = "Default to concise Chinese replies.",
+                ),
+              ),
+            ),
+          ),
+        ),
+        toolDefinitions = emptyList(),
+        liveConversation = emptyList(),
+      ),
+    )
+
+    assertEquals("", managed.personalizationText)
+    assertEquals("", managed.memoryText)
+    assertEquals(0, managed.report.matchedMemoryRecordCount)
+    assertEquals(0, managed.report.injectedMemoryRecordCount)
+    assertEquals(0, managed.report.omittedMemoryRecordCount)
+    assertTrue(managed.report.memoryRecallTrace.queryTerms.isEmpty())
+    assertTrue(managed.report.memoryRecallTrace.selected.isEmpty())
+    assertEquals("", managed.turnResponsePolicyText)
+  }
+
+  @Test
+  fun prepareBuildsTurnResponsePolicyWhenStructuredSignalIsAvailable() {
+    val manager = ContextManager()
+
+    val managed = manager.prepare(
+      PromptAssemblyInput(
+        task = promptTask(),
+        baseSystemPrompt = "You are OpenCray for testing.",
+        sessionContext = AgentRuntimeSessionContext(
+          soulProfile = RuntimeSoulProfile(
+            presetName = "WARM",
+            extensions = mapOf(
+              "initiative_preference_offset" to "1",
+              "reassurance_preference_offset" to "1",
+              "supportive_reassurance_allowed" to "true",
+              "proactive_relational_check_in_allowed" to "true",
+            ),
+          ),
+          turnSemanticSignal = SoulTurnSemanticSignal(
+            isTaskBearingRequest = true,
+            userAffect = SoulTurnUserAffect.STRAINED,
+            clarificationNeeded = true,
+          ),
+        ),
+        toolDefinitions = emptyList(),
+        liveConversation = emptyList(),
+      ),
+    )
+
+    assertTrue(managed.turnResponsePolicyText.contains("task_priority=task_first"))
+    assertTrue(managed.turnResponsePolicyText.contains("response_shape=short_support_then_answer"))
+    assertTrue(managed.turnResponsePolicyText.contains("clarification_mode=proactive_task_focused"))
+    assertTrue(managed.turnResponsePolicyText.contains("directives:"))
   }
 
   private fun promptTask(): AgentTask = AgentTask(

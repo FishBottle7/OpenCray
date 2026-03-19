@@ -61,27 +61,17 @@ class RecentToolObservationSupport(
   private val config: RecentToolObservationConfig = RecentToolObservationConfig(),
   private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
-  fun buildLayer(messages: List<RuntimeConversationMessage>): RecentToolObservationLayer? {
-    val observations = collectObservations(activeTaskMessages(messages))
-    if (observations.isEmpty()) {
-      return null
+  fun summaryLines(messages: List<RuntimeConversationMessage>): List<String> =
+    selectObservations(messages).map { observation ->
+      observation.summaryLine.removePrefix("- ").trim()
     }
 
-    val selected = mutableListOf<RenderedObservation>()
-    val seenSignatures = linkedSetOf<String>()
-    observations.asReversed().forEach { observation ->
-      if (!seenSignatures.add(observation.signature)) {
-        return@forEach
-      }
-      if (selected.size >= config.maxEntries) {
-        return@forEach
-      }
-      selected += observation
-    }
+  fun buildLayer(messages: List<RuntimeConversationMessage>): RecentToolObservationLayer? {
+    val observations = collectObservations(activeTaskMessages(messages))
+    val selected = selectObservations(messages)
     if (selected.isEmpty()) {
       return null
     }
-    selected.reverse()
 
     val lines = mutableListOf<String>()
     lines += "Recent successful workspace observations from the current task are available below."
@@ -104,6 +94,29 @@ class RecentToolObservationSupport(
       observationCount = selected.size,
       omittedObservationCount = omittedObservationCount,
     )
+  }
+
+  private fun selectObservations(messages: List<RuntimeConversationMessage>): List<RenderedObservation> {
+    val observations = collectObservations(activeTaskMessages(messages))
+    if (observations.isEmpty()) {
+      return emptyList()
+    }
+    val selected = mutableListOf<RenderedObservation>()
+    val seenSignatures = linkedSetOf<String>()
+    observations.asReversed().forEach { observation ->
+      if (!seenSignatures.add(observation.signature)) {
+        return@forEach
+      }
+      if (selected.size >= config.maxEntries) {
+        return@forEach
+      }
+      selected += observation
+    }
+    if (selected.isEmpty()) {
+      return emptyList()
+    }
+    selected.reverse()
+    return selected
   }
 
   fun findDuplicateDiscoveryCall(

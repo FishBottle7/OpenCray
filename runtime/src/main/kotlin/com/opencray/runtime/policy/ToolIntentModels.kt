@@ -57,3 +57,37 @@ internal data class ProcessLifecycleIntent(
     workingDirectory?.takeIf(String::isNotBlank)?.let { put("intentWorkingDirectory", it) }
   }
 }
+
+internal enum class DelegationIntentKind(val wireValue: String) {
+  SUBAGENT_TASK("subagent_task"),
+}
+
+internal data class DelegationIntent(
+  val kind: DelegationIntentKind,
+  val subagentType: String,
+  val contextMode: String,
+  val description: String? = null,
+  val promptPreview: String? = null,
+  val allowedToolNames: Set<String> = emptySet(),
+) : ToolRuntimeIntent {
+  override val categoryWireValue: String = "delegation"
+
+  override fun metadata(): Map<String, String> = buildMap {
+    put("intentCategory", categoryWireValue)
+    put("delegationIntentKind", kind.wireValue)
+    put("delegationSubagentType", subagentType)
+    put("delegationContextMode", contextMode)
+    description?.takeIf(String::isNotBlank)?.let { put("delegationDescription", it) }
+    promptPreview?.takeIf(String::isNotBlank)?.let { put("delegationPromptPreview", it) }
+    if (allowedToolNames.isNotEmpty()) {
+      put(
+        "delegationAllowedTools",
+        allowedToolNames
+          .map(String::trim)
+          .filter(String::isNotBlank)
+          .sorted()
+          .joinToString(separator = ","),
+      )
+    }
+  }
+}

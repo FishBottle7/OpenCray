@@ -158,6 +158,62 @@ class OpenCraySkillInstructionsSnapshot {
   }
 }
 
+class OpenCraySkillSourceInspectionSnapshot {
+  const OpenCraySkillSourceInspectionSnapshot({
+    required this.sourceType,
+    required this.sourceRef,
+    required this.sourcePath,
+    required this.resolvedRevision,
+    required this.resolvedCommitSha,
+    required this.candidates,
+  });
+
+  final String sourceType;
+  final String sourceRef;
+  final String sourcePath;
+  final String resolvedRevision;
+  final String resolvedCommitSha;
+  final List<OpenCraySkillSourceInspectionCandidateSnapshot> candidates;
+
+  factory OpenCraySkillSourceInspectionSnapshot.fromMap(
+    Map<Object?, Object?> payload,
+  ) {
+    return OpenCraySkillSourceInspectionSnapshot(
+      sourceType: payload['sourceType'] as String? ?? '',
+      sourceRef: payload['sourceRef'] as String? ?? '',
+      sourcePath: payload['sourcePath'] as String? ?? '',
+      resolvedRevision: payload['resolvedRevision'] as String? ?? '',
+      resolvedCommitSha: payload['resolvedCommitSha'] as String? ?? '',
+      candidates: _requireList(payload['candidates'])
+          .map(_requireMap)
+          .map(OpenCraySkillSourceInspectionCandidateSnapshot.fromMap)
+          .toList(growable: false),
+    );
+  }
+}
+
+class OpenCraySkillSourceInspectionCandidateSnapshot {
+  const OpenCraySkillSourceInspectionCandidateSnapshot({
+    required this.name,
+    required this.description,
+    required this.relativePath,
+  });
+
+  final String name;
+  final String description;
+  final String relativePath;
+
+  factory OpenCraySkillSourceInspectionCandidateSnapshot.fromMap(
+    Map<Object?, Object?> payload,
+  ) {
+    return OpenCraySkillSourceInspectionCandidateSnapshot(
+      name: payload['name'] as String? ?? '',
+      description: payload['description'] as String? ?? '',
+      relativePath: payload['relativePath'] as String? ?? '',
+    );
+  }
+}
+
 List<Object?> _requireList(Object? payload) {
   final list = payload as List<Object?>?;
   if (list == null) {

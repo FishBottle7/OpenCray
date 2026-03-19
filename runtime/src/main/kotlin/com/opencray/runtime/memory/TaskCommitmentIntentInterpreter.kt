@@ -54,7 +54,7 @@ object NoOpTaskCommitmentIntentInterpreter : TaskCommitmentIntentInterpreter {
   override fun interpret(
     request: TaskCommitmentIntentRequest,
   ): TaskCommitmentIntentInterpretation = TaskCommitmentIntentInterpretation.Unavailable(
-    allowHeuristicFallback = true,
+    allowHeuristicFallback = false,
     reason = "No task commitment intent interpreter configured.",
   )
 }

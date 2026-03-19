@@ -5,6 +5,7 @@ import '../models/opencray_chat_snapshot.dart';
 import '../models/opencray_debug_snapshot.dart';
 import '../models/opencray_file_image_preview.dart';
 import '../models/opencray_file_text_preview.dart';
+import '../models/opencray_file_voice_playback_source.dart';
 import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
@@ -75,6 +76,16 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   );
 
   @override
+  Future<OpenCrayFileVoicePlaybackSource> loadWorkspaceVoicePlaybackSource(
+    String relativePath,
+  ) async => OpenCrayFileVoicePlaybackSource.fromMap(
+    await _invokeMap(
+      'loadWorkspaceVoicePlaybackSource',
+      arguments: <String, Object?>{'relativePath': relativePath},
+    ),
+  );
+
+  @override
   Future<OpenCrayWorkspaceTextDocument> loadWorkspaceTextDocument(
     String relativePath,
   ) async => OpenCrayWorkspaceTextDocument.fromMap(
@@ -83,6 +94,12 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       arguments: <String, Object?>{'relativePath': relativePath},
     ),
   );
+
+  @override
+  Future<void> openWorkspaceEntry(String relativePath) =>
+      _methodChannel.invokeMethod<void>('openWorkspaceEntry', <String, Object?>{
+        'relativePath': relativePath,
+      });
 
   @override
   Future<OpenCrayFilesSnapshot> createWorkspaceFolder({
@@ -404,6 +421,7 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
     required String workspaceAccessProfileId,
     required bool readOnlyOutsideWorkspace,
     String liveContextModeId = 'full',
+    bool memoryToolsEnabled = true,
   }) async => OpenCraySafetySettingsSnapshot.fromMap(
     await _invokeMap(
       'saveSafetySettings',
@@ -425,6 +443,7 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
         'workspaceAccessProfileId': workspaceAccessProfileId,
         'readOnlyOutsideWorkspace': readOnlyOutsideWorkspace,
         'liveContextModeId': liveContextModeId,
+        'memoryToolsEnabled': memoryToolsEnabled,
       },
     ),
   );
@@ -459,10 +478,55 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       await _methodChannel.invokeMethod<String>('refreshSkills');
 
   @override
-  Future<String?> installSkillSource(String sourceRef) async =>
+  Future<String?> checkInstalledSkillUpdates({String skillId = ''}) async =>
+      await _methodChannel.invokeMethod<String>(
+        'checkInstalledSkillUpdates',
+        skillId.trim().isEmpty ? null : <String, Object?>{'skillId': skillId},
+      );
+
+  @override
+  Future<String?> updateInstalledSkill(String skillId) async =>
+      await _methodChannel.invokeMethod<String>(
+        'updateInstalledSkill',
+        <String, Object?>{'skillId': skillId},
+      );
+
+  @override
+  Future<OpenCraySkillSourceInspectionSnapshot> inspectSkillSource(
+    String sourceRef,
+  ) async => OpenCraySkillSourceInspectionSnapshot.fromMap(
+    await _invokeMap(
+      'inspectSkillSource',
+      arguments: <String, Object?>{'sourceRef': sourceRef},
+    ),
+  );
+
+  @override
+  Future<String?> installSkillSource(
+    String sourceRef, {
+    String selectedSkillName = '',
+  }) async =>
       await _methodChannel.invokeMethod<String>(
         'installSkillSource',
-        <String, Object?>{'sourceRef': sourceRef},
+        <String, Object?>{
+          'sourceRef': sourceRef,
+          if (selectedSkillName.trim().isNotEmpty)
+            'selectedSkillName': selectedSkillName,
+        },
+      );
+
+  @override
+  Future<String?> installSkillSourceBatch(
+    String sourceRef, {
+    List<String> selectedSkillNames = const <String>[],
+  }) async =>
+      await _methodChannel.invokeMethod<String>(
+        'installSkillSourceBatch',
+        <String, Object?>{
+          'sourceRef': sourceRef,
+          if (selectedSkillNames.isNotEmpty)
+            'selectedSkillNames': selectedSkillNames,
+        },
       );
 
   @override
@@ -546,6 +610,32 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       OpenCraySoulDebugSnapshot.fromMap(
         await _invokeMap('loadSoulDebugSnapshot'),
       );
+
+  @override
+  Future<OpenCrayMemoryDebugSearchSnapshot> searchMemoryDebug({
+    required String query,
+    int maxResults = 4,
+    int minScore = 1,
+  }) async => OpenCrayMemoryDebugSearchSnapshot.fromMap(
+    await _invokeMap('searchMemoryDebug', <String, Object?>{
+      'query': query,
+      'maxResults': maxResults,
+      'minScore': minScore,
+    }),
+  );
+
+  @override
+  Future<OpenCrayMemoryDebugSliceSnapshot> getMemoryDebugSlice({
+    required String path,
+    int? fromLine,
+    int lines = 12,
+  }) async => OpenCrayMemoryDebugSliceSnapshot.fromMap(
+    await _invokeMap('getMemoryDebugSlice', <String, Object?>{
+      'path': path,
+      'fromLine': fromLine,
+      'lines': lines,
+    }),
+  );
 
   @override
   Future<OpenCrayChatRunSnapshot?> waitForChatRun(

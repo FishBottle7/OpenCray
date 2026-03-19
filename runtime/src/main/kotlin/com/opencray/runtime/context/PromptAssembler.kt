@@ -25,6 +25,11 @@ class PromptAssembler {
         kind = PromptLayerKind.SYSTEM,
         content = input.personalizationText,
       )
+      addLayer(
+        name = "Turn Response Policy",
+        kind = PromptLayerKind.SYSTEM,
+        content = input.turnResponsePolicyText,
+      )
       input.bootstrapFiles.forEach { file ->
         addLayer(
           name = "Bootstrap ${file.name}",

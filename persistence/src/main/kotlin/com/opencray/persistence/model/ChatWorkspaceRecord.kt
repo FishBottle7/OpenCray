@@ -16,6 +16,8 @@ enum class ChatTranscriptRole {
 @Serializable
 enum class ChatAttachmentKind {
   IMAGE,
+  VOICE,
+  AUDIO,
   FILE,
 }
 
@@ -27,6 +29,12 @@ data class ChatAttachmentEntry(
   val localPath: String,
   val mimeType: String? = null,
   val sizeBytes: Long? = null,
+  val widthPx: Int? = null,
+  val heightPx: Int? = null,
+  val durationMs: Long? = null,
+  val waveformBars: List<Int> = emptyList(),
+  val transcriptText: String? = null,
+  val contentSha256: String? = null,
 ) {
   init {
     require(attachmentId.isNotBlank()) { "ChatAttachmentEntry attachmentId must not be blank." }

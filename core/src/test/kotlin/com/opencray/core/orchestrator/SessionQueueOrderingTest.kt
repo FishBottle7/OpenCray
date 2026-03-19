@@ -6,6 +6,10 @@ import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -231,6 +235,116 @@ class SessionQueueOrderingTest {
     assertTrue(approvalTransitions.contains(QueueTaskLifecycleState.COMPLETED))
   }
 
+  @Test
+  fun externalCancelWhileRuntimeExecutesStillReachesCancellationHook() {
+    val store = RecordingSnapshotStore()
+    val queueClock = IncrementingClock(start = 80_000L)
+    val runtimeStarted = CountDownLatch(1)
+    val observedCancellation = AtomicBoolean(false)
+
+    val runtime = SessionTaskRuntime { task, hooks ->
+      runtimeStarted.countDown()
+      repeat(100) {
+        if (hooks.isCancellationRequested()) {
+          observedCancellation.set(true)
+          return@repeat
+        }
+        Thread.sleep(5)
+      }
+
+      val cancelled = hooks.isCancellationRequested()
+      observedCancellation.set(cancelled)
+      ExecutionResult(
+        taskId = task.id,
+        status = if (cancelled) ExecutionStatus.CANCELLED else ExecutionStatus.SUCCESS,
+        errorCode = if (cancelled) "CANCELLED_BY_RUNTIME_HOOK" else null,
+        startedAtEpochMs = 100_000L,
+        finishedAtEpochMs = 100_001L,
+      )
+    }
+
+    val queue = SessionQueue(
+      sessionId = "session-external-cancel-1",
+      agentId = "agent-external-cancel-1",
+      runtime = runtime,
+      snapshotStore = store,
+      clock = queueClock,
+    )
+    queue.enqueue(task(id = "task-cancel-external", createdAt = 4_000L))
+
+    val drainThread = Thread { queue.drain() }
+    drainThread.start()
+
+    assertTrue(runtimeStarted.await(2, TimeUnit.SECONDS))
+    assertTrue(queue.requestCancel("task-cancel-external"))
+    drainThread.join(2_000L)
+
+    assertTrue(observedCancellation.get())
+    assertEquals(
+      QueueTaskLifecycleState.CANCELLED,
+      queue.snapshot().tasks.single().lifecycleState,
+    )
+  }
+
+  @Test
+  fun resumeDuringSuspensionSaveDoesNotEnterSnapshotStoreConcurrently() {
+    val suspendedSaveEntered = CountDownLatch(1)
+    val allowSuspendedSave = CountDownLatch(1)
+    val store = BlockingConcurrentSnapshotStore(
+      suspendedSaveEntered = suspendedSaveEntered,
+      allowSuspendedSave = allowSuspendedSave,
+    )
+    val queueClock = IncrementingClock(start = 90_000L)
+
+    val runtime = SessionTaskRuntime { task, hooks ->
+      hooks.requestSuspend(
+        SuspensionRequest(
+          reasonCode = "APPROVAL_REQUIRED",
+          detail = "Approval is required before Write can run.",
+        ),
+      )
+      ExecutionResult(
+        taskId = task.id,
+        status = ExecutionStatus.DENIED,
+        errorCode = "APPROVAL_REQUIRED",
+        errorMessage = "Approval is required before Write can run.",
+        startedAtEpochMs = 110_000L,
+        finishedAtEpochMs = 110_001L,
+      )
+    }
+
+    val queue = SessionQueue(
+      sessionId = "session-suspension-race-1",
+      agentId = "agent-suspension-race-1",
+      runtime = runtime,
+      snapshotStore = store,
+      clock = queueClock,
+    )
+    queue.enqueue(task(id = "task-approval-race", createdAt = 5_000L))
+
+    val drainThread = Thread { queue.drain() }
+    drainThread.start()
+
+    assertTrue(suspendedSaveEntered.await(2, TimeUnit.SECONDS))
+    val resumed = AtomicBoolean(false)
+    val resumeThread = Thread {
+      resumed.set(queue.requestResumeTask("task-approval-race"))
+    }
+    resumeThread.start()
+
+    Thread.sleep(50)
+    allowSuspendedSave.countDown()
+    drainThread.join(2_000L)
+    resumeThread.join(2_000L)
+
+    assertTrue(resumed.get())
+    assertFalse(store.concurrentAccessDetected.get())
+    assertEquals(
+      QueueTaskLifecycleState.QUEUED,
+      queue.snapshot().tasks.single().lifecycleState,
+    )
+  }
+
   private fun task(id: String, createdAt: Long): AgentTask = AgentTask(
     id = id,
     type = AgentTaskType.PROMPT,
@@ -264,6 +378,44 @@ class SessionQueueOrderingTest {
     override fun clear() {
       latest = null
       history.clear()
+    }
+  }
+
+  private class BlockingConcurrentSnapshotStore(
+    private val suspendedSaveEntered: CountDownLatch,
+    private val allowSuspendedSave: CountDownLatch,
+  ) : SessionQueueSnapshotStore {
+    val concurrentAccessDetected: AtomicBoolean = AtomicBoolean(false)
+    private val activeCalls = AtomicInteger(0)
+    @Volatile private var latest: SessionQueueSnapshot? = null
+
+    override fun load(): SessionQueueSnapshot? = withinCall { latest }
+
+    override fun save(snapshot: SessionQueueSnapshot) {
+      withinCall {
+        if (snapshot.tasks.any { task -> task.lifecycleState == QueueTaskLifecycleState.SUSPENDED }) {
+          suspendedSaveEntered.countDown()
+          assertTrue(allowSuspendedSave.await(2, TimeUnit.SECONDS))
+        }
+        latest = snapshot
+      }
+    }
+
+    override fun clear() {
+      withinCall {
+        latest = null
+      }
+    }
+
+    private fun <T> withinCall(block: () -> T): T {
+      if (activeCalls.incrementAndGet() > 1) {
+        concurrentAccessDetected.set(true)
+      }
+      try {
+        return block()
+      } finally {
+        activeCalls.decrementAndGet()
+      }
     }
   }
 }

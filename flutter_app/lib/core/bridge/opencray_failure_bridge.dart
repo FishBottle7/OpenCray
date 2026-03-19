@@ -3,6 +3,7 @@ import '../models/opencray_chat_snapshot.dart';
 import '../models/opencray_debug_snapshot.dart';
 import '../models/opencray_file_image_preview.dart';
 import '../models/opencray_file_text_preview.dart';
+import '../models/opencray_file_voice_playback_source.dart';
 import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
@@ -52,9 +53,18 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   ) async => throw StateError(_failureMessage);
 
   @override
+  Future<OpenCrayFileVoicePlaybackSource> loadWorkspaceVoicePlaybackSource(
+    String relativePath,
+  ) async => throw StateError(_failureMessage);
+
+  @override
   Future<OpenCrayWorkspaceTextDocument> loadWorkspaceTextDocument(
     String relativePath,
   ) async => throw StateError(_failureMessage);
+
+  @override
+  Future<void> openWorkspaceEntry(String relativePath) async =>
+      throw StateError(_failureMessage);
 
   @override
   Future<OpenCrayFilesSnapshot> createWorkspaceFolder({
@@ -358,6 +368,7 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     ],
     workspaceAccessProfileId: 'work',
     readOnlyOutsideWorkspace: true,
+    memoryToolsEnabled: true,
   );
 
   @override
@@ -382,6 +393,7 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     required String workspaceAccessProfileId,
     required bool readOnlyOutsideWorkspace,
     String liveContextModeId = 'full',
+    bool memoryToolsEnabled = true,
   }) async => throw StateError(_failureMessage);
 
   @override
@@ -393,6 +405,27 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
       OpenCraySkillInstallSourceSnapshot(
         id: 'curated-library',
         title: 'Curated skills',
+        subtitle: 'The Android host bridge failed to initialize.',
+        ctaLabel: 'Unavailable',
+        isAvailable: false,
+      ),
+      OpenCraySkillInstallSourceSnapshot(
+        id: 'local-path',
+        title: 'Local path',
+        subtitle: 'The Android host bridge failed to initialize.',
+        ctaLabel: 'Unavailable',
+        isAvailable: false,
+      ),
+      OpenCraySkillInstallSourceSnapshot(
+        id: 'github-url',
+        title: 'GitHub URL',
+        subtitle: 'The Android host bridge failed to initialize.',
+        ctaLabel: 'Unavailable',
+        isAvailable: false,
+      ),
+      OpenCraySkillInstallSourceSnapshot(
+        id: 'gitlab-url',
+        title: 'GitLab URL',
         subtitle: 'The Android host bridge failed to initialize.',
         ctaLabel: 'Unavailable',
         isAvailable: false,
@@ -413,7 +446,28 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   Future<String?> refreshSkills() async => _failureMessage;
 
   @override
-  Future<String?> installSkillSource(String sourceRef) async => _failureMessage;
+  Future<String?> checkInstalledSkillUpdates({String skillId = ''}) async =>
+      _failureMessage;
+
+  @override
+  Future<String?> updateInstalledSkill(String skillId) async => _failureMessage;
+
+  @override
+  Future<OpenCraySkillSourceInspectionSnapshot> inspectSkillSource(
+    String sourceRef,
+  ) async => throw StateError(_failureMessage);
+
+  @override
+  Future<String?> installSkillSource(
+    String sourceRef, {
+    String selectedSkillName = '',
+  }) async => _failureMessage;
+
+  @override
+  Future<String?> installSkillSourceBatch(
+    String sourceRef, {
+    List<String> selectedSkillNames = const <String>[],
+  }) async => _failureMessage;
 
   @override
   Future<String?> installSuggestedSkill(String skillId) async =>
@@ -500,6 +554,30 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
         overlayRecords: <OpenCrayMemoryDebugRecordSnapshot>[],
         fieldSources: <OpenCraySoulFieldSourceSnapshot>[],
       );
+
+  @override
+  Future<OpenCrayMemoryDebugSearchSnapshot> searchMemoryDebug({
+    required String query,
+    int maxResults = 4,
+    int minScore = 1,
+  }) async => OpenCrayMemoryDebugSearchSnapshot(
+    sessionId: '',
+    observedAtEpochMs: 0,
+    query: query,
+  );
+
+  @override
+  Future<OpenCrayMemoryDebugSliceSnapshot> getMemoryDebugSlice({
+    required String path,
+    int? fromLine,
+    int lines = 12,
+  }) async => OpenCrayMemoryDebugSliceSnapshot(
+    sessionId: '',
+    observedAtEpochMs: 0,
+    path: path,
+    startLine: fromLine ?? 1,
+    endLine: (fromLine ?? 1) + lines - 1,
+  );
 
   @override
   Future<OpenCrayChatRunSnapshot?> waitForChatRun(

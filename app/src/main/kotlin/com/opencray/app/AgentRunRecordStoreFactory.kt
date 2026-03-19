@@ -20,6 +20,9 @@ import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
 import com.opencray.runtime.OpenCrayProgressEvent
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
+import com.opencray.runtime.OpenCraySubAgentEvent
+import com.opencray.runtime.OpenCraySubAgentPhase
+import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import java.io.File
@@ -102,6 +105,8 @@ internal data class PersistedAgentRunEvent(
   val status: String? = null,
   val errorCode: String? = null,
   val errorMessage: String? = null,
+  val supplementEntryId: String? = null,
+  val supplementCheckpoint: String? = null,
   val responseFormat: String? = null,
   val isFinal: Boolean? = null,
   val text: String? = null,
@@ -109,6 +114,12 @@ internal data class PersistedAgentRunEvent(
   val approvalPhase: String? = null,
   val isHighRisk: Boolean? = null,
   val toolName: String? = null,
+  val childRunId: String? = null,
+  val childTaskId: String? = null,
+  val subAgentLabel: String? = null,
+  val subAgentType: String? = null,
+  val subAgentContextMode: String? = null,
+  val subAgentDepth: Int? = null,
   val toolReason: String? = null,
   val argumentsJson: String? = null,
   val toolStatus: String? = null,
@@ -144,7 +155,9 @@ internal enum class PersistedAgentRunEventKind {
   LIFECYCLE,
   ASSISTANT,
   PROGRESS,
+  SUPPLEMENT,
   APPROVAL,
+  SUBAGENT,
   TOOL_CALL,
   TOOL_RESULT,
   MEMORY_RETRIEVAL,
@@ -289,6 +302,16 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     text = text,
     stage = stage,
   )
+  is OpenCraySupplementEvent -> PersistedAgentRunEvent(
+    kind = PersistedAgentRunEventKind.SUPPLEMENT,
+    runId = runId,
+    taskId = taskId,
+    turn = turn,
+    emittedAtEpochMs = emittedAtEpochMs,
+    supplementEntryId = entryId,
+    supplementCheckpoint = checkpoint,
+    text = text,
+  )
   is OpenCrayApprovalEvent -> PersistedAgentRunEvent(
     kind = PersistedAgentRunEventKind.APPROVAL,
     runId = runId,
@@ -299,6 +322,21 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     toolName = toolName,
     text = text,
     isHighRisk = isHighRisk,
+  )
+  is OpenCraySubAgentEvent -> PersistedAgentRunEvent(
+    kind = PersistedAgentRunEventKind.SUBAGENT,
+    runId = runId,
+    taskId = taskId,
+    turn = turn,
+    emittedAtEpochMs = emittedAtEpochMs,
+    phase = phase.name,
+    childRunId = childRunId,
+    childTaskId = childTaskId,
+    subAgentLabel = label,
+    subAgentType = subagentType,
+    subAgentContextMode = contextMode,
+    subAgentDepth = depth,
+    text = summary,
   )
   is OpenCrayToolCallEvent -> PersistedAgentRunEvent(
     kind = PersistedAgentRunEventKind.TOOL_CALL,
@@ -404,6 +442,17 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
     stage = stage,
     emittedAtEpochMs = emittedAtEpochMs,
   )
+  PersistedAgentRunEventKind.SUPPLEMENT -> OpenCraySupplementEvent(
+    runId = runId,
+    taskId = taskId,
+    turn = turn ?: 0,
+    entryId = supplementEntryId?.trim()?.takeIf(String::isNotBlank)
+      ?: "supplement-$emittedAtEpochMs",
+    text = text.orEmpty(),
+    checkpoint = supplementCheckpoint?.trim()?.takeIf(String::isNotBlank)
+      ?: "turn_start",
+    emittedAtEpochMs = emittedAtEpochMs,
+  )
   PersistedAgentRunEventKind.APPROVAL -> OpenCrayApprovalEvent(
     runId = runId,
     taskId = taskId,
@@ -415,6 +464,24 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
     toolName = toolName,
     text = text.orEmpty(),
     isHighRisk = isHighRisk ?: false,
+    turn = turn,
+    emittedAtEpochMs = emittedAtEpochMs,
+  )
+  PersistedAgentRunEventKind.SUBAGENT -> OpenCraySubAgentEvent(
+    runId = runId,
+    taskId = taskId,
+    phase = phase
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { raw -> runCatching { OpenCraySubAgentPhase.valueOf(raw) }.getOrNull() }
+      ?: OpenCraySubAgentPhase.STARTED,
+    childRunId = childRunId?.trim()?.takeIf(String::isNotBlank) ?: runId,
+    childTaskId = childTaskId?.trim()?.takeIf(String::isNotBlank) ?: taskId,
+    label = subAgentLabel?.trim()?.takeIf(String::isNotBlank) ?: "Task",
+    subagentType = subAgentType?.trim()?.takeIf(String::isNotBlank) ?: "general-purpose",
+    contextMode = subAgentContextMode?.trim()?.takeIf(String::isNotBlank) ?: "delegated",
+    depth = subAgentDepth ?: 1,
+    summary = text?.trim()?.takeIf(String::isNotBlank),
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
   )

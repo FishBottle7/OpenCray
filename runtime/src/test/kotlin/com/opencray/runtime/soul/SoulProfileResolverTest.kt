@@ -38,8 +38,17 @@ class SoulProfileResolverTest {
           "voice" to " calm but direct ",
           "preferred_naming" to "阿澄",
           "preferred_address_style" to "friendly",
+          "warmth_preference_offset" to "1",
+          "formality_preference_offset" to "-1",
+          "initiative_preference_offset" to "1",
+          "playfulness_preference_offset" to "1",
+          "reassurance_preference_offset" to "-1",
           "intimacy_permission_band" to "warm",
           "playfulness_permission_band" to "familiar",
+          "supportive_reassurance_allowed" to "true",
+          "proactive_relational_check_in_allowed" to "false",
+          "light_playfulness_allowed" to "true",
+          "playful_teasing_allowed" to "false",
           "high_intimacy_behavior_allowed" to "true",
           "playful_affection_allowed" to "false",
           "verbosity" to "expansive",
@@ -57,8 +66,17 @@ class SoulProfileResolverTest {
     assertEquals("calm but direct", profile.voice)
     assertEquals("阿澄", profile.preferredNaming)
     assertEquals(PreferredAddressStyle.FRIENDLY, profile.preferredAddressStyle)
+    assertEquals(1, profile.warmthPreferenceOffset)
+    assertEquals(-1, profile.formalityPreferenceOffset)
+    assertEquals(1, profile.initiativePreferenceOffset)
+    assertEquals(1, profile.playfulnessPreferenceOffset)
+    assertEquals(-1, profile.reassurancePreferenceOffset)
     assertEquals(RelationshipBand.WARM, profile.intimacyPermissionBand)
     assertEquals(RelationshipBand.FAMILIAR, profile.playfulnessPermissionBand)
+    assertEquals(true, profile.supportiveReassuranceAllowed)
+    assertEquals(false, profile.proactiveRelationalCheckInAllowed)
+    assertEquals(true, profile.lightPlayfulnessAllowed)
+    assertEquals(false, profile.playfulTeasingAllowed)
     assertEquals(true, profile.highIntimacyBehaviorAllowed)
     assertEquals(false, profile.playfulAffectionAllowed)
     assertEquals(SoulVerbosity.EXPANSIVE, profile.verbosity)

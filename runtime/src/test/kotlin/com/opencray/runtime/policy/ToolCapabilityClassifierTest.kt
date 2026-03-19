@@ -17,6 +17,7 @@ class ToolCapabilityClassifierTest {
     assertEquals("execute_command", classifier.classifyCapabilityKind("Bash"))
     assertEquals("execute_command", classifier.classifyCapabilityKind("ProcessStart"))
     assertEquals("process_control", classifier.classifyCapabilityKind("ProcessTerminate"))
+    assertEquals("delegate_task", classifier.classifyCapabilityKind("Task"))
   }
 
   @Test
@@ -27,6 +28,7 @@ class ToolCapabilityClassifierTest {
     assertEquals(PolicyToolClass.DELETE_FILE, classifier.classifyPolicyToolClass("workspace_delete_file"))
     assertEquals(PolicyToolClass.NETWORK_ACCESS, classifier.classifyPolicyToolClass("WebFetch"))
     assertEquals(PolicyToolClass.READ_FILE, classifier.classifyPolicyToolClass("Read"))
+    assertEquals(PolicyToolClass.READ_FILE, classifier.classifyPolicyToolClass("Task"))
     assertEquals("write_file", classifier.classifyCapabilityKind("Write"))
     assertEquals("move_file", classifier.classifyCapabilityKind("workspace_move_file"))
     assertEquals("delete_file", classifier.classifyCapabilityKind("workspace_delete_file"))

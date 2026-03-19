@@ -56,6 +56,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 
 class OpenCrayAgentRuntimeTest {
   @get:Rule
@@ -103,6 +105,67 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
+  fun runPromptTaskInjectsSupplementsAtTurnStartBeforeNextLlmRequest() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-supplement-workspace")
+    Files.write(
+      workspaceRoot.toPath().resolve("README.md"),
+      "hello from workspace".toByteArray(StandardCharsets.UTF_8),
+    )
+
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"workspace_read_file","arguments":{"path":"README.md"}}""",
+        """{"type":"final","answer":"I saw the supplement."}""",
+      ),
+    )
+    val eventSink = RecordingEventSink()
+    var supplementProviderCalls = 0
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        supplementInputProvider = { _, _ ->
+          supplementProviderCalls += 1
+          if (supplementProviderCalls == 2) {
+            listOf(
+              OpenCraySupplementInput(
+                entryId = "supplement-1",
+                text = "Also verify the tests before you answer.",
+                createdAtEpochMs = 1_500L,
+              ),
+            )
+          } else {
+            emptyList()
+          }
+        },
+      ),
+      eventSink = eventSink,
+      clock = IncrementingClock(start = 1_000L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Read the README and then answer."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("I saw the supplement.", result.stdout)
+    assertEquals(2, gateway.requests.size)
+    assertFalse(gateway.requests[0].prompt.contains("Also verify the tests before you answer."))
+    assertTrue(gateway.requests[1].prompt.contains("Also verify the tests before you answer."))
+    val supplementEvent = eventSink.events.filterIsInstance<OpenCraySupplementEvent>().single()
+    assertEquals("supplement-1", supplementEvent.entryId)
+    assertEquals(1, supplementEvent.turn)
+    assertEquals("Also verify the tests before you answer.", supplementEvent.text)
+  }
+
+  @Test
   fun runPromptTaskSeedsStoredConversationIntoFirstLlmTurn() {
     val workspaceRoot = temporaryFolder.newFolder("agent-history-workspace")
     val gateway = RecordingGateway(
@@ -142,6 +205,66 @@ class OpenCrayAgentRuntimeTest {
     assertTrue(gateway.requests[0].prompt.contains("Earlier question."))
     assertTrue(gateway.requests[0].prompt.contains("Earlier answer."))
     assertTrue(gateway.requests[0].prompt.contains("What changed since then?"))
+  }
+
+  @Test
+  fun runPromptTaskCarriesFinalAttachmentsIntoResultMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-final-attachments-workspace")
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """
+        {
+          "type": "final",
+          "answer": "",
+          "attachments": [
+            {
+              "kind": "image",
+              "relative_path": "outputs/result.png",
+              "display_name": "result.png",
+              "mime_type": "image/png"
+            },
+            {
+              "kind": "audio",
+              "path": "outputs/voice-note.m4a",
+              "duration_ms": 4200,
+              "waveform_bars": [12, 48, 80],
+              "transcript_text": "Voice summary"
+            }
+          ]
+        }
+        """.trimIndent(),
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      clock = IncrementingClock(start = 2_200L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Send the generated media only."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("", result.stdout)
+    val attachmentsJson = result.metadata[OpenCrayExecutionMetadataKeys.FINAL_ATTACHMENTS_JSON].orEmpty()
+    val attachments = Json.decodeFromString(
+      ListSerializer(OpenCrayFinalAttachment.serializer()),
+      attachmentsJson,
+    )
+    assertEquals(2, attachments.size)
+    assertEquals("outputs/result.png", attachments.first().relativePath)
+    assertEquals("image", attachments.first().kind)
+    assertEquals("outputs/voice-note.m4a", attachments.last().path)
+    assertEquals("audio", attachments.last().kind)
+    assertEquals(4_200L, attachments.last().durationMs)
+    assertEquals(listOf(12, 48, 80), attachments.last().waveformBars)
+    assertEquals("Voice summary", attachments.last().transcriptText)
   }
 
   @Test
@@ -919,7 +1042,9 @@ class OpenCrayAgentRuntimeTest {
         when (event) {
           is OpenCrayLifecycleEvent -> "lifecycle"
           is OpenCrayProgressEvent -> "progress"
+          is OpenCraySupplementEvent -> "supplement"
           is OpenCrayApprovalEvent -> "approval"
+          is OpenCraySubAgentEvent -> "subagent"
           is OpenCrayToolCallEvent -> "tool_call"
           is OpenCrayToolResultEvent -> "tool_result"
           is OpenCrayAssistantEvent -> "assistant"
@@ -985,7 +1110,9 @@ class OpenCrayAgentRuntimeTest {
         when (event) {
           is OpenCrayLifecycleEvent -> "lifecycle"
           is OpenCrayProgressEvent -> "progress"
+          is OpenCraySupplementEvent -> "supplement"
           is OpenCrayApprovalEvent -> "approval"
+          is OpenCraySubAgentEvent -> "subagent"
           is OpenCrayToolCallEvent -> "tool_call"
           is OpenCrayToolResultEvent -> "tool_result"
           is OpenCrayAssistantEvent -> "assistant"

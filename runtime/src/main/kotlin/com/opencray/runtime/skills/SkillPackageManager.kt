@@ -67,11 +67,138 @@ data class SkillPackageInstallResult(
   val manifestEntry: SkillInstallManifestEntry,
 )
 
+data class SkillPackageBatchInstallEntry(
+  val requestedSkillName: String,
+  val installedSkillId: String? = null,
+  val manifestEntry: SkillInstallManifestEntry? = null,
+  val errorCode: String? = null,
+  val errorMessage: String? = null,
+) {
+  val succeeded: Boolean
+    get() = installedSkillId != null && errorCode == null
+}
+
+data class SkillPackageBatchInstallResult(
+  val sourceType: String,
+  val sourceRef: String,
+  val entries: List<SkillPackageBatchInstallEntry>,
+  val sourcePath: String? = null,
+  val resolvedRevision: String? = null,
+  val resolvedCommitSha: String? = null,
+) {
+  val requestedCount: Int
+    get() = entries.size
+
+  val installedCount: Int
+    get() = entries.count(SkillPackageBatchInstallEntry::succeeded)
+
+  val failedCount: Int
+    get() = requestedCount - installedCount
+}
+
 data class SkillPackageRemoveResult(
   val skillId: String,
   val removedDirectory: File,
   val manifestEntryRemoved: Boolean,
 )
+
+data class SkillSourceInspectionCandidate(
+  val name: String,
+  val description: String,
+  val relativePath: String,
+)
+
+data class SkillSourceInspectionResult(
+  val sourceType: String,
+  val sourceRef: String,
+  val candidates: List<SkillSourceInspectionCandidate>,
+  val sourcePath: String? = null,
+  val resolvedRevision: String? = null,
+  val resolvedCommitSha: String? = null,
+)
+
+data class SkillSourceInspectionAttempt(
+  val result: SkillSourceInspectionResult? = null,
+  val errorCode: String? = null,
+  val errorMessage: String? = null,
+) {
+  val succeeded: Boolean
+    get() = result != null && errorCode == null
+}
+
+enum class SkillPackageCheckStatus(
+  val wireValue: String,
+) {
+  UP_TO_DATE("up_to_date"),
+  UPDATE_AVAILABLE("update_available"),
+  SOURCE_UNAVAILABLE("source_unavailable"),
+  UNSUPPORTED_SOURCE("unsupported_source"),
+}
+
+data class SkillPackageCheckResult(
+  val skillId: String,
+  val sourceType: String,
+  val sourceRef: String,
+  val status: SkillPackageCheckStatus,
+  val checkedAtEpochMs: Long,
+  val manifestEntry: SkillInstallManifestEntry? = null,
+  val installedRevision: String? = null,
+  val installedCommitSha: String? = null,
+  val latestRevision: String? = null,
+  val latestCommitSha: String? = null,
+  val installedContentHash: String = "",
+  val latestContentHash: String? = null,
+  val errorCode: String? = null,
+  val errorMessage: String? = null,
+)
+
+data class SkillPackageCheckReport(
+  val results: List<SkillPackageCheckResult>,
+) {
+  val upToDateCount: Int
+    get() = results.count { result -> result.status == SkillPackageCheckStatus.UP_TO_DATE }
+
+  val updateAvailableCount: Int
+    get() = results.count { result -> result.status == SkillPackageCheckStatus.UPDATE_AVAILABLE }
+
+  val sourceUnavailableCount: Int
+    get() = results.count { result -> result.status == SkillPackageCheckStatus.SOURCE_UNAVAILABLE }
+
+  val unsupportedCount: Int
+    get() = results.count { result -> result.status == SkillPackageCheckStatus.UNSUPPORTED_SOURCE }
+}
+
+enum class SkillPackageUpdateStatus(
+  val wireValue: String,
+) {
+  UPDATED("updated"),
+  SKIPPED("skipped"),
+  FAILED("failed"),
+}
+
+data class SkillPackageUpdateResult(
+  val skillId: String,
+  val sourceType: String,
+  val sourceRef: String,
+  val status: SkillPackageUpdateStatus,
+  val manifestEntry: SkillInstallManifestEntry? = null,
+  val checkStatus: SkillPackageCheckStatus? = null,
+  val errorCode: String? = null,
+  val errorMessage: String? = null,
+)
+
+data class SkillPackageUpdateReport(
+  val results: List<SkillPackageUpdateResult>,
+) {
+  val updatedCount: Int
+    get() = results.count { result -> result.status == SkillPackageUpdateStatus.UPDATED }
+
+  val skippedCount: Int
+    get() = results.count { result -> result.status == SkillPackageUpdateStatus.SKIPPED }
+
+  val failedCount: Int
+    get() = results.count { result -> result.status == SkillPackageUpdateStatus.FAILED }
+}
 
 class SkillInstallManifestStore private constructor(
   private val storage: DurableTextStorage,
@@ -117,6 +244,7 @@ class SkillPackageManager(
   private val manifestStore: SkillInstallManifestStore,
   private val remoteSearchClient: RemoteSkillSearchClient = SkillsApiRemoteSkillSearchClient(),
   private val sourceResolver: SkillSourceResolver = SkillSourceResolver(),
+  private val remoteSourceInspector: RemoteSkillSourceInspector = HostedGitRemoteSkillSourceInspector(),
   private val remoteSourceFetcher: RemoteSkillSourceFetcher = HostedGitArchiveRemoteSkillSourceFetcher(),
   private val clock: () -> Long = { System.currentTimeMillis() },
 ) {
@@ -293,6 +421,98 @@ class SkillPackageManager(
     }
   }
 
+  fun installFromRemoteSourceBatch(
+    sourceRef: String,
+    selectedSkillNames: List<String> = emptyList(),
+    installAll: Boolean = false,
+  ): SkillPackageBatchInstallAttempt {
+    val resolvedSource = resolveRemoteSource(sourceRef = sourceRef)
+      ?: return SkillPackageBatchInstallAttempt(
+        errorCode = "SKILL_SOURCE_UNSUPPORTED",
+        errorMessage = "Source '$sourceRef' is not a supported remote skill source.",
+      )
+    return try {
+      ensureManagedRoot()
+      val stagingRoot = File(stagingRootPath(), UUID.randomUUID().toString())
+      val fetched = remoteSourceFetcher.fetch(
+        source = resolvedSource,
+        stagingRoot = stagingRoot,
+      )
+      try {
+        val selections = selectSkillsFromRoot(
+          searchRoot = fetched.searchRoot,
+          requestedSkillNames = selectedSkillNames,
+          installAll = installAll,
+          sourceHint = resolvedSource.selectedSkillName ?: resolvedSource.repo,
+          sourceRef = resolvedSource.requestedSourceRef,
+        )
+        SkillPackageBatchInstallAttempt(
+          result = installSelectedSkills(
+            selections = selections,
+            sourceType = resolvedSource.sourceType.wireValue,
+            sourceRef = resolvedSource.requestedSourceRef,
+            sourcePath = fetched.repositoryUrl,
+            relativeRoot = fetched.repositoryRoot,
+            resolvedRevision = fetched.resolvedRevision,
+            resolvedCommitSha = fetched.resolvedCommitSha,
+          ),
+        )
+      } finally {
+        stagingRoot.deleteRecursively()
+      }
+    } catch (error: SkillPackageException) {
+      SkillPackageBatchInstallAttempt(
+        errorCode = error.errorCode,
+        errorMessage = error.message,
+      )
+    } catch (error: Exception) {
+      SkillPackageBatchInstallAttempt(
+        errorCode = "SKILL_BATCH_INSTALL_FAILED",
+        errorMessage = error.message ?: error::class.java.simpleName,
+      )
+    }
+  }
+
+  fun inspectRemoteSource(sourceRef: String): SkillSourceInspectionAttempt {
+    val resolvedSource = resolveRemoteSource(sourceRef = sourceRef)
+      ?: return SkillSourceInspectionAttempt(
+        errorCode = "SKILL_SOURCE_UNSUPPORTED",
+        errorMessage = "Source '$sourceRef' is not a supported remote skill source.",
+      )
+    return try {
+      val stagingRoot = File(stagingRootPath(), UUID.randomUUID().toString())
+      val fetched = remoteSourceFetcher.fetch(
+        source = resolvedSource,
+        stagingRoot = stagingRoot,
+      )
+      try {
+        SkillSourceInspectionAttempt(
+          result = inspectSkillRoot(
+            searchRoot = fetched.searchRoot,
+            relativeRoot = fetched.repositoryRoot,
+            sourceType = resolvedSource.sourceType.wireValue,
+            sourceRef = resolvedSource.requestedSourceRef,
+            sourcePath = fetched.repositoryUrl,
+            resolvedRevision = fetched.resolvedRevision,
+            resolvedCommitSha = fetched.resolvedCommitSha,
+          ),
+        )
+      } finally {
+        stagingRoot.deleteRecursively()
+      }
+    } catch (error: SkillPackageException) {
+      SkillSourceInspectionAttempt(
+        errorCode = error.errorCode,
+        errorMessage = error.message,
+      )
+    } catch (error: Exception) {
+      SkillSourceInspectionAttempt(
+        errorCode = "SKILL_SOURCE_INSPECTION_FAILED",
+        errorMessage = error.message ?: error::class.java.simpleName,
+      )
+    }
+  }
+
   fun installFromLocalSource(
     sourcePath: File,
     sourceRef: String,
@@ -345,6 +565,170 @@ class SkillPackageManager(
     }
   }
 
+  fun installFromLocalSourceBatch(
+    sourcePath: File,
+    sourceRef: String,
+    selectedSkillNames: List<String> = emptyList(),
+    installAll: Boolean = false,
+  ): SkillPackageBatchInstallAttempt {
+    val normalizedSource = normalizeLocalSourceRoot(sourcePath)
+      ?: return SkillPackageBatchInstallAttempt(
+        errorCode = "SKILL_SOURCE_NOT_FOUND",
+        errorMessage = "Local skill source '$sourceRef' was not found.",
+      )
+    return try {
+      ensureManagedRoot()
+      val selections = selectSkillsFromRoot(
+        searchRoot = normalizedSource,
+        requestedSkillNames = selectedSkillNames,
+        installAll = installAll,
+        sourceHint = normalizedSource.name,
+        sourceRef = sourceRef,
+      )
+      SkillPackageBatchInstallAttempt(
+        result = installSelectedSkills(
+          selections = selections,
+          sourceType = SkillInstallSourceType.LOCAL_PATH.wireValue,
+          sourceRef = sourceRef,
+          sourcePath = canonicalInvariantPath(normalizedSource),
+          relativeRoot = normalizedSource,
+        ),
+      )
+    } catch (error: SkillPackageException) {
+      SkillPackageBatchInstallAttempt(
+        errorCode = error.errorCode,
+        errorMessage = error.message,
+      )
+    } catch (error: Exception) {
+      SkillPackageBatchInstallAttempt(
+        errorCode = "SKILL_BATCH_INSTALL_FAILED",
+        errorMessage = error.message ?: error::class.java.simpleName,
+      )
+    }
+  }
+
+  fun inspectLocalSource(
+    sourcePath: File,
+    sourceRef: String,
+  ): SkillSourceInspectionAttempt {
+    val normalizedSource = normalizeLocalSourceRoot(sourcePath)
+      ?: return SkillSourceInspectionAttempt(
+        errorCode = "SKILL_SOURCE_NOT_FOUND",
+        errorMessage = "Local skill source '$sourceRef' was not found.",
+      )
+    return try {
+      SkillSourceInspectionAttempt(
+        result = inspectSkillRoot(
+          searchRoot = normalizedSource,
+          relativeRoot = normalizedSource,
+          sourceType = SkillInstallSourceType.LOCAL_PATH.wireValue,
+          sourceRef = sourceRef,
+          sourcePath = canonicalInvariantPath(normalizedSource),
+        ),
+      )
+    } catch (error: SkillPackageException) {
+      SkillSourceInspectionAttempt(
+        errorCode = error.errorCode,
+        errorMessage = error.message,
+      )
+    } catch (error: Exception) {
+      SkillSourceInspectionAttempt(
+        errorCode = "SKILL_SOURCE_INSPECTION_FAILED",
+        errorMessage = error.message ?: error::class.java.simpleName,
+      )
+    }
+  }
+
+  fun checkInstalledSkills(skillId: String? = null): SkillPackageCheckReport {
+    val normalizedSkillId = skillId?.trim()?.takeIf(String::isNotBlank)
+    val manifest = refreshManifest()
+    val managedSkillIds = listManagedSkills().mapTo(linkedSetOf()) { skill -> skill.name }
+    val manifestEntries = manifest.installations
+      .filter { entry -> normalizedSkillId == null || entry.skillId == normalizedSkillId }
+      .sortedBy(SkillInstallManifestEntry::skillId)
+    val checkedAtEpochMs = clock()
+    val updatedEntriesById = manifest.installations.associateBy(SkillInstallManifestEntry::skillId).toMutableMap()
+    val results = manifestEntries.map { entry ->
+      updatedEntriesById[entry.skillId] = entry.copy(lastCheckedAtEpochMs = checkedAtEpochMs)
+      checkManifestEntry(
+        entry = entry,
+        checkedAtEpochMs = checkedAtEpochMs,
+      )
+    }.toMutableList()
+    if (manifestEntries.isNotEmpty()) {
+      manifestStore.save(
+        manifest.copy(
+          recordVersion = manifest.recordVersion + 1L,
+          updatedAtEpochMs = checkedAtEpochMs,
+          installations = updatedEntriesById.values.sortedBy(SkillInstallManifestEntry::skillId),
+        ),
+      )
+    }
+    val missingProvenanceSkillIds = when {
+      normalizedSkillId != null && normalizedSkillId in managedSkillIds && manifestEntries.isEmpty() ->
+        listOf(normalizedSkillId)
+
+      normalizedSkillId == null -> managedSkillIds
+        .filterNot { managedSkillId -> managedSkillId in updatedEntriesById }
+
+      else -> emptyList()
+    }
+    missingProvenanceSkillIds
+      .sorted()
+      .mapTo(results) { unmanagedSkillId ->
+        SkillPackageCheckResult(
+          skillId = unmanagedSkillId,
+          sourceType = "unknown",
+          sourceRef = unmanagedSkillId,
+          status = SkillPackageCheckStatus.UNSUPPORTED_SOURCE,
+          checkedAtEpochMs = checkedAtEpochMs,
+          errorCode = "SKILL_PROVENANCE_MISSING",
+          errorMessage = "Skill '$unmanagedSkillId' does not have installation provenance.",
+        )
+      }
+    return SkillPackageCheckReport(
+      results = results.sortedBy(SkillPackageCheckResult::skillId),
+    )
+  }
+
+  fun updateInstalledSkills(skillId: String? = null): SkillPackageUpdateReport =
+    updateInstalledSkills(
+      checkReport = checkInstalledSkills(skillId),
+    )
+
+  fun updateInstalledSkills(checkReport: SkillPackageCheckReport): SkillPackageUpdateReport {
+    val results = checkReport.results.map { checkResult ->
+      when (checkResult.status) {
+        SkillPackageCheckStatus.UP_TO_DATE -> SkillPackageUpdateResult(
+          skillId = checkResult.skillId,
+          sourceType = checkResult.sourceType,
+          sourceRef = checkResult.sourceRef,
+          status = SkillPackageUpdateStatus.SKIPPED,
+          manifestEntry = checkResult.manifestEntry,
+          checkStatus = checkResult.status,
+        )
+
+        SkillPackageCheckStatus.UPDATE_AVAILABLE -> updateCheckedSkill(checkResult)
+
+        SkillPackageCheckStatus.SOURCE_UNAVAILABLE,
+        SkillPackageCheckStatus.UNSUPPORTED_SOURCE,
+        -> SkillPackageUpdateResult(
+          skillId = checkResult.skillId,
+          sourceType = checkResult.sourceType,
+          sourceRef = checkResult.sourceRef,
+          status = SkillPackageUpdateStatus.FAILED,
+          manifestEntry = checkResult.manifestEntry,
+          checkStatus = checkResult.status,
+          errorCode = checkResult.errorCode ?: checkResult.status.wireValue.uppercase(),
+          errorMessage = checkResult.errorMessage,
+        )
+      }
+    }
+    return SkillPackageUpdateReport(
+      results = results.sortedBy(SkillPackageUpdateResult::skillId),
+    )
+  }
+
   fun removeInstalledSkill(skillId: String): SkillPackageRemoveResult? {
     val normalizedSkillId = skillId.trim()
     if (normalizedSkillId.isEmpty()) {
@@ -381,6 +765,291 @@ class SkillPackageManager(
       removedDirectory = installedSkillDirectory,
       manifestEntryRemoved = manifestEntryRemoved,
     )
+  }
+
+  private fun checkManifestEntry(
+    entry: SkillInstallManifestEntry,
+    checkedAtEpochMs: Long,
+  ): SkillPackageCheckResult = when (entry.sourceType) {
+    SkillInstallSourceType.LOCAL_CATALOG.wireValue,
+    SkillInstallSourceType.LOCAL_PATH.wireValue,
+    -> checkLocalManifestEntry(
+      entry = entry,
+      checkedAtEpochMs = checkedAtEpochMs,
+    )
+
+    SkillInstallSourceType.REMOTE_GITHUB.wireValue,
+    SkillInstallSourceType.REMOTE_GITLAB.wireValue,
+    -> checkRemoteManifestEntry(
+      entry = entry,
+      checkedAtEpochMs = checkedAtEpochMs,
+    )
+
+    else -> SkillPackageCheckResult(
+      skillId = entry.skillId,
+      sourceType = entry.sourceType,
+      sourceRef = entry.sourceRef,
+      status = SkillPackageCheckStatus.UNSUPPORTED_SOURCE,
+      checkedAtEpochMs = checkedAtEpochMs,
+      manifestEntry = entry,
+      installedRevision = entry.resolvedRevision,
+      installedCommitSha = entry.resolvedCommitSha,
+      installedContentHash = entry.contentHash,
+      errorCode = "SKILL_SOURCE_UNSUPPORTED",
+      errorMessage = "Source type '${entry.sourceType}' is not supported for update checks.",
+    )
+  }
+
+  private fun checkLocalManifestEntry(
+    entry: SkillInstallManifestEntry,
+    checkedAtEpochMs: Long,
+  ): SkillPackageCheckResult {
+    val sourcePath = entry.sourcePath?.trim()?.takeIf { candidate -> candidate.isNotBlank() }
+      ?: return unavailableLocalManifestEntry(
+        entry = entry,
+        checkedAtEpochMs = checkedAtEpochMs,
+        errorCode = "SKILL_SOURCE_NOT_FOUND",
+        errorMessage = "Local source for '${entry.skillId}' is unavailable.",
+      )
+    val normalizedSource = normalizeLocalSourceRoot(File(sourcePath))
+      ?: return unavailableLocalManifestEntry(
+        entry = entry,
+        checkedAtEpochMs = checkedAtEpochMs,
+        errorCode = "SKILL_SOURCE_NOT_FOUND",
+        errorMessage = "Local source '$sourcePath' was not found for '${entry.skillId}'.",
+      )
+    return try {
+      val selectedSkill = selectSkillFromRoot(
+        searchRoot = normalizedSource,
+        selectedSkillName = entry.selectedSkillName,
+        sourceHint = normalizedSource.name,
+        sourceRef = entry.sourceRef,
+      )
+      val sourceSkillDirectory = File(selectedSkill.source.skillDirectoryPath)
+      val latestContentHash = computeDirectoryHash(sourceSkillDirectory)
+      SkillPackageCheckResult(
+        skillId = entry.skillId,
+        sourceType = entry.sourceType,
+        sourceRef = entry.sourceRef,
+        status = if (entry.contentHash == latestContentHash) {
+          SkillPackageCheckStatus.UP_TO_DATE
+        } else {
+          SkillPackageCheckStatus.UPDATE_AVAILABLE
+        },
+        checkedAtEpochMs = checkedAtEpochMs,
+        manifestEntry = entry,
+        installedRevision = entry.resolvedRevision,
+        installedCommitSha = entry.resolvedCommitSha,
+        installedContentHash = entry.contentHash,
+        latestContentHash = latestContentHash,
+      )
+    } catch (error: SkillPackageException) {
+      unavailableLocalManifestEntry(
+        entry = entry,
+        checkedAtEpochMs = checkedAtEpochMs,
+        errorCode = error.errorCode,
+        errorMessage = error.message,
+      )
+    }
+  }
+
+  private fun unavailableLocalManifestEntry(
+    entry: SkillInstallManifestEntry,
+    checkedAtEpochMs: Long,
+    errorCode: String,
+    errorMessage: String,
+  ): SkillPackageCheckResult = SkillPackageCheckResult(
+    skillId = entry.skillId,
+    sourceType = entry.sourceType,
+    sourceRef = entry.sourceRef,
+    status = SkillPackageCheckStatus.SOURCE_UNAVAILABLE,
+    checkedAtEpochMs = checkedAtEpochMs,
+    manifestEntry = entry,
+    installedRevision = entry.resolvedRevision,
+    installedCommitSha = entry.resolvedCommitSha,
+    installedContentHash = entry.contentHash,
+    errorCode = errorCode,
+    errorMessage = errorMessage,
+  )
+
+  private fun checkRemoteManifestEntry(
+    entry: SkillInstallManifestEntry,
+    checkedAtEpochMs: Long,
+  ): SkillPackageCheckResult {
+    val resolvedSource = resolveRemoteSource(
+      sourceRef = entry.sourceRef,
+      selectedSkillName = entry.selectedSkillName,
+    ) ?: return SkillPackageCheckResult(
+      skillId = entry.skillId,
+      sourceType = entry.sourceType,
+      sourceRef = entry.sourceRef,
+      status = SkillPackageCheckStatus.UNSUPPORTED_SOURCE,
+      checkedAtEpochMs = checkedAtEpochMs,
+      manifestEntry = entry,
+      installedRevision = entry.resolvedRevision,
+      installedCommitSha = entry.resolvedCommitSha,
+      installedContentHash = entry.contentHash,
+      errorCode = "SKILL_SOURCE_UNSUPPORTED",
+      errorMessage = "Remote source '${entry.sourceRef}' is not supported.",
+    )
+    val versionAttempt = remoteSourceInspector.inspect(resolvedSource)
+    val version = versionAttempt.version ?: return SkillPackageCheckResult(
+      skillId = entry.skillId,
+      sourceType = entry.sourceType,
+      sourceRef = entry.sourceRef,
+      status = SkillPackageCheckStatus.SOURCE_UNAVAILABLE,
+      checkedAtEpochMs = checkedAtEpochMs,
+      manifestEntry = entry,
+      installedRevision = entry.resolvedRevision,
+      installedCommitSha = entry.resolvedCommitSha,
+      installedContentHash = entry.contentHash,
+      errorCode = versionAttempt.errorCode ?: "REMOTE_SKILL_SOURCE_UNAVAILABLE",
+      errorMessage = versionAttempt.errorMessage ?: "Remote source '${entry.sourceRef}' is unavailable.",
+    )
+    val hasUpdate = when {
+      !entry.resolvedCommitSha.isNullOrBlank() && !version.resolvedCommitSha.isNullOrBlank() ->
+        entry.resolvedCommitSha != version.resolvedCommitSha
+
+      !entry.resolvedRevision.isNullOrBlank() ->
+        entry.resolvedRevision != version.resolvedRevision
+
+      else -> false
+    }
+    return SkillPackageCheckResult(
+      skillId = entry.skillId,
+      sourceType = entry.sourceType,
+      sourceRef = entry.sourceRef,
+      status = if (hasUpdate) {
+        SkillPackageCheckStatus.UPDATE_AVAILABLE
+      } else {
+        SkillPackageCheckStatus.UP_TO_DATE
+      },
+      checkedAtEpochMs = checkedAtEpochMs,
+      manifestEntry = entry,
+      installedRevision = entry.resolvedRevision,
+      installedCommitSha = entry.resolvedCommitSha,
+      latestRevision = version.resolvedRevision,
+      latestCommitSha = version.resolvedCommitSha,
+      installedContentHash = entry.contentHash,
+    )
+  }
+
+  private fun updateCheckedSkill(
+    checkResult: SkillPackageCheckResult,
+  ): SkillPackageUpdateResult {
+    val manifestEntry = checkResult.manifestEntry
+      ?: return SkillPackageUpdateResult(
+        skillId = checkResult.skillId,
+        sourceType = checkResult.sourceType,
+        sourceRef = checkResult.sourceRef,
+        status = SkillPackageUpdateStatus.FAILED,
+        checkStatus = checkResult.status,
+        errorCode = "SKILL_PROVENANCE_MISSING",
+        errorMessage = "Skill '${checkResult.skillId}' does not have installation provenance.",
+      )
+    return when (manifestEntry.sourceType) {
+      SkillInstallSourceType.LOCAL_CATALOG.wireValue -> {
+        val result = installFromCatalog(manifestEntry.skillId)
+        if (result != null) {
+          SkillPackageUpdateResult(
+            skillId = result.skillId,
+            sourceType = manifestEntry.sourceType,
+            sourceRef = manifestEntry.sourceRef,
+            status = SkillPackageUpdateStatus.UPDATED,
+            manifestEntry = result.manifestEntry,
+            checkStatus = checkResult.status,
+          )
+        } else {
+          SkillPackageUpdateResult(
+            skillId = manifestEntry.skillId,
+            sourceType = manifestEntry.sourceType,
+            sourceRef = manifestEntry.sourceRef,
+            status = SkillPackageUpdateStatus.FAILED,
+            manifestEntry = manifestEntry,
+            checkStatus = checkResult.status,
+            errorCode = "SKILL_INSTALL_FAILED",
+            errorMessage = "Failed to update '${manifestEntry.skillId}' from the local catalog.",
+          )
+        }
+      }
+
+      SkillInstallSourceType.LOCAL_PATH.wireValue -> {
+        val sourcePath = manifestEntry.sourcePath?.trim()?.takeIf { candidate -> candidate.isNotBlank() }
+          ?: return SkillPackageUpdateResult(
+            skillId = manifestEntry.skillId,
+            sourceType = manifestEntry.sourceType,
+            sourceRef = manifestEntry.sourceRef,
+            status = SkillPackageUpdateStatus.FAILED,
+            manifestEntry = manifestEntry,
+            checkStatus = checkResult.status,
+            errorCode = "SKILL_SOURCE_NOT_FOUND",
+            errorMessage = "Local source for '${manifestEntry.skillId}' is unavailable.",
+          )
+        val attempt = installFromLocalSource(
+          sourcePath = File(sourcePath),
+          sourceRef = manifestEntry.sourceRef,
+          selectedSkillName = manifestEntry.selectedSkillName,
+        )
+        attempt.result?.let { result ->
+          SkillPackageUpdateResult(
+            skillId = result.skillId,
+            sourceType = manifestEntry.sourceType,
+            sourceRef = manifestEntry.sourceRef,
+            status = SkillPackageUpdateStatus.UPDATED,
+            manifestEntry = result.manifestEntry,
+            checkStatus = checkResult.status,
+          )
+        } ?: SkillPackageUpdateResult(
+          skillId = manifestEntry.skillId,
+          sourceType = manifestEntry.sourceType,
+          sourceRef = manifestEntry.sourceRef,
+          status = SkillPackageUpdateStatus.FAILED,
+          manifestEntry = manifestEntry,
+          checkStatus = checkResult.status,
+          errorCode = attempt.errorCode ?: "SKILL_INSTALL_FAILED",
+          errorMessage = attempt.errorMessage ?: "Failed to update '${manifestEntry.skillId}' from the local source.",
+        )
+      }
+
+      SkillInstallSourceType.REMOTE_GITHUB.wireValue,
+      SkillInstallSourceType.REMOTE_GITLAB.wireValue,
+      -> {
+        val attempt = installFromRemoteSource(
+          sourceRef = manifestEntry.sourceRef,
+          selectedSkillName = manifestEntry.selectedSkillName,
+        )
+        attempt.result?.let { result ->
+          SkillPackageUpdateResult(
+            skillId = result.skillId,
+            sourceType = manifestEntry.sourceType,
+            sourceRef = manifestEntry.sourceRef,
+            status = SkillPackageUpdateStatus.UPDATED,
+            manifestEntry = result.manifestEntry,
+            checkStatus = checkResult.status,
+          )
+        } ?: SkillPackageUpdateResult(
+          skillId = manifestEntry.skillId,
+          sourceType = manifestEntry.sourceType,
+          sourceRef = manifestEntry.sourceRef,
+          status = SkillPackageUpdateStatus.FAILED,
+          manifestEntry = manifestEntry,
+          checkStatus = checkResult.status,
+          errorCode = attempt.errorCode ?: "SKILL_INSTALL_FAILED",
+          errorMessage = attempt.errorMessage ?: "Failed to update '${manifestEntry.skillId}' from the remote source.",
+        )
+      }
+
+      else -> SkillPackageUpdateResult(
+        skillId = manifestEntry.skillId,
+        sourceType = manifestEntry.sourceType,
+        sourceRef = manifestEntry.sourceRef,
+        status = SkillPackageUpdateStatus.FAILED,
+        manifestEntry = manifestEntry,
+        checkStatus = checkResult.status,
+        errorCode = "SKILL_SOURCE_UNSUPPORTED",
+        errorMessage = "Source type '${manifestEntry.sourceType}' is not supported for updates.",
+      )
+    }
   }
 
   private fun loadCatalogSkill(skillId: String): LoadedSkill? {
@@ -450,6 +1119,7 @@ class SkillPackageManager(
         ?.installedAtEpochMs
         ?: now,
       updatedAtEpochMs = now,
+      lastCheckedAtEpochMs = now,
     )
     saveManifestEntry(existing = manifest, entry = entry, updatedAtEpochMs = now)
     return SkillPackageInstallResult(
@@ -465,14 +1135,25 @@ class SkillPackageManager(
     entry: SkillInstallManifestEntry,
     updatedAtEpochMs: Long,
   ) {
-    val updatedInstallations = (
-      existing.installations.filterNot { installation -> installation.skillId == entry.skillId } + entry
-      ).sortedBy(SkillInstallManifestEntry::skillId)
+    saveManifestSnapshot(
+      existing = existing,
+      updatedAtEpochMs = updatedAtEpochMs,
+      installations = (
+        existing.installations.filterNot { installation -> installation.skillId == entry.skillId } + entry
+        ).sortedBy(SkillInstallManifestEntry::skillId),
+    )
+  }
+
+  private fun saveManifestSnapshot(
+    existing: SkillInstallManifest,
+    updatedAtEpochMs: Long,
+    installations: List<SkillInstallManifestEntry>,
+  ) {
     manifestStore.save(
       existing.copy(
         recordVersion = existing.recordVersion + 1L,
         updatedAtEpochMs = updatedAtEpochMs,
-        installations = updatedInstallations,
+        installations = installations,
       ),
     )
   }
@@ -564,6 +1245,149 @@ class SkillPackageManager(
   private fun canonicalInvariantPath(file: File): String =
     runCatching { file.canonicalPath }.getOrDefault(file.absolutePath).replace('\\', '/')
 
+  private fun inspectSkillRoot(
+    searchRoot: File,
+    relativeRoot: File,
+    sourceType: String,
+    sourceRef: String,
+    sourcePath: String? = null,
+    resolvedRevision: String? = null,
+    resolvedCommitSha: String? = null,
+  ): SkillSourceInspectionResult {
+    val report = SkillLoader.load(searchRoot)
+    if (report.loadedSkills.isEmpty()) {
+      val invalidDetail = report.invalidSkills.firstOrNull()?.detail
+      throw SkillPackageException(
+        errorCode = "SKILL_SOURCE_INVALID",
+        message = invalidDetail ?: "Source '$sourceRef' did not contain any valid skills.",
+      )
+    }
+    val candidates = report.loadedSkills
+      .sortedBy(LoadedSkill::name)
+      .map { skill ->
+        SkillSourceInspectionCandidate(
+          name = skill.name,
+          description = skill.metadata.skillSpec.description,
+          relativePath = relativePathFromRoot(
+            root = relativeRoot,
+            file = skill.source.skillFile,
+          ) ?: skill.source.relativePath,
+        )
+      }
+    return SkillSourceInspectionResult(
+      sourceType = sourceType,
+      sourceRef = sourceRef,
+      candidates = candidates,
+      sourcePath = sourcePath,
+      resolvedRevision = resolvedRevision,
+      resolvedCommitSha = resolvedCommitSha,
+    )
+  }
+
+  private fun installSelectedSkills(
+    selections: List<LoadedSkill>,
+    sourceType: String,
+    sourceRef: String,
+    sourcePath: String? = null,
+    relativeRoot: File,
+    resolvedRevision: String? = null,
+    resolvedCommitSha: String? = null,
+  ): SkillPackageBatchInstallResult {
+    val entries = selections.map { skill ->
+      try {
+        val staged = stageSkillDirectory(File(skill.source.skillDirectoryPath))
+        try {
+          val result = installValidatedSkill(
+            manifest = refreshManifest(),
+            stagedSkillDirectory = staged.skillDirectory,
+            expectedSkillId = skill.name,
+            sourceType = sourceType,
+            sourceRef = sourceRef,
+            sourcePath = sourcePath,
+            sourceRelativePath = relativePathFromRoot(
+              root = relativeRoot,
+              file = skill.source.skillFile,
+            ) ?: skill.source.relativePath,
+            resolvedRevision = resolvedRevision,
+            resolvedCommitSha = resolvedCommitSha,
+          )
+          SkillPackageBatchInstallEntry(
+            requestedSkillName = skill.name,
+            installedSkillId = result.skillId,
+            manifestEntry = result.manifestEntry,
+          )
+        } finally {
+          staged.rootDirectory.deleteRecursively()
+        }
+      } catch (error: SkillPackageException) {
+        SkillPackageBatchInstallEntry(
+          requestedSkillName = skill.name,
+          errorCode = error.errorCode,
+          errorMessage = error.message,
+        )
+      } catch (error: Exception) {
+        SkillPackageBatchInstallEntry(
+          requestedSkillName = skill.name,
+          errorCode = "SKILL_BATCH_INSTALL_FAILED",
+          errorMessage = error.message ?: error::class.java.simpleName,
+        )
+      }
+    }
+    return SkillPackageBatchInstallResult(
+      sourceType = sourceType,
+      sourceRef = sourceRef,
+      entries = entries,
+      sourcePath = sourcePath,
+      resolvedRevision = resolvedRevision,
+      resolvedCommitSha = resolvedCommitSha,
+    )
+  }
+
+  private fun selectSkillsFromRoot(
+    searchRoot: File,
+    requestedSkillNames: List<String>,
+    installAll: Boolean,
+    sourceHint: String,
+    sourceRef: String,
+  ): List<LoadedSkill> {
+    val report = SkillLoader.load(searchRoot)
+    if (report.loadedSkills.isEmpty()) {
+      val invalidDetail = report.invalidSkills.firstOrNull()?.detail
+      throw SkillPackageException(
+        errorCode = "SKILL_SOURCE_INVALID",
+        message = invalidDetail ?: "Source '$sourceRef' did not contain any valid skills.",
+      )
+    }
+    val normalizedRequestedSkillNames = requestedSkillNames
+      .asSequence()
+      .map(String::trim)
+      .filter(String::isNotBlank)
+      .distinct()
+      .toList()
+    if (normalizedRequestedSkillNames.isNotEmpty()) {
+      return normalizedRequestedSkillNames.map { requestedSkillName ->
+        report.registry.get(requestedSkillName) ?: throw SkillPackageException(
+          errorCode = "SKILL_NOT_FOUND",
+          message = "Skill '$requestedSkillName' was not found in source '$sourceRef'.",
+        )
+      }
+    }
+    if (installAll) {
+      return report.loadedSkills.sortedBy(LoadedSkill::name)
+    }
+    if (report.loadedSkills.size == 1) {
+      return listOf(report.loadedSkills.single())
+    }
+    report.registry.get(sourceHint)?.let { return listOf(it) }
+    report.loadedSkills.firstOrNull { skill ->
+      File(skill.source.skillDirectoryPath).name.equals(sourceHint, ignoreCase = true)
+    }?.let { return listOf(it) }
+    throw SkillPackageException(
+      errorCode = "SKILL_SELECTION_AMBIGUOUS",
+      message = "Source '$sourceRef' contains multiple skills. Specify skills explicitly or set install_all to true.",
+    )
+  }
+
   private fun selectSkillFromRoot(
     searchRoot: File,
     selectedSkillName: String?,
@@ -635,4 +1459,13 @@ data class SkillPackageInstallAttempt(
 ) {
   val succeeded: Boolean
     get() = result != null
+}
+
+data class SkillPackageBatchInstallAttempt(
+  val result: SkillPackageBatchInstallResult? = null,
+  val errorCode: String? = null,
+  val errorMessage: String? = null,
+) {
+  val succeeded: Boolean
+    get() = result != null && errorCode == null
 }

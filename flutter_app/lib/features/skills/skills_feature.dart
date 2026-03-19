@@ -255,8 +255,9 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
               ) ...[
                 _SourceRow(
                   source: _snapshot.installSources[index],
-                  onTap: () =>
-                      _handleInstallSource(_snapshot.installSources[index]),
+                  onTap: () {
+                    _handleInstallSource(_snapshot.installSources[index]);
+                  },
                 ),
                 if (index < _snapshot.installSources.length - 1)
                   const Divider(
@@ -466,8 +467,11 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
   Future<void> _installFromSource(
     String sourceRef, {
     String? fallbackName,
+    String selectedSkillName = '',
+    bool showMessage = true,
   }) async {
     final normalizedSourceRef = sourceRef.trim();
+    final normalizedSelectedSkillName = selectedSkillName.trim();
     if (normalizedSourceRef.isEmpty) {
       return;
     }
@@ -477,22 +481,28 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
     try {
       final message = await widget.bridge.installSkillSource(
         normalizedSourceRef,
+        selectedSkillName: normalizedSelectedSkillName,
       );
-      if (mounted && message != null && message.isNotEmpty) {
+      if (mounted && showMessage && message != null && message.isNotEmpty) {
         _showMessage(message);
       }
       if (mounted && _query.trim() == normalizedSourceRef) {
         _searchController.clear();
       }
+      return;
     } catch (error) {
-      if (mounted) {
+      if (mounted && showMessage) {
         _showMessage(
           _errorMessage(error) ??
               widget.copy.skillsInstallFailed(
-                fallbackName ?? normalizedSourceRef,
+                fallbackName ??
+                    (normalizedSelectedSkillName.isNotEmpty
+                        ? normalizedSelectedSkillName
+                        : normalizedSourceRef),
               ),
         );
       }
+      rethrow;
     } finally {
       if (mounted && _pendingInstallSourceRef == normalizedSourceRef) {
         setState(() {
@@ -502,11 +512,256 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
     }
   }
 
-  void _handleInstallSource(OpenCraySkillInstallSourceSnapshot source) {
-    if (source.id == 'curated-library' && _searchController.text.isNotEmpty) {
-      _searchController.clear();
+  Future<void> _handleInstallSource(
+    OpenCraySkillInstallSourceSnapshot source,
+  ) async {
+    if (!source.isAvailable) {
+      _showMessage(source.subtitle);
+      return;
     }
-    _showMessage(source.subtitle);
+    if (source.id == 'curated-library') {
+      if (_searchController.text.isNotEmpty) {
+        _searchController.clear();
+      }
+      return;
+    }
+    final sourceRef = await _promptInstallSource(source);
+    if (!mounted || sourceRef == null) {
+      return;
+    }
+    final normalizedSourceRef = sourceRef.trim();
+    if (normalizedSourceRef.isEmpty) {
+      return;
+    }
+    try {
+      final inspection = await widget.bridge.inspectSkillSource(
+        normalizedSourceRef,
+      );
+      if (!mounted) {
+        return;
+      }
+      if (inspection.candidates.isEmpty) {
+        _showMessage(widget.copy.skillsNoInstallableSkills(normalizedSourceRef));
+        return;
+      }
+      if (inspection.candidates.length == 1) {
+        final candidate = inspection.candidates.single;
+        await _installFromSource(
+          normalizedSourceRef,
+          fallbackName: candidate.name,
+          selectedSkillName: candidate.name,
+        );
+        return;
+      }
+      final selectedSkillNames = await _promptSkillSelection(inspection);
+      if (!mounted || selectedSkillNames == null || selectedSkillNames.isEmpty) {
+        return;
+      }
+      await _installSelectedSkills(
+        sourceRef: normalizedSourceRef,
+        selectedSkillNames: selectedSkillNames,
+      );
+    } catch (error) {
+      if (mounted) {
+        _showMessage(
+          _errorMessage(error) ??
+              widget.copy.skillsInspectFailed(normalizedSourceRef),
+        );
+      }
+    }
+  }
+
+  Future<String?> _promptInstallSource(
+    OpenCraySkillInstallSourceSnapshot source,
+  ) async {
+    final initialValue = _searchController.text.trim();
+    var draftValue = initialValue;
+    final submitted = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text(widget.copy.skillsInspectSourceTitle(source.title)),
+          content: SizedBox(
+            width: 520,
+            child: TextFormField(
+              initialValue: initialValue,
+              autofocus: true,
+              decoration: InputDecoration(
+                labelText: widget.copy.skillsSourceInputLabel(source.title),
+                hintText: widget.copy.skillsSourceInputHint(source.id),
+              ),
+              onChanged: (value) {
+                draftValue = value;
+              },
+              onFieldSubmitted: (value) {
+                Navigator.of(context).pop(value.trim());
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text(widget.copy.skillsCancelAction),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(draftValue.trim()),
+              child: Text(widget.copy.skillsInspectButton),
+            ),
+          ],
+        );
+      },
+    );
+    return submitted?.trim().isEmpty == true ? null : submitted?.trim();
+  }
+
+  Future<List<String>?> _promptSkillSelection(
+    OpenCraySkillSourceInspectionSnapshot inspection,
+  ) async {
+    final selectedNames = inspection.candidates
+        .map((candidate) => candidate.name)
+        .toSet();
+    return showDialog<List<String>>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            final allSelected =
+                selectedNames.length == inspection.candidates.length;
+            return AlertDialog(
+              title: Text(
+                widget.copy.skillsSelectSkillsTitle(inspection.sourceRef),
+              ),
+              content: SizedBox(
+                width: 520,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 420),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.copy.skillsSelectSkillsBody(
+                            inspection.sourceRef,
+                          ),
+                          style: const TextStyle(
+                            fontSize: 14,
+                            height: 1.35,
+                            color: _textSecondary,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        CheckboxListTile(
+                          contentPadding: EdgeInsets.zero,
+                          value: allSelected,
+                          controlAffinity: ListTileControlAffinity.leading,
+                          title: Text(widget.copy.skillsSelectAllAction),
+                          onChanged: (_) {
+                            setState(() {
+                              if (allSelected) {
+                                selectedNames.clear();
+                              } else {
+                                selectedNames
+                                  ..clear()
+                                  ..addAll(
+                                    inspection.candidates.map(
+                                      (candidate) => candidate.name,
+                                    ),
+                                  );
+                              }
+                            });
+                          },
+                        ),
+                        const Divider(height: 1, color: _border),
+                        for (final candidate in inspection.candidates)
+                          CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            value: selectedNames.contains(candidate.name),
+                            controlAffinity: ListTileControlAffinity.leading,
+                            title: Text(candidate.name),
+                            subtitle: Text(
+                              candidate.description.isEmpty
+                                  ? candidate.relativePath
+                                  : '${candidate.description}\n${candidate.relativePath}',
+                            ),
+                            onChanged: (_) {
+                              setState(() {
+                                if (selectedNames.contains(candidate.name)) {
+                                  selectedNames.remove(candidate.name);
+                                } else {
+                                  selectedNames.add(candidate.name);
+                                }
+                              });
+                            },
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: Text(widget.copy.skillsCancelAction),
+                ),
+                FilledButton(
+                  onPressed: selectedNames.isEmpty
+                      ? null
+                      : () {
+                          final orderedSelection = inspection.candidates
+                              .map((candidate) => candidate.name)
+                              .where(selectedNames.contains)
+                              .toList(growable: false);
+                          Navigator.of(context).pop(orderedSelection);
+                        },
+                  child: Text(
+                    widget.copy.skillsInstallSelectedAction(
+                      selectedNames.length,
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _installSelectedSkills({
+    required String sourceRef,
+    required List<String> selectedSkillNames,
+  }) async {
+    final normalizedSelectedSkillNames = selectedSkillNames
+        .map((skillName) => skillName.trim())
+        .where((skillName) => skillName.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    if (normalizedSelectedSkillNames.isEmpty) {
+      return;
+    }
+    try {
+      await widget.bridge.installSkillSourceBatch(
+        sourceRef,
+        selectedSkillNames: normalizedSelectedSkillNames,
+      );
+      if (!mounted) {
+        return;
+      }
+      _showMessage(
+        widget.copy.skillsInstallBatchSummary(
+          normalizedSelectedSkillNames.length,
+          normalizedSelectedSkillNames.length,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      _showMessage(
+        _errorMessage(error) ?? widget.copy.skillsInstallFailed(sourceRef),
+      );
+    }
   }
 
   String? _errorMessage(Object error) {
@@ -582,7 +837,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
                       label: widget.copy.skillsUpdateAction,
                       onTap: () {
                         Navigator.of(context).pop();
-                        _refreshSkills();
+                        _updateInstalledSkill(skill);
                       },
                     ),
                     _ActionRow(
@@ -682,15 +937,19 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
     }
   }
 
-  Future<void> _refreshSkills() async {
+  Future<void> _updateInstalledSkill(
+    OpenCrayInstalledSkillSnapshot skill,
+  ) async {
     try {
-      final message = await widget.bridge.refreshSkills();
+      final message = await widget.bridge.updateInstalledSkill(skill.id);
       if (mounted && message != null && message.isNotEmpty) {
         _showMessage(message);
       }
-    } catch (_) {
+    } catch (error) {
       if (mounted) {
-        _showMessage(widget.copy.skillsRefreshFailed);
+        _showMessage(
+          _errorMessage(error) ?? widget.copy.skillsUpdateFailed(skill.name),
+        );
       }
     }
   }

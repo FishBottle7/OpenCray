@@ -43,15 +43,18 @@
     <string name="skills_install_source_curated_action_browse">浏览</string>
     <string name="skills_install_source_curated_action_empty">空</string>
     <string name="skills_install_source_local_title">本地路径</string>
-    <string name="skills_install_source_local_subtitle_ready">在搜索框里输入明确的本地路径或 SKILL.md 路径，然后直接安装。</string>
-    <string name="skills_install_source_git_title">GitHub 仓库</string>
-    <string name="skills_install_source_git_subtitle_ready">在搜索框里输入 owner/repo、gitlab:group/project/repo 或托管 Git URL，然后直接安装。</string>
-    <string name="skills_install_source_action_search">使用搜索</string>
+    <string name="skills_install_source_local_subtitle_ready">输入本地文件夹路径或 SKILL.md 路径，先检查，再安装一个或多个技能。</string>
+    <string name="skills_install_source_github_title">GitHub URL</string>
+    <string name="skills_install_source_github_subtitle_ready">输入 GitHub 仓库 URL 或 owner/repo，先检查，再安装一个或多个技能。</string>
+    <string name="skills_install_source_gitlab_title">GitLab URL</string>
+    <string name="skills_install_source_gitlab_subtitle_ready">输入 GitLab 仓库 URL 或 gitlab:group/project/repo，先检查，再安装一个或多个技能。</string>
+    <string name="skills_install_source_action_inspect">检查</string>
     <string name="skills_install_source_action_unavailable">不可用</string>
     <string name="skills_activate_curated_empty">这台设备上还没有本地技能目录。</string>
     <string name="skills_activate_curated_available">请使用搜索框和下方结果列表，从本地目录里安装技能。</string>
-    <string name="skills_activate_local_ready">在搜索框里输入本地路径，然后使用直接安装动作。</string>
-    <string name="skills_activate_git_ready">在搜索框里输入仓库引用或 URL，然后使用直接安装动作。</string>
+    <string name="skills_activate_local_ready">输入本地文件夹路径或 SKILL.md 路径来检查并安装技能。</string>
+    <string name="skills_activate_github_ready">输入 GitHub 仓库 URL 或 owner/repo 来检查并安装技能。</string>
+    <string name="skills_activate_gitlab_ready">输入 GitLab 仓库 URL 或 gitlab:group/project/repo 来检查并安装技能。</string>
     <string name="skills_activate_unknown">这个安装来源当前不可用。</string>
     <string name="skills_install_error_source_blank">请输入技能 id、source ref、URL 或本地路径。</string>
     <string name="skills_install_error_source_failed">无法从“%1$s”安装。</string>
@@ -169,6 +172,7 @@
     <string name="llm_error_base_url_scheme">Base URL 必须以 http:// 或 https:// 开头。</string>
     <string name="chat_agent_thinking">思考中…</string>
     <string name="chat_message_opencray">给 OpenCray 发消息</string>
+    <string name="chat_message_opencray_do_differently">换个方式说</string>
     <string name="chat_trace_thinking_active">正在分析请求，并决定下一步要做什么。</string>
     <string name="chat_trace_thinking_collapsed">已完成一轮思考。</string>
     <string name="chat_trace_tool_running">正在调用工具：%1$s</string>
@@ -305,4 +309,10 @@
     <string name="files_share_error_outside_workspace">只能分享当前工作区里的内容。</string>
     <string name="files_share_error_prepare_failed">准备分享内容时失败了。</string>
     <string name="files_share_error_launch_failed">无法打开系统分享面板。</string>
+    <string name="files_open_error_missing_entry">所选文件已经不存在了。</string>
+    <string name="files_open_error_not_file">这里只能打开文件，不能打开文件夹。</string>
+    <string name="files_open_error_no_target">这台设备上没有可用的打开方式。</string>
+    <string name="files_open_error_outside_workspace">只能打开当前工作区里的内容。</string>
+    <string name="files_open_error_prepare_failed">准备打开所选文件时失败了。</string>
+    <string name="files_open_error_launch_failed">无法打开所选文件。</string>
 </resources>

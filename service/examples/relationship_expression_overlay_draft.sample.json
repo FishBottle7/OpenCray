@@ -1,0 +1,57 @@
+{
+  "draft_id": "relationship_overlay_lin_v1",
+  "twin_id": "twin_lin_01",
+  "anchor_person_id": "actor_lin",
+  "generated_at": "2026-03-18T20:44:00+08:00",
+  "publish_target": "review_only",
+  "overall_confidence": 0.72,
+  "relationship_scope": "close_relationship",
+  "overlays": [
+    {
+      "counterpart_id": "actor_user",
+      "counterpart_name": "User",
+      "relationship_label": "daily_partner",
+      "relationship_concentration": 0.91,
+      "recurrence_score": 0.78,
+      "stability_score": 0.66,
+      "dominant_conflict_patterns": [
+        "boundary",
+        "repair"
+      ],
+      "narrative_moments": [
+        {
+          "theme": "tired_but_responsible",
+          "summary": "Frames the need for rest as proof that the relationship deserves clarity and mutual accountability.",
+          "confidence": 0.74,
+          "source_signal_ids": [
+            "sig_turn_0004_conflict_move_01",
+            "sig_turn_0041_repair_move_01"
+          ]
+        }
+      ],
+      "highlighted_scripts": [
+        {
+          "name": "late_repair",
+          "moves": [
+            "resume_contact",
+            "practical_language",
+            "light_reassurance"
+          ],
+          "relationship_scope": "close_relationship",
+          "recurrence_score": 0.69,
+          "observations": 3
+        }
+      ]
+    }
+  ],
+  "provenance": [
+    {
+      "field_path": "overlays[0].relationship_concentration",
+      "confidence": 0.78,
+      "supporting_signal_ids": [
+        "sig_turn_0004_conflict_move_01",
+        "sig_turn_0035_boundary_move_01"
+      ]
+    }
+  ]
+}

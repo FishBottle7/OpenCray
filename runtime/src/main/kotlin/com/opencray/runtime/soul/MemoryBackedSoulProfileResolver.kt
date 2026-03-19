@@ -51,6 +51,14 @@ data class RelationshipStateDebugProjection(
   val intimateAddressChecks: List<SoulGateCheck>,
   val intimacyPermissionBand: RelationshipBand,
   val playfulnessPermissionBand: RelationshipBand,
+  val supportiveReassuranceAllowed: Boolean,
+  val supportiveReassuranceChecks: List<SoulGateCheck>,
+  val proactiveRelationalCheckInAllowed: Boolean,
+  val proactiveRelationalCheckInChecks: List<SoulGateCheck>,
+  val lightPlayfulnessAllowed: Boolean,
+  val lightPlayfulnessChecks: List<SoulGateCheck>,
+  val playfulTeasingAllowed: Boolean,
+  val playfulTeasingChecks: List<SoulGateCheck>,
   val highIntimacyBehaviorAllowed: Boolean,
   val highIntimacyChecks: List<SoulGateCheck>,
   val playfulAffectionAllowed: Boolean,
@@ -80,15 +88,22 @@ class MemoryBackedSoulProfileResolver(
     val plasticity = resolvePlasticity(
       raw = baseProfile?.extensions?.get(SoulProfileExtensionKeys.PLASTICITY),
     )
-    val interactionPreferenceDebug = resolveEffectiveInteractionPreferenceProjection(
+    val interactionPreferenceProjection = resolveEffectiveInteractionPreferenceProjection(
       records = records,
       workspaceId = workspaceId,
-    )?.let(::buildInteractionPreferenceDebugProjection)
-    val relationshipStateDebug = resolveEffectiveRelationshipStateProjection(
+    )
+    val relationshipStateProjection = resolveEffectiveRelationshipStateProjection(
       records = records,
       plasticity = plasticity,
       workspaceId = workspaceId,
-    )?.let(::buildRelationshipStateDebugProjection)
+    )
+    val interactionPreferenceDebug = interactionPreferenceProjection?.let(::buildInteractionPreferenceDebugProjection)
+    val relationshipStateDebug = relationshipStateProjection?.let { projection ->
+      buildRelationshipStateDebugProjection(
+        projection = projection,
+        interactionPreferenceState = interactionPreferenceProjection?.projection?.state,
+      )
+    }
     return SoulOverlayDebugInfo(
       effectiveProfile = effectiveProfile,
       interactionPreferenceDebug = interactionPreferenceDebug,
@@ -136,21 +151,22 @@ class MemoryBackedSoulProfileResolver(
       voice = baseProfile?.voice,
       extensions = baseProfile?.extensions.orEmpty().toMutableMap(),
     )
-    applyProjectedInteractionPreferenceState(
+    val interactionPreferenceProjection = resolveEffectiveInteractionPreferenceProjection(
       records = records,
       workspaceId = workspaceId,
+    )
+    applyProjectedInteractionPreferenceState(
+      projection = interactionPreferenceProjection,
       overlayState = overlayState,
     )
     applyProjectedRelationshipState(
       records = records,
       plasticity = plasticity,
       workspaceId = workspaceId,
+      interactionPreferenceState = interactionPreferenceProjection?.projection?.state,
       overlayState = overlayState,
     )
     applicablePreferences
-      .filterNot { preference ->
-        preference.key == MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE
-      }
       .sortedWith(
         compareBy<ApplicableSoulPreference> { preference ->
           preference.scopePriority
@@ -285,16 +301,12 @@ class MemoryBackedSoulProfileResolver(
   }
 
   private fun applyProjectedInteractionPreferenceState(
-    records: List<MemoryRecord>,
-    workspaceId: String?,
+    projection: ScopedProjectedInteractionPreferenceState?,
     overlayState: MutableSoulOverlay,
   ): Boolean {
-    val projection = resolveEffectiveInteractionPreferenceProjection(
-      records = records,
-      workspaceId = workspaceId,
-    ) ?: return false
+    val effectiveProjection = projection ?: return false
     applyInteractionPreferenceState(
-      state = projection.projection.state,
+      state = effectiveProjection.projection.state,
       overlayState = overlayState,
     )
     return true
@@ -304,6 +316,7 @@ class MemoryBackedSoulProfileResolver(
     records: List<MemoryRecord>,
     plasticity: SoulPlasticity,
     workspaceId: String?,
+    interactionPreferenceState: InteractionPreferenceState?,
     overlayState: MutableSoulOverlay,
   ) {
     val projection = resolveEffectiveRelationshipStateProjection(
@@ -311,7 +324,10 @@ class MemoryBackedSoulProfileResolver(
       plasticity = plasticity,
       workspaceId = workspaceId,
     ) ?: return
-    val derivation = deriveRelationshipStateEffect(projection.projection.state)
+    val derivation = deriveRelationshipStateEffect(
+      state = projection.projection.state,
+      interactionPreferenceState = interactionPreferenceState,
+    )
 
     if (derivation.supportiveStyleUnlocked) {
       overlayState.extensions[SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE] = "supportive"
@@ -331,6 +347,14 @@ class MemoryBackedSoulProfileResolver(
       derivation.intimacyPermissionBand.name.lowercase()
     overlayState.extensions[SoulProfileExtensionKeys.PLAYFULNESS_PERMISSION_BAND] =
       derivation.playfulnessPermissionBand.name.lowercase()
+    overlayState.extensions[SoulProfileExtensionKeys.SUPPORTIVE_REASSURANCE_ALLOWED] =
+      derivation.supportiveReassuranceAllowed.toString()
+    overlayState.extensions[SoulProfileExtensionKeys.PROACTIVE_RELATIONAL_CHECK_IN_ALLOWED] =
+      derivation.proactiveRelationalCheckInAllowed.toString()
+    overlayState.extensions[SoulProfileExtensionKeys.LIGHT_PLAYFULNESS_ALLOWED] =
+      derivation.lightPlayfulnessAllowed.toString()
+    overlayState.extensions[SoulProfileExtensionKeys.PLAYFUL_TEASING_ALLOWED] =
+      derivation.playfulTeasingAllowed.toString()
     overlayState.extensions[SoulProfileExtensionKeys.HIGH_INTIMACY_BEHAVIOR_ALLOWED] =
       derivation.highIntimacyBehaviorAllowed.toString()
     overlayState.extensions[SoulProfileExtensionKeys.PLAYFUL_AFFECTION_ALLOWED] =
@@ -348,6 +372,31 @@ class MemoryBackedSoulProfileResolver(
       overlayState.extensions[SoulProfileExtensionKeys.PREFERRED_ADDRESS_STYLE] =
         preferredAddressStyle.name.lowercase()
     }
+    overlayPreferenceOffset(
+      key = SoulProfileExtensionKeys.WARMTH_PREFERENCE_OFFSET,
+      offset = state.warmth.offset,
+      overlayState = overlayState,
+    )
+    overlayPreferenceOffset(
+      key = SoulProfileExtensionKeys.FORMALITY_PREFERENCE_OFFSET,
+      offset = state.formality.offset,
+      overlayState = overlayState,
+    )
+    overlayPreferenceOffset(
+      key = SoulProfileExtensionKeys.INITIATIVE_PREFERENCE_OFFSET,
+      offset = state.initiative.offset,
+      overlayState = overlayState,
+    )
+    overlayPreferenceOffset(
+      key = SoulProfileExtensionKeys.PLAYFULNESS_PREFERENCE_OFFSET,
+      offset = state.playfulness.offset,
+      overlayState = overlayState,
+    )
+    overlayPreferenceOffset(
+      key = SoulProfileExtensionKeys.REASSURANCE_PREFERENCE_OFFSET,
+      offset = state.reassurance.offset,
+      overlayState = overlayState,
+    )
     when (state.activeRelationshipStyleOrNull()) {
       "warm" -> {
         overlayState.extensions[SoulProfileExtensionKeys.TONE] = "warm"
@@ -361,6 +410,14 @@ class MemoryBackedSoulProfileResolver(
         overlayState.extensions[SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE] = "direct"
       }
     }
+  }
+
+  private fun overlayPreferenceOffset(
+    key: String,
+    offset: Int,
+    overlayState: MutableSoulOverlay,
+  ) {
+    overlayState.extensions[key] = offset.toString()
   }
 
   private fun applyScalarOverlay(
@@ -487,8 +544,12 @@ class MemoryBackedSoulProfileResolver(
 
   private fun buildRelationshipStateDebugProjection(
     projection: ScopedProjectedRelationshipState,
+    interactionPreferenceState: InteractionPreferenceState?,
   ): RelationshipStateDebugProjection {
-    val derivation = deriveRelationshipStateEffect(projection.projection.state)
+    val derivation = deriveRelationshipStateEffect(
+      state = projection.projection.state,
+      interactionPreferenceState = interactionPreferenceState,
+    )
     return RelationshipStateDebugProjection(
       sourceScope = projection.scope,
       snapshotRecordId = projection.projection.snapshotRecordId,
@@ -504,6 +565,14 @@ class MemoryBackedSoulProfileResolver(
       intimateAddressChecks = derivation.intimateAddressChecks,
       intimacyPermissionBand = derivation.intimacyPermissionBand,
       playfulnessPermissionBand = derivation.playfulnessPermissionBand,
+      supportiveReassuranceAllowed = derivation.supportiveReassuranceAllowed,
+      supportiveReassuranceChecks = derivation.supportiveReassuranceChecks,
+      proactiveRelationalCheckInAllowed = derivation.proactiveRelationalCheckInAllowed,
+      proactiveRelationalCheckInChecks = derivation.proactiveRelationalCheckInChecks,
+      lightPlayfulnessAllowed = derivation.lightPlayfulnessAllowed,
+      lightPlayfulnessChecks = derivation.lightPlayfulnessChecks,
+      playfulTeasingAllowed = derivation.playfulTeasingAllowed,
+      playfulTeasingChecks = derivation.playfulTeasingChecks,
       highIntimacyBehaviorAllowed = derivation.highIntimacyBehaviorAllowed,
       highIntimacyChecks = derivation.highIntimacyChecks,
       playfulAffectionAllowed = derivation.playfulAffectionAllowed,
@@ -630,11 +699,17 @@ class MemoryBackedSoulProfileResolver(
 
   private fun deriveRelationshipStateEffect(
     state: RelationshipState,
+    interactionPreferenceState: InteractionPreferenceState? = null,
   ): RelationshipStateDerivation {
     val recentNegativeGuardActive = hasRecentRelationshipNegativeGuard(
       state = state,
       nowEpochMs = clock(),
     )
+    val initiativePreferenceOffset = interactionPreferenceState.preferenceOffsetFor(InteractionPreferenceAxis.INITIATIVE)
+    val playfulnessPreferenceOffset =
+      interactionPreferenceState.preferenceOffsetFor(InteractionPreferenceAxis.PLAYFULNESS)
+    val reassurancePreferenceOffset =
+      interactionPreferenceState.preferenceOffsetFor(InteractionPreferenceAxis.REASSURANCE)
     val supportiveStyleChecks = listOf(
       thresholdCheck("familiarity", state.familiarity, SUPPORTIVE_FAMILIARITY_THRESHOLD),
       thresholdCheck("trust", state.trust, SUPPORTIVE_TRUST_THRESHOLD),
@@ -651,6 +726,67 @@ class MemoryBackedSoulProfileResolver(
       thresholdCheck("intimacy_permission", state.intimacyPermission, FRIENDLY_ADDRESS_INTIMACY_THRESHOLD),
       thresholdCheck("trust", state.trust, FRIENDLY_ADDRESS_TRUST_THRESHOLD),
       thresholdCheck("safety", state.safety, FRIENDLY_ADDRESS_SAFETY_THRESHOLD),
+    )
+    val supportiveReassuranceChecks = listOf(
+      thresholdCheck("familiarity", state.familiarity, SUPPORTIVE_REASSURANCE_FAMILIARITY_THRESHOLD),
+      thresholdCheck("trust", state.trust, SUPPORTIVE_REASSURANCE_TRUST_THRESHOLD),
+      thresholdCheck("safety", state.safety, SUPPORTIVE_REASSURANCE_SAFETY_THRESHOLD),
+      thresholdCheck(
+        "reassurance_preference_offset",
+        reassurancePreferenceOffset,
+        SUPPORTIVE_REASSURANCE_PREFERENCE_THRESHOLD,
+      ),
+    )
+    val proactiveRelationalCheckInChecks = listOf(
+      thresholdCheck("familiarity", state.familiarity, PROACTIVE_CHECK_IN_FAMILIARITY_THRESHOLD),
+      thresholdCheck("trust", state.trust, PROACTIVE_CHECK_IN_TRUST_THRESHOLD),
+      thresholdCheck("safety", state.safety, PROACTIVE_CHECK_IN_SAFETY_THRESHOLD),
+      thresholdCheck("reciprocity", state.reciprocity, PROACTIVE_CHECK_IN_RECIPROCITY_THRESHOLD),
+      thresholdCheck(
+        "initiative_preference_offset",
+        initiativePreferenceOffset,
+        PROACTIVE_CHECK_IN_PREFERENCE_THRESHOLD,
+      ),
+      booleanCheck(
+        key = "recent_negative_guard_inactive",
+        actual = !recentNegativeGuardActive,
+      ),
+    )
+    val lightPlayfulnessChecks = listOf(
+      thresholdCheck(
+        "playfulness_permission",
+        state.playfulnessPermission,
+        LIGHT_PLAYFULNESS_PERMISSION_THRESHOLD,
+      ),
+      thresholdCheck("safety", state.safety, LIGHT_PLAYFULNESS_SAFETY_THRESHOLD),
+      thresholdCheck(
+        "playfulness_preference_offset",
+        playfulnessPreferenceOffset,
+        LIGHT_PLAYFULNESS_PREFERENCE_THRESHOLD,
+      ),
+      booleanCheck(
+        key = "recent_negative_guard_inactive",
+        actual = !recentNegativeGuardActive,
+      ),
+    )
+    val playfulTeasingChecks = listOf(
+      thresholdCheck(
+        "playfulness_permission",
+        state.playfulnessPermission,
+        PLAYFUL_TEASING_PERMISSION_THRESHOLD,
+      ),
+      thresholdCheck("trust", state.trust, PLAYFUL_TEASING_TRUST_THRESHOLD),
+      thresholdCheck("safety", state.safety, PLAYFUL_TEASING_SAFETY_THRESHOLD),
+      thresholdCheck("reciprocity", state.reciprocity, PLAYFUL_TEASING_RECIPROCITY_THRESHOLD),
+      thresholdCheck(
+        "playfulness_preference_offset",
+        playfulnessPreferenceOffset,
+        PLAYFUL_TEASING_PREFERENCE_THRESHOLD,
+      ),
+      booleanCheck(
+        key = "recent_negative_guard_inactive",
+        actual = !recentNegativeGuardActive,
+      ),
     )
     val intimateAddressChecks = listOf(
       thresholdCheck("intimacy_permission", state.intimacyPermission, INTIMATE_ADDRESS_INTIMACY_THRESHOLD),
@@ -682,6 +818,11 @@ class MemoryBackedSoulProfileResolver(
       ),
       thresholdCheck("safety", state.safety, PLAYFUL_AFFECTION_SAFETY_THRESHOLD),
       thresholdCheck("reciprocity", state.reciprocity, PLAYFUL_AFFECTION_RECIPROCITY_THRESHOLD),
+      thresholdCheck(
+        "playfulness_preference_offset",
+        playfulnessPreferenceOffset,
+        PLAYFUL_AFFECTION_PREFERENCE_THRESHOLD,
+      ),
       booleanCheck(
         key = "recent_negative_guard_inactive",
         actual = !recentNegativeGuardActive,
@@ -697,6 +838,10 @@ class MemoryBackedSoulProfileResolver(
     }
     val intimacyPermissionBand = state.bandFor(RelationshipDimension.INTIMACY_PERMISSION)
     val playfulnessPermissionBand = state.bandFor(RelationshipDimension.PLAYFULNESS_PERMISSION)
+    val supportiveReassuranceAllowed = supportiveReassuranceChecks.all(SoulGateCheck::passed)
+    val proactiveRelationalCheckInAllowed = proactiveRelationalCheckInChecks.all(SoulGateCheck::passed)
+    val lightPlayfulnessAllowed = lightPlayfulnessChecks.all(SoulGateCheck::passed)
+    val playfulTeasingAllowed = playfulTeasingChecks.all(SoulGateCheck::passed)
     val highIntimacyBehaviorAllowed = highIntimacyChecks.all(SoulGateCheck::passed)
     val playfulAffectionAllowed = playfulAffectionChecks.all(SoulGateCheck::passed)
 
@@ -711,11 +856,27 @@ class MemoryBackedSoulProfileResolver(
       intimateAddressChecks = intimateAddressChecks,
       intimacyPermissionBand = intimacyPermissionBand,
       playfulnessPermissionBand = playfulnessPermissionBand,
+      supportiveReassuranceAllowed = supportiveReassuranceAllowed,
+      supportiveReassuranceChecks = supportiveReassuranceChecks,
+      proactiveRelationalCheckInAllowed = proactiveRelationalCheckInAllowed,
+      proactiveRelationalCheckInChecks = proactiveRelationalCheckInChecks,
+      lightPlayfulnessAllowed = lightPlayfulnessAllowed,
+      lightPlayfulnessChecks = lightPlayfulnessChecks,
+      playfulTeasingAllowed = playfulTeasingAllowed,
+      playfulTeasingChecks = playfulTeasingChecks,
       highIntimacyBehaviorAllowed = highIntimacyBehaviorAllowed,
       highIntimacyChecks = highIntimacyChecks,
       playfulAffectionAllowed = playfulAffectionAllowed,
       playfulAffectionChecks = playfulAffectionChecks,
     )
+  }
+
+  private fun InteractionPreferenceState?.preferenceOffsetFor(axis: InteractionPreferenceAxis): Int = when (axis) {
+    InteractionPreferenceAxis.WARMTH -> this?.warmth?.offset ?: 0
+    InteractionPreferenceAxis.FORMALITY -> this?.formality?.offset ?: 0
+    InteractionPreferenceAxis.INITIATIVE -> this?.initiative?.offset ?: 0
+    InteractionPreferenceAxis.PLAYFULNESS -> this?.playfulness?.offset ?: 0
+    InteractionPreferenceAxis.REASSURANCE -> this?.reassurance?.offset ?: 0
   }
 
   private fun thresholdCheck(
@@ -767,6 +928,14 @@ class MemoryBackedSoulProfileResolver(
     val intimateAddressChecks: List<SoulGateCheck>,
     val intimacyPermissionBand: RelationshipBand,
     val playfulnessPermissionBand: RelationshipBand,
+    val supportiveReassuranceAllowed: Boolean,
+    val supportiveReassuranceChecks: List<SoulGateCheck>,
+    val proactiveRelationalCheckInAllowed: Boolean,
+    val proactiveRelationalCheckInChecks: List<SoulGateCheck>,
+    val lightPlayfulnessAllowed: Boolean,
+    val lightPlayfulnessChecks: List<SoulGateCheck>,
+    val playfulTeasingAllowed: Boolean,
+    val playfulTeasingChecks: List<SoulGateCheck>,
     val highIntimacyBehaviorAllowed: Boolean,
     val highIntimacyChecks: List<SoulGateCheck>,
     val playfulAffectionAllowed: Boolean,
@@ -777,6 +946,23 @@ class MemoryBackedSoulProfileResolver(
     const val SUPPORTIVE_FAMILIARITY_THRESHOLD: Int = 25
     const val SUPPORTIVE_TRUST_THRESHOLD: Int = 25
     const val SUPPORTIVE_SAFETY_THRESHOLD: Int = 25
+    const val SUPPORTIVE_REASSURANCE_FAMILIARITY_THRESHOLD: Int = 20
+    const val SUPPORTIVE_REASSURANCE_TRUST_THRESHOLD: Int = 30
+    const val SUPPORTIVE_REASSURANCE_SAFETY_THRESHOLD: Int = 35
+    const val SUPPORTIVE_REASSURANCE_PREFERENCE_THRESHOLD: Int = 0
+    const val PROACTIVE_CHECK_IN_FAMILIARITY_THRESHOLD: Int = 35
+    const val PROACTIVE_CHECK_IN_TRUST_THRESHOLD: Int = 45
+    const val PROACTIVE_CHECK_IN_SAFETY_THRESHOLD: Int = 45
+    const val PROACTIVE_CHECK_IN_RECIPROCITY_THRESHOLD: Int = 25
+    const val PROACTIVE_CHECK_IN_PREFERENCE_THRESHOLD: Int = 0
+    const val LIGHT_PLAYFULNESS_PERMISSION_THRESHOLD: Int = 18
+    const val LIGHT_PLAYFULNESS_SAFETY_THRESHOLD: Int = 30
+    const val LIGHT_PLAYFULNESS_PREFERENCE_THRESHOLD: Int = 0
+    const val PLAYFUL_TEASING_PERMISSION_THRESHOLD: Int = 32
+    const val PLAYFUL_TEASING_TRUST_THRESHOLD: Int = 40
+    const val PLAYFUL_TEASING_SAFETY_THRESHOLD: Int = 50
+    const val PLAYFUL_TEASING_RECIPROCITY_THRESHOLD: Int = 30
+    const val PLAYFUL_TEASING_PREFERENCE_THRESHOLD: Int = 1
     const val FRIENDLY_ADDRESS_INTIMACY_THRESHOLD: Int = 25
     const val FRIENDLY_ADDRESS_TRUST_THRESHOLD: Int = 35
     const val FRIENDLY_ADDRESS_SAFETY_THRESHOLD: Int = 35
@@ -793,6 +979,7 @@ class MemoryBackedSoulProfileResolver(
     const val PLAYFUL_AFFECTION_PERMISSION_THRESHOLD: Int = 35
     const val PLAYFUL_AFFECTION_SAFETY_THRESHOLD: Int = 50
     const val PLAYFUL_AFFECTION_RECIPROCITY_THRESHOLD: Int = 35
+    const val PLAYFUL_AFFECTION_PREFERENCE_THRESHOLD: Int = 0
     const val RECENT_NEGATIVE_GUARD_WINDOW_MS: Long = 48L * 60L * 60L * 1000L
     const val WARM_TONE_TRUST_THRESHOLD: Int = 50
     const val WARM_TONE_SAFETY_THRESHOLD: Int = 50

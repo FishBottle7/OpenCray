@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opencray.local/service/schemas/judge_result_batch.schema.json",
+  "title": "JudgeResultBatch",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "mode",
+    "best_candidate_id",
+    "results"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "error"
+      ]
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "judge_candidates"
+      ]
+    },
+    "twin_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "best_candidate_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "result_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  }
+}

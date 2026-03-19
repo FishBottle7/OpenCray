@@ -1,0 +1,10 @@
+{
+  "operation": "preflight_scan",
+  "params": {
+    "source_mode": "chat_history",
+    "source_refs": [
+      "service/examples/chat_corpus.sample.json"
+    ],
+    "service_root": ".opencray/personality_service"
+  }
+}

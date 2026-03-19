@@ -9,7 +9,6 @@ import com.opencray.runtime.memory.MemoryPreferenceKeys
 import com.opencray.runtime.memory.MemoryRecordExtensionKeys
 import com.opencray.runtime.memory.MemoryScope
 import com.opencray.runtime.memory.MemoryStatus
-import com.opencray.runtime.memory.relationshipStyleSignalExtensions
 import com.opencray.runtime.memory.stableMemoryRecordId
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -19,7 +18,7 @@ class InteractionPreferenceMemoryWritePlannerTest {
   private val planner = InteractionPreferenceMemoryWritePlanner(clock = { 2_000L })
 
   @Test
-  fun planCreatesUpdatedUserSnapshotDirectlyFromRelationshipStyleCandidates() {
+  fun planCreatesUpdatedUserSnapshotDirectlyFromInteractionPreferenceCandidates() {
     val plan = planner.plan(
       existingRecords = listOf(
         interactionPreferenceStateRecord(
@@ -33,9 +32,13 @@ class InteractionPreferenceMemoryWritePlannerTest {
         ),
       ),
       sourceCandidates = listOf(
-        relationshipStylePreferenceCandidate(
+        interactionPreferenceSignalCandidate(
           scope = MemoryScope.USER,
-          preferenceValue = "warm",
+          preferenceValue = "warmth_higher__formality_lower",
+          preferenceExtensions = mapOf(
+            MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "higher",
+            MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "lower",
+          ),
         ),
       ),
       plasticity = SoulPlasticity.HIGH,
@@ -49,7 +52,7 @@ class InteractionPreferenceMemoryWritePlannerTest {
   }
 
   @Test
-  fun planCreatesUpdatedUserSnapshotFromRelationshipStyleSignals() {
+  fun planCreatesUpdatedUserSnapshotFromInteractionPreferenceSignals() {
     val plan = planner.plan(
       existingRecords = listOf(
         interactionPreferenceStateRecord(
@@ -63,12 +66,16 @@ class InteractionPreferenceMemoryWritePlannerTest {
         ),
       ),
       sourceRecords = listOf(
-        relationshipStylePreferenceRecord(
-          id = "relationship-warm",
+        interactionPreferenceSignalRecord(
+          id = "interaction-warm",
           scope = MemoryScope.USER,
-          preferenceValue = "warm",
+          preferenceValue = "warmth_higher__formality_lower",
           updatedAtEpochMs = 2_000L,
           recordVersion = 1L,
+          extraExtensions = mapOf(
+            MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "higher",
+            MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "lower",
+          ),
         ),
       ),
       plasticity = SoulPlasticity.HIGH,
@@ -86,11 +93,15 @@ class InteractionPreferenceMemoryWritePlannerTest {
     val plan = planner.plan(
       existingRecords = emptyList(),
       sourceRecords = listOf(
-        relationshipStylePreferenceRecord(
-          id = "relationship-workspace",
+        interactionPreferenceSignalRecord(
+          id = "interaction-workspace",
           scope = MemoryScope.WORKSPACE,
-          preferenceValue = "warm",
+          preferenceValue = "warmth_higher__formality_lower",
           updatedAtEpochMs = 2_000L,
+          extraExtensions = mapOf(
+            MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "higher",
+            MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "lower",
+          ),
         ),
       ),
       plasticity = SoulPlasticity.MEDIUM,
@@ -135,18 +146,26 @@ class InteractionPreferenceMemoryWritePlannerTest {
 
   @Test
   fun planPredictsNextSupportWeightFromExistingMatchingPreferenceWhenUsingCandidates() {
-    val incomingCandidate = relationshipStylePreferenceCandidate(
+    val incomingCandidate = interactionPreferenceSignalCandidate(
       scope = MemoryScope.USER,
-      preferenceValue = "warm",
+      preferenceValue = "warmth_higher__formality_lower",
+      preferenceExtensions = mapOf(
+        MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "higher",
+        MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "lower",
+      ),
     )
     val plan = planner.plan(
       existingRecords = listOf(
-        relationshipStylePreferenceRecord(
+        interactionPreferenceSignalRecord(
           id = stableMemoryRecordId(incomingCandidate),
           scope = MemoryScope.USER,
-          preferenceValue = "warm",
+          preferenceValue = "warmth_higher__formality_lower",
           updatedAtEpochMs = 1_500L,
           recordVersion = 2L,
+          extraExtensions = mapOf(
+            MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "higher",
+            MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "lower",
+          ),
         ),
       ),
       sourceCandidates = listOf(incomingCandidate),
@@ -161,14 +180,14 @@ class InteractionPreferenceMemoryWritePlannerTest {
   }
 
   @Test
-  fun planPrefersTypedRelationshipSignalExtensionsOverLegacyPreferenceValue() {
+  fun planProjectsInteractionPreferenceSignalsUsingTypedExtensionsOnly() {
     val plan = planner.plan(
       existingRecords = emptyList(),
       sourceRecords = listOf(
-        relationshipStylePreferenceRecord(
-          id = "relationship-conflicted",
+        interactionPreferenceSignalRecord(
+          id = "interaction-conflicted",
           scope = MemoryScope.USER,
-          preferenceValue = "warm",
+          preferenceValue = "adaptive",
           updatedAtEpochMs = 2_000L,
           extraExtensions = mapOf(
             MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "lower",
@@ -215,7 +234,35 @@ class InteractionPreferenceMemoryWritePlannerTest {
     assertEquals(1, snapshotState.initiative.lowerSupport)
   }
 
-  private fun relationshipStylePreferenceRecord(
+  @Test
+  fun planProjectsPlayfulnessAndReassuranceExtensionsIntoSnapshot() {
+    val plan = planner.plan(
+      existingRecords = emptyList(),
+      sourceRecords = listOf(
+        preferenceRecord(
+          id = "interaction-signal-rich",
+          scope = MemoryScope.USER,
+          preferenceKey = MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
+          preferenceValue = "adaptive",
+          updatedAtEpochMs = 2_000L,
+          extraExtensions = mapOf(
+            MemoryInteractionPreferenceExtensionKeys.PLAYFULNESS_DIRECTION to "higher",
+            MemoryInteractionPreferenceExtensionKeys.REASSURANCE_DIRECTION to "lower",
+          ),
+        ),
+      ),
+      plasticity = SoulPlasticity.HIGH,
+      sourceSessionId = "session-main",
+    )
+
+    val snapshotState = interactionPreferenceStateFrom(plan.stateSnapshotCandidates.single())
+    assertEquals(1, snapshotState.playfulness.offset)
+    assertEquals(1, snapshotState.playfulness.higherSupport)
+    assertEquals(-1, snapshotState.reassurance.offset)
+    assertEquals(1, snapshotState.reassurance.lowerSupport)
+  }
+
+  private fun interactionPreferenceSignalRecord(
     id: String,
     scope: MemoryScope,
     preferenceValue: String,
@@ -237,7 +284,7 @@ class InteractionPreferenceMemoryWritePlannerTest {
       MemoryRecordExtensionKeys.KIND to MemoryKind.USER_PREFERENCE.name.lowercase(),
       MemoryRecordExtensionKeys.SCOPE to scope.name.lowercase(),
       MemoryRecordExtensionKeys.STATUS to MemoryStatus.ACTIVE.name.lowercase(),
-      MemoryRecordExtensionKeys.PREFERENCE_KEY to MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE,
+      MemoryRecordExtensionKeys.PREFERENCE_KEY to MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
       MemoryRecordExtensionKeys.PREFERENCE_VALUE to preferenceValue,
       MemoryRecordExtensionKeys.LAST_CONFIRMED_AT_EPOCH_MS to updatedAtEpochMs.toString(),
     ) + extraExtensions,
@@ -272,21 +319,42 @@ class InteractionPreferenceMemoryWritePlannerTest {
     ) + extraExtensions,
   )
 
-  private fun relationshipStylePreferenceCandidate(
+  private fun interactionPreferenceSignalCandidate(
     scope: MemoryScope,
     preferenceValue: String,
+    preferenceExtensions: Map<String, String>,
   ): MemoryCandidate = MemoryCandidate(
     kind = MemoryKind.USER_PREFERENCE,
     scope = scope,
     status = MemoryStatus.ACTIVE,
-    content = "Relationship style should gradually move toward $preferenceValue",
+    content = "Interaction preference should gradually adapt: ${preferenceSummary(preferenceExtensions)}",
     source = MemoryEvidenceSource.USER_INPUT,
     sourceSessionId = "session-main",
     extensions = mapOf(
-      MemoryRecordExtensionKeys.PREFERENCE_KEY to MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE,
+      MemoryRecordExtensionKeys.PREFERENCE_KEY to MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
       MemoryRecordExtensionKeys.PREFERENCE_VALUE to preferenceValue,
-    ) + relationshipStyleSignalExtensions(preferenceValue),
+    ) + preferenceExtensions,
   )
+
+  private fun preferenceSummary(
+    preferenceExtensions: Map<String, String>,
+  ): String = buildList {
+    preferenceExtensions[MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION]?.let { direction ->
+      add("warmth $direction")
+    }
+    preferenceExtensions[MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION]?.let { direction ->
+      add("formality $direction")
+    }
+    preferenceExtensions[MemoryInteractionPreferenceExtensionKeys.INITIATIVE_DIRECTION]?.let { direction ->
+      add("initiative $direction")
+    }
+    preferenceExtensions[MemoryInteractionPreferenceExtensionKeys.PLAYFULNESS_DIRECTION]?.let { direction ->
+      add("playfulness $direction")
+    }
+    preferenceExtensions[MemoryInteractionPreferenceExtensionKeys.REASSURANCE_DIRECTION]?.let { direction ->
+      add("reassurance $direction")
+    }
+  }.joinToString(separator = ", ")
 
   private fun interactionPreferenceStateRecord(
     id: String,

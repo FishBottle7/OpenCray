@@ -90,6 +90,7 @@ class _ShellEntry extends StatefulWidget {
 }
 
 class _ShellEntryState extends State<_ShellEntry> {
+  late final ChatFeatureController _chatController = ChatFeatureController();
   late final FilesFeatureController _filesController = FilesFeatureController();
 
   @override
@@ -111,11 +112,13 @@ class _ShellEntryState extends State<_ShellEntry> {
           bridge: widget.bridge,
           initialSnapshot: shellSnapshot,
           initialTab: initialTab,
+          chatController: _chatController,
           filesController: _filesController,
           buildersForSnapshot: (snapshot) => _defaultBuilders(
             snapshot,
             bridge: widget.bridge,
             settingsInitialPage: widget.settingsInitialPage,
+            chatController: _chatController,
             filesController: _filesController,
           ),
         );
@@ -128,12 +131,17 @@ Map<OpenCrayTab, OpenCrayTabBuilder> _defaultBuilders(
   OpenCrayShellSnapshot snapshot, {
   required OpenCrayHostBridge bridge,
   required SettingsPage settingsInitialPage,
+  required ChatFeatureController chatController,
   required FilesFeatureController filesController,
 }) {
   final copy = OpenCrayUiCopy.fromLocaleTag(snapshot.localeTag);
   return {
-    OpenCrayTab.chat: (context, isActive) =>
-        OpenCrayChatFeature(bridge: bridge, copy: copy),
+    OpenCrayTab.chat: (context, isActive) => OpenCrayChatFeature(
+      bridge: bridge,
+      copy: copy,
+      isTabActive: isActive,
+      controller: chatController,
+    ),
     OpenCrayTab.skills: (context, isActive) =>
         SkillsFeatureScreen(bridge: bridge, copy: copy),
     OpenCrayTab.files: (context, isActive) => FilesFeatureScreen(

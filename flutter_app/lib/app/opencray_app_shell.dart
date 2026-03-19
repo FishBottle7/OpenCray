@@ -7,6 +7,7 @@ import '../core/bridge/opencray_host_bridge.dart';
 import '../core/copy/opencray_ui_copy.dart';
 import '../core/models/opencray_shell_snapshot.dart';
 import '../core/design/opencray_widgets.dart';
+import '../features/chat/chat_feature.dart';
 import '../features/files/files.dart';
 import 'opencray_tabs.dart';
 
@@ -24,6 +25,7 @@ class OpenCrayAppShell extends StatefulWidget {
     required this.initialSnapshot,
     required this.buildersForSnapshot,
     required this.initialTab,
+    required this.chatController,
     required this.filesController,
   });
 
@@ -31,6 +33,7 @@ class OpenCrayAppShell extends StatefulWidget {
   final OpenCrayShellSnapshot initialSnapshot;
   final OpenCrayTabBuilderFactory buildersForSnapshot;
   final OpenCrayTab initialTab;
+  final ChatFeatureController chatController;
   final FilesFeatureController filesController;
 
   @override
@@ -72,6 +75,11 @@ class _OpenCrayAppShellState extends State<OpenCrayAppShell> {
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) {
+          return;
+        }
+        if (_selectedTab == OpenCrayTab.chat &&
+            widget.chatController.consumeBackPress()) {
+          _lastBackPressedAt = null;
           return;
         }
         if (_selectedTab == OpenCrayTab.files &&

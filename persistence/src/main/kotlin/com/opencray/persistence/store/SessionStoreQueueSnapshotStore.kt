@@ -12,18 +12,16 @@ class SessionStoreQueueSnapshotStore(
 ) : SessionQueueSnapshotStore {
 
   override fun load(): SessionQueueSnapshot? {
-    val record = sessionStore.load() ?: return null
+    val record = safeLoadRecord() ?: return null
     val encodedSnapshot = record.state[StateKeys.QUEUE_SNAPSHOT_JSON] ?: return null
 
     return runCatching {
       ContractJson.instance.decodeFromString<SessionQueueSnapshot>(encodedSnapshot)
-    }.getOrElse { throwable ->
-      throw IllegalStateException("Failed to decode persisted queue snapshot.", throwable)
-    }
+    }.getOrNull()
   }
 
   override fun save(snapshot: SessionQueueSnapshot) {
-    val existing = sessionStore.load()
+    val existing = safeLoadRecord()
     val encodedSnapshot = ContractJson.instance.encodeToString(snapshot)
 
     val mergedState = existing?.state.orEmpty() + mapOf(
@@ -50,6 +48,9 @@ class SessionStoreQueueSnapshotStore(
   override fun clear() {
     sessionStore.clear()
   }
+
+  private fun safeLoadRecord(): SessionRecord? =
+    runCatching { sessionStore.load() }.getOrNull()
 
   object StateKeys {
     const val QUEUE_STATE: String = "queue_state"

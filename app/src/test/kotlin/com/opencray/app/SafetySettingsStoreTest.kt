@@ -33,6 +33,7 @@ class SafetySettingsStoreTest {
     assertFalse(state.recordingsEnabled)
     assertEquals(WorkspaceAccessProfile.WORK, state.workspaceAccessProfile)
     assertTrue(state.readOnlyOutsideWorkspace)
+    assertTrue(state.memoryToolsEnabled)
   }
 
   @Test
@@ -55,6 +56,7 @@ class SafetySettingsStoreTest {
       recordingsEnabled = true,
       workspaceAccessProfile = WorkspaceAccessProfile.OPEN,
       readOnlyOutsideWorkspace = false,
+      memoryToolsEnabled = false,
     )
 
     store.save(saved)
@@ -125,6 +127,7 @@ class SafetySettingsStoreTest {
         recordingsEnabled = false,
         workspaceAccessProfileId = WorkspaceAccessProfile.WORK.wireValue,
         readOnlyOutsideWorkspace = true,
+        memoryToolsEnabled = false,
       ),
     )
     val persisted = store.load()
@@ -133,6 +136,8 @@ class SafetySettingsStoreTest {
     assertFalse(snapshot.locations.first { it.id == "downloads" }.enabled)
     assertFalse(persisted.photoLibraryEnabled)
     assertFalse(persisted.downloadsEnabled)
+    assertFalse(snapshot.memoryToolsEnabled)
+    assertFalse(persisted.memoryToolsEnabled)
   }
 
   @Test
@@ -165,11 +170,14 @@ class SafetySettingsStoreTest {
         workspaceAccessProfileId = WorkspaceAccessProfile.WORK.wireValue,
         readOnlyOutsideWorkspace = true,
         liveContextModeId = LiveContextMode.NO_SOUL.wireValue,
+        memoryToolsEnabled = false,
       ),
     )
 
     assertEquals(LiveContextMode.NO_SOUL, snapshot.liveContextMode)
     assertEquals(LiveContextMode.NO_SOUL, facade.load().liveContextMode)
     assertEquals(LiveContextMode.NO_SOUL, liveContextModeStore.load())
+    assertFalse(snapshot.memoryToolsEnabled)
+    assertFalse(facade.load().memoryToolsEnabled)
   }
 }

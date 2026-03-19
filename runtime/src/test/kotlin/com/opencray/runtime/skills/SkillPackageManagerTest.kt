@@ -185,6 +185,50 @@ class SkillPackageManagerTest {
   }
 
   @Test
+  fun installFromRemoteSourceBatchInstallsRequestedSkillsWithSingleFetch() {
+    val managedRoot = temporaryFolder.newFolder("managed-remote-batch")
+    val catalogRoot = temporaryFolder.newFolder("catalog-remote-batch")
+    val manifestFile = File(temporaryFolder.root, "skills-manifest-remote-batch.json")
+    val manifestStore = SkillInstallManifestStore.fromFile(manifestFile)
+    val fetcher = FakeRemoteSkillSourceFetcher(
+      skillDirectoryName = "skills/find-skills",
+      skillName = "find-skills",
+      description = "Find skills from a remote source.",
+      extraSkills = listOf(
+        FakeRemoteSkill(
+          relativeDirectory = "skills/review-skills",
+          skillName = "review-skills",
+          description = "Review changes from a remote source.",
+        ),
+      ),
+    )
+    val packageManager = SkillPackageManager(
+      managedRoot = managedRoot,
+      catalogRoot = catalogRoot,
+      manifestStore = manifestStore,
+      remoteSourceFetcher = fetcher,
+      clock = { 55_000L },
+    )
+
+    val attempt = packageManager.installFromRemoteSourceBatch(
+      sourceRef = "roin-orca/skills",
+      selectedSkillNames = listOf("find-skills", "review-skills"),
+    )
+
+    assertTrue(attempt.succeeded)
+    val result = requireNotNull(attempt.result)
+    assertEquals(2, result.installedCount)
+    assertEquals(0, result.failedCount)
+    assertEquals(1, fetcher.fetchCount)
+    assertTrue(File(managedRoot, "find-skills").resolve("SKILL.md").isFile)
+    assertTrue(File(managedRoot, "review-skills").resolve("SKILL.md").isFile)
+    assertEquals(
+      listOf("find-skills", "review-skills"),
+      manifestStore.load().installations.map { entry -> entry.skillId },
+    )
+  }
+
+  @Test
   fun installFromLocalSourceCopiesSkillAndWritesLocalPathProvenance() {
     val managedRoot = temporaryFolder.newFolder("managed-local-source")
     val catalogRoot = temporaryFolder.newFolder("catalog-local-source")
@@ -221,6 +265,225 @@ class SkillPackageManagerTest {
     assertTrue(File(managedRoot, "find-skills").resolve("SKILL.md").isFile)
   }
 
+  @Test
+  fun inspectLocalSourceListsAllContainedSkills() {
+    val managedRoot = temporaryFolder.newFolder("managed-inspect-local")
+    val catalogRoot = temporaryFolder.newFolder("catalog-inspect-local")
+    val localSourceRoot = temporaryFolder.newFolder("local-source-inspect")
+    writeSkill(
+      root = localSourceRoot,
+      directoryName = "find-skills",
+      skillName = "find-skills",
+      description = "Find skills from a local source path.",
+      body = "Use the local source path.",
+    )
+    writeSkill(
+      root = localSourceRoot,
+      directoryName = "review-skills",
+      skillName = "review-skills",
+      description = "Review changes from a local source path.",
+      body = "Review the workspace.",
+    )
+    val manifestFile = File(temporaryFolder.root, "skills-manifest-inspect-local.json")
+    val manifestStore = SkillInstallManifestStore.fromFile(manifestFile)
+    val packageManager = SkillPackageManager(
+      managedRoot = managedRoot,
+      catalogRoot = catalogRoot,
+      manifestStore = manifestStore,
+    )
+
+    val attempt = packageManager.inspectLocalSource(
+      sourcePath = localSourceRoot,
+      sourceRef = "./local-source-inspect",
+    )
+
+    assertTrue(attempt.succeeded)
+    val result = requireNotNull(attempt.result)
+    assertEquals(SkillInstallSourceType.LOCAL_PATH.wireValue, result.sourceType)
+    assertEquals("./local-source-inspect", result.sourceRef)
+    assertEquals(2, result.candidates.size)
+    assertEquals(listOf("find-skills", "review-skills"), result.candidates.map { it.name })
+  }
+
+  @Test
+  fun inspectRemoteSourceListsAllContainedSkills() {
+    val managedRoot = temporaryFolder.newFolder("managed-inspect-remote")
+    val catalogRoot = temporaryFolder.newFolder("catalog-inspect-remote")
+    val manifestFile = File(temporaryFolder.root, "skills-manifest-inspect-remote.json")
+    val manifestStore = SkillInstallManifestStore.fromFile(manifestFile)
+    val packageManager = SkillPackageManager(
+      managedRoot = managedRoot,
+      catalogRoot = catalogRoot,
+      manifestStore = manifestStore,
+      remoteSourceFetcher = FakeRemoteSkillSourceFetcher(
+        skillDirectoryName = "skills/find-skills",
+        skillName = "find-skills",
+        description = "Find skills from a remote source.",
+        extraSkills = listOf(
+          FakeRemoteSkill(
+            relativeDirectory = "skills/review-skills",
+            skillName = "review-skills",
+            description = "Review changes from a remote source.",
+          ),
+        ),
+      ),
+    )
+
+    val attempt = packageManager.inspectRemoteSource("roin-orca/skills")
+
+    assertTrue(attempt.succeeded)
+    val result = requireNotNull(attempt.result)
+    assertEquals(SkillInstallSourceType.REMOTE_GITHUB.wireValue, result.sourceType)
+    assertEquals("roin-orca/skills", result.sourceRef)
+    assertEquals(2, result.candidates.size)
+    assertEquals(listOf("find-skills", "review-skills"), result.candidates.map { it.name })
+    assertEquals("main", result.resolvedRevision)
+    assertEquals("deadbeef", result.resolvedCommitSha)
+  }
+
+  @Test
+  fun checkInstalledSkillsDetectsCatalogUpdatesAndPersistsLastCheckedTime() {
+    val managedRoot = temporaryFolder.newFolder("managed-check-catalog")
+    val catalogRoot = temporaryFolder.newFolder("catalog-check-catalog")
+    writeSkill(
+      root = catalogRoot,
+      directoryName = "find-skills",
+      skillName = "find-skills",
+      description = "Find skills from the local catalog.",
+      body = "Use the local catalog.",
+    )
+    val manifestFile = File(temporaryFolder.root, "skills-manifest-check-catalog.json")
+    val manifestStore = SkillInstallManifestStore.fromFile(manifestFile)
+    var now = 70_000L
+    val packageManager = SkillPackageManager(
+      managedRoot = managedRoot,
+      catalogRoot = catalogRoot,
+      manifestStore = manifestStore,
+      clock = { now },
+    )
+    checkNotNull(packageManager.installFromCatalog("find-skills"))
+    writeSkill(
+      root = catalogRoot,
+      directoryName = "find-skills",
+      skillName = "find-skills",
+      description = "Find skills from the local catalog.",
+      body = "Use the updated catalog.",
+    )
+    now = 71_000L
+
+    val report = packageManager.checkInstalledSkills("find-skills")
+
+    assertEquals(1, report.results.size)
+    val result = report.results.single()
+    assertEquals(SkillPackageCheckStatus.UPDATE_AVAILABLE, result.status)
+    assertTrue(result.latestContentHash?.isNotBlank() == true)
+    assertEquals(71_000L, manifestStore.load().installations.single().lastCheckedAtEpochMs)
+  }
+
+  @Test
+  fun checkInstalledSkillsDetectsRemoteCommitUpdates() {
+    val managedRoot = temporaryFolder.newFolder("managed-check-remote")
+    val catalogRoot = temporaryFolder.newFolder("catalog-check-remote")
+    val manifestFile = File(temporaryFolder.root, "skills-manifest-check-remote.json")
+    val manifestStore = SkillInstallManifestStore.fromFile(manifestFile)
+    val packageManager = SkillPackageManager(
+      managedRoot = managedRoot,
+      catalogRoot = catalogRoot,
+      manifestStore = manifestStore,
+      remoteSourceInspector = FakeRemoteSkillSourceInspector(
+        resolvedRevision = "main",
+        resolvedCommitSha = "feedface",
+      ),
+      remoteSourceFetcher = FakeRemoteSkillSourceFetcher(
+        skillDirectoryName = "find-skills",
+        skillName = "find-skills",
+        description = "Find skills from a remote source.",
+      ),
+      clock = { 80_000L },
+    )
+    check(packageManager.installFromRemoteSource("roin-orca/skills@find-skills").succeeded)
+
+    val report = packageManager.checkInstalledSkills("find-skills")
+
+    assertEquals(1, report.results.size)
+    val result = report.results.single()
+    assertEquals(SkillPackageCheckStatus.UPDATE_AVAILABLE, result.status)
+    assertEquals("deadbeef", result.installedCommitSha)
+    assertEquals("feedface", result.latestCommitSha)
+  }
+
+  @Test
+  fun updateInstalledSkillsRefreshesCatalogInstallInPlace() {
+    val managedRoot = temporaryFolder.newFolder("managed-update-catalog")
+    val catalogRoot = temporaryFolder.newFolder("catalog-update-catalog")
+    writeSkill(
+      root = catalogRoot,
+      directoryName = "find-skills",
+      skillName = "find-skills",
+      description = "Find skills from the local catalog.",
+      body = "Use the local catalog.",
+    )
+    val manifestFile = File(temporaryFolder.root, "skills-manifest-update-catalog.json")
+    val manifestStore = SkillInstallManifestStore.fromFile(manifestFile)
+    var now = 90_000L
+    val packageManager = SkillPackageManager(
+      managedRoot = managedRoot,
+      catalogRoot = catalogRoot,
+      manifestStore = manifestStore,
+      clock = { now },
+    )
+    checkNotNull(packageManager.installFromCatalog("find-skills"))
+    writeSkill(
+      root = catalogRoot,
+      directoryName = "find-skills",
+      skillName = "find-skills",
+      description = "Find skills from the local catalog.",
+      body = "Use the refreshed catalog.",
+    )
+    now = 91_000L
+
+    val report = packageManager.checkInstalledSkills("find-skills")
+    val update = packageManager.updateInstalledSkills(report)
+
+    assertEquals(1, update.updatedCount)
+    assertEquals("Use the refreshed catalog.", File(managedRoot, "find-skills").resolve("SKILL.md").readLines().last())
+    assertEquals(91_000L, manifestStore.load().installations.single().updatedAtEpochMs)
+  }
+
+  @Test
+  fun updateInstalledSkillsRefreshesRemoteManifestCommit() {
+    val managedRoot = temporaryFolder.newFolder("managed-update-remote")
+    val catalogRoot = temporaryFolder.newFolder("catalog-update-remote")
+    val manifestFile = File(temporaryFolder.root, "skills-manifest-update-remote.json")
+    val manifestStore = SkillInstallManifestStore.fromFile(manifestFile)
+    var nextCommitSha = "deadbeef"
+    val packageManager = SkillPackageManager(
+      managedRoot = managedRoot,
+      catalogRoot = catalogRoot,
+      manifestStore = manifestStore,
+      remoteSourceInspector = FakeRemoteSkillSourceInspector(
+        resolvedRevision = "main",
+        resolvedCommitShaProvider = { nextCommitSha },
+      ),
+      remoteSourceFetcher = FakeRemoteSkillSourceFetcher(
+        skillDirectoryName = "find-skills",
+        skillName = "find-skills",
+        descriptionProvider = { "Remote commit $nextCommitSha" },
+        resolvedCommitShaProvider = { nextCommitSha },
+      ),
+      clock = { 100_000L },
+    )
+    check(packageManager.installFromRemoteSource("roin-orca/skills@find-skills").succeeded)
+    nextCommitSha = "feedface"
+
+    val update = packageManager.updateInstalledSkills("find-skills")
+
+    assertEquals(1, update.updatedCount)
+    val entry = manifestStore.load().installations.single()
+    assertEquals("feedface", entry.resolvedCommitSha)
+    assertTrue(File(managedRoot, "find-skills").resolve("SKILL.md").readText().contains("Remote commit feedface"))
+  }
+
   private fun writeSkill(
     root: File,
     directoryName: String,
@@ -250,12 +513,18 @@ class SkillPackageManagerTest {
   private class FakeRemoteSkillSourceFetcher(
     private val skillDirectoryName: String,
     private val skillName: String,
-    private val description: String,
+    private val description: String = "Use the remote source.",
+    private val descriptionProvider: () -> String = { description },
+    private val resolvedCommitShaProvider: () -> String = { "deadbeef" },
+    private val extraSkills: List<FakeRemoteSkill> = emptyList(),
   ) : RemoteSkillSourceFetcher {
+    var fetchCount: Int = 0
+
     override fun fetch(
       source: ResolvedRemoteSkillSource,
       stagingRoot: File,
     ): FetchedRemoteSkillSource {
+      fetchCount += 1
       val repositoryRoot = File(stagingRoot, "repo")
       val skillDirectory = File(repositoryRoot, skillDirectoryName)
       if (!skillDirectory.exists()) {
@@ -265,19 +534,57 @@ class SkillPackageManagerTest {
         """
         ---
         name: $skillName
-        description: $description
+        description: ${descriptionProvider()}
         ---
         Use the remote source.
         """.trimIndent(),
         Charsets.UTF_8,
       )
+      extraSkills.forEach { extraSkill ->
+        val extraSkillDirectory = File(repositoryRoot, extraSkill.relativeDirectory)
+        if (!extraSkillDirectory.exists()) {
+          extraSkillDirectory.mkdirs()
+        }
+        File(extraSkillDirectory, "SKILL.md").writeText(
+          """
+          ---
+          name: ${extraSkill.skillName}
+          description: ${extraSkill.description}
+          ---
+          ${extraSkill.body}
+          """.trimIndent(),
+          Charsets.UTF_8,
+        )
+      }
       return FetchedRemoteSkillSource(
         repositoryRoot = repositoryRoot,
         searchRoot = repositoryRoot,
         repositoryUrl = source.repositoryUrl,
         resolvedRevision = source.ref ?: "main",
-        resolvedCommitSha = "deadbeef",
+        resolvedCommitSha = resolvedCommitShaProvider(),
       )
     }
+  }
+
+  private data class FakeRemoteSkill(
+    val relativeDirectory: String,
+    val skillName: String,
+    val description: String,
+    val body: String = "Use the remote source.",
+  )
+
+  private class FakeRemoteSkillSourceInspector(
+    private val resolvedRevision: String,
+    private val resolvedCommitSha: String? = null,
+    private val resolvedCommitShaProvider: () -> String? = { resolvedCommitSha },
+  ) : RemoteSkillSourceInspector {
+    override fun inspect(source: ResolvedRemoteSkillSource): RemoteSkillSourceVersionAttempt =
+      RemoteSkillSourceVersionAttempt(
+        version = RemoteSkillSourceVersion(
+          repositoryUrl = source.repositoryUrl,
+          resolvedRevision = resolvedRevision,
+          resolvedCommitSha = resolvedCommitShaProvider(),
+        ),
+      )
   }
 }

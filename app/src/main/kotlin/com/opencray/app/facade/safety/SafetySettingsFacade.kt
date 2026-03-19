@@ -32,6 +32,7 @@ data class SafetySettingsSnapshot(
   val workspaceAccessProfile: WorkspaceAccessProfile,
   val readOnlyOutsideWorkspace: Boolean,
   val liveContextMode: LiveContextMode = LiveContextMode.FULL,
+  val memoryToolsEnabled: Boolean = true,
 )
 
 data class SaveSafetySettingsRequest(
@@ -52,6 +53,7 @@ data class SaveSafetySettingsRequest(
   val workspaceAccessProfileId: String,
   val readOnlyOutsideWorkspace: Boolean,
   val liveContextModeId: String = LiveContextMode.FULL.wireValue,
+  val memoryToolsEnabled: Boolean = true,
 )
 
 interface SafetySettingsFacade {
@@ -124,6 +126,7 @@ private fun SaveSafetySettingsRequest.toState(): SafetySettingsState = SafetySet
   recordingsEnabled = recordingsEnabled,
   workspaceAccessProfile = WorkspaceAccessProfile.fromWireValue(workspaceAccessProfileId),
   readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
+  memoryToolsEnabled = memoryToolsEnabled,
 ).sanitized()
 
 private fun SaveSafetySettingsRequest.toLiveContextMode(): LiveContextMode =
@@ -151,6 +154,7 @@ private fun SafetySettingsState.toSnapshot(
   workspaceAccessProfile = workspaceAccessProfile,
   readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
   liveContextMode = liveContextMode,
+  memoryToolsEnabled = memoryToolsEnabled,
 )
 
 private fun reconcileExternalAccessAuthorization(

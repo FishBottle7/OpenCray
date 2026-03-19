@@ -1,0 +1,63 @@
+{
+  "source_id": "wechat_2025_01",
+  "title": "Sample private chat import",
+  "participants": [
+    {
+      "entity_id": "actor_lin",
+      "display_name": "Lin",
+      "role": "anchor"
+    },
+    {
+      "entity_id": "actor_current_user",
+      "display_name": "User",
+      "role": "current_user"
+    }
+  ],
+  "turns": [
+    {
+      "turn_id": "turn_0001",
+      "conversation_id": "conv_2025_01_03",
+      "speaker": "User",
+      "speaker_id": "actor_current_user",
+      "addressed_to": [
+        "actor_lin"
+      ],
+      "text": "对不起，是我答应了你又没做到。",
+      "timestamp": "2025-01-03T21:12:00+08:00",
+      "labels": [
+        "repair"
+      ]
+    },
+    {
+      "turn_id": "turn_0002",
+      "conversation_id": "conv_2025_01_03",
+      "speaker": "Lin",
+      "speaker_id": "actor_lin",
+      "addressed_to": [
+        "actor_current_user"
+      ],
+      "reply_to_turn_id": "turn_0001",
+      "text": "我不是在生气，只是你答应的事又没做到，我有点累，今天先这样吧。",
+      "timestamp": "2025-01-03T21:12:14+08:00",
+      "labels": [
+        "conflict",
+        "boundary"
+      ]
+    },
+    {
+      "turn_id": "turn_0003",
+      "conversation_id": "conv_2025_01_03",
+      "speaker": "User",
+      "speaker_id": "actor_current_user",
+      "addressed_to": [
+        "actor_lin"
+      ],
+      "reply_to_turn_id": "turn_0002",
+      "text": "好，那你先休息，明天我补上。",
+      "timestamp": "2025-01-03T21:12:38+08:00",
+      "labels": [
+        "repair"
+      ]
+    }
+  ]
+}

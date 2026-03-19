@@ -5,6 +5,8 @@ allprojects {
     }
 }
 
+val androidJvmVersion = JavaVersion.VERSION_11
+
 val newBuildDir: Directory =
     rootProject.layout.buildDirectory
         .dir("../../build")
@@ -22,7 +24,7 @@ subprojects {
 subprojects {
     tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
         kotlinOptions {
-            jvmTarget = "1.8"
+            jvmTarget = androidJvmVersion.toString()
         }
     }
 }

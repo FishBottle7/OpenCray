@@ -612,7 +612,9 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                   ),
                   _DebugValueChip(
                     label: 'Soul',
-                    value: liveContext.soulEnabled == true ? 'enabled' : 'disabled',
+                    value: liveContext.soulEnabled == true
+                        ? 'enabled'
+                        : 'disabled',
                   ),
                   _DebugValueChip(
                     label: 'Memory recall',
@@ -1046,19 +1048,32 @@ class _MemoryInspectorPage extends StatefulWidget {
 class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
   bool _isLoading = true;
   bool _isRefreshing = false;
+  bool _isSearching = false;
+  bool _isLoadingSearchSlice = false;
   String? _loadError;
+  String? _searchError;
   _MemoryInspectorFilter _activeFilter = _MemoryInspectorFilter.all;
   OpenCrayMemoryDebugSnapshot? _snapshot;
   OpenCrayMemoryDebugLinksSnapshot? _linksSnapshot;
   OpenCraySoulDebugSnapshot? _soulSnapshot;
+  OpenCrayMemoryDebugSearchSnapshot? _searchSnapshot;
+  OpenCrayMemoryDebugSliceSnapshot? _searchSlice;
   List<OpenCrayMemoryDebugRecordSnapshot> _records =
       const <OpenCrayMemoryDebugRecordSnapshot>[];
   String? _selectedRecordId;
+  String? _selectedSearchRecordId;
+  final TextEditingController _searchController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _refresh();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   @override
@@ -1106,6 +1121,8 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
               _buildStoreSummaryCard(),
               const SizedBox(height: 16),
               _buildFilterCard(),
+              const SizedBox(height: 16),
+              _buildProjectedMemorySearchCard(),
               if (_loadError != null) ...[
                 const SizedBox(height: 16),
                 _SettingsCard(
@@ -1223,6 +1240,132 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
                 )
                 .toList(growable: false),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProjectedMemorySearchCard() {
+    final searchSnapshot = _searchSnapshot;
+    final searchResults = searchSnapshot?.results ?? const <OpenCrayMemoryDebugSearchResultSnapshot>[];
+    final selectedSearchResult = searchResults
+        .cast<OpenCrayMemoryDebugSearchResultSnapshot?>()
+        .firstWhere(
+          (result) => result?.recordId == _selectedSearchRecordId,
+          orElse: () => searchResults.isEmpty ? null : searchResults.first,
+        );
+    return _SettingsCard(
+      key: const ValueKey<String>('settings-memory-search-card'),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Search projected memory',
+                  style: _SettingsTextStyles.cardTitle,
+                ),
+              ),
+              _HeaderActionChip(
+                label: _isSearching ? 'Searching' : 'Search',
+                onTap: _isSearching ? null : _runProjectedMemorySearch,
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            'Query the same projected memory corpus exposed to memory_search and inspect a narrow snippet with memory_get-style slicing.',
+            style: _SettingsTextStyles.body,
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            key: const ValueKey<String>('settings-memory-search-input'),
+            controller: _searchController,
+            textInputAction: TextInputAction.search,
+            autocorrect: false,
+            enableSuggestions: false,
+            enableIMEPersonalizedLearning: false,
+            spellCheckConfiguration: const SpellCheckConfiguration.disabled(),
+            smartDashesType: SmartDashesType.disabled,
+            smartQuotesType: SmartQuotesType.disabled,
+            decoration: const InputDecoration(
+              labelText: 'Search query',
+              hintText: 'name, chinese, rollback, deadline reminder',
+              border: OutlineInputBorder(),
+            ),
+            onSubmitted: (_) => _runProjectedMemorySearch(),
+          ),
+          if (_searchError != null) ...[
+            const SizedBox(height: 10),
+            Text(_searchError!, style: _SettingsTextStyles.bodyStrong),
+          ],
+          if (searchSnapshot != null) ...[
+            const SizedBox(height: 12),
+            Text(
+              '${searchResults.length} match(es) · ${searchSnapshot.corpusFileCount} file(s)${searchSnapshot.queryTerms.isEmpty ? '' : ' · terms ${searchSnapshot.queryTerms.join(', ')}'}',
+              style: _SettingsTextStyles.bodyStrong,
+            ),
+            if (searchResults.isEmpty) ...[
+              const SizedBox(height: 8),
+              const Text(
+                'No projected memory matches were found for the current query.',
+                style: _SettingsTextStyles.body,
+              ),
+            ] else ...[
+              const SizedBox(height: 10),
+              for (int index = 0; index < searchResults.length; index++) ...[
+                _MemoryDebugSearchResultRow(
+                  result: searchResults[index],
+                  selected: searchResults[index].recordId == selectedSearchResult?.recordId,
+                  onTap: () => _selectProjectedMemoryResult(searchResults[index]),
+                ),
+                if (index < searchResults.length - 1)
+                  const SizedBox(height: 10),
+              ],
+            ],
+          ],
+          if (_searchSlice != null || _isLoadingSearchSlice) ...[
+            const SizedBox(height: 14),
+            Text('Selected snippet', style: _SettingsTextStyles.bodyStrong),
+            const SizedBox(height: 8),
+            if (_isLoadingSearchSlice)
+              const Text(
+                'Loading projected snippet...',
+                style: _SettingsTextStyles.body,
+              )
+            else if (_searchSlice != null) ...[
+              _DebugKeyValueLine(
+                'Path',
+                '${_searchSlice!.path}#${_formatMemoryLineRange(_searchSlice!.startLine, _searchSlice!.endLine)}',
+              ),
+              _DebugKeyValueLine(
+                'Record ids',
+                _searchSlice!.recordIds.isEmpty
+                    ? 'Unavailable'
+                    : _searchSlice!.recordIds.join(', '),
+              ),
+              _DebugKeyValueLine(
+                'Total lines',
+                '${_searchSlice!.totalLineCount}',
+              ),
+              const SizedBox(height: 8),
+              Container(
+                key: const ValueKey<String>('settings-memory-search-snippet'),
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF7F8FA),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: OpenCrayColors.divider),
+                ),
+                child: SelectableText(
+                  _searchSlice!.text,
+                  style: _SettingsTextStyles.body,
+                ),
+              ),
+            ],
+          ],
         ],
       ),
     );
@@ -1405,6 +1548,81 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
         _loadError = 'Failed to load memory snapshot: $error';
         _isLoading = false;
         _isRefreshing = false;
+      });
+    }
+  }
+
+  Future<void> _runProjectedMemorySearch() async {
+    final query = _searchController.text.trim();
+    if (query.isEmpty) {
+      setState(() {
+        _searchError = 'Enter a query before searching projected memory.';
+      });
+      return;
+    }
+    setState(() {
+      _isSearching = true;
+      _searchError = null;
+      _searchSnapshot = null;
+      _searchSlice = null;
+      _selectedSearchRecordId = null;
+    });
+    try {
+      final snapshot = await widget.bridge.searchMemoryDebug(query: query);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _searchSnapshot = snapshot;
+        _selectedSearchRecordId = snapshot.results.isEmpty
+            ? null
+            : snapshot.results.first.recordId;
+        _isSearching = false;
+      });
+      if (snapshot.results.isNotEmpty) {
+        await _selectProjectedMemoryResult(snapshot.results.first);
+      }
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _searchError = 'Failed to search projected memory: $error';
+        _isSearching = false;
+      });
+    }
+  }
+
+  Future<void> _selectProjectedMemoryResult(
+    OpenCrayMemoryDebugSearchResultSnapshot result,
+  ) async {
+    setState(() {
+      _selectedSearchRecordId = result.recordId;
+      _selectedRecordId = result.recordId;
+      _activeFilter = _MemoryInspectorFilter.all;
+      _isLoadingSearchSlice = true;
+      _searchError = null;
+    });
+    try {
+      final slice = await widget.bridge.getMemoryDebugSlice(
+        path: result.path,
+        fromLine: result.startLine,
+        lines: result.endLine - result.startLine + 1,
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _searchSlice = slice;
+        _isLoadingSearchSlice = false;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _searchError = 'Failed to load projected snippet: $error';
+        _isLoadingSearchSlice = false;
       });
     }
   }
@@ -1904,6 +2122,66 @@ class _MemoryDebugRecordRow extends StatelessWidget {
   }
 }
 
+class _MemoryDebugSearchResultRow extends StatelessWidget {
+  const _MemoryDebugSearchResultRow({
+    required this.result,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final OpenCrayMemoryDebugSearchResultSnapshot result;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: selected ? const Color(0xFFF3F4F7) : Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: selected ? const Color(0xFFD7E4FF) : OpenCrayColors.divider,
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '${result.recordId} · ${result.path}#${_formatMemoryLineRange(result.startLine, result.endLine)}',
+                style: _SettingsTextStyles.bodyStrong,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'score ${result.score} · ${result.kind}/${result.scope}/${result.status}',
+                style: _SettingsTextStyles.body,
+              ),
+              if (result.matchedTerms.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'terms ${result.matchedTerms.join(', ')}',
+                  style: _SettingsTextStyles.body,
+                ),
+              ],
+              if (result.snippet.trim().isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  _truncateDebugText(result.snippet.trim(), 220),
+                  style: _SettingsTextStyles.body,
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _DebugLinkEventRow extends StatelessWidget {
   const _DebugLinkEventRow({required this.title, required this.detail});
 
@@ -2314,8 +2592,20 @@ List<Widget> _buildSoulProfileLines(OpenCraySoulProfileDebugSnapshot snapshot) {
   addLine('Voice', snapshot.voice);
   addLine('Preferred naming', snapshot.preferredNaming);
   addLine('Preferred address style', snapshot.preferredAddressStyle);
+  addLine('Warmth offset', snapshot.warmthPreferenceOffset);
+  addLine('Formality offset', snapshot.formalityPreferenceOffset);
+  addLine('Initiative offset', snapshot.initiativePreferenceOffset);
+  addLine('Playfulness offset', snapshot.playfulnessPreferenceOffset);
+  addLine('Reassurance offset', snapshot.reassurancePreferenceOffset);
   addLine('Intimacy band', snapshot.intimacyPermissionBand);
   addLine('Playfulness band', snapshot.playfulnessPermissionBand);
+  addLine('Supportive reassurance', snapshot.supportiveReassuranceAllowed);
+  addLine(
+    'Proactive relational check-in',
+    snapshot.proactiveRelationalCheckInAllowed,
+  );
+  addLine('Light playfulness', snapshot.lightPlayfulnessAllowed);
+  addLine('Playful teasing', snapshot.playfulTeasingAllowed);
   addLine('High intimacy allowed', snapshot.highIntimacyBehaviorAllowed);
   addLine('Playful affection allowed', snapshot.playfulAffectionAllowed);
   addLine('Tone', snapshot.tone);
@@ -2407,6 +2697,18 @@ List<Widget> _buildInteractionPreferenceDebugLines(
     _DebugKeyValueLine(
       'Initiative axis',
       _formatPreferenceAxisSummary(snapshot.state.initiative),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Playfulness axis',
+      _formatPreferenceAxisSummary(snapshot.state.playfulness),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Reassurance axis',
+      _formatPreferenceAxisSummary(snapshot.state.reassurance),
     ),
   );
   lines.add(
@@ -2550,6 +2852,54 @@ List<Widget> _buildRelationshipStateDebugLines(
       _formatSoulGateChecks(snapshot.playfulAffectionChecks),
     ),
   );
+  lines.add(
+    _DebugKeyValueLine(
+      'Supportive reassurance',
+      _formatGateVerdict(snapshot.supportiveReassuranceAllowed),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Supportive reassurance checks',
+      _formatSoulGateChecks(snapshot.supportiveReassuranceChecks),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Proactive relational check-in',
+      _formatGateVerdict(snapshot.proactiveRelationalCheckInAllowed),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Proactive check-in checks',
+      _formatSoulGateChecks(snapshot.proactiveRelationalCheckInChecks),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Light playfulness',
+      _formatGateVerdict(snapshot.lightPlayfulnessAllowed),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Light playfulness checks',
+      _formatSoulGateChecks(snapshot.lightPlayfulnessChecks),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Playful teasing',
+      _formatGateVerdict(snapshot.playfulTeasingAllowed),
+    ),
+  );
+  lines.add(
+    _DebugKeyValueLine(
+      'Playful teasing checks',
+      _formatSoulGateChecks(snapshot.playfulTeasingChecks),
+    ),
+  );
   return lines;
 }
 
@@ -2599,12 +2949,52 @@ List<OpenCraySoulFieldSourceSnapshot> _resolvedSoulFieldSources(
   if (effectiveSoul == null) {
     return const <OpenCraySoulFieldSourceSnapshot>[];
   }
+  final interactionPreferenceDebug = snapshot.interactionPreferenceDebug;
+  final relationshipStateDebug = snapshot.relationshipStateDebug;
   final fallback = <OpenCraySoulFieldSourceSnapshot>[];
+
+  String fallbackSourceType() {
+    return snapshot.overlayRecords.isEmpty ? 'stored_soul' : 'memory_overlay';
+  }
+
+  String fallbackSourceLabel() {
+    return snapshot.overlayRecords.isEmpty ? 'stored soul' : 'memory overlay';
+  }
+
+  String interactionPreferenceSourceLabel() {
+    switch (interactionPreferenceDebug?.scope) {
+      case 'workspace':
+        return 'workspace interaction preference';
+      case 'session':
+        return 'session interaction preference';
+      case 'user':
+        return 'user interaction preference';
+      default:
+        return 'interaction preference';
+    }
+  }
+
+  String relationshipStateSourceLabel() {
+    switch (relationshipStateDebug?.scope) {
+      case 'workspace':
+        return 'workspace relationship state';
+      case 'session':
+        return 'session relationship state';
+      case 'user':
+        return 'user relationship state';
+      default:
+        return 'relationship state';
+    }
+  }
+
   void addSource({
     required String field,
     required String value,
     required String sourceType,
     required String sourceLabel,
+    String recordId = '',
+    String sourceScope = '',
+    String sourceDetail = '',
   }) {
     final normalizedValue = value.trim();
     if (normalizedValue.isEmpty) {
@@ -2616,6 +3006,9 @@ List<OpenCraySoulFieldSourceSnapshot> _resolvedSoulFieldSources(
         value: normalizedValue,
         sourceType: sourceType,
         sourceLabel: sourceLabel,
+        recordId: recordId,
+        sourceScope: sourceScope,
+        sourceDetail: sourceDetail,
       ),
     );
   }
@@ -2629,82 +3022,200 @@ List<OpenCraySoulFieldSourceSnapshot> _resolvedSoulFieldSources(
   addSource(
     field: 'displayName',
     value: effectiveSoul.displayName,
-    sourceType: snapshot.overlayRecords.isEmpty
-        ? 'stored_soul'
-        : 'memory_overlay',
-    sourceLabel: snapshot.overlayRecords.isEmpty
-        ? 'stored soul'
-        : 'memory overlay',
+    sourceType: fallbackSourceType(),
+    sourceLabel: fallbackSourceLabel(),
   );
   addSource(
     field: 'voice',
     value: effectiveSoul.voice,
-    sourceType: snapshot.overlayRecords.isEmpty
-        ? 'stored_soul'
-        : 'memory_overlay',
-    sourceLabel: snapshot.overlayRecords.isEmpty
-        ? 'stored soul'
-        : 'memory overlay',
+    sourceType: fallbackSourceType(),
+    sourceLabel: fallbackSourceLabel(),
   );
   addSource(
     field: 'preferredNaming',
     value: effectiveSoul.preferredNaming,
-    sourceType: snapshot.overlayRecords.isEmpty
-        ? 'stored_soul'
-        : 'memory_overlay',
-    sourceLabel: snapshot.overlayRecords.isEmpty
-        ? 'stored soul'
-        : 'memory overlay',
+    sourceType:
+        interactionPreferenceDebug?.preferredNaming.trim().isNotEmpty == true
+        ? 'interaction_preference'
+        : fallbackSourceType(),
+    sourceLabel:
+        interactionPreferenceDebug?.preferredNaming.trim().isNotEmpty == true
+        ? interactionPreferenceSourceLabel()
+        : fallbackSourceLabel(),
+    recordId:
+        interactionPreferenceDebug?.preferredNaming.trim().isNotEmpty == true
+        ? interactionPreferenceDebug?.snapshotRecordId ?? ''
+        : '',
+    sourceScope:
+        interactionPreferenceDebug?.preferredNaming.trim().isNotEmpty == true
+        ? interactionPreferenceDebug?.scope ?? ''
+        : '',
+    sourceDetail:
+        interactionPreferenceDebug?.preferredNaming.trim().isNotEmpty == true
+        ? 'Projected interaction-preference snapshot'
+        : '',
   );
   addSource(
     field: 'preferredAddressStyle',
     value: effectiveSoul.preferredAddressStyle,
-    sourceType: snapshot.overlayRecords.isEmpty
-        ? 'stored_soul'
-        : 'memory_overlay',
-    sourceLabel: snapshot.overlayRecords.isEmpty
-        ? 'stored soul'
-        : 'memory overlay',
+    sourceType:
+        interactionPreferenceDebug?.preferredAddressStyle.trim().isNotEmpty ==
+            true
+        ? 'interaction_preference'
+        : (relationshipStateDebug?.derivedAddressStyle.trim().isNotEmpty == true
+              ? 'relationship_state'
+              : fallbackSourceType()),
+    sourceLabel:
+        interactionPreferenceDebug?.preferredAddressStyle.trim().isNotEmpty ==
+            true
+        ? interactionPreferenceSourceLabel()
+        : (relationshipStateDebug?.derivedAddressStyle.trim().isNotEmpty == true
+              ? relationshipStateSourceLabel()
+              : fallbackSourceLabel()),
+    recordId:
+        interactionPreferenceDebug?.preferredAddressStyle.trim().isNotEmpty ==
+            true
+        ? interactionPreferenceDebug?.snapshotRecordId ?? ''
+        : (relationshipStateDebug?.derivedAddressStyle.trim().isNotEmpty == true
+              ? relationshipStateDebug?.snapshotRecordId ?? ''
+              : ''),
+    sourceScope:
+        interactionPreferenceDebug?.preferredAddressStyle.trim().isNotEmpty ==
+            true
+        ? interactionPreferenceDebug?.scope ?? ''
+        : (relationshipStateDebug?.derivedAddressStyle.trim().isNotEmpty == true
+              ? relationshipStateDebug?.scope ?? ''
+              : ''),
+    sourceDetail:
+        interactionPreferenceDebug?.preferredAddressStyle.trim().isNotEmpty ==
+            true
+        ? 'Projected interaction-preference snapshot'
+        : (relationshipStateDebug?.derivedAddressStyle.trim().isNotEmpty == true
+              ? 'Derived from relationship gates'
+              : ''),
+  );
+  addSource(
+    field: 'warmthPreferenceOffset',
+    value: effectiveSoul.warmthPreferenceOffset,
+    sourceType: 'interaction_preference',
+    sourceLabel: interactionPreferenceSourceLabel(),
+    recordId: interactionPreferenceDebug?.snapshotRecordId ?? '',
+    sourceScope: interactionPreferenceDebug?.scope ?? '',
+    sourceDetail: 'Projected interaction-preference snapshot',
+  );
+  addSource(
+    field: 'formalityPreferenceOffset',
+    value: effectiveSoul.formalityPreferenceOffset,
+    sourceType: 'interaction_preference',
+    sourceLabel: interactionPreferenceSourceLabel(),
+    recordId: interactionPreferenceDebug?.snapshotRecordId ?? '',
+    sourceScope: interactionPreferenceDebug?.scope ?? '',
+    sourceDetail: 'Projected interaction-preference snapshot',
+  );
+  addSource(
+    field: 'initiativePreferenceOffset',
+    value: effectiveSoul.initiativePreferenceOffset,
+    sourceType: 'interaction_preference',
+    sourceLabel: interactionPreferenceSourceLabel(),
+    recordId: interactionPreferenceDebug?.snapshotRecordId ?? '',
+    sourceScope: interactionPreferenceDebug?.scope ?? '',
+    sourceDetail: 'Projected interaction-preference snapshot',
+  );
+  addSource(
+    field: 'playfulnessPreferenceOffset',
+    value: effectiveSoul.playfulnessPreferenceOffset,
+    sourceType: 'interaction_preference',
+    sourceLabel: interactionPreferenceSourceLabel(),
+    recordId: interactionPreferenceDebug?.snapshotRecordId ?? '',
+    sourceScope: interactionPreferenceDebug?.scope ?? '',
+    sourceDetail: 'Projected interaction-preference snapshot',
+  );
+  addSource(
+    field: 'reassurancePreferenceOffset',
+    value: effectiveSoul.reassurancePreferenceOffset,
+    sourceType: 'interaction_preference',
+    sourceLabel: interactionPreferenceSourceLabel(),
+    recordId: interactionPreferenceDebug?.snapshotRecordId ?? '',
+    sourceScope: interactionPreferenceDebug?.scope ?? '',
+    sourceDetail: 'Projected interaction-preference snapshot',
   );
   addSource(
     field: 'intimacyPermissionBand',
     value: effectiveSoul.intimacyPermissionBand,
-    sourceType: snapshot.overlayRecords.isEmpty
-        ? 'stored_soul'
-        : 'memory_overlay',
-    sourceLabel: snapshot.overlayRecords.isEmpty
-        ? 'stored soul'
-        : 'memory overlay',
+    sourceType: 'relationship_state',
+    sourceLabel: relationshipStateSourceLabel(),
+    recordId: relationshipStateDebug?.snapshotRecordId ?? '',
+    sourceScope: relationshipStateDebug?.scope ?? '',
+    sourceDetail: 'Derived from relationship-state score band',
   );
   addSource(
     field: 'playfulnessPermissionBand',
     value: effectiveSoul.playfulnessPermissionBand,
-    sourceType: snapshot.overlayRecords.isEmpty
-        ? 'stored_soul'
-        : 'memory_overlay',
-    sourceLabel: snapshot.overlayRecords.isEmpty
-        ? 'stored soul'
-        : 'memory overlay',
+    sourceType: 'relationship_state',
+    sourceLabel: relationshipStateSourceLabel(),
+    recordId: relationshipStateDebug?.snapshotRecordId ?? '',
+    sourceScope: relationshipStateDebug?.scope ?? '',
+    sourceDetail: 'Derived from relationship-state score band',
+  );
+  addSource(
+    field: 'supportiveReassuranceAllowed',
+    value: effectiveSoul.supportiveReassuranceAllowed,
+    sourceType: 'relationship_state',
+    sourceLabel: relationshipStateSourceLabel(),
+    recordId: relationshipStateDebug?.snapshotRecordId ?? '',
+    sourceScope: relationshipStateDebug?.scope ?? '',
+    sourceDetail:
+        'Relationship gate derived from relationship state and constrained by reassurance preference',
+  );
+  addSource(
+    field: 'proactiveRelationalCheckInAllowed',
+    value: effectiveSoul.proactiveRelationalCheckInAllowed,
+    sourceType: 'relationship_state',
+    sourceLabel: relationshipStateSourceLabel(),
+    recordId: relationshipStateDebug?.snapshotRecordId ?? '',
+    sourceScope: relationshipStateDebug?.scope ?? '',
+    sourceDetail:
+        'Relationship gate derived from relationship state and constrained by initiative preference',
+  );
+  addSource(
+    field: 'lightPlayfulnessAllowed',
+    value: effectiveSoul.lightPlayfulnessAllowed,
+    sourceType: 'relationship_state',
+    sourceLabel: relationshipStateSourceLabel(),
+    recordId: relationshipStateDebug?.snapshotRecordId ?? '',
+    sourceScope: relationshipStateDebug?.scope ?? '',
+    sourceDetail:
+        'Relationship gate derived from relationship state and constrained by playfulness preference',
+  );
+  addSource(
+    field: 'playfulTeasingAllowed',
+    value: effectiveSoul.playfulTeasingAllowed,
+    sourceType: 'relationship_state',
+    sourceLabel: relationshipStateSourceLabel(),
+    recordId: relationshipStateDebug?.snapshotRecordId ?? '',
+    sourceScope: relationshipStateDebug?.scope ?? '',
+    sourceDetail:
+        'Relationship gate derived from relationship state and constrained by playfulness preference',
   );
   addSource(
     field: 'highIntimacyBehaviorAllowed',
     value: effectiveSoul.highIntimacyBehaviorAllowed,
-    sourceType: snapshot.overlayRecords.isEmpty
-        ? 'stored_soul'
-        : 'memory_overlay',
-    sourceLabel: snapshot.overlayRecords.isEmpty
-        ? 'stored soul'
-        : 'memory overlay',
+    sourceType: 'relationship_state',
+    sourceLabel: relationshipStateSourceLabel(),
+    recordId: relationshipStateDebug?.snapshotRecordId ?? '',
+    sourceScope: relationshipStateDebug?.scope ?? '',
+    sourceDetail:
+        'Relationship gate derived from trust, safety, reciprocity, and intimacy',
   );
   addSource(
     field: 'playfulAffectionAllowed',
     value: effectiveSoul.playfulAffectionAllowed,
-    sourceType: snapshot.overlayRecords.isEmpty
-        ? 'stored_soul'
-        : 'memory_overlay',
-    sourceLabel: snapshot.overlayRecords.isEmpty
-        ? 'stored soul'
-        : 'memory overlay',
+    sourceType: 'relationship_state',
+    sourceLabel: relationshipStateSourceLabel(),
+    recordId: relationshipStateDebug?.snapshotRecordId ?? '',
+    sourceScope: relationshipStateDebug?.scope ?? '',
+    sourceDetail:
+        'Relationship gate derived from playfulness, safety, and reciprocity',
   );
   addSource(
     field: 'customGuidance',
@@ -2715,32 +3226,20 @@ List<OpenCraySoulFieldSourceSnapshot> _resolvedSoulFieldSources(
   addSource(
     field: 'tone',
     value: effectiveSoul.tone,
-    sourceType: snapshot.overlayRecords.isEmpty
-        ? 'stored_soul'
-        : 'memory_overlay',
-    sourceLabel: snapshot.overlayRecords.isEmpty
-        ? 'stored soul'
-        : 'memory overlay',
+    sourceType: fallbackSourceType(),
+    sourceLabel: fallbackSourceLabel(),
   );
   addSource(
     field: 'verbosity',
     value: effectiveSoul.verbosity,
-    sourceType: snapshot.overlayRecords.isEmpty
-        ? 'stored_soul'
-        : 'memory_overlay',
-    sourceLabel: snapshot.overlayRecords.isEmpty
-        ? 'stored soul'
-        : 'memory overlay',
+    sourceType: fallbackSourceType(),
+    sourceLabel: fallbackSourceLabel(),
   );
   addSource(
     field: 'userRelationshipStyle',
     value: effectiveSoul.userRelationshipStyle,
-    sourceType: snapshot.overlayRecords.isEmpty
-        ? 'stored_soul'
-        : 'memory_overlay',
-    sourceLabel: snapshot.overlayRecords.isEmpty
-        ? 'stored soul'
-        : 'memory overlay',
+    sourceType: fallbackSourceType(),
+    sourceLabel: fallbackSourceLabel(),
   );
   addSource(
     field: 'riskTolerance',
@@ -2787,20 +3286,44 @@ String _debugSoulFieldLabel(String field) {
       return 'preset';
     case 'displayName':
       return 'display name';
+    case 'voice':
+      return 'voice';
     case 'preferredNaming':
       return 'preferred naming';
     case 'preferredAddressStyle':
       return 'preferred address style';
+    case 'warmthPreferenceOffset':
+      return 'warmth offset';
+    case 'formalityPreferenceOffset':
+      return 'formality offset';
+    case 'initiativePreferenceOffset':
+      return 'initiative offset';
+    case 'playfulnessPreferenceOffset':
+      return 'playfulness offset';
+    case 'reassurancePreferenceOffset':
+      return 'reassurance offset';
     case 'intimacyPermissionBand':
       return 'intimacy band';
     case 'playfulnessPermissionBand':
       return 'playfulness band';
+    case 'supportiveReassuranceAllowed':
+      return 'supportive reassurance allowed';
+    case 'proactiveRelationalCheckInAllowed':
+      return 'proactive check-in allowed';
+    case 'lightPlayfulnessAllowed':
+      return 'light playfulness allowed';
+    case 'playfulTeasingAllowed':
+      return 'playful teasing allowed';
     case 'highIntimacyBehaviorAllowed':
       return 'high intimacy allowed';
     case 'playfulAffectionAllowed':
       return 'playful affection allowed';
     case 'customGuidance':
       return 'custom guidance';
+    case 'tone':
+      return 'tone';
+    case 'verbosity':
+      return 'verbosity';
     case 'userRelationshipStyle':
       return 'relationship';
     case 'riskTolerance':

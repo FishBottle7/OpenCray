@@ -1,0 +1,313 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opencray.local/service/schemas/opencray_draft_bundle.schema.json",
+  "title": "OpenCrayDraftBundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "twin_id",
+    "graph_group_id",
+    "anchor_person_id",
+    "query",
+    "generated_at",
+    "binding_context",
+    "import_session",
+    "graph_hits",
+    "relationship_drafts",
+    "relationship_projection_drafts",
+    "background_context_drafts",
+    "memory_drafts",
+    "notes"
+  ],
+  "properties": {
+    "twin_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "graph_group_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "anchor_person_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "query": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "binding_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "current_user_role_binding",
+        "selected_relationship_binding_id",
+        "counterpart_entity_id",
+        "overlay_key"
+      ],
+      "properties": {
+        "current_user_role_binding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "entity_id"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "real_user",
+                "fictional_character"
+              ]
+            },
+            "entity_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "selected_relationship_binding_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "counterpart_entity_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "overlay_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "import_session": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "graph_hits": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "relationship_drafts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "draft_id",
+          "anchor_person_id",
+          "summary",
+          "confidence",
+          "source",
+          "notes"
+        ],
+        "properties": {
+          "draft_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "anchor_person_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "counterpart_entity_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "selected_relationship_binding_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "relationship_projection_drafts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "draft_id",
+          "anchor_person_id",
+          "relationship_summary",
+          "supporting_events",
+          "graph_distance",
+          "promotion_score",
+          "apply_scope",
+          "promotion_reason",
+          "invalidation_scope"
+        ],
+        "properties": {
+          "draft_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "anchor_person_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "counterpart_entity_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "selected_relationship_binding_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "relationship_summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "supporting_events": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "graph_distance": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "promotion_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "apply_scope": {
+            "type": "string",
+            "minLength": 1
+          },
+          "promotion_reason": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "invalidation_scope": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "background_context_drafts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "draft_id",
+          "kind",
+          "summary",
+          "source"
+        ],
+        "properties": {
+          "draft_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "memory_drafts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "draft_id",
+          "kind",
+          "content",
+          "confidence",
+          "source"
+        ],
+        "properties": {
+          "draft_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

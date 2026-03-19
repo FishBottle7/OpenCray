@@ -218,6 +218,40 @@ class ToolPolicyPipelineTest {
   }
 
   @Test
+  fun policyMetadataCarriesExplicitDelegationIntentMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("pipeline-intent-delegation").toPath()
+    val pipeline = pipeline(workspaceRoot = workspaceRoot)
+
+    val plan = pipeline.plan(
+      task = task(metadata = mapOf("chatMode" to "AUTO")),
+      toolName = "Task",
+      metadataRequest = ToolMetadataContextRequest(
+        targetSummary = "Inspect README",
+      ),
+      intent = DelegationIntent(
+        kind = DelegationIntentKind.SUBAGENT_TASK,
+        subagentType = "researcher",
+        contextMode = "minimal",
+        description = "Inspect README",
+        promptPreview = "Read README.md and summarize it.",
+        allowedToolNames = setOf("Read", "LS", "Grep", "Glob"),
+      ),
+    )
+
+    val metadata = pipeline.policyMetadata(plan)
+
+    assertEquals("delegate_task", metadata["capabilityKind"])
+    assertEquals("delegation", metadata["intentCategory"])
+    assertEquals("subagent_task", metadata["delegationIntentKind"])
+    assertEquals("researcher", metadata["delegationSubagentType"])
+    assertEquals("minimal", metadata["delegationContextMode"])
+    assertEquals("Inspect README", metadata["delegationDescription"])
+    assertEquals("Read README.md and summarize it.", metadata["delegationPromptPreview"])
+    assertEquals("Glob,Grep,LS,Read", metadata["delegationAllowedTools"])
+    assertEquals("Inspect README", metadata["targetSummary"])
+  }
+
+  @Test
   fun resultMetadataAddsStableResultLimitContractForPlannedTools() {
     val workspaceRoot = temporaryFolder.newFolder("pipeline-result-contract").toPath()
     val pipeline = pipeline(workspaceRoot = workspaceRoot)

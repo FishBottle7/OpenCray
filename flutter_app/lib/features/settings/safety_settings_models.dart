@@ -162,6 +162,7 @@ class SafetySettingsSnapshot {
     required this.workspaceAccessProfile,
     required this.readOnlyOutsideWorkspace,
     this.liveContextMode = LiveContextMode.full,
+    this.memoryToolsEnabled = true,
   });
 
   final SafetyAutomationMode automationMode;
@@ -178,6 +179,7 @@ class SafetySettingsSnapshot {
   final WorkspaceAccessProfile workspaceAccessProfile;
   final bool readOnlyOutsideWorkspace;
   final LiveContextMode liveContextMode;
+  final bool memoryToolsEnabled;
 
   int get approvedRootsCount =>
       1 +
@@ -206,6 +208,7 @@ class SafetySettingsSnapshot {
     WorkspaceAccessProfile? workspaceAccessProfile,
     bool? readOnlyOutsideWorkspace,
     LiveContextMode? liveContextMode,
+    bool? memoryToolsEnabled,
   }) {
     return SafetySettingsSnapshot(
       automationMode: automationMode ?? this.automationMode,
@@ -225,6 +228,7 @@ class SafetySettingsSnapshot {
       readOnlyOutsideWorkspace:
           readOnlyOutsideWorkspace ?? this.readOnlyOutsideWorkspace,
       liveContextMode: liveContextMode ?? this.liveContextMode,
+      memoryToolsEnabled: memoryToolsEnabled ?? this.memoryToolsEnabled,
     );
   }
 

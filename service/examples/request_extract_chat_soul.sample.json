@@ -1,0 +1,9 @@
+{
+  "operation": "extract_chat_soul",
+  "params": {
+    "twin_id": "twin_lin_01",
+    "source": "service/examples/chat_corpus.sample.json",
+    "anchor_person_id": "actor_lin",
+    "output_name": "sample_chat_soul"
+  }
+}

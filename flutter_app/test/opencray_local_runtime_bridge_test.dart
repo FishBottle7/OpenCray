@@ -261,6 +261,38 @@ void main() {
     expect(preview.bytes, base64Decode(_tinyPngBase64));
   });
 
+  test('local runtime bridge loads voice playback sources over http', () async {
+    requestHandler = (request) async {
+      expect(request.method, 'GET');
+      expect(request.uri.path, '/v1/workspace_voice_playback_source');
+      expect(
+        request.uri.queryParameters['relativePath'],
+        '.opencray/chat-media/session-1/hash/voice-note.m4a',
+      );
+      await writeJson(request, <String, Object?>{
+        'name': 'voice-note.m4a',
+        'relativePath': '.opencray/chat-media/session-1/hash/voice-note.m4a',
+        'localFilePath': '/workspace/session-1/voice-note.m4a',
+        'mimeType': 'audio/mp4',
+        'durationMs': 4200,
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final source = await bridge.loadWorkspaceVoicePlaybackSource(
+      '.opencray/chat-media/session-1/hash/voice-note.m4a',
+    );
+
+    expect(source.name, 'voice-note.m4a');
+    expect(
+      source.relativePath,
+      '.opencray/chat-media/session-1/hash/voice-note.m4a',
+    );
+    expect(source.localFilePath, '/workspace/session-1/voice-note.m4a');
+    expect(source.mimeType, 'audio/mp4');
+    expect(source.durationMs, 4200);
+  });
+
   test(
     'local runtime bridge posts validation requests and parses results',
     () async {
@@ -321,6 +353,7 @@ void main() {
           'workspaceAccessProfileId': 'work',
           'readOnlyOutsideWorkspace': true,
           'liveContextModeId': capturedBody['liveContextModeId'],
+          'memoryToolsEnabled': capturedBody['memoryToolsEnabled'],
         });
       };
 
@@ -343,6 +376,7 @@ void main() {
         workspaceAccessProfileId: 'work',
         readOnlyOutsideWorkspace: true,
         liveContextModeId: 'no_soul',
+        memoryToolsEnabled: false,
       );
 
       expect(capturedBody['automationModeId'], 'dev');
@@ -350,11 +384,13 @@ void main() {
       expect(capturedBody['maxToolCalls'], 0);
       expect(capturedBody['fileDeletesPolicyId'], 'block');
       expect(capturedBody['liveContextModeId'], 'no_soul');
+      expect(capturedBody['memoryToolsEnabled'], false);
       expect(snapshot.automationModeId, 'dev');
       expect(snapshot.maxAgentTurns, 0);
       expect(snapshot.maxToolCalls, 0);
       expect(snapshot.fileDeletesPolicyId, 'block');
       expect(snapshot.liveContextModeId, 'no_soul');
+      expect(snapshot.memoryToolsEnabled, false);
     },
   );
 
@@ -429,6 +465,99 @@ void main() {
       'docs/report.md',
       'todo.txt',
     ]);
+  });
+
+  test('local runtime bridge posts open file requests over http', () async {
+    late Map<String, Object?> capturedBody;
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/open_workspace_entry');
+      capturedBody = await readJsonBody(request);
+      await writeJson(request, null);
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    await bridge.openWorkspaceEntry(
+      '.opencray/chat-media/session-1/hash/voice-note.m4a',
+    );
+
+    expect(
+      capturedBody['relativePath'],
+      '.opencray/chat-media/session-1/hash/voice-note.m4a',
+    );
+  });
+
+  test('local runtime bridge inspects skill sources over http', () async {
+    late Map<String, Object?> capturedBody;
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/inspect_skill_source');
+      capturedBody = await readJsonBody(request);
+      await writeJson(request, <String, Object?>{
+        'sourceType': 'remote_github',
+        'sourceRef': 'roin-orca/skills',
+        'sourcePath': 'https://github.com/roin-orca/skills',
+        'resolvedRevision': 'main',
+        'resolvedCommitSha': 'deadbeef',
+        'candidates': <Object?>[
+          <String, Object?>{
+            'name': 'find-skills',
+            'description': 'Discover skills.',
+            'relativePath': 'skills/find-skills/SKILL.md',
+          },
+        ],
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final inspection = await bridge.inspectSkillSource('roin-orca/skills');
+
+    expect(capturedBody['sourceRef'], 'roin-orca/skills');
+    expect(inspection.sourceType, 'remote_github');
+    expect(inspection.candidates.single.name, 'find-skills');
+  });
+
+  test('local runtime bridge posts selected skill installs over http', () async {
+    late Map<String, Object?> capturedBody;
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/install_skill_source');
+      capturedBody = await readJsonBody(request);
+      await writeJson(request, 'Installed review-skills.');
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final message = await bridge.installSkillSource(
+      'roin-orca/skills',
+      selectedSkillName: 'review-skills',
+    );
+
+    expect(capturedBody['sourceRef'], 'roin-orca/skills');
+    expect(capturedBody['selectedSkillName'], 'review-skills');
+    expect(message, 'Installed review-skills.');
+  });
+
+  test('local runtime bridge posts batch skill installs over http', () async {
+    late Map<String, Object?> capturedBody;
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/install_skill_source_batch');
+      capturedBody = await readJsonBody(request);
+      await writeJson(request, 'Installed 2 skills.');
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final message = await bridge.installSkillSourceBatch(
+      'roin-orca/skills',
+      selectedSkillNames: const <String>['find-skills', 'review-skills'],
+    );
+
+    expect(capturedBody['sourceRef'], 'roin-orca/skills');
+    expect(capturedBody['selectedSkillNames'], <Object?>[
+      'find-skills',
+      'review-skills',
+    ]);
+    expect(message, 'Installed 2 skills.');
   });
 
   test(

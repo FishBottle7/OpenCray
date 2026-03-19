@@ -39,26 +39,9 @@ class TaskCommitmentResolver(
       evidence = evidence,
       nowEpochMs = now,
     )
-    if (semanticMaintenance != null) {
-      semanticMaintenance.resolvedRecords.forEach(store::upsert)
-      semanticMaintenance.reaffirmedRecords.forEach(store::upsert)
-      return semanticMaintenance.copy(
-        expiredRecordIds = expiredRecordIds,
-      )
-    }
-
-    val completionEvidence = maintenanceEvidence.filter(::containsCompletionSignal)
-    if (completionEvidence.isEmpty()) {
-      return TaskCommitmentMaintenanceSummary(expiredRecordIds = expiredRecordIds)
-    }
-
-    val resolvedRecords = openCommitments
-      .filter { record -> completionEvidence.any { text -> matchesCompletion(record.content, text) } }
-      .map { record -> resolve(record = record, nowEpochMs = now) }
-
-    resolvedRecords.forEach(store::upsert)
-    return TaskCommitmentMaintenanceSummary(
-      resolvedRecords = resolvedRecords,
+    semanticMaintenance.resolvedRecords.forEach(store::upsert)
+    semanticMaintenance.reaffirmedRecords.forEach(store::upsert)
+    return semanticMaintenance.copy(
       expiredRecordIds = expiredRecordIds,
     )
   }
@@ -67,7 +50,7 @@ class TaskCommitmentResolver(
     commitments: List<MemoryRecord>,
     evidence: MemoryTurnEvidence,
     nowEpochMs: Long,
-  ): TaskCommitmentMaintenanceSummary? {
+  ): TaskCommitmentMaintenanceSummary {
     val interpretation = intentInterpreter.interpret(
       TaskCommitmentIntentRequest(
         sessionId = evidence.sessionId,
@@ -111,11 +94,7 @@ class TaskCommitmentResolver(
       }
 
       is TaskCommitmentIntentInterpretation.Unavailable -> {
-        if (interpretation.allowHeuristicFallback) {
-          null
-        } else {
-          TaskCommitmentMaintenanceSummary()
-        }
+        TaskCommitmentMaintenanceSummary()
       }
     }
   }
@@ -182,44 +161,6 @@ class TaskCommitmentResolver(
     listOfNotNull(evidence.assistantOutput) + evidence.toolObservations
       .mapNotNull(policy::normalizeCandidateContent)
 
-  private fun matchesCompletion(
-    commitmentContent: String,
-    evidenceText: String,
-  ): Boolean {
-    val normalizedCommitment = policy.normalizeCandidateContent(commitmentContent) ?: return false
-    val normalizedEvidence = policy.normalizeCandidateContent(evidenceText) ?: return false
-    if (!containsCompletionSignal(normalizedEvidence)) {
-      return false
-    }
-    val commitmentLower = normalizedCommitment.lowercase(Locale.US)
-    val evidenceLower = normalizedEvidence.lowercase(Locale.US)
-    if (evidenceLower.contains(commitmentLower)) {
-      return true
-    }
-    val commitmentTerms = extractTerms(commitmentLower)
-    val evidenceTerms = extractTerms(evidenceLower)
-    if (commitmentTerms.isEmpty() || evidenceTerms.isEmpty()) {
-      return false
-    }
-    val overlapCount = commitmentTerms.intersect(evidenceTerms).size
-    return if (commitmentTerms.size <= 2) {
-      overlapCount >= commitmentTerms.size
-    } else {
-      overlapCount >= 2
-    }
-  }
-
-  private fun containsCompletionSignal(text: String): Boolean {
-    val lowered = text.lowercase(Locale.US)
-    return COMPLETION_MARKERS.any { marker -> lowered.contains(marker) } ||
-      CHINESE_COMPLETION_MARKERS.any { marker -> text.contains(marker) }
-  }
-
-  private fun extractTerms(text: String): Set<String> = TERM_REGEX.findAll(text)
-    .map { match -> match.value.trim() }
-    .filter { token -> token.length >= 2 && token !in STOP_TERMS }
-    .toCollection(linkedSetOf())
-
   private fun parseKind(record: MemoryRecord): MemoryKind? =
     parseEnum(record.extensions[MemoryRecordExtensionKeys.KIND]) { token -> MemoryKind.valueOf(token) }
 
@@ -245,69 +186,5 @@ class TaskCommitmentResolver(
 
   private companion object {
     const val RESOLUTION_REASON_COMPLETED: String = "completed"
-    val TERM_REGEX: Regex = Regex("[\\p{L}\\p{N}_./:-]{2,}")
-    val STOP_TERMS: Set<String> = setOf(
-      "the",
-      "this",
-      "that",
-      "with",
-      "from",
-      "into",
-      "next",
-      "will",
-      "then",
-      "done",
-      "have",
-      "has",
-      "been",
-      "and",
-      "for",
-      "after",
-      "before",
-      "already",
-      "已",
-      "已经",
-      "然后",
-      "接着",
-      "现在",
-      "之后",
-    )
-    val COMPLETION_MARKERS: List<String> = listOf(
-      "completed ",
-      "finished ",
-      "done ",
-      "resolved ",
-      "fixed ",
-      "updated ",
-      "verified ",
-      "checked ",
-      "created ",
-      "wrote ",
-      "executed ",
-      "ran ",
-      "passed ",
-      "applied ",
-      "removed ",
-      "saved ",
-    )
-    val CHINESE_COMPLETION_MARKERS: List<String> = listOf(
-      "已完成",
-      "完成了",
-      "已经完成",
-      "修复了",
-      "已修复",
-      "更新了",
-      "已更新",
-      "验证了",
-      "已验证",
-      "运行了",
-      "执行了",
-      "通过了",
-      "已通过",
-      "写入了",
-      "创建了",
-      "保存了",
-      "处理完",
-    )
   }
 }

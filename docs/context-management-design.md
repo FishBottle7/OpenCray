@@ -1351,10 +1351,16 @@ Adaptive relationship fields:
 
 - warmth
 - formality
-- intimacy
 - playfulness
 - initiative
+- reassurance
 - preferred address style
+- preferred naming
+
+Implementation note:
+
+- `intimacy` should stay primarily relationship-earned rather than a free-floating preference drift axis
+- if the user wants less or more closeness, that should usually land in explicit address-style / naming preferences plus relationship-aware gates, not a direct durable "be more intimate" scalar that bypasses trust and safety
 
 Only adaptive relationship fields should be influenced by memory-backed evolution. Protected core fields stay anchored to `SOUL.md`.
 
@@ -1737,19 +1743,60 @@ The current implementation is only a first skeleton.
 
 What exists now:
 
-- direct-chat durable soul rewrites are partially blocked
-- long-term style requests can be stored as durable `relationship_style_profile` signals
-- runtime overlay can apply a bounded style-oriented relationship shift based on plasticity thresholds
+- direct-chat user/soul memory extraction is semantic-only and fails closed when the relevant interpreter is unavailable
+- direct-chat durable soul rewrites are constrained: naming may remain durable, acting-mode style/verbosity stay session-bound, and durable adaptive drift must flow through `interaction_preference_signal`
+- raw adaptive preference rows only affect runtime after projection into persisted `InteractionPreferenceState`
+- persisted `InteractionPreferenceState`, `RelationshipState`, and relationship-event objects plus updater pipelines now exist
+- runtime overlay can apply projected interaction/relationship state with plasticity thresholds and bounded safety/intimacy gating
 
 What does **not** exist yet:
 
-- a full relationship-state layer with dimensions like trust, safety, intimacy permission, and affection tendency
-- event-driven positive and negative relationship updates
-- reciprocity-aware gating
-- realistic affect growth that depends on interaction history rather than repeated verbal demand
-- a concrete persisted `InteractionPreferenceState` object
-- a concrete persisted `RelationshipState` object
-- a concrete persisted relationship-event object plus updater pipeline
+- full operator-facing curation and drill-down surfaces for memory/soul state maintenance
+- richer reciprocity-aware behavior policies that consume the projected relationship state at action-planning time
+- more realistic long-horizon affect growth that depends on interaction history rather than repeated verbal demand alone
+
+### Turn-time control path
+
+The turn-time control path should not rely on keyword collision or on the main agent improvising everything from one big prompt.
+
+It should be split into three layers:
+
+1. semantic interpretation
+   - a constrained LLM interpreter classifies the current turn
+   - it should produce structured turn-time signals such as:
+     - whether the request is task-bearing
+     - whether the user appears strained, distressed, playful, or neutral
+     - whether the user is inviting playfulness
+     - whether relational support is being sought
+     - whether clarification is actually needed
+   - this layer should remain semantic-only and fail closed when unavailable
+   - this layer should not fall back to keyword heuristics
+2. deterministic response policy
+   - runtime consumes:
+     - base soul
+     - projected interaction preference state
+     - projected relationship state
+     - structured turn-time semantic signal
+   - runtime then produces a bounded response policy for the turn
+   - this policy should decide:
+     - task-first vs balanced vs more relationally open handling
+     - answer-first vs short-support-then-answer vs direct-supportive reply
+     - whether clarification should be minimal or more proactive
+     - whether reassurance is allowed, brief-only, or explicitly withheld
+     - whether relational check-ins are disallowed, secondary-only, or briefly allowed
+     - whether playfulness is disallowed, light-only, or mild-teasing-allowed
+   - this layer is where hard boundaries live
+3. main-agent generation
+   - the main agent still writes the final natural language
+   - but it writes inside the policy envelope rather than deciding all boundaries itself
+
+In short:
+
+- LLM decides what the turn appears to need
+- deterministic runtime decides what the turn is allowed to do
+- the main agent decides how to say it naturally
+
+This structure is important because it preserves style diversity across agents without letting one sentence or one prompt spike bypass relationship gates.
 
 This distinction matters because the current system should be treated as:
 
@@ -1946,6 +1993,24 @@ Rules:
     - suppress runtime soul overlay / soul prompt material
     - suppress automatic memory recall / memory prompt injection
     - explicit memory tools can still remain a separate policy decision instead of being silently tied to this mode
+
+Live-mode suppression should be source-based and fail-closed:
+
+- do not inject a neutral or empty soul policy block; omit soul-derived prompt material entirely
+- `no_soul` must suppress all soul-derived contract surfaces, including:
+  - base `SOUL.md`
+  - memory-backed soul overlay
+  - `behavior_guidance`
+  - future soul turn-response policy
+- `no_memory_or_soul` must additionally suppress:
+  - automatic recalled-memory prompt layers
+  - future memory-derived turn or continuity policy that would otherwise be auto-injected
+- explicit memory tools such as `memory_search` / `memory_get` should be controlled by a separate operator switch; they should not be silently disabled just because automatic memory injection is off
+
+Implementation rule:
+
+- apply the live-mode gate before prompt assembly, then keep a second fail-closed guard in runtime context injection so accidentally populated soul/memory data still cannot leak into the final prompt
+- `full`, `lightweight`, and `none` differ only in bootstrap context selection; they should not silently disable soul- or memory-derived policy surfaces
 
 This is directly inspired by OpenClaw's `resolveBootstrapContextForRun()`.
 

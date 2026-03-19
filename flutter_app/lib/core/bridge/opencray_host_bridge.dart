@@ -2,6 +2,7 @@ import '../models/opencray_chat_snapshot.dart';
 import '../models/opencray_debug_snapshot.dart';
 import '../models/opencray_file_image_preview.dart';
 import '../models/opencray_file_text_preview.dart';
+import '../models/opencray_file_voice_playback_source.dart';
 import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
@@ -27,9 +28,15 @@ abstract interface class OpenCrayHostBridge {
 
   Future<OpenCrayFileTextPreview> loadWorkspaceTextPreview(String relativePath);
 
+  Future<OpenCrayFileVoicePlaybackSource> loadWorkspaceVoicePlaybackSource(
+    String relativePath,
+  );
+
   Future<OpenCrayWorkspaceTextDocument> loadWorkspaceTextDocument(
     String relativePath,
   );
+
+  Future<void> openWorkspaceEntry(String relativePath);
 
   Future<OpenCrayFilesSnapshot> createWorkspaceFolder({
     required String parentRelativePath,
@@ -161,6 +168,7 @@ abstract interface class OpenCrayHostBridge {
     required String workspaceAccessProfileId,
     required bool readOnlyOutsideWorkspace,
     String liveContextModeId = 'full',
+    bool memoryToolsEnabled = true,
   });
 
   Future<OpenCraySkillsSnapshot> loadSkillsSnapshot({String query = ''});
@@ -171,7 +179,23 @@ abstract interface class OpenCrayHostBridge {
 
   Future<String?> refreshSkills();
 
-  Future<String?> installSkillSource(String sourceRef);
+  Future<String?> checkInstalledSkillUpdates({String skillId = ''});
+
+  Future<String?> updateInstalledSkill(String skillId);
+
+  Future<OpenCraySkillSourceInspectionSnapshot> inspectSkillSource(
+    String sourceRef,
+  );
+
+  Future<String?> installSkillSource(
+    String sourceRef, {
+    String selectedSkillName = '',
+  });
+
+  Future<String?> installSkillSourceBatch(
+    String sourceRef, {
+    List<String> selectedSkillNames = const <String>[],
+  });
 
   Future<String?> installSuggestedSkill(String skillId);
 
@@ -196,6 +220,18 @@ abstract interface class OpenCrayHostBridge {
   Future<OpenCrayMemoryDebugLinksSnapshot> loadMemoryDebugLinksSnapshot();
 
   Future<OpenCraySoulDebugSnapshot> loadSoulDebugSnapshot();
+
+  Future<OpenCrayMemoryDebugSearchSnapshot> searchMemoryDebug({
+    required String query,
+    int maxResults = 4,
+    int minScore = 1,
+  });
+
+  Future<OpenCrayMemoryDebugSliceSnapshot> getMemoryDebugSlice({
+    required String path,
+    int? fromLine,
+    int lines = 12,
+  });
 
   Future<OpenCrayChatRunSnapshot?> waitForChatRun(
     String runId, {

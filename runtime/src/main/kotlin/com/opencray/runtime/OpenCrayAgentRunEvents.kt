@@ -15,6 +15,13 @@ enum class OpenCrayApprovalPhase {
   REJECTED,
 }
 
+enum class OpenCraySubAgentPhase {
+  STARTED,
+  COMPLETED,
+  FAILED,
+  CANCELLED,
+}
+
 sealed interface OpenCrayAgentRunEvent {
   val runId: String
   val taskId: String
@@ -52,6 +59,22 @@ data class OpenCrayProgressEvent(
   override val emittedAtEpochMs: Long,
 ) : OpenCrayAgentRunEvent
 
+data class OpenCraySupplementInput(
+  val entryId: String,
+  val text: String,
+  val createdAtEpochMs: Long,
+)
+
+data class OpenCraySupplementEvent(
+  override val runId: String,
+  override val taskId: String,
+  override val turn: Int,
+  val entryId: String,
+  val text: String,
+  val checkpoint: String = "turn_start",
+  override val emittedAtEpochMs: Long,
+) : OpenCrayAgentRunEvent
+
 data class OpenCrayApprovalEvent(
   override val runId: String,
   override val taskId: String,
@@ -59,6 +82,21 @@ data class OpenCrayApprovalEvent(
   val toolName: String? = null,
   val text: String,
   val isHighRisk: Boolean = false,
+  override val turn: Int? = null,
+  override val emittedAtEpochMs: Long,
+) : OpenCrayAgentRunEvent
+
+data class OpenCraySubAgentEvent(
+  override val runId: String,
+  override val taskId: String,
+  val phase: OpenCraySubAgentPhase,
+  val childRunId: String,
+  val childTaskId: String,
+  val label: String,
+  val subagentType: String,
+  val contextMode: String,
+  val depth: Int,
+  val summary: String? = null,
   override val turn: Int? = null,
   override val emittedAtEpochMs: Long,
 ) : OpenCrayAgentRunEvent

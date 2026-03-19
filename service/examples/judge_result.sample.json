@@ -1,0 +1,42 @@
+{
+  "judge_mode": "generation",
+  "candidate_id": "cand_02",
+  "in_character": 0.84,
+  "voice_similarity": 0.79,
+  "decision_similarity": 0.88,
+  "relationship_fit": 0.91,
+  "scene_fit": 0.82,
+  "memory_consistency": 0.93,
+  "value_order_fit": 0.86,
+  "interpersonal_stance_fit": 0.8,
+  "speech_act_fit": 0.89,
+  "regulation_fit": 0.84,
+  "script_continuity_fit": 0.78,
+  "opening_move_fit": 0.81,
+  "closure_fit": 0.76,
+  "boundary_calibration_fit": 0.88,
+  "intimacy_calibration_fit": 0.83,
+  "selected_counterpart_fit": 0.9,
+  "overlay_activation_fit": 0.92,
+  "relationship_state_fit": 0.86,
+  "rebind_contamination_risk": 0.05,
+  "context_quality": "full",
+  "anti_pattern_risk": 0.08,
+  "quote_regurgitation_risk": 0.03,
+  "fiction_contamination_risk": 0.01,
+  "passes_identity_gate": true,
+  "passes_relationship_gate": true,
+  "passes_consistency_gate": true,
+  "passes_style_gate": true,
+  "recommended_action": "accept",
+  "reasons": [
+    "The reply stays short and restrained while acknowledging the other person's feeling first.",
+    "The boundary is clear without becoming punitive."
+  ],
+  "problems": [
+    "The ending is slightly softer than the strongest evidence suggests."
+  ],
+  "rewrite_hint": "Shorten the final reassurance clause.",
+  "hard_veto": false,
+  "veto_reasons": []
+}

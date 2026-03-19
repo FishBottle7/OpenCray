@@ -18,16 +18,17 @@ Use this skill when the user:
 - Wants to search for tools, templates, or workflows
 - Mentions they wish they had help with a specific domain (design, testing, deployment, etc.)
 
-## What is the Skills CLI?
+## Native Skills Tools
 
-The Skills CLI (`npx skills`) is the package manager for the open agent skills ecosystem. Skills are modular packages that extend agent capabilities with specialized knowledge, workflows, and tools.
+OpenCray exposes native skills package-manager tools. Skills are modular packages that extend agent capabilities with specialized knowledge, workflows, and tools.
 
-**Key commands:**
+**Key tools:**
 
-- `npx skills find [query]` - Search for skills interactively or by keyword
-- `npx skills add <package>` - Install a skill from GitHub or other sources
-- `npx skills check` - Check for skill updates
-- `npx skills update` - Update all installed skills
+- `SkillsFind` - Search the host-managed local catalog and remote skills index
+- `SkillsAdd` - Install a skill from the local catalog, a local path, GitHub, or GitLab
+- `SkillsCheck` - Check installed skills for updates using recorded provenance
+- `SkillsUpdate` - Update installed skills in place
+- `SkillsInit` - Scaffold a new local skill when native init support is available
 
 **Browse skills at:** https://skills.sh/
 
@@ -43,25 +44,19 @@ When a user asks for help with something, identify:
 
 ### Step 2: Search for Skills
 
-Run the find command with a relevant query:
-
-```bash
-npx skills find [query]
-```
+Run the native find tool with a relevant query.
 
 For example:
 
-- User asks "how do I make my React app faster?" -> `npx skills find react performance`
-- User asks "can you help me with PR reviews?" -> `npx skills find pr review`
-- User asks "I need to create a changelog" -> `npx skills find changelog`
+- User asks "how do I make my React app faster?" -> use `SkillsFind` with query `react performance`
+- User asks "can you help me with PR reviews?" -> use `SkillsFind` with query `pr review`
+- User asks "I need to create a changelog" -> use `SkillsFind` with query `changelog`
 
-The command will return results like:
+The tool returns installable refs and detail URLs, for example:
 
 ```
-Install with npx skills add <owner/repo@skill>
-
-vercel-labs/agent-skills@vercel-react-best-practices
-└ https://skills.sh/vercel-labs/agent-skills/vercel-react-best-practices
+vercel-react-best-practices    remote    install_ref=vercel-labs/agent-skills@vercel-react-best-practices
+detail_url=https://skills.sh/vercel-labs/agent-skills/vercel-react-best-practices
 ```
 
 ### Step 3: Present Options to the User
@@ -69,7 +64,7 @@ vercel-labs/agent-skills@vercel-react-best-practices
 When you find relevant skills, present them to the user with:
 
 1. The skill name and what it does
-2. The install command they can run
+2. The install ref or the fact that you can install it for them with `SkillsAdd`
 3. A link to learn more at skills.sh
 
 Example response:
@@ -78,8 +73,8 @@ Example response:
 I found a skill that might help! The "vercel-react-best-practices" skill provides
 React and Next.js performance optimization guidelines from Vercel Engineering.
 
-To install it:
-npx skills add vercel-labs/agent-skills@vercel-react-best-practices
+I can install it with:
+SkillsAdd source_ref="vercel-labs/agent-skills@vercel-react-best-practices"
 
 Learn more: https://skills.sh/vercel-labs/agent-skills/vercel-react-best-practices
 ```
@@ -88,11 +83,7 @@ Learn more: https://skills.sh/vercel-labs/agent-skills/vercel-react-best-practic
 
 If the user wants to proceed, you can install the skill for them:
 
-```bash
-npx skills add <owner/repo@skill> -g -y
-```
-
-The `-g` flag installs globally (user-level) and `-y` skips confirmation prompts.
+Use `SkillsAdd` with the chosen `source_ref`.
 
 ## Common Skill Categories
 
@@ -120,7 +111,7 @@ If no relevant skills exist:
 
 1. Acknowledge that no existing skill was found
 2. Offer to help with the task directly using your general capabilities
-3. Suggest the user could create their own skill with `npx skills init`
+3. Suggest the user could create their own skill with `SkillsInit` once native scaffolding is available
 
 Example:
 
@@ -128,6 +119,6 @@ Example:
 I searched for skills related to "xyz" but didn't find any matches.
 I can still help you with this task directly! Would you like me to proceed?
 
-If this is something you do often, you could create your own skill:
-npx skills init my-xyz-skill
+If this is something you do often, creating a dedicated skill may make sense once
+the native `SkillsInit` scaffold flow is available.
 ```

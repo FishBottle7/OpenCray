@@ -126,9 +126,18 @@ internal class OpenCrayLocalRuntimeServer(
       "GET" to "/v1/workspace_text_preview" -> hostRuntime.loadWorkspaceTextPreview(
         relativePath = request.queryParameter("relativePath"),
       )
+      "GET" to "/v1/workspace_voice_playback_source" -> hostRuntime.loadWorkspaceVoicePlaybackSource(
+        relativePath = request.queryParameter("relativePath"),
+      )
       "GET" to "/v1/workspace_text_document" -> hostRuntime.loadWorkspaceTextDocument(
         relativePath = request.queryParameter("relativePath"),
       )
+      "POST" to "/v1/open_workspace_entry" -> {
+        hostRuntime.openWorkspaceEntry(
+          relativePath = body.optString("relativePath"),
+        )
+        null
+      }
       "POST" to "/v1/create_workspace_folder" -> hostRuntime.createWorkspaceFolder(
         parentRelativePath = body.optString("parentRelativePath"),
         name = body.optString("name"),
@@ -246,6 +255,7 @@ internal class OpenCrayLocalRuntimeServer(
         workspaceAccessProfileId = body.optString("workspaceAccessProfileId"),
         readOnlyOutsideWorkspace = body.optBoolean("readOnlyOutsideWorkspace", true),
         liveContextModeId = body.optString("liveContextModeId", LiveContextMode.FULL.wireValue),
+        memoryToolsEnabled = body.optBoolean("memoryToolsEnabled", true),
       )
       "GET" to "/v1/skills_snapshot" -> hostRuntime.loadSkillsSnapshot(
         query = request.queryParameter("query"),
@@ -258,8 +268,22 @@ internal class OpenCrayLocalRuntimeServer(
         null
       }
       "POST" to "/v1/refresh_skills" -> hostRuntime.refreshSkills()
+      "GET" to "/v1/check_installed_skill_updates" -> hostRuntime.checkInstalledSkillUpdates(
+        skillId = request.queryParameter("skillId"),
+      )
+      "POST" to "/v1/update_installed_skill" -> hostRuntime.updateInstalledSkill(
+        skillId = body.optString("skillId"),
+      )
+      "POST" to "/v1/inspect_skill_source" -> hostRuntime.inspectSkillSource(
+        sourceRef = body.optString("sourceRef"),
+      )
       "POST" to "/v1/install_skill_source" -> hostRuntime.installSkillSource(
         sourceRef = body.optString("sourceRef"),
+        selectedSkillName = body.optString("selectedSkillName"),
+      )
+      "POST" to "/v1/install_skill_source_batch" -> hostRuntime.installSkillSourceBatch(
+        sourceRef = body.optString("sourceRef"),
+        selectedSkillNames = body.optJSONArray("selectedSkillNames")?.let(::jsonArrayToStrings) ?: emptyList(),
       )
       "POST" to "/v1/install_suggested_skill" -> hostRuntime.installSuggestedSkill(
         skillId = body.optString("skillId"),
@@ -278,6 +302,16 @@ internal class OpenCrayLocalRuntimeServer(
       "GET" to "/v1/memory_debug_snapshot" -> hostRuntime.loadMemoryDebugSnapshot()
       "GET" to "/v1/memory_debug_links_snapshot" -> hostRuntime.loadMemoryDebugLinksSnapshot()
       "GET" to "/v1/soul_debug_snapshot" -> hostRuntime.loadSoulDebugSnapshot()
+      "POST" to "/v1/memory_debug_search" -> hostRuntime.searchMemoryDebug(
+        query = body.optString("query"),
+        maxResults = body.optInt("maxResults", 4),
+        minScore = body.optInt("minScore", 1),
+      )
+      "POST" to "/v1/memory_debug_slice" -> hostRuntime.getMemoryDebugSlice(
+        path = body.optString("path"),
+        fromLine = body.takeIf { !it.isNull("fromLine") }?.optInt("fromLine"),
+        lines = body.optInt("lines", 12),
+      )
       "POST" to "/v1/create_chat_session" -> {
         hostRuntime.createChatSession()
         null

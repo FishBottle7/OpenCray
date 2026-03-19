@@ -137,12 +137,39 @@ class SoulProfileResolver {
     val preferredAddressStyle =
       extensions[SoulProfileExtensionKeys.PREFERRED_ADDRESS_STYLE].parseEnumOrNull<PreferredAddressStyle>()
         ?: profile.preferredAddressStyle
+    val warmthPreferenceOffset =
+      extensions[SoulProfileExtensionKeys.WARMTH_PREFERENCE_OFFSET].parsePreferenceOffsetOrNull()
+        ?: profile.warmthPreferenceOffset
+    val formalityPreferenceOffset =
+      extensions[SoulProfileExtensionKeys.FORMALITY_PREFERENCE_OFFSET].parsePreferenceOffsetOrNull()
+        ?: profile.formalityPreferenceOffset
+    val initiativePreferenceOffset =
+      extensions[SoulProfileExtensionKeys.INITIATIVE_PREFERENCE_OFFSET].parsePreferenceOffsetOrNull()
+        ?: profile.initiativePreferenceOffset
+    val playfulnessPreferenceOffset =
+      extensions[SoulProfileExtensionKeys.PLAYFULNESS_PREFERENCE_OFFSET].parsePreferenceOffsetOrNull()
+        ?: profile.playfulnessPreferenceOffset
+    val reassurancePreferenceOffset =
+      extensions[SoulProfileExtensionKeys.REASSURANCE_PREFERENCE_OFFSET].parsePreferenceOffsetOrNull()
+        ?: profile.reassurancePreferenceOffset
     val intimacyPermissionBand =
       extensions[SoulProfileExtensionKeys.INTIMACY_PERMISSION_BAND].parseEnumOrNull<RelationshipBand>()
         ?: profile.intimacyPermissionBand
     val playfulnessPermissionBand =
       extensions[SoulProfileExtensionKeys.PLAYFULNESS_PERMISSION_BAND].parseEnumOrNull<RelationshipBand>()
         ?: profile.playfulnessPermissionBand
+    val supportiveReassuranceAllowed =
+      extensions[SoulProfileExtensionKeys.SUPPORTIVE_REASSURANCE_ALLOWED].parseBooleanOrNull()
+        ?: profile.supportiveReassuranceAllowed
+    val proactiveRelationalCheckInAllowed =
+      extensions[SoulProfileExtensionKeys.PROACTIVE_RELATIONAL_CHECK_IN_ALLOWED].parseBooleanOrNull()
+        ?: profile.proactiveRelationalCheckInAllowed
+    val lightPlayfulnessAllowed =
+      extensions[SoulProfileExtensionKeys.LIGHT_PLAYFULNESS_ALLOWED].parseBooleanOrNull()
+        ?: profile.lightPlayfulnessAllowed
+    val playfulTeasingAllowed =
+      extensions[SoulProfileExtensionKeys.PLAYFUL_TEASING_ALLOWED].parseBooleanOrNull()
+        ?: profile.playfulTeasingAllowed
     val highIntimacyBehaviorAllowed =
       extensions[SoulProfileExtensionKeys.HIGH_INTIMACY_BEHAVIOR_ALLOWED].parseBooleanOrNull()
         ?: profile.highIntimacyBehaviorAllowed
@@ -166,8 +193,17 @@ class SoulProfileResolver {
       voice = voice,
       preferredNaming = preferredNaming,
       preferredAddressStyle = preferredAddressStyle,
+      warmthPreferenceOffset = warmthPreferenceOffset,
+      formalityPreferenceOffset = formalityPreferenceOffset,
+      initiativePreferenceOffset = initiativePreferenceOffset,
+      playfulnessPreferenceOffset = playfulnessPreferenceOffset,
+      reassurancePreferenceOffset = reassurancePreferenceOffset,
       intimacyPermissionBand = intimacyPermissionBand,
       playfulnessPermissionBand = playfulnessPermissionBand,
+      supportiveReassuranceAllowed = supportiveReassuranceAllowed,
+      proactiveRelationalCheckInAllowed = proactiveRelationalCheckInAllowed,
+      lightPlayfulnessAllowed = lightPlayfulnessAllowed,
+      playfulTeasingAllowed = playfulTeasingAllowed,
       highIntimacyBehaviorAllowed = highIntimacyBehaviorAllowed,
       playfulAffectionAllowed = playfulAffectionAllowed,
       tone = tone,
@@ -208,6 +244,14 @@ class SoulProfileResolver {
     "true" -> true
     "false" -> false
     else -> null
+  }
+
+  private fun String?.parsePreferenceOffsetOrNull(): Int? {
+    val normalized = normalizeSoulScalarOrNull(this) ?: return null
+    val parsed = normalized.toIntOrNull() ?: return null
+    return parsed.takeIf { value ->
+      value in PreferenceAxisState.MIN_OFFSET..PreferenceAxisState.MAX_OFFSET
+    }
   }
 
   private fun mergeDistinct(

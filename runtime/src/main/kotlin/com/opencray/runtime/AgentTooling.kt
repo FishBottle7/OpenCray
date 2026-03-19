@@ -19,11 +19,14 @@ import com.opencray.runtime.policy.ToolPolicyPipeline
 import com.opencray.runtime.policy.ToolPolicyEvaluator
 import com.opencray.runtime.policy.ToolMetadataContext
 import com.opencray.runtime.policy.ToolPolicySupport
+import com.opencray.runtime.policy.DelegationIntent
+import com.opencray.runtime.policy.DelegationIntentKind
 import com.opencray.runtime.policy.ExecutionIntent
 import com.opencray.runtime.policy.ExecutionIntentKind
 import com.opencray.runtime.policy.ExecutionTransport
 import com.opencray.runtime.policy.ProcessLifecycleIntent
 import com.opencray.runtime.policy.ProcessLifecycleIntentKind
+import com.opencray.runtime.policy.ToolPolicyPlan
 import com.opencray.runtime.policy.ToolTargetKind
 import com.opencray.runtime.policy.ToolTargetResolver
 import com.opencray.runtime.policy.ToolRuntimeIntent
@@ -35,8 +38,11 @@ import com.opencray.runtime.process.InMemoryAgentProcessRegistry
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.skills.SkillPackageBatchInstallEntry
+import com.opencray.runtime.skills.SkillPackageCheckResult
 import com.opencray.runtime.skills.SkillInstallManifestEntry
 import com.opencray.runtime.skills.SkillPackageManager
+import com.opencray.runtime.skills.SkillPackageUpdateResult
 import com.opencray.runtime.web.HttpUrlWebContentFetcher
 import com.opencray.runtime.web.UnconfiguredWebSearchProvider
 import com.opencray.runtime.web.WebContentFetcher
@@ -50,6 +56,8 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.security.MessageDigest
+import java.util.Locale
 import java.util.UUID
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -158,6 +166,7 @@ data class AgentToolResult(
 data class OpenCrayToolDispatcherConfig(
   val workspaceRoots: Set<Path>,
   val readRoots: Set<Path> = workspaceRoots,
+  val allowedToolNames: Set<String>? = null,
   val extraPolicyReadRoots: Set<Path> = emptySet(),
   val extraPolicyWriteRoots: Set<Path> = emptySet(),
   val skillsRoots: List<File> = emptyList(),
@@ -233,6 +242,10 @@ class OpenCrayToolDispatcher(
       approvedWorkingDirectories = writeBoundary.approvedRoots(),
     ),
   )
+  private val allowedToolNames: Set<String>? = config.allowedToolNames
+    ?.map(String::trim)
+    ?.filter(String::isNotBlank)
+    ?.toSet()
 
   fun definitions(): List<AgentToolDefinition> {
     val canonicalDefinitions = listOf(
@@ -328,6 +341,16 @@ class OpenCrayToolDispatcher(
         description = "Read or replace the current chat session's in-memory todo list. Omit todos to inspect the current list; provide todos to replace it.",
         parameters = listOf(
           AgentToolParameter("todos", "object[]", required = false, description = "Array of todo objects with content, status, and optional activeForm."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "Task",
+        description = "Delegate one bounded read-only subtask to a child runtime and wait for its summarized result before continuing.",
+        parameters = listOf(
+          AgentToolParameter("description", "string", required = true, description = "Short task label for the delegated child run."),
+          AgentToolParameter("prompt", "string", required = true, description = "Exact instructions for the child run."),
+          AgentToolParameter("subagent_type", "string", required = true, description = "Child profile id such as general-purpose, researcher, or reviewer."),
+          AgentToolParameter("context_mode", "string", required = false, description = "Optional child context override. Supported values: minimal, delegated, mirrored."),
         ),
       ),
       AgentToolDefinition(
@@ -464,8 +487,23 @@ class OpenCrayToolDispatcher(
         ),
       ),
       AgentToolDefinition(
+        name = "SkillsInspect",
+        description = "Inspect an explicit local path, GitHub source, or GitLab source and list the installable skills it contains before installation.",
+        parameters = listOf(
+          AgentToolParameter("source_ref", "string", required = true, description = "Explicit local path, owner/repo, gitlab:group/project/repo, GitHub URL, GitLab URL, or supported git remote URL."),
+        ),
+      ),
+      AgentToolDefinition(
         name = "SkillsList",
         description = "List skills currently installed in the host-managed skills directory.",
+      ),
+      AgentToolDefinition(
+        name = "SkillsCheck",
+        description = "Check installed skills against their recorded source provenance and report whether updates are available.",
+        parameters = listOf(
+          AgentToolParameter("skill_id", "string", required = false, description = "Optional exact installed skill id to check. Defaults to all installed skills."),
+          AgentToolParameter("all", "boolean", required = false, description = "Optional compatibility flag. When true, check all installed skills."),
+        ),
       ),
       AgentToolDefinition(
         name = "SkillsAdd",
@@ -473,6 +511,24 @@ class OpenCrayToolDispatcher(
         parameters = listOf(
           AgentToolParameter("source_ref", "string", required = true, description = "Catalog skill id, explicit local path, owner/repo, owner/repo@skill-name, gitlab:group/project/repo, GitHub URL, GitLab URL, or supported git remote URL."),
           AgentToolParameter("skill", "string", required = false, description = "Optional explicit skill name when a remote source exposes multiple skills."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "SkillsAddBatch",
+        description = "Install multiple skills from one explicit local path, GitHub source, or GitLab source through the shared host-managed skills pipeline.",
+        parameters = listOf(
+          AgentToolParameter("source_ref", "string", required = true, description = "Explicit local path, owner/repo, gitlab:group/project/repo, GitHub URL, GitLab URL, or supported git remote URL."),
+          AgentToolParameter("skills", "string[]", required = false, description = "Optional explicit skill names to install from the inspected source."),
+          AgentToolParameter("install_all", "boolean", required = false, description = "When true, install every valid skill discovered in the source."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "SkillsUpdate",
+        description = "Update installed skills in place using their recorded source provenance.",
+        parameters = listOf(
+          AgentToolParameter("skill_id", "string", required = false, description = "Optional exact installed skill id to update. Defaults to all installed skills."),
+          AgentToolParameter("all", "boolean", required = false, description = "Optional compatibility flag. When true, update all installed skills."),
+          AgentToolParameter("yes", "boolean", required = false, description = "Optional compatibility flag. Native updates are non-interactive, so this is accepted but ignored."),
         ),
       ),
       AgentToolDefinition(
@@ -487,9 +543,64 @@ class OpenCrayToolDispatcher(
         description = "Inspect currently exposed MCP servers and their trust state. This runtime does not proxy remote MCP tools yet.",
       ),
     ) + memoryToolDefinitions()
-    val aliasDefinitions = toolCallNormalizer.aliasDefinitions(canonicalDefinitions)
-    return canonicalDefinitions + aliasDefinitions
+    val visibleCanonicalDefinitions = allowedToolNames?.let { allowed ->
+      canonicalDefinitions.filter { definition -> definition.name in allowed }
+    } ?: canonicalDefinitions
+    val aliasDefinitions = toolCallNormalizer.aliasDefinitions(visibleCanonicalDefinitions)
+    return visibleCanonicalDefinitions + aliasDefinitions
   }
+
+  fun restrictTo(allowedToolNames: Set<String>): OpenCrayToolDispatcher =
+    OpenCrayToolDispatcher(
+      config.copy(
+        allowedToolNames = allowedToolNames
+          .map(String::trim)
+          .filter(String::isNotBlank)
+          .toSet(),
+      ),
+    )
+
+  internal fun planTaskDelegation(
+    task: AgentTask,
+    description: String,
+    prompt: String,
+    subagentType: String,
+    contextMode: String,
+    allowedToolNames: Set<String>,
+  ): ToolPolicyPlan = toolPolicyPipeline.plan(
+    task = task,
+    toolName = "Task",
+    targetPath = writeBoundary.defaultRoot,
+    metadataRequest = ToolMetadataContextRequest(
+      targetSummary = inlinePreview(description, maxChars = 256),
+    ),
+    intent = DelegationIntent(
+      kind = DelegationIntentKind.SUBAGENT_TASK,
+      subagentType = subagentType,
+      contextMode = contextMode,
+      description = inlinePreview(description, maxChars = 256),
+      promptPreview = inlinePreview(prompt, maxChars = 512),
+      allowedToolNames = allowedToolNames,
+    ),
+  )
+
+  internal fun gateTaskDelegation(plan: ToolPolicyPlan): AgentToolResult? =
+    toolPolicyPipeline.gate(
+      plan = plan,
+      affectedPaths = emptyMap(),
+      askDetail = "Approval is required before Task can delegate this work.",
+      denyDetail = "Policy denied Task.",
+    )
+
+  internal fun taskDelegationResultMetadata(
+    plan: ToolPolicyPlan,
+    metadata: Map<String, String> = emptyMap(),
+    includeOutcome: Boolean = false,
+  ): Map<String, String> = toolPolicyPipeline.resultMetadata(
+    plan = plan,
+    metadata = metadata,
+    includeOutcome = includeOutcome,
+  )
 
   fun dispatch(
     task: AgentTask,
@@ -497,6 +608,21 @@ class OpenCrayToolDispatcher(
     hooks: com.opencray.core.orchestrator.RuntimeExecutionHooks,
   ): AgentToolResult {
     val invocation = toolCallNormalizer.normalize(call)
+    if (allowedToolNames != null && invocation.normalizedToolName !in allowedToolNames) {
+      return toolCallNormalizer.decorateResult(
+        result = AgentToolResult(
+          toolName = invocation.requestedToolName,
+          status = AgentToolResultStatus.DENIED,
+          content = "Tool '${invocation.requestedToolName}' is unavailable in this delegated child runtime.",
+          errorCode = "SUBAGENT_TOOL_NOT_ALLOWED",
+          errorMessage = "Tool '${invocation.requestedToolName}' is unavailable in this delegated child runtime.",
+          metadata = mapOf(
+            "allowedToolNames" to allowedToolNames.sorted().joinToString(separator = ","),
+          ),
+        ),
+        invocation = invocation,
+      )
+    }
     return try {
       val result = when (invocation.normalizedToolName) {
         "workspace_list_files" -> listWorkspaceFiles(task = task, arguments = invocation.arguments)
@@ -527,8 +653,12 @@ class OpenCrayToolDispatcher(
         "skills_list" -> listSkills()
         "skill_read" -> readSkill(invocation.arguments)
         "SkillsFind" -> findSkillPackages(task = task, arguments = invocation.arguments)
+        "SkillsInspect" -> inspectSkillPackageSource(task = task, arguments = invocation.arguments)
         "SkillsList" -> listInstalledSkillPackages(task = task)
+        "SkillsCheck" -> checkInstalledSkillPackages(task = task, arguments = invocation.arguments)
         "SkillsAdd" -> installSkillPackage(task = task, arguments = invocation.arguments)
+        "SkillsAddBatch" -> installSkillPackagesBatch(task = task, arguments = invocation.arguments)
+        "SkillsUpdate" -> updateInstalledSkillPackages(task = task, arguments = invocation.arguments)
         "SkillsRemove" -> removeSkillPackage(task = task, arguments = invocation.arguments)
         "mcp_list_servers" -> listMcpServers()
         "memory_search" -> searchProjectedMemory(invocation.arguments)
@@ -865,6 +995,11 @@ class OpenCrayToolDispatcher(
     )?.let { return it }
 
     copyIntoWorkspace(source = source, destination = destination)
+    val artifactMetadata = if (Files.isRegularFile(source)) {
+      attachmentArtifactMetadata(destination)
+    } else {
+      emptyMap()
+    }
 
     return AgentToolResult(
       toolName = toolName,
@@ -875,7 +1010,7 @@ class OpenCrayToolDispatcher(
         metadata = mapOf(
           "sourcePath" to toolTargetResolver.displayModelPath(source),
           "destinationPath" to toolTargetResolver.displayWritablePath(destination),
-        ),
+        ) + artifactMetadata,
       ),
     )
   }
@@ -1828,6 +1963,11 @@ class OpenCrayToolDispatcher(
       defaultToRoot = false,
     )
     val targetKind = if (Files.isDirectory(source)) ToolTargetKind.DIRECTORY else ToolTargetKind.FILE
+    val artifactMetadata = if (Files.isRegularFile(source)) {
+      attachmentArtifactMetadata(destination)
+    } else {
+      emptyMap()
+    }
     val plan = toolPolicyPipeline.plan(
       task = task,
       toolName = "workspace_move_file",
@@ -1863,7 +2003,7 @@ class OpenCrayToolDispatcher(
         metadata = mapOf(
           "sourcePath" to toolTargetResolver.displayWritablePath(source),
           "destinationPath" to toolTargetResolver.displayWritablePath(destination),
-        ),
+        ) + artifactMetadata,
       ),
     )
   }
@@ -1948,9 +2088,67 @@ class OpenCrayToolDispatcher(
           metadataPathKey to toolTargetResolver.displayPathForTool(toolName = toolName, path = path),
           "checkpointId" to batchResult.checkpointId,
           "checkpointEntryCount" to batchResult.checkpointEntryCount.toString(),
-        ) + extraMetadata,
+        ) + attachmentArtifactMetadata(path) + extraMetadata,
       ),
     )
+  }
+
+  private fun attachmentArtifactMetadata(path: Path): Map<String, String> {
+    val relativePath = toolTargetResolver.displayWritablePath(path)
+      .trim()
+      .takeIf(String::isNotBlank)
+      ?.takeIf { candidate -> candidate != "." }
+      ?: return emptyMap()
+    val displayName = path.fileName?.toString()
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return emptyMap()
+    val artifactId = buildAttachmentArtifactId(
+      relativePath = relativePath,
+      displayName = displayName,
+    )
+    return buildMap {
+      put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_ID, artifactId)
+      put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_RELATIVE_PATH, relativePath)
+      put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_DISPLAY_NAME, displayName)
+      attachmentArtifactKindHint(displayName)?.let { kindHint ->
+        put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_KIND_HINT, kindHint)
+      }
+      attachmentArtifactMimeType(displayName)?.let { mimeType ->
+        put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_MIME_TYPE, mimeType)
+      }
+    }
+  }
+
+  private fun buildAttachmentArtifactId(
+    relativePath: String,
+    displayName: String,
+  ): String {
+    val baseName = displayName.substringBeforeLast('.', displayName)
+      .lowercase(Locale.US)
+      .replace(Regex("[^a-z0-9]+"), "-")
+      .trim('-')
+      .ifBlank { "file" }
+      .take(48)
+    val digest = MessageDigest.getInstance("SHA-256")
+      .digest(relativePath.toByteArray(StandardCharsets.UTF_8))
+      .joinToString(separator = "") { byte -> "%02x".format(byte) }
+      .take(8)
+    return "artifact-$baseName-$digest"
+  }
+
+  private fun attachmentArtifactKindHint(displayName: String): String? {
+    val extension = displayName.substringAfterLast('.', "").lowercase(Locale.US)
+    return when {
+      extension in ATTACHMENT_IMAGE_EXTENSIONS -> "image"
+      extension in ATTACHMENT_AUDIO_EXTENSIONS -> "voice"
+      else -> "file"
+    }
+  }
+
+  private fun attachmentArtifactMimeType(displayName: String): String? {
+    val extension = displayName.substringAfterLast('.', "").lowercase(Locale.US)
+    return ATTACHMENT_FALLBACK_MIME_TYPES[extension]
   }
 
   private fun copyIntoWorkspace(source: Path, destination: Path) {
@@ -2598,6 +2796,240 @@ class OpenCrayToolDispatcher(
     )
   }
 
+  private fun inspectSkillPackageSource(
+    task: AgentTask,
+    arguments: JsonObject,
+  ): AgentToolResult {
+    val packageManager = config.skillPackageManager ?: return unavailableSkillPackageManager(toolName = "SkillsInspect")
+    val sourceRef = arguments.requiredStringFrom("source_ref", "sourceRef", "source", "path", "url")
+    val localSourcePath = resolveExplicitLocalSkillSourcePath(sourceRef)
+    if (localSourcePath != null) {
+      gateLocalSkillSourceReadAccess(
+        task = task,
+        resultToolName = "SkillsInspect",
+        sourcePath = localSourcePath,
+        sourceRef = sourceRef,
+      )?.let { return it }
+
+      val normalizedSourcePath = localSourcePath.toAbsolutePath().normalize()
+      val displayPath = toolTargetResolver.displayModelPath(normalizedSourcePath)
+      val plan = toolPolicyPipeline.plan(
+        task = task,
+        toolName = "SkillsInspect",
+        targetPath = normalizedSourcePath,
+        metadataRequest = ToolMetadataContextRequest(
+          targetKind = if (Files.isDirectory(normalizedSourcePath)) ToolTargetKind.DIRECTORY else ToolTargetKind.FILE,
+          primaryPath = normalizedSourcePath,
+          primaryTargetPath = displayPath,
+          targetSummary = sourceRef,
+        ),
+      )
+      gateReadOnlyTool(
+        plan = plan,
+        affectedPaths = mapOf("sourcePath" to displayPath),
+      )?.let { return it }
+
+      val attempt = packageManager.inspectLocalSource(
+        sourcePath = localSourcePath.toFile(),
+        sourceRef = sourceRef,
+      )
+      val result = attempt.result ?: return AgentToolResult(
+        toolName = "SkillsInspect",
+        status = AgentToolResultStatus.FAILED,
+        content = attempt.errorMessage ?: "Failed to inspect '$sourceRef'.",
+        errorCode = attempt.errorCode ?: "SKILL_SOURCE_INSPECTION_FAILED",
+        errorMessage = attempt.errorMessage,
+        metadata = toolPolicyPipeline.resultMetadata(
+          plan = plan,
+          metadata = mapOf(
+            "sourceRef" to sourceRef,
+            "candidateCount" to "0",
+          ),
+        ),
+      )
+      return AgentToolResult(
+        toolName = "SkillsInspect",
+        status = AgentToolResultStatus.SUCCESS,
+        content = renderSkillSourceInspection(result),
+        metadata = toolPolicyPipeline.resultMetadata(
+          plan = plan,
+          metadata = buildMap {
+            put("sourceRef", result.sourceRef)
+            put("sourceType", result.sourceType)
+            put("candidateCount", result.candidates.size.toString())
+            result.sourcePath?.let { put("sourcePath", it) }
+            result.resolvedRevision?.let { put("resolvedRevision", it) }
+            result.resolvedCommitSha?.let { put("resolvedCommitSha", it) }
+          },
+        ),
+      )
+    }
+
+    val remoteSource = packageManager.resolveRemoteSource(sourceRef = sourceRef)
+    if (remoteSource != null) {
+      gateRemoteSkillNetworkAccess(
+        task = task,
+        resultToolName = "SkillsInspect",
+        url = remoteSource.policyTargetUrl,
+        targetSummary = remoteSource.requestedSourceRef,
+        affectedPaths = mapOf("sourceRef" to remoteSource.requestedSourceRef),
+      )?.let { return it }
+
+      val metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        primaryTargetPath = remoteSource.policyTargetUrl,
+        workspaceRelation = ToolWorkspaceRelation.NONE,
+        targetSummary = remoteSource.requestedSourceRef,
+      )
+      val attempt = packageManager.inspectRemoteSource(sourceRef = sourceRef)
+      val result = attempt.result ?: return AgentToolResult(
+        toolName = "SkillsInspect",
+        status = AgentToolResultStatus.FAILED,
+        content = attempt.errorMessage ?: "Failed to inspect '$sourceRef'.",
+        errorCode = attempt.errorCode ?: "SKILL_SOURCE_INSPECTION_FAILED",
+        errorMessage = attempt.errorMessage,
+        metadata = toolPolicyPipeline.resultMetadata(
+          toolName = "SkillsInspect",
+          request = metadataRequest,
+          metadata = mapOf(
+            "sourceRef" to remoteSource.requestedSourceRef,
+            "candidateCount" to "0",
+          ),
+        ),
+      )
+      return AgentToolResult(
+        toolName = "SkillsInspect",
+        status = AgentToolResultStatus.SUCCESS,
+        content = renderSkillSourceInspection(result),
+        metadata = toolPolicyPipeline.resultMetadata(
+          toolName = "SkillsInspect",
+          request = metadataRequest,
+          metadata = buildMap {
+            put("sourceRef", result.sourceRef)
+            put("sourceType", result.sourceType)
+            put("candidateCount", result.candidates.size.toString())
+            result.sourcePath?.let { put("sourcePath", it) }
+            result.resolvedRevision?.let { put("resolvedRevision", it) }
+            result.resolvedCommitSha?.let { put("resolvedCommitSha", it) }
+          },
+        ),
+      )
+    }
+
+    return AgentToolResult(
+      toolName = "SkillsInspect",
+      status = AgentToolResultStatus.FAILED,
+      content = "Source '$sourceRef' is not a supported local path, GitHub source, or GitLab source.",
+      errorCode = "SKILL_SOURCE_UNSUPPORTED",
+      metadata = toolPolicyPipeline.resultMetadata(
+        toolName = "SkillsInspect",
+        request = ToolMetadataContextRequest(
+          targetKind = ToolTargetKind.NONE,
+          workspaceRelation = ToolWorkspaceRelation.NONE,
+          targetSummary = sourceRef,
+        ),
+        metadata = mapOf(
+          "sourceRef" to sourceRef,
+          "candidateCount" to "0",
+        ),
+      ),
+    )
+  }
+
+  private fun checkInstalledSkillPackages(
+    task: AgentTask,
+    arguments: JsonObject,
+  ): AgentToolResult {
+    val packageManager = config.skillPackageManager ?: return unavailableSkillPackageManager(toolName = "SkillsCheck")
+    val requestedSkillId = arguments.optionalStringFrom("skill_id", "skillId", "name")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    packageManager.refreshManifest()
+    val managedRoot = packageManager.managedRootPath().toPath().toAbsolutePath().normalize()
+    val displayManagedRoot = displaySkillPackagePath(managedRoot)
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "SkillsCheck",
+      targetPath = managedRoot,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.DIRECTORY,
+        primaryPath = managedRoot,
+        primaryTargetPath = displayManagedRoot,
+        targetSummary = requestedSkillId ?: displayManagedRoot,
+      ),
+    )
+    gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = mapOf("path" to displayManagedRoot),
+    )?.let { return it }
+
+    val managedSkills = packageManager.listManagedSkills()
+    val managedSkillIds = managedSkills.mapTo(linkedSetOf()) { skill -> skill.name }
+    val installations = packageManager.listInstallations()
+    val relevantInstallations = installations.filter { entry ->
+      requestedSkillId == null || entry.skillId == requestedSkillId
+    }
+    if (requestedSkillId != null &&
+      requestedSkillId !in managedSkillIds &&
+      relevantInstallations.isEmpty()
+    ) {
+      return AgentToolResult(
+        toolName = "SkillsCheck",
+        status = AgentToolResultStatus.FAILED,
+        content = "Skill '$requestedSkillId' is not installed in the host-managed skills directory.",
+        errorCode = "SKILL_NOT_INSTALLED",
+        metadata = toolPolicyPipeline.resultMetadata(
+          plan = plan,
+          metadata = mapOf(
+            "path" to displayManagedRoot,
+            "skillId" to requestedSkillId,
+            "checkedCount" to "0",
+          ),
+        ),
+      )
+    }
+    relevantInstallations.forEach { entry ->
+      if (!isRemoteSkillSourceType(entry.sourceType)) {
+        return@forEach
+      }
+      val resolvedSource = packageManager.resolveRemoteSource(
+        sourceRef = entry.sourceRef,
+        selectedSkillName = entry.selectedSkillName,
+      )
+      gateRemoteSkillNetworkAccess(
+        task = task,
+        resultToolName = "SkillsCheck",
+        url = resolvedSource?.policyTargetUrl ?: entry.sourceRef,
+        targetSummary = entry.sourceRef,
+        affectedPaths = mapOf("sourceRef" to entry.sourceRef),
+      )?.let { return it }
+    }
+
+    val report = packageManager.checkInstalledSkills(requestedSkillId)
+    val content = if (report.results.isEmpty()) {
+      "No installed skills are available for update checks."
+    } else {
+      report.results.joinToString(separator = "\n", transform = ::renderSkillPackageCheckLine)
+    }
+    return AgentToolResult(
+      toolName = "SkillsCheck",
+      status = AgentToolResultStatus.SUCCESS,
+      content = content,
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = buildMap {
+          put("path", displayManagedRoot)
+          put("checkedCount", report.results.size.toString())
+          put("upToDateCount", report.upToDateCount.toString())
+          put("updateAvailableCount", report.updateAvailableCount.toString())
+          put("sourceUnavailableCount", report.sourceUnavailableCount.toString())
+          put("unsupportedCount", report.unsupportedCount.toString())
+          requestedSkillId?.let { put("skillId", it) }
+        },
+      ),
+    )
+  }
+
   private fun installSkillPackage(
     task: AgentTask,
     arguments: JsonObject,
@@ -2771,6 +3203,323 @@ class OpenCrayToolDispatcher(
     )
   }
 
+  private fun installSkillPackagesBatch(
+    task: AgentTask,
+    arguments: JsonObject,
+  ): AgentToolResult {
+    val packageManager = config.skillPackageManager ?: return unavailableSkillPackageManager(toolName = "SkillsAddBatch")
+    val sourceRef = arguments.requiredStringFrom("source_ref", "sourceRef", "source", "path", "url")
+    val selectedSkillNames = arguments.optionalStringArrayFrom(
+      "skills",
+      "selected_skills",
+      "selectedSkills",
+      "skill_ids",
+      "skillIds",
+    )
+      .asSequence()
+      .map(String::trim)
+      .filter(String::isNotBlank)
+      .distinct()
+      .toList()
+    val installAll = arguments.optionalBooleanFrom("install_all", "installAll", "all") == true
+
+    val localSourcePath = resolveExplicitLocalSkillSourcePath(sourceRef)
+    if (localSourcePath != null) {
+      gateLocalSkillSourceReadAccess(
+        task = task,
+        resultToolName = "SkillsAddBatch",
+        sourcePath = localSourcePath,
+        sourceRef = sourceRef,
+      )?.let { return it }
+
+      val managedRoot = packageManager.managedRootPath().toPath().toAbsolutePath().normalize()
+      val displayManagedRoot = displaySkillPackagePath(managedRoot)
+      val plan = toolPolicyPipeline.plan(
+        task = task,
+        toolName = "SkillsAddBatch",
+        targetPath = managedRoot,
+        metadataRequest = ToolMetadataContextRequest(
+          targetKind = ToolTargetKind.DIRECTORY,
+          primaryPath = managedRoot,
+          primaryTargetPath = displayManagedRoot,
+          targetSummary = "$sourceRef -> $displayManagedRoot",
+        ),
+      )
+      toolPolicyPipeline.gateFileMutation(
+        plan = plan,
+        affectedPaths = mapOf("path" to displayManagedRoot),
+      )?.let { return it }
+
+      val attempt = packageManager.installFromLocalSourceBatch(
+        sourcePath = localSourcePath.toFile(),
+        sourceRef = sourceRef,
+        selectedSkillNames = selectedSkillNames,
+        installAll = installAll,
+      )
+      val result = attempt.result ?: return AgentToolResult(
+        toolName = "SkillsAddBatch",
+        status = AgentToolResultStatus.FAILED,
+        content = attempt.errorMessage ?: "Failed to batch install from local source '$sourceRef'.",
+        errorCode = attempt.errorCode ?: "SKILL_BATCH_INSTALL_FAILED",
+        errorMessage = attempt.errorMessage,
+      )
+      val status = if (result.failedCount > 0) {
+        AgentToolResultStatus.FAILED
+      } else {
+        AgentToolResultStatus.SUCCESS
+      }
+      return AgentToolResult(
+        toolName = "SkillsAddBatch",
+        status = status,
+        content = renderSkillBatchInstallResult(result),
+        errorCode = if (status == AgentToolResultStatus.FAILED) {
+          result.entries.firstNotNullOfOrNull(SkillPackageBatchInstallEntry::errorCode)
+            ?: "SKILL_BATCH_INSTALL_FAILED"
+        } else {
+          null
+        },
+        errorMessage = if (status == AgentToolResultStatus.FAILED) {
+          result.entries.firstNotNullOfOrNull(SkillPackageBatchInstallEntry::errorMessage)
+        } else {
+          null
+        },
+        metadata = toolPolicyPipeline.resultMetadata(
+          plan = plan,
+          metadata = buildMap {
+            put("path", displayManagedRoot)
+            put("sourceType", result.sourceType)
+            put("sourceRef", result.sourceRef)
+            put("requestedCount", result.requestedCount.toString())
+            put("installedCount", result.installedCount.toString())
+            put("failedCount", result.failedCount.toString())
+            result.entries
+              .mapNotNull(SkillPackageBatchInstallEntry::installedSkillId)
+              .singleOrNull()
+              ?.let { put("skillId", it) }
+          },
+        ),
+      )
+    }
+
+    val remoteSource = packageManager.resolveRemoteSource(sourceRef = sourceRef)
+    if (remoteSource != null) {
+      gateRemoteSkillNetworkAccess(
+        task = task,
+        resultToolName = "SkillsAddBatch",
+        url = remoteSource.policyTargetUrl,
+        targetSummary = remoteSource.requestedSourceRef,
+        affectedPaths = mapOf("sourceRef" to remoteSource.requestedSourceRef),
+      )?.let { return it }
+
+      val managedRoot = packageManager.managedRootPath().toPath().toAbsolutePath().normalize()
+      val displayManagedRoot = displaySkillPackagePath(managedRoot)
+      val plan = toolPolicyPipeline.plan(
+        task = task,
+        toolName = "SkillsAddBatch",
+        targetPath = managedRoot,
+        metadataRequest = ToolMetadataContextRequest(
+          targetKind = ToolTargetKind.DIRECTORY,
+          primaryPath = managedRoot,
+          primaryTargetPath = displayManagedRoot,
+          targetSummary = "${remoteSource.requestedSourceRef} -> $displayManagedRoot",
+        ),
+      )
+      toolPolicyPipeline.gateFileMutation(
+        plan = plan,
+        affectedPaths = mapOf("path" to displayManagedRoot),
+      )?.let { return it }
+
+      val attempt = packageManager.installFromRemoteSourceBatch(
+        sourceRef = sourceRef,
+        selectedSkillNames = selectedSkillNames,
+        installAll = installAll,
+      )
+      val result = attempt.result ?: return AgentToolResult(
+        toolName = "SkillsAddBatch",
+        status = AgentToolResultStatus.FAILED,
+        content = attempt.errorMessage ?: "Failed to batch install from remote source '$sourceRef'.",
+        errorCode = attempt.errorCode ?: "SKILL_BATCH_INSTALL_FAILED",
+        errorMessage = attempt.errorMessage,
+      )
+      val status = if (result.failedCount > 0) {
+        AgentToolResultStatus.FAILED
+      } else {
+        AgentToolResultStatus.SUCCESS
+      }
+      return AgentToolResult(
+        toolName = "SkillsAddBatch",
+        status = status,
+        content = renderSkillBatchInstallResult(result),
+        errorCode = if (status == AgentToolResultStatus.FAILED) {
+          result.entries.firstNotNullOfOrNull(SkillPackageBatchInstallEntry::errorCode)
+            ?: "SKILL_BATCH_INSTALL_FAILED"
+        } else {
+          null
+        },
+        errorMessage = if (status == AgentToolResultStatus.FAILED) {
+          result.entries.firstNotNullOfOrNull(SkillPackageBatchInstallEntry::errorMessage)
+        } else {
+          null
+        },
+        metadata = toolPolicyPipeline.resultMetadata(
+          plan = plan,
+          metadata = buildMap {
+            put("path", displayManagedRoot)
+            put("sourceType", result.sourceType)
+            put("sourceRef", result.sourceRef)
+            put("requestedCount", result.requestedCount.toString())
+            put("installedCount", result.installedCount.toString())
+            put("failedCount", result.failedCount.toString())
+            result.sourcePath?.let { put("sourcePath", it) }
+            result.resolvedRevision?.let { put("resolvedRevision", it) }
+            result.resolvedCommitSha?.let { put("resolvedCommitSha", it) }
+            result.entries
+              .mapNotNull(SkillPackageBatchInstallEntry::installedSkillId)
+              .singleOrNull()
+              ?.let { put("skillId", it) }
+          },
+        ),
+      )
+    }
+
+    return AgentToolResult(
+      toolName = "SkillsAddBatch",
+      status = AgentToolResultStatus.FAILED,
+      content = "Batch installation requires an explicit local path, GitHub source, or GitLab source. Use SkillsAdd for the host-managed catalog.",
+      errorCode = "SKILL_SOURCE_UNSUPPORTED",
+      metadata = toolPolicyPipeline.resultMetadata(
+        toolName = "SkillsAddBatch",
+        request = ToolMetadataContextRequest(
+          targetKind = ToolTargetKind.NONE,
+          workspaceRelation = ToolWorkspaceRelation.NONE,
+          targetSummary = sourceRef,
+        ),
+        metadata = mapOf(
+          "sourceRef" to sourceRef,
+          "requestedCount" to selectedSkillNames.size.toString(),
+          "installedCount" to "0",
+          "failedCount" to "0",
+        ),
+      ),
+    )
+  }
+
+  private fun updateInstalledSkillPackages(
+    task: AgentTask,
+    arguments: JsonObject,
+  ): AgentToolResult {
+    val packageManager = config.skillPackageManager ?: return unavailableSkillPackageManager(toolName = "SkillsUpdate")
+    val requestedSkillId = arguments.optionalStringFrom("skill_id", "skillId", "name")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    packageManager.refreshManifest()
+    val managedSkills = packageManager.listManagedSkills()
+    val managedSkillIds = managedSkills.mapTo(linkedSetOf()) { skill -> skill.name }
+    val installations = packageManager.listInstallations()
+    val relevantInstallations = installations.filter { entry ->
+      requestedSkillId == null || entry.skillId == requestedSkillId
+    }
+    if (requestedSkillId != null &&
+      requestedSkillId !in managedSkillIds &&
+      relevantInstallations.isEmpty()
+    ) {
+      return AgentToolResult(
+        toolName = "SkillsUpdate",
+        status = AgentToolResultStatus.FAILED,
+        content = "Skill '$requestedSkillId' is not installed in the host-managed skills directory.",
+        errorCode = "SKILL_NOT_INSTALLED",
+      )
+    }
+    relevantInstallations.forEach { entry ->
+      if (entry.sourceType == "local_path") {
+        val sourcePath = entry.sourcePath?.trim()?.takeIf(String::isNotBlank)
+        if (sourcePath != null) {
+          gateLocalSkillSourceReadAccess(
+            task = task,
+            resultToolName = "SkillsUpdate",
+            sourcePath = Paths.get(sourcePath),
+            sourceRef = entry.sourceRef,
+          )?.let { return it }
+        }
+      }
+      if (isRemoteSkillSourceType(entry.sourceType)) {
+        val resolvedSource = packageManager.resolveRemoteSource(
+          sourceRef = entry.sourceRef,
+          selectedSkillName = entry.selectedSkillName,
+        )
+        gateRemoteSkillNetworkAccess(
+          task = task,
+          resultToolName = "SkillsUpdate",
+          url = resolvedSource?.policyTargetUrl ?: entry.sourceRef,
+          targetSummary = entry.sourceRef,
+          affectedPaths = mapOf("sourceRef" to entry.sourceRef),
+        )?.let { return it }
+      }
+    }
+
+    val checkReport = packageManager.checkInstalledSkills(requestedSkillId)
+    val managedRoot = packageManager.managedRootPath().toPath().toAbsolutePath().normalize()
+    val displayManagedRoot = displaySkillPackagePath(managedRoot)
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "SkillsUpdate",
+      targetPath = managedRoot,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.DIRECTORY,
+        primaryPath = managedRoot,
+        primaryTargetPath = displayManagedRoot,
+        targetSummary = requestedSkillId ?: displayManagedRoot,
+      ),
+    )
+    if (checkReport.updateAvailableCount > 0) {
+      toolPolicyPipeline.gateFileMutation(
+        plan = plan,
+        affectedPaths = mapOf("path" to displayManagedRoot),
+      )?.let { return it }
+    }
+    val updateReport = packageManager.updateInstalledSkills(checkReport)
+    val status = if (updateReport.updatedCount == 0 &&
+      updateReport.failedCount > 0 &&
+      updateReport.skippedCount == 0
+    ) {
+      AgentToolResultStatus.FAILED
+    } else {
+      AgentToolResultStatus.SUCCESS
+    }
+    val content = if (updateReport.results.isEmpty()) {
+      "No installed skills are available for update."
+    } else {
+      updateReport.results.joinToString(separator = "\n", transform = ::renderSkillPackageUpdateLine)
+    }
+    return AgentToolResult(
+      toolName = "SkillsUpdate",
+      status = status,
+      content = content,
+      errorCode = if (status == AgentToolResultStatus.FAILED) {
+        updateReport.results.firstNotNullOfOrNull(SkillPackageUpdateResult::errorCode)
+          ?: "SKILL_UPDATE_FAILED"
+      } else {
+        null
+      },
+      errorMessage = if (status == AgentToolResultStatus.FAILED) {
+        updateReport.results.firstNotNullOfOrNull(SkillPackageUpdateResult::errorMessage)
+      } else {
+        null
+      },
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = buildMap {
+          put("path", displayManagedRoot)
+          put("resultCount", updateReport.results.size.toString())
+          put("updatedCount", updateReport.updatedCount.toString())
+          put("skippedCount", updateReport.skippedCount.toString())
+          put("failedCount", updateReport.failedCount.toString())
+          requestedSkillId?.let { put("skillId", it) }
+        },
+      ),
+    )
+  }
+
   private fun removeSkillPackage(
     task: AgentTask,
     arguments: JsonObject,
@@ -2821,6 +3570,104 @@ class OpenCrayToolDispatcher(
         ),
       ),
     )
+  }
+
+  private fun renderSkillPackageCheckLine(
+    result: SkillPackageCheckResult,
+  ): String = buildList {
+    add(result.skillId)
+    add(result.status.wireValue)
+    add("source=${result.sourceType}")
+    add("source_ref=${result.sourceRef}")
+    result.installedRevision?.takeIf(String::isNotBlank)?.let { add("installed_revision=$it") }
+    result.installedCommitSha?.takeIf(String::isNotBlank)?.let { add("installed_commit=$it") }
+    result.latestRevision?.takeIf(String::isNotBlank)?.let { add("latest_revision=$it") }
+    result.latestCommitSha?.takeIf(String::isNotBlank)?.let { add("latest_commit=$it") }
+    result.latestContentHash?.takeIf(String::isNotBlank)?.let { add("latest_hash=$it") }
+    result.errorCode?.let { add("error_code=$it") }
+    result.errorMessage?.takeIf(String::isNotBlank)?.let { add("message=${inlinePreview(it, maxChars = 160)}") }
+  }.joinToString(separator = "\t")
+
+  private fun renderSkillPackageUpdateLine(
+    result: SkillPackageUpdateResult,
+  ): String = buildList {
+    add(result.skillId)
+    add(result.status.wireValue)
+    add("source=${result.sourceType}")
+    add("source_ref=${result.sourceRef}")
+    result.checkStatus?.let { add("reason=${it.wireValue}") }
+    result.manifestEntry?.resolvedRevision?.takeIf(String::isNotBlank)?.let { add("resolved_revision=$it") }
+    result.manifestEntry?.resolvedCommitSha?.takeIf(String::isNotBlank)?.let { add("resolved_commit=$it") }
+    result.errorCode?.let { add("error_code=$it") }
+    result.errorMessage?.takeIf(String::isNotBlank)?.let { add("message=${inlinePreview(it, maxChars = 160)}") }
+  }.joinToString(separator = "\t")
+
+  private fun renderSkillSourceInspection(
+    result: com.opencray.runtime.skills.SkillSourceInspectionResult,
+  ): String = buildList {
+    add(
+      buildList {
+        add("inspection")
+        add(result.sourceType)
+        add("source_ref=${result.sourceRef}")
+        result.sourcePath?.takeIf(String::isNotBlank)?.let { add("source_path=$it") }
+        result.resolvedRevision?.takeIf(String::isNotBlank)?.let { add("resolved_revision=$it") }
+        result.resolvedCommitSha?.takeIf(String::isNotBlank)?.let { add("resolved_commit=$it") }
+        add("candidate_count=${result.candidates.size}")
+      }.joinToString(separator = "\t"),
+    )
+    addAll(
+      result.candidates.map { candidate ->
+        buildList {
+          add("candidate")
+          add(candidate.name)
+          add("description=${candidate.description}")
+          add("relative_path=${candidate.relativePath}")
+        }.joinToString(separator = "\t")
+      },
+    )
+  }.joinToString(separator = "\n")
+
+  private fun renderSkillBatchInstallResult(
+    result: com.opencray.runtime.skills.SkillPackageBatchInstallResult,
+  ): String = buildList {
+    add(
+      buildList {
+        add("batch_install")
+        add(result.sourceType)
+        add("source_ref=${result.sourceRef}")
+        result.sourcePath?.takeIf(String::isNotBlank)?.let { add("source_path=$it") }
+        result.resolvedRevision?.takeIf(String::isNotBlank)?.let { add("resolved_revision=$it") }
+        result.resolvedCommitSha?.takeIf(String::isNotBlank)?.let { add("resolved_commit=$it") }
+        add("requested_count=${result.requestedCount}")
+        add("installed_count=${result.installedCount}")
+        add("failed_count=${result.failedCount}")
+      }.joinToString(separator = "\t"),
+    )
+    addAll(
+      result.entries.map { entry ->
+        buildList {
+          add(if (entry.succeeded) "installed" else "failed")
+          add(entry.installedSkillId ?: entry.requestedSkillName)
+          add("requested=${entry.requestedSkillName}")
+          entry.manifestEntry?.sourceRelativePath
+            ?.takeIf(String::isNotBlank)
+            ?.let { add("relative_path=$it") }
+          entry.errorCode?.let { add("error_code=$it") }
+          entry.errorMessage
+            ?.takeIf(String::isNotBlank)
+            ?.let { add("message=${inlinePreview(it, maxChars = 160)}") }
+        }.joinToString(separator = "\t")
+      },
+    )
+  }.joinToString(separator = "\n")
+
+  private fun isRemoteSkillSourceType(sourceType: String): Boolean = when (sourceType) {
+    "remote_github",
+    "remote_gitlab",
+    -> true
+
+    else -> false
   }
 
   private fun unavailableSkillPackageManager(toolName: String): AgentToolResult = AgentToolResult(
@@ -3106,7 +3953,15 @@ class OpenCrayToolDispatcher(
       affectedPaths = mapOf("sourcePath" to displayPath),
       askDetail = "Approval is required before $resultToolName can read the local skill source.",
       denyDetail = "Policy denied $resultToolName local source access.",
-    )?.copy(toolName = resultToolName)
+    )?.let { result ->
+      result.copy(
+        toolName = resultToolName,
+        metadata = result.metadata + mapOf(
+          "requestedToolName" to resultToolName,
+          "normalizedToolName" to resultToolName,
+        ),
+      )
+    }
   }
 
   private fun gateRemoteSkillNetworkAccess(
@@ -3131,7 +3986,15 @@ class OpenCrayToolDispatcher(
       affectedPaths = affectedPaths,
       askDetail = "Approval is required before $resultToolName can access the remote skills service.",
       denyDetail = "Policy denied $resultToolName remote network access.",
-    )?.copy(toolName = resultToolName)
+    )?.let { result ->
+      result.copy(
+        toolName = resultToolName,
+        metadata = result.metadata + mapOf(
+          "requestedToolName" to resultToolName,
+          "normalizedToolName" to resultToolName,
+        ),
+      )
+    }
   }
 
   private fun resolveExplicitLocalSkillSourcePath(sourceRef: String): Path? {
@@ -3177,6 +4040,14 @@ class OpenCrayToolDispatcher(
 
   private fun JsonObject.optionalStringFrom(vararg names: String): String? =
     names.firstNotNullOfOrNull { name -> optionalString(name) }
+
+  private fun JsonObject.optionalBooleanFrom(vararg names: String): Boolean? =
+    names.firstNotNullOfOrNull { name -> optionalBoolean(name) }
+
+  private fun JsonObject.optionalStringArrayFrom(vararg names: String): List<String> =
+    names.firstNotNullOfOrNull { name ->
+      this[name]?.let { optionalStringArray(name) }
+    } ?: emptyList()
 
   private fun JsonObject.optionalString(name: String): String? {
     val element = this[name] ?: return null
@@ -3305,6 +4176,34 @@ class OpenCrayToolDispatcher(
     private const val DEFAULT_MANAGED_PROCESS_TIMEOUT_MS: Long = 300_000L
     private const val DEFAULT_MANAGED_PROCESS_WAIT_TIMEOUT_MS: Long = 1_000L
     private val WINDOWS_ABSOLUTE_PATH_REGEX: Regex = Regex("^[A-Za-z]:[\\\\/].+")
+    private val ATTACHMENT_IMAGE_EXTENSIONS: Set<String> = setOf(
+      "png",
+      "jpg",
+      "jpeg",
+      "webp",
+      "gif",
+      "bmp",
+      "heic",
+      "heif",
+    )
+    private val ATTACHMENT_AUDIO_EXTENSIONS: Set<String> = setOf(
+      "mp3",
+      "wav",
+      "m4a",
+    )
+    private val ATTACHMENT_FALLBACK_MIME_TYPES: Map<String, String> = mapOf(
+      "png" to "image/png",
+      "jpg" to "image/jpeg",
+      "jpeg" to "image/jpeg",
+      "webp" to "image/webp",
+      "gif" to "image/gif",
+      "bmp" to "image/bmp",
+      "heic" to "image/heic",
+      "heif" to "image/heif",
+      "mp3" to "audio/mpeg",
+      "wav" to "audio/wav",
+      "m4a" to "audio/mp4",
+    )
     private val MANAGED_PROCESS_RESERVED_METADATA_KEYS: Set<String> = setOf(
       "capabilityKind",
       "targetKind",

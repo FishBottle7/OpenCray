@@ -2,6 +2,10 @@
 
 Last updated: 2026-03-16
 
+## Related designs
+
+- `docs/digital-twin-corpus-import-design.md` describes how imported chats and authored corpus should initialize durable `memory` and `soul` without collapsing those two layers into one prompt blob.
+
 ## Status
 
 Planning document, revised to align more closely with OpenClaw memory patterns.

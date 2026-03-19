@@ -8,9 +8,11 @@ import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.store.MemoryStore
+import com.opencray.runtime.memory.MemoryKind
 import com.opencray.runtime.memory.MemoryCandidateExtractor
 import com.opencray.runtime.memory.MemoryFlushOutcome
 import com.opencray.runtime.memory.MemoryInteractionPreferenceExtensionKeys
+import com.opencray.runtime.memory.MemoryScope
 import com.opencray.runtime.memory.SoulMemoryIntent
 import com.opencray.runtime.memory.SoulMemoryIntentInterpretation
 import com.opencray.runtime.memory.SoulMemoryIntentInterpreter
@@ -43,8 +45,10 @@ import com.opencray.runtime.soul.SoulMemoryObjectTypes
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 
+@OptIn(ExperimentalSerializationApi::class)
 class ChatMemoryIngestionCoordinatorTest {
   @Test
   fun flushBeforeCompactionWritesDurableCandidatesOnlyOncePerTranscriptSignature() {
@@ -52,6 +56,7 @@ class ChatMemoryIngestionCoordinatorTest {
     val coordinator = ChatMemoryIngestionCoordinator(
       memoryStore = memoryStore,
       workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = semanticUserCandidateExtractor(),
     )
     val conversation = listOf(
       conversationMessage(
@@ -104,6 +109,7 @@ class ChatMemoryIngestionCoordinatorTest {
     val coordinator = ChatMemoryIngestionCoordinator(
       memoryStore = memoryStore,
       workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = semanticUserCandidateExtractor(),
     )
     val baseConversation = listOf(
       conversationMessage(
@@ -155,6 +161,7 @@ class ChatMemoryIngestionCoordinatorTest {
     val coordinator = ChatMemoryIngestionCoordinator(
       memoryStore = memoryStore,
       workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = semanticUserCandidateExtractor(),
     )
     val baseConversation = listOf(
       conversationMessage(
@@ -211,6 +218,7 @@ class ChatMemoryIngestionCoordinatorTest {
     val coordinator = ChatMemoryIngestionCoordinator(
       memoryStore = memoryStore,
       workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = semanticUserCandidateExtractor(),
     )
     val conversation = listOf(
       conversationMessage(
@@ -280,6 +288,7 @@ class ChatMemoryIngestionCoordinatorTest {
     val coordinator = ChatMemoryIngestionCoordinator(
       memoryStore = memoryStore,
       workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = semanticUserCandidateExtractor(),
     )
 
     val summary = coordinator.ingestCompletedTurn(
@@ -312,6 +321,7 @@ class ChatMemoryIngestionCoordinatorTest {
       memoryStore = memoryStore,
       writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
       taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 2_000L }),
+      candidateExtractor = semanticUserCandidateExtractor(),
     )
 
     val summary = coordinator.ingestCompletedTurn(
@@ -343,6 +353,7 @@ class ChatMemoryIngestionCoordinatorTest {
       memoryStore = memoryStore,
       writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
       taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 2_000L }),
+      candidateExtractor = semanticUserCandidateExtractor(),
     )
 
     val summary = coordinator.ingestCompletedTurn(
@@ -507,7 +518,7 @@ class ChatMemoryIngestionCoordinatorTest {
   }
 
   @Test
-  fun ingestCompletedTurnWritesInteractionPreferenceSnapshotFromDurableRelationshipStylePreference() {
+  fun ingestCompletedTurnWritesInteractionPreferenceSnapshotFromDurableAdaptiveSignal() {
     val memoryStore = InMemoryMemoryStore()
     val coordinator = ChatMemoryIngestionCoordinator(
       memoryStore = memoryStore,
@@ -518,13 +529,12 @@ class ChatMemoryIngestionCoordinatorTest {
           SoulMemoryIntentInterpretation.Success(
             intents = listOf(
               SoulMemoryIntent(
-                preferenceKey = "relationship_style_profile",
-                preferenceValue = "warm",
+                preferenceKey = "interaction_preference_signal",
+                preferenceValue = "adaptive",
                 scope = com.opencray.runtime.memory.MemoryScope.USER,
-                soulExtensions = mapOf(
-                  "soul_tone" to "warm",
-                  "soul_voice" to "warm and gentle",
-                  "soul_user_relationship_style" to "supportive",
+                preferenceExtensions = mapOf(
+                  MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "higher",
+                  MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "lower",
                 ),
               ),
             ),
@@ -546,8 +556,8 @@ class ChatMemoryIngestionCoordinatorTest {
 
     assertEquals(2, summary.writtenRecords.size)
     assertTrue(memoryStore.list().any { record ->
-      record.extensions["preference_key"] == "relationship_style_profile" &&
-        record.extensions["preference_value"] == "warm" &&
+      record.extensions["preference_key"] == "interaction_preference_signal" &&
+        record.extensions["preference_value"] == "warmth_higher__formality_lower" &&
         record.extensions[MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION] == "higher" &&
         record.extensions[MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION] == "lower"
     })
@@ -557,7 +567,7 @@ class ChatMemoryIngestionCoordinatorTest {
   }
 
   @Test
-  fun ingestCompletedTurnPrefersExplicitRelationshipPreferenceExtensionsWhenProjectingSnapshot() {
+  fun ingestCompletedTurnCanonicalizesDurableStyleRequestsIntoInteractionPreferenceSignal() {
     val memoryStore = InMemoryMemoryStore()
     val coordinator = ChatMemoryIngestionCoordinator(
       memoryStore = memoryStore,
@@ -600,7 +610,8 @@ class ChatMemoryIngestionCoordinatorTest {
 
     assertEquals(2, summary.writtenRecords.size)
     assertTrue(memoryStore.list().any { record ->
-      record.extensions["preference_key"] == "relationship_style_profile" &&
+      record.extensions["preference_key"] == "interaction_preference_signal" &&
+        record.extensions["preference_value"] == "warmth_lower__formality_higher" &&
         record.extensions[MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION] == "lower" &&
         record.extensions[MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION] == "higher"
     })
@@ -859,6 +870,74 @@ class ChatMemoryIngestionCoordinatorTest {
     role = role,
     content = content,
   )
+
+  private fun semanticUserCandidateExtractor(): MemoryCandidateExtractor =
+    MemoryCandidateExtractor(
+      userIntentInterpreter = object : UserMemoryIntentInterpreter {
+        override fun interpret(
+          request: UserMemoryIntentRequest,
+        ): UserMemoryIntentInterpretation {
+          val input = request.userInput
+          val intents = buildList {
+            if (input.contains("Simplified Chinese", ignoreCase = true)) {
+              add(
+                UserMemoryIntent(
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.USER,
+                  content = "Default to Simplified Chinese for explanations",
+                ),
+              )
+            }
+            if (input.contains("PowerShell", ignoreCase = true)) {
+              add(
+                UserMemoryIntent(
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.USER,
+                  content = "Default to PowerShell commands",
+                ),
+              )
+            }
+            if (input.contains("concise Chinese replies", ignoreCase = true)) {
+              add(
+                UserMemoryIntent(
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.USER,
+                  content = "Default to concise Chinese replies",
+                ),
+              )
+            }
+            if (input.contains("git reset --hard", ignoreCase = true)) {
+              add(
+                UserMemoryIntent(
+                  kind = MemoryKind.DURABLE_INSTRUCTION,
+                  scope = MemoryScope.WORKSPACE,
+                  content = "Do not use git reset --hard in this repo",
+                ),
+              )
+            }
+            if (input.contains("Gradle wrapper", ignoreCase = true)) {
+              add(
+                UserMemoryIntent(
+                  kind = MemoryKind.PROJECT_FACT,
+                  scope = MemoryScope.WORKSPACE,
+                  content = "Project uses the Gradle wrapper from the repo root",
+                ),
+              )
+            }
+            if (input.contains("pnpm workspaces", ignoreCase = true)) {
+              add(
+                UserMemoryIntent(
+                  kind = MemoryKind.PROJECT_FACT,
+                  scope = MemoryScope.WORKSPACE,
+                  content = "Project uses pnpm workspaces for package management",
+                ),
+              )
+            }
+          }
+          return UserMemoryIntentInterpretation.Success(intents = intents)
+        }
+      },
+    )
 
   private class InMemoryMemoryStore : MemoryStore {
     private val records = linkedMapOf<String, MemoryRecord>()

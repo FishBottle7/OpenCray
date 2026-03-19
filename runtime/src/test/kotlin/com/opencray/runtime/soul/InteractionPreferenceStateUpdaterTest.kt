@@ -179,11 +179,59 @@ class InteractionPreferenceStateUpdaterTest {
     assertEquals(2, state.preferredNamingSupport)
   }
 
+  @Test
+  fun playfulnessAndReassuranceSignalsDriftLikeOtherAdaptiveAxes() {
+    var state = InteractionPreferenceState()
+
+    state = updater.apply(
+      state = state,
+      signal = axisSignal(
+        axis = InteractionPreferenceAxis.PLAYFULNESS,
+        direction = InteractionPreferenceDirection.HIGHER,
+        occurredAtEpochMs = 1_000L,
+      ),
+      plasticity = SoulPlasticity.MEDIUM,
+    )
+    state = updater.apply(
+      state = state,
+      signal = axisSignal(
+        axis = InteractionPreferenceAxis.REASSURANCE,
+        direction = InteractionPreferenceDirection.LOWER,
+        occurredAtEpochMs = 2_000L,
+      ),
+      plasticity = SoulPlasticity.MEDIUM,
+    )
+    state = updater.apply(
+      state = state,
+      signal = axisSignal(
+        axis = InteractionPreferenceAxis.REASSURANCE,
+        direction = InteractionPreferenceDirection.LOWER,
+        occurredAtEpochMs = 3_000L,
+      ),
+      plasticity = SoulPlasticity.MEDIUM,
+    )
+
+    assertEquals(0, state.playfulness.offset)
+    assertEquals(1, state.playfulness.higherSupport)
+    assertEquals(-1, state.reassurance.offset)
+    assertEquals(2, state.reassurance.lowerSupport)
+  }
+
   private fun warmthSignal(
     direction: InteractionPreferenceDirection,
     occurredAtEpochMs: Long,
-  ): InteractionPreferenceSignal = InteractionPreferenceSignal(
+  ): InteractionPreferenceSignal = axisSignal(
     axis = InteractionPreferenceAxis.WARMTH,
+    direction = direction,
+    occurredAtEpochMs = occurredAtEpochMs,
+  )
+
+  private fun axisSignal(
+    axis: InteractionPreferenceAxis,
+    direction: InteractionPreferenceDirection,
+    occurredAtEpochMs: Long,
+  ): InteractionPreferenceSignal = InteractionPreferenceSignal(
+    axis = axis,
     direction = direction,
     occurredAtEpochMs = occurredAtEpochMs,
   )

@@ -9,6 +9,7 @@ import com.opencray.runtime.memory.RetrievedMemory
 import com.opencray.runtime.skills.ActiveSkillPromptLayer
 import com.opencray.runtime.skills.SkillInventoryPromptLayer
 import com.opencray.runtime.soul.RuntimeSoulPromptComposer
+import com.opencray.runtime.soul.RuntimeSoulTurnPolicyComposer
 
 data class ContextManagerConfig(
   val maxInjectedMemoryRecords: Int = 4,
@@ -25,6 +26,7 @@ class ContextManager(
   private val transcriptWindowBuilder: TranscriptWindowBuilder = TranscriptWindowBuilder(),
   private val compactionPolicy: CompactionPolicy = CompactionPolicy(),
   private val soulPromptComposer: RuntimeSoulPromptComposer = RuntimeSoulPromptComposer(),
+  private val soulTurnPolicyComposer: RuntimeSoulTurnPolicyComposer = RuntimeSoulTurnPolicyComposer(),
   private val memoryPromptLayer: MemoryPromptLayer = MemoryPromptLayer(),
   private val skillInventoryPromptLayer: SkillInventoryPromptLayer = SkillInventoryPromptLayer(),
   private val activeSkillPromptLayer: ActiveSkillPromptLayer = ActiveSkillPromptLayer(),
@@ -32,10 +34,15 @@ class ContextManager(
   private val config: ContextManagerConfig = ContextManagerConfig(),
 ) {
   fun prepare(input: PromptAssemblyInput): ManagedPromptContext {
+    val injectionPolicy = input.sessionContext.injectionPolicy
     val recentToolObservationLayer = recentToolObservationSupport.buildLayer(input.liveConversation)
     val prunedTranscript = contextPruner.prune(input.liveConversation)
     val transcriptSelection = transcriptWindowBuilder.buildSelection(prunedTranscript.messages)
-    val selectedMemory = selectMemory(input.sessionContext.recalledMemory)
+    val selectedMemory = if (injectionPolicy.automaticMemoryInjectionEnabled) {
+      selectMemory(input.sessionContext.recalledMemory)
+    } else {
+      MemoryRecallResult()
+    }
     val renderedSkillInventory = skillInventoryPromptLayer.render(input.sessionContext.skillInventory)
     val renderedActiveSkill = activeSkillPromptLayer.render(input.activeSkillCapsule)
     val compactionSummary = compactionPolicy.summarize(transcriptSelection.omittedMessages)
@@ -44,7 +51,19 @@ class ContextManager(
       task = input.task,
       baseSystemPrompt = input.baseSystemPrompt.trim(),
       sessionPolicyText = input.sessionContext.sessionPolicyText.orEmpty().trim(),
-      personalizationText = soulPromptComposer.compose(input.sessionContext.soulProfile).trim(),
+      personalizationText = if (injectionPolicy.soulContractEnabled) {
+        soulPromptComposer.compose(input.sessionContext.soulProfile).trim()
+      } else {
+        ""
+      },
+      turnResponsePolicyText = if (injectionPolicy.soulTurnPolicyEnabled) {
+        soulTurnPolicyComposer.compose(
+          profile = input.sessionContext.soulProfile,
+          signal = input.sessionContext.turnSemanticSignal,
+        ).trim()
+      } else {
+        ""
+      },
       bootstrapFiles = input.sessionContext.bootstrapContext.files,
       memoryText = memoryPromptLayer.render(selectedMemory),
       durableCompactionText = input.sessionContext.durableCompaction.text,

@@ -1,0 +1,35 @@
+{
+  "source_id": "novel_alpha",
+  "title": "Sample fiction import",
+  "work_id": "novel_alpha",
+  "characters": [
+    {
+      "entity_id": "char_female_lead",
+      "display_name": "Lin",
+      "role": "anchor"
+    },
+    {
+      "entity_id": "char_second_male_lead",
+      "display_name": "Chen",
+      "role": "current_user_binding"
+    }
+  ],
+  "scenes": [
+    {
+      "scene_id": "scene_0001",
+      "heading": "Rainy bridge confrontation",
+      "perspective_character_id": "char_female_lead",
+      "text": "Lin looked at Chen for a long time before saying that she was not angry, only tired of repeated broken promises.",
+      "timestamp": "2025-01-03T21:12:14+08:00",
+      "labels": [
+        "conflict",
+        "repair"
+      ],
+      "source_span": {
+        "chapter_id": "chapter_12",
+        "start_offset": 204,
+        "end_offset": 312
+      }
+    }
+  ]
+}

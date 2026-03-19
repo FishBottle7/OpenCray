@@ -11,6 +11,8 @@ internal class ToolCapabilityClassifier {
     "workspace_write_file",
     "workspace_import_file",
     "SkillsAdd",
+    "SkillsAddBatch",
+    "SkillsUpdate",
     -> PolicyToolClass.WRITE_FILE
 
     "workspace_move_file" -> PolicyToolClass.MOVE_FILE
@@ -33,10 +35,13 @@ internal class ToolCapabilityClassifier {
     "Read",
     "Grep",
     "Glob",
+    "Task",
     "workspace_list_files",
     "workspace_read_file",
     "SkillsFind",
+    "SkillsInspect",
     "SkillsList",
+    "SkillsCheck",
     -> PolicyToolClass.READ_FILE
 
     else -> error("No PolicyToolClass mapping is registered for tool '$toolName'.")
@@ -44,6 +49,8 @@ internal class ToolCapabilityClassifier {
 
   fun classifyCapabilityKind(toolName: String): String = when (toolName) {
     "TodoWrite" -> "todo_management"
+
+    "Task" -> "delegate_task"
 
     "ProcessList",
     "ProcessRead",
@@ -55,10 +62,17 @@ internal class ToolCapabilityClassifier {
     -> "read_skill"
 
     "SkillsFind",
+    "SkillsInspect",
     "SkillsList",
     -> "read_skill_package"
 
+    "SkillsCheck" -> "check_skill_update"
+
     "SkillsAdd" -> "install_skill"
+
+    "SkillsAddBatch" -> "install_skill"
+
+    "SkillsUpdate" -> "update_skill"
 
     "SkillsRemove" -> "remove_skill"
 

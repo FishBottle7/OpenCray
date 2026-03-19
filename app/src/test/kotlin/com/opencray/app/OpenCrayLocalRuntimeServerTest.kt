@@ -30,20 +30,35 @@ import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
+import com.opencray.core.orchestrator.SessionTaskRuntime
 import com.opencray.core.orchestrator.SessionLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
 import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.persistence.model.MemoryRecord
+import com.opencray.runtime.AgentToolCall
+import com.opencray.runtime.AgentToolResult
+import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
+import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.memory.MemoryPreferenceKeys
 import com.opencray.runtime.memory.MemoryRecordExtensionKeys
 import com.opencray.runtime.memory.MemorySoulExtensionKeys
+import com.opencray.runtime.soul.InteractionPreferenceState
+import com.opencray.runtime.soul.PreferenceAxisState
+import com.opencray.runtime.soul.PreferredAddressState
+import com.opencray.runtime.soul.PreferredAddressStyle
+import com.opencray.runtime.soul.RelationshipState
+import com.opencray.runtime.soul.SoulMemoryExtensionKeys
+import com.opencray.runtime.soul.SoulMemoryObjectTypes
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.file.Files
 import java.nio.file.Path
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -474,6 +489,7 @@ class OpenCrayLocalRuntimeServerTest {
           put("workspaceAccessProfileId", "work")
           put("readOnlyOutsideWorkspace", true)
           put("liveContextModeId", LiveContextMode.NO_SOUL.wireValue)
+          put("memoryToolsEnabled", false)
         }.toString(),
       )
 
@@ -482,7 +498,9 @@ class OpenCrayLocalRuntimeServerTest {
         LiveContextMode.NO_SOUL.wireValue,
         JSONObject(response.body).getString("liveContextModeId"),
       )
+      assertEquals(false, JSONObject(response.body).getBoolean("memoryToolsEnabled"))
       assertEquals(LiveContextMode.NO_SOUL, safetyFacade.load().liveContextMode)
+      assertEquals(false, safetyFacade.load().memoryToolsEnabled)
     } finally {
       server.close()
     }
@@ -1450,6 +1468,65 @@ class OpenCrayLocalRuntimeServerTest {
         ),
       ),
     )
+    personalizationStore.upsertMemoryRecord(
+      MemoryRecord(
+        id = "interaction-state",
+        content = "internal interaction preference snapshot",
+        createdAtEpochMs = 2_300L,
+        updatedAtEpochMs = 2_300L,
+        extensions = mapOf(
+          MemoryRecordExtensionKeys.SCOPE to "user",
+          MemoryRecordExtensionKeys.STATUS to "active",
+          MemoryRecordExtensionKeys.LAST_CONFIRMED_AT_EPOCH_MS to "2300",
+          SoulMemoryExtensionKeys.OBJECT_TYPE to SoulMemoryObjectTypes.INTERACTION_PREFERENCE_STATE,
+          SoulMemoryExtensionKeys.OBJECT_SCHEMA_VERSION to "1",
+          SoulMemoryExtensionKeys.OBJECT_PAYLOAD_JSON to Json.encodeToString(
+            InteractionPreferenceState.serializer(),
+            InteractionPreferenceState(
+              warmth = PreferenceAxisState(offset = 1, higherSupport = 2),
+              formality = PreferenceAxisState(offset = -1, lowerSupport = 2),
+              initiative = PreferenceAxisState(offset = 1, higherSupport = 2),
+              playfulness = PreferenceAxisState(offset = 1, higherSupport = 2),
+              reassurance = PreferenceAxisState(offset = 1, higherSupport = 2),
+              addressStyle = PreferredAddressState(
+                selectedStyle = PreferredAddressStyle.FRIENDLY,
+                friendlySupport = 2,
+              ),
+              preferredNaming = "A-Cheng",
+              preferredNamingSupport = 2,
+            ),
+          ),
+        ),
+      ),
+    )
+    personalizationStore.upsertMemoryRecord(
+      MemoryRecord(
+        id = "relationship-state",
+        content = "internal relationship snapshot",
+        createdAtEpochMs = 2_400L,
+        updatedAtEpochMs = 2_400L,
+        extensions = mapOf(
+          MemoryRecordExtensionKeys.SCOPE to "user",
+          MemoryRecordExtensionKeys.STATUS to "active",
+          MemoryRecordExtensionKeys.SOURCE_SESSION_ID to sessionId,
+          MemoryRecordExtensionKeys.LAST_CONFIRMED_AT_EPOCH_MS to "2400",
+          SoulMemoryExtensionKeys.OBJECT_TYPE to SoulMemoryObjectTypes.RELATIONSHIP_STATE,
+          SoulMemoryExtensionKeys.OBJECT_SCHEMA_VERSION to "1",
+          SoulMemoryExtensionKeys.OBJECT_PAYLOAD_JSON to Json.encodeToString(
+            RelationshipState.serializer(),
+            RelationshipState(
+              familiarity = 66,
+              trust = 74,
+              safety = 76,
+              intimacyPermission = 61,
+              playfulnessPermission = 44,
+              affectionTendency = 34,
+              reciprocity = 49,
+            ),
+          ),
+        ),
+      ),
+    )
     val hostRuntime = OpenCrayHostRuntime.createForTest(
       stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
       chatSessionStore = chatStore,
@@ -1472,12 +1549,59 @@ class OpenCrayLocalRuntimeServerTest {
       assertEquals(200, response.statusCode)
       val payload = JSONObject(response.body)
       assertEquals("STEADY", payload.getJSONObject("storedSoul").getString("presetName"))
-      assertEquals("Xiao Bai", payload.getJSONObject("effectiveSoul").getString("displayName"))
+      val effectiveSoul = payload.getJSONObject("effectiveSoul")
+      assertEquals("Xiao Bai", effectiveSoul.getString("displayName"))
+      assertEquals("1", effectiveSoul.getString("warmthPreferenceOffset"))
+      assertEquals("-1", effectiveSoul.getString("formalityPreferenceOffset"))
+      assertEquals("1", effectiveSoul.getString("initiativePreferenceOffset"))
+      assertEquals("1", effectiveSoul.getString("playfulnessPreferenceOffset"))
+      assertEquals("1", effectiveSoul.getString("reassurancePreferenceOffset"))
+      assertEquals("true", effectiveSoul.getString("supportiveReassuranceAllowed"))
+      assertEquals("true", effectiveSoul.getString("proactiveRelationalCheckInAllowed"))
+      assertEquals("true", effectiveSoul.getString("lightPlayfulnessAllowed"))
+      assertEquals("true", effectiveSoul.getString("playfulTeasingAllowed"))
+      val interactionPreferenceDebug = payload.getJSONObject("interactionPreferenceDebug")
+      assertEquals("user", interactionPreferenceDebug.getString("scope"))
+      assertEquals("A-Cheng", interactionPreferenceDebug.getString("preferredNaming"))
+      assertEquals("friendly", interactionPreferenceDebug.getString("preferredAddressStyle"))
+      val relationshipStateDebug = payload.getJSONObject("relationshipStateDebug")
+      assertEquals("user", relationshipStateDebug.getString("scope"))
+      assertEquals("intimate", relationshipStateDebug.getString("derivedAddressStyle"))
+      assertEquals(false, relationshipStateDebug.getBoolean("recentNegativeGuardActive"))
+      assertEquals(true, relationshipStateDebug.getBoolean("supportiveReassuranceAllowed"))
+      assertEquals(true, relationshipStateDebug.getBoolean("proactiveRelationalCheckInAllowed"))
+      assertEquals(true, relationshipStateDebug.getBoolean("lightPlayfulnessAllowed"))
+      assertEquals(true, relationshipStateDebug.getBoolean("playfulTeasingAllowed"))
+      assertEquals(true, relationshipStateDebug.getBoolean("highIntimacyBehaviorAllowed"))
       val fieldSources = payload.getJSONArray("fieldSources")
-      val displayNameSource = (0 until fieldSources.length())
+      fun fieldSource(field: String): JSONObject = (0 until fieldSources.length())
         .map { index -> fieldSources.getJSONObject(index) }
-        .first { source -> source.getString("field") == "displayName" }
+        .first { source -> source.getString("field") == field }
+
+      val displayNameSource = fieldSource("displayName")
+      val warmthOffsetSource = fieldSource("warmthPreferenceOffset")
+      val playfulnessOffsetSource = fieldSource("playfulnessPreferenceOffset")
+      val reassuranceOffsetSource = fieldSource("reassurancePreferenceOffset")
+      val supportiveReassuranceSource = fieldSource("supportiveReassuranceAllowed")
+      val proactiveCheckInSource = fieldSource("proactiveRelationalCheckInAllowed")
+      val lightPlayfulnessSource = fieldSource("lightPlayfulnessAllowed")
+      val playfulTeasingSource = fieldSource("playfulTeasingAllowed")
       assertEquals("memory_overlay", displayNameSource.getString("sourceType"))
+      assertEquals("memory-user", displayNameSource.getString("recordId"))
+      assertEquals("interaction_preference", warmthOffsetSource.getString("sourceType"))
+      assertEquals("interaction-state", warmthOffsetSource.getString("recordId"))
+      assertEquals("interaction_preference", playfulnessOffsetSource.getString("sourceType"))
+      assertEquals("interaction-state", playfulnessOffsetSource.getString("recordId"))
+      assertEquals("interaction_preference", reassuranceOffsetSource.getString("sourceType"))
+      assertEquals("interaction-state", reassuranceOffsetSource.getString("recordId"))
+      assertEquals("relationship_state", supportiveReassuranceSource.getString("sourceType"))
+      assertEquals("relationship-state", supportiveReassuranceSource.getString("recordId"))
+      assertEquals("relationship_state", proactiveCheckInSource.getString("sourceType"))
+      assertEquals("relationship-state", proactiveCheckInSource.getString("recordId"))
+      assertEquals("relationship_state", lightPlayfulnessSource.getString("sourceType"))
+      assertEquals("relationship-state", lightPlayfulnessSource.getString("recordId"))
+      assertEquals("relationship_state", playfulTeasingSource.getString("sourceType"))
+      assertEquals("relationship-state", playfulTeasingSource.getString("recordId"))
     } finally {
       server.close()
     }
@@ -1488,39 +1612,248 @@ class OpenCrayLocalRuntimeServerTest {
     val skillsFacade = RecordingSkillsFacade().apply {
       snapshot = SkillsSnapshot(
         installedSkills = emptyList(),
-        installSources = emptyList(),
-        suggestedSkills = listOf(
-          SuggestedSkillSnapshot(
-            id = "roin-orca/skills/find-skills",
-            name = "find-skills",
-            description = "Remote result",
-            sourceRef = "roin-orca/skills@find-skills",
-            sourceLabel = "skills.sh",
+        installSources = listOf(
+          InstallSourceSnapshot(
+            id = "github-url",
+            title = "GitHub URL",
+            subtitle = "Enter a source ref.",
+            actionLabel = "Inspect",
+            isAvailable = true,
           ),
         ),
+        suggestedSkills = emptyList(),
       )
-      installResult = SkillInstallRequestResult(installedSkillId = "find-skills")
     }
-    val server = localRuntimeServer(skillsFacade = skillsFacade)
+    val runtimeManager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = "skills-session",
+      resumeResult = false,
+    ).apply {
+      queuedToolCompletion = QueuedToolCompletion(
+        toolName = "SkillsFind",
+        content = "find-skills\tremote\tinstall_ref=roin-orca/skills@find-skills\tsource=roin-orca/skills\tinstalls=42",
+      )
+    }
+    runtimeManager.handle = handle
+    val server = localRuntimeServer(
+      skillsFacade = skillsFacade,
+      runtimeManager = runtimeManager,
+    )
     server.ensureStarted()
 
     try {
       val queryResponse = request(server, "GET", "/v1/skills_snapshot?query=find")
 
       assertEquals(200, queryResponse.statusCode)
-      assertEquals("find", skillsFacade.lastLoadedQuery)
+      assertEquals("", skillsFacade.lastLoadedQuery)
       assertTrue(queryResponse.body.contains("roin-orca/skills@find-skills"))
+      assertTrue(handle.submittedTasks.first().input.contains("\"tool_name\":\"SkillsFind\""))
+      assertTrue(handle.submittedTasks.first().input.contains("\"query\":\"find\""))
+
+      handle.queuedToolCompletion = QueuedToolCompletion(
+        toolName = "SkillsInspect",
+        content = """
+          inspection	remote_github	source_ref=roin-orca/skills	source_path=https://github.com/roin-orca/skills	resolved_revision=main	resolved_commit=deadbeef	candidate_count=2
+          candidate	find-skills	description=Discover skills	relative_path=skills/find-skills/SKILL.md
+          candidate	review-skills	description=Review changes	relative_path=skills/review-skills/SKILL.md
+        """.trimIndent(),
+        metadata = mapOf(
+          "sourceType" to "remote_github",
+          "sourceRef" to "roin-orca/skills",
+          "candidateCount" to "2",
+        ),
+      )
+
+      val inspectResponse = request(
+        server,
+        "POST",
+        "/v1/inspect_skill_source",
+        body = """{"sourceRef":"roin-orca/skills"}""",
+      )
+
+      assertEquals(200, inspectResponse.statusCode)
+      assertTrue(inspectResponse.body.contains("\"sourceType\":\"remote_github\""))
+      assertTrue(inspectResponse.body.contains("\"name\":\"find-skills\""))
+      assertTrue(handle.submittedTasks.any { task ->
+        task.input.contains("\"tool_name\":\"SkillsInspect\"") &&
+          task.input.contains("\"sourceRef\":\"roin-orca/skills\"")
+      })
+
+      handle.queuedToolCompletion = QueuedToolCompletion(
+        toolName = "SkillsAddBatch",
+        content = """
+          batch_install	remote_github	source_ref=roin-orca/skills	requested_count=2	installed_count=2	failed_count=0
+          installed	find-skills	requested=find-skills	relative_path=skills/find-skills/SKILL.md
+          installed	review-skills	requested=review-skills	relative_path=skills/review-skills/SKILL.md
+        """.trimIndent(),
+        metadata = mapOf(
+          "sourceType" to "remote_github",
+          "sourceRef" to "roin-orca/skills",
+          "requestedCount" to "2",
+          "installedCount" to "2",
+          "failedCount" to "0",
+        ),
+      )
+
+      val batchInstallResponse = request(
+        server,
+        "POST",
+        "/v1/install_skill_source_batch",
+        body = """{"sourceRef":"roin-orca/skills","selectedSkillNames":["find-skills","review-skills"]}""",
+      )
+
+      assertEquals(200, batchInstallResponse.statusCode)
+      assertTrue(batchInstallResponse.body.contains("Installed 2 skills."))
+      assertTrue(handle.submittedTasks.any { task ->
+        task.input.contains("\"tool_name\":\"SkillsAddBatch\"") &&
+          task.input.contains("\"sourceRef\":\"roin-orca/skills\"") &&
+          task.input.contains("\"skills\":[\"find-skills\",\"review-skills\"]")
+      })
+
+      handle.queuedToolCompletion = QueuedToolCompletion(
+        toolName = "SkillsAdd",
+        content = "Installed skill 'review-skills' from remote source 'roin-orca/skills'.",
+        metadata = mapOf("skillId" to "review-skills"),
+      )
 
       val installResponse = request(
         server,
         "POST",
         "/v1/install_skill_source",
-        body = """{"sourceRef":"roin-orca/skills@find-skills"}""",
+        body = """{"sourceRef":"roin-orca/skills","selectedSkillName":"review-skills"}""",
       )
 
       assertEquals(200, installResponse.statusCode)
-      assertEquals("roin-orca/skills@find-skills", skillsFacade.lastInstalledSourceRef)
-      assertTrue(installResponse.body.contains("Installed find-skills."))
+      assertTrue(installResponse.body.contains("Installed review-skills."))
+      assertTrue(handle.submittedTasks.any { task ->
+        task.input.contains("\"tool_name\":\"SkillsAdd\"") &&
+          task.input.contains("\"sourceRef\":\"roin-orca/skills\"") &&
+          task.input.contains("\"skill\":\"review-skills\"")
+      })
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun skillsUpdateEndpointUsesDirectToolRuntimeFactory() {
+    val directTaskRuntimeFactory = RecordingDirectTaskRuntimeFactory(
+      status = ExecutionStatus.SUCCESS,
+      stdout = "find-skills: updated",
+    )
+    val server = localRuntimeServer(directTaskRuntimeFactory = directTaskRuntimeFactory)
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/update_installed_skill",
+        body = """{"skillId":"find-skills"}""",
+      )
+
+      assertEquals(200, response.statusCode)
+      assertTrue(response.body.contains("find-skills: updated"))
+      assertTrue(directTaskRuntimeFactory.submittedTasks.any { task ->
+        task.input.contains("\"tool_name\":\"SkillsUpdate\"") &&
+          task.input.contains("\"skillId\":\"find-skills\"")
+      })
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun deleteInstalledSkillEndpointUsesSessionPipeline() {
+    val runtimeManager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = "skills-session",
+      resumeResult = false,
+    ).apply {
+      queuedToolCompletion = QueuedToolCompletion(
+        toolName = "SkillsRemove",
+        content = "Removed skill 'find-skills' from the host-managed skills directory.",
+        metadata = mapOf("skillId" to "find-skills"),
+      )
+    }
+    runtimeManager.handle = handle
+    val server = localRuntimeServer(runtimeManager = runtimeManager)
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/delete_installed_skill",
+        body = """{"skillId":"find-skills"}""",
+      )
+
+      assertEquals(200, response.statusCode)
+      assertTrue(response.body.contains("Removed find-skills."))
+      assertTrue(handle.submittedTasks.any { task ->
+        task.input.contains("\"tool_name\":\"SkillsRemove\"") &&
+          task.input.contains("\"skillId\":\"find-skills\"")
+      })
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun openWorkspaceEntryEndpointDelegatesToHostRuntime() {
+    val workspaceRoot = temporaryFolder.newFolder("server-workspace-open-entry").toPath()
+    val openedEntries = mutableListOf<Pair<Path, String>>()
+    val server = localRuntimeServer(
+      workspaceRootProvider = { workspaceRoot },
+      workspaceEntryOpener = { root, relativePath ->
+        openedEntries += root to relativePath
+      },
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/open_workspace_entry",
+        body = """{"relativePath":".opencray/chat-media/session-1/hash/report.pdf"}""",
+      )
+
+      assertEquals(200, response.statusCode)
+      assertEquals(
+        listOf(
+          workspaceRoot.toAbsolutePath().normalize() to
+            ".opencray/chat-media/session-1/hash/report.pdf",
+        ),
+        openedEntries,
+      )
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun voicePlaybackSourceEndpointLoadsResolvedWorkspaceVoiceSource() {
+    val workspaceRoot = temporaryFolder.newFolder("server-workspace-voice-source").toPath()
+    val voiceFile = workspaceRoot.resolve(".opencray/chat-media/session-1/hash/voice-note.m4a")
+    Files.createDirectories(voiceFile.parent)
+    Files.write(voiceFile, byteArrayOf(1, 2, 3, 4))
+    val server = localRuntimeServer(
+      workspaceRootProvider = { workspaceRoot },
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "GET",
+        "/v1/workspace_voice_playback_source?relativePath=.opencray/chat-media/session-1/hash/voice-note.m4a",
+      )
+
+      assertEquals(200, response.statusCode)
+      assertTrue(response.body.contains("voice-note.m4a"))
+      assertTrue(response.body.contains("\"mimeType\":\"audio/mp4\""))
+      assertTrue(response.body.contains("\"sizeBytes\":4"))
     } finally {
       server.close()
     }
@@ -1530,7 +1863,10 @@ class OpenCrayLocalRuntimeServerTest {
     llmConfigFacade: LlmConfigFacade = EmptyLlmConfigFacade,
     networkSearchConfigFacade: NetworkSearchConfigFacade = EmptyNetworkSearchConfigFacade,
     skillsFacade: SkillsFacade = RecordingSkillsFacade(),
+    runtimeManager: AgentSessionRuntimeManager = NoOpRuntimeManager(),
+    directTaskRuntimeFactory: AgentSessionTaskRuntimeFactory? = null,
     workspaceRootProvider: (() -> Path)? = null,
+    workspaceEntryOpener: ((Path, String) -> Unit)? = null,
     workspaceSnapshotProvider: () -> Map<String, Any?> = {
       WorkspaceTreeSnapshot(
         rootName = AppAgentWorkspace.DIRECTORY_NAME,
@@ -1554,9 +1890,11 @@ class OpenCrayLocalRuntimeServerTest {
         networkSearchConfigFacade = networkSearchConfigFacade,
         llmConfigFacade = llmConfigFacade,
         skillsFacade = skillsFacade,
+        directTaskRuntimeFactory = directTaskRuntimeFactory,
         workspaceRootProvider = workspaceRootProvider,
+        workspaceEntryOpener = workspaceEntryOpener,
         workspaceSnapshotProvider = workspaceSnapshotProvider,
-        sessionRuntimeManager = NoOpRuntimeManager(),
+        sessionRuntimeManager = runtimeManager,
         strings = HostRuntimeStrings(
           localeTag = "en",
           shellHostLabel = "HOST CONNECTED",
@@ -1576,6 +1914,7 @@ class OpenCrayLocalRuntimeServerTest {
           skillRemoved = { skillId -> "Removed $skillId." },
           skillsReloaded = "Reloaded skills from local storage.",
           composerPlaceholder = "Message OpenCray",
+          composerRejectedPlaceholder = "Tell OpenCray differently",
           agentThinking = "Thinking",
           agentCancelled = "Cancelled",
           agentMissingLlm = "Missing LLM",
@@ -1641,6 +1980,7 @@ class OpenCrayLocalRuntimeServerTest {
     skillRemoved = { skillId -> "Removed $skillId." },
     skillsReloaded = "Reloaded skills from local storage.",
     composerPlaceholder = "Message OpenCray",
+    composerRejectedPlaceholder = "Tell OpenCray differently",
     agentThinking = "Thinking",
     agentCancelled = "Cancelled",
     agentMissingLlm = "Missing LLM",
@@ -1702,6 +2042,32 @@ class OpenCrayLocalRuntimeServerTest {
     override fun enabledSkillRoots(): List<java.io.File> = emptyList()
 
     override fun activateInstallSource(sourceId: String): String = sourceId
+  }
+
+  private class RecordingDirectTaskRuntimeFactory(
+    private val status: ExecutionStatus,
+    private val stdout: String = "",
+    private val errorMessage: String? = null,
+  ) : AgentSessionTaskRuntimeFactory {
+    val submittedTasks = mutableListOf<AgentTask>()
+    var lastTask: AgentTask? = null
+
+    override fun create(
+      sessionId: String,
+      eventSink: com.opencray.runtime.OpenCrayAgentRuntimeEventSink,
+    ): SessionTaskRuntime = SessionTaskRuntime { task, _ ->
+      submittedTasks += task
+      lastTask = task
+      ExecutionResult(
+        taskId = task.id,
+        status = status,
+        stdout = if (status == ExecutionStatus.SUCCESS) stdout else "",
+        stderr = if (status == ExecutionStatus.SUCCESS) "" else (errorMessage ?: stdout),
+        errorMessage = if (status == ExecutionStatus.SUCCESS) null else errorMessage,
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_000L,
+      )
+    }
   }
 
   private class RecordingLlmConfigFacade : LlmConfigFacade {
@@ -1793,6 +2159,8 @@ class OpenCrayLocalRuntimeServerTest {
     override val sessionId: String,
     private val resumeResult: Boolean,
   ) : AgentSessionHandle {
+    var queuedToolCompletion: QueuedToolCompletion? = null
+    val queuedToolCompletions = mutableListOf<QueuedToolCompletion>()
     val cancelledTaskIds = mutableListOf<String>()
     val resumedTaskIds = mutableListOf<String>()
     val submittedTasks = mutableListOf<AgentTask>()
@@ -1841,6 +2209,45 @@ class OpenCrayLocalRuntimeServerTest {
       return submission
     }
 
+    override fun submitTask(task: AgentTask): AgentRunSubmission {
+      val runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
+        ?.takeIf(String::isNotBlank)
+        ?: "run-${nextTaskIndex++}"
+      val submission = AgentRunSubmission(
+        sessionId = sessionId,
+        runId = runId,
+        taskId = task.id,
+        acceptedAtEpochMs = task.createdAtEpochMs,
+      )
+      submittedTasks += task
+      submissions += submission
+      runSnapshotsById[submission.runId] = AgentRunSnapshot(
+        sessionId = sessionId,
+        runId = submission.runId,
+        taskId = task.id,
+        acceptedAtEpochMs = task.createdAtEpochMs,
+        updatedAtEpochMs = task.createdAtEpochMs,
+        lifecycleState = null,
+        taskState = null,
+        pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID],
+      )
+      val completion = queuedToolCompletion?.also {
+        queuedToolCompletion = null
+      } ?: if (queuedToolCompletions.isNotEmpty()) {
+        queuedToolCompletions.removeAt(0)
+      } else {
+        null
+      }
+      completion?.also {
+        completeQueuedToolCall(
+          task = task,
+          submission = submission,
+          completion = it,
+        )
+      }
+      return submission
+    }
+
     override fun ensureProcessing() = Unit
 
     override fun requestCancel(taskId: String): Boolean {
@@ -1878,6 +2285,52 @@ class OpenCrayLocalRuntimeServerTest {
       runSnapshotsById[event.runId] = existing.copy(
         updatedAtEpochMs = event.emittedAtEpochMs,
         lastEvent = event,
+      )
+    }
+
+    private fun completeQueuedToolCall(
+      task: AgentTask,
+      submission: AgentRunSubmission,
+      completion: QueuedToolCompletion,
+    ) {
+      val resolvedToolName = completion.toolName
+        ?: TOOL_NAME_REGEX.find(task.input)?.groupValues?.getOrNull(1)
+        ?: "UnknownTool"
+      val toolResult = AgentToolResult(
+        toolName = resolvedToolName,
+        status = when (completion.status) {
+          ExecutionStatus.SUCCESS -> AgentToolResultStatus.SUCCESS
+          ExecutionStatus.DENIED -> AgentToolResultStatus.DENIED
+          ExecutionStatus.CANCELLED -> AgentToolResultStatus.CANCELLED
+          ExecutionStatus.TIMEOUT -> AgentToolResultStatus.TIMEOUT
+          ExecutionStatus.FAILED -> AgentToolResultStatus.FAILED
+        },
+        content = completion.content,
+        errorCode = completion.errorCode,
+        errorMessage = completion.errorMessage,
+        metadata = completion.metadata,
+      )
+      recordEvent(
+        OpenCrayToolResultEvent(
+          runId = submission.runId,
+          taskId = task.id,
+          turn = 0,
+          call = AgentToolCall(toolName = resolvedToolName),
+          result = toolResult,
+          emittedAtEpochMs = task.createdAtEpochMs + 1L,
+        ),
+      )
+      recordResult(
+        task = task,
+        result = ExecutionResult(
+          taskId = task.id,
+          status = completion.status,
+          stdout = if (completion.status == ExecutionStatus.SUCCESS) completion.content else "",
+          errorCode = completion.errorCode,
+          errorMessage = completion.errorMessage,
+          startedAtEpochMs = task.createdAtEpochMs,
+          finishedAtEpochMs = task.createdAtEpochMs + 1L,
+        ),
       )
     }
 
@@ -1939,4 +2392,15 @@ class OpenCrayLocalRuntimeServerTest {
 
     override fun hasPendingWork(): Boolean = false
   }
+
+  private data class QueuedToolCompletion(
+    val toolName: String? = null,
+    val content: String,
+    val metadata: Map<String, String> = emptyMap(),
+    val status: ExecutionStatus = ExecutionStatus.SUCCESS,
+    val errorCode: String? = null,
+    val errorMessage: String? = null,
+  )
 }
+
+private val TOOL_NAME_REGEX: Regex = Regex("""\"tool_name\"\s*:\s*\"([^\"]+)\"""")

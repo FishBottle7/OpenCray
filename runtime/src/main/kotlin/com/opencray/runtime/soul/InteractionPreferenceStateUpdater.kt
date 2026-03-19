@@ -148,6 +148,8 @@ class InteractionPreferenceStateUpdater {
     InteractionPreferenceAxis.WARMTH -> warmth
     InteractionPreferenceAxis.FORMALITY -> formality
     InteractionPreferenceAxis.INITIATIVE -> initiative
+    InteractionPreferenceAxis.PLAYFULNESS -> playfulness
+    InteractionPreferenceAxis.REASSURANCE -> reassurance
   }
 
   private fun InteractionPreferenceState.withAxisState(
@@ -157,6 +159,8 @@ class InteractionPreferenceStateUpdater {
     InteractionPreferenceAxis.WARMTH -> copy(warmth = state)
     InteractionPreferenceAxis.FORMALITY -> copy(formality = state)
     InteractionPreferenceAxis.INITIATIVE -> copy(initiative = state)
+    InteractionPreferenceAxis.PLAYFULNESS -> copy(playfulness = state)
+    InteractionPreferenceAxis.REASSURANCE -> copy(reassurance = state)
   }
 
   private fun PreferredAddressState.supportFor(style: PreferredAddressStyle): Int = when (style) {

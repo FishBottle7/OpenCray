@@ -83,6 +83,50 @@ void main() {
     expect(find.text(copy.chatSeedSafeModeAsks), findsNothing);
   });
 
+  testWidgets(
+    'select action enters multi-select mode and highlights the row behind the bubble',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('zh-CN');
+      await tester.pumpWidget(_buildHarness(copy));
+      await tester.pumpAndSettle();
+
+      final targetBubble = find.byKey(
+        const ValueKey<String>('chat-bubble-seed-main-inbound-2'),
+      );
+
+      await _openMessageMenu(tester, targetBubble);
+      await tester.tap(find.text(copy.chatMessageSelectAction));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey<String>('chat-selection-toolbar')),
+        findsOneWidget,
+      );
+      expect(find.text(copy.chatSelectionCount(1)), findsOneWidget);
+      expect(
+        _rowHighlightColor(tester, 'seed-main-inbound-2'),
+        const Color(0xFFE4E5EA),
+      );
+      expect(
+        _rowHighlightColor(tester, 'seed-main-outbound-2'),
+        Colors.transparent,
+      );
+
+      final outboundRow = find.byKey(
+        const ValueKey<String>('chat-message-row-seed-main-outbound-2'),
+      );
+      await tester.ensureVisible(outboundRow);
+      await tester.tap(outboundRow);
+      await tester.pumpAndSettle();
+
+      expect(find.text(copy.chatSelectionCount(2)), findsOneWidget);
+      expect(
+        _rowHighlightColor(tester, 'seed-main-outbound-2'),
+        const Color(0xFFE4E5EA),
+      );
+    },
+  );
+
   testWidgets('copy action prefers the current text selection', (tester) async {
     final copy = OpenCrayUiCopy.fromLocaleTag('en');
     final List<MethodCall> platformCalls = <MethodCall>[];
@@ -121,6 +165,193 @@ void main() {
     expect(platformCalls.last.arguments, <String, dynamic>{
       'text': 'Safe mode',
     });
+  });
+
+  testWidgets(
+    'copy action uses the latest selected text while the menu is open',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final List<MethodCall> platformCalls = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+            platformCalls.add(call);
+            return null;
+          });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(SystemChannels.platform, null);
+      });
+      await tester.pumpWidget(_buildHarness(copy));
+      await tester.pumpAndSettle();
+
+      final targetBubble = find.byKey(
+        const ValueKey<String>('chat-bubble-seed-main-inbound-2'),
+      );
+      final selectionArea = find.descendant(
+        of: targetBubble,
+        matching: find.byType(SelectionArea),
+      );
+      final selectionWidget = tester.widget<SelectionArea>(selectionArea);
+
+      await _openMessageMenu(tester, targetBubble);
+      selectionWidget.onSelectionChanged!(
+        const SelectedContent(plainText: 'before edits'),
+      );
+      await tester.pump();
+      await tester.tap(find.text(copy.chatMessageCopyAction));
+      await tester.pumpAndSettle();
+
+      expect(platformCalls, isNotEmpty);
+      expect(platformCalls.last.method, 'Clipboard.setData');
+      expect(platformCalls.last.arguments, <String, dynamic>{
+        'text': 'before edits',
+      });
+    },
+  );
+
+  testWidgets(
+    'selection toolbar copies selected messages in transcript order',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final List<MethodCall> platformCalls = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+            platformCalls.add(call);
+            return null;
+          });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(SystemChannels.platform, null);
+      });
+      await tester.pumpWidget(_buildHarness(copy));
+      await tester.pumpAndSettle();
+
+      final targetBubble = find.byKey(
+        const ValueKey<String>('chat-bubble-seed-main-inbound-2'),
+      );
+
+      await _openMessageMenu(tester, targetBubble);
+      await tester.tap(find.text(copy.chatMessageSelectAction));
+      await tester.pumpAndSettle();
+      final outboundRow = find.byKey(
+        const ValueKey<String>('chat-message-row-seed-main-outbound-2'),
+      );
+      await tester.ensureVisible(outboundRow);
+      await tester.tap(outboundRow);
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey<String>('chat-selection-copy')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(platformCalls, isNotEmpty);
+      expect(platformCalls.last.method, 'Clipboard.setData');
+      expect(platformCalls.last.arguments, <String, dynamic>{
+        'text':
+            '${copy.chatSeedSafeModeAsks}\n\n${copy.chatSeedShowCurrentLimits}',
+      });
+    },
+  );
+
+  testWidgets('selection toolbar deletes all selected messages', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    await tester.pumpWidget(_buildHarness(copy));
+    await tester.pumpAndSettle();
+
+    final targetBubble = find.byKey(
+      const ValueKey<String>('chat-bubble-seed-main-inbound-2'),
+    );
+
+    await _openMessageMenu(tester, targetBubble);
+    await tester.tap(find.text(copy.chatMessageSelectAction));
+    await tester.pumpAndSettle();
+    final outboundRow = find.byKey(
+      const ValueKey<String>('chat-message-row-seed-main-outbound-2'),
+    );
+    await tester.ensureVisible(outboundRow);
+    await tester.tap(outboundRow);
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey<String>('chat-selection-delete')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text(copy.chatSeedSafeModeAsks), findsNothing);
+    expect(find.text(copy.chatSeedShowCurrentLimits), findsNothing);
+    expect(
+      find.byKey(const ValueKey<String>('chat-selection-toolbar')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('system back exits chat multi-select mode before popping', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    await tester.pumpWidget(_buildHarness(copy));
+    await tester.pumpAndSettle();
+
+    final targetBubble = find.byKey(
+      const ValueKey<String>('chat-bubble-seed-main-inbound-2'),
+    );
+
+    await _openMessageMenu(tester, targetBubble);
+    await tester.tap(find.text(copy.chatMessageSelectAction));
+    await tester.pumpAndSettle();
+
+    expect(find.text(copy.chatSelectionCount(1)), findsOneWidget);
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    expect(find.byType(OpenCrayChatFeature), findsOneWidget);
+    expect(find.text(copy.chatSelectionCount(1)), findsNothing);
+    expect(
+      find.byKey(const ValueKey<String>('chat-selection-toolbar')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('selection mode emits selection haptics on enter and toggle', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final List<MethodCall> platformCalls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+          platformCalls.add(call);
+          return null;
+        });
+    addTearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, null);
+    });
+    await tester.pumpWidget(_buildHarness(copy));
+    await tester.pumpAndSettle();
+
+    final targetBubble = find.byKey(
+      const ValueKey<String>('chat-bubble-seed-main-inbound-2'),
+    );
+
+    await _openMessageMenu(tester, targetBubble);
+    await tester.tap(find.text(copy.chatMessageSelectAction));
+    await tester.pumpAndSettle();
+
+    final outboundRow = find.byKey(
+      const ValueKey<String>('chat-message-row-seed-main-outbound-2'),
+    );
+    await tester.ensureVisible(outboundRow);
+    await tester.tap(outboundRow);
+    await tester.pumpAndSettle();
+
+    final selectionHaptics = platformCalls.where(
+      (call) =>
+          call.method == 'HapticFeedback.vibrate' &&
+          call.arguments == 'HapticFeedbackType.selectionClick',
+    );
+    expect(selectionHaptics.length, greaterThanOrEqualTo(2));
   });
 
   testWidgets(
@@ -237,6 +468,14 @@ Widget _buildHarness(OpenCrayUiCopy copy, {OpenCrayHostBridge? bridge}) {
       body: OpenCrayChatFeature(copy: copy, bridge: bridge),
     ),
   );
+}
+
+Color? _rowHighlightColor(WidgetTester tester, String messageId) {
+  final AnimatedContainer container = tester.widget<AnimatedContainer>(
+    find.byKey(ValueKey<String>('chat-message-row-bg-$messageId')),
+  );
+  final BoxDecoration decoration = container.decoration! as BoxDecoration;
+  return decoration.color;
 }
 
 OpenCrayChatSnapshot _seedBridgeChatSnapshot(OpenCrayUiCopy copy) {

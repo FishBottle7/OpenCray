@@ -201,29 +201,131 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   private fun extractOpenAiMessageContent(choice: JSONObject?): String {
     if (choice == null) return ""
     val message = choice.optJSONObject("message") ?: return ""
-    val content = message.opt("content")
-    return when (content) {
-      is String -> content
-      is JSONArray -> {
-        buildString {
-          for (index in 0 until content.length()) {
-            val segment = content.opt(index)
-            when (segment) {
-              is JSONObject -> {
-                val text = segment.optString("text")
-                if (text.isNotBlank()) {
-                  append(text)
-                }
-              }
+    extractOpenAiContentValue(message.opt("content"))
+      .takeIf(String::isNotBlank)
+      ?.let { content ->
+        return content
+      }
+    synthesizeToolCallPayload(message.optJSONArray("tool_calls"))
+      ?.let { toolPayload ->
+        return toolPayload
+      }
+    return extractProtocolPayloadFromAlternateFields(
+      choice = choice,
+      message = message,
+    ).orEmpty()
+  }
 
-              is String -> append(segment)
-            }
+  private fun extractOpenAiContentValue(rawContent: Any?): String = when (rawContent) {
+    is String -> rawContent
+    is JSONArray -> buildString {
+      for (index in 0 until rawContent.length()) {
+        val segment = extractOpenAiContentValue(rawContent.opt(index))
+        if (segment.isNotBlank()) {
+          append(segment)
+        }
+      }
+    }
+
+    is JSONObject -> firstNonBlankString(
+      rawContent.nonBlankString("text"),
+      rawContent.optJSONObject("text")?.nonBlankString("value"),
+      rawContent.nonBlankString("content"),
+      rawContent.optJSONObject("content")?.nonBlankString("text"),
+      rawContent.nonBlankString("value"),
+    ).orEmpty()
+
+    else -> ""
+  }
+
+  private fun synthesizeToolCallPayload(toolCalls: JSONArray?): String? {
+    if (toolCalls == null || toolCalls.length() == 0) {
+      return null
+    }
+    val normalizedCalls = JSONArray()
+    for (index in 0 until toolCalls.length()) {
+      val toolCall = toolCalls.optJSONObject(index) ?: continue
+      val function = toolCall.optJSONObject("function") ?: continue
+      val toolName = function.nonBlankString("name") ?: continue
+      normalizedCalls.put(
+        JSONObject()
+          .put("tool_name", toolName)
+          .put("arguments", parseToolCallArguments(function.opt("arguments"))),
+      )
+    }
+    if (normalizedCalls.length() == 0) {
+      return null
+    }
+    return JSONObject()
+      .put("tool_calls", normalizedCalls)
+      .toString()
+  }
+
+  private fun parseToolCallArguments(rawArguments: Any?): JSONObject = when (rawArguments) {
+    is JSONObject -> rawArguments
+    is String -> runCatching {
+      JSONObject(rawArguments)
+    }.getOrElse {
+      JSONObject()
+    }
+
+    else -> JSONObject()
+  }
+
+  private fun extractProtocolPayloadFromAlternateFields(
+    choice: JSONObject,
+    message: JSONObject,
+  ): String? = listOf(
+    extractOpenAiContentValue(message.opt("reasoning_content")),
+    extractOpenAiContentValue(message.opt("reasoning")),
+    extractOpenAiContentValue(choice.opt("text")),
+  )
+    .asSequence()
+    .map(String::trim)
+    .firstOrNull { candidate ->
+      candidate.isNotBlank() && looksLikeProtocolPayload(candidate)
+    }
+
+  private fun looksLikeProtocolPayload(text: String): Boolean {
+    val jsonCandidate = extractEmbeddedJsonObject(text) ?: return false
+    val parsed = runCatching { JSONObject(jsonCandidate) }.getOrNull() ?: return false
+    val type = parsed.optString("type").trim().lowercase()
+    return parsed.optJSONArray("tool_calls") != null ||
+      parsed.optString("tool_name").isNotBlank() ||
+      parsed.optString("answer").isNotBlank() ||
+      type in setOf("tool_call", "tool", "final", "answer", "progress", "commentary", "status")
+  }
+
+  private fun extractEmbeddedJsonObject(raw: String): String? {
+    val trimmed = raw.trim()
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      return trimmed
+    }
+    var depth = 0
+    var startIndex = -1
+    var inString = false
+    var escaped = false
+    for ((index, character) in raw.withIndex()) {
+      when {
+        inString && escaped -> escaped = false
+        inString && character == '\\' -> escaped = true
+        character == '"' -> inString = !inString
+        !inString && character == '{' -> {
+          if (depth == 0) {
+            startIndex = index
+          }
+          depth += 1
+        }
+
+        !inString && character == '}' -> {
+          depth -= 1
+          if (depth == 0 && startIndex >= 0) {
+            return raw.substring(startIndex, index + 1)
           }
         }
       }
-
-      else -> ""
     }
+    return null
   }
 
   private fun extractAnthropicMessageContent(payload: JSONObject): String {
@@ -281,6 +383,12 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
   private fun resolvedProtocol(request: LiteLlmProviderRequest): String =
     LlmProviderProtocols.normalize(request.route.metadata["protocol"])
+
+  private fun JSONObject.nonBlankString(key: String): String? =
+    (opt(key) as? String)?.trim()?.takeIf(String::isNotBlank)
+
+  private fun firstNonBlankString(vararg values: String?): String? =
+    values.firstOrNull { value -> !value.isNullOrBlank() }
 
   companion object {
     private const val DEFAULT_ANTHROPIC_MAX_TOKENS: Int = 4096

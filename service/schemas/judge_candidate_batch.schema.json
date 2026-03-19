@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opencray.local/service/schemas/judge_candidate_batch.schema.json",
+  "title": "JudgeCandidateBatch",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "scene_labels",
+    "relationship_scope",
+    "source_mode",
+    "candidates"
+  ],
+  "properties": {
+    "scene_labels": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "relationship_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "selected_relationship_binding_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "counterpart_entity_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "overlay_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "relationship_state_hints": {
+      "type": "object"
+    },
+    "interaction_preference_hints": {
+      "type": "object"
+    },
+    "recent_script_hints": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "memory_hints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reference_quotes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "source_mode": {
+      "type": "string",
+      "enum": [
+        "chat_history",
+        "fiction_work"
+      ]
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidate_id",
+          "text"
+        ],
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "anyOf": [
+          {
+            "required": [
+              "selected_relationship_binding_id"
+            ]
+          },
+          {
+            "required": [
+              "counterpart_entity_id"
+            ]
+          },
+          {
+            "required": [
+              "overlay_key"
+            ]
+          }
+        ]
+      },
+      "then": {
+        "required": [
+          "selected_relationship_binding_id",
+          "counterpart_entity_id",
+          "overlay_key"
+        ]
+      }
+    }
+  ]
+}

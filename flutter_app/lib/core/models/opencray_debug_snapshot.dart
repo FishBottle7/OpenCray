@@ -25,6 +25,127 @@ class OpenCrayMemoryDebugSnapshot {
   }
 }
 
+class OpenCrayMemoryDebugSearchSnapshot {
+  const OpenCrayMemoryDebugSearchSnapshot({
+    required this.sessionId,
+    required this.observedAtEpochMs,
+    this.workspaceId = '',
+    this.query = '',
+    this.queryTerms = const <String>[],
+    this.corpusFileCount = 0,
+    this.results = const <OpenCrayMemoryDebugSearchResultSnapshot>[],
+  });
+
+  final String sessionId;
+  final String workspaceId;
+  final int observedAtEpochMs;
+  final String query;
+  final List<String> queryTerms;
+  final int corpusFileCount;
+  final List<OpenCrayMemoryDebugSearchResultSnapshot> results;
+
+  factory OpenCrayMemoryDebugSearchSnapshot.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    final rawResults = map['results'] as List<Object?>? ?? const <Object?>[];
+    return OpenCrayMemoryDebugSearchSnapshot(
+      sessionId: map['sessionId'] as String? ?? '',
+      workspaceId: map['workspaceId'] as String? ?? '',
+      observedAtEpochMs: map['observedAtEpochMs'] as int? ?? 0,
+      query: map['query'] as String? ?? '',
+      queryTerms: _readStringList(map['queryTerms']),
+      corpusFileCount: map['corpusFileCount'] as int? ?? 0,
+      results: rawResults
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayMemoryDebugSearchResultSnapshot.fromMap)
+          .toList(growable: false),
+    );
+  }
+}
+
+class OpenCrayMemoryDebugSearchResultSnapshot {
+  const OpenCrayMemoryDebugSearchResultSnapshot({
+    required this.recordId,
+    required this.path,
+    required this.startLine,
+    required this.endLine,
+    this.score = 0,
+    this.matchedTerms = const <String>[],
+    this.kind = '',
+    this.scope = '',
+    this.status = '',
+    this.snippet = '',
+  });
+
+  final String recordId;
+  final String path;
+  final int startLine;
+  final int endLine;
+  final int score;
+  final List<String> matchedTerms;
+  final String kind;
+  final String scope;
+  final String status;
+  final String snippet;
+
+  factory OpenCrayMemoryDebugSearchResultSnapshot.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    return OpenCrayMemoryDebugSearchResultSnapshot(
+      recordId: map['recordId'] as String? ?? '',
+      path: map['path'] as String? ?? '',
+      startLine: map['startLine'] as int? ?? 0,
+      endLine: map['endLine'] as int? ?? 0,
+      score: map['score'] as int? ?? 0,
+      matchedTerms: _readStringList(map['matchedTerms']),
+      kind: map['kind'] as String? ?? '',
+      scope: map['scope'] as String? ?? '',
+      status: map['status'] as String? ?? '',
+      snippet: map['snippet'] as String? ?? '',
+    );
+  }
+}
+
+class OpenCrayMemoryDebugSliceSnapshot {
+  const OpenCrayMemoryDebugSliceSnapshot({
+    required this.sessionId,
+    required this.observedAtEpochMs,
+    this.workspaceId = '',
+    this.path = '',
+    this.text = '',
+    this.startLine = 0,
+    this.endLine = 0,
+    this.totalLineCount = 0,
+    this.recordIds = const <String>[],
+  });
+
+  final String sessionId;
+  final String workspaceId;
+  final int observedAtEpochMs;
+  final String path;
+  final String text;
+  final int startLine;
+  final int endLine;
+  final int totalLineCount;
+  final List<String> recordIds;
+
+  factory OpenCrayMemoryDebugSliceSnapshot.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    return OpenCrayMemoryDebugSliceSnapshot(
+      sessionId: map['sessionId'] as String? ?? '',
+      workspaceId: map['workspaceId'] as String? ?? '',
+      observedAtEpochMs: map['observedAtEpochMs'] as int? ?? 0,
+      path: map['path'] as String? ?? '',
+      text: map['text'] as String? ?? '',
+      startLine: map['startLine'] as int? ?? 0,
+      endLine: map['endLine'] as int? ?? 0,
+      totalLineCount: map['totalLineCount'] as int? ?? 0,
+      recordIds: _readStringList(map['recordIds']),
+    );
+  }
+}
+
 class OpenCrayMemoryDebugRecordSnapshot {
   const OpenCrayMemoryDebugRecordSnapshot({
     required this.id,
@@ -216,6 +337,8 @@ class OpenCrayInteractionPreferenceStateSnapshot {
     this.warmth = const OpenCrayPreferenceAxisStateSnapshot(),
     this.formality = const OpenCrayPreferenceAxisStateSnapshot(),
     this.initiative = const OpenCrayPreferenceAxisStateSnapshot(),
+    this.playfulness = const OpenCrayPreferenceAxisStateSnapshot(),
+    this.reassurance = const OpenCrayPreferenceAxisStateSnapshot(),
     this.addressStyle = const OpenCrayPreferredAddressStateSnapshot(),
     this.preferredNaming = '',
     this.preferredNamingSupport = 0,
@@ -225,6 +348,8 @@ class OpenCrayInteractionPreferenceStateSnapshot {
   final OpenCrayPreferenceAxisStateSnapshot warmth;
   final OpenCrayPreferenceAxisStateSnapshot formality;
   final OpenCrayPreferenceAxisStateSnapshot initiative;
+  final OpenCrayPreferenceAxisStateSnapshot playfulness;
+  final OpenCrayPreferenceAxisStateSnapshot reassurance;
   final OpenCrayPreferredAddressStateSnapshot addressStyle;
   final String preferredNaming;
   final int preferredNamingSupport;
@@ -241,6 +366,12 @@ class OpenCrayInteractionPreferenceStateSnapshot {
     final rawInitiative =
         map['initiative'] as Map<Object?, Object?>? ??
         const <Object?, Object?>{};
+    final rawPlayfulness =
+        map['playfulness'] as Map<Object?, Object?>? ??
+        const <Object?, Object?>{};
+    final rawReassurance =
+        map['reassurance'] as Map<Object?, Object?>? ??
+        const <Object?, Object?>{};
     final rawAddressStyle =
         map['addressStyle'] as Map<Object?, Object?>? ??
         const <Object?, Object?>{};
@@ -248,6 +379,8 @@ class OpenCrayInteractionPreferenceStateSnapshot {
       warmth: OpenCrayPreferenceAxisStateSnapshot.fromMap(rawWarmth),
       formality: OpenCrayPreferenceAxisStateSnapshot.fromMap(rawFormality),
       initiative: OpenCrayPreferenceAxisStateSnapshot.fromMap(rawInitiative),
+      playfulness: OpenCrayPreferenceAxisStateSnapshot.fromMap(rawPlayfulness),
+      reassurance: OpenCrayPreferenceAxisStateSnapshot.fromMap(rawReassurance),
       addressStyle: OpenCrayPreferredAddressStateSnapshot.fromMap(
         rawAddressStyle,
       ),
@@ -327,6 +460,15 @@ class OpenCrayRelationshipStateDebugSnapshot {
     this.intimateAddressChecks = const <OpenCraySoulGateCheckSnapshot>[],
     this.intimacyPermissionBand = '',
     this.playfulnessPermissionBand = '',
+    this.supportiveReassuranceAllowed = false,
+    this.supportiveReassuranceChecks = const <OpenCraySoulGateCheckSnapshot>[],
+    this.proactiveRelationalCheckInAllowed = false,
+    this.proactiveRelationalCheckInChecks =
+        const <OpenCraySoulGateCheckSnapshot>[],
+    this.lightPlayfulnessAllowed = false,
+    this.lightPlayfulnessChecks = const <OpenCraySoulGateCheckSnapshot>[],
+    this.playfulTeasingAllowed = false,
+    this.playfulTeasingChecks = const <OpenCraySoulGateCheckSnapshot>[],
     this.highIntimacyBehaviorAllowed = false,
     this.highIntimacyChecks = const <OpenCraySoulGateCheckSnapshot>[],
     this.playfulAffectionAllowed = false,
@@ -347,6 +489,14 @@ class OpenCrayRelationshipStateDebugSnapshot {
   final List<OpenCraySoulGateCheckSnapshot> intimateAddressChecks;
   final String intimacyPermissionBand;
   final String playfulnessPermissionBand;
+  final bool supportiveReassuranceAllowed;
+  final List<OpenCraySoulGateCheckSnapshot> supportiveReassuranceChecks;
+  final bool proactiveRelationalCheckInAllowed;
+  final List<OpenCraySoulGateCheckSnapshot> proactiveRelationalCheckInChecks;
+  final bool lightPlayfulnessAllowed;
+  final List<OpenCraySoulGateCheckSnapshot> lightPlayfulnessChecks;
+  final bool playfulTeasingAllowed;
+  final List<OpenCraySoulGateCheckSnapshot> playfulTeasingChecks;
   final bool highIntimacyBehaviorAllowed;
   final List<OpenCraySoulGateCheckSnapshot> highIntimacyChecks;
   final bool playfulAffectionAllowed;
@@ -374,6 +524,22 @@ class OpenCrayRelationshipStateDebugSnapshot {
       intimacyPermissionBand: map['intimacyPermissionBand'] as String? ?? '',
       playfulnessPermissionBand:
           map['playfulnessPermissionBand'] as String? ?? '',
+      supportiveReassuranceAllowed:
+          map['supportiveReassuranceAllowed'] as bool? ?? false,
+      supportiveReassuranceChecks: _readSoulGateChecks(
+        map['supportiveReassuranceChecks'],
+      ),
+      proactiveRelationalCheckInAllowed:
+          map['proactiveRelationalCheckInAllowed'] as bool? ?? false,
+      proactiveRelationalCheckInChecks: _readSoulGateChecks(
+        map['proactiveRelationalCheckInChecks'],
+      ),
+      lightPlayfulnessAllowed: map['lightPlayfulnessAllowed'] as bool? ?? false,
+      lightPlayfulnessChecks: _readSoulGateChecks(
+        map['lightPlayfulnessChecks'],
+      ),
+      playfulTeasingAllowed: map['playfulTeasingAllowed'] as bool? ?? false,
+      playfulTeasingChecks: _readSoulGateChecks(map['playfulTeasingChecks']),
       highIntimacyBehaviorAllowed:
           map['highIntimacyBehaviorAllowed'] as bool? ?? false,
       highIntimacyChecks: _readSoulGateChecks(map['highIntimacyChecks']),
@@ -497,8 +663,17 @@ class OpenCraySoulProfileDebugSnapshot {
     this.voice = '',
     this.preferredNaming = '',
     this.preferredAddressStyle = '',
+    this.warmthPreferenceOffset = '',
+    this.formalityPreferenceOffset = '',
+    this.initiativePreferenceOffset = '',
+    this.playfulnessPreferenceOffset = '',
+    this.reassurancePreferenceOffset = '',
     this.intimacyPermissionBand = '',
     this.playfulnessPermissionBand = '',
+    this.supportiveReassuranceAllowed = '',
+    this.proactiveRelationalCheckInAllowed = '',
+    this.lightPlayfulnessAllowed = '',
+    this.playfulTeasingAllowed = '',
     this.highIntimacyBehaviorAllowed = '',
     this.playfulAffectionAllowed = '',
     this.customGuidance = '',
@@ -518,8 +693,17 @@ class OpenCraySoulProfileDebugSnapshot {
   final String voice;
   final String preferredNaming;
   final String preferredAddressStyle;
+  final String warmthPreferenceOffset;
+  final String formalityPreferenceOffset;
+  final String initiativePreferenceOffset;
+  final String playfulnessPreferenceOffset;
+  final String reassurancePreferenceOffset;
   final String intimacyPermissionBand;
   final String playfulnessPermissionBand;
+  final String supportiveReassuranceAllowed;
+  final String proactiveRelationalCheckInAllowed;
+  final String lightPlayfulnessAllowed;
+  final String playfulTeasingAllowed;
   final String highIntimacyBehaviorAllowed;
   final String playfulAffectionAllowed;
   final String customGuidance;
@@ -540,9 +724,24 @@ class OpenCraySoulProfileDebugSnapshot {
       voice: map['voice'] as String? ?? '',
       preferredNaming: map['preferredNaming'] as String? ?? '',
       preferredAddressStyle: map['preferredAddressStyle'] as String? ?? '',
+      warmthPreferenceOffset: map['warmthPreferenceOffset']?.toString() ?? '',
+      formalityPreferenceOffset:
+          map['formalityPreferenceOffset']?.toString() ?? '',
+      initiativePreferenceOffset:
+          map['initiativePreferenceOffset']?.toString() ?? '',
+      playfulnessPreferenceOffset:
+          map['playfulnessPreferenceOffset']?.toString() ?? '',
+      reassurancePreferenceOffset:
+          map['reassurancePreferenceOffset']?.toString() ?? '',
       intimacyPermissionBand: map['intimacyPermissionBand'] as String? ?? '',
       playfulnessPermissionBand:
           map['playfulnessPermissionBand'] as String? ?? '',
+      supportiveReassuranceAllowed:
+          map['supportiveReassuranceAllowed']?.toString() ?? '',
+      proactiveRelationalCheckInAllowed:
+          map['proactiveRelationalCheckInAllowed']?.toString() ?? '',
+      lightPlayfulnessAllowed: map['lightPlayfulnessAllowed']?.toString() ?? '',
+      playfulTeasingAllowed: map['playfulTeasingAllowed']?.toString() ?? '',
       highIntimacyBehaviorAllowed:
           map['highIntimacyBehaviorAllowed']?.toString() ?? '',
       playfulAffectionAllowed: map['playfulAffectionAllowed']?.toString() ?? '',

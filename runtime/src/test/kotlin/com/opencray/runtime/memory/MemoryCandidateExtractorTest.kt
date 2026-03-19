@@ -5,10 +5,27 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MemoryCandidateExtractorTest {
-  private val extractor = MemoryCandidateExtractor()
-
   @Test
-  fun extractBuildsUserPreferenceAndDurableInstructionFromUserInput() {
+  fun extractBuildsUserPreferenceAndDurableInstructionFromStructuredUserInput() {
+    val extractor = MemoryCandidateExtractor(
+      userIntentInterpreter = FixedUserIntentInterpreter(
+        UserMemoryIntentInterpretation.Success(
+          intents = listOf(
+            UserMemoryIntent(
+              kind = MemoryKind.USER_PREFERENCE,
+              scope = MemoryScope.USER,
+              content = "Default to Simplified Chinese for explanations",
+            ),
+            UserMemoryIntent(
+              kind = MemoryKind.DURABLE_INSTRUCTION,
+              scope = MemoryScope.WORKSPACE,
+              content = "Do not use git reset --hard in this repo",
+            ),
+          ),
+        ),
+      ),
+    )
+
     val candidates = extractor.extract(
       MemoryTurnEvidence(
         sessionId = "session-1",
@@ -35,6 +52,7 @@ class MemoryCandidateExtractorTest {
 
   @Test
   fun extractBuildsProjectFactFromToolObservationAndTaskCommitmentFromAssistantOutput() {
+    val extractor = MemoryCandidateExtractor()
     val candidates = extractor.extract(
       MemoryTurnEvidence(
         sessionId = "session-2",
@@ -60,7 +78,26 @@ class MemoryCandidateExtractorTest {
   }
 
   @Test
-  fun extractDeduplicatesRepeatedStatementsAcrossEvidenceSources() {
+  fun extractDeduplicatesRepeatedStructuredUserIntents() {
+    val extractor = MemoryCandidateExtractor(
+      userIntentInterpreter = FixedUserIntentInterpreter(
+        UserMemoryIntentInterpretation.Success(
+          intents = listOf(
+            UserMemoryIntent(
+              kind = MemoryKind.USER_PREFERENCE,
+              scope = MemoryScope.USER,
+              content = "Default to PowerShell commands",
+            ),
+            UserMemoryIntent(
+              kind = MemoryKind.USER_PREFERENCE,
+              scope = MemoryScope.USER,
+              content = "Default to PowerShell commands",
+            ),
+          ),
+        ),
+      ),
+    )
+
     val candidates = extractor.extract(
       MemoryTurnEvidence(
         sessionId = "session-3",
@@ -73,7 +110,8 @@ class MemoryCandidateExtractorTest {
       ),
     )
 
-    assertEquals(1, candidates.count { candidate -> candidate.kind == MemoryKind.USER_PREFERENCE })
+    assertEquals(1, candidates.size)
+    assertEquals("Default to PowerShell commands", candidates.single().content)
   }
 
   @Test
@@ -140,7 +178,7 @@ class MemoryCandidateExtractorTest {
   }
 
   @Test
-  fun extractTurnsDurableStructuredStyleIntoRelationshipSignalAndDropsProtectedExtensions() {
+  fun extractTurnsDurableStructuredStyleIntoInteractionPreferenceSignalAndDropsProtectedExtensions() {
     val extractor = MemoryCandidateExtractor(
       soulIntentInterpreter = FixedSoulIntentInterpreter(
         SoulMemoryIntentInterpretation.Success(
@@ -185,7 +223,7 @@ class MemoryCandidateExtractorTest {
     )
 
     val style = candidates.first { candidate ->
-      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL
     }
     val verbosity = candidates.first { candidate ->
       candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.AGENT_VERBOSITY
@@ -197,15 +235,19 @@ class MemoryCandidateExtractorTest {
       style.extensions[MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY],
     )
     assertEquals(
-      "Relationship style should gradually move toward warm",
+      "Interaction preference should gradually adapt: warmth lower, formality higher, initiative higher",
       style.content,
+    )
+    assertEquals(
+      "warmth_lower__formality_higher__initiative_higher",
+      style.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE],
     )
     assertEquals("lower", style.extensions[MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION])
     assertEquals("higher", style.extensions[MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION])
     assertEquals("higher", style.extensions[MemoryInteractionPreferenceExtensionKeys.INITIATIVE_DIRECTION])
-    assertEquals("warm", style.extensions[MemorySoulExtensionKeys.TONE])
-    assertEquals("warm and gentle", style.extensions[MemorySoulExtensionKeys.VOICE])
-    assertEquals("supportive", style.extensions[MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE])
+    assertEquals(null, style.extensions[MemorySoulExtensionKeys.TONE])
+    assertEquals(null, style.extensions[MemorySoulExtensionKeys.VOICE])
+    assertEquals(null, style.extensions[MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE])
     assertEquals(null, style.extensions[MemorySoulExtensionKeys.RISK_TOLERANCE])
 
     assertEquals(MemoryScope.SESSION, verbosity.scope)
@@ -328,7 +370,7 @@ class MemoryCandidateExtractorTest {
   }
 
   @Test
-  fun extractTurnsDurableUserIntentStyleIntoRelationshipSignal() {
+  fun extractTurnsDurableUserIntentStyleIntoInteractionPreferenceSignal() {
     val extractor = MemoryCandidateExtractor(
       userIntentInterpreter = FixedUserIntentInterpreter(
         UserMemoryIntentInterpretation.Success(
@@ -375,7 +417,7 @@ class MemoryCandidateExtractorTest {
     )
 
     val style = candidates.first { candidate ->
-      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL
     }
     val verbosity = candidates.first { candidate ->
       candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.AGENT_VERBOSITY
@@ -383,8 +425,13 @@ class MemoryCandidateExtractorTest {
 
     assertEquals(MemoryScope.USER, style.scope)
     assertEquals(MemoryScope.SESSION, verbosity.scope)
+    assertEquals(
+      "warmth_lower__formality_higher",
+      style.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE],
+    )
     assertEquals("lower", style.extensions[MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION])
     assertEquals("higher", style.extensions[MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION])
+    assertEquals(null, style.extensions[MemorySoulExtensionKeys.TONE])
   }
 
   @Test
@@ -445,11 +492,11 @@ class MemoryCandidateExtractorTest {
   }
 
   @Test
-  fun extractFallsBackToHeuristicSoulParsingOnlyWhenInterpreterExplicitlyAllowsIt() {
+  fun extractDoesNotFallBackToHeuristicSoulParsingWhenSoulInterpreterFailsClosed() {
     val extractor = MemoryCandidateExtractor(
       soulIntentInterpreter = FixedSoulIntentInterpreter(
         SoulMemoryIntentInterpretation.Unavailable(
-          allowHeuristicFallback = true,
+          allowHeuristicFallback = false,
           reason = "LLM unavailable in test.",
         ),
       ),
@@ -463,24 +510,15 @@ class MemoryCandidateExtractorTest {
       ),
     )
 
-    val durableVerbosity = candidates.single { candidate ->
-      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.AGENT_VERBOSITY
-    }
-    assertEquals(MemoryScope.SESSION, durableVerbosity.scope)
-    assertEquals("expansive", durableVerbosity.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE])
-    assertEquals("expansive", durableVerbosity.extensions[MemorySoulExtensionKeys.VERBOSITY])
-    assertEquals(
-      MemoryPreferenceKeys.TEMPORALITY_SESSION,
-      durableVerbosity.extensions[MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY],
-    )
+    assertTrue(candidates.isEmpty())
   }
 
   @Test
-  fun extractFallsBackToRelationshipSignalForDurableStyleRequestsWhenInterpreterAllowsIt() {
+  fun extractDoesNotFallBackToHeuristicInteractionPreferenceParsingWhenSoulInterpreterFailsClosed() {
     val extractor = MemoryCandidateExtractor(
       soulIntentInterpreter = FixedSoulIntentInterpreter(
         SoulMemoryIntentInterpretation.Unavailable(
-          allowHeuristicFallback = true,
+          allowHeuristicFallback = false,
           reason = "LLM unavailable in test.",
         ),
       ),
@@ -495,18 +533,7 @@ class MemoryCandidateExtractorTest {
       ),
     )
 
-    val relationshipSignal = candidates.single { candidate ->
-      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE
-    }
-    assertEquals(MemoryScope.USER, relationshipSignal.scope)
-    assertEquals(
-      MemoryPreferenceKeys.TEMPORALITY_DURABLE,
-      relationshipSignal.extensions[MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY],
-    )
-    assertEquals("warm", relationshipSignal.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE])
-    assertEquals("higher", relationshipSignal.extensions[MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION])
-    assertEquals("lower", relationshipSignal.extensions[MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION])
-    assertEquals("warm", relationshipSignal.extensions[MemorySoulExtensionKeys.TONE])
+    assertTrue(candidates.isEmpty())
   }
 
   @Test
@@ -566,11 +593,11 @@ class MemoryCandidateExtractorTest {
   }
 
   @Test
-  fun extractFallsBackToHeuristicPreferredNamingAndAddressStyleWhenInterpreterAllowsIt() {
+  fun extractDoesNotFallBackToHeuristicPreferredNamingAndAddressStyleWhenSoulInterpreterFailsClosed() {
     val extractor = MemoryCandidateExtractor(
       soulIntentInterpreter = FixedSoulIntentInterpreter(
         SoulMemoryIntentInterpretation.Unavailable(
-          allowHeuristicFallback = true,
+          allowHeuristicFallback = false,
           reason = "LLM unavailable in test.",
         ),
       ),
@@ -585,19 +612,7 @@ class MemoryCandidateExtractorTest {
       ),
     )
 
-    val preferredNaming = candidates.first { candidate ->
-      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.USER_PREFERRED_NAME
-    }
-    val addressStyle = candidates.first { candidate ->
-      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.USER_ADDRESS_STYLE
-    }
-
-    assertEquals("阿澄", preferredNaming.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE])
-    assertEquals("阿澄", preferredNaming.extensions[MemorySoulExtensionKeys.PREFERRED_NAMING])
-    assertEquals(MemoryPreferenceKeys.TEMPORALITY_DURABLE, preferredNaming.extensions[MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY])
-    assertEquals("friendly", addressStyle.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE])
-    assertEquals("friendly", addressStyle.extensions[MemorySoulExtensionKeys.PREFERRED_ADDRESS_STYLE])
-    assertEquals(MemoryPreferenceKeys.TEMPORALITY_DURABLE, addressStyle.extensions[MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY])
+    assertTrue(candidates.isEmpty())
   }
 
   @Test

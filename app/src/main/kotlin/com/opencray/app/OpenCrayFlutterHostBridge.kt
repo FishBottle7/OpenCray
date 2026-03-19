@@ -88,9 +88,18 @@ internal class OpenCrayFlutterHostBridge(
         "loadWorkspaceTextPreview" -> hostRuntime.loadWorkspaceTextPreview(
           relativePath = call.argument<String>("relativePath").orEmpty(),
         )
+        "loadWorkspaceVoicePlaybackSource" -> hostRuntime.loadWorkspaceVoicePlaybackSource(
+          relativePath = call.argument<String>("relativePath").orEmpty(),
+        )
         "loadWorkspaceTextDocument" -> hostRuntime.loadWorkspaceTextDocument(
           relativePath = call.argument<String>("relativePath").orEmpty(),
         )
+        "openWorkspaceEntry" -> {
+          hostRuntime.openWorkspaceEntry(
+            relativePath = call.argument<String>("relativePath").orEmpty(),
+          )
+          null
+        }
         "createWorkspaceFolder" -> hostRuntime.createWorkspaceFolder(
           parentRelativePath = call.argument<String>("parentRelativePath").orEmpty(),
           name = call.argument<String>("name").orEmpty(),
@@ -218,6 +227,7 @@ internal class OpenCrayFlutterHostBridge(
           readOnlyOutsideWorkspace = call.argument<Boolean>("readOnlyOutsideWorkspace") != false,
           liveContextModeId =
             call.argument<String>("liveContextModeId") ?: LiveContextMode.FULL.wireValue,
+          memoryToolsEnabled = call.argument<Boolean>("memoryToolsEnabled") != false,
         )
         "authorizeExternalAccessLocation" -> {
           authorizeExternalAccessLocation(
@@ -245,6 +255,25 @@ internal class OpenCrayFlutterHostBridge(
         "installSkillSource" -> {
           runAsync(result) {
             hostRuntime.installSkillSource(
+              sourceRef = call.argument<String>("sourceRef").orEmpty(),
+              selectedSkillName = call.argument<String>("selectedSkillName").orEmpty(),
+            )
+          }
+          return
+        }
+        "installSkillSourceBatch" -> {
+          runAsync(result) {
+            hostRuntime.installSkillSourceBatch(
+              sourceRef = call.argument<String>("sourceRef").orEmpty(),
+              selectedSkillNames = (call.argument<List<*>>("selectedSkillNames").orEmpty())
+                .mapNotNull { value -> value as? String },
+            )
+          }
+          return
+        }
+        "inspectSkillSource" -> {
+          runAsync(result) {
+            hostRuntime.inspectSkillSource(
               call.argument<String>("sourceRef").orEmpty(),
             )
           }
@@ -257,6 +286,22 @@ internal class OpenCrayFlutterHostBridge(
           call.argument<String>("skillId").orEmpty(),
         )
         "refreshSkills" -> hostRuntime.refreshSkills()
+        "checkInstalledSkillUpdates" -> {
+          runAsync(result) {
+            hostRuntime.checkInstalledSkillUpdates(
+              skillId = call.argument<String>("skillId").orEmpty(),
+            )
+          }
+          return
+        }
+        "updateInstalledSkill" -> {
+          runAsync(result) {
+            hostRuntime.updateInstalledSkill(
+              skillId = call.argument<String>("skillId").orEmpty(),
+            )
+          }
+          return
+        }
         "loadSkillInstructions" -> hostRuntime.loadSkillInstructions(
           call.argument<String>("skillId").orEmpty(),
         )
@@ -272,6 +317,16 @@ internal class OpenCrayFlutterHostBridge(
         "loadMemoryDebugSnapshot" -> hostRuntime.loadMemoryDebugSnapshot()
         "loadMemoryDebugLinksSnapshot" -> hostRuntime.loadMemoryDebugLinksSnapshot()
         "loadSoulDebugSnapshot" -> hostRuntime.loadSoulDebugSnapshot()
+        "searchMemoryDebug" -> hostRuntime.searchMemoryDebug(
+          query = call.argument<String>("query").orEmpty(),
+          maxResults = call.argument<Number>("maxResults")?.toInt() ?: 4,
+          minScore = call.argument<Number>("minScore")?.toInt() ?: 1,
+        )
+        "getMemoryDebugSlice" -> hostRuntime.getMemoryDebugSlice(
+          path = call.argument<String>("path").orEmpty(),
+          fromLine = call.argument<Number>("fromLine")?.toInt(),
+          lines = call.argument<Number>("lines")?.toInt() ?: 12,
+        )
         "waitForChatRun" -> {
           runAsync(result) {
             hostRuntime.waitForChatRun(

@@ -132,6 +132,7 @@ class SessionQueue(
   private val clock: QueueClock = SystemQueueClock,
   private val config: SessionQueueConfig = SessionQueueConfig(),
 ) {
+  private val lock = Any()
   private val taskEntries = mutableListOf<SessionQueueTaskSnapshot>()
   private var lifecycleState: SessionLifecycleState = SessionLifecycleState.IDLE
   private var nextEnqueueOrder: Long = 1L
@@ -140,11 +141,13 @@ class SessionQueue(
     require(sessionId.isNotBlank()) { "SessionQueue sessionId must not be blank." }
     require(agentId.isNotBlank()) { "SessionQueue agentId must not be blank." }
 
-    restore(snapshotStore.load())
-    persistSnapshot()
+    synchronized(lock) {
+      restoreLocked(snapshotStore.load())
+      persistSnapshotLocked()
+    }
   }
 
-  fun enqueue(task: AgentTask): AgentTask {
+  fun enqueue(task: AgentTask): AgentTask = synchronized(lock) {
     require(task.id.isNotBlank()) { "Queued task id must not be blank." }
     require(taskEntries.none { it.task.id == task.id }) {
       "Task id already exists in session queue: ${task.id}"
@@ -163,7 +166,7 @@ class SessionQueue(
       attempt = 0,
     )
     nextEnqueueOrder += 1
-    persistSnapshot()
+    persistSnapshotLocked()
     return queuedTask
   }
 
@@ -172,16 +175,23 @@ class SessionQueue(
    */
   fun drain(maxTasks: Int = Int.MAX_VALUE): List<ExecutionResult> {
     require(maxTasks >= 0) { "drain maxTasks must be >= 0." }
-    if (maxTasks == 0 || lifecycleState == SessionLifecycleState.STOPPED) {
-      return emptyList()
+    synchronized(lock) {
+      if (maxTasks == 0 || lifecycleState == SessionLifecycleState.STOPPED) {
+        return emptyList()
+      }
+      transitionSessionStateLocked(SessionLifecycleState.RUNNING)
     }
-
-    transitionSessionState(SessionLifecycleState.RUNNING)
     val results = mutableListOf<ExecutionResult>()
     var executedCount = 0
 
-    while (executedCount < maxTasks && lifecycleState != SessionLifecycleState.STOPPED) {
-      val nextIndex = nextRunnableTaskIndex()
+    while (executedCount < maxTasks) {
+      val nextIndex = synchronized(lock) {
+        if (lifecycleState == SessionLifecycleState.STOPPED) {
+          null
+        } else {
+          nextRunnableTaskIndexLocked()
+        }
+      }
       if (nextIndex == null) break
 
       val result = executeTaskAt(nextIndex)
@@ -191,8 +201,10 @@ class SessionQueue(
       }
     }
 
-    if (lifecycleState != SessionLifecycleState.STOPPED) {
-      transitionSessionState(SessionLifecycleState.IDLE)
+    synchronized(lock) {
+      if (lifecycleState != SessionLifecycleState.STOPPED) {
+        transitionSessionStateLocked(SessionLifecycleState.IDLE)
+      }
     }
 
     return results
@@ -204,8 +216,8 @@ class SessionQueue(
    * - QUEUED/RETRY_PENDING/SUSPENDED tasks are cancelled before execution.
    * - RUNNING tasks transition to CANCEL_REQUESTED and runtime can observe this via hooks.
    */
-  fun requestCancel(taskId: String): Boolean {
-    val index = indexOfTask(taskId) ?: return false
+  fun requestCancel(taskId: String): Boolean = synchronized(lock) {
+    val index = indexOfTaskLocked(taskId) ?: return false
     val current = taskEntries[index]
 
     return when (current.lifecycleState) {
@@ -213,12 +225,12 @@ class SessionQueue(
       QueueTaskLifecycleState.RETRY_PENDING,
       QueueTaskLifecycleState.SUSPENDED,
       -> {
-        transitionTask(index, QueueTaskLifecycleState.CANCELLED)
+        transitionTaskLocked(index, QueueTaskLifecycleState.CANCELLED)
         true
       }
 
       QueueTaskLifecycleState.RUNNING -> {
-        transitionTask(index, QueueTaskLifecycleState.CANCEL_REQUESTED)
+        transitionTaskLocked(index, QueueTaskLifecycleState.CANCEL_REQUESTED)
         true
       }
 
@@ -233,46 +245,46 @@ class SessionQueue(
   /**
    * Manual retry hook for failed tasks, keeping deterministic serial ordering.
    */
-  fun requestRetry(taskId: String): Boolean {
-    val index = indexOfTask(taskId) ?: return false
+  fun requestRetry(taskId: String): Boolean = synchronized(lock) {
+    val index = indexOfTaskLocked(taskId) ?: return false
     val current = taskEntries[index]
     if (current.lifecycleState != QueueTaskLifecycleState.FAILED) return false
     if (current.attempt >= config.maxAttempts) return false
 
-    transitionTask(index, QueueTaskLifecycleState.RETRY_PENDING)
-    transitionTask(index, QueueTaskLifecycleState.QUEUED)
+    transitionTaskLocked(index, QueueTaskLifecycleState.RETRY_PENDING)
+    transitionTaskLocked(index, QueueTaskLifecycleState.QUEUED)
     return true
   }
 
   /**
    * Resume a task that is explicitly suspended, for example while awaiting approval.
    */
-  fun requestResumeTask(taskId: String): Boolean {
-    val index = indexOfTask(taskId) ?: return false
+  fun requestResumeTask(taskId: String): Boolean = synchronized(lock) {
+    val index = indexOfTaskLocked(taskId) ?: return false
     val current = taskEntries[index]
     if (current.lifecycleState != QueueTaskLifecycleState.SUSPENDED) return false
 
-    transitionTask(index, QueueTaskLifecycleState.QUEUED)
+    transitionTaskLocked(index, QueueTaskLifecycleState.QUEUED)
     return true
   }
 
-  fun stop(): SessionLifecycleState {
-    transitionSessionState(SessionLifecycleState.STOPPED)
+  fun stop(): SessionLifecycleState = synchronized(lock) {
+    transitionSessionStateLocked(SessionLifecycleState.STOPPED)
     return lifecycleState
   }
 
-  fun resume(): SessionLifecycleState {
+  fun resume(): SessionLifecycleState = synchronized(lock) {
     if (lifecycleState == SessionLifecycleState.STOPPED) {
-      transitionSessionState(SessionLifecycleState.IDLE)
+      transitionSessionStateLocked(SessionLifecycleState.IDLE)
     }
     return lifecycleState
   }
 
-  fun currentSessionState(): SessionLifecycleState = lifecycleState
+  fun currentSessionState(): SessionLifecycleState = synchronized(lock) { lifecycleState }
 
-  fun snapshot(): SessionQueueSnapshot = buildSnapshot()
+  fun snapshot(): SessionQueueSnapshot = synchronized(lock) { buildSnapshotLocked() }
 
-  private fun restore(snapshot: SessionQueueSnapshot?) {
+  private fun restoreLocked(snapshot: SessionQueueSnapshot?) {
     if (snapshot == null) return
     if (snapshot.sessionId != sessionId || snapshot.agentId != agentId) return
 
@@ -317,86 +329,91 @@ class SessionQueue(
   }
 
   private fun executeTaskAt(index: Int): ExecutionResult? {
-    val preRun = taskEntries[index]
-    if (preRun.lifecycleState == QueueTaskLifecycleState.RETRY_PENDING) {
-      transitionTask(index, QueueTaskLifecycleState.QUEUED)
-    }
+    val runningSnapshot = synchronized(lock) {
+      val preRun = taskEntries[index]
+      if (preRun.lifecycleState == QueueTaskLifecycleState.RETRY_PENDING) {
+        transitionTaskLocked(index, QueueTaskLifecycleState.QUEUED)
+      }
 
-    val current = taskEntries[index]
-    if (current.lifecycleState != QueueTaskLifecycleState.QUEUED) {
-      return null
-    }
+      val current = taskEntries[index]
+      if (current.lifecycleState != QueueTaskLifecycleState.QUEUED) {
+        return null
+      }
 
-    transitionTask(index, QueueTaskLifecycleState.RUNNING)
-    val runningSnapshot = taskEntries[index]
+      transitionTaskLocked(index, QueueTaskLifecycleState.RUNNING)
+      taskEntries[index]
+    }
 
     var retryRequest: RetryRequest? = null
     var suspensionRequest: SuspensionRequest? = null
     val hooks = RuntimeExecutionHooks(
       isCancellationRequested = {
-        taskEntries.getOrNull(index)?.lifecycleState == QueueTaskLifecycleState.CANCEL_REQUESTED
+        synchronized(lock) {
+          taskEntries.getOrNull(index)?.lifecycleState == QueueTaskLifecycleState.CANCEL_REQUESTED
+        }
       },
       requestRetry = { request -> retryRequest = request },
       requestSuspend = { request -> suspensionRequest = request },
     )
 
     val normalizedResult = executeRuntimeSafely(runningSnapshot.task, hooks)
-    val latest = taskEntries[index]
+    synchronized(lock) {
+      val latest = taskEntries[index]
+      val shouldRetry =
+        retryRequest != null &&
+          normalizedResult.status != ExecutionStatus.SUCCESS &&
+          normalizedResult.status != ExecutionStatus.CANCELLED &&
+          latest.attempt < config.maxAttempts
 
-    val shouldRetry =
-      retryRequest != null &&
+      if (suspensionRequest != null &&
+        latest.lifecycleState != QueueTaskLifecycleState.CANCEL_REQUESTED &&
         normalizedResult.status != ExecutionStatus.SUCCESS &&
-        normalizedResult.status != ExecutionStatus.CANCELLED &&
-        latest.attempt < config.maxAttempts
-
-    if (suspensionRequest != null &&
-      latest.lifecycleState != QueueTaskLifecycleState.CANCEL_REQUESTED &&
-      normalizedResult.status != ExecutionStatus.SUCCESS &&
-      normalizedResult.status != ExecutionStatus.CANCELLED
-    ) {
-      transitionTask(
-        index = index,
-        to = QueueTaskLifecycleState.SUSPENDED,
-        errorCode = normalizedResult.errorCode ?: suspensionRequest?.reasonCode,
-        errorMessage = normalizedResult.errorMessage ?: suspensionRequest?.detail,
-      )
-      return normalizedResult
-    }
-
-    if (shouldRetry) {
-      val request = retryRequest!!
-      transitionTask(
-        index = index,
-        to = QueueTaskLifecycleState.RETRY_PENDING,
-        errorCode = request.reasonCode,
-        errorMessage = request.detail ?: normalizedResult.errorMessage,
-      )
-      transitionTask(index, QueueTaskLifecycleState.QUEUED)
-      return normalizedResult
-    }
-
-    when {
-      latest.lifecycleState == QueueTaskLifecycleState.CANCEL_REQUESTED ||
-        normalizedResult.status == ExecutionStatus.CANCELLED -> {
-        transitionTask(
+        normalizedResult.status != ExecutionStatus.CANCELLED
+      ) {
+        transitionTaskLocked(
           index = index,
-          to = QueueTaskLifecycleState.CANCELLED,
-          errorCode = normalizedResult.errorCode,
-          errorMessage = normalizedResult.errorMessage,
+          to = QueueTaskLifecycleState.SUSPENDED,
+          errorCode = normalizedResult.errorCode ?: suspensionRequest?.reasonCode,
+          errorMessage = normalizedResult.errorMessage ?: suspensionRequest?.detail,
         )
+        return normalizedResult
       }
 
-      normalizedResult.status == ExecutionStatus.SUCCESS -> {
-        transitionTask(index, QueueTaskLifecycleState.COMPLETED)
+      if (shouldRetry) {
+        val request = retryRequest!!
+        transitionTaskLocked(
+          index = index,
+          to = QueueTaskLifecycleState.RETRY_PENDING,
+          errorCode = request.reasonCode,
+          errorMessage = request.detail ?: normalizedResult.errorMessage,
+        )
+        transitionTaskLocked(index, QueueTaskLifecycleState.QUEUED)
+        return normalizedResult
       }
 
-      else -> {
-        transitionTask(
-          index = index,
-          to = QueueTaskLifecycleState.FAILED,
-          errorCode = normalizedResult.errorCode,
-          errorMessage = normalizedResult.errorMessage,
-        )
+      when {
+        latest.lifecycleState == QueueTaskLifecycleState.CANCEL_REQUESTED ||
+          normalizedResult.status == ExecutionStatus.CANCELLED -> {
+          transitionTaskLocked(
+            index = index,
+            to = QueueTaskLifecycleState.CANCELLED,
+            errorCode = normalizedResult.errorCode,
+            errorMessage = normalizedResult.errorMessage,
+          )
+        }
+
+        normalizedResult.status == ExecutionStatus.SUCCESS -> {
+          transitionTaskLocked(index, QueueTaskLifecycleState.COMPLETED)
+        }
+
+        else -> {
+          transitionTaskLocked(
+            index = index,
+            to = QueueTaskLifecycleState.FAILED,
+            errorCode = normalizedResult.errorCode,
+            errorMessage = normalizedResult.errorMessage,
+          )
+        }
       }
     }
 
@@ -425,7 +442,7 @@ class SessionQueue(
     }
   }
 
-  private fun transitionTask(
+  private fun transitionTaskLocked(
     index: Int,
     to: QueueTaskLifecycleState,
     errorCode: String? = null,
@@ -451,20 +468,20 @@ class SessionQueue(
       lastErrorCode = errorCode ?: current.lastErrorCode,
       lastErrorMessage = errorMessage ?: current.lastErrorMessage,
     )
-    persistSnapshot()
+    persistSnapshotLocked()
   }
 
-  private fun transitionSessionState(to: SessionLifecycleState) {
+  private fun transitionSessionStateLocked(to: SessionLifecycleState) {
     if (lifecycleState == to) return
     require(to in ALLOWED_SESSION_TRANSITIONS.getValue(lifecycleState)) {
       "Invalid session transition: $lifecycleState -> $to"
     }
 
     lifecycleState = to
-    persistSnapshot()
+    persistSnapshotLocked()
   }
 
-  private fun nextRunnableTaskIndex(): Int? {
+  private fun nextRunnableTaskIndexLocked(): Int? {
     val sorted = taskEntries.indices.sortedBy { taskEntries[it].enqueueOrder }
     for (index in sorted) {
       val state = taskEntries[index].lifecycleState
@@ -475,11 +492,11 @@ class SessionQueue(
     return null
   }
 
-  private fun indexOfTask(taskId: String): Int? =
+  private fun indexOfTaskLocked(taskId: String): Int? =
     taskEntries.indexOfFirst { it.task.id == taskId }
       .takeIf { it >= 0 }
 
-  private fun buildSnapshot(): SessionQueueSnapshot = SessionQueueSnapshot(
+  private fun buildSnapshotLocked(): SessionQueueSnapshot = SessionQueueSnapshot(
     sessionId = sessionId,
     agentId = agentId,
     lifecycleState = lifecycleState,
@@ -488,8 +505,8 @@ class SessionQueue(
     updatedAtEpochMs = clock.nowEpochMs(),
   )
 
-  private fun persistSnapshot() {
-    snapshotStore.save(buildSnapshot())
+  private fun persistSnapshotLocked() {
+    snapshotStore.save(buildSnapshotLocked())
   }
 
   private fun mapLifecycleToAgentTaskState(state: QueueTaskLifecycleState): AgentTaskState = when (state) {

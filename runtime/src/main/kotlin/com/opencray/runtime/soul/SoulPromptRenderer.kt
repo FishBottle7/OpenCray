@@ -1,6 +1,8 @@
 package com.opencray.runtime.soul
 
 class SoulPromptRenderer {
+  private val behaviorGuidanceBuilder = SoulBehaviorGuidanceBuilder()
+
   fun render(profile: SoulProfile?): String {
     if (profile == null || !profile.isMeaningful()) {
       return ""
@@ -22,11 +24,38 @@ class SoulPromptRenderer {
       profile.preferredAddressStyle?.let { style ->
         appendLine("preferred_address_style=${style.name.lowercase()}")
       }
+      profile.warmthPreferenceOffset?.let { offset ->
+        appendLine("warmth_preference_offset=$offset")
+      }
+      profile.formalityPreferenceOffset?.let { offset ->
+        appendLine("formality_preference_offset=$offset")
+      }
+      profile.initiativePreferenceOffset?.let { offset ->
+        appendLine("initiative_preference_offset=$offset")
+      }
+      profile.playfulnessPreferenceOffset?.let { offset ->
+        appendLine("playfulness_preference_offset=$offset")
+      }
+      profile.reassurancePreferenceOffset?.let { offset ->
+        appendLine("reassurance_preference_offset=$offset")
+      }
       profile.intimacyPermissionBand?.let { band ->
         appendLine("intimacy_permission_band=${band.name.lowercase()}")
       }
       profile.playfulnessPermissionBand?.let { band ->
         appendLine("playfulness_permission_band=${band.name.lowercase()}")
+      }
+      profile.supportiveReassuranceAllowed?.let { allowed ->
+        appendLine("supportive_reassurance_allowed=$allowed")
+      }
+      profile.proactiveRelationalCheckInAllowed?.let { allowed ->
+        appendLine("proactive_relational_check_in_allowed=$allowed")
+      }
+      profile.lightPlayfulnessAllowed?.let { allowed ->
+        appendLine("light_playfulness_allowed=$allowed")
+      }
+      profile.playfulTeasingAllowed?.let { allowed ->
+        appendLine("playful_teasing_allowed=$allowed")
       }
       profile.highIntimacyBehaviorAllowed?.let { allowed ->
         appendLine("high_intimacy_behavior_allowed=$allowed")
@@ -42,6 +71,7 @@ class SoulPromptRenderer {
       appendList("escalation_rules", profile.escalationRules)
       appendList("forbidden_behaviors", profile.forbiddenBehaviors)
       appendList("collaboration_preferences", profile.collaborationPreferences)
+      appendList("behavior_guidance", behaviorGuidanceBuilder.build(profile))
       normalizeSoulScalarOrNull(profile.customGuidance)?.let { value ->
         appendLine("custom_guidance=$value")
       }

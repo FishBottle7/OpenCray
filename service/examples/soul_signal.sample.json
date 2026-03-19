@@ -1,0 +1,31 @@
+{
+  "signal_id": "sig_turn_0004_conflict_move_01",
+  "signal_type": "conflict_move",
+  "signal_value": {
+    "label": "clarify_then_withdraw",
+    "speech_act": "boundary_set"
+  },
+  "confidence": 0.84,
+  "support_weight": 1.18,
+  "evidence_excerpt": "I am not angry. I am just tired of repeating this.",
+  "scene_labels": [
+    "conflict",
+    "boundary",
+    "self_disclosure"
+  ],
+  "relationship_scope": "close_relationship",
+  "condition_tags": [
+    "repeated_misunderstanding",
+    "fatigue"
+  ],
+  "language_mode": "en-US",
+  "time_scope": "turn_window",
+  "aggregation_target": "situation_policy",
+  "source_ref": {
+    "source_id": "src_private_chat_01",
+    "turn_id": "turn_0004",
+    "window_id": "window_0003_0005",
+    "source_type": "private_chat",
+    "timestamp": "2025-01-03T21:12:14+08:00"
+  }
+}

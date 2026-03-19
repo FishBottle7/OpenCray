@@ -229,6 +229,25 @@ data class ResolvedRemoteSkillSource(
     }
 }
 
+data class RemoteSkillSourceVersion(
+  val repositoryUrl: String,
+  val resolvedRevision: String,
+  val resolvedCommitSha: String? = null,
+)
+
+data class RemoteSkillSourceVersionAttempt(
+  val version: RemoteSkillSourceVersion? = null,
+  val errorCode: String? = null,
+  val errorMessage: String? = null,
+) {
+  val succeeded: Boolean
+    get() = version != null
+}
+
+interface RemoteSkillSourceInspector {
+  fun inspect(source: ResolvedRemoteSkillSource): RemoteSkillSourceVersionAttempt
+}
+
 class SkillSourceResolver {
   fun resolve(
     sourceRef: String,
@@ -581,6 +600,134 @@ interface RemoteSkillSourceFetcher {
     source: ResolvedRemoteSkillSource,
     stagingRoot: File,
   ): FetchedRemoteSkillSource
+}
+
+class HostedGitRemoteSkillSourceInspector(
+  private val transport: SkillPackageHttpTransport = HttpUrlSkillPackageHttpTransport(),
+  private val json: Json = Json { ignoreUnknownKeys = true },
+) : RemoteSkillSourceInspector {
+  override fun inspect(source: ResolvedRemoteSkillSource): RemoteSkillSourceVersionAttempt = try {
+    when (source.sourceType) {
+      SkillInstallSourceType.REMOTE_GITHUB -> inspectGithub(source)
+      SkillInstallSourceType.REMOTE_GITLAB -> inspectGitlab(source)
+      else -> RemoteSkillSourceVersionAttempt(
+        errorCode = "REMOTE_SKILL_SOURCE_UNSUPPORTED",
+        errorMessage = "Remote source '${source.requestedSourceRef}' is not supported.",
+      )
+    }
+  } catch (error: SkillPackageException) {
+    RemoteSkillSourceVersionAttempt(
+      errorCode = error.errorCode,
+      errorMessage = error.message,
+    )
+  } catch (error: Exception) {
+    RemoteSkillSourceVersionAttempt(
+      errorCode = "REMOTE_SKILL_SOURCE_UNAVAILABLE",
+      errorMessage = error.message ?: error::class.java.simpleName,
+    )
+  }
+
+  private fun inspectGithub(source: ResolvedRemoteSkillSource): RemoteSkillSourceVersionAttempt {
+    val repositoryMetadata = fetchRepositoryMetadata(
+      source = source,
+      projectUrl = "${source.apiBaseUrl.trimEnd('/')}/repos/${source.repositoryPath}",
+      acceptHeader = "application/vnd.github+json",
+      defaultBranchField = "default_branch",
+      webUrlField = "html_url",
+    )
+    val resolvedRevision = source.ref ?: repositoryMetadata.defaultBranch
+    val commitSha = fetchCommitSha(
+      url = "${source.apiBaseUrl.trimEnd('/')}/repos/${source.repositoryPath}/commits/${encodePathSegment(resolvedRevision)}",
+      acceptHeader = "application/vnd.github+json",
+      fields = listOf("sha"),
+    )
+    return RemoteSkillSourceVersionAttempt(
+      version = RemoteSkillSourceVersion(
+        repositoryUrl = repositoryMetadata.webUrl,
+        resolvedRevision = resolvedRevision,
+        resolvedCommitSha = commitSha,
+      ),
+    )
+  }
+
+  private fun inspectGitlab(source: ResolvedRemoteSkillSource): RemoteSkillSourceVersionAttempt {
+    val encodedProject = encodeProjectPath(source.repositoryPath)
+    val repositoryMetadata = fetchRepositoryMetadata(
+      source = source,
+      projectUrl = "${source.apiBaseUrl.trimEnd('/')}/projects/$encodedProject",
+      acceptHeader = "application/json",
+      defaultBranchField = "default_branch",
+      webUrlField = "web_url",
+    )
+    val resolvedRevision = source.ref ?: repositoryMetadata.defaultBranch
+    val commitSha = fetchCommitSha(
+      url = "${source.apiBaseUrl.trimEnd('/')}/projects/$encodedProject/repository/commits/${encodePathSegment(resolvedRevision)}",
+      acceptHeader = "application/json",
+      fields = listOf("id", "sha"),
+    )
+    return RemoteSkillSourceVersionAttempt(
+      version = RemoteSkillSourceVersion(
+        repositoryUrl = repositoryMetadata.webUrl,
+        resolvedRevision = resolvedRevision,
+        resolvedCommitSha = commitSha,
+      ),
+    )
+  }
+
+  private fun fetchRepositoryMetadata(
+    source: ResolvedRemoteSkillSource,
+    projectUrl: String,
+    acceptHeader: String,
+    defaultBranchField: String,
+    webUrlField: String,
+  ): RepositoryMetadata {
+    val response = transport.execute(
+      SkillPackageHttpRequest(
+        url = projectUrl,
+        headers = mapOf("Accept" to acceptHeader),
+      ),
+    )
+    if (response.statusCode !in 200..299) {
+      throw SkillPackageException(
+        errorCode = "REMOTE_SKILL_SOURCE_NOT_FOUND",
+        message = "Remote skill source '${source.requestedSourceRef}' was not found (HTTP ${response.statusCode}).",
+      )
+    }
+    val payload = json.parseToJsonElement(response.bodyAsText()).jsonObject
+    val defaultBranch = payload.stringValue(defaultBranchField)
+      ?: throw SkillPackageException(
+        errorCode = "REMOTE_SKILL_SOURCE_INVALID",
+        message = "Remote skill source '${source.requestedSourceRef}' did not return a default branch.",
+      )
+    val webUrl = payload.stringValue(webUrlField).orEmpty().ifBlank { source.repositoryUrl }
+    return RepositoryMetadata(
+      defaultBranch = defaultBranch,
+      webUrl = webUrl,
+    )
+  }
+
+  private fun fetchCommitSha(
+    url: String,
+    acceptHeader: String,
+    fields: List<String>,
+  ): String? = runCatching {
+    val response = transport.execute(
+      SkillPackageHttpRequest(
+        url = url,
+        headers = mapOf("Accept" to acceptHeader),
+      ),
+    )
+    if (response.statusCode !in 200..299) {
+      return null
+    }
+    val payload = json.parseToJsonElement(response.bodyAsText()).jsonObject
+    fields.firstNotNullOfOrNull(payload::stringValue)
+  }.getOrNull()
+
+  private data class RepositoryMetadata(
+    val defaultBranch: String,
+    val webUrl: String,
+  )
 }
 
 class HostedGitArchiveRemoteSkillSourceFetcher(

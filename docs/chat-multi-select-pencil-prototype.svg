@@ -1,0 +1,53 @@
+<svg width="430" height="932" viewBox="0 0 430 932" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="430" height="932" fill="#E9EAEE"/>
+  <rect x="18" y="18" width="394" height="896" rx="44" fill="#111214"/>
+  <rect x="28" y="28" width="374" height="876" rx="36" fill="#F5F5F7"/>
+
+  <rect x="28" y="28" width="374" height="108" rx="36" fill="url(#topGlass)"/>
+  <rect x="50" y="78" width="54" height="24" rx="12" fill="#FFFFFF"/>
+  <text x="77" y="94" text-anchor="middle" fill="#007AFF" font-size="15" font-family="SF Pro Display, PingFang SC, sans-serif" font-weight="600">完成</text>
+  <text x="215" y="95" text-anchor="middle" fill="#111111" font-size="17" font-family="SF Pro Display, PingFang SC, sans-serif" font-weight="600">已选 2 条</text>
+
+  <text x="50" y="164" fill="#111111" font-size="30" font-family="SF Pro Display, PingFang SC, sans-serif" font-weight="600">OpenCray</text>
+  <rect x="50" y="184" width="330" height="86" rx="18" fill="#FFFFFF"/>
+  <text x="68" y="212" fill="#111111" font-size="17" font-family="SF Pro Display, PingFang SC, sans-serif" font-weight="600">Mobile Shell Review</text>
+  <text x="68" y="238" fill="#6E6E73" font-size="13" font-family="SF Pro Text, PingFang SC, sans-serif">Selection mode uses a full-row gray layer under the bubble.</text>
+
+  <rect x="40" y="294" width="350" height="66" fill="#E4E5EA"/>
+  <circle cx="64" cy="327" r="11" fill="#007AFF"/>
+  <path d="M59 327L63 331L70 323" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="90" y="303" width="200" height="48" rx="18" fill="#FFFFFF"/>
+  <text x="108" y="331" fill="#111111" font-size="14" font-family="SF Pro Text, PingFang SC, sans-serif" font-weight="500">OpenCray 已经准备好工作区了。</text>
+
+  <rect x="40" y="372" width="350" height="66" fill="#E4E5EA"/>
+  <circle cx="64" cy="405" r="11" fill="#007AFF"/>
+  <path d="M59 405L63 409L70 401" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="214" y="381" width="150" height="48" rx="18" fill="#007AFF"/>
+  <text x="232" y="409" fill="#FFFFFF" font-size="14" font-family="SF Pro Text, PingFang SC, sans-serif" font-weight="500">把当前限制给我看。</text>
+
+  <rect x="40" y="450" width="350" height="66" fill="#F5F5F7"/>
+  <circle cx="64" cy="483" r="11" fill="#FFFFFF" stroke="#C7C7CC" stroke-width="1.5"/>
+  <rect x="90" y="459" width="218" height="48" rx="18" fill="#FFFFFF"/>
+  <text x="108" y="487" fill="#111111" font-size="14" font-family="SF Pro Text, PingFang SC, sans-serif" font-weight="500">SAFE 模式会先停下来等你批准。</text>
+
+  <rect x="40" y="528" width="350" height="66" fill="#F5F5F7"/>
+  <circle cx="64" cy="561" r="11" fill="#FFFFFF" stroke="#C7C7CC" stroke-width="1.5"/>
+  <rect x="234" y="537" width="130" height="48" rx="18" fill="#007AFF"/>
+  <text x="252" y="565" fill="#FFFFFF" font-size="14" font-family="SF Pro Text, PingFang SC, sans-serif" font-weight="500">继续执行。</text>
+
+  <rect x="48" y="786" width="334" height="66" rx="18" fill="#FFFFFF" stroke="#E8E8ED"/>
+  <rect x="60" y="798" width="150" height="42" rx="14" fill="#F7F7FA"/>
+  <text x="135" y="824" text-anchor="middle" fill="#111111" font-size="14" font-family="SF Pro Text, PingFang SC, sans-serif" font-weight="600">复制</text>
+  <rect x="220" y="798" width="150" height="42" rx="14" fill="#FFF2F1"/>
+  <text x="295" y="824" text-anchor="middle" fill="#FF3B30" font-size="14" font-family="SF Pro Text, PingFang SC, sans-serif" font-weight="600">删除</text>
+
+  <rect x="132" y="875" width="166" height="5" rx="2.5" fill="#111111" fill-opacity="0.22"/>
+
+  <defs>
+    <linearGradient id="topGlass" x1="215" y1="28" x2="215" y2="136" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.92"/>
+      <stop offset="0.62" stop-color="#FFFFFF" stop-opacity="0.82"/>
+      <stop offset="1" stop-color="#F5F7FB" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+</svg>

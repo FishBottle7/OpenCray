@@ -8,6 +8,8 @@ import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.core.orchestrator.SessionTaskRuntime
 import com.opencray.llm.DefaultLiteLlmGateway
 import com.opencray.llm.InMemoryLiteLlmRoutingSettingsStore
+import com.opencray.llm.LiteLlmGateway
+import com.opencray.llm.LiteLlmGatewayRequest
 import com.opencray.llm.ModelProfile
 import com.opencray.llm.ProviderRoute
 import com.opencray.llm.ProviderRouting
@@ -22,6 +24,8 @@ import com.opencray.runtime.OpenCrayAgentRuntimeConfig
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
 import com.opencray.runtime.OpenCrayProgressEvent
+import com.opencray.runtime.OpenCraySupplementEvent
+import com.opencray.runtime.OpenCraySupplementInput
 import com.opencray.runtime.OpenCrayToolDispatcher
 import com.opencray.runtime.OpenCrayToolDispatcherConfig
 import com.opencray.runtime.OpenCrayToolResultEvent
@@ -49,6 +53,10 @@ import com.opencray.runtime.skills.SkillInstallManifestStore
 import com.opencray.runtime.skills.SkillInventoryResolver
 import com.opencray.runtime.skills.SkillPackageManager
 import com.opencray.runtime.soul.MemoryBackedSoulProfileResolver
+import com.opencray.runtime.soul.NoOpSoulTurnSemanticSignalInterpreter
+import com.opencray.runtime.soul.SoulTurnSemanticSignalInterpretation
+import com.opencray.runtime.soul.SoulTurnSemanticSignalInterpreter
+import com.opencray.runtime.soul.SoulTurnSemanticSignalRequest
 import com.opencray.runtime.web.UnconfiguredWebSearchProvider
 import com.opencray.runtime.web.WebSearchProvider
 import java.io.File
@@ -76,8 +84,11 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val approvalRegistry: AgentTaskApprovalRegistry = AgentTaskApprovalRegistry(),
   private val processRegistryProvider: (String) -> AgentProcessRegistry = { InMemoryAgentProcessRegistry() },
   private val transcriptStoreProvider: (String) -> SessionTranscriptStore = { InMemorySessionTranscriptStore() },
+  private val supplementStoreProvider: (String) -> SessionSupplementStore = { InMemorySessionSupplementStore() },
   private val compactionStoreProvider: (String) -> SessionCompactionStore = { InMemorySessionCompactionStore() },
   private val memoryIngestionCoordinator: ChatMemoryIngestionCoordinator? = null,
+  private val soulTurnSemanticSignalInterpreter: SoulTurnSemanticSignalInterpreter =
+    NoOpSoulTurnSemanticSignalInterpreter,
   private val pythonRuntimeProvider: () -> PythonScriptRuntime = { HostProcessPythonRuntime() },
   private val webSearchProviderFactory: () -> WebSearchProvider = { UnconfiguredWebSearchProvider },
   private val skillPackageManagerProvider: () -> SkillPackageManager? = { null },
@@ -85,6 +96,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val todoStoresBySession: ConcurrentMap<String, AgentTodoStore> = ConcurrentHashMap()
   private val processRegistriesBySession: ConcurrentMap<String, AgentProcessRegistry> = ConcurrentHashMap()
   private val transcriptStoresBySession: ConcurrentMap<String, SessionTranscriptStore> = ConcurrentHashMap()
+  private val supplementStoresBySession: ConcurrentMap<String, SessionSupplementStore> = ConcurrentHashMap()
   private val compactionStoresBySession: ConcurrentMap<String, SessionCompactionStore> = ConcurrentHashMap()
   private val memoryRetriever: MemoryRetriever = MemoryRetriever()
   private val memoryBackedSoulResolver: MemoryBackedSoulProfileResolver = MemoryBackedSoulProfileResolver()
@@ -122,7 +134,8 @@ internal class AppAgentSessionTaskRuntimeFactory(
   ): ExecutionResult {
     val llmSettings = llmSettingsProvider().sanitized()
     val safetySettings = safetySettingsProvider().sanitized()
-    if (!llmSettings.isConfigured()) {
+    val requiresLlmConfig = task.type == com.opencray.core.contracts.AgentTaskType.PROMPT
+    if (requiresLlmConfig && !llmSettings.isConfigured()) {
       return ExecutionResult(
         taskId = task.id,
         status = ExecutionStatus.FAILED,
@@ -134,21 +147,44 @@ internal class AppAgentSessionTaskRuntimeFactory(
       )
     }
 
-    val route = ProviderRoute(
-      id = "route-${llmSettings.providerId.ifBlank { "openai-compatible" }}",
-      providerId = llmSettings.providerId.ifBlank { "openai-compatible" },
-      baseUrl = llmSettings.baseUrl,
-      model = llmSettings.model,
-      metadata = LlmProviderProtocols.routeMetadata(
-        protocol = llmSettings.protocol,
+    val gateway: LiteLlmGateway = if (requiresLlmConfig) {
+      val route = ProviderRoute(
+        id = "route-${llmSettings.providerId.ifBlank { "openai-compatible" }}",
+        providerId = llmSettings.providerId.ifBlank { "openai-compatible" },
+        baseUrl = llmSettings.baseUrl,
         model = llmSettings.model,
-        reasoningEffort = llmSettings.reasoningEffort,
-      ),
-    )
+        metadata = LlmProviderProtocols.routeMetadata(
+          protocol = llmSettings.protocol,
+          model = llmSettings.model,
+          reasoningEffort = llmSettings.reasoningEffort,
+        ),
+      )
+      DefaultLiteLlmGateway(
+        routingStore = InMemoryLiteLlmRoutingSettingsStore(
+          ProviderRouting(
+            activeProfileId = "profile-default",
+            profiles = listOf(
+              ModelProfile(
+                id = "profile-default",
+                displayName = "Default",
+                primaryRouteId = route.id,
+                routes = listOf(route),
+              ),
+            ),
+          ),
+        ),
+        providerClient = OpenAiCompatibleLiteLlmProviderClient(
+          userAgent = providerUserAgent,
+        ),
+      )
+    } else {
+      NonPromptTaskLiteLlmGateway
+    }
     val pendingMessageId = task.metadata[METADATA_PENDING_MESSAGE_ID].orEmpty()
     val visibleThroughMessageId = task.metadata[METADATA_VISIBLE_THROUGH_MESSAGE_ID].orEmpty()
     val approvalGrant = approvalRegistry.consumeApproved(sessionId, task.id)
     val transcriptStore = transcriptStoreForSession(sessionId)
+    val supplementStore = supplementStoreForSession(sessionId)
     val memoryRecords = memoryRecordsProvider()
     val skillPackageManager = skillPackageManagerProvider()
     val skillPolicyReadRoots = skillPackageManager?.let { manager ->
@@ -176,28 +212,12 @@ internal class AppAgentSessionTaskRuntimeFactory(
       transcriptStore = transcriptStore,
       memoryRecords = memoryRecords,
       liveContextMode = liveContextModeProvider(),
+      memoryToolsEnabled = safetySettings.memoryToolsEnabled,
     )
     val sessionContext = preparedContext.sessionContext
     val effectiveMemoryRecords = preparedContext.effectiveMemoryRecords
     val runtime = OpenCrayAgentRuntime(
-      gateway = DefaultLiteLlmGateway(
-        routingStore = InMemoryLiteLlmRoutingSettingsStore(
-          ProviderRouting(
-            activeProfileId = "profile-default",
-            profiles = listOf(
-              ModelProfile(
-                id = "profile-default",
-                displayName = "Default",
-                primaryRouteId = route.id,
-                routes = listOf(route),
-              ),
-            ),
-          ),
-        ),
-        providerClient = OpenAiCompatibleLiteLlmProviderClient(
-          userAgent = providerUserAgent,
-        ),
-      ),
+      gateway = gateway,
       toolDispatcher = OpenCrayToolDispatcher(
         OpenCrayToolDispatcherConfig(
           workspaceRoots = workspaceRootsProvider(),
@@ -215,11 +235,15 @@ internal class AppAgentSessionTaskRuntimeFactory(
           todoStore = todoStoreForSession(sessionId),
           processRegistry = processRegistryForSession(sessionId),
           webSearchProvider = webSearchProviderFactory(),
-          memoryToolContext = MemoryToolContext(
-            sessionId = sessionId,
-            workspaceId = workspaceId,
-            records = effectiveMemoryRecords,
-          ),
+          memoryToolContext = if (safetySettings.memoryToolsEnabled) {
+            MemoryToolContext(
+              sessionId = sessionId,
+              workspaceId = workspaceId,
+              records = effectiveMemoryRecords,
+            )
+          } else {
+            null
+          },
         ),
       ),
       config = OpenCrayAgentRuntimeConfig(
@@ -229,11 +253,29 @@ internal class AppAgentSessionTaskRuntimeFactory(
           OpenCrayAgentRuntimeConfig.DEFAULT_OPENCRAY_SYSTEM_PROMPT
         },
         sessionContext = sessionContext,
-        llmMetadata = task.metadata.filterKeys(::isLlmVisibleMetadataKey) + mapOf("sessionId" to sessionId),
-        llmAuthHeaders = LlmProviderProtocols.authHeaders(
-          protocol = llmSettings.protocol,
-          apiKey = llmSettings.apiKey,
-        ),
+        supplementInputProvider = { runId, taskId ->
+          supplementStore.consumeForRun(runId = runId, taskId = taskId)
+            .map { entry ->
+              OpenCraySupplementInput(
+                entryId = entry.entryId,
+                text = entry.text,
+                createdAtEpochMs = entry.createdAtEpochMs,
+              )
+            }
+        },
+        llmMetadata = if (requiresLlmConfig) {
+          task.metadata.filterKeys(::isLlmVisibleMetadataKey) + mapOf("sessionId" to sessionId)
+        } else {
+          mapOf("sessionId" to sessionId)
+        },
+        llmAuthHeaders = if (requiresLlmConfig) {
+          LlmProviderProtocols.authHeaders(
+            protocol = llmSettings.protocol,
+            apiKey = llmSettings.apiKey,
+          )
+        } else {
+          emptyMap()
+        },
       ),
       eventSink = transcriptAwareEventSink(
         transcriptStore = transcriptStore,
@@ -252,11 +294,19 @@ internal class AppAgentSessionTaskRuntimeFactory(
   internal fun todoStoreForSession(sessionId: String): AgentTodoStore =
     todoStoresBySession.computeIfAbsent(sessionId) { InMemoryAgentTodoStore() }
 
+  private object NonPromptTaskLiteLlmGateway : LiteLlmGateway {
+    override fun execute(request: LiteLlmGatewayRequest) =
+      error("LiteLlmGateway is unavailable for non-prompt tasks.")
+  }
+
   internal fun processRegistryForSession(sessionId: String): AgentProcessRegistry =
     processRegistriesBySession.computeIfAbsent(sessionId, processRegistryProvider)
 
   internal fun transcriptStoreForSession(sessionId: String): SessionTranscriptStore =
     transcriptStoresBySession.computeIfAbsent(sessionId, transcriptStoreProvider)
+
+  internal fun supplementStoreForSession(sessionId: String): SessionSupplementStore =
+    supplementStoresBySession.computeIfAbsent(sessionId, supplementStoreProvider)
 
   internal fun compactionStoreForSession(sessionId: String): SessionCompactionStore =
     compactionStoresBySession.computeIfAbsent(sessionId, compactionStoreProvider)
@@ -444,6 +494,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     transcriptStore: SessionTranscriptStore,
     memoryRecords: List<MemoryRecord>,
     liveContextMode: LiveContextMode = LiveContextMode.FULL,
+    memoryToolsEnabled: Boolean = safetySettingsProvider().sanitized().memoryToolsEnabled,
   ): PreparedSessionContext {
     val liveContextPolicy = liveContextPolicyFor(liveContextMode)
     val baseContext = sessionContextFactory.create(
@@ -493,6 +544,26 @@ internal class AppAgentSessionTaskRuntimeFactory(
         BootstrapMode.NONE
       },
     )
+    val turnSemanticSignal = if (
+      taskType == com.opencray.core.contracts.AgentTaskType.PROMPT &&
+      liveContextPolicy.injectionPolicy.soulTurnPolicyEnabled
+    ) {
+      when (
+        val interpretation = soulTurnSemanticSignalInterpreter.interpret(
+          SoulTurnSemanticSignalRequest(
+            sessionId = sessionId,
+            taskId = taskId,
+            userInput = taskInput,
+            conversation = transcriptStore.snapshot(),
+          ),
+        )
+      ) {
+        is SoulTurnSemanticSignalInterpretation.Success -> interpretation.signal
+        is SoulTurnSemanticSignalInterpretation.Unavailable -> null
+      }
+    } else {
+      null
+    }
     return PreparedSessionContext(
       sessionContext = baseContext.copy(
         soulProfile = if (liveContextPolicy.soulEnabled) {
@@ -505,6 +576,9 @@ internal class AppAgentSessionTaskRuntimeFactory(
         } else {
           baseContext.soulProfile
         },
+        turnSemanticSignal = turnSemanticSignal,
+        injectionPolicy = liveContextPolicy.injectionPolicy,
+        memoryToolsEnabled = memoryToolsEnabled,
         liveContextTrace = LiveContextTrace(
           mode = liveContextMode.wireValue,
           soulEnabled = liveContextPolicy.soulEnabled,
@@ -538,6 +612,22 @@ internal class AppAgentSessionTaskRuntimeFactory(
   ): OpenCrayAgentRuntimeEventSink = object : OpenCrayAgentRuntimeEventSink {
     override fun onRunEvent(task: AgentTask, event: OpenCrayAgentRunEvent) {
       when (event) {
+        is OpenCraySupplementEvent -> {
+          transcriptStore.appendIfDistinct(
+            RuntimeConversationMessage(
+              role = RuntimeConversationRole.USER,
+              content = event.text,
+            ),
+          )
+          appendIfMissing(
+            transcriptStore = transcriptStore,
+            message = RuntimeConversationMessage(
+              role = RuntimeConversationRole.TOOL,
+              content = buildSupplementReplayContent(event),
+            ),
+          )
+        }
+
         is OpenCrayToolResultEvent -> if (event.result.status == AgentToolResultStatus.SUCCESS) {
           recordSuccessfulToolInteraction(
             transcriptStore = transcriptStore,
@@ -655,12 +745,22 @@ internal class AppAgentSessionTaskRuntimeFactory(
     "progress ${encodeReplayJsonObject {
       put("run_id", event.runId)
       put("task_id", event.taskId)
-      event.turn?.let { turn -> put("turn", turn) }
+      put("turn", event.turn)
       put("text", collapseReplayWhitespace(event.text))
       event.stage
         ?.trim()
         ?.takeIf(String::isNotBlank)
         ?.let { stage -> put("stage", stage) }
+    }}"
+
+  private fun buildSupplementReplayContent(event: OpenCraySupplementEvent): String =
+    "supplement ${encodeReplayJsonObject {
+      put("run_id", event.runId)
+      put("task_id", event.taskId)
+      put("turn", event.turn)
+      put("entry_id", event.entryId)
+      put("text", collapseReplayWhitespace(event.text))
+      put("checkpoint", event.checkpoint)
     }}"
 
   private fun encodeReplayJsonObject(builder: JsonObjectBuilder.() -> Unit): String =

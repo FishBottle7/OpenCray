@@ -1,0 +1,10 @@
+{
+  "operation": "rebind_relationship",
+  "params": {
+    "twin_id": "twin_lin_01",
+    "anchor_person_id": "actor_lin",
+    "to_counterpart_entity_id": "actor_current_user",
+    "selection_source": "user_selected",
+    "service_root": ".opencray/personality_service"
+  }
+}

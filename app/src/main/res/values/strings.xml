@@ -43,15 +43,18 @@
     <string name="skills_install_source_curated_action_browse">Browse</string>
     <string name="skills_install_source_curated_action_empty">Empty</string>
     <string name="skills_install_source_local_title">Local path</string>
-    <string name="skills_install_source_local_subtitle_ready">Enter an explicit local path or a SKILL.md path in search, then install it directly.</string>
-    <string name="skills_install_source_git_title">GitHub repository</string>
-    <string name="skills_install_source_git_subtitle_ready">Enter owner/repo, gitlab:group/project/repo, or a hosted Git URL in search, then install it directly.</string>
-    <string name="skills_install_source_action_search">Use search</string>
+    <string name="skills_install_source_local_subtitle_ready">Enter a local folder path or a SKILL.md path, inspect it, then install one or many skills.</string>
+    <string name="skills_install_source_github_title">GitHub URL</string>
+    <string name="skills_install_source_github_subtitle_ready">Enter a GitHub repository URL or owner/repo, inspect it, then install one or many skills.</string>
+    <string name="skills_install_source_gitlab_title">GitLab URL</string>
+    <string name="skills_install_source_gitlab_subtitle_ready">Enter a GitLab repository URL or gitlab:group/project/repo, inspect it, then install one or many skills.</string>
+    <string name="skills_install_source_action_inspect">Inspect</string>
     <string name="skills_install_source_action_unavailable">Unavailable</string>
     <string name="skills_activate_curated_empty">No local skills catalog is installed on this device.</string>
     <string name="skills_activate_curated_available">Use the search field and results list below to install from the local catalog.</string>
-    <string name="skills_activate_local_ready">Enter a local path in search, then use the direct install action.</string>
-    <string name="skills_activate_git_ready">Enter a repository ref or URL in search, then use the direct install action.</string>
+    <string name="skills_activate_local_ready">Enter a local folder path or SKILL.md path to inspect and install skills.</string>
+    <string name="skills_activate_github_ready">Enter a GitHub repository URL or owner/repo to inspect and install skills.</string>
+    <string name="skills_activate_gitlab_ready">Enter a GitLab repository URL or gitlab:group/project/repo to inspect and install skills.</string>
     <string name="skills_activate_unknown">That install source is unavailable.</string>
     <string name="skills_install_error_source_blank">Enter a skill id, source ref, URL, or local path.</string>
     <string name="skills_install_error_source_failed">Unable to install from &quot;%1$s&quot;.</string>
@@ -169,6 +172,7 @@
     <string name="llm_error_base_url_scheme">Base URL must start with http:// or https://.</string>
     <string name="chat_agent_thinking">Thinking…</string>
     <string name="chat_message_opencray">Message OpenCray</string>
+    <string name="chat_message_opencray_do_differently">Tell OpenCray differently</string>
     <string name="chat_trace_thinking_active">Analyzing the request and deciding the next step.</string>
     <string name="chat_trace_thinking_collapsed">One round of reasoning completed.</string>
     <string name="chat_trace_tool_running">Calling tool: %1$s</string>
@@ -305,4 +309,10 @@
     <string name="files_share_error_outside_workspace">Only items inside the current workspace can be shared.</string>
     <string name="files_share_error_prepare_failed">Could not prepare the selected items for sharing.</string>
     <string name="files_share_error_launch_failed">Could not open the system share sheet.</string>
+    <string name="files_open_error_missing_entry">The selected item is no longer available.</string>
+    <string name="files_open_error_not_file">Only files can be opened here.</string>
+    <string name="files_open_error_no_target">No app is available to open this item.</string>
+    <string name="files_open_error_outside_workspace">Only items inside the current workspace can be opened.</string>
+    <string name="files_open_error_prepare_failed">Could not prepare the selected item for opening.</string>
+    <string name="files_open_error_launch_failed">Could not open the selected item.</string>
 </resources>

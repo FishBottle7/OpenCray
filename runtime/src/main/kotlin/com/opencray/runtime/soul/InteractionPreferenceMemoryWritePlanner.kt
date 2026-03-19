@@ -166,13 +166,6 @@ class InteractionPreferenceMemoryWritePlanner(
     record: MemoryRecord,
     metadata: com.opencray.runtime.memory.ParsedMemoryMetadata,
   ): List<InteractionPreferenceSignal> = when (metadata.preferenceKey) {
-    MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE -> relationshipStyleSignals(
-      extensions = record.extensions,
-      preferenceValue = metadata.preferenceValue,
-      occurredAtEpochMs = metadata.lastConfirmedAtEpochMs ?: record.updatedAtEpochMs,
-      supportWeight = record.recordVersion.coerceAtLeast(1L).coerceAtMost(PreferenceAxisState.MAX_SUPPORT.toLong()).toInt(),
-    )
-
     MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL -> typedInteractionPreferenceSignals(
       extensions = record.extensions,
       occurredAtEpochMs = metadata.lastConfirmedAtEpochMs ?: record.updatedAtEpochMs,
@@ -192,27 +185,6 @@ class InteractionPreferenceMemoryWritePlanner(
     )
 
     else -> emptyList()
-  }
-
-  private fun relationshipStyleSignals(
-    extensions: Map<String, String>,
-    preferenceValue: String?,
-    occurredAtEpochMs: Long,
-    supportWeight: Int,
-  ): List<InteractionPreferenceSignal> {
-    val typedSignals = typedInteractionPreferenceSignals(
-      extensions = extensions,
-      occurredAtEpochMs = occurredAtEpochMs,
-      supportWeight = supportWeight,
-    )
-    if (typedSignals.isNotEmpty()) {
-      return typedSignals
-    }
-    return legacyRelationshipStyleSignals(
-      preferenceValue = preferenceValue,
-      occurredAtEpochMs = occurredAtEpochMs,
-      supportWeight = supportWeight,
-    )
   }
 
   private fun typedInteractionPreferenceSignals(
@@ -238,6 +210,18 @@ class InteractionPreferenceMemoryWritePlanner(
       occurredAtEpochMs = occurredAtEpochMs,
       supportWeight = supportWeight,
     )?.let(::add)
+    extensionSignalOrNull(
+      axis = InteractionPreferenceAxis.PLAYFULNESS,
+      rawDirection = extensions[MemoryInteractionPreferenceExtensionKeys.PLAYFULNESS_DIRECTION],
+      occurredAtEpochMs = occurredAtEpochMs,
+      supportWeight = supportWeight,
+    )?.let(::add)
+    extensionSignalOrNull(
+      axis = InteractionPreferenceAxis.REASSURANCE,
+      rawDirection = extensions[MemoryInteractionPreferenceExtensionKeys.REASSURANCE_DIRECTION],
+      occurredAtEpochMs = occurredAtEpochMs,
+      supportWeight = supportWeight,
+    )?.let(::add)
   }
 
   private fun extensionSignalOrNull(
@@ -257,44 +241,6 @@ class InteractionPreferenceMemoryWritePlanner(
       supportWeight = supportWeight,
       occurredAtEpochMs = occurredAtEpochMs,
     )
-  }
-
-  private fun legacyRelationshipStyleSignals(
-    preferenceValue: String?,
-    occurredAtEpochMs: Long,
-    supportWeight: Int,
-  ): List<InteractionPreferenceSignal> = when (preferenceValue?.lowercase()) {
-    "warm" -> listOf(
-      InteractionPreferenceSignal(
-        axis = InteractionPreferenceAxis.WARMTH,
-        direction = InteractionPreferenceDirection.HIGHER,
-        supportWeight = supportWeight,
-        occurredAtEpochMs = occurredAtEpochMs,
-      ),
-      InteractionPreferenceSignal(
-        axis = InteractionPreferenceAxis.FORMALITY,
-        direction = InteractionPreferenceDirection.LOWER,
-        supportWeight = supportWeight,
-        occurredAtEpochMs = occurredAtEpochMs,
-      ),
-    )
-
-    "serious" -> listOf(
-      InteractionPreferenceSignal(
-        axis = InteractionPreferenceAxis.WARMTH,
-        direction = InteractionPreferenceDirection.LOWER,
-        supportWeight = supportWeight,
-        occurredAtEpochMs = occurredAtEpochMs,
-      ),
-      InteractionPreferenceSignal(
-        axis = InteractionPreferenceAxis.FORMALITY,
-        direction = InteractionPreferenceDirection.HIGHER,
-        supportWeight = supportWeight,
-        occurredAtEpochMs = occurredAtEpochMs,
-      ),
-    )
-
-    else -> emptyList()
   }
 
   private fun preferredNamingSignals(

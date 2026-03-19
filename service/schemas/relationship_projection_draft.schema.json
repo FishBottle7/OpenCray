@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opencray.local/service/schemas/relationship_projection_draft.schema.json",
+  "title": "RelationshipProjectionDraft",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "draft_id",
+    "anchor_person_id",
+    "relationship_summary",
+    "supporting_events",
+    "graph_distance",
+    "promotion_score",
+    "apply_scope",
+    "promotion_reason",
+    "invalidation_scope"
+  ],
+  "properties": {
+    "draft_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "anchor_person_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "counterpart_entity_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "selected_relationship_binding_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "relationship_summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "supporting_events": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "graph_distance": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "promotion_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "apply_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "promotion_reason": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "invalidation_scope": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

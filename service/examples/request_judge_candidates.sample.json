@@ -1,0 +1,8 @@
+{
+  "operation": "judge_candidates",
+  "params": {
+    "draft": ".opencray/personality_service/soul/twin_lin_01/sample_chat_soul.base_soul_draft.json",
+    "candidates": "service/examples/judge_candidates.sample.json",
+    "output_name": "sample_judge"
+  }
+}

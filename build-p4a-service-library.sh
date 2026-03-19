@@ -21,6 +21,7 @@ P4A_GRADLE_USER_HOME_BASE="${P4A_GRADLE_USER_HOME_BASE:-$HOME/.gradle-opencray-p
 P4A_GRADLE_USER_HOME="${P4A_GRADLE_USER_HOME:-}"
 P4A_HOOK_PATH="${P4A_HOOK_PATH:-$ROOT_DIR/.p4a-generated/p4a_build_hook.py}"
 P4A_GRADLE_DIST_ZIP="${P4A_GRADLE_DIST_ZIP:-$ROOT_DIR/tools/android_python_runtime_p4a/gradle/gradle-8.0.2-all.zip}"
+P4A_REQUIREMENTS_LOCK_FILE="${P4A_REQUIREMENTS_LOCK_FILE:-$ROOT_DIR/tools/android_python_runtime_p4a/requirements.lock}"
 P4A_ANDROID_API="${P4A_ANDROID_API:-33}"
 P4A_BUILD_TOOLS_VERSION="${P4A_BUILD_TOOLS_VERSION:-}"
 P4A_NDK_VERSION="${P4A_NDK_VERSION:-}"
@@ -30,12 +31,58 @@ APP_NAME="${P4A_NAME:-OpenCray Python Runtime}"
 APP_VERSION="${P4A_VERSION:-0.1.0}"
 SERVICE_ID="${P4A_SERVICE_ID:-opencraypython}"
 ARCH="${P4A_ARCH:-arm64-v8a}"
-REQUIREMENTS="${P4A_REQUIREMENTS:-python3}"
+REQUIREMENTS=""
 SERVICE_ENTRY="${P4A_SERVICE_ENTRY:-python_runner/p4a_service_main.py}"
 
 log_step() {
   echo
   echo "==> $1"
+}
+
+trim_string() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  echo "$value"
+}
+
+resolve_requirements() {
+  if [[ -n "${P4A_REQUIREMENTS:-}" ]]; then
+    echo "$P4A_REQUIREMENTS"
+    return
+  fi
+
+  local requirements=("python3")
+  local line=""
+  local requirement=""
+  declare -A seen=()
+  seen["python3"]=1
+
+  if [[ -f "$P4A_REQUIREMENTS_LOCK_FILE" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line%%#*}"
+      requirement="$(trim_string "$line")"
+      if [[ -z "$requirement" ]]; then
+        continue
+      fi
+      if [[ -n "${seen[$requirement]:-}" ]]; then
+        continue
+      fi
+      requirements+=("$requirement")
+      seen["$requirement"]=1
+    done < "$P4A_REQUIREMENTS_LOCK_FILE"
+  fi
+
+  local joined=""
+  local item=""
+  for item in "${requirements[@]}"; do
+    if [[ -n "$joined" ]]; then
+      joined+=","
+    fi
+    joined+="$item"
+  done
+
+  echo "$joined"
 }
 
 resolve_python_bin() {
@@ -681,6 +728,7 @@ HOST_PYTHON_BIN="$(resolve_python_bin "$P4A_PYTHON_BIN")"
 ensure_pip_available "$HOST_PYTHON_BIN"
 P4A_PYTHON_BIN="$(resolve_build_python_bin "$HOST_PYTHON_BIN")"
 ensure_pip_available "$P4A_PYTHON_BIN"
+REQUIREMENTS="$(resolve_requirements)"
 ensure_python_for_android "$P4A_PYTHON_BIN"
 ensure_build_python_packages "$P4A_PYTHON_BIN"
 export PATH="$(dirname "$P4A_PYTHON_BIN"):$PATH"
@@ -704,6 +752,7 @@ prepare_private_sources "$P4A_PRIVATE_DIR"
 mkdir -p "$DIST_DIR"
 rm -f "$DIST_DIR"/*.aar
 
+log_step "Using Python requirements: $REQUIREMENTS"
 log_step "Building p4a service library AAR"
 run_p4a aar \
   --private "$P4A_PRIVATE_DIR" \

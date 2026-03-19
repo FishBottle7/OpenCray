@@ -1,0 +1,17 @@
+{
+  "operation": "create_twin_binding",
+  "params": {
+    "twin_id": "twin_lin_01",
+    "anchor_person_id": "actor_lin",
+    "interaction_mode": "chat_twin",
+    "source_mode": "chat_history",
+    "current_user_role_binding": {
+      "type": "real_user",
+      "entity_id": "actor_current_user"
+    },
+    "source_refs": [
+      "service/examples/chat_corpus.sample.json"
+    ],
+    "service_root": ".opencray/personality_service"
+  }
+}

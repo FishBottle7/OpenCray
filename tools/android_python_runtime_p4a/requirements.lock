@@ -1,2 +1,35 @@
-# Pinned Python packages for the Android embedded runtime.
-# Keep this file empty until a package is explicitly approved for bundling.
+# Approved Python requirements for the Android embedded runtime.
+# When P4A_REQUIREMENTS is not set, build-p4a-service-library.sh prepends
+# `python3` and then appends the entries below in order.
+#
+# This file may contain:
+# - p4a recipe names such as `numpy` or `lxml`
+# - approved pure-Python package names such as `python-docx`
+#
+# Keep entries one per line. Comments and blank lines are ignored.
+
+# Science Core
+Pillow
+numpy
+sympy
+requests
+networkx
+pydicom
+simpy
+
+# Science Extended
+scipy
+matplotlib
+lxml
+
+# Science Experimental
+pandas
+plotly
+seaborn
+shapely
+
+# Office / document generation
+openpyxl
+XlsxWriter
+python-docx
+python-pptx

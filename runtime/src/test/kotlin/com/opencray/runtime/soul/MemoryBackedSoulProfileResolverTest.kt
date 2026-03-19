@@ -4,12 +4,17 @@ import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.store.MemoryStore
 import com.opencray.runtime.context.RuntimeSoulProfile
 import com.opencray.runtime.memory.MemoryCandidateExtractor
+import com.opencray.runtime.memory.MemoryInteractionPreferenceExtensionKeys
 import com.opencray.runtime.memory.MemoryKind
 import com.opencray.runtime.memory.MemoryPreferenceKeys
 import com.opencray.runtime.memory.MemoryRecordExtensionKeys
 import com.opencray.runtime.memory.MemoryScope
 import com.opencray.runtime.memory.MemorySoulExtensionKeys
 import com.opencray.runtime.memory.MemoryStatus
+import com.opencray.runtime.memory.SoulMemoryIntent
+import com.opencray.runtime.memory.SoulMemoryIntentInterpretation
+import com.opencray.runtime.memory.SoulMemoryIntentInterpreter
+import com.opencray.runtime.memory.SoulMemoryIntentRequest
 import com.opencray.runtime.memory.MemoryTurnEvidence
 import com.opencray.runtime.memory.MemoryWriter
 import org.junit.Assert.assertEquals
@@ -103,13 +108,21 @@ class MemoryBackedSoulProfileResolverTest {
   @Test
   fun overlayKeepsDurableIdentityWhileSessionOnlySoulStylingStaysLocal() {
     val store = InMemoryMemoryStore()
-    val extractor = MemoryCandidateExtractor()
     val writer = MemoryWriter(
       store = store,
       clock = IncrementingClock(start = 5_000L)::next,
     )
     writer.write(
-      extractor.extract(
+      extractorWithSoulIntents(
+        SoulMemoryIntent(
+          preferenceKey = MemoryPreferenceKeys.AGENT_DISPLAY_NAME,
+          preferenceValue = "小白",
+          scope = MemoryScope.USER,
+          soulExtensions = mapOf(
+            MemorySoulExtensionKeys.DISPLAY_NAME to "小白",
+          ),
+        ),
+      ).extract(
         MemoryTurnEvidence(
           sessionId = "session-1",
           taskId = "task-1",
@@ -122,7 +135,18 @@ class MemoryBackedSoulProfileResolverTest {
       ),
     )
     writer.write(
-      extractor.extract(
+      extractorWithSoulIntents(
+        SoulMemoryIntent(
+          preferenceKey = MemoryPreferenceKeys.AGENT_STYLE_PROFILE,
+          preferenceValue = "serious",
+          scope = MemoryScope.SESSION,
+          soulExtensions = mapOf(
+            MemorySoulExtensionKeys.TONE to "steady",
+            MemorySoulExtensionKeys.VOICE to "serious and formal",
+            MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE to "direct",
+          ),
+        ),
+      ).extract(
         MemoryTurnEvidence(
           sessionId = "session-2",
           taskId = "task-2",
@@ -165,15 +189,24 @@ class MemoryBackedSoulProfileResolverTest {
   }
 
   @Test
-  fun overlayIgnoresLegacyRelationshipStyleSignalsWithoutProjectedState() {
+  fun overlayIgnoresRawInteractionPreferenceSignalsWithoutProjectedState() {
     val store = InMemoryMemoryStore()
-    val extractor = MemoryCandidateExtractor()
     val writer = MemoryWriter(
       store = store,
       clock = IncrementingClock(start = 8_000L)::next,
     )
     writer.write(
-      extractor.extract(
+      extractorWithSoulIntents(
+        SoulMemoryIntent(
+          preferenceKey = MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
+          preferenceValue = "adaptive",
+          scope = MemoryScope.USER,
+          preferenceExtensions = mapOf(
+            MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "higher",
+            MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "lower",
+          ),
+        ),
+      ).extract(
         MemoryTurnEvidence(
           sessionId = "session-10",
           taskId = "task-10",
@@ -183,7 +216,17 @@ class MemoryBackedSoulProfileResolverTest {
       ),
     )
     writer.write(
-      extractor.extract(
+      extractorWithSoulIntents(
+        SoulMemoryIntent(
+          preferenceKey = MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
+          preferenceValue = "adaptive",
+          scope = MemoryScope.USER,
+          preferenceExtensions = mapOf(
+            MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "higher",
+            MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "lower",
+          ),
+        ),
+      ).extract(
         MemoryTurnEvidence(
           sessionId = "session-11",
           taskId = "task-11",
@@ -217,8 +260,20 @@ class MemoryBackedSoulProfileResolverTest {
     assertEquals("tool_forward", profile?.extensions?.get(SoulProfileExtensionKeys.TOOL_USE_BIAS))
   }
 
+  private fun extractorWithSoulIntents(
+    vararg intents: SoulMemoryIntent,
+  ): MemoryCandidateExtractor = MemoryCandidateExtractor(
+    soulIntentInterpreter = object : SoulMemoryIntentInterpreter {
+      override fun interpret(
+        request: SoulMemoryIntentRequest,
+      ): SoulMemoryIntentInterpretation = SoulMemoryIntentInterpretation.Success(
+        intents = intents.toList(),
+      )
+    },
+  )
+
   @Test
-  fun overlayKeepsBaseStyleWhenLegacyRelationshipSignalsAreBalanced() {
+  fun overlayKeepsBaseStyleWhenOnlyRawInteractionPreferenceSignalsExist() {
     val profile = resolver.overlay(
       baseProfile = RuntimeSoulProfile(
         presetName = "BUILDER",
@@ -231,55 +286,51 @@ class MemoryBackedSoulProfileResolverTest {
       ),
       records = listOf(
         preferenceRecord(
-          id = "relationship-warm-1",
+          id = "interaction-warm-1",
           sessionId = "session-a",
           scope = MemoryScope.USER,
-          preferenceKey = MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE,
-          preferenceValue = "warm",
+          preferenceKey = MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
+          preferenceValue = "warmth_higher__formality_lower",
           updatedAtEpochMs = 1_000L,
           extraExtensions = mapOf(
-            MemorySoulExtensionKeys.TONE to "warm",
-            MemorySoulExtensionKeys.VOICE to "warm and gentle",
-            MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE to "supportive",
+            MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "higher",
+            MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "lower",
           ),
         ),
         preferenceRecord(
-          id = "relationship-warm-2",
+          id = "interaction-warm-2",
           sessionId = "session-b",
           scope = MemoryScope.USER,
-          preferenceKey = MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE,
-          preferenceValue = "warm",
+          preferenceKey = MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
+          preferenceValue = "warmth_higher__formality_lower",
           updatedAtEpochMs = 1_100L,
           extraExtensions = mapOf(
-            MemorySoulExtensionKeys.TONE to "warm",
-            MemorySoulExtensionKeys.VOICE to "warm and gentle",
-            MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE to "supportive",
+            MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "higher",
+            MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "lower",
           ),
         ),
         preferenceRecord(
-          id = "relationship-serious-1",
+          id = "interaction-serious-1",
           sessionId = "session-c",
           scope = MemoryScope.USER,
-          preferenceKey = MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE,
-          preferenceValue = "serious",
+          preferenceKey = MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
+          preferenceValue = "warmth_lower__formality_higher",
           updatedAtEpochMs = 1_200L,
           extraExtensions = mapOf(
-            MemorySoulExtensionKeys.TONE to "steady",
-            MemorySoulExtensionKeys.VOICE to "serious and formal",
-            MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE to "direct",
+            MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "lower",
+            MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "higher",
           ),
         ),
         preferenceRecord(
-          id = "relationship-serious-2",
+          id = "interaction-serious-2",
           sessionId = "session-d",
           scope = MemoryScope.USER,
-          preferenceKey = MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE,
-          preferenceValue = "serious",
+          preferenceKey = MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
+          preferenceValue = "warmth_lower__formality_higher",
           updatedAtEpochMs = 1_300L,
           extraExtensions = mapOf(
-            MemorySoulExtensionKeys.TONE to "steady",
-            MemorySoulExtensionKeys.VOICE to "serious and formal",
-            MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE to "direct",
+            MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "lower",
+            MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "higher",
           ),
         ),
       ),
@@ -292,7 +343,7 @@ class MemoryBackedSoulProfileResolverTest {
   }
 
   @Test
-  fun overlayPrefersProjectedInteractionPreferenceStateOverLegacyRelationshipStyleRecords() {
+  fun overlayPrefersProjectedInteractionPreferenceStateOverRawInteractionPreferenceRecords() {
     val profile = resolver.overlay(
       baseProfile = RuntimeSoulProfile(
         presetName = "BUILDER",
@@ -313,16 +364,15 @@ class MemoryBackedSoulProfileResolverTest {
           updatedAtEpochMs = 1_500L,
         ),
         preferenceRecord(
-          id = "legacy-serious",
+          id = "raw-serious-signal",
           sessionId = "session-legacy",
           scope = MemoryScope.USER,
-          preferenceKey = MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE,
-          preferenceValue = "serious",
+          preferenceKey = MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
+          preferenceValue = "warmth_lower__formality_higher",
           updatedAtEpochMs = 1_600L,
           extraExtensions = mapOf(
-            MemorySoulExtensionKeys.TONE to "steady",
-            MemorySoulExtensionKeys.VOICE to "serious and formal",
-            MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE to "direct",
+            MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "lower",
+            MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "higher",
           ),
         ),
       ),
@@ -853,6 +903,131 @@ class MemoryBackedSoulProfileResolverTest {
     assertEquals("serious and formal", profile?.voice)
     assertEquals("steady", profile?.extensions?.get(SoulProfileExtensionKeys.TONE))
     assertEquals("direct", profile?.extensions?.get(SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE))
+  }
+
+  @Test
+  fun overlayProjectsAdaptiveOffsetsAndGraduatedBehaviorGates() {
+    val profile = resolver.overlay(
+      baseProfile = RuntimeSoulProfile(
+        presetName = "BUILDER",
+        voice = "decisive and direct",
+        extensions = mapOf(
+          SoulProfileExtensionKeys.TONE to "builder",
+          SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE to "direct",
+        ),
+      ),
+      records = listOf(
+        interactionPreferenceStateRecord(
+          id = "interaction-rich",
+          scope = MemoryScope.USER,
+          state = InteractionPreferenceState(
+            warmth = PreferenceAxisState(offset = 1, higherSupport = 2),
+            formality = PreferenceAxisState(offset = -1, lowerSupport = 2),
+            initiative = PreferenceAxisState(offset = 1, higherSupport = 2),
+            playfulness = PreferenceAxisState(offset = 1, higherSupport = 2),
+            reassurance = PreferenceAxisState(offset = 1, higherSupport = 2),
+          ),
+          updatedAtEpochMs = 7_000L,
+        ),
+        relationshipStateRecord(
+          id = "relationship-rich",
+          scope = MemoryScope.USER,
+          sourceSessionId = "session-old",
+          state = RelationshipState(
+            familiarity = 46,
+            trust = 58,
+            safety = 60,
+            intimacyPermission = 42,
+            playfulnessPermission = 37,
+            affectionTendency = 26,
+            reciprocity = 38,
+          ),
+          updatedAtEpochMs = 7_100L,
+        ),
+      ),
+      sessionId = "session-main",
+      workspaceId = "workspace-main",
+    )
+
+    assertEquals("1", profile?.extensions?.get(SoulProfileExtensionKeys.WARMTH_PREFERENCE_OFFSET))
+    assertEquals("1", profile?.extensions?.get(SoulProfileExtensionKeys.INITIATIVE_PREFERENCE_OFFSET))
+    assertEquals("1", profile?.extensions?.get(SoulProfileExtensionKeys.PLAYFULNESS_PREFERENCE_OFFSET))
+    assertEquals("1", profile?.extensions?.get(SoulProfileExtensionKeys.REASSURANCE_PREFERENCE_OFFSET))
+    assertEquals("true", profile?.extensions?.get(SoulProfileExtensionKeys.SUPPORTIVE_REASSURANCE_ALLOWED))
+    assertEquals("true", profile?.extensions?.get(SoulProfileExtensionKeys.PROACTIVE_RELATIONAL_CHECK_IN_ALLOWED))
+    assertEquals("true", profile?.extensions?.get(SoulProfileExtensionKeys.LIGHT_PLAYFULNESS_ALLOWED))
+    assertEquals("true", profile?.extensions?.get(SoulProfileExtensionKeys.PLAYFUL_TEASING_ALLOWED))
+    assertEquals("false", profile?.extensions?.get(SoulProfileExtensionKeys.HIGH_INTIMACY_BEHAVIOR_ALLOWED))
+    assertEquals("true", profile?.extensions?.get(SoulProfileExtensionKeys.PLAYFUL_AFFECTION_ALLOWED))
+    assertEquals("warm and gentle", profile?.voice)
+  }
+
+  @Test
+  fun overlayUsesAdaptivePreferenceOffsetsToKeepDeepBehaviorClosed() {
+    val debug = resolver.inspectOverlay(
+      baseProfile = RuntimeSoulProfile(
+        presetName = "BUILDER",
+        voice = "decisive and direct",
+        extensions = mapOf(
+          SoulProfileExtensionKeys.TONE to "builder",
+          SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE to "direct",
+        ),
+      ),
+      records = listOf(
+        interactionPreferenceStateRecord(
+          id = "interaction-guarded",
+          scope = MemoryScope.USER,
+          state = InteractionPreferenceState(
+            initiative = PreferenceAxisState(offset = -1, lowerSupport = 2),
+            playfulness = PreferenceAxisState(offset = -1, lowerSupport = 2),
+            reassurance = PreferenceAxisState(offset = -1, lowerSupport = 2),
+          ),
+          updatedAtEpochMs = 7_200L,
+        ),
+        relationshipStateRecord(
+          id = "relationship-strong",
+          scope = MemoryScope.USER,
+          sourceSessionId = "session-old",
+          state = RelationshipState(
+            familiarity = 70,
+            trust = 75,
+            safety = 78,
+            intimacyPermission = 61,
+            playfulnessPermission = 44,
+            affectionTendency = 34,
+            reciprocity = 50,
+          ),
+          updatedAtEpochMs = 7_300L,
+        ),
+      ),
+      sessionId = "session-main",
+      workspaceId = "workspace-main",
+    )
+
+    val profile = checkNotNull(debug.effectiveProfile)
+    assertEquals("false", profile.extensions[SoulProfileExtensionKeys.SUPPORTIVE_REASSURANCE_ALLOWED])
+    assertEquals("false", profile.extensions[SoulProfileExtensionKeys.PROACTIVE_RELATIONAL_CHECK_IN_ALLOWED])
+    assertEquals("false", profile.extensions[SoulProfileExtensionKeys.LIGHT_PLAYFULNESS_ALLOWED])
+    assertEquals("false", profile.extensions[SoulProfileExtensionKeys.PLAYFUL_TEASING_ALLOWED])
+    assertEquals("true", profile.extensions[SoulProfileExtensionKeys.HIGH_INTIMACY_BEHAVIOR_ALLOWED])
+    assertEquals("false", profile.extensions[SoulProfileExtensionKeys.PLAYFUL_AFFECTION_ALLOWED])
+
+    val relationshipDebug = checkNotNull(debug.relationshipStateDebug)
+    assertTrue(
+      relationshipDebug.supportiveReassuranceChecks.any { check ->
+        check.key == "reassurance_preference_offset" && !check.passed
+      },
+    )
+    assertTrue(
+      relationshipDebug.proactiveRelationalCheckInChecks.any { check ->
+        check.key == "initiative_preference_offset" && !check.passed
+      },
+    )
+    assertTrue(
+      relationshipDebug.playfulAffectionChecks.any { check ->
+        check.key == "playfulness_preference_offset" && !check.passed
+      },
+    )
   }
 
   private fun preferenceRecord(

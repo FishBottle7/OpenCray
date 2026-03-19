@@ -39,7 +39,7 @@ internal class LiteLlmTaskCommitmentIntentInterpreter(
     val settings = llmSettingsProvider().sanitized()
     if (!settings.enabled || !settings.isConfigured()) {
       return TaskCommitmentIntentInterpretation.Unavailable(
-        allowHeuristicFallback = true,
+        allowHeuristicFallback = false,
         reason = "LLM settings are not configured for task commitment interpretation.",
       )
     }

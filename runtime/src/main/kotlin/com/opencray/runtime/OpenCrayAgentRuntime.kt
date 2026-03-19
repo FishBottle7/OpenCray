@@ -28,10 +28,19 @@ import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.memory.MemoryToolOperation
 import com.opencray.runtime.memory.memoryToolTraceFrom
+import com.opencray.runtime.policy.ToolPolicyPlan
+import com.opencray.runtime.subagent.BuiltInSubAgentProfiles
+import com.opencray.runtime.subagent.SubAgentContextBuilder
+import com.opencray.runtime.subagent.SubAgentContextBuildRequest
+import com.opencray.runtime.subagent.SubAgentContextMode
+import com.opencray.runtime.subagent.SubAgentMetadataKeys
+import com.opencray.runtime.subagent.SubAgentTask
 import com.opencray.runtime.skills.ActiveSkillCapsule
 import com.opencray.runtime.skills.ActiveSkillCapsuleResolver
 import java.util.UUID
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -44,13 +53,17 @@ data class OpenCrayAgentRuntimeConfig(
   val sessionContext: AgentRuntimeSessionContext = AgentRuntimeSessionContext(),
   val contextManager: ContextManager = ContextManager(),
   val promptAssembler: PromptAssembler = PromptAssembler(),
+  val supplementInputProvider: (String, String) -> List<OpenCraySupplementInput> = { _, _ -> emptyList() },
   val llmMetadata: Map<String, String> = emptyMap(),
   val llmAuthHeaders: Map<String, String> = emptyMap(),
+  val subAgentContextBuilder: SubAgentContextBuilder = SubAgentContextBuilder(),
+  val maxSubAgentDepth: Int = 1,
   val json: Json = Json { ignoreUnknownKeys = true; prettyPrint = true },
 ) {
   init {
     require(maxTurns >= 0) { "OpenCrayAgentRuntimeConfig maxTurns must be >= 0." }
     require(maxToolCalls >= 0) { "OpenCrayAgentRuntimeConfig maxToolCalls must be >= 0." }
+    require(maxSubAgentDepth >= 0) { "OpenCrayAgentRuntimeConfig maxSubAgentDepth must be >= 0." }
     require(systemPrompt.isNotBlank()) { "OpenCrayAgentRuntimeConfig systemPrompt must not be blank." }
   }
 
@@ -131,6 +144,12 @@ class OpenCrayAgentRuntime(
         return cancelledResult(task = task, startedAt = startedAt, finishedAt = clock())
       }
 
+      applyTurnStartSupplements(
+        task = task,
+        turn = turn,
+        transcript = transcript,
+      )
+
       val turnAwareConversation = promptConversationForTurn(
         transcript = transcript,
         turn = turn,
@@ -143,6 +162,7 @@ class OpenCrayAgentRuntime(
       val visibleToolDefinitions = visibleToolDefinitionsForTurn(
         allDefinitions = toolDispatcher.definitions(),
         activeSkillCapsule = activeSkillCapsule,
+        memoryToolsEnabled = config.sessionContext.memoryToolsEnabled,
       )
       val managedContext = config.contextManager.prepare(
         PromptAssemblyInput(
@@ -297,6 +317,16 @@ class OpenCrayAgentRuntime(
               val toolResult = gateActiveSkillToolCall(
                 call = toolAction.call,
                 activeSkillCapsule = activeSkillCapsule,
+              ) ?: gateDisabledSessionToolCall(
+                call = toolAction.call,
+                memoryToolsEnabled = config.sessionContext.memoryToolsEnabled,
+              ) ?: maybeExecuteSubAgentCall(
+                task = task,
+                turn = turn,
+                call = toolAction.call,
+                transcript = transcript,
+                hooks = hooks,
+                activeSkillCapsule = activeSkillCapsule,
               ) ?: maybeShortCircuitDuplicateDiscoveryCall(
                 call = toolAction.call,
                 transcript = transcript,
@@ -422,7 +452,7 @@ class OpenCrayAgentRuntime(
               toolCallCount = toolCallCount,
               responseFormat = finalAction.responseFormat,
               contextReport = lastContextReport,
-            ),
+            ) + finalAttachmentMetadata(finalAction.attachments),
           )
         }
       }
@@ -491,7 +521,17 @@ class OpenCrayAgentRuntime(
         emittedAtEpochMs = clock(),
       ),
     )
-    val toolResult = toolDispatcher.dispatch(task = task, call = toolCall, hooks = hooks)
+    val toolResult = gateDisabledSessionToolCall(
+      call = toolCall,
+      memoryToolsEnabled = config.sessionContext.memoryToolsEnabled,
+    ) ?: maybeExecuteSubAgentCall(
+      task = task,
+      turn = 0,
+      call = toolCall,
+      transcript = config.sessionContext.conversation,
+      hooks = hooks,
+      activeSkillCapsule = null,
+    ) ?: toolDispatcher.dispatch(task = task, call = toolCall, hooks = hooks)
     eventSink.onRunEvent(
       task = task,
       event = OpenCrayToolResultEvent(
@@ -629,7 +669,7 @@ class OpenCrayAgentRuntime(
       ?: parsed.primitiveContent("decision")?.trim()?.lowercase()
     val hasToolCallShape = parsed.primitiveContent("tool_name")?.isNotBlank() == true
     val hasFinalAnswerShape = parsed.primitiveContent("answer")?.isNotBlank() == true
-    val toolCalls = (parsed["tool_calls"] as? kotlinx.serialization.json.JsonArray)
+    val toolCalls = (parsed["tool_calls"] as? JsonArray)
       ?.map { element ->
         val toolCallObject = element as? JsonObject ?: error("Each entry inside 'tool_calls' must be a JSON object.")
         AgentModelAction.ToolCall(call = parseToolCall(toolCallObject))
@@ -677,14 +717,7 @@ class OpenCrayAgentRuntime(
       )
 
       type in setOf("final", "answer") || (type == null && hasFinalAnswerShape) -> ParsedActionObject(
-        actions = listOf(
-          AgentModelAction.Final(
-            answer = parsed.primitiveContent("answer")?.trim().orEmpty().ifBlank {
-              error("Final action must contain a non-blank 'answer'.")
-            },
-            responseFormat = "json_final",
-          ),
-        ),
+        actions = listOf(parseFinalAction(parsed)),
       )
 
       type == null -> error("Model output must contain 'type' or 'decision'.")
@@ -701,6 +734,81 @@ class OpenCrayAgentRuntime(
     reason = parsed.primitiveContent("reason")?.trim()?.takeIf(String::isNotBlank)
       ?: parsed.primitiveContent("justification")?.trim()?.takeIf(String::isNotBlank),
   )
+
+  private fun parseFinalAction(parsed: JsonObject): AgentModelAction.Final {
+    val attachments = parseFinalAttachments(parsed["attachments"])
+    val answer = parsed.primitiveContent("answer")?.trim().orEmpty()
+    require(answer.isNotBlank() || attachments.isNotEmpty()) {
+      "Final action must contain a non-blank 'answer' or a non-empty 'attachments' array."
+    }
+    return AgentModelAction.Final(
+      answer = answer,
+      responseFormat = "json_final",
+      attachments = attachments,
+    )
+  }
+
+  private fun parseFinalAttachments(
+    rawAttachments: kotlinx.serialization.json.JsonElement?,
+  ): List<OpenCrayFinalAttachment> = (rawAttachments as? JsonArray)
+    ?.map { element ->
+      val attachmentObject = element as? JsonObject
+        ?: error("Each entry inside 'attachments' must be a JSON object.")
+      OpenCrayFinalAttachment(
+        kind = attachmentObject.primitiveContent("kind")?.trim()?.takeIf(String::isNotBlank),
+        relativePath = attachmentObject.primitiveContent("relative_path")
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: attachmentObject.primitiveContent("relativePath")
+            ?.trim()
+            ?.takeIf(String::isNotBlank),
+        path = attachmentObject.primitiveContent("path")?.trim()?.takeIf(String::isNotBlank),
+        artifactId = attachmentObject.primitiveContent("artifact_id")
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: attachmentObject.primitiveContent("artifactId")
+            ?.trim()
+            ?.takeIf(String::isNotBlank),
+        displayName = attachmentObject.primitiveContent("display_name")
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: attachmentObject.primitiveContent("displayName")
+            ?.trim()
+            ?.takeIf(String::isNotBlank),
+        mimeType = attachmentObject.primitiveContent("mime_type")
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: attachmentObject.primitiveContent("mimeType")
+            ?.trim()
+            ?.takeIf(String::isNotBlank),
+        durationMs = attachmentObject.longContent("duration_ms")
+          ?: attachmentObject.longContent("durationMs"),
+        waveformBars = attachmentObject.intArrayContent("waveform_bars")
+          ?: attachmentObject.intArrayContent("waveformBars")
+          ?: emptyList(),
+        transcriptText = attachmentObject.primitiveContent("transcript_text")
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: attachmentObject.primitiveContent("transcriptText")
+            ?.trim()
+            ?.takeIf(String::isNotBlank),
+      )
+    }
+    .orEmpty()
+
+  private fun finalAttachmentMetadata(
+    attachments: List<OpenCrayFinalAttachment>,
+  ): Map<String, String> = attachments
+    .takeIf(List<OpenCrayFinalAttachment>::isNotEmpty)
+    ?.let { resolved ->
+      mapOf(
+        OpenCrayExecutionMetadataKeys.FINAL_ATTACHMENTS_JSON to config.json.encodeToString(
+          ListSerializer(OpenCrayFinalAttachment.serializer()),
+          resolved,
+        ),
+      )
+    }
+    ?: emptyMap()
 
   private fun buildResultMetadata(
     gatewayResult: LiteLlmGatewayResult?,
@@ -918,14 +1026,38 @@ class OpenCrayAgentRuntime(
   private fun visibleToolDefinitionsForTurn(
     allDefinitions: List<AgentToolDefinition>,
     activeSkillCapsule: ActiveSkillCapsule?,
+    memoryToolsEnabled: Boolean,
   ): List<AgentToolDefinition> {
+    val baseDefinitions = if (memoryToolsEnabled) {
+      allDefinitions
+    } else {
+      allDefinitions.filterNot { definition -> isMemoryTool(definition.name) }
+    }
     val allowedToolKeys = normalizedAllowedToolKeys(activeSkillCapsule)
       .takeIf { keys -> keys.isNotEmpty() }
       ?.plus(DEFAULT_ACTIVE_SKILL_EXEMPT_TOOL_KEYS)
-      ?: return allDefinitions
-    return allDefinitions.filter { definition ->
+      ?: return baseDefinitions
+    return baseDefinitions.filter { definition ->
       toolPolicyKey(definition.name) in allowedToolKeys
     }
+  }
+
+  private fun gateDisabledSessionToolCall(
+    call: AgentToolCall,
+    memoryToolsEnabled: Boolean,
+  ): AgentToolResult? {
+    if (memoryToolsEnabled || !isMemoryTool(call.toolName)) {
+      return null
+    }
+    val detail = "Memory tools are disabled for this run by operator settings."
+    return AgentToolResult(
+      toolName = call.toolName,
+      status = AgentToolResultStatus.DENIED,
+      content = detail,
+      errorCode = "MEMORY_TOOL_DISABLED",
+      errorMessage = detail,
+      metadata = mapOf("memoryToolsEnabled" to "false"),
+    )
   }
 
   private fun gateActiveSkillToolCall(
@@ -982,6 +1114,11 @@ class OpenCrayAgentRuntime(
     ?.map(::toolPolicyKey)
     ?.toSet()
     ?: emptySet()
+
+  private fun isMemoryTool(toolName: String): Boolean = when (toolPolicyKey(toolName)) {
+    "memory_search", "memory_get" -> true
+    else -> false
+  }
 
   private fun llmFailureResult(
     task: AgentTask,
@@ -1160,6 +1297,23 @@ class OpenCrayAgentRuntime(
   private fun JsonObject.primitiveContent(key: String): String? =
     (this[key] as? JsonPrimitive)?.content
 
+  private fun JsonObject.longContent(key: String): Long? =
+    (this[key] as? JsonPrimitive)
+      ?.content
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.toLongOrNull()
+
+  private fun JsonObject.intArrayContent(key: String): List<Int>? =
+    (this[key] as? JsonArray)
+      ?.mapNotNull { element ->
+        (element as? JsonPrimitive)
+          ?.content
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?.toIntOrNull()
+      }
+
   private fun runIdFor(task: AgentTask): String =
     task.metadata[RUN_ID_METADATA_KEY]
       ?.takeIf(String::isNotBlank)
@@ -1186,6 +1340,36 @@ class OpenCrayAgentRuntime(
 
   private fun hasTurnBudgetRemaining(turn: Int): Boolean =
     config.maxTurns == 0 || turn < config.maxTurns
+
+  private fun applyTurnStartSupplements(
+    task: AgentTask,
+    turn: Int,
+    transcript: MutableList<RuntimeConversationMessage>,
+  ) {
+    val supplements = config.supplementInputProvider(runIdFor(task), task.id)
+      .sortedBy(OpenCraySupplementInput::createdAtEpochMs)
+    if (supplements.isEmpty()) {
+      return
+    }
+    supplements.forEach { supplement ->
+      val text = supplement.text.trim().takeIf(String::isNotBlank) ?: return@forEach
+      transcript += RuntimeConversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = text,
+      )
+      eventSink.onRunEvent(
+        task = task,
+        event = OpenCraySupplementEvent(
+          runId = runIdFor(task),
+          taskId = task.id,
+          turn = turn,
+          entryId = supplement.entryId,
+          text = text,
+          emittedAtEpochMs = clock(),
+        ),
+      )
+    }
+  }
 
   private fun remainingTurnBudget(turn: Int): Int? =
     config.maxTurns
@@ -1371,6 +1555,277 @@ class OpenCrayAgentRuntime(
       ?.let { reason -> mapOf("toolReason" to reason) }
       ?: emptyMap()
 
+  private fun maybeExecuteSubAgentCall(
+    task: AgentTask,
+    turn: Int,
+    call: AgentToolCall,
+    transcript: List<RuntimeConversationMessage>,
+    hooks: RuntimeExecutionHooks,
+    activeSkillCapsule: ActiveSkillCapsule?,
+  ): AgentToolResult? {
+    if (!call.toolName.trim().equals("Task", ignoreCase = true)) {
+      return null
+    }
+    val description = call.arguments.primitiveContent("description")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return invalidSubAgentCallResult(call, "Task description must not be blank.")
+    val prompt = call.arguments.primitiveContent("prompt")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return invalidSubAgentCallResult(call, "Task prompt must not be blank.")
+    val subagentType = call.arguments.primitiveContent("subagent_type")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return invalidSubAgentCallResult(call, "Task subagent_type must not be blank.")
+    val profile = BuiltInSubAgentProfiles.resolve(subagentType)
+      ?: return invalidSubAgentCallResult(
+        call = call,
+        message = "Unknown Task subagent_type '$subagentType'.",
+      )
+    val requestedContextMode = call.arguments.primitiveContent("context_mode")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val resolvedContextMode = when {
+      requestedContextMode == null -> profile.defaultContextMode
+      else -> SubAgentContextMode.fromWireValue(requestedContextMode)
+        ?: return invalidSubAgentCallResult(
+          call = call,
+          message = "Unknown Task context_mode '$requestedContextMode'. Expected one of: minimal, delegated, mirrored.",
+        )
+    }
+    val parentDepth = task.metadata[SubAgentMetadataKeys.DEPTH]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.toIntOrNull()
+      ?: 0
+    val childDepth = parentDepth + 1
+    if (childDepth > config.maxSubAgentDepth) {
+      return AgentToolResult(
+        toolName = call.toolName,
+        status = AgentToolResultStatus.FAILED,
+        content = "Task delegation depth exceeded the configured child-runtime limit.",
+        errorCode = "SUBAGENT_DEPTH_EXCEEDED",
+        errorMessage = "Task delegation depth exceeded the configured child-runtime limit.",
+        metadata = mapOf(
+          "subagentType" to profile.id,
+          "subagentDepth" to childDepth.toString(),
+          "maxSubAgentDepth" to config.maxSubAgentDepth.toString(),
+        ),
+      )
+    }
+    val childTask = SubAgentTask(
+      description = description,
+      prompt = prompt,
+      subagentType = profile.id,
+      contextMode = resolvedContextMode,
+      parentRunId = runIdFor(task),
+      parentTaskId = task.id,
+      parentTurn = turn,
+      depth = childDepth,
+      activeSkillName = activeSkillCapsule?.name,
+    )
+    val delegationPlan = toolDispatcher.planTaskDelegation(
+      task = task,
+      description = description,
+      prompt = prompt,
+      subagentType = profile.id,
+      contextMode = childTask.contextMode.wireValue,
+      allowedToolNames = profile.allowedToolNames,
+    )
+    toolDispatcher.gateTaskDelegation(delegationPlan)?.let { deniedResult ->
+      return deniedResult.copy(toolName = call.toolName)
+    }
+    val childContext = config.subAgentContextBuilder.build(
+      SubAgentContextBuildRequest(
+        parentSessionContext = config.sessionContext,
+        childTask = childTask,
+        parentGoalSummary = task.input.trim(),
+        parentObservationLines = recentToolObservationSupport.summaryLines(transcript),
+        parentConversation = transcript.toList(),
+        activeSkillCapsule = activeSkillCapsule,
+      ),
+    )
+    val childRunId = "subagent-${runIdFor(task)}-$turn-${UUID.randomUUID().toString().take(8)}"
+    val childPromptTask = AgentTask(
+      id = "subagent-task-${UUID.randomUUID().toString().take(8)}",
+      type = AgentTaskType.PROMPT,
+      input = prompt,
+      policyDecision = task.policyDecision,
+      createdAtEpochMs = clock(),
+      metadata = task.metadata
+        .filterKeys { key -> !key.startsWith(HIDDEN_METADATA_PREFIX) } +
+        childTask.metadata() +
+        mapOf(RUN_ID_METADATA_KEY to childRunId),
+    )
+    emitSubAgentEvent(
+      task = task,
+      turn = turn,
+      phase = OpenCraySubAgentPhase.STARTED,
+      childTask = childTask,
+      childRunId = childRunId,
+      childTaskId = childPromptTask.id,
+      summary = null,
+    )
+    val childRuntime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = toolDispatcher.restrictTo(profile.allowedToolNames),
+      config = config.copy(
+        maxTurns = profile.maxTurns,
+        maxToolCalls = 0,
+        sessionContext = childContext.sessionContext,
+        supplementInputProvider = { _, _ -> emptyList() },
+      ),
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+      clock = clock,
+    )
+    val childResult = childRuntime.execute(childPromptTask, hooks)
+    emitSubAgentEvent(
+      task = task,
+      turn = turn,
+      phase = when (childResult.status) {
+        ExecutionStatus.SUCCESS -> OpenCraySubAgentPhase.COMPLETED
+        ExecutionStatus.CANCELLED -> OpenCraySubAgentPhase.CANCELLED
+        ExecutionStatus.FAILED,
+        ExecutionStatus.DENIED,
+        ExecutionStatus.TIMEOUT,
+        -> OpenCraySubAgentPhase.FAILED
+      },
+      childTask = childTask,
+      childRunId = childRunId,
+      childTaskId = childPromptTask.id,
+      summary = childResult.stdout.trim()
+        .ifBlank { childResult.errorMessage?.trim().orEmpty() }
+        .takeIf(String::isNotBlank),
+    )
+    return childResultToTaskToolResult(
+      call = call,
+      profileId = profile.id,
+      childTask = childTask,
+      delegationPlan = delegationPlan,
+      childRunId = childRunId,
+      childResult = childResult,
+    )
+  }
+
+  private fun invalidSubAgentCallResult(
+    call: AgentToolCall,
+    message: String,
+  ): AgentToolResult = AgentToolResult(
+    toolName = call.toolName,
+    status = AgentToolResultStatus.FAILED,
+    content = message,
+    errorCode = "INVALID_SUBAGENT_TASK",
+    errorMessage = message,
+  )
+
+  private fun childResultToTaskToolResult(
+    call: AgentToolCall,
+    profileId: String,
+    childTask: SubAgentTask,
+    delegationPlan: ToolPolicyPlan,
+    childRunId: String,
+    childResult: ExecutionResult,
+  ): AgentToolResult {
+    val childTurnCount = childResult.metadata["turnCount"].orEmpty()
+    val childToolCallCount = childResult.metadata["toolCallCount"].orEmpty()
+    val baseMetadata = linkedMapOf(
+      "subagentType" to profileId,
+      "subagentContextMode" to childTask.contextMode.wireValue,
+      "subagentDepth" to childTask.depth.toString(),
+      "childRunId" to childRunId,
+      "childTaskId" to childResult.taskId,
+      "childExecutionStatus" to childResult.status.name,
+    ).apply {
+      if (childTurnCount.isNotBlank()) {
+        put("childTurnCount", childTurnCount)
+      }
+      if (childToolCallCount.isNotBlank()) {
+        put("childToolCallCount", childToolCallCount)
+      }
+    }
+    val metadataWithPolicy = toolDispatcher.taskDelegationResultMetadata(
+      plan = delegationPlan,
+      metadata = baseMetadata,
+    )
+    return when (childResult.status) {
+      ExecutionStatus.SUCCESS -> AgentToolResult(
+        toolName = call.toolName,
+        status = AgentToolResultStatus.SUCCESS,
+        content = childResult.stdout.trim().ifBlank {
+          "Delegated child run completed without a final summary."
+        },
+        metadata = metadataWithPolicy,
+      )
+
+      ExecutionStatus.CANCELLED -> AgentToolResult(
+        toolName = call.toolName,
+        status = AgentToolResultStatus.CANCELLED,
+        content = "Delegated child run was cancelled.",
+        errorCode = "SUBAGENT_CANCELLED",
+        errorMessage = childResult.errorMessage ?: "Delegated child run was cancelled.",
+        metadata = metadataWithPolicy,
+      )
+
+      ExecutionStatus.DENIED -> AgentToolResult(
+        toolName = call.toolName,
+        status = AgentToolResultStatus.FAILED,
+        content = childResult.errorMessage ?: "Delegated child run was blocked by policy.",
+        errorCode = "SUBAGENT_POLICY_BLOCKED",
+        errorMessage = childResult.errorMessage ?: "Delegated child run was blocked by policy.",
+        metadata = toolDispatcher.taskDelegationResultMetadata(
+          plan = delegationPlan,
+          metadata = baseMetadata + mapOf(
+            "childErrorCode" to (childResult.errorCode ?: "DENIED"),
+          ),
+        ),
+      )
+
+      ExecutionStatus.FAILED,
+      ExecutionStatus.TIMEOUT,
+      -> AgentToolResult(
+        toolName = call.toolName,
+        status = if (childResult.status == ExecutionStatus.TIMEOUT) {
+          AgentToolResultStatus.TIMEOUT
+        } else {
+          AgentToolResultStatus.FAILED
+        },
+        content = childResult.errorMessage ?: "Delegated child run failed.",
+        errorCode = childResult.errorCode ?: "SUBAGENT_FAILED",
+        errorMessage = childResult.errorMessage ?: "Delegated child run failed.",
+        metadata = metadataWithPolicy,
+      )
+    }
+  }
+
+  private fun emitSubAgentEvent(
+    task: AgentTask,
+    turn: Int,
+    phase: OpenCraySubAgentPhase,
+    childTask: SubAgentTask,
+    childRunId: String,
+    childTaskId: String,
+    summary: String?,
+  ) {
+    eventSink.onRunEvent(
+      task = task,
+      event = OpenCraySubAgentEvent(
+        runId = runIdFor(task),
+        taskId = task.id,
+        phase = phase,
+        childRunId = childRunId,
+        childTaskId = childTaskId,
+        label = childTask.description,
+        subagentType = childTask.subagentType,
+        contextMode = childTask.contextMode.wireValue,
+        depth = childTask.depth,
+        summary = summary,
+        turn = turn,
+        emittedAtEpochMs = clock(),
+      ),
+    )
+  }
+
   private fun maybeShortCircuitDuplicateDiscoveryCall(
     call: AgentToolCall,
     transcript: List<RuntimeConversationMessage>,
@@ -1489,6 +1944,7 @@ class OpenCrayAgentRuntime(
     data class Final(
       val answer: String,
       val responseFormat: String,
+      val attachments: List<OpenCrayFinalAttachment> = emptyList(),
     ) : AgentModelAction
 
     data class ToolCall(

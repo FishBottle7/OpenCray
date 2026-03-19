@@ -43,7 +43,7 @@ object NoOpSoulMemoryIntentInterpreter : SoulMemoryIntentInterpreter {
   override fun interpret(
     request: SoulMemoryIntentRequest,
   ): SoulMemoryIntentInterpretation = SoulMemoryIntentInterpretation.Unavailable(
-    allowHeuristicFallback = true,
+    allowHeuristicFallback = false,
     reason = "No soul memory intent interpreter configured.",
   )
 }

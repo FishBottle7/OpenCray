@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opencray.local/service/schemas/judge_result.schema.json",
+  "title": "JudgeResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "judge_mode",
+    "candidate_id",
+    "in_character",
+    "voice_similarity",
+    "decision_similarity",
+    "relationship_fit",
+    "scene_fit",
+    "memory_consistency",
+    "value_order_fit",
+    "interpersonal_stance_fit",
+    "speech_act_fit",
+    "regulation_fit",
+    "script_continuity_fit",
+    "anti_pattern_risk",
+    "quote_regurgitation_risk",
+    "fiction_contamination_risk",
+    "passes_identity_gate",
+    "passes_relationship_gate",
+    "passes_consistency_gate",
+    "passes_style_gate",
+    "hard_veto",
+    "veto_reasons",
+    "recommended_action",
+    "reasons",
+    "problems"
+  ],
+  "properties": {
+    "judge_mode": {
+      "type": "string",
+      "enum": [
+        "import_trait",
+        "generation",
+        "sequence"
+      ]
+    },
+    "candidate_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "in_character": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "voice_similarity": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "decision_similarity": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "relationship_fit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "scene_fit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "memory_consistency": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "value_order_fit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "interpersonal_stance_fit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "speech_act_fit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "regulation_fit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "script_continuity_fit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "opening_move_fit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "closure_fit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "boundary_calibration_fit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "intimacy_calibration_fit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "selected_counterpart_fit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "overlay_activation_fit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "relationship_state_fit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "rebind_contamination_risk": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "context_quality": {
+      "type": "string",
+      "enum": [
+        "full",
+        "degraded",
+        "minimal"
+      ]
+    },
+    "degraded_context_reason": {
+      "type": "string"
+    },
+    "anti_pattern_risk": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "quote_regurgitation_risk": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "fiction_contamination_risk": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "passes_identity_gate": {
+      "type": "boolean"
+    },
+    "passes_relationship_gate": {
+      "type": "boolean"
+    },
+    "passes_consistency_gate": {
+      "type": "boolean"
+    },
+    "passes_style_gate": {
+      "type": "boolean"
+    },
+    "recommended_action": {
+      "type": "string",
+      "enum": [
+        "accept",
+        "rewrite",
+        "reject"
+      ]
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "problems": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "rewrite_hint": {
+      "type": "string"
+    },
+    "hard_veto": {
+      "type": "boolean"
+    },
+    "veto_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

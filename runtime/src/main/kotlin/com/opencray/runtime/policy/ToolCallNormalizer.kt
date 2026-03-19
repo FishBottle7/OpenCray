@@ -255,6 +255,7 @@ class ToolCallNormalizer(
       "importfile" to "ImportFile",
       "import" to "ImportFile",
       "todowrite" to "TodoWrite",
+      "task" to "Task",
       "processstart" to "ProcessStart",
       "processlist" to "ProcessList",
       "processread" to "ProcessRead",

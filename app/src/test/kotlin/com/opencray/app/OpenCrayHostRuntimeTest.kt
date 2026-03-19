@@ -47,13 +47,20 @@ import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.SessionLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
+import com.opencray.core.orchestrator.SessionTaskRuntime
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
+import com.opencray.persistence.model.ChatAttachmentKind
 import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.store.MemoryStore
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.AgentTodoEntry
+import com.opencray.runtime.AgentTodoStatus
+import com.opencray.runtime.OpenCrayAttachmentArtifactMetadataKeys
+import com.opencray.runtime.OpenCrayExecutionMetadataKeys
+import com.opencray.runtime.OpenCrayFinalAttachment
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
@@ -63,14 +70,21 @@ import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.memory.MemoryCandidateExtractor
+import com.opencray.runtime.memory.MemoryKind
 import com.opencray.runtime.memory.MemoryRecordExtensionKeys
 import com.opencray.runtime.memory.MemoryPreferenceKeys
+import com.opencray.runtime.memory.MemoryScope
 import com.opencray.runtime.memory.MemorySoulExtensionKeys
 import com.opencray.runtime.memory.TaskCommitmentIntentAction
 import com.opencray.runtime.memory.TaskCommitmentIntentDecision
 import com.opencray.runtime.memory.TaskCommitmentIntentInterpretation
 import com.opencray.runtime.memory.TaskCommitmentIntentInterpreter
 import com.opencray.runtime.memory.TaskCommitmentIntentRequest
+import com.opencray.runtime.memory.UserMemoryIntent
+import com.opencray.runtime.memory.UserMemoryIntentInterpretation
+import com.opencray.runtime.memory.UserMemoryIntentInterpreter
+import com.opencray.runtime.memory.UserMemoryIntentRequest
 import com.opencray.runtime.memory.MemoryWriter
 import com.opencray.runtime.memory.TaskCommitmentResolver
 import com.opencray.policy.ExternalAccessMode
@@ -84,13 +98,16 @@ import com.opencray.runtime.soul.PreferredAddressStyle
 import com.opencray.runtime.soul.RelationshipState
 import com.opencray.runtime.soul.SoulMemoryExtensionKeys
 import com.opencray.runtime.soul.SoulMemoryObjectTypes
+import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.Executor
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -223,6 +240,150 @@ class OpenCrayHostRuntimeTest {
     assertEquals(sessionAId, chatStore.loadState().activeSession.sessionId)
     assertEquals(true, selectedSession["isSelected"])
     assertEquals(0, selectedSession["unreadCount"])
+  }
+
+  @Test
+  fun loadChatSnapshotIncludesTodosForActiveSession() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-todos"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = RecordingRuntimeManager(),
+      todoSnapshotProvider = { requestedSessionId ->
+        if (requestedSessionId != sessionId) {
+          emptyList()
+        } else {
+          listOf(
+            AgentTodoEntry(
+              content = "Review chat composer layout",
+              status = AgentTodoStatus.PENDING,
+            ),
+            AgentTodoEntry(
+              content = "Highlight active todo text",
+              status = AgentTodoStatus.IN_PROGRESS,
+              activeForm = "Highlighting active todo text",
+            ),
+            AgentTodoEntry(
+              content = "Approve Pencil prototype",
+              status = AgentTodoStatus.COMPLETED,
+            ),
+          )
+        }
+      },
+    )
+
+    val snapshot = hostRuntime.loadChatSnapshot()
+
+    val todos = snapshot["todos"] as List<*>
+    val pendingTodo = todos[0] as Map<*, *>
+    val activeTodo = todos[1] as Map<*, *>
+    val completedTodo = todos[2] as Map<*, *>
+
+    assertEquals(3, todos.size)
+    assertEquals("Review chat composer layout", pendingTodo["content"])
+    assertEquals("pending", pendingTodo["status"])
+    assertEquals("Highlight active todo text", activeTodo["content"])
+    assertEquals("in_progress", activeTodo["status"])
+    assertEquals("Highlighting active todo text", activeTodo["activeForm"])
+    assertEquals("Approve Pencil prototype", completedTodo["content"])
+    assertEquals("completed", completedTodo["status"])
+  }
+
+  @Test
+  fun chatObserverPublishesTodoSnapshotWhenTodoWriteResultArrives() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-todo-observer"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeManager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = sessionId,
+      onResume = runtimeManager.resumedSessionIds::add,
+    )
+    runtimeManager.putHandle(handle)
+    val mainThreadPoster = QueuedMainThreadPoster()
+    var currentTodos = emptyList<AgentTodoEntry>()
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = runtimeManager,
+      todoSnapshotProvider = { requestedSessionId ->
+        if (requestedSessionId == sessionId) currentTodos else emptyList()
+      },
+      mainThreadPoster = mainThreadPoster,
+    )
+    val observedSnapshots = mutableListOf<Map<String, Any?>>()
+    val dispose = hostRuntime.observeChat { snapshot ->
+      observedSnapshots += snapshot
+    }
+    mainThreadPoster.flush()
+    observedSnapshots.clear()
+
+    hostRuntime.submitChatMessage("Track active todo changes")
+    val task = handle.submittedTasks.single()
+    val run = handle.submissions.single()
+    mainThreadPoster.flush()
+    observedSnapshots.clear()
+
+    currentTodos = listOf(
+      AgentTodoEntry(
+        content = "Review chat composer layout",
+        status = AgentTodoStatus.IN_PROGRESS,
+        activeForm = "Reviewing chat composer layout",
+      ),
+    )
+    runtimeManager.emitRunEvent(
+      sessionId = sessionId,
+      task = task,
+      event = OpenCrayToolResultEvent(
+        runId = run.runId,
+        taskId = task.id,
+        turn = 0,
+        call = AgentToolCall(toolName = "TodoWrite"),
+        result = AgentToolResult(
+          toolName = "TodoWrite",
+          status = AgentToolResultStatus.SUCCESS,
+          content = "[in_progress] Review chat composer layout | active: Reviewing chat composer layout",
+          metadata = mapOf(
+            "todoCount" to "1",
+            "mutated" to "true",
+          ),
+        ),
+        emittedAtEpochMs = 1_001L,
+      ),
+    )
+    mainThreadPoster.flush()
+
+    val addedTodos = observedSnapshots.last()["todos"] as List<*>
+    val addedTodo = addedTodos.single() as Map<*, *>
+    assertEquals("Review chat composer layout", addedTodo["content"])
+    assertEquals("in_progress", addedTodo["status"])
+    assertEquals("Reviewing chat composer layout", addedTodo["activeForm"])
+
+    observedSnapshots.clear()
+    currentTodos = emptyList()
+    runtimeManager.emitRunEvent(
+      sessionId = sessionId,
+      task = task,
+      event = OpenCrayToolResultEvent(
+        runId = run.runId,
+        taskId = task.id,
+        turn = 1,
+        call = AgentToolCall(toolName = "TodoWrite"),
+        result = AgentToolResult(
+          toolName = "TodoWrite",
+          status = AgentToolResultStatus.SUCCESS,
+          content = "Todo list is empty.",
+          metadata = mapOf(
+            "todoCount" to "0",
+            "mutated" to "true",
+          ),
+        ),
+        emittedAtEpochMs = 1_002L,
+      ),
+    )
+    mainThreadPoster.flush()
+    dispose()
+
+    val clearedTodos = observedSnapshots.last()["todos"] as List<*>
+    assertTrue(clearedTodos.isEmpty())
   }
 
   @Test
@@ -491,6 +652,270 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun submitChatMessageWhileRunActiveStoresSupplementInsteadOfQueueingFollowUp() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-mid-loop-supplement"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    hostRuntime.submitChatMessage("Inspect the repo")
+    val secondRun = hostRuntime.submitChatMessage("Also check the tests")
+
+    val messages = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+    val queuedInputs = chatStore.loadPendingUserInputs(activeSessionId)
+    val renderedMessages = (hostRuntime.loadChatSnapshot()["messages"] as List<*>)
+      .map { message -> (message as Map<*, *>)["text"] }
+
+    assertEquals(null, secondRun)
+    assertEquals(listOf("Inspect the repo", "Thinking"), messages.map { it.text })
+    assertTrue(queuedInputs.isEmpty())
+    assertEquals(
+      listOf("Inspect the repo", "Thinking", "Also check the tests"),
+      renderedMessages,
+    )
+    assertEquals(listOf("Inspect the repo"), handle.submittedInputs)
+    assertTrue(handle.cancelledTaskIds.isEmpty())
+  }
+
+  @Test
+  fun replayedSupplementEventProjectsOutboundBubbleForCurrentRun() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-replayed-supplement"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    var replayMessages: List<RuntimeConversationMessage> = emptyList()
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      transcriptMessagesProvider = { replayMessages },
+    )
+
+    hostRuntime.submitChatMessage("Inspect the repo")
+    val submittedTask = handle.submittedTasks.single()
+    val submittedRun = handle.submissions.single()
+    replayMessages = listOf(
+      RuntimeConversationMessage(
+        role = RuntimeConversationRole.TOOL,
+        content = """
+        supplement {"run_id":"${submittedRun.runId}","task_id":"${submittedTask.id}","turn":1,"entry_id":"supplement-1","text":"Also check the tests","checkpoint":"turn_start"}
+        """.trimIndent(),
+      ),
+    )
+
+    val renderedMessages = (hostRuntime.loadChatSnapshot()["messages"] as List<*>)
+      .map { it as Map<*, *> }
+
+    assertEquals(
+      listOf("Inspect the repo", "Also check the tests", "Thinking"),
+      renderedMessages.map { message -> message["text"] },
+    )
+    assertEquals("outbound", renderedMessages[1]["kind"])
+  }
+
+  @Test
+  fun unconsumedSupplementsPromoteIntoNextQueuedRunAfterCurrentRunFinishes() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-supplement-promote"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    hostRuntime.submitChatMessage("Inspect the workspace")
+    val firstTask = handle.submittedTasks.first()
+    assertEquals(null, hostRuntime.submitChatMessage("Also inspect the tests"))
+
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = firstTask,
+      result = ExecutionResult(
+        taskId = firstTask.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "First done.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = firstTask.metadata,
+      ),
+    )
+
+    val messages = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+
+    assertEquals(
+      listOf("Inspect the workspace", "First done.", "Also inspect the tests", "Thinking"),
+      messages.map { it.text },
+    )
+    assertEquals(listOf("Inspect the workspace", "Also inspect the tests"), handle.submittedInputs)
+    assertTrue(chatStore.loadPendingUserInputs(activeSessionId).isEmpty())
+  }
+
+  @Test
+  fun submitChatMessageWhileRunActiveQueuesFollowUpWhenDeferredQueueAlreadyExists() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-queued-follow-up"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    hostRuntime.submitChatMessage("Inspect the repo")
+    chatStore.enqueuePendingUserInput(activeSessionId, "Already queued")
+    val secondRun = hostRuntime.submitChatMessage("Also check the tests")
+
+    val messages = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+    val queuedInputs = chatStore.loadPendingUserInputs(activeSessionId)
+    val renderedMessages = (hostRuntime.loadChatSnapshot()["messages"] as List<*>)
+      .map { message -> (message as Map<*, *>)["text"] }
+    val runtimeActivity = hostRuntime.loadChatSnapshot()["runtimeActivity"] as Map<*, *>
+    val activeRuns = (runtimeActivity["activeRuns"] as List<*>).map { it as Map<*, *> }
+
+    assertEquals(null, secondRun)
+    assertEquals(listOf("Inspect the repo", "Thinking"), messages.map { it.text })
+    assertEquals(
+      listOf("Already queued", "Also check the tests"),
+      queuedInputs.map(PendingUserInputEntry::text),
+    )
+    assertEquals(
+      listOf("Inspect the repo", "Thinking", "Already queued", "Also check the tests"),
+      renderedMessages,
+    )
+    assertEquals(listOf("Inspect the repo"), handle.submittedInputs)
+    assertTrue(handle.cancelledTaskIds.isEmpty())
+    assertTrue(handle.cancelledPendingMessageIdSets.isEmpty())
+    assertEquals(1, activeRuns.size)
+    assertEquals(handle.submissions.first().runId, activeRuns.single()["runId"])
+  }
+
+  @Test
+  fun queuedFollowUpsDrainInOrderAfterEachRunCompletes() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-drain-follow-ups"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    hostRuntime.submitChatMessage("Inspect the workspace")
+    val firstTask = handle.submittedTasks.first()
+    chatStore.enqueuePendingUserInput(activeSessionId, "Also inspect the tests")
+    assertEquals(null, hostRuntime.submitChatMessage("Then summarize"))
+
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = firstTask,
+      result = ExecutionResult(
+        taskId = firstTask.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "First done.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = firstTask.metadata,
+      ),
+    )
+
+    val secondTask = handle.submittedTasks.last()
+    val afterFirstCompletionMessages = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+    val afterFirstRuntime = hostRuntime.loadChatSnapshot()["runtimeActivity"] as Map<*, *>
+    val afterFirstActiveRuns = (afterFirstRuntime["activeRuns"] as List<*>)
+      .map { it as Map<*, *> }
+
+    assertEquals(
+      listOf("Inspect the workspace", "First done.", "Also inspect the tests", "Thinking"),
+      afterFirstCompletionMessages.map { it.text },
+    )
+    assertEquals(1, afterFirstActiveRuns.size)
+    assertEquals(handle.submissions.last().runId, afterFirstActiveRuns.single()["runId"])
+    assertEquals(listOf("Inspect the workspace", "Also inspect the tests"), handle.submittedInputs)
+    assertEquals(listOf("Then summarize"), chatStore.loadPendingUserInputs(activeSessionId).map { it.text })
+
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = secondTask,
+      result = ExecutionResult(
+        taskId = secondTask.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "Second done.",
+        startedAtEpochMs = 1_002L,
+        finishedAtEpochMs = 1_003L,
+        metadata = secondTask.metadata,
+      ),
+    )
+
+    val thirdTask = handle.submittedTasks.last()
+    val afterSecondCompletionMessages = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+    val afterSecondRuntime = hostRuntime.loadChatSnapshot()["runtimeActivity"] as Map<*, *>
+    val afterSecondActiveRuns = afterSecondRuntime["activeRuns"] as List<*>
+
+    assertEquals(
+      listOf(
+        "Inspect the workspace",
+        "First done.",
+        "Also inspect the tests",
+        "Second done.",
+        "Then summarize",
+        "Thinking",
+      ),
+      afterSecondCompletionMessages.map { it.text },
+    )
+    assertEquals(listOf("Inspect the workspace", "Also inspect the tests", "Then summarize"), handle.submittedInputs)
+    assertEquals(1, afterSecondActiveRuns.size)
+    assertTrue(chatStore.loadPendingUserInputs(activeSessionId).isEmpty())
+
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = thirdTask,
+      result = ExecutionResult(
+        taskId = thirdTask.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "All set.",
+        startedAtEpochMs = 1_004L,
+        finishedAtEpochMs = 1_005L,
+        metadata = thirdTask.metadata,
+      ),
+    )
+
+    val finalMessages = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+    val finalRuntime = hostRuntime.loadChatSnapshot()["runtimeActivity"] as Map<*, *>
+    val finalActiveRuns = finalRuntime["activeRuns"] as List<*>
+
+    assertEquals(
+      listOf(
+        "Inspect the workspace",
+        "First done.",
+        "Also inspect the tests",
+        "Second done.",
+        "Then summarize",
+        "All set.",
+      ),
+      finalMessages.map { it.text },
+    )
+    assertTrue(finalActiveRuns.isEmpty())
+  }
+
+  @Test
   fun submitChatMessageDoesNotAttachHostOnlyPolicyDetailToPromptTask() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-policy-detail"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -626,11 +1051,15 @@ class OpenCrayHostRuntimeTest {
       workspaceAccessProfileId = WorkspaceAccessProfile.WORK.wireValue,
       readOnlyOutsideWorkspace = true,
       liveContextModeId = LiveContextMode.NO_SOUL.wireValue,
+      memoryToolsEnabled = false,
     )
 
     assertEquals(LiveContextMode.NO_SOUL.wireValue, payload["liveContextModeId"])
+    assertEquals(false, payload["memoryToolsEnabled"])
     assertEquals(LiveContextMode.NO_SOUL.wireValue, safetyFacade.lastSavedRequest?.liveContextModeId)
+    assertEquals(false, safetyFacade.lastSavedRequest?.memoryToolsEnabled)
     assertEquals(LiveContextMode.NO_SOUL, safetyFacade.snapshot.liveContextMode)
+    assertEquals(false, safetyFacade.snapshot.memoryToolsEnabled)
   }
 
   @Test
@@ -742,6 +1171,452 @@ class OpenCrayHostRuntimeTest {
     assertEquals(
       "The agent produced an internal tool payload instead of a user-facing reply.",
       firstSession["preview"],
+    )
+  }
+
+  @Test
+  fun taskSuccessArchivesAssistantAttachmentsIntoWorkspaceMediaStore() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-assistant-attachments"),
+    )
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val workspaceRoot = temporaryFolder.newFolder("chat-media-workspace").toPath()
+    val approvedExternalRoot = temporaryFolder.newFolder("chat-media-approved").toPath()
+    Files.createDirectories(workspaceRoot.resolve("outputs"))
+    Files.write(workspaceRoot.resolve("outputs").resolve("diagram.png"), byteArrayOf(1, 2, 3, 4))
+    Files.write(approvedExternalRoot.resolve("voice-note.m4a"), byteArrayOf(5, 6, 7, 8))
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      workspaceRootProvider = { workspaceRoot },
+      approvedReadRootsProvider = {
+        ApprovedReadRootsSnapshot(
+          roots = setOf(approvedExternalRoot),
+          summary = approvedExternalRoot.toString(),
+        )
+      },
+    )
+
+    hostRuntime.submitChatMessage("Send the generated media.")
+    val task = handle.submittedTasks.single()
+    val attachmentsJson = Json.encodeToString(
+      ListSerializer(OpenCrayFinalAttachment.serializer()),
+      listOf(
+        OpenCrayFinalAttachment(
+          kind = "image",
+          relativePath = "outputs/diagram.png",
+          displayName = "diagram.png",
+        ),
+        OpenCrayFinalAttachment(
+          kind = "audio",
+          path = approvedExternalRoot.resolve("voice-note.m4a").toString(),
+          displayName = "voice-note.m4a",
+          durationMs = 4_200L,
+          waveformBars = listOf(12, 40, 88),
+          transcriptText = "Voice summary",
+        ),
+      ),
+    )
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          OpenCrayExecutionMetadataKeys.FINAL_ATTACHMENTS_JSON to attachmentsJson,
+        ),
+      ),
+    )
+
+    val assistantMessage = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+      .last()
+    val snapshot = hostRuntime.loadChatSnapshot()
+    val snapshotMessages = (snapshot["messages"] as List<*>).map { it as Map<*, *> }
+    val snapshotAttachments =
+      (snapshotMessages.last()["attachments"] as List<*>).map { it as Map<*, *> }
+
+    assertEquals(null, assistantMessage.text)
+    assertEquals(2, assistantMessage.attachments.size)
+    assertEquals(ChatAttachmentKind.IMAGE, assistantMessage.attachments.first().kind)
+    assertEquals(ChatAttachmentKind.VOICE, assistantMessage.attachments.last().kind)
+    assertEquals(4_200L, assistantMessage.attachments.last().durationMs)
+    assertEquals(listOf(12, 40, 88), assistantMessage.attachments.last().waveformBars)
+    assertEquals("Voice summary", assistantMessage.attachments.last().transcriptText)
+    assistantMessage.attachments.forEach { attachment ->
+      assertTrue(attachment.localPath.startsWith(".opencray/chat-media/$activeSessionId/"))
+      assertTrue(Files.exists(workspaceRoot.resolve(attachment.localPath)))
+    }
+    assertEquals(2, snapshotAttachments.size)
+    assertEquals("image", snapshotAttachments.first()["kind"])
+    assertEquals("voice", snapshotAttachments.last()["kind"])
+    assertEquals(4_200L, snapshotAttachments.last()["durationMs"])
+    assertEquals(listOf(12, 40, 88), snapshotAttachments.last()["waveformBars"])
+    assertEquals("Voice summary", snapshotAttachments.last()["transcriptText"])
+  }
+
+  @Test
+  fun taskSuccessResolvesArtifactOnlyAttachmentsIntoWorkspaceMediaStore() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-assistant-artifact-attachments"),
+    )
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val workspaceRoot = temporaryFolder.newFolder("chat-artifact-workspace").toPath()
+    Files.createDirectories(workspaceRoot.resolve("outputs"))
+    Files.write(workspaceRoot.resolve("outputs").resolve("diagram.png"), byteArrayOf(1, 2, 3, 4))
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      workspaceRootProvider = { workspaceRoot },
+    )
+
+    hostRuntime.submitChatMessage("Send the generated image by artifact id.")
+    val task = handle.submittedTasks.single()
+    val run = handle.submissions.single()
+    manager.emitRunEvent(
+      sessionId = activeSessionId,
+      task = task,
+      event = OpenCrayToolResultEvent(
+        runId = run.runId,
+        taskId = task.id,
+        turn = 0,
+        call = AgentToolCall(toolName = "workspace_write_file"),
+        result = AgentToolResult(
+          toolName = "workspace_write_file",
+          status = AgentToolResultStatus.SUCCESS,
+          content = "Wrote outputs/diagram.png successfully.",
+          metadata = mapOf(
+            OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_ID to "artifact-diagram-1234abcd",
+            OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_RELATIVE_PATH to "outputs/diagram.png",
+            OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_DISPLAY_NAME to "diagram.png",
+            OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_KIND_HINT to "image",
+            OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_MIME_TYPE to "image/png",
+          ),
+        ),
+        emittedAtEpochMs = 1_000L,
+      ),
+    )
+    val attachmentsJson = Json.encodeToString(
+      ListSerializer(OpenCrayFinalAttachment.serializer()),
+      listOf(
+        OpenCrayFinalAttachment(
+          artifactId = "artifact-diagram-1234abcd",
+        ),
+      ),
+    )
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          OpenCrayExecutionMetadataKeys.FINAL_ATTACHMENTS_JSON to attachmentsJson,
+        ),
+      ),
+    )
+
+    val assistantMessage = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+      .last()
+    val attachment = assistantMessage.attachments.single()
+
+    assertEquals(null, assistantMessage.text)
+    assertEquals(ChatAttachmentKind.IMAGE, attachment.kind)
+    assertEquals("diagram.png", attachment.displayName)
+    assertEquals("image/png", attachment.mimeType)
+    assertTrue(attachment.localPath.startsWith(".opencray/chat-media/$activeSessionId/"))
+    assertTrue(Files.exists(workspaceRoot.resolve(attachment.localPath)))
+  }
+
+  @Test
+  fun taskSuccessBackfillsMissingVoiceMetadataAsynchronously() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-voice-metadata-backfill"),
+    )
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val workspaceRoot = temporaryFolder.newFolder("voice-metadata-backfill-workspace").toPath()
+    val approvedExternalRoot = temporaryFolder.newFolder("voice-metadata-backfill-approved").toPath()
+    val sourceVoice = approvedExternalRoot.resolve("voice-note.m4a")
+    Files.write(sourceVoice, byteArrayOf(5, 6, 7, 8))
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val queuedExecutor = QueuedExecutor()
+    var analyzerCallCount = 0
+    val cacheStore = AppAgentWorkspaceVoiceMetadataCacheStore.fromWorkspaceRoot(workspaceRoot)
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      workspaceRootProvider = { workspaceRoot },
+      approvedReadRootsProvider = {
+        ApprovedReadRootsSnapshot(
+          roots = setOf(approvedExternalRoot),
+          summary = approvedExternalRoot.toString(),
+        )
+      },
+      voiceMetadataAnalyzer = AppAgentWorkspaceVoiceMetadataAnalyzer { path, mimeType ->
+        analyzerCallCount += 1
+        assertTrue(path.startsWith(workspaceRoot.resolve(".opencray").normalize()))
+        assertEquals("audio/mp4", mimeType)
+        AppAgentWorkspaceVoiceMetadata(
+          durationMs = 4_200L,
+          waveformBars = listOf(12, 40, 88),
+          transcriptText = "Backfilled transcript",
+        )
+      },
+      voiceMetadataBackfillExecutor = queuedExecutor,
+      voiceMetadataCacheStore = cacheStore,
+    )
+
+    hostRuntime.submitChatMessage("Send the generated voice.")
+    val task = handle.submittedTasks.single()
+    val attachmentsJson = Json.encodeToString(
+      ListSerializer(OpenCrayFinalAttachment.serializer()),
+      listOf(
+        OpenCrayFinalAttachment(
+          kind = "voice",
+          path = sourceVoice.toString(),
+          displayName = "voice-note.m4a",
+        ),
+      ),
+    )
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          OpenCrayExecutionMetadataKeys.FINAL_ATTACHMENTS_JSON to attachmentsJson,
+        ),
+      ),
+    )
+
+    val initialAttachment = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+      .last()
+      .attachments
+      .single()
+    assertEquals(null, initialAttachment.durationMs)
+    assertTrue(initialAttachment.waveformBars.isEmpty())
+    assertEquals(null, initialAttachment.transcriptText)
+    assertEquals(1, queuedExecutor.pendingCount())
+    assertEquals(0, analyzerCallCount)
+
+    queuedExecutor.runAll()
+
+    val updatedAttachment = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+      .last()
+      .attachments
+      .single()
+    val snapshot = hostRuntime.loadChatSnapshot()
+    val snapshotAttachments = ((snapshot["messages"] as List<*>).last() as Map<*, *>)["attachments"] as List<*>
+    val snapshotVoice = snapshotAttachments.single() as Map<*, *>
+    val cachedMetadata = cacheStore.get(updatedAttachment.contentSha256 ?: error("Expected voice hash."))
+
+    assertEquals(1, analyzerCallCount)
+    assertEquals(0, queuedExecutor.pendingCount())
+    assertEquals(4_200L, updatedAttachment.durationMs)
+    assertEquals(listOf(12, 40, 88), updatedAttachment.waveformBars)
+    assertEquals("Backfilled transcript", updatedAttachment.transcriptText)
+    assertEquals(4_200L, snapshotVoice["durationMs"])
+    assertEquals(listOf(12, 40, 88), snapshotVoice["waveformBars"])
+    assertEquals("Backfilled transcript", snapshotVoice["transcriptText"])
+    assertEquals(
+      AppAgentWorkspaceVoiceMetadata(
+        durationMs = 4_200L,
+        waveformBars = listOf(12, 40, 88),
+        transcriptText = "Backfilled transcript",
+      ),
+      cachedMetadata,
+    )
+  }
+
+  @Test
+  fun voiceMetadataBackfillReusesCacheForSameContentAcrossSessions() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-voice-metadata-cache-reuse"),
+    )
+    val firstSessionId = chatStore.loadState().activeSession.sessionId
+    val workspaceRoot = temporaryFolder.newFolder("voice-metadata-cache-workspace").toPath()
+    val approvedExternalRoot = temporaryFolder.newFolder("voice-metadata-cache-approved").toPath()
+    val sourceVoice = approvedExternalRoot.resolve("shared-voice.m4a")
+    Files.write(sourceVoice, byteArrayOf(9, 10, 11, 12))
+    val manager = RecordingRuntimeManager()
+    val firstHandle = RecordingSessionHandle(
+      sessionId = firstSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(firstHandle)
+    val queuedExecutor = QueuedExecutor()
+    var analyzerCallCount = 0
+    val cacheStore = AppAgentWorkspaceVoiceMetadataCacheStore.fromWorkspaceRoot(workspaceRoot)
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      workspaceRootProvider = { workspaceRoot },
+      approvedReadRootsProvider = {
+        ApprovedReadRootsSnapshot(
+          roots = setOf(approvedExternalRoot),
+          summary = approvedExternalRoot.toString(),
+        )
+      },
+      voiceMetadataAnalyzer = AppAgentWorkspaceVoiceMetadataAnalyzer { _, _ ->
+        analyzerCallCount += 1
+        AppAgentWorkspaceVoiceMetadata(
+          durationMs = 8_100L,
+          waveformBars = listOf(18, 36, 72),
+          transcriptText = "Cached transcript",
+        )
+      },
+      voiceMetadataBackfillExecutor = queuedExecutor,
+      voiceMetadataCacheStore = cacheStore,
+    )
+    val attachmentsJson = Json.encodeToString(
+      ListSerializer(OpenCrayFinalAttachment.serializer()),
+      listOf(
+        OpenCrayFinalAttachment(
+          kind = "voice",
+          path = sourceVoice.toString(),
+          displayName = "shared-voice.m4a",
+        ),
+      ),
+    )
+
+    hostRuntime.submitChatMessage("Send the first shared voice.")
+    val firstTask = firstHandle.submittedTasks.single()
+    manager.emitTaskFinished(
+      sessionId = firstSessionId,
+      task = firstTask,
+      result = ExecutionResult(
+        taskId = firstTask.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = firstTask.metadata + mapOf(
+          OpenCrayExecutionMetadataKeys.FINAL_ATTACHMENTS_JSON to attachmentsJson,
+        ),
+      ),
+    )
+    assertEquals(1, queuedExecutor.pendingCount())
+
+    queuedExecutor.runAll()
+
+    assertEquals(1, analyzerCallCount)
+    assertEquals(0, queuedExecutor.pendingCount())
+
+    hostRuntime.createChatSession()
+    val secondSessionId = chatStore.loadState().activeSession.sessionId
+    val secondHandle = RecordingSessionHandle(
+      sessionId = secondSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(secondHandle)
+
+    hostRuntime.submitChatMessage("Send the same shared voice again.")
+    val secondTask = secondHandle.submittedTasks.single()
+    manager.emitTaskFinished(
+      sessionId = secondSessionId,
+      task = secondTask,
+      result = ExecutionResult(
+        taskId = secondTask.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "",
+        startedAtEpochMs = 2_000L,
+        finishedAtEpochMs = 2_001L,
+        metadata = secondTask.metadata + mapOf(
+          OpenCrayExecutionMetadataKeys.FINAL_ATTACHMENTS_JSON to attachmentsJson,
+        ),
+      ),
+    )
+
+    val secondAttachment = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+      .last()
+      .attachments
+      .single()
+
+    assertEquals(1, analyzerCallCount)
+    assertEquals(0, queuedExecutor.pendingCount())
+    assertEquals(8_100L, secondAttachment.durationMs)
+    assertEquals(listOf(18, 36, 72), secondAttachment.waveformBars)
+    assertEquals("Cached transcript", secondAttachment.transcriptText)
+  }
+
+  @Test
+  fun loadWorkspaceVoicePlaybackSourceResolvesSupportedVoiceFiles() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-voice-playback-source"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-voice-playback-source").toPath()
+    val voiceFile = workspaceRoot.resolve(".opencray/chat-media/session-1/hash/voice-note.m4a")
+    Files.createDirectories(voiceFile.parent)
+    Files.write(voiceFile, byteArrayOf(1, 2, 3, 4))
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = NoOpRuntimeManager(),
+      workspaceRootProvider = { workspaceRoot },
+    )
+
+    val payload = hostRuntime.loadWorkspaceVoicePlaybackSource(
+      ".opencray/chat-media/session-1/hash/voice-note.m4a",
+    )
+
+    assertEquals("voice-note.m4a", payload["name"])
+    assertEquals(".opencray/chat-media/session-1/hash/voice-note.m4a", payload["relativePath"])
+    assertEquals(voiceFile.toAbsolutePath().normalize().toString(), payload["localFilePath"])
+    assertEquals("audio/mp4", payload["mimeType"])
+    assertEquals(4L, payload["sizeBytes"])
+  }
+
+  @Test
+  fun openWorkspaceEntryDelegatesToInjectedOpener() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-open-entry"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-open-entry").toPath()
+    val openedEntries = mutableListOf<Pair<Path, String>>()
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = NoOpRuntimeManager(),
+      workspaceRootProvider = { workspaceRoot },
+      workspaceEntryOpener = { root, relativePath ->
+        openedEntries += root to relativePath
+      },
+    )
+
+    hostRuntime.openWorkspaceEntry(".opencray/chat-media/session-1/hash/report.pdf")
+
+    assertEquals(
+      listOf(
+        workspaceRoot.toAbsolutePath().normalize() to
+          ".opencray/chat-media/session-1/hash/report.pdf",
+      ),
+      openedEntries,
     )
   }
 
@@ -868,6 +1743,7 @@ class OpenCrayHostRuntimeTest {
       memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(
         memoryStore = memoryStore,
         workspaceIdProvider = { AppWorkspaceIdentity.fromRoots(setOf(workspaceRoot)) },
+        candidateExtractor = semanticUserCandidateExtractor(),
       ),
     )
 
@@ -1303,6 +2179,57 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun approvalRequiredFailureIncludesDelegationDetailsInPendingApprovalBody() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approval-delegation"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    hostRuntime.submitChatMessage("Need delegation approval")
+    val task = handle.submittedTasks.single()
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.DENIED,
+        errorCode = "APPROVAL_REQUIRED",
+        errorMessage = "Approval is required before Task can delegate this work.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          "normalizedToolName" to "Task",
+          "targetSummary" to "Inspect README",
+          "delegationDescription" to "Inspect README",
+          "delegationPromptPreview" to "Read README.md and summarize it.",
+          "delegationAllowedTools" to "Glob,Grep,LS,Read",
+          "toolReason" to "Use a child researcher to inspect the repo first.",
+        ),
+      ),
+    )
+
+    val snapshot = hostRuntime.loadChatSnapshot()
+    val pendingApprovals = snapshot["pendingApprovals"] as List<*>
+    val pendingApproval = pendingApprovals.single() as Map<*, *>
+    val body = pendingApproval["body"] as String
+
+    assertEquals("Task", pendingApproval["toolName"])
+    assertEquals("Inspect README", pendingApproval["requestSummary"])
+    assertEquals("Inspect README", pendingApproval["primaryDetail"])
+    assertEquals("Use a child researcher to inspect the repo first.", pendingApproval["reason"])
+    assertEquals("Approval is required before Task can delegate this work.", pendingApproval["message"])
+    assertTrue(body.contains("Request: Inspect README"))
+    assertTrue(body.contains("Prompt: Read README.md and summarize it."))
+    assertTrue(body.contains("Allowed tools: Glob,Grep,LS,Read"))
+    assertTrue(body.contains("Agent reason: Use a child researcher to inspect the repo first."))
+  }
+
+  @Test
   fun approvalRequiredFailureAddsApprovalWaitEventToRuntimeActivity() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approval-runtime-event"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -1543,6 +2470,73 @@ class OpenCrayHostRuntimeTest {
       messages.map { message -> message["text"] },
     )
     assertEquals(true, messages[1]["isEphemeral"])
+    assertEquals(1_150L, messages[1]["createdAtEpochMs"])
+  }
+
+  @Test
+  fun chatSnapshotIncludesPersistedMessageTimestamps() {
+    var nowEpochMs = 1_000L
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-message-timestamps"),
+      nowEpochMs = { nowEpochMs },
+    )
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = NoOpRuntimeManager())
+
+    chatStore.appendUserMessage(
+      sessionId = activeSessionId,
+      text = "First persisted message",
+      commandLabel = null,
+      attachments = emptyList(),
+    )
+    nowEpochMs = 2_000L
+    chatStore.appendMessage(
+      sessionId = activeSessionId,
+      role = ChatTranscriptRole.ASSISTANT,
+      text = "Second persisted message",
+    )
+
+    val messages = (hostRuntime.loadChatSnapshot()["messages"] as List<*>)
+      .map { message -> message as Map<*, *> }
+
+    assertEquals(
+      listOf("First persisted message", "Second persisted message"),
+      messages.map { message -> message["text"] },
+    )
+    assertEquals(
+      listOf(1_000L, 2_000L),
+      messages.map { message -> message["createdAtEpochMs"] },
+    )
+  }
+
+  @Test
+  fun chatSnapshotDrawerIncludesLastMessageTimestamp() {
+    var nowEpochMs = 1_000L
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-drawer-message-timestamps"),
+      nowEpochMs = { nowEpochMs },
+    )
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = NoOpRuntimeManager())
+
+    chatStore.appendUserMessage(
+      sessionId = activeSessionId,
+      text = "First persisted message",
+      commandLabel = null,
+      attachments = emptyList(),
+    )
+    nowEpochMs = 2_000L
+    chatStore.appendMessage(
+      sessionId = activeSessionId,
+      role = ChatTranscriptRole.ASSISTANT,
+      text = "Second persisted message",
+    )
+
+    val drawer = hostRuntime.loadChatSnapshot()["drawer"] as Map<*, *>
+    val session = ((drawer["sessions"] as List<*>).single() as Map<*, *>)
+
+    assertEquals("2 messages", session["meta"])
+    assertEquals(2_000L, session["lastMessageAtEpochMs"])
   }
 
   @Test
@@ -2447,6 +3441,7 @@ class OpenCrayHostRuntimeTest {
     val runtimeActivity = snapshot["runtimeActivity"] as Map<*, *>
     val events = (runtimeActivity["events"] as List<*>).map { event -> event as Map<*, *> }
     val approvalResultEvent = events.last()
+    val composerPlaceholder = snapshot["composerPlaceholder"]
     val messages = chatStore.loadState().activeSession.messages
       .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
 
@@ -2469,6 +3464,7 @@ class OpenCrayHostRuntimeTest {
     assertEquals("Bash", approvalResultEvent["toolName"])
     assertEquals(true, approvalResultEvent["isHighRisk"])
     assertEquals("Approval granted. The agent is resuming.", approvalResultEvent["text"])
+    assertEquals("Message OpenCray", composerPlaceholder)
     assertEquals(
       listOf(
         "Need approval",
@@ -2530,6 +3526,7 @@ class OpenCrayHostRuntimeTest {
     val runtimeActivity = snapshot["runtimeActivity"] as Map<*, *>
     val events = (runtimeActivity["events"] as List<*>).map { event -> event as Map<*, *> }
     val approvalResultEvent = events.last()
+    val composerPlaceholder = snapshot["composerPlaceholder"]
     val messages = chatStore.loadState().activeSession.messages
       .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
 
@@ -2553,6 +3550,7 @@ class OpenCrayHostRuntimeTest {
     assertEquals("Write", approvalResultEvent["toolName"])
     assertEquals(false, approvalResultEvent["isHighRisk"])
     assertEquals("Approval rejected. The requested action was not run.", approvalResultEvent["text"])
+    assertEquals("Tell OpenCray differently", composerPlaceholder)
     assertEquals(
       listOf(
         "Need approval",
@@ -2561,6 +3559,94 @@ class OpenCrayHostRuntimeTest {
       ),
       messages.map { it.text },
     )
+  }
+
+  @Test
+  fun rejectChatApprovalRetainsRunAfterCancellationSettles() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approval-retained"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+      resumeResult = true,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+    )
+
+    val run = hostRuntime.submitChatMessage("Need approval")!!
+    val task = handle.submittedTasks.single()
+    manager.emitRunEvent(
+      sessionId = activeSessionId,
+      task = task,
+      event = OpenCrayToolResultEvent(
+        runId = run["runId"] as String,
+        taskId = task.id,
+        turn = 0,
+        call = AgentToolCall(toolName = "Read"),
+        result = AgentToolResult(
+          toolName = "Read",
+          status = AgentToolResultStatus.SUCCESS,
+          content = "Read README.md:1-10",
+        ),
+        emittedAtEpochMs = 1_000L,
+      ),
+    )
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.DENIED,
+        errorCode = "APPROVAL_REQUIRED",
+        errorMessage = "Approval is required before Write can run.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          "normalizedToolName" to "Write",
+        ),
+      ),
+    )
+
+    hostRuntime.rejectChatApproval(run["runId"] as String)
+
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.CANCELLED,
+        errorCode = "USER_CANCELLED",
+        errorMessage = "Cancelled after approval rejection.",
+        startedAtEpochMs = 1_002L,
+        finishedAtEpochMs = 1_003L,
+        metadata = task.metadata + mapOf(
+          "normalizedToolName" to "Write",
+        ),
+      ),
+    )
+
+    val runtimeActivity = hostRuntime.loadChatRuntimeSnapshot()
+    val activeRuns = runtimeActivity["activeRuns"] as List<*>
+    val retainedRuns = runtimeActivity["retainedRuns"] as List<*>
+    val retainedRun = retainedRuns.single() as Map<*, *>
+    val lastEvent = retainedRun["lastEvent"] as Map<*, *>
+    val composerPlaceholder = hostRuntime.loadChatSnapshot()["composerPlaceholder"]
+
+    assertTrue(activeRuns.isEmpty())
+    assertEquals(1, retainedRuns.size)
+    assertEquals(run["runId"], retainedRun["runId"])
+    assertEquals(task.id, retainedRun["taskId"])
+    assertEquals(false, retainedRun["isActive"])
+    assertEquals(true, retainedRun["isTerminal"])
+    assertEquals("approval_result", lastEvent["kind"])
+    assertEquals("rejected", lastEvent["status"])
+    assertEquals("Write", lastEvent["toolName"])
+    assertEquals(false, lastEvent["isHighRisk"])
+    assertEquals("Tell OpenCray differently", composerPlaceholder)
   }
 
   @Test
@@ -3158,6 +4244,9 @@ class OpenCrayHostRuntimeTest {
             InteractionPreferenceState(
               warmth = PreferenceAxisState(offset = 1, higherSupport = 2),
               formality = PreferenceAxisState(offset = -1, lowerSupport = 2),
+              initiative = PreferenceAxisState(offset = 1, higherSupport = 2),
+              playfulness = PreferenceAxisState(offset = 1, higherSupport = 2),
+              reassurance = PreferenceAxisState(offset = 1, higherSupport = 2),
               addressStyle = PreferredAddressState(
                 selectedStyle = PreferredAddressStyle.FRIENDLY,
                 friendlySupport = 2,
@@ -3217,57 +4306,102 @@ class OpenCrayHostRuntimeTest {
     assertEquals("Xiao Bai", effectiveSoul["displayName"])
     assertEquals("warm", effectiveSoul["tone"])
     assertEquals("warm and gentle", effectiveSoul["voice"])
+    assertEquals("1", effectiveSoul["warmthPreferenceOffset"])
+    assertEquals("-1", effectiveSoul["formalityPreferenceOffset"])
+    assertEquals("1", effectiveSoul["initiativePreferenceOffset"])
+    assertEquals("1", effectiveSoul["playfulnessPreferenceOffset"])
+    assertEquals("1", effectiveSoul["reassurancePreferenceOffset"])
+    assertEquals("true", effectiveSoul["supportiveReassuranceAllowed"])
+    assertEquals("true", effectiveSoul["proactiveRelationalCheckInAllowed"])
+    assertEquals("true", effectiveSoul["lightPlayfulnessAllowed"])
+    assertEquals("true", effectiveSoul["playfulTeasingAllowed"])
     assertEquals("user", interactionPreferenceDebug["scope"])
     assertEquals("A-Cheng", interactionPreferenceDebug["preferredNaming"])
     assertEquals("friendly", interactionPreferenceDebug["preferredAddressStyle"])
     assertEquals("user", relationshipStateDebug["scope"])
     assertEquals("intimate", relationshipStateDebug["derivedAddressStyle"])
     assertEquals(false, relationshipStateDebug["recentNegativeGuardActive"])
+    assertEquals(true, relationshipStateDebug["supportiveReassuranceAllowed"])
+    assertEquals(true, relationshipStateDebug["proactiveRelationalCheckInAllowed"])
+    assertEquals(true, relationshipStateDebug["lightPlayfulnessAllowed"])
+    assertEquals(true, relationshipStateDebug["playfulTeasingAllowed"])
     assertEquals(true, relationshipStateDebug["highIntimacyBehaviorAllowed"])
-    val displayNameSource = fieldSources
-      .map { item -> item as Map<*, *> }
-      .first { source -> source["field"] == "displayName" }
-    val preferredNamingSource = fieldSources
-      .map { item -> item as Map<*, *> }
-      .first { source -> source["field"] == "preferredNaming" }
-    val highIntimacySource = fieldSources
-      .map { item -> item as Map<*, *> }
-      .first { source -> source["field"] == "highIntimacyBehaviorAllowed" }
+    val mappedFieldSources = fieldSources.map { item -> item as Map<*, *> }
+    fun fieldSource(field: String): Map<*, *> =
+      mappedFieldSources.first { source -> source["field"] == field }
+
+    val displayNameSource = fieldSource("displayName")
+    val preferredNamingSource = fieldSource("preferredNaming")
+    val warmthOffsetSource = fieldSource("warmthPreferenceOffset")
+    val playfulnessOffsetSource = fieldSource("playfulnessPreferenceOffset")
+    val reassuranceOffsetSource = fieldSource("reassurancePreferenceOffset")
+    val supportiveReassuranceSource = fieldSource("supportiveReassuranceAllowed")
+    val proactiveCheckInSource = fieldSource("proactiveRelationalCheckInAllowed")
+    val lightPlayfulnessSource = fieldSource("lightPlayfulnessAllowed")
+    val playfulTeasingSource = fieldSource("playfulTeasingAllowed")
+    val highIntimacySource = fieldSource("highIntimacyBehaviorAllowed")
     assertEquals("memory_overlay", displayNameSource["sourceType"])
     assertEquals("memory-user", displayNameSource["recordId"])
     assertEquals("interaction_preference", preferredNamingSource["sourceType"])
     assertEquals("interaction-state", preferredNamingSource["recordId"])
+    assertEquals("interaction_preference", warmthOffsetSource["sourceType"])
+    assertEquals("interaction-state", warmthOffsetSource["recordId"])
+    assertEquals("interaction_preference", playfulnessOffsetSource["sourceType"])
+    assertEquals("interaction-state", playfulnessOffsetSource["recordId"])
+    assertEquals("interaction_preference", reassuranceOffsetSource["sourceType"])
+    assertEquals("interaction-state", reassuranceOffsetSource["recordId"])
+    assertEquals("relationship_state", supportiveReassuranceSource["sourceType"])
+    assertEquals("relationship-state", supportiveReassuranceSource["recordId"])
+    assertEquals("relationship_state", proactiveCheckInSource["sourceType"])
+    assertEquals("relationship-state", proactiveCheckInSource["recordId"])
+    assertEquals("relationship_state", lightPlayfulnessSource["sourceType"])
+    assertEquals("relationship-state", lightPlayfulnessSource["recordId"])
+    assertEquals("relationship_state", playfulTeasingSource["sourceType"])
+    assertEquals("relationship-state", playfulTeasingSource["recordId"])
     assertEquals("relationship_state", highIntimacySource["sourceType"])
     assertEquals("relationship-state", highIntimacySource["recordId"])
   }
 
   @Test
-  fun loadSkillsSnapshotForwardsQueryToSkillsFacade() {
+  fun loadSkillsSnapshotQueryUsesSessionPipelineAndParsesToolResult() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-skills-query"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
     val skillsFacade = TestSkillsFacade().apply {
       snapshot = SkillsSnapshot(
         installedSkills = emptyList(),
-        installSources = emptyList(),
-        suggestedSkills = listOf(
-          SuggestedSkillSnapshot(
-            id = "roin-orca/skills/find-skills",
-            name = "find-skills",
-            description = "Remote result",
-            sourceRef = "roin-orca/skills@find-skills",
-            sourceLabel = "skills.sh",
+        installSources = listOf(
+          InstallSourceSnapshot(
+            id = "github-url",
+            title = "GitHub URL",
+            subtitle = "Enter a source ref.",
+            actionLabel = "Inspect",
+            isAvailable = true,
           ),
         ),
+        suggestedSkills = emptyList(),
       )
+    }
+    val handle = RecordingSessionHandle(sessionId = sessionId).apply {
+      queuedToolCompletion = QueuedToolCompletion(
+        toolName = "SkillsFind",
+        content = "find-skills\tremote\tinstall_ref=roin-orca/skills@find-skills\tsource=roin-orca/skills\tinstalls=42",
+      )
+    }
+    val runtimeManager = RecordingRuntimeManager().apply {
+      putHandle(handle)
     }
     val hostRuntime = hostRuntime(
       chatStore = chatStore,
-      runtimeManager = NoOpRuntimeManager(),
+      runtimeManager = runtimeManager,
       skillsFacade = skillsFacade,
     )
 
     val payload = hostRuntime.loadSkillsSnapshot(query = "find")
 
-    assertEquals("find", skillsFacade.lastLoadedQuery)
+    assertEquals("", skillsFacade.lastLoadedQuery)
+    assertEquals(AgentTaskType.TOOL_CALL, handle.submittedTasks.single().type)
+    assertTrue(handle.submittedTasks.single().input.contains("\"tool_name\":\"SkillsFind\""))
+    assertTrue(handle.submittedTasks.single().input.contains("\"query\":\"find\""))
     val suggestedSkills = payload["suggestedSkills"] as List<*>
     val firstResult = suggestedSkills.first() as Map<*, *>
     assertEquals("roin-orca/skills@find-skills", firstResult["sourceRef"])
@@ -3275,22 +4409,319 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
-  fun installSkillSourceUsesSkillsFacadeAndReturnsInstalledSkillMessage() {
+  fun installSkillSourceUsesSessionPipelineAndReturnsInstalledSkillMessage() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-install-source"))
-    val skillsFacade = TestSkillsFacade().apply {
-      installResult = SkillInstallRequestResult(installedSkillId = "find-skills")
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val handle = RecordingSessionHandle(sessionId = sessionId).apply {
+      queuedToolCompletion = QueuedToolCompletion(
+        toolName = "SkillsAdd",
+        content = "Installed skill 'find-skills' from remote source 'roin-orca/skills@find-skills'.",
+        metadata = mapOf("skillId" to "find-skills"),
+      )
+    }
+    val runtimeManager = RecordingRuntimeManager().apply {
+      putHandle(handle)
     }
     val hostRuntime = hostRuntime(
       chatStore = chatStore,
-      runtimeManager = NoOpRuntimeManager(),
-      skillsFacade = skillsFacade,
+      runtimeManager = runtimeManager,
     )
 
     val message = hostRuntime.installSkillSource("roin-orca/skills@find-skills")
 
-    assertEquals("roin-orca/skills@find-skills", skillsFacade.lastInstalledSourceRef)
+    assertTrue(handle.submittedTasks.any { task ->
+      task.type == AgentTaskType.TOOL_CALL &&
+        task.input.contains("\"tool_name\":\"SkillsAdd\"") &&
+        task.input.contains("\"sourceRef\":\"roin-orca/skills@find-skills\"")
+    })
     assertEquals("Installed find-skills.", message)
   }
+
+  @Test
+  fun installSkillSourcePassesSelectedSkillNameThroughSessionPipeline() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-install-source-selected"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val handle = RecordingSessionHandle(sessionId = sessionId).apply {
+      queuedToolCompletion = QueuedToolCompletion(
+        toolName = "SkillsAdd",
+        content = "Installed skill 'review-skills' from remote source 'roin-orca/skills'.",
+        metadata = mapOf("skillId" to "review-skills"),
+      )
+    }
+    val runtimeManager = RecordingRuntimeManager().apply {
+      putHandle(handle)
+    }
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = runtimeManager,
+    )
+
+    val message = hostRuntime.installSkillSource(
+      sourceRef = "roin-orca/skills",
+      selectedSkillName = "review-skills",
+    )
+
+    assertTrue(handle.submittedTasks.any { task ->
+      task.type == AgentTaskType.TOOL_CALL &&
+        task.input.contains("\"tool_name\":\"SkillsAdd\"") &&
+        task.input.contains("\"sourceRef\":\"roin-orca/skills\"") &&
+        task.input.contains("\"skill\":\"review-skills\"")
+    })
+    assertEquals("Installed review-skills.", message)
+  }
+
+  @Test
+  fun installSkillSourceBatchPassesSelectedSkillNamesThroughSessionPipeline() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-install-source-batch"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val handle = RecordingSessionHandle(sessionId = sessionId).apply {
+      queuedToolCompletion = QueuedToolCompletion(
+        toolName = "SkillsAddBatch",
+        content = """
+          batch_install	remote_github	source_ref=roin-orca/skills	requested_count=2	installed_count=2	failed_count=0
+          installed	find-skills	requested=find-skills	relative_path=skills/find-skills/SKILL.md
+          installed	review-skills	requested=review-skills	relative_path=skills/review-skills/SKILL.md
+        """.trimIndent(),
+        metadata = mapOf(
+          "sourceType" to "remote_github",
+          "sourceRef" to "roin-orca/skills",
+          "requestedCount" to "2",
+          "installedCount" to "2",
+          "failedCount" to "0",
+        ),
+      )
+    }
+    val runtimeManager = RecordingRuntimeManager().apply {
+      putHandle(handle)
+    }
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = runtimeManager,
+    )
+
+    val message = hostRuntime.installSkillSourceBatch(
+      sourceRef = "roin-orca/skills",
+      selectedSkillNames = listOf("find-skills", "review-skills"),
+    )
+
+    assertTrue(handle.submittedTasks.any { task ->
+      task.type == AgentTaskType.TOOL_CALL &&
+        task.input.contains("\"tool_name\":\"SkillsAddBatch\"") &&
+        task.input.contains("\"sourceRef\":\"roin-orca/skills\"") &&
+        task.input.contains("\"skills\":[\"find-skills\",\"review-skills\"]")
+    })
+    assertEquals("Installed 2 skills.", message)
+  }
+
+  @Test
+  fun inspectSkillSourceUsesSessionPipelineAndParsesToolResult() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-inspect-source"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val handle = RecordingSessionHandle(sessionId = sessionId).apply {
+      queuedToolCompletion = QueuedToolCompletion(
+        toolName = "SkillsInspect",
+        content = """
+          inspection	remote_github	source_ref=roin-orca/skills	source_path=https://github.com/roin-orca/skills	resolved_revision=main	resolved_commit=deadbeef	candidate_count=2
+          candidate	find-skills	description=Discover skills	relative_path=skills/find-skills/SKILL.md
+          candidate	review-skills	description=Review changes	relative_path=skills/review-skills/SKILL.md
+        """.trimIndent(),
+        metadata = mapOf(
+          "sourceType" to "remote_github",
+          "sourceRef" to "roin-orca/skills",
+          "candidateCount" to "2",
+        ),
+      )
+    }
+    val runtimeManager = RecordingRuntimeManager().apply {
+      putHandle(handle)
+    }
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = runtimeManager,
+    )
+
+    val payload = hostRuntime.inspectSkillSource("roin-orca/skills")
+
+    assertTrue(handle.submittedTasks.any { task ->
+      task.type == AgentTaskType.TOOL_CALL &&
+        task.input.contains("\"tool_name\":\"SkillsInspect\"") &&
+        task.input.contains("\"sourceRef\":\"roin-orca/skills\"")
+    })
+    assertEquals("remote_github", payload["sourceType"])
+    assertEquals("roin-orca/skills", payload["sourceRef"])
+    val candidates = payload["candidates"] as List<*>
+    assertEquals(2, candidates.size)
+    assertEquals("find-skills", (candidates[0] as Map<*, *>)["name"])
+    assertEquals("review-skills", (candidates[1] as Map<*, *>)["name"])
+  }
+
+  @Test
+  fun deleteInstalledSkillUsesSessionPipelineAndReturnsRemovedSkillMessage() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-delete-skill"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val handle = RecordingSessionHandle(sessionId = sessionId).apply {
+      queuedToolCompletion = QueuedToolCompletion(
+        toolName = "SkillsRemove",
+        content = "Removed skill 'find-skills' from the host-managed skills directory.",
+        metadata = mapOf("skillId" to "find-skills"),
+      )
+    }
+    val runtimeManager = RecordingRuntimeManager().apply {
+      putHandle(handle)
+    }
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = runtimeManager,
+    )
+
+    val message = hostRuntime.deleteInstalledSkill("find-skills")
+
+    assertTrue(handle.submittedTasks.any { task ->
+      task.type == AgentTaskType.TOOL_CALL &&
+        task.input.contains("\"tool_name\":\"SkillsRemove\"") &&
+        task.input.contains("\"skillId\":\"find-skills\"")
+    })
+    assertEquals("Removed find-skills.", message)
+  }
+
+  @Test
+  fun loadSkillsSnapshotWithoutQueryUsesSkillsListAndSkillsFindPipelines() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-skills-default"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val skillsFacade = TestSkillsFacade().apply {
+      snapshot = SkillsSnapshot(
+        installedSkills = listOf(
+          InstalledSkillSnapshot(
+            id = "find-skills",
+            name = "find-skills",
+            description = "Fallback description",
+            isEnabled = false,
+            sourceDirectoryPath = "/managed/find-skills",
+            canDelete = true,
+          ),
+        ),
+        installSources = listOf(
+          InstallSourceSnapshot(
+            id = "github-url",
+            title = "GitHub URL",
+            subtitle = "Enter a source ref.",
+            actionLabel = "Inspect",
+            isAvailable = true,
+          ),
+        ),
+        suggestedSkills = emptyList(),
+      )
+    }
+    val handle = RecordingSessionHandle(sessionId = sessionId).apply {
+      queuedToolCompletions += QueuedToolCompletion(
+        toolName = "SkillsList",
+        content = "find-skills\tgithub\tupdated_at=123\tdescription=Managed description",
+      )
+      queuedToolCompletions += QueuedToolCompletion(
+        toolName = "SkillsFind",
+        content = "remote-skill\tremote\tinstall_ref=acme/skills@remote-skill\tsource=acme/skills\tinstalls=7",
+      )
+    }
+    val runtimeManager = RecordingRuntimeManager().apply {
+      putHandle(handle)
+    }
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = runtimeManager,
+      skillsFacade = skillsFacade,
+    )
+
+    val payload = hostRuntime.loadSkillsSnapshot()
+
+    assertEquals(listOf("SkillsList", "SkillsFind"), handle.submittedTasks.map { task ->
+      TOOL_NAME_REGEX.find(task.input)?.groupValues?.getOrNull(1).orEmpty()
+    })
+    val installedSkills = payload["installedSkills"] as List<*>
+    val installed = installedSkills.single() as Map<*, *>
+    assertEquals("find-skills", installed["id"])
+    assertEquals("Managed description", installed["description"])
+    assertEquals(false, installed["isEnabled"])
+    assertEquals("/managed/find-skills", installed["sourceDirectoryPath"])
+    val suggestedSkills = payload["suggestedSkills"] as List<*>
+    val suggested = suggestedSkills.single() as Map<*, *>
+    assertEquals("acme/skills@remote-skill", suggested["sourceRef"])
+    assertEquals("skills.sh", suggested["sourceLabel"])
+  }
+
+  @Test
+  fun checkInstalledSkillUpdatesUsesDirectToolRuntimeFactory() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-skills-check"))
+    val directTaskRuntimeFactory = RecordingDirectTaskRuntimeFactory(
+      status = ExecutionStatus.SUCCESS,
+      stdout = "find-skills: up_to_date",
+    )
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = NoOpRuntimeManager(),
+      directTaskRuntimeFactory = directTaskRuntimeFactory,
+    )
+
+    val message = hostRuntime.checkInstalledSkillUpdates("find-skills")
+
+    assertEquals("find-skills: up_to_date", message)
+    assertEquals(chatStore.loadState().activeSession.sessionId, directTaskRuntimeFactory.lastSessionId)
+    assertEquals(AgentTaskType.TOOL_CALL, directTaskRuntimeFactory.lastTask?.type)
+    assertTrue(directTaskRuntimeFactory.lastTask?.input.orEmpty().contains("\"tool_name\":\"SkillsCheck\""))
+    assertTrue(directTaskRuntimeFactory.lastTask?.input.orEmpty().contains("\"skillId\":\"find-skills\""))
+  }
+
+  @Test
+  fun updateInstalledSkillUsesDirectToolRuntimeFactory() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-skills-update"))
+    val directTaskRuntimeFactory = RecordingDirectTaskRuntimeFactory(
+      status = ExecutionStatus.SUCCESS,
+      stdout = "find-skills: updated",
+    )
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = NoOpRuntimeManager(),
+      directTaskRuntimeFactory = directTaskRuntimeFactory,
+    )
+
+    val message = hostRuntime.updateInstalledSkill("find-skills")
+
+    assertEquals("find-skills: updated", message)
+    assertTrue(directTaskRuntimeFactory.submittedTasks.any { task ->
+      task.type == AgentTaskType.TOOL_CALL &&
+        task.input.contains("\"tool_name\":\"SkillsUpdate\"") &&
+        task.input.contains("\"skillId\":\"find-skills\"")
+    })
+  }
+
+  private fun semanticUserCandidateExtractor(): MemoryCandidateExtractor =
+    MemoryCandidateExtractor(
+      userIntentInterpreter = object : UserMemoryIntentInterpreter {
+        override fun interpret(
+          request: UserMemoryIntentRequest,
+        ): UserMemoryIntentInterpretation = UserMemoryIntentInterpretation.Success(
+          intents = buildList {
+            if (request.userInput.contains("Simplified Chinese", ignoreCase = true)) {
+              add(
+                UserMemoryIntent(
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.USER,
+                  content = "Default to Simplified Chinese for explanations",
+                ),
+              )
+            }
+            if (request.userInput.contains("git reset --hard", ignoreCase = true)) {
+              add(
+                UserMemoryIntent(
+                  kind = MemoryKind.DURABLE_INSTRUCTION,
+                  scope = MemoryScope.WORKSPACE,
+                  content = "Do not use git reset --hard in this repo",
+                ),
+              )
+            }
+          },
+        )
+      },
+    )
 
   private fun hostRuntime(
     chatStore: ChatSessionLocalStore,
@@ -3302,17 +4733,24 @@ class OpenCrayHostRuntimeTest {
     mcpSettingsFacade: McpSettingsFacade = RecordingMcpSettingsFacade(),
     safetySettingsFacade: SafetySettingsFacade = RecordingSafetySettingsFacade(),
     skillsFacade: SkillsFacade = TestSkillsFacade(),
+    directTaskRuntimeFactory: AgentSessionTaskRuntimeFactory? = null,
     memoryIngestionCoordinator: ChatMemoryIngestionCoordinator? = null,
     workspaceRootProvider: (() -> Path)? = null,
     approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot = {
       ApprovedReadRootsSnapshot(roots = emptySet(), summary = "workspace=unavailable")
     },
+    todoSnapshotProvider: (String) -> List<AgentTodoEntry> = { emptyList() },
     transcriptMessagesProvider: (String) -> List<RuntimeConversationMessage> = { emptyList() },
     approvalReplayRecorder: (String, String, String, String?, Boolean) -> Unit = { _, _, _, _, _ -> },
     approvalApprovedReplayRecorder: (String, String, String, String?, Boolean) -> Unit = { _, _, _, _, _ -> },
     runCancellationReplayRecorder: (String, String, String, String?) -> Unit = { _, _, _, _ -> },
     terminalReplayRepairer: (String, List<AgentRunSnapshot>) -> Unit = { _, _ -> },
     mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
+    workspaceEntryOpener: ((Path, String) -> Unit)? = null,
+    voiceMetadataAnalyzer: AppAgentWorkspaceVoiceMetadataAnalyzer =
+      AppAgentWorkspaceVoiceMetadataAnalyzer { _, _ -> null },
+    voiceMetadataBackfillExecutor: Executor = Executor { command -> command.run() },
+    voiceMetadataCacheStore: AppAgentWorkspaceVoiceMetadataCacheStore? = null,
   ): OpenCrayHostRuntime = OpenCrayHostRuntime.createForTest(
     stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
     chatSessionStore = chatStore,
@@ -3325,8 +4763,14 @@ class OpenCrayHostRuntimeTest {
     safetySettingsFacade = safetySettingsFacade,
     skillsFacade = skillsFacade,
     sessionRuntimeManager = runtimeManager,
+    directTaskRuntimeFactory = directTaskRuntimeFactory,
     workspaceRootProvider = workspaceRootProvider,
+    workspaceEntryOpener = workspaceEntryOpener,
     approvedReadRootsProvider = approvedReadRootsProvider,
+    voiceMetadataAnalyzer = voiceMetadataAnalyzer,
+    voiceMetadataBackfillExecutor = voiceMetadataBackfillExecutor,
+    voiceMetadataCacheStore = voiceMetadataCacheStore,
+    todoSnapshotProvider = todoSnapshotProvider,
     transcriptMessagesProvider = transcriptMessagesProvider,
     memoryIngestionCoordinator = memoryIngestionCoordinator,
     approvalReplayRecorder = approvalReplayRecorder,
@@ -3353,6 +4797,7 @@ class OpenCrayHostRuntimeTest {
       skillRemoved = { skillId -> "Removed $skillId." },
       skillsReloaded = "Reloaded skills from local storage.",
       composerPlaceholder = "Message OpenCray",
+      composerRejectedPlaceholder = "Tell OpenCray differently",
       agentThinking = "Thinking",
       agentCancelled = "Cancelled",
       agentMissingLlm = "Missing LLM",
@@ -3427,6 +4872,34 @@ class OpenCrayHostRuntimeTest {
     override fun release(sessionId: String) = Unit
 
     override fun releaseIdleSessions() = Unit
+  }
+
+  private class RecordingDirectTaskRuntimeFactory(
+    private val status: ExecutionStatus,
+    private val stdout: String = "",
+    private val errorMessage: String? = null,
+  ) : AgentSessionTaskRuntimeFactory {
+    var lastSessionId: String? = null
+    val submittedTasks = mutableListOf<AgentTask>()
+    var lastTask: AgentTask? = null
+
+    override fun create(
+      sessionId: String,
+      eventSink: com.opencray.runtime.OpenCrayAgentRuntimeEventSink,
+    ): SessionTaskRuntime = SessionTaskRuntime { task, _ ->
+      lastSessionId = sessionId
+      submittedTasks += task
+      lastTask = task
+      ExecutionResult(
+        taskId = task.id,
+        status = status,
+        stdout = if (status == ExecutionStatus.SUCCESS) stdout else "",
+        stderr = if (status == ExecutionStatus.SUCCESS) "" else (errorMessage ?: stdout),
+        errorMessage = if (status == ExecutionStatus.SUCCESS) null else errorMessage,
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_000L,
+      )
+    }
   }
 
   private class RecordingLlmConfigFacade(
@@ -3644,12 +5117,15 @@ class OpenCrayHostRuntimeTest {
         workspaceAccessProfile = WorkspaceAccessProfile.fromWireValue(request.workspaceAccessProfileId),
         readOnlyOutsideWorkspace = request.readOnlyOutsideWorkspace,
         liveContextMode = LiveContextMode.fromWireValue(request.liveContextModeId),
+        memoryToolsEnabled = request.memoryToolsEnabled,
       )
       return snapshot
     }
   }
 
   private companion object {
+    private val TOOL_NAME_REGEX: Regex = Regex("""\"tool_name\"\s*:\s*\"([^\"]+)\"""")
+
     fun defaultSafetySettingsSnapshot(): SafetySettingsSnapshot = SafetySettingsSnapshot(
       automationMode = SafetyAutomationMode.AUTO,
       rollbackJournalEnabled = true,
@@ -3669,6 +5145,7 @@ class OpenCrayHostRuntimeTest {
       ),
       workspaceAccessProfile = WorkspaceAccessProfile.WORK,
       readOnlyOutsideWorkspace = true,
+      memoryToolsEnabled = true,
     )
   }
 
@@ -3712,6 +5189,22 @@ class OpenCrayHostRuntimeTest {
       handlesBySession[sessionId]?.recordEvent(event)
       listeners.forEach { listener ->
         listener.onRunEvent(sessionId, task, event)
+        when (event) {
+          is OpenCrayToolCallEvent -> listener.onToolCall(
+            sessionId = sessionId,
+            task = task,
+            turn = event.turn,
+            call = event.call,
+          )
+          is OpenCrayToolResultEvent -> listener.onToolResult(
+            sessionId = sessionId,
+            task = task,
+            turn = event.turn,
+            call = event.call,
+            result = event.result,
+          )
+          else -> Unit
+        }
       }
     }
 
@@ -3929,6 +5422,22 @@ class OpenCrayHostRuntimeTest {
     }
   }
 
+  private class QueuedExecutor : Executor {
+    private val commands = ArrayDeque<Runnable>()
+
+    override fun execute(command: Runnable) {
+      commands += command
+    }
+
+    fun pendingCount(): Int = commands.size
+
+    fun runAll() {
+      while (commands.isNotEmpty()) {
+        commands.removeFirst().run()
+      }
+    }
+  }
+
   private class FixedTaskCommitmentIntentInterpreter(
     private val interpretation: TaskCommitmentIntentInterpretation,
   ) : TaskCommitmentIntentInterpreter {
@@ -3943,6 +5452,8 @@ class OpenCrayHostRuntimeTest {
     private val submitFailure: Throwable? = null,
     private val resumeResult: Boolean = false,
   ) : AgentSessionHandle {
+    var queuedToolCompletion: QueuedToolCompletion? = null
+    val queuedToolCompletions = mutableListOf<QueuedToolCompletion>()
     val submittedInputs = mutableListOf<String>()
     val submittedTasks = mutableListOf<AgentTask>()
     val submissions = mutableListOf<AgentRunSubmission>()
@@ -4001,6 +5512,47 @@ class OpenCrayHostRuntimeTest {
       return submission
     }
 
+    override fun submitTask(task: AgentTask): AgentRunSubmission {
+      submitFailure?.let { throw it }
+      val runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
+        ?.takeIf(String::isNotBlank)
+        ?: "run-${submittedTasks.size + 1}"
+      val submission = AgentRunSubmission(
+        sessionId = sessionId,
+        runId = runId,
+        taskId = task.id,
+        acceptedAtEpochMs = task.createdAtEpochMs,
+      )
+      lastSubmittedTaskId = task.id
+      submittedTasks += task
+      submissions += submission
+      runSnapshotsById[runId] = AgentRunSnapshot(
+        sessionId = sessionId,
+        runId = runId,
+        taskId = task.id,
+        acceptedAtEpochMs = task.createdAtEpochMs,
+        updatedAtEpochMs = task.createdAtEpochMs,
+        lifecycleState = null,
+        taskState = null,
+        pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID],
+      )
+      val completion = queuedToolCompletion?.also {
+        queuedToolCompletion = null
+      } ?: if (queuedToolCompletions.isNotEmpty()) {
+        queuedToolCompletions.removeAt(0)
+      } else {
+        null
+      }
+      completion?.also {
+        completeQueuedToolCall(
+          task = task,
+          submission = submission,
+          completion = it,
+        )
+      }
+      return submission
+    }
+
     override fun ensureProcessing() {
       lastSubmittedTaskId?.let(ensureProcessingTaskIds::add)
     }
@@ -4047,6 +5599,52 @@ class OpenCrayHostRuntimeTest {
             ?.get("processId"),
         ),
         lastEvent = event,
+      )
+    }
+
+    private fun completeQueuedToolCall(
+      task: AgentTask,
+      submission: AgentRunSubmission,
+      completion: QueuedToolCompletion,
+    ) {
+      val resolvedToolName = completion.toolName
+        ?: TOOL_NAME_REGEX.find(task.input)?.groupValues?.getOrNull(1)
+        ?: "UnknownTool"
+      val toolResult = AgentToolResult(
+        toolName = resolvedToolName,
+        status = when (completion.status) {
+          ExecutionStatus.SUCCESS -> AgentToolResultStatus.SUCCESS
+          ExecutionStatus.DENIED -> AgentToolResultStatus.DENIED
+          ExecutionStatus.CANCELLED -> AgentToolResultStatus.CANCELLED
+          ExecutionStatus.TIMEOUT -> AgentToolResultStatus.TIMEOUT
+          ExecutionStatus.FAILED -> AgentToolResultStatus.FAILED
+        },
+        content = completion.content,
+        errorCode = completion.errorCode,
+        errorMessage = completion.errorMessage,
+        metadata = completion.metadata,
+      )
+      recordEvent(
+        OpenCrayToolResultEvent(
+          runId = submission.runId,
+          taskId = task.id,
+          turn = 0,
+          call = AgentToolCall(toolName = resolvedToolName),
+          result = toolResult,
+          emittedAtEpochMs = task.createdAtEpochMs + 1L,
+        ),
+      )
+      recordResult(
+        task = task,
+        result = ExecutionResult(
+          taskId = task.id,
+          status = completion.status,
+          stdout = if (completion.status == ExecutionStatus.SUCCESS) completion.content else "",
+          errorCode = completion.errorCode,
+          errorMessage = completion.errorMessage,
+          startedAtEpochMs = task.createdAtEpochMs,
+          finishedAtEpochMs = task.createdAtEpochMs + 1L,
+        ),
       )
     }
 
@@ -4136,6 +5734,15 @@ class OpenCrayHostRuntimeTest {
       ?.let { processId -> if (processId in existing) existing else existing + processId }
       ?: existing
   }
+
+  private data class QueuedToolCompletion(
+    val toolName: String? = null,
+    val content: String,
+    val metadata: Map<String, String> = emptyMap(),
+    val status: ExecutionStatus = ExecutionStatus.SUCCESS,
+    val errorCode: String? = null,
+    val errorMessage: String? = null,
+  )
 
   private class FailingChatSessionLocalStore(
     directory: java.io.File,

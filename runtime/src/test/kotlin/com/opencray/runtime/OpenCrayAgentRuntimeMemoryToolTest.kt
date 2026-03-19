@@ -17,9 +17,11 @@ import com.opencray.llm.LiteLlmGatewayStatus
 import com.opencray.llm.LiteLlmRouteSelectionMetadata
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.runtime.memory.MemoryToolContext
+import com.opencray.runtime.context.AgentRuntimeSessionContext
 import com.opencray.runtime.memory.formatMemoryDateStamp
 import java.nio.file.Files
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -151,7 +153,9 @@ class OpenCrayAgentRuntimeMemoryToolTest {
         when (event) {
           is OpenCrayLifecycleEvent -> "lifecycle"
           is OpenCrayProgressEvent -> "progress"
+          is OpenCraySupplementEvent -> "supplement"
           is OpenCrayApprovalEvent -> "approval"
+          is OpenCraySubAgentEvent -> "subagent"
           is OpenCrayToolCallEvent -> "tool_call"
           is OpenCrayToolResultEvent -> "tool_result"
           is OpenCrayMemoryRetrievalEvent -> "memory_retrieval"
@@ -167,6 +171,94 @@ class OpenCrayAgentRuntimeMemoryToolTest {
     assertEquals(listOf("gradle", "wrapper", "repo", "root"), retrievalEvent.queryTerms)
     assertEquals(listOf("mem-workspace"), retrievalEvent.recordIds)
     assertEquals(1, retrievalEvent.resultCount)
+  }
+
+  @Test
+  fun runPromptTaskHidesMemoryToolsWhenDisabledForSession() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-memory-tool-hidden").toPath()
+    Files.createDirectories(workspaceRoot)
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"No memory tools should be visible."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot),
+          memoryToolContext = MemoryToolContext(
+            sessionId = "session-main",
+            workspaceId = "workspace-main",
+            records = listOf(
+              memoryRecord(
+                id = "mem-workspace",
+                content = "Project uses the Gradle wrapper from the repo root.",
+                kind = "project_fact",
+                scope = "workspace",
+                sourceSessionId = "session-source",
+                workspaceId = "workspace-main",
+                confirmedAtEpochMs = DAY_2_EPOCH_MS,
+                updatedAtEpochMs = DAY_2_EPOCH_MS,
+              ),
+            ),
+          ),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        sessionContext = AgentRuntimeSessionContext(
+          memoryToolsEnabled = false,
+        ),
+      ),
+      clock = IncrementingClock(start = 12_000L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask("What did we decide about the build setup earlier?"),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertFalse(gateway.requests.single().prompt.contains("memory_search"))
+    assertFalse(gateway.requests.single().prompt.contains("memory_get"))
+    assertFalse(gateway.requests.single().prompt.contains("search projected memory first instead of guessing"))
+  }
+
+  @Test
+  fun directToolCallTaskDeniesMemoryToolsWhenDisabledForSession() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-memory-tool-disabled").toPath()
+    Files.createDirectories(workspaceRoot)
+    val runtime = OpenCrayAgentRuntime(
+      gateway = RecordingGateway(outputs = emptyList()),
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot),
+          memoryToolContext = MemoryToolContext(
+            sessionId = "session-main",
+            workspaceId = "workspace-main",
+            records = emptyList(),
+          ),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        sessionContext = AgentRuntimeSessionContext(
+          memoryToolsEnabled = false,
+        ),
+      ),
+      clock = IncrementingClock(start = 13_000L)::next,
+    )
+
+    val result = runtime.execute(
+      task = toolCallTask(
+        """{"type":"tool_call","tool_name":"memory_search","arguments":{"query":"gradle wrapper repo root"}}""",
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.DENIED, result.status)
+    assertEquals("MEMORY_TOOL_DISABLED", result.errorCode)
+    assertTrue(result.errorMessage?.contains("disabled") == true)
+    assertEquals("memory_search", result.metadata["toolName"])
   }
 
   private fun promptTask(input: String): AgentTask = AgentTask(

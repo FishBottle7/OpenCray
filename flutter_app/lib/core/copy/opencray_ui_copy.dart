@@ -169,6 +169,8 @@ class OpenCrayUiCopy {
   String get skillsManageTab => isChinese ? '管理' : 'Manage';
   String get skillsInstallTab => isChinese ? '安装' : 'Install';
   String get skillsInstallButton => isChinese ? '安装' : 'Install';
+  String get skillsInspectButton => isChinese ? '检查' : 'Inspect';
+  String get skillsCancelAction => isChinese ? '取消' : 'Cancel';
   String get skillsSearchHint => isChinese
       ? '搜索技能，或输入 owner/repo、URL、本地路径'
       : 'Search skills or enter owner/repo, URL, or a local path';
@@ -177,6 +179,51 @@ class OpenCrayUiCopy {
   String skillsDirectInstallBody(String sourceRef) => isChinese
       ? '将“$sourceRef”直接交给 SkillsAdd 安装。'
       : 'Send "$sourceRef" straight to SkillsAdd for installation.';
+  String skillsInspectSourceTitle(String sourceTitle) => isChinese
+      ? '检查$sourceTitle'
+      : 'Inspect $sourceTitle';
+  String skillsSourceInputLabel(String sourceTitle) => isChinese
+      ? '$sourceTitle 来源'
+      : '$sourceTitle source';
+  String skillsSourceInputHint(String sourceId) {
+    switch (sourceId) {
+      case 'local-path':
+        return isChinese
+            ? '/storage/emulated/0/Download/skills'
+            : '/storage/emulated/0/Download/skills';
+      case 'github-url':
+        return isChinese
+            ? 'https://github.com/owner/repo 或 owner/repo'
+            : 'https://github.com/owner/repo or owner/repo';
+      case 'gitlab-url':
+        return isChinese
+            ? 'https://gitlab.com/group/project/repo 或 gitlab:group/project/repo'
+            : 'https://gitlab.com/group/project/repo or gitlab:group/project/repo';
+      default:
+        return isChinese ? '输入技能来源' : 'Enter a skill source';
+    }
+  }
+  String skillsInspectFailed(String sourceRef) => isChinese
+      ? '检查 $sourceRef 失败。'
+      : 'Failed to inspect $sourceRef.';
+  String skillsNoInstallableSkills(String sourceRef) => isChinese
+      ? '$sourceRef 里没有找到可安装技能。'
+      : 'No installable skills were found in $sourceRef.';
+  String skillsSelectSkillsTitle(String sourceRef) => isChinese
+      ? '选择要安装的技能'
+      : 'Choose skills to install';
+  String skillsSelectSkillsBody(String sourceRef) => isChinese
+      ? '$sourceRef 中包含多个技能，请选择要安装的项。'
+      : '$sourceRef contains multiple skills. Choose what to install.';
+  String get skillsSelectAllAction => isChinese ? '全选' : 'Select all';
+  String get skillsClearSelectionAction => isChinese ? '清空' : 'Clear';
+  String skillsInstallSelectedAction(int count) => isChinese
+      ? '安装所选 ($count)'
+      : 'Install selected ($count)';
+  String skillsInstallBatchSummary(int installedCount, int totalCount) =>
+      isChinese
+      ? '已安装 $installedCount / $totalCount 个技能。'
+      : 'Installed $installedCount of $totalCount skills.';
 
   String get llmPageSubtitle => isChinese
       ? '选择提供商、路由和响应默认值。'
@@ -296,6 +343,11 @@ class OpenCrayUiCopy {
   String get chatMessageSelectAction => isChinese ? '多选' : 'Select';
   String get chatMessageQuoteAction => isChinese ? '引用' : 'Quote';
   String get chatMessageCopied => isChinese ? '已复制消息。' : 'Message copied.';
+  String get chatSelectionDoneAction => isChinese ? '完成' : 'Done';
+  String chatSelectionCount(int count) =>
+      isChinese ? '已选 $count 条' : '$count Selected';
+  String get chatSelectionCopied =>
+      isChinese ? '已复制所选消息。' : 'Copied the selected messages.';
   String get chatMessageQuoted =>
       isChinese ? '已添加引用到输入框。' : 'Added quote to the composer.';
   String get chatMessageActionFailed =>
@@ -344,6 +396,7 @@ class OpenCrayUiCopy {
       ? '扫描当前改动列表并总结风险。'
       : 'Scan the current change list and summarize risks.';
   String get chatToday => isChinese ? '今天' : 'Today';
+  String get chatYesterday => isChinese ? '昨天' : 'Yesterday';
   String get chatSeedDrawerEyebrow => isChinese ? '会话历史' : 'SESSION HISTORY';
   String get chatSeedRecentSessions => isChinese ? '最近会话' : 'Recent sessions';
   String get chatSeedNewSession => isChinese ? '新建会话' : 'New session';
@@ -363,7 +416,7 @@ class OpenCrayUiCopy {
   String get chatSeedPrepareShellPreview => isChinese
       ? '把迁移拆成宿主层和表现层。'
       : 'Split the migration into host and presentation layers.';
-  String get chatSeedYesterday => isChinese ? '昨天' : 'Yesterday';
+  String get chatSeedYesterday => chatYesterday;
   String get chatSeedSummaryTitle =>
       isChinese ? '优化移动端布局' : 'Refine mobile layout';
   String get chatSeedSummaryBadge => isChinese ? '3 个待处理' : '3 pending';

@@ -116,6 +116,9 @@ internal interface AgentSessionHandle {
     metadata: Map<String, String> = emptyMap(),
   ): AgentRunSubmission
 
+  fun submitTask(task: AgentTask): AgentRunSubmission =
+    throw UnsupportedOperationException("submitTask is not supported by this runtime handle.")
+
   fun ensureProcessing()
 
   fun requestCancel(taskId: String): Boolean
@@ -299,22 +302,42 @@ private class ManagedAgentSessionHandle(
     metadata: Map<String, String>,
   ): AgentRunSubmission {
     touch()
-    val acceptedAtEpochMs = System.currentTimeMillis()
-    val runId = "run-$sessionId-${UUID.randomUUID().toString().take(8)}"
     val task = AgentTask(
       id = "prompt-$sessionId-${UUID.randomUUID().toString().take(8)}",
       type = com.opencray.core.contracts.AgentTaskType.PROMPT,
       input = userText,
       policyDecision = policyDecision,
-      createdAtEpochMs = acceptedAtEpochMs,
+      createdAtEpochMs = System.currentTimeMillis(),
       metadata = metadata + mapOf(
-        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to "run-$sessionId-${UUID.randomUUID().toString().take(8)}",
         AppAgentSessionTaskRuntimeFactory.METADATA_HOST_SESSION_ID to sessionId,
         AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to pendingMessageId,
         AppAgentSessionTaskRuntimeFactory.METADATA_VISIBLE_THROUGH_MESSAGE_ID to visibleThroughMessageId,
       ),
     )
-    val submittedTask = loop.submit(task)
+    return submitTask(task)
+  }
+
+  override fun submitTask(task: AgentTask): AgentRunSubmission {
+    touch()
+    val acceptedAtEpochMs = maxOf(System.currentTimeMillis(), task.createdAtEpochMs)
+    val runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
+      ?.takeIf(String::isNotBlank)
+      ?: "run-$sessionId-${UUID.randomUUID().toString().take(8)}"
+    val queuedTask = if (
+      task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
+        ?.takeIf(String::isNotBlank) == runId
+    ) {
+      task
+    } else {
+      task.copy(
+        metadata = task.metadata + mapOf(
+          AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+          AppAgentSessionTaskRuntimeFactory.METADATA_HOST_SESSION_ID to sessionId,
+        ),
+      )
+    }
+    val submittedTask = loop.submit(queuedTask)
     val submission = AgentRunSubmission(
       sessionId = sessionId,
       runId = runId,
@@ -324,7 +347,7 @@ private class ManagedAgentSessionHandle(
     synchronized(runLock) {
       val record = ManagedRunRecord(
         submission = submission,
-        pendingMessageId = pendingMessageId,
+        pendingMessageId = submittedTask.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID],
       )
       runRecordsById[runId] = record
       persistRunRecordLocked(record)

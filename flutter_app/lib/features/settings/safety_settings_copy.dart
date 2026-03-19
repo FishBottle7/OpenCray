@@ -183,6 +183,15 @@ class SafetySettingsCopy {
     }
   }
 
+  static const String memoryToolsTitle = 'Memory tools';
+
+  static String memoryToolsSummary(bool enabled) {
+    if (enabled) {
+      return 'Allow explicit memory_search and memory_get calls even when automatic recall is off.';
+    }
+    return 'Hide memory_search and memory_get and deny explicit memory lookups for the run.';
+  }
+
   static String sensitiveActionSummary({
     required String title,
     required ToolPolicyOverride policy,

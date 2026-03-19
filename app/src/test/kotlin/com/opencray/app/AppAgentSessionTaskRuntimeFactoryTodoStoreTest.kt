@@ -2,13 +2,32 @@ package com.opencray.app
 
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.store.MemoryStore
+import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.AgentTaskType
+import com.opencray.core.contracts.ExecutionResult
+import com.opencray.core.contracts.ExecutionStatus
+import com.opencray.core.contracts.PolicyDecision
+import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.bootstrap.BootstrapMode
+import com.opencray.runtime.memory.MemoryCandidateExtractor
 import com.opencray.runtime.memory.MemoryFlushOutcome
+import com.opencray.runtime.memory.MemoryInteractionPreferenceExtensionKeys
+import com.opencray.runtime.memory.MemoryKind
+import com.opencray.runtime.memory.MemoryPreferenceKeys
+import com.opencray.runtime.memory.MemoryScope
+import com.opencray.runtime.memory.MemorySoulExtensionKeys
+import com.opencray.runtime.memory.UserMemoryIntent
+import com.opencray.runtime.memory.UserMemoryIntentInterpretation
+import com.opencray.runtime.memory.UserMemoryIntentInterpreter
+import com.opencray.runtime.memory.UserMemoryIntentRequest
+import com.opencray.runtime.context.ContextManager
+import com.opencray.runtime.context.PromptAssembler
+import com.opencray.runtime.soul.SoulProfileExtensionKeys
+import com.opencray.runtime.soul.SoulMemoryObjectTypes
 import com.opencray.runtime.process.InMemoryAgentProcessRegistry
 import com.opencray.runtime.context.RuntimeConversationRole
 import java.io.File
@@ -559,6 +578,135 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
   }
 
   @Test
+  fun prepareSessionContextAppliesDurablePreferenceStateAcrossSessionsWhileKeepingSessionStyleLocal() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-cross-session-soul"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-cross-session-soul").toPath()
+    val workspaceId = "workspace-cross-session-soul"
+    val sessionOneId = chatStore.loadState().activeSession.sessionId
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { workspaceId },
+      candidateExtractor = semanticUserCandidateExtractor(),
+    )
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      memoryRecordsProvider = memoryStore::list,
+      memoryIngestionCoordinator = coordinator,
+    )
+
+    coordinator.ingestCompletedTurn(
+      sessionId = sessionOneId,
+      task = AgentTask(
+        id = "task-cross-session-soul-1",
+        type = AgentTaskType.PROMPT,
+        input = "以后对我温柔一点。以后叫我阿澄。以后称呼我亲切一点。",
+        policyDecision = PolicyDecision(
+          outcome = PolicyDecisionOutcome.ALLOW,
+          reasonCode = "TEST_ALLOW",
+        ),
+        createdAtEpochMs = 1_000L,
+      ),
+      result = ExecutionResult(
+        taskId = "task-cross-session-soul-1",
+        status = ExecutionStatus.SUCCESS,
+        stdout = "知道了。",
+        startedAtEpochMs = 1_100L,
+        finishedAtEpochMs = 1_200L,
+      ),
+      assistantOutput = "知道了。",
+      toolObservations = emptyList(),
+    )
+    coordinator.ingestCompletedTurn(
+      sessionId = sessionOneId,
+      task = AgentTask(
+        id = "task-cross-session-soul-2",
+        type = AgentTaskType.PROMPT,
+        input = "以后对我温柔一点。以后称呼我亲切一点。这次严肃一点。",
+        policyDecision = PolicyDecision(
+          outcome = PolicyDecisionOutcome.ALLOW,
+          reasonCode = "TEST_ALLOW",
+        ),
+        createdAtEpochMs = 1_300L,
+      ),
+      result = ExecutionResult(
+        taskId = "task-cross-session-soul-2",
+        status = ExecutionStatus.SUCCESS,
+        stdout = "知道了。",
+        startedAtEpochMs = 1_400L,
+        finishedAtEpochMs = 1_500L,
+      ),
+      assistantOutput = "知道了。",
+      toolObservations = emptyList(),
+    )
+
+    val sessionOnePrepared = factory.prepareSessionContext(
+      sessionId = sessionOneId,
+      workspaceId = workspaceId,
+      visibleThroughMessageId = null,
+      excludedMessageIds = emptySet(),
+      soulProfile = WorkspaceSoulProfile(
+        presetName = "BUILDER",
+        customLabel = "",
+        customGuidance = "Stay direct.",
+      ),
+      taskType = AgentTaskType.PROMPT,
+      taskId = "task-follow-up-session-one",
+      taskInput = "继续。",
+      transcriptStore = factory.transcriptStoreForSession(sessionOneId),
+      memoryRecords = memoryStore.list(),
+    )
+
+    val sessionTwoId = chatStore.createSession().activeSession.sessionId
+    val sessionTwoPrepared = factory.prepareSessionContext(
+      sessionId = sessionTwoId,
+      workspaceId = workspaceId,
+      visibleThroughMessageId = null,
+      excludedMessageIds = emptySet(),
+      soulProfile = WorkspaceSoulProfile(
+        presetName = "BUILDER",
+        customLabel = "",
+        customGuidance = "Stay direct.",
+      ),
+      taskType = AgentTaskType.PROMPT,
+      taskId = "task-follow-up-session-two",
+      taskInput = "继续。",
+      transcriptStore = factory.transcriptStoreForSession(sessionTwoId),
+      memoryRecords = memoryStore.list(),
+    )
+
+    val sessionOneSoul = checkNotNull(sessionOnePrepared.sessionContext.soulProfile)
+    val sessionTwoSoul = checkNotNull(sessionTwoPrepared.sessionContext.soulProfile)
+
+    assertEquals("阿澄", sessionOneSoul.extensions[SoulProfileExtensionKeys.PREFERRED_NAMING])
+    assertEquals("friendly", sessionOneSoul.extensions[SoulProfileExtensionKeys.PREFERRED_ADDRESS_STYLE])
+    assertEquals("serious and formal", sessionOneSoul.voice)
+    assertEquals("steady", sessionOneSoul.extensions[SoulProfileExtensionKeys.TONE])
+    assertEquals("direct", sessionOneSoul.extensions[SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE])
+
+    assertEquals("阿澄", sessionTwoSoul.extensions[SoulProfileExtensionKeys.PREFERRED_NAMING])
+    assertEquals("friendly", sessionTwoSoul.extensions[SoulProfileExtensionKeys.PREFERRED_ADDRESS_STYLE])
+    assertEquals("warm and gentle", sessionTwoSoul.voice)
+    assertEquals("warm", sessionTwoSoul.extensions[SoulProfileExtensionKeys.TONE])
+    assertEquals("supportive", sessionTwoSoul.extensions[SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE])
+    assertEquals("Stay direct.", sessionTwoSoul.customGuidance)
+
+    assertTrue(memoryStore.list().any { record ->
+      record.extensions["soul_object_type"] == SoulMemoryObjectTypes.INTERACTION_PREFERENCE_STATE
+    })
+    assertTrue(memoryStore.list().any { record ->
+      record.extensions["preference_key"] == "agent_style_profile" &&
+        record.extensions["scope"] == "session" &&
+        record.extensions["source_session_id"] == sessionOneId
+    })
+  }
+
+  @Test
   fun visibleSkillInventoryForLoadsVisibleSkillsAndTracksInvalidEntries() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-skill-inventory"))
     val workspaceRoot = temporaryFolder.newFolder("workspace-root-skill-inventory").toPath()
@@ -643,6 +791,7 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
       memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(
         memoryStore = memoryStore,
         workspaceIdProvider = { workspaceId },
+        candidateExtractor = semanticUserCandidateExtractor(),
       ),
     )
 
@@ -902,9 +1051,94 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     val noMemoryOrSoulPrepared = prepared(LiveContextMode.NO_MEMORY_OR_SOUL)
 
     assertTrue(fullPrepared.sessionContext.recalledMemory.memories.isNotEmpty())
+    assertTrue(fullPrepared.sessionContext.injectionPolicy.soulContractEnabled)
+    assertTrue(fullPrepared.sessionContext.injectionPolicy.automaticMemoryInjectionEnabled)
+    assertFalse(noMemoryOrSoulPrepared.sessionContext.injectionPolicy.soulContractEnabled)
+    assertFalse(noMemoryOrSoulPrepared.sessionContext.injectionPolicy.soulTurnPolicyEnabled)
+    assertFalse(noMemoryOrSoulPrepared.sessionContext.injectionPolicy.automaticMemoryInjectionEnabled)
+    assertFalse(noMemoryOrSoulPrepared.sessionContext.injectionPolicy.memoryDerivedPolicyEnabled)
     assertEquals("lightweight", noMemoryOrSoulPrepared.sessionContext.bootstrapContext.trace.mode)
     assertTrue(noMemoryOrSoulPrepared.effectiveMemoryRecords.isNotEmpty())
     assertTrue(noMemoryOrSoulPrepared.sessionContext.recalledMemory.memories.isEmpty())
+  }
+
+  @Test
+  fun prepareSessionContextLiveModesFailCloseSoulAndMemoryPromptLayers() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-live-prompt").toPath()
+    Files.write(
+      workspaceRoot.resolve("AGENTS.md"),
+      "# Agents\nFollow workspace instructions.".toByteArray(StandardCharsets.UTF_8),
+    )
+    Files.write(
+      workspaceRoot.resolve("SOUL.md"),
+      "# Soul\nStay warm.".toByteArray(StandardCharsets.UTF_8),
+    )
+    val memoryRecords = listOf(
+      memoryRecord(
+        id = "pref-language",
+        content = "Default to concise Chinese replies.",
+        kind = "user_preference",
+        scope = "user",
+        sourceSessionId = "session-source",
+      ),
+    )
+
+    fun assembledFor(mode: LiveContextMode) = run {
+      val chatStore = ChatSessionLocalStore(
+        temporaryFolder.newFolder("chat-store-live-prompt-${mode.wireValue}"),
+      )
+      val sessionId = chatStore.loadState().activeSession.sessionId
+      val factory = AppAgentSessionTaskRuntimeFactory(
+        llmSettingsProvider = { LlmSettingsState() },
+        sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+        soulProfileProvider = { null },
+        workspaceRootsProvider = { setOf(workspaceRoot) },
+        skillsRootsProvider = { emptyList() },
+        mcpReportProvider = { null },
+      )
+      val prepared = factory.prepareSessionContext(
+        sessionId = sessionId,
+        workspaceId = "workspace-live-prompt",
+        visibleThroughMessageId = null,
+        excludedMessageIds = emptySet(),
+        soulProfile = WorkspaceSoulProfile(
+          presetName = "BUILDER",
+          customLabel = "",
+          customGuidance = "Stay direct.",
+        ),
+        taskType = AgentTaskType.PROMPT,
+        taskId = "task-live-prompt-${mode.wireValue}",
+        taskInput = "Please keep using Chinese while continuing.",
+        transcriptStore = factory.transcriptStoreForSession(sessionId),
+        memoryRecords = memoryRecords,
+        liveContextMode = mode,
+      )
+      PromptAssembler().assemble(
+        ContextManager().prepare(
+          com.opencray.runtime.context.PromptAssemblyInput(
+            task = promptTask(input = "Please keep using Chinese while continuing."),
+            baseSystemPrompt = "Base identity.",
+            sessionContext = prepared.sessionContext,
+            toolDefinitions = emptyList(),
+            liveConversation = prepared.sessionContext.conversation,
+          ),
+        ),
+      )
+    }
+
+    val noSoulPrompt = assembledFor(LiveContextMode.NO_SOUL)
+    val noMemoryOrSoulPrompt = assembledFor(LiveContextMode.NO_MEMORY_OR_SOUL)
+
+    assertFalse(noSoulPrompt.systemPrompt.contains("[Personalization]"))
+    assertFalse(noSoulPrompt.systemPrompt.contains("behavior_guidance:"))
+    assertFalse(noSoulPrompt.systemPrompt.contains("[Bootstrap SOUL.md]"))
+    assertTrue(noSoulPrompt.taskPrompt.contains("[Retrieved Memory]"))
+    assertTrue(noSoulPrompt.taskPrompt.contains("Use recalled durable context"))
+
+    assertFalse(noMemoryOrSoulPrompt.systemPrompt.contains("[Personalization]"))
+    assertFalse(noMemoryOrSoulPrompt.systemPrompt.contains("behavior_guidance:"))
+    assertFalse(noMemoryOrSoulPrompt.systemPrompt.contains("[Bootstrap SOUL.md]"))
+    assertFalse(noMemoryOrSoulPrompt.taskPrompt.contains("[Retrieved Memory]"))
   }
 
   @Test
@@ -1004,6 +1238,122 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     Files.write(skillFile.toPath(), content.toByteArray(StandardCharsets.UTF_8))
     return skillFile
   }
+
+  private fun semanticUserCandidateExtractor(): MemoryCandidateExtractor =
+    MemoryCandidateExtractor(
+      userIntentInterpreter = object : UserMemoryIntentInterpreter {
+        override fun interpret(
+          request: UserMemoryIntentRequest,
+        ): UserMemoryIntentInterpretation {
+          val input = request.userInput
+          val intents = buildList {
+            if (input.contains("Simplified Chinese", ignoreCase = true)) {
+              add(
+                UserMemoryIntent(
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.USER,
+                  content = "Default to Simplified Chinese for explanations",
+                ),
+              )
+            }
+            if (input.contains("PowerShell", ignoreCase = true)) {
+              add(
+                UserMemoryIntent(
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.USER,
+                  content = "Default to PowerShell commands",
+                ),
+              )
+            }
+            if (input.contains("git reset --hard", ignoreCase = true)) {
+              add(
+                UserMemoryIntent(
+                  kind = MemoryKind.DURABLE_INSTRUCTION,
+                  scope = MemoryScope.WORKSPACE,
+                  content = "Do not use git reset --hard in this repo",
+                ),
+              )
+            }
+            if (input.contains("Gradle wrapper", ignoreCase = true)) {
+              add(
+                UserMemoryIntent(
+                  kind = MemoryKind.PROJECT_FACT,
+                  scope = MemoryScope.WORKSPACE,
+                  content = "Project uses the Gradle wrapper from the repo root",
+                ),
+              )
+            }
+            if (input.contains("以后对我温柔一点")) {
+              add(
+                UserMemoryIntent(
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.USER,
+                  preferenceKey = MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
+                  preferenceValue = "adaptive",
+                  preferenceExtensions = mapOf(
+                    MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION to "higher",
+                    MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION to "lower",
+                  ),
+                ),
+              )
+            }
+            if (input.contains("以后叫我阿澄")) {
+              add(
+                UserMemoryIntent(
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.USER,
+                  preferenceKey = MemoryPreferenceKeys.USER_PREFERRED_NAME,
+                  preferenceValue = "阿澄",
+                  soulExtensions = mapOf(
+                    MemorySoulExtensionKeys.PREFERRED_NAMING to "阿澄",
+                  ),
+                ),
+              )
+            }
+            if (input.contains("以后称呼我亲切一点")) {
+              add(
+                UserMemoryIntent(
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.USER,
+                  preferenceKey = MemoryPreferenceKeys.USER_ADDRESS_STYLE,
+                  preferenceValue = "friendly",
+                  soulExtensions = mapOf(
+                    MemorySoulExtensionKeys.PREFERRED_ADDRESS_STYLE to "friendly",
+                  ),
+                ),
+              )
+            }
+            if (input.contains("这次严肃一点")) {
+              add(
+                UserMemoryIntent(
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.SESSION,
+                  preferenceKey = MemoryPreferenceKeys.AGENT_STYLE_PROFILE,
+                  preferenceValue = "serious",
+                  soulExtensions = mapOf(
+                    MemorySoulExtensionKeys.TONE to "steady",
+                    MemorySoulExtensionKeys.VOICE to "serious and formal",
+                    MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE to "direct",
+                  ),
+                ),
+              )
+            }
+          }
+          return UserMemoryIntentInterpretation.Success(intents = intents)
+        }
+      },
+    )
+
+  private fun promptTask(input: String): AgentTask = AgentTask(
+    id = "task-live-context",
+    type = AgentTaskType.PROMPT,
+    input = input,
+    policyDecision = PolicyDecision(
+      outcome = PolicyDecisionOutcome.ALLOW,
+      reasonCode = "TEST_ALLOW",
+    ),
+    createdAtEpochMs = 100L,
+  )
 
   private class InMemoryMemoryStore : MemoryStore {
     private val records = linkedMapOf<String, MemoryRecord>()

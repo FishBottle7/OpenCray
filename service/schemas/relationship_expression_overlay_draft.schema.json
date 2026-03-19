@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opencray.local/service/schemas/relationship_expression_overlay_draft.schema.json",
+  "title": "RelationshipExpressionOverlayDraft",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "draft_id",
+    "twin_id",
+    "anchor_person_id",
+    "generated_at",
+    "overlays"
+  ],
+  "properties": {
+    "draft_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "twin_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "anchor_person_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "publish_target": {
+      "type": "string",
+      "enum": [
+        "soul_profile_extensions",
+        "review_only"
+      ]
+    },
+    "overall_confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "relationship_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "overlays": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "counterpart_id",
+          "counterpart_name",
+          "relationship_concentration",
+          "recurrence_score",
+          "stability_score"
+        ],
+        "properties": {
+          "counterpart_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "counterpart_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "relationship_label": {
+            "type": "string"
+          },
+          "relationship_concentration": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "recurrence_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "stability_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "dominant_conflict_patterns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "narrative_moments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "theme",
+                "confidence"
+              ],
+              "properties": {
+                "theme": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "summary": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "source_signal_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          },
+          "highlighted_scripts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "moves"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "moves": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "relationship_scope": {
+                  "type": "string"
+                },
+                "recurrence_score": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "observations": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "language_modes": {
+            "type": "object"
+          },
+          "speech_surface": {
+            "type": "object"
+          },
+          "source_signal_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "field_path",
+          "confidence",
+          "supporting_signal_ids"
+        ],
+        "properties": {
+          "field_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "supporting_signal_ids": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

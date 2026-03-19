@@ -6,6 +6,7 @@ import '../models/opencray_chat_snapshot.dart';
 import '../models/opencray_debug_snapshot.dart';
 import '../models/opencray_file_image_preview.dart';
 import '../models/opencray_file_text_preview.dart';
+import '../models/opencray_file_voice_playback_source.dart';
 import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
@@ -186,15 +187,22 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
                  isAvailable: false,
                ),
                OpenCraySkillInstallSourceSnapshot(
-                 id: 'local-folder',
+                 id: 'local-path',
                  title: 'Local path',
                  subtitle: 'Unavailable while the host bridge is disconnected.',
                  ctaLabel: 'Unavailable',
                  isAvailable: false,
                ),
                OpenCraySkillInstallSourceSnapshot(
-                 id: 'git-repository',
-                 title: 'GitHub repository',
+                 id: 'github-url',
+                 title: 'GitHub URL',
+                 subtitle: 'Unavailable while the host bridge is disconnected.',
+                 ctaLabel: 'Unavailable',
+                 isAvailable: false,
+               ),
+               OpenCraySkillInstallSourceSnapshot(
+                 id: 'gitlab-url',
+                 title: 'GitLab URL',
                  subtitle: 'Unavailable while the host bridge is disconnected.',
                  ctaLabel: 'Unavailable',
                  isAvailable: false,
@@ -349,6 +357,13 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<OpenCrayFileVoicePlaybackSource> loadWorkspaceVoicePlaybackSource(
+    String relativePath,
+  ) async {
+    throw StateError('Seed bridge does not support voice playback.');
+  }
+
+  @override
   Future<OpenCrayWorkspaceTextDocument> loadWorkspaceTextDocument(
     String relativePath,
   ) async {
@@ -372,6 +387,11 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
         documentsByPath: _textDocumentsByPath,
       ),
     );
+  }
+
+  @override
+  Future<void> openWorkspaceEntry(String relativePath) async {
+    throw StateError('Seed bridge does not support opening workspace files.');
   }
 
   @override
@@ -797,6 +817,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     required String workspaceAccessProfileId,
     required bool readOnlyOutsideWorkspace,
     String liveContextModeId = 'full',
+    bool memoryToolsEnabled = true,
   }) async {
     _safetySettings = OpenCraySafetySettingsSnapshot(
       automationModeId: automationModeId,
@@ -830,6 +851,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       workspaceAccessProfileId: workspaceAccessProfileId,
       readOnlyOutsideWorkspace: readOnlyOutsideWorkspace,
       liveContextModeId: liveContextModeId,
+      memoryToolsEnabled: memoryToolsEnabled,
     );
     return _safetySettings;
   }
@@ -873,8 +895,32 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       'Seed bridge refreshed local skills.';
 
   @override
-  Future<String?> installSkillSource(String sourceRef) async =>
+  Future<String?> checkInstalledSkillUpdates({String skillId = ''}) async =>
+      'Seed bridge does not support skill update checks.';
+
+  @override
+  Future<String?> updateInstalledSkill(String skillId) async =>
+      'Seed bridge does not support updating installed skills.';
+
+  @override
+  Future<OpenCraySkillSourceInspectionSnapshot> inspectSkillSource(
+    String sourceRef,
+  ) async => throw StateError(
+    'Seed bridge does not support skill source inspection.',
+  );
+
+  @override
+  Future<String?> installSkillSource(
+    String sourceRef, {
+    String selectedSkillName = '',
+  }) async =>
       'Seed bridge does not support skill installation.';
+
+  @override
+  Future<String?> installSkillSourceBatch(
+    String sourceRef, {
+    List<String> selectedSkillNames = const <String>[],
+  }) async => 'Seed bridge does not support skill installation.';
 
   @override
   Future<String?> installSuggestedSkill(String skillId) async =>
@@ -959,6 +1005,30 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
         overlayRecords: <OpenCrayMemoryDebugRecordSnapshot>[],
         fieldSources: <OpenCraySoulFieldSourceSnapshot>[],
       );
+
+  @override
+  Future<OpenCrayMemoryDebugSearchSnapshot> searchMemoryDebug({
+    required String query,
+    int maxResults = 4,
+    int minScore = 1,
+  }) async => OpenCrayMemoryDebugSearchSnapshot(
+    sessionId: '',
+    observedAtEpochMs: 0,
+    query: query,
+  );
+
+  @override
+  Future<OpenCrayMemoryDebugSliceSnapshot> getMemoryDebugSlice({
+    required String path,
+    int? fromLine,
+    int lines = 12,
+  }) async => OpenCrayMemoryDebugSliceSnapshot(
+    sessionId: '',
+    observedAtEpochMs: 0,
+    path: path,
+    startLine: fromLine ?? 1,
+    endLine: (fromLine ?? 1) + lines - 1,
+  );
 
   @override
   Future<OpenCrayChatRunSnapshot?> waitForChatRun(

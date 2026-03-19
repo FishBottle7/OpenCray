@@ -721,6 +721,124 @@ void main() {
   });
 
   testWidgets(
+    'soul inspector falls back to projected field sources when explicit field sources are absent',
+    (tester) async {
+      final facade = _buildDebugSettingsFacade();
+      final debugBridge = _FakeDebugBridge(
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+        ),
+        runSnapshots: const <String, OpenCrayChatRunSnapshot>{},
+        memorySnapshot: const OpenCrayMemoryDebugSnapshot(
+          sessionId: 'session-1',
+          observedAtEpochMs: 5000,
+        ),
+        linksSnapshot: _buildFallbackFieldSourceLinksSnapshot(),
+        soulSnapshot: _buildFallbackFieldSourceSoulSnapshot(),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.aboutVersion,
+            standalone: true,
+            debugBridge: debugBridge,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Open Debug Tools'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Soul Inspector'));
+      await tester.pumpAndSettle();
+
+      final fieldSourcesCard = find.byKey(
+        const ValueKey<String>('settings-soul-field-sources-card'),
+      );
+      final linkedActivityCard = find.byKey(
+        const ValueKey<String>('settings-soul-linked-activity-card'),
+      );
+
+      expect(
+        find.descendant(
+          of: fieldSourcesCard,
+          matching: find.textContaining(
+            'warmth offset ->: user interaction preference · user · Projected interaction-preference snapshot: 1',
+            findRichText: true,
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fieldSourcesCard,
+          matching: find.textContaining(
+            'reassurance offset ->: user interaction preference · user · Projected interaction-preference snapshot: 1',
+            findRichText: true,
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fieldSourcesCard,
+          matching: find.textContaining(
+            'supportive reassurance allowed ->: user relationship state · user · Relationship gate derived from relationship state and constrained by reassurance preference: true',
+            findRichText: true,
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fieldSourcesCard,
+          matching: find.textContaining(
+            'playful teasing allowed ->: user relationship state · user · Relationship gate derived from relationship state and constrained by playfulness preference: true',
+            findRichText: true,
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: linkedActivityCard,
+          matching: find.textContaining(
+            'interaction-state · preferred naming',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: linkedActivityCard,
+          matching: find.textContaining(
+            'relationship-state · intimacy band',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: linkedActivityCard,
+          matching: find.textContaining('run-interaction-state'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: linkedActivityCard,
+          matching: find.textContaining('run-relationship-state'),
+        ),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
     'network search page saves slot edits, provider changes, and add slot',
     (tester) async {
       final facade = _buildSettingsFacade();
@@ -956,18 +1074,31 @@ void main() {
         WorkspaceAccessProfile.open,
       );
 
-      await tester.tap(find.byType(Switch));
+      await tester.tap(find.byType(Switch).first);
+      await tester.pumpAndSettle();
+
+      expect(facade.safetySettings.memoryToolsEnabled, isFalse);
+
+      await tester.ensureVisible(find.text('Read-only outside workspace'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(Switch).at(1));
       await tester.pumpAndSettle();
 
       expect(facade.safetySettings.readOnlyOutsideWorkspace, isFalse);
 
+      await tester.ensureVisible(find.text('Full'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Full'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('No soul').last);
       await tester.pumpAndSettle();
       await tester.tap(find.text('No soul').last);
       await tester.pumpAndSettle();
 
       expect(facade.safetySettings.liveContextMode, LiveContextMode.noSoul);
 
+      await tester.ensureVisible(find.text('Review approved paths'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Review approved paths'));
       await tester.pumpAndSettle();
 
@@ -1632,6 +1763,182 @@ _FakeDebugBridge _buildDebugBridge() {
     ),
   );
 }
+
+OpenCraySoulDebugSnapshot _buildFallbackFieldSourceSoulSnapshot() =>
+    const OpenCraySoulDebugSnapshot(
+      sessionId: 'session-1',
+      workspaceId: 'workspace-main',
+      observedAtEpochMs: 5000,
+      storedSoul: OpenCrayStoredSoulRecordSnapshot(
+        agentId: 'app-shell-personalization',
+        displayName: 'Night Shift',
+        presetName: 'STEADY',
+        customGuidance: 'Keep replies calm and concrete.',
+      ),
+      baseSoul: OpenCraySoulProfileDebugSnapshot(
+        presetName: 'STEADY',
+        displayName: 'Night Shift',
+        customGuidance: 'Keep replies calm and concrete.',
+        tone: 'steady',
+        verbosity: 'balanced',
+        userRelationshipStyle: 'collaborative',
+        riskTolerance: 'conservative',
+        toolUseBias: 'verify_first',
+      ),
+      effectiveSoul: OpenCraySoulProfileDebugSnapshot(
+        presetName: 'STEADY',
+        displayName: 'Night Shift',
+        voice: 'steady and warm',
+        preferredNaming: 'A-Cheng',
+        preferredAddressStyle: 'friendly',
+        warmthPreferenceOffset: '1',
+        formalityPreferenceOffset: '-1',
+        initiativePreferenceOffset: '1',
+        playfulnessPreferenceOffset: '1',
+        reassurancePreferenceOffset: '1',
+        intimacyPermissionBand: 'warm',
+        playfulnessPermissionBand: 'familiar',
+        supportiveReassuranceAllowed: 'true',
+        proactiveRelationalCheckInAllowed: 'true',
+        lightPlayfulnessAllowed: 'true',
+        playfulTeasingAllowed: 'true',
+        highIntimacyBehaviorAllowed: 'true',
+        playfulAffectionAllowed: 'true',
+        customGuidance: 'Keep replies calm and concrete.',
+        tone: 'warm',
+        verbosity: 'balanced',
+        userRelationshipStyle: 'supportive',
+        riskTolerance: 'conservative',
+        toolUseBias: 'verify_first',
+      ),
+      fieldSources: <OpenCraySoulFieldSourceSnapshot>[],
+      interactionPreferenceDebug: OpenCrayInteractionPreferenceDebugSnapshot(
+        scope: 'user',
+        snapshotRecordId: 'interaction-state',
+        preferredNaming: 'A-Cheng',
+        preferredAddressStyle: 'friendly',
+        derivedRelationshipStyle: 'warm',
+        state: OpenCrayInteractionPreferenceStateSnapshot(
+          warmth: OpenCrayPreferenceAxisStateSnapshot(
+            offset: 1,
+            higherSupport: 2,
+          ),
+          formality: OpenCrayPreferenceAxisStateSnapshot(
+            offset: -1,
+            lowerSupport: 2,
+          ),
+          initiative: OpenCrayPreferenceAxisStateSnapshot(
+            offset: 1,
+            higherSupport: 2,
+          ),
+          playfulness: OpenCrayPreferenceAxisStateSnapshot(
+            offset: 1,
+            higherSupport: 2,
+          ),
+          reassurance: OpenCrayPreferenceAxisStateSnapshot(
+            offset: 1,
+            higherSupport: 2,
+          ),
+          addressStyle: OpenCrayPreferredAddressStateSnapshot(
+            selectedStyle: 'friendly',
+            friendlySupport: 2,
+          ),
+          preferredNaming: 'A-Cheng',
+          preferredNamingSupport: 2,
+        ),
+      ),
+      relationshipStateDebug: OpenCrayRelationshipStateDebugSnapshot(
+        scope: 'user',
+        snapshotRecordId: 'relationship-state',
+        state: OpenCrayRelationshipStateSnapshot(
+          familiarity: 66,
+          trust: 74,
+          safety: 76,
+          intimacyPermission: 61,
+          playfulnessPermission: 44,
+          affectionTendency: 34,
+          reciprocity: 49,
+        ),
+        recentNegativeGuardActive: false,
+        supportiveStyleUnlocked: true,
+        warmToneUnlocked: true,
+        derivedAddressStyle: 'intimate',
+        intimacyPermissionBand: 'warm',
+        playfulnessPermissionBand: 'familiar',
+        supportiveReassuranceAllowed: true,
+        proactiveRelationalCheckInAllowed: true,
+        lightPlayfulnessAllowed: true,
+        playfulTeasingAllowed: true,
+        highIntimacyBehaviorAllowed: true,
+        playfulAffectionAllowed: true,
+      ),
+    );
+
+OpenCrayMemoryDebugLinksSnapshot _buildFallbackFieldSourceLinksSnapshot() =>
+    const OpenCrayMemoryDebugLinksSnapshot(
+      sessionId: 'session-1',
+      observedAtEpochMs: 5000,
+      records: <OpenCrayMemoryDebugLinksEntrySnapshot>[
+        OpenCrayMemoryDebugLinksEntrySnapshot(
+          recordId: 'interaction-state',
+          sourceSessionId: 'session-1',
+          sourceTaskId: 'task-interaction-state',
+          sourceRun: OpenCrayDebugRunLinkSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-interaction-state',
+            taskId: 'task-interaction-state',
+            acceptedAtEpochMs: 2300,
+            updatedAtEpochMs: 2300,
+            executionStatus: 'success',
+            lifecycleState: 'completed',
+          ),
+          maintenanceActions: <OpenCrayMemoryMaintenanceActionLinkSnapshot>[
+            OpenCrayMemoryMaintenanceActionLinkSnapshot(
+              action: 'written',
+              occurredAtEpochMs: 2300,
+              run: OpenCrayDebugRunLinkSnapshot(
+                sessionId: 'session-1',
+                runId: 'run-interaction-state',
+                taskId: 'task-interaction-state',
+                acceptedAtEpochMs: 2300,
+                updatedAtEpochMs: 2300,
+                executionStatus: 'success',
+                lifecycleState: 'completed',
+              ),
+            ),
+          ],
+        ),
+        OpenCrayMemoryDebugLinksEntrySnapshot(
+          recordId: 'relationship-state',
+          sourceSessionId: 'session-1',
+          sourceTaskId: 'task-relationship-state',
+          sourceRun: OpenCrayDebugRunLinkSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-relationship-state',
+            taskId: 'task-relationship-state',
+            acceptedAtEpochMs: 2400,
+            updatedAtEpochMs: 2400,
+            executionStatus: 'success',
+            lifecycleState: 'completed',
+          ),
+          maintenanceActions: <OpenCrayMemoryMaintenanceActionLinkSnapshot>[
+            OpenCrayMemoryMaintenanceActionLinkSnapshot(
+              action: 'written',
+              occurredAtEpochMs: 2400,
+              run: OpenCrayDebugRunLinkSnapshot(
+                sessionId: 'session-1',
+                runId: 'run-relationship-state',
+                taskId: 'task-relationship-state',
+                acceptedAtEpochMs: 2400,
+                updatedAtEpochMs: 2400,
+                executionStatus: 'success',
+                lifecycleState: 'completed',
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
 
 class _FakeSettingsFacade implements SettingsFacade {
   _FakeSettingsFacade({

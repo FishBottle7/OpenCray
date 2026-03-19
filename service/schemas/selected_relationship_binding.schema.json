@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opencray.local/service/schemas/selected_relationship_binding.schema.json",
+  "title": "SelectedRelationshipBinding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "binding_id",
+    "twin_id",
+    "anchor_person_id",
+    "counterpart_entity_id",
+    "counterpart_binding_type",
+    "relationship_label",
+    "overlay_key",
+    "selection_source",
+    "status",
+    "selection_version",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "binding_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "twin_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "anchor_person_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "counterpart_entity_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "counterpart_binding_type": {
+      "type": "string",
+      "enum": [
+        "real_user",
+        "fictional_character"
+      ]
+    },
+    "relationship_label": {
+      "type": "string",
+      "minLength": 1
+    },
+    "overlay_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "selection_source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "active",
+        "superseded",
+        "withdrawn"
+      ]
+    },
+    "selection_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

@@ -101,7 +101,7 @@ class LiteLlmTaskCommitmentIntentInterpreterTest {
   }
 
   @Test
-  fun interpretAllowsFallbackWhenNoLlmIsConfigured() {
+  fun interpretFailsClosedWhenNoLlmIsConfigured() {
     val interpreter = LiteLlmTaskCommitmentIntentInterpreter(
       llmSettingsProvider = { LlmSettingsState() },
       providerClient = RecordingProviderClient(
@@ -123,7 +123,7 @@ class LiteLlmTaskCommitmentIntentInterpreterTest {
     )
 
     val unavailable = result as TaskCommitmentIntentInterpretation.Unavailable
-    assertEquals(true, unavailable.allowHeuristicFallback)
+    assertEquals(false, unavailable.allowHeuristicFallback)
   }
 
   private class RecordingProviderClient(

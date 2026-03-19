@@ -1,0 +1,9 @@
+{
+  "operation": "export_opencray_drafts",
+  "params": {
+    "twin_id": "twin_lin_01",
+    "query": "他和我最近是不是有隔阂",
+    "limit": 8,
+    "service_root": ".opencray/personality_service"
+  }
+}

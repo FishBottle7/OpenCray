@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opencray.local/service/schemas/twin_binding.schema.json",
+  "title": "TwinBinding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "twin_id",
+    "graph_group_id",
+    "anchor_person_id",
+    "interaction_mode",
+    "source_mode",
+    "current_user_role_binding",
+    "import_session_id"
+  ],
+  "properties": {
+    "twin_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "graph_group_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "anchor_person_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "interaction_mode": {
+      "type": "string",
+      "enum": [
+        "chat_twin",
+        "work_role"
+      ]
+    },
+    "source_mode": {
+      "type": "string",
+      "enum": [
+        "chat_history",
+        "fiction_work"
+      ]
+    },
+    "current_user_role_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "entity_id"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "real_user",
+            "fictional_character"
+          ]
+        },
+        "entity_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "selected_relationship_binding_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "import_session_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "focal_node_uuid": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "created_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    }
+  }
+}

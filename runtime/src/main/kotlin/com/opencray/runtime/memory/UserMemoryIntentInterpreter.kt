@@ -49,7 +49,7 @@ object NoOpUserMemoryIntentInterpreter : UserMemoryIntentInterpreter {
   override fun interpret(
     request: UserMemoryIntentRequest,
   ): UserMemoryIntentInterpretation = UserMemoryIntentInterpretation.Unavailable(
-    allowHeuristicFallback = true,
+    allowHeuristicFallback = false,
     reason = "No user memory intent interpreter configured.",
   )
 }

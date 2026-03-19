@@ -24,22 +24,89 @@ class OpenCrayChatMessageSnapshot {
     required this.kind,
     required this.text,
     this.meta = '',
+    this.createdAtEpochMs,
     this.isEphemeral = false,
+    this.attachments = const <OpenCrayChatAttachmentSnapshot>[],
   });
 
   final String messageId;
   final String kind;
   final String text;
   final String meta;
+  final int? createdAtEpochMs;
   final bool isEphemeral;
+  final List<OpenCrayChatAttachmentSnapshot> attachments;
 
   factory OpenCrayChatMessageSnapshot.fromMap(Map<Object?, Object?> map) {
+    final rawAttachments =
+        map['attachments'] as List<Object?>? ?? const <Object?>[];
     return OpenCrayChatMessageSnapshot(
       messageId: map['messageId'] as String? ?? '',
       kind: map['kind'] as String? ?? 'inbound',
       text: map['text'] as String? ?? '',
       meta: map['meta'] as String? ?? '',
+      createdAtEpochMs: map['createdAtEpochMs'] as int?,
       isEphemeral: map['isEphemeral'] as bool? ?? false,
+      attachments: rawAttachments
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatAttachmentSnapshot.fromMap)
+          .toList(growable: false),
+    );
+  }
+}
+
+class OpenCrayChatAttachmentSnapshot {
+  const OpenCrayChatAttachmentSnapshot({
+    this.attachmentId = '',
+    this.kind = 'file',
+    this.displayName = '',
+    this.localPath = '',
+    this.mimeType,
+    this.sizeBytes,
+    this.widthPx,
+    this.heightPx,
+    this.durationMs,
+    this.waveformBars = const <int>[],
+    this.transcriptText,
+    this.contentSha256,
+  });
+
+  final String attachmentId;
+  final String kind;
+  final String displayName;
+  final String localPath;
+  final String? mimeType;
+  final int? sizeBytes;
+  final int? widthPx;
+  final int? heightPx;
+  final int? durationMs;
+  final List<int> waveformBars;
+  final String? transcriptText;
+  final String? contentSha256;
+
+  factory OpenCrayChatAttachmentSnapshot.fromMap(Map<Object?, Object?> map) {
+    int? parseInt(Object? value) => switch (value) {
+      int intValue => intValue,
+      num numValue => numValue.toInt(),
+      _ => int.tryParse(value?.toString() ?? ''),
+    };
+
+    return OpenCrayChatAttachmentSnapshot(
+      attachmentId: map['attachmentId'] as String? ?? '',
+      kind: map['kind'] as String? ?? 'file',
+      displayName: map['displayName'] as String? ?? '',
+      localPath: map['localPath'] as String? ?? '',
+      mimeType: map['mimeType'] as String?,
+      sizeBytes: parseInt(map['sizeBytes']),
+      widthPx: parseInt(map['widthPx']),
+      heightPx: parseInt(map['heightPx']),
+      durationMs: parseInt(map['durationMs']),
+      waveformBars: (map['waveformBars'] as List<Object?>? ?? const <Object?>[])
+          .map(parseInt)
+          .whereType<int>()
+          .toList(growable: false),
+      transcriptText: map['transcriptText'] as String?,
+      contentSha256: map['contentSha256'] as String?,
     );
   }
 }
@@ -51,6 +118,7 @@ class OpenCrayChatSessionItemSnapshot {
     required this.preview,
     required this.meta,
     required this.isSelected,
+    this.lastMessageAtEpochMs,
     this.unreadCount = 0,
   });
 
@@ -59,6 +127,7 @@ class OpenCrayChatSessionItemSnapshot {
   final String preview;
   final String meta;
   final bool isSelected;
+  final int? lastMessageAtEpochMs;
   final int unreadCount;
 
   factory OpenCrayChatSessionItemSnapshot.fromMap(Map<Object?, Object?> map) {
@@ -68,6 +137,7 @@ class OpenCrayChatSessionItemSnapshot {
       preview: map['preview'] as String? ?? '',
       meta: map['meta'] as String? ?? '',
       isSelected: map['isSelected'] as bool? ?? false,
+      lastMessageAtEpochMs: map['lastMessageAtEpochMs'] as int?,
       unreadCount: map['unreadCount'] as int? ?? 0,
     );
   }
@@ -178,6 +248,12 @@ class OpenCrayChatRuntimeEventSnapshot {
     this.stage,
     this.toolName,
     this.isHighRisk = false,
+    this.label,
+    this.childRunId,
+    this.childTaskId,
+    this.subagentType,
+    this.contextMode,
+    this.depth,
     this.toolReason,
     this.argumentsJson,
     this.toolStatus,
@@ -217,6 +293,12 @@ class OpenCrayChatRuntimeEventSnapshot {
   final String? stage;
   final String? toolName;
   final bool isHighRisk;
+  final String? label;
+  final String? childRunId;
+  final String? childTaskId;
+  final String? subagentType;
+  final String? contextMode;
+  final int? depth;
   final String? toolReason;
   final String? argumentsJson;
   final String? toolStatus;
@@ -277,6 +359,12 @@ class OpenCrayChatRuntimeEventSnapshot {
       stage: map['stage'] as String?,
       toolName: map['toolName'] as String?,
       isHighRisk: map['isHighRisk'] as bool? ?? false,
+      label: map['label'] as String?,
+      childRunId: map['childRunId'] as String?,
+      childTaskId: map['childTaskId'] as String?,
+      subagentType: map['subagentType'] as String?,
+      contextMode: map['contextMode'] as String?,
+      depth: map['depth'] as int?,
       toolReason: map['toolReason'] as String?,
       argumentsJson: map['argumentsJson'] as String?,
       toolStatus: map['toolStatus'] as String?,
@@ -838,20 +926,28 @@ class OpenCrayChatRuntimeSnapshot {
   const OpenCrayChatRuntimeSnapshot({
     required this.sessionId,
     required this.activeRuns,
+    this.retainedRuns = const <OpenCrayChatRunSnapshot>[],
     required this.events,
   });
 
   final String sessionId;
   final List<OpenCrayChatRunSnapshot> activeRuns;
+  final List<OpenCrayChatRunSnapshot> retainedRuns;
   final List<OpenCrayChatRuntimeEventSnapshot> events;
 
   factory OpenCrayChatRuntimeSnapshot.fromMap(Map<Object?, Object?> map) {
     final rawActiveRuns =
         map['activeRuns'] as List<Object?>? ?? const <Object?>[];
+    final rawRetainedRuns =
+        map['retainedRuns'] as List<Object?>? ?? const <Object?>[];
     final rawEvents = map['events'] as List<Object?>? ?? const <Object?>[];
     return OpenCrayChatRuntimeSnapshot(
       sessionId: map['sessionId'] as String? ?? '',
       activeRuns: rawActiveRuns
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatRunSnapshot.fromMap)
+          .toList(growable: false),
+      retainedRuns: rawRetainedRuns
           .whereType<Map<Object?, Object?>>()
           .map(OpenCrayChatRunSnapshot.fromMap)
           .toList(growable: false),
@@ -886,6 +982,26 @@ class OpenCrayChatRunSubmission {
   }
 }
 
+class OpenCrayChatTodoSnapshot {
+  const OpenCrayChatTodoSnapshot({
+    required this.content,
+    required this.status,
+    this.activeForm,
+  });
+
+  final String content;
+  final String status;
+  final String? activeForm;
+
+  factory OpenCrayChatTodoSnapshot.fromMap(Map<Object?, Object?> map) {
+    return OpenCrayChatTodoSnapshot(
+      content: map['content'] as String? ?? '',
+      status: map['status'] as String? ?? 'pending',
+      activeForm: map['activeForm'] as String?,
+    );
+  }
+}
+
 class OpenCrayChatSnapshot {
   const OpenCrayChatSnapshot({
     required this.screenTitle,
@@ -896,6 +1012,7 @@ class OpenCrayChatSnapshot {
     required this.messages,
     required this.drawer,
     required this.isInputEnabled,
+    this.todos = const <OpenCrayChatTodoSnapshot>[],
     this.pendingApprovals = const <OpenCrayChatPendingApprovalSnapshot>[],
     this.runtimeActivity,
   });
@@ -908,11 +1025,13 @@ class OpenCrayChatSnapshot {
   final List<OpenCrayChatMessageSnapshot> messages;
   final OpenCrayChatDrawerSnapshot drawer;
   final bool isInputEnabled;
+  final List<OpenCrayChatTodoSnapshot> todos;
   final List<OpenCrayChatPendingApprovalSnapshot> pendingApprovals;
   final OpenCrayChatRuntimeSnapshot? runtimeActivity;
 
   factory OpenCrayChatSnapshot.fromMap(Map<Object?, Object?> map) {
     final rawMessages = map['messages'] as List<Object?>? ?? const <Object?>[];
+    final rawTodos = map['todos'] as List<Object?>? ?? const <Object?>[];
     final rawPendingApprovals =
         map['pendingApprovals'] as List<Object?>? ?? const <Object?>[];
     final rawRuntimeActivity = map['runtimeActivity'];
@@ -933,6 +1052,10 @@ class OpenCrayChatSnapshot {
         map['drawer'] as Map<Object?, Object?>? ?? const <Object?, Object?>{},
       ),
       isInputEnabled: map['isInputEnabled'] as bool? ?? true,
+      todos: rawTodos
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatTodoSnapshot.fromMap)
+          .toList(growable: false),
       pendingApprovals: rawPendingApprovals
           .whereType<Map<Object?, Object?>>()
           .map(OpenCrayChatPendingApprovalSnapshot.fromMap)

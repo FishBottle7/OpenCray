@@ -1,0 +1,40 @@
+{
+  "scene_labels": [
+    "conflict",
+    "boundary"
+  ],
+  "relationship_scope": "close_relationship",
+  "selected_relationship_binding_id": "relbind_twin_lin_01_actor_current_user_20260319T100000Z",
+  "counterpart_entity_id": "actor_current_user",
+  "overlay_key": "counterpart:actor_current_user",
+  "relationship_state_hints": {
+    "familiarity": "high",
+    "trust": "medium",
+    "safety": "medium"
+  },
+  "interaction_preference_hints": {
+    "warmth": "restrained",
+    "formality": "low"
+  },
+  "recent_script_hints": [
+    "clarify_feeling -> state_limit -> withdraw"
+  ],
+  "memory_hints": [
+    "The speaker is tired of repeated broken promises.",
+    "The speaker usually explains before withdrawing."
+  ],
+  "reference_quotes": [
+    "我不是在生气，我是觉得这样很累。"
+  ],
+  "source_mode": "chat_history",
+  "candidates": [
+    {
+      "candidate_id": "cand_01",
+      "text": "我不是在生气，只是有点累。今天先到这里吧。"
+    },
+    {
+      "candidate_id": "cand_02",
+      "text": "你真的太过分了！！！我再也不想理你了！！！"
+    }
+  ]
+}

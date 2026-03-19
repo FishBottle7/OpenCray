@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import com.opencray.runtime.bootstrap.BootstrapMode
+import com.opencray.runtime.context.ContextInjectionPolicy
 
 enum class LiveContextMode(
   val wireValue: String,
@@ -22,6 +23,7 @@ internal data class LiveContextPolicy(
   val bootstrapMode: BootstrapMode,
   val soulEnabled: Boolean,
   val memoryRecallEnabled: Boolean,
+  val injectionPolicy: ContextInjectionPolicy,
 )
 
 internal fun LiveContextMode.toPolicy(): LiveContextPolicy = when (this) {
@@ -29,29 +31,44 @@ internal fun LiveContextMode.toPolicy(): LiveContextPolicy = when (this) {
     bootstrapMode = BootstrapMode.FULL,
     soulEnabled = true,
     memoryRecallEnabled = true,
+    injectionPolicy = ContextInjectionPolicy(),
   )
 
   LiveContextMode.LIGHTWEIGHT -> LiveContextPolicy(
     bootstrapMode = BootstrapMode.LIGHTWEIGHT,
     soulEnabled = true,
     memoryRecallEnabled = true,
+    injectionPolicy = ContextInjectionPolicy(),
   )
 
   LiveContextMode.NONE -> LiveContextPolicy(
     bootstrapMode = BootstrapMode.NONE,
     soulEnabled = true,
     memoryRecallEnabled = true,
+    injectionPolicy = ContextInjectionPolicy(),
   )
 
   LiveContextMode.NO_SOUL -> LiveContextPolicy(
     bootstrapMode = BootstrapMode.LIGHTWEIGHT,
     soulEnabled = false,
     memoryRecallEnabled = true,
+    injectionPolicy = ContextInjectionPolicy(
+      soulContractEnabled = false,
+      soulTurnPolicyEnabled = false,
+      automaticMemoryInjectionEnabled = true,
+      memoryDerivedPolicyEnabled = true,
+    ),
   )
 
   LiveContextMode.NO_MEMORY_OR_SOUL -> LiveContextPolicy(
     bootstrapMode = BootstrapMode.LIGHTWEIGHT,
     soulEnabled = false,
     memoryRecallEnabled = false,
+    injectionPolicy = ContextInjectionPolicy(
+      soulContractEnabled = false,
+      soulTurnPolicyEnabled = false,
+      automaticMemoryInjectionEnabled = false,
+      memoryDerivedPolicyEnabled = false,
+    ),
   )
 }

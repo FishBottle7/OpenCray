@@ -15,8 +15,9 @@ private const val PREFERENCES_NAME = "opencray.skills.workspace"
 private const val PREF_PREFIX_ENABLED = "enabled:"
 
 private const val INSTALL_SOURCE_CURATED = "curated-library"
-private const val INSTALL_SOURCE_LOCAL = "local-folder"
-private const val INSTALL_SOURCE_GIT = "git-repository"
+private const val INSTALL_SOURCE_LOCAL = "local-path"
+private const val INSTALL_SOURCE_GITHUB = "github-url"
+private const val INSTALL_SOURCE_GITLAB = "gitlab-url"
 private val WINDOWS_ABSOLUTE_PATH_REGEX: Regex = Regex("^[A-Za-z]:[\\\\/].+")
 
 data class SkillsSnapshot(
@@ -228,7 +229,8 @@ internal class LocalSkillsFacade private constructor(
     }
 
     INSTALL_SOURCE_LOCAL -> context.getString(R.string.skills_activate_local_ready)
-    INSTALL_SOURCE_GIT -> context.getString(R.string.skills_activate_git_ready)
+    INSTALL_SOURCE_GITHUB -> context.getString(R.string.skills_activate_github_ready)
+    INSTALL_SOURCE_GITLAB -> context.getString(R.string.skills_activate_gitlab_ready)
     else -> context.getString(R.string.skills_activate_unknown)
   }
 
@@ -329,14 +331,21 @@ internal class LocalSkillsFacade private constructor(
         id = INSTALL_SOURCE_LOCAL,
         title = context.getString(R.string.skills_install_source_local_title),
         subtitle = context.getString(R.string.skills_install_source_local_subtitle_ready),
-        actionLabel = context.getString(R.string.skills_install_source_action_search),
+        actionLabel = context.getString(R.string.skills_install_source_action_inspect),
         isAvailable = true,
       ),
       InstallSourceSnapshot(
-        id = INSTALL_SOURCE_GIT,
-        title = context.getString(R.string.skills_install_source_git_title),
-        subtitle = context.getString(R.string.skills_install_source_git_subtitle_ready),
-        actionLabel = context.getString(R.string.skills_install_source_action_search),
+        id = INSTALL_SOURCE_GITHUB,
+        title = context.getString(R.string.skills_install_source_github_title),
+        subtitle = context.getString(R.string.skills_install_source_github_subtitle_ready),
+        actionLabel = context.getString(R.string.skills_install_source_action_inspect),
+        isAvailable = true,
+      ),
+      InstallSourceSnapshot(
+        id = INSTALL_SOURCE_GITLAB,
+        title = context.getString(R.string.skills_install_source_gitlab_title),
+        subtitle = context.getString(R.string.skills_install_source_gitlab_subtitle_ready),
+        actionLabel = context.getString(R.string.skills_install_source_action_inspect),
         isAvailable = true,
       ),
     )

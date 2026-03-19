@@ -5,7 +5,6 @@ import java.util.Locale
 object MemoryPreferenceKeys {
   const val AGENT_DISPLAY_NAME: String = "agent_display_name"
   const val AGENT_STYLE_PROFILE: String = "agent_style_profile"
-  const val RELATIONSHIP_STYLE_PROFILE: String = "relationship_style_profile"
   const val INTERACTION_PREFERENCE_SIGNAL: String = "interaction_preference_signal"
   const val AGENT_VERBOSITY: String = "agent_verbosity"
   const val USER_PREFERRED_NAME: String = "user_preferred_name"
@@ -31,12 +30,13 @@ object MemoryInteractionPreferenceExtensionKeys {
   const val WARMTH_DIRECTION: String = "interaction_preference_warmth_direction"
   const val FORMALITY_DIRECTION: String = "interaction_preference_formality_direction"
   const val INITIATIVE_DIRECTION: String = "interaction_preference_initiative_direction"
+  const val PLAYFULNESS_DIRECTION: String = "interaction_preference_playfulness_direction"
+  const val REASSURANCE_DIRECTION: String = "interaction_preference_reassurance_direction"
 }
 
 internal fun supportedSoulPreferenceKeys(): Set<String> = setOf(
   MemoryPreferenceKeys.AGENT_DISPLAY_NAME,
   MemoryPreferenceKeys.AGENT_STYLE_PROFILE,
-  MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE,
   MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
   MemoryPreferenceKeys.AGENT_VERBOSITY,
   MemoryPreferenceKeys.USER_PREFERRED_NAME,
@@ -72,9 +72,7 @@ internal fun shouldApplyDirectChatSoulPreference(
   MemoryPreferenceKeys.AGENT_VERBOSITY,
   -> scope == MemoryScope.SESSION
 
-  MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE,
-  MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
-  -> false
+  MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL -> false
 
   else -> false
 }
@@ -107,12 +105,6 @@ internal fun allowedSoulMemoryExtensionKeys(
     }
   }
 
-  MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE -> setOf(
-    MemorySoulExtensionKeys.VOICE,
-    MemorySoulExtensionKeys.TONE,
-    MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE,
-  )
-
   MemoryPreferenceKeys.AGENT_VERBOSITY -> {
     if (!shouldApplyDirectChatSoulPreference(preferenceKey, scope)) {
       emptySet()
@@ -129,12 +121,12 @@ internal fun allowedSoulMemoryExtensionKeys(
 internal fun allowedPreferenceMemoryExtensionKeys(
   preferenceKey: String,
 ): Set<String> = when (normalizeMemoryPreferenceKeyOrNull(preferenceKey)) {
-  MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE,
-  MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
-  -> setOf(
+  MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL -> setOf(
     MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION,
     MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION,
     MemoryInteractionPreferenceExtensionKeys.INITIATIVE_DIRECTION,
+    MemoryInteractionPreferenceExtensionKeys.PLAYFULNESS_DIRECTION,
+    MemoryInteractionPreferenceExtensionKeys.REASSURANCE_DIRECTION,
   )
 
   else -> emptySet()
@@ -172,11 +164,6 @@ internal fun buildSoulPreferenceExtensions(
     )
 
     MemoryPreferenceKeys.AGENT_STYLE_PROFILE -> styleProfilePreferenceExtensions(
-      styleProfile = normalizeMemoryPreferenceValueOrNull(preferenceValue) ?: return emptyMap(),
-      scope = effectiveScope,
-    )
-
-    MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE -> relationshipStylePreferenceExtensions(
       styleProfile = normalizeMemoryPreferenceValueOrNull(preferenceValue) ?: return emptyMap(),
       scope = effectiveScope,
     )
@@ -248,31 +235,7 @@ internal fun styleProfilePreferenceExtensions(
   }
 }
 
-internal fun relationshipStylePreferenceExtensions(
-  styleProfile: String,
-  scope: MemoryScope,
-): Map<String, String> = linkedMapOf(
-  MemoryRecordExtensionKeys.PREFERENCE_KEY to MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE,
-  MemoryRecordExtensionKeys.PREFERENCE_VALUE to styleProfile,
-  MemoryRecordExtensionKeys.PREFERENCE_TEMPORALITY to preferenceTemporalityFor(scope),
-).apply {
-  putAll(relationshipStyleSignalExtensions(styleProfile))
-  when (styleProfile.lowercase(Locale.US)) {
-    "warm" -> {
-      put(MemorySoulExtensionKeys.TONE, "warm")
-      put(MemorySoulExtensionKeys.VOICE, "warm and gentle")
-      put(MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE, "supportive")
-    }
-
-    "serious" -> {
-      put(MemorySoulExtensionKeys.TONE, "steady")
-      put(MemorySoulExtensionKeys.VOICE, "serious and formal")
-      put(MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE, "direct")
-    }
-  }
-}
-
-internal fun relationshipStyleSignalExtensions(
+internal fun styleProfileAdaptiveSignalExtensions(
   styleProfile: String,
 ): Map<String, String> = when (styleProfile.lowercase(Locale.US)) {
   "warm" -> linkedMapOf(
@@ -398,9 +361,7 @@ internal fun normalizePreferenceMemoryExtensions(
 internal fun preferenceSupportsSupersession(
   preferenceKey: String,
 ): Boolean = when (normalizeMemoryPreferenceKeyOrNull(preferenceKey)) {
-  MemoryPreferenceKeys.RELATIONSHIP_STYLE_PROFILE,
-  MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
-  -> false
+  MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL -> false
   else -> true
 }
 
@@ -438,6 +399,8 @@ private fun normalizePreferenceMemoryExtensionValueOrNull(
   MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION,
   MemoryInteractionPreferenceExtensionKeys.FORMALITY_DIRECTION,
   MemoryInteractionPreferenceExtensionKeys.INITIATIVE_DIRECTION,
+  MemoryInteractionPreferenceExtensionKeys.PLAYFULNESS_DIRECTION,
+  MemoryInteractionPreferenceExtensionKeys.REASSURANCE_DIRECTION,
   -> when (normalizeMemoryPreferenceKeyOrNull(raw)) {
     "higher",
     "lower",
@@ -492,6 +455,16 @@ private fun interactionPreferenceSignalSegments(
     rawDirection = extensions[MemoryInteractionPreferenceExtensionKeys.INITIATIVE_DIRECTION],
     axisToken = "initiative",
     summaryLabel = "initiative",
+  )?.let(::add)
+  interactionPreferenceSignalSegmentOrNull(
+    rawDirection = extensions[MemoryInteractionPreferenceExtensionKeys.PLAYFULNESS_DIRECTION],
+    axisToken = "playfulness",
+    summaryLabel = "playfulness",
+  )?.let(::add)
+  interactionPreferenceSignalSegmentOrNull(
+    rawDirection = extensions[MemoryInteractionPreferenceExtensionKeys.REASSURANCE_DIRECTION],
+    axisToken = "reassurance",
+    summaryLabel = "reassurance",
   )?.let(::add)
 }
 

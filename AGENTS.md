@@ -8,6 +8,7 @@ Use the Gradle wrapper from the repo root.
 
 - `.\gradlew.bat test` runs JVM unit tests across modules.
 - `.\gradlew.bat connectedDebugAndroidTest` runs Android instrumentation tests on a connected device or emulator.
+- `cd flutter_app && flutter test` runs Flutter widget and unit tests for the embedded Flutter module.
 - `python -m pytest` runs the Python integration and smoke tests from `python_tests/`.
 - `.\build-apk.ps1 -Variant debug` builds a debug APK and copies it to `build/apk/OpenCray-debug.apk`.
 - `.\gradlew.bat clean` removes generated build output.
@@ -17,6 +18,7 @@ Follow the existing Kotlin style: 2-space indentation, concise methods, and pack
 
 ## Testing Guidelines
 Place JVM tests under each module's `src/test/kotlin` and Android UI or integration tests under `app/src/androidTest/kotlin`. Name test files after the subject plus `Test`, for example `CommandExecutorTest.kt`. Add or update tests for behavior changes, especially around runtime policy, persistence, file operations, and navigation. For UI changes, verify layout behavior against `docs/mobile-ui-layout-spec.md` on phone-sized screens before merging.
+In the current Codex sandbox environment, `flutter` tool commands such as `flutter --version`, `flutter test`, and `flutter test --help` may hang without producing output. If that happens, rerun the Flutter command outside the sandbox with approval instead of treating it as a test failure. `dart analyze flutter_app` usually still works inside the sandbox and is a good first-pass verification step.
 
 ## Commit & Pull Request Guidelines
 Git history uses Conventional Commit prefixes such as `feat:` and `fix:`. In this repository, larger changes should be committed with a Chinese, standards-compliant summary, for example `feat: 重构文件工作台移动端布局`. Keep commits focused and include tests with the change when practical. Pull requests should describe the user-visible impact, list verification commands, link related issues, and include screenshots or recordings for UI updates.

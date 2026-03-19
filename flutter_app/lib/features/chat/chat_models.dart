@@ -4,7 +4,9 @@ enum ChatPrototypeVariant { main, empty, attachments, commandMenu, addMenu }
 
 enum ChatMessageKind { timeline, inbound, outbound }
 
-enum ChatAttachmentKind { image, file }
+enum ChatAttachmentKind { image, voice, file }
+
+enum ChatTodoStatus { pending, inProgress, completed }
 
 @immutable
 class ChatFeatureState {
@@ -123,14 +125,49 @@ class ChatMessageData {
     required this.kind,
     required this.text,
     this.meta = '',
+    this.createdAtEpochMs,
     this.isEphemeral = false,
+    this.attachments = const <ChatMessageAttachmentData>[],
   });
 
   final String messageId;
   final ChatMessageKind kind;
   final String text;
   final String meta;
+  final int? createdAtEpochMs;
   final bool isEphemeral;
+  final List<ChatMessageAttachmentData> attachments;
+}
+
+@immutable
+class ChatMessageAttachmentData {
+  const ChatMessageAttachmentData({
+    this.attachmentId = '',
+    required this.kind,
+    required this.displayName,
+    required this.localPath,
+    this.mimeType,
+    this.sizeBytes,
+    this.widthPx,
+    this.heightPx,
+    this.durationMs,
+    this.waveformBars = const <int>[],
+    this.transcriptText,
+    this.contentSha256,
+  });
+
+  final String attachmentId;
+  final ChatAttachmentKind kind;
+  final String displayName;
+  final String localPath;
+  final String? mimeType;
+  final int? sizeBytes;
+  final int? widthPx;
+  final int? heightPx;
+  final int? durationMs;
+  final List<int> waveformBars;
+  final String? transcriptText;
+  final String? contentSha256;
 }
 
 @immutable
@@ -174,6 +211,7 @@ class ChatPendingApprovalData {
 class ChatComposerState {
   const ChatComposerState({
     this.placeholder = 'Message OpenCray',
+    this.todos = const <ChatTodoItemData>[],
     this.attachments = const <ChatAttachmentData>[],
     this.selectedCommand,
     this.commandOptions = const <ChatCommandOptionData>[],
@@ -182,6 +220,7 @@ class ChatComposerState {
   });
 
   final String placeholder;
+  final List<ChatTodoItemData> todos;
   final List<ChatAttachmentData> attachments;
   final String? selectedCommand;
   final List<ChatCommandOptionData> commandOptions;
@@ -190,6 +229,7 @@ class ChatComposerState {
 
   ChatComposerState copyWith({
     String? placeholder,
+    List<ChatTodoItemData>? todos,
     List<ChatAttachmentData>? attachments,
     String? selectedCommand,
     List<ChatCommandOptionData>? commandOptions,
@@ -199,6 +239,7 @@ class ChatComposerState {
   }) {
     return ChatComposerState(
       placeholder: placeholder ?? this.placeholder,
+      todos: todos ?? this.todos,
       attachments: attachments ?? this.attachments,
       selectedCommand: clearSelectedCommand
           ? null
@@ -207,6 +248,29 @@ class ChatComposerState {
       addActions: addActions ?? this.addActions,
       showAddMenu: showAddMenu ?? this.showAddMenu,
     );
+  }
+}
+
+@immutable
+class ChatTodoItemData {
+  const ChatTodoItemData({
+    required this.content,
+    required this.status,
+    this.activeForm,
+  });
+
+  final String content;
+  final ChatTodoStatus status;
+  final String? activeForm;
+
+  String get displayText {
+    if (status == ChatTodoStatus.inProgress) {
+      final String? activeLabel = activeForm?.trim();
+      if (activeLabel != null && activeLabel.isNotEmpty) {
+        return activeLabel;
+      }
+    }
+    return content;
   }
 }
 
@@ -264,6 +328,7 @@ class ChatSessionListItemData {
     required this.preview,
     required this.meta,
     this.isSelected = false,
+    this.lastMessageAtEpochMs,
     this.unreadCount = 0,
   });
 
@@ -272,5 +337,6 @@ class ChatSessionListItemData {
   final String preview;
   final String meta;
   final bool isSelected;
+  final int? lastMessageAtEpochMs;
   final int unreadCount;
 }

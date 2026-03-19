@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opencray.local/service/schemas/import_session.schema.json",
+  "title": "ImportSession",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "twin_id",
+    "anchor_person_id",
+    "state",
+    "source_mode",
+    "source_refs",
+    "current_user_role_binding",
+    "artifact_refs",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "twin_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "anchor_person_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "created",
+        "preflight_scanned",
+        "binding_created",
+        "relationship_selected",
+        "graph_ingested",
+        "soul_extracted",
+        "drafts_projected",
+        "under_review",
+        "published",
+        "rebound",
+        "withdrawn",
+        "stale"
+      ]
+    },
+    "source_mode": {
+      "type": "string",
+      "enum": [
+        "chat_history",
+        "fiction_work"
+      ]
+    },
+    "source_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "source_hash": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "current_user_role_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "entity_id"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "real_user",
+            "fictional_character"
+          ]
+        },
+        "entity_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "selected_relationship_binding_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "artifact_refs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "graph_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binding_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "selected_relationship_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "base_soul_draft_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "relationship_overlay_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "relationship_graph_manifest_path": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

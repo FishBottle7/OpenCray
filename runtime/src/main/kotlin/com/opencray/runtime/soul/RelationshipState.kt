@@ -7,6 +7,8 @@ enum class InteractionPreferenceAxis {
   WARMTH,
   FORMALITY,
   INITIATIVE,
+  PLAYFULNESS,
+  REASSURANCE,
 }
 
 @Serializable
@@ -86,6 +88,8 @@ data class InteractionPreferenceState(
   val warmth: PreferenceAxisState = PreferenceAxisState(),
   val formality: PreferenceAxisState = PreferenceAxisState(),
   val initiative: PreferenceAxisState = PreferenceAxisState(),
+  val playfulness: PreferenceAxisState = PreferenceAxisState(),
+  val reassurance: PreferenceAxisState = PreferenceAxisState(),
   val addressStyle: PreferredAddressState = PreferredAddressState(),
   val preferredNaming: String? = null,
   val preferredNamingSupport: Int = 0,

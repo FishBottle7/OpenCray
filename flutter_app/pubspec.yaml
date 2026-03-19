@@ -26,6 +26,7 @@ dependencies:
     sdk: flutter
   cupertino_icons: ^1.0.8
   flutter_markdown_plus: ^1.0.7
+  just_audio: ^0.10.5
 
 dev_dependencies:
   flutter_test:

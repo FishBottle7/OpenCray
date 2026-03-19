@@ -202,6 +202,7 @@ class BridgeSettingsFacade implements SettingsFacade {
       workspaceAccessProfileId: snapshot.workspaceAccessProfile.id,
       readOnlyOutsideWorkspace: snapshot.readOnlyOutsideWorkspace,
       liveContextModeId: snapshot.liveContextMode.id,
+      memoryToolsEnabled: snapshot.memoryToolsEnabled,
     ),
   );
 
@@ -474,6 +475,7 @@ class BridgeSettingsFacade implements SettingsFacade {
       ),
       readOnlyOutsideWorkspace: snapshot.readOnlyOutsideWorkspace,
       liveContextMode: liveContextModeFromId(snapshot.liveContextModeId),
+      memoryToolsEnabled: snapshot.memoryToolsEnabled,
     );
   }
 }
