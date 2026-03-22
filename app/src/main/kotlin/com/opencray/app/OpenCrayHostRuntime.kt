@@ -8428,9 +8428,10 @@ internal class OpenCrayHostRuntime private constructor(
 
     private fun createFromContext(appContext: Context): OpenCrayHostRuntime {
       BuiltinSkillsSeeder.fromContext(appContext).seedBundledSkillsIfNeeded()
-      val serviceHost = OpenCrayAgentRuntimeService.ensureServiceHost(appContext)
-      val dependencies = serviceHost.dependencies
-      val runtimeAccess = serviceHost.runtimeAccess
+      val serviceBridge = OpenCrayAgentRuntimeService.ensureBridge(appContext)
+      val serviceSnapshot = serviceBridge.loadSnapshot()
+      val dependencies = serviceSnapshot.dependencies
+      val runtimeAccess = serviceSnapshot.runtimeAccess
       val voiceMetadataBackfillExecutor: Executor = Executors.newSingleThreadExecutor()
       val lifecycleDescriptor = HostRuntimeLifecycleDescriptor(
         processStartId = runtimeAccess.lifecycleDescriptor.processStartId,
@@ -8490,7 +8491,7 @@ internal class OpenCrayHostRuntime private constructor(
         mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
         lifecycleDescriptor = lifecycleDescriptor,
         runtimeOwnerDescriptor = runtimeAccess.lifecycleDescriptor,
-        runtimeServiceDescriptor = serviceHost.serviceLifecycle,
+        runtimeServiceDescriptor = serviceSnapshot.serviceLifecycle,
       )
       return hostRuntime
     }

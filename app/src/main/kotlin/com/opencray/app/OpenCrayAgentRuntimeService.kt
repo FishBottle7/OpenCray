@@ -15,6 +15,7 @@ internal class OpenCrayAgentRuntimeService : Service() {
       context = applicationContext,
       serviceLifecycleFactory = { RuntimeServiceLifecycleDescriptor() },
     )
+    latestBinderAccess = binder
   }
 
   override fun onStartCommand(
@@ -25,22 +26,33 @@ internal class OpenCrayAgentRuntimeService : Service() {
 
   override fun onBind(intent: Intent?): IBinder = binder
 
-  internal inner class LocalBinder : Binder() {
+  override fun onDestroy() {
+    if (latestBinderAccess === binder) {
+      latestBinderAccess = null
+    }
+    super.onDestroy()
+  }
+
+  internal inner class LocalBinder : Binder(), OpenCrayRuntimeServiceBinderAccess {
+    override fun loadSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot =
+      OpenCrayRuntimeServiceHostRegistry.getOrCreate(applicationContext).toBridgeSnapshot()
+
     fun peekRuntimeOwnerLifecycle(): Map<String, Any?> =
-      OpenCrayRuntimeServiceHostRegistry.peek()
-        ?.runtimeAccess
+      loadSnapshot()
+        .runtimeAccess
         ?.lifecycleDescriptor
         ?.snapshotMap()
-        ?: emptyMap()
 
     fun peekRuntimeServiceLifecycle(): Map<String, Any?> =
-      OpenCrayRuntimeServiceHostRegistry.peek()
-        ?.serviceLifecycle
+      loadSnapshot()
+        .serviceLifecycle
         ?.snapshotMap()
-        ?: emptyMap()
   }
 
   companion object {
+    @Volatile
+    private var latestBinderAccess: OpenCrayRuntimeServiceBinderAccess? = null
+
     fun ensureStarted(context: Context) {
       val appContext = context.applicationContext
       runCatching {
@@ -50,10 +62,17 @@ internal class OpenCrayAgentRuntimeService : Service() {
       }
     }
 
-    fun ensureServiceHost(context: Context): OpenCrayRuntimeServiceHost {
+    fun ensureBridge(context: Context): OpenCrayRuntimeServiceBridge {
       val appContext = context.applicationContext
       ensureStarted(appContext)
-      return OpenCrayRuntimeServiceHostRegistry.getOrCreate(appContext)
+      val binderAccess = latestBinderAccess
+      return if (binderAccess != null) {
+        BinderBackedOpenCrayRuntimeServiceBridge(binderAccess)
+      } else {
+        InProcessOpenCrayRuntimeServiceBridge {
+          OpenCrayRuntimeServiceHostRegistry.getOrCreate(appContext)
+        }
+      }
     }
   }
 }
