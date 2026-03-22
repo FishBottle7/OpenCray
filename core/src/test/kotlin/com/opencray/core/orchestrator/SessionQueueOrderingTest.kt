@@ -345,6 +345,66 @@ class SessionQueueOrderingTest {
     )
   }
 
+  @Test
+  fun restoreOfInFlightTaskRequiresExplicitRetryBeforeExecutionResumes() {
+    val executionOrder = mutableListOf<String>()
+    val queue = SessionQueue(
+      sessionId = "session-restore-1",
+      agentId = "agent-restore-1",
+      runtime = SessionTaskRuntime { task, _ ->
+        executionOrder += task.id
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.SUCCESS,
+          startedAtEpochMs = 120_000L,
+          finishedAtEpochMs = 120_001L,
+        )
+      },
+      snapshotStore = InMemorySessionQueueSnapshotStore(
+        SessionQueueSnapshot(
+          sessionId = "session-restore-1",
+          agentId = "agent-restore-1",
+          lifecycleState = SessionLifecycleState.RUNNING,
+          nextEnqueueOrder = 2,
+          tasks = listOf(
+            SessionQueueTaskSnapshot(
+              enqueueOrder = 1,
+              task = task(id = "task-restore", createdAt = 6_000L),
+              lifecycleState = QueueTaskLifecycleState.RUNNING,
+              attempt = 3,
+            ),
+          ),
+          updatedAtEpochMs = 6_100L,
+        ),
+      ),
+      clock = IncrementingClock(start = 100_000L),
+      config = SessionQueueConfig(maxAttempts = 3),
+    )
+
+    val restoredTask = queue.snapshot().tasks.single()
+
+    assertEquals(QueueTaskLifecycleState.FAILED, restoredTask.lifecycleState)
+    assertEquals(ERROR_RESTART_REQUIRES_EXPLICIT_RETRY, restoredTask.lastErrorCode)
+    assertTrue(restoredTask.lastErrorMessage?.contains("Retry explicitly") == true)
+    assertEquals("100000", restoredTask.task.metadata[METADATA_QUEUE_RESTORE_EPOCH_MS])
+    assertEquals(
+      RECOVERY_REASON_HOST_RESTART_INFLIGHT_TASK_INTERRUPTED,
+      restoredTask.task.metadata[METADATA_RECOVERY_REASON],
+    )
+    assertEquals("running", restoredTask.task.metadata[METADATA_PREVIOUS_LIFECYCLE_STATE])
+    assertTrue(queue.drain().isEmpty())
+    assertTrue(queue.requestRetry("task-restore"))
+
+    val retriedResults = queue.drain()
+
+    assertEquals(listOf("task-restore"), executionOrder)
+    assertEquals(listOf(ExecutionStatus.SUCCESS), retriedResults.map(ExecutionResult::status))
+    assertEquals(
+      QueueTaskLifecycleState.COMPLETED,
+      queue.snapshot().tasks.single().lifecycleState,
+    )
+  }
+
   private fun task(id: String, createdAt: Long): AgentTask = AgentTask(
     id = id,
     type = AgentTaskType.PROMPT,

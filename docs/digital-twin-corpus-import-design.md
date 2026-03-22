@@ -1,6 +1,6 @@
 # Digital Twin Corpus Import Design
 
-Last updated: 2026-03-18
+Last updated: 2026-03-21
 
 ## Status
 
@@ -295,6 +295,38 @@ Rules:
 - preserve source provenance
 - record whether the text is non-fiction, fiction, or mixed
 - preserve exact timestamps when available
+
+#### Stage 1A: Import Source Probe
+
+Before full normalization, the creator flow should run a lightweight file probe so the app can prefill the correct import mode instead of forcing the user to guess.
+
+Current implemented host/runtime contract:
+
+- Flutter host bridge method: `probeTwinImportSource(filePath)`
+- Local runtime HTTP route: `POST /v1/probe_twin_import_source`
+- Kotlin detector: `TwinImportSourceProbe`
+
+Current probe outputs:
+
+- `sourceMode`: `chat_history`, `fiction_work`, or `null`
+- `formatKey`: machine-readable format id such as `chatlab_json`, `chatlab_jsonl`, `normalized_chat_history`, `normalized_fiction_work`
+- `formatLabel`: user-facing label for the detected format
+- `confidence`: `high`, `medium`, or `low`
+- `usesExistingImporter`: whether the detected source can go straight into an existing importer
+- `needsManualSelection`: whether the create flow should force a manual mode choice
+- `notes`: operator-facing explanation of the detection result
+
+Current auto-detected formats:
+
+- ChatLab `.json` export -> `chat_history`
+- ChatLab `.jsonl` export -> `chat_history`
+- normalized JSON with `participants + turns` -> `chat_history`
+- normalized JSON with `characters + scenes` -> `fiction_work`
+
+Current non-goal of the probe:
+
+- It does not pretend that arbitrary `.txt`, `.md`, or unsupported JSON can already be imported.
+- When confidence is low or the format is unknown, the UI must surface manual mode selection instead of silently coercing the file into a wrong pipeline.
 
 ### Stage 2: Speaker Resolution
 
@@ -828,7 +860,7 @@ The design is now ahead of the checked-in schema files. Before wiring the import
   - allow the active selected relationship to be unset only before selector confirmation; require it for review-complete publish or runtime activation
 - dedicated import-session and relationship-candidate-card schemas
   - capture mobile review state, selector cards, and artifact refs as first-class import artifacts
-- optional but recommended `review_action.schema.json`
+- checked-in `service/schemas/review_action.schema.json`
   - record `accept_field`, `edit_field`, `reject_field`, `bind_relationship`, `rebind_relationship`, `publish_selected_only`, and `withdraw_import` as typed review events instead of UI-only actions
 
 These are import-time and review-time contract changes only. They do not alter runtime `soul` ownership or add a second personality system.
@@ -971,5 +1003,6 @@ To clone the feel of a person from corpus, OpenCray should not ask one model to 
 - judge outputs for similarity, consistency, and anti-pattern violations
 
 That is the difference between a transcript-shaped prompt and a usable digital-twin initialization pipeline.
+
 
 

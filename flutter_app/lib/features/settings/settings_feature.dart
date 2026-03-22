@@ -12,6 +12,8 @@ import 'safety_settings_models.dart';
 import 'settings_facade.dart';
 import 'settings_models.dart';
 
+part 'agent_settings_pages.dart';
+part 'settings_api_pages.dart';
 part 'safety_settings_pages.dart';
 part 'settings_debug_pages.dart';
 
@@ -92,10 +94,22 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
   }
 
   Widget _buildCurrentPage(BuildContext context) {
-    final onBack = widget.standalone
-        ? () => Navigator.of(context).pop()
-        : () => setState(() => _page = SettingsPage.home);
-    final backLabel = _overview?.title ?? '';
+    final nestedBackTarget = _nestedBackTargetForPage(_page);
+    void onBack() {
+      if (nestedBackTarget != null) {
+        setState(() {
+          _page = nestedBackTarget;
+        });
+        return;
+      }
+      if (widget.standalone) {
+        Navigator.of(context).pop();
+        return;
+      }
+      setState(() => _page = SettingsPage.home);
+    }
+
+    final backLabel = _backLabelForPage(_page);
     switch (_page) {
       case SettingsPage.home:
         final overview = _overview;
@@ -123,6 +137,12 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
           onBack: onBack,
           backLabel: backLabel,
         );
+      case SettingsPage.agents:
+        return _AgentsSettingsPage(
+          key: const ValueKey<String>('settings-agents-editor'),
+          onBack: onBack,
+          backLabel: backLabel,
+        );
       case SettingsPage.mcp:
         return _McpSettingsPage(
           key: const ValueKey<String>('settings-mcp-editor'),
@@ -130,16 +150,30 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
           onBack: onBack,
           backLabel: backLabel,
         );
-      case SettingsPage.workspaceAccess:
-        return _WorkspaceAccessSettingsPage(
-          key: const ValueKey<String>('settings-workspace-access-editor'),
+      case SettingsPage.apiIntegrations:
+        return _ApiIntegrationsSettingsPage(
+          key: const ValueKey<String>('settings-api-integrations-editor'),
+          onBack: onBack,
+          backLabel: backLabel,
+          onOpenPage: _openPage,
+        );
+      case SettingsPage.networkSearch:
+        return _NetworkSearchSettingsPage(
+          key: const ValueKey<String>('settings-network-search-editor'),
           facade: widget.facade,
           onBack: onBack,
           backLabel: backLabel,
         );
-      case SettingsPage.privacyTelemetry:
-        return _NetworkSearchSettingsPage(
-          key: const ValueKey<String>('settings-network-search-editor'),
+      case SettingsPage.mediaSpeech:
+        return _MediaSpeechSettingsPage(
+          key: const ValueKey<String>('settings-media-speech-editor'),
+          facade: widget.facade,
+          onBack: onBack,
+          backLabel: backLabel,
+        );
+      case SettingsPage.workspaceAccess:
+        return _WorkspaceAccessSettingsPage(
+          key: const ValueKey<String>('settings-workspace-access-editor'),
           facade: widget.facade,
           onBack: onBack,
           backLabel: backLabel,
@@ -216,11 +250,34 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
 
   bool _usesDedicatedPage(SettingsPage page) =>
       page == SettingsPage.llm ||
-      page == SettingsPage.privacyTelemetry ||
+      page == SettingsPage.apiIntegrations ||
+      page == SettingsPage.networkSearch ||
+      page == SettingsPage.mediaSpeech ||
       page == SettingsPage.personalization ||
+      page == SettingsPage.agents ||
       page == SettingsPage.mcp ||
       page == SettingsPage.workspaceAccess ||
       page == SettingsPage.safetyLimits;
+
+  SettingsPage? _nestedBackTargetForPage(SettingsPage page) {
+    switch (page) {
+      case SettingsPage.networkSearch:
+      case SettingsPage.mediaSpeech:
+        return SettingsPage.apiIntegrations;
+      default:
+        return null;
+    }
+  }
+
+  String _backLabelForPage(SettingsPage page) {
+    switch (page) {
+      case SettingsPage.networkSearch:
+      case SettingsPage.mediaSpeech:
+        return 'API Integrations';
+      default:
+        return _overview?.title ?? '';
+    }
+  }
 }
 
 class _SettingsHome extends StatelessWidget {

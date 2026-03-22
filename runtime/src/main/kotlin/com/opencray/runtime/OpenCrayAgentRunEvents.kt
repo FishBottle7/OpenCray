@@ -1,6 +1,8 @@
 package com.opencray.runtime
 
 import com.opencray.core.contracts.ExecutionStatus
+import com.opencray.runtime.subagent.SubAgentContinuationKind
+import com.opencray.runtime.subagent.SubAgentExecutionState
 
 enum class OpenCrayRunLifecyclePhase {
   START,
@@ -17,6 +19,7 @@ enum class OpenCrayApprovalPhase {
 
 enum class OpenCraySubAgentPhase {
   STARTED,
+  RESUMED,
   COMPLETED,
   FAILED,
   CANCELLED,
@@ -97,6 +100,11 @@ data class OpenCraySubAgentEvent(
   val contextMode: String,
   val depth: Int,
   val summary: String? = null,
+  val executionState: SubAgentExecutionState? = null,
+  val continuationKind: SubAgentContinuationKind? = null,
+  val resumable: Boolean = false,
+  val requiresUserAction: Boolean = false,
+  val isHighRisk: Boolean = false,
   override val turn: Int? = null,
   override val emittedAtEpochMs: Long,
 ) : OpenCrayAgentRunEvent
@@ -124,6 +132,7 @@ data class OpenCrayMemoryWriteEvent(
   val writtenRecordIds: List<String> = emptyList(),
   val writtenKinds: List<String> = emptyList(),
   val resolvedRecordIds: List<String> = emptyList(),
+  val suppressedRecordIds: List<String> = emptyList(),
   val reaffirmedRecordIds: List<String> = emptyList(),
   val expiredRecordIds: List<String> = emptyList(),
   override val turn: Int? = null,

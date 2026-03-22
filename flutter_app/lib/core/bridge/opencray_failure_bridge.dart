@@ -1,4 +1,5 @@
 import '../../app/opencray_tabs.dart';
+import '../models/opencray_chat_draft_attachment.dart';
 import '../models/opencray_chat_snapshot.dart';
 import '../models/opencray_debug_snapshot.dart';
 import '../models/opencray_file_image_preview.dart';
@@ -7,6 +8,7 @@ import '../models/opencray_file_voice_playback_source.dart';
 import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
+import '../models/opencray_media_speech_config.dart';
 import '../models/opencray_mcp_settings.dart';
 import '../models/opencray_network_search_config.dart';
 import '../models/opencray_personalization_config.dart';
@@ -14,6 +16,7 @@ import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
 import '../models/opencray_skills_snapshot.dart';
+import '../models/opencray_twin_import_source_probe.dart';
 import '../models/opencray_workspace_text_document.dart';
 import 'opencray_host_bridge.dart';
 
@@ -147,6 +150,42 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayNetworkSearchConfigSnapshot> saveNetworkSearchConfig(
     List<OpenCrayNetworkSearchSlotSnapshot> slots,
+  ) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayMediaSpeechConfigSnapshot> loadMediaSpeechConfig() async =>
+      const OpenCrayMediaSpeechConfigSnapshot(
+        localeTag: 'en',
+        title: 'Media & Speech',
+        subtitle: 'The Android host bridge failed to initialize.',
+        imageGeneration: OpenCrayMediaProviderConfigSnapshot(
+          provider: 'Fal AI',
+          baseUrl: '',
+          endpoint: '',
+          model: '',
+        ),
+        voiceGeneration: OpenCrayVoiceProviderConfigSnapshot(
+          provider: 'OpenAI TTS',
+          baseUrl: '',
+          endpoint: '',
+          voicePreset: '',
+        ),
+        sttRouteId: 'on_device_model',
+        externalStt: OpenCrayMediaProviderConfigSnapshot(
+          provider: 'OpenAI Whisper',
+          baseUrl: '',
+          endpoint: '',
+          model: '',
+        ),
+        onDeviceModel: OpenCrayOnDeviceSttConfigSnapshot(
+          modelPackage: 'Whisper Small',
+          downloadStatus: 'Host unavailable',
+        ),
+      );
+
+  @override
+  Future<OpenCrayMediaSpeechConfigSnapshot> saveMediaSpeechConfig(
+    OpenCrayMediaSpeechConfigSnapshot snapshot,
   ) async => throw StateError(_failureMessage);
 
   @override
@@ -317,6 +356,26 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   Future<OpenCrayPersonalizationConfigSnapshot> runPersonalizationReset(
     String scopeId,
   ) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayTwinImportSourceProbeSnapshot> probeTwinImportSource(
+    String filePath,
+  ) async => OpenCrayTwinImportSourceProbeSnapshot(
+    filePath: filePath,
+    fileName: filePath.split(RegExp(r'[\\\/]+')).isEmpty
+        ? filePath
+        : filePath.split(RegExp(r'[\\\/]+')).last,
+    fileExtension: filePath.contains('.')
+        ? filePath.split('.').last.toLowerCase()
+        : '',
+    sourceMode: null,
+    formatKey: 'host_unavailable',
+    formatLabel: 'Host unavailable',
+    confidence: 'low',
+    usesExistingImporter: false,
+    needsManualSelection: true,
+    notes: <String>[_failureMessage],
+  );
 
   @override
   Future<OpenCrayMcpSettingsSnapshot> loadMcpSettings() async =>
@@ -580,6 +639,12 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   );
 
   @override
+  Future<void> applyMemoryDebugAction({
+    required String recordId,
+    required String actionId,
+  }) async {}
+
+  @override
   Future<OpenCrayChatRunSnapshot?> waitForChatRun(
     String runId, {
     Duration timeout = const Duration(seconds: 15),
@@ -616,12 +681,23 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   }) async {}
 
   @override
-  Future<OpenCrayChatRunSubmission?> submitChatMessage(String text) async =>
-      null;
+  Future<List<OpenCrayChatDraftAttachment>> pickChatAttachments({
+    required OpenCrayChatDraftAttachmentKind kind,
+  }) async => const <OpenCrayChatDraftAttachment>[];
+
+  @override
+  Future<OpenCrayChatRunSubmission?> submitChatMessage(
+    String text, {
+    List<OpenCrayChatDraftAttachment> attachments =
+        const <OpenCrayChatDraftAttachment>[],
+  }) async => null;
 
   @override
   Future<void> approveChatApproval(String approvalId) async {}
 
   @override
   Future<void> rejectChatApproval(String approvalId) async {}
+
+  @override
+  Future<void> retryChatRun(String runIdOrTaskId) async {}
 }

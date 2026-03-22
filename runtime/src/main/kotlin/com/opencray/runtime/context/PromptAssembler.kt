@@ -58,7 +58,7 @@ class PromptAssembler {
         content = input.activeSkillText,
       )
       addLayer(
-        name = "Recent Workspace Observations",
+        name = "Recent Working Observations",
         kind = PromptLayerKind.CONTEXT,
         content = input.recentToolObservationsText,
       )
@@ -75,22 +75,29 @@ class PromptAssembler {
       addLayer(
         name = "Tool Protocol",
         kind = PromptLayerKind.PROTOCOL,
-        content = renderToolProtocolLayer(input.toolDefinitions),
+        content = renderToolProtocolLayer(
+          toolDefinitions = input.toolDefinitions,
+          nativeToolCallingEnabled = input.nativeToolCallingEnabled,
+        ),
       )
       addLayer(
-        name = "Task Context",
+        name = TASK_METADATA_LAYER_NAME,
         kind = PromptLayerKind.CONTEXT,
-        content = renderTaskContextLayer(
-          task = input.task,
-          transcriptWindow = input.transcriptWindow,
-        ),
+        content = renderTaskMetadataLayer(task = input.task),
+      )
+      addLayer(
+        name = CONVERSATION_LAYER_NAME,
+        kind = PromptLayerKind.CONTEXT,
+        content = renderConversationLayer(transcriptWindow = input.transcriptWindow),
       )
     }
     val systemLayers = layers.filter { layer -> layer.kind == PromptLayerKind.SYSTEM }
     val taskLayers = layers.filter { layer -> layer.kind != PromptLayerKind.SYSTEM }
+    val contextLayers = taskLayers.filterNot { layer -> layer.name == CONVERSATION_LAYER_NAME }
 
     return AssembledPrompt(
       systemPrompt = renderLayers(systemLayers),
+      contextPrompt = renderLayers(contextLayers),
       taskPrompt = renderLayers(taskLayers),
       layers = layers,
       report = ContextAssemblyReport(
@@ -146,41 +153,134 @@ class PromptAssembler {
     )
   }
 
-  private fun renderToolProtocolLayer(toolDefinitions: List<AgentToolDefinition>): String = buildString {
+  private fun renderToolProtocolLayer(
+    toolDefinitions: List<AgentToolDefinition>,
+    nativeToolCallingEnabled: Boolean,
+  ): String = buildString {
+    val normalizedToolNames = toolDefinitions
+      .map { definition -> definition.name.trim().lowercase() }
+      .filter(String::isNotBlank)
+      .toSet()
+    val hasReadTool = hasAnyTool(normalizedToolNames, "read", "workspace_read_file")
+    val hasListTool = hasAnyTool(normalizedToolNames, "ls", "workspace_list_files")
+    val hasGrepTool = hasAnyTool(normalizedToolNames, "grep")
+    val hasGlobTool = hasAnyTool(normalizedToolNames, "glob")
+    val hasWriteTool = hasAnyTool(normalizedToolNames, "write", "workspace_write_file")
+    val hasBashTool = hasAnyTool(normalizedToolNames, "bash")
+    val hasPythonExecTool = hasAnyTool(normalizedToolNames, "python_exec")
+    val hasWebSearchTool = hasAnyTool(normalizedToolNames, "websearch")
+    val hasWebFetchTool = hasAnyTool(normalizedToolNames, "webfetch")
+    val hasImageGenerationTool = hasAnyTool(normalizedToolNames, "generateimage", "imagegenerate")
+    val hasSpeechSynthesisTool = hasAnyTool(normalizedToolNames, "synthesizespeech", "texttospeech", "tts")
+    val hasProcessStartTool = hasAnyTool(normalizedToolNames, "processstart")
+    val hasProcessReadTool = hasAnyTool(normalizedToolNames, "processread")
+    val hasProcessWaitTool = hasAnyTool(normalizedToolNames, "processwait")
     val hasMemorySearchTool = toolDefinitions.any { definition -> definition.name == "memory_search" }
     val hasMemoryGetTool = toolDefinitions.any { definition -> definition.name == "memory_get" }
     val hasImportTool = toolDefinitions.any { definition ->
       definition.name == "ImportFile" || definition.name == "workspace_import_file"
     }
+    val primaryToolCallExample = when {
+      hasReadTool -> """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}"""
+      hasListTool -> """{"type":"tool_call","tool_name":"LS","arguments":{"path":"."}}"""
+      hasGrepTool -> """{"type":"tool_call","tool_name":"Grep","arguments":{"pattern":"TODO","path":"."}}"""
+      hasGlobTool -> """{"type":"tool_call","tool_name":"Glob","arguments":{"pattern":"**/*.kt","path":"."}}"""
+      hasWriteTool -> """{"type":"tool_call","tool_name":"Write","reason":"Need to update the workspace before answering.","arguments":{"file_path":"notes.txt","content":"..."}}"""
+      hasBashTool -> """{"type":"tool_call","tool_name":"Bash","arguments":{"command":"git status"}}"""
+      hasPythonExecTool -> """{"type":"tool_call","tool_name":"python_exec","arguments":{"script_path":"scripts/run.py","args":["--flag"]}}"""
+      hasWebFetchTool -> """{"type":"tool_call","tool_name":"WebFetch","arguments":{"url":"https://example.com"}}"""
+      hasImageGenerationTool -> """{"type":"tool_call","tool_name":"GenerateImage","arguments":{"prompt":"Landing page hero illustration","count":1}}"""
+      hasSpeechSynthesisTool -> """{"type":"tool_call","tool_name":"SynthesizeSpeech","arguments":{"text":"Quick spoken summary for the user."}}"""
+      hasProcessStartTool -> """{"type":"tool_call","tool_name":"ProcessStart","arguments":{"command":"npm","args":["run","dev"]}}"""
+      else -> null
+    }
+    val toolCallExamples = linkedSetOf<String>().apply {
+      primaryToolCallExample?.let(::add)
+      if (hasBashTool) {
+        add("""{"type":"tool_call","tool_name":"Bash","arguments":{"command":"git status"}}""")
+      }
+      if (hasPythonExecTool) {
+        add("""{"type":"tool_call","tool_name":"python_exec","arguments":{"script_path":"scripts/run.py","args":["--flag"]}}""")
+      }
+      if (hasWebFetchTool) {
+        add("""{"type":"tool_call","tool_name":"WebFetch","arguments":{"url":"https://example.com"}}""")
+      }
+      if (hasImageGenerationTool) {
+        add("""{"type":"tool_call","tool_name":"GenerateImage","arguments":{"prompt":"Landing page hero illustration","count":1}}""")
+      }
+      if (hasSpeechSynthesisTool) {
+        add("""{"type":"tool_call","tool_name":"SynthesizeSpeech","arguments":{"text":"Quick spoken summary for the user."}}""")
+      }
+      if (hasWriteTool) {
+        add("""{"type":"tool_call","tool_name":"Write","reason":"Need to update the workspace before answering.","arguments":{"file_path":"notes.txt","content":"..."}}""")
+      }
+      if (hasProcessStartTool) {
+        add("""{"type":"tool_call","tool_name":"ProcessStart","arguments":{"command":"npm","args":["run","dev"]}}""")
+      }
+    }
     appendLine("Decide the next step for this OpenCray task.")
     appendLine()
-    appendLine("On each turn, return exactly one JSON object and nothing else.")
-    appendLine("Use one of these shapes:")
+    if (nativeToolCallingEnabled) {
+      appendLine("Native tool calling is enabled for this run.")
+      appendLine("When you need a tool, prefer the provider's native tool-calling interface instead of describing the tool call in prose.")
+      appendLine("When you are ready to answer the user, prefer a plain assistant text answer.")
+      appendLine("If the endpoint ignores native tool calling or you need the legacy fallback, return exactly one JSON object and nothing else.")
+      appendLine("Use one of these legacy JSON fallback shapes:")
+    } else {
+      appendLine("On each turn, return exactly one JSON object and nothing else.")
+      appendLine("Use one of these shapes:")
+    }
     appendLine("""{"type":"progress","text":"Scanning README and Gradle files before editing."}""")
-    appendLine("""{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}""")
-    appendLine("""{"type":"tool_call","tool_name":"Bash","arguments":{"command":"git status"}}""")
-    appendLine("""{"type":"tool_call","tool_name":"python_exec","arguments":{"script_path":"scripts/run.py","args":["--flag"]}}""")
-    appendLine("""{"type":"tool_call","tool_name":"WebFetch","arguments":{"url":"https://example.com"}}""")
-    appendLine("""{"type":"tool_call","tool_name":"Write","reason":"Need to update the workspace before answering.","arguments":{"file_path":"notes.txt","content":"..."}}""")
-    appendLine("""{"actions":[{"type":"progress","text":"Scanning README and Gradle files before editing."},{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}]}""")
+    toolCallExamples.forEach { example ->
+      appendLine(example)
+    }
+    primaryToolCallExample?.let { toolCallExample ->
+      appendLine("""{"actions":[{"type":"progress","text":"Scanning README and Gradle files before editing."},$toolCallExample]}""")
+    }
     appendLine("""{"actions":[{"type":"progress","text":"Summarizing the confirmed workspace facts."},{"type":"final","answer":"Concise answer for the user."}]}""")
     appendLine("""{"type":"final","answer":"Concise answer for the user."}""")
+    if (hasImageGenerationTool || hasSpeechSynthesisTool || hasWriteTool || hasImportTool) {
+      appendLine("""{"type":"final","answer":"Attached the generated media.","attachments":[{"artifact_id":"artifact-example-1234abcd","kind":"image"}]}""")
+    }
     appendLine("A progress action is a short public status update for the user.")
     appendLine("Never expose raw private chain-of-thought, hidden safety reasoning, or secrets inside progress.")
     appendLine("If you use an actions array, emit at most one progress action first, then exactly one terminal action.")
     appendLine("If you return type=tool_call, the runtime will execute it, append the tool result, and ask you for the next action.")
+    if (nativeToolCallingEnabled) {
+      appendLine("When native tool calling works, prefer it over the legacy JSON tool_call shape.")
+      appendLine("Do not describe a tool call in plain prose.")
+      appendLine("A plain assistant text answer is preferred over the legacy JSON final shape when you are ready to answer.")
+    }
     appendLine("If you return only type=progress, the runtime will record it and ask you for the next action on the following turn.")
     appendLine("If you need multiple tools, call only the next tool now. After each tool result the runtime will ask for the next action.")
-    appendLine("Use Bash for one-off shell commands that do not require Python. Bash runs through the host shell, so use PowerShell syntax on Windows hosts.")
-    appendLine("For current information from the internet, prefer WebSearch when a search provider is configured, and use WebFetch when you already have a URL to read.")
-    appendLine("For commands you want to manage across multiple turns, prefer ProcessStart and then use ProcessRead or ProcessWait.")
-    appendLine("For workspace-local Python scripts, prefer python_exec instead of Bash.")
-    appendLine("For Python runtime inspection or diagnostics such as version checks, sys.path, imports, or environment behavior, do not use Bash. Create or reuse a small workspace-local probe script and run it with python_exec.")
-    appendLine("If you need to manage a long-running Python task across multiple turns, use ProcessStart with script_path only when the runtime supports managed Python process launches.")
-    appendLine("Do not use Bash to invoke python, python3, or py for workspace scripts or Python-related diagnostics.")
+    if (hasBashTool) {
+      appendLine("Use Bash for one-off shell commands that do not require Python. Bash runs through the host shell, so use PowerShell syntax on Windows hosts.")
+    }
+    if (hasWebSearchTool || hasWebFetchTool) {
+      appendLine("For current information from the internet, prefer WebSearch when a search provider is configured, and use WebFetch when you already have a URL to read.")
+    }
+    if (hasProcessStartTool || hasProcessReadTool || hasProcessWaitTool) {
+      appendLine("For commands you want to manage across multiple turns, prefer ProcessStart and then use ProcessRead or ProcessWait.")
+    }
+    if (hasPythonExecTool) {
+      appendLine("For workspace-local Python scripts, prefer python_exec instead of Bash.")
+      appendLine("For Python runtime inspection or diagnostics such as version checks, sys.path, imports, or environment behavior, do not use Bash. Create or reuse a small workspace-local probe script and run it with python_exec.")
+    }
+    if (hasProcessStartTool && hasPythonExecTool) {
+      appendLine("If you need to manage a long-running Python task across multiple turns, use ProcessStart with script_path only when the runtime supports managed Python process launches.")
+    }
+    if (hasBashTool && hasPythonExecTool) {
+      appendLine("Do not use Bash to invoke python, python3, or py for workspace scripts or Python-related diagnostics.")
+    }
     if (hasImportTool) {
       appendLine("When task metadata includes approvedReadRoots, you may inspect those roots with absolute paths.")
       appendLine("Approved external roots are read-only. Use ImportFile to copy files or folders into the writable workspace before editing, deleting, or other mutating operations.")
+    }
+    if (hasImageGenerationTool || hasSpeechSynthesisTool || hasWriteTool || hasImportTool) {
+      appendLine("When a tool result produces attachment artifacts, you may send them in the final action by adding attachments with artifact_id.")
+      appendLine("Use relative_path only for files that already exist inside the workspace.")
+      appendLine("Generated speech should usually be attached with kind=voice so the chat uses the built-in voice player.")
+      appendLine("If you intentionally want an audio file card instead of a voice message, attach the same artifact_id with kind=file.")
     }
     appendLine("A tool_call may include reason or justification, but it must not include a final answer.")
     appendLine("Do not return multiple tool calls in one response.")
@@ -199,6 +299,9 @@ class PromptAssembler {
     append("Only return type=final when you are ready to answer the user.")
   }.trim()
 
+  private fun hasAnyTool(toolNames: Set<String>, vararg candidates: String): Boolean =
+    candidates.any { candidate -> candidate in toolNames }
+
   private fun renderBootstrapLayer(file: com.opencray.runtime.bootstrap.BootstrapSnippet): String = buildString {
     appendLine("source_file=${file.relativePath}")
     appendLine("truncated=${file.truncated}")
@@ -206,9 +309,8 @@ class PromptAssembler {
     append(file.content)
   }.trim()
 
-  private fun renderTaskContextLayer(
+  private fun renderTaskMetadataLayer(
     task: com.opencray.core.contracts.AgentTask,
-    transcriptWindow: TranscriptWindow,
   ): String = buildString {
     appendLine("Task metadata:")
     appendLine("task_id=${task.id}")
@@ -220,7 +322,11 @@ class PromptAssembler {
         appendLine("$key=$value")
       }
     }
-    appendLine()
+  }.trim()
+
+  private fun renderConversationLayer(
+    transcriptWindow: TranscriptWindow,
+  ): String = buildString {
     appendLine("Conversation:")
     if (transcriptWindow.omittedMessageCount > 0) {
       appendLine("[system]")
@@ -254,6 +360,8 @@ class PromptAssembler {
   }
 
   private companion object {
+    const val TASK_METADATA_LAYER_NAME: String = "Task Metadata"
+    const val CONVERSATION_LAYER_NAME: String = "Conversation"
     const val HIDDEN_METADATA_PREFIX: String = "_host."
     const val RUNTIME_RULES: String =
       "Operate as a workspace-first coding agent. Prefer tools over guessing when the answer depends on files or local execution."

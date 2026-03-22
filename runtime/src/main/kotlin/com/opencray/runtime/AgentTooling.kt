@@ -5,6 +5,7 @@ import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.filesystem.FileMutationOperation
 import com.opencray.filesystem.FileOpsService
+import com.opencray.llm.LiteLlmToolDefinition
 import com.opencray.mcp.McpClientExposureReport
 import com.opencray.mcp.McpRuntimeSupport
 import com.opencray.mcp.McpToolExposure
@@ -59,6 +60,7 @@ import java.nio.file.Paths
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.UUID
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
@@ -105,11 +107,13 @@ data class AgentToolDefinition(
 }
 
 data class AgentToolCall(
+  val id: String? = null,
   val toolName: String,
   val arguments: JsonObject = JsonObject(emptyMap()),
   val reason: String? = null,
 ) {
   init {
+    require(id == null || id.isNotBlank()) { "AgentToolCall id must not be blank." }
     require(toolName.isNotBlank()) { "AgentToolCall toolName must not be blank." }
   }
 }
@@ -175,6 +179,8 @@ data class OpenCrayToolDispatcherConfig(
   val modePolicy: ModePolicy = ModePolicy(),
   val approvedTaskId: String? = null,
   val approvedToolName: String? = null,
+  val rejectedTaskId: String? = null,
+  val rejectedToolName: String? = null,
   val commandExecutor: CommandExecutor? = null,
   val pythonRuntimeAdapter: PythonScriptRuntime = HostProcessPythonRuntime(),
   val supportsManagedPythonProcessStart: Boolean = true,
@@ -184,6 +190,9 @@ data class OpenCrayToolDispatcherConfig(
   val processRegistry: AgentProcessRegistry = InMemoryAgentProcessRegistry(),
   val webContentFetcher: WebContentFetcher = HttpUrlWebContentFetcher(),
   val webSearchProvider: WebSearchProvider = UnconfiguredWebSearchProvider,
+  val mediaToolSettingsProvider: () -> OpenCrayMediaToolSettings? = { null },
+  val imageGenerationClient: OpenCrayImageGenerationClient? = null,
+  val speechSynthesisClient: OpenCraySpeechSynthesisClient? = null,
   val memoryToolContext: MemoryToolContext? = null,
   val maxReadBytes: Int = 32_000,
   val maxDirectoryEntries: Int = 200,
@@ -215,6 +224,8 @@ class OpenCrayToolDispatcher(
     modePolicy = config.modePolicy,
     approvedTaskId = config.approvedTaskId,
     approvedToolName = config.approvedToolName,
+    rejectedTaskId = config.rejectedTaskId,
+    rejectedToolName = config.rejectedToolName,
   )
   private val writeBoundary = WorkspaceBoundary(config.workspaceRoots)
   private val readBoundary = WorkspaceBoundary(config.readRoots)
@@ -308,6 +319,27 @@ class OpenCrayToolDispatcher(
         parameters = listOf(
           AgentToolParameter("url", "string", required = true, description = "Absolute http or https URL to fetch."),
           AgentToolParameter("max_chars", "number", required = false, description = "Maximum number of extracted characters to return."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "GenerateImage",
+        description = "Generate one or more images through the configured media provider and save them under the workspace media store so they can be attached in the final response by artifact_id.",
+        parameters = listOf(
+          AgentToolParameter("prompt", "string", required = true, description = "Text prompt describing the image to generate."),
+          AgentToolParameter("count", "number", required = false, description = "How many images to generate. Maximum 9."),
+          AgentToolParameter("size", "string", required = false, description = "Optional provider-specific size hint such as 1024x1024."),
+          AgentToolParameter("format", "string", required = false, description = "Optional output image format. Supported values: png, jpg, jpeg, webp."),
+          AgentToolParameter("model", "string", required = false, description = "Optional provider model override. Defaults to the configured image model."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "SynthesizeSpeech",
+        description = "Convert text into a voice clip through the configured speech provider, save it under the workspace media store, and return an artifact_id that can be attached in the final response.",
+        parameters = listOf(
+          AgentToolParameter("text", "string", required = true, description = "Text to synthesize into spoken audio."),
+          AgentToolParameter("format", "string", required = false, description = "Optional audio format. Supported values: mp3, wav, m4a."),
+          AgentToolParameter("voice", "string", required = false, description = "Optional voice override. Defaults to the configured voice preset."),
+          AgentToolParameter("model", "string", required = false, description = "Optional provider model override. Defaults to the configured speech model."),
         ),
       ),
       AgentToolDefinition(
@@ -560,6 +592,28 @@ class OpenCrayToolDispatcher(
       ),
     )
 
+  fun withApprovalGrant(
+    approvedTaskId: String?,
+    approvedToolName: String?,
+  ): OpenCrayToolDispatcher =
+    OpenCrayToolDispatcher(
+      config.copy(
+        approvedTaskId = approvedTaskId?.trim()?.takeIf(String::isNotBlank),
+        approvedToolName = approvedToolName?.trim()?.takeIf(String::isNotBlank),
+      ),
+    )
+
+  fun withApprovalRejection(
+    rejectedTaskId: String?,
+    rejectedToolName: String?,
+  ): OpenCrayToolDispatcher =
+    OpenCrayToolDispatcher(
+      config.copy(
+        rejectedTaskId = rejectedTaskId?.trim()?.takeIf(String::isNotBlank),
+        rejectedToolName = rejectedToolName?.trim()?.takeIf(String::isNotBlank),
+      ),
+    )
+
   internal fun planTaskDelegation(
     task: AgentTask,
     description: String,
@@ -639,6 +693,8 @@ class OpenCrayToolDispatcher(
         "ImportFile" -> importFileForClaude(task = task, arguments = invocation.arguments)
         "WebSearch" -> webSearch(task = task, arguments = invocation.arguments)
         "WebFetch" -> webFetch(task = task, arguments = invocation.arguments)
+        "GenerateImage" -> generateImage(task = task, arguments = invocation.arguments)
+        "SynthesizeSpeech" -> synthesizeSpeech(task = task, arguments = invocation.arguments)
         "Edit" -> editWorkspaceFile(task = task, arguments = invocation.arguments)
         "MultiEdit" -> multiEditWorkspaceFile(task = task, arguments = invocation.arguments)
         "TodoWrite" -> writeTodoList(arguments = invocation.arguments)
@@ -1345,6 +1401,210 @@ class OpenCrayToolDispatcher(
     )
   }
 
+  private fun generateImage(task: AgentTask, arguments: JsonObject): AgentToolResult {
+    val settings = config.mediaToolSettingsProvider()?.imageGeneration
+      ?: return unavailableMediaTool(
+        toolName = "GenerateImage",
+        message = "Image generation settings are unavailable on this runtime.",
+      )
+    if (!settings.isConfigured()) {
+      return unavailableMediaTool(
+        toolName = "GenerateImage",
+        message = "Image generation is not configured. Set provider base URL, endpoint, and model first.",
+      )
+    }
+    val client = config.imageGenerationClient
+      ?: return unavailableMediaTool(
+        toolName = "GenerateImage",
+        message = "Image generation provider support is unavailable on this runtime.",
+      )
+    val prompt = arguments.requiredText("prompt").trim()
+    require(prompt.isNotBlank()) { "GenerateImage prompt must not be blank." }
+    val count = arguments.optionalInt("count")?.coerceIn(1, MAX_GENERATED_IMAGE_COUNT)
+      ?: 1
+    val format = normalizeGeneratedImageFormat(arguments.optionalString("format")) ?: DEFAULT_GENERATED_IMAGE_FORMAT
+    val size = arguments.optionalString("size")?.trim()?.takeIf(String::isNotBlank)
+    val modelOverride = arguments.optionalString("model")?.trim()?.takeIf(String::isNotBlank)
+    val outputDirectory = generatedMediaDirectory("images")
+    val endpoint = buildConfiguredEndpointPreview(
+      baseUrl = settings.baseUrl,
+      endpoint = settings.endpoint,
+    )
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "GenerateImage",
+      targetPath = outputDirectory,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        primaryPath = outputDirectory,
+        primaryTargetPath = toolTargetResolver.displayWritablePath(outputDirectory),
+        workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+        targetSummary = inlinePreview(prompt, maxChars = 240),
+      ),
+    )
+    toolPolicyPipeline.gate(
+      plan = plan,
+      affectedPaths = buildMap {
+        put("provider", settings.provider)
+        put("endpoint", endpoint)
+        put("outputDirectory", toolTargetResolver.displayWritablePath(outputDirectory))
+      },
+      askDetail = "Approval is required before GenerateImage can access the network.",
+      denyDetail = "Policy denied GenerateImage.",
+    )?.let { return it }
+
+    val response = client.generate(
+      OpenCrayImageGenerationRequest(
+        prompt = prompt,
+        count = count,
+        size = size,
+        format = format,
+        modelOverride = modelOverride,
+        settings = settings,
+      ),
+    )
+    require(response.images.isNotEmpty()) { "Image provider returned no images." }
+    require(response.images.size <= MAX_GENERATED_IMAGE_COUNT) {
+      "Image provider returned too many images (${response.images.size})."
+    }
+
+    val batchId = UUID.randomUUID().toString().replace("-", "").take(12)
+    val artifacts = response.images.mapIndexed { index, asset ->
+      writeGeneratedWorkspaceArtifact(
+        directory = outputDirectory,
+        stem = buildString {
+          append("image-")
+          append(batchId)
+          if (response.images.size > 1) {
+            append("-")
+            append(index + 1)
+          }
+        },
+        requestedExtension = format,
+        defaultExtension = DEFAULT_GENERATED_IMAGE_FORMAT,
+        asset = asset,
+        kindHint = "image",
+      )
+    }
+
+    return AgentToolResult(
+      toolName = "GenerateImage",
+      status = AgentToolResultStatus.SUCCESS,
+      content = buildGeneratedImageResultContent(artifacts = artifacts),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = buildMap {
+          put("provider", settings.provider)
+          put("endpoint", endpoint)
+          put("promptPreview", inlinePreview(prompt, maxChars = 240))
+          put("imageCount", artifacts.size.toString())
+          put("outputDirectory", toolTargetResolver.displayWritablePath(outputDirectory))
+          put("format", format)
+          size?.let { put("size", it) }
+          modelOverride?.let { put("modelOverride", it) }
+          response.providerRequestId?.let { put("providerRequestId", it) }
+          putAll(attachmentArtifactsMetadata(artifacts))
+          putAll(response.metadata)
+        },
+      ),
+    )
+  }
+
+  private fun synthesizeSpeech(task: AgentTask, arguments: JsonObject): AgentToolResult {
+    val settings = config.mediaToolSettingsProvider()?.speechSynthesis
+      ?: return unavailableMediaTool(
+        toolName = "SynthesizeSpeech",
+        message = "Speech synthesis settings are unavailable on this runtime.",
+      )
+    if (!settings.isConfigured()) {
+      return unavailableMediaTool(
+        toolName = "SynthesizeSpeech",
+        message = "Speech synthesis is not configured. Set provider base URL, endpoint, and default voice first.",
+      )
+    }
+    val client = config.speechSynthesisClient
+      ?: return unavailableMediaTool(
+        toolName = "SynthesizeSpeech",
+        message = "Speech synthesis provider support is unavailable on this runtime.",
+      )
+    val text = arguments.requiredText("text").trim()
+    require(text.isNotBlank()) { "SynthesizeSpeech text must not be blank." }
+    val format = normalizeGeneratedAudioFormat(arguments.optionalString("format")) ?: DEFAULT_GENERATED_AUDIO_FORMAT
+    val voiceOverride = arguments.optionalString("voice")?.trim()?.takeIf(String::isNotBlank)
+    val modelOverride = arguments.optionalString("model")?.trim()?.takeIf(String::isNotBlank)
+    val outputDirectory = generatedMediaDirectory("voices")
+    val endpoint = buildConfiguredEndpointPreview(
+      baseUrl = settings.baseUrl,
+      endpoint = settings.endpoint,
+    )
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "SynthesizeSpeech",
+      targetPath = outputDirectory,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        primaryPath = outputDirectory,
+        primaryTargetPath = toolTargetResolver.displayWritablePath(outputDirectory),
+        workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+        targetSummary = inlinePreview(text, maxChars = 240),
+      ),
+    )
+    toolPolicyPipeline.gate(
+      plan = plan,
+      affectedPaths = buildMap {
+        put("provider", settings.provider)
+        put("endpoint", endpoint)
+        put("outputDirectory", toolTargetResolver.displayWritablePath(outputDirectory))
+      },
+      askDetail = "Approval is required before SynthesizeSpeech can access the network.",
+      denyDetail = "Policy denied SynthesizeSpeech.",
+    )?.let { return it }
+
+    val response = client.synthesize(
+      OpenCraySpeechSynthesisRequest(
+        text = text,
+        format = format,
+        voiceOverride = voiceOverride,
+        modelOverride = modelOverride,
+        settings = settings,
+      ),
+    )
+    val transcriptText = response.transcriptText
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: text.takeIf(String::isNotBlank)
+    val artifact = writeGeneratedWorkspaceArtifact(
+      directory = outputDirectory,
+      stem = "voice-${UUID.randomUUID().toString().replace("-", "").take(12)}",
+      requestedExtension = format,
+      defaultExtension = DEFAULT_GENERATED_AUDIO_FORMAT,
+      asset = response.audio,
+      kindHint = "voice",
+      durationMs = response.durationMs,
+      transcriptText = transcriptText,
+    )
+
+    return AgentToolResult(
+      toolName = "SynthesizeSpeech",
+      status = AgentToolResultStatus.SUCCESS,
+      content = buildGeneratedSpeechResultContent(artifact = artifact),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = buildMap {
+          put("provider", settings.provider)
+          put("endpoint", endpoint)
+          put("textPreview", inlinePreview(text, maxChars = 240))
+          put("format", format)
+          voiceOverride?.let { put("voiceOverride", it) }
+          modelOverride?.let { put("modelOverride", it) }
+          response.providerRequestId?.let { put("providerRequestId", it) }
+          putAll(attachmentArtifactsMetadata(listOf(artifact)))
+          putAll(response.metadata)
+        },
+      ),
+    )
+  }
+
   private fun editWorkspaceFile(task: AgentTask, arguments: JsonObject): AgentToolResult {
     val file = toolTargetResolver.resolveWritablePath(
       candidate = arguments.requiredStringFrom("file_path", "path"),
@@ -1419,10 +1679,11 @@ class OpenCrayToolDispatcher(
       todoStore.replaceAll(todos)
     }
     val snapshot = todoStore.snapshot()
-    val rendered = if (snapshot.isEmpty()) {
+    val renderedEntries = todos ?: snapshot
+    val rendered = if (renderedEntries.isEmpty()) {
       "Todo list is empty."
     } else {
-      snapshot.joinToString(separator = "\n") { todo ->
+      renderedEntries.joinToString(separator = "\n") { todo ->
         val statusLabel = when (todo.status) {
           AgentTodoStatus.PENDING -> "[pending]"
           AgentTodoStatus.IN_PROGRESS -> "[in_progress]"
@@ -1443,10 +1704,10 @@ class OpenCrayToolDispatcher(
         toolName = "TodoWrite",
         request = ToolMetadataContextRequest(
           workspaceRelation = ToolWorkspaceRelation.NONE,
-          targetSummary = "${snapshot.size} todo(s)",
+          targetSummary = "${renderedEntries.size} todo(s)",
         ),
         metadata = mapOf(
-          "todoCount" to snapshot.size.toString(),
+          "todoCount" to renderedEntries.size.toString(),
           "mutated" to (todos != null).toString(),
         ),
       ),
@@ -2094,30 +2355,241 @@ class OpenCrayToolDispatcher(
   }
 
   private fun attachmentArtifactMetadata(path: Path): Map<String, String> {
-    val relativePath = toolTargetResolver.displayWritablePath(path)
+    val artifact = attachmentArtifactFor(path) ?: return emptyMap()
+    return attachmentArtifactsMetadata(listOf(artifact))
+  }
+
+  private fun attachmentArtifactsMetadata(
+    artifacts: List<OpenCrayGeneratedWorkspaceArtifact>,
+  ): Map<String, String> {
+    val descriptors = artifacts.mapNotNull(::attachmentArtifactDescriptor)
+    if (descriptors.isEmpty()) {
+      return emptyMap()
+    }
+    val primary = descriptors.first()
+    return buildMap {
+      put(
+        OpenCrayAttachmentArtifactMetadataKeys.ARTIFACTS_JSON,
+        config.json.encodeToString(
+          ListSerializer(OpenCrayAttachmentArtifact.serializer()),
+          descriptors,
+        ),
+      )
+      put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_ID, primary.artifactId)
+      put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_RELATIVE_PATH, primary.relativePath)
+      primary.displayName?.let { put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_DISPLAY_NAME, it) }
+      primary.kindHint?.let { put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_KIND_HINT, it) }
+      primary.mimeType?.let { put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_MIME_TYPE, it) }
+      primary.durationMs?.let { put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_DURATION_MS, it.toString()) }
+      if (primary.waveformBars.isNotEmpty()) {
+        put(
+          OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_WAVEFORM_BARS,
+          primary.waveformBars.joinToString(separator = ","),
+        )
+      }
+      primary.transcriptText?.let { put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_TRANSCRIPT_TEXT, it) }
+    }
+  }
+
+  private fun attachmentArtifactDescriptor(
+    artifact: OpenCrayGeneratedWorkspaceArtifact,
+  ): OpenCrayAttachmentArtifact? {
+    val relativePath = toolTargetResolver.displayWritablePath(artifact.path)
       .trim()
       .takeIf(String::isNotBlank)
       ?.takeIf { candidate -> candidate != "." }
-      ?: return emptyMap()
-    val displayName = path.fileName?.toString()
+      ?: return null
+    val displayName = artifact.displayName
       ?.trim()
       ?.takeIf(String::isNotBlank)
-      ?: return emptyMap()
-    val artifactId = buildAttachmentArtifactId(
+      ?: artifact.path.fileName?.toString()
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+      ?: return null
+    val kindHint = artifact.kindHint?.trim()?.takeIf(String::isNotBlank)
+      ?: attachmentArtifactKindHint(displayName)
+    val mimeType = artifact.mimeType?.trim()?.takeIf(String::isNotBlank)
+      ?: attachmentArtifactMimeType(displayName)
+    return OpenCrayAttachmentArtifact(
+      artifactId = buildAttachmentArtifactId(
+        relativePath = relativePath,
+        displayName = displayName,
+      ),
       relativePath = relativePath,
       displayName = displayName,
+      kindHint = kindHint,
+      mimeType = mimeType,
+      durationMs = artifact.durationMs,
+      waveformBars = artifact.waveformBars,
+      transcriptText = artifact.transcriptText?.trim()?.takeIf(String::isNotBlank),
     )
-    return buildMap {
-      put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_ID, artifactId)
-      put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_RELATIVE_PATH, relativePath)
-      put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_DISPLAY_NAME, displayName)
-      attachmentArtifactKindHint(displayName)?.let { kindHint ->
-        put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_KIND_HINT, kindHint)
+  }
+
+  private fun attachmentArtifactFor(path: Path): OpenCrayGeneratedWorkspaceArtifact? =
+    path.fileName?.toString()
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { displayName ->
+        OpenCrayGeneratedWorkspaceArtifact(
+          path = path,
+          kindHint = attachmentArtifactKindHint(displayName),
+          mimeType = attachmentArtifactMimeType(displayName),
+          displayName = displayName,
+        )
       }
-      attachmentArtifactMimeType(displayName)?.let { mimeType ->
-        put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_MIME_TYPE, mimeType)
-      }
+
+  private fun unavailableMediaTool(
+    toolName: String,
+    message: String,
+  ): AgentToolResult = AgentToolResult(
+    toolName = toolName,
+    status = AgentToolResultStatus.FAILED,
+    content = message,
+    errorCode = "MEDIA_TOOL_UNAVAILABLE",
+    errorMessage = message,
+    metadata = toolPolicyPipeline.resultMetadata(
+      toolName = toolName,
+      request = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+      ),
+      metadata = mapOf("configured" to "false"),
+    ),
+  )
+
+  private fun buildConfiguredEndpointPreview(
+    baseUrl: String,
+    endpoint: String,
+  ): String {
+    val normalizedBaseUrl = baseUrl.trim().trimEnd('/')
+    val normalizedEndpoint = endpoint.trim()
+    if (normalizedEndpoint.startsWith("http://") || normalizedEndpoint.startsWith("https://")) {
+      return normalizedEndpoint
     }
+    val endpointSuffix = normalizedEndpoint.trimStart('/')
+    return when {
+      normalizedBaseUrl.isBlank() -> normalizedEndpoint
+      endpointSuffix.isBlank() -> normalizedBaseUrl
+      else -> "$normalizedBaseUrl/$endpointSuffix"
+    }
+  }
+
+  private fun buildGeneratedImageResultContent(
+    artifacts: List<OpenCrayGeneratedWorkspaceArtifact>,
+  ): String = buildString {
+    appendLine("Generated ${artifacts.size} image file(s).")
+    artifacts.forEachIndexed { index, artifact ->
+      val descriptor = attachmentArtifactDescriptor(artifact) ?: return@forEachIndexed
+      appendLine("${index + 1}. artifact_id=${descriptor.artifactId}")
+      appendLine("   relative_path=${descriptor.relativePath}")
+    }
+    append("Attach the artifact_id values in the final response attachments array to send these images.")
+  }.trim()
+
+  private fun buildGeneratedSpeechResultContent(
+    artifact: OpenCrayGeneratedWorkspaceArtifact,
+  ): String {
+    val descriptor = attachmentArtifactDescriptor(artifact)
+      ?: return "Synthesized speech successfully."
+    return buildString {
+      appendLine("Synthesized one voice clip.")
+      appendLine("artifact_id=${descriptor.artifactId}")
+      appendLine("relative_path=${descriptor.relativePath}")
+      append("Use kind=voice when attaching this artifact in the final response.")
+    }.trim()
+  }
+
+  private fun generatedMediaDirectory(bucket: String): Path =
+    writeBoundary.defaultRoot
+      .resolve(".opencray")
+      .resolve("generated-media")
+      .resolve(bucket)
+      .normalize()
+
+  private fun writeGeneratedWorkspaceArtifact(
+    directory: Path,
+    stem: String,
+    requestedExtension: String?,
+    defaultExtension: String,
+    asset: OpenCrayBinaryAsset,
+    kindHint: String? = null,
+    durationMs: Long? = null,
+    transcriptText: String? = null,
+  ): OpenCrayGeneratedWorkspaceArtifact {
+    require(asset.bytes.isNotEmpty()) { "Generated media asset was empty." }
+    val resolvedExtension = resolveGeneratedAssetExtension(
+      requestedExtension = requestedExtension,
+      defaultExtension = defaultExtension,
+      fileName = asset.fileName,
+      mimeType = asset.mimeType,
+    )
+    Files.createDirectories(directory)
+    val outputPath = directory.resolve("$stem.$resolvedExtension")
+    Files.write(outputPath, asset.bytes)
+    return OpenCrayGeneratedWorkspaceArtifact(
+      path = outputPath,
+      kindHint = kindHint,
+      mimeType = asset.mimeType?.trim()?.takeIf(String::isNotBlank)
+        ?: attachmentArtifactMimeType(outputPath.fileName.toString()),
+      displayName = outputPath.fileName.toString(),
+      durationMs = durationMs,
+      transcriptText = transcriptText,
+    )
+  }
+
+  private fun resolveGeneratedAssetExtension(
+    requestedExtension: String?,
+    defaultExtension: String,
+    fileName: String?,
+    mimeType: String?,
+  ): String = requestedExtension
+    ?.trim()
+    ?.lowercase(Locale.US)
+    ?.takeIf(String::isNotBlank)
+    ?: fileName
+      ?.substringAfterLast('.', "")
+      ?.trim()
+      ?.lowercase(Locale.US)
+      ?.takeIf(String::isNotBlank)
+      ?: mimeTypeToExtension(mimeType)
+      ?: defaultExtension
+
+  private fun mimeTypeToExtension(mimeType: String?): String? = when (mimeType?.trim()?.lowercase(Locale.US)) {
+    "image/png" -> "png"
+    "image/jpeg" -> "jpg"
+    "image/webp" -> "webp"
+    "audio/mpeg",
+    "audio/mp3",
+    -> "mp3"
+    "audio/wav",
+    "audio/x-wav",
+    -> "wav"
+    "audio/mp4",
+    "audio/m4a",
+    "audio/x-m4a",
+    -> "m4a"
+    else -> null
+  }
+
+  private fun normalizeGeneratedImageFormat(rawValue: String?): String? = when (rawValue?.trim()?.lowercase(Locale.US)) {
+    null,
+    "",
+    -> null
+    "jpg" -> "jpg"
+    "jpeg" -> "jpeg"
+    "png" -> "png"
+    "webp" -> "webp"
+    else -> throw IllegalArgumentException("GenerateImage format must be png, jpg, jpeg, or webp.")
+  }
+
+  private fun normalizeGeneratedAudioFormat(rawValue: String?): String? = when (rawValue?.trim()?.lowercase(Locale.US)) {
+    null,
+    "",
+    -> null
+    "mp3" -> "mp3"
+    "wav" -> "wav"
+    "m4a" -> "m4a"
+    else -> throw IllegalArgumentException("SynthesizeSpeech format must be mp3, wav, or m4a.")
   }
 
   private fun buildAttachmentArtifactId(
@@ -4175,6 +4647,9 @@ class OpenCrayToolDispatcher(
     private const val DEFAULT_BASH_WAIT_TIMEOUT_MS: Long = 1_000L
     private const val DEFAULT_MANAGED_PROCESS_TIMEOUT_MS: Long = 300_000L
     private const val DEFAULT_MANAGED_PROCESS_WAIT_TIMEOUT_MS: Long = 1_000L
+    private const val DEFAULT_GENERATED_IMAGE_FORMAT: String = "png"
+    private const val DEFAULT_GENERATED_AUDIO_FORMAT: String = "mp3"
+    private const val MAX_GENERATED_IMAGE_COUNT: Int = 9
     private val WINDOWS_ABSOLUTE_PATH_REGEX: Regex = Regex("^[A-Za-z]:[\\\\/].+")
     private val ATTACHMENT_IMAGE_EXTENSIONS: Set<String> = setOf(
       "png",
@@ -4324,21 +4799,65 @@ class OpenCrayToolDispatcher(
 }
 
 internal fun AgentToolDefinition.toJsonSchema(): JsonObject = buildJsonObject {
-  put("name", name)
-  put("description", description)
+  put("type", "object")
   put(
-    "parameters",
-    buildJsonArray {
+    "properties",
+    buildJsonObject {
       parameters.forEach { parameter ->
-        add(
-          buildJsonObject {
-            put("name", parameter.name)
-            put("type", parameter.type)
-            put("required", parameter.required)
-            put("description", parameter.description)
-          },
-        )
+        put(parameter.name, parameter.toJsonSchemaProperty())
       }
     },
   )
+  parameters
+    .filter(AgentToolParameter::required)
+    .map(AgentToolParameter::name)
+    .takeIf { requiredParameters -> requiredParameters.isNotEmpty() }
+    ?.let { requiredParameters ->
+      put(
+        "required",
+        buildJsonArray {
+          requiredParameters.forEach { requiredParameter ->
+            add(JsonPrimitive(requiredParameter))
+          }
+        },
+      )
+    }
+  put("additionalProperties", false)
+}
+
+internal fun AgentToolDefinition.toLiteLlmToolDefinition(): LiteLlmToolDefinition =
+  LiteLlmToolDefinition(
+    name = name,
+    description = description,
+    inputSchema = toJsonSchema(),
+  )
+
+private fun AgentToolParameter.toJsonSchemaProperty(): JsonObject = buildJsonObject {
+  when (type.trim().lowercase(Locale.ROOT)) {
+    "string" -> put("type", "string")
+    "number" -> put("type", "number")
+    "boolean" -> put("type", "boolean")
+    "string[]" -> {
+      put("type", "array")
+      put(
+        "items",
+        buildJsonObject {
+          put("type", "string")
+        },
+      )
+    }
+
+    "object[]" -> {
+      put("type", "array")
+      put(
+        "items",
+        buildJsonObject {
+          put("type", "object")
+        },
+      )
+    }
+
+    else -> put("type", "string")
+  }
+  put("description", description)
 }

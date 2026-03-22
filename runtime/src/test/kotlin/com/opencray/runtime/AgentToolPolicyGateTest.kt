@@ -773,6 +773,40 @@ class AgentToolPolicyGateTest {
   }
 
   @Test
+  fun rejectedToolRetryReturnsStableDeniedResult() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-rejected-tool").toPath()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        rejectedTaskId = "task-rejected",
+        rejectedToolName = "Write",
+      ),
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(
+        id = "task-rejected",
+        metadata = mapOf("chatMode" to "SAFE"),
+      ),
+      call = AgentToolCall(
+        toolName = "Write",
+        arguments = JsonObject(
+          mapOf(
+            "file_path" to JsonPrimitive("notes.txt"),
+            "content" to JsonPrimitive("hello"),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.DENIED, result.status)
+    assertEquals("DENY_POLICY", result.errorCode)
+    assertEquals("USER_REJECTED_APPROVAL", result.metadata["policyReasonCode"])
+    assertTrue(result.content.contains("User rejected approval for Write"))
+  }
+
+  @Test
   fun coarseTaskDenyStillOverridesDeveloperModeAllowance() {
     val workspaceRoot = temporaryFolder.newFolder("tool-policy-coarse-deny").toPath()
     val dispatcher = OpenCrayToolDispatcher(

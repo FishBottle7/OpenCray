@@ -14,6 +14,12 @@ abstract interface class SettingsFacade {
     List<NetworkSearchSlotSnapshot> slots,
   );
 
+  Future<MediaSpeechConfigSnapshot> loadMediaSpeechConfig();
+
+  Future<MediaSpeechConfigSnapshot> saveMediaSpeechConfig(
+    MediaSpeechConfigSnapshot snapshot,
+  );
+
   Future<LlmConfigSnapshot> loadLlmConfig();
 
   Future<LlmConfigSnapshot> saveLlmConfig({

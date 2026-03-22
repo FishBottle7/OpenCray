@@ -137,6 +137,37 @@ void main() {
     expect(preview.isTruncated, isTrue);
   });
 
+  test('local runtime bridge posts twin import probe requests', () async {
+    late Map<String, Object?> capturedBody;
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/probe_twin_import_source');
+      capturedBody = await readJsonBody(request);
+      await writeJson(request, <String, Object?>{
+        'filePath': '/tmp/chatlab.jsonl',
+        'fileName': 'chatlab.jsonl',
+        'fileExtension': 'jsonl',
+        'sourceMode': 'chat_history',
+        'formatKey': 'chatlab_jsonl',
+        'formatLabel': 'ChatLab JSONL',
+        'confidence': 'high',
+        'usesExistingImporter': true,
+        'needsManualSelection': false,
+        'notes': <Object?>['Detected ChatLab JSONL using header/member/message records.'],
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final snapshot = await bridge.probeTwinImportSource('/tmp/chatlab.jsonl');
+
+    expect(capturedBody['filePath'], '/tmp/chatlab.jsonl');
+    expect(snapshot.fileName, 'chatlab.jsonl');
+    expect(snapshot.sourceMode, 'chat_history');
+    expect(snapshot.formatKey, 'chatlab_jsonl');
+    expect(snapshot.usesExistingImporter, isTrue);
+    expect(snapshot.needsManualSelection, isFalse);
+  });
+
   test('local runtime bridge loads text documents over http', () async {
     requestHandler = (request) async {
       expect(request.method, 'GET');
@@ -517,25 +548,28 @@ void main() {
     expect(inspection.candidates.single.name, 'find-skills');
   });
 
-  test('local runtime bridge posts selected skill installs over http', () async {
-    late Map<String, Object?> capturedBody;
-    requestHandler = (request) async {
-      expect(request.method, 'POST');
-      expect(request.uri.path, '/v1/install_skill_source');
-      capturedBody = await readJsonBody(request);
-      await writeJson(request, 'Installed review-skills.');
-    };
+  test(
+    'local runtime bridge posts selected skill installs over http',
+    () async {
+      late Map<String, Object?> capturedBody;
+      requestHandler = (request) async {
+        expect(request.method, 'POST');
+        expect(request.uri.path, '/v1/install_skill_source');
+        capturedBody = await readJsonBody(request);
+        await writeJson(request, 'Installed review-skills.');
+      };
 
-    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
-    final message = await bridge.installSkillSource(
-      'roin-orca/skills',
-      selectedSkillName: 'review-skills',
-    );
+      final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+      final message = await bridge.installSkillSource(
+        'roin-orca/skills',
+        selectedSkillName: 'review-skills',
+      );
 
-    expect(capturedBody['sourceRef'], 'roin-orca/skills');
-    expect(capturedBody['selectedSkillName'], 'review-skills');
-    expect(message, 'Installed review-skills.');
-  });
+      expect(capturedBody['sourceRef'], 'roin-orca/skills');
+      expect(capturedBody['selectedSkillName'], 'review-skills');
+      expect(message, 'Installed review-skills.');
+    },
+  );
 
   test('local runtime bridge posts batch skill installs over http', () async {
     late Map<String, Object?> capturedBody;
@@ -735,6 +769,81 @@ void main() {
     expect(snapshot.workspaceId, 'workspace-main');
     expect(snapshot.records.single.id, 'memory-user');
     expect(snapshot.records.single.preferenceValue, 'Xiao Bai');
+  });
+
+  test('local runtime bridge searches projected memory debug corpus', () async {
+    late Map<String, Object?> capturedBody;
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/memory_debug_search');
+      capturedBody = await readJsonBody(request);
+      await writeJson(request, <String, Object?>{
+        'sessionId': 'session-1',
+        'workspaceId': 'workspace-main',
+        'observedAtEpochMs': 5000,
+        'query': 'xiao bai',
+        'queryTerms': <Object?>['xiao', 'bai'],
+        'corpusFileCount': 2,
+        'results': <Object?>[
+          <String, Object?>{
+            'recordId': 'memory-user',
+            'path': 'MEMORY.md',
+            'startLine': 5,
+            'endLine': 5,
+            'score': 420,
+            'matchedTerms': <Object?>['xiao', 'bai'],
+            'kind': 'user_preference',
+            'scope': 'user',
+            'status': 'active',
+            'snippet': 'User prefers Chinese replies.',
+          },
+        ],
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final snapshot = await bridge.searchMemoryDebug(query: 'xiao bai');
+
+    expect(capturedBody['query'], 'xiao bai');
+    expect(capturedBody['maxResults'], 4);
+    expect(capturedBody['minScore'], 1);
+    expect(snapshot.query, 'xiao bai');
+    expect(snapshot.results.single.recordId, 'memory-user');
+    expect(snapshot.results.single.path, 'MEMORY.md');
+  });
+
+  test('local runtime bridge loads projected memory debug slices', () async {
+    late Map<String, Object?> capturedBody;
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/memory_debug_slice');
+      capturedBody = await readJsonBody(request);
+      await writeJson(request, <String, Object?>{
+        'sessionId': 'session-1',
+        'workspaceId': 'workspace-main',
+        'observedAtEpochMs': 5000,
+        'path': 'MEMORY.md',
+        'text': 'User prefers Chinese replies.',
+        'startLine': 5,
+        'endLine': 5,
+        'totalLineCount': 12,
+        'recordIds': <Object?>['memory-user'],
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final snapshot = await bridge.getMemoryDebugSlice(
+      path: 'MEMORY.md',
+      fromLine: 5,
+      lines: 1,
+    );
+
+    expect(capturedBody['path'], 'MEMORY.md');
+    expect(capturedBody['fromLine'], 5);
+    expect(capturedBody['lines'], 1);
+    expect(snapshot.path, 'MEMORY.md');
+    expect(snapshot.recordIds, <String>['memory-user']);
+    expect(snapshot.text, 'User prefers Chinese replies.');
   });
 
   test('local runtime bridge loads memory debug link snapshots', () async {
@@ -951,6 +1060,27 @@ void main() {
     expect(snapshot.interactionPreferenceDebug?.preferredNaming, 'A-Cheng');
     expect(snapshot.relationshipStateDebug?.derivedAddressStyle, 'intimate');
     expect(snapshot.relationshipStateDebug?.recentNegativeGuardActive, isFalse);
+  });
+
+  test('local runtime bridge applies memory debug actions', () async {
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/memory_debug_action');
+      final body = await readJsonBody(request);
+      expect(body['recordId'], 'memory-user');
+      expect(body['actionId'], 'suppress');
+      await writeJson(request, <String, Object?>{
+        'recordId': 'memory-user',
+        'action': 'suppress',
+        'applied': true,
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    await bridge.applyMemoryDebugAction(
+      recordId: 'memory-user',
+      actionId: 'suppress',
+    );
   });
 
   test(

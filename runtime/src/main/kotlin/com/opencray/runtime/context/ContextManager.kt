@@ -72,6 +72,7 @@ class ContextManager(
       recentToolObservationsText = recentToolObservationLayer?.text.orEmpty(),
       pruningSummary = prunedTranscript.summary,
       compactionSummary = compactionSummary,
+      nativeToolCallingEnabled = input.nativeToolCallingEnabled,
       toolDefinitions = input.toolDefinitions,
       transcriptWindow = transcriptSelection.window,
       report = ContextSelectionReport(

@@ -8,11 +8,23 @@ import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.store.MemoryStore
+import com.opencray.runtime.context.RuntimeSoulProfile
 import com.opencray.runtime.memory.MemoryKind
 import com.opencray.runtime.memory.MemoryCandidateExtractor
 import com.opencray.runtime.memory.MemoryFlushOutcome
 import com.opencray.runtime.memory.MemoryInteractionPreferenceExtensionKeys
+import com.opencray.runtime.memory.MemoryPreferenceKeys
+import com.opencray.runtime.memory.MemoryRecallRequest
+import com.opencray.runtime.memory.MemoryRecordExtensionKeys
+import com.opencray.runtime.memory.MemoryRetriever
 import com.opencray.runtime.memory.MemoryScope
+import com.opencray.runtime.memory.MemoryStewardshipAction
+import com.opencray.runtime.memory.MemoryStewardshipDecision
+import com.opencray.runtime.memory.MemoryStewardshipInterpretation
+import com.opencray.runtime.memory.MemoryStewardshipInterpreter
+import com.opencray.runtime.memory.MemoryStewardshipRequest
+import com.opencray.runtime.memory.MemoryStewardshipResolutionReason
+import com.opencray.runtime.memory.MemoryStewardshipService
 import com.opencray.runtime.memory.SoulMemoryIntent
 import com.opencray.runtime.memory.SoulMemoryIntentInterpretation
 import com.opencray.runtime.memory.SoulMemoryIntentInterpreter
@@ -39,9 +51,11 @@ import com.opencray.runtime.soul.RelationshipEventRequest
 import com.opencray.runtime.soul.RelationshipEventScope
 import com.opencray.runtime.soul.RelationshipEventType
 import com.opencray.runtime.soul.RelationshipEventValence
+import com.opencray.runtime.soul.MemoryBackedSoulProfileResolver
 import com.opencray.runtime.soul.SoulPlasticity
 import com.opencray.runtime.soul.SoulMemoryExtensionKeys
 import com.opencray.runtime.soul.SoulMemoryObjectTypes
+import com.opencray.runtime.soul.SoulProfileExtensionKeys
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -315,6 +329,166 @@ class ChatMemoryIngestionCoordinatorTest {
   }
 
   @Test
+  fun ingestCompletedTurnWritesDurableMemoryThatCanBeRecalledAcrossSessions() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = semanticUserCandidateExtractor(),
+      memoryStewardshipService = MemoryStewardshipService(
+        clock = { 2_000L },
+        interpreter = FixedMemoryStewardshipInterpreter(
+          interpretation = MemoryStewardshipInterpretation.Success(decisions = emptyList()),
+        ),
+        candidateOnlyReviewKinds = setOf(
+          MemoryKind.PROJECT_FACT,
+          MemoryKind.DURABLE_INSTRUCTION,
+        ),
+      ),
+      writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 2_000L }),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-memory-write",
+      task = promptTask(
+        id = "task-memory-write",
+        input = "以后这个项目不要用 git reset --hard，而且这个项目使用 Gradle wrapper。",
+      ),
+      result = successResult(taskId = "task-memory-write"),
+      assistantOutput = "记住了。",
+      toolObservations = emptyList(),
+    )
+
+    assertEquals(2, summary.writtenRecords.size)
+    val recalled = MemoryRetriever(clock = { 2_000L }).retrieve(
+      records = memoryStore.list(),
+      request = MemoryRecallRequest(
+        sessionId = "session-memory-recall",
+        workspaceId = "workspace-main",
+        userInput = "检查一下 Gradle wrapper，并且不要用 git reset --hard。",
+      ),
+    )
+
+    assertTrue(
+      recalled.memories.any { memory ->
+        memory.kind == MemoryKind.DURABLE_INSTRUCTION &&
+          memory.content.contains("git reset --hard", ignoreCase = true)
+      },
+    )
+    assertTrue(
+      recalled.memories.any { memory ->
+        memory.kind == MemoryKind.PROJECT_FACT &&
+          memory.content.contains("Gradle wrapper", ignoreCase = true)
+      },
+    )
+  }
+
+  @Test
+  fun ingestCompletedTurnCarriesPreferredNameAcrossSessionsAndSupersedesOldValueWhenCorrected() {
+    val memoryStore = InMemoryMemoryStore()
+    val firstCoordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = semanticUserCandidateExtractor(),
+      memoryStewardshipService = MemoryStewardshipService(
+        clock = { 2_000L },
+        interpreter = FixedMemoryStewardshipInterpreter(
+          interpretation = MemoryStewardshipInterpretation.Success(decisions = emptyList()),
+        ),
+        candidateOnlyReviewKinds = setOf(MemoryKind.USER_PREFERENCE),
+      ),
+      writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 2_000L }),
+    )
+
+    val firstSummary = firstCoordinator.ingestCompletedTurn(
+      sessionId = "session-name-a",
+      task = promptTask(
+        id = "task-name-a",
+        input = "以后叫我阿澄。",
+      ),
+      result = successResult(taskId = "task-name-a"),
+      assistantOutput = "知道了。",
+      toolObservations = emptyList(),
+    )
+
+    val initialOverlay = MemoryBackedSoulProfileResolver().overlay(
+      baseProfile = RuntimeSoulProfile(
+        presetName = "BUILDER",
+        voice = "decisive and direct",
+      ),
+      records = memoryStore.list(),
+      sessionId = "session-name-b",
+      workspaceId = "workspace-main",
+    )
+    assertEquals("阿澄", initialOverlay?.extensions?.get(SoulProfileExtensionKeys.PREFERRED_NAMING))
+
+    val oldPreferredNameRecordId = firstSummary.writtenRecords.single { record ->
+      record.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.USER_PREFERRED_NAME
+    }.id
+    val secondCoordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = semanticUserCandidateExtractor(),
+      memoryStewardshipService = MemoryStewardshipService(
+        clock = { 3_000L },
+        interpreter = object : MemoryStewardshipInterpreter {
+          override fun interpret(
+            request: MemoryStewardshipRequest,
+          ): MemoryStewardshipInterpretation = MemoryStewardshipInterpretation.Success(
+            decisions = listOf(
+              MemoryStewardshipDecision(
+                action = MemoryStewardshipAction.SUPERSEDE_RECORD_WITH_CANDIDATE,
+                recordId = oldPreferredNameRecordId,
+                candidateIndex = 0,
+              ),
+            ),
+          )
+        },
+        candidateOnlyReviewKinds = setOf(MemoryKind.USER_PREFERENCE),
+        recordOnlyReviewKinds = setOf(MemoryKind.USER_PREFERENCE),
+      ),
+      writer = MemoryWriter(store = memoryStore, clock = { 3_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 3_000L }),
+    )
+
+    val secondSummary = secondCoordinator.ingestCompletedTurn(
+      sessionId = "session-name-b",
+      task = promptTask(
+        id = "task-name-b",
+        input = "别再叫我阿澄了，以后叫我阿青。",
+      ),
+      result = successResult(taskId = "task-name-b"),
+      assistantOutput = "好，以后叫你阿青。",
+      toolObservations = emptyList(),
+    )
+
+    val activePreferredNameRecords = memoryStore.list().filter { record ->
+      record.extensions[MemoryRecordExtensionKeys.STATUS] == "active" &&
+        record.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.USER_PREFERRED_NAME
+    }
+    assertEquals(1, activePreferredNameRecords.size)
+    assertEquals("阿青", activePreferredNameRecords.single().extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE])
+    assertEquals(listOf(oldPreferredNameRecordId), secondSummary.resolvedRecords.map(MemoryRecord::id))
+    assertEquals(
+      "superseded",
+      secondSummary.resolvedRecords.single().extensions[MemoryRecordExtensionKeys.RESOLUTION_REASON],
+    )
+
+    val correctedOverlay = MemoryBackedSoulProfileResolver().overlay(
+      baseProfile = RuntimeSoulProfile(
+        presetName = "BUILDER",
+        voice = "decisive and direct",
+      ),
+      records = memoryStore.list(),
+      sessionId = "session-name-c",
+      workspaceId = "workspace-main",
+    )
+    assertEquals("阿青", correctedOverlay?.extensions?.get(SoulProfileExtensionKeys.PREFERRED_NAMING))
+  }
+
+  @Test
   fun ingestCompletedTurnSkipsApprovalRequiredDenials() {
     val memoryStore = InMemoryMemoryStore()
     val coordinator = ChatMemoryIngestionCoordinator(
@@ -402,7 +576,20 @@ class ChatMemoryIngestionCoordinatorTest {
     val coordinator = ChatMemoryIngestionCoordinator(
       memoryStore = memoryStore,
       writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
-      taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 2_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(
+        store = memoryStore,
+        clock = { 2_000L },
+        intentInterpreter = FixedTaskCommitmentIntentInterpreter(
+          TaskCommitmentIntentInterpretation.Success(
+            decisions = listOf(
+              TaskCommitmentIntentDecision(
+                commitmentId = "commitment-1",
+                action = TaskCommitmentIntentAction.RESOLVE,
+              ),
+            ),
+          ),
+        ),
+      ),
     )
 
     val summary = coordinator.ingestCompletedTurn(
@@ -418,6 +605,73 @@ class ChatMemoryIngestionCoordinatorTest {
 
     assertEquals(listOf("commitment-1"), summary.resolvedRecords.map { record -> record.id })
     assertEquals("resolved", memoryStore.list().single { record -> record.id == "commitment-1" }.extensions["status"])
+  }
+
+  @Test
+  fun ingestCompletedTurnWritesReplacementCommitmentWhenExistingOneIsSuperseded() {
+    val memoryStore = InMemoryMemoryStore().apply {
+      upsert(
+        MemoryRecord(
+          id = "commitment-old",
+          content = "run the targeted runtime tests",
+          createdAtEpochMs = 1_000L,
+          updatedAtEpochMs = 1_001L,
+          tags = listOf("kind:task_commitment", "scope:session", "status:open"),
+          extensions = mapOf(
+            "kind" to "task_commitment",
+            "scope" to "session",
+            "status" to "open",
+            "source_session_id" to "session-1",
+            "ttl_ms" to (14L * 24L * 60L * 60L * 1000L).toString(),
+            "last_confirmed_at_epoch_ms" to "1001",
+          ),
+        ),
+      )
+    }
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(
+        store = memoryStore,
+        clock = { 2_000L },
+        intentInterpreter = FixedTaskCommitmentIntentInterpreter(
+          TaskCommitmentIntentInterpretation.Success(
+            decisions = listOf(
+              TaskCommitmentIntentDecision(
+                commitmentId = "commitment-old",
+                action = TaskCommitmentIntentAction.SUPERSEDE_WITH_PROPOSED,
+                proposedCommitmentIndex = 0,
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-1",
+      task = promptTask(
+        id = "task-supersede",
+        input = "Please continue.",
+      ),
+      result = successResult(taskId = "task-supersede"),
+      assistantOutput = "Next I will verify the Android smoke tests.",
+      toolObservations = emptyList(),
+    )
+
+    assertEquals(listOf("commitment-old"), summary.resolvedRecords.map { record -> record.id })
+    assertEquals(1, summary.writtenRecords.count { record -> record.extensions["kind"] == "task_commitment" })
+    assertTrue(memoryStore.list().any { record ->
+      record.content == "verify the Android smoke tests" &&
+        record.extensions["kind"] == "task_commitment" &&
+        record.extensions["status"] == "open"
+    })
+    val resolvedRecord = memoryStore.list().single { record -> record.id == "commitment-old" }
+    assertEquals("superseded", resolvedRecord.extensions["resolution_reason"])
+    assertEquals(
+      summary.writtenRecords.single { record -> record.extensions["kind"] == "task_commitment" }.id,
+      resolvedRecord.extensions["superseded_by"],
+    )
   }
 
   @Test
@@ -473,6 +727,67 @@ class ChatMemoryIngestionCoordinatorTest {
 
     assertEquals(listOf("commitment-reaffirm"), summary.reaffirmedRecords.map { record -> record.id })
     assertEquals("open", memoryStore.list().single { record -> record.id == "commitment-reaffirm" }.extensions["status"])
+  }
+
+  @Test
+  fun ingestCompletedTurnDropsDuplicateTaskCommitmentCandidateInsteadOfWritingAnotherRecord() {
+    val memoryStore = InMemoryMemoryStore().apply {
+      upsert(
+        MemoryRecord(
+          id = "commitment-existing",
+          content = "stabilize the flaky runtime test",
+          createdAtEpochMs = 1_000L,
+          updatedAtEpochMs = 1_001L,
+          tags = listOf("kind:task_commitment", "scope:session", "status:open"),
+          extensions = mapOf(
+            "kind" to "task_commitment",
+            "scope" to "session",
+            "status" to "open",
+            "source_session_id" to "session-1",
+            "ttl_ms" to (14L * 24L * 60L * 60L * 1000L).toString(),
+            "last_confirmed_at_epoch_ms" to "1001",
+          ),
+        ),
+      )
+    }
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(
+        store = memoryStore,
+        clock = { 2_000L },
+        intentInterpreter = FixedTaskCommitmentIntentInterpreter(
+          TaskCommitmentIntentInterpretation.Success(
+            decisions = listOf(
+              TaskCommitmentIntentDecision(
+                proposedCommitmentIndex = 0,
+                action = TaskCommitmentIntentAction.DROP_PROPOSED,
+              ),
+              TaskCommitmentIntentDecision(
+                commitmentId = "commitment-existing",
+                action = TaskCommitmentIntentAction.REAFFIRM,
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-1",
+      task = promptTask(
+        id = "task-drop-duplicate",
+        input = "Please continue.",
+      ),
+      result = successResult(taskId = "task-drop-duplicate"),
+      assistantOutput = "Next I will stabilize the flaky runtime test.",
+      toolObservations = emptyList(),
+    )
+
+    assertTrue(summary.writtenRecords.none { record -> record.extensions["kind"] == "task_commitment" })
+    assertEquals(listOf("commitment-existing"), summary.reaffirmedRecords.map { record -> record.id })
+    assertEquals(1, memoryStore.list().count { record -> record.extensions["kind"] == "task_commitment" })
+    assertEquals("commitment-existing", memoryStore.list().single { record -> record.extensions["kind"] == "task_commitment" }.id)
   }
 
   @Test
@@ -804,6 +1119,551 @@ class ChatMemoryIngestionCoordinatorTest {
   }
 
   @Test
+  fun ingestCompletedTurnCanSupersedeExistingProjectFactThroughBoundedStewardship() {
+    val memoryStore = InMemoryMemoryStore().apply {
+      upsert(
+        MemoryRecord(
+          id = "fact-old",
+          content = "Project runs on port 3000",
+          createdAtEpochMs = 1_000L,
+          updatedAtEpochMs = 1_100L,
+          tags = listOf("kind:project_fact", "scope:workspace", "status:active"),
+          extensions = mapOf(
+            "kind" to "project_fact",
+            "scope" to "workspace",
+            "status" to "active",
+            "source" to "user_input",
+            "source_session_id" to "session-old",
+            "workspace_id" to "workspace-main",
+            "ttl_ms" to (90L * 24L * 60L * 60L * 1000L).toString(),
+            "last_confirmed_at_epoch_ms" to "1100",
+          ),
+        ),
+      )
+    }
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = MemoryCandidateExtractor(
+        userIntentInterpreter = FixedUserIntentInterpreter(
+          interpretation = UserMemoryIntentInterpretation.Success(
+            intents = listOf(
+              UserMemoryIntent(
+                kind = MemoryKind.PROJECT_FACT,
+                scope = MemoryScope.WORKSPACE,
+                content = "Project runs on port 8000",
+              ),
+            ),
+          ),
+        ),
+      ),
+      memoryStewardshipService = MemoryStewardshipService(
+        clock = { 2_000L },
+        interpreter = FixedMemoryStewardshipInterpreter(
+          interpretation = MemoryStewardshipInterpretation.Success(
+            decisions = listOf(
+              MemoryStewardshipDecision(
+                action = MemoryStewardshipAction.SUPERSEDE_RECORD_WITH_CANDIDATE,
+                recordId = "fact-old",
+                candidateIndex = 0,
+              ),
+            ),
+          ),
+        ),
+      ),
+      writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 2_000L }),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-project-fact",
+      task = promptTask(
+        id = "task-project-fact",
+        input = "记住这个项目现在跑在 8000 端口。",
+      ),
+      result = successResult(taskId = "task-project-fact"),
+      assistantOutput = "知道了。",
+      toolObservations = emptyList(),
+    )
+
+    assertEquals(listOf("fact-old"), summary.resolvedRecords.map { record -> record.id })
+    assertTrue(memoryStore.list().any { record ->
+      record.content == "Project runs on port 8000" &&
+        record.extensions["status"] == "active"
+    })
+    assertEquals(
+      "superseded",
+      memoryStore.list().single { record -> record.id == "fact-old" }.extensions["resolution_reason"],
+    )
+  }
+
+  @Test
+  fun ingestCompletedTurnCanRefreshExistingProjectFactThroughBoundedStewardship() {
+    val memoryStore = InMemoryMemoryStore().apply {
+      upsert(
+        MemoryRecord(
+          id = "fact-existing",
+          content = "Project runs on port 8000",
+          createdAtEpochMs = 1_000L,
+          updatedAtEpochMs = 1_100L,
+          recordVersion = 2L,
+          tags = listOf("kind:project_fact", "scope:workspace", "status:active"),
+          extensions = mapOf(
+            "kind" to "project_fact",
+            "scope" to "workspace",
+            "status" to "active",
+            "source" to "tool_observation",
+            "source_session_id" to "session-old",
+            "workspace_id" to "workspace-main",
+            "ttl_ms" to (90L * 24L * 60L * 60L * 1000L).toString(),
+            "last_confirmed_at_epoch_ms" to "1100",
+          ),
+        ),
+      )
+    }
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = MemoryCandidateExtractor(
+        userIntentInterpreter = FixedUserIntentInterpreter(
+          interpretation = UserMemoryIntentInterpretation.Success(
+            intents = listOf(
+              UserMemoryIntent(
+                kind = MemoryKind.PROJECT_FACT,
+                scope = MemoryScope.WORKSPACE,
+                content = "Current project port is 8000",
+              ),
+            ),
+          ),
+        ),
+      ),
+      memoryStewardshipService = MemoryStewardshipService(
+        clock = { 2_000L },
+        interpreter = FixedMemoryStewardshipInterpreter(
+          interpretation = MemoryStewardshipInterpretation.Success(
+            decisions = listOf(
+              MemoryStewardshipDecision(
+                action = MemoryStewardshipAction.REFRESH_RECORD_WITH_CANDIDATE,
+                recordId = "fact-existing",
+                candidateIndex = 0,
+              ),
+            ),
+          ),
+        ),
+      ),
+      writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 2_000L }),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-project-fact-refresh",
+      task = promptTask(
+        id = "task-project-fact-refresh",
+        input = "记住一下，现在项目端口还是 8000。",
+      ),
+      result = successResult(taskId = "task-project-fact-refresh"),
+      assistantOutput = "知道了。",
+      toolObservations = emptyList(),
+    )
+
+    assertTrue(summary.writtenRecords.isEmpty())
+    assertEquals(listOf("fact-existing"), summary.reaffirmedRecords.map { record -> record.id })
+    assertEquals(1, memoryStore.list().size)
+    val stored = memoryStore.list().single()
+    assertEquals("fact-existing", stored.id)
+    assertEquals("Project runs on port 8000", stored.content)
+    assertEquals(3L, stored.recordVersion)
+    assertEquals("2000", stored.extensions["last_confirmed_at_epoch_ms"])
+  }
+
+  @Test
+  fun ingestCompletedTurnCanDropConflictingProjectFactCandidateWithoutExistingRecord() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = MemoryCandidateExtractor(
+        userIntentInterpreter = FixedUserIntentInterpreter(
+          interpretation = UserMemoryIntentInterpretation.Success(
+            intents = listOf(
+              UserMemoryIntent(
+                kind = MemoryKind.PROJECT_FACT,
+                scope = MemoryScope.WORKSPACE,
+                content = "Project runs on port 3000",
+              ),
+              UserMemoryIntent(
+                kind = MemoryKind.PROJECT_FACT,
+                scope = MemoryScope.WORKSPACE,
+                content = "Project runs on port 8000",
+              ),
+            ),
+          ),
+        ),
+      ),
+      memoryStewardshipService = MemoryStewardshipService(
+        clock = { 2_000L },
+        interpreter = FixedMemoryStewardshipInterpreter(
+          interpretation = MemoryStewardshipInterpretation.Success(
+            decisions = listOf(
+              MemoryStewardshipDecision(
+                action = MemoryStewardshipAction.DROP_CANDIDATE,
+                candidateIndex = 0,
+              ),
+            ),
+          ),
+        ),
+      ),
+      writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 2_000L }),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-project-fact-conflict",
+      task = promptTask(
+        id = "task-project-fact-conflict",
+        input = "记住项目现在跑在 8000 端口，不是 3000。",
+      ),
+      result = successResult(taskId = "task-project-fact-conflict"),
+      assistantOutput = "知道了。",
+      toolObservations = emptyList(),
+    )
+
+    assertEquals(1, summary.writtenRecords.size)
+    assertEquals(listOf("Project runs on port 8000"), memoryStore.list().map(MemoryRecord::content))
+  }
+
+  @Test
+  fun ingestCompletedTurnCanFailClosedForStewardableCandidatesWhenConfigured() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = semanticUserCandidateExtractor(),
+      memoryStewardshipService = MemoryStewardshipService(
+        clock = { 2_000L },
+        interpreter = FixedMemoryStewardshipInterpreter(
+          interpretation = MemoryStewardshipInterpretation.Unavailable(
+            reason = "offline",
+          ),
+        ),
+        failClosedOnInterpreterUnavailable = true,
+      ),
+      writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 2_000L }),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-fail-closed-stewardship",
+      task = promptTask(
+        id = "task-fail-closed-stewardship",
+        input = """
+          Please default to Simplified Chinese for explanations.
+          Do not use git reset --hard in this repo.
+        """.trimIndent(),
+      ),
+      result = successResult(taskId = "task-fail-closed-stewardship"),
+      assistantOutput = "Next I will run the targeted runtime tests.",
+      toolObservations = listOf("Project uses the Gradle wrapper from the repo root."),
+    )
+
+    assertEquals(1, summary.writtenRecords.size)
+    assertEquals(listOf("task_commitment"), memoryStore.list().mapNotNull { record -> record.extensions["kind"] })
+    assertEquals("run the targeted runtime tests", memoryStore.list().single().content)
+  }
+
+  @Test
+  fun ingestCompletedTurnCanFailClosedForSingleProjectFactCandidateWhenConfigured() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = MemoryCandidateExtractor(
+        userIntentInterpreter = FixedUserIntentInterpreter(
+          interpretation = UserMemoryIntentInterpretation.Success(
+            intents = listOf(
+              UserMemoryIntent(
+                kind = MemoryKind.PROJECT_FACT,
+                scope = MemoryScope.WORKSPACE,
+                content = "Project runs on port 8000",
+              ),
+            ),
+          ),
+        ),
+      ),
+      memoryStewardshipService = MemoryStewardshipService(
+        clock = { 2_000L },
+        interpreter = FixedMemoryStewardshipInterpreter(
+          interpretation = MemoryStewardshipInterpretation.Unavailable(
+            reason = "offline",
+          ),
+        ),
+        failClosedOnInterpreterUnavailable = true,
+        candidateOnlyReviewKinds = setOf(MemoryKind.PROJECT_FACT),
+      ),
+      writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 2_000L }),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-single-project-fact-fail-closed",
+      task = promptTask(
+        id = "task-single-project-fact-fail-closed",
+        input = "记住这个项目现在跑在 8000 端口。",
+      ),
+      result = successResult(taskId = "task-single-project-fact-fail-closed"),
+      assistantOutput = "知道了。",
+      toolObservations = emptyList(),
+    )
+
+    assertTrue(summary.writtenRecords.isEmpty())
+    assertTrue(memoryStore.list().isEmpty())
+  }
+
+  @Test
+  fun ingestCompletedTurnCanFailClosedForSingleDurableInstructionCandidateWhenConfigured() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = MemoryCandidateExtractor(
+        userIntentInterpreter = FixedUserIntentInterpreter(
+          interpretation = UserMemoryIntentInterpretation.Success(
+            intents = listOf(
+              UserMemoryIntent(
+                kind = MemoryKind.DURABLE_INSTRUCTION,
+                scope = MemoryScope.WORKSPACE,
+                content = "Do not use git reset --hard in this repo",
+              ),
+            ),
+          ),
+        ),
+      ),
+      memoryStewardshipService = MemoryStewardshipService(
+        clock = { 2_000L },
+        interpreter = FixedMemoryStewardshipInterpreter(
+          interpretation = MemoryStewardshipInterpretation.Unavailable(
+            reason = "offline",
+          ),
+        ),
+        failClosedOnInterpreterUnavailable = true,
+        candidateOnlyReviewKinds = setOf(MemoryKind.DURABLE_INSTRUCTION),
+      ),
+      writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 2_000L }),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-single-durable-instruction-fail-closed",
+      task = promptTask(
+        id = "task-single-durable-instruction-fail-closed",
+        input = "记住这个仓库不要用 git reset --hard。",
+      ),
+      result = successResult(taskId = "task-single-durable-instruction-fail-closed"),
+      assistantOutput = "知道了。",
+      toolObservations = emptyList(),
+    )
+
+    assertTrue(summary.writtenRecords.isEmpty())
+    assertTrue(memoryStore.list().isEmpty())
+  }
+
+  @Test
+  fun ingestCompletedTurnCanFailClosedForSingleUserPreferenceCandidateWhenConfigured() {
+    val memoryStore = InMemoryMemoryStore()
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = MemoryCandidateExtractor(
+        userIntentInterpreter = FixedUserIntentInterpreter(
+          interpretation = UserMemoryIntentInterpretation.Success(
+            intents = listOf(
+              UserMemoryIntent(
+                kind = MemoryKind.USER_PREFERENCE,
+                scope = MemoryScope.USER,
+                preferenceKey = MemoryPreferenceKeys.USER_PREFERRED_NAME,
+                preferenceValue = "阿澄",
+              ),
+            ),
+          ),
+        ),
+      ),
+      memoryStewardshipService = MemoryStewardshipService(
+        clock = { 2_000L },
+        interpreter = FixedMemoryStewardshipInterpreter(
+          interpretation = MemoryStewardshipInterpretation.Unavailable(
+            reason = "offline",
+          ),
+        ),
+        failClosedOnInterpreterUnavailable = true,
+        candidateOnlyReviewKinds = setOf(MemoryKind.USER_PREFERENCE),
+      ),
+      writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 2_000L }),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-single-user-preference-fail-closed",
+      task = promptTask(
+        id = "task-single-user-preference-fail-closed",
+        input = "以后叫我阿澄。",
+      ),
+      result = successResult(taskId = "task-single-user-preference-fail-closed"),
+      assistantOutput = "知道了。",
+      toolObservations = emptyList(),
+    )
+
+    assertTrue(summary.writtenRecords.isEmpty())
+    assertTrue(memoryStore.list().isEmpty())
+  }
+
+  @Test
+  fun ingestCompletedTurnCanResolveRecordOnlyMemoryWhileKeepingTaskCommitmentWrite() {
+    val memoryStore = InMemoryMemoryStore().apply {
+      upsert(
+        MemoryRecord(
+          id = "pref-old",
+          content = "Preferred user naming is 阿澄",
+          createdAtEpochMs = 1_000L,
+          updatedAtEpochMs = 1_100L,
+          tags = listOf("kind:user_preference", "scope:user", "status:active"),
+          extensions = mapOf(
+            "kind" to "user_preference",
+            "scope" to "user",
+            "status" to "active",
+            "source" to "user_input",
+            "source_session_id" to "session-old",
+            "preference_key" to MemoryPreferenceKeys.USER_PREFERRED_NAME,
+            "preference_value" to "阿澄",
+            "last_confirmed_at_epoch_ms" to "1100",
+          ),
+        ),
+      )
+    }
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = MemoryCandidateExtractor(
+        userIntentInterpreter = FixedUserIntentInterpreter(
+          interpretation = UserMemoryIntentInterpretation.Success(intents = emptyList()),
+        ),
+      ),
+      memoryStewardshipService = MemoryStewardshipService(
+        clock = { 2_000L },
+        interpreter = FixedMemoryStewardshipInterpreter(
+          interpretation = MemoryStewardshipInterpretation.Success(
+            decisions = listOf(
+              MemoryStewardshipDecision(
+                action = MemoryStewardshipAction.RESOLVE_RECORD,
+                recordId = "pref-old",
+                resolutionReason = MemoryStewardshipResolutionReason.INVALIDATED,
+              ),
+            ),
+          ),
+        ),
+        recordOnlyReviewKinds = setOf(MemoryKind.USER_PREFERENCE),
+      ),
+      writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 2_000L }),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-record-only-resolve",
+      task = promptTask(
+        id = "task-record-only-resolve",
+        input = "以后不要再叫我阿澄了。",
+      ),
+      result = successResult(taskId = "task-record-only-resolve"),
+      assistantOutput = "Next I will run the targeted runtime tests.",
+      toolObservations = emptyList(),
+    )
+
+    assertEquals(listOf("pref-old"), summary.resolvedRecords.map { record -> record.id })
+    assertEquals(1, summary.writtenRecords.count { record -> record.extensions["kind"] == "task_commitment" })
+    assertEquals("resolved", memoryStore.list().single { record -> record.id == "pref-old" }.extensions["status"])
+    assertTrue(memoryStore.list().any { record ->
+      record.extensions["kind"] == "task_commitment" &&
+        record.content == "run the targeted runtime tests"
+    })
+  }
+
+  @Test
+  fun ingestCompletedTurnCanCombineRecordOnlyResolveWithProjectFactCandidateWrite() {
+    val memoryStore = InMemoryMemoryStore().apply {
+      upsert(
+        MemoryRecord(
+          id = "pref-old",
+          content = "Preferred user naming is 阿澄",
+          createdAtEpochMs = 1_000L,
+          updatedAtEpochMs = 1_100L,
+          tags = listOf("kind:user_preference", "scope:user", "status:active"),
+          extensions = mapOf(
+            "kind" to "user_preference",
+            "scope" to "user",
+            "status" to "active",
+            "source" to "user_input",
+            "source_session_id" to "session-old",
+            "preference_key" to MemoryPreferenceKeys.USER_PREFERRED_NAME,
+            "preference_value" to "阿澄",
+            "last_confirmed_at_epoch_ms" to "1100",
+          ),
+        ),
+      )
+    }
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = MemoryCandidateExtractor(
+        userIntentInterpreter = FixedUserIntentInterpreter(
+          interpretation = UserMemoryIntentInterpretation.Success(
+            intents = listOf(
+              UserMemoryIntent(
+                kind = MemoryKind.PROJECT_FACT,
+                scope = MemoryScope.WORKSPACE,
+                content = "Project runs on port 8000",
+              ),
+            ),
+          ),
+        ),
+      ),
+      memoryStewardshipService = MemoryStewardshipService(
+        clock = { 2_000L },
+        interpreter = FixedMemoryStewardshipInterpreter(
+          interpretation = MemoryStewardshipInterpretation.Success(
+            decisions = listOf(
+              MemoryStewardshipDecision(
+                action = MemoryStewardshipAction.RESOLVE_RECORD,
+                recordId = "pref-old",
+                resolutionReason = MemoryStewardshipResolutionReason.INVALIDATED,
+              ),
+            ),
+          ),
+        ),
+        recordOnlyReviewKinds = setOf(MemoryKind.USER_PREFERENCE),
+      ),
+      writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 2_000L }),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-record-only-plus-candidate",
+      task = promptTask(
+        id = "task-record-only-plus-candidate",
+        input = "以后不要再叫我阿澄了。记住项目现在跑在 8000 端口。",
+      ),
+      result = successResult(taskId = "task-record-only-plus-candidate"),
+      assistantOutput = "知道了。",
+      toolObservations = emptyList(),
+    )
+
+    assertEquals(listOf("pref-old"), summary.resolvedRecords.map { record -> record.id })
+    assertTrue(summary.writtenRecords.any { record ->
+      record.extensions["kind"] == "project_fact" &&
+        record.content == "Project runs on port 8000"
+    })
+    assertEquals("resolved", memoryStore.list().single { record -> record.id == "pref-old" }.extensions["status"])
+  }
+
+  @Test
   fun ingestCompletedTurnWritesRelationshipEventsAndSnapshotThroughPlanner() {
     val memoryStore = InMemoryMemoryStore()
     val coordinator = ChatMemoryIngestionCoordinator(
@@ -933,6 +1793,25 @@ class ChatMemoryIngestionCoordinatorTest {
                 ),
               )
             }
+            val preferredName = Regex("以后叫我([^。！，!?\\s]+)")
+              .find(input)
+              ?.groupValues
+              ?.getOrNull(1)
+              ?: Regex("叫我([^。！，!?\\s]+)")
+                .findAll(input)
+                .lastOrNull()
+                ?.groupValues
+                ?.getOrNull(1)
+            if (!preferredName.isNullOrBlank()) {
+              add(
+                UserMemoryIntent(
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.USER,
+                  preferenceKey = MemoryPreferenceKeys.USER_PREFERRED_NAME,
+                  preferenceValue = preferredName,
+                ),
+              )
+            }
           }
           return UserMemoryIntentInterpretation.Success(intents = intents)
         }
@@ -987,5 +1866,13 @@ class ChatMemoryIngestionCoordinatorTest {
     override fun interpret(
       request: RelationshipEventRequest,
     ): RelationshipEventInterpretation = interpretation
+  }
+
+  private class FixedMemoryStewardshipInterpreter(
+    private val interpretation: MemoryStewardshipInterpretation,
+  ) : MemoryStewardshipInterpreter {
+    override fun interpret(
+      request: MemoryStewardshipRequest,
+    ): MemoryStewardshipInterpretation = interpretation
   }
 }

@@ -1,0 +1,420 @@
+# Runtime Foundation Delivery Plan
+
+Last updated: 2026-03-22
+
+## Status
+
+Phase 1 complete; Phase 2 approval-boundary checkpoint and planner-aware restore slice partially implemented; in-process detached-owner foundation and first same-process service host landed
+
+## Goal
+
+This document turns the earlier runtime recovery proposals into a concrete delivery plan for three missing foundations:
+
+1. detached runtime ownership
+2. append-only run journal
+3. general checkpoint and resume
+
+The target behavior is strict:
+
+- a task must not be silently restarted or replaced before the final reply
+- leaving the UI must not affect task execution
+- host or process loss must resume from the last safe boundary when possible
+- when safe continuation is impossible, the system must surface explicit interruption instead of replaying the whole run
+
+## Recommended Architecture
+
+Recommended order:
+
+1. append-only run journal
+2. general prompt checkpoint and recovery planner
+3. detached runtime owner via Android service
+4. scheduled and background task triggering
+
+This order is deliberate.
+
+- without the journal, reconnect still loses expanded-card history
+- without checkpoints, a service can keep tasks alive only while the host survives
+- without a detached owner, UI attachment is still coupled to execution lifetime
+
+## Why Not Start With Service
+
+Starting with an Android service alone does not solve the core restart problem.
+
+It only solves:
+
+- UI detachment
+- page exit
+- session switch
+
+It does not solve:
+
+- host rebuild after crash
+- process recreation
+- mid-tool interruption with uncertain commit state
+- expanded history loss after restore
+
+Because of that, `AgentRuntimeService` is Phase 2, not Phase 1.
+
+## Phase 1: Append-Only Run Journal
+
+### Purpose
+
+Make run history durable and replayable without relying on in-memory runtime events or transcript heuristics.
+
+### New components
+
+- `RunEventJournalStoreFactory`
+- `RunEventJournalStore`
+- `PersistedRunJournalEntry`
+
+### Storage model
+
+Per session:
+
+- `files/agent-runtime/session-<encoded>/`
+
+Per run:
+
+- `runs/run-<encoded>/events/`
+
+Each event is stored as its own immutable file.
+
+Recommended filename shape:
+
+- `000000000001-lifecycle.json`
+- `000000000002-tool_call.json`
+- `000000000003-tool_result.json`
+
+This keeps the storage append-only in practice and avoids rewriting a large session-wide file for every new event.
+
+### Journal entry shape
+
+Each entry should contain:
+
+- `schemaVersion`
+- `sessionId`
+- `runId`
+- `taskId`
+- `seq`
+- `eventId`
+- `kind`
+- `emittedAtEpochMs`
+- `persistedAtEpochMs`
+- `payload`
+
+`payload` should reuse the existing persisted event mapping already used by `PersistedAgentRunEvent`.
+
+### Journaled event classes
+
+Phase 1 should journal every replayable runtime event already projected to the chat runtime surface:
+
+- lifecycle
+- assistant
+- progress
+- supplement
+- approval
+- subagent
+- tool_call
+- tool_result
+- memory_retrieval
+- memory_write
+- cancellation
+
+### Write path
+
+Phase 1 write path should attach at the current host event aggregation point:
+
+- `OpenCrayHostRuntime.recordRuntimeEventLocked(...)`
+
+Rationale:
+
+- this path already receives both runtime-originated events and host-synthesized events
+- it captures approval, cancellation, recovery, and memory events uniformly
+- it gives immediate value before service ownership exists
+
+### Read path
+
+The runtime activity replay path should prefer the journal:
+
+1. live in-memory events
+2. durable journal events
+3. transcript replay only as fallback for old runs that predate the journal
+
+This changes the expanded-card source of truth from:
+
+- in-memory events + transcript replay
+
+to:
+
+- in-memory tail + durable journal
+
+### Success criteria
+
+- host rebuild no longer erases detailed run history
+- approval and failure paths remain visible after restore
+- transcript replay becomes compatibility fallback, not the main recovery mechanism
+
+## Phase 2: General Prompt Checkpoint And Recovery Planner
+
+### Purpose
+
+Stop recovering at the task boundary only. Recover at the last safe prompt-execution boundary instead.
+
+### New components
+
+- `PromptCheckpointStoreFactory`
+- `PromptCheckpointStore`
+- `PersistedPromptCheckpoint`
+- `RunRecoveryPlanner`
+
+### Current implementation slice
+
+Implemented so far in Phase 2:
+
+- durable prompt checkpoints now exist for approval boundaries
+- waiting-for-approval state is persisted as a session-scoped checkpoint instead of only host memory
+- approve/reject decisions are persisted as `approved_pending_resume` or `rejected_pending_resume`
+- runtime execution now falls back to those durable checkpoints when the in-memory approval registry is empty after host rebuild
+- once resumed execution emits the next real runtime event, the approval checkpoint is cleared conservatively so stale resume state is not reused later
+- a first `RunRecoveryPlanner` skeleton now classifies runs into checkpoint resume, approval wait, managed-process reconnect, interrupted recovery required, or legacy requeue
+- run snapshots now project that planner output so recovery intent is explicit even before queue restore behavior is switched over
+- app-layer restore now wraps the queue snapshot store and rewrites approval-boundary restores before `SessionQueue` sees them
+- interrupted runs with `approved_pending_resume` or `rejected_pending_resume` can restore as the same queued run instead of being stranded in explicit-retry failure
+- interrupted runs with `waiting_approval` can restore as the same suspended run instead of silently changing recovery shape after host rebuild
+- app-layer restore now prefers durable journal tail over `lastEvent` summary when feeding recovery decisions
+- interrupted runs without a recoverable checkpoint now surface as explicit interruption in planner output instead of implying automatic legacy rerun
+
+Still pending in Phase 2:
+
+- generalized checkpoints for non-approval prompt boundaries
+- managed-process reconnect restore
+- generalized planner integration inside `core` queue restore and detached runtime ownership
+
+Detached-owner foundation landed in app process:
+
+- `OpenCrayHostRuntime.createFromContext()` no longer constructs the session runtime manager and durable runtime stores inline on every host creation path
+- a shared in-process runtime owner now keeps `DefaultAgentSessionRuntimeManager`, run journal/checkpoint stores, supplement store, approval registry, and runtime replay hooks separate from the host facade
+- host instances now project both `hostLifecycle` and `runtimeOwnerLifecycle`, which gives a concrete seam for later Android service ownership without changing the UI contract again
+
+First service-host slice landed:
+
+- `OpenCrayAgentRuntimeService` is now declared in the app manifest and started from app bootstrap and host access paths
+- the service eagerly initializes the shared in-process runtime owner on `onCreate()`, so owner bootstrap is no longer implicit in `OpenCrayHostRuntime` alone
+- the service host now exposes a host-facing runtime access bundle instead of handing `OpenCrayHostRuntime` the raw owner object, which reduces coupling ahead of binder-backed control flow
+- this is still a same-process service host; foreground keepalive, binder-owned control flow, and scheduled wake-up handoff remain later slices
+
+### Recommended checkpoint boundaries
+
+Checkpoint only at explicit safe boundaries:
+
+1. before model request
+2. after model action batch parse
+3. after progress emission is durably committed
+4. after tool result is durably committed
+5. while waiting for approval
+6. after approval resume is committed
+7. after supplement ingestion is durably committed
+8. finalization complete
+
+### Checkpoint payload
+
+The durable checkpoint should generalize the current approval-only `OpenCrayPromptResumeState`.
+
+Minimum fields:
+
+- `sessionId`
+- `runId`
+- `taskId`
+- `checkpointId`
+- `checkpointKind`
+- `turnIndex`
+- `toolCallCount`
+- `transcript`
+- `pendingActions`
+- `nextActionIndex`
+- `activeSkillName`
+- `activeSkillActivationSource`
+- `pendingToolCall`
+- `lastCommittedJournalSeq`
+- `updatedAtEpochMs`
+
+The runtime-facing `OpenCrayPromptResumeState` should become a derived payload built from the durable checkpoint.
+
+### Recovery planner rules
+
+`RunRecoveryPlanner` should inspect:
+
+- queue snapshot
+- latest checkpoint
+- journal tail
+- managed process registry
+- approval registry
+
+Planner outputs:
+
+- `resume_from_checkpoint`
+- `resume_waiting_for_approval`
+- `resume_reconnect_process`
+- `interrupt_recovery_required`
+- `legacy_requeue` for work that was already safely queued before restore, not for interrupted in-flight recovery
+
+### Safety rule
+
+Do not auto-rerun uncertain mutating work.
+
+If a tool was dispatched but the system cannot prove durable result commit, recovery must become:
+
+- explicit interrupted state
+
+not:
+
+- silent replay from the beginning
+
+### Success criteria
+
+- process or host loss resumes from the last safe boundary when possible
+- uncertain mid-tool interruption never silently duplicates mutation
+- task-level rerun becomes last-resort legacy fallback
+
+## Phase 3: Detached Runtime Owner
+
+### Purpose
+
+Make execution independent from UI attachment and host facade lifetime.
+
+### New component
+
+- `AgentRuntimeService`
+
+### Ownership split
+
+`AgentRuntimeService` becomes the execution owner for:
+
+- `DefaultAgentSessionRuntimeManager`
+- queue snapshot stores
+- run journal stores
+- prompt checkpoint stores
+- managed process registries
+
+`OpenCrayHostRuntime` becomes a facade for:
+
+- UI snapshot assembly
+- user actions
+- bridge adaptation
+- service binding
+- diagnostics projection
+
+### Recommended first deployment shape
+
+Use a service in the main app process first.
+
+Do not start with a dedicated `:runtime` process.
+
+Reasons:
+
+- existing runtime objects, tool pipeline dependencies, Python launcher, and local stores are all main-process oriented
+- dedicated-process IPC would multiply risk before recovery semantics are proven
+- same-process service already solves the current UI-coupling problem
+
+### Runtime states
+
+Recommended service modes:
+
+- bound while UI is attached
+- started while active work exists
+- foreground service while active work is expected to outlive the foreground UI
+- idle shutdown after no active runs remain for a grace window
+
+### Success criteria
+
+- leaving the chat page does not affect live work
+- switching sessions does not replace the live task
+- execution lifetime is no longer tied to a visible Flutter screen
+
+## Phase 4: Scheduled And Background Task Triggering
+
+### Purpose
+
+Prepare delayed execution and future periodic tasks without reintroducing UI ownership.
+
+### New components
+
+- scheduled task registry
+- `WorkManager` trigger bridge
+- service wake entrypoints
+- notification actions for resume and cancel
+
+### Behavior
+
+- `WorkManager` should wake the runtime service
+- the service should create or recover the target task
+- the task should run under the same queue, journal, and checkpoint model as interactive runs
+
+### Success criteria
+
+- delayed tasks and future scheduled tasks do not need an open UI
+- scheduled execution shares the same recovery semantics as interactive runs
+
+## Module Impact
+
+### `app/`
+
+- add run journal storage
+- add prompt checkpoint storage
+- add service-owned runtime gateway
+- migrate `OpenCrayHostRuntime` toward facade-only responsibilities
+
+### `runtime/`
+
+- emit generalized checkpoints at safe boundaries
+- restore from durable checkpoint payloads
+- expose recovery metadata for planner decisions
+
+### `core/`
+
+- extend queue restore behavior to support checkpoint-aware recovery states
+- stop treating non-terminal restore as unconditional rerun
+
+### `persistence/`
+
+- no immediate Room migration required
+- keep Phase 1 and Phase 2 on file-backed stores unless scale proves otherwise
+
+### `flutter_app/`
+
+- runtime activity should prefer service and journal-backed snapshots
+- UI should show explicit recovery states
+- UI must never infer a fresh run from the absence of live in-memory events alone
+
+## Recommended First Slice
+
+The first implementation slice should be:
+
+1. add `RunEventJournalStore`
+2. append every runtime event at `OpenCrayHostRuntime.recordRuntimeEventLocked(...)`
+3. load journal-backed replay in chat runtime snapshot generation
+4. keep transcript replay as fallback for older runs
+
+This is the smallest slice that improves user-visible continuity immediately and gives later checkpoint and service work a stable base.
+
+## Explicit Non-Goals For The First Slice
+
+- do not introduce `AgentRuntimeService` yet
+- do not move to a dedicated runtime process
+- do not attempt generic mid-tool recovery yet
+- do not replace the current tool policy pipeline
+
+## Decision Summary
+
+Recommended plan:
+
+- Phase 1 first
+- Phase 2 immediately after Phase 1 stabilizes
+- Phase 3 after checkpoint recovery is trusted
+- Phase 4 after service ownership is stable
+
+This is the lowest-risk path that can reach the desired product contract:
+
+- no silent whole-run replay
+- no expanded-card history loss on restore
+- no execution dependency on an open UI page

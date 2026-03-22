@@ -1,6 +1,7 @@
 import '../../core/bridge/opencray_host_bridge.dart';
 import '../../core/models/opencray_llm_config.dart';
 import '../../core/models/opencray_llm_validation.dart';
+import '../../core/models/opencray_media_speech_config.dart';
 import '../../core/models/opencray_mcp_settings.dart';
 import '../../core/models/opencray_network_search_config.dart';
 import '../../core/models/opencray_personalization_config.dart';
@@ -48,6 +49,46 @@ class BridgeSettingsFacade implements SettingsFacade {
             ),
           )
           .toList(growable: false),
+    ),
+  );
+
+  @override
+  Future<MediaSpeechConfigSnapshot> loadMediaSpeechConfig() async =>
+      _mapMediaSpeech(await _bridge.loadMediaSpeechConfig());
+
+  @override
+  Future<MediaSpeechConfigSnapshot> saveMediaSpeechConfig(
+    MediaSpeechConfigSnapshot snapshot,
+  ) async => _mapMediaSpeech(
+    await _bridge.saveMediaSpeechConfig(
+      OpenCrayMediaSpeechConfigSnapshot(
+        localeTag: snapshot.localeTag,
+        title: snapshot.title,
+        subtitle: snapshot.subtitle,
+        imageGeneration: OpenCrayMediaProviderConfigSnapshot(
+          provider: snapshot.imageGeneration.provider,
+          baseUrl: snapshot.imageGeneration.baseUrl,
+          endpoint: snapshot.imageGeneration.endpoint,
+          model: snapshot.imageGeneration.model,
+        ),
+        voiceGeneration: OpenCrayVoiceProviderConfigSnapshot(
+          provider: snapshot.voiceGeneration.provider,
+          baseUrl: snapshot.voiceGeneration.baseUrl,
+          endpoint: snapshot.voiceGeneration.endpoint,
+          voicePreset: snapshot.voiceGeneration.voicePreset,
+        ),
+        sttRouteId: snapshot.sttRoute.id,
+        externalStt: OpenCrayMediaProviderConfigSnapshot(
+          provider: snapshot.externalStt.provider,
+          baseUrl: snapshot.externalStt.baseUrl,
+          endpoint: snapshot.externalStt.endpoint,
+          model: snapshot.externalStt.model,
+        ),
+        onDeviceModel: OpenCrayOnDeviceSttConfigSnapshot(
+          modelPackage: snapshot.onDeviceModel.modelPackage,
+          downloadStatus: snapshot.onDeviceModel.downloadStatus,
+        ),
+      ),
     ),
   );
 
@@ -325,6 +366,39 @@ class BridgeSettingsFacade implements SettingsFacade {
       reasoningEffort: snapshot.reasoningEffort,
       systemPrompt: snapshot.systemPrompt,
       helperText: snapshot.helperText,
+    );
+  }
+
+  static MediaSpeechConfigSnapshot _mapMediaSpeech(
+    OpenCrayMediaSpeechConfigSnapshot snapshot,
+  ) {
+    return MediaSpeechConfigSnapshot(
+      localeTag: snapshot.localeTag,
+      title: snapshot.title,
+      subtitle: snapshot.subtitle,
+      imageGeneration: MediaProviderConfigSnapshot(
+        provider: snapshot.imageGeneration.provider,
+        baseUrl: snapshot.imageGeneration.baseUrl,
+        endpoint: snapshot.imageGeneration.endpoint,
+        model: snapshot.imageGeneration.model,
+      ),
+      voiceGeneration: VoiceProviderConfigSnapshot(
+        provider: snapshot.voiceGeneration.provider,
+        baseUrl: snapshot.voiceGeneration.baseUrl,
+        endpoint: snapshot.voiceGeneration.endpoint,
+        voicePreset: snapshot.voiceGeneration.voicePreset,
+      ),
+      sttRoute: mediaSpeechSttRouteFromId(snapshot.sttRouteId),
+      externalStt: MediaProviderConfigSnapshot(
+        provider: snapshot.externalStt.provider,
+        baseUrl: snapshot.externalStt.baseUrl,
+        endpoint: snapshot.externalStt.endpoint,
+        model: snapshot.externalStt.model,
+      ),
+      onDeviceModel: OnDeviceSttConfigSnapshot(
+        modelPackage: snapshot.onDeviceModel.modelPackage,
+        downloadStatus: snapshot.onDeviceModel.downloadStatus,
+      ),
     );
   }
 

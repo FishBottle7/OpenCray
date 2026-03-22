@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 
 import '../../core/bridge/opencray_host_bridge.dart';
 import '../../core/copy/opencray_ui_copy.dart';
+import '../../core/models/opencray_chat_draft_attachment.dart';
 import '../../core/models/opencray_chat_snapshot.dart';
 import '../../core/models/opencray_file_image_preview.dart';
 import '../../core/models/opencray_file_text_preview.dart';
@@ -41,6 +42,12 @@ OpenCrayChatRuntimeSnapshot? resolveChatRuntimeSnapshot(
         ? embedded
         : streamed;
   }
+  final String embeddedHostInstanceId = _hostInstanceId(embedded);
+  final String streamedHostInstanceId = _hostInstanceId(streamed);
+  if (embeddedHostInstanceId != streamedHostInstanceId &&
+      streamedHostInstanceId.isNotEmpty) {
+    return streamed;
+  }
   return streamed;
 }
 
@@ -56,9 +63,14 @@ int runtimeSnapshotVersion(OpenCrayChatRuntimeSnapshot snapshot) {
     (latest, run) =>
         latest > run.updatedAtEpochMs ? latest : run.updatedAtEpochMs,
   );
-  return latestEventEpochMs > latestRunEpochMs
-      ? latestEventEpochMs
-      : latestRunEpochMs;
+  final int latestHostEpochMs =
+      snapshot.hostLifecycle?.hostCreatedAtEpochMs ?? 0;
+  return math.max(
+    latestHostEpochMs,
+    latestEventEpochMs > latestRunEpochMs
+        ? latestEventEpochMs
+        : latestRunEpochMs,
+  );
 }
 
 List<OpenCrayChatRunSnapshot> _visibleRuns(
@@ -70,6 +82,9 @@ List<OpenCrayChatRunSnapshot> _visibleRuns(
 
 int _visibleRunCount(OpenCrayChatRuntimeSnapshot snapshot) =>
     snapshot.activeRuns.length + snapshot.retainedRuns.length;
+
+String _hostInstanceId(OpenCrayChatRuntimeSnapshot snapshot) =>
+    snapshot.hostLifecycle?.hostInstanceId?.trim() ?? '';
 
 @visibleForTesting
 TextSelectionThemeData chatBubbleSelectionTheme(ChatMessageKind kind) {
@@ -189,11 +204,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   OpenCrayChatSnapshot? _latestChatSnapshot;
   OpenCrayChatRuntimeSnapshot? _latestChatRuntimeSnapshot;
   final Set<String> _approvalTaskIdsInFlight = <String>{};
+  final Set<String> _retryRunIdsInFlight = <String>{};
   final Set<String> _selectedMessageIds = <String>{};
   final Map<String, String> _selectedTextByMessageId = <String, String>{};
   _ActiveChatMessageMenu? _activeMessageMenu;
+  Timer? _todoArchiveHideTimer;
+  String? _hiddenArchivedTodoFingerprint;
+  String? _scheduledTodoArchiveFingerprint;
   double _composerHeight = 0;
-  bool _todoPanelExpanded = true;
 
   bool get _usesHostBridge => widget.bridge != null;
 
@@ -254,6 +272,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     _chatScrollController.removeListener(_handleChatScrollChanged);
     _chatSubscription?.cancel();
     _chatRuntimeSubscription?.cancel();
+    _todoArchiveHideTimer?.cancel();
     _composerController.dispose();
     _composerFocusNode.dispose();
     _chatScrollController.dispose();
@@ -871,8 +890,6 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             onAddActionSelected: _handleAddAction,
             onCommandSelected: _showCommandMenu,
             onAttachmentRemoved: _removeAttachment,
-            todoPanelExpanded: _todoPanelExpanded,
-            onTodoPanelToggle: _toggleTodoPanel,
           );
     _scheduleComposerHeightSync();
 
@@ -909,8 +926,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                                   widget.voicePlaybackControllerFactory,
                               selectedMessageIds: _selectedMessageIds,
                               busyApprovalTaskIds: _approvalTaskIdsInFlight,
+                              busyRetryRunIds: _retryRunIdsInFlight,
                               onApproveApproval: _approvePendingApproval,
                               onRejectApproval: _rejectPendingApproval,
+                              onRetryRunTrace: _retryRunTrace,
                               onMessageLongPress: _handleMessageLongPress,
                               onMessageSelectionToggle: _toggleMessageSelection,
                               onMessageTextSelectionChanged:
@@ -1112,8 +1131,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   void _handleAddAction(ChatAddActionData action) {
-    setState(() {
-      if (action.label == widget.copy.chatActionCommand) {
+    if (action.label == widget.copy.chatActionCommand) {
+      setState(() {
         _state = _state.copyWith(
           composer: _state.composer.copyWith(
             showAddMenu: false,
@@ -1123,13 +1142,26 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             clearSelectedCommand: true,
           ),
         );
-      } else {
+      });
+      return;
+    }
+
+    if (_attachmentKindForAction(action.label) ==
+            OpenCrayChatDraftAttachmentKind.image &&
+        _currentComposerImageCount >= _chatComposerMaxImageAttachments) {
+      _showComposerNotice(_attachmentImageLimitMessage(skippedCount: 0));
+      return;
+    }
+
+    final bridge = widget.bridge;
+    if (bridge == null) {
+      setState(() {
         final currentAttachments = List<ChatAttachmentData>.of(
           _state.composer.attachments,
         );
         final attachment = _attachmentForAction(action.label);
         final alreadyPresent = currentAttachments.any(
-          (ChatAttachmentData item) => item.label == attachment.label,
+          (ChatAttachmentData item) => item.id == attachment.id,
         );
         if (!alreadyPresent) {
           currentAttachments.add(attachment);
@@ -1141,8 +1173,77 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             addActions: OpenCrayChatSeedData.sampleAddActions(widget.copy),
           ),
         );
+      });
+      return;
+    }
+
+    unawaited(_pickAttachmentsFromBridge(action, bridge));
+  }
+
+  Future<void> _pickAttachmentsFromBridge(
+    ChatAddActionData action,
+    OpenCrayHostBridge bridge,
+  ) async {
+    try {
+      final pickedAttachments = await bridge.pickChatAttachments(
+        kind: _attachmentKindForAction(action.label),
+      );
+      if (!mounted || pickedAttachments.isEmpty) {
+        return;
       }
-    });
+      int duplicateCount = 0;
+      int skippedImageCount = 0;
+      setState(() {
+        final currentAttachments = List<ChatAttachmentData>.of(
+          _state.composer.attachments,
+        );
+        int imageCount = currentAttachments.where((ChatAttachmentData item) {
+          return item.kind == ChatAttachmentKind.image;
+        }).length;
+        for (final attachment in pickedAttachments) {
+          final draft = _draftAttachmentForComposer(attachment);
+          final alreadyPresent = currentAttachments.any(
+            (ChatAttachmentData item) => item.id == draft.id,
+          );
+          if (!alreadyPresent) {
+            if (draft.kind == ChatAttachmentKind.image &&
+                imageCount >= _chatComposerMaxImageAttachments) {
+              skippedImageCount += 1;
+              continue;
+            }
+            currentAttachments.add(draft);
+            if (draft.kind == ChatAttachmentKind.image) {
+              imageCount += 1;
+            }
+          } else {
+            duplicateCount += 1;
+          }
+        }
+        _state = _state.copyWith(
+          composer: _state.composer.copyWith(
+            attachments: currentAttachments,
+            showAddMenu: true,
+            addActions: OpenCrayChatSeedData.sampleAddActions(widget.copy),
+          ),
+        );
+      });
+      final notices = <String>[
+        if (duplicateCount > 0) _attachmentDuplicateMessage(duplicateCount),
+        if (skippedImageCount > 0)
+          _attachmentImageLimitMessage(skippedCount: skippedImageCount),
+      ];
+      if (mounted && notices.isNotEmpty) {
+        _showComposerNotice(notices.join(' '));
+      }
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      final failedText = widget.copy.isChinese
+          ? '无法添加附件。'
+          : 'Unable to add attachment.';
+      _showComposerNotice(failedText);
+    }
   }
 
   void _showCommandMenu() {
@@ -1168,22 +1269,34 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     final bridge = widget.bridge;
     if (bridge != null) {
       final text = _composerController.text.trim();
-      if (text.isEmpty) {
+      final attachments = _state.composer.attachments
+          .map((ChatAttachmentData attachment) => attachment.draftAttachment)
+          .whereType<OpenCrayChatDraftAttachment>()
+          .toList(growable: false);
+      if (text.isEmpty && attachments.isEmpty) {
         return;
       }
       try {
-        await bridge.submitChatMessage(text);
+        await bridge.submitChatMessage(text, attachments: attachments);
         if (!mounted) {
           return;
         }
-        _composerController.clear();
+        setState(() {
+          _composerController.clear();
+          _state = _state.copyWith(
+            composer: _state.composer.copyWith(
+              attachments: const <ChatAttachmentData>[],
+              commandOptions: const <ChatCommandOptionData>[],
+              showAddMenu: false,
+              clearSelectedCommand: true,
+            ),
+          );
+        });
       } catch (_) {
         if (!mounted) {
           return;
         }
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(widget.copy.chatSubmitFailed)));
+        _showComposerNotice(widget.copy.chatSubmitFailed);
       }
       return;
     }
@@ -1205,8 +1318,105 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   void _handleChatRuntimeSnapshot(OpenCrayChatRuntimeSnapshot snapshot) {
+    final String previousHostInstanceId = _hostInstanceId(
+      _latestChatRuntimeSnapshot ??
+          const OpenCrayChatRuntimeSnapshot(
+            sessionId: '',
+            activeRuns: <OpenCrayChatRunSnapshot>[],
+            events: <OpenCrayChatRuntimeEventSnapshot>[],
+          ),
+    );
+    final String nextHostInstanceId = _hostInstanceId(snapshot);
     _latestChatRuntimeSnapshot = snapshot;
     _applyHostState();
+    if (previousHostInstanceId.isNotEmpty &&
+        nextHostInstanceId.isNotEmpty &&
+        previousHostInstanceId != nextHostInstanceId) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        _showMessageFeedback(_hostRebuiltMessage());
+      });
+    }
+  }
+
+  String? _archivedTodoFingerprint(OpenCrayChatSnapshot snapshot) {
+    if (snapshot.todoState != 'archived_completed' || snapshot.todos.isEmpty) {
+      return null;
+    }
+    final int? completedAtEpochMs = snapshot.todoCompletedAtEpochMs;
+    if (completedAtEpochMs == null || completedAtEpochMs <= 0) {
+      return null;
+    }
+    final String encodedTodos = snapshot.todos
+        .map(
+          (todo) => '${todo.content}|${todo.status}|${todo.activeForm ?? ''}',
+        )
+        .join('||');
+    return '$completedAtEpochMs::$encodedTodos';
+  }
+
+  void _cancelTodoArchiveHideTimer() {
+    _todoArchiveHideTimer?.cancel();
+    _todoArchiveHideTimer = null;
+    _scheduledTodoArchiveFingerprint = null;
+  }
+
+  void _syncTodoArchiveVisibility(OpenCrayChatSnapshot snapshot) {
+    final String? fingerprint = _archivedTodoFingerprint(snapshot);
+    if (fingerprint == null) {
+      _hiddenArchivedTodoFingerprint = null;
+      _cancelTodoArchiveHideTimer();
+      return;
+    }
+    if (_hiddenArchivedTodoFingerprint == fingerprint) {
+      _cancelTodoArchiveHideTimer();
+      return;
+    }
+    if (_scheduledTodoArchiveFingerprint == fingerprint &&
+        _todoArchiveHideTimer != null) {
+      return;
+    }
+    final int hideDelayMs = snapshot.todoHideDelayMs ?? 0;
+    if (hideDelayMs <= 0) {
+      _hiddenArchivedTodoFingerprint = fingerprint;
+      _cancelTodoArchiveHideTimer();
+      return;
+    }
+    _cancelTodoArchiveHideTimer();
+    _scheduledTodoArchiveFingerprint = fingerprint;
+    _todoArchiveHideTimer = Timer(Duration(milliseconds: hideDelayMs), () {
+      if (!mounted) {
+        return;
+      }
+      _scheduledTodoArchiveFingerprint = null;
+      _hiddenArchivedTodoFingerprint = fingerprint;
+      _applyHostState();
+    });
+  }
+
+  List<ChatTodoItemData> _mapVisibleTodos(OpenCrayChatSnapshot snapshot) {
+    final String? archivedFingerprint = _archivedTodoFingerprint(snapshot);
+    if (archivedFingerprint != null &&
+        _hiddenArchivedTodoFingerprint == archivedFingerprint) {
+      return const <ChatTodoItemData>[];
+    }
+    return snapshot.todos
+        .map(
+          (OpenCrayChatTodoSnapshot todo) => ChatTodoItemData(
+            content: todo.content,
+            status: switch (todo.status) {
+              'completed' => ChatTodoStatus.completed,
+              'in_progress' ||
+              'in-progress' ||
+              'inprogress' => ChatTodoStatus.inProgress,
+              _ => ChatTodoStatus.pending,
+            },
+            activeForm: todo.activeForm,
+          ),
+        )
+        .toList(growable: false);
   }
 
   void _applyHostState() {
@@ -1217,12 +1427,11 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (snapshot == null) {
       return;
     }
+    _syncTodoArchiveVisibility(snapshot);
     final ChatFeatureState nextState = _mapSnapshot(
       snapshot,
       _latestChatRuntimeSnapshot,
     );
-    final bool hadTodos = _state.composer.todos.isNotEmpty;
-    final bool hasTodos = nextState.composer.todos.isNotEmpty;
     final bool shouldScrollToBottom =
         nextState.messages.length > _state.messages.length ||
         nextState.runTraces.length > _state.runTraces.length ||
@@ -1237,9 +1446,6 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     setState(() {
       _activeMessageMenu = null;
       _state = nextState.copyWith(drawerOpen: _state.drawerOpen);
-      if (!hasTodos || !hadTodos) {
-        _todoPanelExpanded = true;
-      }
       _selectedMessageIds
         ..clear()
         ..addAll(retainedSelection);
@@ -1294,25 +1500,59 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
   }
 
+  Future<void> _retryRunTrace(ChatRunTraceData trace) async {
+    final bridge = widget.bridge;
+    final retryId = trace.retryId;
+    if (bridge == null ||
+        !trace.isRetryable ||
+        _retryRunIdsInFlight.contains(retryId)) {
+      return;
+    }
+    setState(() {
+      _retryRunIdsInFlight.add(retryId);
+    });
+    try {
+      await bridge.retryChatRun(retryId);
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            widget.copy.isChinese
+                ? '无法重新启动这次运行。'
+                : 'Unable to restart this run.',
+          ),
+        ),
+      );
+    } finally {
+      if (!mounted) {
+        _retryRunIdsInFlight.remove(retryId);
+      } else {
+        setState(() {
+          _retryRunIdsInFlight.remove(retryId);
+        });
+      }
+    }
+  }
+
   void _removeAttachment(ChatAttachmentData attachment) {
     setState(() {
-      final attachments =
-          List<ChatAttachmentData>.of(_state.composer.attachments)..removeWhere(
-            (ChatAttachmentData item) => item.label == attachment.label,
-          );
+      final attachments = List<ChatAttachmentData>.of(
+        _state.composer.attachments,
+      )..removeWhere((ChatAttachmentData item) => item.id == attachment.id);
       _state = _state.copyWith(
         composer: _state.composer.copyWith(attachments: attachments),
       );
     });
   }
 
-  void _toggleTodoPanel() {
-    if (_state.composer.todos.isEmpty) {
-      return;
+  OpenCrayChatDraftAttachmentKind _attachmentKindForAction(String label) {
+    if (label == widget.copy.chatActionImage) {
+      return OpenCrayChatDraftAttachmentKind.image;
     }
-    setState(() {
-      _todoPanelExpanded = !_todoPanelExpanded;
-    });
+    return OpenCrayChatDraftAttachmentKind.file;
   }
 
   ChatAttachmentData _attachmentForAction(String label) {
@@ -1324,6 +1564,63 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     return OpenCrayChatSeedData.sampleAttachments(widget.copy).firstWhere(
       (ChatAttachmentData item) => item.kind == ChatAttachmentKind.file,
     );
+  }
+
+  ChatAttachmentData _draftAttachmentForComposer(
+    OpenCrayChatDraftAttachment attachment,
+  ) {
+    final bool isImage =
+        attachment.kind == OpenCrayChatDraftAttachmentKind.image;
+    final String detail =
+        attachment.sizeBytes != null && attachment.sizeBytes! >= 0
+        ? _formatAttachmentBytes(attachment.sizeBytes!)
+        : (widget.copy.isChinese
+              ? (isImage ? '图片附件' : '文件附件')
+              : (isImage ? 'Image attachment' : 'File attachment'));
+    return ChatAttachmentData(
+      id: attachment.id,
+      kind: isImage ? ChatAttachmentKind.image : ChatAttachmentKind.file,
+      label: attachment.displayName,
+      detail: detail,
+      accentColor: isImage ? const Color(0xFFE6F0FF) : const Color(0xFFF2F3F7),
+      draftAttachment: attachment,
+    );
+  }
+
+  int get _currentComposerImageCount =>
+      _state.composer.attachments.where((ChatAttachmentData attachment) {
+        return attachment.kind == ChatAttachmentKind.image;
+      }).length;
+
+  String _attachmentDuplicateMessage(int duplicateCount) {
+    if (widget.copy.isChinese) {
+      return '已自动忽略 $duplicateCount 个重复附件。';
+    }
+    return duplicateCount == 1
+        ? 'Ignored 1 duplicate attachment.'
+        : 'Ignored $duplicateCount duplicate attachments.';
+  }
+
+  String _attachmentImageLimitMessage({required int skippedCount}) {
+    if (widget.copy.isChinese) {
+      return skippedCount > 0
+          ? '单条消息最多添加 $_chatComposerMaxImageAttachments 张图片，已忽略 $skippedCount 张。'
+          : '单条消息最多添加 $_chatComposerMaxImageAttachments 张图片。';
+    }
+    return skippedCount > 0
+        ? 'Each message supports up to $_chatComposerMaxImageAttachments images. Skipped $skippedCount.'
+        : 'Each message supports up to $_chatComposerMaxImageAttachments images.';
+  }
+
+  void _showComposerNotice(String message) {
+    final bridge = widget.bridge;
+    if (bridge != null) {
+      unawaited(bridge.showNativeToast(message));
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _handleSessionSelected(ChatSessionListItemData session) {
@@ -1554,6 +1851,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     _latestChatSnapshot = snapshot;
     _latestChatRuntimeSnapshot = runtimeSnapshot;
+    _syncTodoArchiveVisibility(snapshot);
     final ChatFeatureState nextState = _mapSnapshot(snapshot, runtimeSnapshot);
     final Set<String> retainedSelection = _selectedMessageIds
         .where(
@@ -1588,6 +1886,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         .map((message) => message.messageId.trim())
         .where((messageId) => messageId.isNotEmpty)
         .toSet();
+    final List<ChatTodoItemData> visibleTodos = _mapVisibleTodos(snapshot);
     final List<ChatMessageData> messages = <ChatMessageData>[
       ...mappedMessages,
       ..._mapProjectedProgressMessages(effectiveRuntime, existingMessageIds),
@@ -1596,7 +1895,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       variant:
           messages.isEmpty &&
               runTraces.isEmpty &&
-              snapshot.todos.isEmpty &&
+              visibleTodos.isEmpty &&
               snapshot.pendingApprovals.isEmpty
           ? ChatPrototypeVariant.empty
           : ChatPrototypeVariant.main,
@@ -1610,21 +1909,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       runTraces: runTraces,
       composer: ChatComposerState(
         placeholder: snapshot.composerPlaceholder,
-        todos: snapshot.todos
-            .map(
-              (OpenCrayChatTodoSnapshot todo) => ChatTodoItemData(
-                content: todo.content,
-                status: switch (todo.status) {
-                  'completed' => ChatTodoStatus.completed,
-                  'in_progress' ||
-                  'in-progress' ||
-                  'inprogress' => ChatTodoStatus.inProgress,
-                  _ => ChatTodoStatus.pending,
-                },
-                activeForm: todo.activeForm,
-              ),
-            )
-            .toList(growable: false),
+        todos: visibleTodos,
         attachments: const <ChatAttachmentData>[],
         commandOptions: const <ChatCommandOptionData>[],
         addActions: _usesHostBridge
@@ -1809,12 +2094,37 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     final event = run.lastEvent;
     final toolName = event?.toolName?.trim();
     final bool waitingApproval = _isWaitingApproval(run);
-    final List<ChatRunTraceHistoryEntry> history = _buildRunTraceHistory(
+    List<ChatRunTraceHistoryEntry> history = _buildRunTraceHistory(
       run: run,
       runEvents: runEvents,
     );
-    String compactBody(String fallbackBody) =>
-        _buildCompactTraceBody(history: history, fallbackBody: fallbackBody);
+    if (_isInterruptedOnRestoreRun(run)) {
+      final interruptedEntry = _mainHistoryEntry(
+        label: _interruptedRunLabel(),
+        body: _interruptedRunBody(run),
+      );
+      if (history.isEmpty ||
+          history.last.label != interruptedEntry.label ||
+          history.last.body != interruptedEntry.body) {
+        history = <ChatRunTraceHistoryEntry>[...history, interruptedEntry];
+      }
+      return ChatRunTraceData(
+        runId: run.runId,
+        taskId: run.taskId,
+        label: interruptedEntry.label,
+        body: _buildCompactTraceBody(
+          history: history,
+          fallbackBody: interruptedEntry.body,
+        ),
+        history: history,
+        retryLabel: _retryInterruptedRunLabel(),
+      );
+    }
+    String compactBody(String fallbackBody) => _buildCompactTraceBody(
+      history: history,
+      fallbackBody: fallbackBody,
+      preferredBody: fallbackBody,
+    );
     final OpenCrayChatRuntimeEventSnapshot? pairedToolCall =
         event?.kind == 'tool_result'
         ? _findPreviousToolCall(
@@ -1862,6 +2172,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           history: history,
           isHighRisk:
               waitingApproval && run.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED',
+        );
+      case 'supplement':
+        return ChatRunTraceData(
+          runId: run.runId,
+          taskId: run.taskId,
+          label: _supplementTraceLabel(),
+          body: compactBody(_buildSupplementPreviewBody(event!)),
+          history: history,
         );
       case 'tool_call':
         return ChatRunTraceData(
@@ -1974,11 +2292,16 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     required List<OpenCrayChatRuntimeEventSnapshot> runEvents,
   }) {
     final history = <ChatRunTraceHistoryEntry>[];
+    final consumedIndexes = <int>{};
     for (int index = 0; index < runEvents.length; index += 1) {
+      if (consumedIndexes.contains(index)) {
+        continue;
+      }
       final mapped = _mapRunTraceHistoryEntry(
         event: runEvents[index],
         runEvents: runEvents,
         index: index,
+        consumedIndexes: consumedIndexes,
       );
       if (mapped != null) {
         history.add(mapped);
@@ -1997,7 +2320,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     if (history.isEmpty) {
       history.add(
-        ChatRunTraceHistoryEntry(
+        _mainHistoryEntry(
           label: widget.copy.chatRunWorkingLabel,
           body: widget.copy.chatRunThinkingActive,
         ),
@@ -2008,7 +2331,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     );
     if (_isWaitingApproval(run) && !hasApprovalWaitEvent) {
       final approvalBody = run.errorMessage?.trim();
-      final waitingEntry = ChatRunTraceHistoryEntry(
+      final waitingEntry = _mainHistoryEntry(
         label: widget.copy.chatRunWaitingApprovalLabel,
         body: approvalBody?.isNotEmpty == true
             ? approvalBody!
@@ -2024,16 +2347,78 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     return history;
   }
 
+  String get _mainInspectorActorId => _runTraceMainActorId;
+
+  String _mainInspectorActorLabel() =>
+      widget.copy.isChinese ? '主代理' : 'Main agent';
+
+  String _subagentInspectorActorId(OpenCrayChatRuntimeEventSnapshot event) {
+    final String? explicitId =
+        _nonEmpty(event.childRunId) ?? _nonEmpty(event.childTaskId);
+    if (explicitId != null) {
+      return explicitId;
+    }
+    return [
+      _nonEmpty(event.subagentType),
+      _nonEmpty(event.label),
+      event.emittedAtEpochMs.toString(),
+    ].whereType<String>().join(':');
+  }
+
+  String _subagentInspectorActorLabel(OpenCrayChatRuntimeEventSnapshot event) =>
+      _subagentTraceLabel(event);
+
+  ChatRunTraceHistoryEntry _mainHistoryEntry({
+    required String label,
+    required String body,
+    String? compactBody,
+    bool isHighRisk = false,
+    List<ChatRunTraceInspectorTextPart> inspectorCallParts =
+        const <ChatRunTraceInspectorTextPart>[],
+    String inspectorCallDetail = '',
+    String inspectorResultBody = '',
+  }) {
+    return ChatRunTraceHistoryEntry(
+      label: label,
+      body: body,
+      compactBody: compactBody,
+      isHighRisk: isHighRisk,
+      inspectorActorId: _mainInspectorActorId,
+      inspectorActorLabel: _mainInspectorActorLabel(),
+      inspectorCallParts: inspectorCallParts,
+      inspectorCallDetail: inspectorCallDetail,
+      inspectorResultBody: inspectorResultBody,
+    );
+  }
+
+  ChatRunTraceHistoryEntry _subagentHistoryEntry({
+    required OpenCrayChatRuntimeEventSnapshot event,
+    required String label,
+    required String body,
+    String? compactBody,
+    bool isHighRisk = false,
+  }) {
+    return ChatRunTraceHistoryEntry(
+      label: label,
+      body: body,
+      compactBody: compactBody,
+      isHighRisk: isHighRisk,
+      inspectorActorId: _subagentInspectorActorId(event),
+      inspectorActorLabel: _subagentInspectorActorLabel(event),
+    );
+  }
+
   ChatRunTraceHistoryEntry? _mapRunTraceHistoryEntry({
     required OpenCrayChatRuntimeEventSnapshot event,
     required List<OpenCrayChatRuntimeEventSnapshot> runEvents,
     required int index,
+    required Set<int> consumedIndexes,
   }) {
     final toolName = event.toolName?.trim();
     switch (event.kind) {
       case 'lifecycle':
         if (event.phase?.toLowerCase() == 'start') {
-          return ChatRunTraceHistoryEntry(
+          return _mainHistoryEntry(
             label: widget.copy.chatRunWorkingLabel,
             body: widget.copy.chatRunThinkingActive,
           );
@@ -2043,9 +2428,20 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         final resolvedToolName = toolName?.isNotEmpty == true
             ? toolName!
             : widget.copy.chatRunWorkingLabel;
-        return ChatRunTraceHistoryEntry(
-          label: resolvedToolName,
-          body: _buildToolCallHistoryBody(event),
+        final int? pairedResultIndex = _findNextToolResultIndex(
+          runEvents,
+          afterIndex: index,
+          toolName: resolvedToolName,
+        );
+        final OpenCrayChatRuntimeEventSnapshot? pairedResult =
+            pairedResultIndex == null ? null : runEvents[pairedResultIndex];
+        if (pairedResultIndex != null) {
+          consumedIndexes.add(pairedResultIndex);
+        }
+        return _buildGroupedToolHistoryEntry(
+          toolName: resolvedToolName,
+          toolCallEvent: event,
+          toolResultEvent: pairedResult,
         );
       case 'tool_result':
         final resolvedToolName = toolName?.isNotEmpty == true
@@ -2057,47 +2453,50 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
               beforeIndex: index,
               toolName: resolvedToolName,
             );
-        return ChatRunTraceHistoryEntry(
-          label: resolvedToolName,
-          body: _buildToolResultHistoryBody(
-            event: event,
-            pairedToolCall: pairedToolCall,
-          ),
-          isHighRisk: event.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED',
+        return _buildGroupedToolHistoryEntry(
+          toolName: resolvedToolName,
+          toolCallEvent: pairedToolCall,
+          toolResultEvent: event,
         );
       case 'approval_wait':
       case 'approval_result':
-        return ChatRunTraceHistoryEntry(
+        return _mainHistoryEntry(
           label: _approvalTraceLabel(event),
           body: _buildApprovalHistoryBody(event),
           isHighRisk: event.isHighRisk,
         );
       case 'cancelled':
-        return ChatRunTraceHistoryEntry(
+        return _mainHistoryEntry(
           label: _cancellationTraceLabel(event),
           body: _buildCancellationHistoryBody(event),
         );
       case 'subagent':
-        return ChatRunTraceHistoryEntry(
+        return _subagentHistoryEntry(
+          event: event,
           label: _subagentTraceLabel(event),
           body: _buildSubagentHistoryBody(event),
+        );
+      case 'supplement':
+        return _mainHistoryEntry(
+          label: _supplementTraceLabel(),
+          body: _buildSupplementHistoryBody(event),
         );
       case 'memory_retrieval':
         final resolvedToolName = toolName?.isNotEmpty == true
             ? toolName!
             : widget.copy.chatRunWorkingLabel;
-        return ChatRunTraceHistoryEntry(
+        return _mainHistoryEntry(
           label: resolvedToolName,
           body: _buildMemoryRetrievalHistoryBody(event),
         );
       case 'memory_write':
-        return ChatRunTraceHistoryEntry(
+        return _mainHistoryEntry(
           label: _memoryMaintenanceLabel(),
           body: _buildMemoryWriteHistoryBody(event),
         );
       case 'assistant':
         final text = event.text?.trim();
-        return ChatRunTraceHistoryEntry(
+        return _mainHistoryEntry(
           label: widget.copy.chatRunWorkingLabel,
           body: text?.isNotEmpty == true
               ? text!
@@ -2105,7 +2504,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         );
       case 'progress':
         final text = event.text?.trim();
-        return ChatRunTraceHistoryEntry(
+        return _mainHistoryEntry(
           label: _progressEntryLabel(event),
           body: text?.isNotEmpty == true
               ? text!
@@ -2141,7 +2540,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     );
     if (liveContextBody != null) {
       history.add(
-        ChatRunTraceHistoryEntry(
+        _mainHistoryEntry(
           label: _traceSectionLabel(english: 'Live Context', chinese: '实时上下文'),
           body: liveContextBody,
         ),
@@ -2149,7 +2548,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     if (bootstrapBody != null) {
       history.add(
-        ChatRunTraceHistoryEntry(
+        _mainHistoryEntry(
           label: _traceSectionLabel(english: 'Bootstrap', chinese: '启动上下文'),
           body: bootstrapBody,
         ),
@@ -2157,7 +2556,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     if (memoryTraceBody != null) {
       history.add(
-        ChatRunTraceHistoryEntry(
+        _mainHistoryEntry(
           label: _traceSectionLabel(
             english: 'Retrieved Memory',
             chinese: '记忆召回',
@@ -2168,7 +2567,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     if (memoryFlushBody != null) {
       history.add(
-        ChatRunTraceHistoryEntry(
+        _mainHistoryEntry(
           label: _traceSectionLabel(english: 'Memory Flush', chinese: '记忆刷新'),
           body: memoryFlushBody,
         ),
@@ -2176,7 +2575,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     if (durableCompactionBody != null) {
       history.add(
-        ChatRunTraceHistoryEntry(
+        _mainHistoryEntry(
           label: _traceSectionLabel(
             english: 'Durable Compaction',
             chinese: '持久压缩',
@@ -2187,7 +2586,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     if (skillInventoryBody != null) {
       history.add(
-        ChatRunTraceHistoryEntry(
+        _mainHistoryEntry(
           label: _traceSectionLabel(
             english: 'Skill Inventory',
             chinese: '技能清单',
@@ -2198,7 +2597,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     if (activeSkillBody != null) {
       history.add(
-        ChatRunTraceHistoryEntry(
+        _mainHistoryEntry(
           label: _traceSectionLabel(english: 'Active Skill', chinese: '活动技能'),
           body: activeSkillBody,
         ),
@@ -2594,6 +2993,30 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       run.errorCode == 'APPROVAL_REQUIRED' ||
       run.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED';
 
+  bool _isInterruptedOnRestoreRun(OpenCrayChatRunSnapshot run) =>
+      run.errorCode == 'RESTART_REQUIRES_EXPLICIT_RETRY' ||
+      run.errorCode == 'PROCESS_INTERRUPTED_ON_RESTORE';
+
+  String _interruptedRunLabel() =>
+      widget.copy.isChinese ? '运行已中断' : 'Run interrupted';
+
+  String _retryInterruptedRunLabel() =>
+      widget.copy.isChinese ? '重新启动' : 'Restart run';
+
+  String _hostRebuiltMessage() => widget.copy.isChinese
+      ? '运行宿主已重建。中断的任务现在需要你显式重新启动。'
+      : 'Runtime host rebuilt. Interrupted runs now require an explicit restart.';
+
+  String _interruptedRunBody(OpenCrayChatRunSnapshot run) {
+    final body = run.errorMessage?.trim();
+    if (body != null && body.isNotEmpty) {
+      return body;
+    }
+    return widget.copy.isChinese
+        ? '宿主重建时这次运行被显式中断，避免从头静默重跑。需要你明确触发后才会继续。'
+        : 'This run was interrupted during host recovery to avoid silently rerunning from the beginning. Restart it explicitly when you want to continue.';
+  }
+
   List<OpenCrayChatRuntimeEventSnapshot> _runEventsFor({
     required OpenCrayChatRunSnapshot run,
     required OpenCrayChatRuntimeSnapshot runtimeSnapshot,
@@ -2626,6 +3049,328 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     return null;
   }
+
+  int? _findNextToolResultIndex(
+    List<OpenCrayChatRuntimeEventSnapshot> runEvents, {
+    required int afterIndex,
+    String? toolName,
+  }) {
+    final String? normalizedToolName = toolName?.trim();
+    for (int index = afterIndex + 1; index < runEvents.length; index += 1) {
+      final candidate = runEvents[index];
+      if (candidate.kind == 'tool_call') {
+        return null;
+      }
+      if (candidate.kind != 'tool_result') {
+        continue;
+      }
+      final String? candidateToolName = candidate.toolName?.trim();
+      if (normalizedToolName == null || normalizedToolName.isEmpty) {
+        return index;
+      }
+      if (candidateToolName == normalizedToolName) {
+        return index;
+      }
+    }
+    return null;
+  }
+
+  ChatRunTraceHistoryEntry _buildGroupedToolHistoryEntry({
+    required String toolName,
+    required OpenCrayChatRuntimeEventSnapshot? toolCallEvent,
+    required OpenCrayChatRuntimeEventSnapshot? toolResultEvent,
+  }) {
+    final _ToolInspectorCallDisplay callDisplay =
+        _buildToolInspectorCallDisplay(
+          toolName: toolName,
+          event: toolCallEvent,
+          toolResultEvent: toolResultEvent,
+        );
+    final String callBody = _joinTraceSections(<String?>[
+      callDisplay.text,
+      callDisplay.detail,
+    ]);
+    final String? resultBody = toolResultEvent == null
+        ? null
+        : _buildGroupedToolResultBody(
+            toolName: toolName,
+            event: toolResultEvent,
+            pairedToolCall: toolCallEvent,
+          );
+    final String inspectorBody = resultBody == null
+        ? callBody
+        : '$callBody\n${_indentGroupedToolBlock(resultBody, connector: true)}';
+    final String compactBody = toolResultEvent == null
+        ? _buildToolCallPreviewBody(
+            toolCallEvent ??
+                OpenCrayChatRuntimeEventSnapshot(
+                  kind: 'tool_call',
+                  runId: '',
+                  taskId: '',
+                  emittedAtEpochMs: 0,
+                  toolName: toolName,
+                ),
+          )
+        : _buildToolResultPreviewBody(
+            event: toolResultEvent,
+            pairedToolCall: toolCallEvent,
+            waitingApproval: false,
+            runErrorMessage: null,
+          );
+    return _mainHistoryEntry(
+      label: toolName,
+      body: inspectorBody,
+      compactBody: compactBody,
+      isHighRisk:
+          toolResultEvent?.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED' ||
+          toolResultEvent?.isHighRisk == true,
+      inspectorCallParts: callDisplay.parts,
+      inspectorCallDetail: callDisplay.detail ?? '',
+      inspectorResultBody: resultBody ?? '',
+    );
+  }
+
+  _ToolInspectorCallDisplay _buildToolInspectorCallDisplay({
+    required String toolName,
+    required OpenCrayChatRuntimeEventSnapshot? event,
+    required OpenCrayChatRuntimeEventSnapshot? toolResultEvent,
+  }) {
+    final Map<String, dynamic>? arguments =
+        _decodeJsonObject(_nonEmpty(event?.argumentsJson)) ??
+        (toolResultEvent == null
+            ? null
+            : _toolResultArgumentsFallback(
+                toolName: toolName,
+                event: toolResultEvent,
+              ));
+    final List<ChatRunTraceInspectorTextPart> parts =
+        _toolInspectorCallParts(toolName: toolName, arguments: arguments) ??
+        <ChatRunTraceInspectorTextPart>[
+          ChatRunTraceInspectorTextPart(
+            text: _toolActionSummaryFromArguments(
+              toolName: toolName,
+              arguments: arguments,
+            ),
+          ),
+        ];
+    final String? reason = _nonEmpty(event?.toolReason);
+    final String? detail = _toolInspectorCallDetailBody(
+      toolName: toolName,
+      argumentsJson: _nonEmpty(event?.argumentsJson),
+      toolResultEvent: toolResultEvent,
+    );
+    final String? combinedDetail =
+        _joinTraceSections(<String?>[
+          reason == null
+              ? null
+              : widget.copy.isChinese
+              ? '理由：$reason'
+              : 'Reason: $reason',
+          detail,
+        ]).trim().isEmpty
+        ? null
+        : _joinTraceSections(<String?>[
+            reason == null
+                ? null
+                : widget.copy.isChinese
+                ? '理由：$reason'
+                : 'Reason: $reason',
+            detail,
+          ]);
+    return _ToolInspectorCallDisplay(
+      text: _joinInspectorPartText(parts),
+      parts: parts,
+      detail: combinedDetail,
+    );
+  }
+
+  List<ChatRunTraceInspectorTextPart>? _toolInspectorCallParts({
+    required String toolName,
+    required Map<String, dynamic>? arguments,
+  }) {
+    switch (toolName) {
+      case 'Read':
+        final String? path = _argumentString(
+          arguments,
+          'file_path',
+          fallbackKey: 'path',
+        );
+        if (path == null) {
+          return null;
+        }
+        final String range = _readRangeSummary(
+          offset: _argumentInt(arguments, 'offset'),
+          limit: _argumentInt(arguments, 'limit'),
+        );
+        return <ChatRunTraceInspectorTextPart>[
+          _inspectorAction(widget.copy.isChinese ? '读取' : 'Read'),
+          _inspectorNeutral(' '),
+          _inspectorTarget(path),
+          if (range.isNotEmpty) ...<ChatRunTraceInspectorTextPart>[
+            _inspectorNeutral(widget.copy.isChinese ? '，' : ' '),
+            _inspectorScope(range),
+          ],
+        ];
+      case 'LS':
+        final String path =
+            _argumentString(arguments, 'path') ??
+            _argumentString(arguments, 'file_path') ??
+            '.';
+        return <ChatRunTraceInspectorTextPart>[
+          _inspectorAction(widget.copy.isChinese ? '列出' : 'List'),
+          _inspectorNeutral(' '),
+          _inspectorTarget(path),
+        ];
+      case 'Grep':
+        final String? pattern = _argumentString(arguments, 'pattern');
+        if (pattern == null) {
+          return null;
+        }
+        final String path = _argumentString(arguments, 'path') ?? '.';
+        final String? glob = _argumentString(arguments, 'glob');
+        return <ChatRunTraceInspectorTextPart>[
+          _inspectorAction(widget.copy.isChinese ? '搜索' : 'Search'),
+          _inspectorNeutral(' '),
+          _inspectorTarget('"$pattern"'),
+          _inspectorNeutral(widget.copy.isChinese ? ' 于 ' : ' in '),
+          _inspectorScope(path),
+          if (glob != null) ...<ChatRunTraceInspectorTextPart>[
+            _inspectorNeutral(widget.copy.isChinese ? '，glob ' : ' (glob: '),
+            _inspectorScope(glob),
+            if (!widget.copy.isChinese) _inspectorNeutral(')'),
+          ],
+        ];
+      case 'Glob':
+        final String? pattern = _argumentString(arguments, 'pattern');
+        if (pattern == null) {
+          return null;
+        }
+        final String path = _argumentString(arguments, 'path') ?? '.';
+        return <ChatRunTraceInspectorTextPart>[
+          _inspectorAction(widget.copy.isChinese ? '匹配' : 'Match'),
+          _inspectorNeutral(' '),
+          _inspectorTarget(pattern),
+          _inspectorNeutral(widget.copy.isChinese ? ' 于 ' : ' in '),
+          _inspectorScope(path),
+        ];
+      case 'Write':
+        final String? path = _argumentString(
+          arguments,
+          'file_path',
+          fallbackKey: 'path',
+        );
+        if (path == null) {
+          return null;
+        }
+        return <ChatRunTraceInspectorTextPart>[
+          _inspectorAction(widget.copy.isChinese ? '写入' : 'Write'),
+          _inspectorNeutral(' '),
+          _inspectorTarget(path),
+        ];
+      case 'Edit':
+        final String? path = _argumentString(
+          arguments,
+          'file_path',
+          fallbackKey: 'path',
+        );
+        if (path == null) {
+          return null;
+        }
+        return <ChatRunTraceInspectorTextPart>[
+          _inspectorAction(widget.copy.isChinese ? '编辑' : 'Edit'),
+          _inspectorNeutral(' '),
+          _inspectorTarget(path),
+        ];
+      case 'MultiEdit':
+        final String? path = _argumentString(
+          arguments,
+          'file_path',
+          fallbackKey: 'path',
+        );
+        if (path == null) {
+          return null;
+        }
+        final int editCount = _argumentList(arguments, 'edits')?.length ?? 0;
+        return <ChatRunTraceInspectorTextPart>[
+          _inspectorAction(widget.copy.isChinese ? '编辑' : 'Edit'),
+          _inspectorNeutral(' '),
+          _inspectorTarget(path),
+          if (editCount > 0) ...<ChatRunTraceInspectorTextPart>[
+            _inspectorNeutral(widget.copy.isChinese ? '，共 ' : ' with '),
+            _inspectorScope(
+              widget.copy.isChinese
+                  ? '$editCount 处修改'
+                  : '$editCount change${editCount == 1 ? '' : 's'}',
+            ),
+          ],
+        ];
+      case 'TodoWrite':
+        final int todoCount = _argumentList(arguments, 'todos')?.length ?? 0;
+        if (todoCount <= 0) {
+          return <ChatRunTraceInspectorTextPart>[
+            _inspectorAction(widget.copy.isChinese ? '读取' : 'Read'),
+            _inspectorNeutral(' '),
+            _inspectorTarget(
+              widget.copy.isChinese ? '当前待办列表' : 'current todo list',
+            ),
+          ];
+        }
+        return <ChatRunTraceInspectorTextPart>[
+          _inspectorAction(widget.copy.isChinese ? '更新' : 'Update'),
+          _inspectorNeutral(' '),
+          _inspectorTarget(
+            widget.copy.isChinese
+                ? '$todoCount 条待办'
+                : '$todoCount todo${todoCount == 1 ? '' : 's'}',
+          ),
+        ];
+      case 'Task':
+        final String? description = _argumentString(arguments, 'description');
+        final String actor = _subagentTypeDisplay(
+          _argumentString(arguments, 'subagent_type'),
+        );
+        if (description == null) {
+          return <ChatRunTraceInspectorTextPart>[
+            _inspectorAction(widget.copy.isChinese ? '委派' : 'Delegate'),
+            _inspectorNeutral(widget.copy.isChinese ? '给 ' : ' to '),
+            _inspectorScope(actor),
+          ];
+        }
+        return <ChatRunTraceInspectorTextPart>[
+          _inspectorAction(widget.copy.isChinese ? '委派' : 'Delegate'),
+          _inspectorNeutral(widget.copy.isChinese ? '给 ' : ' to '),
+          _inspectorScope(actor),
+          _inspectorNeutral(widget.copy.isChinese ? '：' : ': '),
+          _inspectorTarget(description),
+        ];
+      default:
+        return null;
+    }
+  }
+
+  ChatRunTraceInspectorTextPart _inspectorNeutral(String text) =>
+      ChatRunTraceInspectorTextPart(text: text);
+
+  ChatRunTraceInspectorTextPart _inspectorAction(String text) =>
+      ChatRunTraceInspectorTextPart(
+        text: text,
+        semantic: ChatRunTraceInspectorTextSemantic.action,
+      );
+
+  ChatRunTraceInspectorTextPart _inspectorTarget(String text) =>
+      ChatRunTraceInspectorTextPart(
+        text: text,
+        semantic: ChatRunTraceInspectorTextSemantic.target,
+      );
+
+  ChatRunTraceInspectorTextPart _inspectorScope(String text) =>
+      ChatRunTraceInspectorTextPart(
+        text: text,
+        semantic: ChatRunTraceInspectorTextSemantic.scope,
+      );
+
+  String _joinInspectorPartText(List<ChatRunTraceInspectorTextPart> parts) =>
+      parts.map((part) => part.text).join();
 
   String _buildToolCallPreviewBody(OpenCrayChatRuntimeEventSnapshot event) {
     final String resolvedToolName =
@@ -2674,27 +3419,51 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   String _buildCompactTraceBody({
     required List<ChatRunTraceHistoryEntry> history,
     required String fallbackBody,
+    String? preferredBody,
   }) {
-    final List<String> bodies = history
+    final List<ChatRunTraceHistoryEntry> entries = history
         .where(_shouldIncludeCompactHistoryEntry)
-        .map((entry) => entry.body.trim())
-        .where((body) => body.isNotEmpty)
         .toList(growable: false);
-    if (bodies.isEmpty) {
+    if (entries.isEmpty) {
       return fallbackBody;
     }
-    final int startIndex = bodies.length > 3 ? bodies.length - 3 : 0;
-    final String compactBody = bodies.sublist(startIndex).join('\n\n');
+    final String? preferred = (() {
+      final String trimmed = preferredBody?.trim() ?? '';
+      return trimmed.isEmpty ? null : trimmed;
+    })();
+    final int endExclusive = preferred == null
+        ? entries.length
+        : entries.lastIndexWhere(
+                (entry) => _historyCompactBody(entry) == preferred,
+              ) +
+              1;
+    final int boundedEndExclusive = endExclusive > 0
+        ? endExclusive
+        : entries.length;
+    final int startIndex = boundedEndExclusive > 3
+        ? boundedEndExclusive - 3
+        : 0;
+    final String compactBody = entries
+        .sublist(startIndex, boundedEndExclusive)
+        .map((entry) => _historyCompactBody(entry))
+        .where((body) => body.isNotEmpty)
+        .join('\n\n');
     return compactBody.trim().isNotEmpty ? compactBody.trim() : fallbackBody;
   }
 
   bool _shouldIncludeCompactHistoryEntry(ChatRunTraceHistoryEntry entry) {
-    final String body = entry.body.trim();
+    final String body = _historyCompactBody(entry);
     if (body.isEmpty) {
       return false;
     }
     return !_thinkingPlaceholders.contains(body);
   }
+
+  String _historyCompactBody(ChatRunTraceHistoryEntry entry) =>
+      (entry.compactBody?.trim().isNotEmpty == true
+              ? entry.compactBody!
+              : entry.body)
+          .trim();
 
   String _progressEntryLabel(OpenCrayChatRuntimeEventSnapshot event) {
     final String? stage = _nonEmpty(event.stage);
@@ -2712,6 +3481,24 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       return body;
     }
     return '$stage\n\n$body';
+  }
+
+  String _buildSupplementPreviewBody(OpenCrayChatRuntimeEventSnapshot event) {
+    final String? text = _nonEmpty(event.text);
+    final String? checkpoint = _supplementCheckpointSummary(event);
+    return _joinTraceSections(<String?>[
+      text ?? checkpoint,
+      if (text != null) checkpoint,
+    ]);
+  }
+
+  String _buildSupplementHistoryBody(OpenCrayChatRuntimeEventSnapshot event) {
+    final String? text = _nonEmpty(event.text);
+    final String? checkpoint = _supplementCheckpointSummary(event);
+    return _joinTraceSections(<String?>[
+      text ?? checkpoint,
+      if (text != null) checkpoint,
+    ]);
   }
 
   String _buildSubagentPreviewBody(OpenCrayChatRuntimeEventSnapshot event) {
@@ -2739,6 +3526,21 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         (widget.copy.isChinese ? '子代理' : 'Subagent');
   }
 
+  String _supplementTraceLabel() =>
+      widget.copy.isChinese ? '补充输入' : 'Follow-up';
+
+  String? _supplementCheckpointSummary(OpenCrayChatRuntimeEventSnapshot event) {
+    return switch (_nonEmpty(event.checkpoint)?.toLowerCase()) {
+      'turn_start' =>
+        widget.copy.isChinese ? '在轮次开始时应用' : 'Applied at turn start',
+      null => null,
+      final String checkpoint =>
+        widget.copy.isChinese
+            ? '应用检查点: ${checkpoint.replaceAll('_', ' ')}'
+            : 'Applied at ${checkpoint.replaceAll('_', ' ')}',
+    };
+  }
+
   String _subagentPhaseSummary(OpenCrayChatRuntimeEventSnapshot event) {
     final String actor = _subagentTraceLabel(event);
     final String? description = _nonEmpty(event.label);
@@ -2747,11 +3549,22 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         : widget.copy.isChinese
         ? '：$description'
         : ': $description';
+    final String? executionStateSummary = _subagentPhaseStateOverrideSummary(
+      actor: actor,
+      executionState: _subagentExecutionState(event),
+    );
+    if (executionStateSummary != null) {
+      return '$executionStateSummary$suffix';
+    }
     switch (_nonEmpty(event.phase)?.toLowerCase()) {
       case 'started':
         return widget.copy.isChinese
             ? '$actor 已启动$suffix'
             : '$actor started$suffix';
+      case 'resumed':
+        return widget.copy.isChinese
+            ? '$actor 已继续$suffix'
+            : '$actor resumed$suffix';
       case 'completed':
         return widget.copy.isChinese
             ? '$actor 已完成$suffix'
@@ -2777,6 +3590,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         '${_traceSectionLabel(english: 'Context', chinese: '上下文')}: ${_contextModeDisplay(event.contextMode!)}',
       if (event.depth != null)
         '${_traceSectionLabel(english: 'Depth', chinese: '深度')}: ${event.depth}',
+      if (_subagentContinuationSummary(event) != null)
+        '${_traceSectionLabel(english: 'Continuation', chinese: '继续方式')}: ${_subagentContinuationSummary(event)!}',
     ];
     return lines.isEmpty ? null : lines.join('\n');
   }
@@ -2790,45 +3605,102 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     return summary.contains('\n') ? '$label:\n$summary' : '$label: $summary';
   }
 
-  String _buildToolCallHistoryBody(OpenCrayChatRuntimeEventSnapshot event) {
-    final String resolvedToolName =
-        _nonEmpty(event.toolName) ?? widget.copy.chatRunWorkingLabel;
-    final String summary = _toolActionSummary(
-      toolName: resolvedToolName,
-      argumentsJson: event.argumentsJson,
-    );
-    final String? reason = _nonEmpty(event.toolReason);
-    final String? detail = _toolCallDetailBody(
-      toolName: resolvedToolName,
-      argumentsJson: event.argumentsJson,
-    );
-    return _joinTraceSections(<String?>[summary, reason, detail]);
-  }
-
-  String _buildToolResultHistoryBody({
+  String _buildGroupedToolResultBody({
+    required String toolName,
     required OpenCrayChatRuntimeEventSnapshot event,
     required OpenCrayChatRuntimeEventSnapshot? pairedToolCall,
   }) {
-    final String resolvedToolName =
-        _nonEmpty(event.toolName) ?? widget.copy.chatRunWorkingLabel;
-    final String summary = _toolResultActionSummary(
-      toolName: resolvedToolName,
-      event: event,
-      pairedToolCall: pairedToolCall,
-    );
     final String? resultSummary = _toolResultMetadataSummary(
-      toolName: resolvedToolName,
+      toolName: toolName,
       event: event,
     );
     final String? errorMessage = _nonEmpty(event.errorMessage);
     final String? preview = _nonEmpty(event.contentPreview);
     return _joinTraceSections(<String?>[
-      summary,
       resultSummary,
-      errorMessage ??
-          preview ??
-          widget.copy.chatRunToolFollowUp(resolvedToolName),
+      if (errorMessage != null && errorMessage != resultSummary) errorMessage,
+      if (preview != null &&
+          preview != resultSummary &&
+          preview != errorMessage)
+        preview,
+      if (resultSummary == null && errorMessage == null && preview == null)
+        _toolResultFallbackSummary(
+          toolName: toolName,
+          event: event,
+          pairedToolCall: pairedToolCall,
+        ),
     ]);
+  }
+
+  String? _toolInspectorCallDetailBody({
+    required String toolName,
+    required String? argumentsJson,
+    required OpenCrayChatRuntimeEventSnapshot? toolResultEvent,
+  }) {
+    final Map<String, dynamic>? arguments =
+        _decodeJsonObject(argumentsJson) ??
+        (toolResultEvent == null
+            ? null
+            : _toolResultArgumentsFallback(
+                toolName: toolName,
+                event: toolResultEvent,
+              ));
+    if (arguments == null || arguments.isEmpty) {
+      return null;
+    }
+    switch (toolName) {
+      case 'Edit':
+        return _editDetailBody(arguments);
+      case 'MultiEdit':
+        return _multiEditDetailBody(arguments);
+      case 'Write':
+        return _writeDetailBody(arguments);
+      case 'Task':
+        return _taskDetailBody(arguments);
+      default:
+        return null;
+    }
+  }
+
+  String? _toolResultFallbackSummary({
+    required String toolName,
+    required OpenCrayChatRuntimeEventSnapshot event,
+    required OpenCrayChatRuntimeEventSnapshot? pairedToolCall,
+  }) {
+    final String previewBody = _buildToolResultPreviewBody(
+      event: event,
+      pairedToolCall: pairedToolCall,
+      waitingApproval: false,
+      runErrorMessage: null,
+    ).trim();
+    if (previewBody.isEmpty) {
+      return null;
+    }
+    final String? resultSummary = _toolResultMetadataSummary(
+      toolName: toolName,
+      event: event,
+    );
+    if (resultSummary != null && previewBody == resultSummary) {
+      return null;
+    }
+    return previewBody;
+  }
+
+  String _indentGroupedToolBlock(String body, {required bool connector}) {
+    final List<String> lines = body
+        .replaceAll('\r\n', '\n')
+        .replaceAll('\r', '\n')
+        .split('\n');
+    return lines
+        .asMap()
+        .entries
+        .map((entry) {
+          final String prefix = entry.key == 0
+              ? (connector ? '  └ ' : '    ')
+              : '    ';
+          return '$prefix${entry.value}';
+        })
+        .join('\n');
   }
 
   String _buildApprovalPreviewBody(OpenCrayChatRuntimeEventSnapshot event) {
@@ -2862,6 +3734,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (event.kind == 'approval_wait') {
       return widget.copy.chatRunWaitingApprovalLabel;
     }
+    if (_nonEmpty(event.status)?.toLowerCase() == 'rejected') {
+      return widget.copy.chatRunAwaitingDirectionLabel;
+    }
     return _nonEmpty(event.toolName) ?? widget.copy.chatRunWorkingLabel;
   }
 
@@ -2879,7 +3754,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   String _cancellationTraceLabel(OpenCrayChatRuntimeEventSnapshot event) {
-    return _nonEmpty(event.toolName) ?? widget.copy.chatRunWorkingLabel;
+    return widget.copy.chatRunAwaitingDirectionLabel;
   }
 
   String _buildMemoryRetrievalPreviewBody(
@@ -2956,6 +3831,12 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         chinese: '解决 ${event.resolvedRecordIds.length} 条',
       ),
       _memoryWriteCountLabel(
+        count: event.suppressedRecordIds.length,
+        singular: 'suppressed',
+        plural: 'suppressed',
+        chinese: '抑制 ${event.suppressedRecordIds.length} 条',
+      ),
+      _memoryWriteCountLabel(
         count: event.reaffirmedRecordIds.length,
         singular: 'reaffirmed',
         plural: 'reaffirmed',
@@ -3000,6 +3881,11 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         englishLabel: 'Resolved',
         chineseLabel: '解决',
         values: event.resolvedRecordIds,
+      ),
+      _memoryWriteListSection(
+        englishLabel: 'Suppressed',
+        chineseLabel: '抑制',
+        values: event.suppressedRecordIds,
       ),
       _memoryWriteListSection(
         englishLabel: 'Reaffirmed',
@@ -3742,6 +4628,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         }
         return 'Current todo list has $todoCount item(s)';
       case 'Task':
+        final String? executionState = _resultMetadataValue(
+          event,
+          'childExecutionState',
+        );
         final String? status = _resultMetadataValue(
           event,
           'childExecutionStatus',
@@ -3761,17 +4651,31 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           _resultMetadataValue(event, 'delegationAllowedTools'),
         );
         final String actor = _subagentTypeDisplay(subagentType);
-        final String statusSummary = switch (status?.toLowerCase()) {
-          'success' =>
-            widget.copy.isChinese ? '$actor 已完成' : '$actor completed',
-          'cancelled' =>
-            widget.copy.isChinese ? '$actor 已取消' : '$actor cancelled',
-          'failed' ||
-          'denied' ||
-          'timeout' => widget.copy.isChinese ? '$actor 失败' : '$actor failed',
-          _ =>
-            widget.copy.isChinese ? '$actor 已返回结果' : '$actor returned a result',
-        };
+        final String statusSummary =
+            _subagentExecutionStateSummary(
+              actor: actor,
+              executionState: executionState,
+            ) ??
+            switch (status?.toLowerCase()) {
+              'success' || 'completed' =>
+                widget.copy.isChinese ? '$actor 已完成' : '$actor completed',
+              'cancelled' =>
+                widget.copy.isChinese ? '$actor 已取消' : '$actor cancelled',
+              'approval_required' =>
+                widget.copy.isChinese
+                    ? '$actor 等待审批'
+                    : '$actor waiting for approval',
+              'high_risk_approval_required' =>
+                widget.copy.isChinese
+                    ? '$actor 等待高风险审批'
+                    : '$actor waiting for high-risk approval',
+              'failed' || 'denied' || 'timeout' =>
+                widget.copy.isChinese ? '$actor 失败' : '$actor failed',
+              _ =>
+                widget.copy.isChinese
+                    ? '$actor 已返回结果'
+                    : '$actor returned a result',
+            };
         final List<String> details = <String>[
           if (contextMode != null)
             widget.copy.isChinese
@@ -3826,6 +4730,66 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     } catch (_) {
       return null;
     }
+  }
+
+  String? _subagentExecutionState(OpenCrayChatRuntimeEventSnapshot event) =>
+      _nonEmpty(event.executionState) ?? _nonEmpty(event.status);
+
+  String? _subagentExecutionStateSummary({
+    required String actor,
+    required String? executionState,
+  }) {
+    return switch (executionState?.toLowerCase()) {
+      'background_queued' =>
+        widget.copy.isChinese ? '$actor 已在后台排队' : '$actor queued in background',
+      'background_running' =>
+        widget.copy.isChinese
+            ? '$actor 正在后台运行'
+            : '$actor running in background',
+      'waiting_approval' =>
+        widget.copy.isChinese ? '$actor 等待审批' : '$actor waiting for approval',
+      'waiting_high_risk_approval' =>
+        widget.copy.isChinese
+            ? '$actor 等待高风险审批'
+            : '$actor waiting for high-risk approval',
+      'running' => widget.copy.isChinese ? '$actor 正在运行' : '$actor running',
+      'completed' => widget.copy.isChinese ? '$actor 已完成' : '$actor completed',
+      'failed' => widget.copy.isChinese ? '$actor 失败' : '$actor failed',
+      'cancelled' => widget.copy.isChinese ? '$actor 已取消' : '$actor cancelled',
+      _ => null,
+    };
+  }
+
+  String? _subagentPhaseStateOverrideSummary({
+    required String actor,
+    required String? executionState,
+  }) {
+    return switch (executionState?.toLowerCase()) {
+      'background_queued' =>
+        widget.copy.isChinese ? '$actor 已在后台排队' : '$actor queued in background',
+      'background_running' =>
+        widget.copy.isChinese
+            ? '$actor 正在后台运行'
+            : '$actor running in background',
+      'waiting_approval' =>
+        widget.copy.isChinese ? '$actor 等待审批' : '$actor waiting for approval',
+      'waiting_high_risk_approval' =>
+        widget.copy.isChinese
+            ? '$actor 等待高风险审批'
+            : '$actor waiting for high-risk approval',
+      _ => null,
+    };
+  }
+
+  String? _subagentContinuationSummary(OpenCrayChatRuntimeEventSnapshot event) {
+    return switch (_nonEmpty(event.continuationKind)?.toLowerCase()) {
+      'background_resume' =>
+        widget.copy.isChinese ? '后台继续' : 'Resumes in background',
+      'prompt_resume' =>
+        widget.copy.isChinese ? '审批后继续' : 'Resumes after approval',
+      'none' || null => null,
+      final String rawValue => rawValue.replaceAll('_', ' '),
+    };
   }
 
   String? _argumentString(
@@ -4025,8 +4989,10 @@ class _ChatScrollContent extends StatelessWidget {
     required this.voicePlaybackControllerFactory,
     required this.selectedMessageIds,
     required this.busyApprovalTaskIds,
+    required this.busyRetryRunIds,
     required this.onApproveApproval,
     required this.onRejectApproval,
+    required this.onRetryRunTrace,
     required this.onMessageLongPress,
     required this.onMessageSelectionToggle,
     required this.onMessageTextSelectionChanged,
@@ -4038,8 +5004,10 @@ class _ChatScrollContent extends StatelessWidget {
   final ChatVoicePlaybackControllerFactory? voicePlaybackControllerFactory;
   final Set<String> selectedMessageIds;
   final Set<String> busyApprovalTaskIds;
+  final Set<String> busyRetryRunIds;
   final ValueChanged<ChatPendingApprovalData> onApproveApproval;
   final ValueChanged<ChatPendingApprovalData> onRejectApproval;
+  final ValueChanged<ChatRunTraceData> onRetryRunTrace;
   final void Function(ChatMessageData, Rect, String?) onMessageLongPress;
   final ValueChanged<ChatMessageData> onMessageSelectionToggle;
   final void Function(ChatMessageData, String?) onMessageTextSelectionChanged;
@@ -4067,8 +5035,10 @@ class _ChatScrollContent extends StatelessWidget {
             pendingApprovals: state.pendingApprovals,
             selectedMessageIds: selectedMessageIds,
             busyApprovalTaskIds: busyApprovalTaskIds,
+            busyRetryRunIds: busyRetryRunIds,
             onApproveApproval: onApproveApproval,
             onRejectApproval: onRejectApproval,
+            onRetryRunTrace: onRetryRunTrace,
             onMessageLongPress: onMessageLongPress,
             onMessageSelectionToggle: onMessageSelectionToggle,
             onMessageTextSelectionChanged: onMessageTextSelectionChanged,
@@ -4962,8 +5932,10 @@ class _MessageList extends StatelessWidget {
     required this.pendingApprovals,
     required this.selectedMessageIds,
     required this.busyApprovalTaskIds,
+    required this.busyRetryRunIds,
     required this.onApproveApproval,
     required this.onRejectApproval,
+    required this.onRetryRunTrace,
     required this.onMessageLongPress,
     required this.onMessageSelectionToggle,
     required this.onMessageTextSelectionChanged,
@@ -4977,8 +5949,10 @@ class _MessageList extends StatelessWidget {
   final List<ChatPendingApprovalData> pendingApprovals;
   final Set<String> selectedMessageIds;
   final Set<String> busyApprovalTaskIds;
+  final Set<String> busyRetryRunIds;
   final ValueChanged<ChatPendingApprovalData> onApproveApproval;
   final ValueChanged<ChatPendingApprovalData> onRejectApproval;
+  final ValueChanged<ChatRunTraceData> onRetryRunTrace;
   final void Function(ChatMessageData, Rect, String?) onMessageLongPress;
   final ValueChanged<ChatMessageData> onMessageSelectionToggle;
   final void Function(ChatMessageData, String?) onMessageTextSelectionChanged;
@@ -5088,6 +6062,8 @@ class _MessageList extends StatelessWidget {
             child: _RunTraceBubble(
               key: ValueKey<String>('chat-run-trace-${trace.runId}'),
               trace: trace,
+              isRetryBusy: busyRetryRunIds.contains(trace.retryId),
+              onRetry: trace.isRetryable ? () => onRetryRunTrace(trace) : null,
             ),
           ),
         ),
@@ -5145,9 +6121,16 @@ class _MessageList extends StatelessWidget {
 }
 
 class _RunTraceBubble extends StatefulWidget {
-  const _RunTraceBubble({super.key, required this.trace});
+  const _RunTraceBubble({
+    super.key,
+    required this.trace,
+    this.onRetry,
+    this.isRetryBusy = false,
+  });
 
   final ChatRunTraceData trace;
+  final VoidCallback? onRetry;
+  final bool isRetryBusy;
 
   @override
   State<_RunTraceBubble> createState() => _RunTraceBubbleState();
@@ -5166,7 +6149,11 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
     return showDialog<void>(
       context: context,
       barrierColor: const Color(0x8A0B0E14),
-      builder: (dialogContext) => _RunTraceFullscreenSheet(trace: widget.trace),
+      builder: (dialogContext) => _RunTraceFullscreenSheet(
+        trace: widget.trace,
+        onRetry: widget.onRetry,
+        isRetryBusy: widget.isRetryBusy,
+      ),
     );
   }
 
@@ -5247,6 +6234,15 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
                     ),
                   ),
                 ],
+                if (trace.isRetryable && widget.onRetry != null) ...<Widget>[
+                  const SizedBox(height: 10),
+                  _RunTraceActionButton(
+                    label: widget.isRetryBusy
+                        ? '${trace.retryLabel!}...'
+                        : trace.retryLabel!,
+                    onTap: widget.isRetryBusy ? null : widget.onRetry,
+                  ),
+                ],
               ],
             ),
           ),
@@ -5256,10 +6252,30 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
   }
 }
 
+const String _runTraceMainActorId = 'main';
+
+class _RunTraceInspectorActorSection {
+  const _RunTraceInspectorActorSection({
+    required this.id,
+    required this.label,
+    required this.entries,
+  });
+
+  final String id;
+  final String label;
+  final List<ChatRunTraceHistoryEntry> entries;
+}
+
 class _RunTraceFullscreenSheet extends StatefulWidget {
-  const _RunTraceFullscreenSheet({required this.trace});
+  const _RunTraceFullscreenSheet({
+    required this.trace,
+    this.onRetry,
+    this.isRetryBusy = false,
+  });
 
   final ChatRunTraceData trace;
+  final VoidCallback? onRetry;
+  final bool isRetryBusy;
 
   @override
   State<_RunTraceFullscreenSheet> createState() =>
@@ -5268,11 +6284,105 @@ class _RunTraceFullscreenSheet extends StatefulWidget {
 
 class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
   late final ScrollController _scrollController = ScrollController();
+  String? _selectedActorId;
 
   @override
   void dispose() {
     _scrollController.dispose();
     super.dispose();
+  }
+
+  List<_RunTraceInspectorActorSection> _buildActorSections(
+    List<ChatRunTraceHistoryEntry> history,
+  ) {
+    final Map<String, _RunTraceInspectorActorSection> sections =
+        <String, _RunTraceInspectorActorSection>{};
+    for (final entry in history) {
+      final String actorId = entry.inspectorActorId.trim().isNotEmpty
+          ? entry.inspectorActorId.trim()
+          : _runTraceMainActorId;
+      final String actorLabel = entry.inspectorActorLabel.trim().isNotEmpty
+          ? entry.inspectorActorLabel.trim()
+          : entry.label;
+      final _RunTraceInspectorActorSection? existing = sections[actorId];
+      if (existing == null) {
+        sections[actorId] = _RunTraceInspectorActorSection(
+          id: actorId,
+          label: actorLabel,
+          entries: <ChatRunTraceHistoryEntry>[entry],
+        );
+        continue;
+      }
+      sections[actorId] = _RunTraceInspectorActorSection(
+        id: existing.id,
+        label: existing.label,
+        entries: <ChatRunTraceHistoryEntry>[...existing.entries, entry],
+      );
+    }
+    final List<_RunTraceInspectorActorSection> resolved = sections.values
+        .toList(growable: false);
+    final Map<String, int> totalsByLabel = <String, int>{};
+    for (final section in resolved) {
+      totalsByLabel.update(
+        section.label,
+        (count) => count + 1,
+        ifAbsent: () => 1,
+      );
+    }
+    final Map<String, int> seenByLabel = <String, int>{};
+    return resolved
+        .map((section) {
+          final int total = totalsByLabel[section.label] ?? 1;
+          if (total <= 1) {
+            return section;
+          }
+          final int seen = seenByLabel.update(
+            section.label,
+            (count) => count + 1,
+            ifAbsent: () => 1,
+          );
+          return _RunTraceInspectorActorSection(
+            id: section.id,
+            label: '${section.label} $seen',
+            entries: section.entries,
+          );
+        })
+        .toList(growable: false);
+  }
+
+  Widget _buildActorTabs(List<_RunTraceInspectorActorSection> sections) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: sections
+            .map((section) {
+              final bool selected =
+                  (_selectedActorId ?? sections.first.id) == section.id;
+              return Padding(
+                padding: const EdgeInsets.only(right: 16),
+                child: GestureDetector(
+                  onTap: () => setState(() => _selectedActorId = section.id),
+                  behavior: HitTestBehavior.opaque,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Text(
+                      section.label,
+                      style: _ChatTextStyles.timeline.copyWith(
+                        color: selected
+                            ? _ChatPalette.inspectorAction
+                            : _ChatPalette.textSecondary,
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            })
+            .toList(growable: false),
+      ),
+    );
   }
 
   @override
@@ -5287,6 +6397,15 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
               isHighRisk: trace.isHighRisk,
             ),
           ];
+    final List<_RunTraceInspectorActorSection> actorSections =
+        _buildActorSections(history);
+    final String selectedActorId =
+        actorSections.any((section) => section.id == _selectedActorId)
+        ? _selectedActorId!
+        : actorSections.first.id;
+    final List<ChatRunTraceHistoryEntry> visibleHistory = actorSections
+        .firstWhere((section) => section.id == selectedActorId)
+        .entries;
     final Color surfaceColor = trace.isHighRisk
         ? _ChatPalette.highRiskSurface
         : Colors.white;
@@ -5331,6 +6450,15 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                       ),
                     ),
                   ),
+                  if (trace.isRetryable && widget.onRetry != null) ...<Widget>[
+                    const SizedBox(width: 10),
+                    _RunTraceActionButton(
+                      label: widget.isRetryBusy
+                          ? '${trace.retryLabel!}...'
+                          : trace.retryLabel!,
+                      onTap: widget.isRetryBusy ? null : widget.onRetry,
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -5367,6 +6495,10 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                           ),
                         ),
                         const SizedBox(height: 14),
+                        if (actorSections.length > 1) ...<Widget>[
+                          _buildActorTabs(actorSections),
+                          const SizedBox(height: 12),
+                        ],
                         Expanded(
                           child: Scrollbar(
                             controller: _scrollController,
@@ -5381,7 +6513,7 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                               physics: const ClampingScrollPhysics(),
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
-                                children: history
+                                children: visibleHistory
                                     .map(
                                       (entry) => Padding(
                                         padding: const EdgeInsets.only(
@@ -5408,6 +6540,51 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
       ),
     );
   }
+}
+
+class _RunTraceActionButton extends StatelessWidget {
+  const _RunTraceActionButton({required this.label, required this.onTap});
+
+  final String label;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool enabled = onTap != null;
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Opacity(
+        opacity: enabled ? 1 : 0.56,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFFE7EBF4),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFD2D8E4)),
+          ),
+          child: Text(
+            label,
+            style: _ChatTextStyles.timeline.copyWith(
+              color: _ChatPalette.textPrimary,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ToolInspectorCallDisplay {
+  const _ToolInspectorCallDisplay({
+    required this.text,
+    required this.parts,
+    this.detail,
+  });
+
+  final String text;
+  final List<ChatRunTraceInspectorTextPart> parts;
+  final String? detail;
 }
 
 class _RunTraceHistoryCard extends StatelessWidget {
@@ -5450,16 +6627,107 @@ class _RunTraceHistoryCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 8),
-            Text(
-              entry.body,
-              style: _ChatTextStyles.bubble.copyWith(
-                color: _ChatPalette.textPrimary,
+            if (entry.hasStructuredInspectorContent)
+              _buildStructuredInspectorBody()
+            else
+              Text(
+                entry.body,
+                style: _ChatTextStyles.bubble.copyWith(
+                  color: _ChatPalette.textPrimary,
+                ),
               ),
-            ),
           ],
         ),
       ),
     );
+  }
+
+  Widget _buildStructuredInspectorBody() {
+    final List<Widget> children = <Widget>[
+      Text.rich(
+        TextSpan(
+          children: entry.inspectorCallParts
+              .map(
+                (part) => TextSpan(
+                  text: part.text,
+                  style: _ChatTextStyles.bubble.copyWith(
+                    color: _inspectorSemanticColor(part.semantic),
+                  ),
+                ),
+              )
+              .toList(growable: false),
+        ),
+      ),
+    ];
+    final String inspectorCallDetail = entry.inspectorCallDetail.trim();
+    if (inspectorCallDetail.isNotEmpty) {
+      children.add(const SizedBox(height: 8));
+      children.add(
+        Text(
+          inspectorCallDetail,
+          style: _ChatTextStyles.bubble.copyWith(
+            color: _ChatPalette.textPrimary,
+          ),
+        ),
+      );
+    }
+    final String inspectorResultBody = entry.inspectorResultBody.trim();
+    if (inspectorResultBody.isNotEmpty) {
+      children.add(const SizedBox(height: 8));
+      children.add(_buildInspectorResultText(inspectorResultBody));
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: children,
+    );
+  }
+
+  Widget _buildInspectorResultText(String body) {
+    final List<String> lines = body
+        .replaceAll('\r\n', '\n')
+        .replaceAll('\r', '\n')
+        .split('\n');
+    final String firstLine = lines.isEmpty ? '' : lines.first;
+    final String remaining = lines.length <= 1
+        ? ''
+        : lines.sublist(1).join('\n  ');
+    return Text.rich(
+      TextSpan(
+        children: <InlineSpan>[
+          TextSpan(
+            text: '└ ',
+            style: _ChatTextStyles.bubble.copyWith(
+              color: _ChatPalette.inspectorConnector,
+            ),
+          ),
+          TextSpan(
+            text: firstLine,
+            style: _ChatTextStyles.bubble.copyWith(
+              color: _ChatPalette.inspectorResult,
+            ),
+          ),
+          if (remaining.isNotEmpty)
+            TextSpan(
+              text: '\n  $remaining',
+              style: _ChatTextStyles.bubble.copyWith(
+                color: _ChatPalette.inspectorResult,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Color _inspectorSemanticColor(ChatRunTraceInspectorTextSemantic semantic) {
+    return switch (semantic) {
+      ChatRunTraceInspectorTextSemantic.action => _ChatPalette.inspectorAction,
+      ChatRunTraceInspectorTextSemantic.target => _ChatPalette.inspectorTarget,
+      ChatRunTraceInspectorTextSemantic.scope => _ChatPalette.inspectorScope,
+      ChatRunTraceInspectorTextSemantic.connector =>
+        _ChatPalette.inspectorConnector,
+      ChatRunTraceInspectorTextSemantic.result => _ChatPalette.inspectorResult,
+      ChatRunTraceInspectorTextSemantic.neutral => _ChatPalette.textPrimary,
+    };
   }
 }
 
@@ -7017,6 +8285,8 @@ const Set<String> _chatPreviewableTextMimeTypes = <String>{
   'application/x-yaml',
 };
 
+const int _chatComposerMaxImageAttachments = 9;
+
 class _ComposerCard extends StatelessWidget {
   const _ComposerCard({
     required this.copy,
@@ -7028,8 +8298,6 @@ class _ComposerCard extends StatelessWidget {
     required this.onAddActionSelected,
     required this.onCommandSelected,
     required this.onAttachmentRemoved,
-    required this.todoPanelExpanded,
-    required this.onTodoPanelToggle,
   });
 
   final OpenCrayUiCopy copy;
@@ -7041,8 +8309,6 @@ class _ComposerCard extends StatelessWidget {
   final ValueChanged<ChatAddActionData> onAddActionSelected;
   final VoidCallback onCommandSelected;
   final ValueChanged<ChatAttachmentData> onAttachmentRemoved;
-  final bool todoPanelExpanded;
-  final VoidCallback onTodoPanelToggle;
 
   @override
   Widget build(BuildContext context) {
@@ -7057,11 +8323,7 @@ class _ComposerCard extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         if (hasTodos) ...<Widget>[
-          _TodoListPanel(
-            todos: state.composer.todos,
-            expanded: todoPanelExpanded,
-            onToggle: onTodoPanelToggle,
-          ),
+          _TodoListPanel(todos: state.composer.todos),
           const SizedBox(height: 12),
         ],
         if (state.composer.commandOptions.isNotEmpty) ...<Widget>[
@@ -7208,19 +8470,13 @@ class _ComposerGlassSurface extends StatelessWidget {
 }
 
 class _TodoListPanel extends StatelessWidget {
-  const _TodoListPanel({
-    required this.todos,
-    required this.expanded,
-    required this.onToggle,
-  });
+  const _TodoListPanel({required this.todos});
 
   static const int _maxVisibleTodoCount = 4;
   static const double _itemHeight = 28;
   static const double _itemGap = 6;
 
   final List<ChatTodoItemData> todos;
-  final bool expanded;
-  final VoidCallback onToggle;
 
   @override
   Widget build(BuildContext context) {
@@ -7232,45 +8488,36 @@ class _TodoListPanel extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
-        GestureDetector(
-          key: const ValueKey<String>('chat-composer-todo-toggle'),
-          onTap: onToggle,
-          behavior: HitTestBehavior.opaque,
-          child: Row(
-            children: <Widget>[
-              Text('TODO', style: _ChatTextStyles.todoLabel),
-              const Spacer(),
-              Icon(
-                expanded
-                    ? CupertinoIcons.chevron_up
-                    : CupertinoIcons.chevron_down,
-                key: const ValueKey<String>('chat-composer-todo-chevron'),
-                size: 13,
-                color: _ChatPalette.textTertiary,
-              ),
-            ],
+        Row(
+          children: <Widget>[
+            Text('TODO', style: _ChatTextStyles.todoLabel),
+            const Spacer(),
+            Icon(
+              CupertinoIcons.chevron_up,
+              key: const ValueKey<String>('chat-composer-todo-chevron'),
+              size: 13,
+              color: _ChatPalette.textTertiary,
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        SizedBox(
+          key: const ValueKey<String>('chat-composer-todo-list'),
+          height: listHeight,
+          child: ListView.separated(
+            padding: EdgeInsets.zero,
+            physics: todos.length > _maxVisibleTodoCount
+                ? const ClampingScrollPhysics()
+                : const NeverScrollableScrollPhysics(),
+            itemCount: todos.length,
+            itemBuilder: (BuildContext context, int index) {
+              return _TodoRow(todo: todos[index], index: index);
+            },
+            separatorBuilder: (BuildContext context, int index) {
+              return const SizedBox(height: _itemGap);
+            },
           ),
         ),
-        if (expanded) ...<Widget>[
-          const SizedBox(height: 10),
-          SizedBox(
-            key: const ValueKey<String>('chat-composer-todo-list'),
-            height: listHeight,
-            child: ListView.separated(
-              padding: EdgeInsets.zero,
-              physics: todos.length > _maxVisibleTodoCount
-                  ? const ClampingScrollPhysics()
-                  : const NeverScrollableScrollPhysics(),
-              itemCount: todos.length,
-              itemBuilder: (BuildContext context, int index) {
-                return _TodoRow(todo: todos[index], index: index);
-              },
-              separatorBuilder: (BuildContext context, int index) {
-                return const SizedBox(height: _itemGap);
-              },
-            ),
-          ),
-        ],
       ],
     );
   }
@@ -7982,6 +9229,11 @@ class _ChatPalette {
   static const Color textSecondary = Color(0xFF6E6E73);
   static const Color textTertiary = Color(0xFF8E8E93);
   static const Color border = Color(0xFFE8E8ED);
+  static const Color inspectorAction = Color(0xFF007AFF);
+  static const Color inspectorTarget = Color(0xFF7C3AED);
+  static const Color inspectorScope = Color(0xFF16A34A);
+  static const Color inspectorResult = Color(0xFF64748B);
+  static const Color inspectorConnector = Color(0xFFCDD6F4);
   static const Color composerStroke = Color(0xFFD7D7DC);
   static const Color plusActiveSurface = Color(0xFFEEF5FF);
   static const Color subtleSurface = Color(0xFFF7F7FA);

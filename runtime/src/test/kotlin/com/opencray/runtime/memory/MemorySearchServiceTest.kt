@@ -79,6 +79,35 @@ class MemorySearchServiceTest {
   }
 
   @Test
+  fun searchAcceptsShortQueriesForProjectedMemoryDebug() {
+    val context = MemoryToolContext(
+      sessionId = "session-main",
+      records = listOf(
+        memoryRecord(
+          id = "mem-user",
+          content = "Call the agent Xiao Bai.",
+          kind = "user_preference",
+          scope = "user",
+          sourceSessionId = "session-source",
+          confirmedAtEpochMs = DAY_2_EPOCH_MS,
+          updatedAtEpochMs = DAY_2_EPOCH_MS,
+        ),
+      ),
+    )
+
+    val search = service.search(
+      context = context,
+      query = "xiao",
+      maxResults = 3,
+    )
+
+    assertEquals(listOf("xiao"), search.queryTerms)
+    assertEquals(1, search.matches.size)
+    assertEquals("mem-user", search.matches.single().recordId)
+    assertTrue(search.matches.single().snippet.contains("Xiao Bai"))
+  }
+
+  @Test
   fun searchFiltersScopeMismatchAndExpiryButKeepsResolvedAccessibleRecords() {
     val context = MemoryToolContext(
       sessionId = "session-main",

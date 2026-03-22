@@ -44,6 +44,8 @@ internal class ToolPolicyEvaluator(
   private val modePolicy: ModePolicy,
   private val approvedTaskId: String? = null,
   private val approvedToolName: String? = null,
+  private val rejectedTaskId: String? = null,
+  private val rejectedToolName: String? = null,
 ) {
   fun evaluate(request: ToolPolicyEvaluationRequest): PolicyDecision {
     val baseDecision = modePolicy.decide(
@@ -70,10 +72,19 @@ internal class ToolPolicyEvaluator(
       task = request.task,
       policyDecision = mergedDecision,
     )
-    return applyApprovedToolOverride(
+    val approvedToolDecision = applyApprovedToolOverride(
       task = request.task,
       toolName = request.toolName,
       policyDecision = approvedTaskDecision,
+    )
+    val rejectedTaskDecision = applyRejectedTaskOverride(
+      task = request.task,
+      policyDecision = approvedToolDecision,
+    )
+    return applyRejectedToolOverride(
+      task = request.task,
+      toolName = request.toolName,
+      policyDecision = rejectedTaskDecision,
     )
   }
 
@@ -219,6 +230,49 @@ internal class ToolPolicyEvaluator(
       outcome = PolicyDecisionOutcome.ALLOW,
       reasonCode = "USER_APPROVED_RETRY",
       detail = "User approved this task retry for $toolName.",
+      approvalRisk = policyDecision.approvalRisk,
+    )
+  }
+
+  private fun applyRejectedTaskOverride(
+    task: AgentTask,
+    policyDecision: PolicyDecision,
+  ): PolicyDecision {
+    if (!rejectedToolName.isNullOrBlank()) {
+      return policyDecision
+    }
+    val rejectedTaskId = rejectedTaskId
+      ?.takeIf(String::isNotBlank)
+      ?: return policyDecision
+    if (rejectedTaskId != task.id || policyDecision.outcome != PolicyDecisionOutcome.ASK) {
+      return policyDecision
+    }
+    return PolicyDecision(
+      outcome = PolicyDecisionOutcome.DENY,
+      reasonCode = "USER_REJECTED_APPROVAL",
+      detail = "User rejected approval for this task retry. Do not execute the blocked action.",
+      approvalRisk = policyDecision.approvalRisk,
+    )
+  }
+
+  private fun applyRejectedToolOverride(
+    task: AgentTask,
+    toolName: String,
+    policyDecision: PolicyDecision,
+  ): PolicyDecision {
+    val rejectedTaskId = rejectedTaskId
+      ?.takeIf(String::isNotBlank)
+      ?: return policyDecision
+    val rejectedToolName = rejectedToolName
+      ?.takeIf(String::isNotBlank)
+      ?: return policyDecision
+    if (rejectedTaskId != task.id || rejectedToolName != toolName || policyDecision.outcome != PolicyDecisionOutcome.ASK) {
+      return policyDecision
+    }
+    return PolicyDecision(
+      outcome = PolicyDecisionOutcome.DENY,
+      reasonCode = "USER_REJECTED_APPROVAL",
+      detail = "User rejected approval for $toolName. Do not execute it.",
       approvalRisk = policyDecision.approvalRisk,
     )
   }

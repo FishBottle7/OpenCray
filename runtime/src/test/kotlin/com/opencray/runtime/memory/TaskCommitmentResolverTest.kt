@@ -135,6 +135,198 @@ class TaskCommitmentResolverTest {
   }
 
   @Test
+  fun maintainSupersedesOpenCommitmentWithProposedReplacement() {
+    val store = InMemoryMemoryStore()
+    val proposedCandidate = taskCommitmentCandidate(
+      content = "verify the Android smoke tests",
+      sessionId = "session-1",
+      taskId = "task-2",
+    )
+    store.upsert(
+      memoryRecord(
+        id = "commitment-old",
+        content = "run the targeted runtime tests",
+        sourceSessionId = "session-1",
+        updatedAtEpochMs = 1_000L,
+      ),
+    )
+    val resolver = TaskCommitmentResolver(
+      store = store,
+      clock = { 2_000L },
+      intentInterpreter = FixedTaskCommitmentIntentInterpreter(
+        TaskCommitmentIntentInterpretation.Success(
+          decisions = listOf(
+            TaskCommitmentIntentDecision(
+              commitmentId = "commitment-old",
+              action = TaskCommitmentIntentAction.SUPERSEDE_WITH_PROPOSED,
+              proposedCommitmentIndex = 0,
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val summary = resolver.maintain(
+      evidence = MemoryTurnEvidence(
+        sessionId = "session-1",
+        taskId = "task-2",
+        userInput = "Please continue.",
+        assistantOutput = "Next I will verify the Android smoke tests.",
+      ),
+      proposedCandidates = listOf(proposedCandidate),
+    )
+
+    assertEquals(listOf("commitment-old"), summary.resolvedRecords.map { record -> record.id })
+    assertTrue(summary.droppedProposedCommitmentIndexes.isEmpty())
+    val record = store.list().single()
+    assertEquals("resolved", record.extensions[MemoryRecordExtensionKeys.STATUS])
+    assertEquals("superseded", record.extensions[MemoryRecordExtensionKeys.RESOLUTION_REASON])
+    assertEquals(
+      taskCommitmentRecordId(proposedCandidate),
+      record.extensions[MemoryRecordExtensionKeys.SUPERSEDED_BY],
+    )
+  }
+
+  @Test
+  fun maintainDropsDuplicateProposedCommitmentAndReaffirmsExistingOne() {
+    val store = InMemoryMemoryStore()
+    store.upsert(
+      memoryRecord(
+        id = "commitment-reaffirm",
+        content = "stabilize the flaky runtime test",
+        sourceSessionId = "session-1",
+        updatedAtEpochMs = 1_000L,
+      ),
+    )
+    val resolver = TaskCommitmentResolver(
+      store = store,
+      clock = { 2_000L },
+      intentInterpreter = FixedTaskCommitmentIntentInterpreter(
+        TaskCommitmentIntentInterpretation.Success(
+          decisions = listOf(
+            TaskCommitmentIntentDecision(
+              proposedCommitmentIndex = 0,
+              action = TaskCommitmentIntentAction.DROP_PROPOSED,
+            ),
+            TaskCommitmentIntentDecision(
+              commitmentId = "commitment-reaffirm",
+              action = TaskCommitmentIntentAction.REAFFIRM,
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val summary = resolver.maintain(
+      evidence = MemoryTurnEvidence(
+        sessionId = "session-1",
+        taskId = "task-2",
+        userInput = "Please continue.",
+        assistantOutput = "Next I will stabilize the flaky runtime test.",
+      ),
+      proposedCandidates = listOf(
+        taskCommitmentCandidate(
+          content = "stabilize the flaky runtime test",
+          sessionId = "session-1",
+          taskId = "task-2",
+        ),
+      ),
+    )
+
+    assertEquals(listOf("commitment-reaffirm"), summary.reaffirmedRecords.map { record -> record.id })
+    assertEquals(listOf(0), summary.droppedProposedCommitmentIndexes)
+    assertEquals("open", store.list().single().extensions[MemoryRecordExtensionKeys.STATUS])
+  }
+
+  @Test
+  fun maintainIgnoresSupersedeDecisionWhenProposedCommitmentMatchesCurrentContent() {
+    val store = InMemoryMemoryStore()
+    store.upsert(
+      memoryRecord(
+        id = "commitment-duplicate",
+        content = "stabilize the flaky runtime test",
+        sourceSessionId = "session-1",
+        updatedAtEpochMs = 1_000L,
+      ),
+    )
+    val resolver = TaskCommitmentResolver(
+      store = store,
+      clock = { 2_000L },
+      intentInterpreter = FixedTaskCommitmentIntentInterpreter(
+        TaskCommitmentIntentInterpretation.Success(
+          decisions = listOf(
+            TaskCommitmentIntentDecision(
+              commitmentId = "commitment-duplicate",
+              action = TaskCommitmentIntentAction.SUPERSEDE_WITH_PROPOSED,
+              proposedCommitmentIndex = 0,
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val summary = resolver.maintain(
+      evidence = MemoryTurnEvidence(
+        sessionId = "session-1",
+        taskId = "task-2",
+        userInput = "Please continue.",
+        assistantOutput = "Next I will stabilize the flaky runtime test.",
+      ),
+      proposedCandidates = listOf(
+        taskCommitmentCandidate(
+          content = "stabilize the flaky runtime test",
+          sessionId = "session-1",
+          taskId = "task-2",
+        ),
+      ),
+    )
+
+    assertTrue(summary.isEmpty)
+    assertEquals("open", store.list().single().extensions[MemoryRecordExtensionKeys.STATUS])
+  }
+
+  @Test
+  fun maintainResolvesAbandonedCommitmentWithoutReplacement() {
+    val store = InMemoryMemoryStore()
+    store.upsert(
+      memoryRecord(
+        id = "commitment-abandoned",
+        content = "prepare the release branch",
+        sourceSessionId = "session-1",
+        updatedAtEpochMs = 1_000L,
+      ),
+    )
+    val resolver = TaskCommitmentResolver(
+      store = store,
+      clock = { 2_000L },
+      intentInterpreter = FixedTaskCommitmentIntentInterpreter(
+        TaskCommitmentIntentInterpretation.Success(
+          decisions = listOf(
+            TaskCommitmentIntentDecision(
+              commitmentId = "commitment-abandoned",
+              action = TaskCommitmentIntentAction.ABANDON,
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val summary = resolver.maintain(
+      MemoryTurnEvidence(
+        sessionId = "session-1",
+        taskId = "task-2",
+        userInput = "Please continue.",
+        assistantOutput = "I am dropping the release branch work for now.",
+      ),
+    )
+
+    assertEquals(listOf("commitment-abandoned"), summary.resolvedRecords.map { record -> record.id })
+    val record = store.list().single()
+    assertEquals("abandoned", record.extensions[MemoryRecordExtensionKeys.RESOLUTION_REASON])
+    assertTrue(record.extensions[MemoryRecordExtensionKeys.SUPERSEDED_BY].isNullOrBlank())
+  }
+
+  @Test
   fun maintainDeletesExpiredTaskCommitments() {
     val store = InMemoryMemoryStore()
     store.upsert(
@@ -260,6 +452,48 @@ class TaskCommitmentResolverTest {
     assertEquals("open", store.list().single().extensions[MemoryRecordExtensionKeys.STATUS])
   }
 
+  @Test
+  fun maintainDoesNotDropOrResolveWhenInterpreterIsUnavailableEvenWithProposedCommitment() {
+    val store = InMemoryMemoryStore()
+    store.upsert(
+      memoryRecord(
+        id = "commitment-unavailable",
+        content = "stabilize the flaky runtime test",
+        sourceSessionId = "session-1",
+        updatedAtEpochMs = 1_000L,
+      ),
+    )
+    val resolver = TaskCommitmentResolver(
+      store = store,
+      clock = { 2_000L },
+      intentInterpreter = FixedTaskCommitmentIntentInterpreter(
+        TaskCommitmentIntentInterpretation.Unavailable(
+          allowHeuristicFallback = false,
+          reason = "Gateway unavailable.",
+        ),
+      ),
+    )
+
+    val summary = resolver.maintain(
+      evidence = MemoryTurnEvidence(
+        sessionId = "session-1",
+        taskId = "task-2",
+        userInput = "Please continue.",
+        assistantOutput = "Next I will stabilize the flaky runtime test.",
+      ),
+      proposedCandidates = listOf(
+        taskCommitmentCandidate(
+          content = "stabilize the flaky runtime test",
+          sessionId = "session-1",
+          taskId = "task-2",
+        ),
+      ),
+    )
+
+    assertTrue(summary.isEmpty)
+    assertEquals("open", store.list().single().extensions[MemoryRecordExtensionKeys.STATUS])
+  }
+
   private fun memoryRecord(
     id: String,
     content: String,
@@ -311,5 +545,26 @@ class TaskCommitmentResolverTest {
     override fun interpret(
       request: TaskCommitmentIntentRequest,
     ): TaskCommitmentIntentInterpretation = interpretation
+  }
+
+  private fun taskCommitmentCandidate(
+    content: String,
+    sessionId: String,
+    taskId: String,
+  ): MemoryCandidate = MemoryCandidate(
+    kind = MemoryKind.TASK_COMMITMENT,
+    scope = MemoryScope.SESSION,
+    status = MemoryStatus.OPEN,
+    content = content,
+    source = MemoryEvidenceSource.ASSISTANT_OUTPUT,
+    sourceSessionId = sessionId,
+    sourceTaskId = taskId,
+    ttlMs = 14L * 24L * 60L * 60L * 1000L,
+  )
+
+  private fun taskCommitmentRecordId(candidate: MemoryCandidate): String {
+    val digestSource = "task_commitment|session:${candidate.sourceSessionId}|${candidate.content.lowercase(java.util.Locale.US)}"
+    val digest = java.security.MessageDigest.getInstance("SHA-256").digest(digestSource.toByteArray(Charsets.UTF_8))
+    return "mem-${digest.joinToString(separator = "") { byte -> "%02x".format(byte) }.take(24)}"
   }
 }

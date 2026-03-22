@@ -195,6 +195,227 @@ void main() {
     },
   );
 
+  testWidgets('home settings includes Agent entry and opens agents page', (
+    tester,
+  ) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: false,
+        providerId: 'openai',
+        selectedProviderOptionId: 'openai',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'openai',
+            providerId: 'openai',
+            title: 'OpenAI',
+            subtitle: 'Official OpenAI-compatible endpoint.',
+            defaultBaseUrl: 'https://api.openai.com/v1',
+            defaultModel: 'gpt-4o-mini',
+            protocol: 'openai',
+            apiKey: '',
+            isCustom: false,
+          ),
+        ],
+        providerName: 'OpenAI',
+        providerNotes: '',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: '',
+        model: 'gpt-4o-mini',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+      overviewSnapshot: const SettingsOverviewSnapshot(
+        eyebrow: 'APP SHELL',
+        title: 'Settings',
+        subtitle: 'Access, providers, and personal defaults.',
+        deviceTitle: 'OpenCray on this device',
+        deviceSummary: 'API routes: Search + Media',
+        entries: <SettingsHomeEntrySnapshot>[
+          SettingsHomeEntrySnapshot(page: SettingsPage.agents, title: 'Agent'),
+        ],
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: SettingsFeatureScreen(facade: facade)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Agent'), findsOneWidget);
+
+    await tester.tap(find.text('Agent'));
+    await tester.pumpAndSettle();
+
+    expect(find.byIcon(Icons.arrow_back_ios_new_rounded), findsOneWidget);
+    expect(find.text('Settings'), findsOneWidget);
+    expect(find.text('Agents'), findsOneWidget);
+    expect(find.text('New agent'), findsOneWidget);
+  });
+
+  testWidgets('agents media page supports naming additional image references', (
+    tester,
+  ) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: false,
+        providerId: 'openai',
+        selectedProviderOptionId: 'openai',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'openai',
+            providerId: 'openai',
+            title: 'OpenAI',
+            subtitle: 'Official OpenAI-compatible endpoint.',
+            defaultBaseUrl: 'https://api.openai.com/v1',
+            defaultModel: 'gpt-4o-mini',
+            protocol: 'openai',
+            apiKey: '',
+            isCustom: false,
+          ),
+        ],
+        providerName: 'OpenAI',
+        providerNotes: '',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: '',
+        model: 'gpt-4o-mini',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.agents,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('4 saved agents'), findsOneWidget);
+
+    await tester.tap(find.text('New agent'));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.text('Media samples'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Media samples'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Add more'), findsOneWidget);
+
+    await tester.ensureVisible(find.text('Add more'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add more'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Image label'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField).last, 'Side profile');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Confirm'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Image label'), findsNothing);
+    expect(find.text('Side profile'), findsOneWidget);
+  });
+
+  testWidgets('agent create flow exposes twin import page and updates summary', (
+    tester,
+  ) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: false,
+        providerId: 'openai',
+        selectedProviderOptionId: 'openai',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'openai',
+            providerId: 'openai',
+            title: 'OpenAI',
+            subtitle: 'Official OpenAI-compatible endpoint.',
+            defaultBaseUrl: 'https://api.openai.com/v1',
+            defaultModel: 'gpt-4o-mini',
+            protocol: 'openai',
+            apiKey: '',
+            isCustom: false,
+          ),
+        ],
+        providerName: 'OpenAI',
+        providerNotes: '',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: '',
+        model: 'gpt-4o-mini',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.agents,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byIcon(Icons.arrow_back_ios_new_rounded), findsOneWidget);
+    expect(find.text('Settings'), findsOneWidget);
+
+    await tester.tap(find.text('New agent'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey<String>('agent-create-twin-import')), findsOneWidget);
+    expect(find.text('Not set'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey<String>('agent-create-twin-import')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Twin import'), findsOneWidget);
+    expect(find.text('CHAT HISTORY'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('agent-twin-import-run-draft')),
+      findsOneWidget,
+    );
+
+    await tester.ensureVisible(
+      find.byKey(const ValueKey<String>('agent-twin-import-run-draft')),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey<String>('agent-twin-import-run-draft')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Twin import'), findsOneWidget);
+    expect(find.text('ChatLab JSONL'), findsOneWidget);
+  });
+
   testWidgets('custom provider save action adds a reusable provider option', (
     tester,
   ) async {
@@ -564,6 +785,113 @@ void main() {
     },
   );
 
+  testWidgets(
+    'memory inspector applies suppress action and refreshes linked activity',
+    (tester) async {
+      final facade = _buildDebugSettingsFacade();
+      final debugBridge = _buildDebugBridge();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.aboutVersion,
+            standalone: true,
+            debugBridge: debugBridge,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Open Debug Tools'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Memory Inspector'));
+      await tester.pumpAndSettle();
+
+      final suppressAction = find.byKey(
+        const ValueKey<String>('settings-memory-action-suppress'),
+      );
+      await tester.ensureVisible(suppressAction);
+      await tester.tap(suppressAction);
+      await tester.pumpAndSettle();
+
+      final linkedActivityCard = find.byKey(
+        const ValueKey<String>('settings-memory-linked-activity-card'),
+      );
+
+      expect(debugBridge.lastMemoryActionRecordId, 'memory-user');
+      expect(debugBridge.lastMemoryActionId, 'suppress');
+      expect(
+        find.textContaining('Latest state: resolved', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Resolution reason: operator_suppressed',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('settings-memory-action-reaffirm')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: linkedActivityCard,
+          matching: find.textContaining('Suppressed', findRichText: true),
+        ),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets('memory inspector can search projected memory and load a slice', (
+    tester,
+  ) async {
+    final facade = _buildDebugSettingsFacade();
+    final debugBridge = _buildDebugBridge();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.aboutVersion,
+          standalone: true,
+          debugBridge: debugBridge,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Open Debug Tools'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Memory Inspector'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byKey(const ValueKey<String>('settings-memory-search-input')),
+      'xiao bai',
+    );
+    await tester.testTextInput.receiveAction(TextInputAction.search);
+    await tester.pumpAndSettle();
+
+    expect(debugBridge.lastMemorySearchQuery, 'xiao bai');
+    expect(debugBridge.lastMemorySlicePath, 'MEMORY.md');
+    expect(debugBridge.lastMemorySliceFromLine, 5);
+    expect(debugBridge.lastMemorySliceLines, 1);
+    expect(find.text('Search projected memory'), findsOneWidget);
+    expect(find.text('Selected snippet'), findsOneWidget);
+    expect(
+      find.textContaining('memory-user · MEMORY.md#5', findRichText: true),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('User prefers Chinese replies.', findRichText: true),
+      findsWidgets,
+    );
+  });
+
   testWidgets('soul inspector renders snapshot-backed soul details', (
     tester,
   ) async {
@@ -736,6 +1064,14 @@ void main() {
           observedAtEpochMs: 5000,
         ),
         linksSnapshot: _buildFallbackFieldSourceLinksSnapshot(),
+        memorySearchSnapshot: const OpenCrayMemoryDebugSearchSnapshot(
+          sessionId: 'session-1',
+          observedAtEpochMs: 5000,
+        ),
+        memorySliceSnapshot: const OpenCrayMemoryDebugSliceSnapshot(
+          sessionId: 'session-1',
+          observedAtEpochMs: 5000,
+        ),
         soulSnapshot: _buildFallbackFieldSourceSoulSnapshot(),
       );
 
@@ -806,18 +1142,14 @@ void main() {
       expect(
         find.descendant(
           of: linkedActivityCard,
-          matching: find.textContaining(
-            'interaction-state · preferred naming',
-          ),
+          matching: find.textContaining('interaction-state · preferred naming'),
         ),
         findsOneWidget,
       );
       expect(
         find.descendant(
           of: linkedActivityCard,
-          matching: find.textContaining(
-            'relationship-state · intimacy band',
-          ),
+          matching: find.textContaining('relationship-state · intimacy band'),
         ),
         findsOneWidget,
       );
@@ -847,7 +1179,7 @@ void main() {
         MaterialApp(
           home: SettingsFeatureScreen(
             facade: facade,
-            initialPage: SettingsPage.privacyTelemetry,
+            initialPage: SettingsPage.networkSearch,
             standalone: true,
           ),
         ),
@@ -880,6 +1212,110 @@ void main() {
       expect(facade.networkSearchConfig.slots.length, 3);
     },
   );
+
+  testWidgets('home settings opens API integrations entry', (tester) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: false,
+        providerId: 'openai',
+        selectedProviderOptionId: 'openai',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'openai',
+            providerId: 'openai',
+            title: 'OpenAI',
+            subtitle: 'Official OpenAI-compatible endpoint.',
+            defaultBaseUrl: 'https://api.openai.com/v1',
+            defaultModel: 'gpt-4o-mini',
+            protocol: 'openai',
+            apiKey: '',
+            isCustom: false,
+          ),
+        ],
+        providerName: 'OpenAI',
+        providerNotes: '',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: '',
+        model: 'gpt-4o-mini',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+      overviewSnapshot: const SettingsOverviewSnapshot(
+        eyebrow: 'APP SHELL',
+        title: 'Settings',
+        subtitle: 'Access, providers, and personal defaults.',
+        deviceTitle: 'OpenCray on this device',
+        deviceSummary: 'API routes: Search + Media',
+        entries: <SettingsHomeEntrySnapshot>[
+          SettingsHomeEntrySnapshot(
+            page: SettingsPage.apiIntegrations,
+            title: 'API Integrations',
+          ),
+        ],
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: SettingsFeatureScreen(facade: facade)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('API Integrations'), findsOneWidget);
+
+    await tester.tap(find.text('API Integrations'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Routing rules'), findsOneWidget);
+    expect(find.text('Network & Search'), findsWidgets);
+    expect(find.text('Media & Speech'), findsOneWidget);
+  });
+
+  testWidgets('media speech page saves edited fields and stt route', (
+    tester,
+  ) async {
+    final facade = _buildSettingsFacade();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.mediaSpeech,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Media & Speech'), findsOneWidget);
+    expect(find.text('On-device Model'), findsWidgets);
+
+    await tester.enterText(
+      find.byType(TextField).at(1),
+      'https://media.example.com',
+    );
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump(const Duration(milliseconds: 800));
+
+    expect(
+      facade.mediaSpeechConfig.imageGeneration.baseUrl,
+      'https://media.example.com',
+    );
+
+    await tester.ensureVisible(find.text('External API'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('External API'));
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(facade.mediaSpeechConfig.sttRoute, MediaSpeechSttRoute.externalApi);
+    expect(find.text('OpenAI Whisper'), findsWidgets);
+  });
 
   testWidgets('safety page saves mode and file delete policy changes', (
     tester,
@@ -1539,6 +1975,40 @@ _FakeDebugBridge _buildDebugBridge() {
         ),
       ],
     ),
+    memorySearchSnapshot: const OpenCrayMemoryDebugSearchSnapshot(
+      sessionId: 'session-1',
+      workspaceId: 'workspace-main',
+      observedAtEpochMs: 5000,
+      queryTerms: <String>['xiao', 'bai'],
+      corpusFileCount: 2,
+      results: <OpenCrayMemoryDebugSearchResultSnapshot>[
+        OpenCrayMemoryDebugSearchResultSnapshot(
+          recordId: 'memory-user',
+          path: 'MEMORY.md',
+          startLine: 5,
+          endLine: 5,
+          score: 420,
+          matchedTerms: <String>['xiao', 'bai'],
+          kind: 'user_preference',
+          scope: 'user',
+          status: 'active',
+          snippet:
+              '- [memory-user] kind=user_preference scope=user status=active confirmed_at=2026-03-19 content=User prefers Chinese replies.',
+        ),
+      ],
+    ),
+    memorySliceSnapshot: const OpenCrayMemoryDebugSliceSnapshot(
+      sessionId: 'session-1',
+      workspaceId: 'workspace-main',
+      observedAtEpochMs: 5000,
+      path: 'MEMORY.md',
+      text:
+          '- [memory-user] kind=user_preference scope=user status=active confirmed_at=2026-03-19 content=User prefers Chinese replies.',
+      startLine: 5,
+      endLine: 5,
+      totalLineCount: 12,
+      recordIds: <String>['memory-user'],
+    ),
     soulSnapshot: const OpenCraySoulDebugSnapshot(
       sessionId: 'session-1',
       workspaceId: 'workspace-main',
@@ -1945,6 +2415,7 @@ class _FakeSettingsFacade implements SettingsFacade {
     required this.llmConfig,
     required this.validationResult,
     PersonalizationConfigSnapshot? personalizationConfig,
+    SettingsOverviewSnapshot? overviewSnapshot,
   }) : personalizationConfig =
            personalizationConfig ??
            const PersonalizationConfigSnapshot(
@@ -2011,6 +2482,16 @@ class _FakeSettingsFacade implements SettingsFacade {
                  isInputEnabled: true,
                ),
              ],
+           ),
+       overviewSnapshot =
+           overviewSnapshot ??
+           const SettingsOverviewSnapshot(
+             eyebrow: 'APP SHELL',
+             title: 'Settings',
+             subtitle: 'Access, providers, and personal defaults.',
+             deviceTitle: 'OpenCray on this device',
+             deviceSummary: 'API routes: Search + Media',
+             entries: <SettingsHomeEntrySnapshot>[],
            );
 
   NetworkSearchConfigSnapshot networkSearchConfig =
@@ -2035,6 +2516,34 @@ class _FakeSettingsFacade implements SettingsFacade {
           ),
         ],
       );
+  MediaSpeechConfigSnapshot mediaSpeechConfig = const MediaSpeechConfigSnapshot(
+    localeTag: 'en',
+    title: 'Media & Speech',
+    subtitle: 'Configure media APIs and STT routing.',
+    imageGeneration: MediaProviderConfigSnapshot(
+      provider: 'Fal AI',
+      baseUrl: 'https://api.fal.ai',
+      endpoint: '/v1/images',
+      model: 'flux-pro',
+    ),
+    voiceGeneration: VoiceProviderConfigSnapshot(
+      provider: 'OpenAI TTS',
+      baseUrl: 'https://api.openai.com',
+      endpoint: '/v1/audio/speech',
+      voicePreset: 'alloy · calm',
+    ),
+    sttRoute: MediaSpeechSttRoute.onDeviceModel,
+    externalStt: MediaProviderConfigSnapshot(
+      provider: 'OpenAI Whisper',
+      baseUrl: 'https://api.openai.com',
+      endpoint: '/v1/audio/transcriptions',
+      model: 'whisper-1',
+    ),
+    onDeviceModel: OnDeviceSttConfigSnapshot(
+      modelPackage: 'Whisper Small',
+      downloadStatus: 'Not downloaded · 1.4 GB',
+    ),
+  );
   LlmConfigSnapshot llmConfig;
   final LlmValidationResult validationResult;
   final PersonalizationConfigSnapshot personalizationConfig;
@@ -2087,19 +2596,12 @@ class _FakeSettingsFacade implements SettingsFacade {
   );
   final Map<String, bool> authorizationResponses = <String, bool>{};
   final List<String> authorizationRequests = <String>[];
+  final SettingsOverviewSnapshot overviewSnapshot;
   int saveCallCount = 0;
   int safetySaveCallCount = 0;
 
   @override
-  Future<SettingsOverviewSnapshot> loadOverview() async =>
-      const SettingsOverviewSnapshot(
-        eyebrow: 'APP SHELL',
-        title: 'Settings',
-        subtitle: 'Access, providers, and personal defaults.',
-        deviceTitle: 'OpenCray on this device',
-        deviceSummary: 'Personalization: Quiet',
-        entries: <SettingsHomeEntrySnapshot>[],
-      );
+  Future<SettingsOverviewSnapshot> loadOverview() async => overviewSnapshot;
 
   @override
   Stream<SettingsOverviewSnapshot> watchOverview() =>
@@ -2143,6 +2645,18 @@ class _FakeSettingsFacade implements SettingsFacade {
       slots: slots,
     );
     return networkSearchConfig;
+  }
+
+  @override
+  Future<MediaSpeechConfigSnapshot> loadMediaSpeechConfig() async =>
+      mediaSpeechConfig;
+
+  @override
+  Future<MediaSpeechConfigSnapshot> saveMediaSpeechConfig(
+    MediaSpeechConfigSnapshot snapshot,
+  ) async {
+    mediaSpeechConfig = snapshot;
+    return mediaSpeechConfig;
   }
 
   @override
@@ -2301,18 +2815,42 @@ class _FakeDebugBridge extends OpenCraySeedBridge {
     required Map<String, OpenCrayChatRunSnapshot> runSnapshots,
     required this.memorySnapshot,
     required this.linksSnapshot,
+    required this.memorySearchSnapshot,
+    required this.memorySliceSnapshot,
     required this.soulSnapshot,
-  }) : _runSnapshots = runSnapshots;
+  }) : _runSnapshots = runSnapshots,
+       _currentRuntimeSnapshot = runtimeSnapshot,
+       _currentMemorySnapshot = memorySnapshot,
+       _currentLinksSnapshot = linksSnapshot,
+       _currentMemorySearchSnapshot = memorySearchSnapshot,
+       _currentMemorySliceSnapshot = memorySliceSnapshot,
+       _seedSoulSnapshot = soulSnapshot,
+       _currentSoulSnapshot = soulSnapshot;
 
   final OpenCrayChatRuntimeSnapshot runtimeSnapshot;
   final Map<String, OpenCrayChatRunSnapshot> _runSnapshots;
   final OpenCrayMemoryDebugSnapshot memorySnapshot;
   final OpenCrayMemoryDebugLinksSnapshot linksSnapshot;
+  final OpenCrayMemoryDebugSearchSnapshot memorySearchSnapshot;
+  final OpenCrayMemoryDebugSliceSnapshot memorySliceSnapshot;
   final OpenCraySoulDebugSnapshot soulSnapshot;
+  OpenCrayChatRuntimeSnapshot _currentRuntimeSnapshot;
+  OpenCrayMemoryDebugSnapshot _currentMemorySnapshot;
+  OpenCrayMemoryDebugLinksSnapshot _currentLinksSnapshot;
+  OpenCrayMemoryDebugSearchSnapshot _currentMemorySearchSnapshot;
+  OpenCrayMemoryDebugSliceSnapshot _currentMemorySliceSnapshot;
+  final OpenCraySoulDebugSnapshot _seedSoulSnapshot;
+  OpenCraySoulDebugSnapshot _currentSoulSnapshot;
+  String? lastMemorySearchQuery;
+  String? lastMemorySlicePath;
+  int? lastMemorySliceFromLine;
+  int? lastMemorySliceLines;
+  String? lastMemoryActionRecordId;
+  String? lastMemoryActionId;
 
   @override
   Future<OpenCrayChatRuntimeSnapshot> loadChatRuntimeSnapshot() async =>
-      runtimeSnapshot;
+      _currentRuntimeSnapshot;
 
   @override
   Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId) async =>
@@ -2320,13 +2858,213 @@ class _FakeDebugBridge extends OpenCraySeedBridge {
 
   @override
   Future<OpenCrayMemoryDebugSnapshot> loadMemoryDebugSnapshot() async =>
-      memorySnapshot;
+      _currentMemorySnapshot;
 
   @override
   Future<OpenCrayMemoryDebugLinksSnapshot>
-  loadMemoryDebugLinksSnapshot() async => linksSnapshot;
+  loadMemoryDebugLinksSnapshot() async => _currentLinksSnapshot;
 
   @override
   Future<OpenCraySoulDebugSnapshot> loadSoulDebugSnapshot() async =>
-      soulSnapshot;
+      _currentSoulSnapshot;
+
+  @override
+  Future<OpenCrayMemoryDebugSearchSnapshot> searchMemoryDebug({
+    required String query,
+    int maxResults = 4,
+    int minScore = 1,
+  }) async {
+    lastMemorySearchQuery = query;
+    return OpenCrayMemoryDebugSearchSnapshot(
+      sessionId: _currentMemorySearchSnapshot.sessionId,
+      workspaceId: _currentMemorySearchSnapshot.workspaceId,
+      observedAtEpochMs: _currentMemorySearchSnapshot.observedAtEpochMs,
+      query: query,
+      queryTerms: _currentMemorySearchSnapshot.queryTerms,
+      corpusFileCount: _currentMemorySearchSnapshot.corpusFileCount,
+      results: _currentMemorySearchSnapshot.results,
+    );
+  }
+
+  @override
+  Future<OpenCrayMemoryDebugSliceSnapshot> getMemoryDebugSlice({
+    required String path,
+    int? fromLine,
+    int lines = 12,
+  }) async {
+    lastMemorySlicePath = path;
+    lastMemorySliceFromLine = fromLine;
+    lastMemorySliceLines = lines;
+    return _currentMemorySliceSnapshot;
+  }
+
+  @override
+  Future<void> applyMemoryDebugAction({
+    required String recordId,
+    required String actionId,
+  }) async {
+    lastMemoryActionRecordId = recordId;
+    lastMemoryActionId = actionId;
+    final records = _currentMemorySnapshot.records
+        .map(
+          (record) => record.id == recordId
+              ? _applyMemoryRecordAction(record: record, actionId: actionId)
+              : record,
+        )
+        .toList(growable: false);
+    _currentMemorySnapshot = OpenCrayMemoryDebugSnapshot(
+      sessionId: _currentMemorySnapshot.sessionId,
+      workspaceId: _currentMemorySnapshot.workspaceId,
+      observedAtEpochMs: _currentMemorySnapshot.observedAtEpochMs + 1,
+      records: records,
+    );
+    final occurredAtEpochMs = _currentLinksSnapshot.observedAtEpochMs + 1;
+    final run = OpenCrayDebugRunLinkSnapshot(
+      sessionId: _currentMemorySnapshot.sessionId,
+      runId: 'run-memory-debug-$actionId',
+      taskId: 'task-memory-debug-$actionId',
+      acceptedAtEpochMs: occurredAtEpochMs,
+      updatedAtEpochMs: occurredAtEpochMs,
+      executionStatus: 'success',
+      lifecycleState: 'completed',
+    );
+    final existingEntry = _currentLinksSnapshot.records
+        .where((entry) => entry.recordId == recordId)
+        .cast<OpenCrayMemoryDebugLinksEntrySnapshot?>()
+        .firstWhere((entry) => entry != null, orElse: () => null);
+    final nextEntry = OpenCrayMemoryDebugLinksEntrySnapshot(
+      recordId: recordId,
+      sourceSessionId:
+          existingEntry?.sourceSessionId ?? _currentMemorySnapshot.sessionId,
+      sourceTaskId: existingEntry?.sourceTaskId ?? '',
+      sourceRun: existingEntry?.sourceRun,
+      promptRecalls:
+          existingEntry?.promptRecalls ??
+          const <OpenCrayMemoryPromptRecallLinkSnapshot>[],
+      toolRetrievals:
+          existingEntry?.toolRetrievals ??
+          const <OpenCrayMemoryToolRetrievalLinkSnapshot>[],
+      maintenanceActions: <OpenCrayMemoryMaintenanceActionLinkSnapshot>[
+        ...?existingEntry?.maintenanceActions,
+        OpenCrayMemoryMaintenanceActionLinkSnapshot(
+          action: actionId == 'suppress' ? 'suppressed' : 'reaffirmed',
+          occurredAtEpochMs: occurredAtEpochMs,
+          run: run,
+        ),
+      ],
+    );
+    final nextLinkEntries = <OpenCrayMemoryDebugLinksEntrySnapshot>[
+      for (final entry in _currentLinksSnapshot.records)
+        if (entry.recordId == recordId) nextEntry else entry,
+      if (existingEntry == null) nextEntry,
+    ];
+    _currentLinksSnapshot = OpenCrayMemoryDebugLinksSnapshot(
+      sessionId: _currentLinksSnapshot.sessionId,
+      workspaceId: _currentLinksSnapshot.workspaceId,
+      observedAtEpochMs: occurredAtEpochMs,
+      records: nextLinkEntries,
+    );
+    final seedFieldSources = _seedSoulSnapshot.fieldSources;
+    final seedOverlayRecords = _seedSoulSnapshot.overlayRecords;
+    final nextFieldSources = actionId == 'suppress'
+        ? _currentSoulSnapshot.fieldSources
+              .where((source) => source.recordId != recordId)
+              .toList(growable: false)
+        : <OpenCraySoulFieldSourceSnapshot>[
+            ..._currentSoulSnapshot.fieldSources,
+            ...seedFieldSources.where(
+              (source) =>
+                  source.recordId == recordId &&
+                  !_currentSoulSnapshot.fieldSources.contains(source),
+            ),
+          ];
+    final nextOverlayRecords = actionId == 'suppress'
+        ? _currentSoulSnapshot.overlayRecords
+              .where((record) => record.id != recordId)
+              .toList(growable: false)
+        : <OpenCrayMemoryDebugRecordSnapshot>[
+            ..._currentSoulSnapshot.overlayRecords,
+            ...seedOverlayRecords.where(
+              (overlay) =>
+                  overlay.id == recordId &&
+                  !_currentSoulSnapshot.overlayRecords.contains(overlay),
+            ),
+          ];
+    _currentSoulSnapshot = OpenCraySoulDebugSnapshot(
+      sessionId: _currentSoulSnapshot.sessionId,
+      workspaceId: _currentSoulSnapshot.workspaceId,
+      observedAtEpochMs: _currentSoulSnapshot.observedAtEpochMs + 1,
+      storedSoul: _currentSoulSnapshot.storedSoul,
+      baseSoul: _currentSoulSnapshot.baseSoul,
+      effectiveSoul: _currentSoulSnapshot.effectiveSoul,
+      overlayRecords: nextOverlayRecords,
+      fieldSources: nextFieldSources,
+      interactionPreferenceDebug:
+          _currentSoulSnapshot.interactionPreferenceDebug,
+      relationshipStateDebug: _currentSoulSnapshot.relationshipStateDebug,
+    );
+  }
+
+  OpenCrayMemoryDebugRecordSnapshot _applyMemoryRecordAction({
+    required OpenCrayMemoryDebugRecordSnapshot record,
+    required String actionId,
+  }) {
+    const nextEpochMs = 6001;
+    switch (actionId) {
+      case 'suppress':
+        return OpenCrayMemoryDebugRecordSnapshot(
+          id: record.id,
+          content: record.content,
+          kind: record.kind,
+          scope: record.scope,
+          status: 'resolved',
+          source: record.source,
+          sourceSessionId: record.sourceSessionId,
+          sourceTaskId: record.sourceTaskId,
+          workspaceId: record.workspaceId,
+          preferenceKey: record.preferenceKey,
+          preferenceValue: record.preferenceValue,
+          preferenceTemporality: record.preferenceTemporality,
+          createdAtEpochMs: record.createdAtEpochMs,
+          updatedAtEpochMs: nextEpochMs,
+          lastConfirmedAtEpochMs: record.lastConfirmedAtEpochMs,
+          resolvedAtEpochMs: nextEpochMs,
+          ttlMs: record.ttlMs,
+          isExpired: record.isExpired,
+          recordVersion: record.recordVersion + 1,
+          resolutionReason: 'operator_suppressed',
+          supersededBy: record.supersededBy,
+          tags: record.tags,
+          extensions: record.extensions,
+        );
+      case 'reaffirm':
+        return OpenCrayMemoryDebugRecordSnapshot(
+          id: record.id,
+          content: record.content,
+          kind: record.kind,
+          scope: record.scope,
+          status: record.kind == 'task_commitment' ? 'open' : 'active',
+          source: record.source,
+          sourceSessionId: record.sourceSessionId,
+          sourceTaskId: record.sourceTaskId,
+          workspaceId: record.workspaceId,
+          preferenceKey: record.preferenceKey,
+          preferenceValue: record.preferenceValue,
+          preferenceTemporality: record.preferenceTemporality,
+          createdAtEpochMs: record.createdAtEpochMs,
+          updatedAtEpochMs: nextEpochMs,
+          lastConfirmedAtEpochMs: nextEpochMs,
+          resolvedAtEpochMs: null,
+          ttlMs: record.ttlMs,
+          isExpired: record.isExpired,
+          recordVersion: record.recordVersion + 1,
+          resolutionReason: '',
+          supersededBy: '',
+          tags: record.tags,
+          extensions: record.extensions,
+        );
+      default:
+        throw StateError('Unsupported memory debug action $actionId');
+    }
+  }
 }

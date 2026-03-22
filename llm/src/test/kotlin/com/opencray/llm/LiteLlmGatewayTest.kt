@@ -44,6 +44,10 @@ class LiteLlmGatewayTest {
         primaryRoute.id to listOf(
           LiteLlmProviderResult.Success(
             outputText = "openai answer",
+            completion = LiteLlmStructuredCompletion(
+              finalText = "openai answer",
+              rawText = "openai answer",
+            ),
             finishReason = "stop",
             metadata = mapOf(
               "providerRequestId" to "provider-openai-1",
@@ -93,6 +97,8 @@ class LiteLlmGatewayTest {
     assertEquals(LiteLlmGatewayStatus.SUCCESS, firstResult.status)
     assertEquals(LiteLlmCompletionMode.PRIMARY, firstResult.completionMode)
     assertEquals("openai answer", firstResult.outputText)
+    assertEquals("openai answer", firstResult.completion?.finalText)
+    assertEquals("provider-openai-1", firstResult.metadata["providerRequestId"])
     assertEquals(primaryRoute.id, firstResult.selectedRoute?.routeId)
     assertEquals(primaryRoute.providerId, firstResult.selectedRoute?.providerId)
     assertEquals(primaryRoute.model, firstResult.selectedRoute?.model)
@@ -124,6 +130,7 @@ class LiteLlmGatewayTest {
     assertEquals(LiteLlmGatewayStatus.SUCCESS, secondResult.status)
     assertEquals(LiteLlmCompletionMode.PRIMARY, secondResult.completionMode)
     assertEquals("anthropic answer", secondResult.outputText)
+    assertEquals("provider-anthropic-1", secondResult.metadata["providerRequestId"])
     assertEquals(alternateRoute.id, secondResult.selectedRoute?.routeId)
     assertEquals(alternateRoute.providerId, secondResult.selectedRoute?.providerId)
     assertEquals(alternateRoute.model, secondResult.selectedRoute?.model)
@@ -237,6 +244,7 @@ class LiteLlmGatewayTest {
     assertEquals(LiteLlmGatewayStatus.SUCCESS, result.status)
     assertEquals(LiteLlmCompletionMode.FALLBACK, result.completionMode)
     assertEquals("fallback answer", result.outputText)
+    assertEquals("provider-fallback-1", result.metadata["providerRequestId"])
     assertEquals(fallbackRoute.id, result.selectedRoute?.routeId)
     assertEquals(2, result.attempts.size)
 

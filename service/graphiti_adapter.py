@@ -5,7 +5,9 @@ import asyncio
 import hashlib
 import inspect
 import json
+import shutil
 import sys
+from importlib import import_module
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,6 +19,7 @@ DEFAULT_GRAPH_DIR = "graphs"
 DEFAULT_BINDING_DIR = "bindings"
 DEFAULT_EXPORT_DIR = "exports"
 DEFAULT_CACHE_DIR = "cache"
+DEFAULT_SOUL_DIR = "soul"
 DEFAULT_SELECTED_RELATIONSHIP_DIR = "selected_relationships"
 DEFAULT_IMPORT_SESSION_DIR = "import_sessions"
 
@@ -29,6 +32,7 @@ class TwinBinding:
     interaction_mode: str
     source_mode: str
     current_user_role_binding: dict[str, Any]
+    graphiti_runtime_preferences: dict[str, Any] = field(default_factory=dict)
     selected_relationship_binding_id: str | None = None
     import_session_id: str | None = None
     focal_node_uuid: str | None = None
@@ -62,6 +66,7 @@ class ImportSession:
     source_refs: list[str] = field(default_factory=list)
     source_hash: str | None = None
     current_user_role_binding: dict[str, Any] = field(default_factory=dict)
+    graphiti_runtime_preferences: dict[str, Any] = field(default_factory=dict)
     selected_relationship_binding_id: str | None = None
     artifact_refs: dict[str, Any] = field(default_factory=dict)
     created_at: str | None = None
@@ -108,6 +113,10 @@ def _export_path(service_root: Path, twin_id: str, export_name: str) -> Path:
     return service_root / DEFAULT_EXPORT_DIR / twin_id / export_name
 
 
+
+def _soul_dir(service_root: Path, twin_id: str) -> Path:
+    return service_root / DEFAULT_SOUL_DIR / twin_id
+
 def _ensure_service_dirs(service_root: Path) -> None:
     (service_root / DEFAULT_GRAPH_DIR).mkdir(parents=True, exist_ok=True)
     (service_root / DEFAULT_BINDING_DIR).mkdir(parents=True, exist_ok=True)
@@ -125,6 +134,227 @@ def _load_json(path: Path) -> Any:
     except json.JSONDecodeError as exc:
         raise ServiceError(f"Invalid JSON in {path}: {exc}") from exc
 
+
+
+CHATLAB_MESSAGE_TYPE_LABELS = {
+    0: "text",
+    1: "image",
+    2: "voice",
+    3: "video",
+    4: "file",
+    5: "sticker",
+    6: "link",
+    7: "call",
+    8: "location",
+    24: "quote",
+    25: "reply",
+    80: "system",
+    81: "notification",
+    99: "other",
+}
+
+
+def _chatlab_timestamp_to_iso(raw: Any) -> str | None:
+    if isinstance(raw, (int, float)):
+        return datetime.fromtimestamp(float(raw), UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    if isinstance(raw, str):
+        value = raw.strip()
+        if not value:
+            return None
+        if value.isdigit():
+            return datetime.fromtimestamp(float(value), UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+        return value
+    return None
+
+
+def _chatlab_display_name(payload: dict[str, Any]) -> str:
+    for key in ("groupNickname", "accountName", "platformId"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "Unknown"
+
+
+def _is_chatlab_json_payload(payload: dict[str, Any]) -> bool:
+    return isinstance(payload.get("meta"), dict) and isinstance(payload.get("messages"), list) and (
+        isinstance(payload.get("members"), list) or isinstance(payload.get("chatlab"), dict)
+    )
+
+
+def _normalize_chatlab_member(member: dict[str, Any]) -> dict[str, Any] | None:
+    entity_id = str(member.get("platformId") or "").strip()
+    if not entity_id:
+        return None
+    aliases = []
+    for key in ("groupNickname", "accountName"):
+        value = member.get(key)
+        if isinstance(value, str) and value.strip() and value.strip() not in aliases:
+            aliases.append(value.strip())
+    participant = {
+        "entity_id": entity_id,
+        "display_name": _chatlab_display_name(member),
+    }
+    if aliases:
+        participant["aliases"] = aliases
+    return participant
+
+
+def _chatlab_message_labels(message_type: Any) -> list[str]:
+    try:
+        numeric_type = int(message_type)
+    except (TypeError, ValueError):
+        return ["chatlab_message"]
+    label = CHATLAB_MESSAGE_TYPE_LABELS.get(numeric_type)
+    if not label:
+        return [f"chatlab_type_{numeric_type}"]
+    if label == "text":
+        return []
+    return [f"chatlab_{label}"]
+
+
+def _normalize_chatlab_message(
+    message: dict[str, Any],
+    *,
+    source_id: str,
+    conversation_id: str,
+    turn_index: int,
+    name_by_id: dict[str, str],
+) -> dict[str, Any] | None:
+    speaker_id = str(message.get("sender") or "").strip()
+    if not speaker_id:
+        return None
+    text = message.get("content")
+    if isinstance(text, str):
+        text = text.strip() or None
+    else:
+        text = None
+    speaker_name = _chatlab_display_name(message)
+    if speaker_id not in name_by_id:
+        name_by_id[speaker_id] = speaker_name
+    turn = {
+        "turn_id": str(message.get("messageId") or f"turn_{turn_index:06d}"),
+        "conversation_id": conversation_id,
+        "speaker": name_by_id.get(speaker_id, speaker_name),
+        "speaker_id": speaker_id,
+        "timestamp": _chatlab_timestamp_to_iso(message.get("timestamp")),
+        "labels": _chatlab_message_labels(message.get("type")),
+    }
+    if text is not None:
+        turn["text"] = text
+    return turn
+
+
+def _normalize_chatlab_payload(payload: dict[str, Any], source_path: Path) -> dict[str, Any]:
+    meta = payload.get("meta") or {}
+    raw_members = [item for item in (payload.get("members") or []) if isinstance(item, dict)]
+    raw_messages = [item for item in (payload.get("messages") or []) if isinstance(item, dict)]
+    source_id = str(meta.get("groupId") or meta.get("name") or source_path.stem).strip() or source_path.stem
+    conversation_id = str(meta.get("groupId") or source_id).strip() or source_id
+    title = str(meta.get("name") or source_id).strip() or source_id
+
+    participants: list[dict[str, Any]] = []
+    seen_participants: set[str] = set()
+    name_by_id: dict[str, str] = {}
+    for member in raw_members:
+        normalized_member = _normalize_chatlab_member(member)
+        if normalized_member is None:
+            continue
+        entity_id = normalized_member["entity_id"]
+        seen_participants.add(entity_id)
+        name_by_id[entity_id] = str(normalized_member.get("display_name") or entity_id)
+        participants.append(normalized_member)
+
+    turns: list[dict[str, Any]] = []
+    pending: list[tuple[float, int, dict[str, Any]]] = []
+    for index, message in enumerate(raw_messages, start=1):
+        normalized_turn = _normalize_chatlab_message(
+            message,
+            source_id=source_id,
+            conversation_id=conversation_id,
+            turn_index=index,
+            name_by_id=name_by_id,
+        )
+        if normalized_turn is None:
+            continue
+        speaker_id = normalized_turn["speaker_id"]
+        if speaker_id not in seen_participants:
+            participant = {
+                "entity_id": speaker_id,
+                "display_name": str(normalized_turn.get("speaker") or speaker_id),
+            }
+            participants.append(participant)
+            seen_participants.add(speaker_id)
+        timestamp_value = normalized_turn.get("timestamp")
+        sort_key = 0.0
+        if isinstance(timestamp_value, str) and timestamp_value.strip():
+            try:
+                sort_key = datetime.fromisoformat(timestamp_value.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                sort_key = float(index)
+        else:
+            sort_key = float(index)
+        pending.append((sort_key, index, normalized_turn))
+
+    pending.sort(key=lambda item: (item[0], item[1]))
+    for _, _, turn in pending:
+        turns.append(turn)
+
+    return {
+        "source_id": source_id,
+        "title": title,
+        "conversation_id": conversation_id,
+        "participants": participants,
+        "turns": turns,
+    }
+
+
+def _load_chatlab_jsonl(path: Path) -> dict[str, Any]:
+    header: dict[str, Any] | None = None
+    members: list[dict[str, Any]] = []
+    messages: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError as exc:
+        raise ServiceError(f"JSON file not found: {path}") from exc
+    for line_number, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ServiceError(f"Invalid ChatLab JSONL in {path} at line {line_number}: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ServiceError(f"ChatLab JSONL line must be an object: {path}:{line_number}")
+        record_type = str(payload.get("_type") or "").strip().lower()
+        if record_type == "header":
+            header = payload
+        elif record_type == "member":
+            members.append(payload)
+        elif record_type == "message":
+            messages.append(payload)
+    if header is None:
+        raise ServiceError(f"ChatLab JSONL header record not found: {path}")
+    return _normalize_chatlab_payload(
+        {
+            "chatlab": header.get("chatlab") or {},
+            "meta": header.get("meta") or {},
+            "members": members,
+            "messages": messages,
+        },
+        path,
+    )
+
+
+def _load_chat_history_payload(path: Path) -> dict[str, Any]:
+    if path.suffix.lower() == ".jsonl":
+        return _load_chatlab_jsonl(path)
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        raise ServiceError(f"Corpus JSON must be an object: {path}")
+    if _is_chatlab_json_payload(payload):
+        return _normalize_chatlab_payload(payload, path)
+    return payload
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -200,6 +430,224 @@ def _source_refs_from_payload(payload: dict[str, Any]) -> list[str]:
     return []
 
 
+def _string_alias(payload: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _bool_alias(payload: dict[str, Any], *keys: str, default: bool) -> bool:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, bool):
+            return value
+    return default
+
+
+def _object_alias(payload: dict[str, Any], *keys: str) -> dict[str, Any] | None:
+    for key in keys:
+        value = payload.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, dict):
+            raise ServiceError(f"Expected object field '{key}'.")
+        return value
+    return None
+
+
+def _normalize_graphiti_endpoint_config(
+    payload: dict[str, Any] | None,
+    *,
+    default_protocol: str | None = None,
+    default_provider_id: str | None = None,
+    default_provider_name: str | None = None,
+    default_base_url: str | None = None,
+    default_api_key: str | None = None,
+    default_model: str | None = None,
+    default_reasoning_effort: str | None = None,
+) -> dict[str, Any] | None:
+    source = payload or {}
+    if not isinstance(source, dict):
+        raise ServiceError("Graphiti endpoint config must be an object.")
+    has_material = bool(source) or any(
+        str(value or "").strip()
+        for value in (
+            default_provider_id,
+            default_provider_name,
+            default_base_url,
+            default_api_key,
+            default_model,
+        )
+    )
+    if not has_material:
+        return None
+    normalized = {
+        "protocol": _string_alias(source, "protocol") or (default_protocol or "openai"),
+        "provider_id": _string_alias(source, "provider_id", "providerId") or default_provider_id or "custom",
+        "provider_name": _string_alias(source, "provider_name", "providerName") or default_provider_name or "",
+        "base_url": _string_alias(source, "base_url", "baseUrl") or default_base_url or "",
+        "api_key": _string_alias(source, "api_key", "apiKey") or default_api_key or "",
+        "model": _string_alias(source, "model", "embedding_model", "embeddingModel", "reranker_model", "rerankerModel") or default_model or "",
+        "reasoning_effort": _string_alias(source, "reasoning_effort", "reasoningEffort") or default_reasoning_effort or "medium",
+    }
+    normalized["protocol"] = str(normalized["protocol"] or "openai").strip().lower()
+    return normalized
+
+
+def _graphiti_endpoint_summary(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not payload:
+        return None
+    return {
+        "protocol": payload.get("protocol"),
+        "provider_id": payload.get("provider_id"),
+        "provider_name": payload.get("provider_name"),
+        "base_url": payload.get("base_url"),
+        "model": payload.get("model"),
+        "reasoning_effort": payload.get("reasoning_effort"),
+        "api_key_configured": bool(str(payload.get("api_key") or "").strip()),
+    }
+
+
+def _is_openai_official_base_url(base_url: str) -> bool:
+    value = base_url.strip().lower()
+    return value.startswith("https://api.openai.com") or value.startswith("http://api.openai.com")
+
+
+def _default_embedder_model(base_llm: dict[str, Any] | None) -> str | None:
+    if not base_llm:
+        return None
+    model = str(base_llm.get("model") or "").strip()
+    if "embed" in model.lower():
+        return model
+    base_url = str(base_llm.get("base_url") or "").strip()
+    provider_id = str(base_llm.get("provider_id") or "").strip().lower()
+    if _is_openai_official_base_url(base_url) or provider_id == "openai":
+        return "text-embedding-3-small"
+    return None
+
+
+def _endpoint_ready(payload: dict[str, Any] | None) -> bool:
+    if not payload:
+        return False
+    return all(str(payload.get(key) or "").strip() for key in ("base_url", "api_key", "model"))
+
+
+def _merge_graphiti_endpoint_config(
+    base: dict[str, Any] | None,
+    override: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if base is None and override is None:
+        return None
+    merged = dict(base or {})
+    for key, value in (override or {}).items():
+        if isinstance(value, str):
+            if value.strip():
+                merged[key] = value.strip()
+            continue
+        if value is not None:
+            merged[key] = value
+    return merged
+
+
+def _resolve_graphiti_runtime_preferences(
+    *,
+    llm_config_payload: dict[str, Any] | None,
+    graphiti_config_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    graphiti_config = graphiti_config_payload or {}
+    if not isinstance(graphiti_config, dict):
+        raise ServiceError("graphiti_config must be an object when provided.")
+
+    app_llm = _normalize_graphiti_endpoint_config(llm_config_payload)
+    use_app_defaults = _bool_alias(graphiti_config, "use_app_llm_defaults", "useAppLlmDefaults", default=True)
+    llm_override = _normalize_graphiti_endpoint_config(_object_alias(graphiti_config, "llm"))
+    embedder_override = _normalize_graphiti_endpoint_config(_object_alias(graphiti_config, "embedder"))
+    cross_encoder_override = _normalize_graphiti_endpoint_config(_object_alias(graphiti_config, "cross_encoder", "crossEncoder", "reranker"))
+
+    base_llm = app_llm if use_app_defaults else None
+    llm = _merge_graphiti_endpoint_config(base_llm, llm_override)
+
+    base_embedder = None
+    if use_app_defaults and app_llm and str(app_llm.get("protocol") or "openai") == "openai":
+        base_embedder = _normalize_graphiti_endpoint_config(
+            {},
+            default_protocol="openai",
+            default_provider_id=str(app_llm.get("provider_id") or "custom"),
+            default_provider_name=str(app_llm.get("provider_name") or ""),
+            default_base_url=str(app_llm.get("base_url") or ""),
+            default_api_key=str(app_llm.get("api_key") or ""),
+            default_model=_default_embedder_model(app_llm),
+            default_reasoning_effort="medium",
+        )
+    embedder = _merge_graphiti_endpoint_config(base_embedder, embedder_override)
+
+    base_cross_encoder = None
+    if use_app_defaults and llm and str(llm.get("protocol") or "openai") == "openai":
+        base_cross_encoder = _normalize_graphiti_endpoint_config(
+            {},
+            default_protocol="openai",
+            default_provider_id=str(llm.get("provider_id") or "custom"),
+            default_provider_name=str(llm.get("provider_name") or ""),
+            default_base_url=str(llm.get("base_url") or ""),
+            default_api_key=str(llm.get("api_key") or ""),
+            default_model=str(llm.get("model") or ""),
+            default_reasoning_effort=str(llm.get("reasoning_effort") or "medium"),
+        )
+    cross_encoder = _merge_graphiti_endpoint_config(base_cross_encoder, cross_encoder_override)
+
+    warnings: list[str] = []
+    if not llm_config_payload and not graphiti_config_payload:
+        config_source = "environment_or_runtime_only"
+    elif use_app_defaults and (llm_override or embedder_override or cross_encoder_override):
+        config_source = "app_llm_default_plus_graphiti_override"
+    elif use_app_defaults and app_llm:
+        config_source = "app_llm_default"
+    else:
+        config_source = "graphiti_override_only"
+
+    if llm and str(llm.get("protocol") or "openai") == "anthropic":
+        if not embedder_override:
+            warnings.append("Anthropic Graphiti LLM requires an explicit Graphiti embedder override; app LLM defaults are not enough for embeddings.")
+        if not cross_encoder_override:
+            warnings.append("Anthropic Graphiti LLM requires an explicit Graphiti cross-encoder override; app LLM defaults are not enough for reranking.")
+    if use_app_defaults and app_llm and str(app_llm.get("protocol") or "openai") == "openai" and base_embedder and not str(base_embedder.get("model") or "").strip():
+        warnings.append("App LLM defaults supplied endpoint credentials to Graphiti, but no safe default embedding model could be inferred. Configure graphiti_config.embedder.model explicitly.")
+    if llm and not _endpoint_ready(llm):
+        warnings.append("Graphiti LLM config is incomplete; base_url, api_key, and model are required.")
+    if embedder and not _endpoint_ready(embedder):
+        warnings.append("Graphiti embedder config is incomplete; base_url, api_key, and model are required.")
+    if cross_encoder and not _endpoint_ready(cross_encoder):
+        warnings.append("Graphiti cross-encoder config is incomplete; base_url, api_key, and model are required.")
+
+    ready = _endpoint_ready(llm) and _endpoint_ready(embedder) and _endpoint_ready(cross_encoder)
+    summary = {
+        "config_source": config_source,
+        "uses_app_llm_defaults": use_app_defaults,
+        "ready": ready,
+        "warnings": warnings,
+        "llm": _graphiti_endpoint_summary(llm),
+        "embedder": _graphiti_endpoint_summary(embedder),
+        "cross_encoder": _graphiti_endpoint_summary(cross_encoder),
+    }
+    return {
+        "summary": summary,
+        "ready": ready,
+        "warnings": warnings,
+        "llm": llm,
+        "embedder": embedder,
+        "cross_encoder": cross_encoder,
+    }
+
+
+def _graphiti_runtime_request_config(payload: dict[str, Any]) -> dict[str, Any]:
+    return _resolve_graphiti_runtime_preferences(
+        llm_config_payload=_object_alias(payload, "llm_config", "llmConfig"),
+        graphiti_config_payload=_object_alias(payload, "graphiti_config", "graphitiConfig"),
+    )
+
+
 def _load_binding(service_root: Path, twin_id: str) -> TwinBinding:
     payload = _load_json(_binding_path(service_root, twin_id))
     if not isinstance(payload, dict):
@@ -211,6 +659,7 @@ def _load_binding(service_root: Path, twin_id: str) -> TwinBinding:
         interaction_mode=_require_string(payload, "interaction_mode"),
         source_mode=_require_string(payload, "source_mode"),
         current_user_role_binding=payload.get("current_user_role_binding") or {},
+        graphiti_runtime_preferences=payload.get("graphiti_runtime_preferences") or {},
         selected_relationship_binding_id=payload.get("selected_relationship_binding_id") or payload.get("active_selected_relationship_binding_id"),
         import_session_id=payload.get("import_session_id"),
         focal_node_uuid=payload.get("focal_node_uuid"),
@@ -281,6 +730,7 @@ def _load_import_session(service_root: Path, session_id: str) -> ImportSession:
         source_refs=[str(item) for item in (payload.get("source_refs") or [])],
         source_hash=payload.get("source_hash"),
         current_user_role_binding=payload.get("current_user_role_binding") or {},
+        graphiti_runtime_preferences=payload.get("graphiti_runtime_preferences") or {},
         selected_relationship_binding_id=payload.get("selected_relationship_binding_id"),
         artifact_refs=payload.get("artifact_refs") or {},
         created_at=payload.get("created_at"),
@@ -295,6 +745,26 @@ def _save_import_session(service_root: Path, session: ImportSession) -> Path:
     path = _import_session_path(service_root, session.session_id)
     _write_json(path, asdict(session))
     return path
+
+
+def _sync_graphiti_runtime_preferences(
+    service_root: Path,
+    binding: TwinBinding,
+    summary: dict[str, Any] | None,
+) -> None:
+    if not summary:
+        return
+    if binding.graphiti_runtime_preferences != summary:
+        binding.graphiti_runtime_preferences = summary
+        _save_binding(service_root, binding)
+    if binding.import_session_id:
+        try:
+            session = _load_import_session(service_root, binding.import_session_id)
+        except ServiceError:
+            return
+        if session.graphiti_runtime_preferences != summary:
+            session.graphiti_runtime_preferences = summary
+            _save_import_session(service_root, session)
 
 
 def _normalize_source_refs(source_refs: list[str] | str | None) -> list[str]:
@@ -1133,7 +1603,10 @@ def _scan_sources(
     all_counterpart_cards: list[dict[str, Any]] = []
     relationship_graph = _empty_relationship_graph()
     for ref in refs:
-        payload = _load_json(Path(ref))
+        if source_mode == "chat_history":
+            payload = _load_chat_history_payload(Path(ref))
+        else:
+            payload = _load_json(Path(ref))
         if not isinstance(payload, dict):
             raise ServiceError(f"Corpus JSON must be an object: {ref}")
         if source_mode == "chat_history":
@@ -1205,6 +1678,28 @@ def _artifact_refs(service_root: Path, twin_id: str) -> dict[str, Any]:
     }
 
 
+
+def _iter_selected_relationship_bindings(service_root: Path, twin_id: str) -> list[SelectedRelationshipBinding]:
+    directory = _selected_relationship_dir(service_root, twin_id)
+    if not directory.exists():
+        return []
+    bindings: list[SelectedRelationshipBinding] = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            bindings.append(_load_selected_relationship_binding(service_root, twin_id, path.stem))
+        except ServiceError:
+            continue
+    return bindings
+
+
+def _remove_path(path: Path) -> bool:
+    if not path.exists():
+        return False
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+        return True
+    path.unlink(missing_ok=True)
+    return True
 def _selected_binding_id(twin_id: str, counterpart_entity_id: str) -> str:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     safe_counterpart = counterpart_entity_id.replace(":", "_").replace("/", "_")
@@ -1226,24 +1721,137 @@ def _import_graphiti() -> tuple[Any, Any, Any]:
         from graphiti_core import Graphiti
         from graphiti_core.driver.kuzu_driver import KuzuDriver
         from graphiti_core.nodes import EpisodeType
+    except ModuleNotFoundError as exc:
+        missing_name = str(getattr(exc, "name", "") or "").strip()
+        if missing_name == "graphiti_core":
+            raise ServiceError(
+                "Graphiti core is not installed. Install it with "
+                "\"pip install 'graphiti-core[kuzu]'\" first."
+            ) from exc
+        if missing_name == "kuzu":
+            raise ServiceError(
+                "Graphiti core is installed, but the Kuzu Python package is unavailable. "
+                "On this machine the current Python runtime may not have a prebuilt Kuzu wheel, "
+                "so installing \"graphiti-core[kuzu]\" falls back to a native build."
+            ) from exc
+        raise ServiceError(
+            f"Graphiti import failed because dependency '{missing_name or 'unknown'}' is unavailable."
+        ) from exc
     except ImportError as exc:
         raise ServiceError(
-            "Graphiti is not installed. Install it with "
-            "\"pip install 'graphiti-core[kuzu]'\" first."
+            "Graphiti import failed. Install it with "
+                "\"pip install 'graphiti-core[kuzu]'\" first."
         ) from exc
     return Graphiti, KuzuDriver, EpisodeType
 
 
-async def _open_graphiti(service_root: Path, twin_id: str) -> Any:
+def _build_graphiti_llm_client(endpoint: dict[str, Any]) -> Any:
+    protocol = str(endpoint.get("protocol") or "openai").strip().lower()
+    llm_config_type = getattr(import_module("graphiti_core.llm_client.config"), "LLMConfig")
+    config = llm_config_type(
+        api_key=str(endpoint.get("api_key") or "").strip() or None,
+        model=str(endpoint.get("model") or "").strip() or None,
+        base_url=str(endpoint.get("base_url") or "").strip() or None,
+        small_model=str(endpoint.get("model") or "").strip() or None,
+    )
+    if protocol == "anthropic":
+        try:
+            anthropic_client_type = getattr(import_module("graphiti_core.llm_client.anthropic_client"), "AnthropicClient")
+        except ImportError as exc:
+            raise ServiceError(
+                "Graphiti Anthropic support is not installed. Install it with "
+                "\"pip install 'graphiti-core[anthropic]'\" or provide an OpenAI-compatible Graphiti override."
+            ) from exc
+        return anthropic_client_type(config=config)
+    if _is_openai_official_base_url(str(endpoint.get("base_url") or "")) and str(endpoint.get("provider_id") or "").strip().lower() in {"", "openai"}:
+        client_type = getattr(import_module("graphiti_core.llm_client.openai_client"), "OpenAIClient")
+        return client_type(config=config)
+    client_type = getattr(import_module("graphiti_core.llm_client.openai_generic_client"), "OpenAIGenericClient")
+    return client_type(config=config)
+
+
+def _build_graphiti_embedder(endpoint: dict[str, Any]) -> Any:
+    module = import_module("graphiti_core.embedder.openai")
+    config_type = getattr(module, "OpenAIEmbedderConfig")
+    embedder_type = getattr(module, "OpenAIEmbedder")
+    config = config_type(
+        api_key=str(endpoint.get("api_key") or "").strip() or None,
+        base_url=str(endpoint.get("base_url") or "").strip() or None,
+        embedding_model=str(endpoint.get("model") or "").strip() or None,
+    )
+    return embedder_type(config=config)
+
+
+def _build_graphiti_cross_encoder(endpoint: dict[str, Any]) -> Any:
+    module = import_module("graphiti_core.cross_encoder.openai_reranker_client")
+    reranker_type = getattr(module, "OpenAIRerankerClient")
+    llm_config_type = getattr(import_module("graphiti_core.llm_client.config"), "LLMConfig")
+    config = llm_config_type(
+        api_key=str(endpoint.get("api_key") or "").strip() or None,
+        model=str(endpoint.get("model") or "").strip() or None,
+        base_url=str(endpoint.get("base_url") or "").strip() or None,
+        small_model=str(endpoint.get("model") or "").strip() or None,
+    )
+    return reranker_type(config=config)
+
+
+def _graphiti_runtime_kwargs(runtime_config: dict[str, Any] | None) -> dict[str, Any]:
+    if not runtime_config:
+        return {}
+    if not runtime_config.get("ready"):
+        summary = runtime_config.get("summary") or {}
+        warnings = [str(item) for item in (summary.get("warnings") or []) if str(item).strip()]
+        warning_text = f" Details: {' | '.join(warnings)}" if warnings else ""
+        raise ServiceError(
+            "Graphiti runtime config is incomplete. Pass llm_config to reuse the app model config, "
+            "or supply graphiti_config overrides for llm/embedder/cross_encoder." + warning_text
+        )
+    llm_endpoint = runtime_config.get("llm") or {}
+    embedder_endpoint = runtime_config.get("embedder") or {}
+    cross_encoder_endpoint = runtime_config.get("cross_encoder") or {}
+    return {
+        "llm_client": _build_graphiti_llm_client(llm_endpoint),
+        "embedder": _build_graphiti_embedder(embedder_endpoint),
+        "cross_encoder": _build_graphiti_cross_encoder(cross_encoder_endpoint),
+    }
+
+
+async def _open_graphiti(
+    service_root: Path,
+    twin_id: str,
+    runtime_config: dict[str, Any] | None = None,
+) -> Any:
     Graphiti, KuzuDriver, _ = _import_graphiti()
     graph_path = _graph_path(service_root, twin_id)
     graph_path.parent.mkdir(parents=True, exist_ok=True)
     driver = KuzuDriver(db=str(graph_path))
-    graphiti = Graphiti(graph_driver=driver)
+    try:
+        graphiti = Graphiti(graph_driver=driver, **_graphiti_runtime_kwargs(runtime_config))
+    except ServiceError:
+        raise
+    except Exception as exc:
+        if runtime_config:
+            raise ServiceError(
+                "Graphiti initialization failed with the provided runtime config. Check the Graphiti provider bridge settings, "
+                "especially llm_config/graphiti_config protocol, base_url, api_key, and model values."
+            ) from exc
+        raise ServiceError(
+            "Graphiti initialization failed. If you are not relying on environment variables, pass llm_config to reuse the app model config or supply graphiti_config overrides."
+        ) from exc
     build = getattr(graphiti, "build_indices_and_constraints", None)
     if callable(build):
         await build()
     return graphiti
+
+
+async def _open_graphiti_for_request(
+    service_root: Path,
+    twin_id: str,
+    runtime_config: dict[str, Any] | None = None,
+) -> Any:
+    if runtime_config is None:
+        return await _open_graphiti(service_root, twin_id)
+    return await _open_graphiti(service_root, twin_id, runtime_config=runtime_config)
 
 
 async def _close_graphiti(graphiti: Any) -> None:
@@ -1596,9 +2204,10 @@ async def _refresh_manifest_with_graphiti_neighborhood(
     service_root: Path,
     binding: TwinBinding,
     manifest_payload: dict[str, Any],
+    runtime_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
-        graphiti = await _open_graphiti(service_root, binding.twin_id)
+        graphiti = await _open_graphiti_for_request(service_root, binding.twin_id, runtime_config)
     except ServiceError:
         return manifest_payload
 
@@ -1835,11 +2444,17 @@ async def initialize_twin(
     binding_entity_id: str | None = None,
     focal_node_uuid: str | None = None,
     source_refs: list[str] | None = None,
+    llm_config: dict[str, Any] | None = None,
+    graphiti_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = _service_root(service_root)
     _ensure_service_dirs(root)
     role_binding = _role_binding(binding_type, _require_string({"binding_entity_id": binding_entity_id}, "binding_entity_id"))
     normalized_source_refs = _normalize_source_refs(source_refs)
+    graphiti_runtime_preferences = _resolve_graphiti_runtime_preferences(
+        llm_config_payload=llm_config,
+        graphiti_config_payload=graphiti_config,
+    )["summary"]
     session_id = f"import_{twin_id}_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
     session = ImportSession(
         session_id=session_id,
@@ -1850,6 +2465,7 @@ async def initialize_twin(
         source_refs=normalized_source_refs,
         source_hash=_hash_source_refs(normalized_source_refs),
         current_user_role_binding=role_binding,
+        graphiti_runtime_preferences=graphiti_runtime_preferences,
         artifact_refs=_artifact_refs(root, twin_id),
     )
     binding = TwinBinding(
@@ -1859,6 +2475,7 @@ async def initialize_twin(
         interaction_mode=interaction_mode,
         source_mode=source_mode,
         current_user_role_binding=role_binding,
+        graphiti_runtime_preferences=graphiti_runtime_preferences,
         selected_relationship_binding_id=None,
         import_session_id=session.session_id,
         focal_node_uuid=focal_node_uuid,
@@ -1887,6 +2504,8 @@ async def create_twin_binding(
     binding_entity_id: str | None = None,
     focal_node_uuid: str | None = None,
     source_refs: list[str] | None = None,
+    llm_config: dict[str, Any] | None = None,
+    graphiti_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     role_binding = (
         _role_binding(
@@ -1906,6 +2525,8 @@ async def create_twin_binding(
         binding_entity_id=str(role_binding.get("entity_id") or binding_entity_id or ""),
         focal_node_uuid=focal_node_uuid,
         source_refs=source_refs,
+        llm_config=llm_config,
+        graphiti_config=graphiti_config,
     )
     refs = _normalize_source_refs(source_refs)
     if not refs:
@@ -1966,9 +2587,18 @@ async def list_relationship_candidates(
     service_root: str | None,
     twin_id: str,
     source_refs: list[str] | None = None,
+    llm_config: dict[str, Any] | None = None,
+    graphiti_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = _service_root(service_root)
     binding = _load_binding(root, twin_id)
+    runtime_config = None
+    if llm_config is not None or graphiti_config is not None:
+        runtime_config = _resolve_graphiti_runtime_preferences(
+            llm_config_payload=llm_config,
+            graphiti_config_payload=graphiti_config,
+        )
+        _sync_graphiti_runtime_preferences(root, binding, runtime_config["summary"])
     refs = _normalize_source_refs(source_refs)
     session = _load_import_session(root, binding.import_session_id) if binding.import_session_id else None
     manifest_path = _relationship_graph_manifest_path(root, twin_id)
@@ -2007,6 +2637,7 @@ async def list_relationship_candidates(
             service_root=root,
             binding=binding,
             manifest_payload=manifest_payload,
+            runtime_config=runtime_config,
         )
     candidates = _annotate_selection_eligibility(list(manifest_payload.get("counterpart_candidates") or []), binding)
     return {
@@ -2014,6 +2645,7 @@ async def list_relationship_candidates(
         "twin_id": twin_id,
         "anchor_person_id": binding.anchor_person_id,
         "current_user_role_binding": binding.current_user_role_binding,
+        "graphiti_runtime_preferences": binding.graphiti_runtime_preferences,
         "selected_relationship_binding_id": binding.selected_relationship_binding_id,
         "source_mode": binding.source_mode,
         "source_refs": list(manifest_payload.get("source_refs") or refs),
@@ -2022,6 +2654,65 @@ async def list_relationship_candidates(
         "candidates": candidates,
     }
 
+
+
+
+async def get_import_session(
+    *,
+    service_root: str | None,
+    twin_id: str,
+    llm_config: dict[str, Any] | None = None,
+    graphiti_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    root = _service_root(service_root)
+    candidates_payload = await list_relationship_candidates(
+        service_root=service_root,
+        twin_id=twin_id,
+        llm_config=llm_config,
+        graphiti_config=graphiti_config,
+    )
+    binding = _load_binding(root, twin_id)
+    session = _load_import_session(root, binding.import_session_id) if binding.import_session_id else None
+    active_selected_binding = _active_selected_binding(root, binding)
+    selected_candidate_card = None
+    if active_selected_binding is not None:
+        selected_candidate_card = next(
+            (
+                item for item in candidates_payload["candidates"]
+                if str(item.get("entity_id") or "") == active_selected_binding.counterpart_entity_id
+            ),
+            None,
+        )
+
+    manifest_path = _relationship_graph_manifest_path(root, twin_id)
+    relationship_graph = None
+    if manifest_path.exists():
+        manifest_payload = _load_relationship_graph_manifest(root, twin_id)
+        relationship_graph = {
+            "manifest_path": str(manifest_path),
+            "generated_at": manifest_payload.get("generated_at"),
+            "source_refs": list(manifest_payload.get("source_refs") or []),
+            "source_hash": manifest_payload.get("source_hash"),
+            "anchor_node_binding": manifest_payload.get("anchor_node_binding"),
+            "candidate_count": len(candidates_payload["candidates"]),
+        }
+
+    return {
+        "status": "ok",
+        "twin_id": twin_id,
+        "binding": asdict(binding),
+        "import_session": asdict(session) if session is not None else None,
+        "graphiti_runtime_preferences": binding.graphiti_runtime_preferences,
+        "active_selected_relationship_binding": asdict(active_selected_binding) if active_selected_binding is not None else None,
+        "selected_candidate_card": selected_candidate_card,
+        "selector_snapshot": {
+            "current_user_role_binding": binding.current_user_role_binding,
+            "selected_relationship_binding_id": binding.selected_relationship_binding_id,
+            "relationship_graph_manifest_path": str(manifest_path) if manifest_path.exists() else None,
+            "candidates": candidates_payload["candidates"],
+        },
+        "relationship_graph": relationship_graph,
+    }
 
 async def select_relationship(
     *,
@@ -2130,26 +2821,89 @@ async def rebind_relationship(
     )
 
 
+
+
+async def withdraw_import(
+    *,
+    service_root: str | None,
+    twin_id: str,
+) -> dict[str, Any]:
+    root = _service_root(service_root)
+    binding = _load_binding(root, twin_id)
+    if not binding.import_session_id:
+        raise ServiceError("Twin binding is missing import_session_id and cannot be withdrawn cleanly.")
+    session = _load_import_session(root, binding.import_session_id)
+    if session.state == "published":
+        raise ServiceError("Cannot withdraw a published import session.")
+
+    withdrawn_selected_bindings: list[dict[str, Any]] = []
+    for selected_binding in _iter_selected_relationship_bindings(root, twin_id):
+        selected_binding.status = "withdrawn"
+        _save_selected_relationship_binding(root, selected_binding)
+        withdrawn_selected_bindings.append(asdict(selected_binding))
+
+    removed_artifacts: list[str] = []
+    for path in (
+        _graph_path(root, twin_id),
+        _relationship_graph_manifest_path(root, twin_id),
+        root / DEFAULT_EXPORT_DIR / twin_id,
+        _soul_dir(root, twin_id),
+        _binding_path(root, twin_id),
+    ):
+        if _remove_path(path):
+            removed_artifacts.append(str(path))
+
+    session.state = "withdrawn"
+    session.selected_relationship_binding_id = None
+    session.artifact_refs = {}
+    session_path = _save_import_session(root, session)
+    return {
+        "status": "ok",
+        "twin_id": twin_id,
+        "session_path": str(session_path),
+        "withdrawn_import_session": asdict(session),
+        "withdrawn_selected_relationship_bindings": withdrawn_selected_bindings,
+        "removed_artifacts": removed_artifacts,
+    }
+
 async def ingest_chat_file(
     *,
     service_root: str | None,
     twin_id: str,
     source: str,
     batch_size: int = 8,
+    llm_config: dict[str, Any] | None = None,
+    graphiti_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = _service_root(service_root)
     binding = _load_binding(root, twin_id)
-    payload = _load_json(Path(source))
+    runtime_config = None
+    if llm_config is not None or graphiti_config is not None:
+        runtime_config = _resolve_graphiti_runtime_preferences(
+            llm_config_payload=llm_config,
+            graphiti_config_payload=graphiti_config,
+        )
+        _sync_graphiti_runtime_preferences(root, binding, runtime_config["summary"])
+    payload = _load_chat_history_payload(Path(source))
     if not isinstance(payload, dict):
         raise ServiceError("Chat corpus JSON must be an object.")
     turns = _require_list(payload, "turns")
+    usable_turns: list[dict[str, Any]] = []
+    for turn in turns:
+        if not isinstance(turn, dict):
+            raise ServiceError("Each chat turn must be an object.")
+        text = turn.get("text")
+        if isinstance(text, str) and text.strip():
+            usable_turns.append(turn)
+    if not usable_turns:
+        raise ServiceError("Chat corpus does not contain any usable text turns after normalization.")
     chunk_size = max(1, batch_size)
 
     _, _, EpisodeType = _import_graphiti()
-    graphiti = await _open_graphiti(root, twin_id)
+    graphiti = await _open_graphiti_for_request(root, twin_id, runtime_config)
     added = 0
     try:
-        for batch_index, batch in enumerate(_chunked(turns, chunk_size), start=1):
+        for batch_index, batch in enumerate(_chunked(usable_turns, chunk_size), start=1):
             if not batch:
                 continue
             first_turn = batch[0]
@@ -2193,16 +2947,25 @@ async def ingest_work_file(
     service_root: str | None,
     twin_id: str,
     source: str,
+    llm_config: dict[str, Any] | None = None,
+    graphiti_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = _service_root(service_root)
     binding = _load_binding(root, twin_id)
+    runtime_config = None
+    if llm_config is not None or graphiti_config is not None:
+        runtime_config = _resolve_graphiti_runtime_preferences(
+            llm_config_payload=llm_config,
+            graphiti_config_payload=graphiti_config,
+        )
+        _sync_graphiti_runtime_preferences(root, binding, runtime_config["summary"])
     payload = _load_json(Path(source))
     if not isinstance(payload, dict):
         raise ServiceError("Work corpus JSON must be an object.")
     scenes = _require_list(payload, "scenes")
 
     _, _, EpisodeType = _import_graphiti()
-    graphiti = await _open_graphiti(root, twin_id)
+    graphiti = await _open_graphiti_for_request(root, twin_id, runtime_config)
     added = 0
     try:
         for index, scene in enumerate(scenes, start=1):
@@ -2253,14 +3016,23 @@ async def search_anchor_graph(
     query: str,
     limit: int = 10,
     focal_node_uuid: str | None = None,
+    llm_config: dict[str, Any] | None = None,
+    graphiti_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = _service_root(service_root)
     binding = _load_binding(root, twin_id)
+    runtime_config = None
+    if llm_config is not None or graphiti_config is not None:
+        runtime_config = _resolve_graphiti_runtime_preferences(
+            llm_config_payload=llm_config,
+            graphiti_config_payload=graphiti_config,
+        )
+        _sync_graphiti_runtime_preferences(root, binding, runtime_config["summary"])
     resolved_focal_node_uuid = focal_node_uuid or binding.focal_node_uuid
 
     manifest_path = _relationship_graph_manifest_path(root, twin_id)
     manifest_payload = _load_relationship_graph_manifest(root, twin_id) if manifest_path.exists() else None
-    graphiti = await _open_graphiti(root, twin_id)
+    graphiti = await _open_graphiti_for_request(root, twin_id, runtime_config)
     try:
         if manifest_payload is not None and not resolved_focal_node_uuid:
             anchor_binding = await _resolve_anchor_node_binding_with_graphiti(
@@ -2305,6 +3077,8 @@ async def export_draft_bundle(
     limit: int = 10,
     focal_node_uuid: str | None = None,
     output_name: str | None = None,
+    llm_config: dict[str, Any] | None = None,
+    graphiti_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = _service_root(service_root)
     binding = _load_binding(root, twin_id)
@@ -2314,6 +3088,8 @@ async def export_draft_bundle(
         query=query,
         limit=limit,
         focal_node_uuid=focal_node_uuid,
+        llm_config=llm_config,
+        graphiti_config=graphiti_config,
     )
     bundle = _project_drafts(
         service_root=root,
@@ -2343,6 +3119,8 @@ async def run_request_envelope(
     if not isinstance(params, dict):
         raise ServiceError("Request envelope 'params' must be an object.")
     service_root = service_root_override or params.get("service_root")
+    llm_config = _object_alias(params, "llm_config", "llmConfig")
+    graphiti_config = _object_alias(params, "graphiti_config", "graphitiConfig")
 
     if operation in {"init", "create_twin_binding"}:
         return await create_twin_binding(
@@ -2356,6 +3134,8 @@ async def run_request_envelope(
             binding_entity_id=params.get("binding_entity_id"),
             focal_node_uuid=params.get("focal_node_uuid"),
             source_refs=_source_refs_from_payload(params),
+            llm_config=llm_config,
+            graphiti_config=graphiti_config,
         )
     if operation == "preflight_scan":
         return await preflight_scan(
@@ -2369,6 +3149,15 @@ async def run_request_envelope(
             service_root=service_root,
             twin_id=_require_string(params, "twin_id"),
             source_refs=_source_refs_from_payload(params),
+            llm_config=llm_config,
+            graphiti_config=graphiti_config,
+        )
+    if operation == "get_import_session":
+        return await get_import_session(
+            service_root=service_root,
+            twin_id=_require_string(params, "twin_id"),
+            llm_config=llm_config,
+            graphiti_config=graphiti_config,
         )
     if operation == "select_relationship":
         return await select_relationship(
@@ -2393,18 +3182,27 @@ async def run_request_envelope(
             binding_type=params.get("binding_type"),
             binding_entity_id=params.get("binding_entity_id"),
         )
+    if operation == "withdraw_import":
+        return await withdraw_import(
+            service_root=service_root,
+            twin_id=_require_string(params, "twin_id"),
+        )
     if operation == "ingest_chat":
         return await ingest_chat_file(
             service_root=service_root,
             twin_id=_require_string(params, "twin_id"),
             source=_require_string(params, "source"),
             batch_size=int(params.get("batch_size") or 8),
+            llm_config=llm_config,
+            graphiti_config=graphiti_config,
         )
     if operation == "ingest_work":
         return await ingest_work_file(
             service_root=service_root,
             twin_id=_require_string(params, "twin_id"),
             source=_require_string(params, "source"),
+            llm_config=llm_config,
+            graphiti_config=graphiti_config,
         )
     if operation == "search_anchor":
         return await search_anchor_graph(
@@ -2413,6 +3211,8 @@ async def run_request_envelope(
             query=_require_string(params, "query"),
             limit=int(params.get("limit") or 10),
             focal_node_uuid=params.get("focal_node_uuid"),
+            llm_config=llm_config,
+            graphiti_config=graphiti_config,
         )
     if operation == "export_opencray_drafts":
         return await export_draft_bundle(
@@ -2422,6 +3222,8 @@ async def run_request_envelope(
             limit=int(params.get("limit") or 10),
             focal_node_uuid=params.get("focal_node_uuid"),
             output_name=params.get("output_name"),
+            llm_config=llm_config,
+            graphiti_config=graphiti_config,
         )
 
     raise ServiceError(f"Unsupported operation: {operation}")
@@ -2471,6 +3273,17 @@ async def cmd_list_relationship_candidates(args: argparse.Namespace) -> int:
     return 0
 
 
+
+
+async def cmd_get_import_session(args: argparse.Namespace) -> int:
+    _print_json(
+        await get_import_session(
+            service_root=args.service_root,
+            twin_id=args.twin_id,
+        )
+    )
+    return 0
+
 async def cmd_select_relationship(args: argparse.Namespace) -> int:
     _print_json(
         await select_relationship(
@@ -2500,6 +3313,17 @@ async def cmd_rebind_relationship(args: argparse.Namespace) -> int:
     )
     return 0
 
+
+
+
+async def cmd_withdraw_import(args: argparse.Namespace) -> int:
+    _print_json(
+        await withdraw_import(
+            service_root=args.service_root,
+            twin_id=args.twin_id,
+        )
+    )
+    return 0
 
 async def cmd_ingest_chat(args: argparse.Namespace) -> int:
     _print_json(
@@ -2631,6 +3455,10 @@ def build_parser() -> argparse.ArgumentParser:
     list_candidates_p.add_argument("--source-refs", nargs="*")
     list_candidates_p.set_defaults(func=cmd_list_relationship_candidates)
 
+    get_session_p = sub.add_parser("get_import_session", help="Get the aggregated import-time snapshot for one twin binding.")
+    get_session_p.add_argument("--twin-id", required=True)
+    get_session_p.set_defaults(func=cmd_get_import_session)
+
     select_p = sub.add_parser("select_relationship", help="Persist one selected relationship binding for the twin.")
     select_p.add_argument("--twin-id", required=True)
     select_p.add_argument("--anchor-person-id", required=True)
@@ -2648,6 +3476,10 @@ def build_parser() -> argparse.ArgumentParser:
     rebind_p.add_argument("--binding-type", choices=("real_user", "fictional_character"))
     rebind_p.add_argument("--binding-entity-id")
     rebind_p.set_defaults(func=cmd_rebind_relationship)
+
+    withdraw_p = sub.add_parser("withdraw_import", help="Withdraw one unpublished import session and clean draft artifacts.")
+    withdraw_p.add_argument("--twin-id", required=True)
+    withdraw_p.set_defaults(func=cmd_withdraw_import)
 
     ingest_chat_p = sub.add_parser("ingest_chat", help="Ingest a normalized chat corpus.")
     ingest_chat_p.add_argument("--twin-id", required=True)
@@ -2715,5 +3547,19 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

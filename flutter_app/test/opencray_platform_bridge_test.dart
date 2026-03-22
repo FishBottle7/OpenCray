@@ -429,81 +429,90 @@ void main() {
     expect(snapshot.children.single.sizeBytes, 11);
   });
 
-  test('platform bridge inspects skill sources over the host channel', () async {
-    late MethodCall capturedCall;
-    const bridge = OpenCrayPlatformBridge();
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(methodChannel, (call) async {
-          capturedCall = call;
-          return <String, Object?>{
-            'sourceType': 'remote_github',
-            'sourceRef': 'roin-orca/skills',
-            'sourcePath': 'https://github.com/roin-orca/skills',
-            'resolvedRevision': 'main',
-            'resolvedCommitSha': 'deadbeef',
-            'candidates': <Object?>[
-              <String, Object?>{
-                'name': 'find-skills',
-                'description': 'Discover skills.',
-                'relativePath': 'skills/find-skills/SKILL.md',
-              },
-            ],
-          };
-        });
+  test(
+    'platform bridge inspects skill sources over the host channel',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return <String, Object?>{
+              'sourceType': 'remote_github',
+              'sourceRef': 'roin-orca/skills',
+              'sourcePath': 'https://github.com/roin-orca/skills',
+              'resolvedRevision': 'main',
+              'resolvedCommitSha': 'deadbeef',
+              'candidates': <Object?>[
+                <String, Object?>{
+                  'name': 'find-skills',
+                  'description': 'Discover skills.',
+                  'relativePath': 'skills/find-skills/SKILL.md',
+                },
+              ],
+            };
+          });
 
-    final inspection = await bridge.inspectSkillSource('roin-orca/skills');
+      final inspection = await bridge.inspectSkillSource('roin-orca/skills');
 
-    expect(capturedCall.method, 'inspectSkillSource');
-    final arguments = capturedCall.arguments as Map<Object?, Object?>;
-    expect(arguments['sourceRef'], 'roin-orca/skills');
-    expect(inspection.sourceType, 'remote_github');
-    expect(inspection.candidates.single.name, 'find-skills');
-  });
+      expect(capturedCall.method, 'inspectSkillSource');
+      final arguments = capturedCall.arguments as Map<Object?, Object?>;
+      expect(arguments['sourceRef'], 'roin-orca/skills');
+      expect(inspection.sourceType, 'remote_github');
+      expect(inspection.candidates.single.name, 'find-skills');
+    },
+  );
 
-  test('platform bridge sends selected skill installs over the host channel', () async {
-    late MethodCall capturedCall;
-    const bridge = OpenCrayPlatformBridge();
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(methodChannel, (call) async {
-          capturedCall = call;
-          return 'Installed review-skills.';
-        });
+  test(
+    'platform bridge sends selected skill installs over the host channel',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return 'Installed review-skills.';
+          });
 
-    final message = await bridge.installSkillSource(
-      'roin-orca/skills',
-      selectedSkillName: 'review-skills',
-    );
+      final message = await bridge.installSkillSource(
+        'roin-orca/skills',
+        selectedSkillName: 'review-skills',
+      );
 
-    expect(capturedCall.method, 'installSkillSource');
-    final arguments = capturedCall.arguments as Map<Object?, Object?>;
-    expect(arguments['sourceRef'], 'roin-orca/skills');
-    expect(arguments['selectedSkillName'], 'review-skills');
-    expect(message, 'Installed review-skills.');
-  });
+      expect(capturedCall.method, 'installSkillSource');
+      final arguments = capturedCall.arguments as Map<Object?, Object?>;
+      expect(arguments['sourceRef'], 'roin-orca/skills');
+      expect(arguments['selectedSkillName'], 'review-skills');
+      expect(message, 'Installed review-skills.');
+    },
+  );
 
-  test('platform bridge sends batch skill installs over the host channel', () async {
-    late MethodCall capturedCall;
-    const bridge = OpenCrayPlatformBridge();
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(methodChannel, (call) async {
-          capturedCall = call;
-          return 'Installed 2 skills.';
-        });
+  test(
+    'platform bridge sends batch skill installs over the host channel',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return 'Installed 2 skills.';
+          });
 
-    final message = await bridge.installSkillSourceBatch(
-      'roin-orca/skills',
-      selectedSkillNames: const <String>['find-skills', 'review-skills'],
-    );
+      final message = await bridge.installSkillSourceBatch(
+        'roin-orca/skills',
+        selectedSkillNames: const <String>['find-skills', 'review-skills'],
+      );
 
-    expect(capturedCall.method, 'installSkillSourceBatch');
-    final arguments = capturedCall.arguments as Map<Object?, Object?>;
-    expect(arguments['sourceRef'], 'roin-orca/skills');
-    expect(arguments['selectedSkillNames'], <String>[
-      'find-skills',
-      'review-skills',
-    ]);
-    expect(message, 'Installed 2 skills.');
-  });
+      expect(capturedCall.method, 'installSkillSourceBatch');
+      final arguments = capturedCall.arguments as Map<Object?, Object?>;
+      expect(arguments['sourceRef'], 'roin-orca/skills');
+      expect(arguments['selectedSkillNames'], <String>[
+        'find-skills',
+        'review-skills',
+      ]);
+      expect(message, 'Installed 2 skills.');
+    },
+  );
 
   test('platform bridge loads image preview payloads', () async {
     late MethodCall capturedCall;
@@ -543,7 +552,8 @@ void main() {
           capturedCall = call;
           return <String, Object?>{
             'name': 'voice-note.m4a',
-            'relativePath': '.opencray/chat-media/session-1/hash/voice-note.m4a',
+            'relativePath':
+                '.opencray/chat-media/session-1/hash/voice-note.m4a',
             'localFilePath': '/workspace/session-1/voice-note.m4a',
             'mimeType': 'audio/mp4',
             'durationMs': 4200,
@@ -789,6 +799,83 @@ void main() {
     expect(snapshot.records.single.preferenceValue, 'Xiao Bai');
   });
 
+  test('platform bridge searches projected memory debug corpus', () async {
+    late MethodCall capturedCall;
+    const bridge = OpenCrayPlatformBridge();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(methodChannel, (call) async {
+          capturedCall = call;
+          return <String, Object?>{
+            'sessionId': 'session-1',
+            'workspaceId': 'workspace-main',
+            'observedAtEpochMs': 5000,
+            'query': 'xiao bai',
+            'queryTerms': <Object?>['xiao', 'bai'],
+            'corpusFileCount': 2,
+            'results': <Object?>[
+              <String, Object?>{
+                'recordId': 'memory-user',
+                'path': 'MEMORY.md',
+                'startLine': 5,
+                'endLine': 5,
+                'score': 420,
+                'matchedTerms': <Object?>['xiao', 'bai'],
+                'kind': 'user_preference',
+                'scope': 'user',
+                'status': 'active',
+                'snippet': 'User prefers Chinese replies.',
+              },
+            ],
+          };
+        });
+
+    final snapshot = await bridge.searchMemoryDebug(query: 'xiao bai');
+
+    expect(capturedCall.method, 'searchMemoryDebug');
+    final arguments = capturedCall.arguments as Map<Object?, Object?>;
+    expect(arguments['query'], 'xiao bai');
+    expect(arguments['maxResults'], 4);
+    expect(arguments['minScore'], 1);
+    expect(snapshot.query, 'xiao bai');
+    expect(snapshot.results.single.recordId, 'memory-user');
+    expect(snapshot.results.single.path, 'MEMORY.md');
+  });
+
+  test('platform bridge loads projected memory debug slices', () async {
+    late MethodCall capturedCall;
+    const bridge = OpenCrayPlatformBridge();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(methodChannel, (call) async {
+          capturedCall = call;
+          return <String, Object?>{
+            'sessionId': 'session-1',
+            'workspaceId': 'workspace-main',
+            'observedAtEpochMs': 5000,
+            'path': 'MEMORY.md',
+            'text': 'User prefers Chinese replies.',
+            'startLine': 5,
+            'endLine': 5,
+            'totalLineCount': 12,
+            'recordIds': <Object?>['memory-user'],
+          };
+        });
+
+    final snapshot = await bridge.getMemoryDebugSlice(
+      path: 'MEMORY.md',
+      fromLine: 5,
+      lines: 1,
+    );
+
+    expect(capturedCall.method, 'getMemoryDebugSlice');
+    final arguments = capturedCall.arguments as Map<Object?, Object?>;
+    expect(arguments['path'], 'MEMORY.md');
+    expect(arguments['fromLine'], 5);
+    expect(arguments['lines'], 1);
+    expect(snapshot.path, 'MEMORY.md');
+    expect(snapshot.recordIds, <String>['memory-user']);
+    expect(snapshot.text, 'User prefers Chinese replies.');
+  });
+
   test('platform bridge loads memory debug link snapshots', () async {
     late MethodCall capturedCall;
     const bridge = OpenCrayPlatformBridge();
@@ -1010,6 +1097,27 @@ void main() {
     expect(snapshot.interactionPreferenceDebug?.preferredNaming, 'A-Cheng');
     expect(snapshot.relationshipStateDebug?.derivedAddressStyle, 'intimate');
     expect(snapshot.relationshipStateDebug?.recentNegativeGuardActive, isFalse);
+  });
+
+  test('platform bridge applies memory debug actions', () async {
+    late MethodCall capturedCall;
+    const bridge = OpenCrayPlatformBridge();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(methodChannel, (call) async {
+          capturedCall = call;
+          return null;
+        });
+
+    await bridge.applyMemoryDebugAction(
+      recordId: 'memory-user',
+      actionId: 'suppress',
+    );
+
+    expect(capturedCall.method, 'applyMemoryDebugAction');
+    expect(capturedCall.arguments, <String, Object?>{
+      'recordId': 'memory-user',
+      'actionId': 'suppress',
+    });
   });
 
   test(

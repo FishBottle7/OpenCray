@@ -69,6 +69,77 @@ void main() {
     expect(liveContext.memoryRecallEnabled, isTrue);
   });
 
+  test('chat runtime snapshot parses host lifecycle and run diagnostics', () {
+    final snapshot = OpenCrayChatRuntimeSnapshot.fromMap(<Object?, Object?>{
+      'sessionId': 'session-1',
+      'hostLifecycle': <Object?, Object?>{
+        'processStartId': 'process-1',
+        'processStartedAtEpochMs': 1500,
+        'hostInstanceId': 'host-1',
+        'runtimeOwnerId': 'owner-1',
+        'hostCreatedAtEpochMs': 2000,
+      },
+      'activeRuns': <Object?>[
+        <Object?, Object?>{
+          'sessionId': 'session-1',
+          'runId': 'run-restore',
+          'taskId': 'task-restore',
+          'acceptedAtEpochMs': 1000,
+          'updatedAtEpochMs': 2100,
+          'attempt': 1,
+          'isTerminal': true,
+          'diagnostics': <Object?, Object?>{
+            'processStartId': 'process-1',
+            'hostInstanceId': 'host-1',
+            'runtimeOwnerId': 'owner-1',
+            'submissionSource': 'chat_user_message',
+            'recoveryReason': 'host_restart_inflight_task_interrupted',
+            'queueRestoreEpochMs': 2050,
+            'previousLifecycleState': 'running',
+            'restoredFromDurableStore': true,
+          },
+        },
+      ],
+      'events': <Object?>[],
+    });
+
+    expect(snapshot.hostLifecycle, isNotNull);
+    expect(snapshot.hostLifecycle!.processStartId, 'process-1');
+    expect(snapshot.hostLifecycle!.hostInstanceId, 'host-1');
+    expect(snapshot.hostLifecycle!.hostCreatedAtEpochMs, 2000);
+
+    final diagnostics = snapshot.activeRuns.single.diagnostics;
+    expect(diagnostics, isNotNull);
+    expect(diagnostics!.submissionSource, 'chat_user_message');
+    expect(
+      diagnostics.recoveryReason,
+      'host_restart_inflight_task_interrupted',
+    );
+    expect(diagnostics.queueRestoreEpochMs, 2050);
+    expect(diagnostics.previousLifecycleState, 'running');
+    expect(diagnostics.restoredFromDurableStore, isTrue);
+  });
+
+  test('chat run submission parses lifecycle diagnostics from map payload', () {
+    final submission = OpenCrayChatRunSubmission.fromMap(<Object?, Object?>{
+      'sessionId': 'session-1',
+      'runId': 'run-1',
+      'taskId': 'task-1',
+      'acceptedAtEpochMs': 1000,
+      'diagnostics': <Object?, Object?>{
+        'processStartId': 'process-1',
+        'hostInstanceId': 'host-1',
+        'runtimeOwnerId': 'owner-1',
+        'submissionSource': 'chat_queued_follow_up',
+      },
+    });
+
+    expect(submission.sessionId, 'session-1');
+    expect(submission.diagnostics, isNotNull);
+    expect(submission.diagnostics!.processStartId, 'process-1');
+    expect(submission.diagnostics!.submissionSource, 'chat_queued_follow_up');
+  });
+
   test('chat message snapshot parses createdAtEpochMs from map payload', () {
     final snapshot = OpenCrayChatMessageSnapshot.fromMap(<Object?, Object?>{
       'messageId': 'message-1',
@@ -189,6 +260,9 @@ void main() {
         'sessions': <Object?>[],
       },
       'isInputEnabled': true,
+      'todoState': 'archived_completed',
+      'todoHideDelayMs': 3200,
+      'todoCompletedAtEpochMs': 1700000003000,
       'todos': <Object?>[
         <Object?, Object?>{
           'content': 'Review chat composer layout',
@@ -211,5 +285,8 @@ void main() {
     expect(snapshot.todos.first.status, 'pending');
     expect(snapshot.todos[1].activeForm, 'Highlighting active todo text');
     expect(snapshot.todos.last.status, 'completed');
+    expect(snapshot.todoState, 'archived_completed');
+    expect(snapshot.todoHideDelayMs, 3200);
+    expect(snapshot.todoCompletedAtEpochMs, 1700000003000);
   });
 }

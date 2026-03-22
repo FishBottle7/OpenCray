@@ -25,6 +25,8 @@ import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.subagent.SubAgentContinuationKind
+import com.opencray.runtime.subagent.SubAgentExecutionState
 import java.io.File
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
@@ -120,6 +122,11 @@ internal data class PersistedAgentRunEvent(
   val subAgentType: String? = null,
   val subAgentContextMode: String? = null,
   val subAgentDepth: Int? = null,
+  val subAgentExecutionState: String? = null,
+  val subAgentContinuationKind: String? = null,
+  val subAgentResumable: Boolean? = null,
+  val subAgentRequiresUserAction: Boolean? = null,
+  val subAgentIsHighRisk: Boolean? = null,
   val toolReason: String? = null,
   val argumentsJson: String? = null,
   val toolStatus: String? = null,
@@ -140,6 +147,7 @@ internal data class PersistedAgentRunEvent(
   val writtenRecordIds: List<String> = emptyList(),
   val writtenKinds: List<String> = emptyList(),
   val resolvedRecordIds: List<String> = emptyList(),
+  val suppressedRecordIds: List<String> = emptyList(),
   val reaffirmedRecordIds: List<String> = emptyList(),
   val expiredRecordIds: List<String> = emptyList(),
 ) {
@@ -336,6 +344,11 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     subAgentType = subagentType,
     subAgentContextMode = contextMode,
     subAgentDepth = depth,
+    subAgentExecutionState = executionState?.wireValue,
+    subAgentContinuationKind = continuationKind?.wireValue,
+    subAgentResumable = resumable,
+    subAgentRequiresUserAction = requiresUserAction,
+    subAgentIsHighRisk = isHighRisk,
     text = summary,
   )
   is OpenCrayToolCallEvent -> PersistedAgentRunEvent(
@@ -392,6 +405,7 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     writtenRecordIds = writtenRecordIds,
     writtenKinds = writtenKinds,
     resolvedRecordIds = resolvedRecordIds,
+    suppressedRecordIds = suppressedRecordIds,
     reaffirmedRecordIds = reaffirmedRecordIds,
     expiredRecordIds = expiredRecordIds,
   )
@@ -467,24 +481,55 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
   )
-  PersistedAgentRunEventKind.SUBAGENT -> OpenCraySubAgentEvent(
-    runId = runId,
-    taskId = taskId,
-    phase = phase
+  PersistedAgentRunEventKind.SUBAGENT -> run {
+    val restoredPhase = phase
       ?.trim()
       ?.takeIf(String::isNotBlank)
       ?.let { raw -> runCatching { OpenCraySubAgentPhase.valueOf(raw) }.getOrNull() }
-      ?: OpenCraySubAgentPhase.STARTED,
-    childRunId = childRunId?.trim()?.takeIf(String::isNotBlank) ?: runId,
-    childTaskId = childTaskId?.trim()?.takeIf(String::isNotBlank) ?: taskId,
-    label = subAgentLabel?.trim()?.takeIf(String::isNotBlank) ?: "Task",
-    subagentType = subAgentType?.trim()?.takeIf(String::isNotBlank) ?: "general-purpose",
-    contextMode = subAgentContextMode?.trim()?.takeIf(String::isNotBlank) ?: "delegated",
-    depth = subAgentDepth ?: 1,
-    summary = text?.trim()?.takeIf(String::isNotBlank),
-    turn = turn,
-    emittedAtEpochMs = emittedAtEpochMs,
-  )
+      ?: OpenCraySubAgentPhase.STARTED
+    val restoredExecutionState = subAgentExecutionState
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let(::parseSubAgentExecutionState)
+      ?: defaultSubAgentExecutionStateFor(restoredPhase)
+    val restoredContinuationKind = subAgentContinuationKind
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let(::parseSubAgentContinuationKind)
+      ?: if (
+        restoredExecutionState == SubAgentExecutionState.BACKGROUND_QUEUED ||
+        restoredExecutionState == SubAgentExecutionState.BACKGROUND_RUNNING
+      ) {
+        SubAgentContinuationKind.BACKGROUND_RESUME
+      } else {
+        SubAgentContinuationKind.NONE
+      }
+
+    OpenCraySubAgentEvent(
+      runId = runId,
+      taskId = taskId,
+      phase = restoredPhase,
+      childRunId = childRunId?.trim()?.takeIf(String::isNotBlank) ?: runId,
+      childTaskId = childTaskId?.trim()?.takeIf(String::isNotBlank) ?: taskId,
+      label = subAgentLabel?.trim()?.takeIf(String::isNotBlank) ?: "Task",
+      subagentType = subAgentType?.trim()?.takeIf(String::isNotBlank) ?: "general-purpose",
+      contextMode = subAgentContextMode?.trim()?.takeIf(String::isNotBlank) ?: "delegated",
+      depth = subAgentDepth ?: 1,
+      summary = text?.trim()?.takeIf(String::isNotBlank),
+      executionState = restoredExecutionState,
+      continuationKind = restoredContinuationKind,
+      resumable = subAgentResumable ?: (restoredContinuationKind != SubAgentContinuationKind.NONE),
+      requiresUserAction = subAgentRequiresUserAction ?: (
+        restoredExecutionState == SubAgentExecutionState.WAITING_APPROVAL ||
+          restoredExecutionState == SubAgentExecutionState.WAITING_HIGH_RISK_APPROVAL
+      ),
+      isHighRisk = subAgentIsHighRisk ?: (
+        restoredExecutionState == SubAgentExecutionState.WAITING_HIGH_RISK_APPROVAL
+      ),
+      turn = turn,
+      emittedAtEpochMs = emittedAtEpochMs,
+    )
+  }
   PersistedAgentRunEventKind.TOOL_CALL -> OpenCrayToolCallEvent(
     runId = runId,
     taskId = taskId,
@@ -545,6 +590,7 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
     writtenRecordIds = writtenRecordIds,
     writtenKinds = writtenKinds,
     resolvedRecordIds = resolvedRecordIds,
+    suppressedRecordIds = suppressedRecordIds,
     reaffirmedRecordIds = reaffirmedRecordIds,
     expiredRecordIds = expiredRecordIds,
     turn = turn,
@@ -559,6 +605,22 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
   )
+}
+
+private fun parseSubAgentExecutionState(raw: String): SubAgentExecutionState? =
+  SubAgentExecutionState.fromWireValue(raw)
+
+private fun parseSubAgentContinuationKind(raw: String): SubAgentContinuationKind? =
+  SubAgentContinuationKind.fromWireValue(raw)
+
+private fun defaultSubAgentExecutionStateFor(
+  phase: OpenCraySubAgentPhase,
+): SubAgentExecutionState = when (phase) {
+  OpenCraySubAgentPhase.STARTED -> SubAgentExecutionState.RUNNING
+  OpenCraySubAgentPhase.RESUMED -> SubAgentExecutionState.RUNNING
+  OpenCraySubAgentPhase.COMPLETED -> SubAgentExecutionState.COMPLETED
+  OpenCraySubAgentPhase.FAILED -> SubAgentExecutionState.FAILED
+  OpenCraySubAgentPhase.CANCELLED -> SubAgentExecutionState.CANCELLED
 }
 
 private fun parseArgumentsJson(argumentsJson: String?): JsonObject {

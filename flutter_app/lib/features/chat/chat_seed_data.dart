@@ -11,12 +11,8 @@ class OpenCrayChatSeedData {
     required ChatMessageKind kind,
     required String text,
     String meta = '',
-  }) => ChatMessageData(
-    messageId: messageId,
-    kind: kind,
-    text: text,
-    meta: meta,
-  );
+  }) =>
+      ChatMessageData(messageId: messageId, kind: kind, text: text, meta: meta);
 
   static ChatSessionsDrawerState _drawer(OpenCrayUiCopy copy) =>
       ChatSessionsDrawerState(
@@ -131,12 +127,14 @@ class OpenCrayChatSeedData {
   static List<ChatAttachmentData> sampleAttachments(OpenCrayUiCopy copy) =>
       <ChatAttachmentData>[
         ChatAttachmentData(
+          id: 'seed-image',
           kind: ChatAttachmentKind.image,
           label: 'workspace-shot.png',
           detail: copy.chatSeedImageDetail,
           accentColor: const Color(0xFFE6F0FF),
         ),
         ChatAttachmentData(
+          id: 'seed-file',
           kind: ChatAttachmentKind.file,
           label: 'mobile-ui-layout-spec.md',
           detail: copy.chatSeedFileDetail,

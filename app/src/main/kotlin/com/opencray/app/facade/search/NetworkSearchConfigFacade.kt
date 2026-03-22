@@ -87,8 +87,8 @@ internal class LocalNetworkSearchConfigFacade private constructor(
         settingsStore = WebSearchSettingsStore.fromContext(context.applicationContext),
         strings = NetworkSearchConfigStrings(
           localeTag = localeTag,
-          title = localizedContext.getString(R.string.settings_card_privacy_telemetry),
-          subtitle = localizedContext.getString(R.string.settings_privacy_subtitle),
+          title = localizedContext.getString(R.string.settings_network_search_title),
+          subtitle = localizedContext.getString(R.string.settings_network_search_subtitle),
         ),
       )
     }

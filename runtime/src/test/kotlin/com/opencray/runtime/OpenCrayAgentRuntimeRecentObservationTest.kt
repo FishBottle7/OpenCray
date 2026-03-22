@@ -63,7 +63,7 @@ class OpenCrayAgentRuntimeRecentObservationTest {
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals(2, gateway.requests.size)
-    assertTrue(gateway.requests[1].prompt.contains("[Recent Workspace Observations]"))
+    assertTrue(gateway.requests[1].prompt.contains("[Recent Working Observations]"))
     assertTrue(gateway.requests[1].prompt.contains("Read file_path=README.md"))
     assertTrue(gateway.requests[1].prompt.contains("line 1"))
     assertEquals("1", gateway.requests[1].metadata["contextRecentObservationCount"])

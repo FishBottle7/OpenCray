@@ -12,10 +12,14 @@ import com.opencray.llm.LiteLlmAttemptOutcome
 import com.opencray.llm.LiteLlmAttemptRecord
 import com.opencray.llm.LiteLlmCompletionMode
 import com.opencray.llm.LiteLlmGateway
+import com.opencray.llm.LiteLlmGatewayMessageRole
 import com.opencray.llm.LiteLlmGatewayRequest
 import com.opencray.llm.LiteLlmGatewayResult
+import com.opencray.llm.LiteLlmMetadataKeys
 import com.opencray.llm.LiteLlmGatewayStatus
 import com.opencray.llm.LiteLlmRouteSelectionMetadata
+import com.opencray.llm.LiteLlmStructuredCompletion
+import com.opencray.llm.LiteLlmStructuredToolCall
 import com.opencray.runtime.bootstrap.BootstrapContext
 import com.opencray.runtime.bootstrap.BootstrapFileTrace
 import com.opencray.runtime.bootstrap.BootstrapMode
@@ -58,6 +62,8 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 class OpenCrayAgentRuntimeTest {
   @get:Rule
@@ -200,7 +206,8 @@ class OpenCrayAgentRuntimeTest {
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("延续了之前的对话", result.stdout)
     assertEquals("3", result.metadata["contextMessageCount"])
-    assertTrue(result.metadata["contextLayerNames"].orEmpty().contains("Task Context"))
+    assertTrue(result.metadata["contextLayerNames"].orEmpty().contains("Task Metadata"))
+    assertTrue(result.metadata["contextLayerNames"].orEmpty().contains("Conversation"))
     assertTrue(gateway.requests[0].systemPrompt.orEmpty().contains("[Session Policy]"))
     assertTrue(gateway.requests[0].prompt.contains("Earlier question."))
     assertTrue(gateway.requests[0].prompt.contains("Earlier answer."))
@@ -893,9 +900,10 @@ class OpenCrayAgentRuntimeTest {
     assertEquals("2", result.metadata["turnCount"])
     assertEquals("1", result.metadata["toolCallCount"])
     assertEquals("1", gateway.requests[1].metadata["remainingTurnCount"])
+    assertTrue(gateway.requests[0].tools.isNotEmpty())
     assertTrue(
       gateway.requests[1].systemPrompt.orEmpty().contains(
-        "This is the last allowed model turn. You must return exactly one JSON final action now.",
+        "This is the last allowed model turn. Do not call any more tools. Return the final user-facing answer now.",
       ),
     )
     assertTrue(
@@ -1002,6 +1010,311 @@ class OpenCrayAgentRuntimeTest {
     assertEquals(1, gateway.requests.size)
     assertEquals(listOf("APPROVAL_REQUIRED"), suspensionRequests.map(SuspensionRequest::reasonCode))
     assertTrue(!Files.exists(workspaceRoot.toPath().resolve("note.txt")))
+  }
+
+  @Test
+  fun runPromptTaskApprovalResumeContinuesFromSavedTurnWithoutReissuingPromptToolCall() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-approval-resume")
+    val initialGateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Write","arguments":{"file_path":"note.txt","content":"hello"}}""",
+      ),
+    )
+    val firstRuntime = OpenCrayAgentRuntime(
+      gateway = initialGateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 4, maxToolCalls = 2),
+      clock = IncrementingClock(start = 3_600L)::next,
+    )
+    val task = promptTask(
+      input = "Write a note in safe mode.",
+      metadata = mapOf("chatMode" to "SAFE"),
+    )
+
+    val firstResult = firstRuntime.execute(
+      task = task,
+      hooks = runtimeHooks(),
+    )
+    val resumeState = requireNotNull(
+      OpenCrayPromptResumeMetadata.decodeFromMetadata(
+        metadata = firstResult.metadata,
+        json = Json { ignoreUnknownKeys = true },
+      ),
+    )
+
+    assertEquals(ExecutionStatus.DENIED, firstResult.status)
+    assertEquals("APPROVAL_REQUIRED", firstResult.errorCode)
+    assertEquals(1, initialGateway.requests.size)
+    assertEquals(0, resumeState.turnIndex)
+    assertEquals(0, resumeState.toolCallCount)
+    assertEquals(0, resumeState.nextActionIndex)
+    assertEquals(1, resumeState.pendingActions.size)
+    val resumedPendingCall = (resumeState.pendingActions.single() as OpenCraySerializableModelAction.ToolCall).call
+    assertEquals("Write", resumedPendingCall.toolName)
+    assertEquals("oc-call-1", resumedPendingCall.id)
+
+    val resumedGateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"Approved write completed."}""",
+      ),
+    )
+    val resumedEventSink = RecordingEventSink()
+    val resumedRuntime = OpenCrayAgentRuntime(
+      gateway = resumedGateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+          approvedTaskId = task.id,
+          approvedToolName = "Write",
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        promptResumeState = resumeState,
+      ),
+      eventSink = resumedEventSink,
+      clock = IncrementingClock(start = 3_700L)::next,
+    )
+
+    val resumedResult = resumedRuntime.execute(
+      task = task,
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, resumedResult.status)
+    assertEquals("Approved write completed.", resumedResult.stdout)
+    assertEquals(1, resumedGateway.requests.size)
+    assertEquals("1", resumedGateway.requests.single().metadata["turnIndex"])
+    assertTrue(resumedGateway.requests.single().prompt.contains("note.txt"))
+    assertTrue(
+      resumedGateway.requests.single().messages.any { message ->
+        message.role == LiteLlmGatewayMessageRole.ASSISTANT &&
+          message.toolCalls.singleOrNull()?.id == "oc-call-1" &&
+          message.toolCalls.singleOrNull()?.toolName == "Write"
+      },
+    )
+    assertTrue(
+      resumedGateway.requests.single().messages.any { message ->
+        message.role == LiteLlmGatewayMessageRole.TOOL &&
+          message.toolResult?.toolCallId == "oc-call-1" &&
+          message.toolResult?.toolName == "Write"
+      },
+    )
+    assertTrue(Files.exists(workspaceRoot.toPath().resolve("note.txt")))
+    assertEquals(
+      listOf("tool_result", "assistant", "lifecycle"),
+      resumedEventSink.events.drop(1).map { event ->
+        when (event) {
+          is OpenCrayToolResultEvent -> "tool_result"
+          is OpenCrayAssistantEvent -> "assistant"
+          is OpenCrayLifecycleEvent -> "lifecycle"
+          else -> "other"
+        }
+      },
+    )
+    assertTrue(resumedEventSink.events.none { event -> event is OpenCrayToolCallEvent })
+  }
+
+  @Test
+  fun runPromptTaskRejectedApprovalResumeContinuesWithoutReaskingApproval() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-approval-reject-resume")
+    val initialGateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Write","arguments":{"file_path":"note.txt","content":"hello"}}""",
+      ),
+    )
+    val firstRuntime = OpenCrayAgentRuntime(
+      gateway = initialGateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 4, maxToolCalls = 2),
+      clock = IncrementingClock(start = 3_750L)::next,
+    )
+    val task = promptTask(
+      input = "Write a note in safe mode.",
+      metadata = mapOf("chatMode" to "SAFE"),
+    )
+
+    val firstResult = firstRuntime.execute(
+      task = task,
+      hooks = runtimeHooks(),
+    )
+    val resumeState = requireNotNull(
+      OpenCrayPromptResumeMetadata.decodeFromMetadata(
+        metadata = firstResult.metadata,
+        json = Json { ignoreUnknownKeys = true },
+      ),
+    )
+
+    val resumedGateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"I skipped the blocked write and did not change the file."}""",
+      ),
+    )
+    val resumedEventSink = RecordingEventSink()
+    val resumedRuntime = OpenCrayAgentRuntime(
+      gateway = resumedGateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+          rejectedTaskId = task.id,
+          rejectedToolName = "Write",
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        promptResumeState = resumeState,
+      ),
+      eventSink = resumedEventSink,
+      clock = IncrementingClock(start = 3_760L)::next,
+    )
+
+    val resumedResult = resumedRuntime.execute(
+      task = task,
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, resumedResult.status)
+    assertEquals("I skipped the blocked write and did not change the file.", resumedResult.stdout)
+    assertEquals(1, resumedGateway.requests.size)
+    assertEquals("1", resumedGateway.requests.single().metadata["turnIndex"])
+    assertEquals(
+      listOf("tool_result", "assistant", "lifecycle"),
+      resumedEventSink.events.drop(1).map { event ->
+        when (event) {
+          is OpenCrayToolResultEvent -> "tool_result"
+          is OpenCrayAssistantEvent -> "assistant"
+          is OpenCrayLifecycleEvent -> "lifecycle"
+          else -> "other"
+        }
+      },
+    )
+    assertEquals(
+      listOf("Write:DENIED"),
+      resumedEventSink.events
+        .filterIsInstance<OpenCrayToolResultEvent>()
+        .map { event -> "${event.call.toolName}:${event.result.status.name}" },
+    )
+    assertTrue(resumedEventSink.events.none { event -> event is OpenCrayToolCallEvent })
+    assertTrue(!Files.exists(workspaceRoot.toPath().resolve("note.txt")))
+  }
+
+  @Test
+  fun runPromptTaskApprovalResumeContinuesRemainingActionsInSameTurnInOriginalOrder() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-approval-batch-resume")
+    Files.write(
+      workspaceRoot.toPath().resolve("input.txt"),
+      "seed".toByteArray(StandardCharsets.UTF_8),
+    )
+    val initialGateway = RecordingGateway(
+      outputs = listOf(
+        """{"actions":[
+          {"type":"progress","text":"Inspecting workspace","stage":"inspect"},
+          {"type":"tool_call","tool_name":"Read","arguments":{"file_path":"input.txt"}},
+          {"type":"tool_call","tool_name":"Write","arguments":{"file_path":"note.txt","content":"hello"}},
+          {"type":"progress","text":"Verifying saved note","stage":"verify"},
+          {"type":"tool_call","tool_name":"Read","arguments":{"file_path":"note.txt"}}
+        ]}""",
+      ),
+    )
+    val initialEventSink = RecordingEventSink()
+    val task = promptTask(
+      input = "Inspect the workspace, write a note, then verify it in safe mode.",
+      metadata = mapOf("chatMode" to "SAFE"),
+    )
+    val firstRuntime = OpenCrayAgentRuntime(
+      gateway = initialGateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 4, maxToolCalls = 4),
+      eventSink = initialEventSink,
+      clock = IncrementingClock(start = 3_800L)::next,
+    )
+
+    val firstResult = firstRuntime.execute(
+      task = task,
+      hooks = runtimeHooks(),
+    )
+    val resumeState = requireNotNull(
+      OpenCrayPromptResumeMetadata.decodeFromMetadata(
+        metadata = firstResult.metadata,
+        json = Json { ignoreUnknownKeys = true },
+      ),
+    )
+
+    assertEquals(ExecutionStatus.DENIED, firstResult.status)
+    assertEquals(listOf("Inspecting workspace"), initialEventSink.events.filterIsInstance<OpenCrayProgressEvent>().map { it.text })
+    assertEquals(listOf("Read", "Write"), initialEventSink.events.filterIsInstance<OpenCrayToolCallEvent>().map { it.call.toolName })
+    assertEquals(
+      listOf("Read:SUCCESS", "Write:DENIED"),
+      initialEventSink.events.filterIsInstance<OpenCrayToolResultEvent>().map { "${it.call.toolName}:${it.result.status.name}" },
+    )
+    assertEquals(0, resumeState.turnIndex)
+    assertEquals(1, resumeState.toolCallCount)
+    assertEquals(2, resumeState.nextActionIndex)
+    assertEquals(5, resumeState.pendingActions.size)
+
+    val resumedGateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"Verified the approved note."}""",
+      ),
+    )
+    val resumedEventSink = RecordingEventSink()
+    val resumedRuntime = OpenCrayAgentRuntime(
+      gateway = resumedGateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+          approvedTaskId = task.id,
+          approvedToolName = "Write",
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 4,
+        promptResumeState = resumeState,
+      ),
+      eventSink = resumedEventSink,
+      clock = IncrementingClock(start = 3_900L)::next,
+    )
+
+    val resumedResult = resumedRuntime.execute(
+      task = task,
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, resumedResult.status)
+    assertEquals("Verified the approved note.", resumedResult.stdout)
+    assertEquals(listOf("Verifying saved note"), resumedEventSink.events.filterIsInstance<OpenCrayProgressEvent>().map { it.text })
+    assertEquals(listOf("Read"), resumedEventSink.events.filterIsInstance<OpenCrayToolCallEvent>().map { it.call.toolName })
+    assertEquals(
+      listOf("Write:SUCCESS", "Read:SUCCESS"),
+      resumedEventSink.events.filterIsInstance<OpenCrayToolResultEvent>().map { "${it.call.toolName}:${it.result.status.name}" },
+    )
+    assertEquals(1, resumedGateway.requests.size)
+    assertEquals("1", resumedGateway.requests.single().metadata["turnIndex"])
+    assertTrue(resumedGateway.requests.single().prompt.contains("Protocol note: return only the next step on each turn."))
+    assertTrue(resumedGateway.requests.single().prompt.contains("prefer it over the legacy JSON tool_call fallback"))
+    assertTrue(resumedGateway.requests.single().prompt.contains("note.txt"))
+    assertEquals(
+      "hello",
+      String(
+        Files.readAllBytes(workspaceRoot.toPath().resolve("note.txt")),
+        StandardCharsets.UTF_8,
+      ),
+    )
   }
 
   @Test
@@ -1276,7 +1589,7 @@ class OpenCrayAgentRuntimeTest {
     )
     assertTrue(
       gateway.requests[1].prompt.contains(
-        "Protocol error: return exactly one JSON object whose action is progress, tool_call, or final.",
+        "Protocol error: either use native tool calling or return exactly one JSON object whose legacy action is progress, tool_call, or final.",
       ),
     )
     assertTrue(gateway.requests[1].prompt.contains("""{"unexpected":"shape"}"""))
@@ -1326,7 +1639,8 @@ class OpenCrayAgentRuntimeTest {
     assertEquals("README says mixed turn and NOTES says second file", result.stdout)
     assertTrue(gateway.requests[1].prompt.contains("mixed turn"))
     assertTrue(gateway.requests[1].prompt.contains("second file"))
-    assertTrue(gateway.requests[1].prompt.contains("Protocol note: return only the next action on each turn."))
+    assertTrue(gateway.requests[1].prompt.contains("Protocol note: return only the next step on each turn."))
+    assertTrue(gateway.requests[1].prompt.contains("prefer it over the legacy JSON tool_call fallback"))
     assertEquals("2", result.metadata["toolCallCount"])
     assertEquals(
       listOf("README says mixed turn and NOTES says second file"),
@@ -1425,6 +1739,225 @@ class OpenCrayAgentRuntimeTest {
     assertEquals("2", result.metadata["contextSourceMessageCount"])
     assertEquals("2", result.metadata["contextWindowMessageCount"])
     assertEquals("2", result.metadata["contextMessageCount"])
+  }
+
+  @Test
+  fun runPromptTaskRecordsToolDiagnosticsWhenFinalReplyIsLostAfterSuccessfulTool() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-tool-diagnostics")
+    Files.write(
+      workspaceRoot.toPath().resolve("README.md"),
+      "diagnostic preview".toByteArray(StandardCharsets.UTF_8),
+    )
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "test-route",
+      providerId = "fake",
+      model = "fake-model",
+      attemptIndex = 0,
+    )
+    var now = 9_000L
+    var requestIndex = 0
+    val gateway = object : LiteLlmGateway {
+      override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+        val startedAt = now++
+        val finishedAt = now++
+        return if (requestIndex++ == 0) {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            outputText = """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 71,
+                startedAtEpochMs = startedAt,
+                finishedAtEpochMs = finishedAt,
+              ),
+            ),
+            startedAtEpochMs = startedAt,
+            finishedAtEpochMs = finishedAt,
+          )
+        } else {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.FAILED,
+            completionMode = LiteLlmCompletionMode.TERMINAL,
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.FAILED,
+                errorCode = "PROVIDER_EMPTY_RESPONSE",
+                startedAtEpochMs = startedAt,
+                finishedAtEpochMs = finishedAt,
+              ),
+            ),
+            errorCode = "PROVIDER_EMPTY_RESPONSE",
+            errorMessage = "Provider returned an empty completion payload.",
+            startedAtEpochMs = startedAt,
+            finishedAtEpochMs = finishedAt,
+            metadata = mapOf(
+              LiteLlmMetadataKeys.PROVIDER_RESPONSE_SHAPE to "openai_empty",
+              LiteLlmMetadataKeys.NATIVE_TOOL_CALL_OBSERVED to "false",
+            ),
+          )
+        }
+      }
+    }
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 4, maxToolCalls = 2),
+      clock = IncrementingClock(start = 9_500L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Read the README and answer."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.FAILED, result.status)
+    assertEquals("PROVIDER_EMPTY_RESPONSE", result.errorCode)
+    assertEquals("true", result.metadata[LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED])
+    assertEquals("openai_empty", result.metadata[LiteLlmMetadataKeys.PROVIDER_RESPONSE_SHAPE])
+    assertEquals("true", result.metadata[LiteLlmMetadataKeys.PARSED_TOOL_CALL_OBSERVED])
+    assertEquals("true", result.metadata[LiteLlmMetadataKeys.FALLBACK_PARSER_ATTEMPTED])
+    assertEquals("true", result.metadata[LiteLlmMetadataKeys.FALLBACK_PARSER_SUCCEEDED])
+    assertEquals("true", result.metadata[LiteLlmMetadataKeys.TOOL_CALL_EVENT_EMITTED])
+    assertEquals("true", result.metadata[LiteLlmMetadataKeys.TOOL_RESULT_EVENT_EMITTED])
+    assertEquals("Read", result.metadata[LiteLlmMetadataKeys.LAST_SUCCESSFUL_TOOL_NAME])
+  }
+
+  @Test
+  fun runPromptTaskExecutesStructuredToolCallWithoutTextProtocolPayload() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-structured-tool-call")
+    Files.write(
+      workspaceRoot.toPath().resolve("README.md"),
+      "structured provider path".toByteArray(StandardCharsets.UTF_8),
+    )
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "test-route",
+      providerId = "anthropic",
+      model = "claude-test",
+      attemptIndex = 0,
+    )
+    var requestIndex = 0
+    val requests = mutableListOf<LiteLlmGatewayRequest>()
+    val gateway = object : LiteLlmGateway {
+      override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+        requests += request
+        return if (requestIndex++ == 0) {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              toolCalls = listOf(
+                LiteLlmStructuredToolCall(
+                  id = "toolu_1",
+                  toolName = "Read",
+                  arguments = JsonObject(
+                    mapOf("file_path" to JsonPrimitive("README.md")),
+                  ),
+                ),
+              ),
+            ),
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 0,
+                startedAtEpochMs = 10_000L,
+                finishedAtEpochMs = 10_001L,
+              ),
+            ),
+            startedAtEpochMs = 10_000L,
+            finishedAtEpochMs = 10_001L,
+            metadata = mapOf(
+              LiteLlmMetadataKeys.PROVIDER_RESPONSE_SHAPE to "anthropic_tool_use",
+              LiteLlmMetadataKeys.NATIVE_TOOL_CALL_OBSERVED to "true",
+            ),
+          )
+        } else {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              finalText = "README shows structured provider path.",
+              rawText = "README shows structured provider path.",
+            ),
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 31,
+                startedAtEpochMs = 10_002L,
+                finishedAtEpochMs = 10_003L,
+              ),
+            ),
+            startedAtEpochMs = 10_002L,
+            finishedAtEpochMs = 10_003L,
+            metadata = mapOf(
+              LiteLlmMetadataKeys.PROVIDER_RESPONSE_SHAPE to "anthropic_text",
+              LiteLlmMetadataKeys.NATIVE_TOOL_CALL_OBSERVED to "false",
+            ),
+          )
+        }
+      }
+    }
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 4, maxToolCalls = 2),
+      clock = IncrementingClock(start = 10_500L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Read the README and answer."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("README shows structured provider path.", result.stdout)
+    assertEquals("native_text_final", result.metadata["responseFormat"])
+    assertEquals("true", result.metadata[LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED])
+    assertEquals("false", result.metadata[LiteLlmMetadataKeys.FALLBACK_PARSER_ATTEMPTED])
+    assertTrue(requests[0].tools.any { tool -> tool.name == "Read" })
+    assertTrue(requests[0].messages.any { message -> message.content?.contains("[Tool Protocol]") == true })
+    assertTrue(requests[0].messages.any { message -> message.content == "Read the README and answer." })
+    val secondRequestMessages = requests[1].messages
+    assertTrue(
+      secondRequestMessages.any { message ->
+        message.role == LiteLlmGatewayMessageRole.ASSISTANT &&
+          message.toolCalls.singleOrNull()?.toolName == "Read" &&
+          message.toolCalls.singleOrNull()?.id == "toolu_1"
+      },
+    )
+    assertTrue(
+      secondRequestMessages.any { message ->
+        message.role == LiteLlmGatewayMessageRole.TOOL &&
+          message.toolResult?.toolCallId == "toolu_1" &&
+          message.toolResult?.toolName == "Read" &&
+          message.toolResult?.content?.contains("\"tool_name\"") == true &&
+          message.toolResult?.content?.contains("Read") == true
+      },
+    )
+    assertEquals("Read", result.metadata[LiteLlmMetadataKeys.LAST_SUCCESSFUL_TOOL_NAME])
   }
 
   @Test

@@ -64,7 +64,7 @@ class PromptAssemblerTest {
           ),
           toolDefinitions = listOf(
             AgentToolDefinition(
-              name = "workspace_read_file",
+              name = "Read",
               description = "Read a file from the workspace.",
             ),
             AgentToolDefinition(
@@ -72,8 +72,24 @@ class PromptAssemblerTest {
               description = "Run a shell command.",
             ),
             AgentToolDefinition(
+              name = "python_exec",
+              description = "Run a workspace Python script.",
+            ),
+            AgentToolDefinition(
+              name = "ProcessStart",
+              description = "Start a managed process.",
+            ),
+            AgentToolDefinition(
               name = "WebFetch",
               description = "Fetch a web page.",
+            ),
+            AgentToolDefinition(
+              name = "GenerateImage",
+              description = "Generate an image.",
+            ),
+            AgentToolDefinition(
+              name = "SynthesizeSpeech",
+              description = "Generate a voice clip.",
             ),
           ),
           liveConversation = listOf(
@@ -101,6 +117,8 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("tool_name\":\"Bash"))
     assertTrue(prompt.taskPrompt.contains("tool_name\":\"python_exec"))
     assertTrue(prompt.taskPrompt.contains("tool_name\":\"WebFetch"))
+    assertTrue(prompt.taskPrompt.contains("tool_name\":\"GenerateImage"))
+    assertTrue(prompt.taskPrompt.contains("tool_name\":\"SynthesizeSpeech"))
     assertTrue(prompt.taskPrompt.contains("Use Bash for one-off shell commands that do not require Python"))
     assertTrue(prompt.taskPrompt.contains("prefer WebSearch when a search provider is configured"))
     assertTrue(prompt.taskPrompt.contains("use PowerShell syntax on Windows hosts"))
@@ -111,12 +129,19 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("Do not use Bash to invoke python, python3, or py for workspace scripts or Python-related diagnostics"))
     assertTrue(prompt.taskPrompt.contains("reason or justification"))
     assertTrue(prompt.taskPrompt.contains("it must not include a final answer"))
+    assertTrue(prompt.taskPrompt.contains("\"attachments\":[{\"artifact_id\":\"artifact-example-1234abcd\",\"kind\":\"image\"}]"))
+    assertTrue(prompt.taskPrompt.contains("When a tool result produces attachment artifacts"))
+    assertTrue(prompt.taskPrompt.contains("Generated speech should usually be attached with kind=voice"))
     assertTrue(prompt.taskPrompt.contains("Available tools:"))
-    assertTrue(prompt.taskPrompt.contains("[Task Context]"))
+    assertTrue(prompt.taskPrompt.contains("[Task Metadata]"))
+    assertTrue(prompt.taskPrompt.contains("[Conversation]"))
     assertTrue(prompt.taskPrompt.contains("[Compaction Summary]"))
     assertTrue(prompt.taskPrompt.contains("Compacted 1 older message(s) outside the active transcript window."))
     assertTrue(prompt.taskPrompt.contains("task_id=task-context"))
     assertTrue(prompt.taskPrompt.contains("Omitted 1 older message(s)"))
+    assertTrue(prompt.contextPrompt.contains("[Task Metadata]"))
+    assertFalse(prompt.contextPrompt.contains("[Conversation]"))
+    assertFalse(prompt.contextPrompt.contains("Latest request."))
     assertEquals(3, prompt.report.sourceTranscriptMessageCount)
     assertEquals(2, prompt.report.windowedTranscriptMessageCount)
     assertEquals(2, prompt.report.transcriptMessageCount)
@@ -128,6 +153,54 @@ class PromptAssemblerTest {
     assertEquals(1, prompt.report.compactedTranscriptMessageCount)
     assertTrue(prompt.report.compactionSummaryIncluded)
     assertEquals(0, prompt.report.injectedMemoryRecordCount)
+  }
+
+  @Test
+  fun assembleReadOnlyToolProtocolOmitsUnavailableMutableAndExecutionTools() {
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      ContextManager().prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "You are OpenCray for testing.",
+          sessionContext = AgentRuntimeSessionContext(),
+          toolDefinitions = listOf(
+            AgentToolDefinition(
+              name = "Read",
+              description = "Read a file from the workspace.",
+            ),
+            AgentToolDefinition(
+              name = "LS",
+              description = "List files in the workspace.",
+            ),
+            AgentToolDefinition(
+              name = "Grep",
+              description = "Search file contents.",
+            ),
+            AgentToolDefinition(
+              name = "Glob",
+              description = "Match workspace paths.",
+            ),
+          ),
+          liveConversation = listOf(
+            RuntimeConversationMessage(RuntimeConversationRole.USER, "Inspect the repo carefully."),
+          ),
+        ),
+      ),
+    )
+
+    assertTrue(prompt.taskPrompt.contains("tool_name\":\"Read"))
+    assertFalse(prompt.taskPrompt.contains("tool_name\":\"Bash"))
+    assertFalse(prompt.taskPrompt.contains("tool_name\":\"python_exec"))
+    assertFalse(prompt.taskPrompt.contains("tool_name\":\"WebFetch"))
+    assertFalse(prompt.taskPrompt.contains("tool_name\":\"Write"))
+    assertFalse(prompt.taskPrompt.contains("tool_name\":\"ProcessStart"))
+    assertFalse(prompt.taskPrompt.contains("Use Bash for one-off shell commands"))
+    assertFalse(prompt.taskPrompt.contains("prefer WebSearch when a search provider is configured"))
+    assertFalse(prompt.taskPrompt.contains("prefer ProcessStart and then use ProcessRead or ProcessWait"))
+    assertFalse(prompt.taskPrompt.contains("prefer python_exec instead of Bash"))
+    assertFalse(prompt.taskPrompt.contains("Do not use Bash to invoke python, python3, or py"))
   }
 
   @Test
@@ -170,6 +243,38 @@ class PromptAssemblerTest {
     assertEquals(1, prompt.report.prunedTranscriptMessageCount)
     assertEquals(1, prompt.report.rewrittenTranscriptMessageCount)
     assertEquals(1, prompt.report.attachmentLikeTranscriptRewriteCount)
+  }
+
+  @Test
+  fun assembleNativeToolCallingProtocolPrefersNativeToolsAndPlainFinalAnswers() {
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      ContextManager().prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "You are OpenCray for testing.",
+          sessionContext = AgentRuntimeSessionContext(),
+          nativeToolCallingEnabled = true,
+          toolDefinitions = listOf(
+            AgentToolDefinition(
+              name = "Read",
+              description = "Read a file from the workspace.",
+            ),
+          ),
+          liveConversation = listOf(
+            RuntimeConversationMessage(RuntimeConversationRole.USER, "Inspect the repo carefully."),
+          ),
+        ),
+      ),
+    )
+
+    assertTrue(prompt.taskPrompt.contains("Native tool calling is enabled for this run."))
+    assertTrue(prompt.taskPrompt.contains("prefer the provider's native tool-calling interface"))
+    assertTrue(prompt.taskPrompt.contains("prefer a plain assistant text answer"))
+    assertTrue(prompt.taskPrompt.contains("legacy JSON fallback"))
+    assertTrue(prompt.contextPrompt.contains("[Tool Protocol]"))
+    assertFalse(prompt.contextPrompt.contains("[Conversation]"))
   }
 
   @Test

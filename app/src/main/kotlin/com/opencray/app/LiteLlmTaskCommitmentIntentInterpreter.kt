@@ -121,19 +121,38 @@ internal class LiteLlmTaskCommitmentIntentInterpreter(
     appendLine("Return a single JSON object and nothing else.")
     appendLine()
     appendLine("Rules:")
-    appendLine("- You may only decide actions for commitments that are listed below.")
-    appendLine("- Allowed action values: resolve, reaffirm.")
+    appendLine("- You may only decide actions for commitments and proposed commitments that are listed below.")
+    appendLine("- Allowed action values: resolve, reaffirm, abandon, supersede_with_proposed, drop_proposed.")
     appendLine("- resolve means the evidence clearly shows the commitment was completed in this turn.")
     appendLine("- reaffirm means the evidence shows the commitment is still active, still being worked on, or will continue next.")
+    appendLine("- abandon means the evidence shows the commitment is no longer being pursued and there is no replacement commitment to keep.")
+    appendLine("- supersede_with_proposed means an existing commitment is no longer the active plan and one listed proposed commitment replaces it.")
+    appendLine("- drop_proposed means a listed proposed commitment should not be written because it is redundant, duplicate, or no longer needed.")
     appendLine("- If the evidence is ambiguous or unrelated, emit no decision for that commitment.")
     appendLine("- Do not invent new commitments.")
     appendLine("- At most one decision per commitment id.")
+    appendLine("- At most one decision per proposed_commitment_index.")
+    appendLine("- resolve, reaffirm, and abandon require commitment_id.")
+    appendLine("- supersede_with_proposed requires both commitment_id and proposed_commitment_index.")
+    appendLine("- drop_proposed requires proposed_commitment_index.")
     appendLine("- If nothing should change, return {\"decisions\":[]}.")
     appendLine()
     appendLine("Open commitments:")
     request.commitments.forEach { commitment ->
       appendLine("- ${commitment.id}: ${commitment.content}")
     }
+    appendLine()
+    appendLine("Proposed commitments from this turn:")
+    if (request.proposedCommitments.isEmpty()) {
+      appendLine("<none>")
+    } else {
+      request.proposedCommitments.forEach { commitment ->
+        appendLine("- candidate ${commitment.candidateIndex}: ${commitment.content}")
+      }
+    }
+    appendLine()
+    appendLine("User input:")
+    appendLine(request.userInput?.trim().takeUnless(String?::isNullOrBlank) ?: "<none>")
     appendLine()
     appendLine("Assistant output:")
     appendLine(request.assistantOutput?.trim().takeUnless(String?::isNullOrBlank) ?: "<none>")
@@ -148,7 +167,11 @@ internal class LiteLlmTaskCommitmentIntentInterpreter(
     }
     appendLine()
     appendLine("JSON schema example:")
-    appendLine("{\"decisions\":[{\"commitment_id\":\"commitment-1\",\"action\":\"resolve\"}]}")
+    appendLine(
+      "{\"decisions\":[{\"commitment_id\":\"commitment-1\",\"action\":\"resolve\"}," +
+        "{\"commitment_id\":\"commitment-2\",\"action\":\"supersede_with_proposed\",\"proposed_commitment_index\":0}," +
+        "{\"proposed_commitment_index\":1,\"action\":\"drop_proposed\"}]}",
+    )
   }
 
   private fun extractEmbeddedJsonObject(raw: String): String? {
@@ -191,18 +214,47 @@ internal class LiteLlmTaskCommitmentIntentInterpreter(
   private data class InterpreterDecision(
     @SerialName("commitment_id")
     val commitmentId: String? = null,
+    @SerialName("proposed_commitment_index")
+    val proposedCommitmentIndex: Int? = null,
     val action: String? = null,
   ) {
     fun toRuntimeDecisionOrNull(): TaskCommitmentIntentDecision? {
-      val resolvedCommitmentId = commitmentId?.trim()?.takeIf(String::isNotBlank) ?: return null
       val resolvedAction = when (action?.trim()?.lowercase()) {
         "resolve" -> TaskCommitmentIntentAction.RESOLVE
         "reaffirm" -> TaskCommitmentIntentAction.REAFFIRM
+        "abandon" -> TaskCommitmentIntentAction.ABANDON
+        "supersede_with_proposed" -> TaskCommitmentIntentAction.SUPERSEDE_WITH_PROPOSED
+        "drop_proposed" -> TaskCommitmentIntentAction.DROP_PROPOSED
         else -> null
       } ?: return null
+      val resolvedCommitmentId = commitmentId?.trim()?.takeIf(String::isNotBlank)
+      val resolvedProposedCommitmentIndex = proposedCommitmentIndex?.takeIf { index -> index >= 0 }
+      when (resolvedAction) {
+        TaskCommitmentIntentAction.RESOLVE,
+        TaskCommitmentIntentAction.REAFFIRM,
+        TaskCommitmentIntentAction.ABANDON,
+        -> {
+          if (resolvedCommitmentId == null) {
+            return null
+          }
+        }
+
+        TaskCommitmentIntentAction.SUPERSEDE_WITH_PROPOSED -> {
+          if (resolvedCommitmentId == null || resolvedProposedCommitmentIndex == null) {
+            return null
+          }
+        }
+
+        TaskCommitmentIntentAction.DROP_PROPOSED -> {
+          if (resolvedProposedCommitmentIndex == null) {
+            return null
+          }
+        }
+      }
       return TaskCommitmentIntentDecision(
         commitmentId = resolvedCommitmentId,
         action = resolvedAction,
+        proposedCommitmentIndex = resolvedProposedCommitmentIndex,
       )
     }
   }

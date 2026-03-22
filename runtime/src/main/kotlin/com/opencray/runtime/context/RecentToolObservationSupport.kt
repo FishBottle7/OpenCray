@@ -1,6 +1,7 @@
 package com.opencray.runtime.context
 
 import com.opencray.runtime.AgentToolCall
+import com.opencray.runtime.subagent.SubAgentResultMetadataKeys
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -74,9 +75,9 @@ class RecentToolObservationSupport(
     }
 
     val lines = mutableListOf<String>()
-    lines += "Recent successful workspace observations from the current task are available below."
-    lines += "Reuse them before repeating identical Read, LS, Grep, or Glob calls."
-    lines += "If you still need more detail, narrow the next discovery call with offset, limit, path, pattern, or glob."
+    lines += "Recent successful workspace and delegation observations from the current task are available below."
+    lines += "Reuse them before repeating identical workspace discovery, skills lookup, or delegated investigation calls."
+    lines += "If you still need more detail, narrow the next discovery call with offset, limit, path, pattern, glob, query, or source."
     selected.forEach { observation ->
       lines += ""
       lines += observation.summaryLine
@@ -140,8 +141,11 @@ class RecentToolObservationSupport(
         continue
       }
       val category = categoryForToolName(parsed.toolName) ?: continue
-      if (category != ObservationCategory.DISCOVERY) {
+      if (category == ObservationCategory.BARRIER) {
         break
+      }
+      if (category != ObservationCategory.DISCOVERY) {
+        continue
       }
       val observation = renderObservation(parsed) ?: continue
       if (observation.signature != signature) {
@@ -163,7 +167,10 @@ class RecentToolObservationSupport(
       .filter { parsed ->
         parsed.status.equals("success", ignoreCase = true) &&
           parsed.metadata["duplicateGuard"] != "true" &&
-          categoryForToolName(parsed.toolName) == ObservationCategory.DISCOVERY
+          categoryForToolName(parsed.toolName).let { category ->
+            category == ObservationCategory.DISCOVERY ||
+              category == ObservationCategory.DELEGATION
+          }
       }
       .mapNotNull(::renderObservation)
 
@@ -181,6 +188,11 @@ class RecentToolObservationSupport(
     "LS" -> renderListObservation(parsed)
     "Grep" -> renderGrepObservation(parsed)
     "Glob" -> renderGlobObservation(parsed)
+    "Task" -> renderTaskObservation(parsed)
+    "SkillsFind" -> renderSkillsFindObservation(parsed)
+    "SkillsList" -> renderSkillsListObservation(parsed)
+    "SkillsInspect" -> renderSkillsInspectObservation(parsed)
+    "SkillsCheck" -> renderSkillsCheckObservation(parsed)
     else -> null
   }
 
@@ -292,22 +304,193 @@ class RecentToolObservationSupport(
     )
   }
 
+  private fun renderTaskObservation(parsed: ParsedToolResult): RenderedObservation {
+    val description = parsed.metadata["delegationDescription"]?.trim().takeUnless { it.isNullOrBlank() }
+      ?: "Task"
+    val subagentType = parsed.metadata["delegationSubagentType"]?.trim().takeUnless { it.isNullOrBlank() }
+      ?: parsed.metadata["subagentType"]?.trim().takeUnless { it.isNullOrBlank() }
+      ?: "general-purpose"
+    val contextMode = parsed.metadata["delegationContextMode"]?.trim().takeUnless { it.isNullOrBlank() }
+      ?: parsed.metadata["subagentContextMode"]?.trim().takeUnless { it.isNullOrBlank() }
+    val executionState = parsed.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+      ?: parsed.metadata["childExecutionStatus"]?.trim()?.lowercase()
+      ?: "completed"
+    val childTurnCount = parsed.metadata["childTurnCount"]?.trim().takeUnless { it.isNullOrBlank() }
+    val childToolCallCount = parsed.metadata["childToolCallCount"]?.trim().takeUnless { it.isNullOrBlank() }
+    val headline = parsed.metadata[SubAgentResultMetadataKeys.SUMMARY_HEADLINE]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+      ?: parsed.content
+        .lineSequence()
+        .map(String::trim)
+        .firstOrNull(String::isNotBlank)
+        ?: "Delegated child result."
+    val details = parsed.metadata[SubAgentResultMetadataKeys.SUMMARY_DETAILS]
+      ?.lines()
+      ?.map(String::trim)
+      ?.filter(String::isNotBlank)
+      .orEmpty()
+    val detailParts = mutableListOf(
+      "description=$description",
+      "subagent=$subagentType",
+      "state=$executionState",
+    )
+    contextMode?.let { detailParts += "context=$it" }
+    childTurnCount?.let { detailParts += "turns=$it" }
+    childToolCallCount?.let { detailParts += "tool_calls=$it" }
+    val bodyLines = buildList {
+      add("Summary: $headline")
+      details.forEach { line ->
+        add("Detail: $line")
+      }
+    }
+    return RenderedObservation(
+      signature = buildTaskSignature(
+        description = description,
+        subagentType = subagentType,
+        headline = headline,
+      ),
+      summaryLine = "- Task ${detailParts.joinToString(separator = " ")}",
+      body = boundMultiline(
+        text = bodyLines.joinToString(separator = "\n"),
+        maxChars = config.maxListChars,
+        maxLines = config.maxListLines,
+      ),
+    )
+  }
+
+  private fun renderSkillsFindObservation(parsed: ParsedToolResult): RenderedObservation {
+    val query = parsed.metadata["query"]?.trim().orEmpty()
+    val resultCount = parsed.metadata["resultCount"]?.toIntOrNull()
+    val remoteResultCount = parsed.metadata["remoteResultCount"]?.toIntOrNull()
+    val localResultCount = parsed.metadata["localResultCount"]?.toIntOrNull()
+    val providerName = parsed.metadata["providerName"]?.trim().takeUnless { it.isNullOrBlank() }
+    val detailParts = mutableListOf(
+      "query=${query.ifBlank { "<catalog>" }}",
+      "results=${resultCount?.toString() ?: "unknown"}",
+    )
+    providerName?.let { detailParts += "provider=$it" }
+    remoteResultCount?.let { detailParts += "remote=$it" }
+    localResultCount?.let { detailParts += "local=$it" }
+    if (parsed.resultTruncated()) {
+      detailParts += "truncated=true"
+    }
+    parsed.resultLimitKind()?.let { detailParts += "limit_kind=$it" }
+    return RenderedObservation(
+      signature = buildSkillsFindSignature(query = query),
+      summaryLine = "- SkillsFind ${detailParts.joinToString(separator = " ")}",
+      body = boundMultiline(
+        text = parsed.content,
+        maxChars = config.maxListChars,
+        maxLines = config.maxListLines,
+      ),
+    )
+  }
+
+  private fun renderSkillsListObservation(parsed: ParsedToolResult): RenderedObservation {
+    val path = parsed.metadata["path"]?.trim().takeUnless { it.isNullOrBlank() }
+    val skillCount = parsed.metadata["skillCount"]?.toIntOrNull()
+    val detailParts = mutableListOf("skills=${skillCount?.toString() ?: "unknown"}")
+    path?.let { detailParts += "path=$it" }
+    if (parsed.resultTruncated()) {
+      detailParts += "truncated=true"
+    }
+    parsed.resultLimitKind()?.let { detailParts += "limit_kind=$it" }
+    return RenderedObservation(
+      signature = buildSkillsListSignature(),
+      summaryLine = "- SkillsList ${detailParts.joinToString(separator = " ")}",
+      body = boundMultiline(
+        text = parsed.content,
+        maxChars = config.maxListChars,
+        maxLines = config.maxListLines,
+      ),
+    )
+  }
+
+  private fun renderSkillsInspectObservation(parsed: ParsedToolResult): RenderedObservation? {
+    val sourceRef = parsed.metadata["sourceRef"]?.trim().takeUnless { it.isNullOrBlank() } ?: return null
+    val sourceType = parsed.metadata["sourceType"]?.trim().takeUnless { it.isNullOrBlank() }
+    val candidateCount = parsed.metadata["candidateCount"]?.toIntOrNull()
+    val detailParts = mutableListOf(
+      "source_ref=$sourceRef",
+      "candidates=${candidateCount?.toString() ?: "unknown"}",
+    )
+    sourceType?.let { detailParts += "source_type=$it" }
+    if (parsed.resultTruncated()) {
+      detailParts += "truncated=true"
+    }
+    parsed.resultLimitKind()?.let { detailParts += "limit_kind=$it" }
+    return RenderedObservation(
+      signature = buildSkillsInspectSignature(sourceRef = sourceRef),
+      summaryLine = "- SkillsInspect ${detailParts.joinToString(separator = " ")}",
+      body = boundMultiline(
+        text = parsed.content,
+        maxChars = config.maxListChars,
+        maxLines = config.maxListLines,
+      ),
+    )
+  }
+
+  private fun renderSkillsCheckObservation(parsed: ParsedToolResult): RenderedObservation {
+    val skillId = parsed.metadata["skillId"]?.trim().takeUnless { it.isNullOrBlank() }
+    val checkedCount = parsed.metadata["checkedCount"]?.toIntOrNull()
+    val updateAvailableCount = parsed.metadata["updateAvailableCount"]?.toIntOrNull()
+    val upToDateCount = parsed.metadata["upToDateCount"]?.toIntOrNull()
+    val sourceUnavailableCount = parsed.metadata["sourceUnavailableCount"]?.toIntOrNull()
+    val unsupportedCount = parsed.metadata["unsupportedCount"]?.toIntOrNull()
+    val detailParts = mutableListOf(
+      "skill=${skillId ?: "<all>"}",
+      "checked=${checkedCount?.toString() ?: "unknown"}",
+    )
+    updateAvailableCount?.let { detailParts += "updates=$it" }
+    upToDateCount?.let { detailParts += "up_to_date=$it" }
+    sourceUnavailableCount?.let { detailParts += "source_unavailable=$it" }
+    unsupportedCount?.let { detailParts += "unsupported=$it" }
+    if (parsed.resultTruncated()) {
+      detailParts += "truncated=true"
+    }
+    parsed.resultLimitKind()?.let { detailParts += "limit_kind=$it" }
+    return RenderedObservation(
+      signature = buildSkillsCheckSignature(skillId = skillId),
+      summaryLine = "- SkillsCheck ${detailParts.joinToString(separator = " ")}",
+      body = boundMultiline(
+        text = parsed.content,
+        maxChars = config.maxListChars,
+        maxLines = config.maxListLines,
+      ),
+    )
+  }
+
   private fun parseToolResult(message: RuntimeConversationMessage): ParsedToolResult? {
     if (message.role != RuntimeConversationRole.TOOL) {
       return null
     }
+    if (message.kind == RuntimeConversationMessageKind.PROGRESS) {
+      return null
+    }
     val normalized = message.content.trim()
     val payload = when {
+      message.kind == RuntimeConversationMessageKind.TOOL_RESULT -> normalized.removePrefix("tool_result ").trim()
       normalized.startsWith("tool_result ") -> normalized.removePrefix("tool_result ").trim()
       normalized.startsWith("{") -> normalized
       else -> return null
     }
     val decoded = runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull() ?: return null
-    val toolName = decoded.stringValue("tool_name")?.trim().takeUnless { it.isNullOrBlank() } ?: return null
+    val toolName = decoded.stringValue("tool_name")
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+      ?: message.toolResult?.toolName
+      ?: return null
     val content = decoded.stringValue("content")
       ?: decoded.stringValue("content_preview")
-      ?: return null
-    val status = decoded.stringValue("status")?.trim().orEmpty()
+      ?: message.content
+    val status = decoded.stringValue("status")
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+      ?: message.toolResult?.status
+      ?: ""
     val metadata = decoded["metadata"]
       ?.let { element -> element as? JsonObject }
       ?.entries
@@ -347,6 +530,20 @@ class RecentToolObservationSupport(
       "Glob" -> buildGlobSignature(
         pattern = arguments.stringValue("pattern") ?: return null,
         path = arguments.stringValue("path") ?: ".",
+      )
+
+      "SkillsFind" -> buildSkillsFindSignature(
+        query = arguments.stringValue("query").orEmpty(),
+      )
+
+      "SkillsList" -> buildSkillsListSignature()
+
+      "SkillsInspect" -> buildSkillsInspectSignature(
+        sourceRef = arguments.stringValueFrom("source_ref", "sourceRef", "source", "path", "url") ?: return null,
+      )
+
+      "SkillsCheck" -> buildSkillsCheckSignature(
+        skillId = arguments.stringValueFrom("skill_id", "skillId", "name"),
       )
 
       else -> null
@@ -406,6 +603,34 @@ class RecentToolObservationSupport(
     normalizePathValue(path),
   ).joinToString(separator = "|")
 
+  private fun buildSkillsFindSignature(query: String): String = listOf(
+    "SkillsFind",
+    query.trim(),
+  ).joinToString(separator = "|")
+
+  private fun buildSkillsListSignature(): String = "SkillsList"
+
+  private fun buildSkillsInspectSignature(sourceRef: String): String = listOf(
+    "SkillsInspect",
+    sourceRef.trim(),
+  ).joinToString(separator = "|")
+
+  private fun buildSkillsCheckSignature(skillId: String?): String = listOf(
+    "SkillsCheck",
+    skillId?.trim().orEmpty(),
+  ).joinToString(separator = "|")
+
+  private fun buildTaskSignature(
+    description: String,
+    subagentType: String,
+    headline: String,
+  ): String = listOf(
+    "Task",
+    description.trim(),
+    subagentType.trim(),
+    headline.trim(),
+  ).joinToString(separator = "|")
+
   private fun normalizePathValue(path: String): String = path.trim().ifBlank { "." }.replace('\\', '/')
 
   private fun boundMultiline(
@@ -445,6 +670,17 @@ class RecentToolObservationSupport(
     "ls", "list" -> "LS"
     "grep" -> "Grep"
     "glob" -> "Glob"
+    "task" -> "Task"
+    "skillsfind", "skills_find" -> "SkillsFind"
+    "skillslist", "skills_list" -> "SkillsList"
+    "skillsinspect", "skills_inspect" -> "SkillsInspect"
+    "skillscheck", "skills_check" -> "SkillsCheck"
+    "skillsadd", "skills_add" -> "SkillsAdd"
+    "skillsaddbatch", "skills_add_batch" -> "SkillsAddBatch"
+    "skillsupdate", "skills_update" -> "SkillsUpdate"
+    "skillsremove", "skills_remove" -> "SkillsRemove"
+    "generateimage", "imagegenerate" -> "GenerateImage"
+    "synthesizespeech", "texttospeech", "tts" -> "SynthesizeSpeech"
     else -> toolName.trim()
   }
 
@@ -453,7 +689,16 @@ class RecentToolObservationSupport(
     "LS",
     "Grep",
     "Glob",
-    -> ObservationCategory.DISCOVERY
+    "Task",
+    "SkillsFind",
+    "SkillsList",
+    "SkillsInspect",
+    "SkillsCheck",
+    -> if (canonicalToolName(toolName) == "Task") {
+      ObservationCategory.DELEGATION
+    } else {
+      ObservationCategory.DISCOVERY
+    }
 
     "Write",
     "Edit",
@@ -462,6 +707,12 @@ class RecentToolObservationSupport(
     "workspace_write_file",
     "workspace_move_file",
     "workspace_delete_file",
+    "GenerateImage",
+    "SynthesizeSpeech",
+    "SkillsAdd",
+    "SkillsAddBatch",
+    "SkillsUpdate",
+    "SkillsRemove",
     "Bash",
     "command_exec",
     "python_exec",
@@ -508,6 +759,7 @@ class RecentToolObservationSupport(
 
   private enum class ObservationCategory {
     DISCOVERY,
+    DELEGATION,
     BARRIER,
   }
 }

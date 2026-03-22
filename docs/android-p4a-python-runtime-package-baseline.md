@@ -38,7 +38,6 @@
 
 这层是“明显提升分析能力，但构建和体积成本更高”的扩展层：
 
-- `scipy`
 - `matplotlib`
 - `lxml`
 
@@ -103,7 +102,6 @@
 - `Pillow`: `8.4.0`
 - `numpy`: `1.22.3`
 - `sympy`: `1.1.1`
-- `scipy`: `1.11.3`
 - `matplotlib`: `3.5.2`
 - `lxml`: `4.8.0`
 - `pandas`: `1.0.3`
@@ -111,8 +109,19 @@
 
 结论：
 
-- `Pillow`、`numpy`、`scipy`、`matplotlib`、`lxml` 比较适合作为长期内置能力推进。
+- `Pillow`、`numpy`、`matplotlib`、`lxml` 比较适合作为长期内置能力推进。
 - `pandas`、`shapely`、`sympy` 在当前本地 recipe 版本下要额外警惕兼容性和回归风险。
+
+`scipy` 当前不再进入默认 Android 基线。
+
+原因不是功能不重要，而是当前本地 `p4a` recipe 明确依赖：
+
+- `lapack`
+- `LEGACY_NDK`
+- 带 `gcc/gfortran` 的旧 NDK 工具链
+
+而当前常规 Android 构建环境使用的是现代 NDK（例如 r25 系列），并不再提供这套 Fortran 工具链。
+在不单独维护 `NDK r21e + android-gfortran` 旁路构建链的前提下，`scipy` 不能作为当前默认运行时的一部分。
 
 ## 6. 构建策略
 

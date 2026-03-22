@@ -9,6 +9,7 @@ import com.opencray.persistence.store.MemoryStore
 import com.opencray.runtime.memory.MemoryCandidateExtractor
 import com.opencray.runtime.memory.MemoryFlushCoordinator
 import com.opencray.runtime.memory.MemoryFlushSummary
+import com.opencray.runtime.memory.MemoryStewardshipService
 import com.opencray.runtime.memory.TaskCommitmentResolver
 import com.opencray.runtime.memory.MemoryTurnEvidence
 import com.opencray.runtime.memory.MemoryWriter
@@ -40,6 +41,7 @@ internal class ChatMemoryIngestionCoordinator(
   private val candidateExtractor: MemoryCandidateExtractor = MemoryCandidateExtractor(),
   private val writer: MemoryWriter = MemoryWriter(store = memoryStore),
   private val taskCommitmentResolver: TaskCommitmentResolver = TaskCommitmentResolver(store = memoryStore),
+  private val memoryStewardshipService: MemoryStewardshipService = MemoryStewardshipService(),
   private val soulPlasticityProvider: () -> SoulPlasticity = { SoulPlasticity.MEDIUM },
   private val interactionPreferenceWritePlanner: InteractionPreferenceMemoryWritePlanner = InteractionPreferenceMemoryWritePlanner(),
   private val relationshipEventInterpreter: RelationshipEventInterpreter = NoOpRelationshipEventInterpreter,
@@ -93,15 +95,28 @@ internal class ChatMemoryIngestionCoordinator(
         .distinct()
         .toList(),
     )
-    val maintenance = taskCommitmentResolver.maintain(evidence)
-    val existingRecordsBeforeWrite = memoryStore.list()
     val writeCandidates = candidateExtractor.extract(evidence)
-    val writeSummary = writer.write(writeCandidates)
+    val maintenance = taskCommitmentResolver.maintain(
+      evidence = evidence,
+      proposedCandidates = writeCandidates,
+    )
+    val filteredWriteCandidates = writeCandidates.filterIndexed { index, _ ->
+      index !in maintenance.droppedProposedCommitmentIndexes
+    }
+    val existingRecordsBeforeWrite = memoryStore.list()
+    val stewardshipPlan = memoryStewardshipService.plan(
+      existingRecords = existingRecordsBeforeWrite,
+      evidence = evidence,
+      proposedCandidates = filteredWriteCandidates,
+    )
+    stewardshipPlan.resolvedRecords.forEach(memoryStore::upsert)
+    stewardshipPlan.reaffirmedRecords.forEach(memoryStore::upsert)
+    val writeSummary = writer.write(stewardshipPlan.acceptedCandidates)
     val plasticity = soulPlasticityProvider()
     val interactionPreferenceWriteSummary = writer.write(
       interactionPreferenceWritePlanner.plan(
         existingRecords = existingRecordsBeforeWrite,
-        sourceCandidates = writeCandidates,
+        sourceCandidates = stewardshipPlan.acceptedCandidates,
         plasticity = plasticity,
         sourceSessionId = sessionId,
         workspaceId = workspaceId,
@@ -138,8 +153,8 @@ internal class ChatMemoryIngestionCoordinator(
     }
     return MemoryIngestionSummary(
       writtenRecords = writeSummary.writtenRecords + interactionPreferenceWriteSummary + relationshipWriteSummary,
-      resolvedRecords = maintenance.resolvedRecords,
-      reaffirmedRecords = maintenance.reaffirmedRecords,
+      resolvedRecords = maintenance.resolvedRecords + stewardshipPlan.resolvedRecords,
+      reaffirmedRecords = maintenance.reaffirmedRecords + stewardshipPlan.reaffirmedRecords,
       expiredRecordIds = maintenance.expiredRecordIds,
     )
   }

@@ -1,6 +1,7 @@
 package com.opencray.runtime.session
 
 import com.opencray.runtime.context.RuntimeConversationMessage
+import com.opencray.runtime.context.RuntimeConversationMessageKind
 import com.opencray.runtime.context.RuntimeConversationRole
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -13,6 +14,7 @@ object SessionTranscriptRules {
   const val MAX_EXECUTION_TOOL_INTERACTIONS: Int = 1
   const val MAX_STATEFUL_TOOL_INTERACTIONS: Int = 1
   const val MAX_PROGRESS_OBSERVATIONS: Int = 3
+  const val MAX_SUBAGENT_INTERACTIONS: Int = 2
   const val MAX_GENERIC_TOOL_INTERACTIONS: Int = 1
 
   fun normalize(messages: List<RuntimeConversationMessage>): List<RuntimeConversationMessage> =
@@ -65,6 +67,9 @@ object SessionTranscriptRules {
       .filterByCategory(ToolReplayCategory.PROGRESS, MAX_PROGRESS_OBSERVATIONS)
       .forEach { interaction -> interaction.forEach { indexesToKeep += it.index } }
     groupedObservations.values
+      .filterByCategory(ToolReplayCategory.SUBAGENT, MAX_SUBAGENT_INTERACTIONS)
+      .forEach { interaction -> interaction.forEach { indexesToKeep += it.index } }
+    groupedObservations.values
       .filterByCategory(ToolReplayCategory.GENERIC, MAX_GENERIC_TOOL_INTERACTIONS)
       .forEach { interaction -> interaction.forEach { indexesToKeep += it.index } }
 
@@ -73,14 +78,7 @@ object SessionTranscriptRules {
 
   private fun normalizeMessage(message: RuntimeConversationMessage): RuntimeConversationMessage {
     val normalizedContent = message.content.trim()
-    return if (normalizedContent == message.content) {
-      message
-    } else {
-      RuntimeConversationMessage(
-        role = message.role,
-        content = normalizedContent,
-      )
-    }
+    return if (normalizedContent == message.content) message else message.copy(content = normalizedContent)
   }
 
   private fun isTerminalToolObservation(content: String): Boolean {
@@ -104,6 +102,30 @@ object SessionTranscriptRules {
     if (isTerminalToolObservation(normalizedContent)) {
       return null
     }
+    when (message.kind) {
+      RuntimeConversationMessageKind.TOOL_CALL -> {
+        return parseReplayToolObservation(
+          index = index,
+          payload = normalizedContent.removePrefix("tool_call ").trim(),
+        )
+      }
+
+      RuntimeConversationMessageKind.TOOL_RESULT -> {
+        return parseReplayToolObservation(
+          index = index,
+          payload = normalizedContent.removePrefix("tool_result ").trim(),
+        )
+      }
+
+      RuntimeConversationMessageKind.PROGRESS -> {
+        return parseReplayProgressObservation(
+          index = index,
+          payload = normalizedContent.removePrefix("progress ").trim(),
+        )
+      }
+
+      RuntimeConversationMessageKind.PLAIN -> Unit
+    }
     if (normalizedContent.startsWith("tool_call ")) {
       return parseReplayToolObservation(
         index = index,
@@ -120,6 +142,12 @@ object SessionTranscriptRules {
       return parseReplayProgressObservation(
         index = index,
         payload = normalizedContent.removePrefix("progress ").trim(),
+      )
+    }
+    if (normalizedContent.startsWith("subagent ")) {
+      return parseReplaySubAgentObservation(
+        index = index,
+        payload = normalizedContent.removePrefix("subagent ").trim(),
       )
     }
     return ToolReplayObservation(
@@ -153,6 +181,33 @@ object SessionTranscriptRules {
       index = index,
       groupKey = groupKey,
       category = ToolReplayCategory.PROGRESS,
+    )
+  }
+
+  private fun parseReplaySubAgentObservation(
+    index: Int,
+    payload: String,
+  ): ToolReplayObservation {
+    val decoded = runCatching { replayJson.parseToJsonElement(payload).jsonObject }.getOrNull()
+      ?: return ToolReplayObservation(
+        index = index,
+        groupKey = "subagent:$index",
+        category = ToolReplayCategory.SUBAGENT,
+      )
+
+    val groupKey = listOf(
+      decoded.stringValue("run_id").orEmpty(),
+      decoded.stringValue("task_id").orEmpty(),
+      decoded.stringValue("child_run_id").orEmpty(),
+      decoded.stringValue("child_task_id").orEmpty(),
+    ).joinToString(separator = "|")
+      .takeIf(String::isNotBlank)
+      ?.let { key -> "subagent:$key" }
+      ?: "subagent:$index"
+    return ToolReplayObservation(
+      index = index,
+      groupKey = groupKey,
+      category = ToolReplayCategory.SUBAGENT,
     )
   }
 
@@ -194,57 +249,61 @@ object SessionTranscriptRules {
     ).joinToString(separator = "|")
   }
 
-  private fun categoryForToolName(toolName: String): ToolReplayCategory = when (toolName) {
-    "Write",
+  private fun categoryForToolName(toolName: String): ToolReplayCategory = when (toolName.trim().lowercase()) {
     "write",
-    "Edit",
     "edit",
-    "MultiEdit",
     "multiedit",
     "workspace_write_file",
     "workspace_move_file",
     "workspace_delete_file",
+    "generateimage",
+    "imagegenerate",
+    "synthesizespeech",
+    "texttospeech",
+    "tts",
+    "skillsadd",
+    "skills_add",
+    "skillsaddbatch",
+    "skills_add_batch",
+    "skillsupdate",
+    "skills_update",
+    "skillsremove",
+    "skills_remove",
     -> ToolReplayCategory.MUTATION
 
-    "Read",
     "read",
-    "LS",
     "ls",
     "list",
-    "Grep",
     "grep",
-    "Glob",
     "glob",
-    "WebSearch",
     "websearch",
-    "WebFetch",
     "webfetch",
     "workspace_list_files",
     "workspace_read_file",
     "skills_list",
+    "skillslist",
+    "skillsfind",
+    "skills_find",
+    "skillsinspect",
+    "skills_inspect",
+    "skillscheck",
+    "skills_check",
     "skill_read",
     "memory_search",
     "memory_get",
     "mcp_list_servers",
     -> ToolReplayCategory.DISCOVERY
 
-    "Bash",
     "bash",
     "command_exec",
     "python_exec",
-    "ProcessStart",
     "processstart",
-    "ProcessList",
     "processlist",
-    "ProcessRead",
     "processread",
-    "ProcessWait",
     "processwait",
-    "ProcessTerminate",
     "processterminate",
     -> ToolReplayCategory.EXECUTION
 
-    "TodoWrite",
     "todowrite",
     -> ToolReplayCategory.STATEFUL
     else -> ToolReplayCategory.GENERIC
@@ -276,6 +335,7 @@ object SessionTranscriptRules {
     EXECUTION,
     STATEFUL,
     PROGRESS,
+    SUBAGENT,
     GENERIC,
   }
 

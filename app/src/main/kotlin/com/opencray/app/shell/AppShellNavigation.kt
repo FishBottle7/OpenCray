@@ -25,8 +25,9 @@ enum class SettingsSubpage(
   MCP("mcp"),
   PRIVACY("privacy"),
   SAFETY("safety"),
-  ABOUT("about"),
   PERSONALIZATION("personalization"),
+  AGENTS("agents"),
+  ABOUT("about"),
   ;
 
   companion object {

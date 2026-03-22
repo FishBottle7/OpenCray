@@ -27,6 +27,10 @@ internal interface SessionSupplementStore {
     taskId: String,
   ): List<MidLoopSupplementEntry>
 
+  fun consumeMatching(
+    predicate: (MidLoopSupplementEntry) -> Boolean,
+  ): List<MidLoopSupplementEntry>
+
   fun consumeAll(): List<MidLoopSupplementEntry>
 
   fun clear()
@@ -104,6 +108,20 @@ internal class InMemorySessionSupplementStore(
     matched.sortedBy(MidLoopSupplementEntry::createdAtEpochMs)
   }
 
+  override fun consumeMatching(
+    predicate: (MidLoopSupplementEntry) -> Boolean,
+  ): List<MidLoopSupplementEntry> = synchronized(lock) {
+    if (entries.isEmpty()) {
+      return@synchronized emptyList()
+    }
+    val matched = entries.filter(predicate)
+    if (matched.isEmpty()) {
+      return@synchronized emptyList()
+    }
+    entries.removeAll(matched.toSet())
+    matched.sortedBy(MidLoopSupplementEntry::createdAtEpochMs)
+  }
+
   override fun consumeAll(): List<MidLoopSupplementEntry> = synchronized(lock) {
     if (entries.isEmpty()) {
       return@synchronized emptyList()
@@ -168,6 +186,24 @@ private class FileBackedSessionSupplementStore(
     val matched = existing.entries.filter { entry ->
       entry.runId == runId || entry.taskId == taskId
     }
+    if (matched.isEmpty()) {
+      return@synchronized emptyList()
+    }
+    saveRecord(
+      existing.copy(
+        recordVersion = existing.recordVersion + 1L,
+        updatedAtEpochMs = System.currentTimeMillis(),
+        entries = existing.entries.filterNot { entry -> entry in matched },
+      ),
+    )
+    matched.sortedBy(MidLoopSupplementEntry::createdAtEpochMs)
+  }
+
+  override fun consumeMatching(
+    predicate: (MidLoopSupplementEntry) -> Boolean,
+  ): List<MidLoopSupplementEntry> = synchronized(lock) {
+    val existing = loadRecord()
+    val matched = existing.entries.filter(predicate)
     if (matched.isEmpty()) {
       return@synchronized emptyList()
     }

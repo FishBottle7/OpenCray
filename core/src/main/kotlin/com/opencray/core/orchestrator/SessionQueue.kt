@@ -124,6 +124,13 @@ data class SessionQueueConfig(
   }
 }
 
+const val ERROR_RESTART_REQUIRES_EXPLICIT_RETRY: String = "RESTART_REQUIRES_EXPLICIT_RETRY"
+const val METADATA_QUEUE_RESTORE_EPOCH_MS: String = "_queue.restoreEpochMs"
+const val METADATA_PREVIOUS_LIFECYCLE_STATE: String = "_queue.previousLifecycleState"
+const val METADATA_RECOVERY_REASON: String = "_queue.recoveryReason"
+const val RECOVERY_REASON_HOST_RESTART_INFLIGHT_TASK_INTERRUPTED: String =
+  "host_restart_inflight_task_interrupted"
+
 class SessionQueue(
   private val sessionId: String,
   private val agentId: String,
@@ -249,7 +256,8 @@ class SessionQueue(
     val index = indexOfTaskLocked(taskId) ?: return false
     val current = taskEntries[index]
     if (current.lifecycleState != QueueTaskLifecycleState.FAILED) return false
-    if (current.attempt >= config.maxAttempts) return false
+    val restartInterrupted = current.lastErrorCode == ERROR_RESTART_REQUIRES_EXPLICIT_RETRY
+    if (!restartInterrupted && current.attempt >= config.maxAttempts) return false
 
     transitionTaskLocked(index, QueueTaskLifecycleState.RETRY_PENDING)
     transitionTaskLocked(index, QueueTaskLifecycleState.QUEUED)
@@ -295,9 +303,10 @@ class SessionQueue(
         SessionLifecycleState.IDLE
       }
 
+    val restoreEpochMs = clock.nowEpochMs()
     val restored = snapshot.tasks
       .sortedBy { it.enqueueOrder }
-      .map(::normalizeAfterRestart)
+      .map { entry -> normalizeAfterRestart(entry, restoreEpochMs) }
 
     taskEntries.clear()
     taskEntries += restored
@@ -306,26 +315,78 @@ class SessionQueue(
     nextEnqueueOrder = maxOf(snapshot.nextEnqueueOrder, maxOrder + 1)
   }
 
-  private fun normalizeAfterRestart(entry: SessionQueueTaskSnapshot): SessionQueueTaskSnapshot {
-    val normalizedLifecycle = when (entry.lifecycleState) {
+  private fun normalizeAfterRestart(
+    entry: SessionQueueTaskSnapshot,
+    restoreEpochMs: Long,
+  ): SessionQueueTaskSnapshot {
+    val wasInterruptedInFlight = when (entry.lifecycleState) {
       QueueTaskLifecycleState.RUNNING,
       QueueTaskLifecycleState.CANCEL_REQUESTED,
       QueueTaskLifecycleState.RETRY_PENDING,
-      -> QueueTaskLifecycleState.QUEUED
+      -> true
 
-      else -> entry.lifecycleState
+      else -> false
     }
-
+    val normalizedLifecycle = if (wasInterruptedInFlight) {
+      QueueTaskLifecycleState.FAILED
+    } else {
+      entry.lifecycleState
+    }
     val mappedTaskState = mapLifecycleToAgentTaskState(normalizedLifecycle)
+    val normalizedMetadata = buildMap<String, String> {
+      putAll(
+        entry.task.metadata.filterKeys { key ->
+          key != METADATA_QUEUE_RESTORE_EPOCH_MS &&
+            key != METADATA_PREVIOUS_LIFECYCLE_STATE &&
+            key != METADATA_RECOVERY_REASON
+        },
+      )
+      put(METADATA_QUEUE_RESTORE_EPOCH_MS, restoreEpochMs.toString())
+      put(METADATA_PREVIOUS_LIFECYCLE_STATE, entry.lifecycleState.name.lowercase())
+      if (wasInterruptedInFlight) {
+        put(METADATA_RECOVERY_REASON, RECOVERY_REASON_HOST_RESTART_INFLIGHT_TASK_INTERRUPTED)
+      }
+    }
     val normalizedTask = entry.task.copy(
       state = mappedTaskState,
-      updatedAtEpochMs = maxOf(entry.task.updatedAtEpochMs, entry.task.createdAtEpochMs),
+      updatedAtEpochMs = maxOf(
+        entry.task.updatedAtEpochMs,
+        entry.task.createdAtEpochMs,
+        restoreEpochMs,
+      ),
+      metadata = normalizedMetadata,
     )
 
     return entry.copy(
       lifecycleState = normalizedLifecycle,
       task = normalizedTask,
+      lastErrorCode = if (wasInterruptedInFlight) {
+        ERROR_RESTART_REQUIRES_EXPLICIT_RETRY
+      } else {
+        entry.lastErrorCode
+      },
+      lastErrorMessage = if (wasInterruptedInFlight) {
+        buildRestoreInterruptedMessage(entry.lifecycleState)
+      } else {
+        entry.lastErrorMessage
+      },
     )
+  }
+
+  private fun buildRestoreInterruptedMessage(
+    previousState: QueueTaskLifecycleState,
+  ): String = when (previousState) {
+    QueueTaskLifecycleState.RUNNING ->
+      "The app host restarted while this run was in progress. OpenCray stopped it to avoid silently rerunning from the beginning. Retry explicitly when you want to continue."
+
+    QueueTaskLifecycleState.RETRY_PENDING ->
+      "The app host restarted while this run was waiting to retry. OpenCray stopped it to avoid silently resuming work. Retry explicitly when you want to continue."
+
+    QueueTaskLifecycleState.CANCEL_REQUESTED ->
+      "The app host restarted while cancellation was still settling. OpenCray stopped the run and now requires an explicit retry to continue."
+
+    else ->
+      "The app host restarted before this run could finish. OpenCray stopped it to avoid silently rerunning from the beginning. Retry explicitly when you want to continue."
   }
 
   private fun executeTaskAt(index: Int): ExecutionResult? {

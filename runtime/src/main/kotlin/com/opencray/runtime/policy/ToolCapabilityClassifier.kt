@@ -29,6 +29,8 @@ internal class ToolCapabilityClassifier {
 
     "WebSearch",
     "WebFetch",
+    "GenerateImage",
+    "SynthesizeSpeech",
     -> PolicyToolClass.NETWORK_ACCESS
 
     "LS",
@@ -51,6 +53,10 @@ internal class ToolCapabilityClassifier {
     "TodoWrite" -> "todo_management"
 
     "Task" -> "delegate_task"
+
+    "GenerateImage",
+    "SynthesizeSpeech",
+    -> "network_access"
 
     "ProcessList",
     "ProcessRead",

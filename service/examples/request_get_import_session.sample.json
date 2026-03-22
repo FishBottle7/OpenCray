@@ -1,0 +1,6 @@
+{
+  "operation": "get_import_session",
+  "params": {
+    "twin_id": "twin_lin_01"
+  }
+}

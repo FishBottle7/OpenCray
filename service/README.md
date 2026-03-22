@@ -44,7 +44,29 @@ python -m venv .venv
 .\.venv\Scripts\python -m pip install "graphiti-core[kuzu]"
 ```
 
+On the current Windows smoke-test machine, `graphiti-core` itself installed successfully, but `kuzu` had no prebuilt `win_amd64` wheel for Python 3.14 and fell back to a native build that requires an additional local C/C++ toolchain. The pragmatic options are to use WSL/Linux with Python 3.12+ or native Windows Python 3.12/3.13.
+
 `soul_extractor.py` itself only uses the Python standard library.
+
+## Graphiti Provider Bridge
+
+For import-time Graphiti calls, the service now supports two config layers:
+
+- `llm_config`: default source of truth, typically copied from the app's current LLM settings
+- `graphiti_config`: optional per-import override for `llm`, `embedder`, and `cross_encoder`
+
+This means the mobile import flow can default to the user's existing app model configuration, while still letting Graphiti use a separate embedding or reranking provider when needed.
+
+Security boundary:
+
+- request-time secrets such as `apiKey` stay in the request payload
+- persisted `binding` / `import_session` files only store a non-secret `graphiti_runtime_preferences` summary
+- no Graphiti provider secret is written into the workspace binding JSON by default
+
+Examples:
+
+- `service/examples/request_init_with_llm_config.sample.json`
+- `service/examples/request_ingest_chat_with_graphiti_override.sample.json`
 
 ## Quick Start
 
@@ -69,6 +91,16 @@ Persist the selected relationship lens:
 .\.venv\Scripts\python service/graphiti_adapter.py select_relationship --twin-id twin_lin_01 --anchor-person-id actor_lin --counterpart-entity-id actor_current_user
 ```
 
+Inspect the aggregated import-session snapshot that a mobile review page can consume directly:
+
+```powershell
+.\.venv\Scripts\python service/graphiti_adapter.py get_import_session --twin-id twin_lin_01
+```
+Withdraw an unpublished import session and clear its draft artifacts:
+
+```powershell
+.\.venv\Scripts\python service/graphiti_adapter.py withdraw_import --twin-id twin_lin_01
+```
 Ingest chat corpus into Graphiti:
 
 ```powershell
@@ -105,6 +137,12 @@ python service/soul_extractor.py run_request --request service/examples/request_
 python service/soul_extractor.py run_request --request service/examples/request_judge_candidates.sample.json --response .opencray/personality_service/cache/last_judge_response.json
 ```
 
+```powershell
+python service/graphiti_adapter.py run_request --request service/examples/request_get_import_session.sample.json --response .opencray/personality_service/cache/last_session_response.json
+```
+```powershell
+python service/graphiti_adapter.py run_request --request service/examples/request_withdraw_import.sample.json --response .opencray/personality_service/cache/last_withdraw_response.json
+```
 The request format is defined by `service/schemas/request_envelope.schema.json`.
 
 ## Service Data Layout
@@ -124,4 +162,8 @@ By default the service writes under:
 - `soul_extractor.py` is an import-time initialization module, not a runtime soul resolver.
 - The adapter can now best-effort resolve the anchor node UUID from the persisted manifest and a live Graphiti store. If Graphiti is unavailable, selector ranking falls back to the persisted relationship graph manifest and any explicit `focal_node_uuid` already stored on the binding.
 - Neither module is wired into app startup or Gradle packaging. Right now they are independent import-time modules only.
+
+
+
+
 

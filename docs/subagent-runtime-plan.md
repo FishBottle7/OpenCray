@@ -110,6 +110,25 @@ Claude Code 官方 SDK 文档已经暴露了 `Task` 这个委派入口，参数�
 - 一层深度限制
 - durable replay 可见的 child 结果摘要
 
+### 当前已收口
+
+- child 结果不再只返回一段压缩摘要，还会生成显式 `SubAgentExecutionSnapshot`
+- snapshot 目前稳定包含：
+  - `state`
+  - `continuationKind`
+  - `resumable`
+  - `requiresUserAction`
+  - `isHighRisk`
+- `Task` tool result metadata、subagent runtime event、durable run record 都会携带这一层状态
+- `subagent` lifecycle 现在也会写进 durable transcript replay
+- transcript pruning / repair 会把 `subagent` lifecycle 当作受控 delegation 交互，而不是 generic 噪音
+- waiting child approval 在通过后，host 也会补一个显式 `subagent resumed` event，避免 timeline 只看到 approval result 却看不到 child lifecycle 已续上
+- 如果 waiting child approval 被用户拒绝，或 waiting child 所在 run 被用户取消，host 会补一个 terminal `subagent` event，避免 timeline 永远停在 `waiting_approval`
+- 当前仍然只是“预抽象”：
+  - child approval suspend / resume 还没有独立 UI / 调度
+  - background child execution 还没有真正落地
+  - 但 replay / host 不再需要靠错误码猜 child 是否可继续
+
 ### 先不做
 
 - child 独立聊天 session

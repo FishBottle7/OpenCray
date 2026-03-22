@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 
 import '../../app/opencray_tabs.dart';
+import '../models/opencray_chat_draft_attachment.dart';
 import '../models/opencray_chat_snapshot.dart';
 import '../models/opencray_debug_snapshot.dart';
 import '../models/opencray_file_image_preview.dart';
@@ -9,6 +10,7 @@ import '../models/opencray_file_voice_playback_source.dart';
 import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
+import '../models/opencray_media_speech_config.dart';
 import '../models/opencray_mcp_settings.dart';
 import '../models/opencray_network_search_config.dart';
 import '../models/opencray_personalization_config.dart';
@@ -16,6 +18,7 @@ import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
 import '../models/opencray_skills_snapshot.dart';
+import '../models/opencray_twin_import_source_probe.dart';
 import '../models/opencray_workspace_text_document.dart';
 import 'opencray_host_bridge.dart';
 
@@ -236,6 +239,19 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   );
 
   @override
+  Future<OpenCrayMediaSpeechConfigSnapshot> loadMediaSpeechConfig() async =>
+      OpenCrayMediaSpeechConfigSnapshot.fromMap(
+        await _invokeMap('loadMediaSpeechConfig'),
+      );
+
+  @override
+  Future<OpenCrayMediaSpeechConfigSnapshot> saveMediaSpeechConfig(
+    OpenCrayMediaSpeechConfigSnapshot snapshot,
+  ) async => OpenCrayMediaSpeechConfigSnapshot.fromMap(
+    await _invokeMap('saveMediaSpeechConfig', arguments: snapshot.toMap()),
+  );
+
+  @override
   Future<OpenCrayLlmConfigSnapshot> loadLlmConfig() async =>
       OpenCrayLlmConfigSnapshot.fromMap(await _invokeMap('loadLlmConfig'));
 
@@ -361,6 +377,16 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
     await _invokeMap(
       'runPersonalizationReset',
       arguments: <String, Object?>{'scopeId': scopeId},
+    ),
+  );
+
+  @override
+  Future<OpenCrayTwinImportSourceProbeSnapshot> probeTwinImportSource(
+    String filePath,
+  ) async => OpenCrayTwinImportSourceProbeSnapshot.fromMap(
+    await _invokeMap(
+      'probeTwinImportSource',
+      arguments: <String, Object?>{'filePath': filePath},
     ),
   );
 
@@ -505,29 +531,23 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   Future<String?> installSkillSource(
     String sourceRef, {
     String selectedSkillName = '',
-  }) async =>
-      await _methodChannel.invokeMethod<String>(
-        'installSkillSource',
-        <String, Object?>{
-          'sourceRef': sourceRef,
-          if (selectedSkillName.trim().isNotEmpty)
-            'selectedSkillName': selectedSkillName,
-        },
-      );
+  }) async => await _methodChannel
+      .invokeMethod<String>('installSkillSource', <String, Object?>{
+        'sourceRef': sourceRef,
+        if (selectedSkillName.trim().isNotEmpty)
+          'selectedSkillName': selectedSkillName,
+      });
 
   @override
   Future<String?> installSkillSourceBatch(
     String sourceRef, {
     List<String> selectedSkillNames = const <String>[],
-  }) async =>
-      await _methodChannel.invokeMethod<String>(
-        'installSkillSourceBatch',
-        <String, Object?>{
-          'sourceRef': sourceRef,
-          if (selectedSkillNames.isNotEmpty)
-            'selectedSkillNames': selectedSkillNames,
-        },
-      );
+  }) async => await _methodChannel
+      .invokeMethod<String>('installSkillSourceBatch', <String, Object?>{
+        'sourceRef': sourceRef,
+        if (selectedSkillNames.isNotEmpty)
+          'selectedSkillNames': selectedSkillNames,
+      });
 
   @override
   Future<String?> installSuggestedSkill(String skillId) async =>
@@ -617,11 +637,14 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
     int maxResults = 4,
     int minScore = 1,
   }) async => OpenCrayMemoryDebugSearchSnapshot.fromMap(
-    await _invokeMap('searchMemoryDebug', <String, Object?>{
-      'query': query,
-      'maxResults': maxResults,
-      'minScore': minScore,
-    }),
+    await _invokeMap(
+      'searchMemoryDebug',
+      arguments: <String, Object?>{
+        'query': query,
+        'maxResults': maxResults,
+        'minScore': minScore,
+      },
+    ),
   );
 
   @override
@@ -630,11 +653,23 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
     int? fromLine,
     int lines = 12,
   }) async => OpenCrayMemoryDebugSliceSnapshot.fromMap(
-    await _invokeMap('getMemoryDebugSlice', <String, Object?>{
-      'path': path,
-      'fromLine': fromLine,
-      'lines': lines,
-    }),
+    await _invokeMap(
+      'getMemoryDebugSlice',
+      arguments: <String, Object?>{
+        'path': path,
+        'fromLine': fromLine,
+        'lines': lines,
+      },
+    ),
+  );
+
+  @override
+  Future<void> applyMemoryDebugAction({
+    required String recordId,
+    required String actionId,
+  }) => _methodChannel.invokeMethod<void>(
+    'applyMemoryDebugAction',
+    <String, Object?>{'recordId': recordId, 'actionId': actionId},
   );
 
   @override
@@ -702,10 +737,33 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   );
 
   @override
-  Future<OpenCrayChatRunSubmission?> submitChatMessage(String text) async {
+  Future<List<OpenCrayChatDraftAttachment>> pickChatAttachments({
+    required OpenCrayChatDraftAttachmentKind kind,
+  }) async {
+    final payload = await _methodChannel.invokeListMethod<Object?>(
+      'pickChatAttachments',
+      <String, Object?>{'kind': kind.wireValue},
+    );
+    return (payload ?? const <Object?>[])
+        .map(_requireMap)
+        .map(OpenCrayChatDraftAttachment.fromMap)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<OpenCrayChatRunSubmission?> submitChatMessage(
+    String text, {
+    List<OpenCrayChatDraftAttachment> attachments =
+        const <OpenCrayChatDraftAttachment>[],
+  }) async {
     final payload = await _methodChannel.invokeMethod<Object?>(
       'submitChatMessage',
-      <String, Object?>{'text': text},
+      <String, Object?>{
+        'text': text,
+        'attachments': attachments
+            .map((OpenCrayChatDraftAttachment attachment) => attachment.toMap())
+            .toList(growable: false),
+      },
     );
     if (payload == null) {
       return null;
@@ -725,6 +783,13 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       _methodChannel.invokeMethod<void>('rejectChatApproval', <String, Object?>{
         'runId': approvalId,
         'taskId': approvalId,
+      });
+
+  @override
+  Future<void> retryChatRun(String runIdOrTaskId) =>
+      _methodChannel.invokeMethod<void>('retryChatRun', <String, Object?>{
+        'runId': runIdOrTaskId,
+        'taskId': runIdOrTaskId,
       });
 
   static Future<Map<Object?, Object?>> _invokeMap(

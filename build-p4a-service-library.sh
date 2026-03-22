@@ -22,6 +22,7 @@ P4A_GRADLE_USER_HOME="${P4A_GRADLE_USER_HOME:-}"
 P4A_HOOK_PATH="${P4A_HOOK_PATH:-$ROOT_DIR/.p4a-generated/p4a_build_hook.py}"
 P4A_GRADLE_DIST_ZIP="${P4A_GRADLE_DIST_ZIP:-$ROOT_DIR/tools/android_python_runtime_p4a/gradle/gradle-8.0.2-all.zip}"
 P4A_REQUIREMENTS_LOCK_FILE="${P4A_REQUIREMENTS_LOCK_FILE:-$ROOT_DIR/tools/android_python_runtime_p4a/requirements.lock}"
+P4A_LOCAL_RECIPES_DIR="${P4A_LOCAL_RECIPES_DIR:-$ROOT_DIR/tools/android_python_runtime_p4a/local_recipes}"
 P4A_ANDROID_API="${P4A_ANDROID_API:-33}"
 P4A_BUILD_TOOLS_VERSION="${P4A_BUILD_TOOLS_VERSION:-}"
 P4A_NDK_VERSION="${P4A_NDK_VERSION:-}"
@@ -178,10 +179,15 @@ ensure_system_prerequisites() {
     python3-pip \
     python3-venv \
     openjdk-17-jdk \
+    autoconf \
+    automake \
+    autopoint \
     zip \
     unzip \
     build-essential \
     pkg-config \
+    gettext \
+    libtool \
     libffi-dev \
     libssl-dev \
     zlib1g-dev \
@@ -218,6 +224,50 @@ ensure_pip_available() {
   exit 1
 }
 
+ensure_host_python_package() {
+  local python_bin="$1"
+  local package_spec="$2"
+  local package_name="${package_spec%%[<>=!~]*}"
+
+  if "$python_bin" -m pip show "$package_name" >/dev/null 2>&1; then
+    return
+  fi
+
+  log_step "Installing host Python package $package_spec"
+  "$python_bin" -m pip install --upgrade "$package_spec"
+}
+
+build_venv_has_pip() {
+  local python_bin="$1"
+  "$python_bin" -m pip --version >/dev/null 2>&1
+}
+
+create_build_venv() {
+  local host_python_bin="$1"
+  local venv_dir="$2"
+  local venv_python_bin="$venv_dir/bin/python"
+
+  log_step "Creating WSL build venv at $venv_dir"
+  if "$host_python_bin" -m venv "$venv_dir"; then
+    if [[ -x "$venv_python_bin" ]] && build_venv_has_pip "$venv_python_bin"; then
+      return
+    fi
+
+    log_step "Rebuilding WSL build venv with virtualenv because pip was not bootstrapped"
+    rm -rf "$venv_dir"
+  else
+    if [[ "$P4A_AUTO_SYSTEM_BOOTSTRAP" == "1" ]]; then
+      install_system_packages python3-venv || true
+    fi
+  fi
+
+  ensure_host_python_package "$host_python_bin" "virtualenv"
+  if ! "$host_python_bin" -m virtualenv "$venv_dir"; then
+    echo "Failed to create the WSL build venv. Install python3-venv or set P4A_USE_BUILD_VENV=0." >&2
+    exit 1
+  fi
+}
+
 resolve_build_python_bin() {
   local host_python_bin="$1"
   if [[ "$P4A_USE_BUILD_VENV" != "1" ]]; then
@@ -226,17 +276,13 @@ resolve_build_python_bin() {
   fi
 
   local venv_python_bin="$P4A_BUILD_VENV_DIR/bin/python"
+  if [[ -x "$venv_python_bin" ]] && ! build_venv_has_pip "$venv_python_bin"; then
+    log_step "Removing WSL build venv without pip support"
+    rm -rf "$P4A_BUILD_VENV_DIR"
+  fi
+
   if [[ ! -x "$venv_python_bin" ]]; then
-    log_step "Creating WSL build venv at $P4A_BUILD_VENV_DIR"
-    if ! "$host_python_bin" -m venv "$P4A_BUILD_VENV_DIR"; then
-      if [[ "$P4A_AUTO_SYSTEM_BOOTSTRAP" == "1" ]]; then
-        install_system_packages python3-venv || true
-      fi
-      if ! "$host_python_bin" -m venv "$P4A_BUILD_VENV_DIR"; then
-        echo "Failed to create the WSL build venv. Install python3-venv or set P4A_USE_BUILD_VENV=0." >&2
-        exit 1
-      fi
-    fi
+    create_build_venv "$host_python_bin" "$P4A_BUILD_VENV_DIR"
   fi
 
   echo "$venv_python_bin"
@@ -671,6 +717,30 @@ clean_broken_hostpython_cache() {
   rm -rf "$hostpython_root"
 }
 
+clean_stale_local_lxml_cache() {
+  local local_lxml_recipe_dir="$P4A_LOCAL_RECIPES_DIR/lxml"
+  local lxml_build_root="$STORAGE_DIR/build/other_builds/lxml"
+  local python_installs_root="$STORAGE_DIR/build/python-installs/$DIST_NAME"
+
+  if [[ ! -d "$local_lxml_recipe_dir" ]]; then
+    return
+  fi
+
+  if [[ -d "$lxml_build_root" ]]; then
+    log_step "Removing cached lxml build so the local recipe override is used"
+    rm -rf "$lxml_build_root"
+  fi
+
+  if [[ ! -d "$python_installs_root" ]]; then
+    return
+  fi
+
+  find "$python_installs_root" \
+    \( -type d -name 'lxml' -o -type d -name 'lxml-*.egg-info' \) \
+    -prune \
+    -exec rm -rf {} + 2>/dev/null || true
+}
+
 copy_built_aar_to_dist() {
   local dist_name="$1"
   local source_candidates=()
@@ -746,6 +816,7 @@ export_android_toolchain "$P4A_ANDROID_SDK_ROOT" "$NDK_VERSION" "$JAVA_HOME"
 export_gradle_env
 install_android_sdk_packages "$P4A_ANDROID_SDK_ROOT" "$BUILD_TOOLS_VERSION" "$NDK_VERSION" "$P4A_ANDROID_API"
 clean_broken_hostpython_cache
+clean_stale_local_lxml_cache
 write_p4a_hook_file
 prepare_private_sources "$P4A_PRIVATE_DIR"
 
@@ -757,6 +828,7 @@ log_step "Building p4a service library AAR"
 run_p4a aar \
   --private "$P4A_PRIVATE_DIR" \
   --storage-dir "$STORAGE_DIR" \
+  --local-recipes "$P4A_LOCAL_RECIPES_DIR" \
   --hook "$P4A_HOOK_PATH" \
   --dist-name "$DIST_NAME" \
   --bootstrap service_library \

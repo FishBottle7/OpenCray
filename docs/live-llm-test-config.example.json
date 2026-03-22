@@ -1,0 +1,7 @@
+{
+  "protocol": "openai",
+  "baseUrl": "https://api.openai.com/v1",
+  "apiKey": "replace-with-your-local-key",
+  "model": "gpt-4.1-mini",
+  "reasoningEffort": "medium"
+}

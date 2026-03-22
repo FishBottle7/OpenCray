@@ -49,15 +49,18 @@ class MemoryCandidateExtractor(
       userInput = evidence.userInput,
     )
     return when (val interpretation = userIntentInterpreter.interpret(request)) {
-      is UserMemoryIntentInterpretation.Success -> UserIntentCandidateExtraction(
-        candidates = interpretation.intents.mapNotNull { intent ->
+      is UserMemoryIntentInterpretation.Success -> {
+        val candidates = interpretation.intents.mapNotNull { intent ->
           candidateFromUserIntent(
             intent = intent,
             evidence = evidence,
           )
-        },
-        shouldAttemptSoulInterpreterFallback = false,
-      )
+        }
+        UserIntentCandidateExtraction(
+          candidates = candidates,
+          shouldAttemptSoulInterpreterFallback = candidates.isEmpty(),
+        )
+      }
 
       is UserMemoryIntentInterpretation.Unavailable -> UserIntentCandidateExtraction(
         shouldAttemptSoulInterpreterFallback = true,
@@ -369,5 +372,4 @@ class MemoryCandidateExtractor(
     val candidates: List<MemoryCandidate> = emptyList(),
     val shouldAttemptSoulInterpreterFallback: Boolean,
   )
-
 }

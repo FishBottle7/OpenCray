@@ -32,6 +32,9 @@
     <string name="chat_default_session_title">新对话</string>
     <string name="chat_messages_badge">%1$d 条消息</string>
     <string name="chat_summary_reply_in_progress">正在生成回复</string>
+    <string name="chat_summary_awaiting_direction">等待你的下一步指示。</string>
+    <string name="chat_summary_supplement_recorded">已记录。到达下一个安全检查点时，这条消息会并入当前运行。</string>
+    <string name="chat_summary_approval_follow_up_recorded">已记录。当前运行正在等待审批，这条消息会在审批决定之后处理。</string>
     <string name="chat_summary_start_new_session">开始一个新会话</string>
     <string name="chat_summary_restored">每次任务都会把本地转录重新注入运行时窗口。</string>
     <string name="skills_message_installed">已安装 %1$s。</string>
@@ -66,10 +69,12 @@
     <string name="settings_card_workspace_access">工作区访问</string>
     <string name="settings_card_llm">LLM</string>
     <string name="settings_card_mcp">MCP</string>
+    <string name="settings_card_api_integrations">API 接入</string>
     <string name="settings_card_privacy_telemetry">联网搜索</string>
     <string name="settings_card_safety_limits">安全与限制</string>
     <string name="settings_card_about_version">关于与版本</string>
     <string name="settings_card_personalization">个性化</string>
+    <string name="settings_card_agents">Agent</string>
     <string name="reset_memory_phrase">RESET MEMORY</string>
     <string name="reset_soul_phrase">RESET SOUL</string>
     <string name="shell_product_name">OpenCray</string>
@@ -258,6 +263,7 @@
     <string name="personalization_preset_warm_voice">基础语气：支持感更强、稍微更温暖，也更适合协作式探索。</string>
     <string name="settings_home_profile_title">这台设备上的 OpenCray</string>
     <string name="settings_home_profile_meta">个性化：%1$s\n搜索：%2$s</string>
+    <string name="settings_home_profile_meta_api_routes">API 路由：搜索 + 媒体</string>
     <string name="settings_chevron">›</string>
     <string name="settings_tone_quiet">安静</string>
     <string name="settings_tone_focus">专注</string>
@@ -287,6 +293,11 @@
     <string name="settings_llm_subtitle">选择提供商、路由和响应默认值。</string>
     <string name="settings_mcp_subtitle">控制服务器发现、批准和健康检查。</string>
     <string name="settings_privacy_subtitle">在这里添加 API key。启用的槽位会按顺序依次尝试。</string>
+    <string name="settings_api_integrations_subtitle">选择 OpenCray 在搜索、媒体生成和语音服务上连接到哪里。</string>
+    <string name="settings_network_search_title">联网搜索</string>
+    <string name="settings_network_search_subtitle">配置搜索槽位、提供商顺序和检索密钥。</string>
+    <string name="settings_media_speech_title">媒体与语音</string>
+    <string name="settings_media_speech_subtitle">配置媒体 API 和 STT 路由。</string>
     <string name="settings_safety_subtitle">决定代理可以拥有多大的自由度。</string>
     <string name="settings_about_subtitle">查看构建信息、发布说明和诊断信息。</string>
     <string name="settings_personalization_subtitle">调整这台设备上的语气、记忆和默认风格。</string>

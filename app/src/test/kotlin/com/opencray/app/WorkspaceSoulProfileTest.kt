@@ -8,7 +8,8 @@ import org.junit.Test
 class WorkspaceSoulProfileTest {
   @Test
   fun toRuntimeSoulProfileFiltersReservedAndBlankExtensionsAfterNormalization() {
-    val runtimeProfile = WorkspaceSoulProfile(
+    val runtimeProfile = runtimeSoulProfileForTest(
+      WorkspaceSoulProfile(
       presetName = "",
       customLabel = "",
       customGuidance = "",
@@ -20,7 +21,8 @@ class WorkspaceSoulProfileTest {
         "blank-value" to "   ",
         "   " to "missing-key",
       ),
-    ).toRuntimeSoulProfile()
+      ),
+    )
 
     assertNull(runtimeProfile.presetName)
     assertNull(runtimeProfile.displayName)

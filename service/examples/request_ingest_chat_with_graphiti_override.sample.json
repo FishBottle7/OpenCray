@@ -1,0 +1,23 @@
+{
+  "operation": "ingest_chat",
+  "params": {
+    "twin_id": "twin_lin_01",
+    "source": "service/examples/chat_corpus.sample.json",
+    "llm_config": {
+      "protocol": "openai",
+      "providerId": "openai",
+      "providerName": "OpenAI",
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKey": "YOUR_API_KEY",
+      "model": "gpt-4o-mini"
+    },
+    "graphiti_config": {
+      "embedder": {
+        "baseUrl": "https://api.openai.com/v1",
+        "apiKey": "YOUR_API_KEY",
+        "model": "text-embedding-3-small"
+      }
+    },
+    "service_root": ".opencray/personality_service"
+  }
+}

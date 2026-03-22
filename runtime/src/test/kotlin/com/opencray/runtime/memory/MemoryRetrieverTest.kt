@@ -197,6 +197,29 @@ class MemoryRetrieverTest {
   }
 
   @Test
+  fun retrieveAcceptsShortQueriesForGenericMemoryRecall() {
+    val retriever = MemoryRetriever(clock = { NOW_EPOCH_MS })
+
+    val result = retriever.retrieve(
+      records = listOf(
+        memoryRecord(
+          id = "assistant-rule",
+          content = "When discussing the patch plan, refer to the helper as Xiao Bai.",
+          kind = MemoryKind.DURABLE_INSTRUCTION,
+          scope = MemoryScope.USER,
+        ),
+      ),
+      request = MemoryRecallRequest(
+        sessionId = "session-main",
+        userInput = "xiao",
+      ),
+    )
+
+    assertEquals(listOf("xiao"), result.trace.queryTerms)
+    assertEquals(listOf("assistant-rule"), result.memories.map { memory -> memory.id })
+  }
+
+  @Test
   fun retrieveKeepsSoulPreferenceRecordsOutOfGenericMemoryRecallLayer() {
     val retriever = MemoryRetriever(clock = { NOW_EPOCH_MS })
 

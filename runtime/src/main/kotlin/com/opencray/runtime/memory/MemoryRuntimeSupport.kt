@@ -54,11 +54,23 @@ internal fun memoryRecordExpired(
   return referenceEpochMs + resolvedTtlMs < nowEpochMs
 }
 
+internal fun normalizeMemoryQueryText(text: String?): String? = text
+  ?.replace(Regex("\\s+"), " ")
+  ?.trim()
+  ?.trim('"', '\'', '`')
+  ?.trim('-', '*', ' ', '.', ',', ';', ':', '。', '，', '；', '：', '!', '?', '！', '？')
+  ?.takeIf(String::isNotEmpty)
+  ?.takeUnless { normalized -> normalized.contains("```") }
+  ?.takeUnless { normalized ->
+    normalized.count { character ->
+      character == '{' || character == '}' || character == '[' || character == ']'
+    } >= 4
+  }
+
 internal fun extractMemoryQueryTerms(
-  policy: MemoryPolicy,
   text: String,
 ): Set<String> {
-  val normalized = policy.normalizeCandidateContent(text).orEmpty().lowercase(Locale.US)
+  val normalized = normalizeMemoryQueryText(text).orEmpty().lowercase(Locale.US)
   if (normalized.isBlank()) {
     return emptySet()
   }

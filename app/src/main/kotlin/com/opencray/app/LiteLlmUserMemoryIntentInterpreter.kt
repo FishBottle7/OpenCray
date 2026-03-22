@@ -93,11 +93,7 @@ internal class LiteLlmUserMemoryIntentInterpreter(
       baseUrl = settings.baseUrl,
       model = settings.model,
       timeoutMs = INTERPRETER_TIMEOUT_MS,
-      metadata = LlmProviderProtocols.routeMetadata(
-        protocol = settings.protocol,
-        model = settings.model,
-        reasoningEffort = settings.reasoningEffort,
-      ),
+      metadata = LiteLlmJsonExtractionSupport.routeMetadata(settings),
     )
     return ProviderRouting(
       activeProfileId = INTERPRETER_PROFILE_ID,
@@ -123,16 +119,23 @@ internal class LiteLlmUserMemoryIntentInterpreter(
     appendLine("- Use session for temporary requests like 'this time', 'for now', '这次', '先', '暂时'.")
     appendLine("- Use user for durable preferences like 'from now on', 'always', '以后', '默认', '今后'.")
     appendLine("- Use workspace for repo/project-scoped rules or facts.")
+    appendLine("- A single message may yield multiple durable intents; emit one intent per durable preference, instruction, or fact.")
     appendLine("- For generic memories, fill content with a short canonical sentence and omit preference_key/preference_value.")
     appendLine("- For soul-related naming or speaking preferences, kind must be user_preference.")
+    appendLine("- If the user tells the agent how to address them, use preference_key=user_preferred_name with soul_extensions.soul_preferred_naming.")
+    appendLine("- If one message contains both a durable workspace rule and a durable workspace fact, extract both separately.")
     LiteLlmAdaptivePreferencePromptGuidance.appendSharedRules(this)
     appendLine("- project_fact should only be used for durable repo/project facts, not one-off task state.")
     appendLine("- If there is nothing durable to remember, return {\"intents\":[]}.")
     appendLine("- Do not infer memories that were not clearly stated.")
+    appendLine("- Example mapping: '以后叫我阿澄。' -> one user_preference intent with preference_key user_preferred_name and preference_value 阿澄.")
+    appendLine("- Example mapping: '以后这个项目不要用 git reset --hard，而且这个项目使用 Gradle wrapper。' -> one durable_instruction plus one project_fact, both workspace scoped.")
     appendLine()
     appendLine("JSON schema examples:")
     appendLine("{\"intents\":[{\"kind\":\"user_preference\",\"scope\":\"user\",\"content\":\"Default to Simplified Chinese for explanations\"}]}")
     appendLine("{\"intents\":[{\"kind\":\"durable_instruction\",\"scope\":\"workspace\",\"content\":\"Do not use git reset --hard in this repo\"}]}")
+    appendLine("{\"intents\":[{\"kind\":\"user_preference\",\"scope\":\"user\",\"preference_key\":\"user_preferred_name\",\"preference_value\":\"阿澄\",\"soul_extensions\":{\"soul_preferred_naming\":\"阿澄\"}}]}")
+    appendLine("{\"intents\":[{\"kind\":\"durable_instruction\",\"scope\":\"workspace\",\"content\":\"Do not use git reset --hard in this repo\"},{\"kind\":\"project_fact\",\"scope\":\"workspace\",\"content\":\"This project uses Gradle wrapper\"}]}")
     LiteLlmAdaptivePreferencePromptGuidance.appendSharedExamples(
       builder = this,
       includeKindField = true,
@@ -226,7 +229,7 @@ internal class LiteLlmUserMemoryIntentInterpreter(
   private companion object {
     const val INTERPRETER_PROFILE_ID: String = "user-memory-intent"
     const val INTERPRETER_ROUTE_ID: String = "user-memory-intent-primary"
-    const val INTERPRETER_TIMEOUT_MS: Long = 20_000L
+    const val INTERPRETER_TIMEOUT_MS: Long = LiteLlmJsonExtractionSupport.DEFAULT_TIMEOUT_MS
     const val INTERPRETER_SYSTEM_PROMPT: String =
       "You are a strict JSON information extractor for OpenCray memory. Output valid JSON only."
   }

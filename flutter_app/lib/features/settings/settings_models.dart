@@ -3,10 +3,13 @@ enum SettingsPage {
   workspaceAccess,
   llm,
   mcp,
-  privacyTelemetry,
+  apiIntegrations,
+  networkSearch,
+  mediaSpeech,
   safetyLimits,
-  aboutVersion,
   personalization,
+  agents,
+  aboutVersion,
 }
 
 extension SettingsPageRouteId on SettingsPage {
@@ -20,14 +23,20 @@ extension SettingsPageRouteId on SettingsPage {
         return 'llm';
       case SettingsPage.mcp:
         return 'mcp';
-      case SettingsPage.privacyTelemetry:
-        return 'privacy_telemetry';
+      case SettingsPage.apiIntegrations:
+        return 'api_integrations';
+      case SettingsPage.networkSearch:
+        return 'network_search';
+      case SettingsPage.mediaSpeech:
+        return 'media_speech';
       case SettingsPage.safetyLimits:
         return 'safety_limits';
-      case SettingsPage.aboutVersion:
-        return 'about_version';
       case SettingsPage.personalization:
         return 'personalization';
+      case SettingsPage.agents:
+        return 'agents';
+      case SettingsPage.aboutVersion:
+        return 'about_version';
     }
   }
 }
@@ -41,13 +50,21 @@ SettingsPage settingsPageFromRouteId(String routeId) {
     case 'mcp':
       return SettingsPage.mcp;
     case 'privacy_telemetry':
-      return SettingsPage.privacyTelemetry;
+      return SettingsPage.apiIntegrations;
+    case 'api_integrations':
+      return SettingsPage.apiIntegrations;
+    case 'network_search':
+      return SettingsPage.networkSearch;
+    case 'media_speech':
+      return SettingsPage.mediaSpeech;
     case 'safety_limits':
       return SettingsPage.safetyLimits;
-    case 'about_version':
-      return SettingsPage.aboutVersion;
     case 'personalization':
       return SettingsPage.personalization;
+    case 'agents':
+      return SettingsPage.agents;
+    case 'about_version':
+      return SettingsPage.aboutVersion;
     default:
       return SettingsPage.home;
   }
@@ -187,6 +204,149 @@ class NetworkSearchConfigSnapshot {
   final String title;
   final String subtitle;
   final List<NetworkSearchSlotSnapshot> slots;
+}
+
+enum MediaSpeechSttRoute { externalApi, onDeviceModel }
+
+extension MediaSpeechSttRouteId on MediaSpeechSttRoute {
+  String get id {
+    switch (this) {
+      case MediaSpeechSttRoute.externalApi:
+        return 'external_api';
+      case MediaSpeechSttRoute.onDeviceModel:
+        return 'on_device_model';
+    }
+  }
+}
+
+MediaSpeechSttRoute mediaSpeechSttRouteFromId(String rawValue) {
+  switch (rawValue) {
+    case 'external_api':
+      return MediaSpeechSttRoute.externalApi;
+    case 'on_device_model':
+    default:
+      return MediaSpeechSttRoute.onDeviceModel;
+  }
+}
+
+class MediaProviderConfigSnapshot {
+  const MediaProviderConfigSnapshot({
+    required this.provider,
+    required this.baseUrl,
+    required this.endpoint,
+    required this.model,
+  });
+
+  final String provider;
+  final String baseUrl;
+  final String endpoint;
+  final String model;
+
+  MediaProviderConfigSnapshot copyWith({
+    String? provider,
+    String? baseUrl,
+    String? endpoint,
+    String? model,
+  }) {
+    return MediaProviderConfigSnapshot(
+      provider: provider ?? this.provider,
+      baseUrl: baseUrl ?? this.baseUrl,
+      endpoint: endpoint ?? this.endpoint,
+      model: model ?? this.model,
+    );
+  }
+}
+
+class VoiceProviderConfigSnapshot {
+  const VoiceProviderConfigSnapshot({
+    required this.provider,
+    required this.baseUrl,
+    required this.endpoint,
+    required this.voicePreset,
+  });
+
+  final String provider;
+  final String baseUrl;
+  final String endpoint;
+  final String voicePreset;
+
+  VoiceProviderConfigSnapshot copyWith({
+    String? provider,
+    String? baseUrl,
+    String? endpoint,
+    String? voicePreset,
+  }) {
+    return VoiceProviderConfigSnapshot(
+      provider: provider ?? this.provider,
+      baseUrl: baseUrl ?? this.baseUrl,
+      endpoint: endpoint ?? this.endpoint,
+      voicePreset: voicePreset ?? this.voicePreset,
+    );
+  }
+}
+
+class OnDeviceSttConfigSnapshot {
+  const OnDeviceSttConfigSnapshot({
+    required this.modelPackage,
+    required this.downloadStatus,
+  });
+
+  final String modelPackage;
+  final String downloadStatus;
+
+  OnDeviceSttConfigSnapshot copyWith({
+    String? modelPackage,
+    String? downloadStatus,
+  }) {
+    return OnDeviceSttConfigSnapshot(
+      modelPackage: modelPackage ?? this.modelPackage,
+      downloadStatus: downloadStatus ?? this.downloadStatus,
+    );
+  }
+}
+
+class MediaSpeechConfigSnapshot {
+  const MediaSpeechConfigSnapshot({
+    required this.localeTag,
+    required this.title,
+    required this.subtitle,
+    required this.imageGeneration,
+    required this.voiceGeneration,
+    required this.sttRoute,
+    required this.externalStt,
+    required this.onDeviceModel,
+  });
+
+  final String localeTag;
+  final String title;
+  final String subtitle;
+  final MediaProviderConfigSnapshot imageGeneration;
+  final VoiceProviderConfigSnapshot voiceGeneration;
+  final MediaSpeechSttRoute sttRoute;
+  final MediaProviderConfigSnapshot externalStt;
+  final OnDeviceSttConfigSnapshot onDeviceModel;
+
+  MediaSpeechConfigSnapshot copyWith({
+    String? localeTag,
+    String? title,
+    String? subtitle,
+    MediaProviderConfigSnapshot? imageGeneration,
+    VoiceProviderConfigSnapshot? voiceGeneration,
+    MediaSpeechSttRoute? sttRoute,
+    MediaProviderConfigSnapshot? externalStt,
+    OnDeviceSttConfigSnapshot? onDeviceModel,
+  }) {
+    return MediaSpeechConfigSnapshot(
+      localeTag: localeTag ?? this.localeTag,
+      title: title ?? this.title,
+      subtitle: subtitle ?? this.subtitle,
+      imageGeneration: imageGeneration ?? this.imageGeneration,
+      voiceGeneration: voiceGeneration ?? this.voiceGeneration,
+      sttRoute: sttRoute ?? this.sttRoute,
+      externalStt: externalStt ?? this.externalStt,
+      onDeviceModel: onDeviceModel ?? this.onDeviceModel,
+    );
+  }
 }
 
 class LlmProviderOption {

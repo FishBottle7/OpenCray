@@ -6,6 +6,7 @@ import com.opencray.persistence.store.file.JsonFileMemoryStore
 import com.opencray.persistence.store.file.JsonFileSessionStore
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -41,7 +42,33 @@ class PersonalizationLocalStoreTest {
   }
 
   @Test
-  fun clearMemoryAndHistoryClearsOnlyMemoryAndSessionStores() {
+  fun memoryDebugActionAuditsRoundTripAcrossStoreReinstantiation() {
+    val directory = temporaryFolder.newFolder("personalization-memory-debug-audit")
+    val store = PersonalizationLocalStore(directory)
+    store.appendMemoryDebugActionAudit(
+      MemoryDebugActionAuditEntry(
+        entryId = "audit-1",
+        recordId = "memory-1",
+        action = "suppress",
+        sessionId = "session-1",
+        runId = "run-memory-debug-1",
+        taskId = "memory-debug-suppress-1",
+        occurredAtEpochMs = 1_234L,
+      ),
+    )
+
+    val reloadedStore = PersonalizationLocalStore(directory)
+    val audits = reloadedStore.listMemoryDebugActionAudits()
+
+    assertEquals(1, audits.size)
+    assertEquals("audit-1", audits.single().entryId)
+    assertEquals("memory-1", audits.single().recordId)
+    assertEquals("suppress", audits.single().action)
+    assertEquals("session-1", audits.single().sessionId)
+  }
+
+  @Test
+  fun clearMemoryAndHistoryClearsMemorySessionAndDebugAuditStores() {
     val directory = temporaryFolder.newFolder("personalization-clear-memory")
     val store = PersonalizationLocalStore(directory)
     store.upsertMemoryRecord(
@@ -61,10 +88,22 @@ class PersonalizationLocalStoreTest {
         updatedAtEpochMs = 1_101L,
       ),
     )
+    store.appendMemoryDebugActionAudit(
+      MemoryDebugActionAuditEntry(
+        entryId = "audit-1",
+        recordId = "memory-1",
+        action = "suppress",
+        sessionId = "session-1",
+        runId = "run-memory-debug-1",
+        taskId = "memory-debug-suppress-1",
+        occurredAtEpochMs = 1_200L,
+      ),
+    )
 
     store.clearMemoryAndHistory()
 
     assertEquals(emptyList<MemoryRecord>(), JsonFileMemoryStore(directory).list())
     assertNull(JsonFileSessionStore(directory).load())
+    assertTrue(PersonalizationLocalStore(directory).listMemoryDebugActionAudits().isEmpty())
   }
 }

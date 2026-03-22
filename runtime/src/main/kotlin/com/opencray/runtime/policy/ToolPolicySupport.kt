@@ -102,7 +102,7 @@ internal class ToolPolicySupport(
         policyDecision = request.policyDecision,
         fallback = request.policyDecision.detail ?: request.askDetail,
       )
-      PolicyDecisionOutcome.DENY -> request.denyDetail
+      PolicyDecisionOutcome.DENY -> request.policyDecision.detail ?: request.denyDetail
       PolicyDecisionOutcome.ALLOW -> error("ALLOW decisions should not be gated.")
     }
     return AgentToolResult(

@@ -8,6 +8,7 @@ import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
+import com.opencray.core.orchestrator.SessionQueueSnapshot
 import com.opencray.core.orchestrator.SessionTaskRuntime
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
@@ -16,6 +17,7 @@ import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
 import com.opencray.runtime.OpenCrayLifecycleEvent
+import com.opencray.runtime.OpenCrayPromptResumeState
 import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.process.ManagedProcessSnapshot
@@ -28,6 +30,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+
+private const val ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE: String = "PROCESS_INTERRUPTED_ON_RESTORE"
+private const val METADATA_RESTORED_FROM_DURABLE_STORE: String = "restoredFromDurableStore"
+private const val METADATA_RESTORED_TERMINAL_STATE: String = "restoredTerminalState"
+private const val RESTORED_TERMINAL_STATE_INTERRUPTED: String = "interrupted"
 
 class AgentSessionRuntimeManagerTest {
   @get:Rule
@@ -94,6 +101,43 @@ class AgentSessionRuntimeManagerTest {
   }
 
   @Test
+  fun submitPromptCarriesLifecycleDiagnosticsIntoSubmissionAndRunSnapshot() {
+    val manager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+    )
+    val handle = manager.forSession("session-diagnostics")
+
+    val submission = handle.submitPrompt(
+      userText = "diagnose this run",
+      pendingMessageId = "pending-diagnostics",
+      visibleThroughMessageId = "pending-diagnostics",
+      policyDecision = allowDecision(),
+      metadata = mapOf(
+        RunLifecycleMetadataKeys.SUBMISSION_SOURCE to "test_submit",
+      ),
+    )
+    val run = requireNotNull(handle.findRun(submission.runId))
+
+    assertTrue(submission.lifecycleDiagnostics.processStartId?.startsWith("process-") == true)
+    assertTrue(submission.lifecycleDiagnostics.hostInstanceId?.startsWith("host-") == true)
+    assertEquals(
+      submission.lifecycleDiagnostics.hostInstanceId,
+      submission.lifecycleDiagnostics.runtimeOwnerId,
+    )
+    assertEquals("test_submit", submission.lifecycleDiagnostics.submissionSource)
+    assertEquals(
+      submission.lifecycleDiagnostics.processStartId,
+      run.lifecycleDiagnostics.processStartId,
+    )
+    assertEquals(
+      submission.lifecycleDiagnostics.hostInstanceId,
+      run.lifecycleDiagnostics.hostInstanceId,
+    )
+    assertEquals("test_submit", run.lifecycleDiagnostics.submissionSource)
+  }
+
+  @Test
   fun resumeRestoresPersistedQueuedTaskIntoSameOwnerPath() {
     val sessionId = "session-restored"
     val initialExecutor = RecordingExecutorService()
@@ -126,6 +170,169 @@ class AgentSessionRuntimeManagerTest {
     assertEquals(listOf(QueueTaskLifecycleState.COMPLETED), snapshot.tasks.map { it.lifecycleState })
     assertEquals(listOf("restored prompt"), restoredFactory.executedInputs)
     assertEquals(QueueTaskLifecycleState.COMPLETED, restoredHandle.findRun(submission.runId)?.lifecycleState)
+  }
+
+  @Test
+  fun restoredApprovedCheckpointKeepsSameRunQueuedAndAutoResumes() {
+    val sessionId = "session-approved-checkpoint-restore"
+    val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(temporaryFolder.root)
+    val firstManager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    )
+    val firstHandle = firstManager.forSession(sessionId)
+
+    val submission = firstHandle.submitPrompt(
+      userText = "continue after approval",
+      pendingMessageId = "pending-approved-restore",
+      visibleThroughMessageId = "pending-approved-restore",
+      policyDecision = allowDecision(),
+    )
+    overwriteQueueSnapshot(
+      sessionId = sessionId,
+      snapshot = firstHandle.snapshot(),
+      taskId = submission.taskId,
+      lifecycleState = QueueTaskLifecycleState.RUNNING,
+    )
+    promptCheckpointStoreFactory.forChatSession(sessionId).upsert(
+      PersistedPromptCheckpoint(
+        sessionId = sessionId,
+        runId = submission.runId,
+        taskId = submission.taskId,
+        checkpointId = "checkpoint-approved",
+        checkpointKind = PromptCheckpointKind.APPROVED_PENDING_RESUME,
+        createdAtEpochMs = 100L,
+        updatedAtEpochMs = 100L,
+        toolName = "Read",
+        promptResumeState = OpenCrayPromptResumeState(
+          turnIndex = 1,
+          toolCallCount = 1,
+        ),
+      ),
+    )
+    firstManager.release(sessionId)
+
+    val restoredExecutor = RecordingExecutorService()
+    val restoredFactory = RecordingRuntimeFactory()
+    val restoredManager = manager(
+      runtimeFactory = restoredFactory,
+      executor = restoredExecutor,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    )
+    val restoredHandle = restoredManager.forSession(sessionId)
+
+    val restoredTaskSnapshot = restoredHandle.snapshot().tasks.single()
+    val restoredRun = requireNotNull(restoredHandle.findRun(submission.runId))
+
+    assertEquals(submission.taskId, restoredRun.taskId)
+    assertEquals(QueueTaskLifecycleState.QUEUED, restoredTaskSnapshot.lifecycleState)
+    assertEquals(QueueTaskLifecycleState.QUEUED, restoredRun.lifecycleState)
+    assertTrue(restoredRun.lifecycleDiagnostics.previousLifecycleState != null)
+    assertTrue(restoredRun.lifecycleDiagnostics.queueRestoreEpochMs != null)
+    assertEquals(null, restoredRun.executionStatus)
+    assertEquals(null, restoredRun.errorCode)
+    assertTrue(!restoredRun.isTerminal)
+    assertTrue(restoredRun.isActive)
+
+    restoredHandle.resume()
+
+    assertEquals(1, restoredExecutor.pendingCount())
+
+    restoredExecutor.runNext()
+
+    assertEquals(listOf("continue after approval"), restoredFactory.executedInputs)
+    assertEquals(0, restoredExecutor.pendingCount())
+    assertEquals(
+      QueueTaskLifecycleState.COMPLETED,
+      restoredHandle.findRun(submission.runId)?.lifecycleState,
+    )
+  }
+
+  @Test
+  fun restoredWaitingApprovalKeepsSameRunSuspendedWithoutRerun() {
+    val sessionId = "session-waiting-approval-restore"
+    val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(temporaryFolder.root)
+    val runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory(temporaryFolder.root)
+    val firstManager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    )
+    val firstHandle = firstManager.forSession(sessionId)
+
+    val submission = firstHandle.submitPrompt(
+      userText = "needs approval",
+      pendingMessageId = "pending-waiting-approval",
+      visibleThroughMessageId = "pending-waiting-approval",
+      policyDecision = allowDecision(),
+    )
+    overwriteQueueSnapshot(
+      sessionId = sessionId,
+      snapshot = firstHandle.snapshot(),
+      taskId = submission.taskId,
+      lifecycleState = QueueTaskLifecycleState.RUNNING,
+    )
+    runRecordStoreFactory.forChatSession(sessionId).upsert(
+      PersistedAgentRunRecord(
+        runId = submission.runId,
+        taskId = submission.taskId,
+        acceptedAtEpochMs = submission.acceptedAtEpochMs,
+        pendingMessageId = "pending-waiting-approval",
+        lastResult = ExecutionResult(
+          taskId = submission.taskId,
+          status = ExecutionStatus.DENIED,
+          errorCode = "APPROVAL_REQUIRED",
+          errorMessage = "Approval is required before Read can run.",
+          startedAtEpochMs = 1_000L,
+          finishedAtEpochMs = 1_001L,
+        ),
+      ),
+    )
+    promptCheckpointStoreFactory.forChatSession(sessionId).upsert(
+      PersistedPromptCheckpoint(
+        sessionId = sessionId,
+        runId = submission.runId,
+        taskId = submission.taskId,
+        checkpointId = "checkpoint-waiting",
+        checkpointKind = PromptCheckpointKind.WAITING_APPROVAL,
+        createdAtEpochMs = 100L,
+        updatedAtEpochMs = 100L,
+        toolName = "Read",
+      ),
+    )
+    firstManager.release(sessionId)
+
+    val restoredExecutor = RecordingExecutorService()
+    val restoredFactory = RecordingRuntimeFactory()
+    val restoredManager = manager(
+      runtimeFactory = restoredFactory,
+      executor = restoredExecutor,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    )
+    val restoredHandle = restoredManager.forSession(sessionId)
+
+    val restoredTaskSnapshot = restoredHandle.snapshot().tasks.single()
+    val restoredRun = requireNotNull(restoredHandle.findRun(submission.runId))
+
+    assertEquals(submission.taskId, restoredRun.taskId)
+    assertEquals(QueueTaskLifecycleState.SUSPENDED, restoredTaskSnapshot.lifecycleState)
+    assertEquals(QueueTaskLifecycleState.SUSPENDED, restoredRun.lifecycleState)
+    assertTrue(restoredRun.lifecycleDiagnostics.previousLifecycleState != null)
+    assertTrue(restoredRun.lifecycleDiagnostics.queueRestoreEpochMs != null)
+    assertEquals(ExecutionStatus.DENIED, restoredRun.executionStatus)
+    assertEquals("APPROVAL_REQUIRED", restoredRun.errorCode)
+    assertTrue(!restoredRun.isTerminal)
+    assertTrue(restoredRun.isActive)
+
+    restoredHandle.resume()
+
+    assertEquals(0, restoredExecutor.pendingCount())
+    assertTrue(restoredFactory.executedInputs.isEmpty())
+    assertEquals(
+      QueueTaskLifecycleState.SUSPENDED,
+      restoredHandle.findRun(submission.runId)?.lifecycleState,
+    )
   }
 
   @Test
@@ -383,13 +590,13 @@ class AgentSessionRuntimeManagerTest {
               taskId = submission.taskId,
               status = ManagedProcessStatus.FAILED,
             ).copy(
-              errorCode = ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE,
+              errorCode = errorManagedProcessInterruptedOnRestoreForTest,
               errorMessage = "Managed process state was restored without a live controller; marking it interrupted.",
               updatedAtEpochMs = 1_002L,
               finishedAtEpochMs = 1_002L,
               metadata = mapOf(
-                METADATA_RESTORED_FROM_DURABLE_STORE to "true",
-                METADATA_RESTORED_TERMINAL_STATE to RESTORED_TERMINAL_STATE_INTERRUPTED,
+                metadataRestoredFromDurableStoreForTest to "true",
+                metadataRestoredTerminalStateForTest to restoredTerminalStateInterruptedForTest,
               ),
             ),
           )
@@ -407,12 +614,12 @@ class AgentSessionRuntimeManagerTest {
     val restoredRun = restoredHandle.findRun(submission.runId)
 
     assertEquals(ExecutionStatus.FAILED, restoredRun?.executionStatus)
-    assertEquals(ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE, restoredRun?.errorCode)
+    assertEquals(errorManagedProcessInterruptedOnRestoreForTest, restoredRun?.errorCode)
     assertEquals(QueueTaskLifecycleState.FAILED, restoredRun?.lifecycleState)
     assertEquals(AgentTaskState.FAILED, restoredRun?.taskState)
     assertEquals(
-      RESTORED_TERMINAL_STATE_INTERRUPTED,
-      restoredRun?.resultMetadata?.get(METADATA_RESTORED_TERMINAL_STATE),
+      restoredTerminalStateInterruptedForTest,
+      restoredRun?.resultMetadata?.get(metadataRestoredTerminalStateForTest),
     )
     assertEquals(listOf("proc-restored"), restoredRun?.managedProcessIds)
     assertEquals(0, restoredRun?.runningManagedProcessCount)
@@ -435,8 +642,71 @@ class AgentSessionRuntimeManagerTest {
     val persistedRun = persistedManager.forSession(sessionId).findRun(submission.runId)
 
     assertEquals(ExecutionStatus.FAILED, persistedRun?.executionStatus)
-    assertEquals(ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE, persistedRun?.errorCode)
+    assertEquals(errorManagedProcessInterruptedOnRestoreForTest, persistedRun?.errorCode)
     assertEquals(listOf("proc-restored"), persistedRun?.managedProcessIds)
+  }
+
+  @Test
+  fun requestRetryClearsPreviousFailureFromQueuedRunSnapshot() {
+    val executor = RecordingExecutorService()
+    var executionCount = 0
+    val runtimeFactory = RecordingRuntimeFactory(
+      executionResultFactory = { task ->
+        executionCount += 1
+        if (executionCount == 1) {
+          ExecutionResult(
+            taskId = task.id,
+            status = ExecutionStatus.FAILED,
+            errorCode = "TRANSIENT_FAILURE",
+            errorMessage = "Try again.",
+            startedAtEpochMs = 1_000L,
+            finishedAtEpochMs = 1_001L,
+          )
+        } else {
+          ExecutionResult(
+            taskId = task.id,
+            status = ExecutionStatus.SUCCESS,
+            stdout = "ok",
+            startedAtEpochMs = 1_002L,
+            finishedAtEpochMs = 1_003L,
+          )
+        }
+      },
+    )
+    val manager = manager(
+      runtimeFactory = runtimeFactory,
+      executor = executor,
+    )
+    val handle = manager.forSession("session-manual-retry")
+
+    val submission = handle.submitPrompt(
+      userText = "retry this prompt",
+      pendingMessageId = "pending-retry",
+      visibleThroughMessageId = "pending-retry",
+      policyDecision = allowDecision(),
+    )
+    handle.ensureProcessing()
+    executor.runNext()
+
+    val failedRun = handle.findRun(submission.runId)
+    assertEquals(ExecutionStatus.FAILED, failedRun?.executionStatus)
+    assertEquals("TRANSIENT_FAILURE", failedRun?.errorCode)
+    assertTrue(failedRun?.isTerminal == true)
+
+    assertTrue(handle.requestRetry(submission.taskId))
+
+    val queuedRetryRun = handle.findRun(submission.runId)
+    assertEquals(QueueTaskLifecycleState.QUEUED, queuedRetryRun?.lifecycleState)
+    assertEquals(null, queuedRetryRun?.executionStatus)
+    assertEquals(null, queuedRetryRun?.errorCode)
+    assertEquals(null, queuedRetryRun?.errorMessage)
+    assertTrue(queuedRetryRun?.isTerminal == false)
+
+    executor.runNext()
+
+    val completedRun = handle.findRun(submission.runId)
+    assertEquals(ExecutionStatus.SUCCESS, completedRun?.executionStatus)
+    assertEquals(QueueTaskLifecycleState.COMPLETED, completedRun?.lifecycleState)
   }
 
   @Test
@@ -665,13 +935,59 @@ class AgentSessionRuntimeManagerTest {
   private fun manager(
     runtimeFactory: AgentSessionTaskRuntimeFactory,
     executor: RecordingExecutorService,
+    runEventJournalStoreFactory: RunEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory(temporaryFolder.root),
+    promptCheckpointStoreFactory: PromptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(temporaryFolder.root),
   ): DefaultAgentSessionRuntimeManager = DefaultAgentSessionRuntimeManager(
     agentId = "opencray-app",
     runtimeFactory = runtimeFactory,
     snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory(temporaryFolder.root),
     runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory(temporaryFolder.root),
+    runEventJournalStoreFactory = runEventJournalStoreFactory,
+    promptCheckpointStoreFactory = promptCheckpointStoreFactory,
     executor = executor,
   )
+
+  private fun overwriteQueueSnapshot(
+    sessionId: String,
+    snapshot: SessionQueueSnapshot,
+    taskId: String,
+    lifecycleState: QueueTaskLifecycleState,
+  ) {
+    val taskState = when (lifecycleState) {
+      QueueTaskLifecycleState.QUEUED,
+      QueueTaskLifecycleState.RETRY_PENDING,
+      -> AgentTaskState.QUEUED
+
+      QueueTaskLifecycleState.RUNNING,
+      QueueTaskLifecycleState.CANCEL_REQUESTED,
+      -> AgentTaskState.RUNNING
+
+      QueueTaskLifecycleState.SUSPENDED -> AgentTaskState.SUSPENDED
+      QueueTaskLifecycleState.COMPLETED -> AgentTaskState.COMPLETED
+      QueueTaskLifecycleState.FAILED -> AgentTaskState.FAILED
+      QueueTaskLifecycleState.CANCELLED -> AgentTaskState.CANCELLED
+    }
+    FileBackedAgentQueueSnapshotStoreFactory(temporaryFolder.root)
+      .forChatSession(sessionId)
+      .save(
+        snapshot.copy(
+          tasks = snapshot.tasks.map { taskSnapshot ->
+            if (taskSnapshot.task.id != taskId) {
+              taskSnapshot
+            } else {
+              taskSnapshot.copy(
+                lifecycleState = lifecycleState,
+                task = taskSnapshot.task.copy(
+                  state = taskState,
+                  updatedAtEpochMs = maxOf(taskSnapshot.task.updatedAtEpochMs, 2_000L),
+                ),
+              )
+            }
+          },
+          updatedAtEpochMs = maxOf(snapshot.updatedAtEpochMs, 2_000L),
+        ),
+      )
+  }
 
   private fun allowDecision(): PolicyDecision = PolicyDecision(
     outcome = PolicyDecisionOutcome.ALLOW,

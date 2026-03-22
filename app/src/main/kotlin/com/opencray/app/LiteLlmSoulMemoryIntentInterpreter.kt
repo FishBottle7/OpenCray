@@ -94,11 +94,7 @@ internal class LiteLlmSoulMemoryIntentInterpreter(
       baseUrl = settings.baseUrl,
       model = settings.model,
       timeoutMs = INTERPRETER_TIMEOUT_MS,
-      metadata = LlmProviderProtocols.routeMetadata(
-        protocol = settings.protocol,
-        model = settings.model,
-        reasoningEffort = settings.reasoningEffort,
-      ),
+      metadata = LiteLlmJsonExtractionSupport.routeMetadata(settings),
     )
     return ProviderRouting(
       activeProfileId = INTERPRETER_PROFILE_ID,
@@ -123,11 +119,15 @@ internal class LiteLlmSoulMemoryIntentInterpreter(
     appendLine("- Use session for temporary requests like 'this time', 'for now', '这次', '先', '暂时'.")
     appendLine("- Use user for durable requests like 'from now on', 'always', '默认', '以后', '今后'.")
     appendLine("- Use workspace only when the user clearly scopes the preference to this repo/project/workspace.")
+    appendLine("- If the user tells the agent how to address them, use preference_key=user_preferred_name with soul_extensions.soul_preferred_naming.")
+    appendLine("- A single message may yield multiple soul intents when the durable scopes are explicit.")
     LiteLlmAdaptivePreferencePromptGuidance.appendSharedRules(this)
     appendLine("- If there is no soul-related memory intent, return {\"intents\":[]}.")
     appendLine("- Do not infer preferences that were not clearly stated.")
+    appendLine("- Example mapping: '以后叫我阿青。' -> one user-scoped intent with preference_key user_preferred_name and preference_value 阿青.")
     appendLine()
     appendLine("JSON schema:")
+    appendLine("{\"intents\":[{\"preference_key\":\"user_preferred_name\",\"preference_value\":\"阿青\",\"scope\":\"user\",\"soul_extensions\":{\"soul_preferred_naming\":\"阿青\"}}]}")
     LiteLlmAdaptivePreferencePromptGuidance.appendSharedExamples(
       builder = this,
       includeKindField = false,
@@ -207,7 +207,7 @@ internal class LiteLlmSoulMemoryIntentInterpreter(
   private companion object {
     const val INTERPRETER_PROFILE_ID: String = "soul-memory-intent"
     const val INTERPRETER_ROUTE_ID: String = "soul-memory-intent-primary"
-    const val INTERPRETER_TIMEOUT_MS: Long = 20_000L
+    const val INTERPRETER_TIMEOUT_MS: Long = LiteLlmJsonExtractionSupport.DEFAULT_TIMEOUT_MS
     const val INTERPRETER_SYSTEM_PROMPT: String =
       "You are a strict JSON information extractor for OpenCray memory. Output valid JSON only."
   }

@@ -156,7 +156,7 @@ class ContextPruner(
     return when (current.role) {
       RuntimeConversationRole.USER -> null
       RuntimeConversationRole.ASSISTANT -> current.content
-        .takeIf(::isToolCallMarker)
+        .takeIf { isToolCallMarker(current) }
         ?.let { content -> "assistant:${collapseWhitespace(content)}" }
 
       RuntimeConversationRole.TOOL,
@@ -200,8 +200,9 @@ class ContextPruner(
   private fun collapseWhitespace(content: String): String =
     content.replace(Regex("\\s+"), " ").trim()
 
-  private fun isToolCallMarker(content: String): Boolean =
-    content.trim().startsWith("tool_call ")
+  private fun isToolCallMarker(message: RuntimeConversationMessage): Boolean =
+    message.kind == RuntimeConversationMessageKind.TOOL_CALL ||
+      message.content.trim().startsWith("tool_call ")
 
   private fun lineCount(content: String): Int =
     content.lineSequence().count().coerceAtLeast(1)

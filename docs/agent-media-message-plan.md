@@ -28,11 +28,19 @@
 
 ## 当前落地状态
 
-截至 `2026-03-19`，本方案已经有一版可运行实现，范围如下：
+截至 `2026-03-20`，本方案已经有一版可运行实现，范围如下：
 
 - 已支持 assistant 在 final action 里发送 `image`、`voice`、`file` 三类附件
 - 仍兼容旧的 `audio` 输入语义，但宿主会把它归一化为聊天里的 `voice`
 - 已支持将附件归档到工作区 `.opencray/chat-media/<sessionId>/...`
+- 已支持 agent 直接调用 `GenerateImage` 工具生成图片
+- 已支持 agent 直接调用 `SynthesizeSpeech` 工具把文本合成为语音
+- 已支持生成图片默认写入工作区 `.opencray/generated-media/images/`
+- 已支持生成语音默认写入工作区 `.opencray/generated-media/voices/`
+- 已支持媒体工具通过 `attachmentArtifactsJson` 向 final action 暴露 `artifactId`
+- 已支持 final action 用 `attachments[].artifact_id` 引用当前 run 内刚生成的图片和语音
+- 已支持语音生成结果默认落到聊天里的 `voice` 语义；若 agent 明确用 `kind=file`，同一 artifact 也可作为音频文件发送
+- 已支持媒体 provider 复用当前 LLM 路由配置里的鉴权头
 - 已支持按 `SHA-256` 做 session 内去重
 - 已支持单条消息最多 `9` 张图片
 - 已支持多张图片、语音卡片、文件卡片渲染在同一个聊天气泡里
@@ -55,14 +63,15 @@
 - `artifactId` 还没有接入跨 run、跨会话可查询的真实宿主 artifact registry
 - 当前实现是 `run` 级 alias：runtime 把文件产物写进 tool result metadata，host 仅在当前 run 内回查
 - 因此当前 `artifactId` 主要适用于“本轮刚生成/导入/移动出来，接着立即发送”的附件
-- 图片/语音生成工具本身还不是这次交付内容，本次主要落地的是发送与展示协议
+- `PublishMediaArtifact` 还没有落地；当前若要跨 `session` 复用图片、语音或文件，仍应先保留到工作区稳定相对路径
+- 还没有工作区级全局 artifact/media registry；当前生成媒体更接近“本 run 内可引用的 artifact + 已落库的 session 私有副本”
 
 这意味着当前代码状态更接近：
 
 - `Phase 1` 已完成主链路
 - `Phase 2` 已完成图片预览、语音内置播放、文本文件内置预览、普通文件外部打开
 - `Phase 2` 语音增强已完成波形、拖动 seek、转写展示
-- `Phase 3` 已完成最小可用的 `artifactId` 发送闭环，但完整 artifact registry 仍属于后续实现
+- `Phase 3` 已部分完成：`GenerateImage` / `SynthesizeSpeech` 与最小可用 `artifactId` 发送闭环已经落地，但完整 artifact registry 与 `PublishMediaArtifact` 仍属于后续实现
 
 说明：
 
@@ -673,6 +682,13 @@ agent 侧选择规则建议固定为：
 
 ### 6. 媒体生成工具层
 
+补充说明：
+
+- 当前代码里已经落地 `GenerateImage` 和 `SynthesizeSpeech`
+- 当前实现使用 `OpenCrayConfigurableMediaProviderClient` 直连可配置 provider
+- 当前没有单独再抽一层独立 media gateway；接口抽象体现在 runtime 的 `OpenCrayImageGenerationClient` / `OpenCraySpeechSynthesisClient`
+- 当前仍未落地 `PublishMediaArtifact`
+
 这一层建议独立于 `LiteLlmGateway`，不要塞进当前文本 LLM 抽象。
 
 #### 6.1 新建 provider 抽象
@@ -696,6 +712,12 @@ agent 侧选择规则建议固定为：
 - `GenerateImage`
 - `SynthesizeSpeech`
 - `PublishMediaArtifact`
+
+当前状态：
+
+- `GenerateImage` 已落地
+- `SynthesizeSpeech` 已落地
+- `PublishMediaArtifact` 未落地
 
 其中：
 
@@ -852,6 +874,14 @@ agent 侧选择规则建议固定为：
 - `PublishMediaArtifact`
 - 独立 media provider gateway
 - 对应设置页或 provider 配置
+
+当前状态：
+
+- `GenerateImage` 已完成
+- `SynthesizeSpeech` 已完成
+- provider 配置页已进入实现范围
+- `PublishMediaArtifact` 未完成
+- 工作区级全局 artifact/media registry 未完成
 
 验收标准：
 

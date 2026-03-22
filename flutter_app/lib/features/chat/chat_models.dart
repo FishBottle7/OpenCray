@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../core/models/opencray_chat_draft_attachment.dart';
+
 enum ChatPrototypeVariant { main, empty, attachments, commandMenu, addMenu }
 
 enum ChatMessageKind { timeline, inbound, outbound }
@@ -82,6 +84,7 @@ class ChatRunTraceData {
     required this.body,
     this.history = const <ChatRunTraceHistoryEntry>[],
     this.isHighRisk = false,
+    this.retryLabel,
   });
 
   final String runId;
@@ -90,6 +93,11 @@ class ChatRunTraceData {
   final String body;
   final List<ChatRunTraceHistoryEntry> history;
   final bool isHighRisk;
+  final String? retryLabel;
+
+  bool get isRetryable => retryLabel?.trim().isNotEmpty == true;
+
+  String get retryId => runId.trim().isNotEmpty ? runId : taskId;
 }
 
 @immutable
@@ -97,12 +105,49 @@ class ChatRunTraceHistoryEntry {
   const ChatRunTraceHistoryEntry({
     required this.label,
     required this.body,
+    this.compactBody,
     this.isHighRisk = false,
+    this.inspectorActorId = 'main',
+    this.inspectorActorLabel = '',
+    this.inspectorCallParts = const <ChatRunTraceInspectorTextPart>[],
+    this.inspectorCallDetail = '',
+    this.inspectorResultBody = '',
   });
 
   final String label;
   final String body;
+  final String? compactBody;
   final bool isHighRisk;
+  final String inspectorActorId;
+  final String inspectorActorLabel;
+  final List<ChatRunTraceInspectorTextPart> inspectorCallParts;
+  final String inspectorCallDetail;
+  final String inspectorResultBody;
+
+  bool get hasStructuredInspectorContent =>
+      inspectorCallParts.isNotEmpty ||
+      inspectorCallDetail.trim().isNotEmpty ||
+      inspectorResultBody.trim().isNotEmpty;
+}
+
+enum ChatRunTraceInspectorTextSemantic {
+  neutral,
+  action,
+  target,
+  scope,
+  result,
+  connector,
+}
+
+@immutable
+class ChatRunTraceInspectorTextPart {
+  const ChatRunTraceInspectorTextPart({
+    required this.text,
+    this.semantic = ChatRunTraceInspectorTextSemantic.neutral,
+  });
+
+  final String text;
+  final ChatRunTraceInspectorTextSemantic semantic;
 }
 
 @immutable
@@ -277,16 +322,20 @@ class ChatTodoItemData {
 @immutable
 class ChatAttachmentData {
   const ChatAttachmentData({
+    required this.id,
     required this.kind,
     required this.label,
     required this.detail,
     required this.accentColor,
+    this.draftAttachment,
   });
 
+  final String id;
   final ChatAttachmentKind kind;
   final String label;
   final String detail;
   final Color accentColor;
+  final OpenCrayChatDraftAttachment? draftAttachment;
 }
 
 @immutable

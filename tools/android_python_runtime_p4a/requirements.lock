@@ -18,7 +18,6 @@ pydicom
 simpy
 
 # Science Extended
-scipy
 matplotlib
 lxml
 

@@ -173,6 +173,42 @@ class SessionTranscriptStoreTest {
   }
 
   @Test
+  fun snapshotTreatsSkillsReplayAsDiscoveryAndMutationActivity() {
+    val store = InMemorySessionTranscriptStore()
+    store.seedIfEmpty(
+      buildList {
+        add(
+          RuntimeConversationMessage(
+            role = RuntimeConversationRole.USER,
+            content = "Start",
+          ),
+        )
+        addToolInteraction(runId = "run-skills-discovery-1", taskId = "task-skills-discovery-1", turn = 1, toolName = "SkillsFind")
+        addToolInteraction(runId = "run-skills-discovery-2", taskId = "task-skills-discovery-2", turn = 2, toolName = "SkillsList")
+        addToolInteraction(runId = "run-skills-discovery-3", taskId = "task-skills-discovery-3", turn = 3, toolName = "SkillsInspect")
+        addToolInteraction(runId = "run-skills-discovery-4", taskId = "task-skills-discovery-4", turn = 4, toolName = "SkillsCheck")
+        addToolInteraction(runId = "run-skills-mutation-1", taskId = "task-skills-mutation-1", turn = 5, toolName = "SkillsAdd")
+        addToolInteraction(runId = "run-skills-mutation-2", taskId = "task-skills-mutation-2", turn = 6, toolName = "SkillsAddBatch")
+        addToolInteraction(runId = "run-skills-mutation-3", taskId = "task-skills-mutation-3", turn = 7, toolName = "SkillsUpdate")
+        addToolInteraction(runId = "run-skills-mutation-4", taskId = "task-skills-mutation-4", turn = 8, toolName = "SkillsRemove")
+      },
+    )
+
+    val snapshot = store.snapshot()
+    val contents = snapshot.map(RuntimeConversationMessage::content)
+
+    assertEquals(9, snapshot.size)
+    assertFalse(contents.any { it.contains("\"run_id\":\"run-skills-discovery-1\"") })
+    assertFalse(contents.any { it.contains("\"run_id\":\"run-skills-discovery-2\"") })
+    assertTrue(contents.any { it.contains("\"run_id\":\"run-skills-discovery-3\"") })
+    assertTrue(contents.any { it.contains("\"run_id\":\"run-skills-discovery-4\"") })
+    assertFalse(contents.any { it.contains("\"run_id\":\"run-skills-mutation-1\"") })
+    assertFalse(contents.any { it.contains("\"run_id\":\"run-skills-mutation-2\"") })
+    assertTrue(contents.any { it.contains("\"run_id\":\"run-skills-mutation-3\"") })
+    assertTrue(contents.any { it.contains("\"run_id\":\"run-skills-mutation-4\"") })
+  }
+
+  @Test
   fun replaceOverwritesStoreWithNormalizedTranscript() {
     val store = InMemorySessionTranscriptStore()
 

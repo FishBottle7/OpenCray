@@ -132,6 +132,227 @@ def _load_json(path: Path) -> Any:
         raise ServiceError(f"Invalid JSON in {path}: {exc}") from exc
 
 
+
+CHATLAB_MESSAGE_TYPE_LABELS = {
+    0: "text",
+    1: "image",
+    2: "voice",
+    3: "video",
+    4: "file",
+    5: "sticker",
+    6: "link",
+    7: "call",
+    8: "location",
+    24: "quote",
+    25: "reply",
+    80: "system",
+    81: "notification",
+    99: "other",
+}
+
+
+def _chatlab_timestamp_to_iso(raw: Any) -> str | None:
+    if isinstance(raw, (int, float)):
+        return datetime.fromtimestamp(float(raw), UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    if isinstance(raw, str):
+        value = raw.strip()
+        if not value:
+            return None
+        if value.isdigit():
+            return datetime.fromtimestamp(float(value), UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+        return value
+    return None
+
+
+def _chatlab_display_name(payload: dict[str, Any]) -> str:
+    for key in ("groupNickname", "accountName", "platformId"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "Unknown"
+
+
+def _is_chatlab_json_payload(payload: dict[str, Any]) -> bool:
+    return isinstance(payload.get("meta"), dict) and isinstance(payload.get("messages"), list) and (
+        isinstance(payload.get("members"), list) or isinstance(payload.get("chatlab"), dict)
+    )
+
+
+def _normalize_chatlab_member(member: dict[str, Any]) -> dict[str, Any] | None:
+    entity_id = str(member.get("platformId") or "").strip()
+    if not entity_id:
+        return None
+    aliases = []
+    for key in ("groupNickname", "accountName"):
+        value = member.get(key)
+        if isinstance(value, str) and value.strip() and value.strip() not in aliases:
+            aliases.append(value.strip())
+    participant = {
+        "entity_id": entity_id,
+        "display_name": _chatlab_display_name(member),
+    }
+    if aliases:
+        participant["aliases"] = aliases
+    return participant
+
+
+def _chatlab_message_labels(message_type: Any) -> list[str]:
+    try:
+        numeric_type = int(message_type)
+    except (TypeError, ValueError):
+        return ["chatlab_message"]
+    label = CHATLAB_MESSAGE_TYPE_LABELS.get(numeric_type)
+    if not label:
+        return [f"chatlab_type_{numeric_type}"]
+    if label == "text":
+        return []
+    return [f"chatlab_{label}"]
+
+
+def _normalize_chatlab_message(
+    message: dict[str, Any],
+    *,
+    source_id: str,
+    conversation_id: str,
+    turn_index: int,
+    name_by_id: dict[str, str],
+) -> dict[str, Any] | None:
+    speaker_id = str(message.get("sender") or "").strip()
+    if not speaker_id:
+        return None
+    text = message.get("content")
+    if isinstance(text, str):
+        text = text.strip() or None
+    else:
+        text = None
+    speaker_name = _chatlab_display_name(message)
+    if speaker_id not in name_by_id:
+        name_by_id[speaker_id] = speaker_name
+    turn = {
+        "turn_id": str(message.get("messageId") or f"turn_{turn_index:06d}"),
+        "conversation_id": conversation_id,
+        "speaker": name_by_id.get(speaker_id, speaker_name),
+        "speaker_id": speaker_id,
+        "timestamp": _chatlab_timestamp_to_iso(message.get("timestamp")),
+        "labels": _chatlab_message_labels(message.get("type")),
+    }
+    if text is not None:
+        turn["text"] = text
+    return turn
+
+
+def _normalize_chatlab_payload(payload: dict[str, Any], source_path: Path) -> dict[str, Any]:
+    meta = payload.get("meta") or {}
+    raw_members = [item for item in (payload.get("members") or []) if isinstance(item, dict)]
+    raw_messages = [item for item in (payload.get("messages") or []) if isinstance(item, dict)]
+    source_id = str(meta.get("groupId") or meta.get("name") or source_path.stem).strip() or source_path.stem
+    conversation_id = str(meta.get("groupId") or source_id).strip() or source_id
+    title = str(meta.get("name") or source_id).strip() or source_id
+
+    participants: list[dict[str, Any]] = []
+    seen_participants: set[str] = set()
+    name_by_id: dict[str, str] = {}
+    for member in raw_members:
+        normalized_member = _normalize_chatlab_member(member)
+        if normalized_member is None:
+            continue
+        entity_id = normalized_member["entity_id"]
+        seen_participants.add(entity_id)
+        name_by_id[entity_id] = str(normalized_member.get("display_name") or entity_id)
+        participants.append(normalized_member)
+
+    turns: list[dict[str, Any]] = []
+    pending: list[tuple[float, int, dict[str, Any]]] = []
+    for index, message in enumerate(raw_messages, start=1):
+        normalized_turn = _normalize_chatlab_message(
+            message,
+            source_id=source_id,
+            conversation_id=conversation_id,
+            turn_index=index,
+            name_by_id=name_by_id,
+        )
+        if normalized_turn is None:
+            continue
+        speaker_id = normalized_turn["speaker_id"]
+        if speaker_id not in seen_participants:
+            participant = {
+                "entity_id": speaker_id,
+                "display_name": str(normalized_turn.get("speaker") or speaker_id),
+            }
+            participants.append(participant)
+            seen_participants.add(speaker_id)
+        timestamp_value = normalized_turn.get("timestamp")
+        sort_key = 0.0
+        if isinstance(timestamp_value, str) and timestamp_value.strip():
+            try:
+                sort_key = datetime.fromisoformat(timestamp_value.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                sort_key = float(index)
+        else:
+            sort_key = float(index)
+        pending.append((sort_key, index, normalized_turn))
+
+    pending.sort(key=lambda item: (item[0], item[1]))
+    for _, _, turn in pending:
+        turns.append(turn)
+
+    return {
+        "source_id": source_id,
+        "title": title,
+        "conversation_id": conversation_id,
+        "participants": participants,
+        "turns": turns,
+    }
+
+
+def _load_chatlab_jsonl(path: Path) -> dict[str, Any]:
+    header: dict[str, Any] | None = None
+    members: list[dict[str, Any]] = []
+    messages: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError as exc:
+        raise ServiceError(f"JSON file not found: {path}") from exc
+    for line_number, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ServiceError(f"Invalid ChatLab JSONL in {path} at line {line_number}: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ServiceError(f"ChatLab JSONL line must be an object: {path}:{line_number}")
+        record_type = str(payload.get("_type") or "").strip().lower()
+        if record_type == "header":
+            header = payload
+        elif record_type == "member":
+            members.append(payload)
+        elif record_type == "message":
+            messages.append(payload)
+    if header is None:
+        raise ServiceError(f"ChatLab JSONL header record not found: {path}")
+    return _normalize_chatlab_payload(
+        {
+            "chatlab": header.get("chatlab") or {},
+            "meta": header.get("meta") or {},
+            "members": members,
+            "messages": messages,
+        },
+        path,
+    )
+
+
+def _load_chat_history_payload(path: Path) -> dict[str, Any]:
+    if path.suffix.lower() == ".jsonl":
+        return _load_chatlab_jsonl(path)
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        raise ServiceError(f"Corpus JSON must be an object: {path}")
+    if _is_chatlab_json_payload(payload):
+        return _normalize_chatlab_payload(payload, path)
+    return payload
+
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -216,6 +437,8 @@ def _participant_lookup(participants: list[dict[str, Any]]) -> tuple[dict[str, s
         id_to_name[entity_id] = display_name
         token_to_id[entity_id] = entity_id
         token_to_id[display_name] = entity_id
+        for alias in _string_list(participant.get("aliases")):
+            token_to_id.setdefault(alias, entity_id)
     return token_to_id, id_to_name
 
 
@@ -387,17 +610,21 @@ def _chat_units(payload: dict[str, Any], anchor_person_id: str | None) -> tuple[
     turns = _require_list(payload, "turns")
     units: list[EvidenceUnit] = []
     default_conversation_id = str(payload.get("conversation_id") or payload.get("source_id") or "").strip() or None
+    source_id = _require_string(payload, "source_id")
     for turn in turns:
         if not isinstance(turn, dict):
             raise ServiceError("Each chat turn must be an object.")
+        text = turn.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
         speaker_id = str(turn.get("speaker_id") or turn.get("speaker") or "Unknown")
         units.append(
             EvidenceUnit(
                 unit_id=str(turn.get("turn_id") or f"turn_{len(units) + 1:04d}"),
-                text=_require_string(turn, "text"),
+                text=text.strip(),
                 speaker=str(turn.get("speaker") or turn.get("speaker_id") or "Unknown"),
                 speaker_id=speaker_id,
-                source_id=_require_string(payload, "source_id"),
+                source_id=source_id,
                 source_type="private_chat",
                 timestamp=turn.get("timestamp"),
                 labels=[str(label) for label in (turn.get("labels") or [])],
@@ -409,6 +636,8 @@ def _chat_units(payload: dict[str, Any], anchor_person_id: str | None) -> tuple[
                 quoted_speech=_string_list(turn.get("quoted_speech")),
             )
         )
+    if not units:
+        raise ServiceError("Chat corpus does not contain any usable text turns after normalization.")
     _link_chat_units(units, fallback_counterparts)
     return anchor_id, anchor_name, participants_count, units
 
@@ -2003,7 +2232,7 @@ def _draft_paths(service_root: Path, twin_id: str, output_name: str | None) -> t
 def extract_chat_soul(*, service_root: str | None, twin_id: str, source: str, anchor_person_id: str | None = None, output_name: str | None = None) -> dict[str, Any]:
     root = _service_root(service_root)
     _ensure_service_dirs(root, twin_id)
-    payload = _load_json(Path(source))
+    payload = _load_chat_history_payload(Path(source))
     if not isinstance(payload, dict):
         raise ServiceError("Chat corpus JSON must be an object.")
     anchor_id, anchor_name, participants_count, units = _chat_units(payload, anchor_person_id)

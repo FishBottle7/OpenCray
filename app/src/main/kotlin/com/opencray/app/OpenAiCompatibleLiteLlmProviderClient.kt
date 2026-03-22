@@ -1,14 +1,22 @@
 package com.opencray.app
 
 import com.opencray.llm.LiteLlmProviderClient
+import com.opencray.llm.LiteLlmGatewayMessage
+import com.opencray.llm.LiteLlmGatewayMessageRole
+import com.opencray.llm.LiteLlmGatewayToolResult
+import com.opencray.llm.LiteLlmMetadataKeys
 import com.opencray.llm.LiteLlmProviderRequest
 import com.opencray.llm.LiteLlmProviderResult
+import com.opencray.llm.LiteLlmStructuredCompletion
+import com.opencray.llm.LiteLlmStructuredToolCall
 import java.io.BufferedReader
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -21,10 +29,12 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       return LiteLlmProviderResult.Failure(
         errorCode = "PROVIDER_BASE_URL_MISSING",
         errorMessage = "Provider route baseUrl is required.",
+        metadata = requestDiagnosticsMetadata(request),
       )
     }
 
     val protocol = resolvedProtocol(request)
+    val requestDiagnostics = requestDiagnosticsMetadata(request)
     val endpoint = buildEndpointUrl(baseUrl, protocol)
     val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
       requestMethod = "POST"
@@ -57,32 +67,41 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         responseCode == 429 -> LiteLlmProviderResult.RateLimited(
           retryAfterMs = parseRetryAfterMillis(connection.getHeaderField("Retry-After")),
           errorMessage = extractErrorMessage(responseText).ifBlank { "Provider returned HTTP 429." },
-          metadata = mapOf("statusCode" to responseCode.toString()),
+          metadata = requestDiagnostics + mapOf("statusCode" to responseCode.toString()),
         )
 
         responseCode !in 200..299 -> LiteLlmProviderResult.Failure(
           errorCode = "HTTP_$responseCode",
           errorMessage = extractErrorMessage(responseText).ifBlank { "Provider returned HTTP $responseCode." },
-          metadata = mapOf("statusCode" to responseCode.toString()),
+          metadata = requestDiagnostics + mapOf("statusCode" to responseCode.toString()),
         )
 
         else -> {
           val parsed = JSONObject(responseText)
           val finishReason = finishReasonFor(parsed, protocol)
+          val responseMetadata = responseMetadata(
+            payload = parsed,
+            protocol = protocol,
+            statusCode = responseCode,
+            nativeToolCallRequested = request.request.tools.isNotEmpty(),
+          )
+          val completion = structuredCompletion(
+            payload = parsed,
+            protocol = protocol,
+          )
           val content = extractMessageContent(parsed, protocol)
-          if (content.isBlank()) {
+          if (content.isBlank() && (completion?.hasVisibleContent != true)) {
             LiteLlmProviderResult.Failure(
               errorCode = "PROVIDER_EMPTY_RESPONSE",
               errorMessage = "Provider returned an empty completion payload.",
+              metadata = responseMetadata,
             )
           } else {
             LiteLlmProviderResult.Success(
               outputText = content,
+              completion = completion,
               finishReason = finishReason,
-              metadata = buildMap {
-                put("statusCode", responseCode.toString())
-                parsed.optString("id").takeIf { it.isNotBlank() }?.let { put("providerRequestId", it) }
-              },
+              metadata = responseMetadata,
             )
           }
         }
@@ -90,12 +109,13 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     } catch (timeout: java.net.SocketTimeoutException) {
       LiteLlmProviderResult.Timeout(
         errorMessage = timeout.message ?: "Provider request timed out.",
+        metadata = requestDiagnostics,
       )
     } catch (exception: Exception) {
       LiteLlmProviderResult.Failure(
         errorCode = "PROVIDER_TRANSPORT_ERROR",
         errorMessage = exception.message ?: exception::class.java.simpleName,
-        metadata = mapOf("exceptionType" to exception::class.java.name),
+        metadata = requestDiagnostics + mapOf("exceptionType" to exception::class.java.name),
       )
     } finally {
       connection.disconnect()
@@ -133,23 +153,11 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   private fun buildOpenAiRequestBody(request: LiteLlmProviderRequest): String {
     val payload = JSONObject()
       .put("model", request.route.model)
-      .put(
-        "messages",
-        JSONArray().apply {
-          request.request.systemPrompt?.takeIf { it.isNotBlank() }?.let { systemPrompt ->
-            put(
-              JSONObject()
-                .put("role", "system")
-                .put("content", systemPrompt),
-            )
-          }
-          put(
-            JSONObject()
-              .put("role", "user")
-              .put("content", request.request.prompt),
-          )
-        },
-      )
+      .put("messages", buildOpenAiMessagesArray(request))
+
+    if (request.request.tools.isNotEmpty()) {
+      payload.put("tools", buildOpenAiToolsArray(request))
+    }
 
     request.route.metadata["temperature"]?.toDoubleOrNull()?.let { payload.put("temperature", it) }
     request.route.metadata["max_tokens"]?.toIntOrNull()?.let { payload.put("max_tokens", it) }
@@ -160,18 +168,15 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   private fun buildAnthropicRequestBody(request: LiteLlmProviderRequest): String {
     val payload = JSONObject()
       .put("model", request.route.model)
-      .put(
-        "messages",
-        JSONArray().put(
-          JSONObject()
-            .put("role", "user")
-            .put("content", request.request.prompt),
-        ),
-      )
+      .put("messages", buildAnthropicMessagesArray(request))
       .put(
         "max_tokens",
         request.route.metadata["max_tokens"]?.toIntOrNull() ?: DEFAULT_ANTHROPIC_MAX_TOKENS,
       )
+
+    if (request.request.tools.isNotEmpty()) {
+      payload.put("tools", buildAnthropicToolsArray(request))
+    }
 
     request.request.systemPrompt?.takeIf { it.isNotBlank() }?.let { systemPrompt ->
       payload.put("system", systemPrompt)
@@ -344,6 +349,117 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     }
   }
 
+  private fun structuredCompletion(
+    payload: JSONObject,
+    protocol: String,
+  ): LiteLlmStructuredCompletion? = when (protocol) {
+    LlmProviderProtocols.ANTHROPIC -> anthropicStructuredCompletion(payload)
+    else -> openAiStructuredCompletion(payload)
+  }
+
+  private fun openAiStructuredCompletion(payload: JSONObject): LiteLlmStructuredCompletion? {
+    val choice = payload.optJSONArray("choices")?.optJSONObject(0) ?: return null
+    val message = choice.optJSONObject("message") ?: return null
+    val toolCalls = openAiStructuredToolCalls(message.optJSONArray("tool_calls"))
+    val textContent = extractOpenAiContentValue(message.opt("content"))
+      .trim()
+      .takeIf(String::isNotBlank)
+    val protocolPayload = extractProtocolPayloadFromAlternateFields(
+      choice = choice,
+      message = message,
+    )?.trim()?.takeIf(String::isNotBlank)
+    val rawText = firstNonBlankString(textContent, protocolPayload)
+    val finalText = rawText?.takeUnless { text ->
+      toolCalls.isNotEmpty() || looksLikeProtocolPayload(text)
+    }
+    return buildStructuredCompletion(
+      toolCalls = toolCalls,
+      finalText = finalText,
+      rawText = rawText,
+    )
+  }
+
+  private fun openAiStructuredToolCalls(toolCalls: JSONArray?): List<LiteLlmStructuredToolCall> {
+    if (toolCalls == null || toolCalls.length() == 0) {
+      return emptyList()
+    }
+    val normalizedCalls = mutableListOf<LiteLlmStructuredToolCall>()
+    for (index in 0 until toolCalls.length()) {
+      val toolCall = toolCalls.optJSONObject(index) ?: continue
+      val function = toolCall.optJSONObject("function") ?: continue
+      val toolName = function.nonBlankString("name") ?: continue
+      normalizedCalls += LiteLlmStructuredToolCall(
+        id = toolCall.nonBlankString("id"),
+        toolName = toolName,
+        arguments = jsonObjectFrom(parseToolCallArguments(function.opt("arguments"))),
+      )
+    }
+    return normalizedCalls
+  }
+
+  private fun anthropicStructuredCompletion(payload: JSONObject): LiteLlmStructuredCompletion? {
+    val content = payload.optJSONArray("content") ?: return null
+    val textBlocks = mutableListOf<String>()
+    val toolCalls = mutableListOf<LiteLlmStructuredToolCall>()
+    for (index in 0 until content.length()) {
+      val block = content.optJSONObject(index) ?: continue
+      when (block.optString("type")) {
+        "text" -> block.optString("text")
+          .trim()
+          .takeIf(String::isNotBlank)
+          ?.let(textBlocks::add)
+
+        "tool_use" -> {
+          block.optString("name").trim().takeIf(String::isNotBlank)?.let { toolName ->
+            toolCalls += LiteLlmStructuredToolCall(
+              id = block.optString("id").trim().takeIf(String::isNotBlank),
+              toolName = toolName,
+              arguments = jsonObjectFrom(block.optJSONObject("input") ?: JSONObject()),
+            )
+          }
+        }
+      }
+    }
+    val rawText = textBlocks.joinToString(separator = "").trim().takeIf(String::isNotBlank)
+    val finalText = rawText?.takeUnless { text ->
+      toolCalls.isNotEmpty() || looksLikeProtocolPayload(text)
+    }
+    return buildStructuredCompletion(
+      toolCalls = toolCalls,
+      finalText = finalText,
+      rawText = rawText,
+    )
+  }
+
+  private fun buildStructuredCompletion(
+    toolCalls: List<LiteLlmStructuredToolCall>,
+    finalText: String? = null,
+    progressText: String? = null,
+    rawText: String? = null,
+  ): LiteLlmStructuredCompletion? {
+    val normalizedFinalText = finalText?.trim()?.takeIf(String::isNotBlank)
+    val normalizedProgressText = progressText?.trim()?.takeIf(String::isNotBlank)
+    val normalizedRawText = rawText?.trim()?.takeIf(String::isNotBlank)
+    if (
+      toolCalls.isEmpty() &&
+      normalizedFinalText == null &&
+      normalizedProgressText == null &&
+      normalizedRawText == null
+    ) {
+      return null
+    }
+    return LiteLlmStructuredCompletion(
+      toolCalls = toolCalls,
+      finalText = normalizedFinalText,
+      progressText = normalizedProgressText,
+      rawText = normalizedRawText,
+    )
+  }
+
+  private fun jsonObjectFrom(payload: JSONObject): JsonObject = runCatching {
+    JSON_CODEC.parseToJsonElement(payload.toString()) as? JsonObject
+  }.getOrNull() ?: JsonObject(emptyMap())
+
   private fun finishReasonFor(
     payload: JSONObject,
     protocol: String,
@@ -353,6 +469,329 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       ?.optJSONObject(0)
       ?.optString("finish_reason")
       ?.takeIf { it.isNotBlank() }
+  }
+
+  private fun responseMetadata(
+    payload: JSONObject,
+    protocol: String,
+    statusCode: Int,
+    nativeToolCallRequested: Boolean,
+  ): Map<String, String> = buildMap {
+    put("statusCode", statusCode.toString())
+    put(LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED, nativeToolCallRequested.toString())
+    payload.optString("id")
+      .takeIf { value -> value.isNotBlank() }
+      ?.let { providerRequestId ->
+        put("providerRequestId", providerRequestId)
+      }
+    put(LiteLlmMetadataKeys.PROVIDER_RESPONSE_SHAPE, responseShape(payload, protocol))
+    put(
+      LiteLlmMetadataKeys.NATIVE_TOOL_CALL_OBSERVED,
+      nativeToolCallObserved(payload, protocol).toString(),
+    )
+  }
+
+  private fun requestDiagnosticsMetadata(
+    request: LiteLlmProviderRequest,
+  ): Map<String, String> = mapOf(
+    LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED to request.request.tools.isNotEmpty().toString(),
+  )
+
+  private fun buildOpenAiToolsArray(request: LiteLlmProviderRequest): JSONArray = JSONArray().apply {
+    request.request.tools.forEach { tool ->
+      put(
+        JSONObject()
+          .put("type", "function")
+          .put(
+            "function",
+            JSONObject()
+              .put("name", tool.name)
+              .put("description", tool.description)
+              .put("parameters", JSONObject(tool.inputSchema.toString()))
+              .apply {
+                tool.strict?.let { strict -> put("strict", strict) }
+              },
+          ),
+      )
+    }
+  }
+
+  private fun buildOpenAiMessagesArray(request: LiteLlmProviderRequest): JSONArray = JSONArray().apply {
+    request.request.systemPrompt?.takeIf { it.isNotBlank() }?.let { systemPrompt ->
+      put(
+        JSONObject()
+          .put("role", "system")
+          .put("content", systemPrompt),
+      )
+    }
+    if (request.request.messages.isEmpty()) {
+      put(
+        JSONObject()
+          .put("role", "user")
+          .put("content", request.request.prompt),
+      )
+      return@apply
+    }
+    request.request.messages.forEach { message ->
+      when (message.role) {
+        LiteLlmGatewayMessageRole.SYSTEM -> {
+          message.content?.takeIf(String::isNotBlank)?.let { content ->
+            put(
+              JSONObject()
+                .put("role", "system")
+                .put("content", content),
+            )
+          }
+        }
+
+        LiteLlmGatewayMessageRole.USER -> {
+          message.content?.takeIf(String::isNotBlank)?.let { content ->
+            put(
+              JSONObject()
+                .put("role", "user")
+                .put("content", content),
+            )
+          }
+        }
+
+        LiteLlmGatewayMessageRole.ASSISTANT -> {
+          val payload = JSONObject()
+            .put("role", "assistant")
+          message.content?.takeIf(String::isNotBlank)?.let { content ->
+            payload.put("content", content)
+          }
+          if (message.toolCalls.isNotEmpty()) {
+            payload.put("tool_calls", buildOpenAiToolCallsArray(message))
+            if (message.content.isNullOrBlank()) {
+              payload.put("content", JSONObject.NULL)
+            }
+          }
+          put(payload)
+        }
+
+        LiteLlmGatewayMessageRole.TOOL -> {
+          buildOpenAiToolResultMessage(message.toolResult)?.let(::put)
+        }
+      }
+    }
+  }
+
+  private fun buildOpenAiToolCallsArray(message: LiteLlmGatewayMessage): JSONArray = JSONArray().apply {
+    message.toolCalls.forEach { toolCall ->
+      put(
+        JSONObject()
+          .put("id", toolCall.id ?: "call_opencray")
+          .put("type", "function")
+          .put(
+            "function",
+            JSONObject()
+              .put("name", toolCall.toolName)
+              .put("arguments", toolCall.arguments.toString()),
+          ),
+      )
+    }
+  }
+
+  private fun buildOpenAiToolResultMessage(toolResult: LiteLlmGatewayToolResult?): JSONObject? {
+    val result = toolResult ?: return null
+    return JSONObject()
+      .put("role", "tool")
+      .put("content", result.content)
+      .apply {
+        result.toolCallId?.let { toolCallId ->
+          put("tool_call_id", toolCallId)
+        }
+        result.toolName?.takeIf(String::isNotBlank)?.let { toolName ->
+          put("name", toolName)
+        }
+      }
+  }
+
+  private fun buildAnthropicToolsArray(request: LiteLlmProviderRequest): JSONArray = JSONArray().apply {
+    request.request.tools.forEach { tool ->
+      put(
+        JSONObject()
+          .put("name", tool.name)
+          .put("description", tool.description)
+          .put("input_schema", JSONObject(tool.inputSchema.toString())),
+      )
+    }
+  }
+
+  private fun buildAnthropicMessagesArray(request: LiteLlmProviderRequest): JSONArray = JSONArray().apply {
+    if (request.request.messages.isEmpty()) {
+      put(
+        JSONObject()
+          .put("role", "user")
+          .put("content", request.request.prompt),
+      )
+      return@apply
+    }
+    request.request.messages.forEach { message ->
+      when (message.role) {
+        LiteLlmGatewayMessageRole.SYSTEM,
+        LiteLlmGatewayMessageRole.USER,
+        -> {
+          message.content?.takeIf(String::isNotBlank)?.let { content ->
+            put(
+              JSONObject()
+                .put("role", "user")
+                .put("content", content),
+            )
+          }
+        }
+
+        LiteLlmGatewayMessageRole.ASSISTANT -> {
+          put(buildAnthropicAssistantMessage(message))
+        }
+
+        LiteLlmGatewayMessageRole.TOOL -> {
+          buildAnthropicToolResultMessage(message.toolResult)?.let(::put)
+        }
+      }
+    }
+  }
+
+  private fun buildAnthropicAssistantMessage(message: LiteLlmGatewayMessage): JSONObject {
+    if (message.toolCalls.isEmpty()) {
+      return JSONObject()
+        .put("role", "assistant")
+        .put("content", message.content.orEmpty())
+    }
+    val blocks = JSONArray()
+    message.content?.takeIf(String::isNotBlank)?.let { content ->
+      blocks.put(
+        JSONObject()
+          .put("type", "text")
+          .put("text", content),
+      )
+    }
+    message.toolCalls.forEach { toolCall ->
+      blocks.put(
+        JSONObject()
+          .put("type", "tool_use")
+          .put("id", toolCall.id ?: "toolu_opencray")
+          .put("name", toolCall.toolName)
+          .put("input", JSONObject(toolCall.arguments.toString())),
+      )
+    }
+    return JSONObject()
+      .put("role", "assistant")
+      .put("content", blocks)
+  }
+
+  private fun buildAnthropicToolResultMessage(toolResult: LiteLlmGatewayToolResult?): JSONObject? {
+    val result = toolResult ?: return null
+    val toolUseId = result.toolCallId?.takeIf(String::isNotBlank) ?: return null
+    return JSONObject()
+      .put("role", "user")
+      .put(
+        "content",
+        JSONArray().put(
+          JSONObject()
+            .put("type", "tool_result")
+            .put("tool_use_id", toolUseId)
+            .put("content", result.content)
+            .apply {
+              if (result.isError == true) {
+                put("is_error", true)
+              }
+            },
+        ),
+      )
+  }
+
+  private fun responseShape(
+    payload: JSONObject,
+    protocol: String,
+  ): String = when (protocol) {
+    LlmProviderProtocols.ANTHROPIC -> anthropicResponseShape(payload)
+    else -> openAiResponseShape(payload)
+  }
+
+  private fun nativeToolCallObserved(
+    payload: JSONObject,
+    protocol: String,
+  ): Boolean {
+    return when (protocol) {
+      LlmProviderProtocols.ANTHROPIC -> {
+        val content = payload.optJSONArray("content")
+        if (content == null) {
+          false
+        } else {
+          for (index in 0 until content.length()) {
+            val block = content.optJSONObject(index) ?: continue
+            if (block.optString("type") == "tool_use") {
+              return true
+            }
+          }
+          false
+        }
+      }
+
+      else -> {
+        val message = payload.optJSONArray("choices")
+          ?.optJSONObject(0)
+          ?.optJSONObject("message")
+        if (message == null) {
+          false
+        } else {
+          val toolCalls = message.optJSONArray("tool_calls")
+          toolCalls != null && toolCalls.length() > 0
+        }
+      }
+    }
+  }
+
+  private fun openAiResponseShape(payload: JSONObject): String {
+    val choice = payload.optJSONArray("choices")?.optJSONObject(0) ?: return "openai_empty"
+    val message = choice.optJSONObject("message")
+    val content = extractOpenAiContentValue(message?.opt("content"))
+    val toolCalls = message?.optJSONArray("tool_calls")
+    val hasToolCalls = toolCalls != null && toolCalls.length() > 0
+    val reasoningPayload = extractProtocolPayloadFromAlternateFields(
+      choice = choice,
+      message = message ?: JSONObject(),
+    )
+    val reasoningText = listOf(
+      extractOpenAiContentValue(message?.opt("reasoning_content")),
+      extractOpenAiContentValue(message?.opt("reasoning")),
+      extractOpenAiContentValue(choice.opt("text")),
+    ).firstOrNull { value -> value.isNotBlank() }
+    return when {
+      hasToolCalls && content.isNotBlank() -> "openai_text_and_tool_calls"
+      hasToolCalls -> "openai_tool_calls"
+      content.isNotBlank() -> "openai_text"
+      !reasoningPayload.isNullOrBlank() -> "openai_reasoning_protocol"
+      !reasoningText.isNullOrBlank() -> "openai_reasoning_text"
+      else -> "openai_empty"
+    }
+  }
+
+  private fun anthropicResponseShape(payload: JSONObject): String {
+    val content = payload.optJSONArray("content") ?: return "anthropic_empty"
+    var hasText = false
+    var hasToolUse = false
+    val blockTypes = linkedSetOf<String>()
+    for (index in 0 until content.length()) {
+      val block = content.optJSONObject(index) ?: continue
+      val type = block.optString("type").trim().ifEmpty { "unknown" }
+      blockTypes += type
+      when (type) {
+        "text" -> if (block.optString("text").isNotBlank()) {
+          hasText = true
+        }
+
+        "tool_use" -> hasToolUse = true
+      }
+    }
+    return when {
+      hasText && hasToolUse -> "anthropic_text_and_tool_use"
+      hasToolUse -> "anthropic_tool_use"
+      hasText -> "anthropic_text"
+      blockTypes.isNotEmpty() -> "anthropic_${blockTypes.joinToString(separator = "_")}"
+      else -> "anthropic_empty"
+    }
   }
 
   private fun extractErrorMessage(responseText: String): String = runCatching {
@@ -392,6 +831,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
   companion object {
     private const val DEFAULT_ANTHROPIC_MAX_TOKENS: Int = 4096
+    private val JSON_CODEC: Json = Json { ignoreUnknownKeys = true }
 
     internal fun providerUserAgent(versionName: String): String =
       OpenCrayUserAgent.providerApi(versionName)

@@ -3,6 +3,7 @@ package com.opencray.app
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import com.opencray.runtime.OpenCrayFinalAttachment
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
@@ -14,6 +15,8 @@ internal class OpenCrayFlutterHostBridge(
   private val hostRuntime = OpenCrayHostRuntime.fromContext(context)
   private val permissionHost: ExternalAccessPermissionRequestHost? =
     context as? ExternalAccessPermissionRequestHost
+  private val chatAttachmentPickerHost: ChatAttachmentPickerHost? =
+    context as? ChatAttachmentPickerHost
   private val mainHandler = Handler(Looper.getMainLooper())
   private var shellObserverDisposer: (() -> Unit)? = null
   private var settingsObserverDisposer: (() -> Unit)? = null
@@ -78,6 +81,10 @@ internal class OpenCrayFlutterHostBridge(
   }
 
   private fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+    if (call.method == "pickChatAttachments") {
+      handlePickChatAttachments(call, result)
+      return
+    }
     runCatching {
       when (call.method) {
         "loadShellSnapshot" -> hostRuntime.loadShellSnapshot()
@@ -147,6 +154,10 @@ internal class OpenCrayFlutterHostBridge(
             slot as? Map<String, Any?>
           },
         )
+        "loadMediaSpeechConfig" -> hostRuntime.loadMediaSpeechConfig()
+        "saveMediaSpeechConfig" -> hostRuntime.saveMediaSpeechConfig(
+          payload = call.arguments<Map<String, Any?>>() ?: emptyMap(),
+        )
         "loadLlmConfig" -> hostRuntime.loadLlmConfig()
         "saveLlmConfig" -> hostRuntime.saveLlmConfig(
           enabled = call.argument<Boolean>("enabled") == true,
@@ -197,6 +208,14 @@ internal class OpenCrayFlutterHostBridge(
         "runPersonalizationReset" -> hostRuntime.runPersonalizationReset(
           scopeId = call.argument<String>("scopeId").orEmpty(),
         )
+        "probeTwinImportSource" -> {
+          runAsync(result) {
+            hostRuntime.probeTwinImportSource(
+              filePath = call.argument<String>("filePath").orEmpty(),
+            )
+          }
+          return
+        }
         "loadMcpSettings" -> hostRuntime.loadMcpSettings()
         "setMcpMasterEnabled" -> hostRuntime.setMcpMasterEnabled(
           enabled = call.argument<Boolean>("enabled") == true,
@@ -327,6 +346,10 @@ internal class OpenCrayFlutterHostBridge(
           fromLine = call.argument<Number>("fromLine")?.toInt(),
           lines = call.argument<Number>("lines")?.toInt() ?: 12,
         )
+        "applyMemoryDebugAction" -> hostRuntime.applyMemoryDebugAction(
+          recordId = call.argument<String>("recordId").orEmpty(),
+          actionId = call.argument<String>("actionId").orEmpty(),
+        )
         "waitForChatRun" -> {
           runAsync(result) {
             hostRuntime.waitForChatRun(
@@ -380,7 +403,10 @@ internal class OpenCrayFlutterHostBridge(
           null
         }
 
-        "submitChatMessage" -> hostRuntime.submitChatMessage(call.argument<String>("text").orEmpty())
+        "submitChatMessage" -> hostRuntime.submitChatMessage(
+          text = call.argument<String>("text").orEmpty(),
+          attachments = parseDraftChatAttachments(call),
+        )
         "approveChatApproval" -> {
           hostRuntime.approveChatApproval(
             call.argument<String>("runId")?.takeIf(String::isNotBlank)
@@ -402,6 +428,13 @@ internal class OpenCrayFlutterHostBridge(
           )
           null
         }
+        "retryChatRun" -> {
+          hostRuntime.retryChatRun(
+            call.argument<String>("runId")?.takeIf(String::isNotBlank)
+              ?: call.argument<String>("taskId").orEmpty(),
+          )
+          null
+        }
 
         else -> {
           result.notImplemented()
@@ -417,6 +450,76 @@ internal class OpenCrayFlutterHostBridge(
         null,
       )
     }
+  }
+
+  private fun handlePickChatAttachments(call: MethodCall, result: MethodChannel.Result) {
+    val pickerHost = chatAttachmentPickerHost
+    if (pickerHost == null) {
+      result.error("HOST_BRIDGE_ERROR", "Chat attachment picker host is unavailable.", null)
+      return
+    }
+    val requestedKind = call.argument<String>("kind").orEmpty()
+    pickerHost.pickChatAttachments(requestedKind) { pickedUrisResult ->
+      pickedUrisResult.onFailure { throwable ->
+        mainHandler.post {
+          result.error(
+            "HOST_BRIDGE_ERROR",
+            throwable.message ?: throwable::class.java.simpleName,
+            null,
+          )
+        }
+      }
+      pickedUrisResult.onSuccess { pickedUris ->
+        if (pickedUris.isEmpty()) {
+          mainHandler.post { result.success(emptyList<Map<String, Any?>>()) }
+          return@onSuccess
+        }
+        Thread {
+          runCatching {
+            hostRuntime.importDraftChatAttachments(
+              requestedKind = requestedKind,
+              uriStrings = pickedUris,
+            )
+          }.onSuccess { payload ->
+            mainHandler.post { result.success(payload) }
+          }.onFailure { throwable ->
+            mainHandler.post {
+              result.error(
+                "HOST_BRIDGE_ERROR",
+                throwable.message ?: throwable::class.java.simpleName,
+                null,
+              )
+            }
+          }
+        }.start()
+      }
+    }
+  }
+
+  private fun parseDraftChatAttachments(call: MethodCall): List<OpenCrayFinalAttachment> {
+    return (call.argument<List<*>>("attachments") ?: emptyList<Any>())
+      .mapNotNull { rawEntry ->
+        val payload = rawEntry as? Map<*, *> ?: return@mapNotNull null
+        val relativePath = payload["relativePath"] as String?
+        val path = payload["path"] as String?
+        val artifactId = payload["artifactId"] as String?
+        if (relativePath.isNullOrBlank() && path.isNullOrBlank() && artifactId.isNullOrBlank()) {
+          return@mapNotNull null
+        }
+        OpenCrayFinalAttachment(
+          kind = payload["kind"] as String?,
+          relativePath = relativePath,
+          path = path,
+          artifactId = artifactId,
+          displayName = payload["displayName"] as String?,
+          mimeType = payload["mimeType"] as String?,
+          durationMs = (payload["durationMs"] as Number?)?.toLong(),
+          waveformBars = (payload["waveformBars"] as? List<*>)?.mapNotNull { value ->
+            (value as? Number)?.toInt()
+          }.orEmpty(),
+          transcriptText = payload["transcriptText"] as String?,
+        )
+      }
   }
 
   private fun runAsync(

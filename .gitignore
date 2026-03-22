@@ -27,9 +27,13 @@
 /.p4a-storage/
 /.p4a-wsl-bin/
 /.pytest_cache/
+/.appdata/
+/.gradle-test-build/
+/.sandbox-home/
 /.ruff_cache/
 /.tmp_manual_python_bridge_checks/
 /.tmp_pytest*/
+/pytest-cache-files-*/
 /%TEMP%/
 /tmp_refs/
 /.codex-home/

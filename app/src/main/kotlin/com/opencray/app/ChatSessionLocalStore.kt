@@ -8,6 +8,8 @@ import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.persistence.model.ChatTranscriptSessionEntry
 import com.opencray.persistence.model.ChatWorkspaceRecord
 import com.opencray.persistence.store.file.JsonFileChatWorkspaceStore
+import com.opencray.runtime.AgentTodoEntry
+import com.opencray.runtime.AgentTodoStatus
 import java.io.File
 import java.util.UUID
 import kotlinx.serialization.Serializable
@@ -71,6 +73,11 @@ internal open class ChatSessionLocalStore(
       sessions = (workspace.sessions.filterNot { it.sessionId == copiedSessionId } + copiedSession)
         .sortedByDescending { it.updatedAtEpochMs },
       activeSessionId = copiedSessionId,
+      extensions = copySessionTodoExtension(
+        extensions = workspace.extensions,
+        sourceSessionId = sourceSession.sessionId,
+        targetSessionId = copiedSessionId,
+      ),
       recordVersion = workspace.recordVersion + 1,
       updatedAtEpochMs = now,
     )
@@ -108,7 +115,10 @@ internal open class ChatSessionLocalStore(
     val updatedWorkspace = workspace.copy(
       sessions = remainingSessions.sortedByDescending { it.updatedAtEpochMs },
       activeSessionId = nextActiveSession.sessionId,
-      extensions = workspace.extensions - pendingUserInputExtensionKey(sessionId),
+      extensions = workspace.extensions -
+        pendingUserInputExtensionKey(sessionId) -
+        todoExtensionKey(sessionId) -
+        archivedTodoExtensionKey(sessionId),
       recordVersion = workspace.recordVersion + 1,
       updatedAtEpochMs = now,
     )
@@ -361,6 +371,11 @@ internal open class ChatSessionLocalStore(
       sessions = (workspace.sessions.filterNot { it.sessionId == branchSessionId } + branchSession)
         .sortedByDescending { it.updatedAtEpochMs },
       activeSessionId = branchSessionId,
+      extensions = copySessionTodoExtension(
+        extensions = workspace.extensions,
+        sourceSessionId = sourceSession.sessionId,
+        targetSessionId = branchSessionId,
+      ),
       recordVersion = workspace.recordVersion + 1,
       updatedAtEpochMs = now,
     )
@@ -391,10 +406,13 @@ internal open class ChatSessionLocalStore(
     userText: String,
     assistantMessageId: String,
     assistantPlaceholderText: String,
+    attachments: List<ChatAttachmentEntry> = emptyList(),
   ): ChatSessionsState {
     val normalizedUserText = userText.trim()
     val normalizedAssistantText = assistantPlaceholderText.trim()
-    require(normalizedUserText.isNotEmpty()) { "appendSubmittedTurn userText must not be blank." }
+    require(normalizedUserText.isNotEmpty() || attachments.isNotEmpty()) {
+      "appendSubmittedTurn userText or attachments must not be blank."
+    }
     require(normalizedAssistantText.isNotEmpty()) { "appendSubmittedTurn assistantPlaceholderText must not be blank." }
     require(assistantMessageId.isNotBlank()) { "appendSubmittedTurn assistantMessageId must not be blank." }
 
@@ -405,7 +423,8 @@ internal open class ChatSessionLocalStore(
     val userMessage = ChatTranscriptMessageEntry(
       messageId = messageId(ChatTranscriptRole.USER.name.lowercase()),
       role = ChatTranscriptRole.USER,
-      text = normalizedUserText,
+      text = normalizedUserText.ifBlank { null },
+      attachments = attachments,
       createdAtEpochMs = now,
     )
     val assistantMessage = ChatTranscriptMessageEntry(
@@ -444,12 +463,89 @@ internal open class ChatSessionLocalStore(
     return pendingUserInputsFrom(workspace = workspace, sessionId = sessionId)
   }
 
+  fun loadTodos(sessionId: String): List<AgentTodoEntry> {
+    if (sessionId.isBlank()) {
+      return emptyList()
+    }
+    val workspace = loadWorkspaceOrCreate()
+    return activeTodosFrom(workspace = workspace, sessionId = sessionId)
+  }
+
+  fun loadTodoSnapshot(sessionId: String): ChatSessionTodoSnapshot {
+    if (sessionId.isBlank()) {
+      return ChatSessionTodoSnapshot.empty()
+    }
+    val workspace = loadWorkspaceOrCreate()
+    return todoSnapshotFrom(workspace = workspace, sessionId = sessionId)
+  }
+
+  fun loadTodoPresentation(
+    sessionId: String,
+    archivedVisibilityDurationMs: Long,
+  ): ChatSessionTodoPresentation {
+    val snapshot = loadTodoSnapshot(sessionId)
+    return when (snapshot.state) {
+      ChatSessionTodoState.ACTIVE -> ChatSessionTodoPresentation(
+        todos = snapshot.todos,
+        state = ChatSessionTodoPresentationState.ACTIVE,
+      )
+
+      ChatSessionTodoState.ARCHIVED_COMPLETED -> {
+        val completedAtEpochMs = snapshot.completedAtEpochMs
+        if (completedAtEpochMs == null) {
+          ChatSessionTodoPresentation.empty()
+        } else {
+          val elapsedMs = (nowEpochMs() - completedAtEpochMs).coerceAtLeast(0L)
+          val remainingMs = archivedVisibilityDurationMs - elapsedMs
+          if (remainingMs > 0L) {
+            ChatSessionTodoPresentation(
+              todos = snapshot.todos,
+              state = ChatSessionTodoPresentationState.ARCHIVED_COMPLETED,
+              hideDelayMs = remainingMs,
+              completedAtEpochMs = completedAtEpochMs,
+            )
+          } else {
+            ChatSessionTodoPresentation.empty()
+          }
+        }
+      }
+
+      ChatSessionTodoState.EMPTY -> ChatSessionTodoPresentation.empty()
+    }
+  }
+
+  fun replaceTodos(
+    sessionId: String,
+    todos: List<AgentTodoEntry>,
+  ) {
+    if (sessionId.isBlank()) {
+      return
+    }
+    val workspace = loadWorkspaceOrCreate()
+    if (workspace.sessions.none { session -> session.sessionId == sessionId }) {
+      return
+    }
+    val updatedWorkspace = workspaceWithTodos(
+      workspace = workspace,
+      sessionId = sessionId,
+      todos = normalizeTodos(todos),
+      updatedAtEpochMs = nowEpochMs(),
+    )
+    if (updatedWorkspace == workspace) {
+      return
+    }
+    workspaceStore.save(updatedWorkspace)
+  }
+
   fun enqueuePendingUserInput(
     sessionId: String,
     text: String,
+    attachments: List<ChatAttachmentEntry> = emptyList(),
   ): PendingUserInputEntry {
     val normalizedText = text.trim()
-    require(normalizedText.isNotEmpty()) { "enqueuePendingUserInput text must not be blank." }
+    require(normalizedText.isNotEmpty() || attachments.isNotEmpty()) {
+      "enqueuePendingUserInput requires text or attachments."
+    }
     require(sessionId.isNotBlank()) { "enqueuePendingUserInput sessionId must not be blank." }
 
     val workspace = loadWorkspaceOrCreate()
@@ -457,6 +553,7 @@ internal open class ChatSessionLocalStore(
     val entry = PendingUserInputEntry(
       queueId = "queued-user-$now-${UUID.randomUUID().toString().take(8)}",
       text = normalizedText,
+      attachments = attachments,
       createdAtEpochMs = now,
     )
     workspaceStore.save(
@@ -495,7 +592,8 @@ internal open class ChatSessionLocalStore(
     val userMessage = ChatTranscriptMessageEntry(
       messageId = messageId(ChatTranscriptRole.USER.name.lowercase()),
       role = ChatTranscriptRole.USER,
-      text = consumed.text,
+      text = consumed.text.ifBlank { null },
+      attachments = consumed.attachments,
       createdAtEpochMs = now,
     )
     val assistantMessage = ChatTranscriptMessageEntry(
@@ -575,12 +673,12 @@ internal open class ChatSessionLocalStore(
       var sessionChanged = false
       val updatedMessages = session.messages.map { message ->
         var messageChanged = false
-        val updatedAttachments = message.attachments.map { attachment ->
+        val updatedAttachments = message.attachments.map attachmentLoop@ { attachment ->
           if (
             attachment.kind != com.opencray.persistence.model.ChatAttachmentKind.VOICE ||
             attachment.contentSha256?.trim()?.lowercase() != normalizedSha
           ) {
-            return@map attachment
+            return@attachmentLoop attachment
           }
           val mergedDuration = attachment.durationMs ?: normalizedMetadata.durationMs
           val mergedWaveformBars = if (attachment.waveformBars.isEmpty()) {
@@ -594,7 +692,7 @@ internal open class ChatSessionLocalStore(
             mergedWaveformBars == attachment.waveformBars &&
             mergedTranscript == attachment.transcriptText
           ) {
-            return@map attachment
+            return@attachmentLoop attachment
           }
           changed = true
           messageChanged = true
@@ -768,6 +866,39 @@ internal open class ChatSessionLocalStore(
     ?.let(::decodePendingUserInputs)
     .orEmpty()
 
+  private fun activeTodosFrom(
+    workspace: ChatWorkspaceRecord,
+    sessionId: String,
+  ): List<AgentTodoEntry> = workspace.extensions[todoExtensionKey(sessionId)]
+    ?.let(::decodePersistedTodos)
+    .orEmpty()
+
+  private fun archivedTodosFrom(
+    workspace: ChatWorkspaceRecord,
+    sessionId: String,
+  ): PersistedArchivedTodoSnapshot? = workspace.extensions[archivedTodoExtensionKey(sessionId)]
+    ?.let(::decodePersistedArchivedTodos)
+
+  private fun todoSnapshotFrom(
+    workspace: ChatWorkspaceRecord,
+    sessionId: String,
+  ): ChatSessionTodoSnapshot {
+    val activeTodos = activeTodosFrom(workspace = workspace, sessionId = sessionId)
+    if (activeTodos.isNotEmpty()) {
+      return ChatSessionTodoSnapshot(
+        todos = activeTodos,
+        state = ChatSessionTodoState.ACTIVE,
+      )
+    }
+    val archivedTodos = archivedTodosFrom(workspace = workspace, sessionId = sessionId)
+      ?: return ChatSessionTodoSnapshot.empty()
+    return ChatSessionTodoSnapshot(
+      todos = archivedTodos.todos.mapNotNull(PersistedTodoEntry::toAgentTodoEntryOrNull),
+      state = ChatSessionTodoState.ARCHIVED_COMPLETED,
+      completedAtEpochMs = archivedTodos.completedAtEpochMs,
+    )
+  }
+
   private fun workspaceWithPendingUserInputs(
     workspace: ChatWorkspaceRecord,
     sessionId: String,
@@ -794,12 +925,94 @@ internal open class ChatSessionLocalStore(
 
   private fun pendingUserInputExtensionKey(sessionId: String): String = "pendingUserInputs.$sessionId"
 
+  private fun workspaceWithTodos(
+    workspace: ChatWorkspaceRecord,
+    sessionId: String,
+    todos: List<AgentTodoEntry>,
+    updatedAtEpochMs: Long,
+  ): ChatWorkspaceRecord {
+    val activeKey = todoExtensionKey(sessionId)
+    val archivedKey = archivedTodoExtensionKey(sessionId)
+    val updatedExtensions = if (todos.isEmpty()) {
+      workspace.extensions - activeKey - archivedKey
+    } else if (todos.all { entry -> entry.status == AgentTodoStatus.COMPLETED }) {
+      val encodedArchive = todoJson.encodeToString(
+        serializer = PersistedArchivedTodoSnapshot.serializer(),
+        value = PersistedArchivedTodoSnapshot.fromAgentTodoEntries(
+          entries = todos,
+          completedAtEpochMs = updatedAtEpochMs,
+        ),
+      )
+      (workspace.extensions - activeKey) + (archivedKey to encodedArchive)
+    } else {
+      val encodedTodos = todoJson.encodeToString(
+        serializer = ListSerializer(PersistedTodoEntry.serializer()),
+        value = todos.map(PersistedTodoEntry::fromAgentTodoEntry),
+      )
+      (workspace.extensions - archivedKey) + (activeKey to encodedTodos)
+    }
+    return if (updatedExtensions == workspace.extensions) {
+      workspace
+    } else {
+      workspace.copy(
+        extensions = updatedExtensions,
+        recordVersion = workspace.recordVersion + 1,
+        updatedAtEpochMs = updatedAtEpochMs,
+      )
+    }
+  }
+
+  private fun todoExtensionKey(sessionId: String): String = "todos.$sessionId"
+  private fun archivedTodoExtensionKey(sessionId: String): String = "todosArchived.$sessionId"
+
+  private fun copySessionTodoExtension(
+    extensions: Map<String, String>,
+    sourceSessionId: String,
+    targetSessionId: String,
+  ): Map<String, String> {
+    var updatedExtensions = extensions
+    extensions[todoExtensionKey(sourceSessionId)]?.let { sourceValue ->
+      updatedExtensions = updatedExtensions + (todoExtensionKey(targetSessionId) to sourceValue)
+    }
+    extensions[archivedTodoExtensionKey(sourceSessionId)]?.let { sourceValue ->
+      updatedExtensions =
+        updatedExtensions + (archivedTodoExtensionKey(targetSessionId) to sourceValue)
+    }
+    return updatedExtensions
+  }
+
   private fun decodePendingUserInputs(raw: String): List<PendingUserInputEntry> = runCatching {
     pendingUserInputJson.decodeFromString(
       deserializer = ListSerializer(PendingUserInputEntry.serializer()),
       string = raw,
     )
   }.getOrDefault(emptyList())
+
+  private fun decodePersistedTodos(raw: String): List<AgentTodoEntry> = runCatching {
+    todoJson.decodeFromString(
+      deserializer = ListSerializer(PersistedTodoEntry.serializer()),
+      string = raw,
+    )
+  }.getOrDefault(emptyList())
+    .mapNotNull(PersistedTodoEntry::toAgentTodoEntryOrNull)
+
+  private fun decodePersistedArchivedTodos(raw: String): PersistedArchivedTodoSnapshot? =
+    runCatching {
+      todoJson.decodeFromString(
+        deserializer = PersistedArchivedTodoSnapshot.serializer(),
+        string = raw,
+      )
+    }.getOrNull()
+      ?.takeIf { archivedTodos -> archivedTodos.completedAtEpochMs >= 0L }
+      ?.takeIf { archivedTodos -> archivedTodos.todos.isNotEmpty() }
+
+  private fun normalizeTodos(todos: List<AgentTodoEntry>): List<AgentTodoEntry> = todos.map { entry ->
+    AgentTodoEntry(
+      content = entry.content.trim(),
+      status = entry.status,
+      activeForm = entry.activeForm?.trim()?.takeIf(String::isNotBlank),
+    )
+  }
 
   private fun sessionsForUi(workspace: ChatWorkspaceRecord): List<SessionSummary> = workspace.sessions
     .sortedByDescending { it.updatedAtEpochMs }
@@ -894,6 +1107,7 @@ internal open class ChatSessionLocalStore(
     internal const val DEFAULT_SYSTEM_TEMPLATE_VALUE =
       "You are OpenCray. Keep the session transcript complete and preserve user-visible context."
     private val pendingUserInputJson = Json { ignoreUnknownKeys = true }
+    private val todoJson = Json { ignoreUnknownKeys = true }
 
     fun fromContext(
       context: Context,
@@ -908,14 +1122,104 @@ internal open class ChatSessionLocalStore(
 }
 
 @Serializable
+internal data class PersistedTodoEntry(
+  val content: String,
+  val status: String,
+  val activeForm: String? = null,
+) {
+  fun toAgentTodoEntryOrNull(): AgentTodoEntry? {
+    val normalizedContent = content.trim()
+    val normalizedStatus = AgentTodoStatus.fromLabelOrNull(status) ?: return null
+    if (normalizedContent.isBlank()) {
+      return null
+    }
+    return AgentTodoEntry(
+      content = normalizedContent,
+      status = normalizedStatus,
+      activeForm = activeForm?.trim()?.takeIf(String::isNotBlank),
+    )
+  }
+
+  companion object {
+    fun fromAgentTodoEntry(entry: AgentTodoEntry): PersistedTodoEntry = PersistedTodoEntry(
+      content = entry.content,
+      status = when (entry.status) {
+        AgentTodoStatus.PENDING -> "pending"
+        AgentTodoStatus.IN_PROGRESS -> "in_progress"
+        AgentTodoStatus.COMPLETED -> "completed"
+      },
+      activeForm = entry.activeForm,
+    )
+  }
+}
+
+internal enum class ChatSessionTodoState {
+  EMPTY,
+  ACTIVE,
+  ARCHIVED_COMPLETED,
+}
+
+internal data class ChatSessionTodoSnapshot(
+  val todos: List<AgentTodoEntry>,
+  val state: ChatSessionTodoState,
+  val completedAtEpochMs: Long? = null,
+) {
+  companion object {
+    fun empty(): ChatSessionTodoSnapshot = ChatSessionTodoSnapshot(
+      todos = emptyList(),
+      state = ChatSessionTodoState.EMPTY,
+    )
+  }
+}
+
+internal enum class ChatSessionTodoPresentationState {
+  EMPTY,
+  ACTIVE,
+  ARCHIVED_COMPLETED,
+}
+
+internal data class ChatSessionTodoPresentation(
+  val todos: List<AgentTodoEntry>,
+  val state: ChatSessionTodoPresentationState,
+  val hideDelayMs: Long? = null,
+  val completedAtEpochMs: Long? = null,
+) {
+  companion object {
+    fun empty(): ChatSessionTodoPresentation = ChatSessionTodoPresentation(
+      todos = emptyList(),
+      state = ChatSessionTodoPresentationState.EMPTY,
+    )
+  }
+}
+
+@Serializable
+internal data class PersistedArchivedTodoSnapshot(
+  val completedAtEpochMs: Long,
+  val todos: List<PersistedTodoEntry>,
+) {
+  companion object {
+    fun fromAgentTodoEntries(
+      entries: List<AgentTodoEntry>,
+      completedAtEpochMs: Long,
+    ): PersistedArchivedTodoSnapshot = PersistedArchivedTodoSnapshot(
+      completedAtEpochMs = completedAtEpochMs,
+      todos = entries.map(PersistedTodoEntry::fromAgentTodoEntry),
+    )
+  }
+}
+
+@Serializable
 internal data class PendingUserInputEntry(
   val queueId: String,
   val text: String,
+  val attachments: List<ChatAttachmentEntry> = emptyList(),
   val createdAtEpochMs: Long,
 ) {
   init {
     require(queueId.isNotBlank()) { "PendingUserInputEntry queueId must not be blank." }
-    require(text.isNotBlank()) { "PendingUserInputEntry text must not be blank." }
+    require(text.isNotBlank() || attachments.isNotEmpty()) {
+      "PendingUserInputEntry text or attachments must not be blank."
+    }
     require(createdAtEpochMs >= 0L) { "PendingUserInputEntry createdAtEpochMs must be >= 0." }
   }
 }

@@ -28,10 +28,16 @@ This document is intentionally deeper than the earlier audit and roadmap documen
 - `docs/agent-runtime-issues.md`
 - `docs/agent-runtime-roadmap.md`
 - `docs/agent-runtime-reference-guide.md`
+- `docs/multi-agent-runtime-design.md`
 - `docs/memory-design.md`
 - `docs/done/design-p0-live-queue-persistence.md`
 - `docs/done/design-p0-session-runtime-manager.md`
 - `docs/done/design-p0-prompt-layer-architecture.md`
+
+Multi-agent note:
+
+- `docs/multi-agent-runtime-design.md` supersedes the earlier assumption that base `SOUL.md` lives in the public workspace root
+- for the multi-agent rollout, base soul should remain document-based but move into an agent-private root, while public workspace remains tool-visible
 
 ## Research Method
 
@@ -1751,9 +1757,31 @@ What exists now:
 
 What does **not** exist yet:
 
-- full operator-facing curation and drill-down surfaces for memory/soul state maintenance
+- richer bounded automatic memory stewardship beyond the current first candidate-driven slice, and the corresponding deeper drill-down surfaces to explain why that stewardship acted
 - richer reciprocity-aware behavior policies that consume the projected relationship state at action-planning time
 - more realistic long-horizon affect growth that depends on interaction history rather than repeated verbal demand alone
+
+Current stewardship note:
+
+- a first bounded candidate-driven stewardship slice now exists for normal memory rows
+- post-turn ingestion may ask a constrained LLM interpreter to compare proposed `user_preference`, `durable_instruction`, and `project_fact` writes against related active records
+- when a turn produces no stewardable replacement candidate but does explicitly mention a small number of already-stored memories, post-turn ingestion may also run a bounded record-only stewardship review over those shortlisted active rows
+- candidate-driven review and record-only review may also coexist in one turn, so a new durable write can be accepted while a separate explicitly mentioned old memory is resolved or reaffirmed through the same bounded stewardship pass
+- the stewardship prompt should carry small structured metadata such as memory kind, scope, and evidence source for active/proposed rows so the interpreter is not forced to infer everything from flattened content strings alone
+- the stewardship prompt may also carry bounded chronology signals such as record `updated_at`, `last_confirmed_at`, and candidate source-task metadata so the model can reason about correction vs stale belief without gaining permission to rewrite memory freely
+- the stewardship prompt should explicitly distinguish durable user preferences from one-turn formatting/tone asks, so the model can drop transient response-style requests instead of promoting them into cross-session memory
+- the interpreter is limited to a small action set:
+  - `refresh_record_with_candidate`
+  - `drop_candidate`
+  - `reaffirm_record`
+  - `resolve_record`
+  - `supersede_record_with_candidate`
+- `refresh_record_with_candidate` is the bounded “same memory, fresh evidence” path: runtime drops the candidate, refreshes the stored record’s confirmation timestamp, and preserves record identity rather than rewriting content
+- for `project_fact` and `durable_instruction`, `refresh_record_with_candidate` is narrower than “same topic”: runtime only allows it when the candidate looks like a pure reconfirmation of the stored row, not when it adds new durable detail or changes a key value on the same topic
+- even when the LLM asks for `refresh_record_with_candidate` or `supersede_record_with_candidate`, runtime should still enforce deterministic same-topic compatibility for normal fact/instruction rows before applying the action
+- in record-only review, runtime should shortlist only a few scope-compatible active rows that are directly mentioned or deterministically topic-related to the current explicit evidence, and without a candidate the model is limited in practice to `resolve_record` or `reaffirm_record`
+- runtime enforces scope compatibility, user-preference key compatibility, per-turn resolution caps, and fail-closed behavior
+- this slice still does not perform broad whole-corpus maintenance, merge-equivalent planning, or richer explanation trace beyond the existing maintenance surfaces
 
 ### Turn-time control path
 

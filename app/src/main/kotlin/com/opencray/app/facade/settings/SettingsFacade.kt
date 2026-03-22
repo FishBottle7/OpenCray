@@ -12,6 +12,7 @@ import com.opencray.app.OpenCrayLocaleManager
 import android.content.Context
 import com.opencray.app.TelemetrySettingsStore
 import com.opencray.app.TelemetryTogglesState
+import com.opencray.app.WebSearchSlotConfig
 import com.opencray.app.WebSearchSettingsStore
 import com.opencray.app.WorkspaceSoulProfile
 import com.opencray.app.WorkspaceSoulProfileStore
@@ -25,9 +26,13 @@ enum class SettingsRouteId(
   WORKSPACE_ACCESS("workspace_access"),
   LLM("llm"),
   MCP("mcp"),
+  API_INTEGRATIONS("api_integrations"),
+  NETWORK_SEARCH("network_search"),
+  MEDIA_SPEECH("media_speech"),
   PRIVACY_TELEMETRY("privacy_telemetry"),
   SAFETY_LIMITS("safety_limits"),
   PERSONALIZATION("personalization"),
+  AGENTS("agents"),
   ABOUT_VERSION("about_version"),
   ;
 
@@ -139,18 +144,12 @@ internal class LocalSettingsFacade(
   private val webSearchSettingsStore: WebSearchSettingsStore,
 ) : SettingsFacade {
   override fun loadOverview(): SettingsOverviewSnapshot {
-    val soulProfile = soulProfileStore.loadSoulProfile(workspaceRootProvider())
-    val searchSlots = webSearchSettingsStore.load()
     return SettingsOverviewSnapshot(
       eyebrow = "APP SHELL",
       title = context.getString(R.string.shell_tab_settings),
       subtitle = context.getString(R.string.settings_home_intro),
       deviceTitle = context.getString(R.string.settings_home_profile_title),
-      deviceSummary = context.getString(
-        R.string.settings_home_profile_meta,
-        personalizationLabel(soulProfile),
-        searchProfileLabel(searchSlots),
-      ),
+      deviceSummary = context.getString(R.string.settings_home_profile_meta_api_routes),
       entries = listOf(
         SettingsHomeEntrySnapshot(
           routeId = SettingsRouteId.WORKSPACE_ACCESS,
@@ -165,8 +164,8 @@ internal class LocalSettingsFacade(
           title = context.getString(R.string.settings_card_mcp),
         ),
         SettingsHomeEntrySnapshot(
-          routeId = SettingsRouteId.PRIVACY_TELEMETRY,
-          title = context.getString(R.string.settings_card_privacy_telemetry),
+          routeId = SettingsRouteId.API_INTEGRATIONS,
+          title = context.getString(R.string.settings_card_api_integrations),
         ),
         SettingsHomeEntrySnapshot(
           routeId = SettingsRouteId.SAFETY_LIMITS,
@@ -175,6 +174,10 @@ internal class LocalSettingsFacade(
         SettingsHomeEntrySnapshot(
           routeId = SettingsRouteId.PERSONALIZATION,
           title = context.getString(R.string.settings_card_personalization),
+        ),
+        SettingsHomeEntrySnapshot(
+          routeId = SettingsRouteId.AGENTS,
+          title = context.getString(R.string.settings_card_agents),
         ),
         SettingsHomeEntrySnapshot(
           routeId = SettingsRouteId.ABOUT_VERSION,
@@ -251,10 +254,23 @@ internal class LocalSettingsFacade(
         ),
       ),
     )
-    SettingsRouteId.PRIVACY_TELEMETRY -> SettingsDetailSnapshot(
+    SettingsRouteId.API_INTEGRATIONS -> SettingsDetailSnapshot(
       routeId = routeId,
-      title = context.getString(R.string.settings_card_privacy_telemetry),
-      subtitle = context.getString(R.string.settings_privacy_subtitle),
+      title = context.getString(R.string.settings_card_api_integrations),
+      subtitle = context.getString(R.string.settings_api_integrations_subtitle),
+      sections = listOf(
+        SettingsSectionSnapshot(
+          title = "Routing rules",
+          helperText = "Search keeps ordered slots. Media uses external APIs, while STT can switch between a hosted API and an on-device model package.",
+        ),
+      ),
+    )
+    SettingsRouteId.NETWORK_SEARCH,
+    SettingsRouteId.PRIVACY_TELEMETRY,
+    -> SettingsDetailSnapshot(
+      routeId = routeId,
+      title = context.getString(R.string.settings_network_search_title),
+      subtitle = context.getString(R.string.settings_network_search_subtitle),
       sections = listOf(
         SettingsSectionSnapshot(
           title = "Search slots",
@@ -265,6 +281,21 @@ internal class LocalSettingsFacade(
               valueLabel = searchProfileLabel(webSearchSettingsStore.load()),
             ),
           ),
+        ),
+      ),
+    )
+    SettingsRouteId.MEDIA_SPEECH -> SettingsDetailSnapshot(
+      routeId = routeId,
+      title = context.getString(R.string.settings_media_speech_title),
+      subtitle = context.getString(R.string.settings_media_speech_subtitle),
+      sections = listOf(
+        SettingsSectionSnapshot(
+          title = "Generation services",
+          helperText = "Image and voice generation both use external API routes.",
+        ),
+        SettingsSectionSnapshot(
+          title = "Speech-to-text",
+          helperText = "Switch between a hosted API route and an on-device model package.",
         ),
       ),
     )
@@ -324,6 +355,17 @@ internal class LocalSettingsFacade(
         ),
       ),
     )
+    SettingsRouteId.AGENTS -> SettingsDetailSnapshot(
+      routeId = routeId,
+      title = context.getString(R.string.settings_card_agents),
+      subtitle = "Browse saved agents and create a new one.",
+      sections = listOf(
+        SettingsSectionSnapshot(
+          title = "Dedicated editor",
+          helperText = "Agent configuration is rendered by the Flutter prototype page.",
+        ),
+      ),
+    )
     SettingsRouteId.ABOUT_VERSION -> SettingsDetailSnapshot(
       routeId = routeId,
       title = context.getString(R.string.settings_card_about_version),
@@ -359,9 +401,6 @@ internal class LocalSettingsFacade(
 
   private fun llmState(): LlmSettingsState = llmSettingsStore.load()
 
-  private fun telemetryState(): TelemetryTogglesState =
-    telemetrySettingsStore.load(TelemetryTogglesState.localized(context))
-
   private fun personalizationProfile(): WorkspaceSoulProfile? =
     soulProfileStore.loadSoulProfile(workspaceRootProvider())
 
@@ -378,6 +417,15 @@ internal class LocalSettingsFacade(
       providerId = state.providerId,
       baseUrl = state.baseUrl,
     )
+  }
+
+  private fun searchProfileLabel(slots: List<WebSearchSlotConfig>): String {
+    if (slots.isEmpty()) {
+      return "No slots"
+    }
+    val enabledCount = slots.count(WebSearchSlotConfig::enabled)
+    val configuredCount = slots.count { slot -> slot.apiKey.isNotBlank() }
+    return "$enabledCount enabled · $configuredCount configured"
   }
 
   private fun personalizationToneIndex(
@@ -445,17 +493,6 @@ internal class LocalSettingsFacade(
       else -> context.getString(R.string.shell_android_release_generic)
     }
     return context.getString(R.string.shell_android_api_label, releaseLabel, minSdk)
-  }
-
-  private fun searchProfileLabel(slots: List<com.opencray.app.WebSearchSlotConfig>): String {
-    val activeCount = slots.count { slot ->
-      slot.enabled && slot.apiKey.isNotBlank()
-    }
-    return when {
-      activeCount <= 0 -> context.getString(R.string.settings_search_profile_empty)
-      activeCount == 1 -> context.getString(R.string.settings_search_profile_one)
-      else -> context.getString(R.string.settings_search_profile_many, activeCount)
-    }
   }
 
   private fun personalizationLabel(

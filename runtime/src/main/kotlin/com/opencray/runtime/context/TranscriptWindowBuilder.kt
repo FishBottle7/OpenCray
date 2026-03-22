@@ -87,7 +87,7 @@ class TranscriptWindowBuilder(
 
   private fun isBackgroundMessage(message: RuntimeConversationMessage): Boolean = when (message.role) {
     RuntimeConversationRole.USER -> false
-    RuntimeConversationRole.ASSISTANT -> isToolCallMarker(message.content)
+    RuntimeConversationRole.ASSISTANT -> isToolCallMarker(message)
     RuntimeConversationRole.TOOL,
     RuntimeConversationRole.SYSTEM,
     -> true
@@ -95,12 +95,12 @@ class TranscriptWindowBuilder(
 
   private fun boundContent(message: RuntimeConversationMessage): String {
     val compacted = when {
-      isToolCallMarker(message.content) -> collapseWhitespace(message.content)
+      isToolCallMarker(message) -> collapseWhitespace(message.content)
       message.role == RuntimeConversationRole.TOOL -> collapseWhitespace(message.content)
       else -> message.content
     }
     val limit = when {
-      isToolCallMarker(message.content) -> minOf(config.maxCharsPerMessage, 480)
+      isToolCallMarker(message) -> minOf(config.maxCharsPerMessage, 480)
       message.role == RuntimeConversationRole.TOOL -> minOf(config.maxCharsPerMessage, 1_600)
       else -> config.maxCharsPerMessage
     }
@@ -114,6 +114,7 @@ class TranscriptWindowBuilder(
   private fun collapseWhitespace(content: String): String =
     content.replace(Regex("\\s+"), " ").trim()
 
-  private fun isToolCallMarker(content: String): Boolean =
-    content.startsWith("tool_call ")
+  private fun isToolCallMarker(message: RuntimeConversationMessage): Boolean =
+    message.kind == RuntimeConversationMessageKind.TOOL_CALL ||
+      message.content.startsWith("tool_call ")
 }

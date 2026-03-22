@@ -345,12 +345,15 @@ Recommended logical operations:
   - bind `twin_id`, `anchor_person_id`, `source_mode`, and `current_user_role_binding`
 - `list_relationship_candidates`
   - enumerate anchor-centered candidate relationships for one `TwinBinding`
-- `select_relationship`
+- `get_import_session`
+  - return one aggregated import-time snapshot for mobile review, including binding, selected relationship, selector cards, and graph-manifest summary- `select_relationship`
   - persist one `SelectedRelationshipBinding`
   - mark it as the active lens for projection and publish
 - `rebind_relationship`
   - switch the active selected relationship without rebuilding unrelated artifacts
 
+- `withdraw_import`
+  - cancel one unpublished import session, clear draft artifacts, and leave a withdrawn session tombstone for audit
 Recommended request shape for selection:
 
 ```json
@@ -807,7 +810,7 @@ The design above is now more specific than the checked-in schema files. Before w
 - new `service/schemas/import_session.schema.json`
   - include `session_id`, session state, source hash, artifact refs, `current_user_role_binding`, and selected-binding references
 - `service/schemas/request_envelope.schema.json`
-  - add selector-facing operations such as `preflight_scan`, `create_twin_binding`, `list_relationship_candidates`, `select_relationship`, `rebind_relationship`, and optional `get_import_session`
+  - add selector-facing operations such as `preflight_scan`, `create_twin_binding`, `list_relationship_candidates`, `get_import_session`, `select_relationship`, and `rebind_relationship`
   - replace the loose `params` object with a discriminated `oneOf` keyed by `operation`
   - make per-operation required fields explicit instead of relying on prose
 - `service/schemas/opencray_draft_bundle.schema.json`
@@ -873,7 +876,20 @@ python -m venv .venv
 .\.venv\Scripts\python -m pip install "graphiti-core[kuzu]"
 ```
 
-If provider-specific credentials are required, those should be handled through the same existing Python environment or host configuration used for other LLM-backed Python tasks.
+If provider-specific credentials are required, the import module should default to the app's existing `llm_config`, then allow an optional `graphiti_config` override for `llm`, `embedder`, or `cross_encoder`.
+
+Recommended import-time contract:
+
+- `llm_config`: reuse the app's configured provider, base URL, API key, model, and reasoning effort by default
+- `graphiti_config.llm`: only override when Graphiti should talk to a different chat/reasoning endpoint than the app default
+- `graphiti_config.embedder`: use when embeddings must come from a different model or provider
+- `graphiti_config.cross_encoder`: use when reranking must come from a different model or provider
+
+Security rule:
+
+- request payloads may carry secrets such as `apiKey`
+- persisted service artifacts only store a non-secret `graphiti_runtime_preferences` summary
+- the import service should not write Graphiti API keys into `*.binding.json` or `*.import_session.json`
 
 ### Minimal Exec Flow
 
@@ -892,6 +908,8 @@ If provider-specific credentials are required, those should be handled through t
 ```powershell
 .\.venv\Scripts\python service/graphiti_adapter.py run_request --request service/examples/request_init.sample.json --response .opencray/personality_service/cache/request_init.response.json
 ```
+
+If the mobile import page wants Graphiti to inherit the app's current model configuration by default, use a request shaped like `service/examples/request_init_with_llm_config.sample.json`. If Graphiti needs a separate embedding provider, add `graphiti_config.embedder` as shown in `service/examples/request_ingest_chat_with_graphiti_override.sample.json`.
 
 The service can be run either:
 
@@ -1440,6 +1458,8 @@ source corpus
 - Graphiti Kuzu DB Configuration: https://help.getzep.com/graphiti/graph-database-clients/kuzu
 - Graphiti server README: https://github.com/getzep/graphiti/blob/main/server/README.md
 - Graphiti MCP server README: https://github.com/getzep/graphiti/blob/main/mcp_server/README.md
+
+
 
 
 

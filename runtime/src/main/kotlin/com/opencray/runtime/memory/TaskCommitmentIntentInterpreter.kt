@@ -10,9 +10,21 @@ data class OpenTaskCommitment(
   }
 }
 
+data class ProposedTaskCommitment(
+  val candidateIndex: Int,
+  val content: String,
+) {
+  init {
+    require(candidateIndex >= 0) { "ProposedTaskCommitment candidateIndex must be >= 0." }
+    require(content.isNotBlank()) { "ProposedTaskCommitment content must not be blank." }
+  }
+}
+
 data class TaskCommitmentIntentRequest(
   val sessionId: String,
   val commitments: List<OpenTaskCommitment>,
+  val proposedCommitments: List<ProposedTaskCommitment> = emptyList(),
+  val userInput: String? = null,
   val assistantOutput: String? = null,
   val toolObservations: List<String> = emptyList(),
 ) {
@@ -24,14 +36,23 @@ data class TaskCommitmentIntentRequest(
 enum class TaskCommitmentIntentAction {
   RESOLVE,
   REAFFIRM,
+  ABANDON,
+  SUPERSEDE_WITH_PROPOSED,
+  DROP_PROPOSED,
 }
 
 data class TaskCommitmentIntentDecision(
-  val commitmentId: String,
+  val commitmentId: String? = null,
   val action: TaskCommitmentIntentAction,
+  val proposedCommitmentIndex: Int? = null,
 ) {
   init {
-    require(commitmentId.isNotBlank()) { "TaskCommitmentIntentDecision commitmentId must not be blank." }
+    require(proposedCommitmentIndex == null || proposedCommitmentIndex >= 0) {
+      "TaskCommitmentIntentDecision proposedCommitmentIndex must be >= 0 when provided."
+    }
+    require(!commitmentId.isNullOrBlank() || proposedCommitmentIndex != null) {
+      "TaskCommitmentIntentDecision must target a commitmentId or a proposedCommitmentIndex."
+    }
   }
 }
 

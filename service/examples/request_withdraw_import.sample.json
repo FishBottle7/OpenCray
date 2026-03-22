@@ -1,0 +1,6 @@
+{
+  "operation": "withdraw_import",
+  "params": {
+    "twin_id": "twin_lin_01"
+  }
+}

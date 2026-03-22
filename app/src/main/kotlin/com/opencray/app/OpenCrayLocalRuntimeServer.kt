@@ -16,6 +16,7 @@ import java.net.URI
 import java.net.URLDecoder
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import com.opencray.runtime.OpenCrayFinalAttachment
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -177,6 +178,10 @@ internal class OpenCrayLocalRuntimeServer(
       "POST" to "/v1/save_network_search_config" -> hostRuntime.saveNetworkSearchConfig(
         slots = body.optJSONArray("slots")?.let(::jsonArrayToMaps) ?: emptyList(),
       )
+      "GET" to "/v1/media_speech_config" -> hostRuntime.loadMediaSpeechConfig()
+      "POST" to "/v1/save_media_speech_config" -> hostRuntime.saveMediaSpeechConfig(
+        payload = jsonObjectToMap(body),
+      )
       "GET" to "/v1/llm_config" -> hostRuntime.loadLlmConfig()
       "POST" to "/v1/save_llm_config" -> hostRuntime.saveLlmConfig(
         enabled = body.optBoolean("enabled"),
@@ -221,6 +226,9 @@ internal class OpenCrayLocalRuntimeServer(
       )
       "POST" to "/v1/run_personalization_reset" -> hostRuntime.runPersonalizationReset(
         scopeId = body.optString("scopeId"),
+      )
+      "POST" to "/v1/probe_twin_import_source" -> hostRuntime.probeTwinImportSource(
+        filePath = body.optString("filePath"),
       )
       "GET" to "/v1/mcp_settings" -> hostRuntime.loadMcpSettings()
       "POST" to "/v1/set_mcp_master_enabled" -> hostRuntime.setMcpMasterEnabled(
@@ -312,6 +320,10 @@ internal class OpenCrayLocalRuntimeServer(
         fromLine = body.takeIf { !it.isNull("fromLine") }?.optInt("fromLine"),
         lines = body.optInt("lines", 12),
       )
+      "POST" to "/v1/memory_debug_action" -> hostRuntime.applyMemoryDebugAction(
+        recordId = body.optString("recordId"),
+        actionId = body.optString("actionId"),
+      )
       "POST" to "/v1/create_chat_session" -> {
         hostRuntime.createChatSession()
         null
@@ -349,7 +361,10 @@ internal class OpenCrayLocalRuntimeServer(
         )
         null
       }
-      "POST" to "/v1/submit_chat_message" -> hostRuntime.submitChatMessage(body.optString("text"))
+      "POST" to "/v1/submit_chat_message" -> hostRuntime.submitChatMessage(
+        text = body.optString("text"),
+        attachments = parseSubmitChatMessageAttachments(body),
+      )
       "POST" to "/v1/wait_chat_run" -> hostRuntime.waitForChatRun(
         runId = body.optString("runId"),
         timeoutMs = body.optLong("timeoutMs", 15_000L),
@@ -368,6 +383,12 @@ internal class OpenCrayLocalRuntimeServer(
       }
       "POST" to "/v1/cancel_chat_run" -> {
         hostRuntime.cancelChatRun(
+          body.optString("runId").takeIf(String::isNotBlank) ?: body.optString("taskId"),
+        )
+        null
+      }
+      "POST" to "/v1/retry_chat_run" -> {
+        hostRuntime.retryChatRun(
           body.optString("runId").takeIf(String::isNotBlank) ?: body.optString("taskId"),
         )
         null
@@ -545,6 +566,31 @@ private fun jsonObjectToMap(payload: JSONObject): Map<String, Any?> =
       else -> value
     }
   }
+
+private fun parseSubmitChatMessageAttachments(body: JSONObject): List<OpenCrayFinalAttachment> {
+  val attachments = body.optJSONArray("attachments") ?: return emptyList()
+  return jsonArrayToMaps(attachments).mapNotNull { payload ->
+    val relativePath = payload["relativePath"] as String?
+    val path = payload["path"] as String?
+    val artifactId = payload["artifactId"] as String?
+    if (relativePath.isNullOrBlank() && path.isNullOrBlank() && artifactId.isNullOrBlank()) {
+      return@mapNotNull null
+    }
+    OpenCrayFinalAttachment(
+      kind = payload["kind"] as String?,
+      relativePath = relativePath,
+      path = path,
+      artifactId = artifactId,
+      displayName = payload["displayName"] as String?,
+      mimeType = payload["mimeType"] as String?,
+      durationMs = (payload["durationMs"] as Number?)?.toLong(),
+      waveformBars = (payload["waveformBars"] as? List<*>)?.mapNotNull { value ->
+        (value as? Number)?.toInt()
+      }.orEmpty(),
+      transcriptText = payload["transcriptText"] as String?,
+    )
+  }
+}
 
 private data class LocalRuntimeRequest(
   val method: String,

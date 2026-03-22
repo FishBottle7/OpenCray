@@ -131,6 +131,77 @@ def test_extract_chat_soul_writes_signal_and_draft_files(local_workspace):
     assert {"event_semantics", "appraisal_hint", "value_tradeoff_hint", "opening_move_hint", "closure_move_hint"}.issubset(signal_types)
 
 
+def test_extract_chat_soul_accepts_chatlab_jsonl_and_skips_non_text_messages(local_workspace):
+    soul_extractor = _load_module()
+    source_path = local_workspace / "chatlab.jsonl"
+    source_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "_type": "header",
+                        "chatlab": {"version": "1"},
+                        "meta": {"name": "Lin x User", "groupId": "chatlab_lin_user", "type": "private"},
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps({"_type": "member", "platformId": "actor_lin", "accountName": "Lin"}, ensure_ascii=False),
+                json.dumps({"_type": "member", "platformId": "actor_user", "accountName": "User"}, ensure_ascii=False),
+                json.dumps(
+                    {
+                        "_type": "message",
+                        "sender": "actor_user",
+                        "accountName": "User",
+                        "timestamp": 1735910400,
+                        "type": 0,
+                        "content": "我会补上。",
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "_type": "message",
+                        "sender": "actor_lin",
+                        "accountName": "Lin",
+                        "timestamp": 1735910414,
+                        "type": 0,
+                        "content": "我知道，但我现在有点累。",
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "_type": "message",
+                        "sender": "actor_user",
+                        "accountName": "User",
+                        "timestamp": 1735910420,
+                        "type": 1,
+                        "content": None,
+                    },
+                    ensure_ascii=False,
+                ),
+            ]
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    service_root = local_workspace / ".opencray" / "personality_service"
+    result = soul_extractor.extract_chat_soul(
+        service_root=str(service_root),
+        twin_id="twin_chatlab_01",
+        source=str(source_path),
+        anchor_person_id="actor_lin",
+        output_name="chatlab_jsonl",
+    )
+
+    assert result["status"] == "ok"
+    assert result["source_id"] == "chatlab_lin_user"
+    signals = json.loads(Path(result["signals_path"]).read_text(encoding="utf-8"))
+    grouped = _group_signals_by_turn(signals)
+    assert "turn_000002" in grouped
+    assert "turn_000003" not in grouped
+    assert all(signal["source_ref"]["turn_id"] != "turn_000003" for signal in signals)
+
 def test_extract_chat_soul_infers_reply_link_when_missing(local_workspace):
     soul_extractor = _load_module()
     source_path = local_workspace / "chat_reply_infer.json"

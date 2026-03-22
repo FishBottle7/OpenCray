@@ -360,6 +360,10 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
                   value: '${memoryWriteEvent?.resolvedRecordIds.length ?? 0}',
                 ),
                 _DebugValueChip(
+                  label: 'Suppressed',
+                  value: '${memoryWriteEvent?.suppressedRecordIds.length ?? 0}',
+                ),
+                _DebugValueChip(
                   label: 'Reaffirmed',
                   value: '${memoryWriteEvent?.reaffirmedRecordIds.length ?? 0}',
                 ),
@@ -389,6 +393,11 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
               _DebugKeyValueLine(
                 'Resolved ids',
                 memoryWriteEvent!.resolvedRecordIds.join(', '),
+              ),
+            if (memoryWriteEvent?.suppressedRecordIds.isNotEmpty == true)
+              _DebugKeyValueLine(
+                'Suppressed ids',
+                memoryWriteEvent!.suppressedRecordIds.join(', '),
               ),
             if (memoryWriteEvent?.reaffirmedRecordIds.isNotEmpty == true)
               _DebugKeyValueLine(
@@ -1050,8 +1059,10 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
   bool _isRefreshing = false;
   bool _isSearching = false;
   bool _isLoadingSearchSlice = false;
+  bool _isApplyingMemoryAction = false;
   String? _loadError;
   String? _searchError;
+  String? _actionError;
   _MemoryInspectorFilter _activeFilter = _MemoryInspectorFilter.all;
   OpenCrayMemoryDebugSnapshot? _snapshot;
   OpenCrayMemoryDebugLinksSnapshot? _linksSnapshot;
@@ -1247,126 +1258,133 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
 
   Widget _buildProjectedMemorySearchCard() {
     final searchSnapshot = _searchSnapshot;
-    final searchResults = searchSnapshot?.results ?? const <OpenCrayMemoryDebugSearchResultSnapshot>[];
+    final searchResults =
+        searchSnapshot?.results ??
+        const <OpenCrayMemoryDebugSearchResultSnapshot>[];
     final selectedSearchResult = searchResults
         .cast<OpenCrayMemoryDebugSearchResultSnapshot?>()
         .firstWhere(
           (result) => result?.recordId == _selectedSearchRecordId,
           orElse: () => searchResults.isEmpty ? null : searchResults.first,
         );
-    return _SettingsCard(
+    return KeyedSubtree(
       key: const ValueKey<String>('settings-memory-search-card'),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  'Search projected memory',
-                  style: _SettingsTextStyles.cardTitle,
+      child: _SettingsCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Search projected memory',
+                    style: _SettingsTextStyles.cardTitle,
+                  ),
                 ),
-              ),
-              _HeaderActionChip(
-                label: _isSearching ? 'Searching' : 'Search',
-                onTap: _isSearching ? null : _runProjectedMemorySearch,
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          const Text(
-            'Query the same projected memory corpus exposed to memory_search and inspect a narrow snippet with memory_get-style slicing.',
-            style: _SettingsTextStyles.body,
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            key: const ValueKey<String>('settings-memory-search-input'),
-            controller: _searchController,
-            textInputAction: TextInputAction.search,
-            autocorrect: false,
-            enableSuggestions: false,
-            enableIMEPersonalizedLearning: false,
-            spellCheckConfiguration: const SpellCheckConfiguration.disabled(),
-            smartDashesType: SmartDashesType.disabled,
-            smartQuotesType: SmartQuotesType.disabled,
-            decoration: const InputDecoration(
-              labelText: 'Search query',
-              hintText: 'name, chinese, rollback, deadline reminder',
-              border: OutlineInputBorder(),
+                _HeaderActionChip(
+                  label: _isSearching ? 'Searching' : 'Search',
+                  onTap: _isSearching ? null : _runProjectedMemorySearch,
+                ),
+              ],
             ),
-            onSubmitted: (_) => _runProjectedMemorySearch(),
-          ),
-          if (_searchError != null) ...[
             const SizedBox(height: 10),
-            Text(_searchError!, style: _SettingsTextStyles.bodyStrong),
-          ],
-          if (searchSnapshot != null) ...[
-            const SizedBox(height: 12),
-            Text(
-              '${searchResults.length} match(es) · ${searchSnapshot.corpusFileCount} file(s)${searchSnapshot.queryTerms.isEmpty ? '' : ' · terms ${searchSnapshot.queryTerms.join(', ')}'}',
-              style: _SettingsTextStyles.bodyStrong,
+            const Text(
+              'Query the same projected memory corpus exposed to memory_search and inspect a narrow snippet with memory_get-style slicing.',
+              style: _SettingsTextStyles.body,
             ),
-            if (searchResults.isEmpty) ...[
-              const SizedBox(height: 8),
-              const Text(
-                'No projected memory matches were found for the current query.',
-                style: _SettingsTextStyles.body,
+            const SizedBox(height: 12),
+            TextField(
+              key: const ValueKey<String>('settings-memory-search-input'),
+              controller: _searchController,
+              textInputAction: TextInputAction.search,
+              autocorrect: false,
+              enableSuggestions: false,
+              enableIMEPersonalizedLearning: false,
+              spellCheckConfiguration: const SpellCheckConfiguration.disabled(),
+              smartDashesType: SmartDashesType.disabled,
+              smartQuotesType: SmartQuotesType.disabled,
+              decoration: const InputDecoration(
+                labelText: 'Search query',
+                hintText: 'name, chinese, rollback, deadline reminder',
+                border: OutlineInputBorder(),
               ),
-            ] else ...[
+              onSubmitted: (_) => _runProjectedMemorySearch(),
+            ),
+            if (_searchError != null) ...[
               const SizedBox(height: 10),
-              for (int index = 0; index < searchResults.length; index++) ...[
-                _MemoryDebugSearchResultRow(
-                  result: searchResults[index],
-                  selected: searchResults[index].recordId == selectedSearchResult?.recordId,
-                  onTap: () => _selectProjectedMemoryResult(searchResults[index]),
+              Text(_searchError!, style: _SettingsTextStyles.bodyStrong),
+            ],
+            if (searchSnapshot != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                '${searchResults.length} match(es) · ${searchSnapshot.corpusFileCount} file(s)${searchSnapshot.queryTerms.isEmpty ? '' : ' · terms ${searchSnapshot.queryTerms.join(', ')}'}',
+                style: _SettingsTextStyles.bodyStrong,
+              ),
+              if (searchResults.isEmpty) ...[
+                const SizedBox(height: 8),
+                const Text(
+                  'No projected memory matches were found for the current query.',
+                  style: _SettingsTextStyles.body,
                 ),
-                if (index < searchResults.length - 1)
-                  const SizedBox(height: 10),
+              ] else ...[
+                const SizedBox(height: 10),
+                for (int index = 0; index < searchResults.length; index++) ...[
+                  _MemoryDebugSearchResultRow(
+                    result: searchResults[index],
+                    selected:
+                        searchResults[index].recordId ==
+                        selectedSearchResult?.recordId,
+                    onTap: () =>
+                        _selectProjectedMemoryResult(searchResults[index]),
+                  ),
+                  if (index < searchResults.length - 1)
+                    const SizedBox(height: 10),
+                ],
+              ],
+            ],
+            if (_searchSlice != null || _isLoadingSearchSlice) ...[
+              const SizedBox(height: 14),
+              Text('Selected snippet', style: _SettingsTextStyles.bodyStrong),
+              const SizedBox(height: 8),
+              if (_isLoadingSearchSlice)
+                const Text(
+                  'Loading projected snippet...',
+                  style: _SettingsTextStyles.body,
+                )
+              else if (_searchSlice != null) ...[
+                _DebugKeyValueLine(
+                  'Path',
+                  '${_searchSlice!.path}#${_formatMemoryLineRange(_searchSlice!.startLine, _searchSlice!.endLine)}',
+                ),
+                _DebugKeyValueLine(
+                  'Record ids',
+                  _searchSlice!.recordIds.isEmpty
+                      ? 'Unavailable'
+                      : _searchSlice!.recordIds.join(', '),
+                ),
+                _DebugKeyValueLine(
+                  'Total lines',
+                  '${_searchSlice!.totalLineCount}',
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  key: const ValueKey<String>('settings-memory-search-snippet'),
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF7F8FA),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: OpenCrayColors.divider),
+                  ),
+                  child: SelectableText(
+                    _searchSlice!.text,
+                    style: _SettingsTextStyles.body,
+                  ),
+                ),
               ],
             ],
           ],
-          if (_searchSlice != null || _isLoadingSearchSlice) ...[
-            const SizedBox(height: 14),
-            Text('Selected snippet', style: _SettingsTextStyles.bodyStrong),
-            const SizedBox(height: 8),
-            if (_isLoadingSearchSlice)
-              const Text(
-                'Loading projected snippet...',
-                style: _SettingsTextStyles.body,
-              )
-            else if (_searchSlice != null) ...[
-              _DebugKeyValueLine(
-                'Path',
-                '${_searchSlice!.path}#${_formatMemoryLineRange(_searchSlice!.startLine, _searchSlice!.endLine)}',
-              ),
-              _DebugKeyValueLine(
-                'Record ids',
-                _searchSlice!.recordIds.isEmpty
-                    ? 'Unavailable'
-                    : _searchSlice!.recordIds.join(', '),
-              ),
-              _DebugKeyValueLine(
-                'Total lines',
-                '${_searchSlice!.totalLineCount}',
-              ),
-              const SizedBox(height: 8),
-              Container(
-                key: const ValueKey<String>('settings-memory-search-snippet'),
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF7F8FA),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: OpenCrayColors.divider),
-                ),
-                child: SelectableText(
-                  _searchSlice!.text,
-                  style: _SettingsTextStyles.body,
-                ),
-              ),
-            ],
-          ],
-        ],
+        ),
       ),
     );
   }
@@ -1403,6 +1421,9 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
   }
 
   Widget _buildSelectedRecordCard(OpenCrayMemoryDebugRecordSnapshot? record) {
+    final actionChips = record == null
+        ? const <Widget>[]
+        : _buildMemoryActionChips(record);
     return _SettingsCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1415,6 +1436,18 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
               style: _SettingsTextStyles.body,
             )
           else ...[
+            if (actionChips.isNotEmpty) ...[
+              Wrap(spacing: 8, runSpacing: 8, children: actionChips),
+              const SizedBox(height: 12),
+            ],
+            if (_actionError != null) ...[
+              Text(
+                _actionError!,
+                key: const ValueKey<String>('settings-memory-action-error'),
+                style: _SettingsTextStyles.bodyStrong,
+              ),
+              const SizedBox(height: 12),
+            ],
             _DebugKeyValueLine('Record', record.id),
             _DebugKeyValueLine(
               'Kind',
@@ -1623,6 +1656,88 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
       setState(() {
         _searchError = 'Failed to load projected snippet: $error';
         _isLoadingSearchSlice = false;
+      });
+    }
+  }
+
+  List<Widget> _buildMemoryActionChips(
+    OpenCrayMemoryDebugRecordSnapshot record,
+  ) {
+    if (_recordHasSoulObjectPayload(record)) {
+      return const <Widget>[];
+    }
+    final status = record.status.trim().toLowerCase();
+    final resolutionReason = record.resolutionReason.trim().toLowerCase();
+    final canSuppress = status == 'active' || status == 'open';
+    final canReaffirm =
+        canSuppress ||
+        (status == 'resolved' &&
+            resolutionReason == _memoryOperatorSuppressedReason);
+    final chips = <Widget>[];
+    if (canSuppress) {
+      chips.add(
+        KeyedSubtree(
+          key: const ValueKey<String>('settings-memory-action-suppress'),
+          child: _HeaderActionChip(
+            label: 'Suppress',
+            onTap: _isApplyingMemoryAction
+                ? null
+                : () => _applyMemoryAction(
+                    recordId: record.id,
+                    actionId: 'suppress',
+                  ),
+          ),
+        ),
+      );
+    }
+    if (canReaffirm) {
+      chips.add(
+        KeyedSubtree(
+          key: const ValueKey<String>('settings-memory-action-reaffirm'),
+          child: _HeaderActionChip(
+            label: 'Reaffirm',
+            onTap: _isApplyingMemoryAction
+                ? null
+                : () => _applyMemoryAction(
+                    recordId: record.id,
+                    actionId: 'reaffirm',
+                  ),
+          ),
+        ),
+      );
+    }
+    return chips;
+  }
+
+  Future<void> _applyMemoryAction({
+    required String recordId,
+    required String actionId,
+  }) async {
+    setState(() {
+      _actionError = null;
+      _isApplyingMemoryAction = true;
+      _activeFilter = _MemoryInspectorFilter.all;
+      _selectedRecordId = recordId;
+    });
+    try {
+      await widget.bridge.applyMemoryDebugAction(
+        recordId: recordId,
+        actionId: actionId,
+      );
+      await _refresh();
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _actionError = 'Failed to apply $actionId: $error';
+      });
+    } finally {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isApplyingMemoryAction = false;
       });
     }
   }
@@ -2246,6 +2361,11 @@ enum _MemoryInspectorFilter {
   }
 }
 
+const String _memoryOperatorSuppressedReason = 'operator_suppressed';
+
+bool _recordHasSoulObjectPayload(OpenCrayMemoryDebugRecordSnapshot record) =>
+    record.extensions['soul_object_type']?.trim().isNotEmpty == true;
+
 OpenCrayMemoryDebugLinksEntrySnapshot? _findMemoryDebugLinksEntry(
   OpenCrayMemoryDebugLinksSnapshot? snapshot,
   String recordId,
@@ -2465,6 +2585,8 @@ String _memoryMaintenanceActionLabel(String action) {
       return 'Written';
     case 'resolved':
       return 'Resolved';
+    case 'suppressed':
+      return 'Suppressed';
     case 'reaffirmed':
       return 'Reaffirmed';
     case 'expired':
@@ -2575,6 +2697,13 @@ String _formatMemoryTtl(int ttlMs) {
     return '${(ttlMs / (60 * 60 * 1000)).round()}h';
   }
   return '${(ttlMs / (24 * 60 * 60 * 1000)).round()}d';
+}
+
+String _formatMemoryLineRange(int startLine, int endLine) {
+  if (startLine <= 0 || endLine <= 0) {
+    return 'unknown';
+  }
+  return startLine == endLine ? '$startLine' : '$startLine-$endLine';
 }
 
 List<Widget> _buildSoulProfileLines(OpenCraySoulProfileDebugSnapshot snapshot) {
@@ -3386,7 +3515,7 @@ String _truncateDebugText(String value, int maxChars) {
 String _summarizeRuntimeEvent(OpenCrayChatRuntimeEventSnapshot event) {
   switch (event.kind) {
     case 'memory_write':
-      return 'written ${event.writtenRecordIds.length} · resolved ${event.resolvedRecordIds.length} · reaffirmed ${event.reaffirmedRecordIds.length} · expired ${event.expiredRecordIds.length}';
+      return 'written ${event.writtenRecordIds.length} · resolved ${event.resolvedRecordIds.length} · suppressed ${event.suppressedRecordIds.length} · reaffirmed ${event.reaffirmedRecordIds.length} · expired ${event.expiredRecordIds.length}';
     case 'memory_retrieval':
       final parts = <String>[];
       if (event.operation?.trim().isNotEmpty == true) {

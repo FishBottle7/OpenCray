@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import '../../app/opencray_tabs.dart';
+import '../models/opencray_chat_draft_attachment.dart';
 import '../models/opencray_chat_snapshot.dart';
 import '../models/opencray_debug_snapshot.dart';
 import '../models/opencray_file_image_preview.dart';
@@ -10,6 +11,7 @@ import '../models/opencray_file_voice_playback_source.dart';
 import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
+import '../models/opencray_media_speech_config.dart';
 import '../models/opencray_mcp_settings.dart';
 import '../models/opencray_network_search_config.dart';
 import '../models/opencray_personalization_config.dart';
@@ -17,6 +19,7 @@ import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
 import '../models/opencray_skills_snapshot.dart';
+import '../models/opencray_twin_import_source_probe.dart';
 import '../models/opencray_workspace_text_document.dart';
 import 'opencray_host_bridge.dart';
 
@@ -51,7 +54,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
              title: 'Settings',
              subtitle: 'Access, providers,\nand personal defaults.',
              deviceTitle: 'OpenCray on this device',
-             deviceSummary: 'Personalization: Quiet\nSearch: 2 active slots',
+             deviceSummary: 'API routes: Search + Media',
              entries: <OpenCraySettingsHomeEntrySnapshot>[
                OpenCraySettingsHomeEntrySnapshot(
                  routeId: 'workspace_access',
@@ -60,8 +63,8 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
                OpenCraySettingsHomeEntrySnapshot(routeId: 'llm', title: 'LLM'),
                OpenCraySettingsHomeEntrySnapshot(routeId: 'mcp', title: 'MCP'),
                OpenCraySettingsHomeEntrySnapshot(
-                 routeId: 'privacy_telemetry',
-                 title: 'Network & Search',
+                 routeId: 'api_integrations',
+                 title: 'API Integrations',
                ),
                OpenCraySettingsHomeEntrySnapshot(
                  routeId: 'safety_limits',
@@ -70,6 +73,10 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
                OpenCraySettingsHomeEntrySnapshot(
                  routeId: 'personalization',
                  title: 'Personalization',
+               ),
+               OpenCraySettingsHomeEntrySnapshot(
+                 routeId: 'agents',
+                 title: 'Agent',
                ),
                OpenCraySettingsHomeEntrySnapshot(
                  routeId: 'about_version',
@@ -280,6 +287,35 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
             enabled: true,
           ),
         ],
+      );
+  OpenCrayMediaSpeechConfigSnapshot _mediaSpeechConfig =
+      const OpenCrayMediaSpeechConfigSnapshot(
+        localeTag: 'en',
+        title: 'Media & Speech',
+        subtitle: 'Configure media APIs and STT routing.',
+        imageGeneration: OpenCrayMediaProviderConfigSnapshot(
+          provider: 'Fal AI',
+          baseUrl: 'https://api.fal.ai',
+          endpoint: '/v1/images',
+          model: 'flux-pro',
+        ),
+        voiceGeneration: OpenCrayVoiceProviderConfigSnapshot(
+          provider: 'OpenAI TTS',
+          baseUrl: 'https://api.openai.com',
+          endpoint: '/v1/audio/speech',
+          voicePreset: 'alloy · calm',
+        ),
+        sttRouteId: 'on_device_model',
+        externalStt: OpenCrayMediaProviderConfigSnapshot(
+          provider: 'OpenAI Whisper',
+          baseUrl: 'https://api.openai.com',
+          endpoint: '/v1/audio/transcriptions',
+          model: 'whisper-1',
+        ),
+        onDeviceModel: OpenCrayOnDeviceSttConfigSnapshot(
+          modelPackage: 'Whisper Small',
+          downloadStatus: 'Not downloaded · 1.4 GB',
+        ),
       );
   OpenCrayLlmConfigSnapshot _llmConfig;
   OpenCrayPersonalizationConfigSnapshot _personalizationConfig;
@@ -569,6 +605,18 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<OpenCrayMediaSpeechConfigSnapshot> loadMediaSpeechConfig() async =>
+      _mediaSpeechConfig;
+
+  @override
+  Future<OpenCrayMediaSpeechConfigSnapshot> saveMediaSpeechConfig(
+    OpenCrayMediaSpeechConfigSnapshot snapshot,
+  ) async {
+    _mediaSpeechConfig = snapshot;
+    return _mediaSpeechConfig;
+  }
+
+  @override
   Future<OpenCrayLlmConfigSnapshot> loadLlmConfig() async => _llmConfig;
 
   @override
@@ -771,6 +819,28 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<OpenCrayTwinImportSourceProbeSnapshot> probeTwinImportSource(
+    String filePath,
+  ) async => OpenCrayTwinImportSourceProbeSnapshot(
+    filePath: filePath,
+    fileName: filePath.split(RegExp(r'[\\\/]+')).isEmpty
+        ? filePath
+        : filePath.split(RegExp(r'[\\\/]+')).last,
+    fileExtension: filePath.contains('.')
+        ? filePath.split('.').last.toLowerCase()
+        : '',
+    sourceMode: null,
+    formatKey: 'seed_mode',
+    formatLabel: 'Seed mode probe',
+    confidence: 'low',
+    usesExistingImporter: false,
+    needsManualSelection: true,
+    notes: const <String>[
+      'Seed bridge does not inspect local corpus files. Wire this call to the Android host or local runtime bridge.',
+    ],
+  );
+
+  @override
   Future<OpenCrayMcpSettingsSnapshot> loadMcpSettings() async => _mcpSettings;
 
   @override
@@ -905,16 +975,14 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCraySkillSourceInspectionSnapshot> inspectSkillSource(
     String sourceRef,
-  ) async => throw StateError(
-    'Seed bridge does not support skill source inspection.',
-  );
+  ) async =>
+      throw StateError('Seed bridge does not support skill source inspection.');
 
   @override
   Future<String?> installSkillSource(
     String sourceRef, {
     String selectedSkillName = '',
-  }) async =>
-      'Seed bridge does not support skill installation.';
+  }) async => 'Seed bridge does not support skill installation.';
 
   @override
   Future<String?> installSkillSourceBatch(
@@ -1029,6 +1097,12 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     startLine: fromLine ?? 1,
     endLine: (fromLine ?? 1) + lines - 1,
   );
+
+  @override
+  Future<void> applyMemoryDebugAction({
+    required String recordId,
+    required String actionId,
+  }) async {}
 
   @override
   Future<OpenCrayChatRunSnapshot?> waitForChatRun(
@@ -1306,9 +1380,35 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   }
 
   @override
-  Future<OpenCrayChatRunSubmission?> submitChatMessage(String text) async {
+  Future<List<OpenCrayChatDraftAttachment>> pickChatAttachments({
+    required OpenCrayChatDraftAttachmentKind kind,
+  }) async {
+    final String fileName = switch (kind) {
+      OpenCrayChatDraftAttachmentKind.image => 'workspace-shot.png',
+      OpenCrayChatDraftAttachmentKind.file => 'mobile-ui-layout-spec.md',
+    };
+    final String mimeType = switch (kind) {
+      OpenCrayChatDraftAttachmentKind.image => 'image/png',
+      OpenCrayChatDraftAttachmentKind.file => 'text/markdown',
+    };
+    return <OpenCrayChatDraftAttachment>[
+      OpenCrayChatDraftAttachment(
+        kind: kind,
+        displayName: fileName,
+        relativePath: '.opencray/seed/$fileName',
+        mimeType: mimeType,
+      ),
+    ];
+  }
+
+  @override
+  Future<OpenCrayChatRunSubmission?> submitChatMessage(
+    String text, {
+    List<OpenCrayChatDraftAttachment> attachments =
+        const <OpenCrayChatDraftAttachment>[],
+  }) async {
     final trimmed = text.trim();
-    if (trimmed.isEmpty) {
+    if (trimmed.isEmpty && attachments.isEmpty) {
       return null;
     }
     _chatSnapshot = OpenCrayChatSnapshot(
@@ -1323,6 +1423,19 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
           messageId: _seedMessageId('seed-outbound'),
           kind: 'outbound',
           text: trimmed,
+          attachments: attachments
+              .map(
+                (OpenCrayChatDraftAttachment attachment) =>
+                    OpenCrayChatAttachmentSnapshot(
+                      attachmentId: attachment.id,
+                      kind: attachment.kind.wireValue,
+                      displayName: attachment.displayName,
+                      localPath: attachment.relativePath,
+                      mimeType: attachment.mimeType,
+                      sizeBytes: attachment.sizeBytes,
+                    ),
+              )
+              .toList(growable: false),
         ),
         OpenCrayChatMessageSnapshot(
           messageId: _seedMessageId('seed-inbound'),
@@ -1353,6 +1466,9 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     _resolveChatApproval(approvalId);
   }
 
+  @override
+  Future<void> retryChatRun(String runIdOrTaskId) async {}
+
   void update(OpenCrayShellSnapshot snapshot) {
     _snapshot = snapshot;
     if (!_controller.isClosed) {
@@ -1373,8 +1489,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       title: _settingsOverview.title,
       subtitle: _settingsOverview.subtitle,
       deviceTitle: _settingsOverview.deviceTitle,
-      deviceSummary:
-          'Personalization: ${_personalizationConfig.livePreviewName}\nSearch: ${_networkSearchConfig.slots.where((slot) => slot.enabled && slot.apiKey.trim().isNotEmpty).length} active slots',
+      deviceSummary: 'API routes: Search + Media',
       entries: _settingsOverview.entries,
     );
     updateSettingsOverview(updatedOverview);
@@ -1612,11 +1727,26 @@ OpenCraySettingsDetailSnapshot _seedSettingsDetailFor(String routeId) {
           ),
         ],
       );
+    case 'api_integrations':
+      return const OpenCraySettingsDetailSnapshot(
+        routeId: 'api_integrations',
+        title: 'API Integrations',
+        subtitle:
+            'Choose where OpenCray connects for search, media generation, and speech services.',
+        sections: <OpenCraySettingsSectionSnapshot>[
+          OpenCraySettingsSectionSnapshot(
+            title: 'Routing rules',
+            helperText:
+                'Search keeps ordered slots. Media uses external APIs, while STT can switch between a hosted API and an on-device model package.',
+          ),
+        ],
+      );
+    case 'network_search':
     case 'privacy_telemetry':
       return const OpenCraySettingsDetailSnapshot(
-        routeId: 'privacy_telemetry',
+        routeId: 'network_search',
         title: 'Network & Search',
-        subtitle: 'Add API keys here. Enabled slots run top to bottom.',
+        subtitle: 'Configure search slots, provider order, and retrieval keys.',
         sections: <OpenCraySettingsSectionSnapshot>[
           OpenCraySettingsSectionSnapshot(
             title: 'Search slots',
@@ -1628,6 +1758,24 @@ OpenCraySettingsDetailSnapshot _seedSettingsDetailFor(String routeId) {
                 valueLabel: '2',
               ),
             ],
+          ),
+        ],
+      );
+    case 'media_speech':
+      return const OpenCraySettingsDetailSnapshot(
+        routeId: 'media_speech',
+        title: 'Media & Speech',
+        subtitle: 'Configure media APIs and STT routing.',
+        sections: <OpenCraySettingsSectionSnapshot>[
+          OpenCraySettingsSectionSnapshot(
+            title: 'Generation services',
+            helperText:
+                'Image and voice generation both use external API routes.',
+          ),
+          OpenCraySettingsSectionSnapshot(
+            title: 'Speech-to-text',
+            helperText:
+                'Switch between a hosted API route and an on-device model package.',
           ),
         ],
       );
@@ -1755,6 +1903,19 @@ OpenCraySettingsDetailSnapshot _seedSettingsDetailFor(String routeId) {
             helperText:
                 'Typed confirmation is required before either reset runs.',
             backgroundTone: OpenCraySettingsSectionBackgroundTone.danger,
+          ),
+        ],
+      );
+    case 'agents':
+      return const OpenCraySettingsDetailSnapshot(
+        routeId: 'agents',
+        title: 'Agent',
+        subtitle: 'Browse saved agents and create a new one.',
+        sections: <OpenCraySettingsSectionSnapshot>[
+          OpenCraySettingsSectionSnapshot(
+            title: 'Dedicated editor',
+            helperText:
+                'Agent configuration is rendered by the Flutter prototype page.',
           ),
         ],
       );

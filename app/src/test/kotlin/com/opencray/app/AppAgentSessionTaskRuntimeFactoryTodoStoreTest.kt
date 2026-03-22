@@ -8,9 +8,13 @@ import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
+import com.opencray.runtime.AgentTodoEntry
+import com.opencray.runtime.AgentTodoStatus
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.OpenCraySubAgentEvent
+import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.bootstrap.BootstrapMode
 import com.opencray.runtime.memory.MemoryCandidateExtractor
@@ -20,6 +24,8 @@ import com.opencray.runtime.memory.MemoryKind
 import com.opencray.runtime.memory.MemoryPreferenceKeys
 import com.opencray.runtime.memory.MemoryScope
 import com.opencray.runtime.memory.MemorySoulExtensionKeys
+import com.opencray.runtime.subagent.SubAgentContinuationKind
+import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.memory.UserMemoryIntent
 import com.opencray.runtime.memory.UserMemoryIntentInterpretation
 import com.opencray.runtime.memory.UserMemoryIntentInterpreter
@@ -45,6 +51,10 @@ import org.junit.rules.TemporaryFolder
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
+private const val ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE: String = "PROCESS_INTERRUPTED_ON_RESTORE"
+private const val METADATA_RESTORED_TERMINAL_STATE: String = "restoredTerminalState"
+private const val RESTORED_TERMINAL_STATE_INTERRUPTED: String = "interrupted"
+
 class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
   @get:Rule
   val temporaryFolder: TemporaryFolder = TemporaryFolder()
@@ -68,6 +78,48 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
 
     assertSame(first, second)
     assertNotSame(first, third)
+  }
+
+  @Test
+  fun todoStoreForSessionRestoresPersistedEntriesAcrossFactoryRecreation() {
+    val chatDirectory = temporaryFolder.newFolder("chat-store-persistent-todos")
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-persistent-todos").toPath()
+    val initialChatStore = ChatSessionLocalStore(chatDirectory)
+    val sessionId = initialChatStore.loadState().activeSession.sessionId
+
+    fun createFactory(chatStore: ChatSessionLocalStore): AppAgentSessionTaskRuntimeFactory =
+      AppAgentSessionTaskRuntimeFactory(
+        llmSettingsProvider = { LlmSettingsState() },
+        sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+        soulProfileProvider = { null },
+        workspaceRootsProvider = { setOf(workspaceRoot) },
+        skillsRootsProvider = { emptyList() },
+        mcpReportProvider = { null },
+        todoStoreProvider = { requestedSessionId ->
+          ChatSessionBackedAgentTodoStore(
+            chatSessionStore = chatStore,
+            sessionId = requestedSessionId,
+          )
+        },
+      )
+
+    createFactory(initialChatStore).todoStoreForSession(sessionId).replaceAll(
+      listOf(
+        AgentTodoEntry(
+          content = "Persist todo state",
+          status = AgentTodoStatus.IN_PROGRESS,
+          activeForm = "Persisting todo state",
+        ),
+      ),
+    )
+
+    val restoredFactory = createFactory(ChatSessionLocalStore(chatDirectory))
+    val restoredTodos = restoredFactory.todoStoreForSession(sessionId).snapshot()
+
+    assertEquals(1, restoredTodos.size)
+    assertEquals("Persist todo state", restoredTodos.single().content)
+    assertEquals(AgentTodoStatus.IN_PROGRESS, restoredTodos.single().status)
+    assertEquals("Persisting todo state", restoredTodos.single().activeForm)
   }
 
   @Test
@@ -341,9 +393,9 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
           taskState = com.opencray.core.contracts.AgentTaskState.FAILED,
           attempt = 1,
           executionStatus = com.opencray.core.contracts.ExecutionStatus.FAILED,
-          errorCode = ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE,
+          errorCode = errorManagedProcessInterruptedOnRestoreForTest,
           resultMetadata = mapOf(
-            METADATA_RESTORED_TERMINAL_STATE to RESTORED_TERMINAL_STATE_INTERRUPTED,
+            metadataRestoredTerminalStateForTest to restoredTerminalStateInterruptedForTest,
           ),
         ),
       ),
@@ -354,7 +406,7 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     assertEquals(1, snapshot.size)
     assertTrue(snapshot.single().content.startsWith("run_interrupted"))
     assertTrue(snapshot.single().content.contains("outcome=restored_process_interrupted"))
-    assertTrue(snapshot.single().content.contains("error_code=$ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE"))
+    assertTrue(snapshot.single().content.contains("error_code=$errorManagedProcessInterruptedOnRestoreForTest"))
   }
 
   @Test
@@ -458,6 +510,62 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     assertEquals(2, snapshot.size)
     assertTrue(snapshot[0].content.contains("\"run_id\":\"run-1\""))
     assertTrue(snapshot[1].content.contains("\"matchCount\":\"1\""))
+  }
+
+  @Test
+  fun transcriptStoreRetainsStartedAndCompletedSubagentReplayEntries() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-subagent-replay"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-subagent-replay").toPath()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    factory.recordSubAgentReplayEvent(
+      sessionId = "session-1",
+      event = OpenCraySubAgentEvent(
+        runId = "run-parent",
+        taskId = "task-parent",
+        phase = OpenCraySubAgentPhase.STARTED,
+        childRunId = "run-child",
+        childTaskId = "task-child",
+        label = "Inspect README",
+        subagentType = "researcher",
+        contextMode = "minimal",
+        depth = 1,
+        executionState = SubAgentExecutionState.RUNNING,
+        continuationKind = SubAgentContinuationKind.NONE,
+        emittedAtEpochMs = 1_000L,
+      ),
+    )
+    factory.recordSubAgentReplayEvent(
+      sessionId = "session-1",
+      event = OpenCraySubAgentEvent(
+        runId = "run-parent",
+        taskId = "task-parent",
+        phase = OpenCraySubAgentPhase.COMPLETED,
+        childRunId = "run-child",
+        childTaskId = "task-child",
+        label = "Inspect README",
+        subagentType = "researcher",
+        contextMode = "minimal",
+        depth = 1,
+        summary = "README inspection finished.",
+        executionState = SubAgentExecutionState.COMPLETED,
+        continuationKind = SubAgentContinuationKind.NONE,
+        emittedAtEpochMs = 1_001L,
+      ),
+    )
+
+    val snapshot = factory.transcriptStoreForSession("session-1").snapshot()
+
+    assertEquals(2, snapshot.size)
+    assertTrue(snapshot[0].content.contains("\"phase\":\"started\""))
+    assertTrue(snapshot[1].content.contains("\"phase\":\"completed\""))
+    assertTrue(snapshot[1].content.contains("\"summary\":\"README inspection finished.\""))
   }
 
   @Test

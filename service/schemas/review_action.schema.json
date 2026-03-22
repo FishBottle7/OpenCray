@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opencray.local/service/schemas/review_action.schema.json",
+  "title": "ReviewAction",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "action_type",
+    "twin_id",
+    "created_at"
+  ],
+  "properties": {
+    "action_type": {
+      "type": "string",
+      "enum": [
+        "accept_field",
+        "edit_field",
+        "reject_field",
+        "accept_overlay",
+        "reject_overlay",
+        "bind_relationship",
+        "rebind_relationship",
+        "publish_selected_only",
+        "defer_for_later_review",
+        "withdraw_import"
+      ]
+    },
+    "twin_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "session_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "selected_relationship_binding_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "counterpart_entity_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "field_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "overlay_key": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "value": {
+      "type": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "integer",
+        "boolean",
+        "null"
+      ]
+    },
+    "notes": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

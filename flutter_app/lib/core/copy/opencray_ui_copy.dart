@@ -371,6 +371,8 @@ class OpenCrayUiCopy {
   String get chatRunWorkingLabel => isChinese ? '运行中' : 'Running';
   String get chatRunWaitingApprovalLabel =>
       isChinese ? '等待审批' : 'Waiting for approval';
+  String get chatRunAwaitingDirectionLabel =>
+      isChinese ? '等待指示' : 'Awaiting direction';
   String get chatRunThinkingActive => isChinese
       ? '正在分析请求，并决定下一步要做什么。'
       : 'Analyzing the request and deciding the next step.';

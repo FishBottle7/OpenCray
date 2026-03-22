@@ -181,6 +181,61 @@ def test_preflight_scan_chat_enumerates_anchor_and_counterpart_candidates(worksp
     assert counterparts["actor_current_user"]["direct_anchor_weight"] > counterparts["actor_mei"]["direct_anchor_weight"]
 
 
+def test_preflight_scan_chatlab_json_normalizes_members_and_messages(workspace: Path):
+    module = _load_module()
+    source_path = workspace / "chatlab.json"
+    source_path.write_text(
+        json.dumps(
+            {
+                "chatlab": {"version": "1"},
+                "meta": {"name": "Lin x User", "groupId": "chatlab_lin_user", "type": "private"},
+                "members": [
+                    {"platformId": "actor_lin", "accountName": "Lin"},
+                    {"platformId": "actor_user", "accountName": "User"},
+                ],
+                "messages": [
+                    {
+                        "sender": "actor_user",
+                        "accountName": "User",
+                        "timestamp": 1735910400,
+                        "type": 0,
+                        "content": "对不起，是我答应了你又没做到。",
+                    },
+                    {
+                        "sender": "actor_lin",
+                        "accountName": "Lin",
+                        "timestamp": 1735910414,
+                        "type": 0,
+                        "content": "我不是在生气，只是有点累。",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = asyncio.run(
+        module.preflight_scan(
+            service_root=None,
+            source_mode="chat_history",
+            source_refs=[str(source_path)],
+            anchor_person_id="actor_lin",
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["resolved_anchor_person_id"] == "actor_lin"
+    assert len(result["anchor_candidates"]) == 2
+    ranked = result["counterpart_candidates"]
+    assert ranked[0]["entity_id"] == "actor_user"
+    assert ranked[0]["display_name"] == "User"
+    assert ranked[0]["direct_interaction_count"] == 1
+    assert "对不起，是我答应了你又没做到。" in ranked[0]["sample_supporting_lines"]
+    assert "我不是在生气，只是有点累。" in ranked[0]["sample_supporting_lines"]
+
+
 
 
 
@@ -764,3 +819,485 @@ def test_search_anchor_graph_resolves_anchor_uuid_before_graph_search(
     assert binding_payload["focal_node_uuid"] == anchor_uuid
     assert manifest_payload["anchor_node_binding"]["focal_node_uuid"] == anchor_uuid
 
+
+def test_get_import_session_returns_binding_session_and_selector_snapshot(workspace: Path):
+    module = _load_module()
+    source_path = workspace / "chat_get_session.json"
+    source_path.write_text(
+        json.dumps(
+            {
+                "source_id": "chat_get_session",
+                "title": "get session chat",
+                "participants": [
+                    {"entity_id": "actor_lin", "display_name": "Lin", "role": "anchor"},
+                    {"entity_id": "actor_current_user", "display_name": "User", "role": "current_user"},
+                    {"entity_id": "actor_mei", "display_name": "Mei", "role": "friend"},
+                ],
+                "turns": [
+                    {
+                        "turn_id": "turn_01",
+                        "speaker": "User",
+                        "speaker_id": "actor_current_user",
+                        "addressed_to": ["actor_lin"],
+                        "text": "我知道，这次我会补上。",
+                        "timestamp": "2025-01-03T21:12:00+08:00",
+                        "labels": ["repair"],
+                    },
+                    {
+                        "turn_id": "turn_02",
+                        "speaker": "Lin",
+                        "speaker_id": "actor_lin",
+                        "addressed_to": ["actor_current_user"],
+                        "text": "我在意的不是道歉，是你能不能真的做到。",
+                        "timestamp": "2025-01-03T21:12:14+08:00",
+                        "labels": ["boundary", "conflict"],
+                    },
+                    {
+                        "turn_id": "turn_03",
+                        "speaker": "Mei",
+                        "speaker_id": "actor_mei",
+                        "addressed_to": ["actor_lin"],
+                        "text": "她最近确实很累。",
+                        "timestamp": "2025-01-04T09:00:00+08:00",
+                        "labels": ["comfort"],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    service_root = _service_root(workspace)
+
+    created = asyncio.run(
+        module.create_twin_binding(
+            service_root=str(service_root),
+            twin_id="twin_get_session_01",
+            anchor_person_id="actor_lin",
+            interaction_mode="chat_twin",
+            source_mode="chat_history",
+            binding_type="real_user",
+            binding_entity_id="actor_current_user",
+            source_refs=[str(source_path)],
+        )
+    )
+    selected = asyncio.run(
+        module.select_relationship(
+            service_root=str(service_root),
+            twin_id="twin_get_session_01",
+            anchor_person_id="actor_lin",
+            counterpart_entity_id="actor_current_user",
+        )
+    )
+
+    snapshot = asyncio.run(
+        module.get_import_session(
+            service_root=str(service_root),
+            twin_id="twin_get_session_01",
+        )
+    )
+
+    assert snapshot["status"] == "ok"
+    assert snapshot["binding"]["twin_id"] == "twin_get_session_01"
+    assert snapshot["import_session"]["session_id"] == created["import_session"]["session_id"]
+    assert snapshot["import_session"]["selected_relationship_binding_id"] == selected["selected_relationship_binding"]["binding_id"]
+    assert snapshot["active_selected_relationship_binding"]["binding_id"] == selected["selected_relationship_binding"]["binding_id"]
+    assert snapshot["selected_candidate_card"]["entity_id"] == "actor_current_user"
+    assert snapshot["selector_snapshot"]["selected_relationship_binding_id"] == selected["selected_relationship_binding"]["binding_id"]
+    assert snapshot["selector_snapshot"]["candidates"][0]["entity_id"] == "actor_current_user"
+    assert snapshot["relationship_graph"]["manifest_path"] == created["relationship_graph_manifest_path"]
+    assert snapshot["relationship_graph"]["candidate_count"] == len(snapshot["selector_snapshot"]["candidates"])
+
+
+def test_run_request_envelope_supports_get_import_session(workspace: Path):
+    module = _load_module()
+    source_path = workspace / "chat_get_session_request.json"
+    source_path.write_text(
+        json.dumps(
+            {
+                "source_id": "chat_get_session_request",
+                "title": "get session request chat",
+                "participants": [
+                    {"entity_id": "actor_lin", "display_name": "Lin", "role": "anchor"},
+                    {"entity_id": "actor_current_user", "display_name": "User", "role": "current_user"},
+                ],
+                "turns": [
+                    {
+                        "turn_id": "turn_01",
+                        "speaker": "User",
+                        "speaker_id": "actor_current_user",
+                        "addressed_to": ["actor_lin"],
+                        "text": "这次我会做到。",
+                        "timestamp": "2025-01-03T21:12:00+08:00",
+                        "labels": ["repair"],
+                    },
+                    {
+                        "turn_id": "turn_02",
+                        "speaker": "Lin",
+                        "speaker_id": "actor_lin",
+                        "addressed_to": ["actor_current_user"],
+                        "text": "那就先看行动。",
+                        "timestamp": "2025-01-03T21:12:14+08:00",
+                        "labels": ["boundary"],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    service_root = _service_root(workspace)
+
+    asyncio.run(
+        module.create_twin_binding(
+            service_root=str(service_root),
+            twin_id="twin_get_session_request_01",
+            anchor_person_id="actor_lin",
+            interaction_mode="chat_twin",
+            source_mode="chat_history",
+            binding_type="real_user",
+            binding_entity_id="actor_current_user",
+            source_refs=[str(source_path)],
+        )
+    )
+
+    response = asyncio.run(
+        module.run_request_envelope(
+            request_payload={
+                "operation": "get_import_session",
+                "params": {
+                    "service_root": str(service_root),
+                    "twin_id": "twin_get_session_request_01",
+                },
+            }
+        )
+    )
+
+    assert response["status"] == "ok"
+    assert response["binding"]["twin_id"] == "twin_get_session_request_01"
+    assert response["selector_snapshot"]["candidates"][0]["entity_id"] == "actor_current_user"
+
+def test_withdraw_import_cleans_draft_artifacts_and_keeps_withdrawn_tombstone(workspace: Path):
+    module = _load_module()
+    source_path = workspace / "chat_withdraw.json"
+    source_path.write_text(
+        json.dumps(
+            {
+                "source_id": "chat_withdraw",
+                "title": "withdraw chat",
+                "participants": [
+                    {"entity_id": "actor_lin", "display_name": "Lin", "role": "anchor"},
+                    {"entity_id": "actor_current_user", "display_name": "User", "role": "current_user"},
+                ],
+                "turns": [
+                    {
+                        "turn_id": "turn_01",
+                        "speaker": "User",
+                        "speaker_id": "actor_current_user",
+                        "addressed_to": ["actor_lin"],
+                        "text": "我会补上。",
+                        "timestamp": "2025-01-03T21:12:00+08:00",
+                        "labels": ["repair"],
+                    },
+                    {
+                        "turn_id": "turn_02",
+                        "speaker": "Lin",
+                        "speaker_id": "actor_lin",
+                        "addressed_to": ["actor_current_user"],
+                        "text": "先看你能不能做到。",
+                        "timestamp": "2025-01-03T21:12:14+08:00",
+                        "labels": ["boundary"],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    service_root = _service_root(workspace)
+    created = asyncio.run(
+        module.create_twin_binding(
+            service_root=str(service_root),
+            twin_id="twin_withdraw_01",
+            anchor_person_id="actor_lin",
+            interaction_mode="chat_twin",
+            source_mode="chat_history",
+            binding_type="real_user",
+            binding_entity_id="actor_current_user",
+            source_refs=[str(source_path)],
+        )
+    )
+    selected = asyncio.run(
+        module.select_relationship(
+            service_root=str(service_root),
+            twin_id="twin_withdraw_01",
+            anchor_person_id="actor_lin",
+            counterpart_entity_id="actor_current_user",
+        )
+    )
+
+    graph_path = Path(created["graph_path"])
+    graph_path.write_text("stub graph", encoding="utf-8")
+    export_file = service_root / "exports" / "twin_withdraw_01" / "review.json"
+    export_file.parent.mkdir(parents=True, exist_ok=True)
+    export_file.write_text("{}", encoding="utf-8")
+    soul_file = service_root / "soul" / "twin_withdraw_01" / "draft.json"
+    soul_file.parent.mkdir(parents=True, exist_ok=True)
+    soul_file.write_text("{}", encoding="utf-8")
+
+    response = asyncio.run(
+        module.run_request_envelope(
+            request_payload={
+                "operation": "withdraw_import",
+                "params": {
+                    "service_root": str(service_root),
+                    "twin_id": "twin_withdraw_01",
+                },
+            }
+        )
+    )
+
+    session_payload = json.loads(Path(response["session_path"]).read_text(encoding="utf-8"))
+    assert response["status"] == "ok"
+    assert session_payload["state"] == "withdrawn"
+    assert session_payload["selected_relationship_binding_id"] is None
+    assert session_payload["artifact_refs"] == {}
+    assert not Path(created["binding_path"]).exists()
+    assert not Path(created["relationship_graph_manifest_path"]).exists()
+    assert not graph_path.exists()
+    assert not export_file.parent.exists()
+    assert not soul_file.parent.exists()
+    assert response["withdrawn_selected_relationship_bindings"][0]["binding_id"] == selected["selected_relationship_binding"]["binding_id"]
+    assert response["withdrawn_selected_relationship_bindings"][0]["status"] == "withdrawn"
+
+
+def test_withdraw_import_rejects_published_session(workspace: Path):
+    module = _load_module()
+    source_path = workspace / "chat_withdraw_published.json"
+    source_path.write_text(
+        json.dumps(
+            {
+                "source_id": "chat_withdraw_published",
+                "title": "withdraw published chat",
+                "participants": [
+                    {"entity_id": "actor_lin", "display_name": "Lin", "role": "anchor"},
+                    {"entity_id": "actor_current_user", "display_name": "User", "role": "current_user"},
+                ],
+                "turns": [
+                    {
+                        "turn_id": "turn_01",
+                        "speaker": "User",
+                        "speaker_id": "actor_current_user",
+                        "addressed_to": ["actor_lin"],
+                        "text": "这次我会做到。",
+                        "timestamp": "2025-01-03T21:12:00+08:00",
+                        "labels": ["repair"],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    service_root = _service_root(workspace)
+    created = asyncio.run(
+        module.create_twin_binding(
+            service_root=str(service_root),
+            twin_id="twin_withdraw_published_01",
+            anchor_person_id="actor_lin",
+            interaction_mode="chat_twin",
+            source_mode="chat_history",
+            binding_type="real_user",
+            binding_entity_id="actor_current_user",
+            source_refs=[str(source_path)],
+        )
+    )
+
+    session = module._load_import_session(service_root, created["import_session"]["session_id"])
+    session.state = "published"
+    module._save_import_session(service_root, session)
+
+    with pytest.raises(module.ServiceError, match="published import session"):
+        asyncio.run(
+            module.withdraw_import(
+                service_root=str(service_root),
+                twin_id="twin_withdraw_published_01",
+            )
+        )
+
+
+def test_resolve_graphiti_runtime_preferences_defaults_from_app_llm_config(workspace: Path):
+    module = _load_module()
+
+    resolved = module._resolve_graphiti_runtime_preferences(
+        llm_config_payload={
+            "protocol": "openai",
+            "providerId": "openai",
+            "providerName": "OpenAI",
+            "baseUrl": "https://api.openai.com/v1",
+            "apiKey": "test-key",
+            "model": "gpt-4o-mini",
+            "reasoningEffort": "high",
+        },
+        graphiti_config_payload=None,
+    )
+
+    assert resolved["ready"] is True
+    assert resolved["summary"]["config_source"] == "app_llm_default"
+    assert resolved["llm"]["model"] == "gpt-4o-mini"
+    assert resolved["embedder"]["model"] == "text-embedding-3-small"
+    assert resolved["cross_encoder"]["model"] == "gpt-4o-mini"
+    assert resolved["summary"]["llm"]["api_key_configured"] is True
+    assert "api_key" not in resolved["summary"]["llm"]
+
+
+
+def test_resolve_graphiti_runtime_preferences_requires_graphiti_overrides_for_anthropic(workspace: Path):
+    module = _load_module()
+
+    resolved = module._resolve_graphiti_runtime_preferences(
+        llm_config_payload={
+            "protocol": "anthropic",
+            "providerId": "custom",
+            "providerName": "Anthropic",
+            "baseUrl": "https://api.anthropic.com",
+            "apiKey": "anthropic-secret",
+            "model": "claude-sonnet-4-5",
+        },
+        graphiti_config_payload=None,
+    )
+
+    assert resolved["ready"] is False
+    warnings = " ".join(resolved["warnings"])
+    assert "explicit Graphiti embedder override" in warnings
+    assert "explicit Graphiti cross-encoder override" in warnings
+
+
+
+def test_create_twin_binding_persists_graphiti_runtime_preferences_without_secret_material(workspace: Path):
+    module = _load_module()
+    source_path = workspace / "chat_graphiti_prefs.json"
+    source_path.write_text(
+        json.dumps(
+            {
+                "source_id": "chat_graphiti_prefs",
+                "title": "graphiti prefs sample",
+                "participants": [
+                    {"entity_id": "actor_lin", "display_name": "Lin", "role": "anchor"},
+                    {"entity_id": "actor_current_user", "display_name": "User", "role": "current_user"},
+                ],
+                "turns": [
+                    {
+                        "turn_id": "turn_01",
+                        "speaker": "User",
+                        "speaker_id": "actor_current_user",
+                        "addressed_to": ["actor_lin"],
+                        "text": "我晚点再跟你说。",
+                        "timestamp": "2025-01-03T21:12:00+08:00",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    service_root = _service_root(workspace)
+
+    asyncio.run(
+        module.create_twin_binding(
+            service_root=str(service_root),
+            twin_id="twin_graphiti_prefs_01",
+            anchor_person_id="actor_lin",
+            interaction_mode="chat_twin",
+            source_mode="chat_history",
+            binding_type="real_user",
+            binding_entity_id="actor_current_user",
+            source_refs=[str(source_path)],
+            llm_config={
+                "protocol": "openai",
+                "providerId": "openai",
+                "providerName": "OpenAI",
+                "baseUrl": "https://api.openai.com/v1",
+                "apiKey": "test-key",
+                "model": "gpt-4o-mini",
+            },
+        )
+    )
+
+    binding_payload = json.loads((service_root / "bindings" / "twin_graphiti_prefs_01.binding.json").read_text(encoding="utf-8"))
+    session_payload = json.loads(next((service_root / "bindings" / "import_sessions").glob("import_twin_graphiti_prefs_01_*.json")).read_text(encoding="utf-8"))
+
+    assert binding_payload["graphiti_runtime_preferences"]["config_source"] == "app_llm_default"
+    assert binding_payload["graphiti_runtime_preferences"]["llm"]["api_key_configured"] is True
+    assert "api_key" not in binding_payload["graphiti_runtime_preferences"]["llm"]
+    assert "test-key" not in json.dumps(binding_payload["graphiti_runtime_preferences"], ensure_ascii=False)
+    assert session_payload["graphiti_runtime_preferences"]["llm"]["model"] == "gpt-4o-mini"
+
+
+
+def test_list_relationship_candidates_keeps_persisted_graphiti_preferences_when_request_omits_runtime_config(workspace: Path):
+    module = _load_module()
+    source_path = workspace / "chat_graphiti_keep_prefs.json"
+    source_path.write_text(
+        json.dumps(
+            {
+                "source_id": "chat_graphiti_keep_prefs",
+                "title": "graphiti prefs retention sample",
+                "participants": [
+                    {"entity_id": "actor_lin", "display_name": "Lin", "role": "anchor"},
+                    {"entity_id": "actor_current_user", "display_name": "User", "role": "current_user"},
+                ],
+                "turns": [
+                    {
+                        "turn_id": "turn_01",
+                        "speaker": "User",
+                        "speaker_id": "actor_current_user",
+                        "addressed_to": ["actor_lin"],
+                        "text": "别担心，我记得。",
+                        "timestamp": "2025-01-03T21:12:00+08:00",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    service_root = _service_root(workspace)
+
+    asyncio.run(
+        module.create_twin_binding(
+            service_root=str(service_root),
+            twin_id="twin_graphiti_keep_prefs_01",
+            anchor_person_id="actor_lin",
+            interaction_mode="chat_twin",
+            source_mode="chat_history",
+            binding_type="real_user",
+            binding_entity_id="actor_current_user",
+            source_refs=[str(source_path)],
+            llm_config={
+                "protocol": "openai",
+                "providerId": "openai",
+                "providerName": "OpenAI",
+                "baseUrl": "https://api.openai.com/v1",
+                "apiKey": "test-key",
+                "model": "gpt-4o-mini",
+            },
+        )
+    )
+
+    result = asyncio.run(
+        module.list_relationship_candidates(
+            service_root=str(service_root),
+            twin_id="twin_graphiti_keep_prefs_01",
+        )
+    )
+    binding = module._load_binding(service_root, "twin_graphiti_keep_prefs_01")
+
+    assert result["graphiti_runtime_preferences"]["config_source"] == "app_llm_default"
+    assert binding.graphiti_runtime_preferences["config_source"] == "app_llm_default"

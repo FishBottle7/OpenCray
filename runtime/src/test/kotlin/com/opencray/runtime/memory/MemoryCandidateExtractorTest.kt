@@ -458,7 +458,7 @@ class MemoryCandidateExtractorTest {
   }
 
   @Test
-  fun extractDoesNotFallBackToLegacyUserParsingWhenUserIntentInterpreterHandlesTheTurn() {
+  fun extractStillConsultsSoulInterpreterWhenUserInterpreterReturnsNoCandidates() {
     val extractor = MemoryCandidateExtractor(
       userIntentInterpreter = FixedUserIntentInterpreter(
         UserMemoryIntentInterpretation.Success(intents = emptyList()),
@@ -488,7 +488,50 @@ class MemoryCandidateExtractorTest {
       ),
     )
 
-    assertTrue(candidates.isEmpty())
+    val displayName = candidates.single { candidate ->
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.AGENT_DISPLAY_NAME
+    }
+    assertEquals(MemoryScope.USER, displayName.scope)
+    assertEquals("小白", displayName.extensions[MemorySoulExtensionKeys.DISPLAY_NAME])
+  }
+
+  @Test
+  fun extractPrefersUserStructuredSoulCandidatesWithoutNeedingSoulFallback() {
+    val extractor = MemoryCandidateExtractor(
+      userIntentInterpreter = FixedUserIntentInterpreter(
+        UserMemoryIntentInterpretation.Success(
+          intents = listOf(
+            UserMemoryIntent(
+              kind = MemoryKind.USER_PREFERENCE,
+              scope = MemoryScope.USER,
+              preferenceKey = MemoryPreferenceKeys.USER_PREFERRED_NAME,
+              preferenceValue = "阿澄",
+              soulExtensions = mapOf(
+                MemorySoulExtensionKeys.PREFERRED_NAMING to "阿澄",
+              ),
+            ),
+          ),
+        ),
+      ),
+      soulIntentInterpreter = FixedSoulIntentInterpreter(
+        SoulMemoryIntentInterpretation.Success(intents = emptyList()),
+      ),
+    )
+
+    val candidates = extractor.extract(
+      MemoryTurnEvidence(
+        sessionId = "session-5c",
+        taskId = "task-5c",
+        workspaceId = "workspace-main",
+        userInput = "以后叫我阿澄。",
+      ),
+    )
+
+    val preferredNaming = candidates.filter { candidate ->
+      candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.USER_PREFERRED_NAME
+    }
+    assertEquals(1, preferredNaming.size)
+    assertEquals("阿澄", preferredNaming.single().extensions[MemorySoulExtensionKeys.PREFERRED_NAMING])
   }
 
   @Test

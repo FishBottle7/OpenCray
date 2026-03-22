@@ -100,12 +100,16 @@ class MemoryFlushCoordinator(
       assistantOutput = policy.mergeAssistantOutput(
         omittedMessages.filter { message ->
           message.role == RuntimeConversationRole.ASSISTANT &&
+            message.kind != com.opencray.runtime.context.RuntimeConversationMessageKind.TOOL_CALL &&
             !message.content.trim().startsWith("tool_call ")
         },
       ),
       toolObservations = omittedMessages
         .asSequence()
-        .filter { message -> message.role == RuntimeConversationRole.TOOL }
+        .filter { message ->
+          message.role == RuntimeConversationRole.TOOL &&
+            message.kind != com.opencray.runtime.context.RuntimeConversationMessageKind.PROGRESS
+        }
         .map(RuntimeConversationMessage::content)
         .map(String::trim)
         .filter(String::isNotBlank)

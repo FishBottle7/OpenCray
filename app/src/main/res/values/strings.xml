@@ -32,6 +32,9 @@
     <string name="chat_default_session_title">New chat</string>
     <string name="chat_messages_badge">%1$d messages</string>
     <string name="chat_summary_reply_in_progress">Reply in progress</string>
+    <string name="chat_summary_awaiting_direction">Waiting for your next instruction.</string>
+    <string name="chat_summary_supplement_recorded">Recorded. This will be applied to the current run when it reaches the next safe checkpoint.</string>
+    <string name="chat_summary_approval_follow_up_recorded">Recorded. The current run is waiting for approval, so this message will be handled after that decision.</string>
     <string name="chat_summary_start_new_session">Start a new session</string>
     <string name="chat_summary_restored">Local transcript is restored into the runtime window for each task.</string>
     <string name="skills_message_installed">Installed %1$s.</string>
@@ -66,10 +69,12 @@
     <string name="settings_card_workspace_access">Workspace Access</string>
     <string name="settings_card_llm">LLM</string>
     <string name="settings_card_mcp">MCP</string>
+    <string name="settings_card_api_integrations">API Integrations</string>
     <string name="settings_card_privacy_telemetry">Network &amp; Search</string>
     <string name="settings_card_safety_limits">Safety &amp; Limits</string>
     <string name="settings_card_about_version">About &amp; Version</string>
     <string name="settings_card_personalization">Personalization</string>
+    <string name="settings_card_agents">Agent</string>
     <string name="reset_memory_phrase">RESET MEMORY</string>
     <string name="reset_soul_phrase">RESET SOUL</string>
     <string name="shell_product_name">OpenCray</string>
@@ -258,6 +263,7 @@
     <string name="personalization_preset_warm_voice">Base voice: supportive, slightly warmer, and better for collaborative exploration.</string>
     <string name="settings_home_profile_title">OpenCray on this device</string>
     <string name="settings_home_profile_meta">Personalization: %1$s\nSearch: %2$s</string>
+    <string name="settings_home_profile_meta_api_routes">API routes: Search + Media</string>
     <string name="settings_chevron">›</string>
     <string name="settings_tone_quiet">Quiet</string>
     <string name="settings_tone_focus">Focus</string>
@@ -287,6 +293,11 @@
     <string name="settings_llm_subtitle">Select providers, routing, and response defaults.</string>
     <string name="settings_mcp_subtitle">Control server discovery, approvals, and health checks.</string>
     <string name="settings_privacy_subtitle">Add API keys here. Enabled slots run top to bottom.</string>
+    <string name="settings_api_integrations_subtitle">Choose where OpenCray connects for search, media generation, and speech services.</string>
+    <string name="settings_network_search_title">Network &amp; Search</string>
+    <string name="settings_network_search_subtitle">Configure search slots, provider order, and retrieval keys.</string>
+    <string name="settings_media_speech_title">Media &amp; Speech</string>
+    <string name="settings_media_speech_subtitle">Configure media APIs and STT routing.</string>
     <string name="settings_safety_subtitle">Choose how much freedom the agent gets.</string>
     <string name="settings_about_subtitle">See build details, release notes, and diagnostics.</string>
     <string name="settings_personalization_subtitle">Tune voice, memory, and default tone for this device.</string>

@@ -1,3 +1,4 @@
+import '../models/opencray_chat_draft_attachment.dart';
 import '../models/opencray_chat_snapshot.dart';
 import '../models/opencray_debug_snapshot.dart';
 import '../models/opencray_file_image_preview.dart';
@@ -6,6 +7,7 @@ import '../models/opencray_file_voice_playback_source.dart';
 import '../models/opencray_files_snapshot.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
+import '../models/opencray_media_speech_config.dart';
 import '../models/opencray_mcp_settings.dart';
 import '../models/opencray_network_search_config.dart';
 import '../models/opencray_personalization_config.dart';
@@ -13,6 +15,7 @@ import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
 import '../models/opencray_skills_snapshot.dart';
+import '../models/opencray_twin_import_source_probe.dart';
 import '../models/opencray_workspace_text_document.dart';
 
 abstract interface class OpenCrayHostBridge {
@@ -84,6 +87,12 @@ abstract interface class OpenCrayHostBridge {
     List<OpenCrayNetworkSearchSlotSnapshot> slots,
   );
 
+  Future<OpenCrayMediaSpeechConfigSnapshot> loadMediaSpeechConfig();
+
+  Future<OpenCrayMediaSpeechConfigSnapshot> saveMediaSpeechConfig(
+    OpenCrayMediaSpeechConfigSnapshot snapshot,
+  );
+
   Future<OpenCrayLlmConfigSnapshot> loadLlmConfig();
 
   Future<OpenCrayLlmConfigSnapshot> saveLlmConfig({
@@ -135,6 +144,10 @@ abstract interface class OpenCrayHostBridge {
 
   Future<OpenCrayPersonalizationConfigSnapshot> runPersonalizationReset(
     String scopeId,
+  );
+
+  Future<OpenCrayTwinImportSourceProbeSnapshot> probeTwinImportSource(
+    String filePath,
   );
 
   Future<OpenCrayMcpSettingsSnapshot> loadMcpSettings();
@@ -233,6 +246,11 @@ abstract interface class OpenCrayHostBridge {
     int lines = 12,
   });
 
+  Future<void> applyMemoryDebugAction({
+    required String recordId,
+    required String actionId,
+  });
+
   Future<OpenCrayChatRunSnapshot?> waitForChatRun(
     String runId, {
     Duration timeout,
@@ -261,9 +279,18 @@ abstract interface class OpenCrayHostBridge {
     required String messageId,
   });
 
-  Future<OpenCrayChatRunSubmission?> submitChatMessage(String text);
+  Future<List<OpenCrayChatDraftAttachment>> pickChatAttachments({
+    required OpenCrayChatDraftAttachmentKind kind,
+  });
+
+  Future<OpenCrayChatRunSubmission?> submitChatMessage(
+    String text, {
+    List<OpenCrayChatDraftAttachment> attachments,
+  });
 
   Future<void> approveChatApproval(String approvalId);
 
   Future<void> rejectChatApproval(String approvalId);
+
+  Future<void> retryChatRun(String runIdOrTaskId);
 }

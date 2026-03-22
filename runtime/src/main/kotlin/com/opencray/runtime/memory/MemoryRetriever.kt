@@ -87,7 +87,6 @@ class MemoryRetriever(
     request: MemoryRecallRequest,
   ): MemoryRecallResult {
     val queryTerms = extractMemoryQueryTerms(
-      policy = policy,
       text = request.userInput,
     )
     if (records.isEmpty()) {

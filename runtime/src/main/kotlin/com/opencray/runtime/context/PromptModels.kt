@@ -17,14 +17,37 @@ import com.opencray.runtime.skills.SkillCatalog
 import com.opencray.runtime.skills.SkillInventory
 import com.opencray.runtime.skills.SkillInventoryTrace
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 @Serializable
 data class RuntimeConversationMessage(
   val role: RuntimeConversationRole,
   val content: String,
+  val kind: RuntimeConversationMessageKind = RuntimeConversationMessageKind.PLAIN,
+  val toolCall: RuntimeConversationToolCall? = null,
+  val toolResult: RuntimeConversationToolResult? = null,
+  val progress: RuntimeConversationProgress? = null,
 ) {
   init {
     require(content.isNotBlank()) { "RuntimeConversationMessage content must not be blank." }
+    require(kind == RuntimeConversationMessageKind.TOOL_CALL || toolCall == null) {
+      "RuntimeConversationMessage toolCall metadata is only valid for TOOL_CALL messages."
+    }
+    require(kind == RuntimeConversationMessageKind.TOOL_RESULT || toolResult == null) {
+      "RuntimeConversationMessage toolResult metadata is only valid for TOOL_RESULT messages."
+    }
+    require(kind == RuntimeConversationMessageKind.PROGRESS || progress == null) {
+      "RuntimeConversationMessage progress metadata is only valid for PROGRESS messages."
+    }
+    require(kind != RuntimeConversationMessageKind.TOOL_CALL || toolCall != null) {
+      "RuntimeConversationMessage TOOL_CALL messages must carry toolCall metadata."
+    }
+    require(kind != RuntimeConversationMessageKind.TOOL_RESULT || toolResult != null) {
+      "RuntimeConversationMessage TOOL_RESULT messages must carry toolResult metadata."
+    }
+    require(kind != RuntimeConversationMessageKind.PROGRESS || progress != null) {
+      "RuntimeConversationMessage PROGRESS messages must carry progress metadata."
+    }
   }
 }
 
@@ -34,6 +57,55 @@ enum class RuntimeConversationRole {
   USER,
   ASSISTANT,
   TOOL,
+}
+
+@Serializable
+enum class RuntimeConversationMessageKind {
+  PLAIN,
+  TOOL_CALL,
+  TOOL_RESULT,
+  PROGRESS,
+}
+
+@Serializable
+data class RuntimeConversationToolCall(
+  val id: String? = null,
+  val toolName: String,
+  val arguments: JsonObject = JsonObject(emptyMap()),
+  val reason: String? = null,
+) {
+  init {
+    require(toolName.isNotBlank()) { "RuntimeConversationToolCall toolName must not be blank." }
+    require(id == null || id.isNotBlank()) { "RuntimeConversationToolCall id must not be blank." }
+  }
+}
+
+@Serializable
+data class RuntimeConversationToolResult(
+  val toolCallId: String? = null,
+  val toolName: String,
+  val status: String? = null,
+  val isError: Boolean? = null,
+) {
+  init {
+    require(toolName.isNotBlank()) { "RuntimeConversationToolResult toolName must not be blank." }
+    require(toolCallId == null || toolCallId.isNotBlank()) {
+      "RuntimeConversationToolResult toolCallId must not be blank."
+    }
+  }
+}
+
+@Serializable
+data class RuntimeConversationProgress(
+  val runId: String? = null,
+  val taskId: String? = null,
+  val turn: Int? = null,
+  val text: String,
+  val stage: String? = null,
+) {
+  init {
+    require(text.isNotBlank()) { "RuntimeConversationProgress text must not be blank." }
+  }
 }
 
 data class RuntimeSoulProfile(
@@ -74,6 +146,7 @@ data class PromptAssemblyInput(
   val baseSystemPrompt: String,
   val sessionContext: AgentRuntimeSessionContext,
   val activeSkillCapsule: ActiveSkillCapsule? = null,
+  val nativeToolCallingEnabled: Boolean = false,
   val toolDefinitions: List<AgentToolDefinition>,
   val liveConversation: List<RuntimeConversationMessage>,
 )
@@ -92,6 +165,7 @@ data class ManagedPromptContext(
   val recentToolObservationsText: String = "",
   val pruningSummary: TranscriptPruningSummary? = null,
   val compactionSummary: CompactionSummary? = null,
+  val nativeToolCallingEnabled: Boolean = false,
   val toolDefinitions: List<AgentToolDefinition> = emptyList(),
   val transcriptWindow: TranscriptWindow = TranscriptWindow(
     messages = emptyList(),
@@ -152,6 +226,7 @@ enum class PromptLayerKind {
 
 data class AssembledPrompt(
   val systemPrompt: String,
+  val contextPrompt: String,
   val taskPrompt: String,
   val layers: List<PromptLayer>,
   val report: ContextAssemblyReport,

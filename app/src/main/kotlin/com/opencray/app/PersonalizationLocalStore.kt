@@ -14,6 +14,7 @@ internal class PersonalizationLocalStore(
   private val memoryStore = JsonFileMemoryStore(directory)
   private val sessionStore = JsonFileSessionStore(directory)
   private val queueSnapshotStore = SessionStoreQueueSnapshotStore(sessionStore)
+  private val memoryDebugActionAuditStore = MemoryDebugActionAuditStore(directory)
 
   internal fun listMemoryRecords(): List<MemoryRecord> = memoryStore.list()
 
@@ -21,11 +22,19 @@ internal class PersonalizationLocalStore(
     memoryStore.upsert(record)
   }
 
+  internal fun listMemoryDebugActionAudits(): List<MemoryDebugActionAuditEntry> =
+    memoryDebugActionAuditStore.list()
+
+  internal fun appendMemoryDebugActionAudit(entry: MemoryDebugActionAuditEntry) {
+    memoryDebugActionAuditStore.append(entry)
+  }
+
   internal fun asMemoryStore(): MemoryStore = memoryStore
 
   fun clearMemoryAndHistory() {
     memoryStore.clear()
     queueSnapshotStore.clear()
+    memoryDebugActionAuditStore.clear()
   }
 
   companion object {

@@ -41,8 +41,8 @@ class MemorySearchService(
     maxResults: Int = DEFAULT_MAX_RESULTS,
     minScore: Int = DEFAULT_MIN_SCORE,
   ): MemorySearchResponse {
-    val queryTerms = extractMemoryQueryTerms(policy = policy, text = query).toList()
-    val normalizedQuery = policy.normalizeCandidateContent(query).orEmpty()
+    val queryTerms = extractMemoryQueryTerms(text = query).toList()
+    val normalizedQuery = normalizeMemoryQueryText(query).orEmpty()
     val projection = projector.project(context)
     if (projection.files.isEmpty()) {
       return MemorySearchResponse(

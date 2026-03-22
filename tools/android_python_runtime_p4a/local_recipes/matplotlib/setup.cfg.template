@@ -1,0 +1,6 @@
+[libs]
+enable_lto = False
+system_freetype = True
+
+[gui_support]
+macosx = False

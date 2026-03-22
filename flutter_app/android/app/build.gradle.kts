@@ -11,6 +11,12 @@ android {
     compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
+    packaging {
+        jniLibs {
+            keepDebugSymbols += setOf("**/libpybundle.so")
+        }
+    }
+
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_11

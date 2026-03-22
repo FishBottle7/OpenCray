@@ -64,7 +64,9 @@ data class CompactionPolicy(
       lines += "Most recent omitted user request: ${preview(message.content)}"
     }
     omittedMessages.lastOrNull { message ->
-      message.role == RuntimeConversationRole.ASSISTANT && !message.content.trim().startsWith("tool_call ")
+      message.role == RuntimeConversationRole.ASSISTANT &&
+        message.kind != RuntimeConversationMessageKind.TOOL_CALL &&
+        !message.content.trim().startsWith("tool_call ")
     }?.let { message ->
       lines += "Most recent omitted assistant reply: ${preview(message.content)}"
     }
@@ -114,6 +116,33 @@ data class CompactionPolicy(
     index: Int,
   ): ToolActivity? {
     val normalized = message.content.trim()
+    when (message.kind) {
+      RuntimeConversationMessageKind.PROGRESS -> {
+        return ToolActivity(groupKey = "progress:$index", category = ToolSummaryCategory.GENERIC)
+      }
+
+      RuntimeConversationMessageKind.TOOL_RESULT -> {
+        return classifyJsonToolActivity(
+          payload = normalized.removePrefix("tool_result ").trim(),
+          fallbackGroupKey = "tool_result:$index",
+        )
+      }
+
+      RuntimeConversationMessageKind.TOOL_CALL -> {
+        return classifyJsonToolActivity(
+          payload = normalized.removePrefix("tool_call ").trim(),
+          fallbackGroupKey = "tool_call:$index",
+        )
+      }
+
+      RuntimeConversationMessageKind.PLAIN -> Unit
+    }
+    if (normalized.startsWith("subagent ")) {
+      return classifyReplaySubAgentActivity(
+        payload = normalized.removePrefix("subagent ").trim(),
+        fallbackGroupKey = "subagent:$index",
+      )
+    }
     if (normalized.startsWith("tool_result ")) {
       return classifyJsonToolActivity(
         payload = normalized.removePrefix("tool_result ").trim(),
@@ -175,57 +204,84 @@ data class CompactionPolicy(
     )
   }
 
-  private fun toolCategoryForName(toolName: String?): ToolSummaryCategory = when (toolName) {
-    "Write",
+  private fun classifyReplaySubAgentActivity(
+    payload: String,
+    fallbackGroupKey: String,
+  ): ToolActivity {
+    val decoded = runCatching {
+      replayJson.parseToJsonElement(payload).jsonObject
+    }.getOrNull()
+    val groupKey = if (decoded == null) {
+      fallbackGroupKey
+    } else {
+      listOf(
+        decoded["run_id"]?.jsonPrimitive?.content.orEmpty(),
+        decoded["task_id"]?.jsonPrimitive?.content.orEmpty(),
+        decoded["child_run_id"]?.jsonPrimitive?.content.orEmpty(),
+        decoded["child_task_id"]?.jsonPrimitive?.content.orEmpty(),
+      ).joinToString(separator = "|")
+    }
+    return ToolActivity(
+      groupKey = groupKey,
+      category = ToolSummaryCategory.DELEGATION,
+    )
+  }
+
+  private fun toolCategoryForName(toolName: String?): ToolSummaryCategory = when (toolName?.trim()?.lowercase()) {
     "write",
-    "Edit",
     "edit",
-    "MultiEdit",
     "multiedit",
     "workspace_write_file",
     "workspace_move_file",
     "workspace_delete_file",
+    "generateimage",
+    "imagegenerate",
+    "synthesizespeech",
+    "texttospeech",
+    "tts",
+    "skillsadd",
+    "skills_add",
+    "skillsaddbatch",
+    "skills_add_batch",
+    "skillsupdate",
+    "skills_update",
+    "skillsremove",
+    "skills_remove",
     -> ToolSummaryCategory.MUTATION
 
-    "Read",
     "read",
-    "LS",
     "ls",
     "list",
-    "Grep",
     "grep",
-    "Glob",
     "glob",
-    "WebSearch",
     "websearch",
-    "WebFetch",
     "webfetch",
     "workspace_list_files",
     "workspace_read_file",
     "skills_list",
+    "skillslist",
+    "skillsfind",
+    "skills_find",
+    "skillsinspect",
+    "skills_inspect",
+    "skillscheck",
+    "skills_check",
     "skill_read",
     "memory_search",
     "memory_get",
     "mcp_list_servers",
     -> ToolSummaryCategory.DISCOVERY
 
-    "Bash",
     "bash",
     "command_exec",
     "python_exec",
-    "ProcessStart",
     "processstart",
-    "ProcessList",
     "processlist",
-    "ProcessRead",
     "processread",
-    "ProcessWait",
     "processwait",
-    "ProcessTerminate",
     "processterminate",
     -> ToolSummaryCategory.EXECUTION
 
-    "TodoWrite",
     "todowrite",
     -> ToolSummaryCategory.STATEFUL
     else -> ToolSummaryCategory.GENERIC
@@ -273,6 +329,7 @@ data class CompactionPolicy(
     DISCOVERY("discovery"),
     EXECUTION("execution"),
     STATEFUL("stateful"),
+    DELEGATION("delegation"),
     GENERIC("generic"),
   }
 

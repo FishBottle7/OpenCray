@@ -98,6 +98,44 @@ class ToolPolicyEvaluatorTest {
     assertEquals("ASK_SAFE_DESTRUCTIVE_HIGH_RISK", deleteDecision.reasonCode)
   }
 
+  @Test
+  fun rejectedToolRetryOnlyBlocksMatchingTool() {
+    val evaluator = ToolPolicyEvaluator(
+      modePolicy = ModePolicy(),
+      rejectedTaskId = "task-rejected",
+      rejectedToolName = "Write",
+    )
+    val writeDecision = evaluator.evaluate(
+      ToolPolicyEvaluationRequest(
+        task = task(
+          id = "task-rejected",
+          metadata = mapOf("chatMode" to "SAFE"),
+        ),
+        toolName = "Write",
+        toolClass = PolicyToolClass.WRITE_FILE,
+        workspaceRoot = workspaceRoot,
+        targetPath = workspaceRoot.resolve("notes.txt"),
+      ),
+    )
+    val deleteDecision = evaluator.evaluate(
+      ToolPolicyEvaluationRequest(
+        task = task(
+          id = "task-rejected",
+          metadata = mapOf("chatMode" to "SAFE"),
+        ),
+        toolName = "workspace_delete_file",
+        toolClass = PolicyToolClass.DELETE_FILE,
+        workspaceRoot = workspaceRoot,
+        targetPath = workspaceRoot.resolve("notes.txt"),
+      ),
+    )
+
+    assertEquals(PolicyDecisionOutcome.DENY, writeDecision.outcome)
+    assertEquals("USER_REJECTED_APPROVAL", writeDecision.reasonCode)
+    assertEquals(PolicyDecisionOutcome.ASK, deleteDecision.outcome)
+    assertEquals("ASK_SAFE_DESTRUCTIVE_HIGH_RISK", deleteDecision.reasonCode)
+  }
+
   private fun task(
     id: String = "task-1",
     metadata: Map<String, String> = emptyMap(),

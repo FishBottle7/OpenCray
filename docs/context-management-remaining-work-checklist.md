@@ -44,8 +44,9 @@ Phase 1 foundation now in progress:
 - managed skills roots now resolve into a bounded `Skill Inventory` prompt layer, and run metadata/snapshots now preserve which skills were visible versus injected for later debugging
 - explicit `skill_read` can now promote one active skill into a dedicated `Active Skill` capsule layer for later turns, with host-visible trace and allowlist-style tool narrowing kept outside `ContextManager`
 - Settings debug tooling now exposes snapshot-backed `Memory Inspector` and `Soul Inspector` state views so persisted memory records, stored/base/effective soul, overlays, field sources, and deterministic linked activity can be inspected without reconstructing them from live events
+- `Memory Inspector` now also supports direct projected-memory `search/get` drill-down, so operators can query the projected corpus and inspect bounded snippets in-place without leaving the debug surface
 - chat fullscreen run trace and Settings `Context & Memory Trace` now render structured run-level context traces for bootstrap, recalled memory, memory flush, durable compaction, skill inventory, and active skill directly from host snapshots
-- the next safe rollout step is finishing operator drill-down/curation surfaces plus child-context policy work, now that Level 2 skill activation, pre-compaction memory flush, durable compaction, and bootstrap trace are in place without moving source-selection logic into `ContextManager`
+- the next safe rollout step is finishing bounded automatic memory stewardship plus child-context policy work, now that Level 2 skill activation, pre-compaction memory flush, durable compaction, and bootstrap trace are in place without moving source-selection logic into `ContextManager`
 
 ## Remaining work after P0
 
@@ -82,12 +83,26 @@ Phase 1 foundation now in progress:
    - Remaining gaps: typed soul still needs to stay disciplined as a runtime-normalized representation rather than drift into a second editing surface, semantic extraction still needs more depth for broader non-Chinese/English phrasing and cases where interpretation depends on richer prior-turn context than the current bounded short-window prompt provides, linked activity for internal soul snapshots/events is still thinner than for classic user-preference records, and any future true soul editing goes through a separate creator/admin flow. The manager/allocator boundary should also stay strict so soul selection logic does not drift upward into `ContextManager`.
 
 2. Deterministic memory write pipeline
-   - Add a memory candidate extractor after completed turns.
-   - Gate writes through explicit policy instead of model-authored free-form dumps.
-   - Start with `user_preference`, `project_fact`, `durable_instruction`, and `task_commitment`.
+  - Add a memory candidate extractor after completed turns.
+  - Gate writes through explicit policy instead of model-authored free-form dumps.
+  - Start with `user_preference`, `project_fact`, `durable_instruction`, and `task_commitment`.
   - Current status: post-turn writes, `task_commitment` resolve/expire/reaffirm maintenance, host-visible `memory_write` summaries, constrained semantic extraction for user-authored durable memories, constrained semantic interpretation for `task_commitment` completion/renewal, and existing Flutter/runtime trace surfaces that retain written/resolved/reaffirmed/expired memory ids are now implemented.
+  - Current status: bounded `task_commitment` maintenance is now broader than simple completion/renewal. The runtime can accept constrained LLM decisions to abandon an obsolete commitment, supersede an older open commitment with one newly proposed commitment from the same turn, or drop a redundant proposed commitment before it is written, while still failing closed when the interpreter is unavailable.
   - Current status: operator-facing read-only inspection now exists through snapshot-backed `Memory Inspector` and `Soul Inspector` debug surfaces, including deterministic linked activity for source, recall, explicit retrieval, and maintenance relationships.
-  - Remaining gaps: there is still no operator editing/curation flow for memory state, and the current `task_commitment` semantic pass is intentionally narrow to resolve/reaffirm decisions rather than broader free-form memory edits.
+  - Current status: the first bounded automatic stewardship slice is now wired into post-turn ingestion. A dedicated memory-stewardship interpreter can review proposed `user_preference`, `durable_instruction`, and `project_fact` writes against related active records and emit only constrained actions such as `refresh_record_with_candidate`, `drop_candidate`, `reaffirm_record`, `resolve_record`, and `supersede_record_with_candidate`; runtime then enforces per-turn caps and scope/preference-key compatibility before writing anything.
+  - Current status: non-task stewardship is no longer limited to “existing record versus new candidate”. When one turn proposes multiple stewardable candidates, the review layer can now prune duplicate/conflicting candidates even if there is no prior active record yet, which closes an important mixed-intent / mixed-scope extraction gap.
+  - Current status: the live app path now configures non-task stewardship to fail closed when a stewardship review is required but the interpreter is unavailable, so related `user_preference`, `durable_instruction`, and `project_fact` candidates are withheld rather than silently written through an unavailable manager.
+  - Current status: live app stewardship now also routes single `user_preference`, `project_fact`, and `durable_instruction` candidates through bounded semantic review instead of only reviewing them when an old record or a same-turn conflict already exists. This gives the manager a chance to reject speculative facts, one-turn formatting/tone asks, and task-local instructions before they become durable memory.
+  - Current status: stewardship review inputs are now slightly more structured than plain content strings. Active records and proposed candidates carry source metadata into the constrained interpreter prompt, so the LLM can distinguish user-authored durable requests from tool-observed facts or other evidence while still returning only bounded maintenance actions.
+  - Current status: stewardship review inputs now also carry bounded recency metadata for active records plus source-task metadata for candidates, so the constrained interpreter can weigh “fresh explicit correction” against “older stored belief” without needing to infer chronology only from prose.
+  - Current status: non-task stewardship now also supports a bounded `refresh_record_with_candidate` action. This lets the constrained interpreter consume a paraphrased or newly re-confirmed candidate as fresh evidence for an existing record, bump the stored record’s confirmation time, and drop the redundant candidate instead of forcing every refresh to become either a duplicate write or a full supersession.
+  - Current status: runtime-side guardrails for `refresh_record_with_candidate` and `supersede_record_with_candidate` are now stricter than kind/scope matching alone. For `project_fact` and `durable_instruction`, runtime also requires deterministic same-topic compatibility, so a model cannot refresh or supersede an unrelated memory row just because it was shortlisted in the same review set.
+  - Current status: `refresh_record_with_candidate` for `project_fact` / `durable_instruction` is now runtime-bounded to pure reconfirmation only. If the proposed candidate introduces new durable detail or changes a key value on the same topic, runtime rejects refresh and leaves the candidate in place for normal write/supersede handling instead of silently mutating the old row.
+  - Current status: non-task stewardship is no longer strictly candidate-driven. When a turn has no stewardable replacement candidate but does explicitly refer to a small set of already-stored `user_preference`, `project_fact`, or `durable_instruction` rows, runtime can now shortlist those scope-compatible active records for bounded record-only review, allowing the constrained interpreter to resolve or reaffirm them without opening arbitrary corpus-wide maintenance.
+  - Current status: candidate-driven and record-only stewardship can now coexist in one turn. A turn may accept a new durable candidate while also resolving or reaffirming a different explicitly mentioned old memory, as long as both stayed inside the bounded shortlist and action set.
+  - Remaining gaps: `task_commitment` now covers resolve/reaffirm/abandon/supersede/drop-proposed, and non-task stewardship now covers related-record review, same-turn candidate pruning, and bounded refresh, but richer bounded operations such as semantic merge or more nuanced invalidation across non-commitment records are still pending. Commitment maintenance also does not yet model richer multi-step plan graphs or reopen flows.
+  - Target direction: let a constrained LLM stewardship layer interpret whether memory should be refreshed, superseded, invalidated, merged, resolved, reopened, or otherwise maintained, while runtime executes only a bounded operation set instead of arbitrary free-form edits.
+  - Guardrails: stewardship should fail closed when the interpreter is unavailable, must not directly rewrite internal soul objects or `SOUL.md`, should prefer append/supersede/resolve style transitions over raw record mutation, and must avoid large destructive memory rewrites from one ambiguous turn.
 
 3. Memory recall layer
    - Retrieve bounded memory relevant to the current session/task before the LLM call.
@@ -103,7 +118,8 @@ Phase 1 foundation now in progress:
    - Automatic bounded recall and explicit memory tools should coexist rather than replace one another.
    - Current status: implemented with projected-corpus search/get tooling and `memory_retrieval` runtime events visible through existing host/local snapshot surfaces.
    - Current status: projected memory corpus now renders human-readable adaptive summaries for typed `interaction_preference_signal` records (and legacy compatibility records that carry the same typed extensions), so memory search/get can expose `warmth higher`, `initiative lower`, and similar drift signals without forcing operators to decode canonical storage tokens manually.
-   - Remaining gaps: explicit memory tools are implemented and their deterministic record links now surface in the inspectors, but there is still no operator action surface for replaying/searching them directly from debug UI; current debug pages remain read-only inspection surfaces.
+   - Current status: `Memory Inspector` now exposes safe read-side projected-memory `search/get` drill-down backed by the same host/runtime snapshot path, so operators can issue direct projected-corpus queries and inspect narrow snippets from the debug UI.
+   - Remaining gaps: explicit memory tools remain intentionally read-only for the current product shape; richer replay/filter workflows beyond the current safe read-side drill-down are still pending, and any write-side correction should come from bounded automatic stewardship rather than a user-facing memory editor.
 
 5. Runtime-visible skill inventory
    - Assemble an explicit inventory layer from managed skills roots.
@@ -167,7 +183,7 @@ Phase 1 foundation now in progress:
 
 1. Preserve the `ContextManager` boundary as allocator/budget owner only
 2. Finish structured soul promotion/confirmation work
-3. Finish the remaining memory debug/operator surfaces, especially editing/curation flows
+3. Finish bounded automatic memory stewardship, starting with allowed maintenance operations and then expanding `user_preference`, `task_commitment`, `project_fact`, and `durable_instruction`
 4. Wire live bootstrap mode selection beyond the current `full`/`none` app path
    - Include the planned `no_soul` and `no_memory_or_soul` live profiles when this selection surface is implemented.
 5. Subagent context modes
@@ -180,6 +196,7 @@ These items are intentionally not part of the current rollout, even though they 
 - Do not add passive relationship decay driven only by elapsed time, long gaps between sessions, or simple absence.
 - Do not add automatic relationship downgrade rules for "only shows up when needing help", "long-term one-sided asking", or similar slow-burn social interpretations unless they are backed by a later product decision and a narrowly testable evidence model.
 - Do not make cross-session warmth, trust, or intimacy feel fragile enough that a work-oriented agent quickly turns cold again just because the user was away for a while.
+- Do not productize a user-facing or operator-facing manual memory editing surface for normal use. Keep memory stewardship primarily automatic; retain existing debug-only maintenance hooks only as development/diagnostic escape hatches.
 
 Rationale for the defer:
 

@@ -192,9 +192,24 @@ const List<_RouteEntry> _routeEntries = <_RouteEntry>[
     settingsInitialPage: SettingsPage.mcp,
   ),
   _RouteEntry(
+    routeName: '/settings/api-integrations',
+    tab: OpenCrayTab.settings,
+    settingsInitialPage: SettingsPage.apiIntegrations,
+  ),
+  _RouteEntry(
     routeName: '/settings/privacy',
     tab: OpenCrayTab.settings,
-    settingsInitialPage: SettingsPage.privacyTelemetry,
+    settingsInitialPage: SettingsPage.apiIntegrations,
+  ),
+  _RouteEntry(
+    routeName: '/settings/network-search',
+    tab: OpenCrayTab.settings,
+    settingsInitialPage: SettingsPage.networkSearch,
+  ),
+  _RouteEntry(
+    routeName: '/settings/media-speech',
+    tab: OpenCrayTab.settings,
+    settingsInitialPage: SettingsPage.mediaSpeech,
   ),
   _RouteEntry(
     routeName: '/settings/safety',
@@ -210,6 +225,11 @@ const List<_RouteEntry> _routeEntries = <_RouteEntry>[
     routeName: '/settings/personalization',
     tab: OpenCrayTab.settings,
     settingsInitialPage: SettingsPage.personalization,
+  ),
+  _RouteEntry(
+    routeName: '/settings/agents',
+    tab: OpenCrayTab.settings,
+    settingsInitialPage: SettingsPage.agents,
   ),
 ];
 

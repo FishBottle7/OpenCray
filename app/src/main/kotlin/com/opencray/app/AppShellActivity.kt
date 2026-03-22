@@ -59,9 +59,10 @@ class AppShellActivity : LocalizedActivity() {
       SettingsSubpage.MCP -> OpenCrayFlutterActivity.Destination.SETTINGS_MCP
       SettingsSubpage.PRIVACY -> OpenCrayFlutterActivity.Destination.SETTINGS_PRIVACY
       SettingsSubpage.SAFETY -> OpenCrayFlutterActivity.Destination.SETTINGS_SAFETY
-      SettingsSubpage.ABOUT -> OpenCrayFlutterActivity.Destination.SETTINGS_ABOUT
       SettingsSubpage.PERSONALIZATION ->
         OpenCrayFlutterActivity.Destination.SETTINGS_PERSONALIZATION
+      SettingsSubpage.AGENTS -> OpenCrayFlutterActivity.Destination.SETTINGS_AGENTS
+      SettingsSubpage.ABOUT -> OpenCrayFlutterActivity.Destination.SETTINGS_ABOUT
     }
 
   private companion object {

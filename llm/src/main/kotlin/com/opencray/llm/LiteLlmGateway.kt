@@ -1,6 +1,7 @@
 package com.opencray.llm
 
 import java.util.UUID
+import kotlinx.serialization.json.JsonObject
 
 interface LiteLlmGateway {
   fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult
@@ -10,12 +11,67 @@ data class LiteLlmGatewayRequest(
   val requestId: String = "llm-${UUID.randomUUID()}",
   val prompt: String,
   val systemPrompt: String? = null,
+  val messages: List<LiteLlmGatewayMessage> = emptyList(),
+  val tools: List<LiteLlmToolDefinition> = emptyList(),
   val metadata: Map<String, String> = emptyMap(),
   val authHeaders: Map<String, String> = emptyMap(),
 ) {
   init {
     require(requestId.isNotBlank()) { "LiteLlmGatewayRequest requestId must not be blank." }
     require(prompt.isNotBlank()) { "LiteLlmGatewayRequest prompt must not be blank." }
+  }
+}
+
+enum class LiteLlmGatewayMessageRole {
+  SYSTEM,
+  USER,
+  ASSISTANT,
+  TOOL,
+}
+
+data class LiteLlmGatewayToolResult(
+  val toolCallId: String? = null,
+  val toolName: String? = null,
+  val content: String,
+  val isError: Boolean? = null,
+) {
+  init {
+    require(content.isNotBlank()) { "LiteLlmGatewayToolResult content must not be blank." }
+  }
+}
+
+data class LiteLlmGatewayMessage(
+  val role: LiteLlmGatewayMessageRole,
+  val content: String? = null,
+  val toolCalls: List<LiteLlmStructuredToolCall> = emptyList(),
+  val toolResult: LiteLlmGatewayToolResult? = null,
+) {
+  init {
+    val hasContent = !content.isNullOrBlank()
+    require(hasContent || toolCalls.isNotEmpty() || toolResult != null) {
+      "LiteLlmGatewayMessage must carry content, toolCalls, or toolResult."
+    }
+    require(role != LiteLlmGatewayMessageRole.ASSISTANT || toolResult == null) {
+      "LiteLlmGatewayMessage assistant messages cannot carry toolResult."
+    }
+    require(role != LiteLlmGatewayMessageRole.TOOL || toolResult != null) {
+      "LiteLlmGatewayMessage tool messages must carry toolResult."
+    }
+    require(role == LiteLlmGatewayMessageRole.ASSISTANT || toolCalls.isEmpty()) {
+      "LiteLlmGatewayMessage only assistant messages may carry toolCalls."
+    }
+  }
+}
+
+data class LiteLlmToolDefinition(
+  val name: String,
+  val description: String,
+  val inputSchema: JsonObject = JsonObject(emptyMap()),
+  val strict: Boolean? = null,
+) {
+  init {
+    require(name.isNotBlank()) { "LiteLlmToolDefinition name must not be blank." }
+    require(description.isNotBlank()) { "LiteLlmToolDefinition description must not be blank." }
   }
 }
 
@@ -76,11 +132,38 @@ data class LiteLlmAttemptRecord(
   }
 }
 
+data class LiteLlmStructuredToolCall(
+  val id: String? = null,
+  val toolName: String,
+  val arguments: JsonObject = JsonObject(emptyMap()),
+  val reason: String? = null,
+) {
+  init {
+    require(toolName.isNotBlank()) { "LiteLlmStructuredToolCall toolName must not be blank." }
+  }
+}
+
+data class LiteLlmStructuredCompletion(
+  val toolCalls: List<LiteLlmStructuredToolCall> = emptyList(),
+  val finalText: String? = null,
+  val progressText: String? = null,
+  val rawText: String? = null,
+) {
+  val hasStructuredActions: Boolean
+    get() = toolCalls.isNotEmpty() ||
+      !finalText.isNullOrBlank() ||
+      !progressText.isNullOrBlank()
+
+  val hasVisibleContent: Boolean
+    get() = hasStructuredActions || !rawText.isNullOrBlank()
+}
+
 data class LiteLlmGatewayResult(
   val requestId: String,
   val status: LiteLlmGatewayStatus,
   val completionMode: LiteLlmCompletionMode,
   val outputText: String? = null,
+  val completion: LiteLlmStructuredCompletion? = null,
   val selectedRoute: LiteLlmRouteSelectionMetadata? = null,
   val attempts: List<LiteLlmAttemptRecord>,
   val errorCode: String? = null,
@@ -107,6 +190,7 @@ data class LiteLlmProviderRequest(
 sealed interface LiteLlmProviderResult {
   data class Success(
     val outputText: String,
+    val completion: LiteLlmStructuredCompletion? = null,
     val finishReason: String? = null,
     val metadata: Map<String, String> = emptyMap(),
   ) : LiteLlmProviderResult
@@ -300,14 +384,15 @@ class DefaultLiteLlmGateway(
 
       when (providerResult) {
         is LiteLlmProviderResult.Success -> {
+          val providerMetadata = providerResult.metadata.toMap()
           attempts += LiteLlmAttemptRecord(
             route = selection,
             outcome = LiteLlmAttemptOutcome.SUCCESS,
-            outputChars = providerResult.outputText.length,
+            outputChars = providerResult.outputTextChars(),
             finishReason = providerResult.finishReason,
             startedAtEpochMs = attemptStartedAtEpochMs,
             finishedAtEpochMs = attemptFinishedAtEpochMs,
-            metadataKeys = providerResult.metadata.safeMetadataKeys(),
+            metadataKeys = providerMetadata.safeMetadataKeys(),
           )
           return LiteLlmGatewayResult(
             requestId = request.requestId,
@@ -318,10 +403,12 @@ class DefaultLiteLlmGateway(
               LiteLlmCompletionMode.PRIMARY
             },
             outputText = providerResult.outputText,
+            completion = providerResult.completion,
             selectedRoute = selection,
             attempts = attempts.toList(),
             startedAtEpochMs = startedAtEpochMs,
             finishedAtEpochMs = attemptFinishedAtEpochMs,
+            metadata = providerMetadata,
           )
         }
 
@@ -369,13 +456,14 @@ class DefaultLiteLlmGateway(
         }
 
         is LiteLlmProviderResult.Failure -> {
+          val providerMetadata = providerResult.metadata.toMap()
           attempts += LiteLlmAttemptRecord(
             route = selection,
             outcome = LiteLlmAttemptOutcome.FAILED,
             errorCode = providerResult.errorCode,
             startedAtEpochMs = attemptStartedAtEpochMs,
             finishedAtEpochMs = attemptFinishedAtEpochMs,
-            metadataKeys = providerResult.metadata.safeMetadataKeys(),
+            metadataKeys = providerMetadata.safeMetadataKeys(),
           )
           return LiteLlmGatewayResult(
             requestId = request.requestId,
@@ -387,6 +475,7 @@ class DefaultLiteLlmGateway(
             errorMessage = providerResult.errorMessage,
             startedAtEpochMs = startedAtEpochMs,
             finishedAtEpochMs = attemptFinishedAtEpochMs,
+            metadata = providerMetadata,
           )
         }
       }
@@ -488,6 +577,7 @@ class DefaultLiteLlmGateway(
       errorMessage = errorMessage,
       startedAtEpochMs = startedAtEpochMs,
       finishedAtEpochMs = attemptFinishedAtEpochMs,
+      metadata = providerMetadata,
     )
   }
 }
@@ -531,7 +621,7 @@ private fun LiteLlmProviderResult.toSafeLog(
     requestId = requestId,
     route = selection,
     outcome = LiteLlmAttemptOutcome.SUCCESS,
-    outputChars = outputText.length,
+    outputChars = outputTextChars(),
     finishReason = finishReason,
     metadataKeys = metadata.safeMetadataKeys(),
   )
@@ -562,6 +652,13 @@ private fun LiteLlmProviderResult.toSafeLog(
     metadataKeys = metadata.safeMetadataKeys(),
   )
 }
+
+private fun LiteLlmProviderResult.Success.outputTextChars(): Int =
+  outputText.length.takeIf { it > 0 }
+    ?: completion?.rawText?.length
+    ?: completion?.finalText?.length
+    ?: completion?.progressText?.length
+    ?: 0
 
 private fun FallbackTrigger.toGatewayStatus(): LiteLlmGatewayStatus = when (this) {
   FallbackTrigger.TIMEOUT -> LiteLlmGatewayStatus.TIMEOUT
