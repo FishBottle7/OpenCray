@@ -30,6 +30,7 @@ class InteractionPreferenceMemoryWritePlanner(
     existingRecords: List<MemoryRecord>,
     sourceRecords: List<MemoryRecord> = emptyList(),
     sourceCandidates: List<MemoryCandidate> = emptyList(),
+    forcedScopes: Set<MemoryScope> = emptySet(),
     plasticity: SoulPlasticity,
     sourceSessionId: String,
     workspaceId: String? = null,
@@ -67,19 +68,25 @@ class InteractionPreferenceMemoryWritePlanner(
         valueTransform = { (_, signals) -> signals },
       )
 
-    if (groupedSignals.isEmpty()) {
+    val scopesToProject = linkedSetOf<MemoryScope>().apply {
+      addAll(groupedSignals.keys)
+      addAll(forcedScopes)
+    }
+
+    if (scopesToProject.isEmpty()) {
       return InteractionPreferenceMemoryWritePlan()
     }
 
     val snapshotCandidates = mutableListOf<MemoryCandidate>()
-    groupedSignals.forEach { (scope, scopedSignalLists) ->
+    scopesToProject.forEach { scope ->
       var projectedState = projector.project(
         records = existingRecords,
         scope = scope,
         sessionId = sourceSessionId,
         workspaceId = workspaceId,
       ).state
-      scopedSignalLists
+      groupedSignals[scope]
+        .orEmpty()
         .flatten()
         .sortedWith(
           compareBy<InteractionPreferenceSignal> { signal -> signal.occurredAtEpochMs }

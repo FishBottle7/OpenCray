@@ -32,6 +32,7 @@ import com.opencray.runtime.memory.UserMemoryIntentInterpreter
 import com.opencray.runtime.memory.UserMemoryIntentRequest
 import com.opencray.runtime.context.ContextManager
 import com.opencray.runtime.context.PromptAssembler
+import com.opencray.runtime.context.RuntimeConversationMessageKind
 import com.opencray.runtime.soul.SoulProfileExtensionKeys
 import com.opencray.runtime.soul.SoulMemoryObjectTypes
 import com.opencray.runtime.process.InMemoryAgentProcessRegistry
@@ -429,6 +430,7 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
         taskId = "task-1",
         turn = 2,
         call = AgentToolCall(
+          id = "call-1",
           toolName = "Read",
           arguments = buildJsonObject {
             put("file_path", "README.md")
@@ -454,15 +456,18 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     val snapshot = factory.transcriptStoreForSession("session-1").snapshot()
 
     assertEquals(2, snapshot.size)
-    assertEquals(RuntimeConversationRole.TOOL, snapshot[0].role)
-    assertTrue(snapshot[0].content.startsWith("tool_call "))
+    assertEquals(RuntimeConversationRole.ASSISTANT, snapshot[0].role)
+    assertEquals(RuntimeConversationMessageKind.TOOL_CALL, snapshot[0].kind)
+    assertFalse(snapshot[0].content.startsWith("tool_call "))
     assertTrue(snapshot[0].content.contains("\"run_id\":\"run-1\""))
     assertTrue(snapshot[0].content.contains("\"turn\":2"))
+    assertTrue(snapshot[0].content.contains("\"tool_call_id\":\"call-1\""))
     assertTrue(snapshot[0].content.contains("\"tool_name\":\"Read\""))
     assertTrue(snapshot[0].content.contains("\"file_path\":\"README.md\""))
-    assertTrue(snapshot[1].content.startsWith("tool_result "))
+    assertEquals(RuntimeConversationMessageKind.TOOL_RESULT, snapshot[1].kind)
+    assertFalse(snapshot[1].content.startsWith("tool_result "))
     assertTrue(snapshot[1].content.contains("\"status\":\"success\""))
-    assertTrue(snapshot[1].content.contains("\"content_preview\":\"Line five Line six\""))
+    assertTrue(snapshot[1].content.contains("\"content\":\"Line five\\nLine six\\n\""))
     assertTrue(snapshot[1].content.contains("\"filePath\":\"README.md\""))
   }
 

@@ -338,7 +338,7 @@ class MemoryBackedSoulProfileResolver(
     }
     if (
       derivation.derivedAddressStyle != null &&
-      normalizePreferredAddressStyleValueOrNull(overlayState.extensions[SoulProfileExtensionKeys.PREFERRED_ADDRESS_STYLE]) == null
+      interactionPreferenceState?.activePreferredAddressStyleOrNull() == null
     ) {
       overlayState.extensions[SoulProfileExtensionKeys.PREFERRED_ADDRESS_STYLE] =
         derivation.derivedAddressStyle.name.lowercase()

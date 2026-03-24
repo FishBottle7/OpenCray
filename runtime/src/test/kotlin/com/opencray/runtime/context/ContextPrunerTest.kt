@@ -16,12 +16,22 @@ class ContextPrunerTest {
         RuntimeConversationMessage(RuntimeConversationRole.TOOL, "Protocol note: return only one action."),
         RuntimeConversationMessage(RuntimeConversationRole.TOOL, "Protocol note: return only one action."),
         RuntimeConversationMessage(
-          RuntimeConversationRole.ASSISTANT,
-          """tool_call Read {"file_path":"README.md"}""",
+          role = RuntimeConversationRole.ASSISTANT,
+          content = """{"run_id":"run-1","task_id":"task-1","turn":1,"tool_call_id":"call-1","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
+          kind = RuntimeConversationMessageKind.TOOL_CALL,
+          toolCall = RuntimeConversationToolCall(
+            id = "call-1",
+            toolName = "Read",
+          ),
         ),
         RuntimeConversationMessage(
-          RuntimeConversationRole.ASSISTANT,
-          """tool_call Read {"file_path":"README.md"}""",
+          role = RuntimeConversationRole.ASSISTANT,
+          content = """{"run_id":"run-1","task_id":"task-1","turn":1,"tool_call_id":"call-1","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
+          kind = RuntimeConversationMessageKind.TOOL_CALL,
+          toolCall = RuntimeConversationToolCall(
+            id = "call-1",
+            toolName = "Read",
+          ),
         ),
       ),
     )
@@ -75,5 +85,41 @@ class ContextPrunerTest {
     assertFalse(pruned.messages[1].content.contains("A".repeat(80)))
     assertTrue(summary.text.contains("tool_output=1"))
     assertTrue(summary.text.contains("attachment_like=1"))
+  }
+
+  @Test
+  fun pruneDropsConsecutiveDuplicateStructuredAssistantToolCalls() {
+    val pruner = ContextPruner()
+
+    val pruned = pruner.prune(
+      listOf(
+        RuntimeConversationMessage(RuntimeConversationRole.USER, "Inspect README."),
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.ASSISTANT,
+          content = """{"run_id":"run-1","task_id":"task-1","turn":1,"tool_call_id":"call-1","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
+          kind = RuntimeConversationMessageKind.TOOL_CALL,
+          toolCall = RuntimeConversationToolCall(
+            id = "call-1",
+            toolName = "Read",
+          ),
+        ),
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.ASSISTANT,
+          content = """{"run_id":"run-1","task_id":"task-1","turn":1,"tool_call_id":"call-1","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
+          kind = RuntimeConversationMessageKind.TOOL_CALL,
+          toolCall = RuntimeConversationToolCall(
+            id = "call-1",
+            toolName = "Read",
+          ),
+        ),
+      ),
+    )
+
+    val summary = requireNotNull(pruned.summary)
+
+    assertEquals(2, pruned.messages.size)
+    assertEquals(1, summary.removedMessageCount)
+    assertEquals(1, summary.duplicateBackgroundMessageCount)
+    assertTrue(pruned.messages.any { it.kind == RuntimeConversationMessageKind.TOOL_CALL })
   }
 }

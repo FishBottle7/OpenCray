@@ -75,6 +75,7 @@ data class AgentToolParameter(
   val type: String,
   val required: Boolean,
   val description: String,
+  val jsonSchema: JsonObject? = null,
 ) {
   init {
     require(name.isNotBlank()) { "AgentToolParameter name must not be blank." }
@@ -357,7 +358,15 @@ class OpenCrayToolDispatcher(
         description = "Apply multiple exact string replacements to one existing text file atomically.",
         parameters = listOf(
           AgentToolParameter("file_path", "string", required = true, description = "File path relative to the workspace root."),
-          AgentToolParameter("edits", "object[]", required = true, description = "Array of edit objects with old_string, new_string, and optional replace_all."),
+          AgentToolParameter(
+            name = "edits",
+            type = "object[]",
+            required = true,
+            description = "Array of edit objects with old_string, new_string, and optional replace_all.",
+            jsonSchema = multiEditArraySchema(
+              description = "Array of exact text edit objects to apply in order.",
+            ),
+          ),
         ),
       ),
       AgentToolDefinition(
@@ -372,7 +381,15 @@ class OpenCrayToolDispatcher(
         name = "TodoWrite",
         description = "Read or replace the current chat session's in-memory todo list. Omit todos to inspect the current list; provide todos to replace it.",
         parameters = listOf(
-          AgentToolParameter("todos", "object[]", required = false, description = "Array of todo objects with content, status, and optional activeForm."),
+          AgentToolParameter(
+            name = "todos",
+            type = "object[]",
+            required = false,
+            description = "Array of todo objects with content, status, and optional activeForm.",
+            jsonSchema = todoEntryArraySchema(
+              description = "Optional replacement todo list. Omit this field to inspect the current todos without mutating them.",
+            ),
+          ),
         ),
       ),
       AgentToolDefinition(
@@ -497,6 +514,7 @@ class OpenCrayToolDispatcher(
           AgentToolParameter("script_path", "string", required = true, description = "Script path relative to the workspace root."),
           AgentToolParameter("args", "string[]", required = false, description = "Script arguments."),
           AgentToolParameter("timeout_ms", "number", required = false, description = "Maximum runtime before the Python execution is timed out."),
+          AgentToolParameter("startup_timeout_ms", "number", required = false, description = "Optional extra startup budget before Python script timeout accounting begins."),
         ),
       ),
       AgentToolDefinition(
@@ -1757,7 +1775,7 @@ class OpenCrayToolDispatcher(
     )
 
     if (startedSnapshot.status != ManagedProcessStatus.RUNNING || background || waitTimeoutMs == 0L) {
-      return AgentToolResult(
+      return managedProcessToolResult(
         toolName = "Bash",
         status = toolStatusForManagedProcessStart(startedSnapshot),
         content = buildString {
@@ -1768,31 +1786,29 @@ class OpenCrayToolDispatcher(
               includeOutput = startedSnapshot.status != ManagedProcessStatus.RUNNING,
             ),
           )
-      }.trim(),
-      errorCode = startedSnapshot.errorCode,
-      errorMessage = startedSnapshot.errorMessage,
-      metadata = toolPolicyPipeline.resultMetadata(
-        plan = plan,
-        metadata = managedProcessMetadata(startedSnapshot) + mapOf(
-          "waitTimeoutMs" to waitTimeoutMs.toString(),
-          "background" to background.toString(),
+        }.trim(),
+        snapshot = startedSnapshot,
+        metadata = toolPolicyPipeline.resultMetadata(
+          plan = plan,
+          metadata = managedProcessMetadata(startedSnapshot) + mapOf(
+            "waitTimeoutMs" to waitTimeoutMs.toString(),
+            "background" to background.toString(),
+          ),
+          resultEnvelope = managedProcessResultEnvelope(startedSnapshot),
         ),
-        resultEnvelope = managedProcessResultEnvelope(startedSnapshot),
-      ),
-    )
-  }
+      )
+    }
 
     val waitedSnapshot = processRegistry.wait(startedSnapshot.processId, waitTimeoutMs)
       ?: startedSnapshot
-    return AgentToolResult(
+    return managedProcessToolResult(
       toolName = "Bash",
       status = toolStatusForManagedProcessStart(waitedSnapshot),
       content = buildString {
         appendLine(bashWaitSummary(snapshot = waitedSnapshot, waitTimeoutMs = waitTimeoutMs))
         append(renderManagedProcessSnapshot(snapshot = waitedSnapshot, includeOutput = true))
       }.trim(),
-      errorCode = waitedSnapshot.errorCode,
-      errorMessage = waitedSnapshot.errorMessage,
+      snapshot = waitedSnapshot,
       metadata = toolPolicyPipeline.resultMetadata(
         plan = plan,
         metadata = managedProcessMetadata(waitedSnapshot) + mapOf(
@@ -1905,15 +1921,14 @@ class OpenCrayToolDispatcher(
         ) + launch.metadata,
       ),
     )
-    return AgentToolResult(
+    return managedProcessToolResult(
       toolName = "ProcessStart",
       status = toolStatusForManagedProcessStart(snapshot),
       content = buildString {
         appendLine("Managed process started.")
         append(renderManagedProcessSnapshot(snapshot, includeOutput = false))
       }.trim(),
-      errorCode = snapshot.errorCode,
-      errorMessage = snapshot.errorMessage,
+      snapshot = snapshot,
       metadata = toolPolicyPipeline.resultMetadata(
         plan = plan,
         metadata = managedProcessMetadata(snapshot),
@@ -2099,10 +2114,11 @@ class OpenCrayToolDispatcher(
     val processId = arguments.requiredString("process_id")
     val snapshot = processRegistry.read(processId)
       ?: return missingManagedProcess(processId = processId, toolName = "ProcessRead")
-    return AgentToolResult(
+    return managedProcessToolResult(
       toolName = "ProcessRead",
       status = AgentToolResultStatus.SUCCESS,
       content = renderManagedProcessSnapshot(snapshot, includeOutput = true),
+      snapshot = snapshot,
       metadata = toolPolicyPipeline.resultMetadata(
         toolName = "ProcessRead",
         request = ToolMetadataContextRequest(
@@ -2122,13 +2138,14 @@ class OpenCrayToolDispatcher(
     val timeoutMs = arguments.optionalLong("timeout_ms") ?: DEFAULT_MANAGED_PROCESS_WAIT_TIMEOUT_MS
     val snapshot = processRegistry.wait(processId, timeoutMs)
       ?: return missingManagedProcess(processId = processId, toolName = "ProcessWait")
-    return AgentToolResult(
+    return managedProcessToolResult(
       toolName = "ProcessWait",
       status = AgentToolResultStatus.SUCCESS,
       content = buildString {
         appendLine("Waited ${timeoutMs}ms for managed process.")
         append(renderManagedProcessSnapshot(snapshot, includeOutput = true))
       }.trim(),
+      snapshot = snapshot,
       metadata = toolPolicyPipeline.resultMetadata(
         toolName = "ProcessWait",
         request = ToolMetadataContextRequest(
@@ -2197,13 +2214,14 @@ class OpenCrayToolDispatcher(
         "Managed process does not support termination on this runtime and is still running."
       else -> "Managed process termination requested."
     }
-    return AgentToolResult(
+    return managedProcessToolResult(
       toolName = "ProcessTerminate",
       status = AgentToolResultStatus.SUCCESS,
       content = buildString {
         appendLine(terminationMessage)
         append(renderManagedProcessSnapshot(snapshot, includeOutput = true))
       }.trim(),
+      snapshot = snapshot,
       metadata = toolPolicyPipeline.resultMetadata(
         plan = plan,
         metadata = managedProcessMetadata(snapshot),
@@ -2862,6 +2880,7 @@ class OpenCrayToolDispatcher(
         scriptPath = scriptPath,
         args = arguments.optionalStringArray("args"),
         timeoutMs = arguments.optionalLong("timeout_ms") ?: 30_000L,
+        startupTimeoutMs = arguments.optionalLong("startup_timeout_ms"),
       ),
     )
     val toolResult = executionResult.toAgentToolResult(toolName = "python_exec")
@@ -2889,6 +2908,24 @@ class OpenCrayToolDispatcher(
     ManagedProcessStatus.SPAWN_ERROR,
     -> AgentToolResultStatus.FAILED
   }
+
+  private fun managedProcessToolResult(
+    toolName: String,
+    status: AgentToolResultStatus,
+    content: String,
+    snapshot: ManagedProcessSnapshot,
+    metadata: Map<String, String>,
+  ): AgentToolResult = AgentToolResult(
+    toolName = toolName,
+    status = status,
+    content = content,
+    exitCode = snapshot.exitCode,
+    stdout = snapshot.stdout,
+    stderr = snapshot.stderr,
+    errorCode = snapshot.errorCode,
+    errorMessage = snapshot.errorMessage,
+    metadata = metadata,
+  )
 
   private fun missingManagedProcess(
     processId: String,
@@ -4825,39 +4862,140 @@ internal fun AgentToolDefinition.toJsonSchema(): JsonObject = buildJsonObject {
   put("additionalProperties", false)
 }
 
-internal fun AgentToolDefinition.toLiteLlmToolDefinition(): LiteLlmToolDefinition =
+internal fun AgentToolDefinition.toLiteLlmToolDefinition(strict: Boolean = false): LiteLlmToolDefinition =
   LiteLlmToolDefinition(
     name = name,
     description = description,
     inputSchema = toJsonSchema(),
+    strict = strict.takeIf { it },
   )
 
-private fun AgentToolParameter.toJsonSchemaProperty(): JsonObject = buildJsonObject {
-  when (type.trim().lowercase(Locale.ROOT)) {
-    "string" -> put("type", "string")
-    "number" -> put("type", "number")
-    "boolean" -> put("type", "boolean")
-    "string[]" -> {
-      put("type", "array")
-      put(
-        "items",
-        buildJsonObject {
-          put("type", "string")
-        },
-      )
-    }
+private fun AgentToolParameter.toJsonSchemaProperty(): JsonObject {
+  jsonSchema?.let { explicitSchema -> return explicitSchema }
+  return buildJsonObject {
+    when (type.trim().lowercase(Locale.ROOT)) {
+      "string" -> put("type", "string")
+      "number" -> put("type", "number")
+      "boolean" -> put("type", "boolean")
+      "string[]" -> {
+        put("type", "array")
+        put(
+          "items",
+          buildJsonObject {
+            put("type", "string")
+          },
+        )
+      }
 
-    "object[]" -> {
-      put("type", "array")
-      put(
-        "items",
-        buildJsonObject {
-          put("type", "object")
-        },
-      )
-    }
+      "object[]" -> {
+        put("type", "array")
+        put(
+          "items",
+          buildJsonObject {
+            put("type", "object")
+          },
+        )
+      }
 
-    else -> put("type", "string")
+      else -> put("type", "string")
+    }
+    put("description", description)
   }
+}
+
+private fun multiEditArraySchema(description: String): JsonObject = objectArraySchema(
+  description = description,
+  itemParameters = listOf(
+    AgentToolParameter(
+      name = "old_string",
+      type = "string",
+      required = true,
+      description = "Exact text to replace.",
+    ),
+    AgentToolParameter(
+      name = "new_string",
+      type = "string",
+      required = true,
+      description = "Replacement text.",
+    ),
+    AgentToolParameter(
+      name = "replace_all",
+      type = "boolean",
+      required = false,
+      description = "Replace every match instead of requiring a unique match.",
+    ),
+  ),
+)
+
+private fun todoEntryArraySchema(description: String): JsonObject = objectArraySchema(
+  description = description,
+  itemParameters = listOf(
+    AgentToolParameter(
+      name = "content",
+      type = "string",
+      required = true,
+      description = "User-visible todo text.",
+    ),
+    AgentToolParameter(
+      name = "status",
+      type = "string",
+      required = true,
+      description = "Todo lifecycle state.",
+      jsonSchema = buildJsonObject {
+        put("type", "string")
+        put("description", "Todo lifecycle state. Supported values: pending, in_progress, completed.")
+        put(
+          "enum",
+          buildJsonArray {
+            add(JsonPrimitive("pending"))
+            add(JsonPrimitive("in_progress"))
+            add(JsonPrimitive("completed"))
+          },
+        )
+      },
+    ),
+    AgentToolParameter(
+      name = "activeForm",
+      type = "string",
+      required = false,
+      description = "Optional present-progress phrasing shown while the todo is active.",
+    ),
+  ),
+)
+
+private fun objectArraySchema(
+  description: String,
+  itemParameters: List<AgentToolParameter>,
+): JsonObject = buildJsonObject {
+  put("type", "array")
   put("description", description)
+  put(
+    "items",
+    buildJsonObject {
+      put("type", "object")
+      put(
+        "properties",
+        buildJsonObject {
+          itemParameters.forEach { parameter ->
+            put(parameter.name, parameter.toJsonSchemaProperty())
+          }
+        },
+      )
+      itemParameters
+        .filter(AgentToolParameter::required)
+        .map(AgentToolParameter::name)
+        .takeIf(List<String>::isNotEmpty)
+        ?.let { requiredParameters ->
+          put(
+            "required",
+            buildJsonArray {
+              requiredParameters.forEach { requiredParameter ->
+                add(JsonPrimitive(requiredParameter))
+              }
+            },
+          )
+        }
+      put("additionalProperties", false)
+    },
+  )
 }

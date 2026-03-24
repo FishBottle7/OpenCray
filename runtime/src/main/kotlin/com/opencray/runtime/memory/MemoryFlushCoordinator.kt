@@ -5,6 +5,8 @@ import com.opencray.runtime.context.ContextPruner
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.TranscriptWindowBuilder
+import com.opencray.runtime.context.isAssistantToolCallMessage
+import com.opencray.runtime.context.toolResultContentOrNull
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentMap
 
@@ -100,17 +102,12 @@ class MemoryFlushCoordinator(
       assistantOutput = policy.mergeAssistantOutput(
         omittedMessages.filter { message ->
           message.role == RuntimeConversationRole.ASSISTANT &&
-            message.kind != com.opencray.runtime.context.RuntimeConversationMessageKind.TOOL_CALL &&
-            !message.content.trim().startsWith("tool_call ")
+            !message.isAssistantToolCallMessage()
         },
       ),
       toolObservations = omittedMessages
         .asSequence()
-        .filter { message ->
-          message.role == RuntimeConversationRole.TOOL &&
-            message.kind != com.opencray.runtime.context.RuntimeConversationMessageKind.PROGRESS
-        }
-        .map(RuntimeConversationMessage::content)
+        .mapNotNull(RuntimeConversationMessage::toolResultContentOrNull)
         .map(String::trim)
         .filter(String::isNotBlank)
         .distinct()

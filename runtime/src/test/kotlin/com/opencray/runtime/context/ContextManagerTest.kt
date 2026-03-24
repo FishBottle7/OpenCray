@@ -153,12 +153,24 @@ class ContextManagerTest {
         liveConversation = listOf(
           RuntimeConversationMessage(RuntimeConversationRole.USER, "Search the repo."),
           RuntimeConversationMessage(
-            RuntimeConversationRole.ASSISTANT,
-            """tool_call Read {"file_path":"README.md"}""",
+            role = RuntimeConversationRole.ASSISTANT,
+            content = """{"tool_call_id":"call-1","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
+            kind = RuntimeConversationMessageKind.TOOL_CALL,
+            toolCall = RuntimeConversationToolCall(
+              id = "call-1",
+              toolName = "Read",
+            ),
           ),
           RuntimeConversationMessage(
-            RuntimeConversationRole.TOOL,
-            """tool_result {"run_id":"run-1","task_id":"task-1","turn":1,"tool_name":"Read","status":"success","content_preview":"intro"}""",
+            role = RuntimeConversationRole.TOOL,
+            content = """{"run_id":"run-1","task_id":"task-1","turn":1,"tool_call_id":"call-1","tool_name":"Read","status":"success","content":"intro"}""",
+            kind = RuntimeConversationMessageKind.TOOL_RESULT,
+            toolResult = RuntimeConversationToolResult(
+              toolCallId = "call-1",
+              toolName = "Read",
+              status = "success",
+              isError = false,
+            ),
           ),
           RuntimeConversationMessage(RuntimeConversationRole.USER, "What did you find?"),
         ),

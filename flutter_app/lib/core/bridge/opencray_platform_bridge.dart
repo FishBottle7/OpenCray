@@ -1,6 +1,5 @@
 import 'package:flutter/services.dart';
 
-import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_draft_attachment.dart';
 import '../models/opencray_chat_snapshot.dart';
 import '../models/opencray_debug_snapshot.dart';
@@ -814,14 +813,9 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   static OpenCrayShellSnapshot _parseShellSnapshot(
     Map<Object?, Object?> payload,
   ) {
-    return OpenCrayShellSnapshot(
-      initialTab: _parseTab(payload['initialTab'] as String?),
-      localeTag: payload['localeTag'] as String? ?? 'en',
-      hostLabel: payload['hostLabel'] as String? ?? 'HOST READY',
-      hostSummary:
-          payload['hostSummary'] as String? ??
-          'Flutter shell is attached to a host bridge.',
-      isHostConnected: payload['isHostConnected'] as bool? ?? true,
+    return OpenCrayShellSnapshot.fromMap(
+      payload,
+      defaultHostSummary: 'Flutter shell is attached to a host bridge.',
     );
   }
 
@@ -912,20 +906,6 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       return null;
     }
     return list.map((value) => value as String? ?? '').toList(growable: false);
-  }
-
-  static OpenCrayTab _parseTab(String? rawValue) {
-    switch (rawValue) {
-      case 'skills':
-        return OpenCrayTab.skills;
-      case 'files':
-        return OpenCrayTab.files;
-      case 'settings':
-        return OpenCrayTab.settings;
-      case 'chat':
-      default:
-        return OpenCrayTab.chat;
-    }
   }
 
   static OpenCraySettingsSectionBackgroundTone _parseBackgroundTone(

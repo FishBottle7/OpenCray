@@ -170,6 +170,7 @@
     <string name="llm_validation_timeout">Validation timed out after %1$d seconds.</string>
     <string name="llm_validation_rate_limited">Provider rate limited the validation request.</string>
     <string name="llm_validation_failed">Validation failed.</string>
+    <string name="llm_validation_native_tools_unavailable">Text connection works, but native tool calling could not be verified. This route will use JSON fallback until native tools are verified.</string>
     <string name="llm_error_base_url_required_enabled">Base URL is required when the provider is enabled.</string>
     <string name="llm_error_base_url_validate_required">Base URL is required to validate the model.</string>
     <string name="llm_error_model_validate_required">Model is required to validate the model.</string>

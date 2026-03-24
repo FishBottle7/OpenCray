@@ -48,6 +48,7 @@ class PythonScriptRuntimeInjectionTest {
             "args" to kotlinx.serialization.json.buildJsonArray {
               add(JsonPrimitive("--flag"))
             },
+            "startup_timeout_ms" to JsonPrimitive(45_000),
           ),
         ),
       ),
@@ -61,6 +62,7 @@ class PythonScriptRuntimeInjectionTest {
     assertEquals(expectedWorkspaceRoot, request.workspaceRoot)
     assertEquals(expectedScriptPath, request.scriptPath)
     assertEquals(listOf("--flag"), request.args)
+    assertEquals(45_000L, request.startupTimeoutMs)
     assertEquals("runtime-ok", result.content)
     assertEquals("scripts/run.py", result.metadata["scriptPath"]?.replace('\\', '/'))
     assertEquals("ALLOW_DEVELOPER_OVERRIDE", result.metadata["policyReasonCode"])

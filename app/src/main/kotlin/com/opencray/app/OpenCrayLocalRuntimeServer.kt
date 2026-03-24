@@ -20,19 +20,90 @@ import com.opencray.runtime.OpenCrayFinalAttachment
 import org.json.JSONArray
 import org.json.JSONObject
 
+private val DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS: InetAddress = InetAddress.getByName("127.0.0.1")
+
+internal data class LocalRuntimeServerState(
+  val phase: String = PHASE_NOT_CREATED,
+  val bindAddress: String,
+  val requestedPort: Int,
+  val listeningPort: Int? = null,
+  val lastStartAttemptAtEpochMs: Long? = null,
+  val lastStartedAtEpochMs: Long? = null,
+  val failureReason: String? = null,
+  val changedAtEpochMs: Long = System.currentTimeMillis(),
+) {
+  fun snapshotMap(): Map<String, Any?> = buildMap {
+    put("phase", phase)
+    put("bindAddress", bindAddress)
+    put("requestedPort", requestedPort)
+    put("listeningPort", listeningPort)
+    put("lastStartAttemptAtEpochMs", lastStartAttemptAtEpochMs)
+    put("lastStartedAtEpochMs", lastStartedAtEpochMs)
+    failureReason?.trim()?.takeIf(String::isNotBlank)?.let { reason ->
+      put("failureReason", reason)
+    }
+    put("changedAtEpochMs", changedAtEpochMs)
+  }
+
+  companion object {
+    const val PHASE_NOT_CREATED: String = "not_created"
+    const val PHASE_CREATED: String = "created"
+    const val PHASE_LISTENING: String = "listening"
+    const val PHASE_BIND_FAILED: String = "bind_failed"
+    const val PHASE_IO_FAILED: String = "io_failed"
+    const val PHASE_CLOSED: String = "closed"
+  }
+}
+
 internal class OpenCrayLocalRuntimeServer(
-  private val hostRuntimeProvider: () -> OpenCrayHostRuntime,
+  private val localGatewayProvider: () -> OpenCrayLocalHostGateway,
+  private val shellGatewayProvider: () -> OpenCrayShellGateway,
+  private val chatRuntimeGatewayProvider: () -> OpenCrayChatRuntimeGateway,
+  private val skillsGatewayProvider: () -> OpenCraySkillsGateway,
+  private val settingsGatewayProvider: () -> OpenCraySettingsGateway,
   private val requestedPort: Int = DEFAULT_PORT,
-  private val bindAddress: InetAddress = LOOPBACK_ADDRESS,
+  private val bindAddress: InetAddress = DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS,
   private val executor: ExecutorService = Executors.newCachedThreadPool(),
   private val shutdownExecutorOnClose: Boolean = false,
 ) {
+  // Test-only convenience constructor. Production wiring should go through
+  // fromContext(...), which stays service-backed and detached from UI host ownership.
+  constructor(
+    hostRuntimeProvider: () -> OpenCrayHostRuntime,
+    shellGatewayResolver: (OpenCrayHostRuntime) -> OpenCrayShellGateway = { it },
+    chatRuntimeGatewayResolver: (OpenCrayHostRuntime) -> OpenCrayChatRuntimeGateway = { it },
+    skillsGatewayResolver: (OpenCrayHostRuntime) -> OpenCraySkillsGateway = { it },
+    settingsGatewayResolver: (OpenCrayHostRuntime) -> OpenCraySettingsGateway = { it },
+    requestedPort: Int = DEFAULT_PORT,
+    bindAddress: InetAddress = DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS,
+    executor: ExecutorService = Executors.newCachedThreadPool(),
+    shutdownExecutorOnClose: Boolean = false,
+  ) : this(
+    localGatewayProvider = { hostRuntimeProvider() },
+    shellGatewayProvider = { shellGatewayResolver(hostRuntimeProvider()) },
+    chatRuntimeGatewayProvider = { chatRuntimeGatewayResolver(hostRuntimeProvider()) },
+    skillsGatewayProvider = { skillsGatewayResolver(hostRuntimeProvider()) },
+    settingsGatewayProvider = { settingsGatewayResolver(hostRuntimeProvider()) },
+    requestedPort = requestedPort,
+    bindAddress = bindAddress,
+    executor = executor,
+    shutdownExecutorOnClose = shutdownExecutorOnClose,
+  )
+
   @Volatile
   private var serverSocket: ServerSocket? = null
 
   @Volatile
   var listeningPort: Int = requestedPort
     private set
+
+  private var serverState: LocalRuntimeServerState = LocalRuntimeServerState(
+    phase = LocalRuntimeServerState.PHASE_CREATED,
+    bindAddress = bindAddress.hostAddress,
+    requestedPort = requestedPort,
+  )
+
+  fun currentState(): LocalRuntimeServerState = synchronized(this) { serverState }
 
   fun ensureStarted() {
     if (serverSocket != null) {
@@ -42,18 +113,44 @@ internal class OpenCrayLocalRuntimeServer(
       if (serverSocket != null) {
         return
       }
+      val startAttemptAtEpochMs = System.currentTimeMillis()
+      serverState = serverState.copy(
+        lastStartAttemptAtEpochMs = startAttemptAtEpochMs,
+        failureReason = null,
+        changedAtEpochMs = startAttemptAtEpochMs,
+      )
       try {
         val socket = ServerSocket()
         socket.reuseAddress = true
         socket.bind(InetSocketAddress(bindAddress, requestedPort))
         listeningPort = socket.localPort
         serverSocket = socket
+        val startedAtEpochMs = System.currentTimeMillis()
+        serverState = serverState.copy(
+          phase = LocalRuntimeServerState.PHASE_LISTENING,
+          listeningPort = listeningPort,
+          lastStartedAtEpochMs = startedAtEpochMs,
+          failureReason = null,
+          changedAtEpochMs = startedAtEpochMs,
+        )
         executor.execute {
           acceptLoop(socket)
         }
-      } catch (_: BindException) {
+      } catch (throwable: BindException) {
+        serverState = serverState.copy(
+          phase = LocalRuntimeServerState.PHASE_BIND_FAILED,
+          listeningPort = null,
+          failureReason = throwable.message ?: "bind_exception",
+          changedAtEpochMs = System.currentTimeMillis(),
+        )
         return
-      } catch (_: IOException) {
+      } catch (throwable: IOException) {
+        serverState = serverState.copy(
+          phase = LocalRuntimeServerState.PHASE_IO_FAILED,
+          listeningPort = null,
+          failureReason = throwable.message ?: "io_exception",
+          changedAtEpochMs = System.currentTimeMillis(),
+        )
         return
       }
     }
@@ -67,6 +164,13 @@ internal class OpenCrayLocalRuntimeServer(
     }
     runCatching {
       socket?.close()
+    }
+    synchronized(this) {
+      serverState = serverState.copy(
+        phase = LocalRuntimeServerState.PHASE_CLOSED,
+        listeningPort = null,
+        changedAtEpochMs = System.currentTimeMillis(),
+      )
     }
     if (shutdownExecutorOnClose) {
       executor.shutdownNow()
@@ -116,74 +220,78 @@ internal class OpenCrayLocalRuntimeServer(
   }
 
   private fun dispatch(request: LocalRuntimeRequest): LocalRuntimeResponse {
-    val hostRuntime = hostRuntimeProvider()
+    val localGateway = localGatewayProvider()
+    val shellGateway = shellGatewayProvider()
+    val chatRuntimeGateway = chatRuntimeGatewayProvider()
+    val skillsGateway = skillsGatewayProvider()
+    val settingsGateway = settingsGatewayProvider()
     val body = request.jsonBody()
     val payload: Any? = when (request.method to request.path) {
-      "GET" to "/v1/shell_snapshot" -> hostRuntime.loadShellSnapshot()
-      "GET" to "/v1/files_snapshot" -> hostRuntime.loadFilesSnapshot()
-      "GET" to "/v1/workspace_image_preview" -> hostRuntime.loadWorkspaceImagePreview(
+      "GET" to "/v1/shell_snapshot" -> shellGateway.loadShellSnapshot()
+      "GET" to "/v1/files_snapshot" -> localGateway.loadFilesSnapshot()
+      "GET" to "/v1/workspace_image_preview" -> localGateway.loadWorkspaceImagePreview(
         relativePath = request.queryParameter("relativePath"),
       )
-      "GET" to "/v1/workspace_text_preview" -> hostRuntime.loadWorkspaceTextPreview(
+      "GET" to "/v1/workspace_text_preview" -> localGateway.loadWorkspaceTextPreview(
         relativePath = request.queryParameter("relativePath"),
       )
-      "GET" to "/v1/workspace_voice_playback_source" -> hostRuntime.loadWorkspaceVoicePlaybackSource(
+      "GET" to "/v1/workspace_voice_playback_source" -> localGateway.loadWorkspaceVoicePlaybackSource(
         relativePath = request.queryParameter("relativePath"),
       )
-      "GET" to "/v1/workspace_text_document" -> hostRuntime.loadWorkspaceTextDocument(
+      "GET" to "/v1/workspace_text_document" -> localGateway.loadWorkspaceTextDocument(
         relativePath = request.queryParameter("relativePath"),
       )
       "POST" to "/v1/open_workspace_entry" -> {
-        hostRuntime.openWorkspaceEntry(
+        localGateway.openWorkspaceEntry(
           relativePath = body.optString("relativePath"),
         )
         null
       }
-      "POST" to "/v1/create_workspace_folder" -> hostRuntime.createWorkspaceFolder(
+      "POST" to "/v1/create_workspace_folder" -> localGateway.createWorkspaceFolder(
         parentRelativePath = body.optString("parentRelativePath"),
         name = body.optString("name"),
       )
-      "POST" to "/v1/create_workspace_text_file" -> hostRuntime.createWorkspaceTextFile(
+      "POST" to "/v1/create_workspace_text_file" -> localGateway.createWorkspaceTextFile(
         parentRelativePath = body.optString("parentRelativePath"),
         name = body.optString("name"),
       )
-      "POST" to "/v1/rename_workspace_entry" -> hostRuntime.renameWorkspaceEntry(
+      "POST" to "/v1/rename_workspace_entry" -> localGateway.renameWorkspaceEntry(
         targetRelativePath = body.optString("targetRelativePath"),
         newName = body.optString("newName"),
       )
-      "POST" to "/v1/delete_workspace_entries" -> hostRuntime.deleteWorkspaceEntries(
+      "POST" to "/v1/delete_workspace_entries" -> localGateway.deleteWorkspaceEntries(
         relativePaths = body.optJSONArray("relativePaths")?.let(::jsonArrayToStrings) ?: emptyList(),
       )
-      "POST" to "/v1/save_workspace_text_document" -> hostRuntime.saveWorkspaceTextDocument(
+      "POST" to "/v1/save_workspace_text_document" -> localGateway.saveWorkspaceTextDocument(
         targetRelativePath = body.optString("targetRelativePath"),
         content = body.optString("content"),
       )
-      "POST" to "/v1/paste_workspace_entries" -> hostRuntime.pasteWorkspaceEntries(
+      "POST" to "/v1/paste_workspace_entries" -> localGateway.pasteWorkspaceEntries(
         sourceRelativePaths = body.optJSONArray("sourceRelativePaths")?.let(::jsonArrayToStrings)
           ?: emptyList(),
         destinationRelativePath = body.optString("destinationRelativePath"),
         move = body.optBoolean("move"),
       )
       "POST" to "/v1/share_workspace_entries" -> {
-        hostRuntime.shareWorkspaceEntries(
+        localGateway.shareWorkspaceEntries(
           relativePaths = body.optJSONArray("relativePaths")?.let(::jsonArrayToStrings) ?: emptyList(),
         )
         null
       }
-      "GET" to "/v1/settings_overview" -> hostRuntime.loadSettingsOverview()
-      "GET" to "/v1/settings_detail" -> hostRuntime.loadSettingsDetail(
+      "GET" to "/v1/settings_overview" -> settingsGateway.loadSettingsOverview()
+      "GET" to "/v1/settings_detail" -> settingsGateway.loadSettingsDetail(
         routeIdRaw = request.queryParameter("routeId"),
       )
-      "GET" to "/v1/network_search_config" -> hostRuntime.loadNetworkSearchConfig()
-      "POST" to "/v1/save_network_search_config" -> hostRuntime.saveNetworkSearchConfig(
+      "GET" to "/v1/network_search_config" -> settingsGateway.loadNetworkSearchConfig()
+      "POST" to "/v1/save_network_search_config" -> settingsGateway.saveNetworkSearchConfig(
         slots = body.optJSONArray("slots")?.let(::jsonArrayToMaps) ?: emptyList(),
       )
-      "GET" to "/v1/media_speech_config" -> hostRuntime.loadMediaSpeechConfig()
-      "POST" to "/v1/save_media_speech_config" -> hostRuntime.saveMediaSpeechConfig(
+      "GET" to "/v1/media_speech_config" -> settingsGateway.loadMediaSpeechConfig()
+      "POST" to "/v1/save_media_speech_config" -> settingsGateway.saveMediaSpeechConfig(
         payload = jsonObjectToMap(body),
       )
-      "GET" to "/v1/llm_config" -> hostRuntime.loadLlmConfig()
-      "POST" to "/v1/save_llm_config" -> hostRuntime.saveLlmConfig(
+      "GET" to "/v1/llm_config" -> settingsGateway.loadLlmConfig()
+      "POST" to "/v1/save_llm_config" -> settingsGateway.saveLlmConfig(
         enabled = body.optBoolean("enabled"),
         providerId = body.optString("providerId"),
         selectedProviderOptionId = body.optString("selectedProviderOptionId"),
@@ -196,7 +304,7 @@ internal class OpenCrayLocalRuntimeServer(
         reasoningEffort = body.optString("reasoningEffort"),
         systemPrompt = body.optString("systemPrompt"),
       )
-      "POST" to "/v1/save_custom_llm_provider" -> hostRuntime.saveCustomLlmProvider(
+      "POST" to "/v1/save_custom_llm_provider" -> settingsGateway.saveCustomLlmProvider(
         selectedProviderOptionId = body.optString("selectedProviderOptionId"),
         protocol = body.optString("protocol"),
         providerName = body.optString("providerName"),
@@ -207,7 +315,7 @@ internal class OpenCrayLocalRuntimeServer(
         reasoningEffort = body.optString("reasoningEffort"),
         systemPrompt = body.optString("systemPrompt"),
       )
-      "POST" to "/v1/validate_llm_config" -> hostRuntime.validateLlmConfig(
+      "POST" to "/v1/validate_llm_config" -> settingsGateway.validateLlmConfig(
         providerId = body.optString("providerId"),
         protocol = body.optString("protocol"),
         baseUrl = body.optString("baseUrl"),
@@ -215,31 +323,31 @@ internal class OpenCrayLocalRuntimeServer(
         model = body.optString("model"),
         reasoningEffort = body.optString("reasoningEffort"),
       )
-      "GET" to "/v1/personalization_config" -> hostRuntime.loadPersonalizationConfig()
-      "POST" to "/v1/save_personalization_config" -> hostRuntime.savePersonalizationConfig(
+      "GET" to "/v1/personalization_config" -> settingsGateway.loadPersonalizationConfig()
+      "POST" to "/v1/save_personalization_config" -> settingsGateway.savePersonalizationConfig(
         presetId = body.optString("presetId"),
         customLabel = body.optString("customLabel"),
         customGuidance = body.optString("customGuidance"),
       )
-      "POST" to "/v1/set_app_language" -> hostRuntime.setAppLanguage(
+      "POST" to "/v1/set_app_language" -> settingsGateway.setAppLanguage(
         languageId = body.optString("languageId"),
       )
-      "POST" to "/v1/run_personalization_reset" -> hostRuntime.runPersonalizationReset(
+      "POST" to "/v1/run_personalization_reset" -> settingsGateway.runPersonalizationReset(
         scopeId = body.optString("scopeId"),
       )
-      "POST" to "/v1/probe_twin_import_source" -> hostRuntime.probeTwinImportSource(
+      "POST" to "/v1/probe_twin_import_source" -> localGateway.probeTwinImportSource(
         filePath = body.optString("filePath"),
       )
-      "GET" to "/v1/mcp_settings" -> hostRuntime.loadMcpSettings()
-      "POST" to "/v1/set_mcp_master_enabled" -> hostRuntime.setMcpMasterEnabled(
+      "GET" to "/v1/mcp_settings" -> settingsGateway.loadMcpSettings()
+      "POST" to "/v1/set_mcp_master_enabled" -> settingsGateway.setMcpMasterEnabled(
         enabled = body.optBoolean("enabled"),
       )
-      "POST" to "/v1/set_mcp_server_enabled" -> hostRuntime.setMcpServerEnabled(
+      "POST" to "/v1/set_mcp_server_enabled" -> settingsGateway.setMcpServerEnabled(
         serverId = body.optString("serverId"),
         enabled = body.optBoolean("enabled"),
       )
-      "GET" to "/v1/safety_settings" -> hostRuntime.loadSafetySettings()
-      "POST" to "/v1/save_safety_settings" -> hostRuntime.saveSafetySettings(
+      "GET" to "/v1/safety_settings" -> settingsGateway.loadSafetySettings()
+      "POST" to "/v1/save_safety_settings" -> settingsGateway.saveSafetySettings(
         automationModeId = body.optString("automationModeId"),
         rollbackJournalEnabled = body.optBoolean("rollbackJournalEnabled", true),
         maxFilesPerBatch = body.optInt("maxFilesPerBatch", 20),
@@ -265,130 +373,130 @@ internal class OpenCrayLocalRuntimeServer(
         liveContextModeId = body.optString("liveContextModeId", LiveContextMode.FULL.wireValue),
         memoryToolsEnabled = body.optBoolean("memoryToolsEnabled", true),
       )
-      "GET" to "/v1/skills_snapshot" -> hostRuntime.loadSkillsSnapshot(
+      "GET" to "/v1/skills_snapshot" -> skillsGateway.loadSkillsSnapshot(
         query = request.queryParameter("query"),
       )
       "POST" to "/v1/set_skill_enabled" -> {
-        hostRuntime.setSkillEnabled(
+        skillsGateway.setSkillEnabled(
           skillId = body.optString("skillId"),
           enabled = body.optBoolean("enabled"),
         )
         null
       }
-      "POST" to "/v1/refresh_skills" -> hostRuntime.refreshSkills()
-      "GET" to "/v1/check_installed_skill_updates" -> hostRuntime.checkInstalledSkillUpdates(
+      "POST" to "/v1/refresh_skills" -> skillsGateway.refreshSkills()
+      "GET" to "/v1/check_installed_skill_updates" -> skillsGateway.checkInstalledSkillUpdates(
         skillId = request.queryParameter("skillId"),
       )
-      "POST" to "/v1/update_installed_skill" -> hostRuntime.updateInstalledSkill(
+      "POST" to "/v1/update_installed_skill" -> skillsGateway.updateInstalledSkill(
         skillId = body.optString("skillId"),
       )
-      "POST" to "/v1/inspect_skill_source" -> hostRuntime.inspectSkillSource(
+      "POST" to "/v1/inspect_skill_source" -> skillsGateway.inspectSkillSource(
         sourceRef = body.optString("sourceRef"),
       )
-      "POST" to "/v1/install_skill_source" -> hostRuntime.installSkillSource(
+      "POST" to "/v1/install_skill_source" -> skillsGateway.installSkillSource(
         sourceRef = body.optString("sourceRef"),
         selectedSkillName = body.optString("selectedSkillName"),
       )
-      "POST" to "/v1/install_skill_source_batch" -> hostRuntime.installSkillSourceBatch(
+      "POST" to "/v1/install_skill_source_batch" -> skillsGateway.installSkillSourceBatch(
         sourceRef = body.optString("sourceRef"),
         selectedSkillNames = body.optJSONArray("selectedSkillNames")?.let(::jsonArrayToStrings) ?: emptyList(),
       )
-      "POST" to "/v1/install_suggested_skill" -> hostRuntime.installSuggestedSkill(
+      "POST" to "/v1/install_suggested_skill" -> skillsGateway.installSuggestedSkill(
         skillId = body.optString("skillId"),
       )
-      "POST" to "/v1/delete_installed_skill" -> hostRuntime.deleteInstalledSkill(
+      "POST" to "/v1/delete_installed_skill" -> skillsGateway.deleteInstalledSkill(
         skillId = body.optString("skillId"),
       )
-      "GET" to "/v1/skill_instructions" -> hostRuntime.loadSkillInstructions(
+      "GET" to "/v1/skill_instructions" -> skillsGateway.loadSkillInstructions(
         skillId = request.queryParameter("skillId"),
       )
-      "GET" to "/v1/chat_snapshot" -> hostRuntime.loadChatSnapshot()
-      "GET" to "/v1/chat_runtime_snapshot" -> hostRuntime.loadChatRuntimeSnapshot()
-      "GET" to "/v1/chat_run_snapshot" -> hostRuntime.loadChatRunSnapshot(
+      "GET" to "/v1/chat_snapshot" -> chatRuntimeGateway.loadChatSnapshot()
+      "GET" to "/v1/chat_runtime_snapshot" -> chatRuntimeGateway.loadChatRuntimeSnapshot()
+      "GET" to "/v1/chat_run_snapshot" -> chatRuntimeGateway.loadChatRunSnapshot(
         runId = request.queryParameter("runId"),
       )
-      "GET" to "/v1/memory_debug_snapshot" -> hostRuntime.loadMemoryDebugSnapshot()
-      "GET" to "/v1/memory_debug_links_snapshot" -> hostRuntime.loadMemoryDebugLinksSnapshot()
-      "GET" to "/v1/soul_debug_snapshot" -> hostRuntime.loadSoulDebugSnapshot()
-      "POST" to "/v1/memory_debug_search" -> hostRuntime.searchMemoryDebug(
+      "GET" to "/v1/memory_debug_snapshot" -> chatRuntimeGateway.loadMemoryDebugSnapshot()
+      "GET" to "/v1/memory_debug_links_snapshot" -> chatRuntimeGateway.loadMemoryDebugLinksSnapshot()
+      "GET" to "/v1/soul_debug_snapshot" -> chatRuntimeGateway.loadSoulDebugSnapshot()
+      "POST" to "/v1/memory_debug_search" -> chatRuntimeGateway.searchMemoryDebug(
         query = body.optString("query"),
         maxResults = body.optInt("maxResults", 4),
         minScore = body.optInt("minScore", 1),
       )
-      "POST" to "/v1/memory_debug_slice" -> hostRuntime.getMemoryDebugSlice(
+      "POST" to "/v1/memory_debug_slice" -> chatRuntimeGateway.getMemoryDebugSlice(
         path = body.optString("path"),
         fromLine = body.takeIf { !it.isNull("fromLine") }?.optInt("fromLine"),
         lines = body.optInt("lines", 12),
       )
-      "POST" to "/v1/memory_debug_action" -> hostRuntime.applyMemoryDebugAction(
+      "POST" to "/v1/memory_debug_action" -> chatRuntimeGateway.applyMemoryDebugAction(
         recordId = body.optString("recordId"),
         actionId = body.optString("actionId"),
       )
       "POST" to "/v1/create_chat_session" -> {
-        hostRuntime.createChatSession()
+        chatRuntimeGateway.createChatSession()
         null
       }
       "POST" to "/v1/copy_chat_session" -> {
-        hostRuntime.copyChatSession(body.optString("sessionId"))
+        chatRuntimeGateway.copyChatSession(body.optString("sessionId"))
         null
       }
       "POST" to "/v1/delete_chat_session" -> {
-        hostRuntime.deleteChatSession(body.optString("sessionId"))
+        chatRuntimeGateway.deleteChatSession(body.optString("sessionId"))
         null
       }
       "POST" to "/v1/select_chat_session" -> {
-        hostRuntime.selectChatSession(body.optString("sessionId"))
+        chatRuntimeGateway.selectChatSession(body.optString("sessionId"))
         null
       }
       "POST" to "/v1/branch_chat_session_from_message" -> {
-        hostRuntime.branchChatSessionFromMessage(
+        chatRuntimeGateway.branchChatSessionFromMessage(
           sessionId = body.optString("sessionId"),
           messageId = body.optString("messageId"),
         )
         null
       }
       "POST" to "/v1/delete_chat_message" -> {
-        hostRuntime.deleteChatMessage(
+        chatRuntimeGateway.deleteChatMessage(
           sessionId = body.optString("sessionId"),
           messageId = body.optString("messageId"),
         )
         null
       }
       "POST" to "/v1/recall_chat_message" -> {
-        hostRuntime.recallChatMessage(
+        chatRuntimeGateway.recallChatMessage(
           sessionId = body.optString("sessionId"),
           messageId = body.optString("messageId"),
         )
         null
       }
-      "POST" to "/v1/submit_chat_message" -> hostRuntime.submitChatMessage(
+      "POST" to "/v1/submit_chat_message" -> chatRuntimeGateway.submitChatMessage(
         text = body.optString("text"),
         attachments = parseSubmitChatMessageAttachments(body),
       )
-      "POST" to "/v1/wait_chat_run" -> hostRuntime.waitForChatRun(
+      "POST" to "/v1/wait_chat_run" -> chatRuntimeGateway.waitForChatRun(
         runId = body.optString("runId"),
         timeoutMs = body.optLong("timeoutMs", 15_000L),
       )
       "POST" to "/v1/approve_chat_approval" -> {
-        hostRuntime.approveChatApproval(
+        chatRuntimeGateway.approveChatApproval(
           body.optString("runId").takeIf(String::isNotBlank) ?: body.optString("taskId"),
         )
         null
       }
       "POST" to "/v1/reject_chat_approval" -> {
-        hostRuntime.rejectChatApproval(
+        chatRuntimeGateway.rejectChatApproval(
           body.optString("runId").takeIf(String::isNotBlank) ?: body.optString("taskId"),
         )
         null
       }
       "POST" to "/v1/cancel_chat_run" -> {
-        hostRuntime.cancelChatRun(
+        chatRuntimeGateway.cancelChatRun(
           body.optString("runId").takeIf(String::isNotBlank) ?: body.optString("taskId"),
         )
         null
       }
       "POST" to "/v1/retry_chat_run" -> {
-        hostRuntime.retryChatRun(
+        chatRuntimeGateway.retryChatRun(
           body.optString("runId").takeIf(String::isNotBlank) ?: body.optString("taskId"),
         )
         null
@@ -523,22 +631,38 @@ internal class OpenCrayLocalRuntimeServer(
     URLDecoder.decode(value, Charsets.UTF_8.name())
 
   companion object {
-    private val LOOPBACK_ADDRESS: InetAddress = InetAddress.getByName("127.0.0.1")
     private const val SOCKET_TIMEOUT_MS: Int = 2_000
     internal const val DEFAULT_PORT: Int = 42_617
-
-    @Volatile
-    private var instance: OpenCrayLocalRuntimeServer? = null
-
-    fun fromContext(context: Context): OpenCrayLocalRuntimeServer =
-      instance ?: synchronized(this) {
-        instance ?: OpenCrayLocalRuntimeServer(
-          hostRuntimeProvider = { OpenCrayHostRuntime.fromContext(context.applicationContext) },
-        ).also { created ->
-          instance = created
-        }
-      }
   }
+}
+
+internal object OpenCrayLocalRuntimeServerRegistry {
+  @Volatile
+  private var instance: OpenCrayLocalRuntimeServer? = null
+
+  fun peekState(): LocalRuntimeServerState = synchronized(this) {
+    instance?.currentState() ?: LocalRuntimeServerState(
+      bindAddress = DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS.hostAddress,
+      requestedPort = OpenCrayLocalRuntimeServer.DEFAULT_PORT,
+    )
+  }
+
+  fun fromContext(context: Context): OpenCrayLocalRuntimeServer =
+    instance ?: synchronized(this) {
+      instance ?: OpenCrayLocalRuntimeServer(
+        localGatewayProvider = { openCrayLocalHostGateway(context.applicationContext) },
+        shellGatewayProvider = { serviceBackedOpenCrayShellGateway(context.applicationContext) },
+        chatRuntimeGatewayProvider = { serviceBackedOpenCrayChatRuntimeGateway(context.applicationContext) },
+        skillsGatewayProvider = { serviceBackedOpenCraySkillsGateway(context.applicationContext) },
+        settingsGatewayProvider = { serviceBackedOpenCraySettingsGateway(context.applicationContext) },
+        bindAddress = DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS,
+      ).also { created ->
+        instance = created
+      }
+    }
+
+  fun ensureStarted(context: Context): OpenCrayLocalRuntimeServer =
+    fromContext(context).also { server -> server.ensureStarted() }
 }
 
 private fun jsonArrayToStrings(array: JSONArray): List<String> =

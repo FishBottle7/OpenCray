@@ -2,9 +2,11 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:opencray/app/opencray_tabs.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
 import 'package:opencray/core/models/opencray_chat_snapshot.dart';
 import 'package:opencray/core/models/opencray_debug_snapshot.dart';
+import 'package:opencray/core/models/opencray_shell_snapshot.dart';
 import 'package:opencray/features/settings/settings.dart';
 
 void main() {
@@ -336,85 +338,93 @@ void main() {
     expect(find.text('Side profile'), findsOneWidget);
   });
 
-  testWidgets('agent create flow exposes twin import page and updates summary', (
-    tester,
-  ) async {
-    final facade = _FakeSettingsFacade(
-      llmConfig: const LlmConfigSnapshot(
-        localeTag: 'en',
-        enabled: false,
-        providerId: 'openai',
-        selectedProviderOptionId: 'openai',
-        protocol: 'openai',
-        providerOptions: <LlmProviderOption>[
-          LlmProviderOption(
-            id: 'openai',
-            providerId: 'openai',
-            title: 'OpenAI',
-            subtitle: 'Official OpenAI-compatible endpoint.',
-            defaultBaseUrl: 'https://api.openai.com/v1',
-            defaultModel: 'gpt-4o-mini',
-            protocol: 'openai',
-            apiKey: '',
-            isCustom: false,
-          ),
-        ],
-        providerName: 'OpenAI',
-        providerNotes: '',
-        baseUrl: 'https://api.openai.com/v1',
-        apiKey: '',
-        model: 'gpt-4o-mini',
-        reasoningEffort: 'medium',
-        systemPrompt: '',
-        helperText: 'Helper text',
-      ),
-      validationResult: const LlmValidationResult(
-        isSuccess: true,
-        message: 'Validated.',
-      ),
-    );
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: SettingsFeatureScreen(
-          facade: facade,
-          initialPage: SettingsPage.agents,
-          standalone: true,
+  testWidgets(
+    'agent create flow exposes twin import page and updates summary',
+    (tester) async {
+      final facade = _FakeSettingsFacade(
+        llmConfig: const LlmConfigSnapshot(
+          localeTag: 'en',
+          enabled: false,
+          providerId: 'openai',
+          selectedProviderOptionId: 'openai',
+          protocol: 'openai',
+          providerOptions: <LlmProviderOption>[
+            LlmProviderOption(
+              id: 'openai',
+              providerId: 'openai',
+              title: 'OpenAI',
+              subtitle: 'Official OpenAI-compatible endpoint.',
+              defaultBaseUrl: 'https://api.openai.com/v1',
+              defaultModel: 'gpt-4o-mini',
+              protocol: 'openai',
+              apiKey: '',
+              isCustom: false,
+            ),
+          ],
+          providerName: 'OpenAI',
+          providerNotes: '',
+          baseUrl: 'https://api.openai.com/v1',
+          apiKey: '',
+          model: 'gpt-4o-mini',
+          reasoningEffort: 'medium',
+          systemPrompt: '',
+          helperText: 'Helper text',
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
+        validationResult: const LlmValidationResult(
+          isSuccess: true,
+          message: 'Validated.',
+        ),
+      );
 
-    expect(find.byIcon(Icons.arrow_back_ios_new_rounded), findsOneWidget);
-    expect(find.text('Settings'), findsOneWidget);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.agents,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.text('New agent'));
-    await tester.pumpAndSettle();
+      expect(find.byIcon(Icons.arrow_back_ios_new_rounded), findsOneWidget);
+      expect(find.text('Settings'), findsOneWidget);
 
-    expect(find.byKey(const ValueKey<String>('agent-create-twin-import')), findsOneWidget);
-    expect(find.text('Not set'), findsOneWidget);
+      await tester.tap(find.text('New agent'));
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const ValueKey<String>('agent-create-twin-import')));
-    await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey<String>('agent-create-twin-import')),
+        findsOneWidget,
+      );
+      expect(find.text('Not set'), findsOneWidget);
 
-    expect(find.text('Twin import'), findsOneWidget);
-    expect(find.text('CHAT HISTORY'), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey<String>('agent-twin-import-run-draft')),
-      findsOneWidget,
-    );
+      await tester.tap(
+        find.byKey(const ValueKey<String>('agent-create-twin-import')),
+      );
+      await tester.pumpAndSettle();
 
-    await tester.ensureVisible(
-      find.byKey(const ValueKey<String>('agent-twin-import-run-draft')),
-    );
-    await tester.pumpAndSettle();
+      expect(find.text('Twin import'), findsOneWidget);
+      expect(find.text('CHAT HISTORY'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey<String>('agent-twin-import-run-draft')),
+        findsOneWidget,
+      );
 
-    await tester.tap(find.byKey(const ValueKey<String>('agent-twin-import-run-draft')));
-    await tester.pumpAndSettle();
+      await tester.ensureVisible(
+        find.byKey(const ValueKey<String>('agent-twin-import-run-draft')),
+      );
+      await tester.pumpAndSettle();
 
-    expect(find.text('Twin import'), findsOneWidget);
-    expect(find.text('ChatLab JSONL'), findsOneWidget);
-  });
+      await tester.tap(
+        find.byKey(const ValueKey<String>('agent-twin-import-run-draft')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Twin import'), findsOneWidget);
+      expect(find.text('ChatLab JSONL'), findsOneWidget);
+    },
+  );
 
   testWidgets('custom provider save action adds a reusable provider option', (
     tester,
@@ -615,6 +625,7 @@ void main() {
       await tester.tap(find.text('Open Debug Tools'));
       await tester.pumpAndSettle();
 
+      expect(find.text('Runtime Diagnostics'), findsOneWidget);
       expect(find.text('Context & Memory Trace'), findsOneWidget);
       expect(find.text('Memory Inspector'), findsOneWidget);
       expect(find.text('Soul Inspector'), findsOneWidget);
@@ -698,6 +709,63 @@ void main() {
           'Bridge note: Detailed soul attribution and relationship gates live in Soul Inspector only.',
           findRichText: true,
         ),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'runtime diagnostics page renders detached host and service state',
+    (tester) async {
+      final facade = _buildDebugSettingsFacade();
+      final debugBridge = _buildDebugBridge();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.aboutVersion,
+            standalone: true,
+            debugBridge: debugBridge,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Open Debug Tools'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Runtime Diagnostics'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Connection & transport'), findsOneWidget);
+      expect(find.text('Local runtime server'), findsOneWidget);
+      expect(find.text('Host & ownership'), findsOneWidget);
+      expect(find.text('Runtime owner work'), findsOneWidget);
+      expect(find.text('Runtime service'), findsOneWidget);
+      expect(find.text('Transport: binder'), findsOneWidget);
+      expect(find.text('Phase: listening'), findsWidgets);
+      expect(find.text('Detached owner: yes'), findsOneWidget);
+      expect(find.text('Active work: yes'), findsWidgets);
+      expect(
+        find.textContaining('Listening port: 42617', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Pending work sessions: session-1',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Service instance: runtime-service-1',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Last start id: 7', findRichText: true),
         findsOneWidget,
       );
     },
@@ -1053,6 +1121,13 @@ void main() {
     (tester) async {
       final facade = _buildDebugSettingsFacade();
       final debugBridge = _FakeDebugBridge(
+        shellSnapshot: const OpenCrayShellSnapshot(
+          initialTab: OpenCrayTab.chat,
+          localeTag: 'en',
+          hostLabel: 'HOST READY',
+          hostSummary: 'Fallback debug bridge.',
+          isHostConnected: true,
+        ),
         runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
           sessionId: 'session-1',
           activeRuns: <OpenCrayChatRunSnapshot>[],
@@ -1624,6 +1699,77 @@ _FakeSettingsFacade _buildDebugSettingsFacade({
 
 _FakeDebugBridge _buildDebugBridge() {
   return _FakeDebugBridge(
+    shellSnapshot: const OpenCrayShellSnapshot(
+      initialTab: OpenCrayTab.chat,
+      localeTag: 'en',
+      hostLabel: 'HOST READY',
+      hostSummary: 'Detached runtime service active.',
+      isHostConnected: true,
+      localRuntimeServerState: OpenCrayLocalRuntimeServerStateSnapshot(
+        phase: 'listening',
+        bindAddress: '127.0.0.1',
+        requestedPort: 42617,
+        listeningPort: 42617,
+        lastStartAttemptAtEpochMs: 1200,
+        lastStartedAtEpochMs: 1300,
+        changedAtEpochMs: 1300,
+      ),
+      hostLifecycle: OpenCrayHostLifecycleSnapshot(
+        processStartId: 'process-1',
+        processStartedAtEpochMs: 1000,
+        hostInstanceId: 'host-ui-1',
+        runtimeOwnerId: 'owner-service-1',
+        hostCreatedAtEpochMs: 2000,
+      ),
+      runtimeOwnerLifecycle: OpenCrayHostLifecycleSnapshot(
+        processStartId: 'process-1',
+        processStartedAtEpochMs: 1000,
+        hostInstanceId: 'host-service-1',
+        runtimeOwnerId: 'owner-service-1',
+        hostCreatedAtEpochMs: 1500,
+      ),
+      runtimeOwnerWorkSummary: OpenCrayRuntimeOwnerWorkSummarySnapshot(
+        hasActiveWork: true,
+        trackedSessionCount: 2,
+        activeRunCount: 1,
+        activeSessionCount: 1,
+        activeSessionIds: <String>['session-1'],
+        pendingWorkSessionIds: <String>['session-1'],
+        liveManagedProcessSessionIds: <String>['session-1'],
+      ),
+      runtimeServiceLifecycle: OpenCrayRuntimeServiceLifecycleSnapshot(
+        processStartId: 'process-1',
+        processStartedAtEpochMs: 1000,
+        serviceInstanceId: 'runtime-service-1',
+        serviceCreatedAtEpochMs: 1400,
+      ),
+      runtimeServiceWorkState: OpenCrayRuntimeServiceWorkStateSnapshot(
+        phase: 'active_work',
+        hasActiveWork: true,
+        keepAliveRequired: true,
+        keepAliveReason: 'active_run',
+        changedAtEpochMs: 2300,
+        activeSinceEpochMs: 1500,
+      ),
+      runtimeServiceKeepAliveState:
+          OpenCrayRuntimeServiceKeepAliveStateSnapshot(
+            phase: 'active_work',
+            idleGraceMs: 30000,
+            stopScheduled: false,
+            hasSeenStartCommand: true,
+            lastStartId: 7,
+            lastStartCommandAtEpochMs: 1450,
+            changedAtEpochMs: 2300,
+          ),
+      runtimeServiceConnectionState:
+          OpenCrayRuntimeServiceConnectionStateSnapshot(
+            phase: 'bound',
+            transport: 'binder',
+            serviceStartRequested: true,
+            bindingRequested: true,
+            binderAvailable: true,
+          ),
+    ),
     runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
       sessionId: 'session-1',
       activeRuns: <OpenCrayChatRunSnapshot>[
@@ -2811,6 +2957,7 @@ class _FakeSettingsFacade implements SettingsFacade {
 
 class _FakeDebugBridge extends OpenCraySeedBridge {
   _FakeDebugBridge({
+    required this.shellSnapshot,
     required this.runtimeSnapshot,
     required Map<String, OpenCrayChatRunSnapshot> runSnapshots,
     required this.memorySnapshot,
@@ -2825,8 +2972,10 @@ class _FakeDebugBridge extends OpenCraySeedBridge {
        _currentMemorySearchSnapshot = memorySearchSnapshot,
        _currentMemorySliceSnapshot = memorySliceSnapshot,
        _seedSoulSnapshot = soulSnapshot,
-       _currentSoulSnapshot = soulSnapshot;
+       _currentSoulSnapshot = soulSnapshot,
+       super(initialSnapshot: shellSnapshot);
 
+  final OpenCrayShellSnapshot shellSnapshot;
   final OpenCrayChatRuntimeSnapshot runtimeSnapshot;
   final Map<String, OpenCrayChatRunSnapshot> _runSnapshots;
   final OpenCrayMemoryDebugSnapshot memorySnapshot;
@@ -2834,11 +2983,11 @@ class _FakeDebugBridge extends OpenCraySeedBridge {
   final OpenCrayMemoryDebugSearchSnapshot memorySearchSnapshot;
   final OpenCrayMemoryDebugSliceSnapshot memorySliceSnapshot;
   final OpenCraySoulDebugSnapshot soulSnapshot;
-  OpenCrayChatRuntimeSnapshot _currentRuntimeSnapshot;
+  final OpenCrayChatRuntimeSnapshot _currentRuntimeSnapshot;
   OpenCrayMemoryDebugSnapshot _currentMemorySnapshot;
   OpenCrayMemoryDebugLinksSnapshot _currentLinksSnapshot;
-  OpenCrayMemoryDebugSearchSnapshot _currentMemorySearchSnapshot;
-  OpenCrayMemoryDebugSliceSnapshot _currentMemorySliceSnapshot;
+  final OpenCrayMemoryDebugSearchSnapshot _currentMemorySearchSnapshot;
+  final OpenCrayMemoryDebugSliceSnapshot _currentMemorySliceSnapshot;
   final OpenCraySoulDebugSnapshot _seedSoulSnapshot;
   OpenCraySoulDebugSnapshot _currentSoulSnapshot;
   String? lastMemorySearchQuery;
@@ -2847,6 +2996,9 @@ class _FakeDebugBridge extends OpenCraySeedBridge {
   int? lastMemorySliceLines;
   String? lastMemoryActionRecordId;
   String? lastMemoryActionId;
+
+  @override
+  Future<OpenCrayShellSnapshot> loadShellSnapshot() async => shellSnapshot;
 
   @override
   Future<OpenCrayChatRuntimeSnapshot> loadChatRuntimeSnapshot() async =>

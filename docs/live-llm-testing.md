@@ -47,6 +47,7 @@ Current live cross-session coverage now includes:
 
 - durable workspace memory write + recall
 - preferred-name carryover and explicit replacement across sessions
+- explicit preferred-name invalidation across sessions, including clearing the projected soul snapshot / overlay
 - durable adaptive preference projection into typed interaction-preference state and cross-session soul overlay
 
 Current live coverage for memory stewardship focuses on the bounded actions that exist today:
@@ -54,6 +55,7 @@ Current live coverage for memory stewardship focuses on the bounded actions that
 - duplicate-refresh style maintenance via `refresh_record_with_candidate` semantics
 - replacement-style maintenance via `supersede_record_with_candidate` semantics
 - record-only invalidation / resolution
+- mixed-turn maintenance where one old preference is invalidated while an unrelated durable fact stays accepted
 - transient candidate dropping
 - candidate-driven and record-only maintenance coexisting in one turn
 

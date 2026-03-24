@@ -49,6 +49,7 @@ data class StewardableMemoryCandidate(
 
 enum class MemoryStewardshipAction(val wireValue: String) {
   REFRESH_RECORD_WITH_CANDIDATE("refresh_record_with_candidate"),
+  MERGE_RECORD_WITH_CANDIDATE("merge_record_with_candidate"),
   REAFFIRM_RECORD("reaffirm_record"),
   RESOLVE_RECORD("resolve_record"),
   SUPERSEDE_RECORD_WITH_CANDIDATE("supersede_record_with_candidate"),

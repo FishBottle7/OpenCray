@@ -12,7 +12,11 @@ import io.flutter.plugin.common.MethodChannel
 internal class OpenCrayFlutterHostBridge(
   private val context: Context,
 ) {
-  private val hostRuntime = OpenCrayHostRuntime.fromContext(context)
+  private val localHostGateway: OpenCrayLocalHostGateway = openCrayLocalHostGateway(context)
+  private val shellGateway: OpenCrayShellGateway = serviceBackedOpenCrayShellGateway(context)
+  private val chatRuntimeGateway: OpenCrayChatRuntimeGateway = serviceBackedOpenCrayChatRuntimeGateway(context)
+  private val skillsGateway: OpenCraySkillsGateway = serviceBackedOpenCraySkillsGateway(context)
+  private val settingsGateway: OpenCraySettingsGateway = serviceBackedOpenCraySettingsGateway(context)
   private val permissionHost: ExternalAccessPermissionRequestHost? =
     context as? ExternalAccessPermissionRequestHost
   private val chatAttachmentPickerHost: ChatAttachmentPickerHost? =
@@ -28,7 +32,7 @@ internal class OpenCrayFlutterHostBridge(
     MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL).setMethodCallHandler(::onMethodCall)
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, SHELL_SNAPSHOT_CHANNEL).setStreamHandler(
       observerStreamHandler(
-        observe = hostRuntime::observeShell,
+        observe = shellGateway::observeShell,
         onDisposeChanged = { disposer -> shellObserverDisposer = disposer },
       ),
     )
@@ -37,25 +41,25 @@ internal class OpenCrayFlutterHostBridge(
       SETTINGS_OVERVIEW_CHANNEL,
     ).setStreamHandler(
       observerStreamHandler(
-        observe = hostRuntime::observeSettingsOverview,
+        observe = settingsGateway::observeSettingsOverview,
         onDisposeChanged = { disposer -> settingsObserverDisposer = disposer },
       ),
     )
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, SKILLS_SNAPSHOT_CHANNEL).setStreamHandler(
       observerStreamHandler(
-        observe = hostRuntime::observeSkills,
+        observe = skillsGateway::observeSkills,
         onDisposeChanged = { disposer -> skillsObserverDisposer = disposer },
       ),
     )
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, CHAT_SNAPSHOT_CHANNEL).setStreamHandler(
       observerStreamHandler(
-        observe = hostRuntime::observeChat,
+        observe = chatRuntimeGateway::observeChat,
         onDisposeChanged = { disposer -> chatObserverDisposer = disposer },
       ),
     )
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, CHAT_RUNTIME_SNAPSHOT_CHANNEL).setStreamHandler(
       observerStreamHandler(
-        observe = hostRuntime::observeChatRuntime,
+        observe = chatRuntimeGateway::observeChatRuntime,
         onDisposeChanged = { disposer -> chatRuntimeObserverDisposer = disposer },
       ),
     )
@@ -87,79 +91,79 @@ internal class OpenCrayFlutterHostBridge(
     }
     runCatching {
       when (call.method) {
-        "loadShellSnapshot" -> hostRuntime.loadShellSnapshot()
-        "loadFilesSnapshot" -> hostRuntime.loadFilesSnapshot()
-        "loadWorkspaceImagePreview" -> hostRuntime.loadWorkspaceImagePreview(
+        "loadShellSnapshot" -> shellGateway.loadShellSnapshot()
+        "loadFilesSnapshot" -> localHostGateway.loadFilesSnapshot()
+        "loadWorkspaceImagePreview" -> localHostGateway.loadWorkspaceImagePreview(
           relativePath = call.argument<String>("relativePath").orEmpty(),
         )
-        "loadWorkspaceTextPreview" -> hostRuntime.loadWorkspaceTextPreview(
+        "loadWorkspaceTextPreview" -> localHostGateway.loadWorkspaceTextPreview(
           relativePath = call.argument<String>("relativePath").orEmpty(),
         )
-        "loadWorkspaceVoicePlaybackSource" -> hostRuntime.loadWorkspaceVoicePlaybackSource(
+        "loadWorkspaceVoicePlaybackSource" -> localHostGateway.loadWorkspaceVoicePlaybackSource(
           relativePath = call.argument<String>("relativePath").orEmpty(),
         )
-        "loadWorkspaceTextDocument" -> hostRuntime.loadWorkspaceTextDocument(
+        "loadWorkspaceTextDocument" -> localHostGateway.loadWorkspaceTextDocument(
           relativePath = call.argument<String>("relativePath").orEmpty(),
         )
         "openWorkspaceEntry" -> {
-          hostRuntime.openWorkspaceEntry(
+          localHostGateway.openWorkspaceEntry(
             relativePath = call.argument<String>("relativePath").orEmpty(),
           )
           null
         }
-        "createWorkspaceFolder" -> hostRuntime.createWorkspaceFolder(
+        "createWorkspaceFolder" -> localHostGateway.createWorkspaceFolder(
           parentRelativePath = call.argument<String>("parentRelativePath").orEmpty(),
           name = call.argument<String>("name").orEmpty(),
         )
-        "createWorkspaceTextFile" -> hostRuntime.createWorkspaceTextFile(
+        "createWorkspaceTextFile" -> localHostGateway.createWorkspaceTextFile(
           parentRelativePath = call.argument<String>("parentRelativePath").orEmpty(),
           name = call.argument<String>("name").orEmpty(),
         )
-        "renameWorkspaceEntry" -> hostRuntime.renameWorkspaceEntry(
+        "renameWorkspaceEntry" -> localHostGateway.renameWorkspaceEntry(
           targetRelativePath = call.argument<String>("targetRelativePath").orEmpty(),
           newName = call.argument<String>("newName").orEmpty(),
         )
-        "deleteWorkspaceEntries" -> hostRuntime.deleteWorkspaceEntries(
+        "deleteWorkspaceEntries" -> localHostGateway.deleteWorkspaceEntries(
           relativePaths = (call.argument<List<String>>("relativePaths") ?: emptyList()),
         )
-        "saveWorkspaceTextDocument" -> hostRuntime.saveWorkspaceTextDocument(
+        "saveWorkspaceTextDocument" -> localHostGateway.saveWorkspaceTextDocument(
           targetRelativePath = call.argument<String>("targetRelativePath").orEmpty(),
           content = call.argument<String>("content").orEmpty(),
         )
-        "pasteWorkspaceEntries" -> hostRuntime.pasteWorkspaceEntries(
+        "pasteWorkspaceEntries" -> localHostGateway.pasteWorkspaceEntries(
           sourceRelativePaths = (call.argument<List<String>>("sourceRelativePaths") ?: emptyList()),
           destinationRelativePath = call.argument<String>("destinationRelativePath").orEmpty(),
           move = call.argument<Boolean>("move") == true,
         )
         "shareWorkspaceEntries" -> {
-          hostRuntime.shareWorkspaceEntries(
+          localHostGateway.shareWorkspaceEntries(
             relativePaths = (call.argument<List<String>>("relativePaths") ?: emptyList()),
           )
           null
         }
         "showNativeToast" -> {
-          hostRuntime.showNativeToast(
+          localHostGateway.showNativeToast(
             message = call.argument<String>("message").orEmpty(),
           )
           null
         }
-        "loadSettingsOverview" -> hostRuntime.loadSettingsOverview()
-        "loadSettingsDetail" -> hostRuntime.loadSettingsDetail(
+        "loadSettingsOverview" -> settingsGateway.loadSettingsOverview()
+        "loadSettingsDetail" -> settingsGateway.loadSettingsDetail(
           routeIdRaw = call.argument<String>("routeId").orEmpty(),
         )
-        "loadNetworkSearchConfig" -> hostRuntime.loadNetworkSearchConfig()
-        "saveNetworkSearchConfig" -> hostRuntime.saveNetworkSearchConfig(
+        "loadNetworkSearchConfig" -> settingsGateway.loadNetworkSearchConfig()
+        "saveNetworkSearchConfig" -> settingsGateway.saveNetworkSearchConfig(
           slots = (call.argument<List<*>>("slots") ?: emptyList<Any?>()).mapNotNull { slot ->
             @Suppress("UNCHECKED_CAST")
             slot as? Map<String, Any?>
           },
         )
-        "loadMediaSpeechConfig" -> hostRuntime.loadMediaSpeechConfig()
-        "saveMediaSpeechConfig" -> hostRuntime.saveMediaSpeechConfig(
+        "loadMediaSpeechConfig" -> settingsGateway.loadMediaSpeechConfig()
+        "saveMediaSpeechConfig" -> settingsGateway.saveMediaSpeechConfig(
           payload = call.arguments<Map<String, Any?>>() ?: emptyMap(),
         )
-        "loadLlmConfig" -> hostRuntime.loadLlmConfig()
-        "saveLlmConfig" -> hostRuntime.saveLlmConfig(
+        "loadLlmConfig" -> settingsGateway.loadLlmConfig()
+        "saveLlmConfig" -> settingsGateway.saveLlmConfig(
           enabled = call.argument<Boolean>("enabled") == true,
           providerId = call.argument<String>("providerId").orEmpty(),
           selectedProviderOptionId = call.argument<String>("selectedProviderOptionId").orEmpty(),
@@ -172,7 +176,7 @@ internal class OpenCrayFlutterHostBridge(
           reasoningEffort = call.argument<String>("reasoningEffort").orEmpty(),
           systemPrompt = call.argument<String>("systemPrompt").orEmpty(),
         )
-        "saveCustomLlmProvider" -> hostRuntime.saveCustomLlmProvider(
+        "saveCustomLlmProvider" -> settingsGateway.saveCustomLlmProvider(
           selectedProviderOptionId = call.argument<String>("selectedProviderOptionId").orEmpty(),
           protocol = call.argument<String>("protocol").orEmpty(),
           providerName = call.argument<String>("providerName").orEmpty(),
@@ -185,7 +189,7 @@ internal class OpenCrayFlutterHostBridge(
         )
         "validateLlmConfig" -> {
           runAsync(result) {
-            hostRuntime.validateLlmConfig(
+            settingsGateway.validateLlmConfig(
               providerId = call.argument<String>("providerId").orEmpty(),
               protocol = call.argument<String>("protocol").orEmpty(),
               baseUrl = call.argument<String>("baseUrl").orEmpty(),
@@ -196,36 +200,36 @@ internal class OpenCrayFlutterHostBridge(
           }
           return
         }
-        "loadPersonalizationConfig" -> hostRuntime.loadPersonalizationConfig()
-        "savePersonalizationConfig" -> hostRuntime.savePersonalizationConfig(
+        "loadPersonalizationConfig" -> settingsGateway.loadPersonalizationConfig()
+        "savePersonalizationConfig" -> settingsGateway.savePersonalizationConfig(
           presetId = call.argument<String>("presetId").orEmpty(),
           customLabel = call.argument<String>("customLabel").orEmpty(),
           customGuidance = call.argument<String>("customGuidance").orEmpty(),
         )
-        "setAppLanguage" -> hostRuntime.setAppLanguage(
+        "setAppLanguage" -> settingsGateway.setAppLanguage(
           languageId = call.argument<String>("languageId").orEmpty(),
         )
-        "runPersonalizationReset" -> hostRuntime.runPersonalizationReset(
+        "runPersonalizationReset" -> settingsGateway.runPersonalizationReset(
           scopeId = call.argument<String>("scopeId").orEmpty(),
         )
         "probeTwinImportSource" -> {
           runAsync(result) {
-            hostRuntime.probeTwinImportSource(
+            localHostGateway.probeTwinImportSource(
               filePath = call.argument<String>("filePath").orEmpty(),
             )
           }
           return
         }
-        "loadMcpSettings" -> hostRuntime.loadMcpSettings()
-        "setMcpMasterEnabled" -> hostRuntime.setMcpMasterEnabled(
+        "loadMcpSettings" -> settingsGateway.loadMcpSettings()
+        "setMcpMasterEnabled" -> settingsGateway.setMcpMasterEnabled(
           enabled = call.argument<Boolean>("enabled") == true,
         )
-        "setMcpServerEnabled" -> hostRuntime.setMcpServerEnabled(
+        "setMcpServerEnabled" -> settingsGateway.setMcpServerEnabled(
           serverId = call.argument<String>("serverId").orEmpty(),
           enabled = call.argument<Boolean>("enabled") == true,
         )
-        "loadSafetySettings" -> hostRuntime.loadSafetySettings()
-        "saveSafetySettings" -> hostRuntime.saveSafetySettings(
+        "loadSafetySettings" -> settingsGateway.loadSafetySettings()
+        "saveSafetySettings" -> settingsGateway.saveSafetySettings(
           automationModeId = call.argument<String>("automationModeId").orEmpty(),
           rollbackJournalEnabled = call.argument<Boolean>("rollbackJournalEnabled") != false,
           maxFilesPerBatch = call.argument<Int>("maxFilesPerBatch") ?: 20,
@@ -258,14 +262,14 @@ internal class OpenCrayFlutterHostBridge(
 
         "loadSkillsSnapshot" -> {
           runAsync(result) {
-            hostRuntime.loadSkillsSnapshot(
+            skillsGateway.loadSkillsSnapshot(
               query = call.argument<String>("query").orEmpty(),
             )
           }
           return
         }
         "setSkillEnabled" -> {
-          hostRuntime.setSkillEnabled(
+          skillsGateway.setSkillEnabled(
             skillId = call.argument<String>("skillId").orEmpty(),
             enabled = call.argument<Boolean>("enabled") == true,
           )
@@ -273,7 +277,7 @@ internal class OpenCrayFlutterHostBridge(
         }
         "installSkillSource" -> {
           runAsync(result) {
-            hostRuntime.installSkillSource(
+            skillsGateway.installSkillSource(
               sourceRef = call.argument<String>("sourceRef").orEmpty(),
               selectedSkillName = call.argument<String>("selectedSkillName").orEmpty(),
             )
@@ -282,7 +286,7 @@ internal class OpenCrayFlutterHostBridge(
         }
         "installSkillSourceBatch" -> {
           runAsync(result) {
-            hostRuntime.installSkillSourceBatch(
+            skillsGateway.installSkillSourceBatch(
               sourceRef = call.argument<String>("sourceRef").orEmpty(),
               selectedSkillNames = (call.argument<List<*>>("selectedSkillNames").orEmpty())
                 .mapNotNull { value -> value as? String },
@@ -292,22 +296,22 @@ internal class OpenCrayFlutterHostBridge(
         }
         "inspectSkillSource" -> {
           runAsync(result) {
-            hostRuntime.inspectSkillSource(
+            skillsGateway.inspectSkillSource(
               call.argument<String>("sourceRef").orEmpty(),
             )
           }
           return
         }
-        "installSuggestedSkill" -> hostRuntime.installSuggestedSkill(
+        "installSuggestedSkill" -> skillsGateway.installSuggestedSkill(
           call.argument<String>("skillId").orEmpty(),
         )
-        "deleteInstalledSkill" -> hostRuntime.deleteInstalledSkill(
+        "deleteInstalledSkill" -> skillsGateway.deleteInstalledSkill(
           call.argument<String>("skillId").orEmpty(),
         )
-        "refreshSkills" -> hostRuntime.refreshSkills()
+        "refreshSkills" -> skillsGateway.refreshSkills()
         "checkInstalledSkillUpdates" -> {
           runAsync(result) {
-            hostRuntime.checkInstalledSkillUpdates(
+            skillsGateway.checkInstalledSkillUpdates(
               skillId = call.argument<String>("skillId").orEmpty(),
             )
           }
@@ -315,44 +319,44 @@ internal class OpenCrayFlutterHostBridge(
         }
         "updateInstalledSkill" -> {
           runAsync(result) {
-            hostRuntime.updateInstalledSkill(
+            skillsGateway.updateInstalledSkill(
               skillId = call.argument<String>("skillId").orEmpty(),
             )
           }
           return
         }
-        "loadSkillInstructions" -> hostRuntime.loadSkillInstructions(
+        "loadSkillInstructions" -> skillsGateway.loadSkillInstructions(
           call.argument<String>("skillId").orEmpty(),
         )
-        "activateSkillsInstallSource" -> hostRuntime.activateSkillsInstallSource(
+        "activateSkillsInstallSource" -> skillsGateway.activateSkillsInstallSource(
           call.argument<String>("sourceId").orEmpty(),
         )
 
-        "loadChatSnapshot" -> hostRuntime.loadChatSnapshot()
-        "loadChatRuntimeSnapshot" -> hostRuntime.loadChatRuntimeSnapshot()
-        "loadChatRunSnapshot" -> hostRuntime.loadChatRunSnapshot(
+        "loadChatSnapshot" -> chatRuntimeGateway.loadChatSnapshot()
+        "loadChatRuntimeSnapshot" -> chatRuntimeGateway.loadChatRuntimeSnapshot()
+        "loadChatRunSnapshot" -> chatRuntimeGateway.loadChatRunSnapshot(
           call.argument<String>("runId").orEmpty(),
         )
-        "loadMemoryDebugSnapshot" -> hostRuntime.loadMemoryDebugSnapshot()
-        "loadMemoryDebugLinksSnapshot" -> hostRuntime.loadMemoryDebugLinksSnapshot()
-        "loadSoulDebugSnapshot" -> hostRuntime.loadSoulDebugSnapshot()
-        "searchMemoryDebug" -> hostRuntime.searchMemoryDebug(
+        "loadMemoryDebugSnapshot" -> chatRuntimeGateway.loadMemoryDebugSnapshot()
+        "loadMemoryDebugLinksSnapshot" -> chatRuntimeGateway.loadMemoryDebugLinksSnapshot()
+        "loadSoulDebugSnapshot" -> chatRuntimeGateway.loadSoulDebugSnapshot()
+        "searchMemoryDebug" -> chatRuntimeGateway.searchMemoryDebug(
           query = call.argument<String>("query").orEmpty(),
           maxResults = call.argument<Number>("maxResults")?.toInt() ?: 4,
           minScore = call.argument<Number>("minScore")?.toInt() ?: 1,
         )
-        "getMemoryDebugSlice" -> hostRuntime.getMemoryDebugSlice(
+        "getMemoryDebugSlice" -> chatRuntimeGateway.getMemoryDebugSlice(
           path = call.argument<String>("path").orEmpty(),
           fromLine = call.argument<Number>("fromLine")?.toInt(),
           lines = call.argument<Number>("lines")?.toInt() ?: 12,
         )
-        "applyMemoryDebugAction" -> hostRuntime.applyMemoryDebugAction(
+        "applyMemoryDebugAction" -> chatRuntimeGateway.applyMemoryDebugAction(
           recordId = call.argument<String>("recordId").orEmpty(),
           actionId = call.argument<String>("actionId").orEmpty(),
         )
         "waitForChatRun" -> {
           runAsync(result) {
-            hostRuntime.waitForChatRun(
+            chatRuntimeGateway.waitForChatRun(
               runId = call.argument<String>("runId").orEmpty(),
               timeoutMs = call.argument<Number>("timeoutMs")?.toLong() ?: 15_000L,
             )
@@ -360,27 +364,27 @@ internal class OpenCrayFlutterHostBridge(
           return
         }
         "createChatSession" -> {
-          hostRuntime.createChatSession()
+          chatRuntimeGateway.createChatSession()
           null
         }
 
         "copyChatSession" -> {
-          hostRuntime.copyChatSession(call.argument<String>("sessionId").orEmpty())
+          chatRuntimeGateway.copyChatSession(call.argument<String>("sessionId").orEmpty())
           null
         }
 
         "deleteChatSession" -> {
-          hostRuntime.deleteChatSession(call.argument<String>("sessionId").orEmpty())
+          chatRuntimeGateway.deleteChatSession(call.argument<String>("sessionId").orEmpty())
           null
         }
 
         "selectChatSession" -> {
-          hostRuntime.selectChatSession(call.argument<String>("sessionId").orEmpty())
+          chatRuntimeGateway.selectChatSession(call.argument<String>("sessionId").orEmpty())
           null
         }
 
         "branchChatSessionFromMessage" -> {
-          hostRuntime.branchChatSessionFromMessage(
+          chatRuntimeGateway.branchChatSessionFromMessage(
             sessionId = call.argument<String>("sessionId").orEmpty(),
             messageId = call.argument<String>("messageId").orEmpty(),
           )
@@ -388,7 +392,7 @@ internal class OpenCrayFlutterHostBridge(
         }
 
         "deleteChatMessage" -> {
-          hostRuntime.deleteChatMessage(
+          chatRuntimeGateway.deleteChatMessage(
             sessionId = call.argument<String>("sessionId").orEmpty(),
             messageId = call.argument<String>("messageId").orEmpty(),
           )
@@ -396,40 +400,40 @@ internal class OpenCrayFlutterHostBridge(
         }
 
         "recallChatMessage" -> {
-          hostRuntime.recallChatMessage(
+          chatRuntimeGateway.recallChatMessage(
             sessionId = call.argument<String>("sessionId").orEmpty(),
             messageId = call.argument<String>("messageId").orEmpty(),
           )
           null
         }
 
-        "submitChatMessage" -> hostRuntime.submitChatMessage(
+        "submitChatMessage" -> chatRuntimeGateway.submitChatMessage(
           text = call.argument<String>("text").orEmpty(),
           attachments = parseDraftChatAttachments(call),
         )
         "approveChatApproval" -> {
-          hostRuntime.approveChatApproval(
+          chatRuntimeGateway.approveChatApproval(
             call.argument<String>("runId")?.takeIf(String::isNotBlank)
               ?: call.argument<String>("taskId").orEmpty(),
           )
           null
         }
         "rejectChatApproval" -> {
-          hostRuntime.rejectChatApproval(
+          chatRuntimeGateway.rejectChatApproval(
             call.argument<String>("runId")?.takeIf(String::isNotBlank)
               ?: call.argument<String>("taskId").orEmpty(),
           )
           null
         }
         "cancelChatRun" -> {
-          hostRuntime.cancelChatRun(
+          chatRuntimeGateway.cancelChatRun(
             call.argument<String>("runId")?.takeIf(String::isNotBlank)
               ?: call.argument<String>("taskId").orEmpty(),
           )
           null
         }
         "retryChatRun" -> {
-          hostRuntime.retryChatRun(
+          chatRuntimeGateway.retryChatRun(
             call.argument<String>("runId")?.takeIf(String::isNotBlank)
               ?: call.argument<String>("taskId").orEmpty(),
           )
@@ -476,7 +480,7 @@ internal class OpenCrayFlutterHostBridge(
         }
         Thread {
           runCatching {
-            hostRuntime.importDraftChatAttachments(
+            localHostGateway.importDraftChatAttachments(
               requestedKind = requestedKind,
               uriStrings = pickedUris,
             )

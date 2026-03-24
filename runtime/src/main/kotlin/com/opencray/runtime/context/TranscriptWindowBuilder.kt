@@ -115,6 +115,5 @@ class TranscriptWindowBuilder(
     content.replace(Regex("\\s+"), " ").trim()
 
   private fun isToolCallMarker(message: RuntimeConversationMessage): Boolean =
-    message.kind == RuntimeConversationMessageKind.TOOL_CALL ||
-      message.content.startsWith("tool_call ")
+    message.isAssistantToolCallMessage()
 }

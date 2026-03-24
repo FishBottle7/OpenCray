@@ -147,6 +147,7 @@ data class PromptAssemblyInput(
   val sessionContext: AgentRuntimeSessionContext,
   val activeSkillCapsule: ActiveSkillCapsule? = null,
   val nativeToolCallingEnabled: Boolean = false,
+  val legacyJsonFallbackEnabled: Boolean = false,
   val toolDefinitions: List<AgentToolDefinition>,
   val liveConversation: List<RuntimeConversationMessage>,
 )
@@ -166,6 +167,7 @@ data class ManagedPromptContext(
   val pruningSummary: TranscriptPruningSummary? = null,
   val compactionSummary: CompactionSummary? = null,
   val nativeToolCallingEnabled: Boolean = false,
+  val legacyJsonFallbackEnabled: Boolean = false,
   val toolDefinitions: List<AgentToolDefinition> = emptyList(),
   val transcriptWindow: TranscriptWindow = TranscriptWindow(
     messages = emptyList(),

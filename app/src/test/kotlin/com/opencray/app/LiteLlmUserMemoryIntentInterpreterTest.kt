@@ -104,6 +104,8 @@ class LiteLlmUserMemoryIntentInterpreterTest {
     assertTrue(prompt.contains("If the user tells the agent how to address them"))
     assertTrue(prompt.contains("If one message contains both a durable workspace rule and a durable workspace fact"))
     assertTrue(prompt.contains("Example mapping: '以后叫我阿澄。'"))
+    assertTrue(prompt.contains("Example mapping: '以后不要再叫我阿澄了。' -> {\"intents\":[]}"))
+    assertTrue(prompt.contains("Example mapping: '别再叫我阿澄了，以后叫我阿青。'"))
     assertTrue(prompt.contains("Example mapping: '以后这个项目不要用 git reset --hard，而且这个项目使用 Gradle wrapper。'"))
     assertTrue(prompt.contains("\"preference_key\":\"user_preferred_name\""))
     assertTrue(prompt.contains("This project uses Gradle wrapper"))
@@ -113,6 +115,10 @@ class LiteLlmUserMemoryIntentInterpreterTest {
     assertTrue(prompt.contains("agent_verbosity always uses session scope"))
     assertTrue(prompt.contains("user_preferred_name stores how the agent should address the user"))
     assertTrue(prompt.contains("user_address_style stores the desired user-addressing closeness"))
+    assertTrue(prompt.contains("A durable naming request like '以后叫我阿澄。', '以后称呼我阿澄。', or '今后直接叫我 A-Cheng。' should emit exactly one user_preference intent"))
+    assertTrue(prompt.contains("Only emit user_preferred_name or user_address_style when the user gives a concrete preferred value to use."))
+    assertTrue(prompt.contains("If the user only invalidates an existing naming or addressing preference without naming a replacement"))
+    assertTrue(prompt.contains("Do not turn pure negations like '以后不要再叫我阿澄了。' into generic durable memories"))
     assertTrue(prompt.contains("preference_extensions may only be used with interaction_preference_signal"))
     assertTrue(prompt.contains("When using interaction_preference_signal, set preference_value to a short placeholder like adaptive"))
     assertTrue(prompt.contains(MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION))
@@ -262,6 +268,43 @@ class LiteLlmUserMemoryIntentInterpreterTest {
     assertTrue(prompt.contains("\"interaction_preference_playfulness_direction\":\"higher\""))
     assertTrue(prompt.contains("\"interaction_preference_reassurance_direction\":\"higher\""))
     assertTrue(prompt.contains("\"scope\":\"session\""))
+  }
+
+  @Test
+  fun promptTreatsPreferredNameInvalidationWithoutReplacementAsRecordOnlyMaintenance() {
+    val providerClient = RecordingProviderClient(
+      result = LiteLlmProviderResult.Success(outputText = """{"intents":[]}"""),
+    )
+    val interpreter = LiteLlmUserMemoryIntentInterpreter(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerId = "openai",
+          protocol = LlmProviderProtocols.OPENAI,
+          baseUrl = "https://api.openai.com/v1",
+          apiKey = "test-key",
+          model = "gpt-4o-mini",
+        )
+      },
+      providerClient = providerClient,
+    )
+
+    val result = interpreter.interpret(
+      UserMemoryIntentRequest(
+        sessionId = "session-5",
+        userInput = "以后不要再叫我阿澄了。",
+      ),
+    )
+
+    val success = result as UserMemoryIntentInterpretation.Success
+    assertTrue(success.intents.isEmpty())
+    val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
+    assertTrue(prompt.contains("Only emit user_preferred_name or user_address_style when the user gives a concrete preferred value to use."))
+    assertTrue(prompt.contains("A durable naming request like '以后叫我阿澄。', '以后称呼我阿澄。', or '今后直接叫我 A-Cheng。' should emit exactly one user_preference intent"))
+    assertTrue(prompt.contains("If the user only invalidates an existing naming or addressing preference without naming a replacement"))
+    assertTrue(prompt.contains("Do not turn pure negations like '以后不要再叫我阿澄了。' into generic durable memories such as 'Do not call the user 阿澄'."))
+    assertTrue(prompt.contains("Example mapping: '以后不要再叫我阿澄了。' -> {\"intents\":[]}"))
+    assertTrue(prompt.contains("Example mapping: '别再叫我阿澄了，以后叫我阿青。'"))
   }
 
   private class RecordingProviderClient(

@@ -194,4 +194,6 @@ object MemoryRecordExtensionKeys {
   const val PREFERENCE_KEY: String = "preference_key"
   const val PREFERENCE_VALUE: String = "preference_value"
   const val PREFERENCE_TEMPORALITY: String = "preference_temporality"
+  const val MERGED_FROM_RECORD_IDS: String = "merged_from_record_ids"
+  const val MERGE_STRATEGY: String = "merge_strategy"
 }

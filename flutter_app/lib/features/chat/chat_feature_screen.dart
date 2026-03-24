@@ -863,6 +863,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     const double toolbarReserveHeight = 44;
     final double topGlassBarHeight =
         MediaQuery.paddingOf(context).top + toolbarReserveHeight + 4;
+    final bool showApprovalSurface =
+        !_isMessageSelectionMode && _state.pendingApprovals.isNotEmpty;
     final Widget bottomSurface = _isMessageSelectionMode
         ? _ChatSelectionToolbar(
             copy: widget.copy,
@@ -877,6 +879,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                 : () {
                     _deleteSelectedMessages();
                   },
+          )
+        : showApprovalSurface
+        ? _PendingApprovalOverlaySurface(
+            copy: widget.copy,
+            approvals: _state.pendingApprovals,
+            busyApprovalTaskIds: _approvalTaskIdsInFlight,
+            onApproveApproval: _approvePendingApproval,
+            onRejectApproval: _rejectPendingApproval,
           )
         : _ComposerCard(
             copy: widget.copy,
@@ -925,10 +935,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                               voicePlaybackControllerFactory:
                                   widget.voicePlaybackControllerFactory,
                               selectedMessageIds: _selectedMessageIds,
-                              busyApprovalTaskIds: _approvalTaskIdsInFlight,
                               busyRetryRunIds: _retryRunIdsInFlight,
-                              onApproveApproval: _approvePendingApproval,
-                              onRejectApproval: _rejectPendingApproval,
                               onRetryRunTrace: _retryRunTrace,
                               onMessageLongPress: _handleMessageLongPress,
                               onMessageSelectionToggle: _toggleMessageSelection,
@@ -4988,10 +4995,7 @@ class _ChatScrollContent extends StatelessWidget {
     required this.state,
     required this.voicePlaybackControllerFactory,
     required this.selectedMessageIds,
-    required this.busyApprovalTaskIds,
     required this.busyRetryRunIds,
-    required this.onApproveApproval,
-    required this.onRejectApproval,
     required this.onRetryRunTrace,
     required this.onMessageLongPress,
     required this.onMessageSelectionToggle,
@@ -5003,10 +5007,7 @@ class _ChatScrollContent extends StatelessWidget {
   final ChatFeatureState state;
   final ChatVoicePlaybackControllerFactory? voicePlaybackControllerFactory;
   final Set<String> selectedMessageIds;
-  final Set<String> busyApprovalTaskIds;
   final Set<String> busyRetryRunIds;
-  final ValueChanged<ChatPendingApprovalData> onApproveApproval;
-  final ValueChanged<ChatPendingApprovalData> onRejectApproval;
   final ValueChanged<ChatRunTraceData> onRetryRunTrace;
   final void Function(ChatMessageData, Rect, String?) onMessageLongPress;
   final ValueChanged<ChatMessageData> onMessageSelectionToggle;
@@ -5032,12 +5033,8 @@ class _ChatScrollContent extends StatelessWidget {
             voicePlaybackControllerFactory: voicePlaybackControllerFactory,
             messages: state.messages,
             runTraces: state.runTraces,
-            pendingApprovals: state.pendingApprovals,
             selectedMessageIds: selectedMessageIds,
-            busyApprovalTaskIds: busyApprovalTaskIds,
             busyRetryRunIds: busyRetryRunIds,
-            onApproveApproval: onApproveApproval,
-            onRejectApproval: onRejectApproval,
             onRetryRunTrace: onRetryRunTrace,
             onMessageLongPress: onMessageLongPress,
             onMessageSelectionToggle: onMessageSelectionToggle,
@@ -5352,61 +5349,207 @@ class _SummaryCard extends StatelessWidget {
   }
 }
 
+class _PendingApprovalOverlaySurface extends StatelessWidget {
+  const _PendingApprovalOverlaySurface({
+    required this.copy,
+    required this.approvals,
+    required this.busyApprovalTaskIds,
+    required this.onApproveApproval,
+    required this.onRejectApproval,
+  });
+
+  final OpenCrayUiCopy copy;
+  final List<ChatPendingApprovalData> approvals;
+  final Set<String> busyApprovalTaskIds;
+  final ValueChanged<ChatPendingApprovalData> onApproveApproval;
+  final ValueChanged<ChatPendingApprovalData> onRejectApproval;
+
+  @override
+  Widget build(BuildContext context) {
+    final ChatPendingApprovalData activeApproval = approvals.first;
+    final List<ChatPendingApprovalData> queuedApprovals = approvals.length <= 1
+        ? const <ChatPendingApprovalData>[]
+        : approvals.sublist(1);
+
+    return _ApprovalGlassSurface(
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          key: const ValueKey<String>('chat-approval-surface-content'),
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            _PendingApprovalCardStack(
+              copy: copy,
+              activeApproval: activeApproval,
+              queuedApprovals: queuedApprovals,
+            ),
+            const SizedBox(height: 8),
+            _ApprovalActionRow(
+              approval: activeApproval,
+              isBusy: busyApprovalTaskIds.contains(activeApproval.approvalId),
+              onApprove: () => onApproveApproval(activeApproval),
+              onReject: () => onRejectApproval(activeApproval),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ApprovalGlassSurface extends StatelessWidget {
+  const _ApprovalGlassSurface({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(28),
+      child: Stack(
+        children: <Widget>[
+          Positioned.fill(
+            child: IgnorePointer(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                child: DecoratedBox(
+                  key: const ValueKey<String>('chat-approval-surface'),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(28),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.52),
+                    ),
+                    boxShadow: <BoxShadow>[
+                      BoxShadow(
+                        color: const Color(0x12000000),
+                        blurRadius: 22,
+                        offset: const Offset(0, 10),
+                      ),
+                    ],
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: <Color>[
+                        Colors.white.withValues(alpha: 0.42),
+                        Colors.white.withValues(alpha: 0.32),
+                        const Color(0xFFF3F7FF).withValues(alpha: 0.26),
+                        const Color(0xFFD7E5FF).withValues(alpha: 0.18),
+                      ],
+                      stops: const <double>[0, 0.28, 0.72, 1],
+                    ),
+                  ),
+                  child: const SizedBox.expand(),
+                ),
+              ),
+            ),
+          ),
+          child,
+        ],
+      ),
+    );
+  }
+}
+
+class _PendingApprovalCardStack extends StatelessWidget {
+  const _PendingApprovalCardStack({
+    required this.copy,
+    required this.activeApproval,
+    required this.queuedApprovals,
+  });
+
+  final OpenCrayUiCopy copy;
+  final ChatPendingApprovalData activeApproval;
+  final List<ChatPendingApprovalData> queuedApprovals;
+
+  @override
+  Widget build(BuildContext context) {
+    final List<ChatPendingApprovalData> previewApprovals = queuedApprovals
+        .take(2)
+        .toList(growable: false);
+    if (previewApprovals.isEmpty) {
+      return _PendingApprovalCard(copy: copy, approval: activeApproval);
+    }
+    final int previewCount = previewApprovals.length;
+    return Padding(
+      padding: EdgeInsets.only(bottom: 12.0 * previewCount),
+      child: Stack(
+        key: const ValueKey<String>('chat-approval-stack'),
+        clipBehavior: Clip.none,
+        children: <Widget>[
+          for (int index = previewApprovals.length - 1; index >= 0; index -= 1)
+            Positioned(
+              left: 6.0 * (index + 1),
+              right: 6.0 * (index + 1),
+              top: 12.0 * (index + 1),
+              child: IgnorePointer(
+                child: Opacity(
+                  opacity: 0.9 - (index * 0.16),
+                  child: _PendingApprovalCard(
+                    copy: copy,
+                    approval: previewApprovals[index],
+                    isPreview: true,
+                  ),
+                ),
+              ),
+            ),
+          _PendingApprovalCard(copy: copy, approval: activeApproval),
+        ],
+      ),
+    );
+  }
+}
+
 class _PendingApprovalCard extends StatelessWidget {
   const _PendingApprovalCard({
     required this.copy,
     required this.approval,
-    required this.isBusy,
-    required this.onApprove,
-    required this.onReject,
+    this.isPreview = false,
   });
 
   final OpenCrayUiCopy copy;
   final ChatPendingApprovalData approval;
-  final bool isBusy;
-  final VoidCallback onApprove;
-  final VoidCallback onReject;
+  final bool isPreview;
 
   @override
   Widget build(BuildContext context) {
-    final String requestSummary = approval.requestSummary.trim();
-    final String primaryDetail = approval.primaryDetail.trim();
-    final List<String> pathDetails = approval.pathDetails
-        .map((path) => path.trim())
-        .where((path) => path.isNotEmpty)
-        .toList(growable: false);
-    final String workingDirectory = approval.workingDirectory.trim();
-    final String reason = approval.reason.trim();
-    final String message = approval.message.trim();
-    final String body = approval.body.trim();
-    final String detailMessage = message.isNotEmpty
-        ? message
-        : (requestSummary.isEmpty &&
-              primaryDetail.isEmpty &&
-              pathDetails.isEmpty &&
-              workingDirectory.isEmpty &&
-              reason.isEmpty)
-        ? body
-        : '';
-    final Color accentColor = approval.isHighRisk
-        ? _ChatPalette.highRiskAccent
-        : _ChatPalette.accent;
+    final _PendingApprovalPresentation presentation =
+        _PendingApprovalPresentation.fromApproval(approval);
     final Color surfaceColor = approval.isHighRisk
-        ? _ChatPalette.highRiskSurface
-        : Colors.white;
+        ? const Color(0xFFFFF8F5)
+        : const Color(0xFFF7F9FC);
+    final Color borderColor = approval.isHighRisk
+        ? const Color(0xFFF0D6C5)
+        : const Color(0xFFDCE3ED);
+    final Color reasonColor = approval.isHighRisk
+        ? const Color(0xFF7B5B47)
+        : const Color(0xFF5B6675);
+    final TextStyle detailStyle = _ChatTextStyles.approvalRequest.copyWith(
+      color: const Color(0xFF1E2430),
+    );
+    final List<String> previewLines = <String>[
+      presentation.primaryLine,
+      if (presentation.secondaryLines.isNotEmpty)
+        presentation.secondaryLines.first,
+      if (presentation.reasonLine != null) presentation.reasonLine!,
+    ];
+    final List<String> activeLines = <String>[
+      presentation.primaryLine,
+      ...presentation.secondaryLines,
+      if (presentation.reasonLine != null) presentation.reasonLine!,
+      if (presentation.messageLine != null) presentation.messageLine!,
+    ];
+    final List<String> visibleLines = isPreview ? previewLines : activeLines;
 
     return DecoratedBox(
+      key: ValueKey<String>('chat-approval-card-${approval.approvalId}'),
       decoration: BoxDecoration(
         color: surfaceColor,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: approval.isHighRisk
-              ? _ChatPalette.highRiskBorder
-              : _ChatPalette.border,
-        ),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: borderColor),
       ),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
@@ -5418,33 +5561,10 @@ class _PendingApprovalCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
                       Text(approval.title, style: _ChatTextStyles.cardTitle),
-                      if (approval.toolName.trim().isNotEmpty) ...<Widget>[
-                        const SizedBox(height: 6),
-                        DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: _ChatPalette.subtleSurface,
-                            borderRadius: BorderRadius.circular(999),
-                            border: Border.all(color: _ChatPalette.border),
-                          ),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 4,
-                            ),
-                            child: Text(
-                              approval.toolName,
-                              style: _ChatTextStyles.approvalAction.copyWith(
-                                color: _ChatPalette.textPrimary,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
                     ],
                   ),
                 ),
-                if (approval.isHighRisk) ...<Widget>[
+                if (approval.isHighRisk && !isPreview) ...<Widget>[
                   const SizedBox(width: 12),
                   DecoratedBox(
                     decoration: BoxDecoration(
@@ -5465,71 +5585,31 @@ class _PendingApprovalCard extends StatelessWidget {
                 ],
               ],
             ),
-            if (requestSummary.isNotEmpty) ...<Widget>[
-              const SizedBox(height: 8),
-              _ApprovalDetailSection(
-                label: copy.chatApprovalRequestLabel,
-                value: requestSummary,
-                emphasize: true,
+            const SizedBox(height: 10),
+            for (
+              int index = 0;
+              index < visibleLines.length;
+              index += 1
+            ) ...<Widget>[
+              if (index > 0) const SizedBox(height: 8),
+              Text(
+                visibleLines[index],
+                maxLines: isPreview && index > 0 ? 1 : null,
+                overflow: isPreview && index > 0
+                    ? TextOverflow.ellipsis
+                    : TextOverflow.visible,
+                style: index == 0
+                    ? detailStyle
+                    : _ChatTextStyles.approvalReason.copyWith(
+                        color:
+                            index == visibleLines.length - 1 &&
+                                presentation.messageLine != null &&
+                                visibleLines[index] == presentation.messageLine
+                            ? _ChatPalette.textSecondary
+                            : reasonColor,
+                      ),
               ),
             ],
-            if (primaryDetail.isNotEmpty &&
-                primaryDetail != requestSummary) ...<Widget>[
-              const SizedBox(height: 8),
-              _ApprovalDetailSection(
-                label: copy.chatApprovalDetailsLabel,
-                value: primaryDetail,
-              ),
-            ],
-            if (pathDetails.isNotEmpty) ...<Widget>[
-              const SizedBox(height: 8),
-              _ApprovalDetailSection(
-                label: copy.chatApprovalPathsLabel,
-                value: pathDetails.join('\n'),
-              ),
-            ],
-            if (workingDirectory.isNotEmpty) ...<Widget>[
-              const SizedBox(height: 8),
-              _ApprovalDetailSection(
-                label: copy.chatApprovalWorkingDirectoryLabel,
-                value: workingDirectory,
-              ),
-            ],
-            if (reason.isNotEmpty) ...<Widget>[
-              const SizedBox(height: 8),
-              _ApprovalDetailSection(
-                label: copy.chatApprovalReasonLabel,
-                value: reason,
-              ),
-            ],
-            if (detailMessage.isNotEmpty) ...<Widget>[
-              const SizedBox(height: 8),
-              Text(detailMessage, style: _ChatTextStyles.bodyMuted),
-            ],
-            const SizedBox(height: 12),
-            Row(
-              children: <Widget>[
-                Expanded(
-                  child: _ApprovalActionButton(
-                    label: approval.rejectLabel,
-                    foregroundColor: _ChatPalette.textSecondary,
-                    backgroundColor: Colors.white,
-                    borderColor: _ChatPalette.border,
-                    onPressed: isBusy ? null : onReject,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _ApprovalActionButton(
-                    label: approval.approveLabel,
-                    foregroundColor: Colors.white,
-                    backgroundColor: accentColor,
-                    borderColor: accentColor,
-                    onPressed: isBusy ? null : onApprove,
-                  ),
-                ),
-              ],
-            ),
           ],
         ),
       ),
@@ -5537,42 +5617,102 @@ class _PendingApprovalCard extends StatelessWidget {
   }
 }
 
-class _ApprovalDetailSection extends StatelessWidget {
-  const _ApprovalDetailSection({
-    required this.label,
-    required this.value,
-    this.emphasize = false,
+class _ApprovalActionRow extends StatelessWidget {
+  const _ApprovalActionRow({
+    required this.approval,
+    required this.isBusy,
+    required this.onApprove,
+    required this.onReject,
   });
 
-  final String label;
-  final String value;
-  final bool emphasize;
+  final ChatPendingApprovalData approval;
+  final bool isBusy;
+  final VoidCallback onApprove;
+  final VoidCallback onReject;
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    final Color accentColor = approval.isHighRisk
+        ? const Color(0xFFF97316)
+        : _ChatPalette.accent;
+    return Row(
       children: <Widget>[
-        Text(label, style: _ChatTextStyles.sectionLabel),
-        const SizedBox(height: 4),
-        DecoratedBox(
-          decoration: BoxDecoration(
-            color: emphasize ? _ChatPalette.subtleSurface : Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: _ChatPalette.border),
+        Expanded(
+          child: _ApprovalActionButton(
+            label: approval.rejectLabel,
+            foregroundColor: const Color(0xFF526071),
+            backgroundColor: Colors.white,
+            borderColor: const Color(0xFFD9DEE8),
+            onPressed: isBusy ? null : onReject,
           ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            child: Text(
-              value,
-              style: _ChatTextStyles.bodyMuted.copyWith(
-                color: _ChatPalette.textPrimary,
-                fontWeight: emphasize ? FontWeight.w600 : FontWeight.w500,
-              ),
-            ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _ApprovalActionButton(
+            label: approval.approveLabel,
+            foregroundColor: Colors.white,
+            backgroundColor: accentColor,
+            borderColor: accentColor,
+            onPressed: isBusy ? null : onApprove,
           ),
         ),
       ],
+    );
+  }
+}
+
+class _PendingApprovalPresentation {
+  const _PendingApprovalPresentation({
+    required this.primaryLine,
+    required this.secondaryLines,
+    required this.reasonLine,
+    required this.messageLine,
+  });
+
+  final String primaryLine;
+  final List<String> secondaryLines;
+  final String? reasonLine;
+  final String? messageLine;
+
+  factory _PendingApprovalPresentation.fromApproval(
+    ChatPendingApprovalData approval,
+  ) {
+    final String requestSummary = approval.requestSummary.trim();
+    final String primaryDetail = approval.primaryDetail.trim();
+    final List<String> pathDetails = approval.pathDetails
+        .map((path) => path.trim())
+        .where((path) => path.isNotEmpty)
+        .toList(growable: false);
+    final String workingDirectory = approval.workingDirectory.trim();
+    final String reason = approval.reason.trim();
+    final String message = approval.message.trim();
+    final String body = approval.body.trim();
+
+    final String primaryLine = requestSummary.isNotEmpty
+        ? requestSummary
+        : primaryDetail.isNotEmpty
+        ? primaryDetail
+        : pathDetails.isNotEmpty
+        ? pathDetails.first
+        : body;
+    final List<String> secondaryLines = <String>[
+      if (primaryDetail.isNotEmpty &&
+          primaryDetail != primaryLine &&
+          !pathDetails.contains(primaryDetail))
+        primaryDetail,
+      ...pathDetails.where((path) => path != primaryLine),
+      if (workingDirectory.isNotEmpty) 'Working directory  $workingDirectory',
+    ];
+    final String? reasonLine = reason.isEmpty ? null : 'Reason  $reason';
+    final String? messageLine =
+        message.isNotEmpty && message != body && message != reason
+        ? message
+        : null;
+    return _PendingApprovalPresentation(
+      primaryLine: primaryLine,
+      secondaryLines: secondaryLines,
+      reasonLine: reasonLine,
+      messageLine: messageLine,
     );
   }
 }
@@ -5929,12 +6069,8 @@ class _MessageList extends StatelessWidget {
     required this.voicePlaybackControllerFactory,
     required this.messages,
     required this.runTraces,
-    required this.pendingApprovals,
     required this.selectedMessageIds,
-    required this.busyApprovalTaskIds,
     required this.busyRetryRunIds,
-    required this.onApproveApproval,
-    required this.onRejectApproval,
     required this.onRetryRunTrace,
     required this.onMessageLongPress,
     required this.onMessageSelectionToggle,
@@ -5946,12 +6082,8 @@ class _MessageList extends StatelessWidget {
   final ChatVoicePlaybackControllerFactory? voicePlaybackControllerFactory;
   final List<ChatMessageData> messages;
   final List<ChatRunTraceData> runTraces;
-  final List<ChatPendingApprovalData> pendingApprovals;
   final Set<String> selectedMessageIds;
-  final Set<String> busyApprovalTaskIds;
   final Set<String> busyRetryRunIds;
-  final ValueChanged<ChatPendingApprovalData> onApproveApproval;
-  final ValueChanged<ChatPendingApprovalData> onRejectApproval;
   final ValueChanged<ChatRunTraceData> onRetryRunTrace;
   final void Function(ChatMessageData, Rect, String?) onMessageLongPress;
   final ValueChanged<ChatMessageData> onMessageSelectionToggle;
@@ -5959,10 +6091,6 @@ class _MessageList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final remainingApprovals = List<ChatPendingApprovalData>.of(
-      pendingApprovals,
-      growable: true,
-    );
     final children = <Widget>[];
     int? previousTimestampEpochMs;
 
@@ -6064,52 +6192,6 @@ class _MessageList extends StatelessWidget {
               trace: trace,
               isRetryBusy: busyRetryRunIds.contains(trace.retryId),
               onRetry: trace.isRetryable ? () => onRetryRunTrace(trace) : null,
-            ),
-          ),
-        ),
-      );
-      final matchingApprovalIndex = remainingApprovals.indexWhere(
-        (approval) =>
-            approval.runId == trace.runId || approval.taskId == trace.taskId,
-      );
-      if (matchingApprovalIndex >= 0) {
-        final approval = remainingApprovals.removeAt(matchingApprovalIndex);
-        children.add(
-          Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 292),
-                child: _PendingApprovalCard(
-                  copy: copy,
-                  approval: approval,
-                  isBusy: busyApprovalTaskIds.contains(approval.approvalId),
-                  onApprove: () => onApproveApproval(approval),
-                  onReject: () => onRejectApproval(approval),
-                ),
-              ),
-            ),
-          ),
-        );
-      }
-    }
-
-    for (final approval in remainingApprovals) {
-      children.add(
-        Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 292),
-              child: _PendingApprovalCard(
-                copy: copy,
-                approval: approval,
-                isBusy: busyApprovalTaskIds.contains(approval.approvalId),
-                onApprove: () => onApproveApproval(approval),
-                onReject: () => onRejectApproval(approval),
-              ),
             ),
           ),
         ),
@@ -9383,6 +9465,20 @@ class _ChatTextStyles {
     fontSize: 13,
     height: 1.1,
     fontWeight: FontWeight.w700,
+  );
+
+  static const TextStyle approvalRequest = TextStyle(
+    fontSize: 13,
+    height: 1.35,
+    fontWeight: FontWeight.w600,
+    color: _ChatPalette.textPrimary,
+  );
+
+  static const TextStyle approvalReason = TextStyle(
+    fontSize: 12,
+    height: 1.4,
+    fontWeight: FontWeight.w500,
+    color: _ChatPalette.textSecondary,
   );
 
   static const TextStyle attachmentLabel = TextStyle(

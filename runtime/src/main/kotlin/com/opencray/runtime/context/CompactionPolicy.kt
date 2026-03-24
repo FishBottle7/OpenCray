@@ -1,5 +1,6 @@
 package com.opencray.runtime.context
 
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -65,8 +66,7 @@ data class CompactionPolicy(
     }
     omittedMessages.lastOrNull { message ->
       message.role == RuntimeConversationRole.ASSISTANT &&
-        message.kind != RuntimeConversationMessageKind.TOOL_CALL &&
-        !message.content.trim().startsWith("tool_call ")
+        !message.isAssistantToolCallMessage()
     }?.let { message ->
       lines += "Most recent omitted assistant reply: ${preview(message.content)}"
     }
@@ -116,58 +116,36 @@ data class CompactionPolicy(
     index: Int,
   ): ToolActivity? {
     val normalized = message.content.trim()
-    when (message.kind) {
-      RuntimeConversationMessageKind.PROGRESS -> {
-        return ToolActivity(groupKey = "progress:$index", category = ToolSummaryCategory.GENERIC)
-      }
-
-      RuntimeConversationMessageKind.TOOL_RESULT -> {
-        return classifyJsonToolActivity(
-          payload = normalized.removePrefix("tool_result ").trim(),
-          fallbackGroupKey = "tool_result:$index",
-        )
-      }
-
-      RuntimeConversationMessageKind.TOOL_CALL -> {
-        return classifyJsonToolActivity(
-          payload = normalized.removePrefix("tool_call ").trim(),
-          fallbackGroupKey = "tool_call:$index",
-        )
-      }
-
-      RuntimeConversationMessageKind.PLAIN -> Unit
-    }
-    if (normalized.startsWith("subagent ")) {
-      return classifyReplaySubAgentActivity(
-        payload = normalized.removePrefix("subagent ").trim(),
-        fallbackGroupKey = "subagent:$index",
-      )
-    }
-    if (normalized.startsWith("tool_result ")) {
+    message.toolResultJsonPayloadOrNull()?.let { payload ->
       return classifyJsonToolActivity(
-        payload = normalized.removePrefix("tool_result ").trim(),
+        payload = payload,
         fallbackGroupKey = "tool_result:$index",
       )
     }
-    if (normalized.startsWith("tool_call ")) {
-      val payload = normalized.removePrefix("tool_call ").trim()
-      return if (payload.startsWith("{")) {
-        classifyJsonToolActivity(
-          payload = payload,
-          fallbackGroupKey = "tool_call:$index",
-        )
-      } else {
-        val toolName = payload.takeWhile { character -> !character.isWhitespace() }
-        if (toolName.isBlank()) {
-          ToolActivity(groupKey = "tool_call:$index", category = ToolSummaryCategory.GENERIC)
-        } else {
-          ToolActivity(
-            groupKey = "tool_call:$toolName:$index",
-            category = toolCategoryForName(toolName),
-          )
-        }
-      }
+    message.toolCallJsonPayloadOrNull()?.let { payload ->
+      return classifyJsonToolActivity(
+        payload = payload,
+        fallbackGroupKey = "tool_call:$index",
+      )
     }
+    message.progressJsonPayloadOrNull()?.let {
+      return ToolActivity(groupKey = "progress:$index", category = ToolSummaryCategory.GENERIC)
+    }
+    when (message.kind) {
+      RuntimeConversationMessageKind.PROGRESS,
+      RuntimeConversationMessageKind.TOOL_RESULT,
+      RuntimeConversationMessageKind.TOOL_CALL,
+      -> Unit
+      RuntimeConversationMessageKind.PLAIN -> Unit
+    }
+    plainReplayJsonObjectOrNull(normalized)
+      ?.takeIf(JsonObject::isSubAgentReplayPayload)
+      ?.let {
+        return classifyReplaySubAgentActivity(
+          payload = normalized,
+          fallbackGroupKey = "subagent:$index",
+        )
+      }
     return if (message.role == RuntimeConversationRole.TOOL) {
       ToolActivity(groupKey = "tool:$index", category = ToolSummaryCategory.GENERIC)
     } else {

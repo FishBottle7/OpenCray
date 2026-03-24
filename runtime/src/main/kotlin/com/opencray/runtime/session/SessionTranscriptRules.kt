@@ -3,6 +3,12 @@ package com.opencray.runtime.session
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationMessageKind
 import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.context.isSubAgentReplayPayload
+import com.opencray.runtime.context.isSupplementReplayPayload
+import com.opencray.runtime.context.plainReplayJsonObjectOrNull
+import com.opencray.runtime.context.progressJsonPayloadOrNull
+import com.opencray.runtime.context.toolCallJsonPayloadOrNull
+import com.opencray.runtime.context.toolResultJsonPayloadOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -83,9 +89,10 @@ object SessionTranscriptRules {
 
   private fun isTerminalToolObservation(content: String): Boolean {
     val normalized = content.trim()
+    val decoded = plainReplayJsonObjectOrNull(normalized)
     return normalized.startsWith("approval_approved") ||
       normalized.startsWith("approval_rejected") ||
-      normalized.startsWith("supplement ") ||
+      decoded?.isSupplementReplayPayload() == true ||
       normalized.startsWith("run_cancelled") ||
       normalized.startsWith("run_interrupted") ||
       normalized.startsWith("retry_abandoned")
@@ -95,6 +102,12 @@ object SessionTranscriptRules {
     index: Int,
     message: RuntimeConversationMessage,
   ): ToolReplayObservation? {
+    message.toolCallJsonPayloadOrNull()?.let { payload ->
+      return parseReplayToolObservation(
+        index = index,
+        payload = payload,
+      )
+    }
     if (message.role != RuntimeConversationRole.TOOL) {
       return null
     }
@@ -102,54 +115,26 @@ object SessionTranscriptRules {
     if (isTerminalToolObservation(normalizedContent)) {
       return null
     }
-    when (message.kind) {
-      RuntimeConversationMessageKind.TOOL_CALL -> {
-        return parseReplayToolObservation(
-          index = index,
-          payload = normalizedContent.removePrefix("tool_call ").trim(),
-        )
-      }
-
-      RuntimeConversationMessageKind.TOOL_RESULT -> {
-        return parseReplayToolObservation(
-          index = index,
-          payload = normalizedContent.removePrefix("tool_result ").trim(),
-        )
-      }
-
-      RuntimeConversationMessageKind.PROGRESS -> {
-        return parseReplayProgressObservation(
-          index = index,
-          payload = normalizedContent.removePrefix("progress ").trim(),
-        )
-      }
-
-      RuntimeConversationMessageKind.PLAIN -> Unit
-    }
-    if (normalizedContent.startsWith("tool_call ")) {
+    message.toolResultJsonPayloadOrNull()?.let { payload ->
       return parseReplayToolObservation(
         index = index,
-        payload = normalizedContent.removePrefix("tool_call ").trim(),
+        payload = payload,
       )
     }
-    if (normalizedContent.startsWith("tool_result ")) {
-      return parseReplayToolObservation(
-        index = index,
-        payload = normalizedContent.removePrefix("tool_result ").trim(),
-      )
-    }
-    if (normalizedContent.startsWith("progress ")) {
+    message.progressJsonPayloadOrNull()?.let { payload ->
       return parseReplayProgressObservation(
         index = index,
-        payload = normalizedContent.removePrefix("progress ").trim(),
+        payload = payload,
       )
     }
-    if (normalizedContent.startsWith("subagent ")) {
-      return parseReplaySubAgentObservation(
-        index = index,
-        payload = normalizedContent.removePrefix("subagent ").trim(),
-      )
-    }
+    plainReplayJsonObjectOrNull(normalizedContent)
+      ?.takeIf(JsonObject::isSubAgentReplayPayload)
+      ?.let {
+        return parseReplaySubAgentObservation(
+          index = index,
+          payload = normalizedContent,
+        )
+      }
     return ToolReplayObservation(
       index = index,
       groupKey = "generic:$index",

@@ -1198,6 +1198,86 @@ class ChatMemoryIngestionCoordinatorTest {
   }
 
   @Test
+  fun ingestCompletedTurnCanMergeExistingProjectFactThroughBoundedStewardship() {
+    val memoryStore = InMemoryMemoryStore().apply {
+      upsert(
+        MemoryRecord(
+          id = "fact-merge-old",
+          content = "Project uses Gradle",
+          createdAtEpochMs = 1_000L,
+          updatedAtEpochMs = 1_100L,
+          tags = listOf("kind:project_fact", "scope:workspace", "status:active"),
+          extensions = mapOf(
+            "kind" to "project_fact",
+            "scope" to "workspace",
+            "status" to "active",
+            "source" to "user_input",
+            "source_session_id" to "session-old",
+            "workspace_id" to "workspace-main",
+            "ttl_ms" to (90L * 24L * 60L * 60L * 1000L).toString(),
+            "last_confirmed_at_epoch_ms" to "1100",
+          ),
+        ),
+      )
+    }
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = MemoryCandidateExtractor(
+        userIntentInterpreter = FixedUserIntentInterpreter(
+          interpretation = UserMemoryIntentInterpretation.Success(
+            intents = listOf(
+              UserMemoryIntent(
+                kind = MemoryKind.PROJECT_FACT,
+                scope = MemoryScope.WORKSPACE,
+                content = "Use the Gradle wrapper from the repo root",
+              ),
+            ),
+          ),
+        ),
+      ),
+      memoryStewardshipService = MemoryStewardshipService(
+        clock = { 2_000L },
+        interpreter = FixedMemoryStewardshipInterpreter(
+          interpretation = MemoryStewardshipInterpretation.Success(
+            decisions = listOf(
+              MemoryStewardshipDecision(
+                action = MemoryStewardshipAction.MERGE_RECORD_WITH_CANDIDATE,
+                recordId = "fact-merge-old",
+                candidateIndex = 0,
+              ),
+            ),
+          ),
+        ),
+      ),
+      writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 2_000L }),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-project-fact-merge",
+      task = promptTask(
+        id = "task-project-fact-merge",
+        input = "记住这个项目用 Gradle，而且要从仓库根目录走 wrapper。",
+      ),
+      result = successResult(taskId = "task-project-fact-merge"),
+      assistantOutput = "知道了。",
+      toolObservations = emptyList(),
+    )
+
+    assertEquals(listOf("fact-merge-old"), summary.resolvedRecords.map { record -> record.id })
+    assertTrue(memoryStore.list().any { record ->
+      record.content == "Project uses Gradle; Use the Gradle wrapper from the repo root" &&
+        record.extensions["status"] == "active" &&
+        record.extensions["merged_from_record_ids"] == "fact-merge-old"
+    })
+    assertEquals(
+      "merged",
+      memoryStore.list().single { record -> record.id == "fact-merge-old" }.extensions["resolution_reason"],
+    )
+  }
+
+  @Test
   fun ingestCompletedTurnCanRefreshExistingProjectFactThroughBoundedStewardship() {
     val memoryStore = InMemoryMemoryStore().apply {
       upsert(
@@ -1584,6 +1664,131 @@ class ChatMemoryIngestionCoordinatorTest {
       record.extensions["kind"] == "task_commitment" &&
         record.content == "run the targeted runtime tests"
     })
+  }
+
+  @Test
+  fun ingestCompletedTurnRewritesInteractionPreferenceSnapshotWhenPreferredNameIsInvalidatedWithoutReplacement() {
+    val staleSnapshotPayload = Json {
+      ignoreUnknownKeys = true
+      encodeDefaults = true
+      explicitNulls = true
+    }.encodeToString(
+      InteractionPreferenceState.serializer(),
+      InteractionPreferenceState(
+        preferredNaming = "阿澄",
+        preferredNamingSupport = 1,
+        lastUpdatedAtEpochMs = 1_200L,
+      ),
+    )
+    val memoryStore = InMemoryMemoryStore().apply {
+      upsert(
+        MemoryRecord(
+          id = "pref-old",
+          content = "Preferred user naming is 阿澄",
+          createdAtEpochMs = 1_000L,
+          updatedAtEpochMs = 1_100L,
+          tags = listOf("kind:user_preference", "scope:user", "status:active"),
+          extensions = mapOf(
+            "kind" to "user_preference",
+            "scope" to "user",
+            "status" to "active",
+            "source" to "user_input",
+            "source_session_id" to "session-old",
+            "preference_key" to MemoryPreferenceKeys.USER_PREFERRED_NAME,
+            "preference_value" to "阿澄",
+            "last_confirmed_at_epoch_ms" to "1100",
+          ),
+        ),
+      )
+      upsert(
+        MemoryRecord(
+          id = "interaction-user-snapshot",
+          content = "Internal interaction_preference_state snapshot for user scope",
+          createdAtEpochMs = 1_050L,
+          updatedAtEpochMs = 1_200L,
+          tags = listOf("kind:project_fact", "scope:user", "status:active"),
+          extensions = mapOf(
+            "kind" to "project_fact",
+            "scope" to "user",
+            "status" to "active",
+            "source" to "assistant_output",
+            "source_session_id" to "session-old",
+            "last_confirmed_at_epoch_ms" to "1200",
+            SoulMemoryExtensionKeys.OBJECT_TYPE to SoulMemoryObjectTypes.INTERACTION_PREFERENCE_STATE,
+            SoulMemoryExtensionKeys.OBJECT_SCHEMA_VERSION to "1",
+            SoulMemoryExtensionKeys.OBJECT_PAYLOAD_JSON to staleSnapshotPayload,
+          ),
+        ),
+      )
+    }
+    val coordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = memoryStore,
+      workspaceIdProvider = { "workspace-main" },
+      candidateExtractor = MemoryCandidateExtractor(
+        userIntentInterpreter = FixedUserIntentInterpreter(
+          interpretation = UserMemoryIntentInterpretation.Success(intents = emptyList()),
+        ),
+      ),
+      memoryStewardshipService = MemoryStewardshipService(
+        clock = { 2_000L },
+        interpreter = FixedMemoryStewardshipInterpreter(
+          interpretation = MemoryStewardshipInterpretation.Success(
+            decisions = listOf(
+              MemoryStewardshipDecision(
+                action = MemoryStewardshipAction.RESOLVE_RECORD,
+                recordId = "pref-old",
+                resolutionReason = MemoryStewardshipResolutionReason.INVALIDATED,
+              ),
+            ),
+          ),
+        ),
+        recordOnlyReviewKinds = setOf(MemoryKind.USER_PREFERENCE),
+      ),
+      writer = MemoryWriter(store = memoryStore, clock = { 2_000L }),
+      taskCommitmentResolver = TaskCommitmentResolver(store = memoryStore, clock = { 2_000L }),
+    )
+
+    val summary = coordinator.ingestCompletedTurn(
+      sessionId = "session-record-only-resolve-snapshot",
+      task = promptTask(
+        id = "task-record-only-resolve-snapshot",
+        input = "以后不要再叫我阿澄了。",
+      ),
+      result = successResult(taskId = "task-record-only-resolve-snapshot"),
+      assistantOutput = "知道了，不再这么叫你。",
+      toolObservations = emptyList(),
+    )
+
+    assertEquals(listOf("pref-old"), summary.resolvedRecords.map { record -> record.id })
+    assertEquals("resolved", memoryStore.list().single { record -> record.id == "pref-old" }.extensions["status"])
+    val latestSnapshotRecord = memoryStore.list()
+      .filter { record ->
+        record.extensions[SoulMemoryExtensionKeys.OBJECT_TYPE] ==
+          SoulMemoryObjectTypes.INTERACTION_PREFERENCE_STATE
+      }
+      .maxByOrNull(MemoryRecord::updatedAtEpochMs)
+    assertTrue("Expected an updated interaction-preference snapshot to be written.", latestSnapshotRecord != null)
+    val snapshotState = Json {
+      ignoreUnknownKeys = true
+      encodeDefaults = true
+      explicitNulls = true
+    }.decodeFromString(
+      InteractionPreferenceState.serializer(),
+      checkNotNull(latestSnapshotRecord!!.extensions[SoulMemoryExtensionKeys.OBJECT_PAYLOAD_JSON]),
+    )
+    assertTrue(snapshotState.preferredNaming == null)
+    assertEquals(0, snapshotState.preferredNamingSupport)
+
+    val overlay = MemoryBackedSoulProfileResolver().overlay(
+      baseProfile = RuntimeSoulProfile(
+        presetName = "BUILDER",
+        voice = "decisive and direct",
+      ),
+      records = memoryStore.list(),
+      sessionId = "session-record-only-resolve-snapshot-followup",
+      workspaceId = "workspace-main",
+    )
+    assertTrue(overlay?.extensions?.get(SoulProfileExtensionKeys.PREFERRED_NAMING) == null)
   }
 
   @Test

@@ -503,7 +503,7 @@ Inspected files:
 
 Current reality:
 
-- `OpenCrayHostRuntime.createFromContext()` still creates one singleton host assembly
+- the current production `OpenCrayHostRuntime` service-owned assembly still creates one singleton host assembly
 - it wires one `PersonalizationLocalStore.fromContext(appContext)`
 - it wires one `ChatSessionLocalStore.fromContext(appContext)`
 - it uses one fixed `workspaceRootProvider = { AppAgentWorkspace.ensureRootForContext(appContext) }`
@@ -553,7 +553,7 @@ Inspected files:
 
 Current reality:
 
-- `OpenCrayHostRuntime.createFromContext()` already builds one `ChatMemoryIngestionCoordinator`
+- the current production `OpenCrayHostRuntime` assembly already builds one `ChatMemoryIngestionCoordinator`
 - that coordinator already owns the post-turn write path for memory extraction, task commitment updates, stewardship, relationship events, and soul-turn signals
 - it is currently bound to one `PersonalizationLocalStore.asMemoryStore()`
 

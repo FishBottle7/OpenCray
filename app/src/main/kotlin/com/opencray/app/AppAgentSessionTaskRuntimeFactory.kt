@@ -167,16 +167,17 @@ internal class AppAgentSessionTaskRuntimeFactory(
     }
 
     val gateway: LiteLlmGateway = if (requiresLlmConfig) {
+      val routeMetadata = LlmProviderProtocols.routeMetadata(
+        protocol = llmSettings.protocol,
+        model = llmSettings.model,
+        reasoningEffort = llmSettings.reasoningEffort,
+      )
       val route = ProviderRoute(
         id = "route-${llmSettings.providerId.ifBlank { "openai-compatible" }}",
         providerId = llmSettings.providerId.ifBlank { "openai-compatible" },
         baseUrl = llmSettings.baseUrl,
         model = llmSettings.model,
-        metadata = LlmProviderProtocols.routeMetadata(
-          protocol = llmSettings.protocol,
-          model = llmSettings.model,
-          reasoningEffort = llmSettings.reasoningEffort,
-        ),
+        metadata = routeMetadata,
       )
       DefaultLiteLlmGateway(
         routingStore = InMemoryLiteLlmRoutingSettingsStore(
@@ -299,7 +300,14 @@ internal class AppAgentSessionTaskRuntimeFactory(
             }
         },
         llmMetadata = if (requiresLlmConfig) {
-          task.metadata.filterKeys(::isLlmVisibleMetadataKey) + mapOf("sessionId" to sessionId)
+          task.metadata.filterKeys(::isLlmVisibleMetadataKey) +
+            mapOf("sessionId" to sessionId) +
+            LlmProviderProtocols.routeMetadata(
+              protocol = llmSettings.protocol,
+              model = llmSettings.model,
+              reasoningEffort = llmSettings.reasoningEffort,
+            ) +
+            llmSettings.agentCapability.runtimeMetadataOverrides()
         } else {
           mapOf("sessionId" to sessionId)
         },
@@ -769,7 +777,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     event: OpenCrayToolResultEvent,
   ) {
     val callObservation = RuntimeConversationMessage(
-      role = RuntimeConversationRole.TOOL,
+      role = RuntimeConversationRole.ASSISTANT,
       content = buildToolCallReplayContent(event),
       kind = RuntimeConversationMessageKind.TOOL_CALL,
       toolCall = RuntimeConversationToolCall(
@@ -812,7 +820,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
   }
 
   private fun buildToolCallReplayContent(event: OpenCrayToolResultEvent): String =
-    "tool_call ${encodeReplayJsonObject {
+    encodeReplayJsonObject {
       put("run_id", event.runId)
       put("task_id", event.taskId)
       put("turn", event.turn)
@@ -825,17 +833,26 @@ internal class AppAgentSessionTaskRuntimeFactory(
           put("reason", collapseReplayWhitespace(reason))
         }
       put("arguments", event.call.arguments)
-    }}"
+    }
 
   private fun buildToolResultReplayContent(event: OpenCrayToolResultEvent): String =
-    "tool_result ${encodeReplayJsonObject {
+    encodeReplayJsonObject {
       put("run_id", event.runId)
       put("task_id", event.taskId)
       put("turn", event.turn)
       event.call.id?.let { toolCallId -> put("tool_call_id", toolCallId) }
       put("tool_name", event.result.toolName)
       put("status", event.result.status.name.lowercase())
-      put("content_preview", previewForReplay(event.result.content))
+      put("content", event.result.content)
+      event.result.exitCode?.let { exitCode -> put("exit_code", exitCode) }
+      if (event.result.stdout.isNotBlank()) {
+        put("stdout", event.result.stdout)
+      }
+      if (event.result.stderr.isNotBlank()) {
+        put("stderr", event.result.stderr)
+      }
+      event.result.errorCode?.let { errorCode -> put("error_code", errorCode) }
+      event.result.errorMessage?.let { errorMessage -> put("error_message", errorMessage) }
       if (event.result.metadata.isNotEmpty()) {
         put(
           "metadata",
@@ -846,10 +863,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
           },
         )
       }
-    }}"
+    }
 
   private fun buildProgressReplayContent(event: OpenCrayProgressEvent): String =
-    "progress ${encodeReplayJsonObject {
+    encodeReplayJsonObject {
       put("run_id", event.runId)
       put("task_id", event.taskId)
       put("turn", event.turn)
@@ -858,20 +875,22 @@ internal class AppAgentSessionTaskRuntimeFactory(
         ?.trim()
         ?.takeIf(String::isNotBlank)
         ?.let { stage -> put("stage", stage) }
-    }}"
+    }
 
   private fun buildSupplementReplayContent(event: OpenCraySupplementEvent): String =
-    "supplement ${encodeReplayJsonObject {
+    encodeReplayJsonObject {
+      put("event_kind", "supplement")
       put("run_id", event.runId)
       put("task_id", event.taskId)
       put("turn", event.turn)
       put("entry_id", event.entryId)
       put("text", collapseReplayWhitespace(event.text))
       put("checkpoint", event.checkpoint)
-    }}"
+    }
 
   private fun buildSubAgentReplayContent(event: OpenCraySubAgentEvent): String =
-    "subagent ${encodeReplayJsonObject {
+    encodeReplayJsonObject {
+      put("event_kind", "subagent")
       put("run_id", event.runId)
       put("task_id", event.taskId)
       put("turn", event.turn)
@@ -899,22 +918,13 @@ internal class AppAgentSessionTaskRuntimeFactory(
         ?.trim()
         ?.takeIf(String::isNotBlank)
         ?.let { summary -> put("summary", collapseReplayWhitespace(summary)) }
-    }}"
+    }
 
   private fun encodeReplayJsonObject(builder: JsonObjectBuilder.() -> Unit): String =
     replayJson.encodeToString(
       serializer = JsonObject.serializer(),
       value = buildJsonObject(builder),
     )
-
-  private fun previewForReplay(content: String): String =
-    collapseReplayWhitespace(content).let { normalized ->
-      if (normalized.length <= TOOL_REPLAY_PREVIEW_LIMIT_CHARS) {
-        normalized
-      } else {
-        normalized.take(TOOL_REPLAY_PREVIEW_LIMIT_CHARS - 1).trimEnd() + "…"
-      }
-    }
 
   private fun collapseReplayWhitespace(content: String): String =
     content.replace(Regex("\\s+"), " ").trim()
@@ -1016,8 +1026,6 @@ internal class AppAgentSessionTaskRuntimeFactory(
     const val METADATA_HOST_SESSION_ID: String = "${METADATA_HOST_PREFIX}sessionId"
     const val METADATA_PENDING_MESSAGE_ID: String = "${METADATA_HOST_PREFIX}pendingMessageId"
     const val METADATA_VISIBLE_THROUGH_MESSAGE_ID: String = "${METADATA_HOST_PREFIX}visibleThroughMessageId"
-    private const val TOOL_REPLAY_PREVIEW_LIMIT_CHARS: Int = 240
-
     fun isLlmVisibleMetadataKey(key: String): Boolean = !key.startsWith(METADATA_HOST_PREFIX)
   }
 }

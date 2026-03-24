@@ -1,4 +1,5 @@
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -17,6 +18,8 @@ def _write_request(
     args: list[str] | None = None,
     cancel_path: pathlib.Path | None = None,
     timeout_ms: int = 30000,
+    requested_at_epoch_ms: int | None = None,
+    execution_started_at_epoch_ms: int | None = None,
 ) -> None:
     payload = {
         "schemaVersion": 1,
@@ -26,8 +29,10 @@ def _write_request(
         "scriptPath": str(script_path),
         "args": args or [],
         "timeoutMs": timeout_ms,
-        "requestedAtEpochMs": int(time.time() * 1000),
+        "requestedAtEpochMs": requested_at_epoch_ms or int(time.time() * 1000),
     }
+    if execution_started_at_epoch_ms is not None:
+        payload["executionStartedAtEpochMs"] = execution_started_at_epoch_ms
     if cancel_path is not None:
         payload["cancelPath"] = str(cancel_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -39,6 +44,7 @@ def _run_bridge(
     request_path: pathlib.Path,
     result_path: pathlib.Path,
     log_path: pathlib.Path,
+    env: dict[str, str] | None = None,
 ) -> dict[str, object]:
     runtime_root = request_path.parent.parent
     completed = subprocess.run(
@@ -54,6 +60,7 @@ def _run_bridge(
         text=True,
         check=False,
         timeout=60,
+        env={**os.environ, **(env or {})},
     )
     assert completed.returncode == 0, completed.stderr
     return json.loads(result_path.read_text(encoding="utf-8"))
@@ -239,6 +246,36 @@ def test_android_p4a_bridge_times_out_long_running_script(workspace: pathlib.Pat
     assert result["errorMessage"] == "Python script exceeded timeout."
 
 
+def test_android_p4a_bridge_uses_execution_start_for_timeout_budget(
+    workspace: pathlib.Path,
+) -> None:
+    request_path, result_path, log_path = _bridge_paths(workspace, "request-execution-start")
+    script_path = workspace / "execution_start.py"
+    script_path.write_text("print('execution start budget ok')\n", encoding="utf-8")
+    now_ms = int(time.time() * 1000)
+    _write_request(
+        request_path,
+        task_id="task-execution-start",
+        workspace_root=workspace,
+        script_path=script_path,
+        timeout_ms=200,
+        requested_at_epoch_ms=now_ms - 2_000,
+        execution_started_at_epoch_ms=now_ms,
+    )
+
+    result = _run_bridge(
+        request_path=request_path,
+        result_path=result_path,
+        log_path=log_path,
+    )
+
+    assert result["status"] == "success"
+    assert result["stdout"] == "execution start budget ok\n"
+    assert result["metadata"]["executionStartedAtEpochMs"] == str(now_ms)
+    assert result["metadata"]["timeoutClockStartEpochMs"] == str(now_ms)
+    assert int(result["metadata"]["queueDelayMs"]) >= 2_000
+
+
 def test_android_p4a_service_writes_ready_and_state_markers(workspace: pathlib.Path) -> None:
     request_path, result_path, log_path = _bridge_paths(workspace, "request-service-state")
     state_path, ready_path = _service_state_paths(workspace, "request-service-state")
@@ -266,4 +303,62 @@ def test_android_p4a_service_writes_ready_and_state_markers(workspace: pathlib.P
     assert service_state["state"] == "idle"
     assert service_state["lastProcessedRequestId"] == "request-service-state"
     assert service_state["lastProcessedStatus"] == "success"
+    assert service_state["claimedRequestId"] is None
+    assert service_state["executionStartedAtEpochMs"] is None
     assert service_ready["state"] == "idle"
+    assert service_ready["claimedRequestId"] is None
+    assert service_ready["executionStartedAtEpochMs"] is None
+
+
+def test_android_p4a_service_prioritizes_startup_request(workspace: pathlib.Path) -> None:
+    runtime_root = workspace / ".p4a-bridge-tests" / "request-startup-priority"
+    request_slow = runtime_root / "requests" / "request-slow.json"
+    request_fast = runtime_root / "requests" / "request-fast.json"
+    result_slow = runtime_root / "results" / "request-slow.json"
+    result_fast = runtime_root / "results" / "request-fast.json"
+    log_fast = runtime_root / "logs" / "request-fast.log"
+
+    slow_script = workspace / "slow_request.py"
+    slow_script.write_text(
+        "import time\n"
+        "time.sleep(0.3)\n"
+        "print('slow request done')\n",
+        encoding="utf-8",
+    )
+    fast_script = workspace / "fast_request.py"
+    fast_script.write_text("print('fast request done')\n", encoding="utf-8")
+
+    _write_request(
+        request_slow,
+        task_id="task-slow",
+        workspace_root=workspace,
+        script_path=slow_script,
+    )
+    _write_request(
+        request_fast,
+        task_id="task-fast",
+        workspace_root=workspace,
+        script_path=fast_script,
+    )
+
+    fast_result = _run_bridge(
+        request_path=request_fast,
+        result_path=result_fast,
+        log_path=log_fast,
+        env={
+            "PYTHON_SERVICE_ARGUMENT": json.dumps(
+                {
+                    "runtimeRoot": str(runtime_root),
+                    "requestId": "request-fast",
+                    "pollIntervalMs": 50,
+                }
+            )
+        },
+    )
+    slow_result = json.loads(result_slow.read_text(encoding="utf-8"))
+
+    assert fast_result["status"] == "success"
+    assert slow_result["status"] == "success"
+    assert fast_result["stdout"] == "fast request done\n"
+    assert slow_result["stdout"] == "slow request done\n"
+    assert fast_result["startedAtEpochMs"] <= slow_result["startedAtEpochMs"]

@@ -34,7 +34,7 @@ class _DebugToolsPage extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               const Text(
-                'Inspect runtime trace, memory, and soul state.',
+                'Inspect runtime ownership, trace, memory, and soul state.',
                 style: _SettingsTextStyles.subtitle,
               ),
               const SizedBox(height: 16),
@@ -48,7 +48,7 @@ class _DebugToolsPage extends StatelessWidget {
                     ),
                     SizedBox(height: 8),
                     Text(
-                      'Trace runs, memory, and soul state.',
+                      'Host/service lifecycle, trace runs, memory, and soul state.',
                       style: _SettingsTextStyles.body,
                     ),
                   ],
@@ -64,6 +64,20 @@ class _DebugToolsPage extends StatelessWidget {
                       style: _SettingsTextStyles.cardTitle,
                     ),
                     const SizedBox(height: 8),
+                    _HomeEntryRow(
+                      title: 'Runtime Diagnostics',
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (context) => _RuntimeDiagnosticsPage(
+                              bridge: bridge,
+                              backLabel: 'Debug tools',
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                    const Divider(height: 1, color: OpenCrayColors.divider),
                     _HomeEntryRow(
                       title: 'Context & Memory Trace',
                       onTap: () {
@@ -114,6 +128,614 @@ class _DebugToolsPage extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _RuntimeDiagnosticsPage extends StatefulWidget {
+  const _RuntimeDiagnosticsPage({
+    required this.bridge,
+    required this.backLabel,
+  });
+
+  final OpenCrayHostBridge bridge;
+  final String backLabel;
+
+  @override
+  State<_RuntimeDiagnosticsPage> createState() =>
+      _RuntimeDiagnosticsPageState();
+}
+
+class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
+  bool _isLoading = true;
+  bool _isRefreshing = false;
+  String? _loadError;
+  OpenCrayShellSnapshot? _snapshot;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final snapshot = _snapshot;
+    return Scaffold(
+      backgroundColor: OpenCrayColors.shellBackground,
+      body: SafeArea(
+        bottom: false,
+        child: SingleChildScrollView(
+          key: const ValueKey<String>('settings-runtime-diagnostics-page'),
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _BackLink(
+                onTap: () => Navigator.of(context).pop(),
+                label: widget.backLabel,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Runtime Diagnostics',
+                style: _SettingsTextStyles.pageTitleSubpage,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Inspect detached runtime ownership, service keepalive, and bridge transport.',
+                style: _SettingsTextStyles.subtitle,
+              ),
+              const SizedBox(height: 16),
+              _SettingsCard(
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Runtime status source',
+                            style: _SettingsTextStyles.cardTitle,
+                          ),
+                          SizedBox(height: 8),
+                          Text(
+                            'Uses the existing shell snapshot path. No separate host diagnostics channel is required.',
+                            style: _SettingsTextStyles.body,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    _HeaderActionChip(
+                      label: _isRefreshing ? 'Refreshing' : 'Refresh',
+                      onTap: _isRefreshing ? null : _refresh,
+                    ),
+                  ],
+                ),
+              ),
+              if (_loadError != null) ...[
+                const SizedBox(height: 16),
+                _SettingsCard(
+                  backgroundColor: const Color(0xFFFFF3F0),
+                  child: Text(
+                    _loadError!,
+                    style: _SettingsTextStyles.bodyStrong,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 16),
+              if (_isLoading)
+                const _SettingsLoading(
+                  key: ValueKey<String>('runtime-diagnostics-loading'),
+                )
+              else if (snapshot != null) ...[
+                _buildConnectionCard(snapshot),
+                const SizedBox(height: 16),
+                _buildLocalRuntimeServerCard(snapshot),
+                const SizedBox(height: 16),
+                _buildHostOwnershipCard(snapshot),
+                const SizedBox(height: 16),
+                _buildRuntimeOwnerCard(snapshot),
+                const SizedBox(height: 16),
+                _buildRuntimeServiceCard(snapshot),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildConnectionCard(OpenCrayShellSnapshot snapshot) {
+    final connection = snapshot.runtimeServiceConnectionState;
+    final phase = connection?.phase?.trim().isNotEmpty == true
+        ? connection!.phase!.trim()
+        : null;
+    final transport = connection?.transport?.trim().isNotEmpty == true
+        ? connection!.transport!.trim()
+        : null;
+    final fallbackReason = connection?.fallbackReason?.trim().isNotEmpty == true
+        ? connection!.fallbackReason!.trim()
+        : null;
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Connection & transport',
+            style: _SettingsTextStyles.cardTitle,
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _DebugValueChip(
+                label: 'Host',
+                value: snapshot.isHostConnected ? 'connected' : 'disconnected',
+              ),
+              _DebugValueChip(
+                label: 'Phase',
+                value:
+                    phase ??
+                    (snapshot.isHostConnected ? 'connected' : 'disconnected'),
+              ),
+              if (transport != null)
+                _DebugValueChip(label: 'Transport', value: transport),
+              _DebugValueChip(
+                label: 'Binder',
+                value: connection?.binderAvailable == true
+                    ? 'available'
+                    : 'unavailable',
+              ),
+              if (fallbackReason != null)
+                _DebugValueChip(label: 'Fallback', value: fallbackReason),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (connection == null)
+            const Text(
+              'No runtime service connection state was projected into the shell snapshot.',
+              style: _SettingsTextStyles.body,
+            )
+          else ...[
+            _DebugKeyValueLine(
+              'Service start requested',
+              _formatDebugBool(connection.serviceStartRequested),
+            ),
+            _DebugKeyValueLine(
+              'Binding requested',
+              _formatDebugBool(connection.bindingRequested),
+            ),
+            _DebugKeyValueLine(
+              'Binder available',
+              _formatDebugBool(connection.binderAvailable),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHostOwnershipCard(OpenCrayShellSnapshot snapshot) {
+    final hostLifecycle = snapshot.hostLifecycle;
+    final ownerLifecycle = snapshot.runtimeOwnerLifecycle;
+    final detachedOwner =
+        hostLifecycle != null &&
+        ownerLifecycle != null &&
+        hostLifecycle.hostInstanceId != ownerLifecycle.hostInstanceId;
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Host & ownership', style: _SettingsTextStyles.cardTitle),
+          const SizedBox(height: 10),
+          if (hostLifecycle == null && ownerLifecycle == null)
+            const Text(
+              'No host or runtime owner lifecycle data is visible in the shell snapshot.',
+              style: _SettingsTextStyles.body,
+            )
+          else ...[
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _DebugValueChip(
+                  label: 'Detached owner',
+                  value: detachedOwner ? 'yes' : 'no',
+                ),
+                if (hostLifecycle?.hostInstanceId?.trim().isNotEmpty == true)
+                  _DebugValueChip(
+                    label: 'Host',
+                    value: hostLifecycle!.hostInstanceId!.trim(),
+                  ),
+                if (ownerLifecycle?.runtimeOwnerId?.trim().isNotEmpty == true)
+                  _DebugValueChip(
+                    label: 'Owner',
+                    value: ownerLifecycle!.runtimeOwnerId!.trim(),
+                  ),
+              ],
+            ),
+            if (hostLifecycle != null) ...[
+              const SizedBox(height: 12),
+              const Text('Current host', style: _SettingsTextStyles.bodyStrong),
+              const SizedBox(height: 8),
+              ..._buildHostLifecycleLines(hostLifecycle),
+            ],
+            if (ownerLifecycle != null) ...[
+              const SizedBox(height: 12),
+              const Text(
+                'Runtime owner',
+                style: _SettingsTextStyles.bodyStrong,
+              ),
+              const SizedBox(height: 8),
+              ..._buildHostLifecycleLines(ownerLifecycle),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLocalRuntimeServerCard(OpenCrayShellSnapshot snapshot) {
+    final server = snapshot.localRuntimeServerState;
+    final phase = server?.phase?.trim().isNotEmpty == true
+        ? server!.phase!.trim()
+        : null;
+    final bindAddress = server?.bindAddress?.trim().isNotEmpty == true
+        ? server!.bindAddress!.trim()
+        : null;
+    final failureReason = server?.failureReason?.trim().isNotEmpty == true
+        ? server!.failureReason!.trim()
+        : null;
+    final listeningPort = server?.listeningPort;
+    final requestedPort = server?.requestedPort;
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Local runtime server',
+            style: _SettingsTextStyles.cardTitle,
+          ),
+          const SizedBox(height: 10),
+          if (server == null)
+            const Text(
+              'No local runtime server state was projected into the shell snapshot.',
+              style: _SettingsTextStyles.body,
+            )
+          else ...[
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _DebugValueChip(label: 'Phase', value: phase ?? 'unknown'),
+                if (bindAddress != null)
+                  _DebugValueChip(label: 'Address', value: bindAddress),
+                _DebugValueChip(
+                  label: 'Port',
+                  value:
+                      (listeningPort ?? requestedPort)?.toString() ?? 'unknown',
+                ),
+                if (failureReason != null)
+                  _DebugValueChip(label: 'Failure', value: failureReason),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _DebugKeyValueLine(
+              'Requested port',
+              requestedPort?.toString() ?? 'n/a',
+            ),
+            _DebugKeyValueLine(
+              'Listening port',
+              listeningPort?.toString() ?? 'n/a',
+            ),
+            _DebugKeyValueLine(
+              'Last start attempt',
+              _formatDebugEpochMs(server.lastStartAttemptAtEpochMs),
+            ),
+            _DebugKeyValueLine(
+              'Last started',
+              _formatDebugEpochMs(server.lastStartedAtEpochMs),
+            ),
+            _DebugKeyValueLine(
+              'Failure reason',
+              _normalizedValue(server.failureReason),
+            ),
+            _DebugKeyValueLine(
+              'Changed',
+              _formatDebugEpochMs(server.changedAtEpochMs),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRuntimeOwnerCard(OpenCrayShellSnapshot snapshot) {
+    final summary = snapshot.runtimeOwnerWorkSummary;
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Runtime owner work',
+            style: _SettingsTextStyles.cardTitle,
+          ),
+          const SizedBox(height: 10),
+          if (summary == null)
+            const Text(
+              'No runtime owner work summary was projected into the shell snapshot.',
+              style: _SettingsTextStyles.body,
+            )
+          else ...[
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _DebugValueChip(
+                  label: 'Active work',
+                  value: summary.hasActiveWork ? 'yes' : 'no',
+                ),
+                _DebugValueChip(
+                  label: 'Tracked sessions',
+                  value: '${summary.trackedSessionCount}',
+                ),
+                _DebugValueChip(
+                  label: 'Active runs',
+                  value: '${summary.activeRunCount}',
+                ),
+                _DebugValueChip(
+                  label: 'Active sessions',
+                  value: '${summary.activeSessionCount}',
+                ),
+                _DebugValueChip(
+                  label: 'Managed processes',
+                  value: '${summary.liveManagedProcessSessionIds.length}',
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (summary.activeSessionIds.isNotEmpty)
+              _DebugKeyValueLine(
+                'Active session ids',
+                summary.activeSessionIds.join(', '),
+              ),
+            if (summary.pendingWorkSessionIds.isNotEmpty)
+              _DebugKeyValueLine(
+                'Pending work sessions',
+                summary.pendingWorkSessionIds.join(', '),
+              ),
+            if (summary.liveManagedProcessSessionIds.isNotEmpty)
+              _DebugKeyValueLine(
+                'Managed process sessions',
+                summary.liveManagedProcessSessionIds.join(', '),
+              ),
+            if (summary.activeSessionIds.isEmpty &&
+                summary.pendingWorkSessionIds.isEmpty &&
+                summary.liveManagedProcessSessionIds.isEmpty)
+              const Text(
+                'No active session ids or managed process owners are currently reported.',
+                style: _SettingsTextStyles.body,
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRuntimeServiceCard(OpenCrayShellSnapshot snapshot) {
+    final lifecycle = snapshot.runtimeServiceLifecycle;
+    final workState = snapshot.runtimeServiceWorkState;
+    final keepAlive = snapshot.runtimeServiceKeepAliveState;
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Runtime service', style: _SettingsTextStyles.cardTitle),
+          const SizedBox(height: 10),
+          if (lifecycle == null && workState == null && keepAlive == null)
+            const Text(
+              'No runtime service lifecycle or keepalive state is visible in the shell snapshot.',
+              style: _SettingsTextStyles.body,
+            )
+          else ...[
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                if (workState?.phase?.trim().isNotEmpty == true)
+                  _DebugValueChip(
+                    label: 'Work',
+                    value: workState!.phase!.trim(),
+                  ),
+                _DebugValueChip(
+                  label: 'Active work',
+                  value: workState?.hasActiveWork == true ? 'yes' : 'no',
+                ),
+                _DebugValueChip(
+                  label: 'Keepalive',
+                  value: keepAlive?.phase?.trim().isNotEmpty == true
+                      ? keepAlive!.phase!.trim()
+                      : 'n/a',
+                ),
+                _DebugValueChip(
+                  label: 'Stop scheduled',
+                  value: keepAlive?.stopScheduled == true ? 'yes' : 'no',
+                ),
+              ],
+            ),
+            if (lifecycle != null) ...[
+              const SizedBox(height: 12),
+              const Text(
+                'Service lifecycle',
+                style: _SettingsTextStyles.bodyStrong,
+              ),
+              const SizedBox(height: 8),
+              _DebugKeyValueLine(
+                'Service instance',
+                _normalizedValue(lifecycle.serviceInstanceId),
+              ),
+              _DebugKeyValueLine(
+                'Process start id',
+                _normalizedValue(lifecycle.processStartId),
+              ),
+              _DebugKeyValueLine(
+                'Service created',
+                _formatDebugEpochMs(lifecycle.serviceCreatedAtEpochMs),
+              ),
+              _DebugKeyValueLine(
+                'Process started',
+                _formatDebugEpochMs(lifecycle.processStartedAtEpochMs),
+              ),
+            ],
+            if (workState != null) ...[
+              const SizedBox(height: 12),
+              const Text('Work state', style: _SettingsTextStyles.bodyStrong),
+              const SizedBox(height: 8),
+              _DebugKeyValueLine(
+                'Keepalive required',
+                _formatDebugBool(workState.keepAliveRequired),
+              ),
+              _DebugKeyValueLine(
+                'Keepalive reason',
+                _normalizedValue(workState.keepAliveReason),
+              ),
+              _DebugKeyValueLine(
+                'Changed',
+                _formatDebugEpochMs(workState.changedAtEpochMs),
+              ),
+              _DebugKeyValueLine(
+                'Active since',
+                _formatDebugEpochMs(workState.activeSinceEpochMs),
+              ),
+              _DebugKeyValueLine(
+                'Idle since',
+                _formatDebugEpochMs(workState.idleSinceEpochMs),
+              ),
+            ],
+            if (keepAlive != null) ...[
+              const SizedBox(height: 12),
+              const Text('Keepalive', style: _SettingsTextStyles.bodyStrong),
+              const SizedBox(height: 8),
+              _DebugKeyValueLine(
+                'Idle grace',
+                keepAlive.idleGraceMs == null
+                    ? 'n/a'
+                    : '${keepAlive.idleGraceMs} ms',
+              ),
+              _DebugKeyValueLine(
+                'Stop deadline',
+                _formatDebugEpochMs(keepAlive.stopDeadlineEpochMs),
+              ),
+              _DebugKeyValueLine(
+                'Seen start command',
+                _formatDebugBool(keepAlive.hasSeenStartCommand),
+              ),
+              _DebugKeyValueLine(
+                'Last start id',
+                keepAlive.lastStartId?.toString() ?? 'n/a',
+              ),
+              _DebugKeyValueLine(
+                'Last start command',
+                _formatDebugEpochMs(keepAlive.lastStartCommandAtEpochMs),
+              ),
+              _DebugKeyValueLine(
+                'Last stop request',
+                _formatDebugEpochMs(keepAlive.lastStopRequestAtEpochMs),
+              ),
+              _DebugKeyValueLine(
+                'Last stop succeeded',
+                _formatDebugNullableBool(keepAlive.lastStopSucceeded),
+              ),
+              _DebugKeyValueLine(
+                'Changed',
+                _formatDebugEpochMs(keepAlive.changedAtEpochMs),
+              ),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _buildHostLifecycleLines(
+    OpenCrayHostLifecycleSnapshot snapshot,
+  ) {
+    return <Widget>[
+      _DebugKeyValueLine(
+        'Process start id',
+        _normalizedValue(snapshot.processStartId),
+      ),
+      _DebugKeyValueLine(
+        'Host instance',
+        _normalizedValue(snapshot.hostInstanceId),
+      ),
+      _DebugKeyValueLine(
+        'Runtime owner id',
+        _normalizedValue(snapshot.runtimeOwnerId),
+      ),
+      _DebugKeyValueLine(
+        'Host created',
+        _formatDebugEpochMs(snapshot.hostCreatedAtEpochMs),
+      ),
+      _DebugKeyValueLine(
+        'Process started',
+        _formatDebugEpochMs(snapshot.processStartedAtEpochMs),
+      ),
+    ];
+  }
+
+  String _normalizedValue(String? value, {String? fallback = 'n/a'}) {
+    final normalized = value?.trim();
+    if (normalized == null || normalized.isEmpty) {
+      return fallback ?? '';
+    }
+    return normalized;
+  }
+
+  String _formatDebugBool(bool value) => value ? 'yes' : 'no';
+
+  String _formatDebugNullableBool(bool? value) {
+    if (value == null) {
+      return 'n/a';
+    }
+    return value ? 'yes' : 'no';
+  }
+
+  String _formatDebugEpochMs(int? epochMs) {
+    if (epochMs == null || epochMs <= 0) {
+      return 'n/a';
+    }
+    return _formatDebugClockTime(epochMs);
+  }
+
+  Future<void> _refresh() async {
+    final shouldShowLoading = _snapshot == null && !_isRefreshing;
+    setState(() {
+      _loadError = null;
+      _isLoading = shouldShowLoading;
+      _isRefreshing = true;
+    });
+    try {
+      final snapshot = await widget.bridge.loadShellSnapshot();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _snapshot = snapshot;
+        _isLoading = false;
+        _isRefreshing = false;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _loadError = 'Failed to load runtime diagnostics: $error';
+        _isLoading = false;
+        _isRefreshing = false;
+      });
+    }
   }
 }
 

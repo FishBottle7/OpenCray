@@ -1,6 +1,7 @@
 package com.opencray.app.facade.llm
 
 import android.content.Context
+import com.opencray.app.LlmAgentCapabilitySnapshot
 import com.opencray.app.LlmProviderCatalog
 import com.opencray.app.LlmProviderPreset
 import com.opencray.app.LlmProviderProtocols
@@ -14,12 +15,22 @@ import com.opencray.app.SavedCustomLlmProvider
 import com.opencray.llm.DefaultLiteLlmGateway
 import com.opencray.llm.InMemoryLiteLlmRoutingSettingsStore
 import com.opencray.llm.LiteLlmGatewayRequest
+import com.opencray.llm.LiteLlmGatewayResult
 import com.opencray.llm.LiteLlmGatewayStatus
+import com.opencray.llm.LiteLlmMetadataKeys
 import com.opencray.llm.LiteLlmProviderClient
+import com.opencray.llm.LiteLlmStructuredToolCall
+import com.opencray.llm.LiteLlmToolChoice
+import com.opencray.llm.LiteLlmToolChoiceMode
+import com.opencray.llm.LiteLlmToolDefinition
 import com.opencray.llm.ModelProfile
 import com.opencray.llm.ProviderRoute
 import com.opencray.llm.ProviderRouting
 import java.net.URI
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.opencray.app.R
 
 data class LlmProviderOptionSnapshot(
@@ -49,6 +60,7 @@ data class LlmConfigSnapshot(
   val reasoningEffort: String,
   val systemPrompt: String,
   val helperText: String,
+  val agentCapability: LlmAgentCapabilitySnapshot = LlmAgentCapabilitySnapshot(),
 )
 
 data class SaveLlmConfigRequest(
@@ -89,6 +101,7 @@ data class ValidateLlmConfigRequest(
 data class LlmValidationResult(
   val isSuccess: Boolean,
   val message: String,
+  val agentCapability: LlmAgentCapabilitySnapshot? = null,
 )
 
 internal data class LlmConfigStrings(
@@ -103,6 +116,7 @@ internal data class LlmConfigStrings(
   val validationTimeout: (Long) -> String,
   val validationRateLimited: String,
   val validationFailed: String,
+  val validationNativeToolsUnavailable: String,
   val baseUrlRequiredEnabled: String,
   val baseUrlValidateRequired: String,
   val modelValidateRequired: String,
@@ -230,38 +244,83 @@ internal class LocalLlmConfigFacade private constructor(
       ),
       providerClient = providerClient,
     )
-    val result = gateway.execute(
-      LiteLlmGatewayRequest(
-        prompt = VALIDATION_PROMPT,
-        metadata = mapOf("source" to "settings_validation"),
-        authHeaders = LlmProviderProtocols.authHeaders(
-          protocol = protocol,
-          apiKey = request.apiKey,
-        ),
-      ),
+    val authHeaders = LlmProviderProtocols.authHeaders(
+      protocol = protocol,
+      apiKey = request.apiKey,
     )
-    return when (result.status) {
-      LiteLlmGatewayStatus.SUCCESS -> LlmValidationResult(
+    validationFailureFor(
+      executeValidationRequest(
+        gateway = gateway,
+        authHeaders = authHeaders,
+        stage = "text_connectivity",
+        prompt = VALIDATION_PROMPT,
+      ),
+    )?.let { failure ->
+      return failure
+    }
+    val nativeProbe = executeCapabilityProbe(
+      gateway = gateway,
+      authHeaders = authHeaders,
+      stage = "native_tool_probe",
+      expectedEcho = NATIVE_TOOL_PROBE_ECHO,
+    )
+    val capability = if (!nativeProbe.supported) {
+      verifiedCapabilitySnapshot(
+        protocol = protocol,
+        baseUrl = baseUrl,
+        model = model,
+        nativeToolCallingAvailable = false,
+      )
+    } else {
+      val controlProbe = executeCapabilityProbe(
+        gateway = gateway,
+        authHeaders = authHeaders,
+        stage = "tool_control_probe",
+        expectedEcho = TOOL_CONTROL_PROBE_ECHO,
+        toolChoice = LiteLlmToolChoice(
+          mode = LiteLlmToolChoiceMode.TOOL,
+          toolName = CAPABILITY_PROBE_TOOL_NAME,
+        ),
+        parallelToolCalls = false,
+      )
+      val strictProbe = if (controlProbe.supported) {
+        executeCapabilityProbe(
+          gateway = gateway,
+          authHeaders = authHeaders,
+          stage = "strict_schema_probe",
+          expectedEcho = STRICT_SCHEMA_PROBE_ECHO,
+          strict = true,
+          toolChoice = LiteLlmToolChoice(
+            mode = LiteLlmToolChoiceMode.TOOL,
+            toolName = CAPABILITY_PROBE_TOOL_NAME,
+          ),
+          parallelToolCalls = false,
+        )
+      } else {
+        CapabilityProbeOutcome.unsupported()
+      }
+      verifiedCapabilitySnapshot(
+        protocol = protocol,
+        baseUrl = baseUrl,
+        model = model,
+        nativeToolCallingAvailable = true,
+        toolChoiceSupported = controlProbe.supported,
+        parallelToolCallsSupported = controlProbe.supported,
+        strictToolSchemaSupported = strictProbe.supported,
+      )
+    }
+    llmSettingsStore.saveAgentCapability(capability)
+    return if (capability.nativeToolCallingAvailable) {
+      LlmValidationResult(
         isSuccess = true,
         message = strings.validationSuccess(model),
+        agentCapability = capability,
       )
-      LiteLlmGatewayStatus.TIMEOUT -> LlmValidationResult(
+    } else {
+      LlmValidationResult(
         isSuccess = false,
-        message = result.errorMessage?.ifBlank {
-          strings.validationTimeout(VALIDATION_TIMEOUT_MS / 1000)
-        } ?: strings.validationTimeout(VALIDATION_TIMEOUT_MS / 1000),
-      )
-      LiteLlmGatewayStatus.RATE_LIMITED -> LlmValidationResult(
-        isSuccess = false,
-        message = result.errorMessage?.ifBlank {
-          strings.validationRateLimited
-        } ?: strings.validationRateLimited,
-      )
-      LiteLlmGatewayStatus.FAILED -> LlmValidationResult(
-        isSuccess = false,
-        message = result.errorMessage?.ifBlank {
-          strings.validationFailed
-        } ?: strings.validationFailed,
+        message = strings.validationNativeToolsUnavailable,
+        agentCapability = capability,
       )
     }
   }
@@ -300,6 +359,7 @@ internal class LocalLlmConfigFacade private constructor(
       reasoningEffort = sanitized.reasoningEffort,
       systemPrompt = sanitized.systemPrompt,
       helperText = strings.helperText,
+      agentCapability = sanitized.agentCapability,
     )
   }
 
@@ -433,8 +493,174 @@ internal class LocalLlmConfigFacade private constructor(
         LlmSettingsState.DEFAULT_REASONING_EFFORT
       },
       systemPrompt = request.systemPrompt.trim(),
+      agentCapability = llmSettingsStore.loadAgentCapability(
+        protocol = protocol,
+        baseUrl = baseUrl,
+        model = model,
+      ),
     ).sanitized()
   }
+
+  private fun executeValidationRequest(
+    gateway: DefaultLiteLlmGateway,
+    authHeaders: Map<String, String>,
+    stage: String,
+    prompt: String,
+    tools: List<LiteLlmToolDefinition> = emptyList(),
+    toolChoice: LiteLlmToolChoice? = null,
+    parallelToolCalls: Boolean? = null,
+  ): LiteLlmGatewayResult = gateway.execute(
+    LiteLlmGatewayRequest(
+      prompt = prompt,
+      tools = tools,
+      toolChoice = toolChoice,
+      parallelToolCalls = parallelToolCalls,
+      metadata = mapOf(
+        "source" to "settings_validation",
+        "validationStage" to stage,
+      ),
+      authHeaders = authHeaders,
+    ),
+  )
+
+  private fun executeCapabilityProbe(
+    gateway: DefaultLiteLlmGateway,
+    authHeaders: Map<String, String>,
+    stage: String,
+    expectedEcho: String,
+    strict: Boolean = false,
+    toolChoice: LiteLlmToolChoice? = null,
+    parallelToolCalls: Boolean? = null,
+  ): CapabilityProbeOutcome {
+    val result = executeValidationRequest(
+      gateway = gateway,
+      authHeaders = authHeaders,
+      stage = stage,
+      prompt = capabilityProbePrompt(expectedEcho),
+      tools = listOf(capabilityProbeTool(expectedEcho = expectedEcho, strict = strict)),
+      toolChoice = toolChoice,
+      parallelToolCalls = parallelToolCalls,
+    )
+    if (result.status != LiteLlmGatewayStatus.SUCCESS) {
+      return CapabilityProbeOutcome(
+        supported = false,
+        result = result,
+      )
+    }
+    val toolCallObserved = result.completion
+      ?.toolCalls
+      ?.any { toolCall ->
+        isCapabilityProbeToolCall(
+          toolCall = toolCall,
+          expectedEcho = expectedEcho,
+        )
+      } == true
+    val metadataObserved = result.metadata[LiteLlmMetadataKeys.NATIVE_TOOL_CALL_OBSERVED]
+      ?.trim()
+      ?.lowercase() == "true"
+    return CapabilityProbeOutcome(
+      supported = toolCallObserved || metadataObserved,
+      result = result,
+    )
+  }
+
+  private fun validationFailureFor(result: LiteLlmGatewayResult): LlmValidationResult? = when (result.status) {
+    LiteLlmGatewayStatus.SUCCESS -> null
+    LiteLlmGatewayStatus.TIMEOUT -> LlmValidationResult(
+      isSuccess = false,
+      message = result.errorMessage?.ifBlank {
+        strings.validationTimeout(VALIDATION_TIMEOUT_MS / 1000)
+      } ?: strings.validationTimeout(VALIDATION_TIMEOUT_MS / 1000),
+    )
+
+    LiteLlmGatewayStatus.RATE_LIMITED -> LlmValidationResult(
+      isSuccess = false,
+      message = result.errorMessage?.ifBlank {
+        strings.validationRateLimited
+      } ?: strings.validationRateLimited,
+    )
+
+    LiteLlmGatewayStatus.FAILED -> LlmValidationResult(
+      isSuccess = false,
+      message = result.errorMessage?.ifBlank {
+        strings.validationFailed
+      } ?: strings.validationFailed,
+    )
+  }
+
+  private fun capabilityProbePrompt(expectedEcho: String): String =
+    """Call the $CAPABILITY_PROBE_TOOL_NAME tool exactly once with {"echo":"$expectedEcho"}. Do not answer with plain text."""
+
+  private fun capabilityProbeTool(
+    expectedEcho: String,
+    strict: Boolean,
+  ): LiteLlmToolDefinition = LiteLlmToolDefinition(
+    name = CAPABILITY_PROBE_TOOL_NAME,
+    description = "Validation-only probe tool. Call it exactly once with the provided echo string.",
+    inputSchema = buildJsonObject {
+      put("type", "object")
+      put(
+        "properties",
+        buildJsonObject {
+          put(
+            "echo",
+            buildJsonObject {
+              put("type", "string")
+              put("description", "Echo the exact validation token.")
+              put(
+                "enum",
+                buildJsonArray {
+                  add(JsonPrimitive(expectedEcho))
+                },
+              )
+            },
+          )
+        },
+      )
+      put(
+        "required",
+        buildJsonArray {
+          add(JsonPrimitive("echo"))
+        },
+      )
+      put("additionalProperties", false)
+    },
+    strict = strict.takeIf { it },
+  )
+
+  private fun isCapabilityProbeToolCall(
+    toolCall: LiteLlmStructuredToolCall,
+    expectedEcho: String,
+  ): Boolean {
+    if (!toolCall.toolName.equals(CAPABILITY_PROBE_TOOL_NAME, ignoreCase = true)) {
+      return false
+    }
+    val echoedValue = toolCall.arguments["echo"]?.toString()
+      ?.trim()
+      ?.removeSurrounding("\"")
+    return echoedValue == null || echoedValue == expectedEcho
+  }
+
+  private fun verifiedCapabilitySnapshot(
+    protocol: String,
+    baseUrl: String,
+    model: String,
+    nativeToolCallingAvailable: Boolean,
+    toolChoiceSupported: Boolean = false,
+    parallelToolCallsSupported: Boolean = false,
+    strictToolSchemaSupported: Boolean = false,
+  ): LlmAgentCapabilitySnapshot = LlmAgentCapabilitySnapshot(
+    routeFingerprint = com.opencray.app.llmRouteFingerprint(
+      protocol = protocol,
+      baseUrl = baseUrl,
+      model = model,
+    ),
+    verifiedAtEpochMs = System.currentTimeMillis(),
+    nativeToolCallingAvailable = nativeToolCallingAvailable,
+    toolChoiceSupported = toolChoiceSupported,
+    parallelToolCallsSupported = parallelToolCallsSupported,
+    strictToolSchemaSupported = strictToolSchemaSupported,
+  )
 
   private fun resolvedCustomProviderName(
     requestedName: String,
@@ -487,6 +713,7 @@ internal class LocalLlmConfigFacade private constructor(
         },
         validationRateLimited = context.getString(R.string.llm_validation_rate_limited),
         validationFailed = context.getString(R.string.llm_validation_failed),
+        validationNativeToolsUnavailable = context.getString(R.string.llm_validation_native_tools_unavailable),
         baseUrlRequiredEnabled = context.getString(R.string.llm_error_base_url_required_enabled),
         baseUrlValidateRequired = context.getString(R.string.llm_error_base_url_validate_required),
         modelValidateRequired = context.getString(R.string.llm_error_model_validate_required),
@@ -506,6 +733,7 @@ internal class LocalLlmConfigFacade private constructor(
       validationTimeout = { seconds -> "Validation timed out after $seconds seconds." },
       validationRateLimited = "Provider rate limited the validation request.",
       validationFailed = "Validation failed.",
+      validationNativeToolsUnavailable = "Text connection works, but native tool calling could not be verified. This route will use JSON fallback until native tools are verified.",
       baseUrlRequiredEnabled = "Base URL is required when the provider is enabled.",
       baseUrlValidateRequired = "Base URL is required to validate the model.",
       modelValidateRequired = "Model is required to validate the model.",
@@ -516,6 +744,10 @@ internal class LocalLlmConfigFacade private constructor(
     private const val VALIDATION_PROFILE_ID: String = "profile-validation"
     private const val VALIDATION_TIMEOUT_MS: Long = 15_000L
     private const val VALIDATION_PROMPT: String = "Reply with OK."
+    private const val CAPABILITY_PROBE_TOOL_NAME: String = "capability_probe"
+    private const val NATIVE_TOOL_PROBE_ECHO: String = "native_tool_probe"
+    private const val TOOL_CONTROL_PROBE_ECHO: String = "tool_choice_probe"
+    private const val STRICT_SCHEMA_PROBE_ECHO: String = "strict_schema_probe"
   }
 }
 
@@ -547,6 +779,7 @@ internal object EmptyLlmConfigFacade : LlmConfigFacade {
     reasoningEffort = LlmSettingsState.DEFAULT_REASONING_EFFORT,
     systemPrompt = "",
     helperText = "LLM settings host support is unavailable.",
+    agentCapability = LlmAgentCapabilitySnapshot(),
   )
 
   override fun save(request: SaveLlmConfigRequest): LlmConfigSnapshot =
@@ -560,4 +793,16 @@ internal object EmptyLlmConfigFacade : LlmConfigFacade {
       isSuccess = false,
       message = "LLM settings host support is unavailable.",
     )
+}
+
+private data class CapabilityProbeOutcome(
+  val supported: Boolean,
+  val result: LiteLlmGatewayResult? = null,
+) {
+  companion object {
+    fun unsupported(): CapabilityProbeOutcome = CapabilityProbeOutcome(
+      supported = false,
+      result = null,
+    )
+  }
 }

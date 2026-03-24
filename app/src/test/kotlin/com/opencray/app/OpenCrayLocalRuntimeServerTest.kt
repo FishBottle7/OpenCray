@@ -53,6 +53,7 @@ import com.opencray.runtime.soul.PreferredAddressStyle
 import com.opencray.runtime.soul.RelationshipState
 import com.opencray.runtime.soul.SoulMemoryExtensionKeys
 import com.opencray.runtime.soul.SoulMemoryObjectTypes
+import com.opencray.runtime.soul.SoulProfileExtensionKeys
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.file.Files
@@ -87,6 +88,25 @@ class OpenCrayLocalRuntimeServerTest {
     } finally {
       server.close()
     }
+  }
+
+  @Test
+  fun localRuntimeServerReportsLifecycleStateAcrossStartAndClose() {
+    val server = localRuntimeServer()
+
+    assertEquals(LocalRuntimeServerState.PHASE_CREATED, server.currentState().phase)
+
+    server.ensureStarted()
+
+    val listeningState = server.currentState()
+    assertEquals(LocalRuntimeServerState.PHASE_LISTENING, listeningState.phase)
+    assertEquals(0, listeningState.requestedPort)
+    assertTrue((listeningState.listeningPort ?: 0) > 0)
+    assertEquals(null, listeningState.failureReason)
+
+    server.close()
+
+    assertEquals(LocalRuntimeServerState.PHASE_CLOSED, server.currentState().phase)
   }
 
   @Test
@@ -1755,6 +1775,90 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun soulDebugSnapshotRouteAttributesRelationshipDerivedAddressStyleOverBaseSoul() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-soul-debug-address-http"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val personalizationStore = PersonalizationLocalStore(
+      temporaryFolder.newFolder("server-soul-debug-address-http"),
+    )
+    val workspaceRoot = temporaryFolder.newFolder("server-workspace-soul-debug-address-http").toPath()
+    WorkspaceSoulProfileStore().saveSoulProfile(
+      workspaceRoot,
+      WorkspaceSoulProfile(
+        presetName = "STEADY",
+        customLabel = "Night Shift",
+        customGuidance = "Keep replies calm and concrete.",
+        extensions = mapOf(
+          SoulProfileExtensionKeys.PREFERRED_ADDRESS_STYLE to "neutral",
+          SoulProfileExtensionKeys.PLASTICITY to "medium",
+        ),
+      ),
+    )
+    personalizationStore.upsertMemoryRecord(
+      MemoryRecord(
+        id = "relationship-state",
+        content = "internal relationship snapshot",
+        createdAtEpochMs = 2_400L,
+        updatedAtEpochMs = 2_400L,
+        extensions = mapOf(
+          MemoryRecordExtensionKeys.SCOPE to "user",
+          MemoryRecordExtensionKeys.STATUS to "active",
+          MemoryRecordExtensionKeys.SOURCE_SESSION_ID to sessionId,
+          MemoryRecordExtensionKeys.LAST_CONFIRMED_AT_EPOCH_MS to "2400",
+          SoulMemoryExtensionKeys.OBJECT_TYPE to SoulMemoryObjectTypes.RELATIONSHIP_STATE,
+          SoulMemoryExtensionKeys.OBJECT_SCHEMA_VERSION to "1",
+          SoulMemoryExtensionKeys.OBJECT_PAYLOAD_JSON to Json.encodeToString(
+            RelationshipState.serializer(),
+            RelationshipState(
+              familiarity = 66,
+              trust = 74,
+              safety = 76,
+              intimacyPermission = 61,
+              playfulnessPermission = 44,
+              affectionTendency = 34,
+              reciprocity = 49,
+            ),
+          ),
+        ),
+      ),
+    )
+    val hostRuntime = OpenCrayHostRuntime.createForTest(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      chatSessionStore = chatStore,
+      settingsFacade = NoOpSettingsFacade,
+      personalizationLocalStore = personalizationStore,
+      workspaceRootProvider = { workspaceRoot },
+      sessionRuntimeManager = NoOpRuntimeManager(),
+      strings = hostRuntimeStrings(),
+    )
+    val server = OpenCrayLocalRuntimeServer(
+      hostRuntimeProvider = { hostRuntime },
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(server, "GET", "/v1/soul_debug_snapshot")
+
+      assertEquals(200, response.statusCode)
+      val payload = JSONObject(response.body)
+      val effectiveSoul = payload.getJSONObject("effectiveSoul")
+      assertEquals("intimate", effectiveSoul.getString("preferredAddressStyle"))
+      val relationshipStateDebug = payload.getJSONObject("relationshipStateDebug")
+      assertEquals("intimate", relationshipStateDebug.getString("derivedAddressStyle"))
+      val fieldSources = payload.getJSONArray("fieldSources")
+      val preferredAddressSource = (0 until fieldSources.length())
+        .map { index -> fieldSources.getJSONObject(index) }
+        .first { source -> source.getString("field") == "preferredAddressStyle" }
+      assertEquals("relationship_state", preferredAddressSource.getString("sourceType"))
+      assertEquals("relationship-state", preferredAddressSource.getString("recordId"))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun skillsEndpointsSupportQueryAndDirectSourceInstall() {
     val skillsFacade = RecordingSkillsFacade().apply {
       snapshot = SkillsSnapshot(
@@ -2040,6 +2144,142 @@ class OpenCrayLocalRuntimeServerTest {
     }
   }
 
+  @Test
+  fun routesChatRuntimeRequestsThroughChatGateway() {
+    val chatGateway = RecordingChatRuntimeGateway()
+    val server = localRuntimeServer(chatRuntimeGatewayResolver = { chatGateway })
+    server.ensureStarted()
+
+    try {
+      val snapshotResponse = request(server, "GET", "/v1/chat_runtime_snapshot")
+      val snapshotPayload = JSONObject(snapshotResponse.body)
+      assertEquals(200, snapshotResponse.statusCode)
+      assertEquals("gateway", snapshotPayload.getString("source"))
+
+      val submitResponse = request(
+        server,
+        "POST",
+        "/v1/submit_chat_message",
+        body = JSONObject().apply {
+          put("text", "hello gateway")
+        }.toString(),
+      )
+      val submitPayload = JSONObject(submitResponse.body)
+      assertEquals(200, submitResponse.statusCode)
+      assertEquals("hello gateway", submitPayload.getString("submittedText"))
+      assertEquals("hello gateway", chatGateway.submittedText)
+
+      val retryResponse = request(
+        server,
+        "POST",
+        "/v1/retry_chat_run",
+        body = JSONObject().apply {
+          put("taskId", "task-123")
+        }.toString(),
+      )
+      assertEquals(200, retryResponse.statusCode)
+      assertEquals("task-123", chatGateway.lastRetriedTaskIdOrRunId)
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun routesShellRequestsThroughShellGateway() {
+    val shellGateway = RecordingShellGateway()
+    val server = localRuntimeServer(shellGatewayResolver = { shellGateway })
+    server.ensureStarted()
+
+    try {
+      val snapshotResponse = request(server, "GET", "/v1/shell_snapshot")
+      val snapshotPayload = JSONObject(snapshotResponse.body)
+
+      assertEquals(200, snapshotResponse.statusCode)
+      assertEquals("gateway-shell", snapshotPayload.getString("source"))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun routesSkillsRequestsThroughSkillsGateway() {
+    val skillsGateway = RecordingSkillsGateway()
+    val server = localRuntimeServer(skillsGatewayResolver = { skillsGateway })
+    server.ensureStarted()
+
+    try {
+      val snapshotResponse = request(server, "GET", "/v1/skills_snapshot?query=android")
+      val snapshotPayload = JSONObject(snapshotResponse.body)
+      assertEquals(200, snapshotResponse.statusCode)
+      assertEquals("gateway-skills", snapshotPayload.getString("source"))
+      assertEquals("android", snapshotPayload.getString("query"))
+
+      val installResponse = request(
+        server,
+        "POST",
+        "/v1/install_skill_source_batch",
+        body = JSONObject().apply {
+          put("sourceRef", "roin-orca/skills")
+          put("selectedSkillNames", JSONArray().apply {
+            put("find-skills")
+            put("humanizer-zh")
+          })
+        }.toString(),
+      )
+      assertEquals(200, installResponse.statusCode)
+      assertTrue(installResponse.body.contains("Installed 2 skills from gateway."))
+      assertEquals("roin-orca/skills", skillsGateway.lastBatchSourceRef)
+      assertEquals(listOf("find-skills", "humanizer-zh"), skillsGateway.lastBatchSkillNames)
+
+      val instructionsResponse = request(
+        server,
+        "GET",
+        "/v1/skill_instructions?skillId=find-skills",
+      )
+      val instructionsPayload = JSONObject(instructionsResponse.body)
+      assertEquals(200, instructionsResponse.statusCode)
+      assertEquals("gateway-instructions", instructionsPayload.getString("source"))
+      assertEquals("find-skills", instructionsPayload.getString("skillId"))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun routesSettingsRequestsThroughSettingsGateway() {
+    val settingsGateway = RecordingSettingsGateway()
+    val server = localRuntimeServer(settingsGatewayResolver = { settingsGateway })
+    server.ensureStarted()
+
+    try {
+      val overviewResponse = request(server, "GET", "/v1/settings_overview")
+      val overviewPayload = JSONObject(overviewResponse.body)
+      assertEquals(200, overviewResponse.statusCode)
+      assertEquals("gateway-settings", overviewPayload.getString("source"))
+
+      val setMcpResponse = request(
+        server,
+        "POST",
+        "/v1/set_mcp_master_enabled",
+        body = JSONObject().apply {
+          put("enabled", true)
+        }.toString(),
+      )
+      val setMcpPayload = JSONObject(setMcpResponse.body)
+      assertEquals(200, setMcpResponse.statusCode)
+      assertEquals("gateway-mcp-master", setMcpPayload.getString("source"))
+      assertEquals(true, setMcpPayload.getBoolean("enabled"))
+      assertEquals(true, settingsGateway.lastMcpMasterEnabled)
+
+      val safetyResponse = request(server, "GET", "/v1/safety_settings")
+      val safetyPayload = JSONObject(safetyResponse.body)
+      assertEquals(200, safetyResponse.statusCode)
+      assertEquals("gateway-safety", safetyPayload.getString("source"))
+    } finally {
+      server.close()
+    }
+  }
+
   private fun localRuntimeServer(
     llmConfigFacade: LlmConfigFacade = EmptyLlmConfigFacade,
     networkSearchConfigFacade: NetworkSearchConfigFacade = EmptyNetworkSearchConfigFacade,
@@ -2048,6 +2288,10 @@ class OpenCrayLocalRuntimeServerTest {
     directTaskRuntimeFactory: AgentSessionTaskRuntimeFactory? = null,
     workspaceRootProvider: (() -> Path)? = null,
     workspaceEntryOpener: ((Path, String) -> Unit)? = null,
+    shellGatewayResolver: ((OpenCrayHostRuntime) -> OpenCrayShellGateway)? = null,
+    chatRuntimeGatewayResolver: ((OpenCrayHostRuntime) -> OpenCrayChatRuntimeGateway)? = null,
+    skillsGatewayResolver: ((OpenCrayHostRuntime) -> OpenCraySkillsGateway)? = null,
+    settingsGatewayResolver: ((OpenCrayHostRuntime) -> OpenCraySettingsGateway)? = null,
     workspaceSnapshotProvider: () -> Map<String, Any?> = {
       WorkspaceTreeSnapshot(
         rootName = AppAgentWorkspace.DIRECTORY_NAME,
@@ -2060,8 +2304,8 @@ class OpenCrayLocalRuntimeServerTest {
         children = emptyList(),
       ).toMap()
     },
-  ): OpenCrayLocalRuntimeServer = OpenCrayLocalRuntimeServer(
-    hostRuntimeProvider = {
+  ): OpenCrayLocalRuntimeServer {
+    val hostRuntimeProvider = {
       OpenCrayHostRuntime.createForTest(
         stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
         chatSessionStore = ChatSessionLocalStore(
@@ -2103,10 +2347,17 @@ class OpenCrayLocalRuntimeServerTest {
           agentFailed = { detail -> "Failed: $detail" },
         ),
       )
-    },
-    requestedPort = 0,
-    shutdownExecutorOnClose = true,
-  )
+    }
+    return OpenCrayLocalRuntimeServer(
+      hostRuntimeProvider = hostRuntimeProvider,
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+      shellGatewayResolver = shellGatewayResolver ?: { hostRuntime -> hostRuntime },
+      chatRuntimeGatewayResolver = chatRuntimeGatewayResolver ?: { hostRuntime -> hostRuntime },
+      skillsGatewayResolver = skillsGatewayResolver ?: { hostRuntime -> hostRuntime },
+      settingsGatewayResolver = settingsGatewayResolver ?: { hostRuntime -> hostRuntime },
+    )
+  }
 
   private fun request(
     server: OpenCrayLocalRuntimeServer,
@@ -2168,6 +2419,269 @@ class OpenCrayLocalRuntimeServerTest {
     agentEmptyAnswer = "The model returned an empty answer.",
     agentFailed = { detail -> "Failed: $detail" },
   )
+
+  private class RecordingChatRuntimeGateway : OpenCrayChatRuntimeGateway {
+    var submittedText: String? = null
+      private set
+
+    var lastRetriedTaskIdOrRunId: String? = null
+      private set
+
+    override fun loadChatSnapshot(): Map<String, Any?> = mapOf("source" to "gateway-chat")
+
+    override fun observeChat(listener: (Map<String, Any?>) -> Unit): () -> Unit {
+      listener(loadChatSnapshot())
+      return { }
+    }
+
+    override fun loadChatRuntimeSnapshot(): Map<String, Any?> = mapOf("source" to "gateway")
+
+    override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? = mapOf("runId" to runId)
+
+    override fun waitForChatRun(runId: String, timeoutMs: Long): Map<String, Any?>? =
+      mapOf("runId" to runId, "timeoutMs" to timeoutMs)
+
+    override fun observeChatRuntime(listener: (Map<String, Any?>) -> Unit): () -> Unit {
+      listener(loadChatRuntimeSnapshot())
+      return { }
+    }
+
+    override fun loadMemoryDebugSnapshot(): Map<String, Any?> = emptyMap()
+
+    override fun loadMemoryDebugLinksSnapshot(): Map<String, Any?> = emptyMap()
+
+    override fun loadSoulDebugSnapshot(): Map<String, Any?> = emptyMap()
+
+    override fun searchMemoryDebug(query: String, maxResults: Int, minScore: Int): Map<String, Any?> =
+      emptyMap()
+
+    override fun getMemoryDebugSlice(path: String, fromLine: Int?, lines: Int): Map<String, Any?> =
+      emptyMap()
+
+    override fun applyMemoryDebugAction(recordId: String, actionId: String): Map<String, Any?> =
+      emptyMap()
+
+    override fun createChatSession() = Unit
+
+    override fun copyChatSession(sessionId: String) = Unit
+
+    override fun deleteChatSession(sessionId: String) = Unit
+
+    override fun selectChatSession(sessionId: String) = Unit
+
+    override fun branchChatSessionFromMessage(sessionId: String, messageId: String) = Unit
+
+    override fun deleteChatMessage(sessionId: String, messageId: String) = Unit
+
+    override fun recallChatMessage(sessionId: String, messageId: String) = Unit
+
+    override fun submitChatMessage(
+      text: String,
+      attachments: List<com.opencray.runtime.OpenCrayFinalAttachment>,
+    ): Map<String, Any?>? {
+      submittedText = text
+      return mapOf("submittedText" to text, "attachmentCount" to attachments.size)
+    }
+
+    override fun approveChatApproval(taskIdOrRunId: String) = Unit
+
+    override fun rejectChatApproval(taskIdOrRunId: String) = Unit
+
+    override fun cancelChatRun(taskIdOrRunId: String) = Unit
+
+    override fun retryChatRun(taskIdOrRunId: String) {
+      lastRetriedTaskIdOrRunId = taskIdOrRunId
+    }
+  }
+
+  private class RecordingShellGateway : OpenCrayShellGateway {
+    override fun loadShellSnapshot(): Map<String, Any?> = mapOf("source" to "gateway-shell")
+
+    override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit {
+      listener(loadShellSnapshot())
+      return { }
+    }
+  }
+
+  private class RecordingSkillsGateway : OpenCraySkillsGateway {
+    var lastBatchSourceRef: String? = null
+      private set
+    var lastBatchSkillNames: List<String> = emptyList()
+      private set
+
+    override fun loadSkillsSnapshot(query: String): Map<String, Any?> = mapOf(
+      "source" to "gateway-skills",
+      "query" to query,
+    )
+
+    override fun observeSkills(listener: (Map<String, Any?>) -> Unit): () -> Unit {
+      listener(loadSkillsSnapshot(query = ""))
+      return { }
+    }
+
+    override fun setSkillEnabled(skillId: String, enabled: Boolean) = Unit
+
+    override fun installSuggestedSkill(skillId: String): String =
+      installSkillSource(sourceRef = skillId, selectedSkillName = "")
+
+    override fun installSkillSource(
+      sourceRef: String,
+      selectedSkillName: String,
+    ): String = "Installed ${selectedSkillName.ifBlank { sourceRef }} from gateway."
+
+    override fun installSkillSourceBatch(
+      sourceRef: String,
+      selectedSkillNames: List<String>,
+    ): String {
+      lastBatchSourceRef = sourceRef
+      lastBatchSkillNames = selectedSkillNames
+      return "Installed ${selectedSkillNames.size} skills from gateway."
+    }
+
+    override fun inspectSkillSource(sourceRef: String): Map<String, Any?> =
+      mapOf("source" to "gateway-inspect", "sourceRef" to sourceRef)
+
+    override fun deleteInstalledSkill(skillId: String): String =
+      "Removed $skillId from gateway."
+
+    override fun refreshSkills(): String = "Reloaded gateway skills."
+
+    override fun checkInstalledSkillUpdates(skillId: String): String =
+      "Checked $skillId on gateway."
+
+    override fun updateInstalledSkill(skillId: String): String =
+      "Updated $skillId on gateway."
+
+    override fun loadSkillInstructions(skillId: String): Map<String, Any?> =
+      mapOf("source" to "gateway-instructions", "skillId" to skillId)
+
+    override fun activateSkillsInstallSource(sourceId: String): String = sourceId
+  }
+
+  private class RecordingSettingsGateway : OpenCraySettingsGateway {
+    var lastMcpMasterEnabled: Boolean? = null
+      private set
+
+    override fun loadSettingsOverview(): Map<String, Any?> = mapOf("source" to "gateway-settings")
+
+    override fun observeSettingsOverview(listener: (Map<String, Any?>) -> Unit): () -> Unit {
+      listener(loadSettingsOverview())
+      return { }
+    }
+
+    override fun loadSettingsDetail(routeIdRaw: String): Map<String, Any?> =
+      mapOf("source" to "gateway-settings-detail", "routeId" to routeIdRaw)
+
+    override fun loadNetworkSearchConfig(): Map<String, Any?> =
+      mapOf("source" to "gateway-network-search")
+
+    override fun saveNetworkSearchConfig(slots: List<Map<String, Any?>>): Map<String, Any?> =
+      mapOf("source" to "gateway-network-search-save", "slotCount" to slots.size)
+
+    override fun loadMediaSpeechConfig(): Map<String, Any?> =
+      mapOf("source" to "gateway-media-speech")
+
+    override fun saveMediaSpeechConfig(payload: Map<String, Any?>): Map<String, Any?> =
+      mapOf("source" to "gateway-media-speech-save", "keys" to payload.keys.sorted())
+
+    override fun loadLlmConfig(): Map<String, Any?> =
+      mapOf("source" to "gateway-llm")
+
+    override fun saveLlmConfig(
+      enabled: Boolean,
+      providerId: String,
+      selectedProviderOptionId: String,
+      protocol: String,
+      providerName: String,
+      providerNotes: String,
+      baseUrl: String,
+      apiKey: String,
+      model: String,
+      reasoningEffort: String,
+      systemPrompt: String,
+    ): Map<String, Any?> = mapOf("source" to "gateway-llm-save", "enabled" to enabled)
+
+    override fun saveCustomLlmProvider(
+      selectedProviderOptionId: String,
+      protocol: String,
+      providerName: String,
+      providerNotes: String,
+      baseUrl: String,
+      apiKey: String,
+      model: String,
+      reasoningEffort: String,
+      systemPrompt: String,
+    ): Map<String, Any?> = mapOf("source" to "gateway-custom-llm")
+
+    override fun validateLlmConfig(
+      providerId: String,
+      protocol: String,
+      baseUrl: String,
+      apiKey: String,
+      model: String,
+      reasoningEffort: String,
+    ): Map<String, Any?> = mapOf("source" to "gateway-llm-validate", "providerId" to providerId)
+
+    override fun loadPersonalizationConfig(): Map<String, Any?> =
+      mapOf("source" to "gateway-personalization")
+
+    override fun savePersonalizationConfig(
+      presetId: String,
+      customLabel: String,
+      customGuidance: String,
+    ): Map<String, Any?> = mapOf("source" to "gateway-personalization-save", "presetId" to presetId)
+
+    override fun setAppLanguage(languageId: String): Map<String, Any?> =
+      mapOf("source" to "gateway-language", "languageId" to languageId)
+
+    override fun runPersonalizationReset(scopeId: String): Map<String, Any?> =
+      mapOf("source" to "gateway-personalization-reset", "scopeId" to scopeId)
+
+    override fun loadMcpSettings(): Map<String, Any?> =
+      mapOf("source" to "gateway-mcp")
+
+    override fun setMcpMasterEnabled(enabled: Boolean): Map<String, Any?> {
+      lastMcpMasterEnabled = enabled
+      return mapOf("source" to "gateway-mcp-master", "enabled" to enabled)
+    }
+
+    override fun setMcpServerEnabled(
+      serverId: String,
+      enabled: Boolean,
+    ): Map<String, Any?> = mapOf(
+      "source" to "gateway-mcp-server",
+      "serverId" to serverId,
+      "enabled" to enabled,
+    )
+
+    override fun loadSafetySettings(): Map<String, Any?> =
+      mapOf("source" to "gateway-safety")
+
+    override fun saveSafetySettings(
+      automationModeId: String,
+      rollbackJournalEnabled: Boolean,
+      maxFilesPerBatch: Int,
+      maxAgentTurns: Int,
+      maxToolCalls: Int,
+      undoWindowHours: Int,
+      fileChangesPolicyId: String,
+      fileDeletesPolicyId: String,
+      shellCommandsPolicyId: String,
+      externalAccessModeId: String,
+      photoLibraryEnabled: Boolean,
+      downloadsEnabled: Boolean,
+      documentsEnabled: Boolean,
+      recordingsEnabled: Boolean,
+      workspaceAccessProfileId: String,
+      readOnlyOutsideWorkspace: Boolean,
+      liveContextModeId: String,
+      memoryToolsEnabled: Boolean,
+    ): Map<String, Any?> = mapOf(
+      "source" to "gateway-safety-save",
+      "automationModeId" to automationModeId,
+      "liveContextModeId" to liveContextModeId,
+    )
+  }
 
   private object NoOpSettingsFacade : SettingsFacade {
     override fun loadOverview(): SettingsOverviewSnapshot = SettingsOverviewSnapshot(

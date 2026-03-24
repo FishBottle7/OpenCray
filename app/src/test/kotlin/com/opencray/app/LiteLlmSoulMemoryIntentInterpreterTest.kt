@@ -98,6 +98,8 @@ class LiteLlmSoulMemoryIntentInterpreterTest {
     assertTrue(prompt.contains("If the user tells the agent how to address them"))
     assertTrue(prompt.contains("A single message may yield multiple soul intents"))
     assertTrue(prompt.contains("Example mapping: '以后叫我阿青。'"))
+    assertTrue(prompt.contains("Example mapping: '以后不要再叫我阿澄了。' -> {\"intents\":[]}"))
+    assertTrue(prompt.contains("Example mapping: '别再叫我阿澄了，以后叫我阿青。'"))
     assertTrue(prompt.contains("\"preference_key\":\"user_preferred_name\""))
     assertTrue(prompt.contains("interaction_preference_signal is the only durable adaptive relationship-drift key"))
     assertTrue(prompt.contains("do not use agent_style_profile"))
@@ -105,6 +107,10 @@ class LiteLlmSoulMemoryIntentInterpreterTest {
     assertTrue(prompt.contains("agent_verbosity always uses session scope"))
     assertTrue(prompt.contains("user_preferred_name stores how the agent should address the user"))
     assertTrue(prompt.contains("user_address_style stores the desired user-addressing closeness"))
+    assertTrue(prompt.contains("A durable naming request like '以后叫我阿澄。', '以后称呼我阿澄。', or '今后直接叫我 A-Cheng。' should emit exactly one user_preferred_name intent"))
+    assertTrue(prompt.contains("Only emit user_preferred_name or user_address_style when the user gives a concrete preferred value to use."))
+    assertTrue(prompt.contains("If the user only invalidates an existing naming or addressing preference without naming a replacement"))
+    assertTrue(prompt.contains("Do not turn pure negations like '以后不要再叫我阿澄了。' into a new soul memory or generic durable memory."))
     assertTrue(prompt.contains("preference_extensions may only be used with interaction_preference_signal"))
     assertTrue(prompt.contains("When using interaction_preference_signal, set preference_value to a short placeholder like adaptive"))
     assertTrue(prompt.contains(MemoryInteractionPreferenceExtensionKeys.WARMTH_DIRECTION))
@@ -254,6 +260,43 @@ class LiteLlmSoulMemoryIntentInterpreterTest {
     assertTrue(prompt.contains("\"interaction_preference_playfulness_direction\":\"higher\""))
     assertTrue(prompt.contains("\"interaction_preference_reassurance_direction\":\"higher\""))
     assertTrue(prompt.contains("\"scope\":\"session\""))
+  }
+
+  @Test
+  fun promptTreatsPreferredNameInvalidationWithoutReplacementAsRecordOnlyMaintenance() {
+    val providerClient = RecordingProviderClient(
+      result = LiteLlmProviderResult.Success(outputText = """{"intents":[]}"""),
+    )
+    val interpreter = LiteLlmSoulMemoryIntentInterpreter(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerId = "openai",
+          protocol = LlmProviderProtocols.OPENAI,
+          baseUrl = "https://api.openai.com/v1",
+          apiKey = "test-key",
+          model = "gpt-4o-mini",
+        )
+      },
+      providerClient = providerClient,
+    )
+
+    val result = interpreter.interpret(
+      SoulMemoryIntentRequest(
+        sessionId = "session-5",
+        userInput = "以后不要再叫我阿澄了。",
+      ),
+    )
+
+    val success = result as SoulMemoryIntentInterpretation.Success
+    assertTrue(success.intents.isEmpty())
+    val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
+    assertTrue(prompt.contains("Only emit user_preferred_name or user_address_style when the user gives a concrete preferred value to use."))
+    assertTrue(prompt.contains("A durable naming request like '以后叫我阿澄。', '以后称呼我阿澄。', or '今后直接叫我 A-Cheng。' should emit exactly one user_preferred_name intent"))
+    assertTrue(prompt.contains("If the user only invalidates an existing naming or addressing preference without naming a replacement"))
+    assertTrue(prompt.contains("Do not turn pure negations like '以后不要再叫我阿澄了。' into a new soul memory or generic durable memory."))
+    assertTrue(prompt.contains("Example mapping: '以后不要再叫我阿澄了。' -> {\"intents\":[]}"))
+    assertTrue(prompt.contains("Example mapping: '别再叫我阿澄了，以后叫我阿青。'"))
   }
 
   private class RecordingProviderClient(

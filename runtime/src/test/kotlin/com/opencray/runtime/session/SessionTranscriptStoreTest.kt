@@ -1,7 +1,10 @@
 package com.opencray.runtime.session
 
 import com.opencray.runtime.context.RuntimeConversationMessage
+import com.opencray.runtime.context.RuntimeConversationMessageKind
 import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.context.RuntimeConversationToolCall
+import com.opencray.runtime.context.RuntimeConversationToolResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -263,16 +266,29 @@ class SessionTranscriptStoreTest {
     turn: Int,
     toolName: String,
   ) {
+    val toolCallId = "$taskId-call"
     add(
       RuntimeConversationMessage(
-        role = RuntimeConversationRole.TOOL,
-        content = """tool_call {"run_id":"$runId","task_id":"$taskId","turn":$turn,"tool_name":"$toolName","arguments":{"path":"."}}""",
+        role = RuntimeConversationRole.ASSISTANT,
+        content = """{"run_id":"$runId","task_id":"$taskId","turn":$turn,"tool_call_id":"$toolCallId","tool_name":"$toolName","arguments":{"path":"."}}""",
+        kind = RuntimeConversationMessageKind.TOOL_CALL,
+        toolCall = RuntimeConversationToolCall(
+          id = toolCallId,
+          toolName = toolName,
+        ),
       ),
     )
     add(
       RuntimeConversationMessage(
         role = RuntimeConversationRole.TOOL,
-        content = """tool_result {"run_id":"$runId","task_id":"$taskId","turn":$turn,"tool_name":"$toolName","status":"success","content_preview":"ok"}""",
+        content = """{"run_id":"$runId","task_id":"$taskId","turn":$turn,"tool_call_id":"$toolCallId","tool_name":"$toolName","status":"success","content":"ok"}""",
+        kind = RuntimeConversationMessageKind.TOOL_RESULT,
+        toolResult = RuntimeConversationToolResult(
+          toolCallId = toolCallId,
+          toolName = toolName,
+          status = "success",
+          isError = false,
+        ),
       ),
     )
   }

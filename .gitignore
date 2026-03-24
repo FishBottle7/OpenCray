@@ -20,13 +20,17 @@
 /.codex/
 /.lsp/
 /.opencode/
+/.android/
 /.android-sdk-linux/
+/.kotlin-tmp/
 /.p4a-generated/
 /.p4a-build-venv/
 /.p4a-private/
 /.p4a-storage/
 /.p4a-wsl-bin/
 /.pytest_cache/
+/.pytest-cache/
+/.pytest-tmp/
 /.appdata/
 /.gradle-test-build/
 /.sandbox-home/

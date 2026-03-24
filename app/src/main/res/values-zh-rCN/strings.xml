@@ -170,6 +170,7 @@
     <string name="llm_validation_timeout">验证超时，已等待 %1$d 秒。</string>
     <string name="llm_validation_rate_limited">提供商对验证请求进行了限流。</string>
     <string name="llm_validation_failed">验证失败。</string>
+    <string name="llm_validation_native_tools_unavailable">文本连接可用，但未能验证原生工具调用。验证通过前，此路由将回退到 JSON 模式。</string>
     <string name="llm_error_base_url_required_enabled">启用提供商时必须填写 Base URL。</string>
     <string name="llm_error_base_url_validate_required">验证模型前必须填写 Base URL。</string>
     <string name="llm_error_model_validate_required">验证模型前必须填写模型名称。</string>

@@ -132,7 +132,11 @@ class MemoryStewardshipService(
     decisions: List<MemoryStewardshipDecision>,
   ): MemoryStewardshipPlan {
     val now = clock()
+    val acceptedCandidatesByIndex = proposedCandidates
+      .mapIndexed { index, candidate -> index to candidate }
+      .toMap(linkedMapOf())
     val droppedCandidateIndexes = linkedSetOf<Int>()
+    val mergedCandidateIndexes = linkedSetOf<Int>()
     val reaffirmedRecords = linkedMapOf<String, MemoryRecord>()
     val resolvedRecords = linkedMapOf<String, MemoryRecord>()
     val supersededCountsByCandidateIndex = linkedMapOf<Int, Int>()
@@ -152,6 +156,12 @@ class MemoryStewardshipService(
           if (droppedCandidateIndexes.contains(candidateIndex)) {
             return@forEach
           }
+          if (
+            mergedCandidateIndexes.contains(candidateIndex) ||
+            supersededCountsByCandidateIndex[candidateIndex] != null
+          ) {
+            return@forEach
+          }
           if (!canRefresh(record = relatedRecord, candidate = candidateView)) {
             return@forEach
           }
@@ -168,7 +178,10 @@ class MemoryStewardshipService(
           if (droppedCandidateIndexes.size >= MAX_DROPPED_CANDIDATES_PER_TURN) {
             return@forEach
           }
-          if (supersededCountsByCandidateIndex[candidateIndex] != null) {
+          if (
+            mergedCandidateIndexes.contains(candidateIndex) ||
+            supersededCountsByCandidateIndex[candidateIndex] != null
+          ) {
             return@forEach
           }
           droppedCandidateIndexes += candidate.index
@@ -205,11 +218,52 @@ class MemoryStewardshipService(
           )
         }
 
+        MemoryStewardshipAction.MERGE_RECORD_WITH_CANDIDATE -> {
+          val relatedRecord = relatedRecords[decision.recordId] ?: return@forEach
+          val candidateIndex = decision.candidateIndex ?: return@forEach
+          val candidateView = candidateViews[candidateIndex] ?: return@forEach
+          val candidate = acceptedCandidatesByIndex[candidateIndex] ?: return@forEach
+          if (droppedCandidateIndexes.contains(candidateIndex)) {
+            return@forEach
+          }
+          if (mergedCandidateIndexes.contains(candidateIndex)) {
+            return@forEach
+          }
+          if (resolvedRecords.size >= MAX_RESOLVED_RECORDS_PER_TURN) {
+            return@forEach
+          }
+          if (!canMerge(record = relatedRecord, candidate = candidateView)) {
+            return@forEach
+          }
+          val mergedCandidate = mergeCandidate(
+            record = relatedRecord,
+            candidate = candidate,
+          ) ?: return@forEach
+          val inserted = resolvedRecords.putIfAbsent(
+            relatedRecord.view.id,
+            resolveRecord(
+              record = relatedRecord.record,
+              nowEpochMs = now,
+              resolutionReason = RESOLUTION_REASON_MERGED,
+              supersededBy = stableMemoryRecordId(mergedCandidate),
+            ),
+          ) == null
+          if (!inserted) {
+            return@forEach
+          }
+          acceptedCandidatesByIndex[candidateIndex] = mergedCandidate
+          mergedCandidateIndexes += candidateIndex
+          reaffirmedRecords.remove(relatedRecord.view.id)
+        }
+
         MemoryStewardshipAction.SUPERSEDE_RECORD_WITH_CANDIDATE -> {
           val relatedRecord = relatedRecords[decision.recordId] ?: return@forEach
           val candidateIndex = decision.candidateIndex ?: return@forEach
           val candidateView = candidateViews[candidateIndex] ?: return@forEach
           if (droppedCandidateIndexes.contains(candidateIndex)) {
+            return@forEach
+          }
+          if (mergedCandidateIndexes.contains(candidateIndex)) {
             return@forEach
           }
           if (resolvedRecords.size >= MAX_RESOLVED_RECORDS_PER_TURN) {
@@ -239,9 +293,12 @@ class MemoryStewardshipService(
       }
     }
 
-    val acceptedCandidates = proposedCandidates.filterIndexed { index, _ ->
-      index !in droppedCandidateIndexes
-    }
+    val acceptedCandidates = acceptedCandidatesByIndex
+      .asSequence()
+      .filterNot { (index, _) -> index in droppedCandidateIndexes }
+      .sortedBy { (index, _) -> index }
+      .map { (_, candidate) -> candidate }
+      .toList()
     val droppedCandidates = proposedCandidates.filterIndexed { index, _ ->
       index in droppedCandidateIndexes
     }
@@ -586,6 +643,35 @@ class MemoryStewardshipService(
     }
   }
 
+  private fun canMerge(
+    record: RelatedMemoryRecord,
+    candidate: StewardableMemoryCandidate,
+  ): Boolean {
+    if (record.view.kind != candidate.kind || record.view.scope != candidate.scope) {
+      return false
+    }
+    return when (candidate.kind) {
+      MemoryKind.DURABLE_INSTRUCTION,
+      MemoryKind.PROJECT_FACT,
+      -> sharesUnderlyingTopic(
+        recordContent = record.view.content,
+        candidateContent = candidate.content,
+      ) &&
+        !isPureReconfirmation(
+          recordContent = record.view.content,
+          candidateContent = candidate.content,
+        ) &&
+        !hasLikelyScalarConflict(
+          recordContent = record.view.content,
+          candidateContent = candidate.content,
+        )
+
+      MemoryKind.USER_PREFERENCE,
+      MemoryKind.TASK_COMMITMENT,
+      -> false
+    }
+  }
+
   private fun canRefresh(
     record: RelatedMemoryRecord,
     candidate: StewardableMemoryCandidate,
@@ -624,6 +710,17 @@ class MemoryStewardshipService(
     return candidateUniqueHighSignalTerms.isEmpty()
   }
 
+  private fun hasLikelyScalarConflict(
+    recordContent: String,
+    candidateContent: String,
+  ): Boolean {
+    val recordScalarTokens = scalarTokens(recordContent)
+    val candidateScalarTokens = scalarTokens(candidateContent)
+    return recordScalarTokens.isNotEmpty() &&
+      candidateScalarTokens.isNotEmpty() &&
+      recordScalarTokens != candidateScalarTokens
+  }
+
   private fun sharesUnderlyingTopic(
     recordContent: String,
     candidateContent: String,
@@ -645,7 +742,7 @@ class MemoryStewardshipService(
     }
     val sharedToken = overlap.singleOrNull() ?: return false
     return isHighSignalTopicToken(sharedToken)
-  }
+      }
 
   private fun topicTerms(
     text: String,
@@ -672,7 +769,15 @@ class MemoryStewardshipService(
           token.any { character ->
             character == '/' || character == '_' || character == '-'
           }
-        )
+      )
+
+  private fun scalarTokens(
+    text: String,
+  ): Set<String> = extractMemoryQueryTerms(text)
+    .mapTo(linkedSetOf()) { token -> token.lowercase(Locale.US) }
+    .filterTo(linkedSetOf()) { token ->
+      token.any(Char::isDigit)
+    }
 
   private fun shouldReviewCandidateOnly(
     candidates: List<StewardableMemoryCandidate>,
@@ -728,6 +833,63 @@ class MemoryStewardshipService(
     },
   )
 
+  private fun mergeCandidate(
+    record: RelatedMemoryRecord,
+    candidate: MemoryCandidate,
+  ): MemoryCandidate? {
+    val mergedContent = mergeRecordAndCandidateContent(
+      recordContent = record.view.content,
+      candidateContent = candidate.content,
+    ) ?: return null
+    return candidate.copy(
+      content = mergedContent,
+      extensions = buildMap {
+        putAll(candidate.extensions)
+        val mergedFromRecordIds = linkedSetOf<String>()
+        record.record.extensions[MemoryRecordExtensionKeys.MERGED_FROM_RECORD_IDS]
+          ?.split(',')
+          ?.map(String::trim)
+          ?.filter(String::isNotBlank)
+          ?.forEach(mergedFromRecordIds::add)
+        mergedFromRecordIds += record.record.id
+        put(
+          MemoryRecordExtensionKeys.MERGED_FROM_RECORD_IDS,
+          mergedFromRecordIds.joinToString(separator = ","),
+        )
+        put(MemoryRecordExtensionKeys.MERGE_STRATEGY, MERGE_STRATEGY_APPEND_CLAUSES)
+      },
+    )
+  }
+
+  private fun mergeRecordAndCandidateContent(
+    recordContent: String,
+    candidateContent: String,
+  ): String? {
+    val recordClause = normalizeMergeClause(recordContent) ?: return null
+    val candidateClause = normalizeMergeClause(candidateContent) ?: return null
+    if (recordClause.equals(candidateClause, ignoreCase = true)) {
+      return recordClause
+    }
+    val recordLower = recordClause.lowercase(Locale.US)
+    val candidateLower = candidateClause.lowercase(Locale.US)
+    return when {
+      candidateLower.contains(recordLower) -> candidateClause
+      recordLower.contains(candidateLower) -> recordClause
+      else -> linkedMapOf(
+        normalizedMergeClauseKey(recordClause) to recordClause,
+        normalizedMergeClauseKey(candidateClause) to candidateClause,
+      ).values.joinToString(separator = "; ")
+    }
+  }
+
+  private fun normalizeMergeClause(text: String): String? = text
+    .replace(Regex("\\s+"), " ")
+    .trim()
+    .trim(';', '；', '.', '。', ',', '，')
+    .takeIf(String::isNotBlank)
+
+  private fun normalizedMergeClauseKey(text: String): String = text.lowercase(Locale.US)
+
   private fun reaffirmRecord(
     record: MemoryRecord,
     nowEpochMs: Long,
@@ -781,7 +943,9 @@ class MemoryStewardshipService(
       MemoryKind.DURABLE_INSTRUCTION,
       MemoryKind.PROJECT_FACT,
     )
+    const val RESOLUTION_REASON_MERGED: String = "merged"
     const val RESOLUTION_REASON_SUPERSEDED: String = "superseded"
+    const val MERGE_STRATEGY_APPEND_CLAUSES: String = "append_clauses"
     const val DAY_MS: Long = 24L * 60L * 60L * 1000L
     const val MAX_RELATED_RECORDS_PER_CANDIDATE: Int = 3
     const val MAX_RELATED_RECORDS_TOTAL: Int = 8

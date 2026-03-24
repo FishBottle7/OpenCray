@@ -647,6 +647,44 @@ class MemoryBackedSoulProfileResolverTest {
   }
 
   @Test
+  fun overlayLetsRelationshipStateOverrideBaseAddressStyleWhenNoInteractionPreferenceAddressStyleExists() {
+    val profile = resolver.overlay(
+      baseProfile = RuntimeSoulProfile(
+        presetName = "BUILDER",
+        voice = "decisive and direct",
+        extensions = mapOf(
+          SoulProfileExtensionKeys.TONE to "builder",
+          SoulProfileExtensionKeys.USER_RELATIONSHIP_STYLE to "direct",
+          SoulProfileExtensionKeys.PREFERRED_ADDRESS_STYLE to "neutral",
+        ),
+      ),
+      records = listOf(
+        relationshipStateRecord(
+          id = "relationship-user-intimate",
+          scope = MemoryScope.USER,
+          sourceSessionId = "session-old",
+          state = RelationshipState(
+            familiarity = 62,
+            trust = 72,
+            safety = 74,
+            intimacyPermission = 58,
+            playfulnessPermission = 42,
+            affectionTendency = 32,
+            reciprocity = 46,
+          ),
+          updatedAtEpochMs = 4_245L,
+        ),
+      ),
+      sessionId = "session-main",
+      workspaceId = "workspace-main",
+    )
+
+    assertEquals("intimate", profile?.extensions?.get(SoulProfileExtensionKeys.PREFERRED_ADDRESS_STYLE))
+    assertEquals("warm", profile?.extensions?.get(SoulProfileExtensionKeys.INTIMACY_PERMISSION_BAND))
+    assertEquals("true", profile?.extensions?.get(SoulProfileExtensionKeys.HIGH_INTIMACY_BEHAVIOR_ALLOWED))
+  }
+
+  @Test
   fun overlayKeepsExplicitInteractionPreferenceAddressStyleOverDeeperRelationshipState() {
     val profile = resolver.overlay(
       baseProfile = RuntimeSoulProfile(

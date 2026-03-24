@@ -9,6 +9,8 @@ import com.opencray.llm.LiteLlmProviderRequest
 import com.opencray.llm.LiteLlmProviderResult
 import com.opencray.llm.LiteLlmRouteSelectionMetadata
 import com.opencray.llm.LiteLlmToolDefinition
+import com.opencray.llm.LiteLlmToolChoice
+import com.opencray.llm.LiteLlmToolChoiceMode
 import com.opencray.llm.ProviderRoute
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -136,9 +138,48 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
     assertTrue(success.outputText.contains("\"status\":\"in_progress\""))
     assertEquals("TodoWrite", completion.toolCalls.single().toolName)
     assertTrue(completion.finalText.isNullOrBlank())
-    assertEquals("true", success.metadata[LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED])
+    assertEquals("false", success.metadata[LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED])
     assertEquals("openai_tool_calls", success.metadata[LiteLlmMetadataKeys.PROVIDER_RESPONSE_SHAPE])
     assertEquals("true", success.metadata[LiteLlmMetadataKeys.NATIVE_TOOL_CALL_OBSERVED])
+  }
+
+  @Test
+  fun executeCapturesOpenAiProgressAndReasoningAlongsideNativeToolCalls() {
+    val result = executeWithOpenAiResponse(
+      """
+      {
+        "id": "req_tool_call_with_progress",
+        "choices": [
+          {
+            "message": {
+              "content": "Updating the todo list now.",
+              "reasoning_content": "Todo sync still needs one write.",
+              "tool_calls": [
+                {
+                  "id": "call_1",
+                  "type": "function",
+                  "function": {
+                    "name": "TodoWrite",
+                    "arguments": "{\"todos\":[{\"content\":\"Ship update entry\",\"status\":\"in_progress\"}]}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_calls"
+          }
+        ]
+      }
+      """.trimIndent(),
+    )
+
+    val success = result as LiteLlmProviderResult.Success
+    val completion = requireNotNull(success.completion)
+    assertEquals("Updating the todo list now.", completion.progressText)
+    assertEquals("Todo sync still needs one write.", completion.reasoningText)
+    assertEquals("TodoWrite", completion.toolCalls.single().toolName)
+    assertTrue(completion.finalText.isNullOrBlank())
+    assertEquals("true", success.metadata[LiteLlmMetadataKeys.PROVIDER_REASONING_OBSERVED])
+    assertEquals("1", success.metadata[LiteLlmMetadataKeys.PROVIDER_REASONING_TURN_COUNT])
   }
 
   @Test
@@ -165,8 +206,10 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
     assertTrue(success.outputText.contains("\"tool_name\":\"TodoWrite\""))
     assertTrue(success.outputText.contains("\"content\":\"Track refresh fix\""))
     assertTrue(success.outputText.contains("\"status\":\"pending\""))
+    assertTrue(requireNotNull(success.completion).reasoningText.isNullOrBlank())
     assertEquals("openai_reasoning_protocol", success.metadata[LiteLlmMetadataKeys.PROVIDER_RESPONSE_SHAPE])
     assertEquals("false", success.metadata[LiteLlmMetadataKeys.NATIVE_TOOL_CALL_OBSERVED])
+    assertEquals("false", success.metadata[LiteLlmMetadataKeys.PROVIDER_REASONING_OBSERVED])
   }
 
   @Test
@@ -190,8 +233,11 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
 
     val failure = result as LiteLlmProviderResult.Failure
     assertEquals("PROVIDER_EMPTY_RESPONSE", failure.errorCode)
+    assertEquals("I should probably call TodoWrite next.", requireNotNull(failure.completion).reasoningText)
     assertEquals("openai_reasoning_text", failure.metadata[LiteLlmMetadataKeys.PROVIDER_RESPONSE_SHAPE])
     assertEquals("false", failure.metadata[LiteLlmMetadataKeys.NATIVE_TOOL_CALL_OBSERVED])
+    assertEquals("true", failure.metadata[LiteLlmMetadataKeys.PROVIDER_REASONING_OBSERVED])
+    assertEquals("1", failure.metadata[LiteLlmMetadataKeys.PROVIDER_REASONING_TURN_COUNT])
   }
 
   @Test
@@ -226,9 +272,52 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
     assertTrue(success.outputText.isBlank())
     assertEquals("TodoWrite", completion.toolCalls.single().toolName)
     assertTrue(completion.finalText.isNullOrBlank())
-    assertEquals("true", success.metadata[LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED])
+    assertEquals("false", success.metadata[LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED])
     assertEquals("anthropic_tool_use", success.metadata[LiteLlmMetadataKeys.PROVIDER_RESPONSE_SHAPE])
     assertEquals("true", success.metadata[LiteLlmMetadataKeys.NATIVE_TOOL_CALL_OBSERVED])
+  }
+
+  @Test
+  fun executeCapturesAnthropicThinkingAndTextAroundToolUse() {
+    val result = executeWithAnthropicResponse(
+      """
+      {
+        "id": "msg_tool_use_with_thinking",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "Need one todo write before answering."
+          },
+          {
+            "type": "text",
+            "text": "Updating the todo list now."
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_1",
+            "name": "TodoWrite",
+            "input": {
+              "todos": [
+                {
+                  "content": "Ship update entry",
+                  "status": "in_progress"
+                }
+              ]
+            }
+          }
+        ],
+        "stop_reason": "tool_use"
+      }
+      """.trimIndent(),
+    )
+
+    val success = result as LiteLlmProviderResult.Success
+    val completion = requireNotNull(success.completion)
+    assertEquals("Updating the todo list now.", completion.progressText)
+    assertEquals("Need one todo write before answering.", completion.reasoningText)
+    assertEquals("TodoWrite", completion.toolCalls.single().toolName)
+    assertTrue(completion.finalText.isNullOrBlank())
+    assertEquals("true", success.metadata[LiteLlmMetadataKeys.PROVIDER_REASONING_OBSERVED])
   }
 
   @Test
@@ -454,10 +543,21 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
                   toolCallId = "oc-call-1",
                   toolName = "EchoProbe",
                   content = """{"tool_name":"EchoProbe","status":"success"}""",
+                  structuredContent = buildJsonObject {
+                    put("probe", "ok")
+                  },
+                  exitCode = 0,
+                  stdout = "probe ok",
+                  metadata = mapOf("source" to "unit-test"),
                 ),
               ),
             ),
             tools = listOf(sampleToolDefinition()),
+            toolChoice = LiteLlmToolChoice(
+              mode = LiteLlmToolChoiceMode.TOOL,
+              toolName = "EchoProbe",
+            ),
+            parallelToolCalls = false,
             authHeaders = mapOf("Authorization" to "Bearer test-key"),
           ),
           selection = LiteLlmRouteSelectionMetadata(
@@ -473,6 +573,10 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
       assertTrue(responseSent.await(5, TimeUnit.SECONDS))
       assertEquals("POST /v1/chat/completions HTTP/1.1", requestLine.get())
       val payload = JSONObject(requestBody.get())
+      assertEquals(false, payload.getBoolean("parallel_tool_calls"))
+      val toolChoice = payload.getJSONObject("tool_choice")
+      assertEquals("function", toolChoice.getString("type"))
+      assertEquals("EchoProbe", toolChoice.getJSONObject("function").getString("name"))
       val messages = payload.getJSONArray("messages")
       assertEquals("system", messages.getJSONObject(0).getString("role"))
       assertEquals("Task context", messages.getJSONObject(1).getString("content"))
@@ -483,7 +587,12 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
       val tool = messages.getJSONObject(3)
       assertEquals("tool", tool.getString("role"))
       assertEquals("oc-call-1", tool.getString("tool_call_id"))
-      assertEquals("""{"tool_name":"EchoProbe","status":"success"}""", tool.getString("content"))
+      val toolContent = JSONObject(tool.getString("content"))
+      assertEquals("""{"tool_name":"EchoProbe","status":"success"}""", toolContent.getString("content"))
+      assertEquals(0, toolContent.getInt("exit_code"))
+      assertEquals("probe ok", toolContent.getString("stdout"))
+      assertEquals("ok", toolContent.getJSONObject("structured_content").getString("probe"))
+      assertEquals("unit-test", toolContent.getJSONObject("metadata").getString("source"))
     } finally {
       runCatching { server.close() }
       serverThread.join(5_000L)
@@ -553,10 +662,17 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
                   toolCallId = "oc-call-1",
                   toolName = "EchoProbe",
                   content = """{"tool_name":"EchoProbe","status":"success"}""",
+                  stderr = "probe warning",
+                  errorCode = "WARN_ONLY",
                 ),
               ),
             ),
             tools = listOf(sampleToolDefinition()),
+            toolChoice = LiteLlmToolChoice(
+              mode = LiteLlmToolChoiceMode.TOOL,
+              toolName = "EchoProbe",
+            ),
+            parallelToolCalls = false,
             authHeaders = mapOf("x-api-key" to "test-key"),
           ),
           selection = LiteLlmRouteSelectionMetadata(
@@ -572,6 +688,10 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
       assertTrue(responseSent.await(5, TimeUnit.SECONDS))
       assertEquals("POST /v1/messages HTTP/1.1", requestLine.get())
       val payload = JSONObject(requestBody.get())
+      val toolChoice = payload.getJSONObject("tool_choice")
+      assertEquals("tool", toolChoice.getString("type"))
+      assertEquals("EchoProbe", toolChoice.getString("name"))
+      assertEquals(true, toolChoice.getBoolean("disable_parallel_tool_use"))
       val messages = payload.getJSONArray("messages")
       assertEquals("user", messages.getJSONObject(0).getString("role"))
       assertEquals("Task context", messages.getJSONObject(0).getString("content"))
@@ -585,7 +705,10 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
       val resultBlock = toolResult.getJSONArray("content").getJSONObject(0)
       assertEquals("tool_result", resultBlock.getString("type"))
       assertEquals("oc-call-1", resultBlock.getString("tool_use_id"))
-      assertEquals("""{"tool_name":"EchoProbe","status":"success"}""", resultBlock.getString("content"))
+      val toolContent = JSONObject(resultBlock.getString("content"))
+      assertEquals("""{"tool_name":"EchoProbe","status":"success"}""", toolContent.getString("content"))
+      assertEquals("probe warning", toolContent.getString("stderr"))
+      assertEquals("WARN_ONLY", toolContent.getString("error_code"))
     } finally {
       runCatching { server.close() }
       serverThread.join(5_000L)

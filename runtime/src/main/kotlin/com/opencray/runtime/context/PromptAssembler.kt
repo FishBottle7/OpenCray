@@ -78,6 +78,7 @@ class PromptAssembler {
         content = renderToolProtocolLayer(
           toolDefinitions = input.toolDefinitions,
           nativeToolCallingEnabled = input.nativeToolCallingEnabled,
+          legacyJsonFallbackEnabled = input.legacyJsonFallbackEnabled,
         ),
       )
       addLayer(
@@ -156,7 +157,10 @@ class PromptAssembler {
   private fun renderToolProtocolLayer(
     toolDefinitions: List<AgentToolDefinition>,
     nativeToolCallingEnabled: Boolean,
+    legacyJsonFallbackEnabled: Boolean,
   ): String = buildString {
+    val jsonProtocolEnabled = legacyJsonFallbackEnabled || !nativeToolCallingEnabled
+    val nativeToolCallingOnly = nativeToolCallingEnabled && !legacyJsonFallbackEnabled
     val normalizedToolNames = toolDefinitions
       .map { definition -> definition.name.trim().lowercase() }
       .filter(String::isNotBlank)
@@ -220,38 +224,58 @@ class PromptAssembler {
     }
     appendLine("Decide the next step for this OpenCray task.")
     appendLine()
-    if (nativeToolCallingEnabled) {
-      appendLine("Native tool calling is enabled for this run.")
-      appendLine("When you need a tool, prefer the provider's native tool-calling interface instead of describing the tool call in prose.")
-      appendLine("When you are ready to answer the user, prefer a plain assistant text answer.")
-      appendLine("If the endpoint ignores native tool calling or you need the legacy fallback, return exactly one JSON object and nothing else.")
-      appendLine("Use one of these legacy JSON fallback shapes:")
+    when {
+      nativeToolCallingOnly -> {
+        appendLine("Native tool calling is enabled for this run.")
+        appendLine("When you need a tool, use the provider's native tool-calling interface.")
+        appendLine("If you need a short public status update before a tool call, put it in assistant text alongside that native tool call.")
+        appendLine("When you are ready to answer the user, return a plain assistant text answer.")
+      }
+
+      nativeToolCallingEnabled -> {
+        appendLine("Native tool calling is enabled for this run.")
+        appendLine("This endpoint is currently running with legacy JSON fallback compatibility enabled.")
+        appendLine("If native tool calling works, prefer it. Otherwise, return exactly one JSON object and nothing else.")
+        appendLine("Use one of these legacy JSON fallback shapes:")
+      }
+
+      else -> {
+        appendLine("On each turn, return exactly one JSON object and nothing else.")
+        appendLine("Use one of these shapes:")
+      }
+    }
+    if (jsonProtocolEnabled) {
+      appendLine("""{"type":"progress","text":"Scanning README and Gradle files before editing."}""")
+      toolCallExamples.forEach { example ->
+        appendLine(example)
+      }
+      primaryToolCallExample?.let { toolCallExample ->
+        appendLine("""{"actions":[{"type":"progress","text":"Scanning README and Gradle files before editing."},$toolCallExample]}""")
+      }
+      appendLine("""{"actions":[{"type":"progress","text":"Summarizing the confirmed workspace facts."},{"type":"final","answer":"Concise answer for the user."}]}""")
+      appendLine("""{"type":"final","answer":"Concise answer for the user."}""")
+      if (hasImageGenerationTool || hasSpeechSynthesisTool || hasWriteTool || hasImportTool) {
+        appendLine("""{"type":"final","answer":"Attached the generated media.","attachments":[{"artifact_id":"artifact-example-1234abcd","kind":"image"}]}""")
+      }
+    }
+    if (nativeToolCallingOnly) {
+      appendLine("A progress update is a short public status update for the user.")
     } else {
-      appendLine("On each turn, return exactly one JSON object and nothing else.")
-      appendLine("Use one of these shapes:")
+      appendLine("A progress action is a short public status update for the user.")
     }
-    appendLine("""{"type":"progress","text":"Scanning README and Gradle files before editing."}""")
-    toolCallExamples.forEach { example ->
-      appendLine(example)
-    }
-    primaryToolCallExample?.let { toolCallExample ->
-      appendLine("""{"actions":[{"type":"progress","text":"Scanning README and Gradle files before editing."},$toolCallExample]}""")
-    }
-    appendLine("""{"actions":[{"type":"progress","text":"Summarizing the confirmed workspace facts."},{"type":"final","answer":"Concise answer for the user."}]}""")
-    appendLine("""{"type":"final","answer":"Concise answer for the user."}""")
-    if (hasImageGenerationTool || hasSpeechSynthesisTool || hasWriteTool || hasImportTool) {
-      appendLine("""{"type":"final","answer":"Attached the generated media.","attachments":[{"artifact_id":"artifact-example-1234abcd","kind":"image"}]}""")
-    }
-    appendLine("A progress action is a short public status update for the user.")
     appendLine("Never expose raw private chain-of-thought, hidden safety reasoning, or secrets inside progress.")
-    appendLine("If you use an actions array, emit at most one progress action first, then exactly one terminal action.")
-    appendLine("If you return type=tool_call, the runtime will execute it, append the tool result, and ask you for the next action.")
-    if (nativeToolCallingEnabled) {
-      appendLine("When native tool calling works, prefer it over the legacy JSON tool_call shape.")
+    if (jsonProtocolEnabled) {
+      appendLine("If you use an actions array, emit at most one progress action first, then exactly one terminal action.")
+      appendLine("If you return type=tool_call, the runtime will execute it, append the tool result, and ask you for the next action.")
+      if (nativeToolCallingEnabled) {
+        appendLine("When native tool calling works, prefer it over the legacy JSON tool_call shape.")
+        appendLine("Do not describe a tool call in plain prose.")
+        appendLine("A plain assistant text answer is preferred over the legacy JSON final shape when you are ready to answer.")
+      }
+      appendLine("If you return only type=progress, the runtime will record it and ask you for the next action on the following turn.")
+    } else {
       appendLine("Do not describe a tool call in plain prose.")
-      appendLine("A plain assistant text answer is preferred over the legacy JSON final shape when you are ready to answer.")
     }
-    appendLine("If you return only type=progress, the runtime will record it and ask you for the next action on the following turn.")
     appendLine("If you need multiple tools, call only the next tool now. After each tool result the runtime will ask for the next action.")
     if (hasBashTool) {
       appendLine("Use Bash for one-off shell commands that do not require Python. Bash runs through the host shell, so use PowerShell syntax on Windows hosts.")

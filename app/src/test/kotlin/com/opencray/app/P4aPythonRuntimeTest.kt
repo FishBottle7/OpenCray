@@ -4,9 +4,12 @@ import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.runtime.PythonExecRequest
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.nio.file.Path
 import kotlin.concurrent.thread
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -184,14 +187,22 @@ class P4aPythonRuntimeTest {
       ): P4aPythonRuntime.P4aPythonRuntimeLaunchResult {
         thread(start = true, isDaemon = true) {
           Thread.sleep(40L)
-          Files.createDirectories(runtime.serviceStatePath().parent)
-          Files.write(
-            runtime.serviceReadyPath(),
-            """{"state":"ready","requestId":"${request.bridgeRequest.requestId}"}""".toByteArray(StandardCharsets.UTF_8),
+          val executionStartedAt = System.currentTimeMillis()
+          writeServiceMarker(
+            path = runtime.serviceReadyPath(),
+            state = "processing",
+            startupRequestId = request.bridgeRequest.requestId,
+            currentRequestId = request.bridgeRequest.requestId,
+            claimedRequestId = request.bridgeRequest.requestId,
+            executionStartedAtEpochMs = executionStartedAt,
           )
-          Files.write(
-            runtime.serviceStatePath(),
-            """{"state":"processing","currentRequestId":"${request.bridgeRequest.requestId}"}""".toByteArray(StandardCharsets.UTF_8),
+          writeServiceMarker(
+            path = runtime.serviceStatePath(),
+            state = "processing",
+            startupRequestId = request.bridgeRequest.requestId,
+            currentRequestId = request.bridgeRequest.requestId,
+            claimedRequestId = request.bridgeRequest.requestId,
+            executionStartedAtEpochMs = executionStartedAt,
           )
           Thread.sleep(40L)
           Files.write(
@@ -269,6 +280,64 @@ class P4aPythonRuntimeTest {
   }
 
   @Test
+  fun execReturnsQueueTimeoutDiagnosticsWhenAnotherRequestBlocksClaim() {
+    val runtimeRoot = temporaryFolder.newFolder("python-runtime-queue-timeout").toPath()
+    val workspaceRoot = temporaryFolder.newFolder("workspace-queue-timeout").toPath()
+    lateinit var runtime: P4aPythonRuntime
+    val launcher = object : P4aPythonRuntime.P4aPythonRuntimeLauncher {
+      override fun launch(
+        request: P4aPythonRuntime.P4aPythonLaunchRequest,
+      ): P4aPythonRuntime.P4aPythonRuntimeLaunchResult {
+        thread(start = true, isDaemon = true) {
+          Thread.sleep(10L)
+          val foreignRequestId = "foreign-running-request"
+          val foreignStartedAt = System.currentTimeMillis()
+          writeServiceMarker(
+            path = runtime.serviceReadyPath(),
+            state = "processing",
+            startupRequestId = request.bridgeRequest.requestId,
+            currentRequestId = foreignRequestId,
+            claimedRequestId = foreignRequestId,
+            executionStartedAtEpochMs = foreignStartedAt,
+            updatedAtEpochMs = foreignStartedAt,
+          )
+          writeServiceMarker(
+            path = runtime.serviceStatePath(),
+            state = "processing",
+            startupRequestId = request.bridgeRequest.requestId,
+            currentRequestId = foreignRequestId,
+            claimedRequestId = foreignRequestId,
+            executionStartedAtEpochMs = foreignStartedAt,
+            updatedAtEpochMs = foreignStartedAt,
+          )
+        }
+        return P4aPythonRuntime.P4aPythonRuntimeLaunchResult.Dispatched(
+          metadata = mapOf("launcherState" to "test-dispatched"),
+        )
+      }
+    }
+    runtime = P4aPythonRuntime.fromRuntimeRoot(runtimeRoot = runtimeRoot, launcher = launcher, json = json)
+
+    val result = runtime.exec(
+      PythonExecRequest(
+        taskId = "task-queue-timeout",
+        workspaceRoot = workspaceRoot,
+        scriptPath = workspaceRoot.resolve("demo.py"),
+        timeoutMs = 40L,
+        startupTimeoutMs = 80L,
+      ),
+    )
+
+    assertEquals(ExecutionStatus.TIMEOUT, result.status)
+    assertEquals(P4aPythonRuntime.ERROR_P4A_QUEUE_TIMEOUT, result.errorCode)
+    assertEquals("queue", result.metadata["timeoutStage"])
+    assertEquals("foreign-running-request", result.metadata["blockingRequestId"])
+    assertEquals("processing", result.metadata["serviceState"])
+    assertEquals("foreign-running-request", result.metadata["serviceClaimedRequestId"])
+    assertEquals("false", result.metadata["serviceReadyObserved"])
+  }
+
+  @Test
   fun execReturnsResultTimeoutDiagnosticsAfterServiceBecomesReady() {
     val runtimeRoot = temporaryFolder.newFolder("python-runtime-result-timeout").toPath()
     val workspaceRoot = temporaryFolder.newFolder("workspace-result-timeout").toPath()
@@ -277,14 +346,22 @@ class P4aPythonRuntimeTest {
       override fun launch(
         request: P4aPythonRuntime.P4aPythonLaunchRequest,
       ): P4aPythonRuntime.P4aPythonRuntimeLaunchResult {
-        Files.createDirectories(runtime.serviceStatePath().parent)
-        Files.write(
-          runtime.serviceReadyPath(),
-          """{"state":"ready","requestId":"${request.bridgeRequest.requestId}"}""".toByteArray(StandardCharsets.UTF_8),
+        val executionStartedAt = System.currentTimeMillis()
+        writeServiceMarker(
+          path = runtime.serviceReadyPath(),
+          state = "processing",
+          startupRequestId = request.bridgeRequest.requestId,
+          currentRequestId = request.bridgeRequest.requestId,
+          claimedRequestId = request.bridgeRequest.requestId,
+          executionStartedAtEpochMs = executionStartedAt,
         )
-        Files.write(
-          runtime.serviceStatePath(),
-          """{"state":"processing","currentRequestId":"${request.bridgeRequest.requestId}"}""".toByteArray(StandardCharsets.UTF_8),
+        writeServiceMarker(
+          path = runtime.serviceStatePath(),
+          state = "processing",
+          startupRequestId = request.bridgeRequest.requestId,
+          currentRequestId = request.bridgeRequest.requestId,
+          claimedRequestId = request.bridgeRequest.requestId,
+          executionStartedAtEpochMs = executionStartedAt,
         )
         Files.write(
           request.logPath,
@@ -316,5 +393,116 @@ class P4aPythonRuntimeTest {
     assertEquals("true", result.metadata["serviceReadyObserved"])
     assertTrue(result.stderr.contains("service_state_preview:"))
     assertTrue(result.stderr.contains("log_tail:"))
+  }
+
+  @Test
+  fun execIgnoresFreshMarkersUntilCurrentRequestIsClaimed() {
+    val runtimeRoot = temporaryFolder.newFolder("python-runtime-request-bound-ready").toPath()
+    val workspaceRoot = temporaryFolder.newFolder("workspace-request-bound-ready").toPath()
+    lateinit var runtime: P4aPythonRuntime
+    val launcher = object : P4aPythonRuntime.P4aPythonRuntimeLauncher {
+      override fun launch(
+        request: P4aPythonRuntime.P4aPythonLaunchRequest,
+      ): P4aPythonRuntime.P4aPythonRuntimeLaunchResult {
+        thread(start = true, isDaemon = true) {
+          val foreignRequestId = "foreign-running-request"
+          Thread.sleep(10L)
+          val foreignStartedAt = System.currentTimeMillis()
+          writeServiceMarker(
+            path = runtime.serviceReadyPath(),
+            state = "processing",
+            startupRequestId = request.bridgeRequest.requestId,
+            currentRequestId = foreignRequestId,
+            claimedRequestId = foreignRequestId,
+            executionStartedAtEpochMs = foreignStartedAt,
+          )
+          writeServiceMarker(
+            path = runtime.serviceStatePath(),
+            state = "processing",
+            startupRequestId = request.bridgeRequest.requestId,
+            currentRequestId = foreignRequestId,
+            claimedRequestId = foreignRequestId,
+            executionStartedAtEpochMs = foreignStartedAt,
+          )
+          Thread.sleep(120L)
+          val currentExecutionStartedAt = System.currentTimeMillis()
+          writeServiceMarker(
+            path = runtime.serviceReadyPath(),
+            state = "processing",
+            startupRequestId = request.bridgeRequest.requestId,
+            currentRequestId = request.bridgeRequest.requestId,
+            claimedRequestId = request.bridgeRequest.requestId,
+            executionStartedAtEpochMs = currentExecutionStartedAt,
+          )
+          writeServiceMarker(
+            path = runtime.serviceStatePath(),
+            state = "processing",
+            startupRequestId = request.bridgeRequest.requestId,
+            currentRequestId = request.bridgeRequest.requestId,
+            claimedRequestId = request.bridgeRequest.requestId,
+            executionStartedAtEpochMs = currentExecutionStartedAt,
+          )
+          Thread.sleep(20L)
+          Files.write(
+            request.resultPath,
+            json.encodeToString(
+              P4aPythonRuntime.P4aPythonExecBridgeResult(
+                requestId = request.bridgeRequest.requestId,
+                taskId = request.bridgeRequest.taskId,
+                status = "success",
+                exitCode = 0,
+                stdout = "python ok",
+                stderr = "",
+                startedAtEpochMs = currentExecutionStartedAt,
+                finishedAtEpochMs = currentExecutionStartedAt + 10L,
+              ),
+            ).toByteArray(StandardCharsets.UTF_8),
+          )
+        }
+        return P4aPythonRuntime.P4aPythonRuntimeLaunchResult.Dispatched(
+          metadata = mapOf("launcherState" to "test-dispatched"),
+        )
+      }
+    }
+    runtime = P4aPythonRuntime.fromRuntimeRoot(runtimeRoot = runtimeRoot, launcher = launcher, json = json)
+
+    val result = runtime.exec(
+      PythonExecRequest(
+        taskId = "task-request-bound-ready",
+        workspaceRoot = workspaceRoot,
+        scriptPath = workspaceRoot.resolve("demo.py"),
+        timeoutMs = 80L,
+        startupTimeoutMs = 400L,
+      ),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals(0, result.exitCode)
+    assertEquals("python ok", result.stdout)
+  }
+
+  private fun writeServiceMarker(
+    path: Path,
+    state: String,
+    startupRequestId: String? = null,
+    currentRequestId: String? = null,
+    claimedRequestId: String? = null,
+    executionStartedAtEpochMs: Long? = null,
+    updatedAtEpochMs: Long? = null,
+  ) {
+    Files.createDirectories(path.parent)
+    Files.write(
+      path,
+      json.encodeToString(
+        buildJsonObject {
+          put("state", JsonPrimitive(state))
+          startupRequestId?.let { put("startupRequestId", JsonPrimitive(it)) }
+          currentRequestId?.let { put("currentRequestId", JsonPrimitive(it)) }
+          claimedRequestId?.let { put("claimedRequestId", JsonPrimitive(it)) }
+          executionStartedAtEpochMs?.let { put("executionStartedAtEpochMs", JsonPrimitive(it)) }
+          updatedAtEpochMs?.let { put("updatedAtEpochMs", JsonPrimitive(it)) }
+        },
+      ).toByteArray(StandardCharsets.UTF_8),
+    )
   }
 }

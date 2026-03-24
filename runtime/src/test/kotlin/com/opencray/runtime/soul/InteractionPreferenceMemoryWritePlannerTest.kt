@@ -9,7 +9,8 @@ import com.opencray.runtime.memory.MemoryPreferenceKeys
 import com.opencray.runtime.memory.MemoryRecordExtensionKeys
 import com.opencray.runtime.memory.MemoryScope
 import com.opencray.runtime.memory.MemoryStatus
-import com.opencray.runtime.memory.stableMemoryRecordId
+import java.security.MessageDigest
+import java.util.Locale
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -145,6 +146,33 @@ class InteractionPreferenceMemoryWritePlannerTest {
   }
 
   @Test
+  fun planEmitsBlankSnapshotForForcedScopeWhenNoActiveNamingSignalsRemain() {
+    val plan = planner.plan(
+      existingRecords = emptyList(),
+      sourceRecords = listOf(
+        interactionPreferenceStateRecord(
+          id = "stale-user-snapshot",
+          scope = MemoryScope.USER,
+          state = InteractionPreferenceState(
+            preferredNaming = "阿澄",
+            preferredNamingSupport = 1,
+            lastUpdatedAtEpochMs = 1_500L,
+          ),
+          updatedAtEpochMs = 1_500L,
+        ),
+      ),
+      forcedScopes = setOf(MemoryScope.USER),
+      plasticity = SoulPlasticity.MEDIUM,
+      sourceSessionId = "session-main",
+    )
+
+    assertEquals(1, plan.stateSnapshotCandidates.size)
+    val snapshotState = interactionPreferenceStateFrom(plan.stateSnapshotCandidates.single())
+    assertTrue(snapshotState.preferredNaming == null)
+    assertEquals(0, snapshotState.preferredNamingSupport)
+  }
+
+  @Test
   fun planPredictsNextSupportWeightFromExistingMatchingPreferenceWhenUsingCandidates() {
     val incomingCandidate = interactionPreferenceSignalCandidate(
       scope = MemoryScope.USER,
@@ -157,7 +185,7 @@ class InteractionPreferenceMemoryWritePlannerTest {
     val plan = planner.plan(
       existingRecords = listOf(
         interactionPreferenceSignalRecord(
-          id = stableMemoryRecordId(incomingCandidate),
+          id = stableRecordIdFor(incomingCandidate),
           scope = MemoryScope.USER,
           preferenceValue = "warmth_higher__formality_lower",
           updatedAtEpochMs = 1_500L,
@@ -382,4 +410,26 @@ class InteractionPreferenceMemoryWritePlannerTest {
     updatedAtEpochMs = 1L,
     extensions = candidate.extensions,
   ).parseInteractionPreferenceStateOrNull() ?: error("Expected interaction preference state payload.")
+
+  private fun stableRecordIdFor(candidate: MemoryCandidate): String {
+    val scopeIdentity = when (candidate.scope) {
+      MemoryScope.USER -> "user"
+      MemoryScope.WORKSPACE -> "workspace:${candidate.workspaceId?.takeIf(String::isNotBlank) ?: "default-workspace"}"
+      MemoryScope.SESSION -> "session:${candidate.sourceSessionId}"
+    }
+    val preferenceKey = candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY]
+      ?.trim()
+      ?.lowercase(Locale.US)
+    val preferenceValue = candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE]
+      ?.trim()
+      ?.lowercase(Locale.US)
+    val canonical = if (preferenceKey != null && preferenceValue != null) {
+      "pref|$preferenceKey|$preferenceValue"
+    } else {
+      candidate.content.lowercase(Locale.US)
+    }
+    val digestSource = "${candidate.kind.name.lowercase(Locale.US)}|$scopeIdentity|$canonical"
+    val digest = MessageDigest.getInstance("SHA-256").digest(digestSource.toByteArray(Charsets.UTF_8))
+    return "mem-${digest.joinToString(separator = "") { byte -> "%02x".format(byte) }.take(24)}"
+  }
 }

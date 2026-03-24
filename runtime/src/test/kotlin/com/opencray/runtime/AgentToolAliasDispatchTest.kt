@@ -21,8 +21,11 @@ import com.opencray.runtime.web.WebSearchResult
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -67,6 +70,45 @@ class AgentToolAliasDispatchTest {
     assertTrue("bash" in definitionNames)
     assertTrue(readDefinition.description.contains("Compatibility alias for Read"))
     assertTrue(pythonDefinition.description.contains("Use this instead of Bash for workspace Python scripts"))
+  }
+
+  @Test
+  fun multiEditAndTodoWriteDefinitionsExposeStructuredObjectSchemas() {
+    val dispatcher = dispatcher()
+    val multiEditDefinition = requireNotNull(
+      dispatcher.definitions().firstOrNull { definition -> definition.name == "MultiEdit" },
+    )
+    val todoWriteDefinition = requireNotNull(
+      dispatcher.definitions().firstOrNull { definition -> definition.name == "TodoWrite" },
+    )
+
+    val multiEditSchema = multiEditDefinition.toJsonSchema()
+    val editsSchema = multiEditSchema.requiredProperty("properties").requiredProperty("edits")
+    val editItemSchema = editsSchema.requiredProperty("items")
+    val editItemProperties = editItemSchema.requiredProperty("properties")
+    assertEquals("array", editsSchema.requiredString("type"))
+    assertEquals("object", editItemSchema.requiredString("type"))
+    assertEquals("string", editItemProperties.requiredProperty("old_string").requiredString("type"))
+    assertEquals("string", editItemProperties.requiredProperty("new_string").requiredString("type"))
+    assertEquals("boolean", editItemProperties.requiredProperty("replace_all").requiredString("type"))
+    assertTrue(editItemSchema.requiredStringArray("required").containsAll(listOf("old_string", "new_string")))
+    assertEquals("false", editItemSchema.requiredPrimitive("additionalProperties").content)
+
+    val todoWriteSchema = todoWriteDefinition.toJsonSchema()
+    val todosSchema = todoWriteSchema.requiredProperty("properties").requiredProperty("todos")
+    val todoItemSchema = todosSchema.requiredProperty("items")
+    val todoItemProperties = todoItemSchema.requiredProperty("properties")
+    val statusSchema = todoItemProperties.requiredProperty("status")
+    assertEquals("array", todosSchema.requiredString("type"))
+    assertEquals("object", todoItemSchema.requiredString("type"))
+    assertEquals("string", todoItemProperties.requiredProperty("content").requiredString("type"))
+    assertEquals("string", statusSchema.requiredString("type"))
+    assertEquals(
+      listOf("pending", "in_progress", "completed"),
+      statusSchema.requiredStringArray("enum"),
+    )
+    assertTrue(todoItemSchema.requiredStringArray("required").containsAll(listOf("content", "status")))
+    assertEquals("false", todoItemSchema.requiredPrimitive("additionalProperties").content)
   }
 
   @Test
@@ -281,6 +323,19 @@ class AgentToolAliasDispatchTest {
     isCancellationRequested = { false },
     requestRetry = { _: RetryRequest -> error("Retry not expected in AgentToolAliasDispatchTest.") },
   )
+
+  private fun JsonObject.requiredProperty(key: String): JsonObject =
+    (get(key) ?: error("Missing property '$key'.")).jsonObject
+
+  private fun JsonObject.requiredPrimitive(key: String): JsonPrimitive =
+    (get(key) ?: error("Missing primitive '$key'.")) as JsonPrimitive
+
+  private fun JsonObject.requiredString(key: String): String = requiredPrimitive(key).content
+
+  private fun JsonObject.requiredStringArray(key: String): List<String> =
+    (get(key) ?: error("Missing array '$key'.")).let { element ->
+      (element as JsonArray).map { item -> (item as JsonPrimitive).content }
+    }
 
   private class AliasProcessRegistry : AgentProcessRegistry {
     private val snapshotsById = linkedMapOf<String, ManagedProcessSnapshot>()

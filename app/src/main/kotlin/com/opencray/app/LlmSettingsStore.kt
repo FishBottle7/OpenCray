@@ -21,6 +21,7 @@ internal object LlmSettingsStoreKeys {
   const val REASONING_EFFORT = "reasoning_effort"
   const val SYSTEM_PROMPT = "system_prompt"
   const val SAVED_CUSTOM_PROVIDERS = "saved_custom_providers"
+  const val AGENT_CAPABILITY_CACHE = "agent_capability_cache"
 }
 
 internal data class LlmSettingsState(
@@ -34,22 +35,33 @@ internal data class LlmSettingsState(
   val model: String = DEFAULT_MODEL,
   val reasoningEffort: String = DEFAULT_REASONING_EFFORT,
   val systemPrompt: String = "",
+  val agentCapability: LlmAgentCapabilitySnapshot = LlmAgentCapabilitySnapshot(),
 ) {
   fun isConfigured(): Boolean =
     baseUrl.trim().isNotEmpty() &&
       apiKey.trim().isNotEmpty()
 
-  fun sanitized(): LlmSettingsState = copy(
-    providerId = providerId.trim().ifBlank { inferProviderId(baseUrl) },
-    protocol = LlmProviderProtocols.normalize(protocol),
-    providerName = providerName.trim(),
-    providerNotes = providerNotes.trim(),
-    baseUrl = baseUrl.trim(),
-    apiKey = apiKey.trim(),
-    model = model.trim(),
-    reasoningEffort = reasoningEffort.trim().ifBlank { DEFAULT_REASONING_EFFORT },
-    systemPrompt = systemPrompt.trim(),
-  )
+  fun sanitized(): LlmSettingsState {
+    val normalizedProtocol = LlmProviderProtocols.normalize(protocol)
+    val normalizedBaseUrl = baseUrl.trim()
+    val normalizedModel = model.trim()
+    return copy(
+      providerId = providerId.trim().ifBlank { inferProviderId(normalizedBaseUrl) },
+      protocol = normalizedProtocol,
+      providerName = providerName.trim(),
+      providerNotes = providerNotes.trim(),
+      baseUrl = normalizedBaseUrl,
+      apiKey = apiKey.trim(),
+      model = normalizedModel,
+      reasoningEffort = reasoningEffort.trim().ifBlank { DEFAULT_REASONING_EFFORT },
+      systemPrompt = systemPrompt.trim(),
+      agentCapability = agentCapability.normalizedForRoute(
+        protocol = normalizedProtocol,
+        baseUrl = normalizedBaseUrl,
+        model = normalizedModel,
+      ),
+    )
+  }
 
   companion object {
     const val DEFAULT_BASE_URL: String = "https://api.openai.com/v1"
@@ -199,7 +211,14 @@ internal class LlmSettingsStore(
       reasoningEffort = keyValueStore.getString(LlmSettingsStoreKeys.REASONING_EFFORT) ?: defaults.reasoningEffort,
       systemPrompt = keyValueStore.getString(LlmSettingsStoreKeys.SYSTEM_PROMPT) ?: defaults.systemPrompt,
     ).sanitized()
-    return resolved.copy(enabled = resolved.isConfigured())
+    return resolved.copy(
+      enabled = resolved.isConfigured(),
+      agentCapability = loadAgentCapability(
+        protocol = resolved.protocol,
+        baseUrl = resolved.baseUrl,
+        model = resolved.model,
+      ),
+    ).sanitized()
   }
 
   fun save(state: LlmSettingsState) {
@@ -226,6 +245,9 @@ internal class LlmSettingsStore(
     keyValueStore.putString(LlmSettingsStoreKeys.MODEL, sanitized.model)
     keyValueStore.putString(LlmSettingsStoreKeys.REASONING_EFFORT, sanitized.reasoningEffort)
     keyValueStore.putString(LlmSettingsStoreKeys.SYSTEM_PROMPT, sanitized.systemPrompt)
+    if (sanitized.agentCapability.wasVerified) {
+      saveAgentCapability(sanitized.agentCapability)
+    }
   }
 
   fun loadSelectedProviderOptionId(defaultProviderId: String): String =
@@ -262,11 +284,80 @@ internal class LlmSettingsStore(
     keyValueStore.putString(LlmSettingsStoreKeys.SAVED_CUSTOM_PROVIDERS, normalized.toString())
   }
 
+  fun loadAgentCapability(
+    protocol: String,
+    baseUrl: String,
+    model: String,
+  ): LlmAgentCapabilitySnapshot {
+    val normalized = LlmAgentCapabilitySnapshot.unknown(
+      protocol = protocol,
+      baseUrl = baseUrl,
+      model = model,
+    )
+    return loadAgentCapabilityCache()
+      .firstOrNull { capability ->
+        capability.matchesRoute(
+          protocol = protocol,
+          baseUrl = baseUrl,
+          model = model,
+        )
+      }
+      ?.normalizedForRoute(
+        protocol = protocol,
+        baseUrl = baseUrl,
+        model = model,
+      )
+      ?: normalized
+  }
+
+  fun saveAgentCapability(capability: LlmAgentCapabilitySnapshot) {
+    val normalized = capability.takeIf { snapshot ->
+      snapshot.routeFingerprint.isNotBlank() && snapshot.wasVerified
+    } ?: return
+    val updatedCache = buildList {
+      add(normalized)
+      loadAgentCapabilityCache()
+        .filterNot { existing -> existing.routeFingerprint == normalized.routeFingerprint }
+        .forEach(::add)
+    }.take(MAX_AGENT_CAPABILITY_CACHE_ENTRIES)
+    saveAgentCapabilityCache(updatedCache)
+  }
+
   fun clear() {
     keyValueStore.clear()
   }
 
+  private fun loadAgentCapabilityCache(): List<LlmAgentCapabilitySnapshot> {
+    val rawPayload = keyValueStore.getString(LlmSettingsStoreKeys.AGENT_CAPABILITY_CACHE).orEmpty()
+    if (rawPayload.isBlank()) {
+      return emptyList()
+    }
+    val payload = runCatching { JSONArray(rawPayload) }
+      .getOrElse { return emptyList() }
+    return buildList {
+      repeat(payload.length()) { index ->
+        val snapshot = payload.optJSONObject(index)
+          ?.let(LlmAgentCapabilitySnapshot::fromJson)
+        if (snapshot != null) {
+          add(snapshot)
+        }
+      }
+    }
+  }
+
+  private fun saveAgentCapabilityCache(entries: List<LlmAgentCapabilitySnapshot>) {
+    val normalized = JSONArray().apply {
+      entries
+        .filter { entry -> entry.routeFingerprint.isNotBlank() && entry.wasVerified }
+        .take(MAX_AGENT_CAPABILITY_CACHE_ENTRIES)
+        .forEach { entry -> put(entry.toJson()) }
+    }
+    keyValueStore.putString(LlmSettingsStoreKeys.AGENT_CAPABILITY_CACHE, normalized.toString())
+  }
+
   companion object {
+    private const val MAX_AGENT_CAPABILITY_CACHE_ENTRIES: Int = 8
+
     fun fromContext(
       context: Context,
       preferencesName: String = DEFAULT_LLM_SETTINGS_PREFERENCES,

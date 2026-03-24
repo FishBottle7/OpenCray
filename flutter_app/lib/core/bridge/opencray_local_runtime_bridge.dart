@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_draft_attachment.dart';
 import '../models/opencray_chat_snapshot.dart';
 import '../models/opencray_debug_snapshot.dart';
@@ -840,14 +839,10 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   static OpenCrayShellSnapshot _parseShellSnapshot(
     Map<Object?, Object?> payload,
   ) {
-    return OpenCrayShellSnapshot(
-      initialTab: _parseTab(payload['initialTab'] as String?),
-      localeTag: payload['localeTag'] as String? ?? 'en',
-      hostLabel: payload['hostLabel'] as String? ?? 'HOST READY',
-      hostSummary:
-          payload['hostSummary'] as String? ??
+    return OpenCrayShellSnapshot.fromMap(
+      payload,
+      defaultHostSummary:
           'Flutter shell is attached to a local runtime bridge.',
-      isHostConnected: payload['isHostConnected'] as bool? ?? true,
     );
   }
 
@@ -921,20 +916,6 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
           title: payload['title'] as String? ?? '',
           valueLabel: payload['valueLabel'] as String? ?? '',
         );
-    }
-  }
-
-  static OpenCrayTab _parseTab(String? rawValue) {
-    switch (rawValue) {
-      case 'skills':
-        return OpenCrayTab.skills;
-      case 'files':
-        return OpenCrayTab.files;
-      case 'settings':
-        return OpenCrayTab.settings;
-      case 'chat':
-      default:
-        return OpenCrayTab.chat;
     }
   }
 

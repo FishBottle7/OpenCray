@@ -13,6 +13,9 @@ import java.util.UUID
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Android-side file bridge and service launcher contract for the embedded `python-for-android`
@@ -97,6 +100,7 @@ internal class P4aPythonRuntime private constructor(
       ) {
         is P4aPythonRuntimeLaunchResult.Dispatched -> waitForBridgeResult(
           taskId = request.taskId,
+          requestId = requestId,
           startupTimeoutMs = startupTimeoutMs,
           scriptTimeoutMs = scriptTimeoutMs,
           startedAt = startedAt,
@@ -159,6 +163,7 @@ internal class P4aPythonRuntime private constructor(
 
   private fun waitForBridgeResult(
     taskId: String,
+    requestId: String,
     startupTimeoutMs: Long,
     scriptTimeoutMs: Long,
     startedAt: Long,
@@ -173,29 +178,37 @@ internal class P4aPythonRuntime private constructor(
     val startupBudgetMs = startupTimeoutMs.coerceAtLeast(0L)
     val scriptBudgetMs = scriptTimeoutMs.coerceAtLeast(0L)
     val startupDeadline = startedAt + startupBudgetMs
-    var serviceReadyObservedAt: Long? = null
+    var requestExecutionObservation: RequestExecutionObservation? = null
 
     while (true) {
       if (Files.exists(resultPath)) {
         return readBridgeResult(taskId = taskId, resultPath = resultPath, metadata = metadata)
       }
       val now = System.currentTimeMillis()
-      if (serviceReadyObservedAt == null && serviceReadyRecentlyObserved(
-          startedAt = startedAt,
+      if (requestExecutionObservation == null) {
+        requestExecutionObservation = findRequestExecutionObservation(
+          requestId = requestId,
           serviceReadyPath = serviceReadyPath,
           serviceStatePath = serviceStatePath,
         )
-      ) {
-        serviceReadyObservedAt = now
       }
-      val deadline = serviceReadyObservedAt?.let { observedAt -> observedAt + scriptBudgetMs } ?: startupDeadline
+      val deadline = requestExecutionObservation?.executionStartedAtEpochMs
+        ?.let { executionStartedAt -> executionStartedAt + scriptBudgetMs }
+        ?: startupDeadline
       if (now > deadline) {
         break
       }
       Thread.sleep(resolvePollIntervalMs(maxOf(startupBudgetMs, scriptBudgetMs)))
     }
 
-    val timeoutStage = if (serviceReadyObservedAt == null) "startup" else "result"
+    val latestServiceMarker = findLatestServiceLifecycleMarker(
+      serviceReadyPath = serviceReadyPath,
+      serviceStatePath = serviceStatePath,
+    )
+    val timeoutStage = resolveTimeoutStage(
+      requestExecutionObservation = requestExecutionObservation,
+      latestServiceMarker = latestServiceMarker,
+    )
     val diagnostics = collectTimeoutDiagnostics(
       requestPath = requestPath,
       resultPath = resultPath,
@@ -211,18 +224,41 @@ internal class P4aPythonRuntime private constructor(
       exitCode = null,
       stdout = "",
       stderr = diagnostics.stderr,
-      errorCode = if (timeoutStage == "startup") ERROR_P4A_STARTUP_TIMEOUT else ERROR_P4A_RESULT_TIMEOUT,
-      errorMessage = if (timeoutStage == "startup") {
-        "Timed out waiting for the embedded Python runtime service to become ready."
-      } else {
-        "Timed out waiting for the embedded Python runtime result after service startup."
+      errorCode = when (timeoutStage) {
+        "queue" -> ERROR_P4A_QUEUE_TIMEOUT
+        "result" -> ERROR_P4A_RESULT_TIMEOUT
+        else -> ERROR_P4A_STARTUP_TIMEOUT
+      },
+      errorMessage = when (timeoutStage) {
+        "queue" -> "Timed out waiting for the embedded Python runtime service to claim the request."
+        "result" -> "Timed out waiting for the embedded Python runtime result after service startup."
+        else -> "Timed out waiting for the embedded Python runtime service to become ready."
       },
       startedAtEpochMs = startedAt,
       finishedAtEpochMs = finishedAt,
       metadata = metadata + diagnostics.metadata + buildMap {
         put("timeoutStage", timeoutStage)
-        put("serviceReadyObserved", (serviceReadyObservedAt != null).toString())
-        serviceReadyObservedAt?.let { put("serviceReadyObservedAtEpochMs", it.toString()) }
+        put("serviceReadyObserved", (requestExecutionObservation != null).toString())
+        latestServiceMarker?.let { marker ->
+          put("serviceMarkerSource", marker.source)
+          marker.state?.let { put("serviceState", it) }
+          marker.startupRequestId?.let { put("serviceStartupRequestId", it) }
+          marker.currentRequestId?.let { put("serviceCurrentRequestId", it) }
+          marker.claimedRequestId?.let { put("serviceClaimedRequestId", it) }
+          marker.updatedAtEpochMs?.let { put("serviceMarkerUpdatedAtEpochMs", it.toString()) }
+          marker.lastModifiedEpochMs?.let { put("serviceMarkerLastModifiedEpochMs", it.toString()) }
+          marker.blockingRequestId(requestId)?.let { put("blockingRequestId", it) }
+        }
+        requestExecutionObservation?.let { observation ->
+          put("serviceReadyObservedAtEpochMs", observation.observedAtEpochMs.toString())
+          put("serviceExecutionStartedAtEpochMs", observation.executionStartedAtEpochMs.toString())
+          put("serviceExecutionMarkerSource", observation.source)
+          observation.state?.let { put("serviceExecutionState", it) }
+          observation.startupRequestId?.let { put("serviceStartupRequestId", it) }
+          observation.currentRequestId?.let { put("serviceCurrentRequestId", it) }
+          observation.claimedRequestId?.let { put("serviceClaimedRequestId", it) }
+          observation.markerUpdatedAtEpochMs?.let { put("serviceMarkerUpdatedAtEpochMs", it.toString()) }
+        }
       },
     )
   }
@@ -263,19 +299,67 @@ internal class P4aPythonRuntime private constructor(
     )
   }
 
-  private fun serviceReadyRecentlyObserved(
-    startedAt: Long,
+  private fun findRequestExecutionObservation(
+    requestId: String,
     serviceReadyPath: Path,
     serviceStatePath: Path,
-  ): Boolean {
-    val freshnessCutoff = startedAt - READY_MARKER_FRESHNESS_GRACE_MS
-    return isFreshMarker(serviceReadyPath, freshnessCutoff) || isFreshMarker(serviceStatePath, freshnessCutoff)
+  ): RequestExecutionObservation? {
+    val observedAt = System.currentTimeMillis()
+    return listOf(
+      parseServiceLifecycleMarker(serviceStatePath, "service_state"),
+      parseServiceLifecycleMarker(serviceReadyPath, "service_ready"),
+    ).filterNotNull()
+      .firstOrNull { marker -> marker.matchesRequest(requestId) }
+      ?.toExecutionObservation(observedAtEpochMs = observedAt)
   }
 
-  private fun isFreshMarker(path: Path, freshnessCutoffEpochMs: Long): Boolean =
-    runCatching {
-      Files.exists(path) && Files.getLastModifiedTime(path).toMillis() >= freshnessCutoffEpochMs
-    }.getOrDefault(false)
+  private fun findLatestServiceLifecycleMarker(
+    serviceReadyPath: Path,
+    serviceStatePath: Path,
+  ): ServiceLifecycleMarker? = listOf(
+    parseServiceLifecycleMarker(serviceStatePath, "service_state"),
+    parseServiceLifecycleMarker(serviceReadyPath, "service_ready"),
+  ).filterNotNull()
+    .maxByOrNull(ServiceLifecycleMarker::recencyEpochMs)
+
+  private fun resolveTimeoutStage(
+    requestExecutionObservation: RequestExecutionObservation?,
+    latestServiceMarker: ServiceLifecycleMarker?,
+  ): String = when {
+    requestExecutionObservation != null -> "result"
+    latestServiceMarker == null || latestServiceMarker.state == "startup_error" -> "startup"
+    else -> "queue"
+  }
+
+  private fun parseServiceLifecycleMarker(
+    path: Path,
+    source: String,
+  ): ServiceLifecycleMarker? = runCatching {
+    if (!Files.exists(path)) {
+      null
+    } else {
+      val lastModifiedEpochMs = Files.getLastModifiedTime(path).toMillis()
+      val payload = json.parseToJsonElement(
+        String(Files.readAllBytes(path), StandardCharsets.UTF_8),
+      ).jsonObject
+      ServiceLifecycleMarker(
+        source = source,
+        state = payload.stringValue("state"),
+        startupRequestId = payload.stringValue("startupRequestId"),
+        currentRequestId = payload.stringValue("currentRequestId"),
+        claimedRequestId = payload.stringValue("claimedRequestId"),
+        executionStartedAtEpochMs = payload.longValue("executionStartedAtEpochMs"),
+        updatedAtEpochMs = payload.longValue("updatedAtEpochMs"),
+        lastModifiedEpochMs = lastModifiedEpochMs,
+      )
+    }
+  }.getOrNull()
+
+  private fun kotlinx.serialization.json.JsonObject.stringValue(key: String): String? =
+    get(key)?.jsonPrimitive?.contentOrNull?.trim()?.takeIf(String::isNotBlank)
+
+  private fun kotlinx.serialization.json.JsonObject.longValue(key: String): Long? =
+    get(key)?.jsonPrimitive?.contentOrNull?.toLongOrNull()
 
   private fun collectTimeoutDiagnostics(
     requestPath: Path,
@@ -487,12 +571,12 @@ internal class P4aPythonRuntime private constructor(
     private const val MAX_POLL_INTERVAL_MS: Long = 250L
     private const val MIN_STARTUP_TIMEOUT_MS: Long = 15_000L
     private const val MAX_STARTUP_TIMEOUT_MS: Long = 60_000L
-    private const val READY_MARKER_FRESHNESS_GRACE_MS: Long = 5_000L
     private const val MAX_DIAGNOSTIC_PREVIEW_CHARS: Int = 1_200
 
     const val ERROR_P4A_RUNTIME_UNAVAILABLE: String = "P4A_RUNTIME_UNAVAILABLE"
     const val ERROR_P4A_REQUEST_PREPARATION_FAILED: String = "P4A_REQUEST_PREPARATION_FAILED"
     const val ERROR_P4A_STARTUP_TIMEOUT: String = "P4A_STARTUP_TIMEOUT"
+    const val ERROR_P4A_QUEUE_TIMEOUT: String = "P4A_QUEUE_TIMEOUT"
     const val ERROR_P4A_RESULT_TIMEOUT: String = "P4A_RESULT_TIMEOUT"
     const val ERROR_P4A_RESULT_PARSE_FAILED: String = "P4A_RESULT_PARSE_FAILED"
 
@@ -527,6 +611,57 @@ internal class P4aPythonRuntime private constructor(
   private data class TimeoutDiagnostics(
     val metadata: Map<String, String>,
     val stderr: String,
+  )
+
+  private data class ServiceLifecycleMarker(
+    val source: String,
+    val state: String?,
+    val startupRequestId: String?,
+    val currentRequestId: String?,
+    val claimedRequestId: String?,
+    val executionStartedAtEpochMs: Long?,
+    val updatedAtEpochMs: Long?,
+    val lastModifiedEpochMs: Long?,
+  ) {
+    fun matchesRequest(requestId: String): Boolean =
+      claimedRequestId == requestId || currentRequestId == requestId
+
+    val recencyEpochMs: Long
+      get() = updatedAtEpochMs ?: lastModifiedEpochMs ?: Long.MIN_VALUE
+
+    fun blockingRequestId(requestId: String): String? = when {
+      claimedRequestId != null && claimedRequestId != requestId -> claimedRequestId
+      currentRequestId != null && currentRequestId != requestId -> currentRequestId
+      else -> null
+    }
+
+    fun toExecutionObservation(observedAtEpochMs: Long): RequestExecutionObservation {
+      val executionStartedAt = executionStartedAtEpochMs
+        ?: updatedAtEpochMs
+        ?: lastModifiedEpochMs
+        ?: observedAtEpochMs
+      return RequestExecutionObservation(
+        source = source,
+        state = state,
+        startupRequestId = startupRequestId,
+        currentRequestId = currentRequestId,
+        claimedRequestId = claimedRequestId,
+        executionStartedAtEpochMs = executionStartedAt,
+        markerUpdatedAtEpochMs = updatedAtEpochMs,
+        observedAtEpochMs = observedAtEpochMs,
+      )
+    }
+  }
+
+  private data class RequestExecutionObservation(
+    val source: String,
+    val state: String?,
+    val startupRequestId: String?,
+    val currentRequestId: String?,
+    val claimedRequestId: String?,
+    val executionStartedAtEpochMs: Long,
+    val markerUpdatedAtEpochMs: Long?,
+    val observedAtEpochMs: Long,
   )
 
   private enum class PreviewMode {

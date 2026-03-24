@@ -1772,16 +1772,19 @@ Current stewardship note:
 - the stewardship prompt should explicitly distinguish durable user preferences from one-turn formatting/tone asks, so the model can drop transient response-style requests instead of promoting them into cross-session memory
 - the interpreter is limited to a small action set:
   - `refresh_record_with_candidate`
+  - `merge_record_with_candidate`
   - `drop_candidate`
   - `reaffirm_record`
   - `resolve_record`
   - `supersede_record_with_candidate`
 - `refresh_record_with_candidate` is the bounded “same memory, fresh evidence” path: runtime drops the candidate, refreshes the stored record’s confirmation timestamp, and preserves record identity rather than rewriting content
 - for `project_fact` and `durable_instruction`, `refresh_record_with_candidate` is narrower than “same topic”: runtime only allows it when the candidate looks like a pure reconfirmation of the stored row, not when it adds new durable detail or changes a key value on the same topic
-- even when the LLM asks for `refresh_record_with_candidate` or `supersede_record_with_candidate`, runtime should still enforce deterministic same-topic compatibility for normal fact/instruction rows before applying the action
+- `merge_record_with_candidate` is the first bounded “same topic, compatible new detail” path for normal fact/instruction rows: runtime may fold the existing row and the candidate into one deterministic replacement record, resolve the old row with `resolution_reason=merged`, and record merge provenance on the new row instead of leaving two nearly-duplicate active memories behind
+- the first merge slice is intentionally narrow: it is allowed only for `project_fact` and `durable_instruction`, still requires deterministic same-topic compatibility, and is rejected when runtime sees likely scalar replacement rather than compatible extension
+- even when the LLM asks for `refresh_record_with_candidate`, `merge_record_with_candidate`, or `supersede_record_with_candidate`, runtime should still enforce deterministic same-topic compatibility for normal fact/instruction rows before applying the action
 - in record-only review, runtime should shortlist only a few scope-compatible active rows that are directly mentioned or deterministically topic-related to the current explicit evidence, and without a candidate the model is limited in practice to `resolve_record` or `reaffirm_record`
 - runtime enforces scope compatibility, user-preference key compatibility, per-turn resolution caps, and fail-closed behavior
-- this slice still does not perform broad whole-corpus maintenance, merge-equivalent planning, or richer explanation trace beyond the existing maintenance surfaces
+- this slice still does not perform broad whole-corpus maintenance, richer multi-record merge synthesis, or richer explanation trace beyond the existing maintenance surfaces
 
 ### Turn-time control path
 

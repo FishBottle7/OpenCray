@@ -1,13 +1,19 @@
 package com.opencray.app
 
 import com.opencray.runtime.context.RuntimeConversationMessage
+import com.opencray.runtime.context.RuntimeConversationMessageKind
+import com.opencray.runtime.context.RuntimeConversationProgress
 import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.context.RuntimeConversationToolCall
+import com.opencray.runtime.context.RuntimeConversationToolResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 class AgentSessionTranscriptStoreFactoryTest {
   @get:Rule
@@ -73,6 +79,58 @@ class AgentSessionTranscriptStoreFactoryTest {
     assertEquals("Session A", factory.forChatSession("session-a").snapshot().single().content)
     assertEquals("Session B", factory.forChatSession("session-b").snapshot().single().content)
     assertTrue(root.listFiles().orEmpty().size >= 2)
+  }
+
+  @Test
+  fun fileBackedStorePersistsStructuredTranscriptMetadataAcrossFactoryRecreation() {
+    val root = temporaryFolder.newFolder("agent-runtime-structured")
+    val firstFactory = FileBackedAgentSessionTranscriptStoreFactory(root)
+    val firstStore = firstFactory.forChatSession("session-structured")
+    val messages = listOf(
+      RuntimeConversationMessage(
+        role = RuntimeConversationRole.ASSISTANT,
+        content = """{"run_id":"run-1","task_id":"task-1","turn":0,"tool_call_id":"call-1","tool_name":"Read","reason":"Inspect README.","arguments":{"path":"README.md"}}""",
+        kind = RuntimeConversationMessageKind.TOOL_CALL,
+        toolCall = RuntimeConversationToolCall(
+          id = "call-1",
+          toolName = "Read",
+          arguments = buildJsonObject {
+            put("path", "README.md")
+          },
+          reason = "Inspect README.",
+        ),
+      ),
+      RuntimeConversationMessage(
+        role = RuntimeConversationRole.TOOL,
+        content = """{"run_id":"run-1","task_id":"task-1","turn":0,"tool_call_id":"call-1","tool_name":"Read","status":"success","content":"README contents","metadata":{"path":"README.md"}}""",
+        kind = RuntimeConversationMessageKind.TOOL_RESULT,
+        toolResult = RuntimeConversationToolResult(
+          toolCallId = "call-1",
+          toolName = "Read",
+          status = "success",
+          isError = false,
+        ),
+      ),
+      RuntimeConversationMessage(
+        role = RuntimeConversationRole.TOOL,
+        content = """{"run_id":"run-1","task_id":"task-1","turn":1,"text":"Planning the edit.","stage":"Planning"}""",
+        kind = RuntimeConversationMessageKind.PROGRESS,
+        progress = RuntimeConversationProgress(
+          runId = "run-1",
+          taskId = "task-1",
+          turn = 1,
+          text = "Planning the edit.",
+          stage = "Planning",
+        ),
+      ),
+    )
+
+    firstStore.replace(messages)
+
+    val secondFactory = FileBackedAgentSessionTranscriptStoreFactory(root)
+    val restoredStore = secondFactory.forChatSession("session-structured")
+
+    assertEquals(messages, restoredStore.snapshot())
   }
 
   @Test
@@ -193,16 +251,29 @@ class AgentSessionTranscriptStoreFactoryTest {
     turn: Int,
     toolName: String,
   ) {
+    val toolCallId = "$taskId-call"
     add(
       RuntimeConversationMessage(
-        role = RuntimeConversationRole.TOOL,
-        content = """tool_call {"run_id":"$runId","task_id":"$taskId","turn":$turn,"tool_name":"$toolName","arguments":{"path":"."}}""",
+        role = RuntimeConversationRole.ASSISTANT,
+        content = """{"run_id":"$runId","task_id":"$taskId","turn":$turn,"tool_call_id":"$toolCallId","tool_name":"$toolName","arguments":{"path":"."}}""",
+        kind = RuntimeConversationMessageKind.TOOL_CALL,
+        toolCall = RuntimeConversationToolCall(
+          id = toolCallId,
+          toolName = toolName,
+        ),
       ),
     )
     add(
       RuntimeConversationMessage(
         role = RuntimeConversationRole.TOOL,
-        content = """tool_result {"run_id":"$runId","task_id":"$taskId","turn":$turn,"tool_name":"$toolName","status":"success","content_preview":"ok"}""",
+        content = """{"run_id":"$runId","task_id":"$taskId","turn":$turn,"tool_call_id":"$toolCallId","tool_name":"$toolName","status":"success","content":"ok"}""",
+        kind = RuntimeConversationMessageKind.TOOL_RESULT,
+        toolResult = RuntimeConversationToolResult(
+          toolCallId = toolCallId,
+          toolName = toolName,
+          status = "success",
+          isError = false,
+        ),
       ),
     )
   }

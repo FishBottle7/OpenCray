@@ -443,6 +443,99 @@ class MemoryStewardshipServiceTest {
   }
 
   @Test
+  fun planCanMergeExistingProjectFactWithCandidateIntoSingleReplacementRow() {
+    val existing = workspaceProjectFactRecord(
+      id = "fact-merge-old",
+      content = "Project uses Gradle",
+    )
+    val candidate = workspaceProjectFactCandidate(
+      content = "Use the Gradle wrapper from the repo root",
+    )
+    val service = MemoryStewardshipService(
+      clock = { 6_000L },
+      interpreter = object : MemoryStewardshipInterpreter {
+        override fun interpret(
+          request: MemoryStewardshipRequest,
+        ): MemoryStewardshipInterpretation = MemoryStewardshipInterpretation.Success(
+          decisions = listOf(
+            MemoryStewardshipDecision(
+              action = MemoryStewardshipAction.MERGE_RECORD_WITH_CANDIDATE,
+              recordId = existing.id,
+              candidateIndex = 0,
+            ),
+          ),
+        )
+      },
+    )
+
+    val plan = service.plan(
+      existingRecords = listOf(existing),
+      evidence = turnEvidence(
+        userInput = "记住这个项目用 Gradle，而且要从仓库根目录走 wrapper。",
+      ),
+      proposedCandidates = listOf(candidate),
+    )
+
+    assertEquals(1, plan.acceptedCandidates.size)
+    assertEquals(
+      "Project uses Gradle; Use the Gradle wrapper from the repo root",
+      plan.acceptedCandidates.single().content,
+    )
+    assertEquals(existing.id, plan.resolvedRecords.single().id)
+    assertEquals("merged", plan.resolvedRecords.single().extensions[MemoryRecordExtensionKeys.RESOLUTION_REASON])
+    assertEquals(
+      existing.id,
+      plan.acceptedCandidates.single().extensions[MemoryRecordExtensionKeys.MERGED_FROM_RECORD_IDS],
+    )
+    assertEquals(
+      "append_clauses",
+      plan.acceptedCandidates.single().extensions[MemoryRecordExtensionKeys.MERGE_STRATEGY],
+    )
+    assertTrue(plan.reaffirmedRecords.isEmpty())
+    assertTrue(plan.droppedCandidates.isEmpty())
+  }
+
+  @Test
+  fun planRejectsMergeWhenProjectFactChangesScalarValue() {
+    val existing = workspaceProjectFactRecord(
+      id = "fact-merge-conflict",
+      content = "Project runs on port 3000",
+    )
+    val candidate = workspaceProjectFactCandidate(
+      content = "Project runs on port 8000",
+    )
+    val service = MemoryStewardshipService(
+      clock = { 6_000L },
+      interpreter = object : MemoryStewardshipInterpreter {
+        override fun interpret(
+          request: MemoryStewardshipRequest,
+        ): MemoryStewardshipInterpretation = MemoryStewardshipInterpretation.Success(
+          decisions = listOf(
+            MemoryStewardshipDecision(
+              action = MemoryStewardshipAction.MERGE_RECORD_WITH_CANDIDATE,
+              recordId = existing.id,
+              candidateIndex = 0,
+            ),
+          ),
+        )
+      },
+    )
+
+    val plan = service.plan(
+      existingRecords = listOf(existing),
+      evidence = turnEvidence(
+        userInput = "记住项目现在跑在 8000 端口。",
+      ),
+      proposedCandidates = listOf(candidate),
+    )
+
+    assertEquals(listOf(candidate), plan.acceptedCandidates)
+    assertTrue(plan.resolvedRecords.isEmpty())
+    assertTrue(plan.reaffirmedRecords.isEmpty())
+    assertTrue(plan.droppedCandidates.isEmpty())
+  }
+
+  @Test
   fun planRejectsRefreshWhenCandidateAddsNewProjectFactDetail() {
     val existing = workspaceProjectFactRecord(
       id = "fact-1",

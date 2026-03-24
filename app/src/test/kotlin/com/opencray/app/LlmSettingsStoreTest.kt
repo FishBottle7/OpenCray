@@ -79,7 +79,7 @@ class LlmSettingsStoreTest {
 
     store.save(saved)
 
-    assertEquals(saved, store.load())
+    assertEquals(saved.sanitized(), store.load())
   }
 
   @Test
@@ -106,5 +106,67 @@ class LlmSettingsStoreTest {
     assertEquals("saved-custom-1", providers.single().id)
     assertEquals("Acme", providers.single().providerName)
     assertEquals("anthropic", providers.single().protocol)
+  }
+
+  @Test
+  fun loadReturnsCachedAgentCapabilityForMatchingRoute() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val capability = LlmAgentCapabilitySnapshot(
+      routeFingerprint = llmRouteFingerprint(
+        protocol = LlmProviderProtocols.OPENAI,
+        baseUrl = "https://proxy.example/v1",
+        model = "model-x",
+      ),
+      verifiedAtEpochMs = 1234L,
+      nativeToolCallingAvailable = false,
+    )
+
+    store.saveAgentCapability(capability)
+
+    val state = store.load(
+      defaults = LlmSettingsState(
+        protocol = LlmProviderProtocols.OPENAI,
+        baseUrl = "https://proxy.example/v1",
+        apiKey = "token",
+        model = "model-x",
+      ),
+    )
+
+    assertEquals(capability, state.agentCapability)
+    assertTrue(state.agentCapability.wasVerified)
+  }
+
+  @Test
+  fun loadDoesNotLeakCachedAgentCapabilityAcrossRoutes() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    store.saveAgentCapability(
+      LlmAgentCapabilitySnapshot(
+        routeFingerprint = llmRouteFingerprint(
+          protocol = LlmProviderProtocols.OPENAI,
+          baseUrl = "https://proxy.example/v1",
+          model = "model-x",
+        ),
+        verifiedAtEpochMs = 1234L,
+        nativeToolCallingAvailable = false,
+      ),
+    )
+
+    val state = store.load(
+      defaults = LlmSettingsState(
+        protocol = LlmProviderProtocols.ANTHROPIC,
+        baseUrl = "https://api.anthropic.com",
+        model = "claude-3-7-sonnet",
+      ),
+    )
+
+    assertFalse(state.agentCapability.wasVerified)
+    assertEquals(
+      llmRouteFingerprint(
+        protocol = LlmProviderProtocols.ANTHROPIC,
+        baseUrl = "https://api.anthropic.com",
+        model = "claude-3-7-sonnet",
+      ),
+      state.agentCapability.routeFingerprint,
+    )
   }
 }

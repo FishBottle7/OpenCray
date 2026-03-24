@@ -270,11 +270,42 @@ class PromptAssemblerTest {
     )
 
     assertTrue(prompt.taskPrompt.contains("Native tool calling is enabled for this run."))
-    assertTrue(prompt.taskPrompt.contains("prefer the provider's native tool-calling interface"))
-    assertTrue(prompt.taskPrompt.contains("prefer a plain assistant text answer"))
-    assertTrue(prompt.taskPrompt.contains("legacy JSON fallback"))
+    assertTrue(prompt.taskPrompt.contains("use the provider's native tool-calling interface"))
+    assertTrue(prompt.taskPrompt.contains("return a plain assistant text answer"))
+    assertFalse(prompt.taskPrompt.contains("legacy JSON fallback"))
+    assertFalse(prompt.taskPrompt.contains("\"type\":\"final\""))
     assertTrue(prompt.contextPrompt.contains("[Tool Protocol]"))
     assertFalse(prompt.contextPrompt.contains("[Conversation]"))
+  }
+
+  @Test
+  fun assembleCanReEnableLegacyJsonFallbackWhenNativeToolCallingDegrades() {
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      ContextManager().prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "You are OpenCray for testing.",
+          sessionContext = AgentRuntimeSessionContext(),
+          nativeToolCallingEnabled = true,
+          legacyJsonFallbackEnabled = true,
+          toolDefinitions = listOf(
+            AgentToolDefinition(
+              name = "Read",
+              description = "Read a file from the workspace.",
+            ),
+          ),
+          liveConversation = listOf(
+            RuntimeConversationMessage(RuntimeConversationRole.USER, "Inspect the repo carefully."),
+          ),
+        ),
+      ),
+    )
+
+    assertTrue(prompt.taskPrompt.contains("legacy JSON fallback compatibility enabled"))
+    assertTrue(prompt.taskPrompt.contains("If native tool calling works, prefer it. Otherwise, return exactly one JSON object"))
+    assertTrue(prompt.taskPrompt.contains("\"type\":\"final\""))
   }
 
   @Test

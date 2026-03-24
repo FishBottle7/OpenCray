@@ -35510,7 +35510,7 @@
                   "type": "frame",
                   "id": "72lZR",
                   "name": "Chat Content",
-                  "width": 350,
+                  "width": 387,
                   "height": "fill_container",
                   "layout": "vertical",
                   "gap": 18,
@@ -35823,16 +35823,7 @@
                                           "fontFamily": "Inter",
                                           "fontSize": 12,
                                           "fontWeight": "500"
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "type": "frame",
-                                      "id": "I0JZs",
-                                      "name": "mainReadLine2",
-                                      "width": "fill_container",
-                                      "gap": 4,
-                                      "children": [
+                                        },
                                         {
                                           "type": "text",
                                           "id": "k84Ce",
@@ -36465,7 +36456,7 @@
                   "type": "frame",
                   "id": "VxmOp",
                   "name": "Chat Content",
-                  "width": 350,
+                  "width": 389,
                   "height": "fill_container",
                   "layout": "vertical",
                   "gap": 18,
@@ -36769,16 +36760,7 @@
                                           "fontFamily": "Inter",
                                           "fontSize": 12,
                                           "fontWeight": "600"
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "type": "frame",
-                                      "id": "hRdzx",
-                                      "name": "childReadLine2",
-                                      "width": "fill_container",
-                                      "gap": 4,
-                                      "children": [
+                                        },
                                         {
                                           "type": "text",
                                           "id": "I2JX9",
@@ -36796,16 +36778,7 @@
                                           "fontFamily": "Inter",
                                           "fontSize": 12,
                                           "fontWeight": "600"
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "type": "frame",
-                                      "id": "YM3OD",
-                                      "name": "childReadLine3",
-                                      "width": "fill_container",
-                                      "gap": 4,
-                                      "children": [
+                                        },
                                         {
                                           "type": "text",
                                           "id": "kAXjH",
@@ -36814,7 +36787,16 @@
                                           "fontFamily": "Inter",
                                           "fontSize": 12,
                                           "fontWeight": "500"
-                                        },
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "frame",
+                                      "id": "hRdzx",
+                                      "name": "childReadLine2",
+                                      "width": "fill_container",
+                                      "gap": 4,
+                                      "children": [
                                         {
                                           "type": "text",
                                           "id": "C49by",
@@ -36900,16 +36882,7 @@
                                           "fontFamily": "Inter",
                                           "fontSize": 12,
                                           "fontWeight": "600"
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "type": "frame",
-                                      "id": "DAR88",
-                                      "name": "childGrepLine2",
-                                      "width": "fill_container",
-                                      "gap": 4,
-                                      "children": [
+                                        },
                                         {
                                           "type": "text",
                                           "id": "vzX5f",

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../core/bridge/opencray_host_bridge.dart';
 import '../../core/models/opencray_chat_snapshot.dart';
 import '../../core/models/opencray_debug_snapshot.dart';
+import '../../core/models/opencray_shell_snapshot.dart';
 import '../../core/copy/opencray_ui_copy.dart';
 import '../../core/design/opencray_tokens.dart';
 import 'safety_settings_copy.dart';

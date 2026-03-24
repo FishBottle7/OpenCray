@@ -13,12 +13,40 @@ data class LiteLlmGatewayRequest(
   val systemPrompt: String? = null,
   val messages: List<LiteLlmGatewayMessage> = emptyList(),
   val tools: List<LiteLlmToolDefinition> = emptyList(),
+  val toolChoice: LiteLlmToolChoice? = null,
+  val parallelToolCalls: Boolean? = null,
+  val previousResponseId: String? = null,
+  val responseApiPreferred: Boolean = false,
   val metadata: Map<String, String> = emptyMap(),
   val authHeaders: Map<String, String> = emptyMap(),
 ) {
   init {
     require(requestId.isNotBlank()) { "LiteLlmGatewayRequest requestId must not be blank." }
     require(prompt.isNotBlank()) { "LiteLlmGatewayRequest prompt must not be blank." }
+    require(previousResponseId == null || previousResponseId.isNotBlank()) {
+      "LiteLlmGatewayRequest previousResponseId must not be blank."
+    }
+  }
+}
+
+enum class LiteLlmToolChoiceMode {
+  AUTO,
+  NONE,
+  REQUIRED,
+  TOOL,
+}
+
+data class LiteLlmToolChoice(
+  val mode: LiteLlmToolChoiceMode,
+  val toolName: String? = null,
+) {
+  init {
+    require(mode != LiteLlmToolChoiceMode.TOOL || !toolName.isNullOrBlank()) {
+      "LiteLlmToolChoice TOOL mode requires a toolName."
+    }
+    require(mode == LiteLlmToolChoiceMode.TOOL || toolName == null) {
+      "LiteLlmToolChoice toolName is only valid in TOOL mode."
+    }
   }
 }
 
@@ -33,10 +61,29 @@ data class LiteLlmGatewayToolResult(
   val toolCallId: String? = null,
   val toolName: String? = null,
   val content: String,
+  val structuredContent: JsonObject? = null,
   val isError: Boolean? = null,
+  val exitCode: Int? = null,
+  val stdout: String? = null,
+  val stderr: String? = null,
+  val errorCode: String? = null,
+  val errorMessage: String? = null,
+  val metadata: Map<String, String> = emptyMap(),
 ) {
   init {
     require(content.isNotBlank()) { "LiteLlmGatewayToolResult content must not be blank." }
+    require(toolCallId == null || toolCallId.isNotBlank()) {
+      "LiteLlmGatewayToolResult toolCallId must not be blank."
+    }
+    require(toolName == null || toolName.isNotBlank()) {
+      "LiteLlmGatewayToolResult toolName must not be blank."
+    }
+    require(errorCode == null || errorCode.isNotBlank()) {
+      "LiteLlmGatewayToolResult errorCode must not be blank."
+    }
+    require(errorMessage == null || errorMessage.isNotBlank()) {
+      "LiteLlmGatewayToolResult errorMessage must not be blank."
+    }
   }
 }
 
@@ -147,6 +194,7 @@ data class LiteLlmStructuredCompletion(
   val toolCalls: List<LiteLlmStructuredToolCall> = emptyList(),
   val finalText: String? = null,
   val progressText: String? = null,
+  val reasoningText: String? = null,
   val rawText: String? = null,
 ) {
   val hasStructuredActions: Boolean
@@ -164,6 +212,8 @@ data class LiteLlmGatewayResult(
   val completionMode: LiteLlmCompletionMode,
   val outputText: String? = null,
   val completion: LiteLlmStructuredCompletion? = null,
+  val providerResponseId: String? = null,
+  val providerLineageId: String? = null,
   val selectedRoute: LiteLlmRouteSelectionMetadata? = null,
   val attempts: List<LiteLlmAttemptRecord>,
   val errorCode: String? = null,
@@ -192,6 +242,8 @@ sealed interface LiteLlmProviderResult {
     val outputText: String,
     val completion: LiteLlmStructuredCompletion? = null,
     val finishReason: String? = null,
+    val providerResponseId: String? = null,
+    val providerLineageId: String? = null,
     val metadata: Map<String, String> = emptyMap(),
   ) : LiteLlmProviderResult
 
@@ -209,6 +261,9 @@ sealed interface LiteLlmProviderResult {
   data class Failure(
     val errorCode: String = "PROVIDER_FAILURE",
     val errorMessage: String,
+    val completion: LiteLlmStructuredCompletion? = null,
+    val providerResponseId: String? = null,
+    val providerLineageId: String? = null,
     val metadata: Map<String, String> = emptyMap(),
   ) : LiteLlmProviderResult {
     init {
@@ -404,6 +459,8 @@ class DefaultLiteLlmGateway(
             },
             outputText = providerResult.outputText,
             completion = providerResult.completion,
+            providerResponseId = providerResult.providerResponseId,
+            providerLineageId = providerResult.providerLineageId,
             selectedRoute = selection,
             attempts = attempts.toList(),
             startedAtEpochMs = startedAtEpochMs,
@@ -469,6 +526,9 @@ class DefaultLiteLlmGateway(
             requestId = request.requestId,
             status = LiteLlmGatewayStatus.FAILED,
             completionMode = LiteLlmCompletionMode.TERMINAL,
+            completion = providerResult.completion,
+            providerResponseId = providerResult.providerResponseId,
+            providerLineageId = providerResult.providerLineageId,
             selectedRoute = selection,
             attempts = attempts.toList(),
             errorCode = providerResult.errorCode,
@@ -658,6 +718,7 @@ private fun LiteLlmProviderResult.Success.outputTextChars(): Int =
     ?: completion?.rawText?.length
     ?: completion?.finalText?.length
     ?: completion?.progressText?.length
+    ?: completion?.reasoningText?.length
     ?: 0
 
 private fun FallbackTrigger.toGatewayStatus(): LiteLlmGatewayStatus = when (this) {

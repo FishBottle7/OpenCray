@@ -201,8 +201,7 @@ class ContextPruner(
     content.replace(Regex("\\s+"), " ").trim()
 
   private fun isToolCallMarker(message: RuntimeConversationMessage): Boolean =
-    message.kind == RuntimeConversationMessageKind.TOOL_CALL ||
-      message.content.trim().startsWith("tool_call ")
+    message.isAssistantToolCallMessage()
 
   private fun lineCount(content: String): Int =
     content.lineSequence().count().coerceAtLeast(1)

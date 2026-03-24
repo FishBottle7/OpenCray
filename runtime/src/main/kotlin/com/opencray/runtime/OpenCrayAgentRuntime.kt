@@ -23,6 +23,8 @@ import com.opencray.llm.LiteLlmGatewayStatus
 import com.opencray.llm.LiteLlmGatewayToolResult
 import com.opencray.llm.LiteLlmStructuredCompletion
 import com.opencray.llm.LiteLlmStructuredToolCall
+import com.opencray.llm.LiteLlmToolChoice
+import com.opencray.llm.LiteLlmToolChoiceMode
 import com.opencray.runtime.context.AgentRuntimeSessionContext
 import com.opencray.runtime.context.ContextManager
 import com.opencray.runtime.context.ContextAssemblyReport
@@ -36,6 +38,8 @@ import com.opencray.runtime.context.RuntimeConversationProgress
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.RuntimeConversationToolCall
 import com.opencray.runtime.context.RuntimeConversationToolResult
+import com.opencray.runtime.context.toolResultContentOrNull
+import com.opencray.runtime.context.toolResultJsonPayloadOrNull
 import com.opencray.runtime.policy.ToolPolicyPlan
 import com.opencray.runtime.subagent.BuiltInSubAgentProfiles
 import com.opencray.runtime.subagent.SubAgentContextBuilder
@@ -158,6 +162,7 @@ class OpenCrayAgentRuntime(
       activeSkillName = config.promptResumeState?.activeSkillName,
       activeSkillActivationSource = config.promptResumeState?.activeSkillActivationSource,
       nextSyntheticToolCallSequence = nextSyntheticToolCallSequence(executionTranscript),
+      legacyJsonFallbackEnabled = false,
     )
     var lastGatewayResult: LiteLlmGatewayResult? = null
     var lastContextReport: ContextAssemblyReport? = null
@@ -176,6 +181,18 @@ class OpenCrayAgentRuntime(
         activeSkillName = cursor.activeSkillName,
         activationSource = cursor.activeSkillActivationSource,
       )
+      val visibleToolDefinitions = visibleToolDefinitionsForTurn(
+        allDefinitions = toolDispatcher.definitions(),
+        activeSkillCapsule = activeSkillCapsule,
+        memoryToolsEnabled = config.sessionContext.memoryToolsEnabled,
+      )
+      val nativeToolCallingEnabled = nativeToolCallingEnabledForTurn(
+        visibleToolDefinitions = visibleToolDefinitions,
+      )
+      val legacyJsonFallbackEnabled = legacyJsonFallbackEnabledForTurn(
+        nativeToolCallingEnabled = nativeToolCallingEnabled,
+        priorFallbackEnabled = cursor.legacyJsonFallbackEnabled,
+      )
       when (
         val outcome = executePromptActionBatch(
           task = task,
@@ -190,6 +207,8 @@ class OpenCrayAgentRuntime(
           hooks = hooks,
           activeSkillCapsule = activeSkillCapsule,
           diagnostics = diagnostics,
+          nativeToolCallingEnabled = nativeToolCallingEnabled,
+          legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
           actionStartIndex = resumeActionIndex,
           suppressToolCallEventAtActionIndex = resumeActionIndex,
         )
@@ -210,10 +229,6 @@ class OpenCrayAgentRuntime(
         transcript = cursor.transcript,
       )
 
-      val turnAwareConversation = promptConversationForTurn(
-        transcript = cursor.transcript,
-        turn = cursor.turn,
-      )
       val activeSkillCapsule = activeSkillCapsuleResolver.resolve(
         catalog = config.sessionContext.skillCatalog,
         activeSkillName = cursor.activeSkillName,
@@ -224,15 +239,38 @@ class OpenCrayAgentRuntime(
         activeSkillCapsule = activeSkillCapsule,
         memoryToolsEnabled = config.sessionContext.memoryToolsEnabled,
       )
-      val nativeToolDefinitions = visibleToolDefinitions.map(AgentToolDefinition::toLiteLlmToolDefinition)
-      diagnostics.nativeToolCallRequested = nativeToolDefinitions.isNotEmpty()
+      val nativeToolCallingEnabled = nativeToolCallingEnabledForTurn(
+        visibleToolDefinitions = visibleToolDefinitions,
+      )
+      val legacyJsonFallbackEnabled = legacyJsonFallbackEnabledForTurn(
+        nativeToolCallingEnabled = nativeToolCallingEnabled,
+        priorFallbackEnabled = cursor.legacyJsonFallbackEnabled,
+      )
+      val turnAwareConversation = promptConversationForTurn(
+        transcript = cursor.transcript,
+        turn = cursor.turn,
+        legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
+      )
+      val strictToolSchemaEnabled = config.llmMetadata["toolSchemaStrict"]
+        ?.trim()
+        ?.lowercase() == "true"
+      val nativeToolDefinitions = visibleToolDefinitions.map { definition ->
+        definition.toLiteLlmToolDefinition(strict = strictToolSchemaEnabled)
+      }
+      val requestedNativeToolDefinitions = if (nativeToolCallingEnabled) {
+        nativeToolDefinitions
+      } else {
+        emptyList()
+      }
+      diagnostics.nativeToolCallRequested = requestedNativeToolDefinitions.isNotEmpty()
       val managedContext = config.contextManager.prepare(
         PromptAssemblyInput(
           task = task,
           baseSystemPrompt = config.systemPrompt,
           sessionContext = config.sessionContext,
           activeSkillCapsule = activeSkillCapsule,
-          nativeToolCallingEnabled = nativeToolDefinitions.isNotEmpty(),
+          nativeToolCallingEnabled = nativeToolCallingEnabled,
+          legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
           toolDefinitions = visibleToolDefinitions,
           liveConversation = turnAwareConversation,
         ),
@@ -242,8 +280,9 @@ class OpenCrayAgentRuntime(
       val enforcedSystemPrompt = enforcedSystemPromptForTurn(
         systemPrompt = assembledPrompt.systemPrompt,
         turn = cursor.turn,
+        legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
       )
-      val gatewayMessages = if (nativeToolDefinitions.isNotEmpty()) {
+      val gatewayMessages = if (requestedNativeToolDefinitions.isNotEmpty()) {
         buildGatewayMessages(
           contextPrompt = assembledPrompt.contextPrompt,
           transcript = turnAwareConversation,
@@ -253,12 +292,47 @@ class OpenCrayAgentRuntime(
       }
 
       val runId = runIdFor(task)
+      val requestedToolChoiceOverride = runCatching {
+        val mode = when (config.llmMetadata["toolChoiceMode"]?.trim()?.lowercase()) {
+          "auto" -> LiteLlmToolChoiceMode.AUTO
+          "none" -> LiteLlmToolChoiceMode.NONE
+          "required", "any" -> LiteLlmToolChoiceMode.REQUIRED
+          "tool", "function" -> LiteLlmToolChoiceMode.TOOL
+          else -> null
+        } ?: return@runCatching null
+        LiteLlmToolChoice(
+          mode = mode,
+          toolName = config.llmMetadata["toolChoiceName"]?.trim()?.takeIf(String::isNotBlank),
+        )
+      }.getOrNull()
+      val requestedParallelToolCallsOverride = if (requestedNativeToolDefinitions.isNotEmpty()) {
+        config.llmMetadata["parallelToolCalls"]
+          ?.trim()
+          ?.lowercase()
+          ?.let { rawValue ->
+            when (rawValue) {
+              "true" -> true
+              "false" -> false
+              else -> null
+            }
+          }
+      } else {
+        null
+      }
+      val requestedPreviousResponseIdOverride =
+        config.llmMetadata["previousResponseId"]?.trim()?.takeIf(String::isNotBlank)
+      val responseApiPreferredOverride =
+        config.llmMetadata["responseApiPreferred"]?.trim()?.lowercase() == "true"
       val request = LiteLlmGatewayRequest(
         requestId = "agent-$runId-turn-${cursor.turn}-${UUID.randomUUID().toString().take(8)}",
         prompt = assembledPrompt.taskPrompt,
         systemPrompt = enforcedSystemPrompt,
         messages = gatewayMessages,
-        tools = nativeToolDefinitions,
+        tools = requestedNativeToolDefinitions,
+        toolChoice = requestedToolChoiceOverride,
+        parallelToolCalls = requestedParallelToolCallsOverride,
+        previousResponseId = requestedPreviousResponseIdOverride,
+        responseApiPreferred = responseApiPreferredOverride,
         metadata = buildMap {
           put("runId", runId)
           put("taskId", task.id)
@@ -278,7 +352,7 @@ class OpenCrayAgentRuntime(
           put("contextPruningSummaryIncluded", assembledPrompt.report.pruningSummaryIncluded.toString())
           put("contextRecentObservationCount", assembledPrompt.report.recentToolObservationCount.toString())
           put("contextRecentObservationLayerIncluded", assembledPrompt.report.recentToolObservationLayerIncluded.toString())
-          put(LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED, nativeToolDefinitions.isNotEmpty().toString())
+          put(LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED, requestedNativeToolDefinitions.isNotEmpty().toString())
           putAll(task.metadata.filterKeys(::isGatewayVisibleMetadataKey))
           putAll(config.llmMetadata)
         },
@@ -298,7 +372,7 @@ class OpenCrayAgentRuntime(
         )
       }
 
-      val parsedBatch = parseGatewayResultActionBatch(
+      val parsedGatewayResult = parseGatewayResultActionBatch(
         gatewayResult = gatewayResult,
         diagnostics = diagnostics,
       )
@@ -311,10 +385,16 @@ class OpenCrayAgentRuntime(
           contextReport = lastContextReport,
           diagnostics = diagnostics,
         )
-      when (parsedBatch) {
+      if (nativeToolCallingEnabled && parsedGatewayResult.usedLegacyJsonFallback) {
+        cursor.legacyJsonFallbackEnabled = true
+      }
+      when (val parsedBatch = parsedGatewayResult.batch) {
         is ParsedModelActionBatch.ProtocolError -> {
           protocolErrorCount += 1
           lastProtocolErrorMessage = parsedBatch.reason
+          if (nativeToolCallingEnabled) {
+            cursor.legacyJsonFallbackEnabled = true
+          }
           val outputPreview = gatewayResult.completion?.rawText
             ?: gatewayResult.outputText
             ?: ""
@@ -325,6 +405,11 @@ class OpenCrayAgentRuntime(
           cursor.transcript += RuntimeConversationMessage(
             role = RuntimeConversationRole.TOOL,
             content = buildProtocolRecoveryObservation(
+              nativeToolCallingEnabled = nativeToolCallingEnabled,
+              legacyJsonFallbackEnabled = legacyJsonFallbackEnabledForTurn(
+                nativeToolCallingEnabled = nativeToolCallingEnabled,
+                priorFallbackEnabled = true,
+              ),
               rawOutput = outputPreview,
               reason = parsedBatch.reason,
             ),
@@ -345,6 +430,8 @@ class OpenCrayAgentRuntime(
               hooks = hooks,
               activeSkillCapsule = activeSkillCapsule,
               diagnostics = diagnostics,
+              nativeToolCallingEnabled = nativeToolCallingEnabled,
+              legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
             )
           ) {
             is PromptBatchExecutionOutcome.Continue -> continue
@@ -550,23 +637,37 @@ class OpenCrayAgentRuntime(
   private fun parseGatewayResultActionBatch(
     gatewayResult: LiteLlmGatewayResult,
     diagnostics: PromptRunDiagnostics,
-  ): ParsedModelActionBatch? {
+  ): ParsedGatewayActionBatch? {
     gatewayResult.completion?.let { completion ->
+      completion.reasoningText
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { reasoningText ->
+          diagnostics.providerReasoningObserved = true
+          diagnostics.providerReasoningTurnCount += 1
+          diagnostics.providerReasoningChars += reasoningText.length
+        }
       parseStructuredCompletion(completion)?.let { parsed ->
-        return parsed
+        return ParsedGatewayActionBatch(batch = parsed)
       }
       completion.rawText?.takeIf(String::isNotBlank)?.let { rawText ->
         diagnostics.fallbackParserAttempted = true
         val parsed = parseModelActionBatch(rawText)
         diagnostics.fallbackParserSucceeded = parsed is ParsedModelActionBatch.Actions
-        return parsed
+        return ParsedGatewayActionBatch(
+          batch = parsed,
+          usedLegacyJsonFallback = parsed is ParsedModelActionBatch.Actions,
+        )
       }
     }
     val outputText = gatewayResult.outputText?.takeIf { it.isNotBlank() } ?: return null
     diagnostics.fallbackParserAttempted = true
     val parsed = parseModelActionBatch(outputText)
     diagnostics.fallbackParserSucceeded = parsed is ParsedModelActionBatch.Actions
-    return parsed
+    return ParsedGatewayActionBatch(
+      batch = parsed,
+      usedLegacyJsonFallback = parsed is ParsedModelActionBatch.Actions,
+    )
   }
 
   private fun parseStructuredCompletion(
@@ -601,6 +702,80 @@ class OpenCrayAgentRuntime(
       )
     }
     return null
+  }
+
+  private fun nativeToolCallingEnabledForTurn(
+    visibleToolDefinitions: List<AgentToolDefinition>,
+  ): Boolean {
+    if (visibleToolDefinitions.isEmpty()) {
+      return false
+    }
+    config.llmMetadata["nativeToolCallingAvailable"]
+      ?.trim()
+      ?.lowercase()
+      ?.let { rawValue ->
+        if (rawValue == "true" || rawValue == "false") {
+          return rawValue.toBoolean()
+        }
+      }
+    return when (config.llmMetadata["protocol"]?.trim()?.lowercase()) {
+      null,
+      "",
+      "openai",
+      "anthropic",
+      -> true
+      else -> false
+    }
+  }
+
+  private fun legacyJsonFallbackEnabledForTurn(
+    nativeToolCallingEnabled: Boolean,
+    priorFallbackEnabled: Boolean,
+  ): Boolean = priorFallbackEnabled || !nativeToolCallingEnabled
+
+  private fun requestedToolChoice(): LiteLlmToolChoice? {
+    val mode = when (config.llmMetadata["toolChoiceMode"]?.trim()?.lowercase()) {
+      "auto" -> LiteLlmToolChoiceMode.AUTO
+      "none" -> LiteLlmToolChoiceMode.NONE
+      "required", "any" -> LiteLlmToolChoiceMode.REQUIRED
+      "tool", "function" -> LiteLlmToolChoiceMode.TOOL
+      else -> null
+    } ?: return null
+    val toolName = config.llmMetadata["toolChoiceName"]?.trim()?.takeIf(String::isNotBlank)
+    return runCatching {
+      LiteLlmToolChoice(
+        mode = mode,
+        toolName = toolName,
+      )
+    }.getOrNull()
+  }
+
+  private fun requestedParallelToolCalls(
+    nativeToolCallingEnabled: Boolean,
+  ): Boolean? {
+    if (!nativeToolCallingEnabled) {
+      return null
+    }
+    return config.llmMetadata["parallelToolCalls"]
+      ?.trim()
+      ?.lowercase()
+      ?.let { rawValue ->
+        when (rawValue) {
+          "true" -> true
+          "false" -> false
+          else -> null
+        }
+      }
+  }
+
+  private fun requestedPreviousResponseId(): String? =
+    config.llmMetadata["previousResponseId"]?.trim()?.takeIf(String::isNotBlank)
+
+  private fun responseApiPreferred(): Boolean {
+    val rawValue = config.llmMetadata["responseApiPreferred"]
+      ?.trim()
+      ?.lowercase()
+    return rawValue == "true"
   }
 
   private fun parseStructuredToolCall(
@@ -992,6 +1167,9 @@ class OpenCrayAgentRuntime(
         put(key, value)
       }
     }
+    val gatewayReasoningText = gatewayResult?.completion?.reasoningText
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
     diagnostics?.let { promptDiagnostics ->
       put(LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED, promptDiagnostics.nativeToolCallRequested.toString())
       put(LiteLlmMetadataKeys.PARSED_TOOL_CALL_OBSERVED, promptDiagnostics.parsedToolCallObserved.toString())
@@ -1005,6 +1183,18 @@ class OpenCrayAgentRuntime(
         ?.let { toolName ->
           put(LiteLlmMetadataKeys.LAST_SUCCESSFUL_TOOL_NAME, toolName)
         }
+      val providerReasoningObserved = promptDiagnostics.providerReasoningObserved || gatewayReasoningText != null
+      put(LiteLlmMetadataKeys.PROVIDER_REASONING_OBSERVED, providerReasoningObserved.toString())
+      if (providerReasoningObserved) {
+        put(
+          LiteLlmMetadataKeys.PROVIDER_REASONING_TURN_COUNT,
+          (if (promptDiagnostics.providerReasoningObserved) promptDiagnostics.providerReasoningTurnCount else 1).toString(),
+        )
+        put(
+          LiteLlmMetadataKeys.PROVIDER_REASONING_CHARS,
+          (if (promptDiagnostics.providerReasoningObserved) promptDiagnostics.providerReasoningChars else gatewayReasoningText?.length ?: 0).toString(),
+        )
+      }
     }
   }
 
@@ -1359,6 +1549,20 @@ class OpenCrayAgentRuntime(
       ?.takeIf(String::isNotBlank)
       ?.toLongOrNull()
 
+  private fun JsonObject.intContent(key: String): Int? =
+    (this[key] as? JsonPrimitive)
+      ?.content
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.toIntOrNull()
+
+  private fun JsonObject.jsonObjectContent(key: String): JsonObject? =
+    this[key] as? JsonObject
+
+  private fun JsonObject.toStringMap(): Map<String, String> = entries.mapNotNull { (key, value) ->
+    (value as? JsonPrimitive)?.content?.let { content -> key to content }
+  }.toMap()
+
   private fun JsonObject.intArrayContent(key: String): List<Int>? =
     (this[key] as? JsonArray)
       ?.mapNotNull { element ->
@@ -1396,6 +1600,8 @@ class OpenCrayAgentRuntime(
     hooks: RuntimeExecutionHooks,
     activeSkillCapsule: ActiveSkillCapsule?,
     diagnostics: PromptRunDiagnostics,
+    nativeToolCallingEnabled: Boolean,
+    legacyJsonFallbackEnabled: Boolean,
     actionStartIndex: Int = 0,
     suppressToolCallEventAtActionIndex: Int? = null,
   ): PromptBatchExecutionOutcome {
@@ -1668,7 +1874,10 @@ class OpenCrayAgentRuntime(
     if (parsedBatch.requiresSingleActionReminder) {
       cursor.transcript += RuntimeConversationMessage(
         role = RuntimeConversationRole.TOOL,
-        content = buildSingleActionReminderObservation(),
+        content = buildSingleActionReminderObservation(
+          nativeToolCallingEnabled = nativeToolCallingEnabled,
+          legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
+        ),
       )
     }
     cursor.turn += 1
@@ -1845,8 +2054,12 @@ class OpenCrayAgentRuntime(
   private fun promptConversationForTurn(
     transcript: List<RuntimeConversationMessage>,
     turn: Int,
+    legacyJsonFallbackEnabled: Boolean,
   ): List<RuntimeConversationMessage> {
-    val reminder = turnBudgetReminderFor(turn) ?: return transcript
+    val reminder = turnBudgetReminderFor(
+      turn = turn,
+      legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
+    ) ?: return transcript
     if (transcript.lastOrNull() == reminder) {
       return transcript
     }
@@ -1856,9 +2069,10 @@ class OpenCrayAgentRuntime(
   private fun enforcedSystemPromptForTurn(
     systemPrompt: String?,
     turn: Int,
+    legacyJsonFallbackEnabled: Boolean,
   ): String? {
     val appendix = when (remainingTurnBudget(turn)) {
-      1 -> FINAL_TURN_SYSTEM_PROMPT_APPENDIX
+      1 -> finalTurnSystemPromptAppendix(legacyJsonFallbackEnabled)
       2 -> PENULTIMATE_TURN_SYSTEM_PROMPT_APPENDIX
       else -> null
     } ?: return systemPrompt
@@ -1866,10 +2080,13 @@ class OpenCrayAgentRuntime(
       .joinToString(separator = "\n\n")
   }
 
-  private fun turnBudgetReminderFor(turn: Int): RuntimeConversationMessage? = when (remainingTurnBudget(turn)) {
+  private fun turnBudgetReminderFor(
+    turn: Int,
+    legacyJsonFallbackEnabled: Boolean,
+  ): RuntimeConversationMessage? = when (remainingTurnBudget(turn)) {
     1 -> RuntimeConversationMessage(
       role = RuntimeConversationRole.TOOL,
-      content = buildFinalAnswerRequiredObservation(),
+      content = buildFinalAnswerRequiredObservation(legacyJsonFallbackEnabled),
     )
 
     2 -> RuntimeConversationMessage(
@@ -2041,7 +2258,7 @@ class OpenCrayAgentRuntime(
       -> null
     } ?: when (message.role) {
       RuntimeConversationRole.ASSISTANT -> parseToolCallTranscriptEntry(message.content)?.id
-      RuntimeConversationRole.TOOL -> parseToolResultObservation(message.content)?.toolCallId
+      RuntimeConversationRole.TOOL -> parseToolResultObservation(message)?.toolCallId
       else -> null
     }
     return toolCallId
@@ -2054,7 +2271,7 @@ class OpenCrayAgentRuntime(
     task: AgentTask,
     turn: Int,
     call: AgentToolCall,
-  ): String = "tool_call ${config.json.encodeToString(
+  ): String = config.json.encodeToString(
     JsonObject.serializer(),
     buildJsonObject {
       put("run_id", runIdFor(task))
@@ -2068,7 +2285,7 @@ class OpenCrayAgentRuntime(
         ?.let { reason -> put("reason", reason) }
       put("arguments", call.arguments)
     },
-  )}"
+  )
 
   private fun buildToolResultTranscriptEntry(
     task: AgentTask,
@@ -2107,21 +2324,16 @@ class OpenCrayAgentRuntime(
     task: AgentTask,
     turn: Int,
     progress: AgentModelAction.Progress,
-  ): String = buildString {
-    append("progress ")
-    append(
-      config.json.encodeToString(
-        JsonObject.serializer(),
-        buildJsonObject {
-          put("run_id", runIdFor(task))
-          put("task_id", task.id)
-          put("turn", turn)
-          put("text", progress.text)
-          progress.stage?.let { stage -> put("stage", stage) }
-        },
-      ),
-    )
-  }
+  ): String = config.json.encodeToString(
+    JsonObject.serializer(),
+    buildJsonObject {
+      put("run_id", runIdFor(task))
+      put("task_id", task.id)
+      put("turn", turn)
+      put("text", progress.text)
+      progress.stage?.let { stage -> put("stage", stage) }
+    },
+  )
 
   private fun buildGatewayMessages(
     contextPrompt: String,
@@ -2136,10 +2348,9 @@ class OpenCrayAgentRuntime(
           role = LiteLlmGatewayMessageRole.USER,
           content = prompt,
         )
-      }
+    }
     var syntheticToolCallIndex = nextSyntheticToolCallSequence(transcript) - 1
     var pendingToolCallId: String? = null
-    var pendingToolName: String? = null
     transcript.forEach { entry ->
       when (entry.role) {
         RuntimeConversationRole.SYSTEM -> {
@@ -2166,7 +2377,6 @@ class OpenCrayAgentRuntime(
                 id = "oc-call-${++syntheticToolCallIndex}",
               )
             pendingToolCallId = normalizedToolCall.id
-            pendingToolName = normalizedToolCall.toolName
             messages += LiteLlmGatewayMessage(
               role = LiteLlmGatewayMessageRole.ASSISTANT,
               toolCalls = listOf(
@@ -2196,12 +2406,18 @@ class OpenCrayAgentRuntime(
             toolResult = LiteLlmGatewayToolResult(
               toolCallId = observation.toolCallId ?: pendingToolCallId,
               toolName = observation.toolName,
-              content = entry.content,
+              content = observation.content,
+              structuredContent = observation.structuredContent,
               isError = observation.isError,
+              exitCode = observation.exitCode,
+              stdout = observation.stdout,
+              stderr = observation.stderr,
+              errorCode = observation.errorCode,
+              errorMessage = observation.errorMessage,
+              metadata = observation.metadata,
             ),
           )
           pendingToolCallId = null
-          pendingToolName = null
         }
       }
     }
@@ -2210,47 +2426,19 @@ class OpenCrayAgentRuntime(
 
   private fun parseToolCallTranscriptEntry(content: String): AgentToolCall? {
     val trimmed = content.trim()
-    if (!trimmed.startsWith("tool_call ")) {
+    if (!trimmed.startsWith("{")) {
       return null
     }
-    val payload = trimmed.removePrefix("tool_call ").trim()
-    if (payload.startsWith("{")) {
-      val parsed = runCatching {
-        config.json.parseToJsonElement(payload) as? JsonObject
-      }.getOrNull() ?: return null
-      return AgentToolCall(
-        id = parsed.primitiveContent("tool_call_id")?.trim()?.takeIf(String::isNotBlank)
-          ?: parsed.primitiveContent("id")?.trim()?.takeIf(String::isNotBlank),
-        toolName = parsed.primitiveContent("tool_name")?.trim()?.takeIf(String::isNotBlank)
-          ?: return null,
-        arguments = parsed["arguments"] as? JsonObject ?: JsonObject(emptyMap()),
-        reason = parsed.primitiveContent("reason")?.trim()?.takeIf(String::isNotBlank),
-      )
-    }
-    val argumentsStart = trimmed.indexOf('{')
-    if (argumentsStart <= "tool_call ".length) {
-      return null
-    }
-    val header = trimmed.substring("tool_call ".length, argumentsStart).trim()
-    val arguments = runCatching {
-      config.json.parseToJsonElement(trimmed.substring(argumentsStart)) as? JsonObject
+    val parsed = runCatching {
+      config.json.parseToJsonElement(trimmed) as? JsonObject
     }.getOrNull() ?: return null
-    val toolName = header.substringBefore(" id=", missingDelimiterValue = header)
-      .substringBefore(" reason=", missingDelimiterValue = header)
-      .trim()
-      .takeIf(String::isNotBlank)
-      ?: return null
-    val reason = header.substringAfter(" reason=", missingDelimiterValue = "")
-      .trim()
-      .takeIf(String::isNotBlank)
     return AgentToolCall(
-      id = header.substringAfter(" id=", missingDelimiterValue = "")
-        .substringBefore(" reason=", missingDelimiterValue = "")
-        .trim()
-        .takeIf(String::isNotBlank),
-      toolName = toolName,
-      arguments = arguments,
-      reason = reason,
+      id = parsed.primitiveContent("tool_call_id")?.trim()?.takeIf(String::isNotBlank)
+        ?: parsed.primitiveContent("id")?.trim()?.takeIf(String::isNotBlank),
+      toolName = parsed.primitiveContent("tool_name")?.trim()?.takeIf(String::isNotBlank)
+        ?: return null,
+      arguments = parsed["arguments"] as? JsonObject ?: JsonObject(emptyMap()),
+      reason = parsed.primitiveContent("reason")?.trim()?.takeIf(String::isNotBlank),
     )
   }
 
@@ -2265,11 +2453,12 @@ class OpenCrayAgentRuntime(
     } ?: parseToolCallTranscriptEntry(entry.content)
 
   private fun runtimeToolResultFor(entry: RuntimeConversationMessage): ParsedToolResultObservation? =
-    parseToolResultObservation(entry.content)
+    parseToolResultObservation(entry)
       ?: entry.toolResult?.let { toolResult ->
         ParsedToolResultObservation(
           toolCallId = toolResult.toolCallId,
           toolName = toolResult.toolName,
+          content = entry.toolResultContentOrNull() ?: entry.content,
           isError = toolResult.isError ?: toolResult.status
             ?.equals(AgentToolResultStatus.SUCCESS.name, ignoreCase = true)
             ?.not()
@@ -2277,25 +2466,51 @@ class OpenCrayAgentRuntime(
         )
       }
 
-  private fun parseToolResultObservation(content: String): ParsedToolResultObservation? {
-    val payload = content.trim().removePrefix("tool_result ").trim()
+  private fun parseToolResultObservation(
+    entry: RuntimeConversationMessage,
+  ): ParsedToolResultObservation? {
+    val payload = entry.toolResultJsonPayloadOrNull() ?: return null
     val parsed = runCatching {
       config.json.parseToJsonElement(payload) as? JsonObject
     }.getOrNull() ?: return null
     val toolCallId = parsed.primitiveContent("tool_call_id")
       ?.trim()
       ?.takeIf(String::isNotBlank)
+      ?: entry.toolResult?.toolCallId
     val toolName = parsed.primitiveContent("tool_name")
       ?.trim()
       ?.takeIf(String::isNotBlank)
+      ?: entry.toolResult?.toolName
       ?: return null
     val status = parsed.primitiveContent("status")
       ?.trim()
       ?.lowercase()
+      ?: entry.toolResult?.status
+        ?.trim()
+        ?.lowercase()
+    val metadata = parsed.jsonObjectContent("metadata")
+      ?.toStringMap()
+      ?: emptyMap()
     return ParsedToolResultObservation(
       toolCallId = toolCallId,
       toolName = toolName,
-      isError = status != null && status != AgentToolResultStatus.SUCCESS.name.lowercase(),
+      content = parsed.primitiveContent("content")
+        ?: entry.toolResultContentOrNull()
+        ?: entry.content,
+      structuredContent = parsed.jsonObjectContent("structured_content")
+        ?: parsed.jsonObjectContent("structuredContent"),
+      isError = entry.toolResult?.isError
+        ?: (status != null && status != AgentToolResultStatus.SUCCESS.name.lowercase()),
+      exitCode = parsed.intContent("exit_code") ?: parsed.intContent("exitCode"),
+      stdout = parsed.primitiveContent("stdout")?.trim()?.takeIf(String::isNotBlank),
+      stderr = parsed.primitiveContent("stderr")?.trim()?.takeIf(String::isNotBlank),
+      errorCode = parsed.primitiveContent("error_code")
+        ?.trim()
+        ?.takeIf(String::isNotBlank),
+      errorMessage = parsed.primitiveContent("error_message")
+        ?.trim()
+        ?.takeIf(String::isNotBlank),
+      metadata = metadata,
     )
   }
 
@@ -2741,9 +2956,18 @@ class OpenCrayAgentRuntime(
     append(hit.excerpt)
   }.trim()
 
-  private fun buildSingleActionReminderObservation(): String = buildString {
+  private fun buildSingleActionReminderObservation(
+    nativeToolCallingEnabled: Boolean,
+    legacyJsonFallbackEnabled: Boolean,
+  ): String = buildString {
     appendLine("Protocol note: return only the next step on each turn.")
-    appendLine("If native tool calling is available, prefer it over the legacy JSON tool_call fallback.")
+    if (nativeToolCallingEnabled && !legacyJsonFallbackEnabled) {
+      appendLine("Use native tool calling for the next tool action.")
+    } else if (nativeToolCallingEnabled) {
+      appendLine("Prefer native tool calling when it works, and otherwise use the legacy JSON fallback.")
+    } else {
+      appendLine("Return the next action as a single JSON object.")
+    }
     appendLine("You may include one short public progress summary before that action.")
     appendLine("Do not include a final answer alongside a tool_call.")
     append("If you need multiple tools, call them one at a time across turns.")
@@ -2755,17 +2979,32 @@ class OpenCrayAgentRuntime(
     append("The next turn must return a final answer without calling another tool.")
   }.trim()
 
-  private fun buildFinalAnswerRequiredObservation(): String = buildString {
+  private fun buildFinalAnswerRequiredObservation(
+    legacyJsonFallbackEnabled: Boolean,
+  ): String = buildString {
     appendLine("Turn budget note: this is the last allowed model turn.")
     appendLine("Do not call any more tools.")
-    append("Return the best user-facing final answer now. Prefer plain assistant text. If this endpoint is still on the legacy fallback path, return exactly one JSON final action.")
+    if (legacyJsonFallbackEnabled) {
+      append("Return the best user-facing final answer now. Prefer plain assistant text. If this endpoint is still on the legacy fallback path, return exactly one JSON final action.")
+    } else {
+      append("Return the best user-facing final answer now as plain assistant text.")
+    }
   }.trim()
 
   private fun buildProtocolRecoveryObservation(
+    nativeToolCallingEnabled: Boolean,
+    legacyJsonFallbackEnabled: Boolean,
     rawOutput: String,
     reason: String,
   ): String = buildString {
-    appendLine("Protocol error: either use native tool calling or return exactly one JSON object whose legacy action is progress, tool_call, or final.")
+    when {
+      nativeToolCallingEnabled && legacyJsonFallbackEnabled ->
+        appendLine("Protocol error: prefer native tool calling when it works, otherwise return exactly one JSON object whose legacy action is progress, tool_call, or final.")
+      nativeToolCallingEnabled ->
+        appendLine("Protocol error: use native tool calling for the next tool action, or return a plain final answer when you are done.")
+      else ->
+        appendLine("Protocol error: return exactly one JSON object whose action is progress, tool_call, or final.")
+    }
     appendLine("A tool_call may include reason or justification, but it must not include a final answer.")
     appendLine("If you include progress, keep it public, short, and non-sensitive.")
     appendLine("If you need multiple tools, call only the next tool now and wait for the next turn.")
@@ -2777,6 +3016,14 @@ class OpenCrayAgentRuntime(
       append(preview)
     }
   }.trim()
+
+  private fun finalTurnSystemPromptAppendix(
+    legacyJsonFallbackEnabled: Boolean,
+  ): String = if (legacyJsonFallbackEnabled) {
+    "[Turn Budget]\nThis is the last allowed model turn. Do not call any more tools. Return the final user-facing answer now. Prefer plain assistant text, and use the legacy JSON final action only if this endpoint is still on fallback."
+  } else {
+    "[Turn Budget]\nThis is the last allowed model turn. Do not call any more tools. Return the final user-facing answer now as plain assistant text."
+  }
 
   private fun toolPolicyKey(toolName: String): String = when (toolName.trim().lowercase()) {
     "ls",
@@ -2857,6 +3104,7 @@ class OpenCrayAgentRuntime(
     var activeSkillName: String?,
     var activeSkillActivationSource: String?,
     var nextSyntheticToolCallSequence: Int,
+    var legacyJsonFallbackEnabled: Boolean,
   )
 
   private data class PromptRunDiagnostics(
@@ -2867,12 +3115,28 @@ class OpenCrayAgentRuntime(
     var toolCallEventEmitted: Boolean = false,
     var toolResultEventEmitted: Boolean = false,
     var lastSuccessfulToolName: String? = null,
+    var providerReasoningObserved: Boolean = false,
+    var providerReasoningTurnCount: Int = 0,
+    var providerReasoningChars: Int = 0,
+  )
+
+  private data class ParsedGatewayActionBatch(
+    val batch: ParsedModelActionBatch,
+    val usedLegacyJsonFallback: Boolean = false,
   )
 
   private data class ParsedToolResultObservation(
     val toolCallId: String? = null,
     val toolName: String,
+    val content: String,
     val isError: Boolean,
+    val structuredContent: JsonObject? = null,
+    val exitCode: Int? = null,
+    val stdout: String? = null,
+    val stderr: String? = null,
+    val errorCode: String? = null,
+    val errorMessage: String? = null,
+    val metadata: Map<String, String> = emptyMap(),
   )
 
   private data class MemoryRetrievalTrace(
@@ -2941,8 +3205,6 @@ class OpenCrayAgentRuntime(
     const val ACTIVATION_SOURCE_SKILL_READ: String = "skill_read"
     const val PENULTIMATE_TURN_SYSTEM_PROMPT_APPENDIX: String =
       "[Turn Budget]\nYou have two model turns left including this one. If another tool is still necessary, use at most one more tool now and be ready to answer on the next turn."
-    const val FINAL_TURN_SYSTEM_PROMPT_APPENDIX: String =
-      "[Turn Budget]\nThis is the last allowed model turn. Do not call any more tools. Return the final user-facing answer now. Prefer plain assistant text, and use the legacy JSON final action only if this endpoint is still on fallback."
     val CHILD_APPROVAL_METADATA_KEYS: Set<String> = setOf(
       "normalizedToolName",
       "canonicalToolName",

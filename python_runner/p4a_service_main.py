@@ -94,6 +94,8 @@ def _write_service_state(
     poll_interval_ms: int,
     startup_request_id: str,
     current_request_id: str | None = None,
+    claimed_request_id: str | None = None,
+    execution_started_at_epoch_ms: int | None = None,
     last_observed_request_id: str | None = None,
     last_processed_request_id: str | None = None,
     last_processed_status: str | None = None,
@@ -112,6 +114,8 @@ def _write_service_state(
         "pollIntervalMs": poll_interval_ms,
         "startupRequestId": startup_request_id,
         "currentRequestId": current_request_id,
+        "claimedRequestId": claimed_request_id,
+        "executionStartedAtEpochMs": execution_started_at_epoch_ms,
         "lastObservedRequestId": last_observed_request_id
         if last_observed_request_id is not None
         else existing.get("lastObservedRequestId"),
@@ -137,6 +141,8 @@ def _write_service_state(
             "pollIntervalMs": poll_interval_ms,
             "startupRequestId": startup_request_id,
             "currentRequestId": current_request_id,
+            "claimedRequestId": claimed_request_id,
+            "executionStartedAtEpochMs": execution_started_at_epoch_ms,
         },
     )
 
@@ -164,6 +170,28 @@ def _result_status(result_path: Path) -> str | None:
     return str(status).strip() if status is not None else None
 
 
+def _pending_request_paths(
+    requests_dir: Path,
+    results_dir: Path,
+    startup_request_id: str,
+) -> list[Path]:
+    pending = [
+        request_path
+        for request_path in sorted(requests_dir.glob("*.json"))
+        if not (results_dir / f"{request_path.stem}.json").exists()
+    ]
+    if not startup_request_id:
+        return pending
+
+    startup_path = next(
+        (request_path for request_path in pending if request_path.stem == startup_request_id),
+        None,
+    )
+    if startup_path is None:
+        return pending
+    return [startup_path, *(request_path for request_path in pending if request_path != startup_path)]
+
+
 def _process_pending_requests(
     runtime_root: Path,
     *,
@@ -177,12 +205,15 @@ def _process_pending_requests(
     logs_dir = runtime_root / "logs"
 
     processed = 0
-    for request_path in sorted(requests_dir.glob("*.json")):
+    for request_path in _pending_request_paths(
+        requests_dir=requests_dir,
+        results_dir=results_dir,
+        startup_request_id=startup_request_id,
+    ):
         request_id = request_path.stem
         result_path = results_dir / f"{request_id}.json"
-        if result_path.exists():
-            continue
         log_path = logs_dir / f"{request_id}.log"
+        execution_started_at = _now_ms()
         _write_service_state(
             runtime_root,
             state="processing",
@@ -190,12 +221,15 @@ def _process_pending_requests(
             poll_interval_ms=poll_interval_ms,
             startup_request_id=startup_request_id,
             current_request_id=request_id,
+            claimed_request_id=request_id,
+            execution_started_at_epoch_ms=execution_started_at,
             last_observed_request_id=request_id,
         )
         run_request_file(
             request_path=request_path,
             result_path=result_path,
             log_path=log_path,
+            execution_started_at_epoch_ms=execution_started_at,
         )
         _write_service_state(
             runtime_root,
@@ -204,6 +238,8 @@ def _process_pending_requests(
             poll_interval_ms=poll_interval_ms,
             startup_request_id=startup_request_id,
             current_request_id=None,
+            claimed_request_id=None,
+            execution_started_at_epoch_ms=None,
             last_observed_request_id=request_id,
             last_processed_request_id=request_id,
             last_processed_status=_result_status(result_path),
@@ -232,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
             poll_interval_ms=poll_interval_ms,
             startup_request_id=startup_request_id,
             current_request_id=None,
+            claimed_request_id=None,
+            execution_started_at_epoch_ms=None,
         )
 
         if ns.once:
@@ -248,6 +286,8 @@ def main(argv: list[str] | None = None) -> int:
                 poll_interval_ms=poll_interval_ms,
                 startup_request_id=startup_request_id,
                 current_request_id=None,
+                claimed_request_id=None,
+                execution_started_at_epoch_ms=None,
             )
             return 0
 
@@ -262,6 +302,8 @@ def main(argv: list[str] | None = None) -> int:
                     poll_interval_ms=poll_interval_ms,
                     startup_request_id=startup_request_id,
                     current_request_id=None,
+                    claimed_request_id=None,
+                    execution_started_at_epoch_ms=None,
                 )
                 next_heartbeat_epoch_ms = now + max(SERVICE_HEARTBEAT_INTERVAL_MS, poll_interval_ms)
             _process_pending_requests(
@@ -281,6 +323,8 @@ def main(argv: list[str] | None = None) -> int:
                 poll_interval_ms=poll_interval_ms,
                 startup_request_id=startup_request_id,
                 current_request_id=None,
+                claimed_request_id=None,
+                execution_started_at_epoch_ms=None,
                 last_error=str(exc),
                 last_traceback=traceback.format_exc(),
             )

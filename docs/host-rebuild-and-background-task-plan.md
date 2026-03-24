@@ -1,6 +1,6 @@
 # Host Rebuild And Background Task Plan
 
-Last updated: 2026-03-22
+Last updated: 2026-03-23
 
 ## Status
 
@@ -28,6 +28,32 @@ Implemented in code:
 - runtime snapshots now expose both `hostLifecycle` and `runtimeOwnerLifecycle`, so host recreation can be distinguished from runtime-owner continuity in diagnostics and UI projection
 - app startup and host access now both route through `OpenCrayAgentRuntimeService.ensureStarted(...)`, and the service eagerly bootstraps the shared in-process runtime owner on `onCreate()`
 - the service host now hands `OpenCrayHostRuntime` a narrowed runtime-access/replay-access bundle instead of the raw owner, which keeps the next binder/service-lifetime slice from changing host wiring again
+- `OpenCrayHostRuntime` now consumes that boundary through a single `OpenCrayRuntimeHostAccess` facade rather than directly reaching for session runtime manager, approval registry, or per-session store factories
+- host bootstrap now resolves a formal runtime service client, not the bridge directly, so transport choice and lifecycle projection are separated from host construction
+- runtime and shell snapshots now emit `runtimeServiceConnectionState`, which makes binder-backed access versus in-process fallback explicit during same-process service rollout
+- shell snapshots now also emit `localRuntimeServerState`, which makes loopback HTTP server startup and bind failures visible separately from binder transport churn
+- app bootstrap now only ensures the runtime service; the local loopback server is bootstrapped from `OpenCrayAgentRuntimeService.onCreate()`, so both Android transports initialize from the same service-side boundary
+- the runtime service client now performs a real non-blocking `bindService(...)` attempt and keeps its connection state live, instead of inferring binder reachability only from same-process static access
+- host observers now emit fresh shell/runtime snapshots when that client state changes, so a late binder attachment no longer requires rebuilding the host singleton to become visible
+- production `OpenCrayHostRuntime` creation is now projection-only for session bootstrap: active-session `resume()` and terminal replay repair run once from runtime service host initialization instead of from every host-facade constructor
+- runtime service host bootstrap is now explicit on `ensureStarted(...)`; the client fallback snapshot bridge only reads an existing host and no longer hides a `getOrCreate(...)` bootstrap behind the first binder-pending snapshot load
+- service-backed chat/skills/settings gateways now keep fallback strictly projection-only for reads; binder-unavailable writes and tool-executing commands fail explicitly instead of silently dropping back to the UI-side facade
+- the shell snapshot surface now goes through a dedicated `OpenCrayShellGateway`, and the Flutter bridge plus loopback HTTP server prefer a binder-backed service shell gateway for shell loads and shell observation
+- chat/runtime commands and snapshots are now fronted by a dedicated `OpenCrayChatRuntimeGateway`, and both the Flutter host bridge and the loopback HTTP server use that gateway for the execution-facing path
+- the service binder now exposes a service-owned chat/runtime gateway, and the Flutter bridge plus loopback HTTP server prefer that binder-backed gateway for chat/runtime loads and commands whenever binding succeeds
+- chat/runtime observation now rebinds between the fallback host gateway and the binder-backed service gateway as service connection state changes, so the UI event streams can follow the service-owned runtime without reconstructing the bridge
+- skills snapshot, observation, install, update, delete, inspect, and instructions flows are now fronted by a dedicated `OpenCraySkillsGateway`, and both the Flutter host bridge and the loopback HTTP server use that gateway for the skills-management path
+- the service binder now exposes a service-owned skills gateway, and the Flutter bridge plus loopback HTTP server prefer that binder-backed gateway for skills loads and commands whenever binding succeeds
+- skills observation now rebinds between the fallback host gateway and the binder-backed service gateway as service connection state changes, so the skills page can follow the service-owned runtime without reconstructing the bridge
+- settings overview, runtime-config loads, and runtime-config writes are now fronted by a dedicated `OpenCraySettingsGateway`, and both the Flutter host bridge and the loopback HTTP server use that gateway for the settings-management path
+- the service binder now exposes a service-owned settings gateway, and the Flutter bridge plus loopback HTTP server prefer that binder-backed gateway for settings and runtime-config loads or writes whenever binding succeeds
+- settings observation now rebinds between the fallback host gateway and the binder-backed service gateway as service connection state changes, so the settings UI can follow the service-owned runtime without reconstructing the bridge
+- service-backed shell/chat/skills/settings observers now re-check the active gateway immediately after connection observation registration, which closes the binder-connect race that could otherwise leave a UI stream stuck on projection fallback until a later connection transition
+- the Android runtime-service client now treats binder attachment as an idle-released transport lease instead of a permanent process-wide bind: active connection observers keep the binder attached, transient reads or commands schedule an automatic unbind after a short quiet window, and detached execution still belongs to the started service plus keepalive path rather than the UI transport
+- workspace tree/document operations, local file open/share, native toast, twin import probing, and draft attachment import are now fronted by a dedicated `OpenCrayLocalHostGateway`, so the Flutter host bridge and the loopback HTTP server no longer hold a full `OpenCrayHostRuntime` just to reach local-only device/workspace capabilities
+- `OpenCrayHostRuntime` now implements that same local-only gateway by delegation, which preserves the current projection fallback path while keeping service-owned runtime surfaces separate from local host helpers
+- shell, settings, and skills read fallback are now served by dedicated projection-only gateways rather than a full `OpenCrayHostRuntime`, so binder-pending reads on those surfaces no longer instantiate the UI-side host facade
+- projection-only skills fallback is now strictly local-only and no longer issues `SkillsList` or `SkillsFind`, which keeps tool-executing skills discovery and remote install metadata on the binder-owned pipeline
 - this service slice is intentionally same-process and non-foreground for now: it establishes the owner host boundary without yet introducing binder-driven control flow, foreground keepalive, or scheduled wake-up semantics
 
 Not yet implemented:
@@ -66,7 +92,7 @@ At the same time, the UI makes the problem look worse than it is, because expand
 
 ### 1. The run owner is process-scoped, not page-scoped
 
-`OpenCrayHostRuntime` is a singleton in the Android app process.
+`OpenCrayHostRuntime` no longer exposes an app-process singleton facade entrypoint in production.
 
 Relevant files:
 
@@ -76,9 +102,10 @@ Relevant files:
 
 Important facts:
 
-- `OpenCrayHostRuntime.fromContext()` caches a single static `instance`
-- only two code paths create or access that singleton: the Flutter platform bridge and the local runtime server
-- `OpenCrayFlutterHostBridge` only attaches and detaches channels around that singleton; it does not own execution state
+- production `OpenCrayHostRuntime` is created from the runtime service path, not from a UI-side `fromContext()` singleton
+- the Flutter platform bridge and the local runtime server no longer hold a full host runtime just to do workspace/device work; those pure local paths now go through `OpenCrayLocalHostGateway`
+- service-backed gateways project reads through dedicated projection gateways while binder-backed ownership is incomplete; the bridge/server no longer route their local-only capabilities through a UI-owned host facade
+- `OpenCrayFlutterHostBridge` still only attaches and detaches channels around host-facing gateways; it does not own execution state
 
 Conclusion:
 
@@ -130,11 +157,11 @@ Current restore behavior in `app`:
 - approval-boundary checkpoints can rewrite a restored run back into the same `SUSPENDED` run when the task was waiting for approval
 - managed-process reconnect and general prompt checkpoint recovery are still not implemented
 
-Then, when a new `OpenCrayHostRuntime` is created, its initializer calls `ensureActiveSessionResumed()`, which:
+Today that startup edge is split:
 
-- resumes the active session queue
-- promotes idle supplements
-- starts the next queued chat run if available
+- the first runtime service host creation resumes the active session queue once and repairs terminal replay state for that active session
+- production `OpenCrayHostRuntime` creation is projection-only and no longer resumes the active session from the host-facade initializer
+- test-only host construction can still opt into the old init-time resume behavior where assertions depend on it
 
 Conclusion:
 
@@ -170,7 +197,7 @@ Conclusion:
 - after host recreation, the expanded run card loses most of the detail needed to explain what happened before the rerun
 - that makes a genuine rerun feel even more abrupt
 
-### 5. There is no detached execution owner yet
+### 5. Detached execution ownership is only partially implemented
 
 Relevant files:
 
@@ -179,14 +206,14 @@ Relevant files:
 
 Current state:
 
-- the app starts the local loopback server on process startup
-- execution is owned by in-process singletons and executors
-- there is no Android `Service` owning the runtime
+- app bootstrap now ensures `OpenCrayAgentRuntimeService`, and that service bootstraps the local loopback server on `onCreate()`
+- execution now routes through a same-process Android `Service` host boundary rather than directly through a UI-owned host facade
+- execution is still ultimately backed by same-process singletons and executors
 - there is no `WorkManager` or scheduler responsible for delayed/background tasks
 
 Conclusion:
 
-- tasks are currently coupled to the lifetime of the app process even though they are not coupled to a single screen
+- tasks are no longer page-bound, but they are still coupled to the lifetime of the app process
 
 ## What Can Explain "I Did Not Restart The App, But The Run Restarted"
 

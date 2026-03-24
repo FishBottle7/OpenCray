@@ -48,6 +48,7 @@ class BridgeRequest:
     args: list[str]
     timeout_ms: int
     requested_at_epoch_ms: int
+    execution_started_at_epoch_ms: int = 0
     cancel_path: str | None = None
 
     @classmethod
@@ -61,6 +62,7 @@ class BridgeRequest:
             args=[str(item) for item in payload.get("args", [])],
             timeout_ms=int(payload.get("timeoutMs", 0)),
             requested_at_epoch_ms=int(payload.get("requestedAtEpochMs", 0)),
+            execution_started_at_epoch_ms=int(payload.get("executionStartedAtEpochMs", 0)),
             cancel_path=str(payload["cancelPath"]) if payload.get("cancelPath") else None,
         )
 
@@ -137,7 +139,12 @@ def _resolve_in_workspace(workspace_root: Path, candidate: Path) -> Path:
     return resolved
 
 
-def _base_metadata(request: BridgeRequest, resolved_script: Path | None = None) -> dict[str, str]:
+def _base_metadata(
+    request: BridgeRequest,
+    *,
+    resolved_script: Path | None = None,
+    execution_started_at_epoch_ms: int | None = None,
+) -> dict[str, str]:
     metadata = {
         "runtimeBackend": "p4a-python",
         "runtimeTransport": "file_json_bridge",
@@ -149,6 +156,15 @@ def _base_metadata(request: BridgeRequest, resolved_script: Path | None = None) 
         "executionModel": "runpy",
         "pythonVersion": sys.version.split()[0],
     }
+    if request.requested_at_epoch_ms > 0:
+        metadata["requestedAtEpochMs"] = str(request.requested_at_epoch_ms)
+    if execution_started_at_epoch_ms is not None and execution_started_at_epoch_ms > 0:
+        metadata["executionStartedAtEpochMs"] = str(execution_started_at_epoch_ms)
+        metadata["timeoutClockStartEpochMs"] = str(execution_started_at_epoch_ms)
+        if request.requested_at_epoch_ms > 0:
+            metadata["queueDelayMs"] = str(
+                max(0, execution_started_at_epoch_ms - request.requested_at_epoch_ms)
+            )
     if resolved_script is not None:
         metadata["resolvedScriptPath"] = str(resolved_script)
     if request.cancel_path:
@@ -165,12 +181,16 @@ class _ExecutionTimedOut(Exception):
 
 
 class _ExecutionGuard:
-    def __init__(self, request: BridgeRequest):
+    def __init__(
+        self,
+        request: BridgeRequest,
+        *,
+        timeout_started_at_epoch_ms: int,
+    ):
         self._cancel_path = Path(request.cancel_path).resolve() if request.cancel_path else None
         self._deadline_epoch_ms = None
         if request.timeout_ms > 0:
-            requested_at = request.requested_at_epoch_ms if request.requested_at_epoch_ms > 0 else _now_ms()
-            self._deadline_epoch_ms = requested_at + request.timeout_ms
+            self._deadline_epoch_ms = timeout_started_at_epoch_ms + request.timeout_ms
         self._previous_trace = None
         self._previous_thread_trace = None
 
@@ -202,8 +222,11 @@ class _ExecutionGuard:
 
 
 def execute_request(request: BridgeRequest) -> BridgeResult:
-    started_at = _now_ms()
-    metadata = _base_metadata(request)
+    started_at = request.execution_started_at_epoch_ms if request.execution_started_at_epoch_ms > 0 else _now_ms()
+    metadata = _base_metadata(
+        request,
+        execution_started_at_epoch_ms=started_at,
+    )
 
     try:
         if request.schema_version != SCHEMA_VERSION:
@@ -240,7 +263,11 @@ def execute_request(request: BridgeRequest) -> BridgeResult:
             )
 
         resolved_script = _resolve_in_workspace(workspace_root, Path(request.script_path))
-        metadata = _base_metadata(request, resolved_script=resolved_script)
+        metadata = _base_metadata(
+            request,
+            resolved_script=resolved_script,
+            execution_started_at_epoch_ms=started_at,
+        )
         if not resolved_script.exists() or not resolved_script.is_file():
             finished_at = _now_ms()
             return BridgeResult(
@@ -273,7 +300,10 @@ def execute_request(request: BridgeRequest) -> BridgeResult:
                 inserted_paths.append(candidate)
 
             with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-                with _ExecutionGuard(request):
+                with _ExecutionGuard(
+                    request,
+                    timeout_started_at_epoch_ms=started_at,
+                ):
                     runpy.run_path(str(resolved_script), run_name="__main__")
 
             finished_at = _now_ms()
@@ -437,6 +467,7 @@ def run_request_file(
     request_path: Path,
     result_path: Path,
     log_path: Path | None = None,
+    execution_started_at_epoch_ms: int | None = None,
 ) -> int:
     request_id = request_path.stem
     task_id = "unknown-task"
@@ -445,6 +476,8 @@ def run_request_file(
         if isinstance(payload, dict):
             request_id = str(payload.get("requestId", request_id))
             task_id = str(payload.get("taskId", task_id))
+            if execution_started_at_epoch_ms is not None and execution_started_at_epoch_ms > 0:
+                payload["executionStartedAtEpochMs"] = execution_started_at_epoch_ms
         request = BridgeRequest.from_json_dict(payload)
         result = execute_request(request)
     except Exception as exc:

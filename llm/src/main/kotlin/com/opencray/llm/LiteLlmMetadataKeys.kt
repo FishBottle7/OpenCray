@@ -10,4 +10,7 @@ object LiteLlmMetadataKeys {
   const val TOOL_CALL_EVENT_EMITTED: String = "toolCallEventEmitted"
   const val TOOL_RESULT_EVENT_EMITTED: String = "toolResultEventEmitted"
   const val LAST_SUCCESSFUL_TOOL_NAME: String = "lastSuccessfulToolName"
+  const val PROVIDER_REASONING_OBSERVED: String = "providerReasoningObserved"
+  const val PROVIDER_REASONING_TURN_COUNT: String = "providerReasoningTurnCount"
+  const val PROVIDER_REASONING_CHARS: String = "providerReasoningChars"
 }

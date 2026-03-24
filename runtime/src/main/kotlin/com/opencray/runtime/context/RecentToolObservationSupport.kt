@@ -467,24 +467,19 @@ class RecentToolObservationSupport(
     if (message.role != RuntimeConversationRole.TOOL) {
       return null
     }
-    if (message.kind == RuntimeConversationMessageKind.PROGRESS) {
+    if (message.progressJsonPayloadOrNull() != null) {
       return null
     }
-    val normalized = message.content.trim()
-    val payload = when {
-      message.kind == RuntimeConversationMessageKind.TOOL_RESULT -> normalized.removePrefix("tool_result ").trim()
-      normalized.startsWith("tool_result ") -> normalized.removePrefix("tool_result ").trim()
-      normalized.startsWith("{") -> normalized
-      else -> return null
-    }
-    val decoded = runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull() ?: return null
+    val decoded = message.toolResultJsonPayloadOrNull()
+      ?.let(::replayJsonObjectOrNull)
+      ?: return null
     val toolName = decoded.stringValue("tool_name")
       ?.trim()
       .takeUnless { it.isNullOrBlank() }
       ?: message.toolResult?.toolName
       ?: return null
     val content = decoded.stringValue("content")
-      ?: decoded.stringValue("content_preview")
+      ?: message.toolResultContentOrNull()
       ?: message.content
     val status = decoded.stringValue("status")
       ?.trim()

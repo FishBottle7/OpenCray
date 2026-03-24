@@ -84,7 +84,7 @@ internal fun extractMemoryQueryTerms(
     .toCollection(linkedSetOf())
 }
 
-internal fun formatMemoryDateStamp(epochMs: Long): String =
+fun formatMemoryDateStamp(epochMs: Long): String =
   checkNotNull(MEMORY_DATE_STAMP_FORMAT.get()).format(Date(epochMs))
 
 internal fun formatMemoryIsoInstant(epochMs: Long): String =

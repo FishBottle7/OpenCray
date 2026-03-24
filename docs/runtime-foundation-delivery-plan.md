@@ -1,6 +1,6 @@
 # Runtime Foundation Delivery Plan
 
-Last updated: 2026-03-22
+Last updated: 2026-03-23
 
 ## Status
 
@@ -192,7 +192,7 @@ Still pending in Phase 2:
 
 Detached-owner foundation landed in app process:
 
-- `OpenCrayHostRuntime.createFromContext()` no longer constructs the session runtime manager and durable runtime stores inline on every host creation path
+- production `OpenCrayHostRuntime` no longer exposes the old app-process `fromContext()` facade path; service-owned host construction now flows through `createForRuntimeService(...)`
 - a shared in-process runtime owner now keeps `DefaultAgentSessionRuntimeManager`, run journal/checkpoint stores, supplement store, approval registry, and runtime replay hooks separate from the host facade
 - host instances now project both `hostLifecycle` and `runtimeOwnerLifecycle`, which gives a concrete seam for later Android service ownership without changing the UI contract again
 
@@ -201,6 +201,32 @@ First service-host slice landed:
 - `OpenCrayAgentRuntimeService` is now declared in the app manifest and started from app bootstrap and host access paths
 - the service eagerly initializes the shared in-process runtime owner on `onCreate()`, so owner bootstrap is no longer implicit in `OpenCrayHostRuntime` alone
 - the service host now exposes a host-facing runtime access bundle instead of handing `OpenCrayHostRuntime` the raw owner object, which reduces coupling ahead of binder-backed control flow
+- `OpenCrayHostRuntime` itself now talks to that owner only through `OpenCrayRuntimeHostAccess`, so session-manager, approval-registry, and journal/checkpoint/supplement store wiring no longer leak into the host facade
+- host bootstrap now goes through a formal runtime service client that returns both the runtime snapshot and the host-visible connection state instead of reaching into the service bridge directly
+- runtime and shell snapshots now project `runtimeServiceConnectionState`, so binder-backed access and in-process fallback are distinguishable without inferring from implementation details
+- shell snapshots now also project `localRuntimeServerState`, so loopback HTTP server startup, listening, and bind-failure diagnostics are visible separately from binder transport state
+- app bootstrap now only ensures `OpenCrayAgentRuntimeService`, and that service bootstraps the local loopback runtime server on `onCreate()`, so both Android transports now initialize from the same runtime-service boundary
+- the runtime service client now issues a real asynchronous `bindService(...)` request and keeps projecting connection transitions through the same snapshot field, without blocking synchronous host creation paths
+- host observers now refresh shell/runtime snapshots when the service client connection state changes, so later binder attachment is visible without rebuilding the host facade
+- production `OpenCrayHostRuntime` construction is now projection-only with respect to session bootstrap: active-session `resume()` plus terminal replay repair moved to one-time runtime service host startup instead of running from every host-facade init path
+- runtime service host bootstrap is now explicit in `OpenCrayAgentRuntimeService.ensureStarted(...)`; the binding client fallback bridge only projects an already-initialized host and no longer lazily `getOrCreate(...)`s the runtime host during first snapshot reads
+- service-backed chat/skills/settings gateways now treat binder fallback as projection-only for reads: `load*` and `observe*` paths may still project through the fallback facade, but mutating or tool-executing operations now fail explicitly unless a binder-backed service gateway is attached
+- the shell snapshot surface is now normalized behind `OpenCrayShellGateway`, and both the Flutter bridge and loopback HTTP server prefer a binder-backed service shell gateway for `loadShellSnapshot()` and shell observation when the binder is available
+- the execution-facing chat/runtime surface is now normalized behind `OpenCrayChatRuntimeGateway`, and both the Flutter bridge and loopback HTTP server dispatch that path through the gateway instead of calling chat/runtime host methods directly
+- the runtime service binder now exposes a service-owned chat/runtime gateway, and the Flutter bridge plus loopback HTTP server prefer that binder-backed gateway for chat/runtime loads and commands when the binder is available
+- chat/runtime observers now switch dynamically between the fallback host gateway and the binder-backed service gateway based on service connection state, so the same event channels can follow the service-owned execution path without recreating the Flutter bridge
+- the skills-management surface is now normalized behind `OpenCraySkillsGateway`, and both the Flutter bridge and loopback HTTP server dispatch skills snapshot, observation, install, update, delete, inspect, and instructions flows through the same service-preferred boundary
+- the runtime service binder now exposes a service-owned skills gateway, and the Flutter bridge plus loopback HTTP server prefer that binder-backed gateway for skills loads and commands whenever binding succeeds
+- skills observers now switch dynamically between the fallback host gateway and the binder-backed service gateway based on service connection state, so the skills page can follow the service-owned runtime path without recreating the host bridge
+- the settings and runtime-configuration surface is now normalized behind `OpenCraySettingsGateway`, and both the Flutter bridge and loopback HTTP server dispatch settings overview, config loads, and config writes through that same service-preferred boundary
+- the runtime service binder now exposes a service-owned settings gateway, and the Flutter bridge plus loopback HTTP server prefer that binder-backed gateway for settings and runtime-config loads or writes whenever binding succeeds
+- settings overview observers now switch dynamically between the fallback host gateway and the binder-backed service gateway based on service connection state, so the settings UI can follow the service-owned runtime path without recreating the host bridge
+- service-backed shell/chat/skills/settings observers now re-check the active gateway immediately after connection observation registration, which closes the binder-connect race that could otherwise leave a UI stream stuck on projection fallback until a later connection transition
+- the Android runtime-service client now treats binder attachment as an idle-released transport lease instead of a permanent process-wide bind: active connection observers keep the binder attached, transient reads or commands schedule an automatic unbind after a short quiet window, and detached execution still belongs to the started service plus keepalive path rather than the UI transport
+- workspace tree/document operations, local file open/share, native toast, twin import probing, and draft attachment import are now isolated behind `OpenCrayLocalHostGateway`, so the Flutter bridge and loopback HTTP server no longer need to hold a full `OpenCrayHostRuntime` just to reach pure local device/workspace capabilities
+- `OpenCrayHostRuntime` now implements that same local-only gateway by delegation, which keeps the remaining projection fallback compatible while separating service-owned runtime surfaces from local-only host helpers
+- shell, settings, and skills read fallback are now served by dedicated projection-only gateways instead of a full `OpenCrayHostRuntime`, so those surfaces no longer pull the UI-side host facade into existence just to satisfy binder-pending reads
+- projection-only skills fallback is now strictly local-only: it filters the local snapshot and local instructions without issuing `SkillsList` or `SkillsFind`, which keeps tool-executing skills discovery on the binder-owned pipeline
 - this is still a same-process service host; foreground keepalive, binder-owned control flow, and scheduled wake-up handoff remain later slices
 
 ### Recommended checkpoint boundaries

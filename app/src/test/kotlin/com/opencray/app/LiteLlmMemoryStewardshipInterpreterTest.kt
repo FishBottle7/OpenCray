@@ -171,6 +171,7 @@ class LiteLlmMemoryStewardshipInterpreterTest {
     assertTrue(result is MemoryStewardshipInterpretation.Success)
     val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
     assertTrue(prompt.contains("For user preferences, drop one-turn formatting asks"))
+    assertTrue(prompt.contains("A durable naming or addressing preference such as '以后叫我阿澄' or '以后称呼我亲切一点' should usually be kept"))
     assertTrue(prompt.contains("kind=user_preference"))
     assertTrue(prompt.contains("preference_key=${MemoryPreferenceKeys.USER_PREFERRED_NAME}"))
     assertTrue(prompt.contains("preference_value=阿澄"))
@@ -235,7 +236,80 @@ class LiteLlmMemoryStewardshipInterpreterTest {
     assertTrue(prompt.contains("last_confirmed_at_epoch_ms=1500"))
     assertTrue(prompt.contains("source_task_id=task-1"))
     assertTrue(prompt.contains("Prefer the current turn's explicit evidence over older conflicting records"))
+    assertTrue(prompt.contains("Resolving an old preference record should not cause you to drop a separate valid workspace fact."))
     assertTrue(prompt.contains("别再叫我阿澄了，以后叫我阿青"))
+  }
+
+  @Test
+  fun interpretParsesResolveAndDropWhenPreferredNameIsExplicitlyInvalidatedWithoutReplacement() {
+    val providerClient = RecordingProviderClient(
+      result = LiteLlmProviderResult.Success(
+        outputText = """
+          {"decisions":[
+            {"action":"resolve_record","record_id":"pref-old","resolution_reason":"invalidated"},
+            {"action":"drop_candidate","candidate_index":0}
+          ]}
+        """.trimIndent(),
+      ),
+    )
+    val interpreter = LiteLlmMemoryStewardshipInterpreter(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerId = "openai",
+          protocol = LlmProviderProtocols.OPENAI,
+          baseUrl = "https://api.openai.com/v1",
+          apiKey = "test-key",
+          model = "gpt-4o-mini",
+        )
+      },
+      providerClient = providerClient,
+    )
+
+    val result = interpreter.interpret(
+      MemoryStewardshipRequest(
+        sessionId = "session-1",
+        userInput = "以后不要再叫我阿澄了。",
+        activeRecords = listOf(
+          StewardableMemoryRecord(
+            id = "pref-old",
+            kind = MemoryKind.USER_PREFERENCE,
+            scope = MemoryScope.USER,
+            content = "Preferred user naming is 阿澄",
+            source = MemoryEvidenceSource.USER_INPUT,
+            sourceSessionId = "session-0",
+            preferenceKey = MemoryPreferenceKeys.USER_PREFERRED_NAME,
+            preferenceValue = "阿澄",
+          ),
+        ),
+        proposedCandidates = listOf(
+          StewardableMemoryCandidate(
+            index = 0,
+            kind = MemoryKind.USER_PREFERENCE,
+            scope = MemoryScope.USER,
+            content = "Do not call the user 阿澄",
+            source = MemoryEvidenceSource.USER_INPUT,
+            sourceSessionId = "session-1",
+          ),
+        ),
+      ),
+    )
+
+    val success = result as MemoryStewardshipInterpretation.Success
+    assertEquals(2, success.decisions.size)
+    assertTrue(success.decisions.any { decision ->
+      decision.action == MemoryStewardshipAction.RESOLVE_RECORD &&
+        decision.recordId == "pref-old"
+    })
+    assertTrue(success.decisions.any { decision ->
+      decision.action == MemoryStewardshipAction.DROP_CANDIDATE &&
+        decision.candidateIndex == 0
+    })
+    val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
+    assertTrue(prompt.contains("If an active user_preferred_name or user_address_style record is explicitly invalidated without a replacement candidate"))
+    assertTrue(prompt.contains("If a proposed candidate is only a negative restatement such as 'Do not call the user 阿澄'"))
+    assertTrue(prompt.contains("{\"decisions\":[{\"action\":\"resolve_record\",\"record_id\":\"pref-old-name\",\"resolution_reason\":\"invalidated\"},{\"action\":\"drop_candidate\",\"candidate_index\":0}]}"))
+    assertTrue(prompt.contains("content=Do not call the user 阿澄"))
   }
 
   @Test
@@ -297,6 +371,69 @@ class LiteLlmMemoryStewardshipInterpreterTest {
     val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
     assertTrue(prompt.contains("refresh_record_with_candidate"))
     assertTrue(prompt.contains("does not add new durable detail"))
+  }
+
+  @Test
+  fun interpretParsesMergeRecordWithCandidateAction() {
+    val providerClient = RecordingProviderClient(
+      result = LiteLlmProviderResult.Success(
+        outputText = """
+          {"decisions":[
+            {"action":"merge_record_with_candidate","record_id":"fact-old","candidate_index":0}
+          ]}
+        """.trimIndent(),
+      ),
+    )
+    val interpreter = LiteLlmMemoryStewardshipInterpreter(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerId = "openai",
+          protocol = LlmProviderProtocols.OPENAI,
+          baseUrl = "https://api.openai.com/v1",
+          apiKey = "test-key",
+          model = "gpt-4o-mini",
+        )
+      },
+      providerClient = providerClient,
+    )
+
+    val result = interpreter.interpret(
+      MemoryStewardshipRequest(
+        sessionId = "session-1",
+        userInput = "记住这个项目用 Gradle，而且要从仓库根目录走 wrapper。",
+        activeRecords = listOf(
+          StewardableMemoryRecord(
+            id = "fact-old",
+            kind = MemoryKind.PROJECT_FACT,
+            scope = MemoryScope.WORKSPACE,
+            content = "Project uses Gradle",
+          ),
+        ),
+        proposedCandidates = listOf(
+          StewardableMemoryCandidate(
+            index = 0,
+            kind = MemoryKind.PROJECT_FACT,
+            scope = MemoryScope.WORKSPACE,
+            content = "Use the Gradle wrapper from the repo root",
+            sourceSessionId = "session-1",
+            workspaceId = "workspace-main",
+          ),
+        ),
+      ),
+    )
+
+    val success = result as MemoryStewardshipInterpretation.Success
+    assertEquals(1, success.decisions.size)
+    assertEquals(
+      MemoryStewardshipAction.MERGE_RECORD_WITH_CANDIDATE,
+      success.decisions.single().action,
+    )
+    val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
+    assertTrue(prompt.contains("merge_record_with_candidate"))
+    assertTrue(prompt.contains("adds compatible durable detail"))
+    assertTrue(prompt.contains("Do not use merge_record_with_candidate when the candidate changes a key value"))
+    assertTrue(prompt.contains("{\"decisions\":[{\"action\":\"merge_record_with_candidate\",\"record_id\":\"fact-old\",\"candidate_index\":0}]}"))
   }
 
   @Test

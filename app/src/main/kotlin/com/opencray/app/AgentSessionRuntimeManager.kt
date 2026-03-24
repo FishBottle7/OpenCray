@@ -105,6 +105,8 @@ internal interface AgentSessionRuntimeManager {
 
   fun observe(listener: AgentSessionRuntimeListener): () -> Unit
 
+  fun activeWorkSummary(): RuntimeOwnerWorkSummary = RuntimeOwnerWorkSummary()
+
   fun release(sessionId: String)
 
   fun releaseIdleSessions()
@@ -218,6 +220,41 @@ internal class DefaultAgentSessionRuntimeManager(
         listeners -= listener
       }
     }
+  }
+
+  override fun activeWorkSummary(): RuntimeOwnerWorkSummary {
+    val handles = synchronized(lock) { sessions.values.toList() }
+    if (handles.isEmpty()) {
+      return RuntimeOwnerWorkSummary()
+    }
+    val activeSessionIds = linkedSetOf<String>()
+    val pendingWorkSessionIds = mutableListOf<String>()
+    val liveManagedProcessSessionIds = mutableListOf<String>()
+    var activeRunCount = 0
+
+    handles.forEach { handle ->
+      val runs = handle.listRuns()
+      val hasPendingWork = runs.any { snapshot -> !snapshot.isTerminal }
+      val hasLiveManagedProcesses = runs.any(AgentRunSnapshot::hasLiveManagedProcesses) ||
+        handle.hasLiveManagedProcesses()
+      if (hasPendingWork) {
+        pendingWorkSessionIds += handle.sessionId
+        activeSessionIds += handle.sessionId
+      }
+      if (hasLiveManagedProcesses) {
+        liveManagedProcessSessionIds += handle.sessionId
+        activeSessionIds += handle.sessionId
+      }
+      activeRunCount += runs.count(AgentRunSnapshot::isActive)
+    }
+
+    return RuntimeOwnerWorkSummary(
+      trackedSessionCount = handles.size,
+      activeRunCount = activeRunCount,
+      activeSessionIds = activeSessionIds.toList(),
+      pendingWorkSessionIds = pendingWorkSessionIds.distinct(),
+      liveManagedProcessSessionIds = liveManagedProcessSessionIds.distinct(),
+    )
   }
 
   override fun release(sessionId: String) {

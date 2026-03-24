@@ -73,6 +73,7 @@ class ContextManager(
       pruningSummary = prunedTranscript.summary,
       compactionSummary = compactionSummary,
       nativeToolCallingEnabled = input.nativeToolCallingEnabled,
+      legacyJsonFallbackEnabled = input.legacyJsonFallbackEnabled,
       toolDefinitions = input.toolDefinitions,
       transcriptWindow = transcriptSelection.window,
       report = ContextSelectionReport(

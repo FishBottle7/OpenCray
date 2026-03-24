@@ -384,5 +384,11 @@ class RecentToolObservationSupportTest {
       content = content,
       metadata = metadata,
     ).toObservationText(json),
+    kind = RuntimeConversationMessageKind.TOOL_RESULT,
+    toolResult = RuntimeConversationToolResult(
+      toolName = toolName,
+      status = AgentToolResultStatus.SUCCESS.name.lowercase(),
+      isError = false,
+    ),
   )
 }

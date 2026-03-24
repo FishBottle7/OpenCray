@@ -19,7 +19,7 @@ object SoulMemoryExtensionKeys {
   const val OBJECT_PAYLOAD_JSON: String = "soul_object_payload_json"
 }
 
-internal fun buildInteractionPreferenceStateMemoryExtensions(
+fun buildInteractionPreferenceStateMemoryExtensions(
   state: InteractionPreferenceState,
 ): Map<String, String> = buildSoulMemoryExtensions(
   objectType = SoulMemoryObjectTypes.INTERACTION_PREFERENCE_STATE,
@@ -29,7 +29,7 @@ internal fun buildInteractionPreferenceStateMemoryExtensions(
   ),
 )
 
-internal fun buildRelationshipStateMemoryExtensions(
+fun buildRelationshipStateMemoryExtensions(
   state: RelationshipState,
 ): Map<String, String> = buildSoulMemoryExtensions(
   objectType = SoulMemoryObjectTypes.RELATIONSHIP_STATE,
@@ -39,7 +39,7 @@ internal fun buildRelationshipStateMemoryExtensions(
   ),
 )
 
-internal fun buildRelationshipEventMemoryExtensions(
+fun buildRelationshipEventMemoryExtensions(
   event: RelationshipEvent,
 ): Map<String, String> = buildSoulMemoryExtensions(
   objectType = SoulMemoryObjectTypes.RELATIONSHIP_EVENT,
@@ -49,7 +49,7 @@ internal fun buildRelationshipEventMemoryExtensions(
   ),
 )
 
-internal fun MemoryRecord.parseInteractionPreferenceStateOrNull(): InteractionPreferenceState? =
+fun MemoryRecord.parseInteractionPreferenceStateOrNull(): InteractionPreferenceState? =
   parseSoulMemoryPayloadOrNull(
     expectedObjectType = SoulMemoryObjectTypes.INTERACTION_PREFERENCE_STATE,
     decode = { payload ->
@@ -60,7 +60,7 @@ internal fun MemoryRecord.parseInteractionPreferenceStateOrNull(): InteractionPr
     },
   )
 
-internal fun MemoryRecord.parseRelationshipStateOrNull(): RelationshipState? =
+fun MemoryRecord.parseRelationshipStateOrNull(): RelationshipState? =
   parseSoulMemoryPayloadOrNull(
     expectedObjectType = SoulMemoryObjectTypes.RELATIONSHIP_STATE,
     decode = { payload ->
@@ -71,7 +71,7 @@ internal fun MemoryRecord.parseRelationshipStateOrNull(): RelationshipState? =
     },
   )
 
-internal fun MemoryRecord.parseRelationshipEventOrNull(): RelationshipEvent? =
+fun MemoryRecord.parseRelationshipEventOrNull(): RelationshipEvent? =
   parseSoulMemoryPayloadOrNull(
     expectedObjectType = SoulMemoryObjectTypes.RELATIONSHIP_EVENT,
     decode = { payload ->
@@ -82,13 +82,13 @@ internal fun MemoryRecord.parseRelationshipEventOrNull(): RelationshipEvent? =
     },
   )
 
-internal fun MemoryRecord.soulObjectTypeOrNull(): String? =
+fun MemoryRecord.soulObjectTypeOrNull(): String? =
   extensions[SoulMemoryExtensionKeys.OBJECT_TYPE]
     ?.trim()
     ?.lowercase(Locale.US)
     ?.takeIf(String::isNotBlank)
 
-internal fun MemoryRecord.hasSoulObjectPayload(): Boolean = soulObjectTypeOrNull() != null
+fun MemoryRecord.hasSoulObjectPayload(): Boolean = soulObjectTypeOrNull() != null
 
 private fun buildSoulMemoryExtensions(
   objectType: String,

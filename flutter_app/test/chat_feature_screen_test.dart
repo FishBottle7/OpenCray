@@ -2008,7 +2008,7 @@ void main() {
   });
 
   testWidgets(
-    'approval card is rendered inline with the running trace instead of at the top',
+    'approval card replaces the composer with a bottom glass surface',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');
       await tester.pumpWidget(
@@ -2028,12 +2028,16 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text(copy.chatPendingApprovalsTitle), findsNothing);
+      expect(
+        find.byKey(const ValueKey<String>('chat-approval-surface')),
+        findsOneWidget,
+      );
       expect(find.text('Approval required'), findsOneWidget);
       expect(
         find.byKey(const ValueKey<String>('chat-run-trace-run-1')),
         findsOneWidget,
       );
+      expect(find.text(copy.chatComposerPlaceholder), findsNothing);
     },
   );
 
@@ -2096,15 +2100,20 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('Approval required'), findsOneWidget);
-      expect(find.text('Bash'), findsOneWidget);
-      expect(find.text('Request'), findsOneWidget);
-      expect(find.text('git status --short'), findsOneWidget);
-      expect(find.text('Working directory'), findsOneWidget);
-      expect(find.text('.'), findsOneWidget);
-      expect(find.text('Agent reason'), findsOneWidget);
       expect(
-        find.text('Check repository state before editing.'),
+        find.byKey(const ValueKey<String>('chat-approval-surface')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('chat-approval-card-run-approval-1')),
+        findsOneWidget,
+      );
+      expect(find.text('Approval required'), findsOneWidget);
+      expect(find.text(copy.chatComposerPlaceholder), findsNothing);
+      expect(find.text('git status --short'), findsOneWidget);
+      expect(find.text('Working directory  .'), findsOneWidget);
+      expect(
+        find.text('Reason  Check repository state before editing.'),
         findsOneWidget,
       );
       expect(
@@ -2112,10 +2121,88 @@ void main() {
         findsOneWidget,
       );
 
+      await tester.ensureVisible(find.text('Approve'));
       await tester.tap(find.text('Approve'));
       await tester.pumpAndSettle();
 
       expect(bridge.approvedApprovalIds, <String>['run-approval-1']);
+    },
+  );
+
+  testWidgets(
+    'multiple approvals render as a stacked queue and only the first one is actionable',
+    (tester) async {
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          pendingApprovals: const <OpenCrayChatPendingApprovalSnapshot>[
+            OpenCrayChatPendingApprovalSnapshot(
+              runId: 'run-approval-stack-1',
+              taskId: 'task-approval-stack-1',
+              title: 'Approval required',
+              body: 'Write lib/a.dart',
+              approveLabel: 'Approve',
+              rejectLabel: 'Reject',
+              isHighRisk: false,
+              requestSummary: 'Write lib/a.dart',
+              reason: 'Patch the first file.',
+            ),
+            OpenCrayChatPendingApprovalSnapshot(
+              runId: 'run-approval-stack-2',
+              taskId: 'task-approval-stack-2',
+              title: 'Approval required',
+              body: 'Write lib/b.dart',
+              approveLabel: 'Approve',
+              rejectLabel: 'Reject',
+              isHighRisk: false,
+              requestSummary: 'Write lib/b.dart',
+              reason: 'Patch the second file.',
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(
+              copy: OpenCrayUiCopy.fromLocaleTag('en'),
+              bridge: bridge,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey<String>('chat-approval-stack')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(
+          const ValueKey<String>('chat-approval-card-run-approval-stack-1'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(
+          const ValueKey<String>('chat-approval-card-run-approval-stack-2'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Write lib/a.dart'), findsWidgets);
+      expect(find.text('Write lib/b.dart'), findsWidgets);
+
+      await tester.ensureVisible(find.text('Approve'));
+      await tester.tap(find.text('Approve'));
+      await tester.pumpAndSettle();
+
+      expect(bridge.approvedApprovalIds, <String>['run-approval-stack-1']);
+      expect(bridge.rejectedApprovalIds, isEmpty);
     },
   );
 

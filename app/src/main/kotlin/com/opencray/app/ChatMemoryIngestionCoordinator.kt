@@ -6,9 +6,14 @@ import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.store.MemoryStore
+import com.opencray.runtime.memory.MemoryCandidate
 import com.opencray.runtime.memory.MemoryCandidateExtractor
 import com.opencray.runtime.memory.MemoryFlushCoordinator
 import com.opencray.runtime.memory.MemoryFlushSummary
+import com.opencray.runtime.memory.MemoryKind
+import com.opencray.runtime.memory.MemoryPreferenceKeys
+import com.opencray.runtime.memory.MemoryRecordExtensionKeys
+import com.opencray.runtime.memory.MemoryScope
 import com.opencray.runtime.memory.MemoryStewardshipService
 import com.opencray.runtime.memory.TaskCommitmentResolver
 import com.opencray.runtime.memory.MemoryTurnEvidence
@@ -113,16 +118,26 @@ internal class ChatMemoryIngestionCoordinator(
     stewardshipPlan.reaffirmedRecords.forEach(memoryStore::upsert)
     val writeSummary = writer.write(stewardshipPlan.acceptedCandidates)
     val plasticity = soulPlasticityProvider()
-    val interactionPreferenceWriteSummary = writer.write(
-      interactionPreferenceWritePlanner.plan(
-        existingRecords = existingRecordsBeforeWrite,
-        sourceCandidates = stewardshipPlan.acceptedCandidates,
-        plasticity = plasticity,
-        sourceSessionId = sessionId,
-        workspaceId = workspaceId,
-        sourceTaskId = task.id,
-      ).candidates,
-    ).writtenRecords
+    val interactionPreferenceScopesToRewrite = interactionPreferenceSnapshotScopesToRewrite(
+      acceptedCandidates = stewardshipPlan.acceptedCandidates,
+      resolvedRecords = stewardshipPlan.resolvedRecords,
+      reaffirmedRecords = stewardshipPlan.reaffirmedRecords,
+    )
+    val interactionPreferenceWriteSummary = if (interactionPreferenceScopesToRewrite.isNotEmpty()) {
+      writer.write(
+        interactionPreferenceWritePlanner.plan(
+          existingRecords = emptyList(),
+          sourceRecords = memoryStore.list(),
+          forcedScopes = interactionPreferenceScopesToRewrite,
+          plasticity = plasticity,
+          sourceSessionId = sessionId,
+          workspaceId = workspaceId,
+          sourceTaskId = task.id,
+        ).candidates,
+      ).writtenRecords
+    } else {
+      emptyList()
+    }
     val relationshipEvents = when (
       val interpretation = relationshipEventInterpreter.interpret(
         RelationshipEventRequest(
@@ -163,8 +178,59 @@ internal class ChatMemoryIngestionCoordinator(
     result.status == ExecutionStatus.DENIED &&
       (result.errorCode == ERROR_APPROVAL_REQUIRED || result.errorCode == ERROR_HIGH_RISK_APPROVAL_REQUIRED)
 
+  private fun interactionPreferenceSnapshotScopesToRewrite(
+    acceptedCandidates: List<MemoryCandidate>,
+    resolvedRecords: List<MemoryRecord>,
+    reaffirmedRecords: List<MemoryRecord>,
+  ): Set<MemoryScope> = buildSet {
+    acceptedCandidates.forEach { candidate ->
+      interactionPreferenceSourceScopeOrNull(candidate)?.let(::add)
+    }
+    resolvedRecords.forEach { record ->
+      interactionPreferenceSourceScopeOrNull(record)?.let(::add)
+    }
+    reaffirmedRecords.forEach { record ->
+      interactionPreferenceSourceScopeOrNull(record)?.let(::add)
+    }
+  }
+
+  private fun interactionPreferenceSourceScopeOrNull(candidate: MemoryCandidate): MemoryScope? {
+    if (candidate.kind != MemoryKind.USER_PREFERENCE) {
+      return null
+    }
+    if (candidate.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] !in INTERACTION_PREFERENCE_SOURCE_KEYS) {
+      return null
+    }
+    return when (candidate.scope) {
+      MemoryScope.USER,
+      MemoryScope.WORKSPACE,
+      -> candidate.scope
+
+      MemoryScope.SESSION -> null
+    }
+  }
+
+  private fun interactionPreferenceSourceScopeOrNull(record: MemoryRecord): MemoryScope? {
+    if (record.extensions[MemoryRecordExtensionKeys.KIND] != MemoryKind.USER_PREFERENCE.name.lowercase()) {
+      return null
+    }
+    if (record.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] !in INTERACTION_PREFERENCE_SOURCE_KEYS) {
+      return null
+    }
+    return when (record.extensions[MemoryRecordExtensionKeys.SCOPE]) {
+      MemoryScope.USER.name.lowercase() -> MemoryScope.USER
+      MemoryScope.WORKSPACE.name.lowercase() -> MemoryScope.WORKSPACE
+      else -> null
+    }
+  }
+
   private companion object {
     const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
     const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
+    val INTERACTION_PREFERENCE_SOURCE_KEYS: Set<String> = setOf(
+      MemoryPreferenceKeys.INTERACTION_PREFERENCE_SIGNAL,
+      MemoryPreferenceKeys.USER_PREFERRED_NAME,
+      MemoryPreferenceKeys.USER_ADDRESS_STYLE,
+    )
   }
 }

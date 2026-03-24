@@ -330,45 +330,54 @@ Android 第一阶段不建议把 `ProcessStart(script_path=...)` 直接接到 `p
 1. 生成 `requestId`
 2. 写入 request JSON
 3. 启动 `p4a` service
-4. 等待结果文件
-5. 超时则写取消标记并返回 `TIMEOUT`
-6. 读取结果文件并转为 `ExecutionResult`
-7. 清理临时 request/result 文件
+4. 等待 service 进入当前 request 的 claim/execution 状态
+5. 当前 request 被 claim 后，再按脚本执行预算等待结果文件
+6. 超时时区分：
+   - `startup`: service 未进入可观察状态
+   - `queue`: service 已启动，但当前 request 尚未被 claim
+   - `result`: 当前 request 已开始执行，但结果未按时落盘
+7. 超时则写取消标记并返回 `TIMEOUT`
+8. 读取结果文件并转为 `ExecutionResult`
+9. 清理临时 request/result 文件
 
 ### 10.3 元数据建议
 
 在 `ExecutionResult.metadata` 中新增：
 
 - `runtimeBackend=p4a`
-- `runtimeTransport=file_json`
+- `runtimeTransport=file_json_bridge`
 - `requestId=<uuid>`
-- `pythonRuntimeVersion=<version>`
-- `packagedDependenciesVersion=<version>`
+- `startupTimeoutMs=<ms>`
+- `scriptTimeoutMs=<ms>`
+- `timeoutStage=<startup|queue|result>`
+- `serviceClaimedRequestId=<requestId>`
+- `serviceExecutionStartedAtEpochMs=<ms>`
+- `pythonVersion=<version>`
 
 这对后续排障和遥测很重要。
 
 ## 11. Python 入口脚本的建议职责
 
-Python 入口脚本建议只处理一个请求，然后退出。
+当前实现已经切换为 Android service 承载的常驻 Python worker，而不是“一次请求一次 Python 进程”。
 
-第一阶段不要做常驻 worker。
+当前 worker 行为：
 
-推荐行为：
+1. service 启动后进入轮询循环
+2. 读取 `requests/` 下的待处理请求
+3. 优先处理本次启动携带的 `startupRequestId`
+4. 在开始执行前写入：
+   - `currentRequestId`
+   - `claimedRequestId`
+   - `executionStartedAtEpochMs`
+5. 调用 bridge 执行脚本并写结果
+6. 回到 idle，继续处理后续请求
 
-1. 读取 request JSON
-2. 确认脚本路径位于工作区中
-3. 将内置库路径插入 `sys.path`
-4. 将工作区根目录插入 `sys.path`
-5. 用 `runpy.run_path` 运行脚本
-6. 捕获异常并写标准化结果
-7. 写入 `result.json`
-8. 退出
+这样做的代价和收益：
 
-这样做的好处是：
-
-- 没有 Python worker 生命周期管理问题
-- 更接近当前 `python_exec` 一次调用一次结果的语义
-- 容易做 deterministic 测试
+- 收益：冷启动摊销后，后续 `python_exec` 延迟更低
+- 收益：可以支持 request 级别取消、claim 状态和队列诊断
+- 代价：timeout 语义必须显式区分 startup / queue / result 三段
+- 代价：文档和测试都必须围绕常驻 worker 语义维护
 
 ## 12. 实施阶段建议
 

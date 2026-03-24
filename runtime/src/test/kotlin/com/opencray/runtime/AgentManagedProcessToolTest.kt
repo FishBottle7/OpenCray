@@ -194,6 +194,9 @@ class AgentManagedProcessToolTest {
     assertTrue(waitResult.content.contains("status=success"))
     assertTrue(waitResult.content.contains("[stdout]"))
     assertTrue(waitResult.content.contains("server ready"))
+    assertEquals(0, waitResult.exitCode)
+    assertEquals("server ready", waitResult.stdout.trim())
+    assertEquals("", waitResult.stderr)
     assertEquals("true", waitResult.metadata["resultLimitApplied"])
     assertEquals("false", waitResult.metadata["resultTruncated"])
     assertEquals("process_output_byte_limit", waitResult.metadata["resultLimitKind"])
@@ -204,6 +207,9 @@ class AgentManagedProcessToolTest {
     assertEquals(processId, terminateResult.metadata["intentProcessId"])
     assertEquals(".", terminateResult.metadata["intentWorkingDirectory"])
     assertTrue(terminateResult.content.contains("process_id=$processId"))
+    assertEquals(137, terminateResult.exitCode)
+    assertEquals("CANCELLED", terminateResult.errorCode)
+    assertEquals("Managed process terminated.", terminateResult.errorMessage)
     assertEquals(1, registry.terminateCount)
   }
 
@@ -517,6 +523,8 @@ class AgentManagedProcessToolTest {
     assertTrue(waitResult.content.contains("status=cancelled"))
     assertTrue(waitResult.content.contains("termination_support=cooperative"))
     assertTrue(waitResult.content.contains("termination_request_accepted=true"))
+    assertEquals(130, waitResult.exitCode)
+    assertEquals("CANCELLED", waitResult.errorCode)
     assertEquals("true", waitResult.metadata["cancelled"])
     assertEquals("p4a-cancellable-test", waitResult.metadata["runtimeBackend"])
   }
