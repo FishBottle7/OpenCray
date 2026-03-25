@@ -3828,79 +3828,17 @@ class OpenCrayAgentRuntime(
     cursor: PromptTurnCursor?,
     activeSkillCapsule: ActiveSkillCapsule?,
   ): AgentToolResult {
-    val description = call.arguments.primitiveContent("description")
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?: return invalidSubAgentCallResult(call, "spawn_agent description must not be blank.")
-    val prompt = call.arguments.primitiveContent("prompt")
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?: return invalidSubAgentCallResult(call, "spawn_agent prompt must not be blank.")
-    val subagentType = call.arguments.primitiveContent("subagent_type")
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?: return invalidSubAgentCallResult(call, "spawn_agent subagent_type must not be blank.")
-    val profile = BuiltInSubAgentProfiles.resolve(subagentType)
-      ?: return invalidSubAgentCallResult(
+    val preparedDelegation = when (
+      val prepared = prepareSubAgentDelegation(
+        task = task,
+        turn = turn,
         call = call,
-        message = "Unknown spawn_agent subagent_type '$subagentType'.",
+        activeSkillCapsule = activeSkillCapsule,
+        toolName = "spawn_agent",
       )
-    val requestedContextMode = call.arguments.primitiveContent("context_mode")
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-    val resolvedContextMode = when {
-      requestedContextMode == null -> profile.defaultContextMode
-      else -> SubAgentContextMode.fromWireValue(requestedContextMode)
-        ?: return invalidSubAgentCallResult(
-          call = call,
-          message = "Unknown spawn_agent context_mode '$requestedContextMode'. Expected one of: minimal, delegated, mirrored.",
-        )
-    }
-    val parentDepth = task.metadata[SubAgentMetadataKeys.DEPTH]
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?.toIntOrNull()
-      ?: 0
-    val childDepth = parentDepth + 1
-    if (childDepth > config.maxSubAgentDepth) {
-      return AgentToolResult(
-        toolName = call.toolName,
-        status = AgentToolResultStatus.FAILED,
-        content = "spawn_agent delegation depth exceeded the configured child-runtime limit.",
-        errorCode = "SUBAGENT_DEPTH_EXCEEDED",
-        errorMessage = "spawn_agent delegation depth exceeded the configured child-runtime limit.",
-        metadata = mapOf(
-          "subagentType" to profile.id,
-          "subagentDepth" to childDepth.toString(),
-          "maxSubAgentDepth" to config.maxSubAgentDepth.toString(),
-        ),
-      )
-    }
-    val childTask = SubAgentTask(
-      description = description,
-      prompt = prompt,
-      subagentType = profile.id,
-      contextMode = resolvedContextMode,
-      parentRunId = runIdFor(task),
-      parentTaskId = task.id,
-      parentTurn = turn,
-      depth = childDepth,
-      activeSkillName = activeSkillCapsule?.name,
-    )
-    val delegationPlan = toolDispatcher.planTaskDelegation(
-      task = task,
-      toolName = "spawn_agent",
-      description = description,
-      prompt = prompt,
-      subagentType = profile.id,
-      contextMode = childTask.contextMode.wireValue,
-      allowedToolNames = profile.allowedToolNames,
-    )
-    toolDispatcher.gateTaskDelegation(
-      plan = delegationPlan,
-      toolName = "spawn_agent",
-    )?.let { deniedResult ->
-      return deniedResult.copy(toolName = call.toolName)
+    ) {
+      is PreparedSubAgentDelegationResult.Invalid -> return prepared.result
+      is PreparedSubAgentDelegationResult.Ready -> prepared.delegation
     }
     val handles = subAgentHandleRegistry(cursor)
     val requestedAgentId = call.arguments.primitiveContent("agent_id")
@@ -3918,27 +3856,17 @@ class OpenCrayAgentRuntime(
         metadata = mapOf("agentId" to agentId),
       )
     }
-    val handle = SubAgentHandleState.queued(
+    val handle = createSubAgentHandle(
+      task = task,
+      prepared = preparedDelegation,
       agentId = agentId,
-      childRunId = "subagent-${runIdFor(task)}-$turn-${UUID.randomUUID().toString().take(8)}",
-      childTaskId = "subagent-task-${UUID.randomUUID().toString().take(8)}",
-      description = description,
-      prompt = prompt,
-      subagentType = profile.id,
-      contextMode = childTask.contextMode.wireValue,
-      parentRunId = runIdFor(task),
-      parentTaskId = task.id,
-      parentTurn = turn,
-      depth = childDepth,
-      activeSkillName = activeSkillCapsule?.name,
-      createdAtEpochMs = createdAt,
     )
     handles[agentId] = handle
     emitSubAgentEvent(
       task = task,
       turn = turn,
       phase = OpenCraySubAgentPhase.STARTED,
-      childTask = childTask,
+      childTask = preparedDelegation.childTask,
       childRunId = handle.childRunId,
       childTaskId = handle.childTaskId,
       summary = handle.snapshot.summaryText(),
@@ -3949,7 +3877,7 @@ class OpenCrayAgentRuntime(
       status = AgentToolResultStatus.SUCCESS,
       content = "Queued delegated child handle '$agentId'.\n${handle.snapshot.summaryText()}",
       metadata = toolDispatcher.taskDelegationResultMetadata(
-        plan = delegationPlan,
+        plan = preparedDelegation.delegationPlan,
         metadata = subAgentHandleMetadata(handle),
       ),
     )
@@ -4441,27 +4369,168 @@ class OpenCrayAgentRuntime(
     errorMessage = message,
   )
 
+  private fun prepareSubAgentDelegation(
+    task: AgentTask,
+    turn: Int,
+    call: AgentToolCall,
+    activeSkillCapsule: ActiveSkillCapsule?,
+    toolName: String,
+  ): PreparedSubAgentDelegationResult {
+    val description = call.arguments.primitiveContent("description")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return PreparedSubAgentDelegationResult.Invalid(
+        invalidSubAgentCallResult(call, "$toolName description must not be blank."),
+      )
+    val prompt = call.arguments.primitiveContent("prompt")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return PreparedSubAgentDelegationResult.Invalid(
+        invalidSubAgentCallResult(call, "$toolName prompt must not be blank."),
+      )
+    val subagentType = call.arguments.primitiveContent("subagent_type")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return PreparedSubAgentDelegationResult.Invalid(
+        invalidSubAgentCallResult(call, "$toolName subagent_type must not be blank."),
+      )
+    val profile = BuiltInSubAgentProfiles.resolve(subagentType)
+      ?: return PreparedSubAgentDelegationResult.Invalid(
+        invalidSubAgentCallResult(
+          call = call,
+          message = "Unknown $toolName subagent_type '$subagentType'.",
+        ),
+      )
+    val requestedContextMode = call.arguments.primitiveContent("context_mode")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val resolvedContextMode = when {
+      requestedContextMode == null -> profile.defaultContextMode
+      else -> SubAgentContextMode.fromWireValue(requestedContextMode)
+        ?: return PreparedSubAgentDelegationResult.Invalid(
+          invalidSubAgentCallResult(
+            call = call,
+            message = "Unknown $toolName context_mode '$requestedContextMode'. Expected one of: minimal, delegated, mirrored.",
+          ),
+        )
+    }
+    val parentDepth = task.metadata[SubAgentMetadataKeys.DEPTH]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.toIntOrNull()
+      ?: 0
+    val childDepth = parentDepth + 1
+    if (childDepth > config.maxSubAgentDepth) {
+      return PreparedSubAgentDelegationResult.Invalid(
+        AgentToolResult(
+          toolName = call.toolName,
+          status = AgentToolResultStatus.FAILED,
+          content = "$toolName delegation depth exceeded the configured child-runtime limit.",
+          errorCode = "SUBAGENT_DEPTH_EXCEEDED",
+          errorMessage = "$toolName delegation depth exceeded the configured child-runtime limit.",
+          metadata = mapOf(
+            "subagentType" to profile.id,
+            "subagentDepth" to childDepth.toString(),
+            "maxSubAgentDepth" to config.maxSubAgentDepth.toString(),
+          ),
+        ),
+      )
+    }
+    val childTask = SubAgentTask(
+      description = description,
+      prompt = prompt,
+      subagentType = profile.id,
+      contextMode = resolvedContextMode,
+      parentRunId = runIdFor(task),
+      parentTaskId = task.id,
+      parentTurn = turn,
+      depth = childDepth,
+      activeSkillName = activeSkillCapsule?.name,
+    )
+    val delegationPlan = toolDispatcher.planTaskDelegation(
+      task = task,
+      toolName = toolName,
+      description = description,
+      prompt = prompt,
+      subagentType = profile.id,
+      contextMode = childTask.contextMode.wireValue,
+      allowedToolNames = profile.allowedToolNames,
+    )
+    toolDispatcher.gateTaskDelegation(
+      plan = delegationPlan,
+      toolName = toolName,
+    )?.let { deniedResult ->
+      return PreparedSubAgentDelegationResult.Invalid(deniedResult.copy(toolName = call.toolName))
+    }
+    return PreparedSubAgentDelegationResult.Ready(
+      PreparedSubAgentDelegation(
+        profile = profile,
+        childTask = childTask,
+        delegationPlan = delegationPlan,
+      ),
+    )
+  }
+
+  private fun createSubAgentHandle(
+    task: AgentTask,
+    prepared: PreparedSubAgentDelegation,
+    agentId: String? = null,
+    childRunId: String? = null,
+    childTaskId: String? = null,
+  ): SubAgentHandleState {
+    val createdAt = clock()
+    return SubAgentHandleState.queued(
+      agentId = agentId ?: "agent-${UUID.randomUUID().toString().take(8)}",
+      childRunId = childRunId ?: "subagent-${runIdFor(task)}-${prepared.childTask.parentTurn}-${UUID.randomUUID().toString().take(8)}",
+      childTaskId = childTaskId ?: "subagent-task-${UUID.randomUUID().toString().take(8)}",
+      description = prepared.childTask.description,
+      prompt = prepared.childTask.prompt,
+      subagentType = prepared.profile.id,
+      contextMode = prepared.childTask.contextMode.wireValue,
+      parentRunId = prepared.childTask.parentRunId,
+      parentTaskId = prepared.childTask.parentTaskId,
+      parentTurn = prepared.childTask.parentTurn,
+      depth = prepared.childTask.depth,
+      activeSkillName = prepared.childTask.activeSkillName,
+      createdAtEpochMs = createdAt,
+    )
+  }
+
+  private fun continuationResume(): SubAgentApprovalResume? =
+    pendingApprovedSubAgentResume ?: pendingRejectedSubAgentResume
+
+  private fun findContinuationHandle(
+    handles: Map<String, SubAgentHandleState>,
+  ): SubAgentHandleState? {
+    val resume = continuationResume() ?: return null
+    return handles.values.firstOrNull { handle -> resumeMatchesHandle(resume, handle, handles) }
+  }
+
   private fun childResultToTaskToolResult(
     call: AgentToolCall,
-    profileId: String,
-    childTask: SubAgentTask,
+    handle: SubAgentHandleState,
     delegationPlan: ToolPolicyPlan,
-    childRunId: String,
     childResult: ExecutionResult,
     compressedChildResult: SubAgentExecutionSnapshot,
   ): AgentToolResult {
     val childTurnCount = childResult.metadata["turnCount"].orEmpty()
     val childToolCallCount = childResult.metadata["toolCallCount"].orEmpty()
-    val childApprovalResume = childApprovalResume(childResult)
+    val childApprovalResume = childApprovalResume(
+      childResult = childResult,
+      agentId = handle.agentId,
+      childRunId = handle.childRunId,
+      childTaskId = handle.childTaskId,
+    )
     val childApprovalMetadata = childApprovalMetadata(
       childMetadata = childResult.metadata,
       childApprovalResume = childApprovalResume,
     )
     val baseMetadata = linkedMapOf(
-      "subagentType" to profileId,
-      "subagentContextMode" to childTask.contextMode.wireValue,
-      "subagentDepth" to childTask.depth.toString(),
-      "childRunId" to childRunId,
+      "agentId" to handle.agentId,
+      "subagentType" to handle.subagentType,
+      "subagentContextMode" to handle.contextMode,
+      "subagentDepth" to handle.depth.toString(),
+      "childRunId" to handle.childRunId,
       "childTaskId" to childResult.taskId,
       "childExecutionStatus" to childResult.status.name,
     ).apply {
@@ -4970,6 +5039,22 @@ class OpenCrayAgentRuntime(
     val resume: SubAgentApprovalResume,
     val approved: Boolean,
   )
+
+  private data class PreparedSubAgentDelegation(
+    val profile: SubAgentProfile,
+    val childTask: SubAgentTask,
+    val delegationPlan: ToolPolicyPlan,
+  )
+
+  private sealed interface PreparedSubAgentDelegationResult {
+    data class Ready(
+      val delegation: PreparedSubAgentDelegation,
+    ) : PreparedSubAgentDelegationResult
+
+    data class Invalid(
+      val result: AgentToolResult,
+    ) : PreparedSubAgentDelegationResult
+  }
 
   private data class LocalContinuationEnvelope(
     val stableAnchor: String,
