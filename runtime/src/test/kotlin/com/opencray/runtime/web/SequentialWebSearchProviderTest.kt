@@ -175,6 +175,194 @@ class SequentialWebSearchProviderTest {
     )
   }
 
+  @Test
+  fun openAiWebSearchUsesConfiguredBaseUrlAndMapsCitations() {
+    val transport = RecordingWebSearchHttpTransport(
+      responses = mapOf(
+        "https://proxy.example.com/v1/responses" to WebSearchHttpResponse(
+          statusCode = 200,
+          body = """
+          {
+            "output": [
+              {
+                "type": "web_search_call",
+                "action": {
+                  "sources": [
+                    { "type": "url", "url": "https://docs.example.com/guide" }
+                  ]
+                }
+              },
+              {
+                "type": "message",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "OpenCray guide summary.",
+                    "annotations": [
+                      {
+                        "type": "url_citation",
+                        "title": "OpenCray Guide",
+                        "url": "https://docs.example.com/guide"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+          """.trimIndent(),
+        ),
+      ),
+    )
+    val provider = SequentialWebSearchProvider(
+      slots = listOf(
+        ConfiguredWebSearchSlot(
+          providerId = "openai_web_search",
+          baseUrl = "https://proxy.example.com/v1",
+          model = "gpt-5-mini",
+          apiKey = "openai-key",
+        ),
+      ),
+      transport = transport,
+    )
+
+    val result = provider.search(
+      WebSearchRequest(
+        query = "opencray latest docs",
+        maxResults = 3,
+        domains = listOf("docs.example.com"),
+      ),
+    )
+
+    assertTrue(result.isSuccess)
+    assertEquals("openai_web_search", result.providerName)
+    assertEquals(1, result.results.size)
+    assertEquals("OpenCray Guide", result.results.single().title)
+    assertEquals("https://docs.example.com/guide", result.results.single().url)
+
+    val request = transport.requests.single()
+    assertEquals("https://proxy.example.com/v1/responses", request.url)
+    val payload = Json.parseToJsonElement(request.body.orEmpty()).toString()
+    assertTrue(payload.contains("\"model\":\"gpt-5-mini\""))
+    assertTrue(payload.contains("\"type\":\"web_search\""))
+    assertTrue(payload.contains("\"allowed_domains\":[\"docs.example.com\"]"))
+    assertTrue(payload.contains("\"include\":[\"web_search_call.action.sources\"]"))
+  }
+
+  @Test
+  fun openAiWebSearchParsesNestedTextObjectAnnotations() {
+    val transport = RecordingWebSearchHttpTransport(
+      responses = mapOf(
+        "https://api.openai.com/v1/responses" to WebSearchHttpResponse(
+          statusCode = 200,
+          body = """
+          {
+            "output": [
+              {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": {
+                      "value": "Nested text annotation summary.",
+                      "annotations": [
+                        {
+                          "type": "url_citation",
+                          "title": "Nested Guide",
+                          "url": "https://docs.example.com/nested"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+          """.trimIndent(),
+        ),
+      ),
+    )
+    val provider = SequentialWebSearchProvider(
+      slots = listOf(
+        ConfiguredWebSearchSlot(
+          providerId = "openai_web_search",
+          apiKey = "openai-key",
+        ),
+      ),
+      transport = transport,
+    )
+
+    val result = provider.search(
+      WebSearchRequest(
+        query = "nested output text",
+        maxResults = 3,
+        domains = listOf("docs.example.com"),
+      ),
+    )
+
+    assertTrue(result.isSuccess)
+    assertEquals(1, result.results.size)
+    assertEquals("Nested Guide", result.results.single().title)
+    assertEquals("https://docs.example.com/nested", result.results.single().url)
+    assertEquals("Nested text annotation summary.", result.results.single().snippet)
+  }
+
+  @Test
+  fun openAiWebSearchParsesSingleContentObjectResponsesShape() {
+    val transport = RecordingWebSearchHttpTransport(
+      responses = mapOf(
+        "https://api.openai.com/v1/responses" to WebSearchHttpResponse(
+          statusCode = 200,
+          body = """
+          {
+            "output": [
+              {
+                "type": "message",
+                "role": "assistant",
+                "content": {
+                  "type": "output_text",
+                  "text": "Single object content summary.",
+                  "annotations": [
+                    {
+                      "type": "url_citation",
+                      "title": "Single Object Guide",
+                      "url": "https://docs.example.com/object"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+          """.trimIndent(),
+        ),
+      ),
+    )
+    val provider = SequentialWebSearchProvider(
+      slots = listOf(
+        ConfiguredWebSearchSlot(
+          providerId = "openai_web_search",
+          apiKey = "openai-key",
+        ),
+      ),
+      transport = transport,
+    )
+
+    val result = provider.search(
+      WebSearchRequest(
+        query = "single object content",
+        maxResults = 3,
+        domains = listOf("docs.example.com"),
+      ),
+    )
+
+    assertTrue(result.isSuccess)
+    assertEquals(1, result.results.size)
+    assertEquals("Single Object Guide", result.results.single().title)
+    assertEquals("https://docs.example.com/object", result.results.single().url)
+    assertEquals("Single object content summary.", result.results.single().snippet)
+  }
+
   private class FakeWebSearchHttpTransport(
     private val responses: Map<String, WebSearchHttpResponse> = emptyMap(),
   ) : WebSearchHttpTransport {

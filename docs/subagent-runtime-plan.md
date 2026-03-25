@@ -534,16 +534,444 @@ child context 必须来自一个显式的 `SubAgentContextBuilder`。
 - durable run record 能恢复最后一个 child lifecycle
 - replay 时父级能看到 child 已经完成过的摘要
 
-## 二期再做什么
+## 当前基线更新
 
-一期稳定后，再往前推：
+在这份文档最初写完之后，一期能力又往前推了半步，当前已经不再是“只有 read-only child”：
 
-1. child 独立 registry
-2. child approval suspend / resume
-3. child write-capable worker profile
-4. child 内再次 `Task`
-5. `mirrored` context mode
-6. child 独立 trace / UI surface
+- 内建 profile 现在已有：
+  - `researcher`
+  - `general-purpose`
+  - `reviewer`
+  - `worker`
+- 其中 `worker` 已支持 bounded workspace edits：
+  - `LS`
+  - `Read`
+  - `Grep`
+  - `Glob`
+  - `Write`
+  - `Edit`
+  - `MultiEdit`
+- `worker` 当前仍明确不允许：
+  - `Bash`
+  - `python_exec`
+  - `ProcessStart` / `ProcessRead` / `ProcessWait` / `ProcessTerminate`
+  - nested `Task`
+- host / runtime snapshot 现在也已经有轻量 child registry 投影：
+  - session runtime snapshot 会暴露 `subAgents`
+  - 每个 child 会携带 latest phase / execution state / continuation kind / resumable / requires user action / summary
+
+所以当前正确的判断是：
+
+- OpenCray 已经不是“只有 explorer 型 child”
+- 但 OpenCray 还不是 Codex 那种显式 `spawn / wait / send_input / close` 控制面
+- 当前更像一个同步的 `delegate_and_wait`
+
+## 二期目标：补成更接近 Codex 的 subagent control plane
+
+这一步的目标，不是继续把更多隐式行为塞进 `Task`，而是把 child runtime 从“同步工具调用”提升成“显式 runtime actor”。
+
+二期做完之后，希望 OpenCray 的抽象更接近：
+
+- `spawn_agent(...)`
+- `send_input(...)`
+- `wait_agent(...)`
+- `close_agent(...)`
+
+同时保留当前的 `Task` 作为兼容层和简单糖衣。
+
+### 二期总原则
+
+1. 不推翻当前 `Task`
+
+`Task` 已经是稳定可用的 Claude 风格入口，不应该废掉。
+
+二期里它应该变成：
+
+- 一个 convenience wrapper
+- 语义等价于 `spawn_agent + wait_agent`
+
+也就是说：
+
+- 简单委派仍然可以只用 `Task`
+- 复杂编排再显式使用 control plane
+
+2. 不一上来做 worktree / cloud / detached swarm
+
+OpenCray 当前产品目标不是 Codex 的完整执行环境矩阵。
+
+二期先做：
+
+- 本地 runtime 内的 child control plane
+- durable child registry
+- 显式等待 / 路由 / 关闭
+
+先不做：
+
+- worktree isolation
+- cloud execution
+- 多环境切换
+
+3. 先把控制语义做实，再谈更激进的并发
+
+如果没有显式 child handle / lifecycle / mailbox / wait 机制，就算表面上能并发，也会在 replay、approval、恢复、UI 投影上持续失真。
+
+所以二期优先级应该是：
+
+- 先显式建模
+- 再允许更多 child 行为
+
+## 二期工具表面建议
+
+### 1. `spawn_agent`
+
+用途：
+
+- 启动一个 child runtime
+- 立刻返回 child handle
+- 父 agent 不必同步等待结果
+
+建议参数：
+
+- `task: string`
+- `subagent_type: string`
+- `context_mode?: string`
+
+可选后续参数：
+
+- `approval_mode?: string`
+- `label?: string`
+
+建议返回：
+
+- `agent_id`
+- `status`
+- `subagent_type`
+- `context_mode`
+- `depth`
+
+### 2. `send_input`
+
+用途：
+
+- 给一个已存在 child 追加输入
+- 用于 follow-up、修正、补充约束
+
+建议参数：
+
+- `agent_id: string`
+- `message: string`
+
+建议返回：
+
+- `agent_id`
+- `status`
+- `queued: boolean`
+
+第一版建议只允许：
+
+- child 在 waiting / idle / approval_wait 边界时收新输入
+
+先不支持：
+
+- mid-loop 任意位置强插
+
+### 3. `wait_agent`
+
+用途：
+
+- 显式等待一个或多个 child 的状态推进
+- 支持等到 terminal，或等到 approval / user action / timeout
+
+建议参数：
+
+- `agent_ids: string[]`
+- `timeout_ms?: number`
+
+建议返回：
+
+- 每个 child 的：
+  - `agent_id`
+  - `status`
+  - `execution_state`
+  - `summary`
+  - `requires_user_action`
+  - `resumable`
+
+第一版的关键不是“花哨的多路选择”，而是：
+
+- wait 结果必须 durable
+- timeout 必须可恢复
+- approval wait 必须可见
+
+### 4. `close_agent`
+
+用途：
+
+- 显式关闭一个 child thread / child handle
+- 标记后续不再向它路由输入
+
+建议参数：
+
+- `agent_id: string`
+
+建议返回：
+
+- `agent_id`
+- `closed: boolean`
+- `final_status`
+
+这里的重点不是“杀进程”，而是：
+
+- 关闭 child control-plane handle
+- 让 replay / host / UI 知道这个 child 生命周期已经收束
+
+### 5. 可选补一个 `list_agents`
+
+如果后面模型真的需要枚举 child，或者 UI 想更干净地调试，可以补：
+
+- `list_agents()`
+
+但这不是第一优先级。
+
+第一优先级仍然是：
+
+- `spawn_agent`
+- `send_input`
+- `wait_agent`
+- `close_agent`
+
+## profile 命名建议
+
+如果希望更接近 Codex，不应该继续只停留在：
+
+- `researcher`
+- `general-purpose`
+- `reviewer`
+- `worker`
+
+二期建议把对模型暴露的命名收敛成更贴近 Codex 的表面：
+
+- `default`
+- `worker`
+- `explorer`
+
+兼容策略：
+
+- `default` -> 映射到当前 `general-purpose`
+- `explorer` -> 映射到当前 `researcher`
+- `worker` -> 保持 `worker`
+- `reviewer` 可以先保留为兼容 alias，但不一定继续作为主推荐名称
+
+这样做的原因不是“盲目模仿名字”，而是：
+
+- 模型更容易迁移既有工具习惯
+- prompt / system instruction 可以更贴近公开范式
+- 后续 control plane 不会出现“功能像 Codex，但 profile 名完全另一套”的割裂感
+
+## 二期 runtime 模型建议
+
+### 1. 显式 child handle
+
+需要新增一层独立模型，例如：
+
+- `SubAgentHandle`
+
+建议字段：
+
+- `agentId`
+- `parentRunId`
+- `parentTaskId`
+- `childRunId`
+- `childTaskId`
+- `subagentType`
+- `contextMode`
+- `depth`
+- `lifecycleState`
+- `executionState`
+- `continuationKind`
+- `resumable`
+- `requiresUserAction`
+- `isHighRisk`
+- `summary`
+- `createdAtEpochMs`
+- `updatedAtEpochMs`
+
+### 2. child mailbox
+
+需要把 child 的 follow-up 输入显式存起来，而不是靠拼 prompt。
+
+建议新增：
+
+- `SubAgentMailbox`
+
+最小能力：
+
+- pending messages queue
+- last delivered message id
+- approval wait 时可挂起
+
+### 3. child registry
+
+当前 host snapshot 的 `subAgents` 只是投影层。
+
+二期要把它补成真正的 runtime registry：
+
+- runtime 持有 active child handles
+- host 可恢复 child latest state
+- replay 可恢复 child 生命周期边界
+
+### 4. `Task` 改成 sugar
+
+`Task` 在二期里不应继续直接 new child runtime 后同步执行到底。
+
+更合理的方式是：
+
+1. `Task` 内部调用 `spawn_agent`
+2. 然后调用 `wait_agent`
+3. 把 terminal / waiting summary 再包装成 tool result
+
+这样可以避免维护两套 child 语义。
+
+## approval / cancel / replay 规则
+
+### approval
+
+二期里 child approval 不能只表现成父级 `Task` 的 denied result。
+
+还需要：
+
+- child handle 自己进入 `waiting_approval`
+- `wait_agent` 返回 `requires_user_action=true`
+- host / replay / UI 都能知道是哪个 child 卡住了
+
+### cancel
+
+要区分两种 cancel：
+
+1. 关闭 child handle
+2. 用户主动取消整个 parent run
+
+规则建议：
+
+- parent cancel -> 级联 cancel child
+- close_agent -> 只关闭指定 child
+- 被关闭或被取消的 child 都要写 durable replay
+
+### replay
+
+child 不能只留下最后一句摘要。
+
+至少要 durable：
+
+- child spawned
+- child resumed
+- child waiting approval
+- child completed / failed / cancelled
+- child closed
+
+但也不能把 child 全 transcript 无限制塞回 parent。
+
+所以 replay 仍然坚持：
+
+- lifecycle + bounded summary
+- 不混入 child 全量内部过程
+
+## UI / host 最小落点
+
+二期不要求先做完整 child session UI，但至少要支持：
+
+1. runtime snapshot 可列出当前 children
+2. inspector 能按 child handle 看历史
+3. approval 卡能明确知道挂起的是哪个 child
+4. parent run 卡能看到：
+   - spawn 了哪个 child
+   - child 现在在运行 / 等审批 / 已完成
+
+换句话说：
+
+- 先做 control plane
+- 再让 UI 消费这个 control plane
+- 不要继续让 UI 只从零散 event 猜 child 状态
+
+## 具体实施顺序
+
+### P2-1 命名标准化
+
+- 对模型暴露 `default / explorer / worker`
+- 保留 `general-purpose / researcher / reviewer` 作为兼容 alias
+- 更新工具描述和系统提示，不再把旧名字当主推荐面
+
+### P2-2 child registry 落地
+
+- runtime 内引入显式 child handle registry
+- host snapshot 改为优先读 registry，而不是只读 event 聚合
+- durable store 能恢复 latest child state
+
+### P2-3 `spawn_agent`
+
+- child 可被显式启动
+- 先只支持同 parent run 下的 local child
+- 第一版仍限制深度和工具面
+
+### P2-4 `wait_agent`
+
+- wait terminal
+- wait approval
+- wait timeout
+- wait 返回结构化 child states
+
+### P2-5 `Task` 改 sugar
+
+- 复用 `spawn_agent + wait_agent`
+- 不再保留第二套同步 child execution 语义
+
+### P2-6 `send_input`
+
+- 先支持 boundary-based supplement
+- 不做 mid-loop arbitrary interrupt
+
+### P2-7 `close_agent`
+
+- 收束 child handle
+- 让 replay / host / UI 都能看到 closed terminal edge
+
+### P2-8 tests
+
+至少补：
+
+- spawn -> wait -> complete
+- spawn -> approval wait -> approve -> wait
+- spawn -> approval wait -> reject -> wait
+- spawn -> send_input while idle / waiting
+- spawn -> close
+- parent cancel cascades to child
+- replay restores child registry and wait-visible states
+
+## 暂时不做的内容
+
+- child worktree isolation
+- child cloud execution
+- child arbitrary mid-loop interrupt injection
+- 自动子代理图调度
+- 大规模并发 child swarm
+
+## 最终建议
+
+如果目标是“更接近 Codex 的 subagent 行为”，下一步最重要的不是继续增强 `Task` 的单次能力，而是：
+
+- 把 child 变成显式 handle
+- 把控制动作显式化
+- 把 `Task` 下沉成 sugar
+
+只有这一步做完，后面的：
+
+- 更复杂的 worker 任务
+- child follow-up
+- child background execution
+- child close / cleanup
+- 更接近 Codex 的 UI 和 runtime 行为
+
+才会有稳定基座。
 
 ## 最终建议
 

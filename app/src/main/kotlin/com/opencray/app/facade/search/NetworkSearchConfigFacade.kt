@@ -12,6 +12,8 @@ data class NetworkSearchSlotSnapshot(
   val id: String,
   val providerId: String,
   val label: String,
+  val baseUrl: String,
+  val model: String,
   val apiKey: String,
   val enabled: Boolean,
 )
@@ -27,6 +29,8 @@ data class SaveNetworkSearchSlotRequest(
   val id: String,
   val providerId: String,
   val label: String,
+  val baseUrl: String,
+  val model: String,
   val apiKey: String,
   val enabled: Boolean,
 )
@@ -54,6 +58,8 @@ internal class LocalNetworkSearchConfigFacade private constructor(
           id = slot.id,
           providerId = slot.providerId,
           label = slot.label,
+          baseUrl = slot.baseUrl,
+          model = slot.model,
           apiKey = slot.apiKey,
           enabled = slot.enabled,
         )
@@ -73,6 +79,8 @@ internal class LocalNetworkSearchConfigFacade private constructor(
           providerId = WebSearchProviderId.fromWireValue(slot.providerId)?.wireValue
             ?: WebSearchProviderId.EXA.wireValue,
           label = slot.label,
+          baseUrl = slot.baseUrl,
+          model = slot.model,
           apiKey = slot.apiKey,
           enabled = slot.enabled,
         )

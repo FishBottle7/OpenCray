@@ -1020,6 +1020,8 @@ class _NetworkSearchSettingsPageState
           id: 'slot-${DateTime.now().microsecondsSinceEpoch}',
           providerId: 'exa',
           label: '',
+          baseUrl: '',
+          model: '',
           apiKey: '',
           enabled: true,
         ),
@@ -1130,9 +1132,17 @@ class _NetworkSearchSlotCard extends StatefulWidget {
 }
 
 class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
+  static const String _openAiWebSearchProviderId = 'openai_web_search';
+  static const String _defaultOpenAiBaseUrl = 'https://api.openai.com/v1';
+  static const String _defaultOpenAiSearchModel = 'gpt-5';
+
   late final TextEditingController _labelController;
+  late final TextEditingController _baseUrlController;
+  late final TextEditingController _modelController;
   late final TextEditingController _apiKeyController;
   late final FocusNode _labelFocusNode;
+  late final FocusNode _baseUrlFocusNode;
+  late final FocusNode _modelFocusNode;
   late final FocusNode _apiKeyFocusNode;
   Timer? _saveDebounce;
 
@@ -1140,8 +1150,12 @@ class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
   void initState() {
     super.initState();
     _labelController = TextEditingController(text: widget.slot.label);
+    _baseUrlController = TextEditingController(text: widget.slot.baseUrl);
+    _modelController = TextEditingController(text: widget.slot.model);
     _apiKeyController = TextEditingController(text: widget.slot.apiKey);
     _labelFocusNode = FocusNode()..addListener(_handleFocusChange);
+    _baseUrlFocusNode = FocusNode()..addListener(_handleFocusChange);
+    _modelFocusNode = FocusNode()..addListener(_handleFocusChange);
     _apiKeyFocusNode = FocusNode()..addListener(_handleFocusChange);
   }
 
@@ -1150,6 +1164,12 @@ class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
     super.didUpdateWidget(oldWidget);
     if (widget.slot.label != _labelController.text) {
       _labelController.text = widget.slot.label;
+    }
+    if (widget.slot.baseUrl != _baseUrlController.text) {
+      _baseUrlController.text = widget.slot.baseUrl;
+    }
+    if (widget.slot.model != _modelController.text) {
+      _modelController.text = widget.slot.model;
     }
     if (widget.slot.apiKey != _apiKeyController.text) {
       _apiKeyController.text = widget.slot.apiKey;
@@ -1162,10 +1182,18 @@ class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
     _labelFocusNode
       ..removeListener(_handleFocusChange)
       ..dispose();
+    _baseUrlFocusNode
+      ..removeListener(_handleFocusChange)
+      ..dispose();
+    _modelFocusNode
+      ..removeListener(_handleFocusChange)
+      ..dispose();
     _apiKeyFocusNode
       ..removeListener(_handleFocusChange)
       ..dispose();
     _labelController.dispose();
+    _baseUrlController.dispose();
+    _modelController.dispose();
     _apiKeyController.dispose();
     super.dispose();
   }
@@ -1200,11 +1228,30 @@ class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
           ),
           const SizedBox(height: 6),
           _InteractiveSegmentedSelector(
-            labels: const <String>['exa', 'tavily', 'brave'],
+            labels: const <String>[
+              'exa',
+              'tavily',
+              'brave',
+              _openAiWebSearchProviderId,
+            ],
             selectedId: widget.slot.providerId,
             labelBuilder: copy.networkSearchProviderTitle,
             onSelected: (providerId) {
-              widget.onChanged(widget.slot.copyWith(providerId: providerId));
+              widget.onChanged(
+                widget.slot.copyWith(
+                  providerId: providerId,
+                  baseUrl: providerId == _openAiWebSearchProviderId
+                      ? widget.slot.baseUrl.trim().isEmpty
+                            ? _defaultOpenAiBaseUrl
+                            : widget.slot.baseUrl
+                      : '',
+                  model: providerId == _openAiWebSearchProviderId
+                      ? widget.slot.model.trim().isEmpty
+                            ? _defaultOpenAiSearchModel
+                            : widget.slot.model
+                      : '',
+                ),
+              );
             },
           ),
           const SizedBox(height: 10),
@@ -1215,6 +1262,26 @@ class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
             focusNode: _labelFocusNode,
             onChanged: (_) => _scheduleEmit(),
           ),
+          if (_showsBaseUrlField) ...[
+            const SizedBox(height: 8),
+            _InlineEditableField(
+              title: copy.networkSearchBaseUrlFieldTitle,
+              hintText: copy.networkSearchBaseUrlHint,
+              controller: _baseUrlController,
+              focusNode: _baseUrlFocusNode,
+              onChanged: (_) => _scheduleEmit(),
+            ),
+          ],
+          if (_showsBaseUrlField) ...[
+            const SizedBox(height: 8),
+            _InlineEditableField(
+              title: copy.networkSearchModelFieldTitle,
+              hintText: copy.networkSearchModelHint,
+              controller: _modelController,
+              focusNode: _modelFocusNode,
+              onChanged: (_) => _scheduleEmit(),
+            ),
+          ],
           const SizedBox(height: 8),
           _InlineEditableField(
             title: copy.networkSearchApiKeyFieldTitle,
@@ -1252,7 +1319,10 @@ class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
   }
 
   void _handleFocusChange() {
-    if (!_labelFocusNode.hasFocus && !_apiKeyFocusNode.hasFocus) {
+    if (!_labelFocusNode.hasFocus &&
+        !_baseUrlFocusNode.hasFocus &&
+        !_modelFocusNode.hasFocus &&
+        !_apiKeyFocusNode.hasFocus) {
       _emitNow();
     }
   }
@@ -1267,10 +1337,15 @@ class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
     widget.onChanged(
       widget.slot.copyWith(
         label: _labelController.text,
+        baseUrl: _showsBaseUrlField ? _baseUrlController.text : '',
+        model: _showsBaseUrlField ? _modelController.text : '',
         apiKey: _apiKeyController.text,
       ),
     );
   }
+
+  bool get _showsBaseUrlField =>
+      widget.slot.providerId == _openAiWebSearchProviderId;
 }
 
 class _LlmSettingsPage extends StatefulWidget {
@@ -1290,7 +1365,11 @@ class _LlmSettingsPage extends StatefulWidget {
 }
 
 class _LlmSettingsPageState extends State<_LlmSettingsPage> {
-  static const List<String> _protocolOptions = <String>['openai', 'anthropic'];
+  static const List<String> _protocolOptions = <String>[
+    'openai',
+    'openai_responses',
+    'anthropic',
+  ];
   static const List<String> _reasoningOptions = <String>[
     'low',
     'medium',
@@ -1595,11 +1674,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
       _selectedProviderOptionId = option.id;
       _providerId = option.providerId;
       final isSavedCustomProvider = option.isCustom && option.id != 'custom';
-      if (option.isCustom) {
-        _protocol = option.protocol;
-      } else {
-        _protocol = 'openai';
-      }
+      _protocol = option.protocol;
       if (isSavedCustomProvider) {
         _providerNameController.text = option.title;
         _providerNotesController.text = option.subtitle;
@@ -2135,12 +2210,13 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     return _draftProtocolFor(_selectedProviderFor(snapshot));
   }
 
-  String _draftProtocolFor(LlmProviderOption provider) =>
-      provider.isCustom ? _protocol : 'openai';
+  String _draftProtocolFor(LlmProviderOption provider) => _protocol;
 
   String _protocolTitle(String protocol) {
     final copy = _copyForSnapshot();
     switch (protocol) {
+      case 'openai_responses':
+        return copy.llmProtocolOpenAiResponses;
       case 'anthropic':
         return copy.llmProtocolAnthropic;
       default:

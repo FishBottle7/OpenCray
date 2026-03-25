@@ -56,18 +56,32 @@ def _default_poll_interval_ms() -> int:
     payload = _service_argument_payload()
     raw_value = payload.get("pollIntervalMs")
     if raw_value is None:
-        return 250
+        return 25
     try:
         return int(raw_value)
     except (TypeError, ValueError):
-        return 250
+        return 25
+
+
+def _default_run_once() -> bool:
+    payload = _service_argument_payload()
+    raw_value = payload.get("once")
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, str):
+        normalized = raw_value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return False
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime-root", default=_default_runtime_root())
     parser.add_argument("--poll-interval-ms", type=int, default=_default_poll_interval_ms())
-    parser.add_argument("--once", action="store_true")
+    parser.add_argument("--once", action="store_true", default=_default_run_once())
     return parser
 
 
@@ -170,10 +184,19 @@ def _result_status(result_path: Path) -> str | None:
     return str(status).strip() if status is not None else None
 
 
+def _safe_unlink(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def _pending_request_paths(
     requests_dir: Path,
     results_dir: Path,
     startup_request_id: str,
+    *,
+    limit: int | None = None,
 ) -> list[Path]:
     pending = [
         request_path
@@ -188,8 +211,9 @@ def _pending_request_paths(
         None,
     )
     if startup_path is None:
-        return pending
-    return [startup_path, *(request_path for request_path in pending if request_path != startup_path)]
+        return pending[:limit] if limit is not None else pending
+    ordered = [startup_path, *(request_path for request_path in pending if request_path != startup_path)]
+    return ordered[:limit] if limit is not None else ordered
 
 
 def _process_pending_requests(
@@ -198,6 +222,7 @@ def _process_pending_requests(
     started_at_epoch_ms: int,
     poll_interval_ms: int,
     startup_request_id: str,
+    limit: int | None = None,
 ) -> int:
     _ensure_runtime_dirs(runtime_root)
     requests_dir = runtime_root / "requests"
@@ -209,6 +234,7 @@ def _process_pending_requests(
         requests_dir=requests_dir,
         results_dir=results_dir,
         startup_request_id=startup_request_id,
+        limit=limit,
     ):
         request_id = request_path.stem
         result_path = results_dir / f"{request_id}.json"
@@ -244,6 +270,7 @@ def _process_pending_requests(
             last_processed_request_id=request_id,
             last_processed_status=_result_status(result_path),
         )
+        _safe_unlink(request_path)
         processed += 1
     return processed
 
@@ -256,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
 
     runtime_root = Path(runtime_root_raw)
     started_at_epoch_ms = _now_ms()
-    poll_interval_ms = max(int(ns.poll_interval_ms), 50)
+    poll_interval_ms = max(int(ns.poll_interval_ms), 25)
     startup_request_id = str(_service_argument_payload().get("requestId", "")).strip()
 
     try:
@@ -278,6 +305,7 @@ def main(argv: list[str] | None = None) -> int:
                 started_at_epoch_ms=started_at_epoch_ms,
                 poll_interval_ms=poll_interval_ms,
                 startup_request_id=startup_request_id,
+                limit=1,
             )
             _write_service_state(
                 runtime_root,

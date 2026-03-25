@@ -278,6 +278,88 @@ void main() {
     expect(snapshot.memoryToolsEnabled, false);
   });
 
+  test('platform bridge loads strong background snapshots', () async {
+    late MethodCall capturedCall;
+    const bridge = OpenCrayPlatformBridge();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(methodChannel, (call) async {
+          capturedCall = call;
+          return <String, Object?>{
+            'source': 'strong-background',
+            'available': true,
+            'tierId': 'strong_background',
+            'setupComplete': true,
+            'recommendedActionIds': const <Object?>[],
+            'notifications': <String, Object?>{
+              'permissionRequired': true,
+              'permissionGranted': true,
+              'enabled': true,
+              'configured': true,
+            },
+            'exactAlarms': <String, Object?>{
+              'accessRequired': true,
+              'accessGranted': true,
+              'configured': true,
+            },
+            'batteryOptimization': <String, Object?>{
+              'supported': true,
+              'exempt': true,
+              'configured': true,
+            },
+            'actions': <Object?>[
+              <String, Object?>{
+                'id': 'open_notification_settings',
+                'available': true,
+                'recommended': false,
+              },
+            ],
+            'runtimeServiceConnectionState': <String, Object?>{
+              'phase': 'binder_connected',
+              'binderAvailable': true,
+            },
+          };
+        });
+
+    final snapshot = await bridge.loadStrongBackgroundSnapshot();
+
+    expect(capturedCall.method, 'loadStrongBackgroundSnapshot');
+    expect(snapshot.available, isTrue);
+    expect(snapshot.tierId, 'strong_background');
+    expect(snapshot.setupComplete, isTrue);
+    expect(snapshot.notifications.configured, isTrue);
+    expect(snapshot.exactAlarms.accessGranted, isTrue);
+    expect(snapshot.batteryOptimization.exempt, isTrue);
+    expect(snapshot.actions.single.id, 'open_notification_settings');
+    expect(snapshot.runtimeServiceConnectionState?.binderAvailable, isTrue);
+  });
+
+  test('platform bridge posts strong background actions', () async {
+    late MethodCall capturedCall;
+    const bridge = OpenCrayPlatformBridge();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(methodChannel, (call) async {
+          capturedCall = call;
+          return <String, Object?>{
+            'source': 'strong-background-action',
+            'actionId': 'open_notification_settings',
+            'available': true,
+            'launched': true,
+          };
+        });
+
+    final result = await bridge.performStrongBackgroundAction(
+      'open_notification_settings',
+    );
+
+    expect(capturedCall.method, 'performStrongBackgroundAction');
+    expect(capturedCall.arguments, isA<Map<Object?, Object?>>());
+    final arguments = capturedCall.arguments as Map<Object?, Object?>;
+    expect(arguments['actionId'], 'open_notification_settings');
+    expect(result.actionId, 'open_notification_settings');
+    expect(result.available, isTrue);
+    expect(result.launched, isTrue);
+  });
+
   test(
     'platform bridge authorizes external access over the host channel',
     () async {
@@ -616,6 +698,26 @@ void main() {
         arguments['relativePath'],
         '.opencray/chat-media/session-1/hash/report.pdf',
       );
+    },
+  );
+
+  test(
+    'platform bridge forwards external uri requests to the host channel',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return null;
+          });
+
+      await bridge.openExternalUri('https://opencray.dev/docs');
+
+      expect(capturedCall.method, 'openExternalUri');
+      expect(capturedCall.arguments, isA<Map<Object?, Object?>>());
+      final arguments = capturedCall.arguments as Map<Object?, Object?>;
+      expect(arguments['uri'], 'https://opencray.dev/docs');
     },
   );
 

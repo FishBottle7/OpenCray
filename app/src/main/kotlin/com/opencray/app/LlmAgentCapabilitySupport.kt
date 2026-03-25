@@ -9,6 +9,10 @@ data class LlmAgentCapabilitySnapshot(
   val toolChoiceSupported: Boolean = false,
   val parallelToolCallsSupported: Boolean = false,
   val strictToolSchemaSupported: Boolean = false,
+  val responsesContinuationSupported: Boolean = false,
+  val builtinWebSearchSupported: Boolean = false,
+  val assistantPhaseSupported: Boolean = false,
+  val citationIncludeSupported: Boolean = false,
 ) {
   val wasVerified: Boolean
     get() = verifiedAtEpochMs != null
@@ -51,6 +55,10 @@ data class LlmAgentCapabilitySnapshot(
     .put("toolChoiceSupported", toolChoiceSupported)
     .put("parallelToolCallsSupported", parallelToolCallsSupported)
     .put("strictToolSchemaSupported", strictToolSchemaSupported)
+    .put("responsesContinuationSupported", responsesContinuationSupported)
+    .put("builtinWebSearchSupported", builtinWebSearchSupported)
+    .put("assistantPhaseSupported", assistantPhaseSupported)
+    .put("citationIncludeSupported", citationIncludeSupported)
 
   companion object {
     fun unknown(
@@ -78,6 +86,10 @@ data class LlmAgentCapabilitySnapshot(
         toolChoiceSupported = payload.optBoolean("toolChoiceSupported", false),
         parallelToolCallsSupported = payload.optBoolean("parallelToolCallsSupported", false),
         strictToolSchemaSupported = payload.optBoolean("strictToolSchemaSupported", false),
+        responsesContinuationSupported = payload.optBoolean("responsesContinuationSupported", false),
+        builtinWebSearchSupported = payload.optBoolean("builtinWebSearchSupported", false),
+        assistantPhaseSupported = payload.optBoolean("assistantPhaseSupported", false),
+        citationIncludeSupported = payload.optBoolean("citationIncludeSupported", false),
       )
     }
   }
@@ -111,9 +123,15 @@ internal fun LlmAgentCapabilitySnapshot.runtimeMetadataOverrides(): Map<String, 
     put("toolChoiceMode", "auto")
   }
   if (parallelToolCallsSupported) {
-    put("parallelToolCalls", "false")
+    put("parallelToolCalls", "true")
   }
   if (strictToolSchemaSupported) {
     put("toolSchemaStrict", "true")
+  }
+  if (wasVerified) {
+    put("responsesContinuationSupported", responsesContinuationSupported.toString())
+    put("nativeWebSearchEnabled", builtinWebSearchSupported.toString())
+    put("assistantPhaseSupported", assistantPhaseSupported.toString())
+    put("citationIncludeSupported", citationIncludeSupported.toString())
   }
 }

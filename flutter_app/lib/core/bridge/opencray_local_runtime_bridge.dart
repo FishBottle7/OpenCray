@@ -19,6 +19,7 @@ import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
 import '../models/opencray_skills_snapshot.dart';
+import '../models/opencray_strong_background.dart';
 import '../models/opencray_twin_import_source_probe.dart';
 import '../models/opencray_workspace_text_document.dart';
 import 'opencray_host_bridge.dart';
@@ -91,6 +92,10 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     'v1/open_workspace_entry',
     <String, Object?>{'relativePath': relativePath},
   );
+
+  @override
+  Future<void> openExternalUri(String uri) =>
+      _postVoid('v1/open_external_uri', <String, Object?>{'uri': uri});
 
   @override
   Future<OpenCrayFilesSnapshot> createWorkspaceFolder({
@@ -183,6 +188,22 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
       'v1/settings_detail',
       queryParameters: <String, String>{'routeId': routeId},
     ),
+  );
+
+  @override
+  Future<OpenCrayStrongBackgroundSnapshot>
+  loadStrongBackgroundSnapshot() async =>
+      OpenCrayStrongBackgroundSnapshot.fromMap(
+        await _getMap('v1/strong_background_snapshot'),
+      );
+
+  @override
+  Future<OpenCrayStrongBackgroundActionResult> performStrongBackgroundAction(
+    String actionId,
+  ) async => OpenCrayStrongBackgroundActionResult.fromMap(
+    await _postMap('v1/perform_strong_background_action', <String, Object?>{
+      'actionId': actionId,
+    }),
   );
 
   @override

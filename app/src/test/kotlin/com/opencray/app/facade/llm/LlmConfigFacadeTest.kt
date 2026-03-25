@@ -4,6 +4,9 @@ import com.opencray.app.InMemoryLlmSettingsKeyValueStore
 import com.opencray.app.LlmProviderProtocols
 import com.opencray.app.LlmSettingsState
 import com.opencray.app.LlmSettingsStore
+import com.opencray.app.runtimeMetadataOverrides
+import com.opencray.llm.LiteLlmBuiltinToolType
+import com.opencray.llm.LiteLlmMetadataKeys
 import com.opencray.llm.LiteLlmProviderClient
 import com.opencray.llm.LiteLlmProviderRequest
 import com.opencray.llm.LiteLlmProviderResult
@@ -111,6 +114,7 @@ class LlmConfigFacadeTest {
       capabilityProbeResult(expectedEcho = "native_tool_probe"),
       capabilityProbeResult(expectedEcho = "tool_choice_probe"),
       capabilityProbeResult(expectedEcho = "strict_schema_probe"),
+      parallelCapabilityProbeResult(),
     )
     val facade = LocalLlmConfigFacade.createForTest(
       llmSettingsStore = store,
@@ -133,7 +137,9 @@ class LlmConfigFacadeTest {
     assertTrue(result.agentCapability?.nativeToolCallingAvailable == true)
     assertTrue(result.agentCapability?.toolChoiceSupported == true)
     assertTrue(result.agentCapability?.strictToolSchemaSupported == true)
-    assertEquals(4, providerClient.requests.size)
+    assertTrue(result.agentCapability?.parallelToolCallsSupported == true)
+    assertEquals("true", result.agentCapability?.runtimeMetadataOverrides()?.get("parallelToolCalls"))
+    assertEquals(5, providerClient.requests.size)
     assertEquals("https://api.openai.com/v1", providerClient.requests[0].route.baseUrl)
     assertEquals("gpt-4o-mini", providerClient.requests[0].route.model)
     assertEquals("high", providerClient.requests[0].route.metadata["reasoning_effort"])
@@ -145,6 +151,8 @@ class LlmConfigFacadeTest {
     assertEquals("capability_probe", providerClient.requests[2].request.toolChoice?.toolName)
     assertEquals(false, providerClient.requests[2].request.parallelToolCalls)
     assertEquals(true, providerClient.requests[3].request.tools.single().strict)
+    assertEquals(true, providerClient.requests[4].request.parallelToolCalls)
+    assertEquals(2, providerClient.requests[4].request.tools.size)
     assertTrue(
       store.load(
         defaults = LlmSettingsState(
@@ -238,6 +246,7 @@ class LlmConfigFacadeTest {
       capabilityProbeResult(expectedEcho = "native_tool_probe"),
       capabilityProbeResult(expectedEcho = "tool_choice_probe"),
       capabilityProbeResult(expectedEcho = "strict_schema_probe"),
+      parallelCapabilityProbeResult(),
     )
     val facade = LocalLlmConfigFacade.createForTest(
       llmSettingsStore = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore()),
@@ -261,6 +270,90 @@ class LlmConfigFacadeTest {
     assertEquals("16000", providerClient.requests[0].route.metadata["thinking_budget_tokens"])
     assertEquals("anthropic-secret", providerClient.requests[0].request.authHeaders["x-api-key"])
     assertEquals("2023-06-01", providerClient.requests[0].request.authHeaders["anthropic-version"])
+  }
+
+  @Test
+  fun validateOpenAiResponsesCapturesResponsesSpecificCapabilities() {
+    val providerClient = RecordingProviderClient(
+      LiteLlmProviderResult.Success(outputText = "OK"),
+      capabilityProbeResult(expectedEcho = "native_tool_probe"),
+      capabilityProbeResult(expectedEcho = "tool_choice_probe"),
+      capabilityProbeResult(expectedEcho = "strict_schema_probe"),
+      parallelCapabilityProbeResult(),
+      LiteLlmProviderResult.Success(
+        outputText = "READY",
+        providerResponseId = "resp_seed",
+      ),
+      LiteLlmProviderResult.Success(
+        outputText = "responses_continuation_probe_token",
+      ),
+      LiteLlmProviderResult.Success(
+        outputText = "https://example.com",
+        metadata = mapOf(
+          LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_USED to "true",
+          LiteLlmMetadataKeys.PROVIDER_CITATION_COUNT to "1",
+        ),
+      ),
+      LiteLlmProviderResult.Success(
+        outputText = "OK",
+        metadata = mapOf(
+          LiteLlmMetadataKeys.RESPONSES_COMMENTARY_PHASE_OBSERVED to "true",
+          LiteLlmMetadataKeys.RESPONSES_FINAL_PHASE_OBSERVED to "true",
+        ),
+      ),
+    )
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val facade = LocalLlmConfigFacade.createForTest(
+      llmSettingsStore = store,
+      providerClient = providerClient,
+    )
+
+    val result = facade.validate(
+      ValidateLlmConfigRequest(
+        providerId = "openai",
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "test-key",
+        model = "gpt-5",
+        reasoningEffort = "medium",
+      ),
+    )
+
+    assertTrue(result.isSuccess)
+    assertTrue(result.agentCapability?.responsesContinuationSupported == true)
+    assertTrue(result.agentCapability?.builtinWebSearchSupported == true)
+    assertTrue(result.agentCapability?.assistantPhaseSupported == true)
+    assertTrue(result.agentCapability?.citationIncludeSupported == true)
+    assertTrue(result.agentCapability?.parallelToolCallsSupported == true)
+    assertEquals(true, providerClient.requests[4].request.parallelToolCalls)
+    assertEquals(2, providerClient.requests[4].request.tools.size)
+    assertEquals("resp_seed", providerClient.requests[6].request.previousResponseId)
+    assertEquals(
+      LiteLlmBuiltinToolType.WEB_SEARCH,
+      providerClient.requests[7].request.builtinTools.single().type,
+    )
+    assertEquals(
+      "true",
+      providerClient.requests[6].request.metadata[LiteLlmMetadataKeys.VALIDATION_ENABLE_RESPONSES_CONTINUATION],
+    )
+    assertEquals(
+      "true",
+      providerClient.requests[7].request.metadata[LiteLlmMetadataKeys.VALIDATION_ENABLE_RESPONSES_CITATION_INCLUDE],
+    )
+    assertEquals(
+      "true",
+      providerClient.requests[8].request.metadata[LiteLlmMetadataKeys.VALIDATION_ENABLE_RESPONSES_ASSISTANT_PHASES],
+    )
+    assertEquals(
+      true,
+      store.load(
+        defaults = LlmSettingsState(
+          protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+          baseUrl = "https://api.openai.com/v1",
+          model = "gpt-5",
+        ),
+      ).agentCapability.responsesContinuationSupported,
+    )
   }
 
   private class RecordingProviderClient(
@@ -289,6 +382,27 @@ class LlmConfigFacadeTest {
             toolName = "capability_probe",
             arguments = buildJsonObject {
               put("echo", expectedEcho)
+            },
+          ),
+        ),
+      ),
+    )
+
+  private fun parallelCapabilityProbeResult(): LiteLlmProviderResult.Success =
+    LiteLlmProviderResult.Success(
+      outputText = "",
+      completion = LiteLlmStructuredCompletion(
+        toolCalls = listOf(
+          LiteLlmStructuredToolCall(
+            toolName = "parallel_probe_one",
+            arguments = buildJsonObject {
+              put("echo", "parallel_tool_probe_one")
+            },
+          ),
+          LiteLlmStructuredToolCall(
+            toolName = "parallel_probe_two",
+            arguments = buildJsonObject {
+              put("echo", "parallel_tool_probe_two")
             },
           ),
         ),

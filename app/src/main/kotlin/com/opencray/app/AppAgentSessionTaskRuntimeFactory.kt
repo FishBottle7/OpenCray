@@ -23,9 +23,11 @@ import com.opencray.runtime.OpenCrayAgentRuntime
 import com.opencray.runtime.OpenCrayAgentRuntimeConfig
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
+import com.opencray.runtime.OpenCrayAssistantPhaseEvent
+import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayImageGenerationClient
 import com.opencray.runtime.OpenCrayMediaToolSettings
-import com.opencray.runtime.OpenCrayProgressEvent
+import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySpeechSynthesisClient
 import com.opencray.runtime.OpenCraySpeechSynthesisSettings
@@ -44,6 +46,7 @@ import com.opencray.runtime.compaction.SessionCompactionStore
 import com.opencray.runtime.context.AgentRuntimeSessionContext
 import com.opencray.runtime.context.LiveContextTrace
 import com.opencray.runtime.context.RuntimeConversationMessage
+import com.opencray.runtime.context.RuntimeConversationAssistantPhase
 import com.opencray.runtime.context.RuntimeConversationMessageKind
 import com.opencray.runtime.context.RuntimeConversationProgress
 import com.opencray.runtime.context.RuntimeConversationRole
@@ -205,7 +208,11 @@ internal class AppAgentSessionTaskRuntimeFactory(
     val approvalContinuation = approvalContinuationForExecution(sessionId, task.id)
     val approvalGrant = approvalContinuation.grant
     val approvalRejection = approvalContinuation.rejection
-    val promptResumeState = (approvalGrant?.promptResumeState ?: approvalRejection?.promptResumeState)
+    val promptResumeState = (
+      approvalGrant?.promptResumeState
+        ?: approvalRejection?.promptResumeState
+        ?: generalPromptResumeStateForExecution(sessionId, task.id)
+      )
       ?.takeIf { task.type == com.opencray.core.contracts.AgentTaskType.PROMPT }
     val approvedSubAgentResume = approvalGrant?.subAgentApprovalResume
     val rejectedSubAgentResume = approvalRejection?.subAgentApprovalResume
@@ -302,6 +309,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
         llmMetadata = if (requiresLlmConfig) {
           task.metadata.filterKeys(::isLlmVisibleMetadataKey) +
             mapOf("sessionId" to sessionId) +
+            mapOf(HOST_METADATA_PROVIDER_ID to llmSettings.providerId) +
             LlmProviderProtocols.routeMetadata(
               protocol = llmSettings.protocol,
               model = llmSettings.model,
@@ -362,9 +370,20 @@ internal class AppAgentSessionTaskRuntimeFactory(
       PromptCheckpointKind.REJECTED_PENDING_RESUME ->
         ApprovalContinuation(rejection = approvalRejectionFromCheckpoint(durableCheckpoint))
 
-      PromptCheckpointKind.WAITING_APPROVAL -> ApprovalContinuation()
+      PromptCheckpointKind.WAITING_APPROVAL,
+      PromptCheckpointKind.GENERAL_RESUME,
+      -> ApprovalContinuation()
     }
   }
+
+  internal fun generalPromptResumeStateForExecution(
+    sessionId: String,
+    taskId: String,
+  ): com.opencray.runtime.OpenCrayPromptResumeState? =
+    promptCheckpointStoreForSession(sessionId)
+      .get(taskId)
+      ?.takeIf { checkpoint -> checkpoint.checkpointKind == PromptCheckpointKind.GENERAL_RESUME }
+      ?.promptResumeState
 
   private object NonPromptTaskLiteLlmGateway : LiteLlmGateway {
     override fun execute(request: LiteLlmGatewayRequest) =
@@ -701,21 +720,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
   ): OpenCrayAgentRuntimeEventSink = object : OpenCrayAgentRuntimeEventSink {
     override fun onRunEvent(task: AgentTask, event: OpenCrayAgentRunEvent) {
       when (event) {
-        is OpenCraySupplementEvent -> {
-          transcriptStore.appendIfDistinct(
-            RuntimeConversationMessage(
-              role = RuntimeConversationRole.USER,
-              content = event.text,
-            ),
-          )
-          appendIfMissing(
-            transcriptStore = transcriptStore,
-            message = RuntimeConversationMessage(
-              role = RuntimeConversationRole.TOOL,
-              content = buildSupplementReplayContent(event),
-            ),
-          )
-        }
+        is OpenCraySupplementEvent -> recordSupplementReplayEvent(
+          transcriptStore = transcriptStore,
+          event = event,
+        )
 
         is OpenCrayToolResultEvent -> if (event.result.status == AgentToolResultStatus.SUCCESS) {
           recordSuccessfulToolInteraction(
@@ -724,20 +732,9 @@ internal class AppAgentSessionTaskRuntimeFactory(
           )
         }
 
-        is OpenCrayProgressEvent -> appendIfMissing(
+        is OpenCrayAssistantPhaseEvent -> recordAssistantReplayEvent(
           transcriptStore = transcriptStore,
-          message = RuntimeConversationMessage(
-            role = RuntimeConversationRole.TOOL,
-            content = buildProgressReplayContent(event),
-            kind = RuntimeConversationMessageKind.PROGRESS,
-            progress = RuntimeConversationProgress(
-              runId = event.runId,
-              taskId = event.taskId,
-              turn = event.turn,
-              text = event.text,
-              stage = event.stage,
-            ),
-          ),
+          event = event.toAssistantEvent(),
         )
 
         is OpenCraySubAgentEvent -> recordSubAgentReplayEvent(sessionId = sessionId, event = event)
@@ -767,9 +764,33 @@ internal class AppAgentSessionTaskRuntimeFactory(
           RuntimeConversationMessage(
             role = RuntimeConversationRole.ASSISTANT,
             content = assistantText,
+            assistantPhase = RuntimeConversationAssistantPhase.FINAL_ANSWER,
           ),
         )
       }
+  }
+
+  private fun recordSupplementReplayEvent(
+    transcriptStore: SessionTranscriptStore,
+    event: OpenCraySupplementEvent,
+  ) {
+    val replayContent = buildSupplementReplayContent(event)
+    if (transcriptStore.snapshot().any { message -> message.content == replayContent }) {
+      return
+    }
+    transcriptStore.appendIfDistinct(
+      RuntimeConversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = event.text,
+      ),
+    )
+    appendIfMissing(
+      transcriptStore = transcriptStore,
+      message = RuntimeConversationMessage(
+        role = RuntimeConversationRole.TOOL,
+        content = replayContent,
+      ),
+    )
   }
 
   private fun recordSuccessfulToolInteraction(
@@ -805,6 +826,31 @@ internal class AppAgentSessionTaskRuntimeFactory(
     appendIfMissing(
       transcriptStore = transcriptStore,
       message = resultObservation,
+    )
+  }
+
+  private fun recordAssistantReplayEvent(
+    transcriptStore: SessionTranscriptStore,
+    event: OpenCrayAssistantEvent,
+  ) {
+    if (event.isFinal) {
+      return
+    }
+    appendIfMissing(
+      transcriptStore = transcriptStore,
+      message = RuntimeConversationMessage(
+        role = RuntimeConversationRole.ASSISTANT,
+        content = buildProgressReplayContent(event),
+        kind = RuntimeConversationMessageKind.PROGRESS,
+        progress = RuntimeConversationProgress(
+          runId = event.runId,
+          taskId = event.taskId,
+          turn = event.turn,
+          text = event.text,
+          stage = event.stage,
+        ),
+        assistantPhase = RuntimeConversationAssistantPhase.COMMENTARY,
+      ),
     )
   }
 
@@ -853,11 +899,12 @@ internal class AppAgentSessionTaskRuntimeFactory(
       }
       event.result.errorCode?.let { errorCode -> put("error_code", errorCode) }
       event.result.errorMessage?.let { errorMessage -> put("error_message", errorMessage) }
-      if (event.result.metadata.isNotEmpty()) {
+      val replayMetadata = replayMetadataSnapshot(event.result.metadata)
+      if (replayMetadata.isNotEmpty()) {
         put(
           "metadata",
           buildJsonObject {
-            event.result.metadata.toSortedMap().forEach { (key, value) ->
+            replayMetadata.toSortedMap().forEach { (key, value) ->
               put(key, value)
             }
           },
@@ -865,12 +912,18 @@ internal class AppAgentSessionTaskRuntimeFactory(
       }
     }
 
-  private fun buildProgressReplayContent(event: OpenCrayProgressEvent): String =
+  private fun buildProgressReplayContent(event: OpenCrayAssistantEvent): String =
     encodeReplayJsonObject {
+      put("event_kind", "assistant_phase")
+      put("phase", event.phase.name.lowercase())
       put("run_id", event.runId)
       put("task_id", event.taskId)
       put("turn", event.turn)
       put("text", collapseReplayWhitespace(event.text))
+      event.responseFormat
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { responseFormat -> put("response_format", responseFormat) }
       event.stage
         ?.trim()
         ?.takeIf(String::isNotBlank)
@@ -886,6 +939,22 @@ internal class AppAgentSessionTaskRuntimeFactory(
       put("entry_id", event.entryId)
       put("text", collapseReplayWhitespace(event.text))
       put("checkpoint", event.checkpoint)
+      val replayMetadata = replayMetadataSnapshot(event.metadata)
+      if (replayMetadata.isNotEmpty()) {
+        put(
+          "metadata",
+          buildJsonObject {
+            replayMetadata.toSortedMap().forEach { (key, value) ->
+              put(key, value)
+            }
+          },
+        )
+      }
+    }
+
+  private fun replayMetadataSnapshot(metadata: Map<String, String>): Map<String, String> =
+    metadata.filterKeys { key ->
+      key != OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON
     }
 
   private fun buildSubAgentReplayContent(event: OpenCraySubAgentEvent): String =
@@ -1022,6 +1091,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
   companion object {
     const val ERROR_CODE_MISSING_LLM_CONFIG: String = "MISSING_LLM_CONFIG"
     const val METADATA_HOST_PREFIX: String = "_host."
+    const val HOST_METADATA_PROVIDER_ID: String = "${METADATA_HOST_PREFIX}providerId"
     const val METADATA_RUN_ID: String = "${METADATA_HOST_PREFIX}runId"
     const val METADATA_HOST_SESSION_ID: String = "${METADATA_HOST_PREFIX}sessionId"
     const val METADATA_PENDING_MESSAGE_ID: String = "${METADATA_HOST_PREFIX}pendingMessageId"

@@ -1006,13 +1006,34 @@ internal open class ChatSessionLocalStore(
       ?.takeIf { archivedTodos -> archivedTodos.completedAtEpochMs >= 0L }
       ?.takeIf { archivedTodos -> archivedTodos.todos.isNotEmpty() }
 
-  private fun normalizeTodos(todos: List<AgentTodoEntry>): List<AgentTodoEntry> = todos.map { entry ->
-    AgentTodoEntry(
-      content = entry.content.trim(),
-      status = entry.status,
-      activeForm = entry.activeForm?.trim()?.takeIf(String::isNotBlank),
-    )
-  }
+  private fun normalizeTodos(todos: List<AgentTodoEntry>): List<AgentTodoEntry> =
+    todos.mapIndexed { index, entry ->
+      val normalizedContent = entry.content.trim()
+      require(normalizedContent.isNotBlank()) {
+        "Todo entry ${index + 1} content must not be blank."
+      }
+      val normalizedActiveForm = entry.activeForm?.trim()?.takeIf(String::isNotBlank)
+      require(entry.status == AgentTodoStatus.IN_PROGRESS || normalizedActiveForm == null) {
+        "Todo entry ${index + 1} can only set activeForm when status is in_progress."
+      }
+      AgentTodoEntry(
+        content = normalizedContent,
+        status = entry.status,
+        activeForm = normalizedActiveForm,
+      )
+    }.also { normalized ->
+      val firstIndexByContent = linkedMapOf<String, Int>()
+      normalized.forEachIndexed { index, entry ->
+        val duplicateIndex = firstIndexByContent.putIfAbsent(entry.content, index)
+        val duplicateOrdinal = (duplicateIndex ?: 0) + 1
+        require(duplicateIndex == null) {
+          "Todo entry ${index + 1} duplicates todo $duplicateOrdinal content."
+        }
+      }
+      require(normalized.count { entry -> entry.status == AgentTodoStatus.IN_PROGRESS } <= 1) {
+        "Todo entries allow at most one in_progress todo at a time."
+      }
+    }
 
   private fun sessionsForUi(workspace: ChatWorkspaceRecord): List<SessionSummary> = workspace.sessions
     .sortedByDescending { it.updatedAtEpochMs }

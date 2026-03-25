@@ -1,6 +1,6 @@
 # Runtime Foundation Delivery Plan
 
-Last updated: 2026-03-23
+Last updated: 2026-03-25
 
 ## Status
 
@@ -13,6 +13,8 @@ This document turns the earlier runtime recovery proposals into a concrete deliv
 1. detached runtime ownership
 2. append-only run journal
 3. general checkpoint and resume
+
+For the Android-specific product design that sits on top of those foundations, including foreground-service survival and scheduled wake-up, see `docs/android-local-strong-background-runtime-design.md`.
 
 The target behavior is strict:
 
@@ -175,10 +177,12 @@ Implemented so far in Phase 2:
 - waiting-for-approval state is persisted as a session-scoped checkpoint instead of only host memory
 - approve/reject decisions are persisted as `approved_pending_resume` or `rejected_pending_resume`
 - runtime execution now falls back to those durable checkpoints when the in-memory approval registry is empty after host rebuild
+- a first non-approval general resume slice now persists durable prompt resume state after committed tool results, and runtime execution can rebuild from that `general_resume` checkpoint
 - once resumed execution emits the next real runtime event, the approval checkpoint is cleared conservatively so stale resume state is not reused later
 - a first `RunRecoveryPlanner` skeleton now classifies runs into checkpoint resume, approval wait, managed-process reconnect, interrupted recovery required, or legacy requeue
 - run snapshots now project that planner output so recovery intent is explicit even before queue restore behavior is switched over
 - app-layer restore now wraps the queue snapshot store and rewrites approval-boundary restores before `SessionQueue` sees them
+- app-layer restore can now also rewrite interrupted runs back to the same queued run when a durable `general_resume` checkpoint proves that post-tool-result continuation is safe
 - interrupted runs with `approved_pending_resume` or `rejected_pending_resume` can restore as the same queued run instead of being stranded in explicit-retry failure
 - interrupted runs with `waiting_approval` can restore as the same suspended run instead of silently changing recovery shape after host rebuild
 - app-layer restore now prefers durable journal tail over `lastEvent` summary when feeding recovery decisions
@@ -186,7 +190,7 @@ Implemented so far in Phase 2:
 
 Still pending in Phase 2:
 
-- generalized checkpoints for non-approval prompt boundaries
+- additional generalized checkpoint boundaries beyond the current post-tool-result `general_resume` slice
 - managed-process reconnect restore
 - generalized planner integration inside `core` queue restore and detached runtime ownership
 

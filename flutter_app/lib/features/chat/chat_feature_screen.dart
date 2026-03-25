@@ -6,6 +6,7 @@ import 'dart:ui';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../../core/bridge/opencray_host_bridge.dart';
 import '../../core/copy/opencray_ui_copy.dart';
@@ -151,6 +152,23 @@ class _ActiveChatMessageMenu {
     }
     return message.text;
   }
+}
+
+@immutable
+class _TodoTraceSummary {
+  const _TodoTraceSummary({
+    required this.todoCount,
+    required this.pendingCount,
+    required this.inProgressCount,
+    required this.completedCount,
+    this.activeTodoContent,
+  });
+
+  final int todoCount;
+  final int pendingCount;
+  final int inProgressCount;
+  final int completedCount;
+  final String? activeTodoContent;
 }
 
 class ChatFeatureController {
@@ -3312,10 +3330,19 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           ],
         ];
       case 'TodoWrite':
-        final int todoCount = _argumentList(arguments, 'todos')?.length ?? 0;
-        if (todoCount <= 0) {
+        final _TodoTraceSummary? summary = _todoSummaryFromArguments(arguments);
+        if (arguments?.containsKey('todos') != true) {
           return <ChatRunTraceInspectorTextPart>[
             _inspectorAction(widget.copy.isChinese ? '读取' : 'Read'),
+            _inspectorNeutral(' '),
+            _inspectorTarget(
+              widget.copy.isChinese ? '当前待办列表' : 'current todo list',
+            ),
+          ];
+        }
+        if (summary == null || summary.todoCount <= 0) {
+          return <ChatRunTraceInspectorTextPart>[
+            _inspectorAction(widget.copy.isChinese ? '清空' : 'Clear'),
             _inspectorNeutral(' '),
             _inspectorTarget(
               widget.copy.isChinese ? '当前待办列表' : 'current todo list',
@@ -3325,11 +3352,16 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         return <ChatRunTraceInspectorTextPart>[
           _inspectorAction(widget.copy.isChinese ? '更新' : 'Update'),
           _inspectorNeutral(' '),
-          _inspectorTarget(
+          _inspectorScope(
             widget.copy.isChinese
-                ? '$todoCount 条待办'
-                : '$todoCount todo${todoCount == 1 ? '' : 's'}',
+                ? '${summary.todoCount} 条待办'
+                : '${summary.todoCount} todo${summary.todoCount == 1 ? '' : 's'}',
           ),
+          if (summary.activeTodoContent !=
+              null) ...<ChatRunTraceInspectorTextPart>[
+            _inspectorNeutral(widget.copy.isChinese ? '，当前进行中：' : ', active: '),
+            _inspectorTarget(summary.activeTodoContent!),
+          ],
         ];
       case 'Task':
         final String? description = _argumentString(arguments, 'description');
@@ -3540,6 +3572,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     return switch (_nonEmpty(event.checkpoint)?.toLowerCase()) {
       'turn_start' =>
         widget.copy.isChinese ? '在轮次开始时应用' : 'Applied at turn start',
+      'post_tool_pre_model' =>
+        widget.copy.isChinese ? '在工具结果之后应用' : 'Applied after tool result',
       null => null,
       final String checkpoint =>
         widget.copy.isChinese
@@ -3656,6 +3690,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       return null;
     }
     switch (toolName) {
+      case 'TodoWrite':
+        return _todoWriteDetailBody(arguments);
       case 'Edit':
         return _editDetailBody(arguments);
       case 'MultiEdit':
@@ -4197,13 +4233,11 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             ? '对 $path 应用 $editCount 处编辑'
             : 'Apply $editCount edit(s) to $path';
       case 'TodoWrite':
-        final int todoCount = _argumentList(arguments, 'todos')?.length ?? 0;
-        if (todoCount <= 0) {
+        final _TodoTraceSummary? summary = _todoSummaryFromArguments(arguments);
+        if (arguments?.containsKey('todos') != true) {
           return widget.copy.isChinese ? '读取当前待办列表' : 'Read current todo list';
         }
-        return widget.copy.isChinese
-            ? '更新 $todoCount 条待办'
-            : 'Update $todoCount todo(s)';
+        return _todoWriteActionSummary(summary: summary, mutated: true);
       case 'Task':
         final String? description = _argumentString(arguments, 'description');
         final String? subagentType = _argumentString(
@@ -4236,6 +4270,12 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         argumentsJson: argumentsJson,
       );
     }
+    if (toolName == 'TodoWrite') {
+      return _todoWriteActionSummary(
+        summary: _todoSummaryFromResultMetadata(event),
+        mutated: _resultMetadataBool(event, 'mutated') == true,
+      );
+    }
     return _toolActionSummaryFromArguments(
       toolName: toolName,
       arguments: _toolResultArgumentsFallback(toolName: toolName, event: event),
@@ -4251,6 +4291,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       return _nonEmpty(argumentsJson);
     }
     switch (toolName) {
+      case 'TodoWrite':
+        return _todoWriteDetailBody(arguments);
       case 'Edit':
         return _editDetailBody(arguments);
       case 'MultiEdit':
@@ -4284,6 +4326,52 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         values: allowedTools,
       ),
     ]);
+  }
+
+  String? _todoWriteDetailBody(Map<String, dynamic> arguments) {
+    if (!arguments.containsKey('todos')) {
+      return null;
+    }
+    final List<dynamic>? todos = _argumentList(arguments, 'todos');
+    if (todos == null || todos.isEmpty) {
+      return null;
+    }
+    final List<String> lines = <String>[];
+    for (final dynamic rawTodo in todos) {
+      if (rawTodo is! Map) {
+        continue;
+      }
+      final Map<String, dynamic> todo = Map<String, dynamic>.from(
+        rawTodo.map((key, value) => MapEntry(key.toString(), value)),
+      );
+      final String? content = _argumentString(todo, 'content');
+      if (content == null) {
+        continue;
+      }
+      final String statusLabel = switch (_argumentString(
+        todo,
+        'status',
+      )?.toLowerCase()) {
+        'completed' ||
+        'complete' ||
+        'done' => widget.copy.isChinese ? '[已完成]' : '[completed]',
+        'in_progress' ||
+        'in-progress' ||
+        'inprogress' => widget.copy.isChinese ? '[进行中]' : '[in_progress]',
+        _ => widget.copy.isChinese ? '[待处理]' : '[pending]',
+      };
+      final String? activeForm =
+          _argumentString(todo, 'activeForm') ??
+          _argumentString(todo, 'active_form');
+      lines.add(
+        activeForm == null
+            ? '$statusLabel $content'
+            : widget.copy.isChinese
+            ? '$statusLabel $content | 当前动作：$activeForm'
+            : '$statusLabel $content | active: $activeForm',
+      );
+    }
+    return lines.isEmpty ? null : lines.join('\n');
   }
 
   String? _editDetailBody(Map<String, dynamic> arguments) {
@@ -4619,21 +4707,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         ];
         return parts.isEmpty ? null : 'Applied ${parts.join(' ')}';
       case 'TodoWrite':
-        final int? todoCount = _resultMetadataInt(event, 'todoCount');
-        final bool? mutated = _resultMetadataBool(event, 'mutated');
-        if (todoCount == null) {
-          return null;
-        }
-        if (widget.copy.isChinese) {
-          if (mutated == true) {
-            return '待办列表已更新，共 $todoCount 项';
-          }
-          return '当前待办列表共 $todoCount 项';
-        }
-        if (mutated == true) {
-          return 'Updated the todo list to $todoCount item(s)';
-        }
-        return 'Current todo list has $todoCount item(s)';
+        return _todoWriteResultSummary(event);
       case 'Task':
         final String? executionState = _resultMetadataValue(
           event,
@@ -4719,6 +4793,200 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       default:
         return null;
     }
+  }
+
+  String _todoWriteActionSummary({
+    required _TodoTraceSummary? summary,
+    required bool mutated,
+  }) {
+    if (!mutated) {
+      return widget.copy.isChinese ? '读取当前待办列表' : 'Read current todo list';
+    }
+    if (summary == null || summary.todoCount <= 0) {
+      return widget.copy.isChinese ? '清空待办列表' : 'Clear the todo list';
+    }
+    final String? breakdown = _todoBreakdownSummary(summary);
+    if (widget.copy.isChinese) {
+      final String base = breakdown == null
+          ? '更新 ${summary.todoCount} 条待办'
+          : '更新 ${summary.todoCount} 条待办（$breakdown）';
+      return summary.activeTodoContent == null
+          ? base
+          : '$base，当前进行中：${summary.activeTodoContent!}';
+    }
+    final String base = breakdown == null
+        ? 'Update ${summary.todoCount} todo(s)'
+        : 'Update ${summary.todoCount} todo(s) ($breakdown)';
+    return summary.activeTodoContent == null
+        ? base
+        : '$base, active: ${summary.activeTodoContent!}';
+  }
+
+  String? _todoWriteResultSummary(OpenCrayChatRuntimeEventSnapshot event) {
+    final _TodoTraceSummary? summary = _todoSummaryFromResultMetadata(event);
+    if (summary == null) {
+      return null;
+    }
+    final bool mutated = _resultMetadataBool(event, 'mutated') == true;
+    final bool? planChanged = _resultMetadataBool(event, 'planChanged');
+    if (!mutated) {
+      if (summary.todoCount <= 0) {
+        return widget.copy.isChinese
+            ? '当前待办列表为空'
+            : 'Current todo list is empty';
+      }
+      final String? breakdown = _todoBreakdownSummary(summary);
+      if (widget.copy.isChinese) {
+        final String base = breakdown == null
+            ? '当前待办列表共 ${summary.todoCount} 项'
+            : '当前待办列表共 ${summary.todoCount} 项，$breakdown';
+        return summary.activeTodoContent == null
+            ? base
+            : '$base，当前进行中：${summary.activeTodoContent!}';
+      }
+      final String base = breakdown == null
+          ? 'Current todo list has ${summary.todoCount} item(s)'
+          : 'Current todo list has ${summary.todoCount} item(s): $breakdown';
+      return summary.activeTodoContent == null
+          ? base
+          : '$base. Active: ${summary.activeTodoContent!}';
+    }
+    if (summary.todoCount <= 0) {
+      if (widget.copy.isChinese) {
+        return planChanged == false ? '待办列表未变化，当前为空' : '待办列表已清空';
+      }
+      return planChanged == false
+          ? 'Plan unchanged. Todo list is empty.'
+          : 'Cleared the todo list';
+    }
+    final int completedDeltaCount =
+        _resultMetadataInt(event, 'completedTodoDeltaCount') ?? 0;
+    final int addedTodoCount = _resultMetadataInt(event, 'addedTodoCount') ?? 0;
+    final int removedTodoCount =
+        _resultMetadataInt(event, 'removedTodoCount') ?? 0;
+    final int statusChangedTodoCount =
+        _resultMetadataInt(event, 'statusChangedTodoCount') ?? 0;
+    final int extraStatusChangeCount = math.max(
+      0,
+      statusChangedTodoCount - completedDeltaCount,
+    );
+    final List<String> details = <String>[
+      if (completedDeltaCount > 0)
+        widget.copy.isChinese
+            ? '完成 $completedDeltaCount 项'
+            : 'completed $completedDeltaCount',
+      if (addedTodoCount > 0)
+        widget.copy.isChinese
+            ? '新增 $addedTodoCount 项'
+            : 'added $addedTodoCount',
+      if (removedTodoCount > 0)
+        widget.copy.isChinese
+            ? '移除 $removedTodoCount 项'
+            : 'removed $removedTodoCount',
+      if (extraStatusChangeCount > 0)
+        widget.copy.isChinese
+            ? '更新 $extraStatusChangeCount 项状态'
+            : 'updated $extraStatusChangeCount status${extraStatusChangeCount == 1 ? '' : 'es'}',
+    ];
+    if (details.isEmpty) {
+      final String? breakdown = _todoBreakdownSummary(summary);
+      if (breakdown != null) {
+        details.add(breakdown);
+      }
+    }
+    if (widget.copy.isChinese) {
+      final String base = planChanged == false ? '待办计划未变化' : '待办计划已更新';
+      final String detailText = details.isEmpty
+          ? base
+          : '$base：${details.join('，')}';
+      return summary.activeTodoContent == null
+          ? detailText
+          : '$detailText，当前进行中：${summary.activeTodoContent!}';
+    }
+    final String base = planChanged == false
+        ? 'Plan unchanged'
+        : 'Plan updated';
+    final String detailText = details.isEmpty
+        ? base
+        : '$base: ${details.join(', ')}';
+    return summary.activeTodoContent == null
+        ? detailText
+        : '$detailText. Active now: ${summary.activeTodoContent!}';
+  }
+
+  String? _todoBreakdownSummary(_TodoTraceSummary summary) {
+    if (summary.todoCount <= 0) {
+      return null;
+    }
+    if (widget.copy.isChinese) {
+      return '${summary.pendingCount} 待处理，${summary.inProgressCount} 进行中，${summary.completedCount} 已完成';
+    }
+    return '${summary.pendingCount} pending, ${summary.inProgressCount} in progress, ${summary.completedCount} completed';
+  }
+
+  _TodoTraceSummary? _todoSummaryFromArguments(
+    Map<String, dynamic>? arguments,
+  ) {
+    if (arguments == null || arguments.containsKey('todos') != true) {
+      return null;
+    }
+    final List<dynamic>? todos = _argumentList(arguments, 'todos');
+    return _todoSummaryFromTodoList(todos);
+  }
+
+  _TodoTraceSummary? _todoSummaryFromResultMetadata(
+    OpenCrayChatRuntimeEventSnapshot event,
+  ) {
+    final int? todoCount = _resultMetadataInt(event, 'todoCount');
+    if (todoCount == null) {
+      return null;
+    }
+    return _TodoTraceSummary(
+      todoCount: todoCount,
+      pendingCount: _resultMetadataInt(event, 'pendingTodoCount') ?? 0,
+      inProgressCount: _resultMetadataInt(event, 'inProgressTodoCount') ?? 0,
+      completedCount: _resultMetadataInt(event, 'completedTodoCount') ?? 0,
+      activeTodoContent: _resultMetadataValue(event, 'activeTodoContent'),
+    );
+  }
+
+  _TodoTraceSummary _todoSummaryFromTodoList(List<dynamic>? todos) {
+    int pendingCount = 0;
+    int inProgressCount = 0;
+    int completedCount = 0;
+    String? activeTodoContent;
+    final List<dynamic> normalizedTodos = todos ?? const <dynamic>[];
+    for (final dynamic rawTodo in normalizedTodos) {
+      if (rawTodo is! Map) {
+        continue;
+      }
+      final Map<String, dynamic> todo = Map<String, dynamic>.from(
+        rawTodo.map((key, value) => MapEntry(key.toString(), value)),
+      );
+      switch ((_argumentString(todo, 'status') ?? '').trim().toLowerCase()) {
+        case 'completed':
+        case 'complete':
+        case 'done':
+          completedCount += 1;
+          break;
+        case 'in_progress':
+        case 'in-progress':
+        case 'inprogress':
+          inProgressCount += 1;
+          activeTodoContent ??= _argumentString(todo, 'content');
+          break;
+        default:
+          pendingCount += 1;
+          break;
+      }
+    }
+    return _TodoTraceSummary(
+      todoCount: normalizedTodos.length,
+      pendingCount: pendingCount,
+      inProgressCount: inProgressCount,
+      completedCount: completedCount,
+      activeTodoContent: activeTodoContent,
+    );
   }
 
   Map<String, dynamic>? _decodeJsonObject(String? rawJson) {
@@ -7153,11 +7421,13 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
                           BuildContext context,
                           SelectableRegionState selectableRegionState,
                         ) => const SizedBox.shrink(),
-                    child: Text(
-                      text,
-                      style: _ChatTextStyles.bubble.copyWith(
-                        color: widget.textColor,
-                      ),
+                    child: _ChatBubbleMarkdownBody(
+                      bridge: widget.bridge,
+                      copy: widget.copy,
+                      text: text,
+                      textColor: widget.textColor,
+                      backgroundColor: widget.backgroundColor,
+                      messageId: widget.message.messageId,
                     ),
                   ),
                 ),
@@ -7206,6 +7476,153 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
       child: bubble,
     );
   }
+}
+
+class _ChatBubbleMarkdownBody extends StatelessWidget {
+  const _ChatBubbleMarkdownBody({
+    required this.bridge,
+    required this.copy,
+    required this.text,
+    required this.textColor,
+    required this.backgroundColor,
+    required this.messageId,
+  });
+
+  final OpenCrayHostBridge? bridge;
+  final OpenCrayUiCopy copy;
+  final String text;
+  final Color textColor;
+  final Color backgroundColor;
+  final String messageId;
+
+  Future<void> _handleLinkTap(BuildContext context, String? href) async {
+    final OpenCrayHostBridge? hostBridge = bridge;
+    final String target = href?.trim() ?? '';
+    if (hostBridge == null || target.isEmpty) {
+      return;
+    }
+    final ScaffoldMessengerState? messenger = ScaffoldMessenger.maybeOf(
+      context,
+    );
+    try {
+      final Uri? uri = Uri.tryParse(target);
+      if (_isHttpExternalChatLink(uri)) {
+        await hostBridge.openExternalUri(uri.toString());
+        return;
+      }
+      if (_isWorkspaceRelativeChatLink(uri, target)) {
+        final String relativePath = _normalizeChatWorkspaceRelativePath(target);
+        if (_isPreviewableTextRelativePath(relativePath)) {
+          final OpenCrayFileTextPreview preview = await hostBridge
+              .loadWorkspaceTextPreview(relativePath);
+          if (!context.mounted) {
+            return;
+          }
+          await _showChatTextPreviewDialog(context, preview);
+          return;
+        }
+        await hostBridge.openWorkspaceEntry(relativePath);
+        return;
+      }
+      throw StateError('Unsupported markdown link target.');
+    } catch (_) {
+      if (!context.mounted) {
+        return;
+      }
+      messenger
+        ?..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(copy.chatMessageActionFailed)));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MarkdownBody(
+      key: ValueKey<String>('chat-bubble-markdown-$messageId'),
+      data: text,
+      onTapLink: (_, href, __) {
+        unawaited(_handleLinkTap(context, href));
+      },
+      styleSheet: _chatMarkdownStyleSheet(
+        context,
+        textColor: textColor,
+        backgroundColor: backgroundColor,
+      ),
+    );
+  }
+}
+
+MarkdownStyleSheet _chatMarkdownStyleSheet(
+  BuildContext context, {
+  required Color textColor,
+  required Color backgroundColor,
+}) {
+  final base = MarkdownStyleSheet.fromTheme(Theme.of(context));
+  final bool darkBubble =
+      ThemeData.estimateBrightnessForColor(backgroundColor) == Brightness.dark;
+  final Color chromeColor = darkBubble
+      ? Colors.white.withValues(alpha: 0.18)
+      : Colors.black.withValues(alpha: 0.08);
+  final Color subtleChromeColor = darkBubble
+      ? Colors.white.withValues(alpha: 0.12)
+      : Colors.black.withValues(alpha: 0.05);
+  final TextStyle bodyStyle = _ChatTextStyles.bubble.copyWith(color: textColor);
+  final TextStyle headingStyle = bodyStyle.copyWith(
+    fontWeight: FontWeight.w700,
+    height: 1.3,
+  );
+  return base.copyWith(
+    a: bodyStyle.copyWith(
+      decoration: TextDecoration.underline,
+      decorationColor: textColor.withValues(alpha: 0.65),
+    ),
+    p: bodyStyle,
+    pPadding: EdgeInsets.zero,
+    strong: bodyStyle.copyWith(fontWeight: FontWeight.w700),
+    em: bodyStyle.copyWith(fontStyle: FontStyle.italic),
+    del: bodyStyle.copyWith(decoration: TextDecoration.lineThrough),
+    h1: headingStyle.copyWith(fontSize: 20),
+    h2: headingStyle.copyWith(fontSize: 18),
+    h3: headingStyle.copyWith(fontSize: 16),
+    h4: headingStyle.copyWith(fontSize: 15),
+    h5: headingStyle.copyWith(fontSize: 14),
+    h6: headingStyle.copyWith(fontSize: 14),
+    listBullet: bodyStyle,
+    code: TextStyle(
+      fontSize: 13,
+      height: 1.45,
+      fontFamily: 'monospace',
+      color: textColor,
+    ),
+    codeblockPadding: const EdgeInsets.all(10),
+    codeblockDecoration: BoxDecoration(
+      color: subtleChromeColor,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: chromeColor),
+    ),
+    blockquote: bodyStyle.copyWith(
+      color: textColor.withValues(alpha: darkBubble ? 0.88 : 0.82),
+    ),
+    blockquotePadding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+    blockquoteDecoration: BoxDecoration(
+      color: subtleChromeColor,
+      borderRadius: BorderRadius.circular(12),
+      border: Border(left: BorderSide(color: chromeColor, width: 3)),
+    ),
+    tableHead: bodyStyle.copyWith(fontWeight: FontWeight.w700),
+    tableBody: bodyStyle,
+    tableHeadAlign: TextAlign.left,
+    tablePadding: const EdgeInsets.only(top: 2, bottom: 4),
+    tableBorder: TableBorder.all(color: chromeColor),
+    tableColumnWidth: const IntrinsicColumnWidth(),
+    tableCellsPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+    tableCellsDecoration: BoxDecoration(color: subtleChromeColor),
+    tableHeadCellsDecoration: BoxDecoration(color: chromeColor),
+    horizontalRuleDecoration: BoxDecoration(
+      border: Border(top: BorderSide(color: chromeColor)),
+    ),
+    blockSpacing: 10,
+  );
 }
 
 class _ChatImageAttachmentGroup extends StatelessWidget {
@@ -7522,10 +7939,7 @@ class _ChatFileAttachmentTile extends StatelessWidget {
         if (!context.mounted) {
           return;
         }
-        await showDialog<void>(
-          context: context,
-          builder: (dialogContext) => _ChatTextPreviewDialog(preview: preview),
-        );
+        await _showChatTextPreviewDialog(context, preview);
         return;
       }
       await hostBridge.openWorkspaceEntry(localPath);
@@ -8225,6 +8639,16 @@ String _formatAttachmentDuration(int durationMs) {
   return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
 }
 
+Future<void> _showChatTextPreviewDialog(
+  BuildContext context,
+  OpenCrayFileTextPreview preview,
+) {
+  return showDialog<void>(
+    context: context,
+    builder: (dialogContext) => _ChatTextPreviewDialog(preview: preview),
+  );
+}
+
 bool _isPreviewableTextAttachment(ChatMessageAttachmentData attachment) {
   final String normalizedMimeType =
       attachment.mimeType?.trim().toLowerCase() ?? '';
@@ -8232,7 +8656,17 @@ bool _isPreviewableTextAttachment(ChatMessageAttachmentData attachment) {
       _chatPreviewableTextMimeTypes.contains(normalizedMimeType)) {
     return true;
   }
-  final String normalizedName = attachment.displayName.trim().toLowerCase();
+  return _isPreviewableTextFileName(attachment.displayName);
+}
+
+bool _isPreviewableTextRelativePath(String relativePath) =>
+    _isPreviewableTextFileName(_chatRelativePathFileName(relativePath));
+
+bool _isPreviewableTextFileName(String fileName) {
+  final String normalizedName = fileName.trim().toLowerCase();
+  if (normalizedName.isEmpty) {
+    return false;
+  }
   if (_chatPreviewableTextFileNames.contains(normalizedName)) {
     return true;
   }
@@ -8240,6 +8674,54 @@ bool _isPreviewableTextAttachment(ChatMessageAttachmentData attachment) {
       ? normalizedName.split('.').last
       : '';
   return _chatPreviewableTextExtensions.contains(extension);
+}
+
+bool _isHttpExternalChatLink(Uri? uri) {
+  final String scheme = uri?.scheme.trim().toLowerCase() ?? '';
+  return scheme == 'http' || scheme == 'https';
+}
+
+bool _isWorkspaceRelativeChatLink(Uri? uri, String href) {
+  if (href.trim().isEmpty) {
+    return false;
+  }
+  if (uri != null && uri.hasScheme) {
+    return false;
+  }
+  final String normalizedPath = _normalizeChatWorkspaceRelativePath(href);
+  return normalizedPath.isNotEmpty && !normalizedPath.startsWith('/');
+}
+
+String _normalizeChatWorkspaceRelativePath(String href) {
+  final String trimmed = href.trim();
+  if (trimmed.isEmpty) {
+    return '';
+  }
+  final Uri? uri = Uri.tryParse(trimmed);
+  final String path = uri != null && !uri.hasScheme ? uri.path : trimmed;
+  return _safeDecodeChatLinkPath(path).replaceAll('\\', '/').trim();
+}
+
+String _chatRelativePathFileName(String relativePath) {
+  final String normalizedPath = _normalizeChatWorkspaceRelativePath(
+    relativePath,
+  );
+  if (normalizedPath.isEmpty) {
+    return '';
+  }
+  final int slashIndex = normalizedPath.lastIndexOf('/');
+  if (slashIndex < 0) {
+    return normalizedPath;
+  }
+  return normalizedPath.substring(slashIndex + 1);
+}
+
+String _safeDecodeChatLinkPath(String value) {
+  try {
+    return Uri.decodeFull(value);
+  } on FormatException {
+    return value;
+  }
 }
 
 class _ChatTextPreviewDialog extends StatelessWidget {
@@ -8551,7 +9033,7 @@ class _ComposerGlassSurface extends StatelessWidget {
   }
 }
 
-class _TodoListPanel extends StatelessWidget {
+class _TodoListPanel extends StatefulWidget {
   const _TodoListPanel({required this.todos});
 
   static const int _maxVisibleTodoCount = 4;
@@ -8561,11 +9043,21 @@ class _TodoListPanel extends StatelessWidget {
   final List<ChatTodoItemData> todos;
 
   @override
+  State<_TodoListPanel> createState() => _TodoListPanelState();
+}
+
+class _TodoListPanelState extends State<_TodoListPanel> {
+  bool _isExpanded = true;
+
+  @override
   Widget build(BuildContext context) {
-    final int visibleCount = math.min(todos.length, _maxVisibleTodoCount);
+    final int visibleCount = math.min(
+      widget.todos.length,
+      _TodoListPanel._maxVisibleTodoCount,
+    );
     final double listHeight =
-        (visibleCount * _itemHeight) +
-        (visibleCount > 0 ? (visibleCount - 1) * _itemGap : 0);
+        (visibleCount * _TodoListPanel._itemHeight) +
+        (visibleCount > 0 ? (visibleCount - 1) * _TodoListPanel._itemGap : 0);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -8574,32 +9066,51 @@ class _TodoListPanel extends StatelessWidget {
           children: <Widget>[
             Text('TODO', style: _ChatTextStyles.todoLabel),
             const Spacer(),
-            Icon(
-              CupertinoIcons.chevron_up,
+            GestureDetector(
               key: const ValueKey<String>('chat-composer-todo-chevron'),
-              size: 13,
-              color: _ChatPalette.textTertiary,
+              behavior: HitTestBehavior.opaque,
+              onTap: () {
+                setState(() {
+                  _isExpanded = !_isExpanded;
+                });
+              },
+              child: SizedBox.square(
+                dimension: 24,
+                child: Center(
+                  child: AnimatedRotation(
+                    duration: const Duration(milliseconds: 180),
+                    turns: _isExpanded ? 0 : 0.5,
+                    child: const Icon(
+                      CupertinoIcons.chevron_up,
+                      size: 13,
+                      color: _ChatPalette.textTertiary,
+                    ),
+                  ),
+                ),
+              ),
             ),
           ],
         ),
-        const SizedBox(height: 10),
-        SizedBox(
-          key: const ValueKey<String>('chat-composer-todo-list'),
-          height: listHeight,
-          child: ListView.separated(
-            padding: EdgeInsets.zero,
-            physics: todos.length > _maxVisibleTodoCount
-                ? const ClampingScrollPhysics()
-                : const NeverScrollableScrollPhysics(),
-            itemCount: todos.length,
-            itemBuilder: (BuildContext context, int index) {
-              return _TodoRow(todo: todos[index], index: index);
-            },
-            separatorBuilder: (BuildContext context, int index) {
-              return const SizedBox(height: _itemGap);
-            },
+        if (_isExpanded) ...<Widget>[
+          const SizedBox(height: 10),
+          SizedBox(
+            key: const ValueKey<String>('chat-composer-todo-list'),
+            height: listHeight,
+            child: ListView.separated(
+              padding: EdgeInsets.zero,
+              physics: widget.todos.length > _TodoListPanel._maxVisibleTodoCount
+                  ? const ClampingScrollPhysics()
+                  : const NeverScrollableScrollPhysics(),
+              itemCount: widget.todos.length,
+              itemBuilder: (BuildContext context, int index) {
+                return _TodoRow(todo: widget.todos[index], index: index);
+              },
+              separatorBuilder: (BuildContext context, int index) {
+                return const SizedBox(height: _TodoListPanel._itemGap);
+              },
+            ),
           ),
-        ),
+        ],
       ],
     );
   }

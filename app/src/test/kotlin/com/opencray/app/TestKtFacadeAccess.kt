@@ -49,6 +49,57 @@ internal fun inMemoryRunEventJournalStoreFactoryForTest(): RunEventJournalStoreF
     methodName = "inMemoryRunEventJournalStoreFactory",
   )
 
+internal fun inMemoryRunEventJournalStoreFactory(): RunEventJournalStoreFactory =
+  inMemoryRunEventJournalStoreFactoryForTest()
+
+internal fun inMemoryPromptCheckpointStoreFactory(): PromptCheckpointStoreFactory =
+  inMemoryPromptCheckpointStoreFactoryForTest()
+
+internal fun inMemoryScheduledTaskSpecStoreFactory(): ScheduledTaskSpecStoreFactory =
+  invokeKtStatic(
+    className = "com.opencray.app.ScheduledTaskStoreKt",
+    methodName = "inMemoryScheduledTaskSpecStoreFactory",
+  )
+
+internal fun inMemoryScheduledTaskRunRecordStoreFactory(): ScheduledTaskRunRecordStoreFactory =
+  invokeKtStatic(
+    className = "com.opencray.app.ScheduledTaskStoreKt",
+    methodName = "inMemoryScheduledTaskRunRecordStoreFactory",
+  )
+
+internal fun llmRouteFingerprint(
+  protocol: String,
+  baseUrl: String,
+  model: String,
+): String = invokeKtStatic(
+  className = "com.opencray.app.LlmAgentCapabilitySupportKt",
+  methodName = "llmRouteFingerprint",
+  args = arrayOf(protocol, baseUrl, model),
+)
+
+internal fun LlmAgentCapabilitySnapshot.runtimeMetadataOverrides(): Map<String, String> =
+  invokeKtStatic(
+    className = "com.opencray.app.LlmAgentCapabilitySupportKt",
+    methodName = "runtimeMetadataOverrides",
+    args = arrayOf(this),
+  )
+
+internal fun InProcessOpenCrayRuntimeOwner.toRuntimeOwnerAccess(): OpenCrayRuntimeOwnerAccess =
+  invokeKtStatic(
+    className = "com.opencray.app.OpenCrayRuntimeServiceHostKt",
+    methodName = "toRuntimeOwnerAccess",
+    args = arrayOf(this),
+  )
+
+internal fun bootstrapSessionsForRuntimeServiceHost(
+  chatSessionStore: ChatSessionLocalStore,
+  runtimeAccess: OpenCrayRuntimeOwnerAccess,
+): RuntimeServiceBootstrapResult = invokeKtStatic(
+  className = "com.opencray.app.OpenCrayRuntimeServiceHostKt",
+  methodName = "bootstrapSessionsForRuntimeServiceHost",
+  args = arrayOf(chatSessionStore, runtimeAccess),
+)
+
 internal val errorManagedProcessInterruptedOnRestoreForTest: String
   get() = readKtStaticString(
     className = "com.opencray.app.AgentSessionRuntimeManagerKt",

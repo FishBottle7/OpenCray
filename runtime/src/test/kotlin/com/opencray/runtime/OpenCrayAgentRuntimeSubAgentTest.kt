@@ -14,6 +14,7 @@ import com.opencray.llm.LiteLlmCompletionMode
 import com.opencray.llm.LiteLlmGateway
 import com.opencray.llm.LiteLlmGatewayRequest
 import com.opencray.llm.LiteLlmGatewayResult
+import com.opencray.llm.LiteLlmGatewayMessageRole
 import com.opencray.llm.LiteLlmGatewayStatus
 import com.opencray.llm.LiteLlmRouteSelectionMetadata
 import com.opencray.policy.SafetySettingsMetadataKeys
@@ -90,11 +91,12 @@ class OpenCrayAgentRuntimeSubAgentTest {
     assertEquals("README says hello.", taskResultMetadata[SubAgentResultMetadataKeys.SUMMARY_HEADLINE])
     assertFalse(gateway.requests[1].prompt.contains("Please delegate README inspection and then answer."))
     assertTrue(gateway.requests[1].prompt.contains("Read README.md and summarize it."))
-    assertTrue(gateway.requests[1].prompt.contains("tool_name\":\"Read"))
-    assertFalse(gateway.requests[1].prompt.contains("tool_name\":\"Task"))
-    assertFalse(gateway.requests[1].prompt.contains("tool_name\":\"Write"))
-    assertFalse(gateway.requests[1].prompt.contains("tool_name\":\"Bash"))
-    assertFalse(gateway.requests[1].prompt.contains("tool_name\":\"python_exec"))
+    val childToolNames = gateway.requests[1].tools.map { definition -> definition.name }
+    assertTrue(childToolNames.contains("Read"))
+    assertFalse(childToolNames.contains("Task"))
+    assertFalse(childToolNames.contains("Write"))
+    assertFalse(childToolNames.contains("Bash"))
+    assertFalse(childToolNames.contains("python_exec"))
     assertTrue(gateway.requests[2].prompt.contains("README says hello."))
     assertTrue(gateway.requests[2].prompt.contains("[Recent Working Observations]"))
     assertTrue(
@@ -263,7 +265,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
   }
 
   @Test
-  fun taskToolCancellationPreservesSubagentMetadataOnParentResult() {
+  fun taskCancellationBeforeDelegationStartsReturnsTopLevelCancelledResult() {
     val workspaceRoot = temporaryFolder.newFolder("subagent-cancelled").toPath()
     val gateway = RecordingGateway(
       outputs = listOf(
@@ -290,23 +292,10 @@ class OpenCrayAgentRuntimeSubAgentTest {
     )
 
     assertEquals(ExecutionStatus.CANCELLED, result.status)
-    assertEquals("SUBAGENT_CANCELLED", result.errorCode)
-    assertEquals("Task", result.metadata["cancelledToolName"])
-    assertEquals("Task", result.metadata["toolName"])
-    assertEquals("minimal", result.metadata["subagentContextMode"])
-    assertEquals("1", result.metadata["toolCallCount"])
-    assertEquals("none", result.metadata[SubAgentResultMetadataKeys.CONTINUATION_KIND])
-    assertEquals("false", result.metadata[SubAgentResultMetadataKeys.CONTINUATION_RESUMABLE])
-    assertEquals(1, gateway.requests.size)
-    val subAgentEvents = eventSink.events.filterIsInstance<OpenCraySubAgentEvent>()
-    assertEquals(
-      listOf(OpenCraySubAgentPhase.STARTED, OpenCraySubAgentPhase.CANCELLED),
-      subAgentEvents.map(OpenCraySubAgentEvent::phase),
-    )
-    assertEquals(
-      listOf(SubAgentExecutionState.RUNNING, SubAgentExecutionState.CANCELLED),
-      subAgentEvents.map(OpenCraySubAgentEvent::executionState),
-    )
+    assertEquals("AGENT_CANCELLED", result.errorCode)
+    assertEquals("cancelled", result.metadata["responseFormat"])
+    assertEquals(0, gateway.requests.size)
+    assertTrue(eventSink.events.none { event -> event is OpenCraySubAgentEvent })
   }
 
   @Test
@@ -346,6 +335,314 @@ class OpenCrayAgentRuntimeSubAgentTest {
         .map(OpenCraySubAgentEvent::phase),
     )
     assertEquals(1, gateway.requests.size)
+  }
+
+  @Test
+  fun taskToolRunsWorkerChildWithEditableToolSurface() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-worker-edit").toPath()
+    val notesFile = workspaceRoot.resolve("notes.txt")
+    Files.write(
+      notesFile,
+      "draft\nTODO\n".toByteArray(StandardCharsets.UTF_8),
+    )
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Task","arguments":{"description":"update notes","prompt":"Replace TODO with DONE in notes.txt and report back.","subagent_type":"worker"}}""",
+        """{"type":"tool_call","tool_name":"Edit","arguments":{"file_path":"notes.txt","old_string":"TODO","new_string":"DONE"}}""",
+        """{"type":"final","answer":"notes.txt updated."}""",
+        """{"type":"final","answer":"Worker completed the edit."}""",
+      ),
+    )
+    val eventSink = RecordingEventSink()
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      eventSink = eventSink,
+    )
+
+    val result = runtime.execute(
+      task = promptTask("Delegate a focused notes edit and continue."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Worker completed the edit.", result.stdout)
+    assertEquals("draft\nDONE\n", String(Files.readAllBytes(notesFile), StandardCharsets.UTF_8))
+    assertEquals(4, gateway.requests.size)
+    val taskResultMetadata = eventSink.events
+      .filterIsInstance<OpenCrayToolResultEvent>()
+      .single()
+      .result
+      .metadata
+    assertEquals("worker", taskResultMetadata["delegationSubagentType"])
+    assertEquals("delegated", taskResultMetadata["delegationContextMode"])
+    assertEquals("Edit,Glob,Grep,LS,MultiEdit,Read,Write", taskResultMetadata["delegationAllowedTools"])
+    assertEquals("completed", taskResultMetadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+    val childToolNames = gateway.requests[1].tools.map { definition -> definition.name }
+    assertTrue(childToolNames.contains("Edit"))
+    assertTrue(childToolNames.contains("MultiEdit"))
+    assertTrue(childToolNames.contains("Write"))
+    assertFalse(childToolNames.contains("Task"))
+    assertFalse(childToolNames.contains("Bash"))
+    assertFalse(childToolNames.contains("python_exec"))
+    assertTrue(gateway.requests[3].prompt.contains("notes.txt updated."))
+  }
+
+  @Test
+  fun taskToolFailsWhenWorkerChildAttemptsDisallowedBash() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-worker-disallowed-bash").toPath()
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Bash","arguments":{"command":"echo hi"}}""",
+      ),
+    )
+    val eventSink = RecordingEventSink()
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      eventSink = eventSink,
+    )
+
+    val result = runtime.execute(
+      task = directToolCallTask(
+        """{"type":"tool_call","tool_name":"Task","arguments":{"description":"attempt bash","prompt":"Try to run echo hi.","subagent_type":"worker"}}""",
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.FAILED, result.status)
+    assertEquals("SUBAGENT_TOOL_NOT_ALLOWED", result.errorCode)
+    assertEquals("FAILED", result.metadata["childExecutionStatus"])
+    assertEquals("failed", result.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+    assertEquals("worker", result.metadata["subagentType"])
+    assertTrue(result.errorMessage.orEmpty().contains("unavailable"))
+    assertEquals(
+      listOf(OpenCraySubAgentPhase.STARTED, OpenCraySubAgentPhase.FAILED),
+      eventSink.events
+        .filterIsInstance<OpenCraySubAgentEvent>()
+        .map(OpenCraySubAgentEvent::phase),
+    )
+    assertEquals(1, gateway.requests.size)
+  }
+
+  @Test
+  fun taskToolCapturesWorkerEditApprovalContinuationMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-worker-edit-approval").toPath()
+    val notesFile = workspaceRoot.resolve("notes.txt")
+    Files.write(
+      notesFile,
+      "draft\nTODO\n".toByteArray(StandardCharsets.UTF_8),
+    )
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Edit","arguments":{"file_path":"notes.txt","old_string":"TODO","new_string":"DONE"}}""",
+      ),
+    )
+    val eventSink = RecordingEventSink()
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      eventSink = eventSink,
+    )
+
+    val result = runtime.execute(
+      task = directToolCallTask(
+        """{"type":"tool_call","tool_name":"Task","arguments":{"description":"edit notes","prompt":"Replace TODO with DONE in notes.txt.","subagent_type":"worker"}}""",
+        metadata = mapOf(
+          SafetySettingsMetadataKeys.EXECUTION_MODE to "safe",
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.DENIED, result.status)
+    assertEquals("APPROVAL_REQUIRED", result.errorCode)
+    assertEquals("DENIED", result.metadata["childExecutionStatus"])
+    assertEquals("waiting_approval", result.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+    assertEquals("prompt_resume", result.metadata[SubAgentResultMetadataKeys.CONTINUATION_KIND])
+    assertEquals("true", result.metadata[SubAgentResultMetadataKeys.CONTINUATION_RESUMABLE])
+    assertEquals("true", result.metadata[SubAgentResultMetadataKeys.CONTINUATION_REQUIRES_USER_ACTION])
+    assertEquals("false", result.metadata[SubAgentResultMetadataKeys.CONTINUATION_IS_HIGH_RISK])
+    assertEquals("Edit", result.metadata["normalizedToolName"])
+    assertEquals("STANDARD", result.metadata["approvalRisk"])
+    assertEquals("ASK_SAFE_WRITE", result.metadata["policyReasonCode"])
+    assertEquals("file", result.metadata["targetKind"])
+    assertEquals("inside_workspace", result.metadata["workspaceRelation"])
+    assertEquals("notes.txt", result.metadata["primaryTargetPath"])
+    assertEquals("draft\nTODO\n", String(Files.readAllBytes(notesFile), StandardCharsets.UTF_8))
+    assertTrue(
+      result.metadata[SubAgentApprovalResumeMetadata.KEY_PROMPT_RESUME_JSON]
+        ?.isNotBlank() == true,
+    )
+    assertEquals("Edit", result.metadata[SubAgentApprovalResumeMetadata.KEY_APPROVED_TOOL_NAME])
+    val subAgentEvents = eventSink.events.filterIsInstance<OpenCraySubAgentEvent>()
+    assertEquals(
+      listOf(OpenCraySubAgentPhase.STARTED, OpenCraySubAgentPhase.FAILED),
+      subAgentEvents.map(OpenCraySubAgentEvent::phase),
+    )
+    assertEquals(
+      listOf(SubAgentExecutionState.RUNNING, SubAgentExecutionState.WAITING_APPROVAL),
+      subAgentEvents.map(OpenCraySubAgentEvent::executionState),
+    )
+    assertEquals(
+      listOf(SubAgentContinuationKind.NONE, SubAgentContinuationKind.PROMPT_RESUME),
+      subAgentEvents.map(OpenCraySubAgentEvent::continuationKind),
+    )
+    assertEquals(listOf(false, true), subAgentEvents.map(OpenCraySubAgentEvent::resumable))
+    assertEquals(listOf(false, true), subAgentEvents.map(OpenCraySubAgentEvent::requiresUserAction))
+    assertEquals(listOf(false, false), subAgentEvents.map(OpenCraySubAgentEvent::isHighRisk))
+    assertEquals(1, gateway.requests.size)
+  }
+
+  @Test
+  fun approvedWorkerResumeContinuesChildEditWithoutReaskingApproval() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-worker-edit-resume").toPath()
+    val notesFile = workspaceRoot.resolve("notes.txt")
+    Files.write(
+      notesFile,
+      "draft\nTODO\n".toByteArray(StandardCharsets.UTF_8),
+    )
+    val initialGateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Edit","arguments":{"file_path":"notes.txt","old_string":"TODO","new_string":"DONE"}}""",
+      ),
+    )
+    val task = directToolCallTask(
+      """{"type":"tool_call","tool_name":"Task","arguments":{"description":"edit notes","prompt":"Replace TODO with DONE in notes.txt.","subagent_type":"worker"}}""",
+      metadata = mapOf(
+        SafetySettingsMetadataKeys.EXECUTION_MODE to "safe",
+      ),
+    )
+    val initialRuntime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = initialGateway,
+    )
+
+    val initialResult = initialRuntime.execute(
+      task = task,
+      hooks = runtimeHooks(),
+    )
+    val approvedResume = requireNotNull(
+      SubAgentApprovalResumeMetadata.decodeFromMetadata(
+        metadata = initialResult.metadata,
+        json = TEST_JSON,
+      ),
+    )
+
+    val resumedGateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"Approved edit completed."}""",
+      ),
+    )
+    val resumedEventSink = RecordingEventSink()
+    val resumedRuntime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = resumedGateway,
+      approvedSubAgentResume = approvedResume,
+      eventSink = resumedEventSink,
+    )
+
+    val resumedResult = resumedRuntime.execute(
+      task = task,
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, resumedResult.status)
+    assertTrue(resumedResult.stdout.contains("Approved edit completed."))
+    assertEquals("draft\nDONE\n", String(Files.readAllBytes(notesFile), StandardCharsets.UTF_8))
+    assertEquals(1, resumedGateway.requests.size)
+    assertTrue(
+      resumedGateway.requests.single().messages.any { message ->
+        message.role == LiteLlmGatewayMessageRole.TOOL &&
+          message.toolResult?.toolName == "Edit"
+      },
+    )
+    assertEquals(
+      listOf(
+        OpenCraySubAgentPhase.STARTED,
+        OpenCraySubAgentPhase.RESUMED,
+        OpenCraySubAgentPhase.COMPLETED,
+      ),
+      resumedEventSink.events
+        .filterIsInstance<OpenCraySubAgentEvent>()
+        .map(OpenCraySubAgentEvent::phase),
+    )
+  }
+
+  @Test
+  fun rejectedWorkerResumeContinuesChildWithoutReaskingApproval() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-worker-edit-reject-resume").toPath()
+    val notesFile = workspaceRoot.resolve("notes.txt")
+    Files.write(
+      notesFile,
+      "draft\nTODO\n".toByteArray(StandardCharsets.UTF_8),
+    )
+    val initialGateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Edit","arguments":{"file_path":"notes.txt","old_string":"TODO","new_string":"DONE"}}""",
+      ),
+    )
+    val task = directToolCallTask(
+      """{"type":"tool_call","tool_name":"Task","arguments":{"description":"edit notes","prompt":"Replace TODO with DONE in notes.txt.","subagent_type":"worker"}}""",
+      metadata = mapOf(
+        SafetySettingsMetadataKeys.EXECUTION_MODE to "safe",
+      ),
+    )
+    val initialRuntime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = initialGateway,
+    )
+
+    val initialResult = initialRuntime.execute(
+      task = task,
+      hooks = runtimeHooks(),
+    )
+    val rejectedResume = requireNotNull(
+      SubAgentApprovalResumeMetadata.decodeFromMetadata(
+        metadata = initialResult.metadata,
+        json = TEST_JSON,
+      ),
+    )
+
+    val resumedGateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"I skipped the blocked edit and left notes.txt unchanged."}""",
+      ),
+    )
+    val resumedEventSink = RecordingEventSink()
+    val resumedRuntime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = resumedGateway,
+      rejectedSubAgentResume = rejectedResume,
+      eventSink = resumedEventSink,
+    )
+
+    val resumedResult = resumedRuntime.execute(
+      task = task,
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, resumedResult.status)
+    assertTrue(resumedResult.stdout.contains("I skipped the blocked edit"))
+    assertEquals("draft\nTODO\n", String(Files.readAllBytes(notesFile), StandardCharsets.UTF_8))
+    assertEquals(1, resumedGateway.requests.size)
+    assertTrue(
+      resumedGateway.requests.single().messages.any { message ->
+        message.role == LiteLlmGatewayMessageRole.TOOL &&
+          message.toolResult?.toolName == "Edit" &&
+          message.toolResult?.isError == true
+      },
+    )
+    assertEquals(
+      listOf(
+        OpenCraySubAgentPhase.STARTED,
+        OpenCraySubAgentPhase.RESUMED,
+        OpenCraySubAgentPhase.COMPLETED,
+      ),
+      resumedEventSink.events
+        .filterIsInstance<OpenCraySubAgentEvent>()
+        .map(OpenCraySubAgentEvent::phase),
+    )
   }
 
   @Test
@@ -640,12 +937,242 @@ class OpenCrayAgentRuntimeSubAgentTest {
     )
   }
 
+  @Test
+  fun spawnAgentQueuesHandleAndWaitAgentRunsChild() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-spawn-wait").toPath()
+    Files.write(
+      workspaceRoot.resolve("README.md"),
+      "hello".toByteArray(StandardCharsets.UTF_8),
+    )
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"inspect readme","prompt":"Read README.md and summarize it.","subagent_type":"researcher"}}""",
+        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
+        """{"type":"final","answer":"README says hello."}""",
+        """{"type":"final","answer":"Delegated wait completed."}""",
+      ),
+    )
+    val eventSink = RecordingEventSink()
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      eventSink = eventSink,
+    )
+
+    val result = runtime.execute(
+      task = promptTask("Queue a child and then wait for it."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Delegated wait completed.", result.stdout)
+    assertEquals(4, gateway.requests.size)
+    assertTrue(gateway.requests[2].prompt.contains("Read README.md and summarize it."))
+    val spawnResultMetadata = eventSink.events
+      .filterIsInstance<OpenCrayToolResultEvent>()
+      .first { event -> event.call.toolName == "spawn_agent" }
+      .result
+      .metadata
+    assertEquals("child-1", spawnResultMetadata["agentId"])
+    assertEquals("background_queued", spawnResultMetadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+    val subAgentEvents = eventSink.events.filterIsInstance<OpenCraySubAgentEvent>()
+    assertEquals(
+      listOf(
+        OpenCraySubAgentPhase.STARTED,
+        OpenCraySubAgentPhase.RESUMED,
+        OpenCraySubAgentPhase.COMPLETED,
+      ),
+      subAgentEvents.map(OpenCraySubAgentEvent::phase),
+    )
+    assertEquals(
+      listOf(
+        SubAgentExecutionState.BACKGROUND_QUEUED,
+        SubAgentExecutionState.BACKGROUND_RUNNING,
+        SubAgentExecutionState.COMPLETED,
+      ),
+      subAgentEvents.map(OpenCraySubAgentEvent::executionState),
+    )
+  }
+
+  @Test
+  fun sendInputAppendsSupplementalParentInstructionBeforeWait() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-send-input").toPath()
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"inspect docs","prompt":"Inspect README.md only.","subagent_type":"researcher"}}""",
+        """{"type":"tool_call","tool_name":"send_input","arguments":{"agent_id":"child-1","message":"Also inspect docs/notes.md and mention it."}}""",
+        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
+        """{"type":"final","answer":"Inspected README.md and docs/notes.md."}""",
+        """{"type":"final","answer":"Supplemental wait completed."}""",
+      ),
+    )
+    val eventSink = RecordingEventSink()
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      eventSink = eventSink,
+    )
+
+    val result = runtime.execute(
+      task = promptTask("Queue, supplement, and then wait for a child."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Supplemental wait completed.", result.stdout)
+    assertEquals(5, gateway.requests.size)
+    assertTrue(gateway.requests[3].prompt.contains("Inspect README.md only."))
+    assertTrue(gateway.requests[3].prompt.contains("[Additional parent input 1]"))
+    assertTrue(gateway.requests[3].prompt.contains("Also inspect docs/notes.md and mention it."))
+    val sendInputResultMetadata = eventSink.events
+      .filterIsInstance<OpenCrayToolResultEvent>()
+      .first { event -> event.call.toolName == "send_input" }
+      .result
+      .metadata
+    assertEquals("1", sendInputResultMetadata["supplementalInputCount"])
+  }
+
+  @Test
+  fun closeAgentCancelsQueuedHandleWithoutRunningChild() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-close").toPath()
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"inspect readme","prompt":"Read README.md and summarize it.","subagent_type":"researcher"}}""",
+        """{"type":"tool_call","tool_name":"close_agent","arguments":{"agent_id":"child-1"}}""",
+        """{"type":"final","answer":"Queued child closed."}""",
+      ),
+    )
+    val eventSink = RecordingEventSink()
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      eventSink = eventSink,
+    )
+
+    val result = runtime.execute(
+      task = promptTask("Queue a child and then close it."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Queued child closed.", result.stdout)
+    assertEquals(3, gateway.requests.size)
+    val closeResultMetadata = eventSink.events
+      .filterIsInstance<OpenCrayToolResultEvent>()
+      .first { event -> event.call.toolName == "close_agent" }
+      .result
+      .metadata
+    assertEquals("true", closeResultMetadata["closed"])
+    assertEquals(
+      listOf(OpenCraySubAgentPhase.STARTED, OpenCraySubAgentPhase.CANCELLED),
+      eventSink.events
+        .filterIsInstance<OpenCraySubAgentEvent>()
+        .map(OpenCraySubAgentEvent::phase),
+    )
+  }
+
+  @Test
+  fun waitAgentCapturesApprovalContinuationAndApprovedResumeContinuesQueuedChild() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-wait-approval").toPath()
+    val notesFile = workspaceRoot.resolve("notes.txt")
+    Files.write(
+      notesFile,
+      "draft\nTODO\n".toByteArray(StandardCharsets.UTF_8),
+    )
+    val initialGateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"edit notes","prompt":"Replace TODO with DONE in notes.txt.","subagent_type":"worker"}}""",
+        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
+        """{"type":"tool_call","tool_name":"Edit","arguments":{"file_path":"notes.txt","old_string":"TODO","new_string":"DONE"}}""",
+      ),
+    )
+    val initialRuntime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = initialGateway,
+    )
+
+    val initialResult = initialRuntime.execute(
+      task = promptTask(
+        "Queue a worker child and wait for it.",
+        metadata = mapOf(
+          SafetySettingsMetadataKeys.EXECUTION_MODE to "safe",
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.DENIED, initialResult.status)
+    assertEquals("APPROVAL_REQUIRED", initialResult.errorCode)
+    val approvedResume = requireNotNull(
+      SubAgentApprovalResumeMetadata.decodeFromMetadata(
+        metadata = initialResult.metadata,
+        json = TEST_JSON,
+      ),
+    )
+    assertEquals("child-1", approvedResume.agentId)
+    val promptResumeState = requireNotNull(
+      OpenCrayPromptResumeMetadata.decodeFromMetadata(
+        metadata = initialResult.metadata,
+        json = TEST_JSON,
+      ),
+    )
+    assertEquals(1, promptResumeState.subAgentHandles.size)
+    assertEquals("child-1", promptResumeState.subAgentHandles.single().agentId)
+    assertEquals(
+      SubAgentExecutionState.WAITING_APPROVAL,
+      promptResumeState.subAgentHandles.single().snapshot.state,
+    )
+
+    val resumedGateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"Approved edit completed."}""",
+        """{"type":"final","answer":"Approved wait completed."}""",
+      ),
+    )
+    val resumedEventSink = RecordingEventSink()
+    val resumedRuntime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = resumedGateway,
+      promptResumeState = promptResumeState,
+      approvedSubAgentResume = approvedResume,
+      eventSink = resumedEventSink,
+    )
+
+    val resumedResult = resumedRuntime.execute(
+      task = promptTask(
+        "Queue a worker child and wait for it.",
+        metadata = mapOf(
+          SafetySettingsMetadataKeys.EXECUTION_MODE to "safe",
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, resumedResult.status)
+    assertEquals("Approved wait completed.", resumedResult.stdout)
+    assertEquals("draft\nDONE\n", String(Files.readAllBytes(notesFile), StandardCharsets.UTF_8))
+    assertEquals(2, resumedGateway.requests.size)
+    assertTrue(
+      resumedGateway.requests[0].messages.any { message ->
+        message.role == LiteLlmGatewayMessageRole.TOOL &&
+          message.toolResult?.toolName == "Edit"
+      },
+    )
+    assertEquals(
+      listOf(OpenCraySubAgentPhase.RESUMED, OpenCraySubAgentPhase.COMPLETED),
+      resumedEventSink.events
+        .filterIsInstance<OpenCraySubAgentEvent>()
+        .map(OpenCraySubAgentEvent::phase),
+    )
+  }
+
   private fun runtime(
     workspaceRoot: java.nio.file.Path,
     readRoots: Set<java.nio.file.Path> = setOf(workspaceRoot),
     gateway: LiteLlmGateway,
     eventSink: OpenCrayAgentRuntimeEventSink = NoOpOpenCrayAgentRuntimeEventSink,
     sessionContext: AgentRuntimeSessionContext = AgentRuntimeSessionContext(),
+    promptResumeState: OpenCrayPromptResumeState? = null,
     approvedSubAgentResume: SubAgentApprovalResume? = null,
     rejectedSubAgentResume: SubAgentApprovalResume? = null,
   ): OpenCrayAgentRuntime = OpenCrayAgentRuntime(
@@ -660,6 +1187,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
       maxTurns = 6,
       maxToolCalls = 0,
       sessionContext = sessionContext,
+      promptResumeState = promptResumeState,
       approvedSubAgentResume = approvedSubAgentResume,
       rejectedSubAgentResume = rejectedSubAgentResume,
       json = TEST_JSON,
@@ -668,7 +1196,10 @@ class OpenCrayAgentRuntimeSubAgentTest {
     clock = IncrementingClock(start = 10_000L)::next,
   )
 
-  private fun promptTask(input: String): AgentTask = AgentTask(
+  private fun promptTask(
+    input: String,
+    metadata: Map<String, String> = emptyMap(),
+  ): AgentTask = AgentTask(
     id = "prompt-task",
     type = AgentTaskType.PROMPT,
     input = input,
@@ -677,6 +1208,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
       reasonCode = "ALLOW_ALL",
     ),
     createdAtEpochMs = 1_000L,
+    metadata = metadata,
   )
 
   private fun directToolCallTask(

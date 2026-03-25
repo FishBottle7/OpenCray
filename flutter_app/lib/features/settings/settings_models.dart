@@ -165,6 +165,8 @@ class NetworkSearchSlotSnapshot {
     required this.id,
     required this.providerId,
     required this.label,
+    required this.baseUrl,
+    required this.model,
     required this.apiKey,
     required this.enabled,
   });
@@ -172,6 +174,8 @@ class NetworkSearchSlotSnapshot {
   final String id;
   final String providerId;
   final String label;
+  final String baseUrl;
+  final String model;
   final String apiKey;
   final bool enabled;
 
@@ -179,6 +183,8 @@ class NetworkSearchSlotSnapshot {
     String? id,
     String? providerId,
     String? label,
+    String? baseUrl,
+    String? model,
     String? apiKey,
     bool? enabled,
   }) {
@@ -186,6 +192,8 @@ class NetworkSearchSlotSnapshot {
       id: id ?? this.id,
       providerId: providerId ?? this.providerId,
       label: label ?? this.label,
+      baseUrl: baseUrl ?? this.baseUrl,
+      model: model ?? this.model,
       apiKey: apiKey ?? this.apiKey,
       enabled: enabled ?? this.enabled,
     );

@@ -38,6 +38,10 @@ internal class ToolCapabilityClassifier {
     "Grep",
     "Glob",
     "Task",
+    "spawn_agent",
+    "wait_agent",
+    "send_input",
+    "close_agent",
     "workspace_list_files",
     "workspace_read_file",
     "SkillsFind",
@@ -52,7 +56,12 @@ internal class ToolCapabilityClassifier {
   fun classifyCapabilityKind(toolName: String): String = when (toolName) {
     "TodoWrite" -> "todo_management"
 
-    "Task" -> "delegate_task"
+    "Task",
+    "spawn_agent",
+    "wait_agent",
+    "send_input",
+    "close_agent",
+    -> "delegate_task"
 
     "GenerateImage",
     "SynthesizeSpeech",

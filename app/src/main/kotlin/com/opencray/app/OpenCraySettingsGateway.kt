@@ -7,6 +7,10 @@ internal interface OpenCraySettingsGateway {
 
   fun loadSettingsDetail(routeIdRaw: String): Map<String, Any?>
 
+  fun loadStrongBackgroundSnapshot(): Map<String, Any?>
+
+  fun performStrongBackgroundAction(actionId: String): Map<String, Any?>
+
   fun loadNetworkSearchConfig(): Map<String, Any?>
 
   fun saveNetworkSearchConfig(slots: List<Map<String, Any?>>): Map<String, Any?>

@@ -204,6 +204,113 @@ At the top of every prompt-loop turn:
 
 This gives the model the same information the user sees, without mutating the already-finished part of the current turn.
 
+## Provider-Native And Local Continuation Paths
+
+The supplement semantics should stay unified, but the continuation mechanism does not need to.
+
+Core invariant:
+
+- one durable supplement inbox
+- one safe-checkpoint gating model
+- one transcript / replay truth source
+- each provider route may use its own continuation mechanism after supplement has been durably recorded
+
+### OpenAI Responses Route
+
+When the current route is `openai_responses` and provider lineage is still trusted:
+
+- consume supplements at the normal safe checkpoint
+- append them into local transcript first
+- emit the ordinary supplement runtime event
+- continue the next provider request with `previous_response_id`
+- send only the newly added supplement and newly produced tool results as delta input when possible
+
+This route should be treated as the native supplement path, not as a local continuation layer that merely happens to optimize the shared path.
+
+What stays shared is only:
+
+- supplement durability
+- checkpoint timing
+- transcript / replay truth
+
+What should stay provider-native is:
+
+- lineage continuation
+- delta input composition
+- provider request resume mechanics
+
+### Anthropic Native Route
+
+Anthropic does not provide a general-purpose equivalent of `previous_response_id` for arbitrary mid-loop continuation.
+
+However, Anthropic native tool use does provide one useful native boundary:
+
+- when the run is continuing immediately after a `tool_use`
+- and the host is constructing the matching `tool_result` reply
+- the runtime may append extra user guidance after the `tool_result` blocks inside that same user turn
+
+This path is only valid at the tool boundary itself.
+
+It must not be generalized into:
+
+- mid-tool interruption
+- approval-wait injection
+- arbitrary free-form provider lineage reuse
+
+Outside that narrow tool-result boundary, Anthropic should still use the shared supplement inbox plus transcript-first or local runtime-owned continuation.
+
+### Non-Responses Routes
+
+For `openai`, `anthropic`, and other non-Responses transcript-first routes, the next optimization step should not try to fake a provider lineage token.
+
+Instead, the runtime should add a local continuation layer:
+
+- a durable checkpointed continuation envelope
+- owned by runtime checkpoint state, not by the UI
+- rebuilt only from prompt-visible state, not hidden chain-of-thought
+
+### Checkpointed Continuation Envelope
+
+Goal:
+
+- keep supplement semantics identical across dialects
+- reduce the amount of unnecessary full-turn rebuild work
+- make safe-checkpoint continuation more explicit and more debuggable
+
+The envelope should capture the stable next-turn continuation boundary, for example:
+
+- checkpoint class such as `turn_start`, `post_tool_pre_model`, or `post_resume`
+- current task prompt / active direction anchor
+- current prompt-visible transcript frontier
+- latest tool frontier needed for the next step
+- active skill / approval-resume / subagent-resume state
+- consumed supplement cursor for the active run
+
+The envelope must not contain:
+
+- hidden reasoning
+- provider-private opaque state that cannot be reconstructed locally
+- ad hoc UI-only projection state
+
+At the next safe checkpoint, the runtime should:
+
+1. load the latest trusted continuation envelope for the active run
+2. append newly consumed supplements into transcript and replay as usual
+3. if the envelope is still valid, build the next provider request from that checkpointed continuation boundary instead of naively treating every turn as a fresh full replay
+4. if the envelope is not valid, fall back to the existing transcript-first rebuild path
+
+This keeps the runtime architecture closer to Claude Code style mid-loop continuation without pretending that non-Responses providers expose native lineage continuation.
+
+### Fallback Rule
+
+If any provider-native or local continuation state becomes untrusted:
+
+- preserve the supplement in transcript and replay
+- discard the optimization layer
+- continue from the normal transcript-first request path
+
+This fallback rule is mandatory because supplement semantics matter more than provider-side efficiency.
+
 ## Durable Replay
 
 Each applied supplement must be written into durable transcript/replay state in two forms:
@@ -247,3 +354,11 @@ After this lands and stabilizes, the next step can extend checkpoint coverage be
 - tool and approval boundaries remain explicit
 - replay stays deterministic
 - UI can distinguish queued follow-ups from applied live supplements
+
+Recommended follow-on order after the current phase:
+
+1. keep the current durable supplement inbox and turn-start checkpoint as the cross-dialect baseline
+2. stabilize `openai_responses` continuation with `previous_response_id`
+3. add Anthropic-native tool-boundary supplement only at the strict `tool_result` resume boundary
+4. add the local checkpointed continuation envelope for non-Responses routes
+5. only after those are stable, consider broader checkpoint classes beyond plain turn start

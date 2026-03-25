@@ -34,14 +34,23 @@ class OpenCrayFlutterActivity :
   companion object {
     private const val EXTRA_DESTINATION =
       "com.opencray.app.OpenCrayFlutterActivity.extra.DESTINATION"
+    private const val EXTRA_CHAT_SESSION_ID =
+      "com.opencray.app.OpenCrayFlutterActivity.extra.CHAT_SESSION_ID"
     private const val PERMISSION_REQUEST_CODE: Int = 2_401
     private const val CHAT_ATTACHMENT_PICKER_REQUEST_CODE: Int = 2_402
 
     fun intent(
       context: Context,
       destination: Destination = Destination.SHELL,
+      chatSessionId: String? = null,
     ): Intent = Intent(context, OpenCrayFlutterActivity::class.java).apply {
       putExtra(EXTRA_DESTINATION, destination.route)
+      chatSessionId
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { sessionId ->
+          putExtra(EXTRA_CHAT_SESSION_ID, sessionId)
+        }
     }
   }
 
@@ -71,10 +80,19 @@ class OpenCrayFlutterActivity :
       hostBridge = created
     }
     bridge.attach(flutterEngine)
+    applyLaunchIntent(intent, flutterEngine, pushRoute = false)
   }
 
   override fun getInitialRoute(): String =
     intent.getStringExtra(EXTRA_DESTINATION) ?: Destination.SHELL.route
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    flutterEngine?.let { engine ->
+      applyLaunchIntent(intent, engine, pushRoute = true)
+    }
+  }
 
   override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
     hostBridge?.detach(flutterEngine)
@@ -167,5 +185,38 @@ class OpenCrayFlutterActivity :
       },
       CHAT_ATTACHMENT_PICKER_REQUEST_CODE,
     )
+  }
+
+  private fun applyLaunchIntent(
+    intent: Intent?,
+    flutterEngine: FlutterEngine,
+    pushRoute: Boolean,
+  ) {
+    val targetApprovalTaskId = intent
+      ?.getStringExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_TASK_ID)
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val targetSessionId = intent?.getStringExtra(EXTRA_CHAT_SESSION_ID)
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    if (targetSessionId != null) {
+      val selected = runCatching {
+        serviceBackedOpenCrayChatRuntimeGateway(applicationContext).selectChatSession(targetSessionId)
+      }.isSuccess
+      if (selected) {
+        RuntimeNotificationCoordinator.dismissApprovalNotification(
+          applicationContext,
+          targetApprovalTaskId,
+        )
+      }
+    }
+    if (pushRoute) {
+      intent?.getStringExtra(EXTRA_DESTINATION)
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { route ->
+          flutterEngine.navigationChannel.pushRoute(route)
+        }
+    }
   }
 }

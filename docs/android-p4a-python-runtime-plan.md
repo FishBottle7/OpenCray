@@ -452,6 +452,7 @@ Windows 日常构建入口：
 - `python -m pythonforandroid.toolchain aar`
 - `bootstrap=service_library`
 - `service=opencraypython:python_runner/p4a_service_main.py`
+- 运行时默认按 `once=true` 启动，并且单个 service 启动只处理本次 `requestId` 对应的一条请求，避免把后续 pending 请求一起排进同一实例
 - 默认 requirements 来自 `tools/android_python_runtime_p4a/requirements.lock`
 - 输出 AAR 复制到 `tools/android_python_runtime_p4a/dist/`
 

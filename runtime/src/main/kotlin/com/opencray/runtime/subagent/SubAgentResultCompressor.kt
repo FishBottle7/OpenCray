@@ -3,7 +3,9 @@ package com.opencray.runtime.subagent
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
+import kotlinx.serialization.Serializable
 
+@Serializable
 enum class SubAgentExecutionState(
   val wireValue: String,
 ) {
@@ -40,6 +42,7 @@ enum class SubAgentExecutionState(
   }
 }
 
+@Serializable
 enum class SubAgentContinuationKind(
   val wireValue: String,
 ) {
@@ -56,6 +59,7 @@ enum class SubAgentContinuationKind(
   }
 }
 
+@Serializable
 data class SubAgentExecutionSnapshot(
   val state: SubAgentExecutionState,
   val continuationKind: SubAgentContinuationKind,
@@ -117,6 +121,28 @@ data class SubAgentExecutionSnapshot(
       state = SubAgentExecutionState.RUNNING,
       continuationKind = SubAgentContinuationKind.NONE,
       resumable = false,
+      requiresUserAction = false,
+      isHighRisk = false,
+      headline = headline,
+    )
+
+    fun backgroundQueued(
+      headline: String = "Delegated child run queued.",
+    ): SubAgentExecutionSnapshot = SubAgentExecutionSnapshot(
+      state = SubAgentExecutionState.BACKGROUND_QUEUED,
+      continuationKind = SubAgentContinuationKind.BACKGROUND_RESUME,
+      resumable = true,
+      requiresUserAction = false,
+      isHighRisk = false,
+      headline = headline,
+    )
+
+    fun backgroundRunning(
+      headline: String = "Delegated child run is running in the background.",
+    ): SubAgentExecutionSnapshot = SubAgentExecutionSnapshot(
+      state = SubAgentExecutionState.BACKGROUND_RUNNING,
+      continuationKind = SubAgentContinuationKind.BACKGROUND_RESUME,
+      resumable = true,
       requiresUserAction = false,
       isHighRisk = false,
       headline = headline,

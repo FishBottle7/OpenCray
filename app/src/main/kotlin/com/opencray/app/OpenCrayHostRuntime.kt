@@ -94,6 +94,7 @@ import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayAttachmentArtifact
 import com.opencray.runtime.OpenCrayAttachmentArtifactMetadataKeys
 import com.opencray.runtime.NoOpOpenCrayAgentRuntimeEventSink
+import com.opencray.runtime.OpenCrayAssistantPhaseEvent
 import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayCancellationEvent
 import com.opencray.runtime.OpenCrayExecutionMetadataKeys
@@ -101,7 +102,6 @@ import com.opencray.runtime.OpenCrayFinalAttachment
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
-import com.opencray.runtime.OpenCrayProgressEvent
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCrayPromptResumeState
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
@@ -110,6 +110,7 @@ import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.TodoWriteMetadataKeys
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationMessageKind
 import com.opencray.runtime.context.RuntimeConversationRole
@@ -166,6 +167,7 @@ internal class OpenCrayHostRuntime private constructor(
   private var skillsFacade: SkillsFacade,
   private val workspaceRootProvider: (() -> Path)?,
   private val workspaceEntryOpener: ((Path, String) -> Unit)? = null,
+  private val externalUriOpener: ((String) -> Unit)? = null,
   private val approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot = {
     ApprovedReadRootsSnapshot(
       roots = emptySet(),
@@ -173,6 +175,8 @@ internal class OpenCrayHostRuntime private constructor(
     )
   },
   private val workspaceSnapshotProvider: () -> Map<String, Any?>,
+  private val strongBackgroundSettingsAccess: StrongBackgroundSettingsAccess =
+    NoOpStrongBackgroundSettingsAccess,
   private val voiceMetadataAnalyzer: AppAgentWorkspaceVoiceMetadataAnalyzer,
   private val voiceMetadataBackfillExecutor: Executor,
   private val voiceMetadataCacheStore: AppAgentWorkspaceVoiceMetadataCacheStore? = null,
@@ -194,6 +198,7 @@ internal class OpenCrayHostRuntime private constructor(
     appContext = appContext,
     workspaceRootProvider = workspaceRootProvider,
     workspaceEntryOpener = workspaceEntryOpener,
+    externalUriOpener = externalUriOpener,
     workspaceSnapshotProvider = workspaceSnapshotProvider,
     mainThreadPoster = mainThreadPoster,
   ),
@@ -385,6 +390,11 @@ internal class OpenCrayHostRuntime private constructor(
               return@synchronized EventEmissionDecision(shouldEmit = false)
             }
             recordRuntimeEventLocked(sessionId = sessionId, event = event)
+            maybePersistGeneralResumeCheckpointLocked(
+              sessionId = sessionId,
+              task = task,
+              event = event,
+            )
             EventEmissionDecision(
               shouldEmit = true,
               emitChatSnapshot =
@@ -469,6 +479,17 @@ internal class OpenCrayHostRuntime private constructor(
     return synchronized(lock) { settingsFacade.loadDetail(routeId) }.toMap()
   }
 
+  override fun loadStrongBackgroundSnapshot(): Map<String, Any?> = buildMap {
+    putAll(strongBackgroundSettingsAccess.loadSnapshot())
+    put(
+      "runtimeServiceConnectionState",
+      runtimeServiceConnectionStateProvider()?.snapshotMap(),
+    )
+  }
+
+  override fun performStrongBackgroundAction(actionId: String): Map<String, Any?> =
+    strongBackgroundSettingsAccess.performAction(actionId)
+
   override fun loadNetworkSearchConfig(): Map<String, Any?> =
     synchronized(lock) { networkSearchConfigFacade.load() }.toMap()
 
@@ -483,6 +504,8 @@ internal class OpenCrayHostRuntime private constructor(
               id = slot["id"]?.toString().orEmpty(),
               providerId = slot["providerId"]?.toString().orEmpty(),
               label = slot["label"]?.toString().orEmpty(),
+              baseUrl = slot["baseUrl"]?.toString().orEmpty(),
+              model = slot["model"]?.toString().orEmpty(),
               apiKey = slot["apiKey"]?.toString().orEmpty(),
               enabled = slot["enabled"] as? Boolean ?: true,
             )
@@ -770,6 +793,10 @@ internal class OpenCrayHostRuntime private constructor(
 
   override fun openWorkspaceEntry(relativePath: String) {
     localHostGateway.openWorkspaceEntry(relativePath)
+  }
+
+  override fun openExternalUri(uri: String) {
+    localHostGateway.openExternalUri(uri)
   }
 
   override fun createWorkspaceFolder(
@@ -1845,52 +1872,53 @@ internal class OpenCrayHostRuntime private constructor(
 
   override fun approveChatApproval(taskIdOrRunId: String) {
     synchronized(lock) {
-      val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
-      val approval = pendingApprovalForIdentifier(activeSessionId, taskIdOrRunId)
+      val approvalMatch = findPendingApprovalMatchLocked(taskIdOrRunId)
         ?: error("Pending approval '$taskIdOrRunId' is unavailable.")
+      val sessionId = approvalMatch.sessionId
+      val approval = approvalMatch.approval
       runtimeHostAccess.markApprovalApproved(
-        sessionId = activeSessionId,
+        sessionId = sessionId,
         taskId = approval.taskId,
         toolName = approval.toolName,
         promptResumeState = approval.promptResumeState,
         subAgentApprovalResume = approval.subAgentApprovalResume,
       )
       persistPromptCheckpointLocked(
-        sessionId = activeSessionId,
+        sessionId = sessionId,
         checkpoint = pendingApprovalCheckpoint(
-          sessionId = activeSessionId,
+          sessionId = sessionId,
           approval = approval,
           checkpointKind = PromptCheckpointKind.APPROVED_PENDING_RESUME,
           nowEpochMs = System.currentTimeMillis(),
         ),
       )
-      val resumed = runtimeSession(activeSessionId).requestResumeTask(approval.taskId)
+      val resumed = runtimeSession(sessionId).requestResumeTask(approval.taskId)
       if (!resumed) {
-        clearApproval(activeSessionId, approval.taskId)
-        clearPromptCheckpointLocked(activeSessionId, approval.taskId)
+        clearApproval(sessionId, approval.taskId)
+        clearPromptCheckpointLocked(sessionId, approval.taskId)
         error("Unable to resume pending approval '$taskIdOrRunId'.")
       }
       approvalApprovedReplayRecorder(
-        activeSessionId,
+        sessionId,
         approval.taskId,
         approval.runId,
         approval.toolName,
         approval.isHighRisk,
       )
-      clearPendingApprovalLocked(activeSessionId, approval.taskId)
+      clearPendingApprovalLocked(sessionId, approval.taskId)
       pendingApprovalSubAgentResumedEvent(
         approval = approval,
         summary = delegatedChildApprovalApprovedSummary(),
         emittedAtEpochMs = System.currentTimeMillis(),
       )?.let { event ->
-        subAgentReplayRecorder(activeSessionId, event)
+        subAgentReplayRecorder(sessionId, event)
         recordRuntimeEventLocked(
-          sessionId = activeSessionId,
+          sessionId = sessionId,
           event = event,
         )
       }
       recordRuntimeEventLocked(
-        sessionId = activeSessionId,
+        sessionId = sessionId,
         event = approvalResultRuntimeEvent(
           approval = approval,
           phase = OpenCrayApprovalPhase.APPROVED,
@@ -1899,14 +1927,14 @@ internal class OpenCrayHostRuntime private constructor(
       )
       approval.pendingMessageId?.let { pendingMessageId ->
         chatSessionStore.replaceMessage(
-          sessionId = activeSessionId,
+          sessionId = sessionId,
           messageId = pendingMessageId,
           role = ChatTranscriptRole.ASSISTANT,
           text = strings.agentThinking,
         )
       }
       chatSessionStore.appendMessage(
-        sessionId = activeSessionId,
+        sessionId = sessionId,
         role = ChatTranscriptRole.TOOL,
         text = strings.chatApprovalApproved,
       )
@@ -1917,52 +1945,53 @@ internal class OpenCrayHostRuntime private constructor(
 
   override fun rejectChatApproval(taskIdOrRunId: String) {
     synchronized(lock) {
-      val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
-      val approval = pendingApprovalForIdentifier(activeSessionId, taskIdOrRunId)
+      val approvalMatch = findPendingApprovalMatchLocked(taskIdOrRunId)
         ?: error("Pending approval '$taskIdOrRunId' is unavailable.")
+      val sessionId = approvalMatch.sessionId
+      val approval = approvalMatch.approval
       approvalReplayRecorder(
-        activeSessionId,
+        sessionId,
         approval.taskId,
         approval.runId,
         approval.toolName,
         approval.isHighRisk,
       )
       runtimeHostAccess.markApprovalRejected(
-        sessionId = activeSessionId,
+        sessionId = sessionId,
         taskId = approval.taskId,
         toolName = approval.toolName,
         promptResumeState = approval.promptResumeState,
         subAgentApprovalResume = approval.subAgentApprovalResume,
       )
       persistPromptCheckpointLocked(
-        sessionId = activeSessionId,
+        sessionId = sessionId,
         checkpoint = pendingApprovalCheckpoint(
-          sessionId = activeSessionId,
+          sessionId = sessionId,
           approval = approval,
           checkpointKind = PromptCheckpointKind.REJECTED_PENDING_RESUME,
           nowEpochMs = System.currentTimeMillis(),
         ),
       )
-      val resumed = runtimeSession(activeSessionId).requestResumeTask(approval.taskId)
+      val resumed = runtimeSession(sessionId).requestResumeTask(approval.taskId)
       if (!resumed) {
-        clearApproval(activeSessionId, approval.taskId)
-        clearPromptCheckpointLocked(activeSessionId, approval.taskId)
+        clearApproval(sessionId, approval.taskId)
+        clearPromptCheckpointLocked(sessionId, approval.taskId)
         error("Unable to resume pending approval '$taskIdOrRunId' after rejection.")
       }
-      clearPendingApprovalLocked(activeSessionId, approval.taskId)
+      clearPendingApprovalLocked(sessionId, approval.taskId)
       pendingApprovalSubAgentResumedEvent(
         approval = approval,
         summary = delegatedChildApprovalRejectedContinueSummary(),
         emittedAtEpochMs = System.currentTimeMillis(),
       )?.let { event ->
-        subAgentReplayRecorder(activeSessionId, event)
+        subAgentReplayRecorder(sessionId, event)
         recordRuntimeEventLocked(
-          sessionId = activeSessionId,
+          sessionId = sessionId,
           event = event,
         )
       }
       recordRuntimeEventLocked(
-        sessionId = activeSessionId,
+        sessionId = sessionId,
         event = approvalResultRuntimeEvent(
           approval = approval,
           phase = OpenCrayApprovalPhase.REJECTED,
@@ -1971,14 +2000,14 @@ internal class OpenCrayHostRuntime private constructor(
       )
       approval.pendingMessageId?.let { pendingMessageId ->
         chatSessionStore.replaceMessage(
-          sessionId = activeSessionId,
+          sessionId = sessionId,
           messageId = pendingMessageId,
           role = ChatTranscriptRole.ASSISTANT,
           text = strings.agentThinking,
         )
       }
       chatSessionStore.appendMessage(
-        sessionId = activeSessionId,
+        sessionId = sessionId,
         role = ChatTranscriptRole.TOOL,
         text = strings.chatApprovalRejected,
       )
@@ -2501,6 +2530,68 @@ internal class OpenCrayHostRuntime private constructor(
       approval.taskId == taskIdOrRunId || approval.runId == taskIdOrRunId
     }
 
+  private fun findPendingApprovalMatchLocked(
+    taskIdOrRunId: String,
+  ): PendingApprovalMatch? = knownSessionIdsLocked().firstNotNullOfOrNull { sessionId ->
+    pendingApprovalForIdentifier(sessionId, taskIdOrRunId)?.let { approval ->
+      PendingApprovalMatch(
+        sessionId = sessionId,
+        approval = approval,
+      )
+    }
+  }
+
+  internal fun listPendingApprovalNotificationTargets(): List<RuntimePendingApprovalNotificationTarget> =
+    synchronized(lock) {
+      knownSessionIdsLocked().flatMap { sessionId ->
+        val sessionTitle = sessionDisplayTitleLocked(sessionId)
+        pendingApprovalsForSession(sessionId).map { approval ->
+          RuntimePendingApprovalNotificationTarget(
+            sessionId = sessionId,
+            sessionTitle = sessionTitle,
+            runId = approval.runId,
+            taskId = approval.taskId,
+            title = approval.title,
+            body = approval.body,
+            isHighRisk = approval.isHighRisk,
+          )
+        }
+      }
+    }
+
+  internal fun sessionDisplayTitleForNotification(sessionId: String): String = synchronized(lock) {
+    sessionDisplayTitleLocked(sessionId)
+  }
+
+  internal fun summarizeResultForNotification(
+    sessionId: String,
+    task: AgentTask,
+    result: ExecutionResult,
+  ): String = synchronized(lock) {
+    finalTextForLocked(
+      sessionId = sessionId,
+      task = task,
+      result = result,
+    )
+  }
+
+  private fun knownSessionIdsLocked(): List<String> {
+    val state = chatSessionStore.loadState()
+    return buildList {
+      add(state.activeSession.sessionId)
+      addAll(state.sessions.map(ChatSessionLocalStore.SessionSummary::sessionId))
+    }.distinct()
+  }
+
+  private fun sessionDisplayTitleLocked(sessionId: String): String {
+    val state = chatSessionStore.loadState()
+    val summary = state.sessions.firstOrNull { session -> session.sessionId == sessionId }
+    val fallbackTitle = summary?.title?.takeIf(String::isNotBlank)
+      ?: chatSessionStore.loadSession(sessionId)?.title?.takeIf(String::isNotBlank)
+      ?: strings.chatDefaultSessionTitle
+    return displaySessionTitle(fallbackTitle)
+  }
+
   private fun recordPendingApprovalLocked(
     sessionId: String,
     task: AgentTask,
@@ -2558,6 +2649,57 @@ internal class OpenCrayHostRuntime private constructor(
     subAgentPromptResumeState = approval.subAgentApprovalResume?.promptResumeState,
     subAgentIsHighRisk = approval.subAgentApprovalResume?.isHighRisk,
   )
+
+  private fun maybePersistGeneralResumeCheckpointLocked(
+    sessionId: String,
+    task: AgentTask,
+    event: OpenCrayAgentRunEvent,
+  ) {
+    val eventRunId: String
+    val eventTaskId: String
+    val eventToolName: String?
+    val eventMetadata: Map<String, String>
+    val emittedAtEpochMs: Long
+    when (event) {
+      is OpenCrayToolResultEvent -> {
+        eventRunId = event.runId
+        eventTaskId = event.taskId
+        eventToolName = event.result.toolName
+        eventMetadata = event.result.metadata
+        emittedAtEpochMs = event.emittedAtEpochMs
+      }
+
+      is OpenCraySupplementEvent -> {
+        eventRunId = event.runId
+        eventTaskId = event.taskId
+        eventToolName = null
+        eventMetadata = event.metadata
+        emittedAtEpochMs = event.emittedAtEpochMs
+      }
+
+      else -> return
+    }
+    val promptResumeState = OpenCrayPromptResumeMetadata.decodeFromMetadata(
+      metadata = eventMetadata,
+      json = replayJson,
+    ) ?: return
+    persistPromptCheckpointLocked(
+      sessionId = sessionId,
+      checkpoint = PersistedPromptCheckpoint(
+        sessionId = sessionId,
+        runId = eventRunId,
+        taskId = eventTaskId,
+        checkpointId = "checkpoint-$emittedAtEpochMs-${UUID.randomUUID().toString().take(8)}",
+        checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
+        createdAtEpochMs = emittedAtEpochMs,
+        updatedAtEpochMs = emittedAtEpochMs,
+        toolName = eventToolName,
+        pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
+          ?.takeIf(String::isNotBlank),
+        promptResumeState = promptResumeState,
+      ),
+    )
+  }
 
   private fun persistPromptCheckpointLocked(
     sessionId: String,
@@ -2702,6 +2844,10 @@ internal class OpenCrayHostRuntime private constructor(
     displayedRuns: List<AgentRunSnapshot>,
     recentEvents: List<OpenCrayAgentRunEvent>,
   ): Map<String, Any?> {
+    val subAgentSnapshots = subAgentSnapshotsForActivity(
+      displayedRuns = displayedRuns,
+      recentEvents = recentEvents,
+    )
     return mapOf(
       "sessionId" to sessionId,
       "hostLifecycle" to lifecycleDescriptor.snapshotMap(),
@@ -2715,9 +2861,107 @@ internal class OpenCrayHostRuntime private constructor(
         .filter(AgentRunSnapshot::isActive)
         .map(::runSnapshotToMap),
       "retainedRuns" to retainedRunsForSnapshot(displayedRuns).map(::runSnapshotToMap),
+      "subAgents" to subAgentSnapshots.map(::subAgentSnapshotToMap),
       "events" to recentEvents.map(::runtimeEventToMap),
     )
   }
+
+  private fun subAgentSnapshotsForActivity(
+    displayedRuns: List<AgentRunSnapshot>,
+    recentEvents: List<OpenCrayAgentRunEvent>,
+  ): List<SubAgentActivitySnapshot> {
+    if (recentEvents.isEmpty()) {
+      return emptyList()
+    }
+    val visibleRunIds = displayedRuns
+      .mapTo(linkedSetOf(), AgentRunSnapshot::runId)
+      .ifEmpty {
+        recentEvents
+          .mapNotNullTo(linkedSetOf()) { event ->
+            event.runId.trim().takeIf(String::isNotBlank)
+          }
+      }
+    if (visibleRunIds.isEmpty()) {
+      return emptyList()
+    }
+    val grouped = linkedMapOf<String, SubAgentActivityAccumulator>()
+    recentEvents.forEach { event ->
+      val subAgentEvent = event as? OpenCraySubAgentEvent ?: return@forEach
+      if (subAgentEvent.runId !in visibleRunIds) {
+        return@forEach
+      }
+      val key = subAgentRegistryKey(subAgentEvent)
+      val existing = grouped[key]
+      grouped[key] = if (existing == null) {
+        SubAgentActivityAccumulator(
+          firstEvent = subAgentEvent,
+          latestEvent = subAgentEvent,
+          eventCount = 1,
+        )
+      } else {
+        existing.copy(
+          latestEvent = subAgentEvent,
+          eventCount = existing.eventCount + 1,
+        )
+      }
+    }
+    return grouped.values.map { accumulator ->
+      val firstEvent = accumulator.firstEvent
+      val latestEvent = accumulator.latestEvent
+      SubAgentActivitySnapshot(
+        parentRunId = latestEvent.runId,
+        parentTaskId = latestEvent.taskId,
+        childRunId = latestEvent.childRunId,
+        childTaskId = latestEvent.childTaskId,
+        label = latestEvent.label,
+        subagentType = latestEvent.subagentType,
+        contextMode = latestEvent.contextMode,
+        depth = latestEvent.depth,
+        phase = latestEvent.phase.name.lowercase(),
+        status = latestEvent.executionState?.wireValue,
+        executionState = latestEvent.executionState?.wireValue,
+        continuationKind = latestEvent.continuationKind?.wireValue,
+        resumable = latestEvent.resumable,
+        requiresUserAction = latestEvent.requiresUserAction,
+        isHighRisk = latestEvent.isHighRisk,
+        summary = latestEvent.summary,
+        startedAtEpochMs = firstEvent.emittedAtEpochMs,
+        updatedAtEpochMs = latestEvent.emittedAtEpochMs,
+        eventCount = accumulator.eventCount,
+      )
+    }
+  }
+
+  private fun subAgentRegistryKey(
+    event: OpenCraySubAgentEvent,
+  ): String = listOf(
+    event.runId,
+    event.childRunId.trim().takeIf(String::isNotBlank)
+      ?: event.childTaskId.trim().takeIf(String::isNotBlank)
+      ?: event.label.trim(),
+  ).joinToString(separator = "|")
+
+  private fun subAgentSnapshotToMap(snapshot: SubAgentActivitySnapshot): Map<String, Any?> = mapOf(
+    "parentRunId" to snapshot.parentRunId,
+    "parentTaskId" to snapshot.parentTaskId,
+    "childRunId" to snapshot.childRunId,
+    "childTaskId" to snapshot.childTaskId,
+    "label" to snapshot.label,
+    "subagentType" to snapshot.subagentType,
+    "contextMode" to snapshot.contextMode,
+    "depth" to snapshot.depth,
+    "phase" to snapshot.phase,
+    "status" to snapshot.status,
+    "executionState" to snapshot.executionState,
+    "continuationKind" to snapshot.continuationKind,
+    "resumable" to snapshot.resumable,
+    "requiresUserAction" to snapshot.requiresUserAction,
+    "isHighRisk" to snapshot.isHighRisk,
+    "summary" to snapshot.summary,
+    "startedAtEpochMs" to snapshot.startedAtEpochMs,
+    "updatedAtEpochMs" to snapshot.updatedAtEpochMs,
+    "eventCount" to snapshot.eventCount,
+  )
 
   private fun displayedRunsForSnapshot(
     runs: List<AgentRunSnapshot>,
@@ -2949,7 +3193,7 @@ internal class OpenCrayHostRuntime private constructor(
   private fun projectedRuntimeMessageText(
     event: OpenCrayAgentRunEvent,
   ): String? = when (event) {
-    is OpenCrayProgressEvent -> chatProgressText(event)
+    is OpenCrayAssistantPhaseEvent -> if (event.isFinal) null else chatProgressText(event)
     is OpenCraySupplementEvent -> event.text.trim().takeIf(String::isNotBlank)
     is OpenCrayApprovalEvent -> null
     is OpenCrayToolCallEvent -> null
@@ -2963,7 +3207,7 @@ internal class OpenCrayHostRuntime private constructor(
     else -> "inbound"
   }
 
-  private fun chatProgressText(event: OpenCrayProgressEvent): String {
+  private fun chatProgressText(event: OpenCrayAssistantPhaseEvent): String {
     val stage = event.stage?.trim().orEmpty()
     val text = event.text.trim()
     return when {
@@ -3153,17 +3397,21 @@ internal class OpenCrayHostRuntime private constructor(
       }
 
       "TodoWrite" -> {
-        val todoCount = arguments.replayArraySize("todos") ?: 0
-        if (todoCount > 0) {
+        if (!arguments.containsKey("todos")) {
           if (isChineseHostLocale()) {
-            "更新 $todoCount 条待办"
+            "读取当前待办列表"
           } else {
-            "Update $todoCount todo(s)"
+            "Read current todo list"
           }
-        } else if (isChineseHostLocale()) {
-          "读取当前待办列表"
         } else {
-          "Read current todo list"
+          todoSummaryFromArguments(arguments)?.let { summary ->
+            return todoWriteActionSummary(summary = summary, mutated = true)
+          }
+          if (isChineseHostLocale()) {
+            "更新待办列表"
+          } else {
+            "Update the todo list"
+          }
         }
       }
 
@@ -3372,6 +3620,14 @@ internal class OpenCrayHostRuntime private constructor(
         }
       }
 
+      "TodoWrite" ->
+        todoSummaryFromMetadata(metadata)?.let { summary ->
+          todoWriteActionSummary(
+            summary = summary,
+            mutated = metadataBoolean(metadata, TodoWriteMetadataKeys.MUTATED) == true,
+          )
+        } ?: fallback
+
       else -> fallback
     }
   }
@@ -3549,19 +3805,7 @@ internal class OpenCrayHostRuntime private constructor(
       }
 
       "TodoWrite" -> {
-        val todoCount = metadataInt(metadata, "todoCount") ?: return null
-        val mutated = metadataBoolean(metadata, "mutated")
-        if (isChineseHostLocale()) {
-          if (mutated == true) {
-            "待办列表已更新，共 $todoCount 项"
-          } else {
-            "当前待办列表共 $todoCount 项"
-          }
-        } else if (mutated == true) {
-          "Updated the todo list to $todoCount item(s)"
-        } else {
-          "Current todo list has $todoCount item(s)"
-        }
+        todoWriteResultSummary(metadata)
       }
 
       else -> null
@@ -3642,6 +3886,190 @@ internal class OpenCrayHostRuntime private constructor(
       "Reason: $reason"
     }
 
+  private fun todoWriteActionSummary(
+    summary: TodoSnapshotSummary,
+    mutated: Boolean,
+  ): String {
+    if (!mutated) {
+      return if (isChineseHostLocale()) {
+        "读取当前待办列表"
+      } else {
+        "Read current todo list"
+      }
+    }
+    if (summary.todoCount == 0) {
+      return if (isChineseHostLocale()) {
+        "清空待办列表"
+      } else {
+        "Clear the todo list"
+      }
+    }
+    val breakdown = todoBreakdownSummary(summary)
+    val active = summary.activeTodoContent
+    return if (isChineseHostLocale()) {
+      buildString {
+        append("更新 ${summary.todoCount} 条待办")
+        breakdown?.let { append("（$it）") }
+        active?.let { append("，当前进行中：$it") }
+      }
+    } else {
+      buildString {
+        append("Update ${summary.todoCount} todo(s)")
+        breakdown?.let { append(" ($it)") }
+        active?.let { append(", active: $it") }
+      }
+    }
+  }
+
+  private fun todoWriteResultSummary(metadata: Map<String, String>): String? {
+    val summary = todoSummaryFromMetadata(metadata) ?: return null
+    val mutated = metadataBoolean(metadata, TodoWriteMetadataKeys.MUTATED) == true
+    val planChanged = metadataBoolean(metadata, TodoWriteMetadataKeys.PLAN_CHANGED)
+    if (!mutated) {
+      if (summary.todoCount == 0) {
+        return if (isChineseHostLocale()) {
+          "当前待办列表为空"
+        } else {
+          "Current todo list is empty"
+        }
+      }
+      val breakdown = todoBreakdownSummary(summary)
+      return if (isChineseHostLocale()) {
+        buildString {
+          append("当前待办列表共 ${summary.todoCount} 项")
+          breakdown?.let { append("，$it") }
+          summary.activeTodoContent?.let { append("，当前进行中：$it") }
+        }
+      } else {
+        buildString {
+          append("Current todo list has ${summary.todoCount} item(s)")
+          breakdown?.let { append(": $it") }
+          summary.activeTodoContent?.let { append(". Active: $it") }
+        }
+      }
+    }
+    if (summary.todoCount == 0) {
+      return if (isChineseHostLocale()) {
+        if (planChanged == false) "待办列表未变化，当前为空" else "待办列表已清空"
+      } else {
+        if (planChanged == false) "Plan unchanged. Todo list is empty." else "Cleared the todo list"
+      }
+    }
+    val details = mutableListOf<String>()
+    val completedDeltaCount = metadataInt(metadata, TodoWriteMetadataKeys.COMPLETED_TODO_DELTA_COUNT) ?: 0
+    val addedTodoCount = metadataInt(metadata, TodoWriteMetadataKeys.ADDED_TODO_COUNT) ?: 0
+    val removedTodoCount = metadataInt(metadata, TodoWriteMetadataKeys.REMOVED_TODO_COUNT) ?: 0
+    val statusChangedTodoCount = metadataInt(metadata, TodoWriteMetadataKeys.STATUS_CHANGED_TODO_COUNT) ?: 0
+    val extraStatusChangeCount = (statusChangedTodoCount - completedDeltaCount).coerceAtLeast(0)
+    if (completedDeltaCount > 0) {
+      details += if (isChineseHostLocale()) {
+        "完成 $completedDeltaCount 项"
+      } else {
+        "completed $completedDeltaCount"
+      }
+    }
+    if (addedTodoCount > 0) {
+      details += if (isChineseHostLocale()) {
+        "新增 $addedTodoCount 项"
+      } else {
+        "added $addedTodoCount"
+      }
+    }
+    if (removedTodoCount > 0) {
+      details += if (isChineseHostLocale()) {
+        "移除 $removedTodoCount 项"
+      } else {
+        "removed $removedTodoCount"
+      }
+    }
+    if (extraStatusChangeCount > 0) {
+      details += if (isChineseHostLocale()) {
+        "更新 $extraStatusChangeCount 项状态"
+      } else {
+        "updated $extraStatusChangeCount status${if (extraStatusChangeCount == 1) "" else "es"}"
+      }
+    }
+    if (details.isEmpty()) {
+      todoBreakdownSummary(summary)?.let(details::add)
+    }
+    return if (isChineseHostLocale()) {
+      buildString {
+        append(if (planChanged == false) "待办计划未变化" else "待办计划已更新")
+        if (details.isNotEmpty()) {
+          append("：")
+          append(details.joinToString(separator = "，"))
+        }
+        summary.activeTodoContent?.let { append("，当前进行中：$it") }
+      }
+    } else {
+      buildString {
+        append(if (planChanged == false) "Plan unchanged" else "Plan updated")
+        if (details.isNotEmpty()) {
+          append(": ")
+          append(details.joinToString(separator = ", "))
+        }
+        summary.activeTodoContent?.let { append(". Active now: $it") }
+      }
+    }
+  }
+
+  private fun todoBreakdownSummary(summary: TodoSnapshotSummary): String? {
+    if (summary.todoCount <= 0) {
+      return null
+    }
+    return if (isChineseHostLocale()) {
+      "${summary.pendingCount} 待处理，${summary.inProgressCount} 进行中，${summary.completedCount} 已完成"
+    } else {
+      "${summary.pendingCount} pending, ${summary.inProgressCount} in progress, ${summary.completedCount} completed"
+    }
+  }
+
+  private fun todoSummaryFromArguments(arguments: JsonObject): TodoSnapshotSummary? {
+    if (!arguments.containsKey("todos")) {
+      return null
+    }
+    return todoSummaryFromTodoObjects(arguments.replayObjectArray("todos").orEmpty())
+  }
+
+  private fun todoSummaryFromMetadata(metadata: Map<String, String>): TodoSnapshotSummary? {
+    val todoCount = metadataInt(metadata, TodoWriteMetadataKeys.TODO_COUNT) ?: return null
+    return TodoSnapshotSummary(
+      todoCount = todoCount,
+      pendingCount = metadataInt(metadata, TodoWriteMetadataKeys.PENDING_TODO_COUNT) ?: 0,
+      inProgressCount = metadataInt(metadata, TodoWriteMetadataKeys.IN_PROGRESS_TODO_COUNT) ?: 0,
+      completedCount = metadataInt(metadata, TodoWriteMetadataKeys.COMPLETED_TODO_COUNT) ?: 0,
+      activeTodoContent = metadataValue(metadata, TodoWriteMetadataKeys.ACTIVE_TODO_CONTENT),
+    )
+  }
+
+  private fun todoSummaryFromTodoObjects(todos: List<JsonObject>): TodoSnapshotSummary {
+    var pendingCount = 0
+    var inProgressCount = 0
+    var completedCount = 0
+    var activeTodoContent: String? = null
+    todos.forEach { todo ->
+      when (AgentTodoStatus.fromLabelOrNull(todo.replayString("status"))) {
+        AgentTodoStatus.PENDING -> pendingCount += 1
+        AgentTodoStatus.IN_PROGRESS -> {
+          inProgressCount += 1
+          if (activeTodoContent == null) {
+            activeTodoContent = todo.replayString("content")
+          }
+        }
+
+        AgentTodoStatus.COMPLETED -> completedCount += 1
+        null -> Unit
+      }
+    }
+    return TodoSnapshotSummary(
+      todoCount = todos.size,
+      pendingCount = pendingCount,
+      inProgressCount = inProgressCount,
+      completedCount = completedCount,
+      activeTodoContent = activeTodoContent,
+    )
+  }
+
   private fun joinProjectedChatSections(vararg sections: String?): String =
     sections
       .mapNotNull { section -> section?.trim()?.takeIf(String::isNotBlank) }
@@ -3670,11 +4098,22 @@ internal class OpenCrayHostRuntime private constructor(
       ?: metadataBoolean(metadata, "truncated")
       ?: false
 
+  private fun JsonObject.replayObjectArray(key: String): List<JsonObject>? =
+    (this[key] as? JsonArray)?.mapNotNull { entry -> entry as? JsonObject }
+
   private fun JsonObject.replayArraySize(key: String): Int? =
     (this[key] as? JsonArray)?.size
 
+  private data class TodoSnapshotSummary(
+    val todoCount: Int,
+    val pendingCount: Int,
+    val inProgressCount: Int,
+    val completedCount: Int,
+    val activeTodoContent: String?,
+  )
+
   private fun runtimeProjectedMessageId(event: OpenCrayAgentRunEvent): String = when (event) {
-    is OpenCrayProgressEvent -> "runtime-progress-${event.runId}-${event.emittedAtEpochMs}"
+    is OpenCrayAssistantPhaseEvent -> "runtime-assistant-${event.phase.name.lowercase(Locale.US)}-${event.runId}-${event.emittedAtEpochMs}"
     is OpenCraySupplementEvent -> "runtime-supplement-${event.entryId}"
     is OpenCrayApprovalEvent -> "runtime-approval-${event.phase.name.lowercase(Locale.US)}-${event.runId}-${event.emittedAtEpochMs}"
     is OpenCrayToolCallEvent -> "runtime-tool-call-${event.runId}-${event.turn}-${event.emittedAtEpochMs}"
@@ -3812,7 +4251,7 @@ internal class OpenCrayHostRuntime private constructor(
       when (replay.kind) {
         ReplayedRuntimeEventKind.TOOL_CALL -> parseReplayedToolCallEvent(replay.payload)
         ReplayedRuntimeEventKind.TOOL_RESULT -> parseReplayedToolResultEvent(replay.payload)
-        ReplayedRuntimeEventKind.PROGRESS -> parseReplayedProgressEvent(replay.payload)
+        ReplayedRuntimeEventKind.ASSISTANT_PHASE -> parseReplayedAssistantPhaseEvent(replay.payload)
         ReplayedRuntimeEventKind.SUPPLEMENT -> parseReplayedSupplementEvent(replay.payload)
         ReplayedRuntimeEventKind.SUBAGENT -> parseReplayedSubAgentEvent(replay.payload)
       }
@@ -3889,14 +4328,19 @@ internal class OpenCrayHostRuntime private constructor(
     )
   }
 
-  private fun parseReplayedProgressEvent(payload: String): OpenCrayProgressEvent? {
+  private fun parseReplayedAssistantPhaseEvent(payload: String): OpenCrayAssistantEvent? {
     val decoded = decodeReplayPayload(payload) ?: return null
     val identifiers = replayIdentifiers(decoded) ?: return null
-    return OpenCrayProgressEvent(
+    val isFinal = decoded.replayString("phase")
+      ?.trim()
+      ?.lowercase(Locale.US) == "final_answer"
+    return OpenCrayAssistantEvent(
       runId = identifiers.first,
       taskId = identifiers.second,
       turn = decoded.replayInt("turn") ?: 0,
       text = decoded.replayString("text") ?: return null,
+      responseFormat = decoded.replayString("response_format"),
+      isFinal = isFinal,
       stage = decoded.replayString("stage"),
       emittedAtEpochMs = 0L,
     )
@@ -3912,6 +4356,7 @@ internal class OpenCrayHostRuntime private constructor(
       entryId = decoded.replayString("entry_id") ?: return null,
       text = decoded.replayString("text") ?: return null,
       checkpoint = decoded.replayString("checkpoint") ?: "turn_start",
+      metadata = decoded.replayStringMap("metadata"),
       emittedAtEpochMs = 0L,
     )
   }
@@ -4098,21 +4543,14 @@ internal class OpenCrayHostRuntime private constructor(
       event.errorMessage.orEmpty(),
     ).joinToString(separator = "|")
 
-    is OpenCrayAssistantEvent -> listOf(
-      "assistant",
+    is OpenCrayAssistantPhaseEvent -> listOf(
+      "assistant_phase",
       event.runId,
       event.taskId,
       event.turn.toString(),
-      event.responseFormat,
+      event.phase.name,
+      event.responseFormat.orEmpty(),
       event.isFinal.toString(),
-      event.text,
-    ).joinToString(separator = "|")
-
-    is OpenCrayProgressEvent -> listOf(
-      "progress",
-      event.runId,
-      event.taskId,
-      event.turn.toString(),
       event.stage.orEmpty(),
       event.text,
     ).joinToString(separator = "|")
@@ -4769,35 +5207,35 @@ internal class OpenCrayHostRuntime private constructor(
       "errorCode" to event.errorCode,
       "errorMessage" to event.errorMessage,
     )
-    is OpenCrayAssistantEvent -> mapOf(
-      "kind" to "assistant",
+    is OpenCrayAssistantPhaseEvent -> mapOf(
+      "kind" to "assistant_phase",
       "runId" to event.runId,
       "taskId" to event.taskId,
       "turn" to event.turn,
       "emittedAtEpochMs" to event.emittedAtEpochMs,
+      "phase" to event.phase.name.lowercase(),
       "responseFormat" to event.responseFormat,
       "isFinal" to event.isFinal,
-      "text" to event.text,
-    )
-    is OpenCrayProgressEvent -> mapOf(
-      "kind" to "progress",
-      "runId" to event.runId,
-      "taskId" to event.taskId,
-      "turn" to event.turn,
-      "emittedAtEpochMs" to event.emittedAtEpochMs,
-      "text" to event.text,
       "stage" to event.stage,
-    )
-    is OpenCraySupplementEvent -> mapOf(
-      "kind" to "supplement",
-      "runId" to event.runId,
-      "taskId" to event.taskId,
-      "turn" to event.turn,
-      "emittedAtEpochMs" to event.emittedAtEpochMs,
-      "entryId" to event.entryId,
       "text" to event.text,
-      "checkpoint" to event.checkpoint,
     )
+    is OpenCraySupplementEvent -> buildMap<String, Any?> {
+      put("kind", "supplement")
+      put("runId", event.runId)
+      put("taskId", event.taskId)
+      put("turn", event.turn)
+      put("emittedAtEpochMs", event.emittedAtEpochMs)
+      put("entryId", event.entryId)
+      put("text", event.text)
+      put("checkpoint", event.checkpoint)
+      val metadataSnapshot = supplementMetadataSnapshot(event.metadata)
+      if (metadataSnapshot.isNotEmpty()) {
+        put("metadata", metadataSnapshot)
+      }
+      if (hasPromptResumeCheckpointMetadata(event.metadata)) {
+        put("hasResumeCheckpointMetadata", true)
+      }
+    }
     is OpenCrayApprovalEvent -> mapOf(
       "kind" to if (event.phase == OpenCrayApprovalPhase.REQUIRED) "approval_wait" else "approval_result",
       "runId" to event.runId,
@@ -5514,8 +5952,11 @@ internal class OpenCrayHostRuntime private constructor(
     }
     val lastEvent = run.lastEvent ?: return null
     return when (lastEvent) {
-      is OpenCrayAssistantEvent -> lastEvent.text.trim().takeIf(String::isNotBlank)
-      is OpenCrayProgressEvent -> chatProgressText(lastEvent).trim().takeIf(String::isNotBlank)
+      is OpenCrayAssistantPhaseEvent -> if (lastEvent.isFinal) {
+        lastEvent.text.trim().takeIf(String::isNotBlank)
+      } else {
+        chatProgressText(lastEvent).trim().takeIf(String::isNotBlank)
+      }
       is OpenCrayToolCallEvent -> chatToolCallText(lastEvent).trim().takeIf(String::isNotBlank)
       is OpenCrayToolResultEvent -> {
         val orderedRunEvents = recentEvents
@@ -6038,8 +6479,18 @@ internal class OpenCrayHostRuntime private constructor(
       "resultLimitKind",
       "replacementCount",
       "editCount",
-      "todoCount",
-      "mutated",
+      TodoWriteMetadataKeys.TODO_COUNT,
+      TodoWriteMetadataKeys.MUTATED,
+      TodoWriteMetadataKeys.PLAN_CHANGED,
+      TodoWriteMetadataKeys.PENDING_TODO_COUNT,
+      TodoWriteMetadataKeys.IN_PROGRESS_TODO_COUNT,
+      TodoWriteMetadataKeys.COMPLETED_TODO_COUNT,
+      TodoWriteMetadataKeys.ADDED_TODO_COUNT,
+      TodoWriteMetadataKeys.REMOVED_TODO_COUNT,
+      TodoWriteMetadataKeys.STATUS_CHANGED_TODO_COUNT,
+      TodoWriteMetadataKeys.COMPLETED_TODO_DELTA_COUNT,
+      TodoWriteMetadataKeys.ACTIVE_TODO_CHANGED,
+      TodoWriteMetadataKeys.ACTIVE_TODO_CONTENT,
       "workingDirectory",
       "processId",
       "shellCommand",
@@ -6055,6 +6506,26 @@ internal class OpenCrayHostRuntime private constructor(
       }
     }
   }
+
+  private fun supplementMetadataSnapshot(metadata: Map<String, String>): Map<String, String> =
+    metadata.mapNotNull { (key, value) ->
+      val normalizedKey = key.trim()
+      val normalizedValue = value.trim()
+      if (
+        normalizedKey.isBlank() ||
+        normalizedValue.isBlank() ||
+        normalizedKey == OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON
+      ) {
+        null
+      } else {
+        normalizedKey to normalizedValue
+      }
+    }.toMap(linkedMapOf())
+
+  private fun hasPromptResumeCheckpointMetadata(metadata: Map<String, String>): Boolean =
+    metadata[OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON]
+      ?.trim()
+      ?.isNotBlank() == true
 
   private fun looksLikeInternalToolPayload(text: String): Boolean {
     val jsonCandidate = extractEmbeddedJsonObject(text) ?: return false
@@ -6159,42 +6630,10 @@ internal class OpenCrayHostRuntime private constructor(
 
   private fun safetyMetadataForTask(
     snapshot: SafetySettingsSnapshot,
-  ): Map<String, String> = buildMap {
-    val approvedReadRoots = approvedReadRootsProvider()
-    put(SafetySettingsMetadataKeys.CHAT_MODE, snapshot.automationMode.chatMetadataLabel)
-    put(
-      SafetySettingsMetadataKeys.EXECUTION_MODE,
-      snapshot.automationMode.executionMode.name,
-    )
-    put(
-      SafetySettingsMetadataKeys.FILE_CHANGES_POLICY_ID,
-      snapshot.fileChangesPolicy.wireValue,
-    )
-    put(
-      SafetySettingsMetadataKeys.FILE_DELETES_POLICY_ID,
-      snapshot.fileDeletesPolicy.wireValue,
-    )
-    put(
-      SafetySettingsMetadataKeys.SHELL_COMMANDS_POLICY_ID,
-      snapshot.shellCommandsPolicy.wireValue,
-    )
-    put(
-      SafetySettingsMetadataKeys.EXTERNAL_ACCESS_MODE_ID,
-      snapshot.externalAccessMode.wireValue,
-    )
-    put(
-      SafetySettingsMetadataKeys.WORKSPACE_ACCESS_PROFILE_ID,
-      snapshot.workspaceAccessProfile.wireValue,
-    )
-    put(
-      SafetySettingsMetadataKeys.READ_ONLY_OUTSIDE_WORKSPACE,
-      snapshot.readOnlyOutsideWorkspace.toString(),
-    )
-    put(
-      SafetySettingsMetadataKeys.APPROVED_READ_ROOTS,
-      approvedReadRoots.summary,
-    )
-  }
+  ): Map<String, String> = buildTaskSafetyMetadata(
+    snapshot = snapshot,
+    approvedReadRoots = approvedReadRootsProvider(),
+  )
 
   private fun refreshLocalizedResourcesLocked() {
     val baseContext = appContext ?: return
@@ -6250,12 +6689,14 @@ internal class OpenCrayHostRuntime private constructor(
   )
 
   private fun NetworkSearchSlotSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "id" to id,
-    "providerId" to providerId,
-    "label" to label,
-    "apiKey" to apiKey,
-    "enabled" to enabled,
-  )
+  "id" to id,
+  "providerId" to providerId,
+  "label" to label,
+  "baseUrl" to baseUrl,
+  "model" to model,
+  "apiKey" to apiKey,
+  "enabled" to enabled,
+)
 
   private fun MediaSpeechConfigSnapshot.toMap(): Map<String, Any?> = mapOf(
     "localeTag" to localeTag,
@@ -6349,6 +6790,10 @@ internal class OpenCrayHostRuntime private constructor(
     "toolChoiceSupported" to toolChoiceSupported,
     "parallelToolCallsSupported" to parallelToolCallsSupported,
     "strictToolSchemaSupported" to strictToolSchemaSupported,
+    "responsesContinuationSupported" to responsesContinuationSupported,
+    "builtinWebSearchSupported" to builtinWebSearchSupported,
+    "assistantPhaseSupported" to assistantPhaseSupported,
+    "citationIncludeSupported" to citationIncludeSupported,
   )
 
   private fun PersonalizationConfigSnapshot.toMap(): Map<String, Any?> = mapOf(
@@ -6621,6 +7066,7 @@ internal class OpenCrayHostRuntime private constructor(
       skillsFacade: SkillsFacade = EmptySkillsFacade,
       workspaceRootProvider: (() -> Path)? = null,
       workspaceEntryOpener: ((Path, String) -> Unit)? = null,
+      externalUriOpener: ((String) -> Unit)? = null,
       approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot = {
         workspaceRootProvider?.invoke()?.let { workspaceRoot ->
           val normalizedWorkspaceRoot = workspaceRoot.toAbsolutePath().normalize()
@@ -6645,6 +7091,8 @@ internal class OpenCrayHostRuntime private constructor(
           children = emptyList(),
         ).toMap()
       },
+      strongBackgroundSettingsAccess: StrongBackgroundSettingsAccess =
+        NoOpStrongBackgroundSettingsAccess,
       voiceMetadataAnalyzer: AppAgentWorkspaceVoiceMetadataAnalyzer = NoOpVoiceMetadataAnalyzer,
       voiceMetadataBackfillExecutor: Executor = InlineExecutor,
       voiceMetadataCacheStore: AppAgentWorkspaceVoiceMetadataCacheStore? = null,
@@ -6739,8 +7187,10 @@ internal class OpenCrayHostRuntime private constructor(
         skillsFacade = skillsFacade,
         workspaceRootProvider = workspaceRootProvider,
         workspaceEntryOpener = workspaceEntryOpener,
+        externalUriOpener = externalUriOpener,
         approvedReadRootsProvider = approvedReadRootsProvider,
         workspaceSnapshotProvider = workspaceSnapshotProvider,
+        strongBackgroundSettingsAccess = strongBackgroundSettingsAccess,
         voiceMetadataAnalyzer = voiceMetadataAnalyzer,
         voiceMetadataBackfillExecutor = voiceMetadataBackfillExecutor,
         voiceMetadataCacheStore = voiceMetadataCacheStore,
@@ -6844,6 +7294,7 @@ internal class OpenCrayHostRuntime private constructor(
         workspaceRootProvider = dependencies.workspaceRootProvider,
         approvedReadRootsProvider = dependencies.approvedReadRootsProvider,
         workspaceSnapshotProvider = dependencies.workspaceSnapshotProvider,
+        strongBackgroundSettingsAccess = AndroidStrongBackgroundSettingsAccess.fromContext(appContext),
         voiceMetadataAnalyzer = DefaultAppAgentWorkspaceVoiceMetadataAnalyzer,
         voiceMetadataBackfillExecutor = voiceMetadataBackfillExecutor,
         voiceMetadataCacheStore = dependencies.voiceMetadataCacheStore,
@@ -7016,6 +7467,16 @@ private data class VoiceMetadataBackfillCandidate(
   val mimeType: String?,
 )
 
+internal data class RuntimePendingApprovalNotificationTarget(
+  val sessionId: String,
+  val sessionTitle: String,
+  val runId: String,
+  val taskId: String,
+  val title: String,
+  val body: String,
+  val isHighRisk: Boolean,
+)
+
 private data class PendingApprovalSnapshot(
   val runId: String,
   val taskId: String,
@@ -7033,6 +7494,11 @@ private data class PendingApprovalSnapshot(
   val subAgentLifecycle: PendingApprovalSubAgentLifecycle? = null,
   val title: String,
   val body: String,
+)
+
+private data class PendingApprovalMatch(
+  val sessionId: String,
+  val approval: PendingApprovalSnapshot,
 )
 
 private data class PendingApprovalSubAgentLifecycle(
@@ -7059,11 +7525,38 @@ private data class ProjectedRuntimeChatMessage(
   val snapshot: Map<String, Any?>,
 )
 
+private data class SubAgentActivityAccumulator(
+  val firstEvent: OpenCraySubAgentEvent,
+  val latestEvent: OpenCraySubAgentEvent,
+  val eventCount: Int,
+)
+
+private data class SubAgentActivitySnapshot(
+  val parentRunId: String,
+  val parentTaskId: String,
+  val childRunId: String,
+  val childTaskId: String,
+  val label: String,
+  val subagentType: String,
+  val contextMode: String,
+  val depth: Int,
+  val phase: String,
+  val status: String?,
+  val executionState: String?,
+  val continuationKind: String?,
+  val resumable: Boolean,
+  val requiresUserAction: Boolean,
+  val isHighRisk: Boolean,
+  val summary: String?,
+  val startedAtEpochMs: Long,
+  val updatedAtEpochMs: Long,
+  val eventCount: Int,
+)
+
 private fun OpenCrayAgentRunEvent.withEmittedAtEpochMs(emittedAtEpochMs: Long): OpenCrayAgentRunEvent =
   when (this) {
     is OpenCrayLifecycleEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
     is OpenCrayAssistantEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
-    is OpenCrayProgressEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
     is OpenCraySupplementEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
     is OpenCrayApprovalEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)
     is OpenCraySubAgentEvent -> copy(emittedAtEpochMs = emittedAtEpochMs)

@@ -13,12 +13,12 @@ import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCrayApprovalEvent
 import com.opencray.runtime.OpenCrayApprovalPhase
 import com.opencray.runtime.OpenCrayAgentRunEvent
+import com.opencray.runtime.OpenCrayAssistantPhaseEvent
 import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayCancellationEvent
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
-import com.opencray.runtime.OpenCrayProgressEvent
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySubAgentPhase
@@ -161,8 +161,7 @@ internal data class PersistedAgentRunEvent(
 @Serializable
 internal enum class PersistedAgentRunEventKind {
   LIFECYCLE,
-  ASSISTANT,
-  PROGRESS,
+  ASSISTANT_PHASE,
   SUPPLEMENT,
   APPROVAL,
   SUBAGENT,
@@ -291,22 +290,15 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     errorCode = errorCode,
     errorMessage = errorMessage,
   )
-  is OpenCrayAssistantEvent -> PersistedAgentRunEvent(
-    kind = PersistedAgentRunEventKind.ASSISTANT,
+  is OpenCrayAssistantPhaseEvent -> PersistedAgentRunEvent(
+    kind = PersistedAgentRunEventKind.ASSISTANT_PHASE,
     runId = runId,
     taskId = taskId,
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
+    phase = phase.name,
     responseFormat = responseFormat,
     isFinal = isFinal,
-    text = text,
-  )
-  is OpenCrayProgressEvent -> PersistedAgentRunEvent(
-    kind = PersistedAgentRunEventKind.PROGRESS,
-    runId = runId,
-    taskId = taskId,
-    turn = turn,
-    emittedAtEpochMs = emittedAtEpochMs,
     text = text,
     stage = stage,
   )
@@ -319,6 +311,7 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     supplementEntryId = entryId,
     supplementCheckpoint = checkpoint,
     text = text,
+    resultMetadata = metadata,
   )
   is OpenCrayApprovalEvent -> PersistedAgentRunEvent(
     kind = PersistedAgentRunEventKind.APPROVAL,
@@ -439,20 +432,17 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
   )
-  PersistedAgentRunEventKind.ASSISTANT -> OpenCrayAssistantEvent(
+  PersistedAgentRunEventKind.ASSISTANT_PHASE -> OpenCrayAssistantEvent(
     runId = runId,
     taskId = taskId,
     turn = turn ?: 0,
     text = text.orEmpty(),
-    responseFormat = responseFormat.orEmpty(),
-    isFinal = isFinal ?: false,
-    emittedAtEpochMs = emittedAtEpochMs,
-  )
-  PersistedAgentRunEventKind.PROGRESS -> OpenCrayProgressEvent(
-    runId = runId,
-    taskId = taskId,
-    turn = turn ?: 0,
-    text = text.orEmpty(),
+    responseFormat = responseFormat?.trim()?.takeIf(String::isNotBlank),
+    isFinal = phase
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.equals("FINAL_ANSWER", ignoreCase = true)
+      ?: (isFinal == true),
     stage = stage,
     emittedAtEpochMs = emittedAtEpochMs,
   )
@@ -465,6 +455,7 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
     text = text.orEmpty(),
     checkpoint = supplementCheckpoint?.trim()?.takeIf(String::isNotBlank)
       ?: "turn_start",
+    metadata = resultMetadata,
     emittedAtEpochMs = emittedAtEpochMs,
   )
   PersistedAgentRunEventKind.APPROVAL -> OpenCrayApprovalEvent(

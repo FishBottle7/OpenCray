@@ -253,6 +253,22 @@ internal object AndroidOpenCrayRuntimeServiceBindingAdapter : OpenCrayRuntimeSer
   }
 }
 
+private object NoOpRuntimeServiceDelayScheduler : RuntimeServiceDelayScheduler {
+  override fun schedule(
+    delayMs: Long,
+    action: () -> Unit,
+  ): RuntimeServiceDelayedTask = RuntimeServiceDelayedTask { }
+}
+
+private fun defaultBindingReleaseScheduler(
+  mainThreadPoster: MainThreadPoster,
+): RuntimeServiceDelayScheduler =
+  if (mainThreadPoster === ImmediateMainThreadPoster) {
+    NoOpRuntimeServiceDelayScheduler
+  } else {
+    HandlerRuntimeServiceDelayScheduler(Handler(Looper.getMainLooper()))
+  }
+
 internal class AndroidBindingOpenCrayRuntimeServiceClient(
   private val appContext: Context,
   private val fallbackBridge: OpenCrayRuntimeServiceBridge =
@@ -268,7 +284,7 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
     HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
   private val bindingReleaseDelayMs: Long = DEFAULT_BINDING_RELEASE_DELAY_MS,
   private val bindingReleaseScheduler: RuntimeServiceDelayScheduler =
-    HandlerRuntimeServiceDelayScheduler(Handler(Looper.getMainLooper())),
+    defaultBindingReleaseScheduler(mainThreadPoster),
   private val serviceIntentFactory: (Context) -> Intent = { context ->
     Intent(context, OpenCrayAgentRuntimeService::class.java)
   },

@@ -2,6 +2,7 @@ package com.opencray.app
 
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySubAgentPhase
+import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import org.junit.Assert.assertEquals
@@ -113,5 +114,53 @@ class AgentRunRecordStoreFactoryTest {
     assertTrue(restored.resumable)
     assertFalse(restored.requiresUserAction)
     assertFalse(restored.isHighRisk)
+  }
+
+  @Test
+  fun supplementEventRoundTripsThroughPersistedRecordMetadata() {
+    val event = OpenCraySupplementEvent(
+      runId = "run-1",
+      taskId = "task-1",
+      turn = 3,
+      entryId = "supplement-1",
+      text = "Also inspect the docs.",
+      checkpoint = "post_tool_pre_model",
+      metadata = mapOf(
+        "checkpointKind" to "general_resume",
+        "promptResumeState" to "encoded-state",
+      ),
+      emittedAtEpochMs = 2_345L,
+    )
+
+    val restored = runtimeEventForTest(
+      persistedRecordForTest(event),
+    ) as OpenCraySupplementEvent
+
+    assertEquals("run-1", restored.runId)
+    assertEquals("task-1", restored.taskId)
+    assertEquals(3, restored.turn)
+    assertEquals("supplement-1", restored.entryId)
+    assertEquals("Also inspect the docs.", restored.text)
+    assertEquals("post_tool_pre_model", restored.checkpoint)
+    assertEquals(event.metadata, restored.metadata)
+    assertEquals(2_345L, restored.emittedAtEpochMs)
+  }
+
+  @Test
+  fun persistedSupplementEventDefaultsMetadataToEmptyMap() {
+    val restored = PersistedAgentRunEvent(
+      kind = PersistedAgentRunEventKind.SUPPLEMENT,
+      runId = "run-1",
+      taskId = "task-1",
+      turn = 2,
+      emittedAtEpochMs = 44L,
+      supplementEntryId = "supplement-legacy",
+      text = "Legacy supplement",
+    ).let(::runtimeEventForTest) as OpenCraySupplementEvent
+
+    assertEquals("supplement-legacy", restored.entryId)
+    assertEquals("Legacy supplement", restored.text)
+    assertEquals("turn_start", restored.checkpoint)
+    assertTrue(restored.metadata.isEmpty())
   }
 }

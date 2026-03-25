@@ -1,8 +1,12 @@
 param(
   [string]$WslDistro,
-  [string]$P4aRequirements = "python3",
+  [string]$P4aRequirements,
   [string]$P4aArch = "arm64-v8a",
-  [switch]$SkipP4aUpgrade
+  [switch]$SkipP4aUpgrade,
+  # `fast` matches the WSL smoke-build profile and keeps the default runtime minimal.
+  [ValidateSet("full", "fast")]
+  [string]$P4aBuildProfile = "fast",
+  [switch]$Fast
 )
 
 $ErrorActionPreference = "Stop"
@@ -326,7 +330,9 @@ $sdkCmdlineToolsRootWsl = "$androidSdkWsl/cmdline-tools/latest"
 $sdkCmdlineToolsBinWsl = "$sdkCmdlineToolsRootWsl/bin"
 $repoRootWsl = Convert-ToWslPath -Path $projectRoot
 $sdkCmdlineToolsBinWindows = Join-Path $androidSdkWindows "cmdline-tools\latest\bin"
-$autoUpgrade = if ($SkipP4aUpgrade) { "0" } else { "1" }
+$resolvedBuildProfile = if ($Fast) { "fast" } else { $P4aBuildProfile }
+$requirementsWasProvided = $PSBoundParameters.ContainsKey("P4aRequirements")
+$autoUpgrade = if ($SkipP4aUpgrade -or $resolvedBuildProfile -eq "fast") { "0" } else { "1" }
 $bashLines = @(
   "set -euo pipefail",
   "cd $(Convert-ToBashLiteral $repoRootWsl)",
@@ -341,10 +347,18 @@ $bashLines = @(
   "chmod +x $(Convert-ToBashLiteral "$sdkCmdlineToolsBinWsl/avdmanager")",
   "export P4A_AUTO_BOOTSTRAP=1",
   "export P4A_AUTO_UPGRADE=$autoUpgrade",
-  "export P4A_REQUIREMENTS=$(Convert-ToBashLiteral $P4aRequirements)",
+  "export P4A_BUILD_PROFILE=$(Convert-ToBashLiteral $resolvedBuildProfile)",
   "export P4A_ARCH=$(Convert-ToBashLiteral $P4aArch)",
   "./build-p4a-service-library.sh"
 )
+
+if ($requirementsWasProvided) {
+  $bashLines = @(
+    $bashLines[0..12]
+    "export P4A_REQUIREMENTS=$(Convert-ToBashLiteral $P4aRequirements)"
+    $bashLines[13..($bashLines.Length - 1)]
+  )
+}
 
 Ensure-WslPythonBootstrap -Distro $WslDistro
 Ensure-WslAndroidSdkScaffold `

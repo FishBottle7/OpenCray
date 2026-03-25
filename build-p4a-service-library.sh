@@ -8,7 +8,13 @@ STORAGE_DIR="${P4A_STORAGE_DIR:-$DEFAULT_P4A_STORAGE_BASE/opencray/p4a-storage}"
 P4A_BIN="${P4A_BIN:-}"
 P4A_PYTHON_BIN="${P4A_PYTHON_BIN:-}"
 P4A_AUTO_BOOTSTRAP="${P4A_AUTO_BOOTSTRAP:-1}"
+P4A_AUTO_UPGRADE_WAS_SET=0
+if [[ -n "${P4A_AUTO_UPGRADE+x}" ]]; then
+  P4A_AUTO_UPGRADE_WAS_SET=1
+fi
 P4A_AUTO_UPGRADE="${P4A_AUTO_UPGRADE:-1}"
+# `fast` is a smoke-build profile: python3-only by default and no automatic p4a upgrade.
+P4A_BUILD_PROFILE="${P4A_BUILD_PROFILE:-full}"
 P4A_PACKAGE_SPEC="${P4A_PACKAGE_SPEC:-python-for-android}"
 P4A_BUILD_VENV_DIR="${P4A_BUILD_VENV_DIR:-$ROOT_DIR/.p4a-build-venv}"
 P4A_USE_BUILD_VENV="${P4A_USE_BUILD_VENV:-1}"
@@ -21,6 +27,10 @@ P4A_GRADLE_USER_HOME_BASE="${P4A_GRADLE_USER_HOME_BASE:-$HOME/.gradle-opencray-p
 P4A_GRADLE_USER_HOME="${P4A_GRADLE_USER_HOME:-}"
 P4A_HOOK_PATH="${P4A_HOOK_PATH:-$ROOT_DIR/.p4a-generated/p4a_build_hook.py}"
 P4A_GRADLE_DIST_ZIP="${P4A_GRADLE_DIST_ZIP:-$ROOT_DIR/tools/android_python_runtime_p4a/gradle/gradle-8.0.2-all.zip}"
+P4A_REQUIREMENTS_LOCK_FILE_WAS_SET=0
+if [[ -n "${P4A_REQUIREMENTS_LOCK_FILE+x}" ]]; then
+  P4A_REQUIREMENTS_LOCK_FILE_WAS_SET=1
+fi
 P4A_REQUIREMENTS_LOCK_FILE="${P4A_REQUIREMENTS_LOCK_FILE:-$ROOT_DIR/tools/android_python_runtime_p4a/requirements.lock}"
 P4A_LOCAL_RECIPES_DIR="${P4A_LOCAL_RECIPES_DIR:-$ROOT_DIR/tools/android_python_runtime_p4a/local_recipes}"
 P4A_ANDROID_API="${P4A_ANDROID_API:-33}"
@@ -40,11 +50,44 @@ log_step() {
   echo "==> $1"
 }
 
+normalize_build_profile() {
+  local profile="$1"
+  case "$profile" in
+    full)
+      echo "full"
+      ;;
+    fast|quick)
+      echo "fast"
+      ;;
+    *)
+      echo "Unsupported P4A_BUILD_PROFILE: $profile" >&2
+      echo "Supported profiles: full, fast" >&2
+      exit 1
+      ;;
+  esac
+}
+
 trim_string() {
   local value="$1"
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
   echo "$value"
+}
+
+apply_build_profile_defaults() {
+  P4A_BUILD_PROFILE="$(normalize_build_profile "$P4A_BUILD_PROFILE")"
+
+  if [[ "$P4A_BUILD_PROFILE" != "fast" ]]; then
+    return
+  fi
+
+  if [[ "$P4A_AUTO_UPGRADE_WAS_SET" != "1" ]]; then
+    P4A_AUTO_UPGRADE="0"
+  fi
+
+  if [[ -z "${P4A_REQUIREMENTS:-}" ]] && [[ "$P4A_REQUIREMENTS_LOCK_FILE_WAS_SET" != "1" ]]; then
+    P4A_REQUIREMENTS="python3"
+  fi
 }
 
 resolve_requirements() {
@@ -793,6 +836,7 @@ run_p4a() {
   "$P4A_PYTHON_BIN" -m pythonforandroid.toolchain "$@"
 }
 
+apply_build_profile_defaults
 ensure_system_prerequisites
 HOST_PYTHON_BIN="$(resolve_python_bin "$P4A_PYTHON_BIN")"
 ensure_pip_available "$HOST_PYTHON_BIN"
@@ -823,6 +867,11 @@ prepare_private_sources "$P4A_PRIVATE_DIR"
 mkdir -p "$DIST_DIR"
 rm -f "$DIST_DIR"/*.aar
 
+log_step "Using p4a build profile: $P4A_BUILD_PROFILE"
+if [[ -z "${P4A_REQUIREMENTS:-}" ]] && [[ "$P4A_BUILD_PROFILE" != "fast" || "$P4A_REQUIREMENTS_LOCK_FILE_WAS_SET" == "1" ]]; then
+  log_step "Using requirements lock file: $P4A_REQUIREMENTS_LOCK_FILE"
+fi
+log_step "Auto-upgrade python-for-android: $P4A_AUTO_UPGRADE"
 log_step "Using Python requirements: $REQUIREMENTS"
 log_step "Building p4a service library AAR"
 run_p4a aar \

@@ -22,8 +22,14 @@ import com.opencray.core.orchestrator.SessionQueueSnapshot
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.store.MemoryStore
+import com.opencray.runtime.AgentToolCall
+import com.opencray.runtime.AgentToolResult
+import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
-import com.opencray.runtime.OpenCrayProgressEvent
+import com.opencray.runtime.OpenCrayPromptResumeMetadata
+import com.opencray.runtime.OpenCraySupplementEvent
+import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.memory.MemoryPreferenceKeys
 import com.opencray.runtime.memory.MemoryRecordExtensionKeys
 import java.util.ArrayDeque
@@ -108,6 +114,10 @@ class OpenCrayRuntimeServiceHostTest {
     val active = tracker.refresh()
     assertEquals("active_work", active.phase)
     assertEquals(true, active.hasActiveWork)
+    assertEquals(1, active.activeRunCount)
+    assertEquals(1, active.activeSessionCount)
+    assertEquals(1, active.pendingWorkSessionCount)
+    assertEquals(0, active.liveManagedProcessSessionCount)
     assertEquals(true, active.keepAliveRequired)
     assertEquals("active_run", active.keepAliveReason)
     assertEquals(2_000L, active.changedAtEpochMs)
@@ -124,6 +134,7 @@ class OpenCrayRuntimeServiceHostTest {
     )
     val managedProcess = tracker.refresh()
     assertEquals("active_work", managedProcess.phase)
+    assertEquals(1, managedProcess.liveManagedProcessSessionCount)
     assertEquals("managed_process", managedProcess.keepAliveReason)
     assertEquals(2_000L, managedProcess.activeSinceEpochMs)
     assertEquals(3_000L, managedProcess.changedAtEpochMs)
@@ -138,6 +149,39 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals(4_000L, idle.changedAtEpochMs)
     assertEquals(null, idle.activeSinceEpochMs)
     assertEquals(4_000L, idle.idleSinceEpochMs)
+  }
+
+  @Test
+  fun runtimeServiceWorkStateTrackerRefreshesWhenActiveCountsChange() {
+    var now = 1_000L
+    var summary = RuntimeOwnerWorkSummary(
+      trackedSessionCount = 1,
+      activeRunCount = 1,
+      activeSessionIds = listOf("session-a"),
+      pendingWorkSessionIds = listOf("session-a"),
+    )
+    val tracker = RuntimeServiceWorkStateTracker(
+      workSummaryProvider = { summary },
+      clock = { now },
+    )
+
+    val initial = tracker.refresh()
+
+    now = 1_500L
+    summary = RuntimeOwnerWorkSummary(
+      trackedSessionCount = 2,
+      activeRunCount = 2,
+      activeSessionIds = listOf("session-a", "session-b"),
+      pendingWorkSessionIds = listOf("session-a", "session-b"),
+    )
+    val updated = tracker.refresh()
+
+    assertEquals(1, initial.activeRunCount)
+    assertEquals(1, initial.activeSessionCount)
+    assertEquals(2, updated.activeRunCount)
+    assertEquals(2, updated.activeSessionCount)
+    assertEquals(2, updated.pendingWorkSessionCount)
+    assertEquals(1_500L, updated.changedAtEpochMs)
   }
 
   @Test
@@ -231,6 +275,99 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals(false, destroyed.stopScheduled)
     assertEquals(null, destroyed.stopDeadlineEpochMs)
     assertEquals(RuntimeServiceKeepAliveState.PHASE_DESTROYED, controller.currentState().phase)
+  }
+
+  @Test
+  fun runtimeForegroundControllerPromotesAndStopsForegroundBasedOnWorkState() {
+    var now = 5_000L
+    val adapter = RecordingRuntimeForegroundServiceAdapter()
+    val controller = RuntimeForegroundController(
+      serviceAdapter = adapter,
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { now },
+    )
+
+    val active = controller.onWorkStateChanged(
+      RuntimeServiceWorkState(
+        phase = RuntimeServiceWorkState.PHASE_ACTIVE_WORK,
+        hasActiveWork = true,
+        activeRunCount = 1,
+        activeSessionCount = 1,
+        pendingWorkSessionCount = 1,
+        keepAliveRequired = true,
+        keepAliveReason = RuntimeServiceWorkState.KEEP_ALIVE_REASON_ACTIVE_RUN,
+        changedAtEpochMs = now,
+        activeSinceEpochMs = now,
+      ),
+    )
+
+    assertEquals(RuntimeForegroundState.PHASE_FOREGROUND, active.phase)
+    assertEquals(true, active.notificationVisible)
+    assertEquals(1, adapter.startedModels.size)
+    assertEquals(0, adapter.stopCount)
+
+    now = 5_500L
+    val idle = controller.onWorkStateChanged(
+      RuntimeServiceWorkState(
+        phase = RuntimeServiceWorkState.PHASE_IDLE,
+        hasActiveWork = false,
+        keepAliveRequired = false,
+        changedAtEpochMs = now,
+        idleSinceEpochMs = now,
+      ),
+    )
+
+    assertEquals(RuntimeForegroundState.PHASE_IDLE, idle.phase)
+    assertEquals(false, idle.notificationVisible)
+    assertEquals(1, adapter.startedModels.size)
+    assertEquals(1, adapter.stopCount)
+  }
+
+  @Test
+  fun runtimeForegroundControllerUpdatesForegroundWhenActiveCountsChange() {
+    var now = 6_000L
+    val adapter = RecordingRuntimeForegroundServiceAdapter()
+    val controller = RuntimeForegroundController(
+      serviceAdapter = adapter,
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { now },
+    )
+
+    controller.onWorkStateChanged(
+      RuntimeServiceWorkState(
+        phase = RuntimeServiceWorkState.PHASE_ACTIVE_WORK,
+        hasActiveWork = true,
+        activeRunCount = 1,
+        activeSessionCount = 1,
+        pendingWorkSessionCount = 1,
+        keepAliveRequired = true,
+        keepAliveReason = RuntimeServiceWorkState.KEEP_ALIVE_REASON_ACTIVE_RUN,
+        changedAtEpochMs = now,
+        activeSinceEpochMs = now,
+      ),
+    )
+
+    now = 6_200L
+    val updated = controller.onWorkStateChanged(
+      RuntimeServiceWorkState(
+        phase = RuntimeServiceWorkState.PHASE_ACTIVE_WORK,
+        hasActiveWork = true,
+        activeRunCount = 2,
+        activeSessionCount = 2,
+        pendingWorkSessionCount = 2,
+        keepAliveRequired = true,
+        keepAliveReason = RuntimeServiceWorkState.KEEP_ALIVE_REASON_ACTIVE_RUN,
+        changedAtEpochMs = now,
+        activeSinceEpochMs = 6_000L,
+      ),
+    )
+
+    assertEquals(RuntimeForegroundState.PHASE_FOREGROUND, updated.phase)
+    assertEquals(2, updated.activeRunCount)
+    assertEquals(2, updated.activeSessionCount)
+    assertEquals(2, adapter.startedModels.size)
+    assertEquals(2, adapter.startedModels.last().activeRunCount)
+    assertEquals(2, adapter.startedModels.last().activeSessionCount)
   }
 
   @Test
@@ -1190,11 +1327,12 @@ class OpenCrayRuntimeServiceHostTest {
       ),
     )
     journalFactory.forChatSession(sessionId).append(
-      OpenCrayProgressEvent(
+      OpenCrayAssistantEvent(
         runId = runId,
         taskId = taskId,
         turn = 1,
         text = "Inspecting workspace",
+        isFinal = false,
         stage = "tool_call",
         emittedAtEpochMs = 1_250L,
       ),
@@ -1243,13 +1381,302 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals(runId, activeRuns.single()["runId"])
     assertEquals("running", activeRuns.single()["lifecycleState"])
     assertEquals(1, events.size)
-    assertEquals("progress", events.single()["kind"])
+    assertEquals("assistant_phase", events.single()["kind"])
+    assertEquals("commentary", events.single()["phase"])
     assertEquals("Inspecting workspace", events.single()["text"])
     assertNotNull(runSnapshot)
     assertEquals(runId, runSnapshot?.get("runId"))
     assertEquals("running", runSnapshot?.get("lifecycleState"))
     assertEquals(1, messages.size)
     assertEquals("hello from user", messages.single()["text"])
+  }
+
+  @Test
+  fun projectionOnlyChatRuntimeGatewayHidesInternalToolResultMetadata() {
+    val chatRoot = temporaryFolder.newFolder("projection-chat-tool-metadata-store")
+    val runtimeRoot = temporaryFolder.newFolder("projection-runtime-tool-metadata-store")
+    val chatStore = ChatSessionLocalStore(chatRoot)
+    val sessionId = chatStore.loadState().activeSession.sessionId
+
+    val queueFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val runRecordFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
+    val journalFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val checkpointFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val processFactory = FileBackedAgentProcessRegistryFactory(runtimeRoot)
+    val supplementFactory = FileBackedAgentSessionSupplementStoreFactory(runtimeRoot)
+
+    val runId = "projection-tool-run-1"
+    val taskId = "projection-tool-task-1"
+    queueFactory.forChatSession(sessionId).save(
+      SessionQueueSnapshot(
+        sessionId = sessionId,
+        agentId = "test-agent",
+        lifecycleState = SessionLifecycleState.RUNNING,
+        updatedAtEpochMs = 1_200L,
+        tasks = listOf(
+          SessionQueueTaskSnapshot(
+            enqueueOrder = 1L,
+            task = AgentTask(
+              id = taskId,
+              type = AgentTaskType.PROMPT,
+              input = "inspect metadata",
+              state = AgentTaskState.RUNNING,
+              policyDecision = PolicyDecision(
+                outcome = com.opencray.core.contracts.PolicyDecisionOutcome.ALLOW,
+                reasonCode = "test",
+              ),
+              createdAtEpochMs = 1_000L,
+              updatedAtEpochMs = 1_200L,
+              metadata = mapOf(
+                AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+              ),
+            ),
+            lifecycleState = QueueTaskLifecycleState.RUNNING,
+            attempt = 1,
+          ),
+        ),
+      ),
+    )
+    runRecordFactory.forChatSession(sessionId).upsert(
+      PersistedAgentRunRecord(
+        runId = runId,
+        taskId = taskId,
+        acceptedAtEpochMs = 1_000L,
+      ),
+    )
+    journalFactory.forChatSession(sessionId).append(
+      OpenCrayToolResultEvent(
+        runId = runId,
+        taskId = taskId,
+        turn = 1,
+        call = AgentToolCall(toolName = "Read"),
+        result = AgentToolResult(
+          toolName = "Read",
+          status = AgentToolResultStatus.SUCCESS,
+          content = "alpha",
+          metadata = mapOf(
+            "filePath" to "README.md",
+            "checkpointId" to "hidden-checkpoint",
+            OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON to """{"turnIndex":1,"toolCallCount":1}""",
+          ),
+        ),
+        emittedAtEpochMs = 1_250L,
+      ),
+    )
+
+    val gateway = ProjectionOnlyOpenCrayChatRuntimeGateway(
+      chatSessionStore = chatStore,
+      queueSnapshotStoreFactory = queueFactory,
+      runRecordStoreFactory = runRecordFactory,
+      runEventJournalStoreFactory = journalFactory,
+      promptCheckpointStoreFactory = checkpointFactory,
+      processRegistryFactory = processFactory,
+      supplementStoreFactory = supplementFactory,
+      strings = projectionOnlyChatStrings(),
+      connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { 1_500L },
+    )
+
+    val runtimeSnapshot = gateway.loadChatRuntimeSnapshot()
+    @Suppress("UNCHECKED_CAST")
+    val events = runtimeSnapshot["events"] as List<Map<String, Any?>>
+    val resultMetadata = events.single()["resultMetadata"] as Map<*, *>
+
+    assertEquals("README.md", resultMetadata["filePath"])
+    assertFalse(resultMetadata.containsKey("checkpointId"))
+    assertFalse(resultMetadata.containsKey(OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON))
+  }
+
+  @Test
+  fun projectionOnlyChatRuntimeGatewayProjectsSupplementMetadataWithoutHiddenResumePayload() {
+    val chatRoot = temporaryFolder.newFolder("projection-chat-supplement-metadata-store")
+    val runtimeRoot = temporaryFolder.newFolder("projection-runtime-supplement-metadata-store")
+    val chatStore = ChatSessionLocalStore(chatRoot)
+    val sessionId = chatStore.loadState().activeSession.sessionId
+
+    val queueFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val runRecordFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
+    val journalFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val checkpointFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val processFactory = FileBackedAgentProcessRegistryFactory(runtimeRoot)
+    val supplementFactory = FileBackedAgentSessionSupplementStoreFactory(runtimeRoot)
+
+    val runId = "projection-supplement-run-1"
+    val taskId = "projection-supplement-task-1"
+    queueFactory.forChatSession(sessionId).save(
+      SessionQueueSnapshot(
+        sessionId = sessionId,
+        agentId = "test-agent",
+        lifecycleState = SessionLifecycleState.RUNNING,
+        updatedAtEpochMs = 1_200L,
+        tasks = listOf(
+          SessionQueueTaskSnapshot(
+            enqueueOrder = 1L,
+            task = AgentTask(
+              id = taskId,
+              type = AgentTaskType.PROMPT,
+              input = "inspect supplement metadata",
+              state = AgentTaskState.RUNNING,
+              policyDecision = PolicyDecision(
+                outcome = com.opencray.core.contracts.PolicyDecisionOutcome.ALLOW,
+                reasonCode = "test",
+              ),
+              createdAtEpochMs = 1_000L,
+              updatedAtEpochMs = 1_200L,
+              metadata = mapOf(
+                AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+              ),
+            ),
+            lifecycleState = QueueTaskLifecycleState.RUNNING,
+            attempt = 1,
+          ),
+        ),
+      ),
+    )
+    runRecordFactory.forChatSession(sessionId).upsert(
+      PersistedAgentRunRecord(
+        runId = runId,
+        taskId = taskId,
+        acceptedAtEpochMs = 1_000L,
+      ),
+    )
+    journalFactory.forChatSession(sessionId).append(
+      OpenCraySupplementEvent(
+        runId = runId,
+        taskId = taskId,
+        turn = 1,
+        entryId = "supplement-1",
+        text = "Also inspect the logs",
+        checkpoint = "turn_start",
+        metadata = mapOf(
+          "source" to "manual",
+          OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON to
+            """{"turnIndex":1,"toolCallCount":1}""",
+        ),
+        emittedAtEpochMs = 1_250L,
+      ),
+    )
+
+    val gateway = ProjectionOnlyOpenCrayChatRuntimeGateway(
+      chatSessionStore = chatStore,
+      queueSnapshotStoreFactory = queueFactory,
+      runRecordStoreFactory = runRecordFactory,
+      runEventJournalStoreFactory = journalFactory,
+      promptCheckpointStoreFactory = checkpointFactory,
+      processRegistryFactory = processFactory,
+      supplementStoreFactory = supplementFactory,
+      strings = projectionOnlyChatStrings(),
+      connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { 1_500L },
+    )
+
+    val runtimeSnapshot = gateway.loadChatRuntimeSnapshot()
+    @Suppress("UNCHECKED_CAST")
+    val events = runtimeSnapshot["events"] as List<Map<String, Any?>>
+    val supplement = events.single()
+    val metadata = supplement["metadata"] as Map<*, *>
+
+    assertEquals("supplement", supplement["kind"])
+    assertEquals("Also inspect the logs", supplement["text"])
+    assertEquals("manual", metadata["source"])
+    assertEquals(true, supplement["hasResumeCheckpointMetadata"])
+    assertFalse(metadata.containsKey(OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON))
+  }
+
+  @Test
+  fun projectionOnlyChatRuntimeGatewayOmitsSupplementMetadataWhenOnlyResumeCheckpointMetadataExists() {
+    val chatRoot = temporaryFolder.newFolder("projection-chat-supplement-hidden-only-store")
+    val runtimeRoot = temporaryFolder.newFolder("projection-runtime-supplement-hidden-only-store")
+    val chatStore = ChatSessionLocalStore(chatRoot)
+    val sessionId = chatStore.loadState().activeSession.sessionId
+
+    val queueFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val runRecordFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
+    val journalFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val checkpointFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val processFactory = FileBackedAgentProcessRegistryFactory(runtimeRoot)
+    val supplementFactory = FileBackedAgentSessionSupplementStoreFactory(runtimeRoot)
+
+    val runId = "projection-supplement-hidden-run-1"
+    val taskId = "projection-supplement-hidden-task-1"
+    queueFactory.forChatSession(sessionId).save(
+      SessionQueueSnapshot(
+        sessionId = sessionId,
+        agentId = "test-agent",
+        lifecycleState = SessionLifecycleState.RUNNING,
+        updatedAtEpochMs = 1_200L,
+        tasks = listOf(
+          SessionQueueTaskSnapshot(
+            enqueueOrder = 1L,
+            task = AgentTask(
+              id = taskId,
+              type = AgentTaskType.PROMPT,
+              input = "inspect supplement hidden metadata",
+              state = AgentTaskState.RUNNING,
+              policyDecision = PolicyDecision(
+                outcome = com.opencray.core.contracts.PolicyDecisionOutcome.ALLOW,
+                reasonCode = "test",
+              ),
+              createdAtEpochMs = 1_000L,
+              updatedAtEpochMs = 1_200L,
+              metadata = mapOf(
+                AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+              ),
+            ),
+            lifecycleState = QueueTaskLifecycleState.RUNNING,
+            attempt = 1,
+          ),
+        ),
+      ),
+    )
+    runRecordFactory.forChatSession(sessionId).upsert(
+      PersistedAgentRunRecord(
+        runId = runId,
+        taskId = taskId,
+        acceptedAtEpochMs = 1_000L,
+      ),
+    )
+    journalFactory.forChatSession(sessionId).append(
+      OpenCraySupplementEvent(
+        runId = runId,
+        taskId = taskId,
+        turn = 1,
+        entryId = "supplement-1",
+        text = "Also inspect the logs",
+        checkpoint = "turn_start",
+        metadata = mapOf(
+          OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON to
+            """{"turnIndex":1,"toolCallCount":2}""",
+        ),
+        emittedAtEpochMs = 1_250L,
+      ),
+    )
+
+    val gateway = ProjectionOnlyOpenCrayChatRuntimeGateway(
+      chatSessionStore = chatStore,
+      queueSnapshotStoreFactory = queueFactory,
+      runRecordStoreFactory = runRecordFactory,
+      runEventJournalStoreFactory = journalFactory,
+      promptCheckpointStoreFactory = checkpointFactory,
+      processRegistryFactory = processFactory,
+      supplementStoreFactory = supplementFactory,
+      strings = projectionOnlyChatStrings(),
+      connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { 1_500L },
+    )
+
+    val runtimeSnapshot = gateway.loadChatRuntimeSnapshot()
+    @Suppress("UNCHECKED_CAST")
+    val events = runtimeSnapshot["events"] as List<Map<String, Any?>>
+    val supplement = events.single()
+
+    assertEquals("supplement", supplement["kind"])
+    assertEquals("Also inspect the logs", supplement["text"])
+    assertEquals(true, supplement["hasResumeCheckpointMetadata"])
+    assertFalse(supplement.containsKey("metadata"))
   }
 
   @Test
@@ -1345,11 +1772,12 @@ class OpenCrayRuntimeServiceHostTest {
         ),
       )
       journalFactory.forChatSession(sessionId).append(
-        OpenCrayProgressEvent(
+        OpenCrayAssistantEvent(
           runId = runId,
           taskId = taskId,
           turn = 1,
           text = "Polling update",
+          isFinal = false,
           emittedAtEpochMs = 2_250L,
         ),
       )
@@ -1688,6 +2116,48 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals(listOf("fallback-settings", "binder-settings", "fallback-settings"), observedSources)
   }
 
+  @Test
+  fun serviceBackedSettingsGatewayAllowsFallbackStrongBackgroundLoadsAndActions() {
+    val binderGateway = RecordingSettingsGateway("binder")
+    val fallbackGateway = RecordingSettingsGateway("fallback")
+    val serviceClient = RecordingRuntimeServiceClient(
+      currentShellGateway = null,
+      currentChatGateway = null,
+      currentSkillsGateway = null,
+      currentSettingsGateway = null,
+    )
+    val gateway = ServiceBackedOpenCraySettingsGateway(
+      serviceClient = serviceClient,
+      fallbackGateway = fallbackGateway,
+    )
+
+    assertEquals("fallback-strong-background", gateway.loadStrongBackgroundSnapshot()["source"])
+    assertEquals(
+      "fallback-strong-background-action",
+      gateway.performStrongBackgroundAction(
+        StrongBackgroundActionIds.OPEN_NOTIFICATION_SETTINGS,
+      )["source"],
+    )
+    assertEquals(
+      StrongBackgroundActionIds.OPEN_NOTIFICATION_SETTINGS,
+      fallbackGateway.lastStrongBackgroundActionId,
+    )
+
+    serviceClient.currentSettingsGateway = binderGateway
+
+    assertEquals("binder-strong-background", gateway.loadStrongBackgroundSnapshot()["source"])
+    assertEquals(
+      "binder-strong-background-action",
+      gateway.performStrongBackgroundAction(
+        StrongBackgroundActionIds.OPEN_EXACT_ALARM_SETTINGS,
+      )["source"],
+    )
+    assertEquals(
+      StrongBackgroundActionIds.OPEN_EXACT_ALARM_SETTINGS,
+      binderGateway.lastStrongBackgroundActionId,
+    )
+  }
+
   private class NoOpAgentSessionRuntimeManager : AgentSessionRuntimeManager {
     override fun forSession(sessionId: String): AgentSessionHandle = error("unused in test")
 
@@ -1859,6 +2329,22 @@ class OpenCrayRuntimeServiceHostTest {
 
       override fun cancel() {
         cancelled = true
+      }
+    }
+  }
+
+  private class RecordingRuntimeForegroundServiceAdapter : RuntimeForegroundServiceAdapter {
+    val startedModels = mutableListOf<RuntimeForegroundNotificationModel>()
+    var stopCount: Int = 0
+      private set
+
+    override fun startOrUpdateForeground(model: RuntimeForegroundNotificationModel) {
+      startedModels += model
+    }
+
+    override fun stopForeground(removeNotification: Boolean) {
+      if (removeNotification) {
+        stopCount += 1
       }
     }
   }
@@ -2134,6 +2620,8 @@ class OpenCrayRuntimeServiceHostTest {
   ) : OpenCraySettingsGateway {
     var lastMcpMasterEnabled: Boolean? = null
       private set
+    var lastStrongBackgroundActionId: String? = null
+      private set
 
     override fun loadSettingsOverview(): Map<String, Any?> = mapOf("source" to "$label-settings")
 
@@ -2144,6 +2632,14 @@ class OpenCrayRuntimeServiceHostTest {
 
     override fun loadSettingsDetail(routeIdRaw: String): Map<String, Any?> =
       mapOf("source" to "$label-settings-detail", "routeId" to routeIdRaw)
+
+    override fun loadStrongBackgroundSnapshot(): Map<String, Any?> =
+      mapOf("source" to "$label-strong-background")
+
+    override fun performStrongBackgroundAction(actionId: String): Map<String, Any?> {
+      lastStrongBackgroundActionId = actionId
+      return mapOf("source" to "$label-strong-background-action", "actionId" to actionId)
+    }
 
     override fun loadNetworkSearchConfig(): Map<String, Any?> =
       mapOf("source" to "$label-network-search")

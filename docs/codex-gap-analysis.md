@@ -1,486 +1,780 @@
 # Codex Long-Task Workflow Gap Analysis
 
-Updated: 2026-03-23
+Updated: 2026-03-25
 
-This document summarizes the current gap between OpenCray and Codex for long, tool-heavy, self-driven tasks.
+This document summarizes the currently verified gap between OpenCray and Codex for long, tool-heavy, self-driven tasks.
 
-It also clarifies three terms that are easy to mix together:
+Important scope guard:
 
-- `assistant phase`
-- `assistant commentary`
-- `final answer`
+- do not assume `tool calling` is fully "done" just because native tool calls now work on the main path
+- do not assume `Responses-native continuation` is fully "done" just because `openai_responses` and `previous_response_id` now exist in the codebase
+- the right question is no longer "can OpenCray run an agent loop at all?"
+- the right question is "where is the remaining product, protocol, and orchestration gap once the basic loop exists?"
+- worktree-class task isolation is currently treated as out of scope for OpenCray's product direction, because the app is not trying to become a general-purpose coding IDE
 
-This analysis supersedes parts of older docs that are now partially stale, especially:
+This analysis supersedes older docs that now understate the current baseline, especially:
 
 - `docs/chat-runtime-ux-parity-plan.md`
 - `docs/openclaw-runtime-parity-roadmap.md`
 - `docs/agent-runtime-audit.md`
 
-## 1. Definitions
+## 1. Terms
 
 ### 1.1 `assistant phase`
 
-`assistant phase` is best understood as a host/runtime classification for an assistant emission.
+`assistant phase` is a host/runtime classification for an assistant emission.
 
-It answers: "What kind of assistant output is this right now?"
+Typical Codex-like phases are:
 
-Typical phases in a Codex-like system are:
+- `commentary`
+- `final`
 
-- `commentary`: a public progress or intent update
-- `final`: the terminal answer for the current task
-
-Important: this is not the same thing as the model's private chain-of-thought. In practice, "phase" is usually a runtime/UI contract, not a universal provider-native field that every API returns in the same format.
+This is not the same thing as hidden private reasoning.
 
 ### 1.2 `assistant commentary`
 
-`assistant commentary` is a short, public, user-visible progress message. It is the "I am going to inspect the repo first" or "I found the native tool-calling path; next I am checking how progress events are emitted" lane.
+`assistant commentary` is a short, public, user-visible status update such as:
+
+- "Inspecting the repo before editing."
+- "I found the Responses route. Next I am checking continuation state."
 
 Its purpose is:
 
 - reduce perceived latency
-- make long tasks feel observable
 - show intent before tool execution
-- keep the user oriented without exposing private reasoning
-
-Official prompting guidance supports this pattern. The GPT-5.1 prompting guide explicitly recommends that, for long-running executions, the model should explain what it is doing in a commentary message first, before deeper hidden reasoning or tool work begins.
+- keep long tasks observable
+- avoid exposing private reasoning
 
 ### 1.3 `final answer`
 
-`final answer` is the terminal user-facing answer for the turn or task.
+`final answer` is the terminal user-facing answer for the current task or turn.
 
-It should not be mixed with a tool call in the same action step. In a Codex-like loop, commentary can appear before or between tool actions, while `final answer` closes the run.
+In a Codex-like loop:
 
-### 1.4 `analysis` is not `commentary`
+- commentary can appear before or between tools
+- tool calls and tool results are structured
+- final closes the run
 
-These four things must stay separate:
-
-- private model reasoning / hidden analysis
-- public commentary / progress
-- tool calls and tool results
-- final answer
-
-The key product discipline in Codex-style systems is not "show the whole reasoning trace". It is "show a safe public progress lane, keep private reasoning private, and keep tools and final answers structurally typed."
-
-## 2. Confirmed OpenCray Baseline
+## 2. Verified OpenCray Baseline
 
 OpenCray is already much closer to Codex than several older internal docs suggest.
 
-### 2.1 Native tool calling already exists on the main path
+### 2.1 Native function tool calling is real, but still not "finished"
 
-The runtime already enables native tool calling when visible tool definitions exist:
+The current codebase already supports provider-native structured tool calling for multiple dialects:
 
-- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt:229-238`
-
-The provider client already parses OpenAI-style `message.tool_calls`:
-
-- `app/src/main/kotlin/com/opencray/app/OpenAiCompatibleLiteLlmProviderClient.kt:360-377`
-
-The provider client already parses Anthropic-style `tool_use` blocks:
-
-- `app/src/main/kotlin/com/opencray/app/OpenAiCompatibleLiteLlmProviderClient.kt:400-429`
-
-The runtime already consumes structured completion first and only falls back to raw-text parsing when needed:
-
-- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt:552-571`
-
-So the correct statement is:
-
-- OpenCray already has native tool calling
-- OpenCray still keeps a legacy JSON fallback layer
-
-The remaining gap is not "native tool calling is missing". The remaining gap is "Codex-grade phase/protocol maturity on top of native tool calling is still incomplete."
-
-### 2.2 Public progress/commentary-like events already exist
-
-OpenCray already parses `progress`, `commentary`, and `status` legacy actions into a progress event:
-
-- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt:658-679`
-
-OpenCray already has a dedicated progress event type:
-
-- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRunEvents.kt:56-63`
-
-OpenCray also has a dedicated assistant event type for normal assistant output:
-
-- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRunEvents.kt:46-54`
-
-There is already a regression test proving the timeline:
-
-- `progress -> tool_call -> tool_result -> progress -> assistant`
-- `runtime/src/test/kotlin/com/opencray/runtime/OpenCrayAgentRuntimeTest.kt:1388-1455`
-
-So the correct statement is:
-
-- OpenCray already has a public progress lane
-- but it is not yet promoted into a stronger, end-to-end "assistant commentary phase" contract
-
-### 2.3 Prompting already encourages progress before action
-
-The prompt assembler already teaches the model that:
-
-- native tool calling should be preferred
-- a progress action is a short public status update
-- one progress action can come before one terminal action
+- OpenAI chat-completions style tool calls
+- Anthropic messages-style `tool_use`
+- OpenAI Responses-style `function_call`
 
 Evidence:
 
-- `runtime/src/main/kotlin/com/opencray/runtime/context/PromptAssembler.kt:223-255`
+- `app/src/main/kotlin/com/opencray/app/OpenAiCompatibleLiteLlmProviderClient.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt`
 
-The runtime reminder also already says:
+The gateway model now also explicitly supports:
 
-- prefer native tool calling over legacy JSON fallback
-- you may include one short public progress summary before that action
+- host function tools
+- provider builtin tools
+- `toolChoice`
+- `parallelToolCalls`
+- `previousResponseId`
+- `responseApiPreferred`
+- recoverable structured `toolCallErrors`
 
 Evidence:
 
-- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt:2722-2727`
+- `llm/src/main/kotlin/com/opencray/llm/LiteLlmGateway.kt`
 
-This matters because OpenCray already has the seed of the Codex-like "say what you are about to do, then do it" pattern.
+So the correct statement is:
 
-### 2.4 Session, resume, context, subagent, and process foundations already exist
+- OpenCray already has native structured tool calling
+- OpenCray still runs a dual-protocol world with legacy JSON fallback and recovery logic
+- native tool calling should be treated as a strong baseline, not as a completed end state
+
+### 2.2 `openai_responses` and lineage state now exist
+
+The current codebase now explicitly models `openai_responses` as its own protocol:
+
+- `app/src/main/kotlin/com/opencray/app/LlmProviderRequestSupport.kt`
+
+The provider client now explicitly supports:
+
+- `/v1/responses`
+- Responses output parsing
+- `function_call` parsing
+- commentary/final phase extraction from Responses message items
+- builtin web search request/observation metadata
+
+Evidence:
+
+- `app/src/main/kotlin/com/opencray/app/OpenAiCompatibleLiteLlmProviderClient.kt`
+
+The runtime also now keeps per-run Responses continuation state:
+
+- `responsesPreviousResponseId`
+- `responsesLineageTrusted`
+- `responsesPendingMessages`
+
+and can choose between:
+
+- full rebuild
+- local delta continuation
+- `responses_native` continuation
+
+Evidence:
+
+- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt`
+
+So the correct statement is:
+
+- OpenCray no longer lacks Responses-native continuation entirely
+- but Responses support should still not be treated as "fully finished"
+
+### 2.3 Commentary/progress is stronger than before
+
+The provider client now does more than older docs assumed.
+
+Notable improvements:
+
+- Responses message `phase=commentary` is parsed
+- commentary text is folded into `progressText`
+- runtime already maps `progressText` into a public progress action
+
+Evidence:
+
+- `app/src/main/kotlin/com/opencray/app/OpenAiCompatibleLiteLlmProviderClient.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt`
+
+So the old statement "provider-native commentary is not carried through the structured path" is no longer accurate.
+
+The remaining gap is not the total absence of commentary.
+The remaining gap is that commentary is still not modeled as a single first-class assistant phase across provider parsing, runtime events, persistence, and UI.
+
+### 2.4 Resume, recovery, compaction, and memory stewardship are real
+
+OpenCray already has substantial long-task infrastructure:
+
+- session-scoped runtime ownership
+- durable queue snapshots
+- prompt checkpoints for approval and resume boundaries
+- recovery planning
+- managed process reconnect on restore
+- pre-compaction memory flush
+- durable compaction summaries
+
+Evidence:
+
+- `app/src/main/kotlin/com/opencray/app/AgentSessionRuntimeManager.kt`
+- `app/src/main/kotlin/com/opencray/app/PromptCheckpointStoreFactory.kt`
+- `app/src/main/kotlin/com/opencray/app/RunRecoveryPlanner.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/memory/MemoryFlushCoordinator.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/compaction/DurableCompaction.kt`
+
+This means OpenCray is not a "single fresh loop per prompt" system anymore.
+
+### 2.5 Subagents exist, but in a narrower form than Codex
 
 OpenCray already has:
 
-- session-scoped runtime ownership
-  - `app/src/main/kotlin/com/opencray/app/OpenCrayRuntimeServiceHost.kt`
-- restart/recovery-aware queue snapshot support
-  - `app/src/main/kotlin/com/opencray/app/RecoveryAwareQueueSnapshotStore.kt`
-- an explicit context manager for prompt preparation
-  - `runtime/src/main/kotlin/com/opencray/runtime/context/ContextManager.kt`
-- a real subagent runtime and subagent context builder
-  - `runtime/src/main/kotlin/com/opencray/runtime/subagent/SubAgentRuntime.kt`
-  - `runtime/src/main/kotlin/com/opencray/runtime/subagent/SubAgentContextBuilder.kt`
-- managed process tools such as `Bash`, `ProcessStart`, and `ProcessWait`
-  - `runtime/src/main/kotlin/com/opencray/runtime/AgentTooling.kt:389-424`
-  - `runtime/src/main/kotlin/com/opencray/runtime/AgentTooling.kt:702-706`
-
-This means OpenCray is no longer in a "toy loop" stage. The important comparison now is product quality and protocol rigor, not whether the basic architecture exists at all.
-
-## 3. What Is Still Behind Codex
-
-The remaining gap is real, but narrower and more specific than "OpenCray cannot do long tasks."
-
-### 3.1 The biggest protocol gap: commentary is not yet a first-class assistant phase end-to-end
-
-OpenCray currently models the public lane in two different ways:
-
-- `OpenCrayProgressEvent`
-- `OpenCrayAssistantEvent` with `isFinal`
-
-That works, but it is not the same as a unified assistant-phase contract such as:
-
-- `COMMENTARY`
-- `FINAL`
-
-Current symptoms:
-
-- commentary-like output is treated as a separate progress event rather than as an assistant phase
-- assistant output still primarily distinguishes `isFinal` instead of a richer phase enum
-- this makes UI, persistence, replay, and provider adaptation less uniform than a true phase model
-
-In other words, OpenCray already has the behavior shape, but not yet the clean semantic model.
-
-### 3.2 Provider-native structured completion does not yet fully carry commentary/phase semantics
-
-`LiteLlmStructuredCompletion` already has a `progressText` slot:
-
-- `app/src/main/kotlin/com/opencray/app/OpenAiCompatibleLiteLlmProviderClient.kt:437-454`
-
-The runtime already knows how to turn `progressText` into a progress action:
-
-- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt:574-598`
-
-But the current OpenAI and Anthropic structured parsing paths only populate:
-
-- `toolCalls`
-- `finalText`
-- `rawText`
-
-They do not currently populate provider-native commentary/progress fields into `progressText`.
+- a real delegated child-runtime path
+- subagent lifecycle events
+- subagent context modes
+- resumable subagent approval states
 
 Evidence:
 
-- `app/src/main/kotlin/com/opencray/app/OpenAiCompatibleLiteLlmProviderClient.kt:360-377`
-- `app/src/main/kotlin/com/opencray/app/OpenAiCompatibleLiteLlmProviderClient.kt:400-429`
+- `runtime/src/main/kotlin/com/opencray/runtime/subagent/SubAgentRuntime.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/subagent/SubAgentContextBuilder.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/subagent/SubAgentResultCompressor.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRunEvents.kt`
 
-This is one of the most important remaining gaps. Native tool calling is already there, but commentary is still mostly carried by prompt conventions and legacy action parsing, not by a first-class structured provider path.
+But the currently exposed subagent control surface is still much narrower than Codex. That matters for the remaining gap.
 
-### 3.3 "Say one sentence before the first tool call" is only a soft instruction today
+## 3. What Is Still Not Fully Done In Tool Calling And Responses
 
-OpenCray currently says:
+This section is intentionally separate from the long-task section.
 
-- "You may include one short public progress summary before that action."
+The point is:
+
+- native tool calling exists
+- Responses-native continuation exists
+- neither should yet be declared complete
+
+### 3.1 The mainline is still dual-protocol, not cleanly single-protocol
+
+OpenCray still teaches and recovers a legacy JSON action protocol in the main runtime path.
+
+That is valuable for robustness, but it has costs:
+
+- prompt complexity stays higher
+- protocol recovery logic stays hot
+- provider behavior is less uniform
+- the model still learns fallback shapes instead of only one clean native shape
 
 Evidence:
 
-- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt:2724-2725`
+- `runtime/src/main/kotlin/com/opencray/runtime/context/PromptAssembler.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt`
 
-That is permissive, not mandatory.
+Compared with Codex, the remaining gap is not "no native tools"; it is "native tools are still sharing the stage with a legacy fallback contract."
 
-Codex-like behavior is more stable because the whole stack is aligned around this pattern:
+### 3.2 Responses support is present, but coverage and trust boundaries still matter
 
-- prompting expects it
-- runtime and UI have a dedicated public commentary lane
-- the product makes such messages visible and useful
+Current Responses support is substantial, but it still has non-trivial edge handling:
 
-OpenCray today is closer to:
+- output items must be normalized
+- commentary/final/unphased text must be merged
+- malformed tool arguments become `toolCallErrors`
+- lineage can be invalidated and dropped back to full rebuild
 
-- "the model is allowed to do this"
+Evidence:
 
-than to:
+- `app/src/main/kotlin/com/opencray/app/OpenAiCompatibleLiteLlmProviderClient.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt`
 
-- "the system strongly converges on this behavior"
+This means the codebase is correctly handling the fact that Responses is not a trivial "just switch endpoint" change.
 
-### 3.4 Legacy fallback is still part of the main prompt contract
+The remaining gap versus Codex is not mere endpoint support.
+It is long-run confidence, broader coverage, and cleaner end-to-end semantics.
 
-OpenCray's prompt still explicitly teaches the model the legacy JSON fallback shapes:
+### 3.3 Responses-native continuation is now durable across checkpoints, but the trust model is still narrower than Codex
 
-- `runtime/src/main/kotlin/com/opencray/runtime/context/PromptAssembler.kt:223-255`
+This section changed materially.
 
-And the runtime still contains protocol-error recovery for mixed or malformed legacy payloads:
+The runtime now persists and restores Responses continuation state through `OpenCrayPromptResumeState`, including:
 
-- `runtime/src/test/kotlin/com/opencray/runtime/OpenCrayAgentRuntimeTest.kt:1555-1596`
+- `responsesPreviousResponseId`
+- `responsesProviderLineageId`
+- `responsesLineageTrusted`
+- `responsesPendingMessages`
+- `localContinuationEnvelope`
 
-This is useful for robustness, but it also means OpenCray is still operating a dual-protocol world:
+Evidence:
 
-- preferred native structured tool calling
-- legacy JSON action protocol as fallback
+- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayPromptResumeState.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt`
+- `app/src/main/kotlin/com/opencray/app/PromptCheckpointStoreFactory.kt`
+- `runtime/src/test/kotlin/com/opencray/runtime/OpenCrayAgentRuntimeTest.kt`
+- `app/src/test/kotlin/com/opencray/app/PromptCheckpointStoreFactoryTest.kt`
 
-Codex-grade systems are stronger when the mainline protocol is cleaner, with fallback kept narrow and invisible to the model whenever possible.
+This means the older conclusion "Responses-native continuation is only in-memory" is no longer correct.
 
-### 3.5 OpenCray has `TodoWrite`, but not Codex-grade plan-state discipline
+The remaining gap is subtler:
 
-OpenCray already exposes `TodoWrite`, but that is not the same as the stronger plan semantics Codex-style prompting uses.
+- runtime continuation decisions still key off `responsesPreviousResponseId`
+- `responsesProviderLineageId` is persisted, but not used as an independent decision surface
+- the current Responses adapter derives `providerLineageId` from `providerResponseId`, rather than from a distinct provider lineage abstraction
 
-What Codex-style long-task execution usually adds on top:
+So the remaining Codex gap is no longer absence of durable resume state.
+It is that lineage trust and continuation policy are still centered on one provider-specific handle, with limited abstraction above it.
 
-- explicit milestone items
-- stable status transitions
-- exactly one `in_progress`
-- end-of-turn invariants
-- durable plan history or plan deltas
-- plan state reflected in user-visible progress updates
+### 3.4 Responses full rebuild now round-trips assistant phase end-to-end much more faithfully
 
-By contrast, OpenCray currently has a todo tool, but not yet a first-class planning protocol with strong runtime invariants and replay semantics.
+This section also changed materially.
 
-That difference matters a lot on long tasks because it reduces drift, duplicate work, and premature stopping.
+The transcript model now has explicit assistant phase support:
 
-### 3.6 Codex is stronger at long-horizon orchestration and productization
+- `RuntimeConversationAssistantPhase`
+- `assistantPhase` on `RuntimeConversationMessage`
+- replay of assistant messages with preserved phase
+- replay of `PROGRESS` messages back into assistant `COMMENTARY` messages during gateway rebuild
+- a public `OpenCrayAssistantPhaseEvent` contract
+- persisted run journal entries stored as `ASSISTANT_PHASE`
+- host replay that restores assistant commentary as `OpenCrayAssistantEvent`
 
-Official docs show several product-level behaviors that go beyond just "the loop exists."
+Evidence:
 
-Codex's local shell guidance shows an iterative Responses loop using `previous_response_id`:
+- `runtime/src/main/kotlin/com/opencray/runtime/context/PromptModels.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt`
+- `llm/src/main/kotlin/com/opencray/llm/LiteLlmGateway.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRunEvents.kt`
+- `app/src/main/kotlin/com/opencray/app/AgentRunRecordStoreFactory.kt`
+- `app/src/main/kotlin/com/opencray/app/AppAgentSessionTaskRuntimeFactory.kt`
+- `app/src/main/kotlin/com/opencray/app/OpenCrayHostRuntime.kt`
+- `runtime/src/test/kotlin/com/opencray/runtime/OpenCrayAgentRuntimeTest.kt`
+- `app/src/test/kotlin/com/opencray/app/RunEventJournalStoreFactoryTest.kt`
 
-- `https://developers.openai.com/api/docs/guides/tools-local-shell`
+This means the older conclusion "Responses full rebuild cannot round-trip assistant phase semantics" is now wrong.
 
-Codex's compaction docs show a first-class server-side and standalone compaction model for long-running interactions:
+The remaining gap is narrower and mostly about product enforcement:
 
-- `https://developers.openai.com/api/docs/guides/compaction`
+- assistant-phase is now the only public runtime event lane for commentary/final emissions
+- the deprecated `OpenCrayProgressEvent` compatibility wrapper has been removed
+- old persisted run-event payloads are no longer migration targets during development
+- the "commentary before tool call" behavior is now explicitly encoded in the prompt contract, but still not enforced as a hard runtime requirement
 
-Codex app docs show:
+So the big gap here is no longer event-model absence.
+It is finishing the migration and tightening the product contract around commentary-first behavior.
 
-- isolated `Local`, `Worktree`, and `Cloud` modes
-- worktree-based isolation for side-by-side tasks
-- dedicated background worktrees for automations
-- background notifications when a task completes or needs approval
+### 3.5 Assistant phase is now unified on the mainline
 
-References:
+Today the real public assistant lane is centered on:
 
-- `https://developers.openai.com/codex/app/features`
+- `OpenCrayAssistantPhaseEvent`
+- `OpenCrayAssistantEvent`
+- `OpenCrayAssistantPhase`
 
-Codex subagent docs show:
+Evidence:
 
-- explicit parallel subagent workflows
-- orchestration of spawn, wait, routing, and close
-- inherited approval and sandbox policies
+- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRunEvents.kt`
+- `app/src/main/kotlin/com/opencray/app/AgentRunRecordStoreFactory.kt`
 
-References:
+The mainline now uses only:
+
+- `OpenCrayAssistantPhaseEvent`
+- `OpenCrayAssistantEvent`
+- `OpenCrayAssistantPhase`
+- persisted `ASSISTANT_PHASE` run events
+- replay payloads with `event_kind=assistant_phase`
+
+The tradeoff is explicit:
+
+- development builds no longer preserve backward compatibility with older progress-event persistence shapes
+
+So this is no longer a migration-cleanup gap.
+It is now a deliberate development-stage simplification.
+
+### 3.6 Parallel tool calling is real, route-probed, and still conservatively scoped
+
+This section changed materially as well.
+
+OpenCray now has all of the following:
+
+- prompt instructions that explicitly allow multiple tool calls when `parallelToolCallsEnabled=true`
+- gateway requests that set `parallelToolCalls=true`
+- runtime logic that groups independent tool calls
+- concurrent execution via `dispatchPromptToolCallsInParallel(...)`
+- a dedicated validation probe that requests two tool calls under `parallelToolCalls=true`
+- direct tests proving batched structured tool calls and concurrent execution
+
+Evidence:
+
+- `runtime/src/main/kotlin/com/opencray/runtime/context/PromptAssembler.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt`
+- `app/src/main/kotlin/com/opencray/app/facade/llm/LlmConfigFacade.kt`
+- `runtime/src/test/kotlin/com/opencray/runtime/OpenCrayAgentRuntimeTest.kt`
+- `app/src/test/kotlin/com/opencray/app/facade/llm/LlmConfigFacadeTest.kt`
+
+So the older conclusion "parallel tool calling is still serial-first" is no longer correct.
+
+The remaining gap is scope and product policy:
+
+- `canExecuteInParallel(...)` only whitelists read/search style tools such as `workspace_read_file`, `Read`, `Grep`, `Glob`, `WebSearch`, and `WebFetch`
+- mutating tools, process tools, and delegation tools are still excluded from parallel execution
+
+Compared with Codex, the remaining gap is not lack of parallel mechanics.
+It is that the parallel contract is still conservative and intentionally narrow.
+
+### 3.7 Host tool vs builtin provider tool arbitration is improved, but still a sensitive area
+
+The runtime now supports builtin tools such as provider-native web search and can hide host `WebSearch` when builtin web search is active.
+
+Evidence:
+
+- `llm/src/main/kotlin/com/opencray/llm/LiteLlmGateway.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt`
+
+That is the right direction.
+But this area still deserves ongoing scrutiny because it is exactly where duplicated capability surfaces can confuse both models and users.
+
+In other words:
+
+- the basic arbitration mechanism exists
+- the long-term product contract still needs to be tightened
+
+### 3.8 Capability probing is now richer, but not yet exhaustive
+
+OpenCray now has dedicated Responses-oriented probes for:
+
+- continuation viability
+- builtin web search viability
+- assistant phase viability
+
+It also derives citation support from the builtin web search probe result metadata.
+
+Evidence:
+
+- `app/src/main/kotlin/com/opencray/app/LlmAgentCapabilitySupport.kt`
+- `app/src/main/kotlin/com/opencray/app/facade/llm/LlmConfigFacade.kt`
+- `app/src/test/kotlin/com/opencray/app/facade/llm/LlmConfigFacadeTest.kt`
+
+So the older conclusion "capability probing is still generic, not Responses-specific" is now wrong.
+
+The remaining gap is narrower:
+
+- `parallelToolCallsSupported` still comes from the generic control probe
+- there is still no dedicated probe that proves multi-call batching behavior under `parallelToolCalls=true`
+- recovery behavior after lineage invalidation is still not part of route validation
+- some Responses-specific runtime/provider switches still default to optimistic `true` semantics when route metadata is absent, which is convenient for OpenAI-first routes but riskier for partially compatible custom routes
+
+Compared with Codex, the remaining gap is now in depth and completeness of capability validation, not in total absence of Responses-specific probing.
+
+### 3.9 `providerLineageId` is now populated and persisted, but still mostly observational
+
+`providerLineageId` is no longer an empty placeholder.
+
+The current code does all of the following:
+
+- populates it for `openai_responses`
+- carries it through `LiteLlmProviderResult` and `LiteLlmGatewayResult`
+- persists it into `OpenCrayPromptResumeState`
+- restores it into `PromptTurnCursor`
+- emits it into result metadata
+
+Evidence:
+
+- `llm/src/main/kotlin/com/opencray/llm/LiteLlmGateway.kt`
+- `app/src/main/kotlin/com/opencray/app/OpenAiCompatibleLiteLlmProviderClient.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayPromptResumeState.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt`
+
+But it still appears mostly observational:
+
+- the runtime does not currently choose continuation strategy based on `responsesProviderLineageId`
+- the current Responses adapter sets `providerLineageId` to `providerResponseId`
+
+So this gap is no longer "missing field."
+It is "persisted lineage metadata exists, but a stronger lineage abstraction and decision model are still missing."
+
+### 3.10 The provider adapter surface is becoming richer, and therefore more fragile
+
+The current provider client now covers:
+
+- OpenAI chat-completions
+- OpenAI Responses
+- Anthropic messages
+- commentary/progress
+- reasoning text
+- citations
+- builtin web search observation
+- tool call parse diagnostics
+
+Evidence:
+
+- `app/src/main/kotlin/com/opencray/app/OpenAiCompatibleLiteLlmProviderClient.kt`
+
+That is powerful, but it also means the adapter now carries more branching and more normalization burden.
+
+Compared with Codex, one remaining gap is not feature absence but protocol productization:
+
+- clearer capability matrices
+- narrower per-dialect adapters
+- stronger conformance testing
+
+### 3.11 Test coverage is materially better, but still not fully Codex-grade
+
+This section also needs to be updated.
+
+There is now direct test coverage for:
+
+- approval resume preserving Responses lineage and using `previous_response_id`
+- prompt checkpoint serialization of Responses resume fields
+- full rebuild replay of assistant phases
+- multiple structured tool calls when parallel tool calling is enabled
+- actual concurrent execution of a parallel-safe tool batch
+- Responses capability validation probes
+
+Evidence:
+
+- `runtime/src/test/kotlin/com/opencray/runtime/OpenCrayAgentRuntimeTest.kt`
+- `app/src/test/kotlin/com/opencray/app/PromptCheckpointStoreFactoryTest.kt`
+- `app/src/test/kotlin/com/opencray/app/facade/llm/LlmConfigFacadeTest.kt`
+
+The remaining high-value gaps appear to be:
+
+- invalid-lineage recovery paths after a previously trusted Responses chain breaks
+- route validation that proves actual parallel batching support rather than inferring it
+- tests where `providerLineageId` changes runtime behavior rather than merely round-tripping through state
+
+For long-task work, these remaining cases still matter.
+But the old conclusion that the core Responses/parallel paths were largely untested is no longer accurate.
+
+## 4. The Main Strategic Gap Vs Codex Has Moved Upward, But Section 3 Still Matters
+
+The biggest strategic difference versus Codex is increasingly in long-task product discipline and orchestration.
+
+But section 3 should not be waved away as "just protocol polish." The unresolved lower-level gaps there still directly affect:
+
+- approval/resume reliability
+- multi-turn Responses fidelity
+- multi-tool efficiency
+- observability of commentary across long runs
+
+So the right framing is:
+
+- OpenCray has moved beyond the "basic loop missing" phase
+- OpenCray still has protocol-level holes that materially shape long-task behavior
+- above that, the larger remaining gap is orchestration maturity
+
+### 4.1 `TodoWrite` is materially stronger now, but still not a full Codex-grade planning surface
+
+OpenCray already had `TodoWrite`, and that baseline has improved since the earlier audit.
+
+The current implementation now has real invariants and runtime closure checks, including:
+
+- unique todo content
+- at most one `in_progress`
+- `activeForm` allowed only on the active todo
+- final-answer interception when an `in_progress` item is still present
+- richer result metadata about plan mutations and state transitions
+
+Evidence:
+
+- `runtime/src/main/kotlin/com/opencray/runtime/AgentTodoStore.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/AgentTooling.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt`
+- `runtime/src/test/kotlin/com/opencray/runtime/TodoWritePlanInvariantTest.kt`
+
+So the old conclusion that `TodoWrite` lacks basic invariants is no longer correct.
+
+The remaining Codex gap is higher-level planning ergonomics:
+
+- no durable plan history or delta model
+- no explicit planner/worker contract
+- no richer task graph or dependency structure
+- no automatic plan adoption discipline across more agent profiles
+
+### 4.2 Subagents are still mostly synchronous and bounded, even though they are no longer all read-only
+
+The current exposed `Task` tool says:
+
+- delegate one bounded subtask
+- wait for its summarized result before continuing
+
+The built-in subagent profiles now include:
+
+- read-only investigator/reviewer styles
+- a `worker` profile that can use `Write`, `Edit`, and `MultiEdit` for bounded workspace edits
+
+Evidence:
+
+- `runtime/src/main/kotlin/com/opencray/runtime/AgentTooling.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/subagent/SubAgentProfile.kt`
+- `runtime/src/test/kotlin/com/opencray/runtime/OpenCrayAgentRuntimeSubAgentTest.kt`
+
+Compared with Codex, the main missing pieces are:
+
+- an explicit multi-step subagent control plane
+- parallel worker orchestration
+- more productized spawn/wait/route/close semantics
+
+Codex's public subagent docs are ahead here:
 
 - `https://developers.openai.com/codex/subagents`
 
-OpenCray already has partial equivalents:
+### 4.3 There is still no worktree-class isolation surface
 
-- subagent runtime
-- managed processes
-- durable resume
-- context manager
+Product-scope note:
 
-But Codex is still ahead in product maturity:
+- this remains a real Codex difference
+- but it is currently not planned as an OpenCray target capability
+- treat it as a non-goal unless the product direction changes toward IDE-style coding workflows
 
-- stronger isolated execution surfaces
-- stronger background-task ergonomics
-- stronger task observability
-- stronger parallel-work orchestration contract
+Codex publicly exposes:
 
-### 3.7 Some existing OpenCray docs are stale and understate the current baseline
+- `Local`
+- `Worktree`
+- `Cloud`
 
-Examples of statements that are no longer fully accurate:
+and uses worktree-based isolation for side-by-side tasks and background automations.
 
-- "there is no public intermediate progress event"
-- "there is no subagent runtime"
-- "tool calling is still mostly non-native"
+Reference:
 
-Those statements made sense earlier, but no longer describe the current codebase accurately.
+- `https://developers.openai.com/codex/app/features`
 
-That matters because bad self-diagnosis leads to wrong priorities. The real priority is not rebuilding the old foundation; it is tightening the protocol and product surfaces that sit on top of the foundation now in place.
+In the current OpenCray runtime code, there is no equivalent worktree orchestration surface.
 
-## 4. What `assistant phase` and `assistant commentary` mean for OpenCray specifically
+This matters because long tasks benefit from:
 
-If OpenCray wants Codex-like semantics, the clean mapping should be:
+- isolated write scopes
+- less interference between runs
+- easier background task continuation
+- cleaner task-level provenance
 
-- `assistant phase = commentary`
-  - public progress / intent update
-  - non-terminal
-  - often emitted before the first tool call or between major steps
+### 4.4 Background scheduling and notifications now exist, but detached execution is still narrower than Codex
 
-- `assistant phase = final`
-  - terminal answer
-  - user-facing completion for the task
+This section changed materially too.
 
-Under the current OpenCray model, the nearest equivalents are:
+OpenCray now has:
 
-- `OpenCrayProgressEvent` ~= commentary lane
-- `OpenCrayAssistantEvent(isFinal = true)` ~= final lane
+- `WorkManagerScheduledWorkScheduler`
+- alarm-backed trigger registration
+- scheduled task spec and run stores
+- runtime notification coordination for approvals and terminal outcomes
 
-What is missing is a single explicit assistant-phase abstraction that spans:
+Evidence:
 
-- provider completion parsing
-- runtime action model
-- durable event model
-- UI rendering
+- `app/src/main/kotlin/com/opencray/app/ScheduledTaskWorkManager.kt`
+- `app/src/main/kotlin/com/opencray/app/ScheduledTaskRuntime.kt`
+- `app/src/main/kotlin/com/opencray/app/RuntimeNotificationCoordinator.kt`
+- `app/src/main/kotlin/com/opencray/app/OpenCrayRuntimeServiceHost.kt`
 
-## 5. Can "say one sentence before tool calls" be done by prompt alone?
+So the old conclusion "there is not yet a WorkManager or scheduler" is no longer correct.
 
-Yes, partially.
+The remaining Codex gap is product scope and detachment level:
 
-No, not reliably enough if you want Codex-like consistency.
+- OpenCray still runs through the app-owned runtime host rather than through a broader local/worktree/cloud execution product
+- scheduled/background execution is now real, but still narrower than Codex automations and environment isolation
 
-### 5.1 Prompt-only
+### 4.5 OpenCray compaction is real, but still mostly host-side summary compaction
 
-Prompt-only can get surprisingly far. The GPT-5.1 prompting guide explicitly shows that commentary-first behavior is promptable.
+OpenCray already does:
 
-That is already visible in OpenCray's current prompt design:
+- pre-compaction memory flush
+- durable compaction summaries
+- compacted transcript reinjection
 
-- progress examples are included
-- public progress is defined
-- the model is told it may send a short progress summary before acting
+Evidence:
 
-If the goal is:
+- `runtime/src/main/kotlin/com/opencray/runtime/memory/MemoryFlushCoordinator.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/compaction/DurableCompaction.kt`
 
-- "usually say one sentence before using tools"
+This is much better than having no compaction.
 
-then prompt-only may be enough.
+But compared with Codex / OpenAI Responses guidance, the gap is that OpenCray still primarily relies on host-rendered summary text rather than provider-native opaque compaction artifacts.
 
-If the goal is:
+Reference:
 
-- "make this a stable product behavior across models, providers, and long tasks"
+- `https://platform.openai.com/docs/guides/compaction`
 
-then prompt-only is not enough.
+That difference matters most on very long or deeply branching tasks.
 
-### 5.2 Prompt plus runtime guard
+### 4.6 Commentary-first behavior now has an explicit prompt contract, but runtime enforcement is still softer than Codex
 
-A stronger implementation is:
+This section needs a more precise statement than some older notes.
 
-1. Prompt the model to emit commentary before the first tool call.
-2. Detect whether the first action batch starts with a tool call and has no commentary/progress.
-3. Apply a guardrail.
+Codex does not rely on runtime behavior alone for the "say what you are about to do before using tools" pattern.
+Its open-source prompt layer explicitly teaches that behavior.
 
-Possible guardrail strategies:
+Verified Codex prompt evidence:
 
-- soft repair: reprompt once and require a public commentary first
-- hard protocol rule: reject first-turn bare tool calls when commentary is required
-- host-generated fallback: synthesize a host status message such as "Inspecting workspace before action"
+- `D:/codes/Opensource/codex/codex-rs/core/gpt_5_1_prompt.md`
+  - "keep the user updated"
+  - "Before the first tool call, give a quick plan"
+- `D:/codes/Opensource/codex/codex-rs/core/prompt.md`
+  - "Before making tool calls, send a brief preamble"
+- `D:/codes/Opensource/codex/codex-rs/core/models.json`
+  - GPT-5.4 `base_instructions` carry the same user-update / preamble contract
 
-Of these, the cleanest long-term option is usually:
+OpenCray now mirrors that pattern in its own prompt protocol layer.
 
-- model-generated commentary as the default
-- runtime enforcement only when a product flag requires it
+Current OpenCray prompt contract:
 
-### 5.3 Best long-term direction: make commentary a first-class phase
+- `runtime/src/main/kotlin/com/opencray/runtime/context/PromptAssembler.kt`
+  - tells the model to keep the user updated with short public commentary or progress
+  - tells the model that before the first tool call it should give a brief public plan
+  - tells the model that before making tool calls it should send a brief public preamble
+  - teaches native-tool routes to put that preamble in assistant text
+  - teaches legacy JSON routes to express that preamble as a `progress` action
+- `runtime/src/test/kotlin/com/opencray/runtime/context/PromptAssemblerTest.kt`
+  - asserts that those prompt instructions are present
 
-The strongest design is to add a true assistant-phase contract.
+So one older conclusion is no longer accurate:
 
-For example:
+- OpenCray no longer lacks a Codex-style prompt contract for "quick plan / preamble before tool calls"
 
-- `AssistantPhase.COMMENTARY`
-- `AssistantPhase.FINAL`
+The remaining gap is narrower and more product-level:
 
-Then wire that through:
+- the contract is still mostly prompt-shaped rather than runtime-mandated
+- the runtime does not yet hard-fail or auto-recover when a first tool call omits the intended commentary-first UX
 
-- provider client structured completion
-- runtime action parsing
-- event persistence
-- chat projection/UI
+Codex-like systems are strongest when this behavior converges across:
 
-This would give OpenCray a stable semantic basis for the behavior you want, instead of depending only on soft prompt compliance.
+- prompting
+- runtime
+- persistence
+- UI
 
-## 6. Recommended Next Steps
+OpenCray is now stronger on the first of those layers and materially better on the middle two.
+The remaining work is to make the behavior more consistently guaranteed, not to invent the contract from scratch.
 
-### 6.1 Short term
+## 5. Priority Order For Closing The Remaining Gap
 
-- Keep native tool calling as the preferred path.
-- Tighten the prompt wording from "may include one short public progress summary" to "before the first tool call, emit one short public progress summary unless the task is trivial."
-- Keep legacy JSON fallback, but make it more clearly secondary.
+If the goal is "make OpenCray feel more like Codex on long tasks", the highest-leverage order is now:
 
-### 6.2 Medium term
+1. Promote the existing commentary-first prompt contract into a stronger runtime and product guarantee so native tool calls consistently emit an intent/update before tool execution when that UX is desired.
+2. Tighten Responses lineage semantics beyond `previous_response_id`, and decide whether `providerLineageId` should become a stronger continuation/trust input.
+3. Upgrade subagents from synchronous bounded delegation into a real parallel orchestration surface.
+4. Promote `TodoWrite` from a validated todo list into a richer planning protocol.
+5. Decide how much more of the mutating/process tool surface should become parallel-safe.
+6. Add worktree-class task isolation if product direction ever expands toward IDE-style coding workflows.
+7. Continue hardening scheduler-backed background execution and notification flows rather than treating them as missing.
 
-- Add an explicit assistant phase model in runtime and persistence.
-- Populate `progressText` from structured provider-native commentary/progress fields whenever the provider exposes them.
-- Add a runtime option such as `requireInitialCommentaryBeforeFirstToolCall`.
+If only one item can be prioritized, the best next move is usually:
 
-### 6.3 Long term
+- promoting the existing commentary-first prompt contract into stronger runtime enforcement
 
-- Promote plan state from `TodoWrite` into a first-class long-task control surface.
-- Strengthen isolated execution surfaces for parallel or detached work.
-- Make background execution, approvals, and resumability feel like one continuous product surface instead of several adjacent mechanisms.
+If two items can be prioritized, the best pair is usually:
+
+- promoting the existing commentary-first prompt contract into stronger runtime enforcement
+- stronger subagent and lineage contracts
+
+## 6. What Should No Longer Be Said
+
+The following older conclusions are now misleading:
+
+- "OpenCray has no native tool calling."
+- "OpenCray has no Responses-native continuation."
+- "OpenCray has no public progress lane."
+- "OpenCray has no durable compaction or memory stewardship."
+- "OpenCray has no subagent runtime."
+- "OpenCray has not encoded Codex-style quick-plan / preamble guidance in its prompt layer."
+- "OpenCray's Responses-native continuation is already Codex-grade."
+- "OpenCray's parallel tool calling is already fully productized."
+
+Those statements no longer match the current codebase.
+
+The stronger current conclusion is:
+
+- OpenCray has crossed the line from "basic loop missing" into "advanced orchestration still maturing"
 
 ## 7. Evidence Index
 
 ### Local code evidence
 
-- Native tool calling request path:
-  - `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt:229-238`
-- Structured completion preferred over raw fallback:
-  - `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt:552-571`
-- Structured completion progress/final handling:
-  - `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt:574-598`
-- Legacy action parsing for `progress/commentary/status`:
-  - `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt:658-679`
-- Prompt examples and tool/progress guidance:
-  - `runtime/src/main/kotlin/com/opencray/runtime/context/PromptAssembler.kt:223-255`
-- Prompt reminder that allows a short public progress summary:
-  - `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt:2722-2727`
-- OpenAI `tool_calls` parsing:
-  - `app/src/main/kotlin/com/opencray/app/OpenAiCompatibleLiteLlmProviderClient.kt:360-377`
-- Anthropic `tool_use` parsing:
-  - `app/src/main/kotlin/com/opencray/app/OpenAiCompatibleLiteLlmProviderClient.kt:400-429`
-- Structured completion shape with `progressText`:
-  - `app/src/main/kotlin/com/opencray/app/OpenAiCompatibleLiteLlmProviderClient.kt:437-454`
-- Assistant and progress event types:
-  - `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRunEvents.kt:46-63`
-- Progress -> tool -> result -> progress -> final test:
-  - `runtime/src/test/kotlin/com/opencray/runtime/OpenCrayAgentRuntimeTest.kt:1388-1455`
-- Session runtime ownership:
-  - `app/src/main/kotlin/com/opencray/app/OpenCrayRuntimeServiceHost.kt`
-- Recovery-aware queue snapshot store:
-  - `app/src/main/kotlin/com/opencray/app/RecoveryAwareQueueSnapshotStore.kt`
-- Context manager:
-  - `runtime/src/main/kotlin/com/opencray/runtime/context/ContextManager.kt`
-- Subagent runtime:
-  - `runtime/src/main/kotlin/com/opencray/runtime/subagent/SubAgentRuntime.kt`
-- Managed process tools:
-  - `runtime/src/main/kotlin/com/opencray/runtime/AgentTooling.kt:389-424`
-  - `runtime/src/main/kotlin/com/opencray/runtime/AgentTooling.kt:702-706`
+- gateway request model with builtin tools, `previousResponseId`, and recoverable tool-call diagnostics:
+  - `llm/src/main/kotlin/com/opencray/llm/LiteLlmGateway.kt`
+- `openai_responses` protocol registration:
+  - `app/src/main/kotlin/com/opencray/app/LlmProviderRequestSupport.kt`
+- OpenAI / Anthropic / Responses provider parsing:
+  - `app/src/main/kotlin/com/opencray/app/OpenAiCompatibleLiteLlmProviderClient.kt`
+- Responses continuation state and local/native continuation modes:
+  - `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt`
+- prompt resume state:
+  - `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayPromptResumeState.kt`
+- assistant phase events:
+  - `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRunEvents.kt`
+- route capability snapshot and runtime metadata overrides:
+  - `app/src/main/kotlin/com/opencray/app/LlmAgentCapabilitySupport.kt`
+- route validation probes:
+  - `app/src/main/kotlin/com/opencray/app/facade/llm/LlmConfigFacade.kt`
+- todo tool and store:
+  - `runtime/src/main/kotlin/com/opencray/runtime/AgentTooling.kt`
+  - `runtime/src/main/kotlin/com/opencray/runtime/AgentTodoStore.kt`
+- session runtime ownership:
+  - `app/src/main/kotlin/com/opencray/app/AgentSessionRuntimeManager.kt`
+- prompt checkpoints:
+  - `app/src/main/kotlin/com/opencray/app/PromptCheckpointStoreFactory.kt`
+- recovery planner:
+  - `app/src/main/kotlin/com/opencray/app/RunRecoveryPlanner.kt`
+- memory flush:
+  - `runtime/src/main/kotlin/com/opencray/runtime/memory/MemoryFlushCoordinator.kt`
+- durable compaction:
+  - `runtime/src/main/kotlin/com/opencray/runtime/compaction/DurableCompaction.kt`
+- subagent profiles and execution snapshots:
+  - `runtime/src/main/kotlin/com/opencray/runtime/subagent/SubAgentProfile.kt`
+  - `runtime/src/main/kotlin/com/opencray/runtime/subagent/SubAgentResultCompressor.kt`
 
 ### Official external references
 
-- GPT-5.1 prompting guide, commentary-first guidance:
+- GPT-5.1 prompting guide:
   - `https://cookbook.openai.com/examples/gpt-5/gpt-5.1_prompting_guide/`
-- Local shell iterative loop with `previous_response_id`:
+- OpenAI local shell iterative loop and continuation guidance:
   - `https://developers.openai.com/api/docs/guides/tools-local-shell`
-- Long-context compaction:
-  - `https://developers.openai.com/api/docs/guides/compaction`
-- Codex app features, worktrees, background approvals/notifications:
+- OpenAI compaction:
+  - `https://platform.openai.com/docs/guides/compaction`
+- Codex app features:
   - `https://developers.openai.com/codex/app/features`
 - Codex subagents:
   - `https://developers.openai.com/codex/subagents`

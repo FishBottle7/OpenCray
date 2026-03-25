@@ -7,9 +7,11 @@ import '../../core/models/opencray_network_search_config.dart';
 import '../../core/models/opencray_personalization_config.dart';
 import '../../core/models/opencray_safety_settings.dart';
 import '../../core/models/opencray_settings_snapshot.dart';
+import '../../core/models/opencray_strong_background.dart';
 import 'safety_settings_models.dart';
 import 'settings_facade.dart';
 import 'settings_models.dart';
+import 'strong_background_settings_models.dart';
 
 class BridgeSettingsFacade implements SettingsFacade {
   const BridgeSettingsFacade({required OpenCrayHostBridge bridge})
@@ -30,6 +32,17 @@ class BridgeSettingsFacade implements SettingsFacade {
       _mapDetail(await _bridge.loadSettingsDetail(page.routeId));
 
   @override
+  Future<StrongBackgroundSnapshot> loadStrongBackgroundSnapshot() async =>
+      _mapStrongBackground(await _bridge.loadStrongBackgroundSnapshot());
+
+  @override
+  Future<StrongBackgroundActionResult> performStrongBackgroundAction(
+    StrongBackgroundActionId actionId,
+  ) async => _mapStrongBackgroundActionResult(
+    await _bridge.performStrongBackgroundAction(actionId.id),
+  );
+
+  @override
   Future<NetworkSearchConfigSnapshot> loadNetworkSearchConfig() async =>
       _mapNetworkSearch(await _bridge.loadNetworkSearchConfig());
 
@@ -44,6 +57,8 @@ class BridgeSettingsFacade implements SettingsFacade {
               id: slot.id,
               providerId: slot.providerId,
               label: slot.label,
+              baseUrl: slot.baseUrl,
+              model: slot.model,
               apiKey: slot.apiKey,
               enabled: slot.enabled,
             ),
@@ -315,6 +330,61 @@ class BridgeSettingsFacade implements SettingsFacade {
     );
   }
 
+  static StrongBackgroundSnapshot _mapStrongBackground(
+    OpenCrayStrongBackgroundSnapshot snapshot,
+  ) {
+    return StrongBackgroundSnapshot(
+      source: snapshot.source,
+      available: snapshot.available,
+      tier: strongBackgroundTierFromId(snapshot.tierId),
+      setupComplete: snapshot.setupComplete,
+      recommendedActionIds: snapshot.recommendedActionIds
+          .map(strongBackgroundActionIdFromId)
+          .toList(growable: false),
+      notifications: StrongBackgroundNotificationsSnapshot(
+        permissionRequired: snapshot.notifications.permissionRequired,
+        permissionGranted: snapshot.notifications.permissionGranted,
+        enabled: snapshot.notifications.enabled,
+        configured: snapshot.notifications.configured,
+      ),
+      exactAlarms: StrongBackgroundExactAlarmSnapshot(
+        accessRequired: snapshot.exactAlarms.accessRequired,
+        accessGranted: snapshot.exactAlarms.accessGranted,
+        configured: snapshot.exactAlarms.configured,
+      ),
+      batteryOptimization: StrongBackgroundBatteryOptimizationSnapshot(
+        supported: snapshot.batteryOptimization.supported,
+        exempt: snapshot.batteryOptimization.exempt,
+        configured: snapshot.batteryOptimization.configured,
+      ),
+      actions: snapshot.actions
+          .map(
+            (action) => StrongBackgroundActionSnapshot(
+              id: strongBackgroundActionIdFromId(action.id),
+              available: action.available,
+              recommended: action.recommended,
+            ),
+          )
+          .toList(growable: false),
+      runtimeServiceConnectionState: snapshot.runtimeServiceConnectionState,
+    );
+  }
+
+  static StrongBackgroundActionResult _mapStrongBackgroundActionResult(
+    OpenCrayStrongBackgroundActionResult result,
+  ) {
+    return StrongBackgroundActionResult(
+      source: result.source,
+      actionId: strongBackgroundActionIdFromId(result.actionId),
+      available: result.available,
+      launched: result.launched,
+      reason: result.reason,
+      fallbackActionId: result.fallbackActionId == null
+          ? null
+          : strongBackgroundActionIdFromId(result.fallbackActionId!),
+    );
+  }
+
   static NetworkSearchConfigSnapshot _mapNetworkSearch(
     OpenCrayNetworkSearchConfigSnapshot snapshot,
   ) {
@@ -328,6 +398,8 @@ class BridgeSettingsFacade implements SettingsFacade {
               id: slot.id,
               providerId: slot.providerId,
               label: slot.label,
+              baseUrl: slot.baseUrl,
+              model: slot.model,
               apiKey: slot.apiKey,
               enabled: slot.enabled,
             ),

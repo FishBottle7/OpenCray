@@ -128,74 +128,134 @@ void main() {
     },
   );
 
-  testWidgets(
-    'custom provider supports Anthropic protocol and xhigh reasoning',
-    (tester) async {
-      final facade = _FakeSettingsFacade(
-        llmConfig: const LlmConfigSnapshot(
-          localeTag: 'en',
-          enabled: true,
-          providerId: 'custom',
-          selectedProviderOptionId: 'custom',
-          protocol: 'openai',
-          providerOptions: <LlmProviderOption>[
-            LlmProviderOption(
-              id: 'custom',
-              providerId: 'custom',
-              title: 'Custom provider',
-              subtitle: 'Any OpenAI-compatible or Anthropic endpoint.',
-              defaultBaseUrl: '',
-              defaultModel: '',
-              protocol: 'openai',
-              apiKey: '',
-              isCustom: true,
-            ),
-          ],
-          providerName: 'Custom provider',
-          providerNotes: '',
-          baseUrl: 'https://api.example.com/v1',
-          apiKey: 'secret',
-          model: 'claude-3-7-sonnet',
-          reasoningEffort: 'medium',
-          systemPrompt: '',
-          helperText: 'Helper text',
-        ),
-        validationResult: const LlmValidationResult(
-          isSuccess: true,
-          message: 'Validated.',
-        ),
-      );
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: SettingsFeatureScreen(
-            facade: facade,
-            initialPage: SettingsPage.llm,
-            standalone: true,
+  testWidgets('custom provider supports Anthropic protocol and xhigh reasoning', (
+    tester,
+  ) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: true,
+        providerId: 'custom',
+        selectedProviderOptionId: 'custom',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'custom',
+            providerId: 'custom',
+            title: 'Custom provider',
+            subtitle:
+                'Any OpenAI-compatible, OpenAI Responses, or Anthropic endpoint.',
+            defaultBaseUrl: '',
+            defaultModel: '',
+            protocol: 'openai',
+            apiKey: '',
+            isCustom: true,
           ),
+        ],
+        providerName: 'Custom provider',
+        providerNotes: '',
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'secret',
+        model: 'claude-3-7-sonnet',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.llm,
+          standalone: true,
         ),
-      );
-      await tester.pumpAndSettle();
+      ),
+    );
+    await tester.pumpAndSettle();
 
-      await tester.tap(find.text('OpenAI compatible'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Anthropic').last);
-      await tester.pumpAndSettle();
+    await tester.tap(find.text('OpenAI compatible'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Anthropic').last);
+    await tester.pumpAndSettle();
 
-      expect(facade.saveCallCount, 1);
-      expect(facade.llmConfig.protocol, 'anthropic');
+    expect(facade.saveCallCount, 1);
+    expect(facade.llmConfig.protocol, 'anthropic');
 
-      await tester.ensureVisible(find.text('Medium'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Medium'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('XHigh'));
-      await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Medium'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Medium'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('XHigh'));
+    await tester.pumpAndSettle();
 
-      expect(facade.saveCallCount, 2);
-      expect(facade.llmConfig.reasoningEffort, 'xhigh');
-    },
-  );
+    expect(facade.saveCallCount, 2);
+    expect(facade.llmConfig.reasoningEffort, 'xhigh');
+  });
+
+  testWidgets('custom provider supports OpenAI Responses protocol', (
+    tester,
+  ) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: true,
+        providerId: 'custom',
+        selectedProviderOptionId: 'custom',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'custom',
+            providerId: 'custom',
+            title: 'Custom provider',
+            subtitle:
+                'Any OpenAI-compatible, OpenAI Responses, or Anthropic endpoint.',
+            defaultBaseUrl: '',
+            defaultModel: '',
+            protocol: 'openai',
+            apiKey: '',
+            isCustom: true,
+          ),
+        ],
+        providerName: 'Custom provider',
+        providerNotes: '',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'secret',
+        model: 'gpt-5-mini',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.llm,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('OpenAI compatible'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('OpenAI Responses').last);
+    await tester.pumpAndSettle();
+
+    expect(facade.saveCallCount, 1);
+    expect(facade.llmConfig.protocol, 'openai_responses');
+    expect(find.text('OpenAI Responses'), findsOneWidget);
+  });
 
   testWidgets('home settings includes Agent entry and opens agents page', (
     tester,
@@ -441,7 +501,8 @@ void main() {
             id: 'custom',
             providerId: 'custom',
             title: 'Custom provider',
-            subtitle: 'Any OpenAI-compatible or Anthropic endpoint.',
+            subtitle:
+                'Any OpenAI-compatible, OpenAI Responses, or Anthropic endpoint.',
             defaultBaseUrl: '',
             defaultModel: '',
             protocol: 'openai',
@@ -519,7 +580,8 @@ void main() {
               id: 'custom',
               providerId: 'custom',
               title: 'Custom provider',
-              subtitle: 'Any OpenAI-compatible or Anthropic endpoint.',
+              subtitle:
+                  'Any OpenAI-compatible, OpenAI Responses, or Anthropic endpoint.',
               defaultBaseUrl: '',
               defaultModel: '',
               protocol: 'openai',
@@ -1246,7 +1308,7 @@ void main() {
   );
 
   testWidgets(
-    'network search page saves slot edits, provider changes, and add slot',
+    'network search page saves slot edits, openai search base url and model, and add slot',
     (tester) async {
       final facade = _buildSettingsFacade();
 
@@ -1269,10 +1331,31 @@ void main() {
 
       expect(facade.networkSearchConfig.slots.first.label, 'Primary Exa');
 
-      await tester.tap(find.text('BRAVE').first);
+      await tester.tap(find.text('OPENAI').first);
       await tester.pump(const Duration(milliseconds: 500));
 
-      expect(facade.networkSearchConfig.slots.first.providerId, 'brave');
+      expect(
+        facade.networkSearchConfig.slots.first.providerId,
+        'openai_web_search',
+      );
+
+      await tester.enterText(
+        find.byType(TextField).at(1),
+        'https://proxy.example.com/v1',
+      );
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pump(const Duration(milliseconds: 800));
+
+      expect(
+        facade.networkSearchConfig.slots.first.baseUrl,
+        'https://proxy.example.com/v1',
+      );
+
+      await tester.enterText(find.byType(TextField).at(2), 'gpt-5-mini');
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pump(const Duration(milliseconds: 800));
+
+      expect(facade.networkSearchConfig.slots.first.model, 'gpt-5-mini');
 
       await tester.tap(find.byType(Switch).first);
       await tester.pump(const Duration(milliseconds: 500));
@@ -2650,6 +2733,8 @@ class _FakeSettingsFacade implements SettingsFacade {
             id: 'slot-1',
             providerId: 'exa',
             label: 'Primary Exa',
+            baseUrl: '',
+            model: '',
             apiKey: 'sk_live_demo',
             enabled: true,
           ),
@@ -2657,6 +2742,8 @@ class _FakeSettingsFacade implements SettingsFacade {
             id: 'slot-2',
             providerId: 'tavily',
             label: 'Tavily Backup',
+            baseUrl: '',
+            model: '',
             apiKey: 'tvly-demo',
             enabled: true,
           ),
@@ -2740,8 +2827,43 @@ class _FakeSettingsFacade implements SettingsFacade {
     workspaceAccessProfile: WorkspaceAccessProfile.work,
     readOnlyOutsideWorkspace: true,
   );
+  StrongBackgroundSnapshot strongBackgroundSnapshot =
+      const StrongBackgroundSnapshot(
+        source: 'strong-background',
+        available: true,
+        tier: StrongBackgroundTier.baseline,
+        setupComplete: false,
+        recommendedActionIds: <StrongBackgroundActionId>[
+          StrongBackgroundActionId.openNotificationSettings,
+        ],
+        notifications: StrongBackgroundNotificationsSnapshot(
+          permissionRequired: true,
+          permissionGranted: false,
+          enabled: false,
+          configured: false,
+        ),
+        exactAlarms: StrongBackgroundExactAlarmSnapshot(
+          accessRequired: true,
+          accessGranted: false,
+          configured: false,
+        ),
+        batteryOptimization: StrongBackgroundBatteryOptimizationSnapshot(
+          supported: true,
+          exempt: false,
+          configured: false,
+        ),
+        actions: <StrongBackgroundActionSnapshot>[
+          StrongBackgroundActionSnapshot(
+            id: StrongBackgroundActionId.openNotificationSettings,
+            available: true,
+            recommended: true,
+          ),
+        ],
+      );
   final Map<String, bool> authorizationResponses = <String, bool>{};
   final List<String> authorizationRequests = <String>[];
+  final List<StrongBackgroundActionId> strongBackgroundActionRequests =
+      <StrongBackgroundActionId>[];
   final SettingsOverviewSnapshot overviewSnapshot;
   int saveCallCount = 0;
   int safetySaveCallCount = 0;
@@ -2775,6 +2897,23 @@ class _FakeSettingsFacade implements SettingsFacade {
               ]
             : const <SettingsSectionSnapshot>[],
       );
+
+  @override
+  Future<StrongBackgroundSnapshot> loadStrongBackgroundSnapshot() async =>
+      strongBackgroundSnapshot;
+
+  @override
+  Future<StrongBackgroundActionResult> performStrongBackgroundAction(
+    StrongBackgroundActionId actionId,
+  ) async {
+    strongBackgroundActionRequests.add(actionId);
+    return StrongBackgroundActionResult(
+      source: 'strong-background-action',
+      actionId: actionId,
+      available: true,
+      launched: true,
+    );
+  }
 
   @override
   Future<NetworkSearchConfigSnapshot> loadNetworkSearchConfig() async =>

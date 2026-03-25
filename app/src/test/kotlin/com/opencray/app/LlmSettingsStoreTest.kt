@@ -109,6 +109,28 @@ class LlmSettingsStoreTest {
   }
 
   @Test
+  fun sanitizedStatePreservesOpenAiResponsesProtocol() {
+    val state = LlmSettingsState(
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      baseUrl = "https://api.openai.com/v1",
+      apiKey = "token",
+      model = "gpt-5-mini",
+    )
+
+    val sanitized = state.sanitized()
+
+    assertEquals(LlmProviderProtocols.OPENAI_RESPONSES, sanitized.protocol)
+    assertEquals(
+      llmRouteFingerprint(
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://api.openai.com/v1",
+        model = "gpt-5-mini",
+      ),
+      sanitized.agentCapability.routeFingerprint,
+    )
+  }
+
+  @Test
   fun loadReturnsCachedAgentCapabilityForMatchingRoute() {
     val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
     val capability = LlmAgentCapabilitySnapshot(

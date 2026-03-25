@@ -20,6 +20,12 @@ internal class ServiceBackedOpenCraySettingsGateway(
   override fun loadSettingsDetail(routeIdRaw: String): Map<String, Any?> =
     currentReadGateway().loadSettingsDetail(routeIdRaw)
 
+  override fun loadStrongBackgroundSnapshot(): Map<String, Any?> =
+    currentReadGateway().loadStrongBackgroundSnapshot()
+
+  override fun performStrongBackgroundAction(actionId: String): Map<String, Any?> =
+    currentReadGateway().performStrongBackgroundAction(actionId)
+
   override fun loadNetworkSearchConfig(): Map<String, Any?> =
     currentReadGateway().loadNetworkSearchConfig()
 

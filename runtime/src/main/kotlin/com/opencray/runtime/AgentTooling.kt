@@ -259,6 +259,8 @@ class OpenCrayToolDispatcher(
     ?.filter(String::isNotBlank)
     ?.toSet()
 
+  fun todoSnapshot(): List<AgentTodoEntry> = todoStore.snapshot()
+
   fun definitions(): List<AgentToolDefinition> {
     val canonicalDefinitions = listOf(
       AgentToolDefinition(
@@ -379,27 +381,65 @@ class OpenCrayToolDispatcher(
       ),
       AgentToolDefinition(
         name = "TodoWrite",
-        description = "Read or replace the current chat session's in-memory todo list. Omit todos to inspect the current list; provide todos to replace it.",
+        description = "Read or replace the current chat session's in-memory todo list. Omit todos to inspect the current list; provide todos to replace it; provide an empty todos array to clear it. Keep todo contents unique, keep at most one todo in_progress, and only that active todo may set activeForm.",
         parameters = listOf(
           AgentToolParameter(
             name = "todos",
             type = "object[]",
             required = false,
-            description = "Array of todo objects with content, status, and optional activeForm.",
+            description = "Array of todo objects with unique content, status, and optional activeForm. At most one entry may use status=in_progress, and only that entry may include activeForm.",
             jsonSchema = todoEntryArraySchema(
-              description = "Optional replacement todo list. Omit this field to inspect the current todos without mutating them.",
+              description = "Optional replacement todo list. Omit this field to inspect the current todos without mutating them. Send an empty array to clear the current todo list. Keep contents unique, keep at most one entry in_progress, and only that active entry may include activeForm.",
             ),
           ),
         ),
       ),
       AgentToolDefinition(
         name = "Task",
-        description = "Delegate one bounded read-only subtask to a child runtime and wait for its summarized result before continuing.",
+        description = "Delegate one bounded subtask to a child runtime and wait for its summarized result before continuing. Use researcher, reviewer, or general-purpose for read-only work, and worker for bounded workspace edits.",
         parameters = listOf(
           AgentToolParameter("description", "string", required = true, description = "Short task label for the delegated child run."),
           AgentToolParameter("prompt", "string", required = true, description = "Exact instructions for the child run."),
-          AgentToolParameter("subagent_type", "string", required = true, description = "Child profile id such as general-purpose, researcher, or reviewer."),
+          AgentToolParameter("subagent_type", "string", required = true, description = "Child profile id such as general-purpose, researcher, reviewer, or worker."),
           AgentToolParameter("context_mode", "string", required = false, description = "Optional child context override. Supported values: minimal, delegated, mirrored."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "spawn_agent",
+        description = "Queue one bounded subagent handle and return its agent id. Use wait_agent to execute it later.",
+        parameters = listOf(
+          AgentToolParameter("agent_id", "string", required = false, description = "Optional explicit handle id for the delegated child run."),
+          AgentToolParameter("description", "string", required = true, description = "Short task label for the delegated child run."),
+          AgentToolParameter("prompt", "string", required = true, description = "Exact instructions for the child run."),
+          AgentToolParameter("subagent_type", "string", required = true, description = "Child profile id such as general-purpose, researcher, reviewer, or worker."),
+          AgentToolParameter("context_mode", "string", required = false, description = "Optional child context override. Supported values: minimal, delegated, mirrored."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "wait_agent",
+        description = "Execute or resume one queued delegated child handle and return its latest summarized state.",
+        parameters = listOf(
+          AgentToolParameter("agent_id", "string", required = false, description = "One delegated child agent id returned by spawn_agent."),
+          AgentToolParameter("agent_ids", "string[]", required = false, description = "Optional batch form. The first listed id is used in this runtime."),
+          AgentToolParameter("ids", "string[]", required = false, description = "Compatibility alias for agent_ids."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "send_input",
+        description = "Append one supplemental parent instruction to a queued delegated child handle before wait_agent executes it.",
+        parameters = listOf(
+          AgentToolParameter("agent_id", "string", required = false, description = "Delegated child agent id returned by spawn_agent."),
+          AgentToolParameter("id", "string", required = false, description = "Compatibility alias for agent_id."),
+          AgentToolParameter("message", "string", required = false, description = "Supplemental instruction to append to the queued child prompt."),
+          AgentToolParameter("input", "string", required = false, description = "Compatibility alias for message."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "close_agent",
+        description = "Close one delegated child handle. Queued or approval-waiting children are cancelled and removed.",
+        parameters = listOf(
+          AgentToolParameter("agent_id", "string", required = false, description = "Delegated child agent id returned by spawn_agent."),
+          AgentToolParameter("id", "string", required = false, description = "Compatibility alias for agent_id."),
         ),
       ),
       AgentToolDefinition(
@@ -634,6 +674,7 @@ class OpenCrayToolDispatcher(
 
   internal fun planTaskDelegation(
     task: AgentTask,
+    toolName: String = "Task",
     description: String,
     prompt: String,
     subagentType: String,
@@ -641,7 +682,7 @@ class OpenCrayToolDispatcher(
     allowedToolNames: Set<String>,
   ): ToolPolicyPlan = toolPolicyPipeline.plan(
     task = task,
-    toolName = "Task",
+    toolName = toolName,
     targetPath = writeBoundary.defaultRoot,
     metadataRequest = ToolMetadataContextRequest(
       targetSummary = inlinePreview(description, maxChars = 256),
@@ -656,12 +697,15 @@ class OpenCrayToolDispatcher(
     ),
   )
 
-  internal fun gateTaskDelegation(plan: ToolPolicyPlan): AgentToolResult? =
+  internal fun gateTaskDelegation(
+    plan: ToolPolicyPlan,
+    toolName: String = "Task",
+  ): AgentToolResult? =
     toolPolicyPipeline.gate(
       plan = plan,
       affectedPaths = emptyMap(),
-      askDetail = "Approval is required before Task can delegate this work.",
-      denyDetail = "Policy denied Task.",
+      askDetail = "Approval is required before $toolName can delegate this work.",
+      denyDetail = "Policy denied $toolName.",
     )
 
   internal fun taskDelegationResultMetadata(
@@ -757,6 +801,217 @@ class OpenCrayToolDispatcher(
         invocation = invocation,
       )
     }
+  }
+
+  internal fun canExecuteInParallel(
+    task: AgentTask,
+    call: AgentToolCall,
+  ): Boolean {
+    val invocation = toolCallNormalizer.normalize(call)
+    if (allowedToolNames != null && invocation.normalizedToolName !in allowedToolNames) {
+      return false
+    }
+    return runCatching {
+      when (invocation.normalizedToolName) {
+        "workspace_list_files" -> preflightWorkspaceListFiles(task = task, arguments = invocation.arguments)
+        "workspace_read_file" -> preflightWorkspaceReadFile(task = task, arguments = invocation.arguments)
+        "LS" -> preflightListFilesForClaude(task = task, arguments = invocation.arguments)
+        "Read" -> preflightReadFileForClaude(task = task, arguments = invocation.arguments)
+        "Grep" -> preflightGrepWorkspace(task = task, arguments = invocation.arguments)
+        "Glob" -> preflightGlobWorkspace(task = task, arguments = invocation.arguments)
+        "WebSearch" -> preflightWebSearch(task = task, arguments = invocation.arguments)
+        "WebFetch" -> preflightWebFetch(task = task, arguments = invocation.arguments)
+        "ProcessList",
+        "ProcessRead",
+        "skills_list",
+        "skill_read",
+        "SkillsList",
+        "mcp_list_servers",
+        "memory_search",
+        "memory_get",
+        -> true
+        else -> false
+      }
+    }.getOrDefault(false)
+  }
+
+  private fun preflightWorkspaceListFiles(task: AgentTask, arguments: JsonObject): Boolean {
+    val directory = toolTargetResolver.ensureReadableDirectory(
+      candidate = arguments.optionalString("path"),
+      label = "workspace list",
+      defaultToRoot = true,
+    )
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "workspace_list_files",
+      targetPath = directory,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.DIRECTORY,
+        primaryPath = directory,
+      ),
+    )
+    return gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = mapOf("path" to toolTargetResolver.displayModelPath(directory)),
+    ) == null
+  }
+
+  private fun preflightWorkspaceReadFile(task: AgentTask, arguments: JsonObject): Boolean {
+    val file = toolTargetResolver.ensureReadableFile(arguments.requiredString("path"), label = "workspace read")
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "workspace_read_file",
+      targetPath = file,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.FILE,
+        primaryPath = file,
+      ),
+    )
+    return gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = mapOf("path" to toolTargetResolver.displayModelPath(file)),
+    ) == null
+  }
+
+  private fun preflightListFilesForClaude(task: AgentTask, arguments: JsonObject): Boolean {
+    val directory = toolTargetResolver.ensureReadableDirectory(
+      candidate = arguments.optionalString("path"),
+      label = "LS",
+      defaultToRoot = true,
+    )
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "LS",
+      targetPath = directory,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.DIRECTORY,
+        primaryPath = directory,
+      ),
+    )
+    return gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = mapOf("path" to toolTargetResolver.displayModelPath(directory)),
+    ) == null
+  }
+
+  private fun preflightReadFileForClaude(task: AgentTask, arguments: JsonObject): Boolean {
+    val file = toolTargetResolver.ensureReadableFile(
+      arguments.requiredStringFrom("file_path", "path"),
+      label = "Read",
+    )
+    val offset = arguments.optionalInt("offset") ?: 1
+    require(offset >= 1) { "Read offset must be >= 1." }
+    val limit = arguments.optionalInt("limit")
+    require(limit == null || limit >= 1) { "Read limit must be >= 1 when provided." }
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "Read",
+      targetPath = file,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.FILE,
+        primaryPath = file,
+      ),
+    )
+    return gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = mapOf("filePath" to toolTargetResolver.displayModelPath(file)),
+    ) == null
+  }
+
+  private fun preflightGrepWorkspace(task: AgentTask, arguments: JsonObject): Boolean {
+    val pattern = arguments.requiredString("pattern")
+    Regex(pattern)
+    val searchRoot = toolTargetResolver.resolveSearchRoot(arguments.optionalString("path"), label = "Grep path")
+    arguments.optionalString("glob")?.let(::compileGlobMatcher)
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "Grep",
+      targetPath = searchRoot,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.SEARCH_ROOT,
+        primaryPath = searchRoot,
+        targetSummary = "$pattern @ ${toolTargetResolver.displayModelPath(searchRoot)}",
+      ),
+    )
+    return gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = buildMap {
+        put("path", toolTargetResolver.displayModelPath(searchRoot))
+        put("pattern", pattern)
+        arguments.optionalString("glob")?.let { put("glob", it) }
+      },
+    ) == null
+  }
+
+  private fun preflightGlobWorkspace(task: AgentTask, arguments: JsonObject): Boolean {
+    val pattern = arguments.requiredString("pattern")
+    compileGlobMatcher(pattern)
+    val searchRoot = toolTargetResolver.resolveSearchRoot(arguments.optionalString("path"), label = "Glob path")
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "Glob",
+      targetPath = searchRoot,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.SEARCH_ROOT,
+        primaryPath = searchRoot,
+        targetSummary = "$pattern @ ${toolTargetResolver.displayModelPath(searchRoot)}",
+      ),
+    )
+    return gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = mapOf(
+        "path" to toolTargetResolver.displayModelPath(searchRoot),
+        "pattern" to pattern,
+      ),
+    ) == null
+  }
+
+  private fun preflightWebSearch(task: AgentTask, arguments: JsonObject): Boolean {
+    val query = arguments.requiredString("query")
+    val domains = arguments.optionalStringArray("domains")
+      .map(String::trim)
+      .filter(String::isNotEmpty)
+      .distinct()
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "WebSearch",
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        workspaceRelation = ToolWorkspaceRelation.NONE,
+        targetSummary = inlinePreview(query, maxChars = 256),
+      ),
+    )
+    return toolPolicyPipeline.gate(
+      plan = plan,
+      affectedPaths = buildMap {
+        put("query", inlinePreview(query, maxChars = 256))
+        if (domains.isNotEmpty()) {
+          put("domains", domains.joinToString(separator = ","))
+        }
+      },
+      askDetail = "Approval is required before WebSearch can access the network.",
+      denyDetail = "Policy denied WebSearch.",
+    ) == null
+  }
+
+  private fun preflightWebFetch(task: AgentTask, arguments: JsonObject): Boolean {
+    val url = arguments.requiredString("url")
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "WebFetch",
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        workspaceRelation = ToolWorkspaceRelation.NONE,
+        primaryTargetPath = url,
+        targetSummary = inlinePreview(url, maxChars = 256),
+      ),
+    )
+    return toolPolicyPipeline.gate(
+      plan = plan,
+      affectedPaths = mapOf("url" to inlinePreview(url, maxChars = 256)),
+      askDetail = "Approval is required before WebFetch can access the network.",
+      denyDetail = "Policy denied WebFetch.",
+    ) == null
   }
 
   private fun listWorkspaceFiles(task: AgentTask, arguments: JsonObject): AgentToolResult {
@@ -1273,9 +1528,8 @@ class OpenCrayToolDispatcher(
       )
     }
 
-    val rendered = if (result.results.isEmpty()) {
-      "No web search results."
-    } else {
+    val rendered = when {
+      result.results.isNotEmpty() -> {
       buildString {
         appendLine("provider=${result.providerName}")
         result.results.forEachIndexed { index, hit ->
@@ -1291,6 +1545,14 @@ class OpenCrayToolDispatcher(
           }
         }
       }.trim()
+      }
+
+      result.summaryText.isNotBlank() -> buildString {
+        appendLine("provider=${result.providerName}")
+        appendLine("summary=${result.summaryText}")
+      }.trim()
+
+      else -> "No web search results."
     }
     return AgentToolResult(
       toolName = "WebSearch",
@@ -1683,6 +1945,7 @@ class OpenCrayToolDispatcher(
   }
 
   private fun writeTodoList(arguments: JsonObject): AgentToolResult {
+    val previousEntries = todoStore.snapshot()
     val todos = arguments.optionalObjectArray("todos")?.mapIndexed { index, entry ->
       val content = entry.requiredString("content")
       val status = AgentTodoStatus.fromLabelOrNull(entry.requiredString("status"))
@@ -1697,7 +1960,24 @@ class OpenCrayToolDispatcher(
       todoStore.replaceAll(todos)
     }
     val snapshot = todoStore.snapshot()
-    val renderedEntries = todos ?: snapshot
+    val renderedEntries = snapshot
+    val pendingCount = renderedEntries.count { todo -> todo.status == AgentTodoStatus.PENDING }
+    val inProgressCount = renderedEntries.count { todo -> todo.status == AgentTodoStatus.IN_PROGRESS }
+    val completedCount = renderedEntries.count { todo -> todo.status == AgentTodoStatus.COMPLETED }
+    val previousByContent = previousEntries.associateBy { entry -> entry.content }
+    val currentByContent = renderedEntries.associateBy { entry -> entry.content }
+    val addedTodoCount = currentByContent.keys.count { content -> content !in previousByContent }
+    val removedTodoCount = previousByContent.keys.count { content -> content !in currentByContent }
+    val statusChangedTodoCount = currentByContent.count { (content, entry) ->
+      previousByContent[content]?.status?.let { previousStatus -> previousStatus != entry.status } == true
+    }
+    val completedTodoDeltaCount = currentByContent.count { (content, entry) ->
+      entry.status == AgentTodoStatus.COMPLETED &&
+        previousByContent[content]?.status != AgentTodoStatus.COMPLETED
+    }
+    val previousActiveTodo = previousEntries.firstOrNull { todo -> todo.status == AgentTodoStatus.IN_PROGRESS }
+    val activeTodo = renderedEntries.firstOrNull { todo -> todo.status == AgentTodoStatus.IN_PROGRESS }
+    val planChanged = previousEntries != renderedEntries
     val rendered = if (renderedEntries.isEmpty()) {
       "Todo list is empty."
     } else {
@@ -1725,8 +2005,21 @@ class OpenCrayToolDispatcher(
           targetSummary = "${renderedEntries.size} todo(s)",
         ),
         metadata = mapOf(
-          "todoCount" to renderedEntries.size.toString(),
-          "mutated" to (todos != null).toString(),
+          TodoWriteMetadataKeys.TODO_COUNT to renderedEntries.size.toString(),
+          TodoWriteMetadataKeys.MUTATED to (todos != null).toString(),
+          TodoWriteMetadataKeys.PLAN_CHANGED to planChanged.toString(),
+          TodoWriteMetadataKeys.PENDING_TODO_COUNT to pendingCount.toString(),
+          TodoWriteMetadataKeys.IN_PROGRESS_TODO_COUNT to inProgressCount.toString(),
+          TodoWriteMetadataKeys.COMPLETED_TODO_COUNT to completedCount.toString(),
+          TodoWriteMetadataKeys.ADDED_TODO_COUNT to addedTodoCount.toString(),
+          TodoWriteMetadataKeys.REMOVED_TODO_COUNT to removedTodoCount.toString(),
+          TodoWriteMetadataKeys.STATUS_CHANGED_TODO_COUNT to statusChangedTodoCount.toString(),
+          TodoWriteMetadataKeys.COMPLETED_TODO_DELTA_COUNT to completedTodoDeltaCount.toString(),
+          TodoWriteMetadataKeys.ACTIVE_TODO_CHANGED to (previousActiveTodo?.content != activeTodo?.content).toString(),
+        ) + listOfNotNull(
+          activeTodo?.content?.takeIf(String::isNotBlank)?.let { content ->
+            TodoWriteMetadataKeys.ACTIVE_TODO_CONTENT to content
+          },
         ),
       ),
     )

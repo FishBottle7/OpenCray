@@ -1017,6 +1017,7 @@ class OpenCrayChatRuntimeSnapshot {
     required this.sessionId,
     required this.activeRuns,
     this.retainedRuns = const <OpenCrayChatRunSnapshot>[],
+    this.subAgents = const <OpenCrayChatSubAgentSnapshot>[],
     required this.events,
     this.hostLifecycle,
   });
@@ -1024,6 +1025,7 @@ class OpenCrayChatRuntimeSnapshot {
   final String sessionId;
   final List<OpenCrayChatRunSnapshot> activeRuns;
   final List<OpenCrayChatRunSnapshot> retainedRuns;
+  final List<OpenCrayChatSubAgentSnapshot> subAgents;
   final List<OpenCrayChatRuntimeEventSnapshot> events;
   final OpenCrayHostLifecycleSnapshot? hostLifecycle;
 
@@ -1032,6 +1034,8 @@ class OpenCrayChatRuntimeSnapshot {
         map['activeRuns'] as List<Object?>? ?? const <Object?>[];
     final rawRetainedRuns =
         map['retainedRuns'] as List<Object?>? ?? const <Object?>[];
+    final rawSubAgents =
+        map['subAgents'] as List<Object?>? ?? const <Object?>[];
     final rawEvents = map['events'] as List<Object?>? ?? const <Object?>[];
     final rawHostLifecycle = map['hostLifecycle'];
     return OpenCrayChatRuntimeSnapshot(
@@ -1044,6 +1048,10 @@ class OpenCrayChatRuntimeSnapshot {
           .whereType<Map<Object?, Object?>>()
           .map(OpenCrayChatRunSnapshot.fromMap)
           .toList(growable: false),
+      subAgents: rawSubAgents
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatSubAgentSnapshot.fromMap)
+          .toList(growable: false),
       events: rawEvents
           .whereType<Map<Object?, Object?>>()
           .map(OpenCrayChatRuntimeEventSnapshot.fromMap)
@@ -1051,6 +1059,74 @@ class OpenCrayChatRuntimeSnapshot {
       hostLifecycle: rawHostLifecycle is Map<Object?, Object?>
           ? OpenCrayHostLifecycleSnapshot.fromMap(rawHostLifecycle)
           : null,
+    );
+  }
+}
+
+class OpenCrayChatSubAgentSnapshot {
+  const OpenCrayChatSubAgentSnapshot({
+    required this.parentRunId,
+    required this.parentTaskId,
+    required this.childRunId,
+    required this.childTaskId,
+    required this.label,
+    required this.subagentType,
+    required this.contextMode,
+    required this.depth,
+    required this.startedAtEpochMs,
+    required this.updatedAtEpochMs,
+    required this.eventCount,
+    this.phase,
+    this.status,
+    this.executionState,
+    this.continuationKind,
+    this.resumable = false,
+    this.requiresUserAction = false,
+    this.isHighRisk = false,
+    this.summary,
+  });
+
+  final String parentRunId;
+  final String parentTaskId;
+  final String childRunId;
+  final String childTaskId;
+  final String label;
+  final String subagentType;
+  final String contextMode;
+  final int depth;
+  final String? phase;
+  final String? status;
+  final String? executionState;
+  final String? continuationKind;
+  final bool resumable;
+  final bool requiresUserAction;
+  final bool isHighRisk;
+  final String? summary;
+  final int startedAtEpochMs;
+  final int updatedAtEpochMs;
+  final int eventCount;
+
+  factory OpenCrayChatSubAgentSnapshot.fromMap(Map<Object?, Object?> map) {
+    return OpenCrayChatSubAgentSnapshot(
+      parentRunId: map['parentRunId'] as String? ?? '',
+      parentTaskId: map['parentTaskId'] as String? ?? '',
+      childRunId: map['childRunId'] as String? ?? '',
+      childTaskId: map['childTaskId'] as String? ?? '',
+      label: map['label'] as String? ?? '',
+      subagentType: map['subagentType'] as String? ?? '',
+      contextMode: map['contextMode'] as String? ?? '',
+      depth: map['depth'] as int? ?? 0,
+      phase: map['phase'] as String?,
+      status: map['status'] as String?,
+      executionState: map['executionState'] as String?,
+      continuationKind: map['continuationKind'] as String?,
+      resumable: map['resumable'] as bool? ?? false,
+      requiresUserAction: map['requiresUserAction'] as bool? ?? false,
+      isHighRisk: map['isHighRisk'] as bool? ?? false,
+      summary: map['summary'] as String?,
+      startedAtEpochMs: map['startedAtEpochMs'] as int? ?? 0,
+      updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
+      eventCount: map['eventCount'] as int? ?? 0,
     );
   }
 }

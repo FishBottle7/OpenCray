@@ -13,8 +13,13 @@ import com.opencray.runtime.AgentTodoStatus
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.NoOpOpenCrayAgentRuntimeEventSink
+import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
+import com.opencray.runtime.OpenCrayPromptResumeMetadata
+import com.opencray.runtime.OpenCrayPromptResumeState
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySubAgentPhase
+import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.bootstrap.BootstrapMode
 import com.opencray.runtime.memory.MemoryCandidateExtractor
@@ -37,6 +42,7 @@ import com.opencray.runtime.soul.SoulProfileExtensionKeys
 import com.opencray.runtime.soul.SoulMemoryObjectTypes
 import com.opencray.runtime.process.InMemoryAgentProcessRegistry
 import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.session.SessionTranscriptStore
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -49,7 +55,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 private const val ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE: String = "PROCESS_INTERRUPTED_ON_RESTORE"
@@ -121,6 +130,62 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     assertEquals("Persist todo state", restoredTodos.single().content)
     assertEquals(AgentTodoStatus.IN_PROGRESS, restoredTodos.single().status)
     assertEquals("Persisting todo state", restoredTodos.single().activeForm)
+  }
+
+  @Test
+  fun todoStoreForSessionRejectsInvalidReplacementAndKeepsPersistedPlan() {
+    val chatDirectory = temporaryFolder.newFolder("chat-store-invalid-persistent-todos")
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-invalid-persistent-todos").toPath()
+    val chatStore = ChatSessionLocalStore(chatDirectory)
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      todoStoreProvider = { requestedSessionId ->
+        ChatSessionBackedAgentTodoStore(
+          chatSessionStore = chatStore,
+          sessionId = requestedSessionId,
+        )
+      },
+    )
+    val todoStore = factory.todoStoreForSession(sessionId)
+    todoStore.replaceAll(
+      listOf(
+        AgentTodoEntry(
+          content = "Inspect runtime continuation",
+          status = AgentTodoStatus.IN_PROGRESS,
+          activeForm = "Inspecting runtime continuation",
+        ),
+      ),
+    )
+
+    val error = runCatching {
+      todoStore.replaceAll(
+        listOf(
+          AgentTodoEntry(
+            content = "Inspect runtime continuation",
+            status = AgentTodoStatus.IN_PROGRESS,
+            activeForm = "Inspecting runtime continuation",
+          ),
+          AgentTodoEntry(
+            content = "Write follow-up tests",
+            status = AgentTodoStatus.IN_PROGRESS,
+            activeForm = "Writing follow-up tests",
+          ),
+        ),
+      )
+    }.exceptionOrNull()
+    val restoredTodos = ChatSessionLocalStore(chatDirectory).loadTodos(sessionId)
+
+    assertTrue(error?.message.orEmpty().contains("at most one in_progress"))
+    assertEquals(1, restoredTodos.size)
+    assertEquals("Inspect runtime continuation", restoredTodos.single().content)
+    assertEquals(AgentTodoStatus.IN_PROGRESS, restoredTodos.single().status)
+    assertEquals("Inspecting runtime continuation", restoredTodos.single().activeForm)
   }
 
   @Test
@@ -472,6 +537,50 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
   }
 
   @Test
+  fun supplementReplayContentOmitsHiddenPromptResumeMetadata() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-supplement-replay"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-supplement-replay").toPath()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    val method = AppAgentSessionTaskRuntimeFactory::class.java.getDeclaredMethod(
+      "buildSupplementReplayContent",
+      OpenCraySupplementEvent::class.java,
+    )
+    method.isAccessible = true
+
+    val payload = method.invoke(
+      factory,
+      OpenCraySupplementEvent(
+        runId = "run-1",
+        taskId = "task-1",
+        turn = 1,
+        entryId = "supplement-1",
+        text = "Also inspect the logs",
+        checkpoint = "turn_start",
+        metadata = mapOf(
+          "source" to "manual",
+          OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON to
+            """{"turnIndex":1,"toolCallCount":1}""",
+        ),
+        emittedAtEpochMs = 1_000L,
+      ),
+    ) as String
+
+    val decoded = Json.parseToJsonElement(payload).jsonObject
+    val metadata = requireNotNull(decoded["metadata"]).jsonObject
+
+    assertEquals("supplement", decoded.getValue("event_kind").jsonPrimitive.content)
+    assertEquals("manual", metadata.getValue("source").jsonPrimitive.content)
+    assertFalse(metadata.containsKey(OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON))
+  }
+
+  @Test
   fun recordSuccessfulToolInteractionSkipsDuplicateReplayEntriesForSameRunTurn() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-tool-replay-dedupe"))
     val workspaceRoot = temporaryFolder.newFolder("workspace-root-tool-replay-dedupe").toPath()
@@ -515,6 +624,143 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     assertEquals(2, snapshot.size)
     assertTrue(snapshot[0].content.contains("\"run_id\":\"run-1\""))
     assertTrue(snapshot[1].content.contains("\"matchCount\":\"1\""))
+  }
+
+  @Test
+  fun transcriptAwareEventSinkFiltersResumePayloadFromSupplementReplayMetadata() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-supplement-replay"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-supplement-replay").toPath()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    val sessionId = "session-1"
+    val transcriptStore = factory.transcriptStoreForSession(sessionId)
+    val eventSink = factory.transcriptAwareEventSinkForTest(
+      sessionId = sessionId,
+      transcriptStore = transcriptStore,
+    )
+    val resumeState = OpenCrayPromptResumeState(turnIndex = 1, toolCallCount = 1)
+
+    eventSink.onRunEvent(
+      promptTask("Inspect the logs."),
+      OpenCraySupplementEvent(
+        runId = "run-1",
+        taskId = "task-live-context",
+        turn = 1,
+        entryId = "supplement-1",
+        text = "Also inspect the logs",
+        metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(resumeState, Json) +
+          mapOf("source" to "manual"),
+        emittedAtEpochMs = 1_000L,
+      ),
+    )
+
+    val snapshot = transcriptStore.snapshot()
+    val replay = Json.parseToJsonElement(snapshot[1].content).jsonObject
+    val replayMetadata = replay["metadata"]?.jsonObject
+
+    assertEquals(2, snapshot.size)
+    assertEquals(RuntimeConversationRole.USER, snapshot[0].role)
+    assertEquals("Also inspect the logs", snapshot[0].content)
+    assertEquals(RuntimeConversationRole.TOOL, snapshot[1].role)
+    assertEquals("supplement", replay["event_kind"]?.jsonPrimitive?.content)
+    assertEquals("supplement-1", replay["entry_id"]?.jsonPrimitive?.content)
+    assertEquals("Also inspect the logs", replay["text"]?.jsonPrimitive?.content)
+    assertEquals("manual", replayMetadata?.get("source")?.jsonPrimitive?.content)
+    assertEquals(1, replayMetadata?.size)
+    assertFalse(replayMetadata?.containsKey(OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON) == true)
+  }
+
+  @Test
+  fun transcriptAwareEventSinkOmitsSupplementMetadataObjectWhenOnlyHiddenResumePayloadExists() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-supplement-replay-hidden-only"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-supplement-replay-hidden-only").toPath()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    val sessionId = "session-1"
+    val transcriptStore = factory.transcriptStoreForSession(sessionId)
+    val eventSink = factory.transcriptAwareEventSinkForTest(
+      sessionId = sessionId,
+      transcriptStore = transcriptStore,
+    )
+    val resumeState = OpenCrayPromptResumeState(turnIndex = 1, toolCallCount = 2)
+
+    eventSink.onRunEvent(
+      promptTask("Inspect the logs."),
+      OpenCraySupplementEvent(
+        runId = "run-1",
+        taskId = "task-live-context",
+        turn = 1,
+        entryId = "supplement-1",
+        text = "Also inspect the logs",
+        metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(resumeState, Json),
+        emittedAtEpochMs = 1_001L,
+      ),
+    )
+
+    val snapshot = transcriptStore.snapshot()
+    val replay = Json.parseToJsonElement(snapshot[1].content).jsonObject
+
+    assertEquals(2, snapshot.size)
+    assertEquals(RuntimeConversationRole.USER, snapshot[0].role)
+    assertEquals(RuntimeConversationRole.TOOL, snapshot[1].role)
+    assertEquals("supplement", replay["event_kind"]?.jsonPrimitive?.content)
+    assertEquals("supplement-1", replay["entry_id"]?.jsonPrimitive?.content)
+    assertEquals("turn_start", replay["checkpoint"]?.jsonPrimitive?.content)
+    assertFalse(replay.containsKey("metadata"))
+  }
+
+  @Test
+  fun transcriptAwareEventSinkSkipsDuplicateSupplementReplayEntriesForSameEvent() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-supplement-replay-dedupe"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-supplement-replay-dedupe").toPath()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    val sessionId = "session-1"
+    val transcriptStore = factory.transcriptStoreForSession(sessionId)
+    val eventSink = factory.transcriptAwareEventSinkForTest(
+      sessionId = sessionId,
+      transcriptStore = transcriptStore,
+    )
+    val event = OpenCraySupplementEvent(
+      runId = "run-1",
+      taskId = "task-live-context",
+      turn = 1,
+      entryId = "supplement-1",
+      text = "Also inspect the logs",
+      metadata = mapOf("source" to "manual"),
+      emittedAtEpochMs = 1_002L,
+    )
+
+    eventSink.onRunEvent(promptTask("Inspect the logs."), event)
+    eventSink.onRunEvent(promptTask("Inspect the logs."), event)
+
+    val snapshot = transcriptStore.snapshot()
+    val replay = Json.parseToJsonElement(snapshot[1].content).jsonObject
+
+    assertEquals(2, snapshot.size)
+    assertEquals(1, snapshot.count { message -> message.role == RuntimeConversationRole.USER })
+    assertEquals(1, snapshot.count { message -> message.role == RuntimeConversationRole.TOOL })
+    assertEquals("Also inspect the logs", snapshot[0].content)
+    assertEquals("supplement", replay["event_kind"]?.jsonPrimitive?.content)
+    assertEquals("supplement-1", replay["entry_id"]?.jsonPrimitive?.content)
   }
 
   @Test
@@ -1467,6 +1713,21 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     ),
     createdAtEpochMs = 100L,
   )
+
+  private fun AppAgentSessionTaskRuntimeFactory.transcriptAwareEventSinkForTest(
+    sessionId: String,
+    transcriptStore: SessionTranscriptStore,
+  ): OpenCrayAgentRuntimeEventSink {
+    val method = AppAgentSessionTaskRuntimeFactory::class.java.getDeclaredMethod(
+      "transcriptAwareEventSink",
+      String::class.java,
+      SessionTranscriptStore::class.java,
+      OpenCrayAgentRuntimeEventSink::class.java,
+    )
+    method.isAccessible = true
+    return method.invoke(this, sessionId, transcriptStore, NoOpOpenCrayAgentRuntimeEventSink)
+      as OpenCrayAgentRuntimeEventSink
+  }
 
   private class InMemoryMemoryStore : MemoryStore {
     private val records = linkedMapOf<String, MemoryRecord>()

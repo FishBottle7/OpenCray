@@ -67,7 +67,9 @@ android {
 
 dependencies {
     implementation(kotlin("stdlib"))
+    implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("androidx.core:core-ktx:1.10.1")
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
     implementation(
         fileTree(
             mapOf(
@@ -80,8 +82,10 @@ dependencies {
     implementation(project(":llm"))
     implementation(project(":runtime"))
     implementation(project(":persistence"))
+    implementation(project(":policy"))
     implementation(project(":skills"))
     implementation(project(":mcp"))
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")

@@ -17,6 +17,8 @@ It focuses on four concrete goals:
 3. Make the runtime continue without an attached UI.
 4. Prepare the Android app for future task keepalive and background execution.
 
+For the Android-specific product design that extends these foundations into local strong-background execution, scheduled wake-up, and foreground keepalive behavior, see `docs/android-local-strong-background-runtime-design.md`.
+
 ## User-Visible Problem
 
 The current user-facing failure mode is not "it looks like a retry". It is a real run restart:

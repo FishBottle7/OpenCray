@@ -3,6 +3,8 @@ class OpenCrayNetworkSearchSlotSnapshot {
     required this.id,
     required this.providerId,
     required this.label,
+    required this.baseUrl,
+    required this.model,
     required this.apiKey,
     required this.enabled,
   });
@@ -10,6 +12,8 @@ class OpenCrayNetworkSearchSlotSnapshot {
   final String id;
   final String providerId;
   final String label;
+  final String baseUrl;
+  final String model;
   final String apiKey;
   final bool enabled;
 
@@ -18,6 +22,8 @@ class OpenCrayNetworkSearchSlotSnapshot {
       id: map['id'] as String? ?? '',
       providerId: map['providerId'] as String? ?? 'exa',
       label: map['label'] as String? ?? '',
+      baseUrl: map['baseUrl'] as String? ?? '',
+      model: map['model'] as String? ?? '',
       apiKey: map['apiKey'] as String? ?? '',
       enabled: map['enabled'] as bool? ?? true,
     );
@@ -27,6 +33,8 @@ class OpenCrayNetworkSearchSlotSnapshot {
     'id': id,
     'providerId': providerId,
     'label': label,
+    'baseUrl': baseUrl,
+    'model': model,
     'apiKey': apiKey,
     'enabled': enabled,
   };

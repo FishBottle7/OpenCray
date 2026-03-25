@@ -17,6 +17,11 @@ enum class OpenCrayApprovalPhase {
   REJECTED,
 }
 
+enum class OpenCrayAssistantPhase {
+  COMMENTARY,
+  FINAL_ANSWER,
+}
+
 enum class OpenCraySubAgentPhase {
   STARTED,
   RESUMED,
@@ -30,6 +35,16 @@ sealed interface OpenCrayAgentRunEvent {
   val taskId: String
   val turn: Int?
   val emittedAtEpochMs: Long
+}
+
+sealed interface OpenCrayAssistantPhaseEvent : OpenCrayAgentRunEvent {
+  val text: String
+  val responseFormat: String?
+  val isFinal: Boolean
+  val stage: String?
+  val phase: OpenCrayAssistantPhase
+
+  fun toAssistantEvent(): OpenCrayAssistantEvent
 }
 
 data class OpenCrayLifecycleEvent(
@@ -47,20 +62,21 @@ data class OpenCrayAssistantEvent(
   override val runId: String,
   override val taskId: String,
   override val turn: Int,
-  val text: String,
-  val responseFormat: String,
-  val isFinal: Boolean,
+  override val text: String,
+  override val responseFormat: String? = null,
+  override val isFinal: Boolean = false,
+  override val stage: String? = null,
   override val emittedAtEpochMs: Long,
-) : OpenCrayAgentRunEvent
+) : OpenCrayAssistantPhaseEvent {
+  override val phase: OpenCrayAssistantPhase
+    get() = if (isFinal) {
+      OpenCrayAssistantPhase.FINAL_ANSWER
+    } else {
+      OpenCrayAssistantPhase.COMMENTARY
+    }
 
-data class OpenCrayProgressEvent(
-  override val runId: String,
-  override val taskId: String,
-  override val turn: Int,
-  val text: String,
-  val stage: String? = null,
-  override val emittedAtEpochMs: Long,
-) : OpenCrayAgentRunEvent
+  override fun toAssistantEvent(): OpenCrayAssistantEvent = this
+}
 
 data class OpenCraySupplementInput(
   val entryId: String,
@@ -75,6 +91,7 @@ data class OpenCraySupplementEvent(
   val entryId: String,
   val text: String,
   val checkpoint: String = "turn_start",
+  val metadata: Map<String, String> = emptyMap(),
   override val emittedAtEpochMs: Long,
 ) : OpenCrayAgentRunEvent
 

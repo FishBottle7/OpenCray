@@ -179,12 +179,10 @@ class OpenCrayUiCopy {
   String skillsDirectInstallBody(String sourceRef) => isChinese
       ? '将“$sourceRef”直接交给 SkillsAdd 安装。'
       : 'Send "$sourceRef" straight to SkillsAdd for installation.';
-  String skillsInspectSourceTitle(String sourceTitle) => isChinese
-      ? '检查$sourceTitle'
-      : 'Inspect $sourceTitle';
-  String skillsSourceInputLabel(String sourceTitle) => isChinese
-      ? '$sourceTitle 来源'
-      : '$sourceTitle source';
+  String skillsInspectSourceTitle(String sourceTitle) =>
+      isChinese ? '检查$sourceTitle' : 'Inspect $sourceTitle';
+  String skillsSourceInputLabel(String sourceTitle) =>
+      isChinese ? '$sourceTitle 来源' : '$sourceTitle source';
   String skillsSourceInputHint(String sourceId) {
     switch (sourceId) {
       case 'local-path':
@@ -203,23 +201,21 @@ class OpenCrayUiCopy {
         return isChinese ? '输入技能来源' : 'Enter a skill source';
     }
   }
-  String skillsInspectFailed(String sourceRef) => isChinese
-      ? '检查 $sourceRef 失败。'
-      : 'Failed to inspect $sourceRef.';
+
+  String skillsInspectFailed(String sourceRef) =>
+      isChinese ? '检查 $sourceRef 失败。' : 'Failed to inspect $sourceRef.';
   String skillsNoInstallableSkills(String sourceRef) => isChinese
       ? '$sourceRef 里没有找到可安装技能。'
       : 'No installable skills were found in $sourceRef.';
-  String skillsSelectSkillsTitle(String sourceRef) => isChinese
-      ? '选择要安装的技能'
-      : 'Choose skills to install';
+  String skillsSelectSkillsTitle(String sourceRef) =>
+      isChinese ? '选择要安装的技能' : 'Choose skills to install';
   String skillsSelectSkillsBody(String sourceRef) => isChinese
       ? '$sourceRef 中包含多个技能，请选择要安装的项。'
       : '$sourceRef contains multiple skills. Choose what to install.';
   String get skillsSelectAllAction => isChinese ? '全选' : 'Select all';
   String get skillsClearSelectionAction => isChinese ? '清空' : 'Clear';
-  String skillsInstallSelectedAction(int count) => isChinese
-      ? '安装所选 ($count)'
-      : 'Install selected ($count)';
+  String skillsInstallSelectedAction(int count) =>
+      isChinese ? '安装所选 ($count)' : 'Install selected ($count)';
   String skillsInstallBatchSummary(int installedCount, int totalCount) =>
       isChinese
       ? '已安装 $installedCount / $totalCount 个技能。'
@@ -281,6 +277,7 @@ class OpenCrayUiCopy {
   String get llmFallbackCustomProviderSubtitle =>
       isChinese ? '当前没有可用的提供商预设。' : 'No provider presets are available.';
   String get llmProtocolAnthropic => 'Anthropic';
+  String get llmProtocolOpenAiResponses => 'OpenAI Responses';
   String get llmProtocolOpenAiCompatible =>
       isChinese ? 'OpenAI 兼容' : 'OpenAI compatible';
   String networkSearchSlotTitle(int index) =>
@@ -289,6 +286,14 @@ class OpenCrayUiCopy {
   String get networkSearchLabelFieldTitle => isChinese ? '标签' : 'Label';
   String get networkSearchLabelHint =>
       isChinese ? '例如：主 Exa' : 'For example: Primary Exa';
+  String get networkSearchBaseUrlFieldTitle =>
+      isChinese ? 'Base URL' : 'Base URL';
+  String get networkSearchBaseUrlHint => isChinese
+      ? 'OpenAI 搜索 endpoint，例如：https://api.openai.com/v1'
+      : 'OpenAI search endpoint, for example: https://api.openai.com/v1';
+  String get networkSearchModelFieldTitle => isChinese ? '模型' : 'Model';
+  String get networkSearchModelHint =>
+      isChinese ? '例如：gpt-5' : 'For example: gpt-5';
   String get networkSearchApiKeyFieldTitle => isChinese ? 'API 密钥' : 'API key';
   String get networkSearchApiKeyHint =>
       isChinese ? '粘贴 provider 的密钥' : 'Paste the provider key';
@@ -304,6 +309,8 @@ class OpenCrayUiCopy {
         return 'TAVILY';
       case 'brave':
         return 'BRAVE';
+      case 'openai_web_search':
+        return 'OPENAI';
       case 'exa':
       default:
         return 'EXA';

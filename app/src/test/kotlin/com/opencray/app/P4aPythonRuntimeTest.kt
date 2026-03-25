@@ -29,7 +29,20 @@ class P4aPythonRuntimeTest {
   fun execWritesBridgeRequestBeforeReturningUnavailable() {
     val runtimeRoot = temporaryFolder.newFolder("python-runtime-unavailable").toPath()
     val workspaceRoot = temporaryFolder.newFolder("workspace-unavailable").toPath()
-    val runtime = P4aPythonRuntime.fromRuntimeRoot(runtimeRoot)
+    var capturedRequestJson = ""
+    val launcher = object : P4aPythonRuntime.P4aPythonRuntimeLauncher {
+      override fun launch(
+        request: P4aPythonRuntime.P4aPythonLaunchRequest,
+      ): P4aPythonRuntime.P4aPythonRuntimeLaunchResult {
+        capturedRequestJson = String(Files.readAllBytes(request.requestPath), StandardCharsets.UTF_8)
+        return P4aPythonRuntime.P4aPythonRuntimeLaunchResult.Unavailable(
+          errorCode = P4aPythonRuntime.ERROR_P4A_RUNTIME_UNAVAILABLE,
+          errorMessage = "runtime unavailable",
+          metadata = mapOf("launcherState" to "test-unavailable"),
+        )
+      }
+    }
+    val runtime = P4aPythonRuntime.fromRuntimeRoot(runtimeRoot = runtimeRoot, launcher = launcher, json = json)
 
     val result = runtime.exec(
       PythonExecRequest(
@@ -45,13 +58,17 @@ class P4aPythonRuntimeTest {
     assertEquals(P4aPythonRuntime.ERROR_P4A_RUNTIME_UNAVAILABLE, result.errorCode)
     assertEquals("p4a", result.metadata["runtimeBackend"])
     assertEquals("file_json_bridge", result.metadata["runtimeTransport"])
-    assertEquals("unwired", result.metadata["launcherState"])
+    assertEquals("test-unavailable", result.metadata["launcherState"])
 
     val requestPath = runtimeRoot.resolve("requests").resolve("${result.metadata.getValue("requestId")}.json")
-    assertTrue(Files.exists(requestPath))
+    val cancelPath = runtimeRoot.resolve("cancels").resolve("${result.metadata.getValue("requestId")}.cancel")
+    assertTrue(Files.notExists(requestPath))
+    assertTrue(Files.exists(cancelPath))
+    assertEquals("true", result.metadata["cleanupRequestDeleted"])
+    assertEquals("true", result.metadata["cleanupCancelMarkerWritten"])
 
     val requestJson = json.parseToJsonElement(
-      String(Files.readAllBytes(requestPath), StandardCharsets.UTF_8),
+      capturedRequestJson,
     ).jsonObject
 
     assertEquals(
@@ -115,8 +132,11 @@ class P4aPythonRuntimeTest {
     assertEquals("test-dispatched", result.metadata["launcherState"])
     assertEquals("p4a", result.metadata["runtimeBackend"])
     assertEquals("file_json_bridge", result.metadata["runtimeTransport"])
+    assertEquals("100", result.metadata["servicePollIntervalMs"])
+    assertEquals("once", result.metadata["serviceRunMode"])
     assertEquals(100L, result.startedAtEpochMs)
     assertEquals(140L, result.finishedAtEpochMs)
+    assertTrue(Files.notExists(runtimeRoot.resolve("requests").resolve("${result.metadata.getValue("requestId")}.json")))
   }
 
   @Test
@@ -161,8 +181,78 @@ class P4aPythonRuntimeTest {
     val launchRequest = checkNotNull(capturedRequest)
     assertEquals("proc-fixed-id", launchRequest.bridgeRequest.requestId)
     assertEquals(runtimeRoot.resolve("cancels").resolve("proc-fixed-id.cancel").toString(), launchRequest.bridgeRequest.cancelPath)
+    assertEquals(100L, launchRequest.servicePollIntervalMs)
+    assertTrue(launchRequest.runOnce)
     assertEquals("proc-fixed-id", result.metadata["requestId"])
     assertEquals(runtimeRoot.resolve("cancels").resolve("proc-fixed-id.cancel").toString(), result.metadata["cancelPath"])
+    assertTrue(Files.notExists(runtimeRoot.resolve("requests").resolve("proc-fixed-id.json")))
+  }
+
+  @Test
+  fun execCleansUpRequestArtifactsWhenLauncherThrowsAfterRequestWrite() {
+    val runtimeRoot = temporaryFolder.newFolder("python-runtime-launcher-throw").toPath()
+    val workspaceRoot = temporaryFolder.newFolder("workspace-launcher-throw").toPath()
+    val launcher = object : P4aPythonRuntime.P4aPythonRuntimeLauncher {
+      override fun launch(
+        request: P4aPythonRuntime.P4aPythonLaunchRequest,
+      ): P4aPythonRuntime.P4aPythonRuntimeLaunchResult {
+        assertTrue(Files.exists(request.requestPath))
+        throw IllegalStateException("launcher boom")
+      }
+    }
+    val runtime = P4aPythonRuntime.fromRuntimeRoot(runtimeRoot = runtimeRoot, launcher = launcher, json = json)
+
+    val result = runtime.exec(
+      PythonExecRequest(
+        taskId = "task-launcher-throw",
+        workspaceRoot = workspaceRoot,
+        scriptPath = workspaceRoot.resolve("demo.py"),
+        timeoutMs = 8_000L,
+      ),
+    )
+
+    val requestId = result.metadata.getValue("requestId")
+    assertEquals(ExecutionStatus.FAILED, result.status)
+    assertEquals(P4aPythonRuntime.ERROR_P4A_REQUEST_PREPARATION_FAILED, result.errorCode)
+    assertEquals("true", result.metadata["cleanupRequestDeleted"])
+    assertEquals("true", result.metadata["cleanupCancelMarkerWritten"])
+    assertTrue(Files.notExists(runtimeRoot.resolve("requests/$requestId.json")))
+    assertTrue(Files.exists(runtimeRoot.resolve("cancels/$requestId.cancel")))
+  }
+
+  @Test
+  fun execCleansUpRequestArtifactsWhenBridgeResultParsingFails() {
+    val runtimeRoot = temporaryFolder.newFolder("python-runtime-parse-failed").toPath()
+    val workspaceRoot = temporaryFolder.newFolder("workspace-parse-failed").toPath()
+    val launcher = object : P4aPythonRuntime.P4aPythonRuntimeLauncher {
+      override fun launch(
+        request: P4aPythonRuntime.P4aPythonLaunchRequest,
+      ): P4aPythonRuntime.P4aPythonRuntimeLaunchResult {
+        Files.write(
+          request.resultPath,
+          "{not-json}\n".toByteArray(StandardCharsets.UTF_8),
+        )
+        return P4aPythonRuntime.P4aPythonRuntimeLaunchResult.Dispatched(
+          metadata = mapOf("launcherState" to "test-dispatched"),
+        )
+      }
+    }
+    val runtime = P4aPythonRuntime.fromRuntimeRoot(runtimeRoot = runtimeRoot, launcher = launcher, json = json)
+
+    val result = runtime.exec(
+      PythonExecRequest(
+        taskId = "task-parse-failed",
+        workspaceRoot = workspaceRoot,
+        scriptPath = workspaceRoot.resolve("demo.py"),
+        timeoutMs = 8_000L,
+      ),
+    )
+
+    val requestId = result.metadata.getValue("requestId")
+    assertEquals(ExecutionStatus.FAILED, result.status)
+    assertEquals(P4aPythonRuntime.ERROR_P4A_RESULT_PARSE_FAILED, result.errorCode)
+    assertEquals("true", result.metadata["cleanupRequestDeleted"])
+    assertTrue(Files.notExists(runtimeRoot.resolve("requests/$requestId.json")))
   }
 
   @Test
@@ -233,15 +323,16 @@ class P4aPythonRuntimeTest {
         taskId = "task-startup-budget",
         workspaceRoot = workspaceRoot,
         scriptPath = workspaceRoot.resolve("demo.py"),
-        timeoutMs = 60L,
-        startupTimeoutMs = 80L,
+        timeoutMs = 120L,
+        startupTimeoutMs = 160L,
       ),
     )
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals(0, result.exitCode)
-    assertEquals("60", result.metadata["scriptTimeoutMs"])
-    assertEquals("80", result.metadata["startupTimeoutMs"])
+    assertEquals("120", result.metadata["scriptTimeoutMs"])
+    assertEquals("160", result.metadata["startupTimeoutMs"])
+    assertEquals("25", result.metadata["servicePollIntervalMs"])
     assertEquals("test-dispatched", result.metadata["launcherState"])
   }
 
@@ -275,8 +366,83 @@ class P4aPythonRuntimeTest {
     assertEquals("false", result.metadata["resultExists"])
     assertEquals("false", result.metadata["serviceReadyExists"])
     assertEquals("false", result.metadata["serviceStateExists"])
+    assertEquals("true", result.metadata["cleanupRequestDeleted"])
+    assertEquals("true", result.metadata["cleanupCancelMarkerWritten"])
     assertTrue(result.stderr.contains("service_ready: exists=false"))
     assertTrue(result.stderr.contains("service_state: exists=false"))
+  }
+
+  @Test
+  fun execDoesNotSpendStartupBudgetDuringLauncherPreparation() {
+    val runtimeRoot = temporaryFolder.newFolder("python-runtime-launcher-delay").toPath()
+    val workspaceRoot = temporaryFolder.newFolder("workspace-launcher-delay").toPath()
+    lateinit var runtime: P4aPythonRuntime
+    val launcher = object : P4aPythonRuntime.P4aPythonRuntimeLauncher {
+      override fun launch(
+        request: P4aPythonRuntime.P4aPythonLaunchRequest,
+      ): P4aPythonRuntime.P4aPythonRuntimeLaunchResult {
+        Thread.sleep(120L)
+        thread(start = true, isDaemon = true) {
+          Thread.sleep(20L)
+          val executionStartedAt = System.currentTimeMillis()
+          writeServiceMarker(
+            path = runtime.serviceReadyPath(),
+            state = "processing",
+            startupRequestId = request.bridgeRequest.requestId,
+            currentRequestId = request.bridgeRequest.requestId,
+            claimedRequestId = request.bridgeRequest.requestId,
+            executionStartedAtEpochMs = executionStartedAt,
+          )
+          writeServiceMarker(
+            path = runtime.serviceStatePath(),
+            state = "processing",
+            startupRequestId = request.bridgeRequest.requestId,
+            currentRequestId = request.bridgeRequest.requestId,
+            claimedRequestId = request.bridgeRequest.requestId,
+            executionStartedAtEpochMs = executionStartedAt,
+          )
+          Files.write(
+            request.resultPath,
+            json.encodeToString(
+              P4aPythonRuntime.P4aPythonExecBridgeResult(
+                requestId = request.bridgeRequest.requestId,
+                taskId = request.bridgeRequest.taskId,
+                status = "success",
+                exitCode = 0,
+                stdout = "python ok after prepare",
+                stderr = "",
+                startedAtEpochMs = executionStartedAt,
+                finishedAtEpochMs = executionStartedAt + 10L,
+              ),
+            ).toByteArray(StandardCharsets.UTF_8),
+          )
+        }
+        return P4aPythonRuntime.P4aPythonRuntimeLaunchResult.Dispatched(
+          metadata = mapOf("launcherState" to "test-delayed-dispatch"),
+        )
+      }
+    }
+    runtime = P4aPythonRuntime.fromRuntimeRoot(runtimeRoot = runtimeRoot, launcher = launcher, json = json)
+
+    val result = runtime.exec(
+      PythonExecRequest(
+        taskId = "task-launcher-delay",
+        workspaceRoot = workspaceRoot,
+        scriptPath = workspaceRoot.resolve("demo.py"),
+        timeoutMs = 40L,
+        startupTimeoutMs = 30L,
+      ),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals(0, result.exitCode)
+    assertEquals("python ok after prepare", result.stdout)
+    assertEquals("test-delayed-dispatch", result.metadata["launcherState"])
+    assertTrue((result.metadata.getValue("launcherDispatchDurationMs").toLong()) >= 100L)
+    assertEquals(
+      result.metadata["launcherDispatchCompletedAtEpochMs"],
+      result.metadata["startupTimerStartedAtEpochMs"],
+    )
   }
 
   @Test
@@ -335,6 +501,8 @@ class P4aPythonRuntimeTest {
     assertEquals("processing", result.metadata["serviceState"])
     assertEquals("foreign-running-request", result.metadata["serviceClaimedRequestId"])
     assertEquals("false", result.metadata["serviceReadyObserved"])
+    assertEquals("true", result.metadata["cleanupRequestDeleted"])
+    assertEquals("true", result.metadata["cleanupCancelMarkerWritten"])
   }
 
   @Test
@@ -342,6 +510,7 @@ class P4aPythonRuntimeTest {
     val runtimeRoot = temporaryFolder.newFolder("python-runtime-result-timeout").toPath()
     val workspaceRoot = temporaryFolder.newFolder("workspace-result-timeout").toPath()
     lateinit var runtime: P4aPythonRuntime
+    var stopCalls = 0
     val launcher = object : P4aPythonRuntime.P4aPythonRuntimeLauncher {
       override fun launch(
         request: P4aPythonRuntime.P4aPythonLaunchRequest,
@@ -371,6 +540,11 @@ class P4aPythonRuntimeTest {
           metadata = mapOf("launcherState" to "test-dispatched"),
         )
       }
+
+      override fun stop(): Map<String, String> {
+        stopCalls += 1
+        return mapOf("launcherStopState" to "stop_requested")
+      }
     }
     runtime = P4aPythonRuntime.fromRuntimeRoot(runtimeRoot = runtimeRoot, launcher = launcher, json = json)
 
@@ -391,6 +565,10 @@ class P4aPythonRuntimeTest {
     assertEquals("true", result.metadata["serviceStateExists"])
     assertEquals("true", result.metadata["logExists"])
     assertEquals("true", result.metadata["serviceReadyObserved"])
+    assertEquals("true", result.metadata["cleanupRequestDeleted"])
+    assertEquals("true", result.metadata["cleanupCancelMarkerWritten"])
+    assertEquals("stop_requested", result.metadata["launcherStopState"])
+    assertEquals(1, stopCalls)
     assertTrue(result.stderr.contains("service_state_preview:"))
     assertTrue(result.stderr.contains("log_tail:"))
   }
@@ -424,7 +602,7 @@ class P4aPythonRuntimeTest {
             claimedRequestId = foreignRequestId,
             executionStartedAtEpochMs = foreignStartedAt,
           )
-          Thread.sleep(120L)
+          Thread.sleep(260L)
           val currentExecutionStartedAt = System.currentTimeMillis()
           writeServiceMarker(
             path = runtime.serviceReadyPath(),
@@ -442,7 +620,7 @@ class P4aPythonRuntimeTest {
             claimedRequestId = request.bridgeRequest.requestId,
             executionStartedAtEpochMs = currentExecutionStartedAt,
           )
-          Thread.sleep(20L)
+          Thread.sleep(40L)
           Files.write(
             request.resultPath,
             json.encodeToString(
@@ -471,8 +649,8 @@ class P4aPythonRuntimeTest {
         taskId = "task-request-bound-ready",
         workspaceRoot = workspaceRoot,
         scriptPath = workspaceRoot.resolve("demo.py"),
-        timeoutMs = 80L,
-        startupTimeoutMs = 400L,
+        timeoutMs = 200L,
+        startupTimeoutMs = 800L,
       ),
     )
 

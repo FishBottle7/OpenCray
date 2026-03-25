@@ -454,6 +454,38 @@ class ClaudeStyleToolDispatchTest {
   }
 
   @Test
+  fun webSearchRendersProviderSummaryWhenNoUrlHitsExist() {
+    val workspaceRoot = temporaryFolder.newFolder("claude-websearch-summary-only").toPath()
+    val provider = object : WebSearchProvider {
+      override val providerName: String = "summary-only-search"
+
+      override fun search(request: WebSearchRequest): WebSearchResult = WebSearchResult(
+        providerName = providerName,
+        summaryText = "OpenAI web search returned a summary without URL citations.",
+      )
+    }
+    val dispatcher = dispatcher(
+      workspaceRoot = workspaceRoot,
+      webSearchProvider = provider,
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "WebSearch",
+        arguments = buildJsonObject {
+          put("query", "opencray tools")
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertTrue(result.content.contains("provider=summary-only-search"))
+    assertTrue(result.content.contains("summary=OpenAI web search returned a summary without URL citations."))
+  }
+
+  @Test
   fun webSearchFailsCleanlyWhenProviderIsNotConfigured() {
     val workspaceRoot = temporaryFolder.newFolder("claude-websearch-unconfigured").toPath()
     val dispatcher = dispatcher(

@@ -18,8 +18,11 @@ import com.opencray.llm.LiteLlmRouteSelectionMetadata
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.runtime.memory.MemoryToolContext
 import com.opencray.runtime.context.AgentRuntimeSessionContext
-import com.opencray.runtime.memory.formatMemoryDateStamp
+import java.text.SimpleDateFormat
 import java.nio.file.Files
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -35,7 +38,7 @@ class OpenCrayAgentRuntimeMemoryToolTest {
   fun runPromptTaskGuidesModelToSearchProjectedMemoryAndFeedsToolObservationsForward() {
     val workspaceRoot = temporaryFolder.newFolder("agent-memory-tool-workspace").toPath()
     Files.createDirectories(workspaceRoot)
-    val expectedPath = "memory/${formatMemoryDateStamp(DAY_2_EPOCH_MS)}.md"
+    val expectedPath = "memory/${formatDateStamp(DAY_2_EPOCH_MS)}.md"
     val eventSink = RecordingEventSink()
     val gateway = RecordingGateway(
       outputs = listOf(
@@ -152,7 +155,7 @@ class OpenCrayAgentRuntimeMemoryToolTest {
       eventSink.events.map { event ->
         when (event) {
           is OpenCrayLifecycleEvent -> "lifecycle"
-          is OpenCrayProgressEvent -> "progress"
+          is OpenCrayAssistantPhaseEvent -> "assistant"
           is OpenCraySupplementEvent -> "supplement"
           is OpenCrayApprovalEvent -> "approval"
           is OpenCraySubAgentEvent -> "subagent"
@@ -374,6 +377,10 @@ class OpenCrayAgentRuntimeMemoryToolTest {
       events += event
     }
   }
+
+  private fun formatDateStamp(epochMs: Long): String = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+    timeZone = TimeZone.getTimeZone("UTC")
+  }.format(Date(epochMs))
 
   private companion object {
     const val DAY_2_EPOCH_MS: Long = 1_710_086_400_000L

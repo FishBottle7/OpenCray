@@ -109,6 +109,7 @@ def test_android_p4a_bridge_executes_workspace_script(workspace: pathlib.Path) -
     assert result["metadata"]["runtimeTransport"] == "file_json_bridge"
     assert result["metadata"]["resolvedScriptPath"] == str(script_path.resolve())
     assert log_path.exists()
+    assert not request_path.exists()
 
 
 def test_android_p4a_bridge_denies_script_outside_workspace(workspace: pathlib.Path, tmp_path: pathlib.Path) -> None:
@@ -310,7 +311,7 @@ def test_android_p4a_service_writes_ready_and_state_markers(workspace: pathlib.P
     assert service_ready["executionStartedAtEpochMs"] is None
 
 
-def test_android_p4a_service_prioritizes_startup_request(workspace: pathlib.Path) -> None:
+def test_android_p4a_service_once_mode_only_processes_startup_request(workspace: pathlib.Path) -> None:
     runtime_root = workspace / ".p4a-bridge-tests" / "request-startup-priority"
     request_slow = runtime_root / "requests" / "request-slow.json"
     request_fast = runtime_root / "requests" / "request-fast.json"
@@ -355,10 +356,27 @@ def test_android_p4a_service_prioritizes_startup_request(workspace: pathlib.Path
             )
         },
     )
-    slow_result = json.loads(result_slow.read_text(encoding="utf-8"))
 
     assert fast_result["status"] == "success"
-    assert slow_result["status"] == "success"
     assert fast_result["stdout"] == "fast request done\n"
+    assert not request_fast.exists()
+    assert not result_slow.exists()
+    assert request_slow.exists()
+
+    slow_result = _run_bridge(
+        request_path=request_slow,
+        result_path=result_slow,
+        log_path=runtime_root / "logs" / "request-slow.log",
+        env={
+            "PYTHON_SERVICE_ARGUMENT": json.dumps(
+                {
+                    "runtimeRoot": str(runtime_root),
+                    "requestId": "request-slow",
+                    "pollIntervalMs": 50,
+                }
+            )
+        },
+    )
+
+    assert slow_result["status"] == "success"
     assert slow_result["stdout"] == "slow request done\n"
-    assert fast_result["startedAtEpochMs"] <= slow_result["startedAtEpochMs"]

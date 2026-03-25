@@ -107,6 +107,7 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
   private val personalizationFacade: PersonalizationFacade,
   private val mcpSettingsFacade: McpSettingsFacade,
   private val safetySettingsFacade: SafetySettingsFacade,
+  private val strongBackgroundSettingsAccess: StrongBackgroundSettingsAccess,
   private val connectionStateProvider: () -> RuntimeServiceConnectionState,
   private val mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
 ) : OpenCraySettingsGateway {
@@ -124,6 +125,14 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
     val routeId = SettingsRouteId.fromWireValue(routeIdRaw) ?: SettingsRouteId.WORKSPACE_ACCESS
     return settingsFacade.loadDetail(routeId).toGatewayMap()
   }
+
+  override fun loadStrongBackgroundSnapshot(): Map<String, Any?> = buildMap {
+    putAll(strongBackgroundSettingsAccess.loadSnapshot())
+    put("runtimeServiceConnectionState", connectionStateProvider().snapshotMap())
+  }
+
+  override fun performStrongBackgroundAction(actionId: String): Map<String, Any?> =
+    strongBackgroundSettingsAccess.performAction(actionId)
 
   override fun loadNetworkSearchConfig(): Map<String, Any?> =
     networkSearchConfigFacade.load().toGatewayMap()
@@ -343,6 +352,7 @@ internal fun projectionOnlyOpenCraySettingsGateway(
     personalizationFacade = LocalPersonalizationFacade.fromContext(appContext),
     mcpSettingsFacade = LocalMcpSettingsFacade.fromContext(appContext),
     safetySettingsFacade = LocalSafetySettingsFacade.fromContext(appContext),
+    strongBackgroundSettingsAccess = AndroidStrongBackgroundSettingsAccess.fromContext(appContext),
     connectionStateProvider = connectionStateProvider,
     mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
   )
@@ -451,6 +461,8 @@ private fun NetworkSearchSlotSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "id" to id,
   "providerId" to providerId,
   "label" to label,
+  "baseUrl" to baseUrl,
+  "model" to model,
   "apiKey" to apiKey,
   "enabled" to enabled,
 )

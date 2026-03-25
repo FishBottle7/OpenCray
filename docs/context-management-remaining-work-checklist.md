@@ -1,6 +1,6 @@
 # Context Management Remaining Work Checklist
 
-Last updated: 2026-03-19
+Last updated: 2026-03-24
 
 ## Current checkpoint
 
@@ -104,6 +104,7 @@ Phase 1 foundation now in progress:
   - Current status: non-task stewardship now also supports a bounded `merge_record_with_candidate` action for `project_fact` and `durable_instruction`. A constrained interpreter may choose merge when the candidate adds compatible durable detail to the same underlying topic; runtime then deterministically synthesizes one replacement row, resolves the old row with `resolution_reason=merged`, records merge provenance in extensions, and still rejects the action when the pair fails same-topic checks or appears to change a scalar value such as a port/version rather than extend the memory.
   - Current status: non-task stewardship is no longer strictly candidate-driven. When a turn has no stewardable replacement candidate but does explicitly refer to a small set of already-stored `user_preference`, `project_fact`, or `durable_instruction` rows, runtime can now shortlist those scope-compatible active records for bounded record-only review, allowing the constrained interpreter to resolve or reaffirm them without opening arbitrary corpus-wide maintenance.
   - Current status: candidate-driven and record-only stewardship can now coexist in one turn. A turn may accept a new durable candidate while also resolving or reaffirming a different explicitly mentioned old memory, as long as both stayed inside the bounded shortlist and action set.
+  - Current status: focused live LLM smoke verification now passes for durable preferred-name extraction, explicit preferred-name replacement stewardship, and compatible project-fact merge stewardship, so the bounded semantic interpreter path is no longer only unit-covered.
   - Remaining gaps: `task_commitment` now covers resolve/reaffirm/abandon/supersede/drop-proposed, and non-task stewardship now covers related-record review, same-turn candidate pruning, bounded refresh, and a first bounded merge slice, but richer merge synthesis, more nuanced invalidation across non-commitment records, and reopen-style maintenance flows are still pending. Commitment maintenance also does not yet model richer multi-step plan graphs.
   - Target direction: let a constrained LLM stewardship layer interpret whether memory should be refreshed, superseded, invalidated, merged, resolved, reopened, or otherwise maintained, while runtime executes only a bounded operation set instead of arbitrary free-form edits.
   - Guardrails: stewardship should fail closed when the interpreter is unavailable, must not directly rewrite internal soul objects or `SOUL.md`, should prefer append/supersede/resolve style transitions over raw record mutation, and must avoid large destructive memory rewrites from one ambiguous turn.

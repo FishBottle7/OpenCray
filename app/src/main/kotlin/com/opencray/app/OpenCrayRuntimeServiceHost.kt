@@ -50,6 +50,10 @@ internal data class RuntimeOwnerWorkSummary(
 internal data class RuntimeServiceWorkState(
   val phase: String = PHASE_IDLE,
   val hasActiveWork: Boolean = false,
+  val activeRunCount: Int = 0,
+  val activeSessionCount: Int = 0,
+  val pendingWorkSessionCount: Int = 0,
+  val liveManagedProcessSessionCount: Int = 0,
   val keepAliveRequired: Boolean = false,
   val keepAliveReason: String? = null,
   val changedAtEpochMs: Long = System.currentTimeMillis(),
@@ -59,6 +63,10 @@ internal data class RuntimeServiceWorkState(
   fun snapshotMap(): Map<String, Any?> = buildMap {
     put("phase", phase)
     put("hasActiveWork", hasActiveWork)
+    put("activeRunCount", activeRunCount)
+    put("activeSessionCount", activeSessionCount)
+    put("pendingWorkSessionCount", pendingWorkSessionCount)
+    put("liveManagedProcessSessionCount", liveManagedProcessSessionCount)
     put("keepAliveRequired", keepAliveRequired)
     keepAliveReason?.let { reason ->
       put("keepAliveReason", reason)
@@ -117,6 +125,10 @@ internal class RuntimeServiceWorkStateTracker(
       val previous = currentState
       if (
         previous.phase == nextPhase &&
+        previous.activeRunCount == summary.activeRunCount &&
+        previous.activeSessionCount == summary.activeSessionIds.size &&
+        previous.pendingWorkSessionCount == summary.pendingWorkSessionIds.size &&
+        previous.liveManagedProcessSessionCount == summary.liveManagedProcessSessionIds.size &&
         previous.keepAliveRequired == summary.hasActiveWork &&
         previous.keepAliveReason == nextReason
       ) {
@@ -127,6 +139,10 @@ internal class RuntimeServiceWorkStateTracker(
         RuntimeServiceWorkState(
           phase = nextPhase,
           hasActiveWork = true,
+          activeRunCount = summary.activeRunCount,
+          activeSessionCount = summary.activeSessionIds.size,
+          pendingWorkSessionCount = summary.pendingWorkSessionIds.size,
+          liveManagedProcessSessionCount = summary.liveManagedProcessSessionIds.size,
           keepAliveRequired = true,
           keepAliveReason = nextReason,
           changedAtEpochMs = changedAtEpochMs,
@@ -141,6 +157,10 @@ internal class RuntimeServiceWorkStateTracker(
         RuntimeServiceWorkState(
           phase = nextPhase,
           hasActiveWork = false,
+          activeRunCount = summary.activeRunCount,
+          activeSessionCount = summary.activeSessionIds.size,
+          pendingWorkSessionCount = summary.pendingWorkSessionIds.size,
+          liveManagedProcessSessionCount = summary.liveManagedProcessSessionIds.size,
           keepAliveRequired = false,
           keepAliveReason = null,
           changedAtEpochMs = changedAtEpochMs,
@@ -422,6 +442,10 @@ internal data class OpenCrayRuntimeServiceHost(
   val runtimeAccess: OpenCrayRuntimeOwnerAccess,
   val serviceLifecycle: RuntimeServiceLifecycleDescriptor,
   val serviceWorkStateTracker: RuntimeServiceWorkStateTracker,
+  val scheduledTaskSpecStore: ScheduledTaskSpecStore = inMemoryScheduledTaskSpecStoreFactory().create(),
+  val scheduledTaskRunRecordStore: ScheduledTaskRunRecordStore =
+    inMemoryScheduledTaskRunRecordStoreFactory().create(),
+  val scheduledTriggerRegistrar: ScheduledTriggerRegistrar = NoOpScheduledTriggerRegistrar,
 )
 
 internal data class RuntimeServiceBootstrapResult(
@@ -461,10 +485,18 @@ private fun createOpenCrayRuntimeServiceHost(
   val dependencies = loadOpenCrayRuntimeContextDependencies(appContext)
   val owner = ensureInProcessRuntimeOwner(dependencies)
   val runtimeAccess = owner.toRuntimeOwnerAccess()
+  val scheduledTaskSpecStore = FileBackedScheduledTaskSpecStoreFactory.fromContext(appContext).create()
+  val scheduledTaskRunRecordStore = FileBackedScheduledTaskRunRecordStoreFactory.fromContext(appContext).create()
+  val scheduledWorkScheduler = WorkManagerScheduledWorkScheduler.fromContext(appContext)
+  val scheduledTriggerRegistrar = DefaultScheduledTriggerRegistrar(
+    alarmScheduler = AlarmManagerScheduledAlarmScheduler.fromContext(appContext),
+    workScheduler = scheduledWorkScheduler,
+  )
   bootstrapSessionsForRuntimeServiceHost(
     chatSessionStore = dependencies.chatSessionStore,
     runtimeAccess = runtimeAccess,
   )
+  scheduledTriggerRegistrar.syncAll(scheduledTaskSpecStore.listEnabled())
   val serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
     workSummaryProvider = runtimeAccess.hostAccess::activeWorkSummary,
   )
@@ -497,6 +529,9 @@ private fun createOpenCrayRuntimeServiceHost(
     runtimeAccess = runtimeAccess,
     serviceLifecycle = serviceLifecycle,
     serviceWorkStateTracker = serviceWorkStateTracker,
+    scheduledTaskSpecStore = scheduledTaskSpecStore,
+    scheduledTaskRunRecordStore = scheduledTaskRunRecordStore,
+    scheduledTriggerRegistrar = scheduledTriggerRegistrar,
   )
 }
 

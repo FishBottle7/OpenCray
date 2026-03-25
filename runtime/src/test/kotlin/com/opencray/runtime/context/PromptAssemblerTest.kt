@@ -80,6 +80,10 @@ class PromptAssemblerTest {
               description = "Start a managed process.",
             ),
             AgentToolDefinition(
+              name = "TodoWrite",
+              description = "Keep a short live plan for multi-step work.",
+            ),
+            AgentToolDefinition(
               name = "WebFetch",
               description = "Fetch a web page.",
             ),
@@ -113,7 +117,17 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("On each turn, return exactly one JSON object"))
     assertTrue(prompt.taskPrompt.contains("the runtime will execute it, append the tool result"))
     assertTrue(prompt.taskPrompt.contains("If you need multiple tools, call only the next tool now"))
+    assertTrue(prompt.taskPrompt.contains("Keep the user updated with short public progress as you work"))
+    assertTrue(prompt.taskPrompt.contains("Before the first tool call, give a brief public plan"))
+    assertTrue(prompt.taskPrompt.contains("Before making tool calls, send a brief public preamble"))
+    assertTrue(prompt.taskPrompt.contains("use a progress action for that preamble"))
     assertTrue(prompt.taskPrompt.contains("A progress action is a short public status update"))
+    assertTrue(prompt.taskPrompt.contains("Group related tool reads or searches under one preamble"))
+    assertTrue(prompt.taskPrompt.contains("connect the next preamble to that new context"))
+    assertTrue(prompt.taskPrompt.contains("use TodoWrite to keep a short live plan"))
+    assertTrue(prompt.taskPrompt.contains("Omit todos to read the current plan without mutating it"))
+    assertTrue(prompt.taskPrompt.contains("at most one in_progress item"))
+    assertTrue(prompt.taskPrompt.contains("before returning the final answer make sure the plan state is accurate"))
     assertTrue(prompt.taskPrompt.contains("tool_name\":\"Bash"))
     assertTrue(prompt.taskPrompt.contains("tool_name\":\"python_exec"))
     assertTrue(prompt.taskPrompt.contains("tool_name\":\"WebFetch"))
@@ -195,6 +209,7 @@ class PromptAssemblerTest {
     assertFalse(prompt.taskPrompt.contains("tool_name\":\"python_exec"))
     assertFalse(prompt.taskPrompt.contains("tool_name\":\"WebFetch"))
     assertFalse(prompt.taskPrompt.contains("tool_name\":\"Write"))
+    assertFalse(prompt.taskPrompt.contains("TodoWrite"))
     assertFalse(prompt.taskPrompt.contains("tool_name\":\"ProcessStart"))
     assertFalse(prompt.taskPrompt.contains("Use Bash for one-off shell commands"))
     assertFalse(prompt.taskPrompt.contains("prefer WebSearch when a search provider is configured"))
@@ -270,7 +285,11 @@ class PromptAssemblerTest {
     )
 
     assertTrue(prompt.taskPrompt.contains("Native tool calling is enabled for this run."))
+    assertTrue(prompt.taskPrompt.contains("Keep the user updated with short public commentary as you work"))
+    assertTrue(prompt.taskPrompt.contains("Before the first tool call, give a brief public plan"))
+    assertTrue(prompt.taskPrompt.contains("Before making tool calls, send a brief public preamble"))
     assertTrue(prompt.taskPrompt.contains("use the provider's native tool-calling interface"))
+    assertTrue(prompt.taskPrompt.contains("put that preamble in assistant text alongside the native tool call"))
     assertTrue(prompt.taskPrompt.contains("return a plain assistant text answer"))
     assertFalse(prompt.taskPrompt.contains("legacy JSON fallback"))
     assertFalse(prompt.taskPrompt.contains("\"type\":\"final\""))
@@ -304,6 +323,10 @@ class PromptAssemblerTest {
     )
 
     assertTrue(prompt.taskPrompt.contains("legacy JSON fallback compatibility enabled"))
+    assertTrue(prompt.taskPrompt.contains("Keep the user updated with short public progress as you work"))
+    assertTrue(prompt.taskPrompt.contains("Before the first tool call, give a brief public plan"))
+    assertTrue(prompt.taskPrompt.contains("Before making tool calls, send a brief public preamble"))
+    assertTrue(prompt.taskPrompt.contains("represent it as a progress action"))
     assertTrue(prompt.taskPrompt.contains("If native tool calling works, prefer it. Otherwise, return exactly one JSON object"))
     assertTrue(prompt.taskPrompt.contains("\"type\":\"final\""))
   }

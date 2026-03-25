@@ -78,6 +78,7 @@ class PromptAssembler {
         content = renderToolProtocolLayer(
           toolDefinitions = input.toolDefinitions,
           nativeToolCallingEnabled = input.nativeToolCallingEnabled,
+          parallelToolCallsEnabled = input.parallelToolCallsEnabled,
           legacyJsonFallbackEnabled = input.legacyJsonFallbackEnabled,
         ),
       )
@@ -157,6 +158,7 @@ class PromptAssembler {
   private fun renderToolProtocolLayer(
     toolDefinitions: List<AgentToolDefinition>,
     nativeToolCallingEnabled: Boolean,
+    parallelToolCallsEnabled: Boolean,
     legacyJsonFallbackEnabled: Boolean,
   ): String = buildString {
     val jsonProtocolEnabled = legacyJsonFallbackEnabled || !nativeToolCallingEnabled
@@ -170,6 +172,7 @@ class PromptAssembler {
     val hasGrepTool = hasAnyTool(normalizedToolNames, "grep")
     val hasGlobTool = hasAnyTool(normalizedToolNames, "glob")
     val hasWriteTool = hasAnyTool(normalizedToolNames, "write", "workspace_write_file")
+    val hasTodoWriteTool = hasAnyTool(normalizedToolNames, "todowrite")
     val hasBashTool = hasAnyTool(normalizedToolNames, "bash")
     val hasPythonExecTool = hasAnyTool(normalizedToolNames, "python_exec")
     val hasWebSearchTool = hasAnyTool(normalizedToolNames, "websearch")
@@ -227,19 +230,31 @@ class PromptAssembler {
     when {
       nativeToolCallingOnly -> {
         appendLine("Native tool calling is enabled for this run.")
+        appendLine("Keep the user updated with short public commentary as you work.")
+        appendLine("Before the first tool call, give a brief public plan that states the goal, key constraints, and immediate next step.")
+        appendLine("Before making tool calls, send a brief public preamble explaining what you are about to do.")
         appendLine("When you need a tool, use the provider's native tool-calling interface.")
+        appendLine("For native tool calling, put that preamble in assistant text alongside the native tool call when possible.")
         appendLine("If you need a short public status update before a tool call, put it in assistant text alongside that native tool call.")
         appendLine("When you are ready to answer the user, return a plain assistant text answer.")
       }
 
       nativeToolCallingEnabled -> {
         appendLine("Native tool calling is enabled for this run.")
+        appendLine("Keep the user updated with short public progress as you work.")
+        appendLine("Before the first tool call, give a brief public plan that states the goal, key constraints, and immediate next step.")
+        appendLine("Before making tool calls, send a brief public preamble explaining what you are about to do.")
+        appendLine("When you need that preamble while using legacy JSON fallback, represent it as a progress action.")
         appendLine("This endpoint is currently running with legacy JSON fallback compatibility enabled.")
         appendLine("If native tool calling works, prefer it. Otherwise, return exactly one JSON object and nothing else.")
         appendLine("Use one of these legacy JSON fallback shapes:")
       }
 
       else -> {
+        appendLine("Keep the user updated with short public progress as you work.")
+        appendLine("Before the first tool call, give a brief public plan that states the goal, key constraints, and immediate next step.")
+        appendLine("Before making tool calls, send a brief public preamble explaining what you are about to do.")
+        appendLine("In this protocol, use a progress action for that preamble.")
         appendLine("On each turn, return exactly one JSON object and nothing else.")
         appendLine("Use one of these shapes:")
       }
@@ -263,9 +278,15 @@ class PromptAssembler {
     } else {
       appendLine("A progress action is a short public status update for the user.")
     }
+    appendLine("Group related tool reads or searches under one preamble instead of repeating trivial updates for every tiny action.")
+    appendLine("After you learn something important, connect the next preamble to that new context so the user can follow your reasoning and momentum.")
     appendLine("Never expose raw private chain-of-thought, hidden safety reasoning, or secrets inside progress.")
     if (jsonProtocolEnabled) {
-      appendLine("If you use an actions array, emit at most one progress action first, then exactly one terminal action.")
+      if (parallelToolCallsEnabled) {
+        appendLine("If you use an actions array, emit at most one progress action first, then either one or more tool_call actions, or exactly one final action.")
+      } else {
+        appendLine("If you use an actions array, emit at most one progress action first, then exactly one terminal action.")
+      }
       appendLine("If you return type=tool_call, the runtime will execute it, append the tool result, and ask you for the next action.")
       if (nativeToolCallingEnabled) {
         appendLine("When native tool calling works, prefer it over the legacy JSON tool_call shape.")
@@ -276,7 +297,18 @@ class PromptAssembler {
     } else {
       appendLine("Do not describe a tool call in plain prose.")
     }
-    appendLine("If you need multiple tools, call only the next tool now. After each tool result the runtime will ask for the next action.")
+    if (parallelToolCallsEnabled) {
+      appendLine("When multiple independent tools are needed, you may return multiple tool calls in one response.")
+      appendLine("Only batch tools that do not depend on each other's outputs.")
+    } else {
+      appendLine("If you need multiple tools, call only the next tool now. After each tool result the runtime will ask for the next action.")
+    }
+    if (hasTodoWriteTool) {
+      appendLine("For non-trivial work with multiple concrete steps, use TodoWrite to keep a short live plan.")
+      appendLine("Omit todos to read the current plan without mutating it, and send todos=[] only when you intentionally want to clear the current plan.")
+      appendLine("TodoWrite entries must keep unique content, allow at most one in_progress item, and only that in_progress item may set activeForm.")
+      appendLine("Keep the plan aligned with reality after meaningful progress, and before returning the final answer make sure the plan state is accurate.")
+    }
     if (hasBashTool) {
       appendLine("Use Bash for one-off shell commands that do not require Python. Bash runs through the host shell, so use PowerShell syntax on Windows hosts.")
     }
@@ -307,7 +339,9 @@ class PromptAssembler {
       appendLine("If you intentionally want an audio file card instead of a voice message, attach the same artifact_id with kind=file.")
     }
     appendLine("A tool_call may include reason or justification, but it must not include a final answer.")
-    appendLine("Do not return multiple tool calls in one response.")
+    if (!parallelToolCallsEnabled) {
+      appendLine("Do not return multiple tool calls in one response.")
+    }
     if (hasMemorySearchTool) {
       appendLine("When the user asks about prior work, earlier decisions, remembered preferences, dates, people, paths, or todos, search projected memory first instead of guessing from partial context.")
       if (hasMemoryGetTool) {

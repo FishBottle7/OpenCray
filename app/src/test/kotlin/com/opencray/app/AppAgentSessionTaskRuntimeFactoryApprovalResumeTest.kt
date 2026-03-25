@@ -56,4 +56,47 @@ class AppAgentSessionTaskRuntimeFactoryApprovalResumeTest {
     assertNull(continuation.rejection)
     assertTrue(factory.promptCheckpointStoreForSession(sessionId).get("task-1") != null)
   }
+
+  @Test
+  fun generalPromptResumeStateForExecutionFallsBackToDurableCheckpoint() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-general-resume").toPath()
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-general-resume-factory"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val checkpointFactory = com.opencray.app.inMemoryPromptCheckpointStoreFactoryForTest()
+    val checkpointStore = checkpointFactory.forChatSession(sessionId)
+    val resumeState = OpenCrayPromptResumeState(turnIndex = 2, toolCallCount = 3)
+
+    checkpointStore.upsert(
+      PersistedPromptCheckpoint(
+        sessionId = sessionId,
+        runId = "run-1",
+        taskId = "task-1",
+        checkpointId = "checkpoint-1",
+        checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
+        createdAtEpochMs = 100L,
+        updatedAtEpochMs = 100L,
+        toolName = "LS",
+        promptResumeState = resumeState,
+      ),
+    )
+
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      approvalRegistry = AgentTaskApprovalRegistry(),
+      promptCheckpointStoreProvider = checkpointFactory::forChatSession,
+    )
+
+    assertEquals(
+      resumeState,
+      factory.generalPromptResumeStateForExecution(
+        sessionId = sessionId,
+        taskId = "task-1",
+      ),
+    )
+  }
 }

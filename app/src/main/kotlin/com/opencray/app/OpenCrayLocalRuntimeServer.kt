@@ -22,6 +22,8 @@ import org.json.JSONObject
 
 private val DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS: InetAddress = InetAddress.getByName("127.0.0.1")
 
+private fun InetAddress.asRuntimeBindAddress(): String = hostAddress ?: hostName ?: "127.0.0.1"
+
 internal data class LocalRuntimeServerState(
   val phase: String = PHASE_NOT_CREATED,
   val bindAddress: String,
@@ -67,7 +69,8 @@ internal class OpenCrayLocalRuntimeServer(
   private val shutdownExecutorOnClose: Boolean = false,
 ) {
   // Test-only convenience constructor. Production wiring should go through
-  // fromContext(...), which stays service-backed and detached from UI host ownership.
+  // OpenCrayLocalRuntimeServerRegistry, which stays service-backed and detached
+  // from UI host ownership.
   constructor(
     hostRuntimeProvider: () -> OpenCrayHostRuntime,
     shellGatewayResolver: (OpenCrayHostRuntime) -> OpenCrayShellGateway = { it },
@@ -99,7 +102,7 @@ internal class OpenCrayLocalRuntimeServer(
 
   private var serverState: LocalRuntimeServerState = LocalRuntimeServerState(
     phase = LocalRuntimeServerState.PHASE_CREATED,
-    bindAddress = bindAddress.hostAddress,
+    bindAddress = bindAddress.asRuntimeBindAddress(),
     requestedPort = requestedPort,
   )
 
@@ -247,6 +250,12 @@ internal class OpenCrayLocalRuntimeServer(
         )
         null
       }
+      "POST" to "/v1/open_external_uri" -> {
+        localGateway.openExternalUri(
+          uri = body.optString("uri"),
+        )
+        null
+      }
       "POST" to "/v1/create_workspace_folder" -> localGateway.createWorkspaceFolder(
         parentRelativePath = body.optString("parentRelativePath"),
         name = body.optString("name"),
@@ -281,6 +290,10 @@ internal class OpenCrayLocalRuntimeServer(
       "GET" to "/v1/settings_overview" -> settingsGateway.loadSettingsOverview()
       "GET" to "/v1/settings_detail" -> settingsGateway.loadSettingsDetail(
         routeIdRaw = request.queryParameter("routeId"),
+      )
+      "GET" to "/v1/strong_background_snapshot" -> settingsGateway.loadStrongBackgroundSnapshot()
+      "POST" to "/v1/perform_strong_background_action" -> settingsGateway.performStrongBackgroundAction(
+        actionId = body.optString("actionId"),
       )
       "GET" to "/v1/network_search_config" -> settingsGateway.loadNetworkSearchConfig()
       "POST" to "/v1/save_network_search_config" -> settingsGateway.saveNetworkSearchConfig(
@@ -642,7 +655,7 @@ internal object OpenCrayLocalRuntimeServerRegistry {
 
   fun peekState(): LocalRuntimeServerState = synchronized(this) {
     instance?.currentState() ?: LocalRuntimeServerState(
-      bindAddress = DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS.hostAddress,
+      bindAddress = DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS.asRuntimeBindAddress(),
       requestedPort = OpenCrayLocalRuntimeServer.DEFAULT_PORT,
     )
   }

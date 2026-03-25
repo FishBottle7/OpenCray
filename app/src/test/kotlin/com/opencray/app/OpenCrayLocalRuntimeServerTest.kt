@@ -2185,6 +2185,31 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun openExternalUriEndpointDelegatesToHostRuntime() {
+    val openedUris = mutableListOf<String>()
+    val server = localRuntimeServer(
+      externalUriOpener = { uri ->
+        openedUris += uri
+      },
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/open_external_uri",
+        body = """{"uri":"https://opencray.dev/docs"}""",
+      )
+
+      assertEquals(200, response.statusCode)
+      assertEquals(listOf("https://opencray.dev/docs"), openedUris)
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun routesShellRequestsThroughShellGateway() {
     val shellGateway = RecordingShellGateway()
     val server = localRuntimeServer(shellGatewayResolver = { shellGateway })
@@ -2257,6 +2282,34 @@ class OpenCrayLocalRuntimeServerTest {
       assertEquals(200, overviewResponse.statusCode)
       assertEquals("gateway-settings", overviewPayload.getString("source"))
 
+      val strongBackgroundResponse = request(server, "GET", "/v1/strong_background_snapshot")
+      val strongBackgroundPayload = JSONObject(strongBackgroundResponse.body)
+      assertEquals(200, strongBackgroundResponse.statusCode)
+      assertEquals("gateway-strong-background", strongBackgroundPayload.getString("source"))
+
+      val strongBackgroundActionResponse = request(
+        server,
+        "POST",
+        "/v1/perform_strong_background_action",
+        body = JSONObject().apply {
+          put("actionId", StrongBackgroundActionIds.OPEN_NOTIFICATION_SETTINGS)
+        }.toString(),
+      )
+      val strongBackgroundActionPayload = JSONObject(strongBackgroundActionResponse.body)
+      assertEquals(200, strongBackgroundActionResponse.statusCode)
+      assertEquals(
+        "gateway-strong-background-action",
+        strongBackgroundActionPayload.getString("source"),
+      )
+      assertEquals(
+        StrongBackgroundActionIds.OPEN_NOTIFICATION_SETTINGS,
+        strongBackgroundActionPayload.getString("actionId"),
+      )
+      assertEquals(
+        StrongBackgroundActionIds.OPEN_NOTIFICATION_SETTINGS,
+        settingsGateway.lastStrongBackgroundActionId,
+      )
+
       val setMcpResponse = request(
         server,
         "POST",
@@ -2288,6 +2341,7 @@ class OpenCrayLocalRuntimeServerTest {
     directTaskRuntimeFactory: AgentSessionTaskRuntimeFactory? = null,
     workspaceRootProvider: (() -> Path)? = null,
     workspaceEntryOpener: ((Path, String) -> Unit)? = null,
+    externalUriOpener: ((String) -> Unit)? = null,
     shellGatewayResolver: ((OpenCrayHostRuntime) -> OpenCrayShellGateway)? = null,
     chatRuntimeGatewayResolver: ((OpenCrayHostRuntime) -> OpenCrayChatRuntimeGateway)? = null,
     skillsGatewayResolver: ((OpenCrayHostRuntime) -> OpenCraySkillsGateway)? = null,
@@ -2318,6 +2372,7 @@ class OpenCrayLocalRuntimeServerTest {
         directTaskRuntimeFactory = directTaskRuntimeFactory,
         workspaceRootProvider = workspaceRootProvider,
         workspaceEntryOpener = workspaceEntryOpener,
+        externalUriOpener = externalUriOpener,
         workspaceSnapshotProvider = workspaceSnapshotProvider,
         sessionRuntimeManager = runtimeManager,
         strings = HostRuntimeStrings(
@@ -2561,6 +2616,8 @@ class OpenCrayLocalRuntimeServerTest {
   private class RecordingSettingsGateway : OpenCraySettingsGateway {
     var lastMcpMasterEnabled: Boolean? = null
       private set
+    var lastStrongBackgroundActionId: String? = null
+      private set
 
     override fun loadSettingsOverview(): Map<String, Any?> = mapOf("source" to "gateway-settings")
 
@@ -2571,6 +2628,14 @@ class OpenCrayLocalRuntimeServerTest {
 
     override fun loadSettingsDetail(routeIdRaw: String): Map<String, Any?> =
       mapOf("source" to "gateway-settings-detail", "routeId" to routeIdRaw)
+
+    override fun loadStrongBackgroundSnapshot(): Map<String, Any?> =
+      mapOf("source" to "gateway-strong-background")
+
+    override fun performStrongBackgroundAction(actionId: String): Map<String, Any?> {
+      lastStrongBackgroundActionId = actionId
+      return mapOf("source" to "gateway-strong-background-action", "actionId" to actionId)
+    }
 
     override fun loadNetworkSearchConfig(): Map<String, Any?> =
       mapOf("source" to "gateway-network-search")

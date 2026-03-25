@@ -9,6 +9,7 @@ import com.opencray.runtime.PythonScriptRuntime
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.util.UUID
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -40,6 +41,7 @@ internal class P4aPythonRuntime private constructor(
       explicitStartupTimeoutMs = request.startupTimeoutMs,
       scriptTimeoutMs = scriptTimeoutMs,
     )
+    val servicePollIntervalMs = resolveServicePollIntervalMs(startupTimeoutMs)
     val requestId = request.requestId?.trim()?.takeIf(String::isNotBlank) ?: UUID.randomUUID().toString()
     val requestPath = requestsDir.resolve("$requestId.json")
     val resultPath = resultsDir.resolve("$requestId.json")
@@ -57,6 +59,8 @@ internal class P4aPythonRuntime private constructor(
       "cancelPath" to cancelPath.toString(),
       "scriptTimeoutMs" to scriptTimeoutMs.toString(),
       "startupTimeoutMs" to startupTimeoutMs.toString(),
+      "servicePollIntervalMs" to servicePollIntervalMs.toString(),
+      "serviceRunMode" to "once",
       "serviceStatePath" to serviceStatePath.toString(),
       "serviceReadyPath" to serviceReadyPath.toString(),
     )
@@ -83,38 +87,54 @@ internal class P4aPythonRuntime private constructor(
         requestedAtEpochMs = startedAt,
         cancelPath = cancelPath.toString(),
       )
-      Files.write(
+      writeAtomicText(
         requestPath,
-        (json.encodeToString(payload) + "\n").toByteArray(StandardCharsets.UTF_8),
+        json.encodeToString(payload) + "\n",
       )
 
-      when (
-        val launchResult = launcher.launch(
-          P4aPythonLaunchRequest(
-            bridgeRequest = payload,
-            requestPath = requestPath,
-            resultPath = resultPath,
-            logPath = logPath,
-          ),
-        )
-      ) {
+      val launcherDispatchStartedAt = System.currentTimeMillis()
+      val launchResult = launcher.launch(
+        P4aPythonLaunchRequest(
+          bridgeRequest = payload,
+          requestPath = requestPath,
+          resultPath = resultPath,
+          logPath = logPath,
+          servicePollIntervalMs = servicePollIntervalMs,
+          runOnce = true,
+        ),
+      )
+      val launcherDispatchCompletedAt = System.currentTimeMillis()
+      val launchTimingMetadata = mapOf(
+        "launcherDispatchStartedAtEpochMs" to launcherDispatchStartedAt.toString(),
+        "launcherDispatchCompletedAtEpochMs" to launcherDispatchCompletedAt.toString(),
+        "launcherDispatchDurationMs" to (launcherDispatchCompletedAt - launcherDispatchStartedAt).toString(),
+        "startupTimerStartedAtEpochMs" to launcherDispatchCompletedAt.toString(),
+      )
+
+      when (launchResult) {
         is P4aPythonRuntimeLaunchResult.Dispatched -> waitForBridgeResult(
           taskId = request.taskId,
           requestId = requestId,
           startupTimeoutMs = startupTimeoutMs,
           scriptTimeoutMs = scriptTimeoutMs,
           startedAt = startedAt,
+          startupWaitStartedAt = launcherDispatchCompletedAt,
           requestPath = requestPath,
           resultPath = resultPath,
           logPath = logPath,
           cancelPath = cancelPath,
           serviceStatePath = serviceStatePath,
           serviceReadyPath = serviceReadyPath,
-          metadata = runtimeMetadata + launchResult.metadata,
+          metadata = runtimeMetadata + launchResult.metadata + launchTimingMetadata,
         )
 
         is P4aPythonRuntimeLaunchResult.Unavailable -> {
           val finishedAt = System.currentTimeMillis()
+          val cleanupMetadata = cleanupRequestArtifacts(
+            requestPath = requestPath,
+            cancelPath = cancelPath,
+            writeCancelMarker = true,
+          )
           ExecutionResult(
             taskId = request.taskId,
             status = ExecutionStatus.FAILED,
@@ -125,12 +145,17 @@ internal class P4aPythonRuntime private constructor(
             errorMessage = launchResult.errorMessage,
             startedAtEpochMs = startedAt,
             finishedAtEpochMs = finishedAt,
-            metadata = runtimeMetadata + launchResult.metadata,
+            metadata = runtimeMetadata + launchResult.metadata + launchTimingMetadata + cleanupMetadata,
           )
         }
       }
     } catch (error: Throwable) {
       val finishedAt = System.currentTimeMillis()
+      val cleanupMetadata = cleanupRequestArtifacts(
+        requestPath = requestPath,
+        cancelPath = cancelPath,
+        writeCancelMarker = true,
+      )
       ExecutionResult(
         taskId = request.taskId,
         status = ExecutionStatus.FAILED,
@@ -141,7 +166,7 @@ internal class P4aPythonRuntime private constructor(
         errorMessage = error.message ?: "Failed to prepare embedded Python runtime request.",
         startedAtEpochMs = startedAt,
         finishedAtEpochMs = finishedAt,
-        metadata = runtimeMetadata,
+        metadata = runtimeMetadata + cleanupMetadata,
       )
     }
   }
@@ -167,6 +192,7 @@ internal class P4aPythonRuntime private constructor(
     startupTimeoutMs: Long,
     scriptTimeoutMs: Long,
     startedAt: Long,
+    startupWaitStartedAt: Long,
     requestPath: Path,
     resultPath: Path,
     logPath: Path,
@@ -177,12 +203,18 @@ internal class P4aPythonRuntime private constructor(
   ): ExecutionResult {
     val startupBudgetMs = startupTimeoutMs.coerceAtLeast(0L)
     val scriptBudgetMs = scriptTimeoutMs.coerceAtLeast(0L)
-    val startupDeadline = startedAt + startupBudgetMs
+    val startupDeadline = startupWaitStartedAt + startupBudgetMs
     var requestExecutionObservation: RequestExecutionObservation? = null
 
     while (true) {
       if (Files.exists(resultPath)) {
-        return readBridgeResult(taskId = taskId, resultPath = resultPath, metadata = metadata)
+        return readBridgeResult(
+          taskId = taskId,
+          requestPath = requestPath,
+          cancelPath = cancelPath,
+          resultPath = resultPath,
+          metadata = metadata,
+        )
       }
       val now = System.currentTimeMillis()
       if (requestExecutionObservation == null) {
@@ -217,6 +249,16 @@ internal class P4aPythonRuntime private constructor(
       serviceReadyPath = serviceReadyPath,
       serviceStatePath = serviceStatePath,
     )
+    val cleanupMetadata = cleanupRequestArtifacts(
+      requestPath = requestPath,
+      cancelPath = cancelPath,
+      writeCancelMarker = true,
+    )
+    val stopMetadata = if (timeoutStage == "result") {
+      launcher.stop()
+    } else {
+      emptyMap()
+    }
     val finishedAt = System.currentTimeMillis()
     return ExecutionResult(
       taskId = taskId,
@@ -236,7 +278,7 @@ internal class P4aPythonRuntime private constructor(
       },
       startedAtEpochMs = startedAt,
       finishedAtEpochMs = finishedAt,
-      metadata = metadata + diagnostics.metadata + buildMap {
+      metadata = metadata + diagnostics.metadata + cleanupMetadata + stopMetadata + buildMap {
         put("timeoutStage", timeoutStage)
         put("serviceReadyObserved", (requestExecutionObservation != null).toString())
         latestServiceMarker?.let { marker ->
@@ -265,6 +307,8 @@ internal class P4aPythonRuntime private constructor(
 
   private fun readBridgeResult(
     taskId: String,
+    requestPath: Path,
+    cancelPath: Path,
     resultPath: Path,
     metadata: Map<String, String>,
   ): ExecutionResult = try {
@@ -281,10 +325,19 @@ internal class P4aPythonRuntime private constructor(
       errorMessage = bridgeResult.errorMessage,
       startedAtEpochMs = bridgeResult.startedAtEpochMs,
       finishedAtEpochMs = bridgeResult.finishedAtEpochMs,
-      metadata = bridgeResult.metadata + metadata,
+      metadata = bridgeResult.metadata + metadata + cleanupRequestArtifacts(
+        requestPath = requestPath,
+        cancelPath = cancelPath,
+        writeCancelMarker = false,
+      ),
     )
   } catch (error: Throwable) {
     val finishedAt = System.currentTimeMillis()
+    val cleanupMetadata = cleanupRequestArtifacts(
+      requestPath = requestPath,
+      cancelPath = cancelPath,
+      writeCancelMarker = false,
+    )
     ExecutionResult(
       taskId = taskId,
       status = ExecutionStatus.FAILED,
@@ -295,7 +348,7 @@ internal class P4aPythonRuntime private constructor(
       errorMessage = error.message ?: "Failed to parse embedded Python runtime result.",
       startedAtEpochMs = finishedAt,
       finishedAtEpochMs = finishedAt,
-      metadata = metadata,
+      metadata = metadata + cleanupMetadata,
     )
   }
 
@@ -496,11 +549,67 @@ internal class P4aPythonRuntime private constructor(
   private fun sanitizeMetadataPreview(content: String): String =
     content.replace("\r", "").replace("\n", "\\n")
 
+  private fun writeAtomicText(path: Path, content: String) {
+    Files.createDirectories(path.parent)
+    val tempPath = path.resolveSibling("${path.fileName}.tmp")
+    Files.write(tempPath, content.toByteArray(StandardCharsets.UTF_8))
+    runCatching {
+      Files.move(
+        tempPath,
+        path,
+        StandardCopyOption.REPLACE_EXISTING,
+        StandardCopyOption.ATOMIC_MOVE,
+      )
+    }.getOrElse {
+      Files.move(
+        tempPath,
+        path,
+        StandardCopyOption.REPLACE_EXISTING,
+      )
+    }
+  }
+
+  private fun cleanupRequestArtifacts(
+    requestPath: Path,
+    cancelPath: Path?,
+    writeCancelMarker: Boolean,
+  ): Map<String, String> {
+    val metadata = linkedMapOf<String, String>()
+    if (writeCancelMarker && cancelPath != null) {
+      val cancelWritten = runCatching {
+        Files.createDirectories(cancelPath.parent)
+        Files.write(
+          cancelPath,
+          "cancelled\n".toByteArray(StandardCharsets.UTF_8),
+        )
+        true
+      }.getOrDefault(false)
+      metadata["cleanupCancelMarkerWritten"] = cancelWritten.toString()
+    }
+    val requestDeleted = runCatching {
+      Files.deleteIfExists(requestPath)
+    }.getOrDefault(false)
+    metadata["cleanupRequestDeleted"] = requestDeleted.toString()
+    if (!writeCancelMarker && cancelPath != null) {
+      val cancelDeleted = runCatching {
+        Files.deleteIfExists(cancelPath)
+      }.getOrDefault(false)
+      metadata["cleanupCancelMarkerDeleted"] = cancelDeleted.toString()
+    }
+    return metadata
+  }
+
   private fun resolveStartupTimeoutMs(
     explicitStartupTimeoutMs: Long?,
     scriptTimeoutMs: Long,
   ): Long = explicitStartupTimeoutMs?.coerceAtLeast(0L)
     ?: scriptTimeoutMs.coerceIn(MIN_STARTUP_TIMEOUT_MS, MAX_STARTUP_TIMEOUT_MS)
+
+  private fun resolveServicePollIntervalMs(startupTimeoutMs: Long): Long =
+    (startupTimeoutMs.coerceAtLeast(0L) / 20L).coerceIn(
+      MIN_SERVICE_POLL_INTERVAL_MS,
+      MAX_SERVICE_POLL_INTERVAL_MS,
+    )
 
   private fun resolvePollIntervalMs(timeoutMs: Long): Long =
     (timeoutMs / 20L).coerceIn(DEFAULT_POLL_INTERVAL_MS, MAX_POLL_INTERVAL_MS)
@@ -547,10 +656,14 @@ internal class P4aPythonRuntime private constructor(
     val requestPath: Path,
     val resultPath: Path,
     val logPath: Path,
+    val servicePollIntervalMs: Long,
+    val runOnce: Boolean,
   )
 
   internal interface P4aPythonRuntimeLauncher {
     fun launch(request: P4aPythonLaunchRequest): P4aPythonRuntimeLaunchResult
+
+    fun stop(): Map<String, String> = emptyMap()
   }
 
   internal sealed interface P4aPythonRuntimeLaunchResult {
@@ -569,6 +682,8 @@ internal class P4aPythonRuntime private constructor(
     internal const val BRIDGE_SCHEMA_VERSION: Int = 1
     private const val DEFAULT_POLL_INTERVAL_MS: Long = 25L
     private const val MAX_POLL_INTERVAL_MS: Long = 250L
+    private const val MIN_SERVICE_POLL_INTERVAL_MS: Long = 25L
+    private const val MAX_SERVICE_POLL_INTERVAL_MS: Long = 100L
     private const val MIN_STARTUP_TIMEOUT_MS: Long = 15_000L
     private const val MAX_STARTUP_TIMEOUT_MS: Long = 60_000L
     private const val MAX_DIAGNOSTIC_PREVIEW_CHARS: Int = 1_200

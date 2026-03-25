@@ -54,12 +54,13 @@ Current live coverage for memory stewardship focuses on the bounded actions that
 
 - duplicate-refresh style maintenance via `refresh_record_with_candidate` semantics
 - replacement-style maintenance via `supersede_record_with_candidate` semantics
+- compatible-detail merge via `merge_record_with_candidate` semantics
 - record-only invalidation / resolution
 - mixed-turn maintenance where one old preference is invalidated while an unrelated durable fact stays accepted
 - transient candidate dropping
 - candidate-driven and record-only maintenance coexisting in one turn
 
-There is still no separate free-form `merge_records` action in runtime. For now, "merge-like" behavior is represented by the bounded refresh/supersede/resolve paths above rather than arbitrary record rewriting.
+There is still no free-form corpus-level `merge_records` editor in runtime. The current merge path is intentionally narrow: `merge_record_with_candidate` only applies to bounded stewardship review for compatible `project_fact` / `durable_instruction` pairs, and runtime still rejects it when the candidate appears to replace a scalar value instead of safely extending the old record.
 
 The live smoke tests are opt-in:
 
@@ -70,9 +71,11 @@ Windows / Gradle notes from current verification:
 
 - In this repo's Windows environment, repeated `:app:testDebugUnitTest` runs may intermittently fail because Gradle cannot delete `app/build/test-results/testDebugUnitTest/binary/output.bin` after a prior run.
 - Another intermittent failure mode is a locked `app/build/intermediates/compile_app_classes_jar/debug/bundleDebugClassesToCompileJar/classes.jar`.
+- Similar file-lock failures can also hit `runtime/build/test-results/testDebugUnitTest` or `app/build/intermediates/.../R.jar` during repeated no-daemon verification.
 - The practical workaround is:
+  - stop Gradle daemons with `.\gradlew.bat --stop`
   - wait a few seconds for Java/Kotlin worker processes to exit
-  - delete `app/build/test-results/testDebugUnitTest`
+  - delete the locked generated directory under `app/build` or `runtime/build/test-results/testDebugUnitTest`
   - if needed, also delete `app/build/intermediates/compile_app_classes_jar/debug/bundleDebugClassesToCompileJar`
   - rerun the target class with `--no-daemon`
 - In practice, running the live smoke classes one-by-one is more reliable than a single Gradle invocation with multiple `--tests` selectors.

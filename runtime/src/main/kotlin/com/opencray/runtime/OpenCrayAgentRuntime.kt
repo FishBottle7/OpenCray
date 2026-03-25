@@ -13,6 +13,9 @@ import com.opencray.core.orchestrator.SessionQueueSnapshotStore
 import com.opencray.core.orchestrator.SessionTaskRuntime
 import com.opencray.core.orchestrator.SuspensionRequest
 import com.opencray.core.orchestrator.SystemQueueClock
+import com.opencray.llm.LiteLlmAssistantPhase
+import com.opencray.llm.LiteLlmBuiltinToolDefinition
+import com.opencray.llm.LiteLlmBuiltinToolType
 import com.opencray.llm.LiteLlmGateway
 import com.opencray.llm.LiteLlmGatewayMessage
 import com.opencray.llm.LiteLlmGatewayMessageRole
@@ -33,6 +36,7 @@ import com.opencray.runtime.context.PromptAssembler
 import com.opencray.runtime.context.PromptAssemblyInput
 import com.opencray.runtime.context.RecentToolObservationSupport
 import com.opencray.runtime.context.RuntimeConversationMessage
+import com.opencray.runtime.context.RuntimeConversationAssistantPhase
 import com.opencray.runtime.context.RuntimeConversationMessageKind
 import com.opencray.runtime.context.RuntimeConversationProgress
 import com.opencray.runtime.context.RuntimeConversationRole
@@ -47,13 +51,18 @@ import com.opencray.runtime.subagent.SubAgentContextBuildRequest
 import com.opencray.runtime.subagent.SubAgentContextMode
 import com.opencray.runtime.subagent.SubAgentApprovalResume
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
+import com.opencray.runtime.subagent.SubAgentContinuationKind
+import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentExecutionSnapshot
+import com.opencray.runtime.subagent.SubAgentHandleState
 import com.opencray.runtime.subagent.SubAgentMetadataKeys
+import com.opencray.runtime.subagent.SubAgentProfile
 import com.opencray.runtime.subagent.SubAgentResultCompressor
 import com.opencray.runtime.subagent.SubAgentTask
 import com.opencray.runtime.skills.ActiveSkillCapsule
 import com.opencray.runtime.skills.ActiveSkillCapsuleResolver
 import java.util.UUID
+import java.util.concurrent.Executors
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -65,6 +74,8 @@ import kotlinx.serialization.json.put
 data class OpenCrayAgentRuntimeConfig(
   val maxTurns: Int = DEFAULT_MAX_TURNS,
   val maxToolCalls: Int = DEFAULT_MAX_TOOL_CALLS,
+  val maxRecoverableLlmRetries: Int = DEFAULT_MAX_RECOVERABLE_LLM_RETRIES,
+  val recoverableLlmRetryDelayMs: Long = DEFAULT_RECOVERABLE_LLM_RETRY_DELAY_MS,
   val systemPrompt: String = DEFAULT_OPENCRAY_SYSTEM_PROMPT,
   val sessionContext: AgentRuntimeSessionContext = AgentRuntimeSessionContext(),
   val promptResumeState: OpenCrayPromptResumeState? = null,
@@ -78,10 +89,17 @@ data class OpenCrayAgentRuntimeConfig(
   val subAgentContextBuilder: SubAgentContextBuilder = SubAgentContextBuilder(),
   val maxSubAgentDepth: Int = 1,
   val json: Json = Json { ignoreUnknownKeys = true; prettyPrint = true },
+  val sleep: (Long) -> Unit = { durationMs -> Thread.sleep(durationMs) },
 ) {
   init {
     require(maxTurns >= 0) { "OpenCrayAgentRuntimeConfig maxTurns must be >= 0." }
     require(maxToolCalls >= 0) { "OpenCrayAgentRuntimeConfig maxToolCalls must be >= 0." }
+    require(maxRecoverableLlmRetries >= 0) {
+      "OpenCrayAgentRuntimeConfig maxRecoverableLlmRetries must be >= 0."
+    }
+    require(recoverableLlmRetryDelayMs >= 0) {
+      "OpenCrayAgentRuntimeConfig recoverableLlmRetryDelayMs must be >= 0."
+    }
     require(maxSubAgentDepth >= 0) { "OpenCrayAgentRuntimeConfig maxSubAgentDepth must be >= 0." }
     require(systemPrompt.isNotBlank()) { "OpenCrayAgentRuntimeConfig systemPrompt must not be blank." }
   }
@@ -89,9 +107,11 @@ data class OpenCrayAgentRuntimeConfig(
   companion object {
     const val DEFAULT_MAX_TURNS: Int = 16
     const val DEFAULT_MAX_TOOL_CALLS: Int = 0
+    const val DEFAULT_MAX_RECOVERABLE_LLM_RETRIES: Int = 5
+    const val DEFAULT_RECOVERABLE_LLM_RETRY_DELAY_MS: Long = 15_000L
     const val DEFAULT_OPENCRAY_SYSTEM_PROMPT: String =
       "You are OpenCray, a workspace-first coding agent. " +
-        "You may call one tool at a time when you need concrete workspace facts or to make a change. " +
+        "You may call tools when you need concrete workspace facts or to make a change. " +
         "Always prefer tools over guessing when the answer depends on files or local execution."
   }
 }
@@ -159,10 +179,33 @@ class OpenCrayAgentRuntime(
       transcript = executionTranscript.toMutableList(),
       turn = config.promptResumeState?.turnIndex ?: 0,
       toolCallCount = config.promptResumeState?.toolCallCount ?: 0,
+      todoWriteUsed = executionTranscript.any { entry ->
+        entry.role == RuntimeConversationRole.ASSISTANT &&
+          runtimeToolCallFor(entry)?.toolName == "TodoWrite"
+      },
       activeSkillName = config.promptResumeState?.activeSkillName,
       activeSkillActivationSource = config.promptResumeState?.activeSkillActivationSource,
       nextSyntheticToolCallSequence = nextSyntheticToolCallSequence(executionTranscript),
       legacyJsonFallbackEnabled = false,
+      responsesPreviousResponseId = config.promptResumeState?.responsesPreviousResponseId,
+      responsesProviderLineageId = config.promptResumeState?.responsesProviderLineageId,
+      responsesLineageTrusted = config.promptResumeState?.responsesLineageTrusted ?: (config.promptResumeState == null),
+      responsesPendingMessages = config.promptResumeState
+        ?.restoredResponsesPendingMessages()
+        ?.toMutableList()
+        ?: mutableListOf(),
+      localContinuationEnvelope = config.promptResumeState?.localContinuationEnvelope?.let { envelope ->
+        LocalContinuationEnvelope(
+          stableAnchor = envelope.stableAnchor,
+          transcriptFrontier = envelope.restoredTranscriptFrontier(executionTranscript),
+          gatewayMessages = envelope.restoredGatewayMessages(),
+        )
+      },
+      subAgentHandles = linkedMapOf<String, SubAgentHandleState>().apply {
+        config.promptResumeState
+          ?.subAgentHandles
+          ?.forEach { handle -> put(handle.agentId, handle) }
+      },
     )
     var lastGatewayResult: LiteLlmGatewayResult? = null
     var lastContextReport: ContextAssemblyReport? = null
@@ -186,8 +229,16 @@ class OpenCrayAgentRuntime(
         activeSkillCapsule = activeSkillCapsule,
         memoryToolsEnabled = config.sessionContext.memoryToolsEnabled,
       )
-      val nativeToolCallingEnabled = nativeToolCallingEnabledForTurn(
+      val requestedBuiltinTools = providerBuiltinToolsForTurn(
         visibleToolDefinitions = visibleToolDefinitions,
+      )
+      val functionVisibleToolDefinitions = functionToolDefinitionsForTurn(
+        visibleToolDefinitions = visibleToolDefinitions,
+        builtinTools = requestedBuiltinTools,
+      )
+      val nativeToolCallingEnabled = nativeToolCallingEnabledForTurn(
+        visibleToolDefinitions = functionVisibleToolDefinitions,
+        builtinTools = requestedBuiltinTools,
       )
       val legacyJsonFallbackEnabled = legacyJsonFallbackEnabledForTurn(
         nativeToolCallingEnabled = nativeToolCallingEnabled,
@@ -226,7 +277,7 @@ class OpenCrayAgentRuntime(
       applyTurnStartSupplements(
         task = task,
         turn = cursor.turn,
-        transcript = cursor.transcript,
+        cursor = cursor,
       )
 
       val activeSkillCapsule = activeSkillCapsuleResolver.resolve(
@@ -239,8 +290,16 @@ class OpenCrayAgentRuntime(
         activeSkillCapsule = activeSkillCapsule,
         memoryToolsEnabled = config.sessionContext.memoryToolsEnabled,
       )
-      val nativeToolCallingEnabled = nativeToolCallingEnabledForTurn(
+      val requestedBuiltinTools = providerBuiltinToolsForTurn(
         visibleToolDefinitions = visibleToolDefinitions,
+      )
+      val functionVisibleToolDefinitions = functionToolDefinitionsForTurn(
+        visibleToolDefinitions = visibleToolDefinitions,
+        builtinTools = requestedBuiltinTools,
+      )
+      val nativeToolCallingEnabled = nativeToolCallingEnabledForTurn(
+        visibleToolDefinitions = functionVisibleToolDefinitions,
+        builtinTools = requestedBuiltinTools,
       )
       val legacyJsonFallbackEnabled = legacyJsonFallbackEnabledForTurn(
         nativeToolCallingEnabled = nativeToolCallingEnabled,
@@ -254,7 +313,7 @@ class OpenCrayAgentRuntime(
       val strictToolSchemaEnabled = config.llmMetadata["toolSchemaStrict"]
         ?.trim()
         ?.lowercase() == "true"
-      val nativeToolDefinitions = visibleToolDefinitions.map { definition ->
+      val nativeToolDefinitions = functionVisibleToolDefinitions.map { definition ->
         definition.toLiteLlmToolDefinition(strict = strictToolSchemaEnabled)
       }
       val requestedNativeToolDefinitions = if (nativeToolCallingEnabled) {
@@ -262,7 +321,16 @@ class OpenCrayAgentRuntime(
       } else {
         emptyList()
       }
-      diagnostics.nativeToolCallRequested = requestedNativeToolDefinitions.isNotEmpty()
+      val activeBuiltinTools = if (nativeToolCallingEnabled) {
+        requestedBuiltinTools
+      } else {
+        emptyList()
+      }
+      val requestedParallelToolCallsOverride = requestedParallelToolCalls(
+        nativeToolCallingEnabled = requestedNativeToolDefinitions.isNotEmpty(),
+      )
+      diagnostics.nativeToolCallRequested =
+        requestedNativeToolDefinitions.isNotEmpty() || activeBuiltinTools.isNotEmpty()
       val managedContext = config.contextManager.prepare(
         PromptAssemblyInput(
           task = task,
@@ -270,26 +338,57 @@ class OpenCrayAgentRuntime(
           sessionContext = config.sessionContext,
           activeSkillCapsule = activeSkillCapsule,
           nativeToolCallingEnabled = nativeToolCallingEnabled,
+          parallelToolCallsEnabled = requestedParallelToolCallsOverride == true,
           legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
-          toolDefinitions = visibleToolDefinitions,
+          toolDefinitions = functionVisibleToolDefinitions,
           liveConversation = turnAwareConversation,
         ),
       )
       val assembledPrompt = config.promptAssembler.assemble(managedContext)
       lastContextReport = assembledPrompt.report
+      val stableLocalContinuationAnchor = stableLocalContinuationAnchor(assembledPrompt)
       val enforcedSystemPrompt = enforcedSystemPromptForTurn(
         systemPrompt = assembledPrompt.systemPrompt,
         turn = cursor.turn,
         legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
       )
-      val gatewayMessages = if (requestedNativeToolDefinitions.isNotEmpty()) {
-        buildGatewayMessages(
-          contextPrompt = assembledPrompt.contextPrompt,
-          transcript = turnAwareConversation,
-        )
+      val gatewayMessagePlan = if (
+        requestedNativeToolDefinitions.isNotEmpty() ||
+          activeBuiltinTools.isNotEmpty()
+      ) {
+        if (shouldUseResponsesContinuation(cursor)) {
+          GatewayMessagePlan(
+            messages = cursor.responsesPendingMessages.toList(),
+            mode = LocalContinuationMode.RESPONSES_NATIVE,
+            reason = "responses_previous_response_id",
+          )
+        } else if (isResponsesProtocol()) {
+          GatewayMessagePlan(
+            messages = buildGatewayMessages(
+              contextPrompt = assembledPrompt.contextPrompt,
+              transcript = turnAwareConversation,
+            ),
+            mode = LocalContinuationMode.FULL_REBUILD,
+            reason = "responses_lineage_unavailable",
+          )
+        } else {
+          buildNonResponsesGatewayMessagePlan(
+            cursor = cursor,
+            transcript = cursor.transcript,
+            turnAwareConversation = turnAwareConversation,
+            contextPrompt = assembledPrompt.contextPrompt,
+            stableAnchor = stableLocalContinuationAnchor,
+          )
+        }
       } else {
-        emptyList()
+        GatewayMessagePlan(
+          messages = emptyList(),
+          mode = LocalContinuationMode.DISABLED,
+          reason = "no_message_route",
+        )
       }
+      diagnostics.recordGatewayMessagePlan(gatewayMessagePlan)
+      val gatewayMessages = gatewayMessagePlan.messages
 
       val runId = runIdFor(task)
       val requestedToolChoiceOverride = runCatching {
@@ -305,30 +404,19 @@ class OpenCrayAgentRuntime(
           toolName = config.llmMetadata["toolChoiceName"]?.trim()?.takeIf(String::isNotBlank),
         )
       }.getOrNull()
-      val requestedParallelToolCallsOverride = if (requestedNativeToolDefinitions.isNotEmpty()) {
-        config.llmMetadata["parallelToolCalls"]
-          ?.trim()
-          ?.lowercase()
-          ?.let { rawValue ->
-            when (rawValue) {
-              "true" -> true
-              "false" -> false
-              else -> null
-            }
-          }
+      val requestedPreviousResponseIdOverride = if (shouldUseResponsesContinuation(cursor)) {
+        cursor.responsesPreviousResponseId
       } else {
-        null
+        requestedPreviousResponseId()
       }
-      val requestedPreviousResponseIdOverride =
-        config.llmMetadata["previousResponseId"]?.trim()?.takeIf(String::isNotBlank)
-      val responseApiPreferredOverride =
-        config.llmMetadata["responseApiPreferred"]?.trim()?.lowercase() == "true"
+      val responseApiPreferredOverride = responseApiPreferred() || isResponsesProtocol()
       val request = LiteLlmGatewayRequest(
         requestId = "agent-$runId-turn-${cursor.turn}-${UUID.randomUUID().toString().take(8)}",
         prompt = assembledPrompt.taskPrompt,
         systemPrompt = enforcedSystemPrompt,
         messages = gatewayMessages,
         tools = requestedNativeToolDefinitions,
+        builtinTools = activeBuiltinTools,
         toolChoice = requestedToolChoiceOverride,
         parallelToolCalls = requestedParallelToolCallsOverride,
         previousResponseId = requestedPreviousResponseIdOverride,
@@ -352,15 +440,55 @@ class OpenCrayAgentRuntime(
           put("contextPruningSummaryIncluded", assembledPrompt.report.pruningSummaryIncluded.toString())
           put("contextRecentObservationCount", assembledPrompt.report.recentToolObservationCount.toString())
           put("contextRecentObservationLayerIncluded", assembledPrompt.report.recentToolObservationLayerIncluded.toString())
+          put("localContinuationMode", gatewayMessagePlan.mode.wireValue)
+          gatewayMessagePlan.reason?.let { reason ->
+            put("localContinuationReason", reason)
+          }
+          cursor.responsesProviderLineageId
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?.let { lineageId ->
+              put(LiteLlmMetadataKeys.RESPONSES_LINEAGE_ID, lineageId)
+            }
           put(LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED, requestedNativeToolDefinitions.isNotEmpty().toString())
           putAll(task.metadata.filterKeys(::isGatewayVisibleMetadataKey))
           putAll(config.llmMetadata)
         },
         authHeaders = config.llmAuthHeaders,
       )
-      val gatewayResult = gateway.execute(request)
+      val gatewayTurnExecution = executeGatewayTurnWithRecovery(
+        task = task,
+        request = request,
+        turn = cursor.turn,
+        hooks = hooks,
+        diagnostics = diagnostics,
+      )
+      if (gatewayTurnExecution is GatewayTurnExecution.Cancelled) {
+        return cancelledResult(
+          task = task,
+          startedAt = startedAt,
+          finishedAt = clock(),
+        )
+      }
+      val gatewayResult = (gatewayTurnExecution as GatewayTurnExecution.Completed).result
       lastGatewayResult = gatewayResult
       if (gatewayResult.status != LiteLlmGatewayStatus.SUCCESS) {
+        invalidateResponsesLineage(cursor)
+        invalidateLocalContinuation(cursor)
+        val recoveryObservation = recoverableGatewayFailureObservation(
+          gatewayResult = gatewayResult,
+          nativeToolCallingEnabled = nativeToolCallingEnabled,
+          legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
+          diagnostics = diagnostics,
+        )
+        if (recoveryObservation != null) {
+          cursor.transcript += RuntimeConversationMessage(
+            role = RuntimeConversationRole.TOOL,
+            content = recoveryObservation,
+          )
+          cursor.turn += 1
+          continue
+        }
         return llmFailureResult(
           task = task,
           startedAt = startedAt,
@@ -376,7 +504,24 @@ class OpenCrayAgentRuntime(
         gatewayResult = gatewayResult,
         diagnostics = diagnostics,
       )
-        ?: return llmFailureResult(
+      if (parsedGatewayResult == null) {
+        invalidateResponsesLineage(cursor)
+        invalidateLocalContinuation(cursor)
+        val recoveryObservation = recoverableSuccessfulEmptyResponseObservation(
+          gatewayResult = gatewayResult,
+          nativeToolCallingEnabled = nativeToolCallingEnabled,
+          legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
+          diagnostics = diagnostics,
+        )
+        if (recoveryObservation != null) {
+          cursor.transcript += RuntimeConversationMessage(
+            role = RuntimeConversationRole.TOOL,
+            content = recoveryObservation,
+          )
+          cursor.turn += 1
+          continue
+        }
+        return llmFailureResult(
           task = task,
           startedAt = startedAt,
           gatewayResult = gatewayResult,
@@ -385,11 +530,14 @@ class OpenCrayAgentRuntime(
           contextReport = lastContextReport,
           diagnostics = diagnostics,
         )
+      }
       if (nativeToolCallingEnabled && parsedGatewayResult.usedLegacyJsonFallback) {
         cursor.legacyJsonFallbackEnabled = true
       }
       when (val parsedBatch = parsedGatewayResult.batch) {
         is ParsedModelActionBatch.ProtocolError -> {
+          invalidateResponsesLineage(cursor)
+          invalidateLocalContinuation(cursor)
           protocolErrorCount += 1
           lastProtocolErrorMessage = parsedBatch.reason
           if (nativeToolCallingEnabled) {
@@ -419,6 +567,10 @@ class OpenCrayAgentRuntime(
         }
 
         is ParsedModelActionBatch.Actions -> {
+          updateResponsesContinuationState(
+            cursor = cursor,
+            gatewayResult = gatewayResult,
+          )
           when (
             val outcome = executePromptActionBatch(
               task = task,
@@ -432,9 +584,21 @@ class OpenCrayAgentRuntime(
               diagnostics = diagnostics,
               nativeToolCallingEnabled = nativeToolCallingEnabled,
               legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
+              localContinuationContextPrompt = assembledPrompt.contextPrompt,
+              localContinuationStableAnchor = stableLocalContinuationAnchor,
+              localContinuationGatewayMessagesEnabled =
+                requestedNativeToolDefinitions.isNotEmpty() || activeBuiltinTools.isNotEmpty(),
             )
           ) {
-            is PromptBatchExecutionOutcome.Continue -> continue
+            is PromptBatchExecutionOutcome.Continue -> {
+              refreshLocalContinuationEnvelope(
+                cursor = cursor,
+                contextPrompt = assembledPrompt.contextPrompt,
+                stableAnchor = stableLocalContinuationAnchor,
+                gatewayMessagesEnabled = requestedNativeToolDefinitions.isNotEmpty() || activeBuiltinTools.isNotEmpty(),
+              )
+              continue
+            }
             is PromptBatchExecutionOutcome.Terminal -> return outcome.result
           }
         }
@@ -516,6 +680,7 @@ class OpenCrayAgentRuntime(
       transcript = config.sessionContext.conversation,
       hooks = hooks,
       activeSkillCapsule = null,
+      cursor = null,
     ) ?: toolDispatcher.dispatch(task = task, call = toolCall, hooks = hooks)
     eventSink.onRunEvent(
       task = task,
@@ -672,7 +837,12 @@ class OpenCrayAgentRuntime(
 
   private fun parseStructuredCompletion(
     completion: LiteLlmStructuredCompletion,
-  ): ParsedModelActionBatch.Actions? {
+  ): ParsedModelActionBatch? {
+    if (completion.toolCallErrors.isNotEmpty()) {
+      return ParsedModelActionBatch.ProtocolError(
+        reason = buildStructuredToolCallRecoveryReason(completion.toolCallErrors),
+      )
+    }
     val actions = mutableListOf<AgentModelAction>()
     completion.progressText
       ?.trim()
@@ -704,10 +874,174 @@ class OpenCrayAgentRuntime(
     return null
   }
 
+  private fun executeGatewayTurnWithRecovery(
+    task: AgentTask,
+    request: LiteLlmGatewayRequest,
+    turn: Int,
+    hooks: RuntimeExecutionHooks,
+    diagnostics: PromptRunDiagnostics,
+  ): GatewayTurnExecution {
+    var retryCount = 0
+    while (true) {
+      if (hooks.isCancellationRequested()) {
+        return GatewayTurnExecution.Cancelled
+      }
+      val gatewayResult = gateway.execute(request)
+      val retryDelayMs = recoverableGatewayRetryDelayMs(gatewayResult)
+      if (retryDelayMs == null || retryCount >= config.maxRecoverableLlmRetries) {
+        return GatewayTurnExecution.Completed(result = gatewayResult)
+      }
+      retryCount += 1
+      diagnostics.llmRetryCount += 1
+      emitProgressEvent(
+        task = task,
+        turn = turn,
+        text = buildRecoverableRetryProgressText(
+          gatewayResult = gatewayResult,
+          retryCount = retryCount,
+          delayMs = retryDelayMs,
+        ),
+        stage = "llm_retry",
+      )
+      if (!sleepForRecoverableRetry(delayMs = retryDelayMs, hooks = hooks)) {
+        return GatewayTurnExecution.Cancelled
+      }
+    }
+  }
+
+  private fun recoverableGatewayRetryDelayMs(gatewayResult: LiteLlmGatewayResult): Long? = when {
+    gatewayResult.status == LiteLlmGatewayStatus.TIMEOUT ->
+      config.recoverableLlmRetryDelayMs
+
+    gatewayResult.status == LiteLlmGatewayStatus.RATE_LIMITED ->
+      maxOf(
+        config.recoverableLlmRetryDelayMs,
+        gatewayResult.metadata["retryAfterMs"]?.toLongOrNull() ?: 0L,
+      )
+
+    gatewayResult.status == LiteLlmGatewayStatus.FAILED &&
+      gatewayResult.errorCode.isTransientGatewayFailureCode() ->
+      config.recoverableLlmRetryDelayMs
+
+    else -> null
+  }
+
+  private fun recoverableGatewayFailureObservation(
+    gatewayResult: LiteLlmGatewayResult,
+    nativeToolCallingEnabled: Boolean,
+    legacyJsonFallbackEnabled: Boolean,
+    diagnostics: PromptRunDiagnostics,
+  ): String? {
+    if (gatewayResult.status != LiteLlmGatewayStatus.FAILED) {
+      return null
+    }
+    if (gatewayResult.errorCode != "PROVIDER_EMPTY_RESPONSE") {
+      return null
+    }
+    diagnostics.emptyResponseRecoveryCount += 1
+    return buildEmptyResponseRecoveryObservation(
+      nativeToolCallingEnabled = nativeToolCallingEnabled,
+      legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
+      detail = gatewayResult.errorMessage ?: "Provider returned an empty completion payload.",
+      reasoningText = gatewayResult.completion?.reasoningText,
+      rawOutput = gatewayResult.completion?.rawText ?: gatewayResult.outputText,
+    )
+  }
+
+  private fun recoverableSuccessfulEmptyResponseObservation(
+    gatewayResult: LiteLlmGatewayResult,
+    nativeToolCallingEnabled: Boolean,
+    legacyJsonFallbackEnabled: Boolean,
+    diagnostics: PromptRunDiagnostics,
+  ): String? {
+    if (gatewayResult.status != LiteLlmGatewayStatus.SUCCESS) {
+      return null
+    }
+    val hasAnyVisibleOutput = !gatewayResult.outputText.isNullOrBlank() ||
+      !gatewayResult.completion?.rawText.isNullOrBlank() ||
+      !gatewayResult.completion?.finalText.isNullOrBlank() ||
+      !gatewayResult.completion?.progressText.isNullOrBlank() ||
+      gatewayResult.completion?.toolCalls?.isNotEmpty() == true
+    if (hasAnyVisibleOutput) {
+      return null
+    }
+    diagnostics.emptyResponseRecoveryCount += 1
+    return buildEmptyResponseRecoveryObservation(
+      nativeToolCallingEnabled = nativeToolCallingEnabled,
+      legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
+      detail = "The previous response contained no usable tool call, progress update, or final answer.",
+      reasoningText = gatewayResult.completion?.reasoningText,
+      rawOutput = null,
+    )
+  }
+
+  private fun sleepForRecoverableRetry(
+    delayMs: Long,
+    hooks: RuntimeExecutionHooks,
+  ): Boolean {
+    var remainingDelayMs = delayMs.coerceAtLeast(0L)
+    while (remainingDelayMs > 0) {
+      if (hooks.isCancellationRequested()) {
+        return false
+      }
+      val sleepChunkMs = minOf(remainingDelayMs, RECOVERABLE_LLM_RETRY_SLEEP_CHUNK_MS)
+      val sleepOutcome = runCatching { config.sleep(sleepChunkMs) }
+      if (sleepOutcome.isFailure) {
+        sleepOutcome.exceptionOrNull()
+          ?.takeIf { error -> error is InterruptedException }
+          ?.let { Thread.currentThread().interrupt() }
+        return false
+      }
+      remainingDelayMs -= sleepChunkMs
+    }
+    return !hooks.isCancellationRequested()
+  }
+
+  private fun buildRecoverableRetryProgressText(
+    gatewayResult: LiteLlmGatewayResult,
+    retryCount: Int,
+    delayMs: Long,
+  ): String {
+    val reason = gatewayResult.errorCode
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: gatewayResult.status.name
+    val detail = gatewayResult.errorMessage
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: "LLM request failed."
+    return buildString {
+      append("LLM request failed with ")
+      append(reason)
+      append(". Retrying in ")
+      append(delayMs / 1_000L)
+      append("s (retry ")
+      append(retryCount)
+      append("/")
+      append(config.maxRecoverableLlmRetries)
+      append("). ")
+      append(detail)
+    }
+  }
+
+  private fun buildStructuredToolCallRecoveryReason(
+    toolCallErrors: List<String>,
+  ): String = buildString {
+    append("Native tool call payload could not be parsed. ")
+    append("Return the same next step again with a valid tool call payload. ")
+    append("Diagnostics: ")
+    append(
+      toolCallErrors
+        .take(MAX_STRUCTURED_TOOL_CALL_ERROR_COUNT)
+        .joinToString(separator = " | "),
+    )
+  }
+
   private fun nativeToolCallingEnabledForTurn(
     visibleToolDefinitions: List<AgentToolDefinition>,
+    builtinTools: List<LiteLlmBuiltinToolDefinition> = emptyList(),
   ): Boolean {
-    if (visibleToolDefinitions.isEmpty()) {
+    if (visibleToolDefinitions.isEmpty() && builtinTools.isEmpty()) {
       return false
     }
     config.llmMetadata["nativeToolCallingAvailable"]
@@ -722,9 +1056,45 @@ class OpenCrayAgentRuntime(
       null,
       "",
       "openai",
+      "openai_responses",
       "anthropic",
       -> true
       else -> false
+    }
+  }
+
+  private fun providerBuiltinToolsForTurn(
+    visibleToolDefinitions: List<AgentToolDefinition>,
+  ): List<LiteLlmBuiltinToolDefinition> {
+    if (!nativeResponsesWebSearchEnabled()) {
+      return emptyList()
+    }
+    val hostWebSearchVisible = visibleToolDefinitions.any { definition ->
+      definition.name.equals("WebSearch", ignoreCase = true)
+    }
+    if (!hostWebSearchVisible) {
+      return emptyList()
+    }
+    return listOf(
+      LiteLlmBuiltinToolDefinition(
+        type = LiteLlmBuiltinToolType.WEB_SEARCH,
+        includeSources = true,
+      ),
+    )
+  }
+
+  private fun functionToolDefinitionsForTurn(
+    visibleToolDefinitions: List<AgentToolDefinition>,
+    builtinTools: List<LiteLlmBuiltinToolDefinition>,
+  ): List<AgentToolDefinition> {
+    val hidesHostWebSearch = builtinTools.any { tool ->
+      tool.type == LiteLlmBuiltinToolType.WEB_SEARCH
+    } && !dualExposeWebSearchEnabled()
+    if (!hidesHostWebSearch) {
+      return visibleToolDefinitions
+    }
+    return visibleToolDefinitions.filterNot { definition ->
+      definition.name.equals("WebSearch", ignoreCase = true)
     }
   }
 
@@ -776,6 +1146,216 @@ class OpenCrayAgentRuntime(
       ?.trim()
       ?.lowercase()
     return rawValue == "true"
+  }
+
+  private fun isResponsesProtocol(): Boolean =
+    config.llmMetadata["protocol"]?.trim()?.lowercase() == RESPONSES_PROTOCOL
+
+  private fun nativeResponsesWebSearchEnabled(): Boolean {
+    config.llmMetadata["nativeWebSearchEnabled"]
+      ?.trim()
+      ?.lowercase()
+      ?.let { rawValue ->
+        if (rawValue == "true" || rawValue == "false") {
+          return rawValue.toBoolean()
+        }
+      }
+    return isResponsesProtocol()
+  }
+
+  private fun dualExposeWebSearchEnabled(): Boolean =
+    config.llmMetadata["dualExposeWebSearch"]
+      ?.trim()
+      ?.lowercase() == "true"
+
+  private fun responsesContinuationSupported(): Boolean =
+    config.llmMetadata["responsesContinuationSupported"]
+      ?.trim()
+      ?.lowercase() == "true"
+
+  private fun shouldUseResponsesContinuation(cursor: PromptTurnCursor): Boolean =
+    isResponsesProtocol() &&
+      responsesContinuationSupported() &&
+      hasResponsesLineage(cursor) &&
+      cursor.responsesPendingMessages.isNotEmpty()
+
+  private fun hasResponsesLineage(cursor: PromptTurnCursor): Boolean =
+    cursor.responsesLineageTrusted &&
+      !cursor.responsesProviderLineageId.isNullOrBlank() &&
+      !cursor.responsesPreviousResponseId.isNullOrBlank()
+
+  private fun buildNonResponsesGatewayMessagePlan(
+    cursor: PromptTurnCursor,
+    transcript: List<RuntimeConversationMessage>,
+    turnAwareConversation: List<RuntimeConversationMessage>,
+    contextPrompt: String,
+    stableAnchor: String,
+  ): GatewayMessagePlan {
+    val envelope = cursor.localContinuationEnvelope ?: return fullGatewayMessageRebuild(
+      contextPrompt = contextPrompt,
+      transcript = turnAwareConversation,
+      reason = "no_envelope",
+    )
+    if (envelope.stableAnchor != stableAnchor) {
+      invalidateLocalContinuation(cursor)
+      return fullGatewayMessageRebuild(
+        contextPrompt = contextPrompt,
+        transcript = turnAwareConversation,
+        reason = "anchor_changed",
+      )
+    }
+    val transcriptDelta = transcriptDeltaSince(
+      frontier = envelope.transcriptFrontier,
+      transcript = transcript,
+    ) ?: run {
+      invalidateLocalContinuation(cursor)
+      return fullGatewayMessageRebuild(
+        contextPrompt = contextPrompt,
+        transcript = turnAwareConversation,
+        reason = "transcript_mismatch",
+      )
+    }
+    val promptOnlyDelta = if (turnAwareConversation.size > transcript.size) {
+      turnAwareConversation.subList(transcript.size, turnAwareConversation.size)
+    } else {
+      emptyList()
+    }
+    val deltaMessages = buildGatewayMessages(
+      contextPrompt = "",
+      transcript = transcriptDelta + promptOnlyDelta,
+    )
+    return GatewayMessagePlan(
+      messages = envelope.gatewayMessages + deltaMessages,
+      mode = LocalContinuationMode.LOCAL_DELTA,
+      reason = if (transcriptDelta.isEmpty()) "steady_turn" else "transcript_delta",
+    )
+  }
+
+  private fun fullGatewayMessageRebuild(
+    contextPrompt: String,
+    transcript: List<RuntimeConversationMessage>,
+    reason: String,
+  ): GatewayMessagePlan = GatewayMessagePlan(
+    messages = buildGatewayMessages(
+      contextPrompt = contextPrompt,
+      transcript = transcript,
+    ),
+    mode = LocalContinuationMode.FULL_REBUILD,
+    reason = reason,
+  )
+
+  private fun updateResponsesContinuationState(
+    cursor: PromptTurnCursor,
+    gatewayResult: LiteLlmGatewayResult,
+  ) {
+    if (!isResponsesProtocol()) {
+      invalidateResponsesLineage(cursor)
+      return
+    }
+    val providerResponseId = gatewayResult.providerResponseId?.trim()?.takeIf(String::isNotBlank)
+    if (providerResponseId == null) {
+      invalidateResponsesLineage(cursor)
+      return
+    }
+    val providerLineageId = gatewayResult.providerLineageId
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: cursor.responsesProviderLineageId
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+      ?: providerResponseId
+    cursor.responsesPreviousResponseId = providerResponseId
+    cursor.responsesProviderLineageId = providerLineageId
+    cursor.responsesLineageTrusted = providerLineageId.isNotBlank()
+    cursor.responsesPendingMessages.clear()
+  }
+
+  private fun invalidateResponsesLineage(cursor: PromptTurnCursor) {
+    cursor.responsesPreviousResponseId = null
+    cursor.responsesProviderLineageId = null
+    cursor.responsesLineageTrusted = false
+    cursor.responsesPendingMessages.clear()
+  }
+
+  private fun refreshLocalContinuationEnvelope(
+    cursor: PromptTurnCursor,
+    contextPrompt: String,
+    stableAnchor: String,
+    gatewayMessagesEnabled: Boolean,
+  ) {
+    cursor.localContinuationEnvelope = buildLocalContinuationEnvelope(
+      cursor = cursor,
+      contextPrompt = contextPrompt,
+      stableAnchor = stableAnchor,
+      gatewayMessagesEnabled = gatewayMessagesEnabled,
+    )
+  }
+
+  private fun invalidateLocalContinuation(cursor: PromptTurnCursor) {
+    cursor.localContinuationEnvelope = null
+  }
+
+  private fun buildLocalContinuationEnvelope(
+    cursor: PromptTurnCursor,
+    contextPrompt: String,
+    stableAnchor: String,
+    gatewayMessagesEnabled: Boolean,
+  ): LocalContinuationEnvelope? {
+    if (isResponsesProtocol() || !gatewayMessagesEnabled) {
+      return null
+    }
+    return LocalContinuationEnvelope(
+      stableAnchor = stableAnchor,
+      transcriptFrontier = cursor.transcript.toList(),
+      gatewayMessages = buildGatewayMessages(
+        contextPrompt = contextPrompt,
+        transcript = cursor.transcript,
+      ),
+    )
+  }
+
+  private fun transcriptDeltaSince(
+    frontier: List<RuntimeConversationMessage>,
+    transcript: List<RuntimeConversationMessage>,
+  ): List<RuntimeConversationMessage>? {
+    if (frontier.size > transcript.size) {
+      return null
+    }
+    if (!transcript.subList(0, frontier.size).equals(frontier)) {
+      return null
+    }
+    return transcript.drop(frontier.size)
+  }
+
+  private fun stableLocalContinuationAnchor(assembledPrompt: com.opencray.runtime.context.AssembledPrompt): String =
+    assembledPrompt.layers
+      .filterNot { layer ->
+        layer.name == "Conversation" ||
+          layer.name == "Recent Working Observations" ||
+          layer.name == "Pruning Summary"
+      }
+      .joinToString(separator = "\n\n") { layer ->
+        buildString {
+          append("[")
+          append(layer.kind.name)
+          append(":")
+          append(layer.name)
+          appendLine("]")
+          append(stableLocalContinuationLayerContent(layer))
+        }
+      }
+
+  private fun stableLocalContinuationLayerContent(
+    layer: com.opencray.runtime.context.PromptLayer,
+  ): String {
+    val trimmed = layer.content.trim()
+    if (layer.name != "Task Metadata") {
+      return trimmed
+    }
+    return trimmed.lineSequence()
+      .filterNot { line -> line.startsWith("task_id=") }
+      .joinToString(separator = "\n")
+      .trim()
   }
 
   private fun parseStructuredToolCall(
@@ -1162,6 +1742,16 @@ class OpenCrayAgentRuntime(
     gatewayResult?.selectedRoute?.model?.let { put("selectedModel", it) }
     gatewayResult?.completionMode?.name?.let { put("completionMode", it) }
     gatewayResult?.status?.name?.let { put("llmStatus", it) }
+    gatewayResult?.providerResponseId?.let { providerResponseId ->
+      if (providerResponseId.isNotBlank()) {
+        put("providerResponseId", providerResponseId)
+      }
+    }
+    gatewayResult?.providerLineageId?.let { providerLineageId ->
+      if (providerLineageId.isNotBlank()) {
+        put("providerLineageId", providerLineageId)
+      }
+    }
     gatewayResult?.metadata?.forEach { (key, value) ->
       if (key.isNotBlank() && value.isNotBlank()) {
         put(key, value)
@@ -1177,6 +1767,15 @@ class OpenCrayAgentRuntime(
       put(LiteLlmMetadataKeys.FALLBACK_PARSER_SUCCEEDED, promptDiagnostics.fallbackParserSucceeded.toString())
       put(LiteLlmMetadataKeys.TOOL_CALL_EVENT_EMITTED, promptDiagnostics.toolCallEventEmitted.toString())
       put(LiteLlmMetadataKeys.TOOL_RESULT_EVENT_EMITTED, promptDiagnostics.toolResultEventEmitted.toString())
+      put("llmRetryCount", promptDiagnostics.llmRetryCount.toString())
+      put("emptyResponseRecoveryCount", promptDiagnostics.emptyResponseRecoveryCount.toString())
+      put("localContinuationUsedCount", promptDiagnostics.localContinuationUsedCount.toString())
+      put("localContinuationFallbackCount", promptDiagnostics.localContinuationFallbackCount.toString())
+      put("localContinuationLastMode", promptDiagnostics.localContinuationLastMode.wireValue)
+      promptDiagnostics.localContinuationLastReason
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { reason -> put("localContinuationLastReason", reason) }
       promptDiagnostics.lastSuccessfulToolName
         ?.trim()
         ?.takeIf(String::isNotBlank)
@@ -1573,6 +2172,15 @@ class OpenCrayAgentRuntime(
           ?.toIntOrNull()
       }
 
+  private fun JsonObject.stringArrayContent(key: String): List<String>? =
+    (this[key] as? JsonArray)
+      ?.mapNotNull { element ->
+        (element as? JsonPrimitive)
+          ?.content
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+      }
+
   private fun runIdFor(task: AgentTask): String =
     task.metadata[RUN_ID_METADATA_KEY]
       ?.takeIf(String::isNotBlank)
@@ -1604,6 +2212,9 @@ class OpenCrayAgentRuntime(
     legacyJsonFallbackEnabled: Boolean,
     actionStartIndex: Int = 0,
     suppressToolCallEventAtActionIndex: Int? = null,
+    localContinuationContextPrompt: String? = null,
+    localContinuationStableAnchor: String? = null,
+    localContinuationGatewayMessagesEnabled: Boolean = false,
   ): PromptBatchExecutionOutcome {
     val batchActions = normalizeToolCallIds(
       actions = parsedBatch.actions,
@@ -1635,8 +2246,12 @@ class OpenCrayAgentRuntime(
       diagnostics.parsedToolCallObserved = true
     }
 
+    val parallelToolCallsEnabled =
+      requestedParallelToolCalls(nativeToolCallingEnabled) == true &&
+        suppressToolCallEventAtActionIndex == null
     var shouldContinueBatch = true
-    for (index in actionStartIndex until batchActions.size) {
+    var index = actionStartIndex
+    while (index < batchActions.size) {
       if (!shouldContinueBatch) {
         break
       }
@@ -1649,7 +2264,7 @@ class OpenCrayAgentRuntime(
             stage = action.stage,
           )
           cursor.transcript += RuntimeConversationMessage(
-            role = RuntimeConversationRole.TOOL,
+            role = RuntimeConversationRole.ASSISTANT,
             kind = RuntimeConversationMessageKind.PROGRESS,
             content = buildProgressTranscriptEntry(
               task = task,
@@ -1663,7 +2278,10 @@ class OpenCrayAgentRuntime(
               text = action.text,
               stage = action.stage,
             ),
+            assistantPhase = RuntimeConversationAssistantPhase.COMMENTARY,
           )
+          index += 1
+          continue
         }
 
         is AgentModelAction.ToolCall -> {
@@ -1706,144 +2324,111 @@ class OpenCrayAgentRuntime(
             )
           }
 
-          val suppressToolCallEvent = suppressToolCallEventAtActionIndex == index
-          if (!suppressToolCallEvent) {
-            cursor.transcript += RuntimeConversationMessage(
-              role = RuntimeConversationRole.ASSISTANT,
-              kind = RuntimeConversationMessageKind.TOOL_CALL,
-              content = buildToolCallTranscriptEntry(
-                task = task,
-                turn = cursor.turn,
-                call = action.call,
-              ),
-              toolCall = action.call.toRuntimeConversationToolCall(),
-            )
-            eventSink.onRunEvent(
+          if (parallelToolCallsEnabled) {
+            val parallelGroup = collectParallelToolActionGroup(
               task = task,
-              event = OpenCrayToolCallEvent(
-                runId = runIdFor(task),
-                taskId = task.id,
-                turn = cursor.turn,
-                call = action.call,
-                emittedAtEpochMs = clock(),
-              ),
+              actions = batchActions,
+              startIndex = index,
+              cursor = cursor,
+              activeSkillCapsule = activeSkillCapsule,
             )
-            diagnostics.toolCallEventEmitted = true
+            if (parallelGroup != null) {
+              when (
+                val outcome = executeParallelToolActionGroup(
+                  task = task,
+                  startedAt = startedAt,
+                  gatewayResult = gatewayResult,
+                  contextReport = contextReport,
+                  batchActions = batchActions,
+                  parsedBatch = parsedBatch,
+                  cursor = cursor,
+                  hooks = hooks,
+                  activeSkillCapsule = activeSkillCapsule,
+                  diagnostics = diagnostics,
+                  group = parallelGroup,
+                  localContinuationContextPrompt = localContinuationContextPrompt,
+                  localContinuationStableAnchor = localContinuationStableAnchor,
+                  localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+                )
+              ) {
+                is ParallelToolActionGroupOutcome.Advance -> {
+                  shouldContinueBatch = outcome.shouldContinueBatch
+                  index = outcome.nextActionIndex
+                  continue
+                }
+
+                is ParallelToolActionGroupOutcome.Terminal -> {
+                  return PromptBatchExecutionOutcome.Terminal(outcome.result)
+                }
+              }
+            }
+          }
+
+          val suppressToolCallEvent = suppressToolCallEventAtActionIndex == index
+          announcePromptToolCall(
+            task = task,
+            turn = cursor.turn,
+            call = action.call,
+            cursor = cursor,
+            diagnostics = diagnostics,
+            suppressToolCallEvent = suppressToolCallEvent,
+          )
+          if (action.call.toolName == "TodoWrite") {
+            cursor.todoWriteUsed = true
           }
           val toolResult = dispatchPromptToolCall(
             task = task,
             turn = cursor.turn,
             call = action.call,
             transcript = cursor.transcript,
+            cursor = cursor,
             hooks = hooks,
             activeSkillCapsule = activeSkillCapsule,
             allowDuplicateShortCircuit = !suppressToolCallEvent,
           )
-          eventSink.onRunEvent(
+          terminalOutcomeForPromptToolCall(
             task = task,
-            event = OpenCrayToolResultEvent(
-              runId = runIdFor(task),
-              taskId = task.id,
-              turn = cursor.turn,
-              call = action.call,
-              result = toolResult,
-              emittedAtEpochMs = clock(),
-            ),
-          )
-          diagnostics.toolResultEventEmitted = true
-          emitMemoryRetrievalEvent(
+            startedAt = startedAt,
+            gatewayResult = gatewayResult,
+            contextReport = contextReport,
+            batchActions = batchActions,
+            parsedBatch = parsedBatch,
+            cursor = cursor,
+            hooks = hooks,
+            diagnostics = diagnostics,
+            index = index,
+            call = action.call,
+            toolResult = toolResult,
+          )?.let { terminalOutcome ->
+            return terminalOutcome
+          }
+          shouldContinueBatch = applyPromptToolResult(
             task = task,
             turn = cursor.turn,
             call = action.call,
-            result = toolResult,
+            toolResult = toolResult,
+            cursor = cursor,
+            diagnostics = diagnostics,
+            localContinuationContextPrompt = localContinuationContextPrompt,
+            localContinuationStableAnchor = localContinuationStableAnchor,
+            localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
           )
-          if (toolResult.status == AgentToolResultStatus.CANCELLED) {
-            return PromptBatchExecutionOutcome.Terminal(
-              cancelledToolExecutionResult(
-                task = task,
-                startedAt = startedAt,
-                finishedAt = clock(),
-                toolResult = toolResult,
-                gatewayResult = gatewayResult,
-                turn = cursor.turn,
-                toolCallCount = cursor.toolCallCount + 1,
-                contextReport = contextReport,
-                diagnostics = diagnostics,
-              ),
-            )
-          }
-          if (toolResult.isSubAgentToolNotAllowed()) {
-            return PromptBatchExecutionOutcome.Terminal(
-              failedToolExecutionResult(
-                task = task,
-                startedAt = startedAt,
-                finishedAt = clock(),
-                toolResult = toolResult,
-                gatewayResult = gatewayResult,
-                turn = cursor.turn,
-                toolCallCount = cursor.toolCallCount + 1,
-                contextReport = contextReport,
-                diagnostics = diagnostics,
-              ),
-            )
-          }
-          if (toolResult.isApprovalRequiredDenial()) {
-            return PromptBatchExecutionOutcome.Terminal(
-              approvalRequiredPromptToolResult(
-                task = task,
-                startedAt = startedAt,
-                finishedAt = clock(),
-                gatewayResult = gatewayResult,
-                contextReport = contextReport,
-                turn = cursor.turn,
-                toolCallCount = cursor.toolCallCount,
-                transcript = cursor.transcript,
-                pendingActions = batchActions,
-                nextActionIndex = index,
-                requiresSingleActionReminder = parsedBatch.requiresSingleActionReminder,
-                toolCall = action.call,
-                toolResult = toolResult,
-                activeSkillName = cursor.activeSkillName,
-                activeSkillActivationSource = cursor.activeSkillActivationSource,
-                hooks = hooks,
-                diagnostics = diagnostics,
-              ),
-            )
-          }
-          if (toolResult.status == AgentToolResultStatus.SUCCESS) {
-            diagnostics.lastSuccessfulToolName = toolResult.toolName
-            val activatedSkillName = activatedSkillNameFrom(
-              call = action.call,
-              result = toolResult,
-            )
-            if (!activatedSkillName.isNullOrBlank()) {
-              cursor.activeSkillName = activatedSkillName
-              cursor.activeSkillActivationSource = ACTIVATION_SOURCE_SKILL_READ
-            }
-          }
-          cursor.transcript += RuntimeConversationMessage(
-            role = RuntimeConversationRole.TOOL,
-            kind = RuntimeConversationMessageKind.TOOL_RESULT,
-            content = buildToolResultTranscriptEntry(
-              task = task,
-              turn = cursor.turn,
-              call = action.call,
-              result = toolResult,
-            ),
-            toolResult = RuntimeConversationToolResult(
-              toolCallId = action.call.id,
-              toolName = toolResult.toolName,
-              status = toolResult.status.name.lowercase(),
-              isError = toolResult.status != AgentToolResultStatus.SUCCESS,
-            ),
-          )
-          cursor.toolCallCount += 1
-          if (toolResult.status != AgentToolResultStatus.SUCCESS) {
-            shouldContinueBatch = false
-          }
+          index += 1
+          continue
         }
 
         is AgentModelAction.Final -> if (!containsToolAction) {
+          val todoPlanClosureObservation = todoPlanClosureObservation(cursor)
+          if (todoPlanClosureObservation != null) {
+            cursor.transcript += RuntimeConversationMessage(
+              role = RuntimeConversationRole.TOOL,
+              content = todoPlanClosureObservation,
+            )
+            invalidateResponsesLineage(cursor)
+            invalidateLocalContinuation(cursor)
+            shouldContinueBatch = false
+            continue
+          }
           emitAssistantEvent(
             task = task,
             turn = cursor.turn,
@@ -1869,6 +2454,7 @@ class OpenCrayAgentRuntime(
           )
         }
       }
+      index += 1
     }
 
     if (parsedBatch.requiresSingleActionReminder) {
@@ -1884,11 +2470,415 @@ class OpenCrayAgentRuntime(
     return PromptBatchExecutionOutcome.Continue
   }
 
+  private fun collectParallelToolActionGroup(
+    task: AgentTask,
+    actions: List<AgentModelAction>,
+    startIndex: Int,
+    cursor: PromptTurnCursor,
+    activeSkillCapsule: ActiveSkillCapsule?,
+  ): List<ParallelToolActionStep>? {
+    val remainingToolBudget = if (config.maxToolCalls > 0) {
+      (config.maxToolCalls - cursor.toolCallCount).coerceAtLeast(0)
+    } else {
+      Int.MAX_VALUE
+    }
+    if (remainingToolBudget < 2) {
+      return null
+    }
+    val transcriptSnapshot = cursor.transcript.toList()
+    val seenDuplicateSignatures = linkedSetOf<String>()
+    val group = mutableListOf<ParallelToolActionStep>()
+    var index = startIndex
+    while (index < actions.size && group.size < remainingToolBudget) {
+      val action = actions[index] as? AgentModelAction.ToolCall ?: break
+      if (
+        !canExecutePromptToolCallInParallel(
+          task = task,
+          call = action.call,
+          transcript = transcriptSnapshot,
+          activeSkillCapsule = activeSkillCapsule,
+        )
+      ) {
+        break
+      }
+      val duplicateSignature = recentToolObservationSupport.duplicateDiscoverySignature(action.call)
+      if (duplicateSignature != null && !seenDuplicateSignatures.add(duplicateSignature)) {
+        break
+      }
+      group += ParallelToolActionStep(
+        index = index,
+        call = action.call,
+      )
+      index += 1
+    }
+    return group.takeIf { candidates -> candidates.size > 1 }
+  }
+
+  private fun canExecutePromptToolCallInParallel(
+    task: AgentTask,
+    call: AgentToolCall,
+    transcript: List<RuntimeConversationMessage>,
+    activeSkillCapsule: ActiveSkillCapsule?,
+  ): Boolean {
+    if (
+      gateActiveSkillToolCall(
+        call = call,
+        activeSkillCapsule = activeSkillCapsule,
+      ) != null
+    ) {
+      return false
+    }
+    if (
+      gateDisabledSessionToolCall(
+        call = call,
+        memoryToolsEnabled = config.sessionContext.memoryToolsEnabled,
+      ) != null
+    ) {
+      return false
+    }
+    if (maybeShortCircuitDuplicateDiscoveryCall(call = call, transcript = transcript) != null) {
+      return false
+    }
+    return toolDispatcher.canExecuteInParallel(task = task, call = call)
+  }
+
+  private fun executeParallelToolActionGroup(
+    task: AgentTask,
+    startedAt: Long,
+    gatewayResult: LiteLlmGatewayResult?,
+    contextReport: ContextAssemblyReport?,
+    batchActions: List<AgentModelAction>,
+    parsedBatch: ParsedModelActionBatch.Actions,
+    cursor: PromptTurnCursor,
+    hooks: RuntimeExecutionHooks,
+    activeSkillCapsule: ActiveSkillCapsule?,
+    diagnostics: PromptRunDiagnostics,
+    group: List<ParallelToolActionStep>,
+    localContinuationContextPrompt: String?,
+    localContinuationStableAnchor: String?,
+    localContinuationGatewayMessagesEnabled: Boolean,
+  ): ParallelToolActionGroupOutcome {
+    group.forEach { step ->
+      announcePromptToolCall(
+        task = task,
+        turn = cursor.turn,
+        call = step.call,
+        cursor = cursor,
+        diagnostics = diagnostics,
+        suppressToolCallEvent = false,
+      )
+    }
+    val dispatches = dispatchPromptToolCallsInParallel(
+      task = task,
+      turn = cursor.turn,
+      calls = group,
+      transcript = cursor.transcript.toList(),
+      cursor = cursor,
+      hooks = hooks,
+      activeSkillCapsule = activeSkillCapsule,
+    )
+    var shouldContinueBatch = true
+    for (dispatch in dispatches) {
+      terminalOutcomeForPromptToolCall(
+        task = task,
+        startedAt = startedAt,
+        gatewayResult = gatewayResult,
+        contextReport = contextReport,
+        batchActions = batchActions,
+        parsedBatch = parsedBatch,
+        cursor = cursor,
+        hooks = hooks,
+        diagnostics = diagnostics,
+        index = dispatch.step.index,
+        call = dispatch.step.call,
+        toolResult = dispatch.result,
+      )?.let { terminalOutcome ->
+        return ParallelToolActionGroupOutcome.Terminal(terminalOutcome.result)
+      }
+      shouldContinueBatch = applyPromptToolResult(
+        task = task,
+        turn = cursor.turn,
+        call = dispatch.step.call,
+        toolResult = dispatch.result,
+        cursor = cursor,
+        diagnostics = diagnostics,
+        localContinuationContextPrompt = localContinuationContextPrompt,
+        localContinuationStableAnchor = localContinuationStableAnchor,
+        localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+      )
+      if (!shouldContinueBatch) {
+        break
+      }
+    }
+    return ParallelToolActionGroupOutcome.Advance(
+      nextActionIndex = group.last().index + 1,
+      shouldContinueBatch = shouldContinueBatch,
+    )
+  }
+
+  private fun dispatchPromptToolCallsInParallel(
+    task: AgentTask,
+    turn: Int,
+    calls: List<ParallelToolActionStep>,
+    transcript: List<RuntimeConversationMessage>,
+    cursor: PromptTurnCursor,
+    hooks: RuntimeExecutionHooks,
+    activeSkillCapsule: ActiveSkillCapsule?,
+  ): List<ParallelToolDispatch> {
+    val executor = Executors.newFixedThreadPool(calls.size)
+    try {
+      val futures = calls.map { step ->
+        executor.submit<ParallelToolDispatch> {
+          val result = runCatching {
+            dispatchPromptToolCall(
+              task = task,
+              turn = turn,
+              call = step.call,
+              transcript = transcript,
+              cursor = cursor,
+              hooks = hooks,
+              activeSkillCapsule = activeSkillCapsule,
+              allowDuplicateShortCircuit = false,
+            )
+          }.getOrElse { error ->
+            unexpectedPromptToolDispatchFailure(
+              call = step.call,
+              error = error,
+            )
+          }
+          ParallelToolDispatch(
+            step = step,
+            result = result,
+          )
+        }
+      }
+      return futures.map { future -> future.get() }
+    } finally {
+      executor.shutdownNow()
+    }
+  }
+
+  private fun announcePromptToolCall(
+    task: AgentTask,
+    turn: Int,
+    call: AgentToolCall,
+    cursor: PromptTurnCursor,
+    diagnostics: PromptRunDiagnostics,
+    suppressToolCallEvent: Boolean,
+  ) {
+    if (suppressToolCallEvent) {
+      return
+    }
+    cursor.transcript += RuntimeConversationMessage(
+      role = RuntimeConversationRole.ASSISTANT,
+      kind = RuntimeConversationMessageKind.TOOL_CALL,
+      content = buildToolCallTranscriptEntry(
+        task = task,
+        turn = turn,
+        call = call,
+      ),
+      toolCall = call.toRuntimeConversationToolCall(),
+    )
+    eventSink.onRunEvent(
+      task = task,
+      event = OpenCrayToolCallEvent(
+        runId = runIdFor(task),
+        taskId = task.id,
+        turn = turn,
+        call = call,
+        emittedAtEpochMs = clock(),
+      ),
+    )
+    diagnostics.toolCallEventEmitted = true
+  }
+
+  private fun terminalOutcomeForPromptToolCall(
+    task: AgentTask,
+    startedAt: Long,
+    gatewayResult: LiteLlmGatewayResult?,
+    contextReport: ContextAssemblyReport?,
+    batchActions: List<AgentModelAction>,
+    parsedBatch: ParsedModelActionBatch.Actions,
+    cursor: PromptTurnCursor,
+    hooks: RuntimeExecutionHooks,
+    diagnostics: PromptRunDiagnostics,
+    index: Int,
+    call: AgentToolCall,
+    toolResult: AgentToolResult,
+  ): PromptBatchExecutionOutcome.Terminal? {
+    if (toolResult.status == AgentToolResultStatus.CANCELLED) {
+      emitToolResultEvent(
+        task = task,
+        turn = cursor.turn,
+        call = call,
+        result = toolResult,
+        diagnostics = diagnostics,
+      )
+      return PromptBatchExecutionOutcome.Terminal(
+        cancelledToolExecutionResult(
+          task = task,
+          startedAt = startedAt,
+          finishedAt = clock(),
+          toolResult = toolResult,
+          gatewayResult = gatewayResult,
+          turn = cursor.turn,
+          toolCallCount = cursor.toolCallCount + 1,
+          contextReport = contextReport,
+          diagnostics = diagnostics,
+        ),
+      )
+    }
+    if (toolResult.isSubAgentToolNotAllowed()) {
+      emitToolResultEvent(
+        task = task,
+        turn = cursor.turn,
+        call = call,
+        result = toolResult,
+        diagnostics = diagnostics,
+      )
+      return PromptBatchExecutionOutcome.Terminal(
+        failedToolExecutionResult(
+          task = task,
+          startedAt = startedAt,
+          finishedAt = clock(),
+          toolResult = toolResult,
+          gatewayResult = gatewayResult,
+          turn = cursor.turn,
+          toolCallCount = cursor.toolCallCount + 1,
+          contextReport = contextReport,
+          diagnostics = diagnostics,
+        ),
+      )
+    }
+    if (toolResult.isApprovalRequiredDenial()) {
+      emitToolResultEvent(
+        task = task,
+        turn = cursor.turn,
+        call = call,
+        result = toolResult,
+        diagnostics = diagnostics,
+      )
+      return PromptBatchExecutionOutcome.Terminal(
+        approvalRequiredPromptToolResult(
+          task = task,
+          startedAt = startedAt,
+          finishedAt = clock(),
+          gatewayResult = gatewayResult,
+          contextReport = contextReport,
+          turn = cursor.turn,
+          toolCallCount = cursor.toolCallCount,
+          transcript = cursor.transcript,
+          pendingActions = batchActions,
+          nextActionIndex = index,
+          requiresSingleActionReminder = parsedBatch.requiresSingleActionReminder,
+          toolCall = call,
+          toolResult = toolResult,
+          activeSkillName = cursor.activeSkillName,
+          activeSkillActivationSource = cursor.activeSkillActivationSource,
+          responsesPreviousResponseId = cursor.responsesPreviousResponseId,
+          responsesProviderLineageId = cursor.responsesProviderLineageId,
+          responsesLineageTrusted = cursor.responsesLineageTrusted,
+          responsesPendingMessages = cursor.responsesPendingMessages.toList(),
+          subAgentHandles = cursor.subAgentHandles.values.toList(),
+          hooks = hooks,
+          diagnostics = diagnostics,
+        ),
+      )
+    }
+    return null
+  }
+
+  private fun applyPromptToolResult(
+    task: AgentTask,
+    turn: Int,
+    call: AgentToolCall,
+    toolResult: AgentToolResult,
+    cursor: PromptTurnCursor,
+    diagnostics: PromptRunDiagnostics,
+    localContinuationContextPrompt: String?,
+    localContinuationStableAnchor: String?,
+    localContinuationGatewayMessagesEnabled: Boolean,
+  ): Boolean {
+    if (toolResult.status == AgentToolResultStatus.SUCCESS) {
+      diagnostics.lastSuccessfulToolName = toolResult.toolName
+      val activatedSkillName = activatedSkillNameFrom(
+        call = call,
+        result = toolResult,
+      )
+      if (!activatedSkillName.isNullOrBlank()) {
+        cursor.activeSkillName = activatedSkillName
+        cursor.activeSkillActivationSource = ACTIVATION_SOURCE_SKILL_READ
+      }
+    }
+    cursor.transcript += RuntimeConversationMessage(
+      role = RuntimeConversationRole.TOOL,
+      kind = RuntimeConversationMessageKind.TOOL_RESULT,
+      content = buildToolResultTranscriptEntry(
+        task = task,
+        turn = turn,
+        call = call,
+        result = toolResult,
+      ),
+      toolResult = RuntimeConversationToolResult(
+        toolCallId = call.id,
+        toolName = toolResult.toolName,
+        status = toolResult.status.name.lowercase(),
+        isError = toolResult.status != AgentToolResultStatus.SUCCESS,
+      ),
+    )
+    if (isResponsesProtocol() && hasResponsesLineage(cursor)) {
+      cursor.responsesPendingMessages += LiteLlmGatewayMessage(
+        role = LiteLlmGatewayMessageRole.TOOL,
+        toolResult = LiteLlmGatewayToolResult(
+          toolCallId = call.id,
+          toolName = toolResult.toolName,
+          content = toolResult.content,
+          isError = toolResult.status != AgentToolResultStatus.SUCCESS,
+          exitCode = toolResult.exitCode,
+          stdout = toolResult.stdout,
+          stderr = toolResult.stderr,
+          errorCode = toolResult.errorCode,
+          errorMessage = toolResult.errorMessage,
+          metadata = toolResult.metadata,
+        ),
+      )
+    }
+    cursor.toolCallCount += 1
+    val eventToolResult = toolResult.copy(
+      metadata = toolResult.metadata + generalResumeCheckpointMetadata(
+        cursor = cursor,
+        localContinuationContextPrompt = localContinuationContextPrompt,
+        localContinuationStableAnchor = localContinuationStableAnchor,
+        localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+      ),
+    )
+    emitToolResultEvent(
+      task = task,
+      turn = turn,
+      call = call,
+      result = eventToolResult,
+      diagnostics = diagnostics,
+    )
+    return toolResult.status == AgentToolResultStatus.SUCCESS
+  }
+
+  private fun unexpectedPromptToolDispatchFailure(
+    call: AgentToolCall,
+    error: Throwable,
+  ): AgentToolResult = AgentToolResult(
+    toolName = call.toolName,
+    status = AgentToolResultStatus.FAILED,
+    content = error.message ?: "${call.toolName} failed.",
+    errorCode = "TOOL_EXECUTION_FAILED",
+    errorMessage = error.message ?: error::class.java.simpleName,
+  )
+
   private fun dispatchPromptToolCall(
     task: AgentTask,
     turn: Int,
     call: AgentToolCall,
     transcript: List<RuntimeConversationMessage>,
+    cursor: PromptTurnCursor,
     hooks: RuntimeExecutionHooks,
     activeSkillCapsule: ActiveSkillCapsule?,
     allowDuplicateShortCircuit: Boolean,
@@ -1905,6 +2895,7 @@ class OpenCrayAgentRuntime(
     transcript = transcript,
     hooks = hooks,
     activeSkillCapsule = activeSkillCapsule,
+    cursor = cursor,
   ) ?: if (allowDuplicateShortCircuit) {
     maybeShortCircuitDuplicateDiscoveryCall(
       call = call,
@@ -1969,6 +2960,11 @@ class OpenCrayAgentRuntime(
     toolResult: AgentToolResult,
     activeSkillName: String?,
     activeSkillActivationSource: String?,
+    responsesPreviousResponseId: String?,
+    responsesProviderLineageId: String?,
+    responsesLineageTrusted: Boolean,
+    responsesPendingMessages: List<LiteLlmGatewayMessage>,
+    subAgentHandles: List<SubAgentHandleState>,
     hooks: RuntimeExecutionHooks,
     diagnostics: PromptRunDiagnostics,
   ): ExecutionResult {
@@ -2005,6 +3001,11 @@ class OpenCrayAgentRuntime(
             requiresSingleActionReminder = requiresSingleActionReminder,
             activeSkillName = activeSkillName,
             activeSkillActivationSource = activeSkillActivationSource,
+            responsesPreviousResponseId = responsesPreviousResponseId,
+            responsesProviderLineageId = responsesProviderLineageId,
+            responsesLineageTrusted = responsesLineageTrusted,
+            responsesPendingMessages = responsesPendingMessages.map(OpenCraySerializableGatewayMessage::from),
+            subAgentHandles = subAgentHandles,
           ),
           json = config.json,
         ),
@@ -2017,19 +3018,26 @@ class OpenCrayAgentRuntime(
   private fun applyTurnStartSupplements(
     task: AgentTask,
     turn: Int,
-    transcript: MutableList<RuntimeConversationMessage>,
+    cursor: PromptTurnCursor,
   ) {
     val supplements = config.supplementInputProvider(runIdFor(task), task.id)
       .sortedBy(OpenCraySupplementInput::createdAtEpochMs)
     if (supplements.isEmpty()) {
       return
     }
+    val checkpoint = supplementCheckpointFor(cursor.transcript)
     supplements.forEach { supplement ->
       val text = supplement.text.trim().takeIf(String::isNotBlank) ?: return@forEach
-      transcript += RuntimeConversationMessage(
+      cursor.transcript += RuntimeConversationMessage(
         role = RuntimeConversationRole.USER,
         content = text,
       )
+      if (isResponsesProtocol() && hasResponsesLineage(cursor)) {
+        cursor.responsesPendingMessages += LiteLlmGatewayMessage(
+          role = LiteLlmGatewayMessageRole.USER,
+          content = text,
+        )
+      }
       eventSink.onRunEvent(
         task = task,
         event = OpenCraySupplementEvent(
@@ -2038,11 +3046,23 @@ class OpenCrayAgentRuntime(
           turn = turn,
           entryId = supplement.entryId,
           text = text,
+          checkpoint = checkpoint,
+          metadata = generalResumeCheckpointMetadata(cursor = cursor),
           emittedAtEpochMs = clock(),
         ),
       )
     }
   }
+
+  private fun supplementCheckpointFor(
+    transcript: List<RuntimeConversationMessage>,
+  ): String = transcript.lastOrNull()
+    ?.takeIf { message ->
+      message.role == RuntimeConversationRole.TOOL &&
+        message.kind == RuntimeConversationMessageKind.TOOL_RESULT
+    }
+    ?.let { SUPPLEMENT_CHECKPOINT_POST_TOOL_PRE_MODEL }
+    ?: SUPPLEMENT_CHECKPOINT_TURN_START
 
   private fun remainingTurnBudget(turn: Int): Int? =
     config.maxTurns
@@ -2133,7 +3153,7 @@ class OpenCrayAgentRuntime(
         taskId = task.id,
         turn = turn,
         text = text,
-        responseFormat = responseFormat,
+        responseFormat = responseFormat.takeIf(String::isNotBlank),
         isFinal = isFinal,
         emittedAtEpochMs = clock(),
       ),
@@ -2148,11 +3168,12 @@ class OpenCrayAgentRuntime(
   ) {
     eventSink.onRunEvent(
       task = task,
-      event = OpenCrayProgressEvent(
+      event = OpenCrayAssistantEvent(
         runId = runIdFor(task),
         taskId = task.id,
         turn = turn,
         text = text,
+        isFinal = false,
         stage = stage,
         emittedAtEpochMs = clock(),
       ),
@@ -2327,6 +3348,8 @@ class OpenCrayAgentRuntime(
   ): String = config.json.encodeToString(
     JsonObject.serializer(),
     buildJsonObject {
+      put("event_kind", "assistant_phase")
+      put("phase", "commentary")
       put("run_id", runIdFor(task))
       put("task_id", task.id)
       put("turn", turn)
@@ -2368,6 +3391,19 @@ class OpenCrayAgentRuntime(
         }
 
         RuntimeConversationRole.ASSISTANT -> {
+          if (entry.kind == RuntimeConversationMessageKind.PROGRESS) {
+            val commentary = entry.progress?.text?.trim()?.takeIf(String::isNotBlank)
+              ?: entry.content.trim().takeIf(String::isNotBlank)
+            commentary?.let { commentaryText ->
+              messages += LiteLlmGatewayMessage(
+                role = LiteLlmGatewayMessageRole.ASSISTANT,
+                content = commentaryText,
+                assistantPhase = entry.assistantPhase?.toLiteLlmAssistantPhase()
+                  ?: LiteLlmAssistantPhase.COMMENTARY,
+              )
+            }
+            return@forEach
+          }
           val toolCall = runtimeToolCallFor(entry)
           if (toolCall != null) {
             val normalizedToolCall = toolCall.id
@@ -2387,17 +3423,28 @@ class OpenCrayAgentRuntime(
                   reason = normalizedToolCall.reason,
                 ),
               ),
+              assistantPhase = entry.assistantPhase?.toLiteLlmAssistantPhase(),
             )
           } else {
             messages += LiteLlmGatewayMessage(
               role = LiteLlmGatewayMessageRole.ASSISTANT,
               content = entry.content,
+              assistantPhase = entry.assistantPhase?.toLiteLlmAssistantPhase(),
             )
           }
         }
 
         RuntimeConversationRole.TOOL -> {
           if (entry.kind == RuntimeConversationMessageKind.PROGRESS) {
+            val progressText = entry.progress?.text?.trim()?.takeIf(String::isNotBlank)
+              ?: entry.content.trim().takeIf(String::isNotBlank)
+            progressText?.let { commentary ->
+              messages += LiteLlmGatewayMessage(
+                role = LiteLlmGatewayMessageRole.ASSISTANT,
+                content = commentary,
+                assistantPhase = LiteLlmAssistantPhase.COMMENTARY,
+              )
+            }
             return@forEach
           }
           val observation = runtimeToolResultFor(entry) ?: return@forEach
@@ -2422,6 +3469,21 @@ class OpenCrayAgentRuntime(
       }
     }
     return messages
+  }
+
+  private fun PromptRunDiagnostics.recordGatewayMessagePlan(
+    plan: GatewayMessagePlan,
+  ) {
+    localContinuationLastMode = plan.mode
+    localContinuationLastReason = plan.reason
+    if (plan.mode == LocalContinuationMode.LOCAL_DELTA) {
+      localContinuationUsedCount += 1
+    } else if (
+      plan.mode == LocalContinuationMode.FULL_REBUILD &&
+      (plan.reason == "anchor_changed" || plan.reason == "transcript_mismatch")
+    ) {
+      localContinuationFallbackCount += 1
+    }
   }
 
   private fun parseToolCallTranscriptEntry(content: String): AgentToolCall? {
@@ -2522,6 +3584,11 @@ class OpenCrayAgentRuntime(
       reason = reason,
     )
 
+  private fun RuntimeConversationAssistantPhase.toLiteLlmAssistantPhase(): LiteLlmAssistantPhase = when (this) {
+    RuntimeConversationAssistantPhase.COMMENTARY -> LiteLlmAssistantPhase.COMMENTARY
+    RuntimeConversationAssistantPhase.FINAL_ANSWER -> LiteLlmAssistantPhase.FINAL_ANSWER
+  }
+
   private fun AgentModelAction.toSerializableModelAction(): OpenCraySerializableModelAction = when (this) {
     is AgentModelAction.Progress -> OpenCraySerializableModelAction.Progress(
       text = text,
@@ -2570,15 +3637,48 @@ class OpenCrayAgentRuntime(
     transcript: List<RuntimeConversationMessage>,
     hooks: RuntimeExecutionHooks,
     activeSkillCapsule: ActiveSkillCapsule?,
+    cursor: PromptTurnCursor?,
   ): AgentToolResult? {
+    val canonicalToolName = canonicalSubAgentToolName(call.toolName) ?: return null
+    if (!isSubAgentToolExposed(canonicalToolName)) {
+      return toolDispatcher.dispatch(task = task, call = call, hooks = hooks)
+    }
+    when (canonicalToolName) {
+      "spawn_agent" -> return spawnSubAgentHandle(
+        task = task,
+        turn = turn,
+        call = call,
+        cursor = cursor,
+        activeSkillCapsule = activeSkillCapsule,
+      )
+
+      "wait_agent" -> return waitOnSubAgentHandle(
+        task = task,
+        turn = turn,
+        call = call,
+        transcript = transcript,
+        cursor = cursor,
+        hooks = hooks,
+        activeSkillCapsule = activeSkillCapsule,
+      )
+
+      "send_input" -> return sendInputToSubAgentHandle(
+        call = call,
+        cursor = cursor,
+      )
+
+      "close_agent" -> return closeSubAgentHandle(
+        task = task,
+        turn = turn,
+        call = call,
+        cursor = cursor,
+      )
+
+      "Task" -> Unit
+      else -> return null
+    }
     if (!call.toolName.trim().equals("Task", ignoreCase = true)) {
       return null
-    }
-    if (toolDispatcher.definitions().none { definition ->
-        definition.name.trim().equals("Task", ignoreCase = true)
-      }
-    ) {
-      return toolDispatcher.dispatch(task = task, call = call, hooks = hooks)
     }
     val description = call.arguments.primitiveContent("description")
       ?.trim()
@@ -2689,6 +3789,30 @@ class OpenCrayAgentRuntime(
     check(approvedSubAgentResume == null || rejectedSubAgentResume == null) {
       "Only one subagent approval continuation can be pending at a time."
     }
+    val resumeToolName = approvedSubAgentResume?.approvedToolName
+      ?: rejectedSubAgentResume?.approvedToolName
+    if (resumeToolName != null) {
+      emitSubAgentEvent(
+        task = task,
+        turn = turn,
+        phase = OpenCraySubAgentPhase.RESUMED,
+        childTask = childTask,
+        childRunId = childRunId,
+        childTaskId = childPromptTask.id,
+        summary = if (approvedSubAgentResume != null) {
+          "Delegated child run resumed after approval for $resumeToolName."
+        } else {
+          "Delegated child run resumed after rejection for $resumeToolName."
+        },
+        snapshot = SubAgentExecutionSnapshot.running(
+          headline = if (approvedSubAgentResume != null) {
+            "Delegated child run resumed after approval."
+          } else {
+            "Delegated child run resumed after rejection."
+          },
+        ),
+      )
+    }
     val childToolDispatcher = when {
       approvedSubAgentResume != null -> toolDispatcher.withApprovalGrant(
         approvedTaskId = childPromptTask.id,
@@ -2743,6 +3867,640 @@ class OpenCrayAgentRuntime(
       childResult = childResult,
       compressedChildResult = compressedChildResult,
     )
+  }
+
+  private fun canonicalSubAgentToolName(toolName: String): String? = when (toolName.trim().lowercase()) {
+    "task" -> "Task"
+    "spawn_agent",
+    "spawnagent",
+    -> "spawn_agent"
+
+    "wait_agent",
+    "waitagent",
+    -> "wait_agent"
+
+    "send_input",
+    "sendinput",
+    -> "send_input"
+
+    "close_agent",
+    "closeagent",
+    -> "close_agent"
+
+    else -> null
+  }
+
+  private fun isSubAgentToolExposed(toolName: String): Boolean = toolDispatcher.definitions().any { definition ->
+    definition.name.trim().equals(toolName, ignoreCase = true)
+  }
+
+  private fun spawnSubAgentHandle(
+    task: AgentTask,
+    turn: Int,
+    call: AgentToolCall,
+    cursor: PromptTurnCursor?,
+    activeSkillCapsule: ActiveSkillCapsule?,
+  ): AgentToolResult {
+    val description = call.arguments.primitiveContent("description")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return invalidSubAgentCallResult(call, "spawn_agent description must not be blank.")
+    val prompt = call.arguments.primitiveContent("prompt")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return invalidSubAgentCallResult(call, "spawn_agent prompt must not be blank.")
+    val subagentType = call.arguments.primitiveContent("subagent_type")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return invalidSubAgentCallResult(call, "spawn_agent subagent_type must not be blank.")
+    val profile = BuiltInSubAgentProfiles.resolve(subagentType)
+      ?: return invalidSubAgentCallResult(
+        call = call,
+        message = "Unknown spawn_agent subagent_type '$subagentType'.",
+      )
+    val requestedContextMode = call.arguments.primitiveContent("context_mode")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val resolvedContextMode = when {
+      requestedContextMode == null -> profile.defaultContextMode
+      else -> SubAgentContextMode.fromWireValue(requestedContextMode)
+        ?: return invalidSubAgentCallResult(
+          call = call,
+          message = "Unknown spawn_agent context_mode '$requestedContextMode'. Expected one of: minimal, delegated, mirrored.",
+        )
+    }
+    val parentDepth = task.metadata[SubAgentMetadataKeys.DEPTH]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.toIntOrNull()
+      ?: 0
+    val childDepth = parentDepth + 1
+    if (childDepth > config.maxSubAgentDepth) {
+      return AgentToolResult(
+        toolName = call.toolName,
+        status = AgentToolResultStatus.FAILED,
+        content = "spawn_agent delegation depth exceeded the configured child-runtime limit.",
+        errorCode = "SUBAGENT_DEPTH_EXCEEDED",
+        errorMessage = "spawn_agent delegation depth exceeded the configured child-runtime limit.",
+        metadata = mapOf(
+          "subagentType" to profile.id,
+          "subagentDepth" to childDepth.toString(),
+          "maxSubAgentDepth" to config.maxSubAgentDepth.toString(),
+        ),
+      )
+    }
+    val childTask = SubAgentTask(
+      description = description,
+      prompt = prompt,
+      subagentType = profile.id,
+      contextMode = resolvedContextMode,
+      parentRunId = runIdFor(task),
+      parentTaskId = task.id,
+      parentTurn = turn,
+      depth = childDepth,
+      activeSkillName = activeSkillCapsule?.name,
+    )
+    val delegationPlan = toolDispatcher.planTaskDelegation(
+      task = task,
+      toolName = "spawn_agent",
+      description = description,
+      prompt = prompt,
+      subagentType = profile.id,
+      contextMode = childTask.contextMode.wireValue,
+      allowedToolNames = profile.allowedToolNames,
+    )
+    toolDispatcher.gateTaskDelegation(
+      plan = delegationPlan,
+      toolName = "spawn_agent",
+    )?.let { deniedResult ->
+      return deniedResult.copy(toolName = call.toolName)
+    }
+    val handles = subAgentHandleRegistry(cursor)
+    val requestedAgentId = call.arguments.primitiveContent("agent_id")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val createdAt = clock()
+    val agentId = requestedAgentId ?: "agent-${UUID.randomUUID().toString().take(8)}"
+    if (handles.containsKey(agentId)) {
+      return AgentToolResult(
+        toolName = call.toolName,
+        status = AgentToolResultStatus.FAILED,
+        content = "Delegated child handle '$agentId' already exists.",
+        errorCode = "SUBAGENT_HANDLE_EXISTS",
+        errorMessage = "Delegated child handle '$agentId' already exists.",
+        metadata = mapOf("agentId" to agentId),
+      )
+    }
+    val handle = SubAgentHandleState.queued(
+      agentId = agentId,
+      childRunId = "subagent-${runIdFor(task)}-$turn-${UUID.randomUUID().toString().take(8)}",
+      childTaskId = "subagent-task-${UUID.randomUUID().toString().take(8)}",
+      description = description,
+      prompt = prompt,
+      subagentType = profile.id,
+      contextMode = childTask.contextMode.wireValue,
+      parentRunId = runIdFor(task),
+      parentTaskId = task.id,
+      parentTurn = turn,
+      depth = childDepth,
+      activeSkillName = activeSkillCapsule?.name,
+      createdAtEpochMs = createdAt,
+    )
+    handles[agentId] = handle
+    emitSubAgentEvent(
+      task = task,
+      turn = turn,
+      phase = OpenCraySubAgentPhase.STARTED,
+      childTask = childTask,
+      childRunId = handle.childRunId,
+      childTaskId = handle.childTaskId,
+      summary = handle.snapshot.summaryText(),
+      snapshot = handle.snapshot,
+    )
+    return AgentToolResult(
+      toolName = call.toolName,
+      status = AgentToolResultStatus.SUCCESS,
+      content = "Queued delegated child handle '$agentId'.\n${handle.snapshot.summaryText()}",
+      metadata = toolDispatcher.taskDelegationResultMetadata(
+        plan = delegationPlan,
+        metadata = subAgentHandleMetadata(handle),
+      ),
+    )
+  }
+
+  private fun waitOnSubAgentHandle(
+    task: AgentTask,
+    turn: Int,
+    call: AgentToolCall,
+    transcript: List<RuntimeConversationMessage>,
+    cursor: PromptTurnCursor?,
+    hooks: RuntimeExecutionHooks,
+    activeSkillCapsule: ActiveSkillCapsule?,
+  ): AgentToolResult {
+    val handles = subAgentHandleRegistry(cursor)
+    val agentId = resolveSubAgentHandleId(call)
+      ?: return invalidSubAgentCallResult(call, "wait_agent agent_id must not be blank.")
+    val handle = handles[agentId] ?: return unknownSubAgentHandleResult(
+      call = call,
+      agentId = agentId,
+    )
+    if (isTerminalSubAgentState(handle.snapshot.state) && handle.pendingApprovalResume == null) {
+      return storedSubAgentHandleResult(call = call, handle = handle)
+    }
+    val approvalContinuation = takePendingApprovalContinuation(
+      handle = handle,
+      handles = handles,
+    )
+    if (handle.pendingApprovalResume != null && approvalContinuation == null) {
+      return storedSubAgentHandleResult(call = call, handle = handle)
+    }
+    val profile = BuiltInSubAgentProfiles.resolve(handle.subagentType)
+      ?: return invalidSubAgentCallResult(
+        call = call,
+        message = "Unknown delegated subagent_type '${handle.subagentType}'.",
+      )
+    val runningSnapshot = SubAgentExecutionSnapshot.backgroundRunning(
+      headline = when {
+        approvalContinuation?.approved == true -> "Queued delegated child run resumed after approval."
+        approvalContinuation?.approved == false -> "Queued delegated child run resumed after rejection."
+        else -> "Queued delegated child run started."
+      },
+    )
+    val runningHandle = handle.copy(
+      snapshot = runningSnapshot,
+      pendingApprovalResume = null,
+      updatedAtEpochMs = clock(),
+    )
+    handles[agentId] = runningHandle
+    emitSubAgentEvent(
+      task = task,
+      turn = turn,
+      phase = OpenCraySubAgentPhase.RESUMED,
+      childTask = runningHandle.toTask(),
+      childRunId = runningHandle.childRunId,
+      childTaskId = runningHandle.childTaskId,
+      summary = when {
+        approvalContinuation?.approved == true ->
+          "Delegated child run resumed after approval for ${approvalContinuation.resume.approvedToolName}."
+        approvalContinuation?.approved == false ->
+          "Delegated child run resumed after rejection for ${approvalContinuation.resume.approvedToolName}."
+        else -> "Queued delegated child run started."
+      },
+      snapshot = runningSnapshot,
+    )
+    val childResult = executeSubAgentHandleRuntime(
+      parentTask = task,
+      transcript = transcript,
+      hooks = hooks,
+      activeSkillCapsule = activeSkillCapsule,
+      handle = runningHandle,
+      profile = profile,
+      approvalContinuation = approvalContinuation,
+    )
+    val compressedChildResult = SubAgentResultCompressor.compress(childResult)
+    val childApprovalResume = childApprovalResume(
+      childResult = childResult,
+      agentId = runningHandle.agentId,
+      childRunId = runningHandle.childRunId,
+      childTaskId = runningHandle.childTaskId,
+    )
+    val updatedHandle = runningHandle.copy(
+      snapshot = compressedChildResult,
+      pendingApprovalResume = childApprovalResume,
+      childExecutionStatus = childResult.status.name,
+      childTurnCount = childResult.metadata["turnCount"]?.toIntOrNull(),
+      childToolCallCount = childResult.metadata["toolCallCount"]?.toIntOrNull(),
+      updatedAtEpochMs = clock(),
+    )
+    handles[agentId] = updatedHandle
+    emitSubAgentEvent(
+      task = task,
+      turn = turn,
+      phase = when (childResult.status) {
+        ExecutionStatus.SUCCESS -> OpenCraySubAgentPhase.COMPLETED
+        ExecutionStatus.CANCELLED -> OpenCraySubAgentPhase.CANCELLED
+        ExecutionStatus.FAILED,
+        ExecutionStatus.DENIED,
+        ExecutionStatus.TIMEOUT,
+        -> OpenCraySubAgentPhase.FAILED
+      },
+      childTask = updatedHandle.toTask(),
+      childRunId = updatedHandle.childRunId,
+      childTaskId = updatedHandle.childTaskId,
+      summary = compressedChildResult.summaryText(),
+      snapshot = compressedChildResult,
+    )
+    return childResultToWaitAgentToolResult(
+      call = call,
+      handle = updatedHandle,
+      childResult = childResult,
+      childApprovalResume = childApprovalResume,
+    )
+  }
+
+  private fun sendInputToSubAgentHandle(
+    call: AgentToolCall,
+    cursor: PromptTurnCursor?,
+  ): AgentToolResult {
+    val handles = subAgentHandleRegistry(cursor)
+    val agentId = resolveSubAgentHandleId(call)
+      ?: return invalidSubAgentCallResult(call, "send_input agent_id must not be blank.")
+    val message = call.arguments.primitiveContent("message")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: call.arguments.primitiveContent("input")
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+      ?: return invalidSubAgentCallResult(call, "send_input message must not be blank.")
+    val handle = handles[agentId] ?: return unknownSubAgentHandleResult(
+      call = call,
+      agentId = agentId,
+    )
+    if (handle.snapshot.state != SubAgentExecutionState.BACKGROUND_QUEUED) {
+      return AgentToolResult(
+        toolName = call.toolName,
+        status = AgentToolResultStatus.FAILED,
+        content = "send_input can only target a queued delegated child handle.",
+        errorCode = "SUBAGENT_NOT_QUEUEABLE",
+        errorMessage = "send_input can only target a queued delegated child handle.",
+        metadata = subAgentHandleMetadata(handle),
+      )
+    }
+    val updatedHandle = handle.copy(
+      supplementalInputs = handle.supplementalInputs + message,
+      updatedAtEpochMs = clock(),
+    )
+    handles[agentId] = updatedHandle
+    return AgentToolResult(
+      toolName = call.toolName,
+      status = AgentToolResultStatus.SUCCESS,
+      content = "Queued delegated child input appended.",
+      metadata = subAgentHandleMetadata(updatedHandle) + mapOf(
+        "supplementalInputCount" to updatedHandle.supplementalInputs.size.toString(),
+      ),
+    )
+  }
+
+  private fun closeSubAgentHandle(
+    task: AgentTask,
+    turn: Int,
+    call: AgentToolCall,
+    cursor: PromptTurnCursor?,
+  ): AgentToolResult {
+    val handles = subAgentHandleRegistry(cursor)
+    val agentId = resolveSubAgentHandleId(call)
+      ?: return invalidSubAgentCallResult(call, "close_agent agent_id must not be blank.")
+    val handle = handles.remove(agentId) ?: return unknownSubAgentHandleResult(
+      call = call,
+      agentId = agentId,
+    )
+    if (!isTerminalSubAgentState(handle.snapshot.state)) {
+      val cancelledSnapshot = SubAgentExecutionSnapshot(
+        state = SubAgentExecutionState.CANCELLED,
+        continuationKind = SubAgentContinuationKind.NONE,
+        resumable = false,
+        requiresUserAction = false,
+        isHighRisk = false,
+        headline = "Queued delegated child run '${handle.description}' was closed.",
+      )
+      emitSubAgentEvent(
+        task = task,
+        turn = turn,
+        phase = OpenCraySubAgentPhase.CANCELLED,
+        childTask = handle.toTask(),
+        childRunId = handle.childRunId,
+        childTaskId = handle.childTaskId,
+        summary = cancelledSnapshot.summaryText(),
+        snapshot = cancelledSnapshot,
+      )
+      return AgentToolResult(
+        toolName = call.toolName,
+        status = AgentToolResultStatus.SUCCESS,
+        content = cancelledSnapshot.summaryText(),
+        metadata = subAgentHandleMetadata(
+          handle.copy(
+            snapshot = cancelledSnapshot,
+            pendingApprovalResume = null,
+            childExecutionStatus = ExecutionStatus.CANCELLED.name,
+          ),
+        ) + mapOf("closed" to "true"),
+      )
+    }
+    return AgentToolResult(
+      toolName = call.toolName,
+      status = AgentToolResultStatus.SUCCESS,
+      content = "Delegated child handle closed.",
+      metadata = subAgentHandleMetadata(handle) + mapOf("closed" to "true"),
+    )
+  }
+
+  private fun subAgentHandleRegistry(
+    cursor: PromptTurnCursor?,
+  ): MutableMap<String, SubAgentHandleState> = cursor?.subAgentHandles ?: linkedMapOf<String, SubAgentHandleState>().apply {
+    config.promptResumeState
+      ?.subAgentHandles
+      ?.forEach { handle -> put(handle.agentId, handle) }
+  }
+
+  private fun resolveSubAgentHandleId(call: AgentToolCall): String? =
+    call.arguments.primitiveContent("agent_id")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: call.arguments.primitiveContent("id")
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+      ?: call.arguments.stringArrayContent("agent_ids")
+        ?.firstOrNull()
+      ?: call.arguments.stringArrayContent("ids")
+        ?.firstOrNull()
+
+  private fun unknownSubAgentHandleResult(
+    call: AgentToolCall,
+    agentId: String,
+  ): AgentToolResult = AgentToolResult(
+    toolName = call.toolName,
+    status = AgentToolResultStatus.FAILED,
+    content = "Unknown delegated child handle '$agentId'.",
+    errorCode = "UNKNOWN_SUBAGENT_HANDLE",
+    errorMessage = "Unknown delegated child handle '$agentId'.",
+    metadata = mapOf("agentId" to agentId),
+  )
+
+  private fun isTerminalSubAgentState(state: SubAgentExecutionState): Boolean = when (state) {
+    SubAgentExecutionState.COMPLETED,
+    SubAgentExecutionState.FAILED,
+    SubAgentExecutionState.CANCELLED,
+    -> true
+
+    else -> false
+  }
+
+  private fun takePendingApprovalContinuation(
+    handle: SubAgentHandleState,
+    handles: Map<String, SubAgentHandleState>,
+  ): PendingSubAgentApprovalContinuation? {
+    val approvedResume = pendingApprovedSubAgentResume
+    val rejectedResume = pendingRejectedSubAgentResume
+    check(approvedResume == null || rejectedResume == null) {
+      "Only one subagent approval continuation can be pending at a time."
+    }
+    approvedResume?.takeIf { resumeMatchesHandle(it, handle, handles) }?.let { resume ->
+      pendingApprovedSubAgentResume = null
+      return PendingSubAgentApprovalContinuation(
+        resume = resume,
+        approved = true,
+      )
+    }
+    rejectedResume?.takeIf { resumeMatchesHandle(it, handle, handles) }?.let { resume ->
+      pendingRejectedSubAgentResume = null
+      return PendingSubAgentApprovalContinuation(
+        resume = resume,
+        approved = false,
+      )
+    }
+    return null
+  }
+
+  private fun resumeMatchesHandle(
+    resume: SubAgentApprovalResume,
+    handle: SubAgentHandleState,
+    handles: Map<String, SubAgentHandleState>,
+  ): Boolean = when {
+    !resume.agentId.isNullOrBlank() -> resume.agentId == handle.agentId
+    !resume.childTaskId.isNullOrBlank() -> resume.childTaskId == handle.childTaskId
+    !resume.childRunId.isNullOrBlank() -> resume.childRunId == handle.childRunId
+    else -> handle.pendingApprovalResume != null &&
+      handles.values.count { candidate -> candidate.pendingApprovalResume != null } == 1
+  }
+
+  private fun executeSubAgentHandleRuntime(
+    parentTask: AgentTask,
+    transcript: List<RuntimeConversationMessage>,
+    hooks: RuntimeExecutionHooks,
+    activeSkillCapsule: ActiveSkillCapsule?,
+    handle: SubAgentHandleState,
+    profile: SubAgentProfile,
+    approvalContinuation: PendingSubAgentApprovalContinuation?,
+  ): ExecutionResult {
+    val childTask = handle.toTask()
+    val childContext = config.subAgentContextBuilder.build(
+      SubAgentContextBuildRequest(
+        parentSessionContext = config.sessionContext,
+        childTask = childTask,
+        parentGoalSummary = parentTask.input.trim(),
+        parentObservationLines = recentToolObservationSupport.summaryLines(transcript),
+        parentConversation = transcript.toList(),
+        activeSkillCapsule = activeSkillCapsule,
+      ),
+    )
+    val childPromptTask = AgentTask(
+      id = handle.childTaskId,
+      type = AgentTaskType.PROMPT,
+      input = childTask.prompt,
+      policyDecision = parentTask.policyDecision,
+      createdAtEpochMs = handle.createdAtEpochMs,
+      metadata = parentTask.metadata
+        .filterKeys { key -> !key.startsWith(HIDDEN_METADATA_PREFIX) } +
+        childTask.metadata() +
+        mapOf(RUN_ID_METADATA_KEY to handle.childRunId),
+    )
+    val childToolDispatcher = when {
+      approvalContinuation?.approved == true -> toolDispatcher.withApprovalGrant(
+        approvedTaskId = childPromptTask.id,
+        approvedToolName = approvalContinuation.resume.approvedToolName,
+      )
+
+      approvalContinuation?.approved == false -> toolDispatcher.withApprovalRejection(
+        rejectedTaskId = childPromptTask.id,
+        rejectedToolName = approvalContinuation.resume.approvedToolName,
+      )
+
+      else -> toolDispatcher
+    }
+    val childRuntime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = childToolDispatcher.restrictTo(profile.allowedToolNames),
+      config = config.copy(
+        maxTurns = profile.maxTurns,
+        maxToolCalls = 0,
+        sessionContext = childContext.sessionContext,
+        promptResumeState = approvalContinuation?.resume?.promptResumeState,
+        approvedSubAgentResume = null,
+        rejectedSubAgentResume = null,
+        supplementInputProvider = { _, _ -> emptyList() },
+      ),
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+      clock = clock,
+    )
+    return childRuntime.execute(childPromptTask, hooks)
+  }
+
+  private fun subAgentHandleMetadata(
+    handle: SubAgentHandleState,
+  ): Map<String, String> = linkedMapOf(
+    "agentId" to handle.agentId,
+    "subagentType" to handle.subagentType,
+    "subagentContextMode" to handle.contextMode,
+    "subagentDepth" to handle.depth.toString(),
+    "childRunId" to handle.childRunId,
+    "childTaskId" to handle.childTaskId,
+  ).apply {
+    handle.childExecutionStatus
+      ?.takeIf(String::isNotBlank)
+      ?.let { put("childExecutionStatus", it) }
+    handle.childTurnCount?.let { put("childTurnCount", it.toString()) }
+    handle.childToolCallCount?.let { put("childToolCallCount", it.toString()) }
+    putAll(handle.snapshot.metadata())
+    handle.pendingApprovalResume?.let { resume ->
+      putAll(
+        SubAgentApprovalResumeMetadata.encodeToMetadata(
+          resume = resume,
+          json = config.json,
+        ),
+      )
+    }
+  }
+
+  private fun storedSubAgentHandleResult(
+    call: AgentToolCall,
+    handle: SubAgentHandleState,
+  ): AgentToolResult {
+    val status = when (handle.snapshot.state) {
+      SubAgentExecutionState.COMPLETED -> AgentToolResultStatus.SUCCESS
+      SubAgentExecutionState.CANCELLED -> AgentToolResultStatus.CANCELLED
+      SubAgentExecutionState.FAILED -> when (handle.childExecutionStatus) {
+        ExecutionStatus.TIMEOUT.name -> AgentToolResultStatus.TIMEOUT
+        else -> AgentToolResultStatus.FAILED
+      }
+
+      SubAgentExecutionState.WAITING_APPROVAL,
+      SubAgentExecutionState.WAITING_HIGH_RISK_APPROVAL,
+      -> AgentToolResultStatus.DENIED
+
+      else -> AgentToolResultStatus.SUCCESS
+    }
+    val errorCode = when (handle.snapshot.state) {
+      SubAgentExecutionState.CANCELLED -> "SUBAGENT_CANCELLED"
+      SubAgentExecutionState.FAILED -> handle.snapshot.childErrorCode ?: "SUBAGENT_FAILED"
+      SubAgentExecutionState.WAITING_HIGH_RISK_APPROVAL -> ERROR_HIGH_RISK_APPROVAL_REQUIRED
+      SubAgentExecutionState.WAITING_APPROVAL -> ERROR_APPROVAL_REQUIRED
+      else -> null
+    }
+    val errorMessage = when (handle.snapshot.state) {
+      SubAgentExecutionState.CANCELLED -> "Delegated child run was cancelled."
+      SubAgentExecutionState.FAILED -> "Delegated child run failed."
+      SubAgentExecutionState.WAITING_HIGH_RISK_APPROVAL,
+      SubAgentExecutionState.WAITING_APPROVAL,
+      -> "Delegated child run needs approval before it can continue."
+
+      else -> null
+    }
+    return AgentToolResult(
+      toolName = call.toolName,
+      status = status,
+      content = handle.snapshot.summaryText(),
+      errorCode = errorCode,
+      errorMessage = errorMessage,
+      metadata = subAgentHandleMetadata(handle),
+    )
+  }
+
+  private fun childResultToWaitAgentToolResult(
+    call: AgentToolCall,
+    handle: SubAgentHandleState,
+    childResult: ExecutionResult,
+    childApprovalResume: SubAgentApprovalResume?,
+  ): AgentToolResult {
+    val metadata = subAgentHandleMetadata(handle)
+    return when (childResult.status) {
+      ExecutionStatus.SUCCESS -> AgentToolResult(
+        toolName = call.toolName,
+        status = AgentToolResultStatus.SUCCESS,
+        content = handle.snapshot.summaryText(),
+        metadata = metadata,
+      )
+
+      ExecutionStatus.CANCELLED -> AgentToolResult(
+        toolName = call.toolName,
+        status = AgentToolResultStatus.CANCELLED,
+        content = handle.snapshot.summaryText(),
+        errorCode = "SUBAGENT_CANCELLED",
+        errorMessage = childResult.errorMessage ?: "Delegated child run was cancelled.",
+        metadata = metadata,
+      )
+
+      ExecutionStatus.DENIED -> AgentToolResult(
+        toolName = call.toolName,
+        status = if (childApprovalResume != null) AgentToolResultStatus.DENIED else AgentToolResultStatus.FAILED,
+        content = handle.snapshot.summaryText(),
+        errorCode = if (childApprovalResume != null) {
+          childResult.errorCode ?: ERROR_APPROVAL_REQUIRED
+        } else {
+          "SUBAGENT_POLICY_BLOCKED"
+        },
+        errorMessage = childResult.errorMessage ?: if (childApprovalResume != null) {
+          "Delegated child run needs approval before it can continue."
+        } else {
+          "Delegated child run was blocked by policy."
+        },
+        metadata = metadata,
+      )
+
+      ExecutionStatus.FAILED,
+      ExecutionStatus.TIMEOUT,
+      -> AgentToolResult(
+        toolName = call.toolName,
+        status = if (childResult.status == ExecutionStatus.TIMEOUT) {
+          AgentToolResultStatus.TIMEOUT
+        } else {
+          AgentToolResultStatus.FAILED
+        },
+        content = handle.snapshot.summaryText(),
+        errorCode = childResult.errorCode ?: "SUBAGENT_FAILED",
+        errorMessage = childResult.errorMessage ?: "Delegated child run failed.",
+        metadata = metadata,
+      )
+    }
   }
 
   private fun invalidSubAgentCallResult(
@@ -2884,13 +4642,20 @@ class OpenCrayAgentRuntime(
 
   private fun childApprovalResume(
     childResult: ExecutionResult,
+    agentId: String? = null,
+    childRunId: String? = null,
+    childTaskId: String? = null,
   ): SubAgentApprovalResume? {
     val encodedResume = SubAgentApprovalResumeMetadata.decodeFromMetadata(
       metadata = childResult.metadata,
       json = config.json,
     )
     if (encodedResume != null) {
-      return encodedResume
+      return encodedResume.copy(
+        agentId = encodedResume.agentId ?: agentId,
+        childRunId = encodedResume.childRunId ?: childRunId,
+        childTaskId = encodedResume.childTaskId ?: childTaskId,
+      )
     }
     val approvedToolName = approvalToolName(childResult.metadata) ?: return null
     val promptResumeState = OpenCrayPromptResumeMetadata.decodeFromMetadata(
@@ -2901,6 +4666,9 @@ class OpenCrayAgentRuntime(
       approvedToolName = approvedToolName,
       promptResumeState = promptResumeState,
       isHighRisk = childResult.errorCode == ERROR_HIGH_RISK_APPROVAL_REQUIRED,
+      agentId = agentId,
+      childRunId = childRunId,
+      childTaskId = childTaskId,
     )
   }
 
@@ -2991,6 +4759,86 @@ class OpenCrayAgentRuntime(
     }
   }.trim()
 
+  private fun generalResumeCheckpointMetadata(
+    cursor: PromptTurnCursor,
+    localContinuationContextPrompt: String? = null,
+    localContinuationStableAnchor: String? = null,
+    localContinuationGatewayMessagesEnabled: Boolean = false,
+  ): Map<String, String> = OpenCrayPromptResumeMetadata.encodeToMetadata(
+    state = OpenCrayPromptResumeState(
+      transcript = cursor.transcript.toList(),
+      turnIndex = cursor.turn + 1,
+      toolCallCount = cursor.toolCallCount,
+      activeSkillName = cursor.activeSkillName,
+      activeSkillActivationSource = cursor.activeSkillActivationSource,
+      localContinuationEnvelope = localContinuationContextPrompt
+        ?.let { contextPrompt ->
+          localContinuationStableAnchor?.let { stableAnchor ->
+            buildLocalContinuationEnvelope(
+              cursor = cursor,
+              contextPrompt = contextPrompt,
+              stableAnchor = stableAnchor,
+              gatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+            )?.toSerializable()
+          }
+        },
+      responsesPreviousResponseId = cursor.responsesPreviousResponseId,
+      responsesProviderLineageId = cursor.responsesProviderLineageId,
+      responsesLineageTrusted = cursor.responsesLineageTrusted,
+      responsesPendingMessages = cursor.responsesPendingMessages.map(OpenCraySerializableGatewayMessage::from),
+      subAgentHandles = cursor.subAgentHandles.values.toList(),
+    ),
+    json = config.json,
+  )
+
+  private fun emitToolResultEvent(
+    task: AgentTask,
+    turn: Int,
+    call: AgentToolCall,
+    result: AgentToolResult,
+    diagnostics: PromptRunDiagnostics,
+  ) {
+    eventSink.onRunEvent(
+      task = task,
+      event = OpenCrayToolResultEvent(
+        runId = runIdFor(task),
+        taskId = task.id,
+        turn = turn,
+        call = call,
+        result = result,
+        emittedAtEpochMs = clock(),
+      ),
+    )
+    diagnostics.toolResultEventEmitted = true
+    emitMemoryRetrievalEvent(
+      task = task,
+      turn = turn,
+      call = call,
+      result = result,
+    )
+  }
+
+  private fun todoPlanClosureObservation(
+    cursor: PromptTurnCursor,
+  ): String? {
+    if (!cursor.todoWriteUsed) {
+      return null
+    }
+    val activeTodo = toolDispatcher.todoSnapshot()
+      .firstOrNull { entry -> entry.status == AgentTodoStatus.IN_PROGRESS }
+      ?: return null
+    return buildTodoPlanClosureObservation(activeTodo)
+  }
+
+  private fun buildTodoPlanClosureObservation(
+    activeTodo: AgentTodoEntry,
+  ): String = buildString {
+    appendLine("Plan note: TodoWrite still has an in_progress item.")
+    appendLine("Before returning the final answer, update TodoWrite so the active item is no longer in_progress.")
+    appendLine("If the work is done, mark it completed or clear the plan intentionally.")
+    append("Active todo: ${activeTodo.content}")
+  }.trim()
+
   private fun buildProtocolRecoveryObservation(
     nativeToolCallingEnabled: Boolean,
     legacyJsonFallbackEnabled: Boolean,
@@ -3016,6 +4864,58 @@ class OpenCrayAgentRuntime(
       append(preview)
     }
   }.trim()
+
+  private fun buildEmptyResponseRecoveryObservation(
+    nativeToolCallingEnabled: Boolean,
+    legacyJsonFallbackEnabled: Boolean,
+    detail: String,
+    reasoningText: String?,
+    rawOutput: String?,
+  ): String = buildString {
+    when {
+      nativeToolCallingEnabled && legacyJsonFallbackEnabled ->
+        appendLine("Response error: the previous model response did not produce a usable native tool call or final answer. Prefer native tool calling when it works, otherwise return exactly one legacy JSON action object.")
+      nativeToolCallingEnabled ->
+        appendLine("Response error: the previous model response did not produce a usable native tool call, progress update, or final answer.")
+      else ->
+        appendLine("Response error: the previous model response did not produce a usable progress, tool_call, or final action.")
+    }
+    appendLine("Return only the next valid step now.")
+    appendLine("Do not emit hidden reasoning by itself.")
+    appendLine("If you need a tool, emit one valid tool call with schema-correct arguments.")
+    appendLine("If you are done, return the final user-facing answer.")
+    appendLine("Reason: $detail")
+    reasoningText
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { reasoning ->
+        appendLine("Provider reasoning preview:")
+        appendLine(reasoning.take(MAX_PROTOCOL_ERROR_PREVIEW_CHARS))
+      }
+    rawOutput
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { preview ->
+        appendLine("Previous response preview:")
+        append(preview.take(MAX_PROTOCOL_ERROR_PREVIEW_CHARS))
+      }
+  }.trim()
+
+  private fun String?.isTransientGatewayFailureCode(): Boolean {
+    val normalized = this?.trim()?.uppercase() ?: return false
+    if (normalized == "PROVIDER_TRANSPORT_ERROR" || normalized == "PROVIDER_CLIENT_EXCEPTION") {
+      return true
+    }
+    if (!normalized.startsWith("HTTP_")) {
+      return false
+    }
+    val statusCode = normalized.removePrefix("HTTP_").toIntOrNull() ?: return false
+    return statusCode == 408 ||
+      statusCode == 409 ||
+      statusCode == 425 ||
+      statusCode == 429 ||
+      statusCode in 500..599
+  }
 
   private fun finalTurnSystemPromptAppendix(
     legacyJsonFallbackEnabled: Boolean,
@@ -3101,10 +5001,17 @@ class OpenCrayAgentRuntime(
     val transcript: MutableList<RuntimeConversationMessage>,
     var turn: Int,
     var toolCallCount: Int,
+    var todoWriteUsed: Boolean,
     var activeSkillName: String?,
     var activeSkillActivationSource: String?,
     var nextSyntheticToolCallSequence: Int,
     var legacyJsonFallbackEnabled: Boolean,
+    var responsesPreviousResponseId: String?,
+    var responsesProviderLineageId: String?,
+    var responsesLineageTrusted: Boolean,
+    val responsesPendingMessages: MutableList<LiteLlmGatewayMessage>,
+    var localContinuationEnvelope: LocalContinuationEnvelope?,
+    val subAgentHandles: MutableMap<String, SubAgentHandleState>,
   )
 
   private data class PromptRunDiagnostics(
@@ -3118,7 +5025,44 @@ class OpenCrayAgentRuntime(
     var providerReasoningObserved: Boolean = false,
     var providerReasoningTurnCount: Int = 0,
     var providerReasoningChars: Int = 0,
+    var llmRetryCount: Int = 0,
+    var emptyResponseRecoveryCount: Int = 0,
+    var localContinuationUsedCount: Int = 0,
+    var localContinuationFallbackCount: Int = 0,
+    var localContinuationLastMode: LocalContinuationMode = LocalContinuationMode.DISABLED,
+    var localContinuationLastReason: String? = null,
   )
+
+  private data class GatewayMessagePlan(
+    val messages: List<LiteLlmGatewayMessage>,
+    val mode: LocalContinuationMode,
+    val reason: String? = null,
+  )
+
+  private data class PendingSubAgentApprovalContinuation(
+    val resume: SubAgentApprovalResume,
+    val approved: Boolean,
+  )
+
+  private data class LocalContinuationEnvelope(
+    val stableAnchor: String,
+    val transcriptFrontier: List<RuntimeConversationMessage>,
+    val gatewayMessages: List<LiteLlmGatewayMessage>,
+  )
+
+  private fun LocalContinuationEnvelope.toSerializable(): OpenCraySerializableLocalContinuationEnvelope =
+    OpenCraySerializableLocalContinuationEnvelope(
+      stableAnchor = stableAnchor,
+      transcriptFrontier = transcriptFrontier,
+      gatewayMessages = gatewayMessages.map(OpenCraySerializableGatewayMessage::from),
+    )
+
+  private enum class LocalContinuationMode(val wireValue: String) {
+    DISABLED("disabled"),
+    FULL_REBUILD("full_rebuild"),
+    LOCAL_DELTA("local_delta"),
+    RESPONSES_NATIVE("responses_native"),
+  }
 
   private data class ParsedGatewayActionBatch(
     val batch: ParsedModelActionBatch,
@@ -3163,6 +5107,27 @@ class OpenCrayAgentRuntime(
     ) : PromptBatchExecutionOutcome
   }
 
+  private data class ParallelToolActionStep(
+    val index: Int,
+    val call: AgentToolCall,
+  )
+
+  private data class ParallelToolDispatch(
+    val step: ParallelToolActionStep,
+    val result: AgentToolResult,
+  )
+
+  private sealed interface ParallelToolActionGroupOutcome {
+    data class Advance(
+      val nextActionIndex: Int,
+      val shouldContinueBatch: Boolean,
+    ) : ParallelToolActionGroupOutcome
+
+    data class Terminal(
+      val result: ExecutionResult,
+    ) : ParallelToolActionGroupOutcome
+  }
+
   private data class JsonEnvelope(
     val json: String,
     val leadingText: String,
@@ -3195,13 +5160,27 @@ class OpenCrayAgentRuntime(
     ) : ParsedModelActionBatch
   }
 
+  private sealed interface GatewayTurnExecution {
+    data class Completed(
+      val result: LiteLlmGatewayResult,
+    ) : GatewayTurnExecution
+
+    data object Cancelled : GatewayTurnExecution
+  }
+
   private companion object {
+    const val RESPONSES_PROTOCOL: String = "openai_responses"
     const val HIDDEN_METADATA_PREFIX: String = "_host."
+    const val HOST_PROVIDER_ID_METADATA_KEY: String = "${HIDDEN_METADATA_PREFIX}providerId"
     const val RUN_ID_METADATA_KEY: String = "${HIDDEN_METADATA_PREFIX}runId"
+    const val SUPPLEMENT_CHECKPOINT_TURN_START: String = "turn_start"
+    const val SUPPLEMENT_CHECKPOINT_POST_TOOL_PRE_MODEL: String = "post_tool_pre_model"
     const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
     const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
     const val ERROR_SKILL_TOOL_POLICY_BLOCKED: String = "SKILL_TOOL_POLICY_BLOCKED"
     const val MAX_PROTOCOL_ERROR_PREVIEW_CHARS: Int = 600
+    const val MAX_STRUCTURED_TOOL_CALL_ERROR_COUNT: Int = 3
+    const val RECOVERABLE_LLM_RETRY_SLEEP_CHUNK_MS: Long = 250L
     const val ACTIVATION_SOURCE_SKILL_READ: String = "skill_read"
     const val PENULTIMATE_TURN_SYSTEM_PROMPT_APPENDIX: String =
       "[Turn Budget]\nYou have two model turns left including this one. If another tool is still necessary, use at most one more tool now and be ready to answer on the next turn."
@@ -3219,6 +5198,7 @@ class OpenCrayAgentRuntime(
       "finalUrl",
       "processId",
       "targetKind",
+      "workspaceRelation",
       "sourcePath",
       "destinationPath",
       "workingDirectory",

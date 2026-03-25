@@ -341,6 +341,10 @@ v1 推荐默认策略：
 - 复用主 OpenAI API key
 - 可单独指定 search model
 - 不要求单独配置第二份 key
+- 仅 `openai_web_search` provider 暴露 `baseUrl` 配置
+- 仅 `openai_web_search` provider 暴露 `model` 配置
+- `exa / tavily / brave` 继续只保留各自现有的 `apiKey` 配置，不引入通用 `baseUrl` 字段
+- `openai_web_search` 的 `model` 若留空，当前实现默认回落到 `gpt-5`
 
 后续可扩展：
 
@@ -519,7 +523,7 @@ v1 推荐默认策略：
 
 ### 7.6 `openai_responses` 下的 mid-loop supplement 桥接
 
-`mid-loop supplement` 不应做成 `openai_responses` 私有功能，而应继续沿用现有宿主模型：
+`mid-loop supplement` 的 durability / replay 语义仍然属于宿主层，但 `openai_responses` 的续接方式应直接走 provider-native 路径：
 
 - supplement inbox 是 session-scoped、run-targeted 的 durable 输入盒
 - supplement 只在 safe checkpoint 被消费
@@ -544,6 +548,7 @@ v1 推荐默认策略：
 
 - supplement 是 agent 架构层能力，而不是某个 provider 特例
 - 用户感知与 replay 语义不会因方言切换而改变
+- route 差异只体现在“下一跳怎么续接”，而不是“supplement 是否存在”
 
 #### 7.6.2 `openai_responses` 路线下的续接方式
 
@@ -564,6 +569,10 @@ v1 推荐默认策略：
 
 - 沿用同一条 provider lineage
 - 在下一跳请求中附加新的 user guidance
+
+这里不需要再额外设计一层本地 continuation envelope 去包住 `openai_responses`。
+
+对于这条 route，原生 continuation 本身就是首选实现。
 
 #### 7.6.3 supplement 何时使 lineage 失效
 
@@ -598,22 +607,87 @@ v1 推荐默认策略：
 
 #### 7.6.5 建议的实现边界
 
-推荐把 supplement 设计拆成两层，避免方言分叉：
+推荐把 supplement 设计拆成两层，避免把 durability 语义和 continuation 机制混在一起：
 
 - 通用层：
   - supplement inbox
   - checkpoint gating
   - transcript append
   - replay event
-- 方言桥接层：
+- route-specific continuation 层：
   - `openai_responses` 读取 `lastProviderResponseId`
-  - 决定下一跳是 lineage continuation 还是 transcript replay
+  - 直接决定下一跳是 provider-native lineage continuation 还是 transcript replay
+  - 非 Responses route 再决定是否使用本地 continuation envelope
 
 这能保证：
 
-- supplement 机制只有一套
-- `openai_responses` 只是获得更高效的 continuation bridge
-- 其他方言继续使用 transcript-first 路径
+- supplement durability 机制只有一套
+- `openai_responses` 可以直接使用原生 continuation
+- 其他方言继续使用 transcript-first 或本地 continuation 路径
+
+#### 7.6.6 Anthropic native 路线的边界
+
+Anthropic native route 不应被视为具备和 `openai_responses` 同等级的 provider lineage continuation。
+
+当前建议是：
+
+- Anthropic 没有通用的 `previous_response_id` 等价物
+- 因此不能把“mid-loop supplement”设计成 Anthropic 私有的 response lineage 续接
+- Anthropic 只能在严格的 tool boundary 利用其原生消息结构做局部优化
+
+可用的 Anthropic-native 优化边界是：
+
+- 当前 assistant 刚返回 `tool_use`
+- runtime 正在构造紧随其后的 `tool_result`
+- 如果此时有新的用户补充说明，允许把该说明追加在同一个 `tool_result` user turn 内
+
+不应做的事：
+
+- 不要在普通 running 状态下伪造 Anthropic lineage continuation
+- 不要在 approval wait 中把 supplement 注入同一 suspended request
+- 不要把 Anthropic-native tool boundary 扩张成通用的“任意时刻追加 delta”
+
+因此 Anthropic 路线应是：
+
+- tool-result 边界：优先走 Anthropic-native message composition
+- 其他边界：继续走共享 supplement inbox + transcript-first continuation
+
+#### 7.6.7 非 Responses 路线的本地 continuation 设计
+
+对于 `openai`、`anthropic` 以及其他非 Responses 路线，推荐新增一层 runtime-owned 的本地 continuation 优化，而不是试图发明一个 provider 假 lineage token。
+
+建议模型：
+
+- `supplement inbox` 仍然是唯一的 durable 输入盒
+- transcript / replay 仍然是真相源
+- 在 safe checkpoint 上，runtime 额外维护一个 durable `checkpointed continuation envelope`
+
+这一层只保存 prompt-visible continuation state，例如：
+
+- 当前 checkpoint class
+- 当前 task prompt / direction anchor
+- 当前 transcript frontier
+- 最近工具 frontier
+- active skill / approval resume / subagent resume
+- 已消费 supplement cursor
+
+它不应保存：
+
+- hidden reasoning
+- provider 私有 opaque state
+- UI-only projection
+
+这样非 Responses 路线在消费 supplement 时可以：
+
+1. 先按通用规则把 supplement 写入 transcript 与 replay
+2. 优先从本地 continuation envelope 继续下一跳
+3. 只有 envelope 不可信时，才退回完整 transcript-first rebuild
+
+这条路线的意义是：
+
+- 不改变 supplement 语义
+- 不制造第二套 agent 架构
+- 让非 Responses route 也更接近 Claude Code 式的 mid-loop continuation 体验
 
 ## 8. OpenAI Responses route 的工具暴露策略
 
@@ -715,6 +789,39 @@ v1 推荐默认策略：
 
 - OpenAI 模型在该 route 上优先使用原生搜索
 - 其他模型不受影响
+
+当前实现检查点（2026-03-24，本地已落地并完成定向单测）：
+
+- `LiteLlmGatewayRequest` 已补 `builtinTools: List<LiteLlmBuiltinToolDefinition>`
+- runtime 已区分 host function tool 与 provider built-in tool
+- 当前只落地了一种 provider built-in tool：
+  - `LiteLlmBuiltinToolType.WEB_SEARCH`
+- `openai_responses` route 下，runtime 的默认判定逻辑为：
+  - 若 `llmMetadata["nativeWebSearchEnabled"]` 显式为 `true/false`，则优先使用该值
+  - 否则只有 `protocol=openai_responses` 且 `_host.providerId=openai` 时，默认启用 provider-native `web_search`
+  - 自定义 `openai_responses` provider 默认不会自动获得 built-in search
+- 当 provider-native `web_search` 启用时：
+  - runtime 注入 Responses built-in `web_search`
+  - 默认隐藏宿主 `WebSearch`
+  - 若 `llmMetadata["dualExposeWebSearch"]=true`，则仅在调试场景双暴露
+- 当前 Responses request 已按 OpenAI 原生格式发出：
+  - `tools: [{ "type": "web_search" }, ...function tools]`
+  - 当请求源引用时附带 `include: ["web_search_call.action.sources"]`
+- 当前 diagnostics / observability 已补齐最小闭环：
+  - `builtinWebSearchRequested`
+  - `builtinWebSearchUsed`
+  - `providerCitationCount`
+- 当前 PR2 仍刻意保持一个统一 agent loop：
+  - 只是在同一 runtime 架构里切换 tool exposure 与 Responses 请求体
+  - 没有把 `openai_responses` 单独做成第二套 agent/supplement/replay 架构
+
+当前 PR2 明确未包含：
+
+- 宿主 `openai_web_search` backend
+- `WebSearchSettingsStore` / `AppConfiguredWebSearchProviderFactory` 的 OpenAI 搜索后端接入
+- 任意主模型共享 OpenAI 官方搜索 backend 的能力
+
+对应项留给 PR3，避免把 “Responses route 的原生 built-in 搜索” 和 “宿主搜索后端替换” 混在一个阶段里排查。
 
 ### 10.3 PR3：宿主搜索 backend 接入 OpenAI 官方搜索
 

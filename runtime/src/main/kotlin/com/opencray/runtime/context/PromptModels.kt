@@ -27,6 +27,7 @@ data class RuntimeConversationMessage(
   val toolCall: RuntimeConversationToolCall? = null,
   val toolResult: RuntimeConversationToolResult? = null,
   val progress: RuntimeConversationProgress? = null,
+  val assistantPhase: RuntimeConversationAssistantPhase? = null,
 ) {
   init {
     require(content.isNotBlank()) { "RuntimeConversationMessage content must not be blank." }
@@ -48,6 +49,9 @@ data class RuntimeConversationMessage(
     require(kind != RuntimeConversationMessageKind.PROGRESS || progress != null) {
       "RuntimeConversationMessage PROGRESS messages must carry progress metadata."
     }
+    require(role == RuntimeConversationRole.ASSISTANT || assistantPhase == null) {
+      "RuntimeConversationMessage assistantPhase is only valid for assistant messages."
+    }
   }
 }
 
@@ -65,6 +69,12 @@ enum class RuntimeConversationMessageKind {
   TOOL_CALL,
   TOOL_RESULT,
   PROGRESS,
+}
+
+@Serializable
+enum class RuntimeConversationAssistantPhase {
+  COMMENTARY,
+  FINAL_ANSWER,
 }
 
 @Serializable
@@ -147,6 +157,7 @@ data class PromptAssemblyInput(
   val sessionContext: AgentRuntimeSessionContext,
   val activeSkillCapsule: ActiveSkillCapsule? = null,
   val nativeToolCallingEnabled: Boolean = false,
+  val parallelToolCallsEnabled: Boolean = false,
   val legacyJsonFallbackEnabled: Boolean = false,
   val toolDefinitions: List<AgentToolDefinition>,
   val liveConversation: List<RuntimeConversationMessage>,
@@ -167,6 +178,7 @@ data class ManagedPromptContext(
   val pruningSummary: TranscriptPruningSummary? = null,
   val compactionSummary: CompactionSummary? = null,
   val nativeToolCallingEnabled: Boolean = false,
+  val parallelToolCallsEnabled: Boolean = false,
   val legacyJsonFallbackEnabled: Boolean = false,
   val toolDefinitions: List<AgentToolDefinition> = emptyList(),
   val transcriptWindow: TranscriptWindow = TranscriptWindow(

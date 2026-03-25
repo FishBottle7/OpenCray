@@ -1,7 +1,14 @@
 package com.opencray.llm
 
 object LiteLlmMetadataKeys {
+  const val RESPONSES_LINEAGE_ID: String = "responsesLineageId"
+  const val VALIDATION_ENABLE_RESPONSES_CONTINUATION: String = "validationEnableResponsesContinuation"
+  const val VALIDATION_ENABLE_RESPONSES_ASSISTANT_PHASES: String = "validationEnableResponsesAssistantPhases"
+  const val VALIDATION_ENABLE_RESPONSES_CITATION_INCLUDE: String = "validationEnableResponsesCitationInclude"
   const val NATIVE_TOOL_CALL_REQUESTED: String = "nativeToolCallRequested"
+  const val BUILTIN_WEB_SEARCH_REQUESTED: String = "builtinWebSearchRequested"
+  const val BUILTIN_WEB_SEARCH_USED: String = "builtinWebSearchUsed"
+  const val PROVIDER_CITATION_COUNT: String = "providerCitationCount"
   const val PROVIDER_RESPONSE_SHAPE: String = "providerResponseShape"
   const val NATIVE_TOOL_CALL_OBSERVED: String = "nativeToolCallObserved"
   const val PARSED_TOOL_CALL_OBSERVED: String = "parsedToolCallObserved"
@@ -13,4 +20,6 @@ object LiteLlmMetadataKeys {
   const val PROVIDER_REASONING_OBSERVED: String = "providerReasoningObserved"
   const val PROVIDER_REASONING_TURN_COUNT: String = "providerReasoningTurnCount"
   const val PROVIDER_REASONING_CHARS: String = "providerReasoningChars"
+  const val RESPONSES_COMMENTARY_PHASE_OBSERVED: String = "responsesCommentaryPhaseObserved"
+  const val RESPONSES_FINAL_PHASE_OBSERVED: String = "responsesFinalPhaseObserved"
 }

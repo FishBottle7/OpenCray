@@ -3,6 +3,7 @@ package com.opencray.app
 import com.opencray.runtime.AgentTodoEntry
 import com.opencray.runtime.AgentTodoStatus
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -78,6 +79,99 @@ class ChatSessionLocalStoreTodoPersistenceTest {
     assertEquals(ChatSessionTodoPresentationState.ARCHIVED_COMPLETED, restoredPresentation.state)
     assertEquals(3_500L, restoredPresentation.hideDelayMs)
     assertEquals(2, restoredPresentation.todos.size)
+  }
+
+  @Test
+  fun replaceTodosRejectsInvalidPlanAndPreservesPreviouslyPersistedTodos() {
+    val directory = temporaryFolder.newFolder("chat-store-todos-invalid-plan")
+    val store = ChatSessionLocalStore(directory)
+    val sessionId = store.loadState().activeSession.sessionId
+    store.replaceTodos(
+      sessionId = sessionId,
+      todos = listOf(
+        AgentTodoEntry(
+          content = "Inspect runtime continuation",
+          status = AgentTodoStatus.IN_PROGRESS,
+          activeForm = "Inspecting runtime continuation",
+        ),
+        AgentTodoEntry(
+          content = "Write follow-up tests",
+          status = AgentTodoStatus.PENDING,
+        ),
+      ),
+    )
+
+    val error = runCatching {
+      store.replaceTodos(
+        sessionId = sessionId,
+        todos = listOf(
+          AgentTodoEntry(
+            content = "Inspect runtime continuation",
+            status = AgentTodoStatus.IN_PROGRESS,
+            activeForm = "Inspecting runtime continuation",
+          ),
+          AgentTodoEntry(
+            content = "Write follow-up tests",
+            status = AgentTodoStatus.IN_PROGRESS,
+            activeForm = "Writing follow-up tests",
+          ),
+        ),
+      )
+    }.exceptionOrNull()
+    val restoredTodos = ChatSessionLocalStore(directory).loadTodos(sessionId)
+
+    assertNotNull(error)
+    assertTrue(error?.message.orEmpty().contains("at most one in_progress"))
+    assertEquals(2, restoredTodos.size)
+    assertEquals(AgentTodoStatus.IN_PROGRESS, restoredTodos[0].status)
+    assertEquals("Inspecting runtime continuation", restoredTodos[0].activeForm)
+    assertEquals(AgentTodoStatus.PENDING, restoredTodos[1].status)
+    assertEquals(null, restoredTodos[1].activeForm)
+  }
+
+  @Test
+  fun replaceTodosRejectsDuplicateContentAndPreservesPreviouslyPersistedTodos() {
+    val directory = temporaryFolder.newFolder("chat-store-todos-duplicate-plan")
+    val store = ChatSessionLocalStore(directory)
+    val sessionId = store.loadState().activeSession.sessionId
+    store.replaceTodos(
+      sessionId = sessionId,
+      todos = listOf(
+        AgentTodoEntry(
+          content = "Keep current plan",
+          status = AgentTodoStatus.IN_PROGRESS,
+          activeForm = "Keeping current plan",
+        ),
+        AgentTodoEntry(
+          content = "Write follow-up tests",
+          status = AgentTodoStatus.PENDING,
+        ),
+      ),
+    )
+
+    val error = runCatching {
+      store.replaceTodos(
+        sessionId = sessionId,
+        todos = listOf(
+          AgentTodoEntry(
+            content = "Keep current plan",
+            status = AgentTodoStatus.IN_PROGRESS,
+            activeForm = "Keeping current plan",
+          ),
+          AgentTodoEntry(
+            content = "Keep current plan",
+            status = AgentTodoStatus.PENDING,
+          ),
+        ),
+      )
+    }.exceptionOrNull()
+    val restoredTodos = ChatSessionLocalStore(directory).loadTodos(sessionId)
+
+    assertNotNull(error)
+    assertTrue(error?.message.orEmpty().contains("duplicates todo 1 content"))
+    assertEquals(2, restoredTodos.size)
+    assertEquals("Keep current plan", restoredTodos[0].content)
+    assertEquals("Write follow-up tests", restoredTodos[1].content)
   }
 
   @Test

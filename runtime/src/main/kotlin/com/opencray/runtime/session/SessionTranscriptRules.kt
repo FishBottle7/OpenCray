@@ -108,6 +108,12 @@ object SessionTranscriptRules {
         payload = payload,
       )
     }
+    message.progressJsonPayloadOrNull()?.let { payload ->
+      return parseReplayProgressObservation(
+        index = index,
+        payload = payload,
+      )
+    }
     if (message.role != RuntimeConversationRole.TOOL) {
       return null
     }
@@ -117,12 +123,6 @@ object SessionTranscriptRules {
     }
     message.toolResultJsonPayloadOrNull()?.let { payload ->
       return parseReplayToolObservation(
-        index = index,
-        payload = payload,
-      )
-    }
-    message.progressJsonPayloadOrNull()?.let { payload ->
-      return parseReplayProgressObservation(
         index = index,
         payload = payload,
       )

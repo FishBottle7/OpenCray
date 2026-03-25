@@ -28,6 +28,7 @@ data class WebSearchHit(
 data class WebSearchResult(
   val providerName: String,
   val results: List<WebSearchHit> = emptyList(),
+  val summaryText: String = "",
   val errorCode: String? = null,
   val errorMessage: String? = null,
 ) {

@@ -20,6 +20,7 @@ internal object RunSubmissionSources {
   const val CHAT_USER_MESSAGE: String = "chat_user_message"
   const val CHAT_QUEUED_FOLLOW_UP: String = "chat_queued_follow_up"
   const val HOST_UI_TOOL_ACTION: String = "host_ui_tool_action"
+  const val SCHEDULED_TRIGGER: String = "scheduled_trigger"
 }
 
 internal data class HostRuntimeLifecycleDescriptor(

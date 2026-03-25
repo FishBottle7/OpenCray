@@ -1,6 +1,6 @@
 # Host Rebuild And Background Task Plan
 
-Last updated: 2026-03-23
+Last updated: 2026-03-25
 
 ## Status
 
@@ -18,9 +18,10 @@ Implemented in code:
 - approval-boundary prompt checkpoints are now durably persisted, including `waiting_approval`, `approved_pending_resume`, and `rejected_pending_resume`
 - host approval actions now write durable resume checkpoints before asking the queue to resume, so host rebuild no longer depends solely on the in-memory approval registry
 - runtime task creation now falls back to durable approval checkpoints when reconstructing prompt resume state and approved or rejected tool grants
+- a first general prompt-resume slice now persists `general_resume` checkpoints after committed tool results, and runtime task creation plus app-layer restore can continue from that durable post-tool-result boundary after host rebuild
 - a first recovery planner now projects per-run recovery intent from queue state, checkpoints, journal tail, and managed-process presence into chat run snapshots
 - app-layer restore now preprocesses persisted queue snapshots before `SessionQueue` restore, so approval-boundary recoveries can keep the same run non-terminal instead of falling straight into explicit-retry failure
-- `approved_pending_resume` and `rejected_pending_resume` restore back to the same queued run when safe, and `waiting_approval` restores back to the same suspended run when safe
+- `approved_pending_resume`, `rejected_pending_resume`, and `general_resume` checkpoints restore back to the same queued run when safe, and `waiting_approval` restores back to the same suspended run when safe
 - session resume no longer spins the executor on approval-waiting runs that have no runnable queue work
 - restore planning now prefers durable journal tail over `lastEvent` summary, so interruption classification is based on the append-only runtime history when available
 - interrupted runs without a recoverable checkpoint now stay explicitly interrupted in planner output instead of hinting that an automatic rerun is expected
@@ -54,12 +55,14 @@ Implemented in code:
 - `OpenCrayHostRuntime` now implements that same local-only gateway by delegation, which preserves the current projection fallback path while keeping service-owned runtime surfaces separate from local host helpers
 - shell, settings, and skills read fallback are now served by dedicated projection-only gateways rather than a full `OpenCrayHostRuntime`, so binder-pending reads on those surfaces no longer instantiate the UI-side host facade
 - projection-only skills fallback is now strictly local-only and no longer issues `SkillsList` or `SkillsFind`, which keeps tool-executing skills discovery and remote install metadata on the binder-owned pipeline
-- this service slice is intentionally same-process and non-foreground for now: it establishes the owner host boundary without yet introducing binder-driven control flow, foreground keepalive, or scheduled wake-up semantics
+- the runtime service now promotes itself to foreground while keepalive-required work exists, and service-owned notification flows now cover active-runtime, approval-needed, completion/interruption, and scheduled-dispatch surfaces
+- completion/interruption notifications now backfill from durable run state when the app is backgrounded, and terminal delivery is deduped across restore/backfill via a persistent notification-delivery store
+- this service slice is still intentionally same-process: foreground keepalive, notification surfaces, and scheduled wake-up semantics have landed, but binder-driven control flow and stronger detached ownership semantics are still later slices
 
 Not yet implemented:
 
-- detached runtime ownership via Android service with foreground keepalive / binder-driven control
-- general prompt checkpoint store beyond the approval-boundary slice
+- fully detached runtime ownership via Android service with binder-driven control as the primary execution path
+- additional prompt checkpoint boundaries beyond the current approval and post-tool-result slices
 - managed-process reconnect restore path
 - generalized checkpoint-aware queue restore in `core` beyond the current app-layer approval-boundary rewrite
 
@@ -71,6 +74,8 @@ This document answers two concrete questions:
 2. How should OpenCray evolve so tasks can continue after the user leaves the page and later support scheduled/background execution?
 
 This document complements `docs/runtime-checkpoint-and-detached-execution-design.md`. That document defines the recovery model. This document focuses on the current restart boundary, the code-backed investigation, and the phased architecture plan.
+
+For the Android-specific local strong-background product design that sits on top of this plan, including foreground-service survival, scheduled wake-up, and battery-optimization posture, see `docs/android-local-strong-background-runtime-design.md`.
 
 ## Executive Summary
 

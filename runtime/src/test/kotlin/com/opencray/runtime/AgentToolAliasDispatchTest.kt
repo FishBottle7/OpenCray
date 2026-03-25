@@ -107,6 +107,12 @@ class AgentToolAliasDispatchTest {
       listOf("pending", "in_progress", "completed"),
       statusSchema.requiredStringArray("enum"),
     )
+    assertTrue(
+      todoWriteDefinition.description.contains("empty todos array to clear"),
+    )
+    assertTrue(
+      todosSchema.requiredString("description").contains("Send an empty array to clear"),
+    )
     assertTrue(todoItemSchema.requiredStringArray("required").containsAll(listOf("content", "status")))
     assertEquals("false", todoItemSchema.requiredPrimitive("additionalProperties").content)
   }

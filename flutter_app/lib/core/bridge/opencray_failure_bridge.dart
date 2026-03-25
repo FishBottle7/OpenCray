@@ -16,6 +16,7 @@ import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
 import '../models/opencray_skills_snapshot.dart';
+import '../models/opencray_strong_background.dart';
 import '../models/opencray_twin_import_source_probe.dart';
 import '../models/opencray_workspace_text_document.dart';
 import 'opencray_host_bridge.dart';
@@ -67,6 +68,10 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
 
   @override
   Future<void> openWorkspaceEntry(String relativePath) async =>
+      throw StateError(_failureMessage);
+
+  @override
+  Future<void> openExternalUri(String uri) async =>
       throw StateError(_failureMessage);
 
   @override
@@ -136,6 +141,54 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     title: 'Settings unavailable',
     subtitle: _failureMessage,
     sections: const <OpenCraySettingsSectionSnapshot>[],
+  );
+
+  @override
+  Future<OpenCrayStrongBackgroundSnapshot>
+  loadStrongBackgroundSnapshot() async =>
+      const OpenCrayStrongBackgroundSnapshot(
+        source: 'strong-background',
+        available: false,
+        tierId: 'baseline',
+        setupComplete: false,
+        recommendedActionIds: <String>[],
+        notifications: OpenCrayStrongBackgroundNotificationsSnapshot(),
+        exactAlarms: OpenCrayStrongBackgroundExactAlarmSnapshot(),
+        batteryOptimization:
+            OpenCrayStrongBackgroundBatteryOptimizationSnapshot(),
+        actions: <OpenCrayStrongBackgroundActionSnapshot>[
+          OpenCrayStrongBackgroundActionSnapshot(
+            id: 'open_notification_settings',
+            available: false,
+            recommended: false,
+          ),
+          OpenCrayStrongBackgroundActionSnapshot(
+            id: 'open_exact_alarm_settings',
+            available: false,
+            recommended: false,
+          ),
+          OpenCrayStrongBackgroundActionSnapshot(
+            id: 'open_battery_optimization_settings',
+            available: false,
+            recommended: false,
+          ),
+          OpenCrayStrongBackgroundActionSnapshot(
+            id: 'request_ignore_battery_optimizations',
+            available: false,
+            recommended: false,
+          ),
+        ],
+      );
+
+  @override
+  Future<OpenCrayStrongBackgroundActionResult> performStrongBackgroundAction(
+    String actionId,
+  ) async => OpenCrayStrongBackgroundActionResult(
+    source: 'strong-background-action',
+    actionId: actionId,
+    available: false,
+    launched: false,
+    reason: _failureMessage,
   );
 
   @override

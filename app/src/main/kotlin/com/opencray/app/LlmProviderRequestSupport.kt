@@ -2,11 +2,13 @@ package com.opencray.app
 
 internal object LlmProviderProtocols {
   const val OPENAI: String = "openai"
+  const val OPENAI_RESPONSES: String = "openai_responses"
   const val ANTHROPIC: String = "anthropic"
 
   private const val DEFAULT_ANTHROPIC_VERSION: String = "2023-06-01"
 
   fun normalize(rawValue: String?): String = when (rawValue?.trim()?.lowercase()) {
+    OPENAI_RESPONSES -> OPENAI_RESPONSES
     ANTHROPIC -> ANTHROPIC
     else -> OPENAI
   }
@@ -37,6 +39,7 @@ internal object LlmProviderProtocols {
     reasoningEffort: String,
   ): Map<String, String> = when (normalize(protocol)) {
     ANTHROPIC -> anthropicRouteMetadata(reasoningEffort)
+    OPENAI_RESPONSES -> openAiResponsesRouteMetadata(model = model, reasoningEffort = reasoningEffort)
     else -> openAiRouteMetadata(model = model, reasoningEffort = reasoningEffort)
   }
 
@@ -52,6 +55,22 @@ internal object LlmProviderProtocols {
     )
   } else {
     mapOf("protocol" to OPENAI)
+  }
+
+  private fun openAiResponsesRouteMetadata(
+    model: String,
+    reasoningEffort: String,
+  ): Map<String, String> {
+    val normalizedEffort = reasoningEffort.trim().ifBlank {
+      LlmSettingsState.DEFAULT_REASONING_EFFORT
+    }
+    return buildMap {
+      put("protocol", OPENAI_RESPONSES)
+      put("responseApiPreferred", "true")
+      if (model.contains("gpt", ignoreCase = true)) {
+        put("reasoning_effort", normalizedEffort)
+      }
+    }
   }
 
   private fun anthropicRouteMetadata(reasoningEffort: String): Map<String, String> {

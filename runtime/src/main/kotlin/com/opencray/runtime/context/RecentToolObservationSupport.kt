@@ -162,6 +162,8 @@ class RecentToolObservationSupport(
     return null
   }
 
+  fun duplicateDiscoverySignature(call: AgentToolCall): String? = signatureForCall(call)
+
   private fun collectObservations(messages: List<RuntimeConversationMessage>): List<RenderedObservation> =
     messages.mapNotNull(::parseToolResult)
       .filter { parsed ->

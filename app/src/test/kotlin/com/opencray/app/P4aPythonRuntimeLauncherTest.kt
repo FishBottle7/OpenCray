@@ -59,6 +59,8 @@ class P4aPythonRuntimeLauncherTest {
         """"resultPath":"${runtimeRoot.resolve("results/request-missing.json").toString().replace("\\", "\\\\")}"""",
       ),
     )
+    assertTrue(spec.serviceArgument.contains(""""pollIntervalMs":25"""))
+    assertTrue(spec.serviceArgument.contains(""""once":true"""))
     assertEquals(
       "org.opencray.app.ServiceOpencraypython",
       P4aPythonRuntimeServiceContract.generatedServiceClassName("org.opencray.app"),
@@ -145,6 +147,27 @@ class P4aPythonRuntimeLauncherTest {
     assertEquals(listOf("prepare"), FakeGeneratedService.invocations)
   }
 
+  @Test
+  fun androidServiceStarterRequestsGeneratedServiceStop() {
+    FakeGeneratedService.reset()
+    val starter = AndroidP4aPythonRuntimeServiceStarter(
+      context = ContextWrapper(null),
+      classLoader = FakeGeneratedService::class.java.classLoader,
+    )
+
+    val metadata = starter.stop(
+      P4aPythonRuntimeServiceControlSpec(
+        packageName = "org.opencray.app",
+        serviceId = "opencraypython",
+        generatedServiceClassName = FakeGeneratedService::class.java.name,
+      ),
+    )
+
+    assertEquals("stop_requested", metadata["launcherStopState"])
+    assertEquals(FakeGeneratedService::class.java.name, metadata["launcherStopServiceClass"])
+    assertEquals(listOf("stop"), FakeGeneratedService.invocations)
+  }
+
   private fun launchRequest(
     runtimeRoot: Path,
     requestId: String,
@@ -161,6 +184,8 @@ class P4aPythonRuntimeLauncherTest {
     requestPath = runtimeRoot.resolve("requests/$requestId.json"),
     resultPath = runtimeRoot.resolve("results/$requestId.json"),
     logPath = runtimeRoot.resolve("logs/$requestId.log"),
+    servicePollIntervalMs = 25L,
+    runOnce = true,
   )
 }
 
@@ -189,6 +214,11 @@ private class FakeGeneratedService {
     fun start(context: Context, pythonServiceArgument: String) {
       invocations += "start"
       capturedServiceArgument = pythonServiceArgument
+    }
+
+    @JvmStatic
+    fun stop(context: Context) {
+      invocations += "stop"
     }
   }
 }

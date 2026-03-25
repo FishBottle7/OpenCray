@@ -20,6 +20,8 @@ internal interface OpenCrayLocalHostGateway {
 
   fun openWorkspaceEntry(relativePath: String)
 
+  fun openExternalUri(uri: String)
+
   fun createWorkspaceFolder(parentRelativePath: String, name: String): Map<String, Any?>
 
   fun createWorkspaceTextFile(parentRelativePath: String, name: String): Map<String, Any?>
@@ -52,6 +54,7 @@ internal class DefaultOpenCrayLocalHostGateway(
   private val appContext: Context?,
   private val workspaceRootProvider: (() -> Path)?,
   private val workspaceEntryOpener: ((Path, String) -> Unit)? = null,
+  private val externalUriOpener: ((String) -> Unit)? = null,
   private val workspaceSnapshotProvider: () -> Map<String, Any?>,
   private val mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
 ) : OpenCrayLocalHostGateway {
@@ -99,6 +102,18 @@ internal class DefaultOpenCrayLocalHostGateway(
           },
           workspaceRoot = workspaceRoot,
           relativePath = relativePath,
+        )
+    }
+  }
+
+  override fun openExternalUri(uri: String) {
+    synchronized(lock) {
+      externalUriOpener?.invoke(uri)
+        ?: AppExternalUriOpener.openUri(
+          appContext = requireNotNull(appContext) {
+            "External link handling is unavailable."
+          },
+          uri = uri,
         )
     }
   }

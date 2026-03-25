@@ -25,12 +25,16 @@ private const val DEFAULT_WEB_SEARCH_USER_AGENT: String = "OpenCray-WebSearch/1.
 
 data class ConfiguredWebSearchSlot(
   val providerId: String,
+  val baseUrl: String = "",
+  val model: String = "",
   val apiKey: String,
   val label: String = "",
   val enabled: Boolean = true,
 ) {
   fun sanitized(): ConfiguredWebSearchSlot = copy(
     providerId = providerId.trim().lowercase(),
+    baseUrl = baseUrl.trim(),
+    model = model.trim(),
     apiKey = apiKey.trim(),
     label = label.trim(),
     enabled = enabled,
@@ -139,6 +143,7 @@ class SequentialWebSearchProvider(
           return WebSearchResult(
             providerName = slot.displayName(),
             results = outcome.hits,
+            summaryText = outcome.summaryText,
           )
         }
 
@@ -163,6 +168,7 @@ class SequentialWebSearchProvider(
       "exa" -> searchExa(slot, request)
       "tavily" -> searchTavily(slot, request)
       "brave" -> searchBrave(slot, request)
+      "openai_web_search" -> searchOpenAiWebSearch(slot, request)
       else -> ProviderSearchOutcome.Failure("Unsupported provider '${slot.providerId}'.")
     }
   } catch (timeout: SocketTimeoutException) {
@@ -264,6 +270,58 @@ class SequentialWebSearchProvider(
     return ProviderSearchOutcome.Success(request.filterHits(hits))
   }
 
+  private fun searchOpenAiWebSearch(
+    slot: ConfiguredWebSearchSlot,
+    request: WebSearchRequest,
+  ): ProviderSearchOutcome {
+    val response = transport.execute(
+      WebSearchHttpRequest(
+        method = "POST",
+        url = openAiResponsesEndpoint(slot.baseUrl),
+        headers = mapOf(
+          "Content-Type" to "application/json",
+          "Authorization" to "Bearer ${slot.apiKey}",
+        ),
+        body = buildJsonObject {
+          put("model", slot.model.ifBlank { DEFAULT_OPENAI_WEB_SEARCH_MODEL })
+          put("input", request.query)
+          put("tool_choice", "required")
+          putJsonArray("tools") {
+            add(
+              buildJsonObject {
+                put("type", "web_search")
+                if (request.domains.isNotEmpty()) {
+                  put(
+                    "filters",
+                    buildJsonObject {
+                      putJsonArray("allowed_domains") {
+                        request.domains.forEach { domain ->
+                          add(JsonPrimitive(domain))
+                        }
+                      }
+                    },
+                  )
+                }
+              },
+            )
+          }
+          putJsonArray("include") {
+            add(JsonPrimitive("web_search_call.action.sources"))
+          }
+        }.toString(),
+      ),
+    )
+    if (response.statusCode !in 200..299) {
+      return ProviderSearchOutcome.Failure(httpErrorMessage(response))
+    }
+    val payload = parseJsonObject(response.body)
+    val parsed = openAiWebSearchParseResult(payload)
+    return ProviderSearchOutcome.Success(
+      hits = request.filterHits(parsed.hits),
+      summaryText = parsed.summaryText,
+    )
+  }
+
   private fun exaHit(result: JsonObject): WebSearchHit? {
     val url = result.string("url").orEmpty().trim()
     if (url.isEmpty()) {
@@ -311,6 +369,124 @@ class SequentialWebSearchProvider(
         result.string("snippet"),
       ).normalizedSnippet(),
     )
+  }
+
+  private fun openAiWebSearchParseResult(payload: JsonObject): OpenAiWebSearchParseResult {
+    val output: List<JsonElement> = payload.arrayValue("output").orEmpty()
+    val summaryText = firstNonBlank(
+      responsesOutputText(output),
+      payload.string("output_text"),
+      payload.objectValue("output_text")?.string("value"),
+    ).normalizedSnippet()
+    val byUrl = linkedMapOf<String, WebSearchHit>()
+    output.forEach { element ->
+      val item = element as? JsonObject ?: return@forEach
+      when (item.string("type")) {
+        "web_search_call" -> {
+          val sources = item.objectValue("action")?.arrayValue("sources")
+            ?: item.arrayValue("sources")
+          sources.orEmpty().forEach sourceLoop@{ source ->
+            val sourceObject = source as? JsonObject ?: return@sourceLoop
+            val url = sourceObject.string("url").orEmpty().trim()
+            if (url.isEmpty()) {
+              return@sourceLoop
+            }
+            byUrl.putIfAbsent(
+              url,
+              WebSearchHit(
+                title = sourceObject.string("title").orEmpty().ifBlank { url },
+                url = url,
+                snippet = summaryText,
+              ),
+            )
+          }
+        }
+
+        "message" -> {
+          responsesMessageContentObjects(item).forEach contentLoop@{ content ->
+            content.responseAnnotations().forEach annotationLoop@{ annotationElement ->
+              val annotation = annotationElement as? JsonObject ?: return@annotationLoop
+              if (annotation.string("type") != "url_citation") {
+                return@annotationLoop
+              }
+              val url = annotation.string("url").orEmpty().trim()
+              if (url.isEmpty()) {
+                return@annotationLoop
+              }
+              byUrl[url] = WebSearchHit(
+                title = annotation.string("title").orEmpty().ifBlank {
+                  byUrl[url]?.title ?: url
+                },
+                url = url,
+                snippet = byUrl[url]?.snippet?.takeIf(String::isNotBlank) ?: summaryText,
+              )
+            }
+          }
+        }
+      }
+    }
+    return OpenAiWebSearchParseResult(
+      hits = byUrl.values.toList(),
+      summaryText = summaryText,
+    )
+  }
+
+  private fun responsesOutputText(output: List<JsonElement>): String = buildString {
+    output.forEach { element ->
+      val item = element as? JsonObject ?: return@forEach
+      if (item.string("type") != "message") {
+        return@forEach
+      }
+      val textSegments = buildList<String> {
+        responsesMessageContentObjects(item).forEach { content ->
+          responseContentText(content)
+            .takeIf(String::isNotBlank)
+            ?.let(::add)
+        }
+        if (isEmpty()) {
+          firstNonBlank(
+            item.string("content"),
+            item.objectValue("content")?.let(::responseContentText),
+            item.string("text"),
+            item.objectValue("text")?.string("value"),
+          ).takeIf(String::isNotBlank)?.let(::add)
+        }
+      }
+      textSegments.forEach { text ->
+        if (isNotEmpty()) {
+          append(' ')
+        }
+        append(text)
+      }
+    }
+  }
+
+  private fun responsesMessageContentObjects(message: JsonObject): List<JsonObject> {
+    val directArray = message.arrayValue("content")
+      ?.mapNotNull { element -> element as? JsonObject }
+      .orEmpty()
+    if (directArray.isNotEmpty()) {
+      return directArray
+    }
+    message.objectValue("content")?.let { contentObject ->
+      return listOf(contentObject)
+    }
+    return emptyList()
+  }
+
+  private fun responseContentText(content: JsonObject): String = firstNonBlank(
+    content.string("text"),
+    content.string("output_text"),
+    content.string("summary_text"),
+    content.string("content"),
+    content.string("value"),
+    content.objectValue("text")?.string("value"),
+    content.objectValue("text")?.string("text"),
+  )
+
+  private fun JsonObject.responseAnnotations(): List<JsonElement> = buildList {
+    arrayValue("annotations")?.let(::addAll)
+    objectValue("text")?.arrayValue("annotations")?.let(::addAll)
   }
 
   private fun parseJsonObject(source: String): JsonObject = json.parseToJsonElement(source).jsonObject
@@ -405,19 +581,38 @@ class SequentialWebSearchProvider(
   private fun String.normalizedSnippet(): String =
     replace(WHITESPACE_REGEX, " ").trim().take(MAX_SNIPPET_CHARS)
 
+  private fun openAiResponsesEndpoint(baseUrl: String): String {
+    val trimmedBaseUrl = baseUrl.trim().ifBlank { DEFAULT_OPENAI_RESPONSES_BASE_URL }.trimEnd('/')
+    return when {
+      trimmedBaseUrl.endsWith("/v1/responses") -> trimmedBaseUrl
+      trimmedBaseUrl.endsWith("/v1") -> "$trimmedBaseUrl/responses"
+      else -> "$trimmedBaseUrl/v1/responses"
+    }
+  }
+
   private fun ConfiguredWebSearchSlot.displayName(): String =
     if (label.isBlank()) providerId else "$providerId:$label"
 
   private sealed interface ProviderSearchOutcome {
-    data class Success(val hits: List<WebSearchHit>) : ProviderSearchOutcome
+    data class Success(
+      val hits: List<WebSearchHit>,
+      val summaryText: String = "",
+    ) : ProviderSearchOutcome
 
     data class Failure(val message: String) : ProviderSearchOutcome
   }
+
+  private data class OpenAiWebSearchParseResult(
+    val hits: List<WebSearchHit>,
+    val summaryText: String,
+  )
 
   private companion object {
     private const val MAX_SNIPPET_CHARS: Int = 280
     private const val MAX_PROVIDER_FETCH_RESULTS: Int = 20
     private const val BRAVE_DOMAIN_FETCH_MULTIPLIER: Int = 4
+    private const val DEFAULT_OPENAI_RESPONSES_BASE_URL: String = "https://api.openai.com/v1"
+    private const val DEFAULT_OPENAI_WEB_SEARCH_MODEL: String = "gpt-5"
     private val WHITESPACE_REGEX = Regex("\\s+")
   }
 }

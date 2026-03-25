@@ -18,6 +18,8 @@ internal object AppConfiguredWebSearchProviderFactory {
       .map { slot ->
         ConfiguredWebSearchSlot(
           providerId = slot.providerId,
+          baseUrl = slot.baseUrl,
+          model = slot.model,
           apiKey = slot.apiKey,
           label = slot.label,
           enabled = slot.enabled,

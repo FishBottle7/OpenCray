@@ -81,6 +81,7 @@ internal data class PromptCheckpointStoreConfig(
 
 @Serializable
 internal enum class PromptCheckpointKind {
+  GENERAL_RESUME,
   WAITING_APPROVAL,
   APPROVED_PENDING_RESUME,
   REJECTED_PENDING_RESUME,

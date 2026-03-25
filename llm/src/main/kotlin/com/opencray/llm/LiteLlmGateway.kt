@@ -13,6 +13,7 @@ data class LiteLlmGatewayRequest(
   val systemPrompt: String? = null,
   val messages: List<LiteLlmGatewayMessage> = emptyList(),
   val tools: List<LiteLlmToolDefinition> = emptyList(),
+  val builtinTools: List<LiteLlmBuiltinToolDefinition> = emptyList(),
   val toolChoice: LiteLlmToolChoice? = null,
   val parallelToolCalls: Boolean? = null,
   val previousResponseId: String? = null,
@@ -57,6 +58,13 @@ enum class LiteLlmGatewayMessageRole {
   TOOL,
 }
 
+enum class LiteLlmAssistantPhase(
+  val wireValue: String,
+) {
+  COMMENTARY("commentary"),
+  FINAL_ANSWER("final_answer"),
+}
+
 data class LiteLlmGatewayToolResult(
   val toolCallId: String? = null,
   val toolName: String? = null,
@@ -92,6 +100,7 @@ data class LiteLlmGatewayMessage(
   val content: String? = null,
   val toolCalls: List<LiteLlmStructuredToolCall> = emptyList(),
   val toolResult: LiteLlmGatewayToolResult? = null,
+  val assistantPhase: LiteLlmAssistantPhase? = null,
 ) {
   init {
     val hasContent = !content.isNullOrBlank()
@@ -107,6 +116,9 @@ data class LiteLlmGatewayMessage(
     require(role == LiteLlmGatewayMessageRole.ASSISTANT || toolCalls.isEmpty()) {
       "LiteLlmGatewayMessage only assistant messages may carry toolCalls."
     }
+    require(role == LiteLlmGatewayMessageRole.ASSISTANT || assistantPhase == null) {
+      "LiteLlmGatewayMessage assistantPhase is only valid for assistant messages."
+    }
   }
 }
 
@@ -119,6 +131,22 @@ data class LiteLlmToolDefinition(
   init {
     require(name.isNotBlank()) { "LiteLlmToolDefinition name must not be blank." }
     require(description.isNotBlank()) { "LiteLlmToolDefinition description must not be blank." }
+  }
+}
+
+enum class LiteLlmBuiltinToolType {
+  WEB_SEARCH,
+}
+
+data class LiteLlmBuiltinToolDefinition(
+  val type: LiteLlmBuiltinToolType,
+  val domains: List<String> = emptyList(),
+  val includeSources: Boolean = false,
+) {
+  init {
+    require(domains.none(String::isBlank)) {
+      "LiteLlmBuiltinToolDefinition domains must not contain blank values."
+    }
   }
 }
 
@@ -196,14 +224,18 @@ data class LiteLlmStructuredCompletion(
   val progressText: String? = null,
   val reasoningText: String? = null,
   val rawText: String? = null,
+  val toolCallErrors: List<String> = emptyList(),
 ) {
   val hasStructuredActions: Boolean
     get() = toolCalls.isNotEmpty() ||
       !finalText.isNullOrBlank() ||
       !progressText.isNullOrBlank()
 
+  val hasRecoverableDiagnostics: Boolean
+    get() = toolCallErrors.isNotEmpty()
+
   val hasVisibleContent: Boolean
-    get() = hasStructuredActions || !rawText.isNullOrBlank()
+    get() = hasStructuredActions || !rawText.isNullOrBlank() || hasRecoverableDiagnostics
 }
 
 data class LiteLlmGatewayResult(

@@ -1,5 +1,6 @@
 import 'settings_models.dart';
 import 'safety_settings_models.dart';
+import 'strong_background_settings_models.dart';
 
 abstract interface class SettingsFacade {
   Future<SettingsOverviewSnapshot> loadOverview();
@@ -7,6 +8,12 @@ abstract interface class SettingsFacade {
   Stream<SettingsOverviewSnapshot> watchOverview();
 
   Future<SettingsDetailSnapshot> loadDetail(SettingsPage page);
+
+  Future<StrongBackgroundSnapshot> loadStrongBackgroundSnapshot();
+
+  Future<StrongBackgroundActionResult> performStrongBackgroundAction(
+    StrongBackgroundActionId actionId,
+  );
 
   Future<NetworkSearchConfigSnapshot> loadNetworkSearchConfig();
 

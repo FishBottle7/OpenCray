@@ -19,6 +19,7 @@ import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
 import '../models/opencray_skills_snapshot.dart';
+import '../models/opencray_strong_background.dart';
 import '../models/opencray_twin_import_source_probe.dart';
 import '../models/opencray_workspace_text_document.dart';
 import 'opencray_host_bridge.dart';
@@ -32,6 +33,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     OpenCrayPersonalizationConfigSnapshot? initialPersonalizationConfig,
     OpenCrayMcpSettingsSnapshot? initialMcpSettings,
     OpenCraySafetySettingsSnapshot? initialSafetySettings,
+    OpenCrayStrongBackgroundSnapshot? initialStrongBackgroundSnapshot,
     OpenCraySkillsSnapshot? initialSkillsSnapshot,
     OpenCrayChatSnapshot? initialChatSnapshot,
   }) : _snapshot =
@@ -107,7 +109,8 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
                  id: 'custom',
                  providerId: 'custom',
                  title: 'Custom provider',
-                 subtitle: 'Any OpenAI-compatible or Anthropic endpoint.',
+                 subtitle:
+                     'Any OpenAI-compatible, OpenAI Responses, or Anthropic endpoint.',
                  defaultBaseUrl: '',
                  defaultModel: '',
                  protocol: 'openai',
@@ -162,6 +165,41 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
              ],
              workspaceAccessProfileId: 'work',
              readOnlyOutsideWorkspace: true,
+           ),
+       _strongBackgroundSnapshot =
+           initialStrongBackgroundSnapshot ??
+           const OpenCrayStrongBackgroundSnapshot(
+             source: 'strong-background',
+             available: false,
+             tierId: 'baseline',
+             setupComplete: false,
+             recommendedActionIds: <String>[],
+             notifications: OpenCrayStrongBackgroundNotificationsSnapshot(),
+             exactAlarms: OpenCrayStrongBackgroundExactAlarmSnapshot(),
+             batteryOptimization:
+                 OpenCrayStrongBackgroundBatteryOptimizationSnapshot(),
+             actions: <OpenCrayStrongBackgroundActionSnapshot>[
+               OpenCrayStrongBackgroundActionSnapshot(
+                 id: 'open_notification_settings',
+                 available: false,
+                 recommended: false,
+               ),
+               OpenCrayStrongBackgroundActionSnapshot(
+                 id: 'open_exact_alarm_settings',
+                 available: false,
+                 recommended: false,
+               ),
+               OpenCrayStrongBackgroundActionSnapshot(
+                 id: 'open_battery_optimization_settings',
+                 available: false,
+                 recommended: false,
+               ),
+               OpenCrayStrongBackgroundActionSnapshot(
+                 id: 'request_ignore_battery_optimizations',
+                 available: false,
+                 recommended: false,
+               ),
+             ],
            ),
        _skillsSnapshot =
            initialSkillsSnapshot ??
@@ -276,6 +314,8 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
             id: 'seed-search-1',
             providerId: 'exa',
             label: 'Primary Exa',
+            baseUrl: '',
+            model: '',
             apiKey: 'sk_live_demo_7Q9K',
             enabled: true,
           ),
@@ -283,6 +323,8 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
             id: 'seed-search-2',
             providerId: 'tavily',
             label: 'Tavily Backup',
+            baseUrl: '',
+            model: '',
             apiKey: 'tvly-demo-BK24',
             enabled: true,
           ),
@@ -321,6 +363,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   OpenCrayPersonalizationConfigSnapshot _personalizationConfig;
   OpenCrayMcpSettingsSnapshot _mcpSettings;
   OpenCraySafetySettingsSnapshot _safetySettings;
+  final OpenCrayStrongBackgroundSnapshot _strongBackgroundSnapshot;
   OpenCraySkillsSnapshot _skillsSnapshot;
   OpenCrayChatSnapshot _chatSnapshot;
   int _seedMessageCounter = 1;
@@ -428,6 +471,11 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   @override
   Future<void> openWorkspaceEntry(String relativePath) async {
     throw StateError('Seed bridge does not support opening workspace files.');
+  }
+
+  @override
+  Future<void> openExternalUri(String uri) async {
+    throw StateError('Seed bridge does not support opening external links.');
   }
 
   @override
@@ -585,6 +633,21 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   Future<OpenCraySettingsDetailSnapshot> loadSettingsDetail(
     String routeId,
   ) async => _seedSettingsDetailFor(routeId);
+
+  @override
+  Future<OpenCrayStrongBackgroundSnapshot>
+  loadStrongBackgroundSnapshot() async => _strongBackgroundSnapshot;
+
+  @override
+  Future<OpenCrayStrongBackgroundActionResult> performStrongBackgroundAction(
+    String actionId,
+  ) async => OpenCrayStrongBackgroundActionResult(
+    source: 'strong-background-action',
+    actionId: actionId,
+    available: false,
+    launched: false,
+    reason: 'Seed bridge does not support Android strong-background actions.',
+  );
 
   @override
   Future<OpenCrayNetworkSearchConfigSnapshot> loadNetworkSearchConfig() async =>

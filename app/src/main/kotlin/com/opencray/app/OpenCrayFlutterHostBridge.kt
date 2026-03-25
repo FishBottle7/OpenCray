@@ -111,6 +111,12 @@ internal class OpenCrayFlutterHostBridge(
           )
           null
         }
+        "openExternalUri" -> {
+          localHostGateway.openExternalUri(
+            uri = call.argument<String>("uri").orEmpty(),
+          )
+          null
+        }
         "createWorkspaceFolder" -> localHostGateway.createWorkspaceFolder(
           parentRelativePath = call.argument<String>("parentRelativePath").orEmpty(),
           name = call.argument<String>("name").orEmpty(),
@@ -150,6 +156,10 @@ internal class OpenCrayFlutterHostBridge(
         "loadSettingsOverview" -> settingsGateway.loadSettingsOverview()
         "loadSettingsDetail" -> settingsGateway.loadSettingsDetail(
           routeIdRaw = call.argument<String>("routeId").orEmpty(),
+        )
+        "loadStrongBackgroundSnapshot" -> settingsGateway.loadStrongBackgroundSnapshot()
+        "performStrongBackgroundAction" -> settingsGateway.performStrongBackgroundAction(
+          actionId = call.argument<String>("actionId").orEmpty(),
         )
         "loadNetworkSearchConfig" -> settingsGateway.loadNetworkSearchConfig()
         "saveNetworkSearchConfig" -> settingsGateway.saveNetworkSearchConfig(

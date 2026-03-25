@@ -17,6 +17,8 @@ import com.opencray.llm.InMemoryLiteLlmRoutingSettingsStore
 import com.opencray.llm.LiteLlmGatewayRequest
 import com.opencray.llm.LiteLlmGatewayResult
 import com.opencray.llm.LiteLlmGatewayStatus
+import com.opencray.llm.LiteLlmBuiltinToolDefinition
+import com.opencray.llm.LiteLlmBuiltinToolType
 import com.opencray.llm.LiteLlmMetadataKeys
 import com.opencray.llm.LiteLlmProviderClient
 import com.opencray.llm.LiteLlmStructuredToolCall
@@ -299,14 +301,58 @@ internal class LocalLlmConfigFacade private constructor(
       } else {
         CapabilityProbeOutcome.unsupported()
       }
+      val parallelToolCallsProbe = if (controlProbe.supported) {
+        executeParallelToolCallsProbe(
+          gateway = gateway,
+          authHeaders = authHeaders,
+        )
+      } else {
+        CapabilityProbeOutcome.unsupported()
+      }
+      val responsesContinuationProbe = if (protocol == LlmProviderProtocols.OPENAI_RESPONSES) {
+        executeResponsesContinuationProbe(
+          gateway = gateway,
+          authHeaders = authHeaders,
+        )
+      } else {
+        CapabilityProbeOutcome.unsupported()
+      }
+      val responsesBuiltinWebSearchProbe = if (protocol == LlmProviderProtocols.OPENAI_RESPONSES) {
+        executeResponsesBuiltinWebSearchProbe(
+          gateway = gateway,
+          authHeaders = authHeaders,
+        )
+      } else {
+        CapabilityProbeOutcome.unsupported()
+      }
+      val responsesAssistantPhaseProbeSupported = if (protocol == LlmProviderProtocols.OPENAI_RESPONSES) {
+        executeResponsesAssistantPhaseProbe(
+          gateway = gateway,
+          authHeaders = authHeaders,
+        )
+      }
+      else {
+        false
+      }
+      val assistantPhaseSupported = responsesAssistantPhaseProbeSupported
+      val citationIncludeSupported = responsesBuiltinWebSearchProbe.result
+        ?.metadata
+        ?.get(LiteLlmMetadataKeys.PROVIDER_CITATION_COUNT)
+        ?.toIntOrNull()
+        ?.let { count -> count > 0 }
+        ?: false
       verifiedCapabilitySnapshot(
         protocol = protocol,
         baseUrl = baseUrl,
         model = model,
         nativeToolCallingAvailable = true,
         toolChoiceSupported = controlProbe.supported,
-        parallelToolCallsSupported = controlProbe.supported,
+        parallelToolCallsSupported = parallelToolCallsProbe.supported,
         strictToolSchemaSupported = strictProbe.supported,
+        responsesContinuationSupported = responsesContinuationProbe.supported,
+        builtinWebSearchSupported = responsesBuiltinWebSearchProbe.supported,
+        assistantPhaseSupported = assistantPhaseSupported,
+        citationIncludeSupported = citationIncludeSupported,
       )
     }
     llmSettingsStore.saveAgentCapability(capability)
@@ -445,11 +491,11 @@ internal class LocalLlmConfigFacade private constructor(
   private fun resolvedProtocol(
     providerPreset: LlmProviderPreset,
     requestedProtocol: String,
-  ): String = if (providerPreset.isCustom) {
-    LlmProviderProtocols.normalize(requestedProtocol)
-  } else {
-    providerPreset.defaultProtocol
-  }
+  ): String = requestedProtocol
+    .trim()
+    .takeIf(String::isNotBlank)
+    ?.let(LlmProviderProtocols::normalize)
+    ?: providerPreset.defaultProtocol
 
   private fun resolvedStateFromRequest(request: SaveLlmConfigRequest): LlmSettingsState {
     val providerPreset = LlmProviderCatalog.presetById(request.providerId)
@@ -507,18 +553,23 @@ internal class LocalLlmConfigFacade private constructor(
     stage: String,
     prompt: String,
     tools: List<LiteLlmToolDefinition> = emptyList(),
+    builtinTools: List<LiteLlmBuiltinToolDefinition> = emptyList(),
     toolChoice: LiteLlmToolChoice? = null,
     parallelToolCalls: Boolean? = null,
+    previousResponseId: String? = null,
+    metadata: Map<String, String> = emptyMap(),
   ): LiteLlmGatewayResult = gateway.execute(
     LiteLlmGatewayRequest(
       prompt = prompt,
       tools = tools,
+      builtinTools = builtinTools,
       toolChoice = toolChoice,
       parallelToolCalls = parallelToolCalls,
+      previousResponseId = previousResponseId,
       metadata = mapOf(
         "source" to "settings_validation",
         "validationStage" to stage,
-      ),
+      ) + metadata,
       authHeaders = authHeaders,
     ),
   )
@@ -537,7 +588,13 @@ internal class LocalLlmConfigFacade private constructor(
       authHeaders = authHeaders,
       stage = stage,
       prompt = capabilityProbePrompt(expectedEcho),
-      tools = listOf(capabilityProbeTool(expectedEcho = expectedEcho, strict = strict)),
+      tools = listOf(
+        capabilityProbeTool(
+          toolName = CAPABILITY_PROBE_TOOL_NAME,
+          expectedEcho = expectedEcho,
+          strict = strict,
+        ),
+      ),
       toolChoice = toolChoice,
       parallelToolCalls = parallelToolCalls,
     )
@@ -552,6 +609,7 @@ internal class LocalLlmConfigFacade private constructor(
       ?.any { toolCall ->
         isCapabilityProbeToolCall(
           toolCall = toolCall,
+          toolName = CAPABILITY_PROBE_TOOL_NAME,
           expectedEcho = expectedEcho,
         )
       } == true
@@ -562,6 +620,154 @@ internal class LocalLlmConfigFacade private constructor(
       supported = toolCallObserved || metadataObserved,
       result = result,
     )
+  }
+
+  private fun executeParallelToolCallsProbe(
+    gateway: DefaultLiteLlmGateway,
+    authHeaders: Map<String, String>,
+  ): CapabilityProbeOutcome {
+    val result = executeValidationRequest(
+      gateway = gateway,
+      authHeaders = authHeaders,
+      stage = "parallel_tool_calls_probe",
+      prompt = parallelCapabilityProbePrompt(),
+      tools = listOf(
+        capabilityProbeTool(
+          toolName = PARALLEL_CAPABILITY_PROBE_TOOL_ONE,
+          expectedEcho = PARALLEL_TOOL_PROBE_ONE_ECHO,
+          strict = true,
+        ),
+        capabilityProbeTool(
+          toolName = PARALLEL_CAPABILITY_PROBE_TOOL_TWO,
+          expectedEcho = PARALLEL_TOOL_PROBE_TWO_ECHO,
+          strict = true,
+        ),
+      ),
+      parallelToolCalls = true,
+    )
+    if (result.status != LiteLlmGatewayStatus.SUCCESS) {
+      return CapabilityProbeOutcome(
+        supported = false,
+        result = result,
+      )
+    }
+    val observedToolCalls = result.completion?.toolCalls.orEmpty()
+    val observedFirst = observedToolCalls.any { toolCall ->
+      isCapabilityProbeToolCall(
+        toolCall = toolCall,
+        toolName = PARALLEL_CAPABILITY_PROBE_TOOL_ONE,
+        expectedEcho = PARALLEL_TOOL_PROBE_ONE_ECHO,
+      )
+    }
+    val observedSecond = observedToolCalls.any { toolCall ->
+      isCapabilityProbeToolCall(
+        toolCall = toolCall,
+        toolName = PARALLEL_CAPABILITY_PROBE_TOOL_TWO,
+        expectedEcho = PARALLEL_TOOL_PROBE_TWO_ECHO,
+      )
+    }
+    return CapabilityProbeOutcome(
+      supported = observedToolCalls.size >= 2 && observedFirst && observedSecond,
+      result = result,
+    )
+  }
+
+  private fun executeResponsesContinuationProbe(
+    gateway: DefaultLiteLlmGateway,
+    authHeaders: Map<String, String>,
+  ): CapabilityProbeOutcome {
+    val seedResult = executeValidationRequest(
+      gateway = gateway,
+      authHeaders = authHeaders,
+      stage = "responses_continuation_seed",
+      prompt = "Remember the exact token $RESPONSES_CONTINUATION_TOKEN and reply only with READY.",
+      metadata = mapOf(
+        LiteLlmMetadataKeys.VALIDATION_ENABLE_RESPONSES_CONTINUATION to "true",
+      ),
+    )
+    if (seedResult.status != LiteLlmGatewayStatus.SUCCESS) {
+      return CapabilityProbeOutcome(
+        supported = false,
+        result = seedResult,
+      )
+    }
+    val previousResponseId = seedResult.providerResponseId?.trim()?.takeIf(String::isNotBlank)
+      ?: return CapabilityProbeOutcome(
+        supported = false,
+        result = seedResult,
+      )
+    val followupResult = executeValidationRequest(
+      gateway = gateway,
+      authHeaders = authHeaders,
+      stage = "responses_continuation_followup",
+      prompt = "What token did I ask you to remember? Reply only with the exact token.",
+      previousResponseId = previousResponseId,
+      metadata = mapOf(
+        LiteLlmMetadataKeys.VALIDATION_ENABLE_RESPONSES_CONTINUATION to "true",
+      ),
+    )
+    val recalledText = followupResult.outputText
+      ?.trim()
+      ?.ifBlank { followupResult.completion?.finalText?.trim().orEmpty() }
+      .orEmpty()
+    return CapabilityProbeOutcome(
+      supported = followupResult.status == LiteLlmGatewayStatus.SUCCESS &&
+        recalledText.contains(RESPONSES_CONTINUATION_TOKEN),
+      result = followupResult,
+    )
+  }
+
+  private fun executeResponsesBuiltinWebSearchProbe(
+    gateway: DefaultLiteLlmGateway,
+    authHeaders: Map<String, String>,
+  ): CapabilityProbeOutcome {
+    val result = executeValidationRequest(
+      gateway = gateway,
+      authHeaders = authHeaders,
+      stage = "responses_builtin_web_search_probe",
+      prompt = "Use web search to find the canonical https://example.com URL and cite one source.",
+      builtinTools = listOf(
+        LiteLlmBuiltinToolDefinition(
+          type = LiteLlmBuiltinToolType.WEB_SEARCH,
+          includeSources = true,
+        ),
+      ),
+      metadata = mapOf(
+        LiteLlmMetadataKeys.VALIDATION_ENABLE_RESPONSES_CITATION_INCLUDE to "true",
+      ),
+    )
+    return CapabilityProbeOutcome(
+      supported = result.status == LiteLlmGatewayStatus.SUCCESS &&
+        result.metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_USED]
+          ?.trim()
+          ?.lowercase() == "true",
+      result = result,
+    )
+  }
+
+  private fun executeResponsesAssistantPhaseProbe(
+    gateway: DefaultLiteLlmGateway,
+    authHeaders: Map<String, String>,
+  ): Boolean {
+    val result = executeValidationRequest(
+      gateway = gateway,
+      authHeaders = authHeaders,
+      stage = "responses_assistant_phase_probe",
+      prompt = "Return a short commentary update first, then the final answer OK. Use phased assistant messages if supported.",
+      metadata = mapOf(
+        LiteLlmMetadataKeys.VALIDATION_ENABLE_RESPONSES_ASSISTANT_PHASES to "true",
+      ),
+    )
+    if (result.status != LiteLlmGatewayStatus.SUCCESS) {
+      return false
+    }
+    val commentaryObserved = result.metadata[LiteLlmMetadataKeys.RESPONSES_COMMENTARY_PHASE_OBSERVED]
+      ?.trim()
+      ?.lowercase() == "true"
+    val finalObserved = result.metadata[LiteLlmMetadataKeys.RESPONSES_FINAL_PHASE_OBSERVED]
+      ?.trim()
+      ?.lowercase() == "true"
+    return commentaryObserved && finalObserved
   }
 
   private fun validationFailureFor(result: LiteLlmGatewayResult): LlmValidationResult? = when (result.status) {
@@ -592,10 +798,11 @@ internal class LocalLlmConfigFacade private constructor(
     """Call the $CAPABILITY_PROBE_TOOL_NAME tool exactly once with {"echo":"$expectedEcho"}. Do not answer with plain text."""
 
   private fun capabilityProbeTool(
+    toolName: String,
     expectedEcho: String,
     strict: Boolean,
   ): LiteLlmToolDefinition = LiteLlmToolDefinition(
-    name = CAPABILITY_PROBE_TOOL_NAME,
+    name = toolName,
     description = "Validation-only probe tool. Call it exactly once with the provided echo string.",
     inputSchema = buildJsonObject {
       put("type", "object")
@@ -628,11 +835,15 @@ internal class LocalLlmConfigFacade private constructor(
     strict = strict.takeIf { it },
   )
 
+  private fun parallelCapabilityProbePrompt(): String =
+    """Call both $PARALLEL_CAPABILITY_PROBE_TOOL_ONE and $PARALLEL_CAPABILITY_PROBE_TOOL_TWO exactly once in the same response. Do not answer with plain text."""
+
   private fun isCapabilityProbeToolCall(
     toolCall: LiteLlmStructuredToolCall,
+    toolName: String,
     expectedEcho: String,
   ): Boolean {
-    if (!toolCall.toolName.equals(CAPABILITY_PROBE_TOOL_NAME, ignoreCase = true)) {
+    if (!toolCall.toolName.equals(toolName, ignoreCase = true)) {
       return false
     }
     val echoedValue = toolCall.arguments["echo"]?.toString()
@@ -649,6 +860,10 @@ internal class LocalLlmConfigFacade private constructor(
     toolChoiceSupported: Boolean = false,
     parallelToolCallsSupported: Boolean = false,
     strictToolSchemaSupported: Boolean = false,
+    responsesContinuationSupported: Boolean = false,
+    builtinWebSearchSupported: Boolean = false,
+    assistantPhaseSupported: Boolean = false,
+    citationIncludeSupported: Boolean = false,
   ): LlmAgentCapabilitySnapshot = LlmAgentCapabilitySnapshot(
     routeFingerprint = com.opencray.app.llmRouteFingerprint(
       protocol = protocol,
@@ -660,6 +875,10 @@ internal class LocalLlmConfigFacade private constructor(
     toolChoiceSupported = toolChoiceSupported,
     parallelToolCallsSupported = parallelToolCallsSupported,
     strictToolSchemaSupported = strictToolSchemaSupported,
+    responsesContinuationSupported = responsesContinuationSupported,
+    builtinWebSearchSupported = builtinWebSearchSupported,
+    assistantPhaseSupported = assistantPhaseSupported,
+    citationIncludeSupported = citationIncludeSupported,
   )
 
   private fun resolvedCustomProviderName(
@@ -748,6 +967,11 @@ internal class LocalLlmConfigFacade private constructor(
     private const val NATIVE_TOOL_PROBE_ECHO: String = "native_tool_probe"
     private const val TOOL_CONTROL_PROBE_ECHO: String = "tool_choice_probe"
     private const val STRICT_SCHEMA_PROBE_ECHO: String = "strict_schema_probe"
+    private const val PARALLEL_CAPABILITY_PROBE_TOOL_ONE: String = "parallel_probe_one"
+    private const val PARALLEL_CAPABILITY_PROBE_TOOL_TWO: String = "parallel_probe_two"
+    private const val PARALLEL_TOOL_PROBE_ONE_ECHO: String = "parallel_tool_probe_one"
+    private const val PARALLEL_TOOL_PROBE_TWO_ECHO: String = "parallel_tool_probe_two"
+    private const val RESPONSES_CONTINUATION_TOKEN: String = "responses_continuation_probe_token"
   }
 }
 

@@ -11,7 +11,7 @@ import kotlinx.serialization.json.jsonObject
 internal enum class ReplayedRuntimeEventKind {
   TOOL_CALL,
   TOOL_RESULT,
-  PROGRESS,
+  ASSISTANT_PHASE,
   SUPPLEMENT,
   SUBAGENT,
 }
@@ -48,10 +48,10 @@ internal fun RuntimeConversationMessage.replayedRuntimePayloadOrNull(): Replayed
       }
 
     RuntimeConversationMessageKind.PROGRESS ->
-      if (role == RuntimeConversationRole.TOOL) {
+      if (role == RuntimeConversationRole.TOOL || role == RuntimeConversationRole.ASSISTANT) {
         plainJsonPayloadOrNull(normalized)?.let { payload ->
           return ReplayedRuntimePayload(
-            kind = ReplayedRuntimeEventKind.PROGRESS,
+            kind = ReplayedRuntimeEventKind.ASSISTANT_PHASE,
             payload = payload,
           )
         }
@@ -81,7 +81,7 @@ private fun inferReplayEventKind(decoded: JsonObject): ReplayedRuntimeEventKind?
       when (rawKind) {
         "tool_call" -> return ReplayedRuntimeEventKind.TOOL_CALL
         "tool_result" -> return ReplayedRuntimeEventKind.TOOL_RESULT
-        "progress" -> return ReplayedRuntimeEventKind.PROGRESS
+        "assistant_phase" -> return ReplayedRuntimeEventKind.ASSISTANT_PHASE
         "supplement" -> return ReplayedRuntimeEventKind.SUPPLEMENT
         "subagent" -> return ReplayedRuntimeEventKind.SUBAGENT
         else -> Unit
@@ -110,9 +110,6 @@ private fun inferReplayEventKind(decoded: JsonObject): ReplayedRuntimeEventKind?
     decoded.replayString("subagent_type") != null
   ) {
     return ReplayedRuntimeEventKind.SUBAGENT
-  }
-  if (decoded.replayString("text") != null) {
-    return ReplayedRuntimeEventKind.PROGRESS
   }
   return null
 }

@@ -113,7 +113,7 @@ class AgentSessionTranscriptStoreFactoryTest {
       ),
       RuntimeConversationMessage(
         role = RuntimeConversationRole.TOOL,
-        content = """{"run_id":"run-1","task_id":"task-1","turn":1,"text":"Planning the edit.","stage":"Planning"}""",
+        content = """{"event_kind":"assistant_phase","phase":"commentary","run_id":"run-1","task_id":"task-1","turn":1,"text":"Planning the edit.","stage":"Planning"}""",
         kind = RuntimeConversationMessageKind.PROGRESS,
         progress = RuntimeConversationProgress(
           runId = "run-1",

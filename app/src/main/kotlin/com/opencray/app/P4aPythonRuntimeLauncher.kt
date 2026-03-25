@@ -52,10 +52,24 @@ internal object P4aPythonRuntimeServiceContract {
           requestPath = request.requestPath.toString(),
           resultPath = request.resultPath.toString(),
           logPath = request.logPath.toString(),
+          pollIntervalMs = request.servicePollIntervalMs,
+          once = request.runOnce,
         ),
       ),
     )
   }
+
+  fun buildControlSpec(
+    packageName: String,
+    serviceId: String = GENERATED_SERVICE_ID,
+  ): P4aPythonRuntimeServiceControlSpec = P4aPythonRuntimeServiceControlSpec(
+    packageName = packageName,
+    serviceId = serviceId,
+    generatedServiceClassName = generatedServiceClassName(
+      packageName = packageName,
+      serviceId = serviceId,
+    ),
+  )
 }
 
 @Serializable
@@ -66,6 +80,8 @@ internal data class P4aPythonRuntimeServiceArgument(
   val requestPath: String,
   val resultPath: String,
   val logPath: String,
+  val pollIntervalMs: Long,
+  val once: Boolean,
 )
 
 internal data class P4aPythonRuntimeServiceStartSpec(
@@ -73,6 +89,12 @@ internal data class P4aPythonRuntimeServiceStartSpec(
   val serviceId: String,
   val generatedServiceClassName: String,
   val serviceArgument: String,
+)
+
+internal data class P4aPythonRuntimeServiceControlSpec(
+  val packageName: String,
+  val serviceId: String,
+  val generatedServiceClassName: String,
 )
 
 internal sealed interface P4aPythonRuntimeServiceStartResult {
@@ -89,6 +111,8 @@ internal sealed interface P4aPythonRuntimeServiceStartResult {
 
 internal interface P4aPythonRuntimeServiceStarter {
   fun start(spec: P4aPythonRuntimeServiceStartSpec): P4aPythonRuntimeServiceStartResult
+
+  fun stop(spec: P4aPythonRuntimeServiceControlSpec): Map<String, String> = emptyMap()
 }
 
 internal class ServiceBackedP4aPythonRuntimeLauncher(
@@ -127,6 +151,10 @@ internal class ServiceBackedP4aPythonRuntimeLauncher(
     }
   }
 
+  override fun stop(): Map<String, String> = serviceStarter.stop(
+    P4aPythonRuntimeServiceContract.buildControlSpec(packageName = packageName),
+  )
+
   companion object {
     fun fromContext(context: Context): ServiceBackedP4aPythonRuntimeLauncher =
       ServiceBackedP4aPythonRuntimeLauncher(
@@ -144,18 +172,16 @@ internal class AndroidP4aPythonRuntimeServiceStarter(
 ) : P4aPythonRuntimeServiceStarter {
   override fun start(spec: P4aPythonRuntimeServiceStartSpec): P4aPythonRuntimeServiceStartResult {
     val generatedServiceClass = try {
-      Class.forName(spec.generatedServiceClassName, true, classLoader)
-    } catch (_: ClassNotFoundException) {
-      return P4aPythonRuntimeServiceStartResult.Unavailable(
-        reason = "service_class_missing",
-        message = "Generated p4a service class was not found in the installed runtime artifact.",
-      )
+      loadGeneratedServiceClass(spec.generatedServiceClassName)
     } catch (error: Throwable) {
       return P4aPythonRuntimeServiceStartResult.Unavailable(
         reason = "service_class_load_failed",
         message = error.message ?: "Failed to load the generated p4a service class.",
       )
-    }
+    } ?: return P4aPythonRuntimeServiceStartResult.Unavailable(
+      reason = "service_class_missing",
+      message = "Generated p4a service class was not found in the installed runtime artifact.",
+    )
 
     val prepareMethod = generatedServiceClass.methods.firstOrNull { method ->
       method.name == "prepare" &&
@@ -211,5 +237,50 @@ internal class AndroidP4aPythonRuntimeServiceStarter(
         metadata = prepareMetadata,
       )
     }
+  }
+
+  override fun stop(spec: P4aPythonRuntimeServiceControlSpec): Map<String, String> {
+    val generatedServiceClass = try {
+      loadGeneratedServiceClass(spec.generatedServiceClassName)
+    } catch (error: Throwable) {
+      return mapOf(
+        "launcherStopState" to "service_class_load_failed",
+        "launcherStopServiceClass" to spec.generatedServiceClassName,
+        "launcherStopError" to (error.message ?: "unknown"),
+      )
+    } ?: return mapOf(
+      "launcherStopState" to "service_class_missing",
+      "launcherStopServiceClass" to spec.generatedServiceClassName,
+    )
+    val stopMethod = generatedServiceClass.methods.firstOrNull { method ->
+      method.name == "stop" &&
+        Modifier.isStatic(method.modifiers) &&
+        method.parameterTypes.size == 1 &&
+        method.parameterTypes[0].isAssignableFrom(context.javaClass)
+    } ?: return mapOf(
+      "launcherStopState" to "stop_method_missing",
+      "launcherStopServiceClass" to spec.generatedServiceClassName,
+    )
+    return try {
+      stopMethod.invoke(null, context)
+      mapOf(
+        "launcherStopState" to "stop_requested",
+        "launcherStopServiceClass" to spec.generatedServiceClassName,
+      )
+    } catch (error: Throwable) {
+      mapOf(
+        "launcherStopState" to "stop_failed",
+        "launcherStopServiceClass" to spec.generatedServiceClassName,
+        "launcherStopError" to (error.cause?.message ?: error.message ?: "unknown"),
+      )
+    }
+  }
+
+  private fun loadGeneratedServiceClass(className: String): Class<*>? = try {
+    Class.forName(className, true, classLoader)
+  } catch (_: ClassNotFoundException) {
+    null
+  } catch (error: Throwable) {
+    throw error
   }
 }

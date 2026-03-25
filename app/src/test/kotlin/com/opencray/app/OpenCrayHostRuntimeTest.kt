@@ -63,19 +63,21 @@ import com.opencray.runtime.AgentTodoEntry
 import com.opencray.runtime.AgentTodoStatus
 import com.opencray.runtime.OpenCrayAttachmentArtifact
 import com.opencray.runtime.OpenCrayAttachmentArtifactMetadataKeys
+import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayExecutionMetadataKeys
 import com.opencray.runtime.OpenCrayFinalAttachment
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
-import com.opencray.runtime.OpenCrayProgressEvent
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCrayPromptResumeState
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySubAgentPhase
+import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.TodoWriteMetadataKeys
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationMessageKind
 import com.opencray.runtime.context.RuntimeConversationProgress
@@ -945,10 +947,11 @@ class OpenCrayHostRuntimeTest {
     manager.emitRunEvent(
       sessionId = activeSessionId,
       task = task,
-      event = OpenCrayProgressEvent(
+      event = OpenCrayAssistantEvent(
         runId = run["runId"] as String,
         taskId = task.id,
         turn = 1,
+        isFinal = false,
         stage = "Planning",
         text = "Inspecting README and Gradle files before the next tool call.",
         emittedAtEpochMs = 1_100L,
@@ -2282,6 +2285,23 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun openExternalUriDelegatesToInjectedOpener() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-open-external"))
+    val openedUris = mutableListOf<String>()
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = NoOpRuntimeManager(),
+      externalUriOpener = { uri ->
+        openedUris += uri
+      },
+    )
+
+    hostRuntime.openExternalUri("https://opencray.dev/docs")
+
+    assertEquals(listOf("https://opencray.dev/docs"), openedUris)
+  }
+
+  @Test
   fun chatObserverReceivesSettledSnapshotAfterTaskFinish() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-settled-observer"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -3246,6 +3266,7 @@ class OpenCrayHostRuntimeTest {
             "resultTruncated" to "false",
             "resultLimitKind" to "read_byte_budget",
             "checkpointId" to "hidden-checkpoint",
+            OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON to """{"turnIndex":1,"toolCallCount":1}""",
           ),
         ),
         emittedAtEpochMs = 1_200L,
@@ -3267,6 +3288,77 @@ class OpenCrayHostRuntimeTest {
     assertEquals("false", resultMetadata["resultTruncated"])
     assertEquals("read_byte_budget", resultMetadata["resultLimitKind"])
     assertFalse(resultMetadata.containsKey("checkpointId"))
+    assertFalse(resultMetadata.containsKey(OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON))
+  }
+
+  @Test
+  fun chatSnapshotIncludesTodoPlanResultMetadata() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-todo-result-metadata"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    hostRuntime.submitChatMessage("Track the current plan")
+    val task = handle.submittedTasks.single()
+    val run = handle.submissions.single()
+    manager.emitRunEvent(
+      sessionId = activeSessionId,
+      task = task,
+      event = OpenCrayToolResultEvent(
+        runId = run.runId,
+        taskId = task.id,
+        turn = 0,
+        call = AgentToolCall(toolName = "TodoWrite"),
+        result = AgentToolResult(
+          toolName = "TodoWrite",
+          status = AgentToolResultStatus.SUCCESS,
+          content = """
+            [completed] Inspect runtime continuation
+            [in_progress] Prepare final answer | active: Preparing final answer
+          """.trimIndent(),
+          metadata = mapOf(
+            TodoWriteMetadataKeys.TODO_COUNT to "2",
+            TodoWriteMetadataKeys.MUTATED to "true",
+            TodoWriteMetadataKeys.PLAN_CHANGED to "true",
+            TodoWriteMetadataKeys.PENDING_TODO_COUNT to "0",
+            TodoWriteMetadataKeys.IN_PROGRESS_TODO_COUNT to "1",
+            TodoWriteMetadataKeys.COMPLETED_TODO_COUNT to "1",
+            TodoWriteMetadataKeys.ADDED_TODO_COUNT to "1",
+            TodoWriteMetadataKeys.REMOVED_TODO_COUNT to "1",
+            TodoWriteMetadataKeys.STATUS_CHANGED_TODO_COUNT to "1",
+            TodoWriteMetadataKeys.COMPLETED_TODO_DELTA_COUNT to "1",
+            TodoWriteMetadataKeys.ACTIVE_TODO_CHANGED to "true",
+            TodoWriteMetadataKeys.ACTIVE_TODO_CONTENT to "Prepare final answer",
+            "checkpointId" to "hidden-checkpoint",
+          ),
+        ),
+        emittedAtEpochMs = 1_210L,
+      ),
+    )
+
+    val runtimeActivity = hostRuntime.loadChatSnapshot()["runtimeActivity"] as Map<*, *>
+    val firstEvent = (runtimeActivity["events"] as List<*>).single() as Map<*, *>
+    val resultMetadata = firstEvent["resultMetadata"] as Map<*, *>
+
+    assertEquals("tool_result", firstEvent["kind"])
+    assertEquals("2", resultMetadata[TodoWriteMetadataKeys.TODO_COUNT])
+    assertEquals("true", resultMetadata[TodoWriteMetadataKeys.MUTATED])
+    assertEquals("true", resultMetadata[TodoWriteMetadataKeys.PLAN_CHANGED])
+    assertEquals("0", resultMetadata[TodoWriteMetadataKeys.PENDING_TODO_COUNT])
+    assertEquals("1", resultMetadata[TodoWriteMetadataKeys.IN_PROGRESS_TODO_COUNT])
+    assertEquals("1", resultMetadata[TodoWriteMetadataKeys.COMPLETED_TODO_COUNT])
+    assertEquals("1", resultMetadata[TodoWriteMetadataKeys.ADDED_TODO_COUNT])
+    assertEquals("1", resultMetadata[TodoWriteMetadataKeys.REMOVED_TODO_COUNT])
+    assertEquals("1", resultMetadata[TodoWriteMetadataKeys.STATUS_CHANGED_TODO_COUNT])
+    assertEquals("1", resultMetadata[TodoWriteMetadataKeys.COMPLETED_TODO_DELTA_COUNT])
+    assertEquals("true", resultMetadata[TodoWriteMetadataKeys.ACTIVE_TODO_CHANGED])
+    assertEquals("Prepare final answer", resultMetadata[TodoWriteMetadataKeys.ACTIVE_TODO_CONTENT])
+    assertFalse(resultMetadata.containsKey("checkpointId"))
   }
 
   @Test
@@ -3287,11 +3379,12 @@ class OpenCrayHostRuntimeTest {
     manager.emitRunEvent(
       sessionId = activeSessionId,
       task = task,
-      event = OpenCrayProgressEvent(
+      event = OpenCrayAssistantEvent(
         runId = run.runId,
         taskId = task.id,
         turn = 0,
         text = "Scanning README and Gradle files before choosing the next tool.",
+        isFinal = false,
         stage = "Planning",
         emittedAtEpochMs = 1_150L,
       ),
@@ -3301,7 +3394,8 @@ class OpenCrayHostRuntimeTest {
     val firstEvent = (runtimeActivity["events"] as List<*>).single() as Map<*, *>
 
     assertEquals(activeSessionId, runtimeActivity["sessionId"])
-    assertEquals("progress", firstEvent["kind"])
+    assertEquals("assistant_phase", firstEvent["kind"])
+    assertEquals("commentary", firstEvent["phase"])
     assertEquals("Planning", firstEvent["stage"])
     assertEquals(
       "Scanning README and Gradle files before choosing the next tool.",
@@ -3328,11 +3422,12 @@ class OpenCrayHostRuntimeTest {
     manager.emitRunEvent(
       sessionId = activeSessionId,
       task = task,
-      event = OpenCrayProgressEvent(
+      event = OpenCrayAssistantEvent(
         runId = run.runId,
         taskId = task.id,
         turn = 0,
         text = "Scanning README and Gradle files before choosing the next tool.",
+        isFinal = false,
         stage = "Planning",
         emittedAtEpochMs = 1_150L,
       ),
@@ -3449,11 +3544,12 @@ class OpenCrayHostRuntimeTest {
     manager.emitRunEvent(
       sessionId = activeSessionId,
       task = task,
-      event = OpenCrayProgressEvent(
+      event = OpenCrayAssistantEvent(
         runId = run.runId,
         taskId = task.id,
         turn = 0,
         text = "Scanning README and Gradle files before choosing the next tool.",
+        isFinal = false,
         stage = "Planning",
         emittedAtEpochMs = 1_150L,
       ),
@@ -3511,7 +3607,7 @@ class OpenCrayHostRuntimeTest {
     transcriptMessages = listOf(
       RuntimeConversationMessage(
         role = RuntimeConversationRole.TOOL,
-        content = """{"run_id":"${run.runId}","task_id":"${task.id}","turn":0,"text":"Scanning README and Gradle files before choosing the next tool.","stage":"Planning"}""",
+        content = """{"event_kind":"assistant_phase","phase":"commentary","run_id":"${run.runId}","task_id":"${task.id}","turn":0,"text":"Scanning README and Gradle files before choosing the next tool.","stage":"Planning"}""",
       ),
     )
 
@@ -3687,7 +3783,7 @@ class OpenCrayHostRuntimeTest {
       ),
       RuntimeConversationMessage(
         role = RuntimeConversationRole.TOOL,
-        content = """{"run_id":"replay-run","task_id":"replay-task","turn":1,"text":"Planning the next edit after reading README.","stage":"Planning"}""",
+        content = """{"event_kind":"assistant_phase","phase":"commentary","run_id":"replay-run","task_id":"replay-task","turn":1,"text":"Planning the next edit after reading README.","stage":"Planning"}""",
       ),
     )
     val hostRuntime = hostRuntime(
@@ -3721,7 +3817,8 @@ class OpenCrayHostRuntimeTest {
     assertEquals("5", resultMetadata["offset"])
     assertEquals("2", resultMetadata["limit"])
     assertFalse(resultMetadata.containsKey("checkpointId"))
-    assertEquals("progress", progress["kind"])
+    assertEquals("assistant_phase", progress["kind"])
+    assertEquals("commentary", progress["phase"])
     assertEquals("Planning", progress["stage"])
     assertEquals(
       "Planning the next edit after reading README.",
@@ -3762,7 +3859,7 @@ class OpenCrayHostRuntimeTest {
       ),
       RuntimeConversationMessage(
         role = RuntimeConversationRole.TOOL,
-        content = """{"run_id":"replay-run","task_id":"replay-task","turn":1,"text":"Planning the next edit after reading README.","stage":"Planning"}""",
+        content = """{"event_kind":"assistant_phase","phase":"commentary","run_id":"replay-run","task_id":"replay-task","turn":1,"text":"Planning the next edit after reading README.","stage":"Planning"}""",
         kind = RuntimeConversationMessageKind.PROGRESS,
         progress = RuntimeConversationProgress(
           runId = "replay-run",
@@ -3804,7 +3901,8 @@ class OpenCrayHostRuntimeTest {
     assertEquals("5", resultMetadata["offset"])
     assertEquals("2", resultMetadata["limit"])
     assertFalse(resultMetadata.containsKey("checkpointId"))
-    assertEquals("progress", progress["kind"])
+    assertEquals("assistant_phase", progress["kind"])
+    assertEquals("commentary", progress["phase"])
     assertEquals("Planning", progress["stage"])
     assertEquals(
       "Planning the next edit after reading README.",
@@ -3827,11 +3925,11 @@ class OpenCrayHostRuntimeTest {
       ),
       RuntimeConversationMessage(
         role = RuntimeConversationRole.TOOL,
-        content = """{"run_id":"replay-run","task_id":"replay-task","turn":1,"text":"Planning the next edit after reading README.","stage":"Planning"}""",
+        content = """{"event_kind":"assistant_phase","phase":"commentary","run_id":"replay-run","task_id":"replay-task","turn":1,"text":"Planning the next edit after reading README.","stage":"Planning"}""",
       ),
       RuntimeConversationMessage(
         role = RuntimeConversationRole.TOOL,
-        content = """{"run_id":"replay-run","task_id":"replay-task","turn":1,"entry_id":"supplement-1","text":"Also inspect the logs","checkpoint":"turn_start"}""",
+        content = """{"run_id":"replay-run","task_id":"replay-task","turn":1,"entry_id":"supplement-1","text":"Also inspect the logs","checkpoint":"turn_start","metadata":{"source":"manual","${OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON}":"{\"turnIndex\":1,\"toolCallCount\":1}"}}""",
       ),
       RuntimeConversationMessage(
         role = RuntimeConversationRole.TOOL,
@@ -3863,10 +3961,14 @@ class OpenCrayHostRuntimeTest {
     assertEquals("Read", toolCall["toolName"])
     assertEquals("tool_result", toolResult["kind"])
     assertEquals("README full content from transcript", toolResult["contentPreview"])
-    assertEquals("progress", progress["kind"])
+    assertEquals("assistant_phase", progress["kind"])
+    assertEquals("commentary", progress["phase"])
     assertEquals("Planning", progress["stage"])
     assertEquals("supplement", supplement["kind"])
     assertEquals("Also inspect the logs", supplement["text"])
+    assertEquals(mapOf("source" to "manual"), supplement["metadata"])
+    assertEquals(true, supplement["hasResumeCheckpointMetadata"])
+    assertFalse((supplement["metadata"] as Map<*, *>).containsKey(OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON))
     assertEquals("subagent", subagent["kind"])
     assertEquals("failed", subagent["phase"])
     assertEquals("waiting_approval", subagent["status"])
@@ -3927,6 +4029,67 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun chatRuntimeSnapshotBuildsLatestSubAgentRegistryFromReplayEvents() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-subagent-runtime-registry"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val transcriptMessages = listOf(
+      RuntimeConversationMessage(
+        role = RuntimeConversationRole.TOOL,
+        content = """{"event_kind":"subagent","run_id":"replay-run","task_id":"replay-task","turn":0,"phase":"started","child_run_id":"child-run-1","child_task_id":"child-task-1","label":"Inspect README","subagent_type":"researcher","context_mode":"minimal","depth":1,"execution_state":"running","continuation_kind":"none","resumable":false,"requires_user_action":false,"is_high_risk":false}""",
+      ),
+      RuntimeConversationMessage(
+        role = RuntimeConversationRole.TOOL,
+        content = """{"event_kind":"subagent","run_id":"replay-run","task_id":"replay-task","turn":0,"phase":"failed","child_run_id":"child-run-1","child_task_id":"child-task-1","label":"Inspect README","subagent_type":"researcher","context_mode":"minimal","depth":1,"summary":"Waiting for approval to read /external/notes.txt.","execution_state":"waiting_approval","continuation_kind":"prompt_resume","resumable":true,"requires_user_action":true,"is_high_risk":false}""",
+      ),
+      RuntimeConversationMessage(
+        role = RuntimeConversationRole.TOOL,
+        content = """{"event_kind":"subagent","run_id":"replay-run","task_id":"replay-task","turn":1,"phase":"started","child_run_id":"child-run-2","child_task_id":"child-task-2","label":"Patch tests","subagent_type":"worker","context_mode":"delegated","depth":1,"execution_state":"running","continuation_kind":"none","resumable":false,"requires_user_action":false,"is_high_risk":false}""",
+      ),
+      RuntimeConversationMessage(
+        role = RuntimeConversationRole.TOOL,
+        content = """{"event_kind":"subagent","run_id":"replay-run","task_id":"replay-task","turn":1,"phase":"completed","child_run_id":"child-run-2","child_task_id":"child-task-2","label":"Patch tests","subagent_type":"worker","context_mode":"delegated","depth":1,"summary":"Updated runtime tests.","execution_state":"completed","continuation_kind":"none","resumable":false,"requires_user_action":false,"is_high_risk":false}""",
+      ),
+    )
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = RecordingRuntimeManager(),
+      transcriptMessagesProvider = { sessionId ->
+        if (sessionId == activeSessionId) {
+          transcriptMessages
+        } else {
+          emptyList()
+        }
+      },
+    )
+
+    val runtimeActivity = hostRuntime.loadChatRuntimeSnapshot()
+    val subAgents = (runtimeActivity["subAgents"] as List<*>).map { entry ->
+      entry as Map<*, *>
+    }
+    val waitingChild = subAgents.single { entry -> entry["childRunId"] == "child-run-1" }
+    val completedChild = subAgents.single { entry -> entry["childRunId"] == "child-run-2" }
+
+    assertEquals(2, subAgents.size)
+    assertEquals("replay-run", waitingChild["parentRunId"])
+    assertEquals("replay-task", waitingChild["parentTaskId"])
+    assertEquals("failed", waitingChild["phase"])
+    assertEquals("waiting_approval", waitingChild["status"])
+    assertEquals("waiting_approval", waitingChild["executionState"])
+    assertEquals("prompt_resume", waitingChild["continuationKind"])
+    assertEquals(true, waitingChild["resumable"])
+    assertEquals(true, waitingChild["requiresUserAction"])
+    assertEquals(false, waitingChild["isHighRisk"])
+    assertEquals("Waiting for approval to read /external/notes.txt.", waitingChild["summary"])
+    assertEquals(2, waitingChild["eventCount"])
+    assertEquals("worker", completedChild["subagentType"])
+    assertEquals("delegated", completedChild["contextMode"])
+    assertEquals("completed", completedChild["phase"])
+    assertEquals("completed", completedChild["status"])
+    assertEquals("Updated runtime tests.", completedChild["summary"])
+    assertEquals(2, completedChild["eventCount"])
+  }
+
+  @Test
   fun activeRunUsesReplayedTranscriptEventAsLastEventWhenLiveHistoryIsEmpty() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-runtime-replay-last-event"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -3955,7 +4118,7 @@ class OpenCrayHostRuntimeTest {
     transcriptMessages = listOf(
       RuntimeConversationMessage(
         role = RuntimeConversationRole.TOOL,
-        content = """{"run_id":"${run.runId}","task_id":"${task.id}","turn":0,"text":"Restored progress from transcript.","stage":"Planning"}""",
+        content = """{"event_kind":"assistant_phase","phase":"commentary","run_id":"${run.runId}","task_id":"${task.id}","turn":0,"text":"Restored progress from transcript.","stage":"Planning"}""",
       ),
     )
 
@@ -3964,7 +4127,8 @@ class OpenCrayHostRuntimeTest {
     val lastEvent = activeRun["lastEvent"] as Map<*, *>
 
     assertEquals(run.runId, activeRun["runId"])
-    assertEquals("progress", lastEvent["kind"])
+    assertEquals("assistant_phase", lastEvent["kind"])
+    assertEquals("commentary", lastEvent["phase"])
     assertEquals("Planning", lastEvent["stage"])
     assertEquals("Restored progress from transcript.", lastEvent["text"])
   }
@@ -4006,7 +4170,7 @@ class OpenCrayHostRuntimeTest {
       ),
       RuntimeConversationMessage(
         role = RuntimeConversationRole.TOOL,
-        content = """{"run_id":"${run.runId}","task_id":"${task.id}","turn":1,"text":"Evaluating the next step.","stage":"Planning"}""",
+        content = """{"event_kind":"assistant_phase","phase":"commentary","run_id":"${run.runId}","task_id":"${task.id}","turn":1,"text":"Evaluating the next step.","stage":"Planning"}""",
       ),
     )
     manager.emitRunEvent(
@@ -4029,11 +4193,12 @@ class OpenCrayHostRuntimeTest {
     manager.emitRunEvent(
       sessionId = activeSessionId,
       task = task,
-      event = OpenCrayProgressEvent(
+      event = OpenCrayAssistantEvent(
         runId = run.runId,
         taskId = task.id,
         turn = 1,
         text = "Evaluating the next step.",
+        isFinal = false,
         stage = "Planning",
         emittedAtEpochMs = 1_250L,
       ),
@@ -4043,9 +4208,9 @@ class OpenCrayHostRuntimeTest {
     val events = runtimeActivity["events"] as List<*>
     val kinds = events.map { event -> (event as Map<*, *>)["kind"] }
 
-    assertEquals(listOf("tool_call", "tool_result", "progress"), kinds)
+    assertEquals(listOf("tool_call", "tool_result", "assistant_phase"), kinds)
     assertEquals(1, kinds.count { kind -> kind == "tool_result" })
-    assertEquals(1, kinds.count { kind -> kind == "progress" })
+    assertEquals(1, kinds.count { kind -> kind == "assistant_phase" })
   }
 
   @Test
@@ -4152,11 +4317,12 @@ class OpenCrayHostRuntimeTest {
     manager.emitRunEvent(
       sessionId = activeSessionId,
       task = task,
-      event = OpenCrayProgressEvent(
+      event = OpenCrayAssistantEvent(
         runId = submission["runId"] as String,
         taskId = task.id,
         turn = 0,
         text = "Scanning workspace",
+        isFinal = false,
         stage = "workspace_scan",
         emittedAtEpochMs = 1_234L,
       ),
@@ -4172,7 +4338,8 @@ class OpenCrayHostRuntimeTest {
     val event = events.single() as Map<*, *>
 
     assertEquals(activeSessionId, runtimeActivity["sessionId"])
-    assertEquals("progress", event["kind"])
+    assertEquals("assistant_phase", event["kind"])
+    assertEquals("commentary", event["phase"])
     assertEquals("Scanning workspace", event["text"])
     assertEquals("workspace_scan", event["stage"])
     assertEquals(submission["runId"], event["runId"])
@@ -5113,13 +5280,237 @@ class OpenCrayHostRuntimeTest {
     manager.emitRunEvent(
       sessionId = activeSessionId,
       task = task,
-      event = OpenCrayProgressEvent(
+      event = OpenCrayAssistantEvent(
         runId = run["runId"] as String,
         taskId = task.id,
         turn = 1,
         text = "Continuing after approval",
+        isFinal = false,
         stage = "resume",
         emittedAtEpochMs = 1_002L,
+      ),
+    )
+
+    assertNull(promptCheckpointStore.get(task.id))
+  }
+
+  @Test
+  fun successfulToolResultEventPersistsGeneralResumeCheckpoint() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-general-resume-checkpoint"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val promptCheckpointStoreFactory = com.opencray.app.inMemoryPromptCheckpointStoreFactoryForTest()
+    val promptCheckpointStore = promptCheckpointStoreFactory.forChatSession(activeSessionId)
+    val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; prettyPrint = true }
+    val resumeState = OpenCrayPromptResumeState(
+      turnIndex = 2,
+      toolCallCount = 1,
+      responsesPreviousResponseId = "resp_general",
+      responsesProviderLineageId = "lineage_general",
+      responsesLineageTrusted = true,
+    )
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    )
+
+    hostRuntime.submitChatMessage("Checkpoint the run")
+    val task = handle.submittedTasks.single()
+    manager.emitRunEvent(
+      sessionId = activeSessionId,
+      task = task,
+      event = OpenCrayToolResultEvent(
+        runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID] ?: task.id,
+        taskId = task.id,
+        turn = 1,
+        call = AgentToolCall(toolName = "LS"),
+        result = AgentToolResult(
+          toolName = "LS",
+          status = AgentToolResultStatus.SUCCESS,
+          content = "Listed 1 entry.",
+          metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(resumeState, json),
+        ),
+        emittedAtEpochMs = 2_000L,
+      ),
+    )
+
+    val checkpoint = promptCheckpointStore.get(task.id)
+    assertEquals(PromptCheckpointKind.GENERAL_RESUME, checkpoint?.checkpointKind)
+    assertEquals("LS", checkpoint?.toolName)
+    assertEquals(resumeState, checkpoint?.promptResumeState)
+  }
+
+  @Test
+  fun failedToolResultEventAlsoPersistsGeneralResumeCheckpoint() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-general-resume-failed"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val promptCheckpointStoreFactory = com.opencray.app.inMemoryPromptCheckpointStoreFactoryForTest()
+    val promptCheckpointStore = promptCheckpointStoreFactory.forChatSession(activeSessionId)
+    val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; prettyPrint = true }
+    val resumeState = OpenCrayPromptResumeState(
+      turnIndex = 2,
+      toolCallCount = 1,
+    )
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    )
+
+    hostRuntime.submitChatMessage("Checkpoint after a failed tool result")
+    val task = handle.submittedTasks.single()
+    manager.emitRunEvent(
+      sessionId = activeSessionId,
+      task = task,
+      event = OpenCrayToolResultEvent(
+        runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID] ?: task.id,
+        taskId = task.id,
+        turn = 1,
+        call = AgentToolCall(toolName = "Read"),
+        result = AgentToolResult(
+          toolName = "Read",
+          status = AgentToolResultStatus.FAILED,
+          content = "Missing file.",
+          errorCode = "FILE_NOT_FOUND",
+          errorMessage = "missing.txt was not found.",
+          metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(resumeState, json),
+        ),
+        emittedAtEpochMs = 2_000L,
+      ),
+    )
+
+    val checkpoint = promptCheckpointStore.get(task.id)
+    assertEquals(PromptCheckpointKind.GENERAL_RESUME, checkpoint?.checkpointKind)
+    assertEquals("Read", checkpoint?.toolName)
+    assertEquals(resumeState, checkpoint?.promptResumeState)
+  }
+
+  @Test
+  fun supplementEventAlsoPersistsGeneralResumeCheckpoint() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-general-resume-supplement"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val promptCheckpointStoreFactory = com.opencray.app.inMemoryPromptCheckpointStoreFactoryForTest()
+    val promptCheckpointStore = promptCheckpointStoreFactory.forChatSession(activeSessionId)
+    val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; prettyPrint = true }
+    val resumeState = OpenCrayPromptResumeState(
+      turnIndex = 2,
+      toolCallCount = 1,
+      transcript = listOf(
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.USER,
+          content = "Supplement checkpoint",
+        ),
+      ),
+    )
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    )
+
+    hostRuntime.submitChatMessage("Checkpoint after supplement")
+    val task = handle.submittedTasks.single()
+    manager.emitRunEvent(
+      sessionId = activeSessionId,
+      task = task,
+      event = OpenCraySupplementEvent(
+        runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID] ?: task.id,
+        taskId = task.id,
+        turn = 1,
+        entryId = "supplement-1",
+        text = "Supplement checkpoint",
+        checkpoint = "post_tool_pre_model",
+        metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(resumeState, json),
+        emittedAtEpochMs = 2_000L,
+      ),
+    )
+
+    val checkpoint = promptCheckpointStore.get(task.id)
+    assertEquals(PromptCheckpointKind.GENERAL_RESUME, checkpoint?.checkpointKind)
+    assertEquals(null, checkpoint?.toolName)
+    assertEquals(resumeState, checkpoint?.promptResumeState)
+
+    val runtimeActivity = hostRuntime.loadChatRuntimeSnapshot()
+    val supplement = (runtimeActivity["events"] as List<*>)
+      .filterIsInstance<Map<*, *>>()
+      .first { event -> event["kind"] == "supplement" }
+    assertEquals(true, supplement["hasResumeCheckpointMetadata"])
+    assertFalse(supplement.containsKey("metadata"))
+  }
+
+  @Test
+  fun terminalTaskFinishClearsGeneralResumeCheckpoint() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-general-resume-cleared"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val promptCheckpointStoreFactory = com.opencray.app.inMemoryPromptCheckpointStoreFactoryForTest()
+    val promptCheckpointStore = promptCheckpointStoreFactory.forChatSession(activeSessionId)
+    val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; prettyPrint = true }
+    val resumeState = OpenCrayPromptResumeState(
+      turnIndex = 2,
+      toolCallCount = 1,
+    )
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    )
+
+    hostRuntime.submitChatMessage("Checkpoint and then finish")
+    val task = handle.submittedTasks.single()
+    manager.emitRunEvent(
+      sessionId = activeSessionId,
+      task = task,
+      event = OpenCrayToolResultEvent(
+        runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID] ?: task.id,
+        taskId = task.id,
+        turn = 1,
+        call = AgentToolCall(toolName = "LS"),
+        result = AgentToolResult(
+          toolName = "LS",
+          status = AgentToolResultStatus.SUCCESS,
+          content = "Listed 1 entry.",
+          metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(resumeState, json),
+        ),
+        emittedAtEpochMs = 2_000L,
+      ),
+    )
+
+    assertEquals(PromptCheckpointKind.GENERAL_RESUME, promptCheckpointStore.get(task.id)?.checkpointKind)
+
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "Final answer.",
+        startedAtEpochMs = 2_001L,
+        finishedAtEpochMs = 2_010L,
+        metadata = task.metadata,
       ),
     )
 
@@ -5263,9 +5654,11 @@ class OpenCrayHostRuntimeTest {
     val activeRun = activeRuns.single() as Map<*, *>
     val lastEvent = activeRun["lastEvent"] as Map<*, *>
     val events = (runtimeActivity["events"] as List<*>).map { event -> event as Map<*, *> }
+    val subAgents = (runtimeActivity["subAgents"] as List<*>).map { event -> event as Map<*, *> }
     val subagentEvent = events.last { event ->
       event["kind"] == "subagent" && event["phase"] == "resumed"
     }
+    val subagentRegistryEntry = subAgents.single()
 
     assertEquals(listOf(task.id), handle.resumedTaskIds)
     assertEquals(run["runId"], activeRun["runId"])
@@ -5281,6 +5674,14 @@ class OpenCrayHostRuntimeTest {
     assertEquals("running", subagentEvent["status"])
     assertEquals(false, subagentEvent["resumable"])
     assertEquals(false, subagentEvent["requiresUserAction"])
+    assertEquals("child-run-approve", subagentRegistryEntry["childRunId"])
+    assertEquals("resumed", subagentRegistryEntry["phase"])
+    assertEquals("running", subagentRegistryEntry["status"])
+    assertEquals(false, subagentRegistryEntry["resumable"])
+    assertEquals(
+      "Delegated child approval granted. The child will continue.",
+      subagentRegistryEntry["summary"],
+    )
     assertEquals(
       "Delegated child approval granted. The child will continue.",
       subagentEvent["text"],
@@ -5935,15 +6336,19 @@ class OpenCrayHostRuntimeTest {
       slots = listOf(
         mapOf(
           "id" to "slot-primary",
-          "providerId" to "brave",
-          "label" to "Primary Brave",
-          "apiKey" to "brave-secret",
+          "providerId" to "openai_web_search",
+          "label" to "Primary OpenAI Search",
+          "baseUrl" to "https://proxy.example.com/v1",
+          "model" to "gpt-5-mini",
+          "apiKey" to "openai-secret",
           "enabled" to true,
         ),
         mapOf(
           "id" to "slot-backup",
           "providerId" to "tavily",
           "label" to "Backup Tavily",
+          "baseUrl" to "https://ignored.example.com",
+          "model" to "ignored-model",
           "apiKey" to "",
           "enabled" to false,
         ),
@@ -5952,10 +6357,14 @@ class OpenCrayHostRuntimeTest {
 
     val savedSlots = (savedPayload["slots"] as List<*>).map { it as Map<*, *> }
     assertEquals(2, savedSlots.size)
-    assertEquals("brave", savedSlots[0]["providerId"])
-    assertEquals("Primary Brave", savedSlots[0]["label"])
+    assertEquals("openai_web_search", savedSlots[0]["providerId"])
+    assertEquals("Primary OpenAI Search", savedSlots[0]["label"])
+    assertEquals("https://proxy.example.com/v1", savedSlots[0]["baseUrl"])
+    assertEquals("gpt-5-mini", savedSlots[0]["model"])
     assertEquals(true, savedSlots[0]["enabled"])
     assertEquals("tavily", savedSlots[1]["providerId"])
+    assertEquals("", savedSlots[1]["baseUrl"])
+    assertEquals("", savedSlots[1]["model"])
     assertEquals(false, savedSlots[1]["enabled"])
   }
 
@@ -7113,6 +7522,7 @@ class OpenCrayHostRuntimeTest {
     },
     mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
     workspaceEntryOpener: ((Path, String) -> Unit)? = null,
+    externalUriOpener: ((String) -> Unit)? = null,
     voiceMetadataAnalyzer: AppAgentWorkspaceVoiceMetadataAnalyzer =
       AppAgentWorkspaceVoiceMetadataAnalyzer { _, _ -> null },
     voiceMetadataBackfillExecutor: Executor = Executor { command -> command.run() },
@@ -7155,6 +7565,7 @@ class OpenCrayHostRuntimeTest {
     supplementStoreFactory = supplementStoreFactory,
     workspaceRootProvider = workspaceRootProvider,
     workspaceEntryOpener = workspaceEntryOpener,
+    externalUriOpener = externalUriOpener,
     approvedReadRootsProvider = approvedReadRootsProvider,
     voiceMetadataAnalyzer = voiceMetadataAnalyzer,
     voiceMetadataBackfillExecutor = voiceMetadataBackfillExecutor,

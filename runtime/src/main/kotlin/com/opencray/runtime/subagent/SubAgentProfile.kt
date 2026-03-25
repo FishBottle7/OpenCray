@@ -30,6 +30,16 @@ object BuiltInSubAgentProfiles {
     "Glob",
   )
 
+  private val writeCapableWorkspaceTools: Set<String> = linkedSetOf(
+    "LS",
+    "Read",
+    "Grep",
+    "Glob",
+    "Write",
+    "Edit",
+    "MultiEdit",
+  )
+
   val researcher: SubAgentProfile = SubAgentProfile(
     id = "researcher",
     description = "Read-only workspace investigator for focused exploration tasks.",
@@ -51,10 +61,18 @@ object BuiltInSubAgentProfiles {
     allowedToolNames = readOnlyWorkspaceTools,
   )
 
+  val worker: SubAgentProfile = SubAgentProfile(
+    id = "worker",
+    description = "Bounded delegated worker for focused workspace edits and follow-up analysis.",
+    defaultContextMode = SubAgentContextMode.DELEGATED,
+    allowedToolNames = writeCapableWorkspaceTools,
+  )
+
   private val profiles: List<SubAgentProfile> = listOf(
     generalPurpose,
     researcher,
     reviewer,
+    worker,
   )
 
   fun all(): List<SubAgentProfile> = profiles

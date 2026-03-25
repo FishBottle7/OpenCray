@@ -33,8 +33,10 @@ class AppConfiguredWebSearchProviderFactoryTest {
     val provider = AppConfiguredWebSearchProviderFactory.create(
       slots = listOf(
         WebSearchSlotConfig.create(
-          providerId = "tavily",
-          apiKey = "tavily-secret",
+          providerId = "openai_web_search",
+          baseUrl = "https://proxy.example.com/v1",
+          model = "gpt-5-mini",
+          apiKey = "openai-secret",
           enabled = true,
         ),
       ),

@@ -45,7 +45,14 @@ class AppShellActivity : LocalizedActivity() {
       AppShellTab.FILES -> OpenCrayFlutterActivity.Destination.FILES
       AppShellTab.SETTINGS -> destination.settingsSubpage.toFlutterDestination()
     }
-    return OpenCrayFlutterActivity.intent(this, flutterDestination).apply {
+    val notificationSessionId = intent.getStringExtra(
+      RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SESSION_ID,
+    )?.trim()?.takeIf(String::isNotBlank)
+    return OpenCrayFlutterActivity.intent(
+      this,
+      flutterDestination,
+      chatSessionId = notificationSessionId,
+    ).apply {
       putExtras(intent)
       addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
     }

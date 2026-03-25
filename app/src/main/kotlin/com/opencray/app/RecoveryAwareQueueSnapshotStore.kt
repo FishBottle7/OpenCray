@@ -118,6 +118,7 @@ internal class RecoveryAwareQueueSnapshotStore(
             metadata = rewrittenTaskMetadata(
               entry = entry,
               restoreEpochMs = restoreEpochMs,
+              recoveryPlan = recoveryPlan,
             ),
           ),
           lastErrorCode = null,
@@ -141,6 +142,7 @@ internal class RecoveryAwareQueueSnapshotStore(
             metadata = rewrittenTaskMetadata(
               entry = entry,
               restoreEpochMs = restoreEpochMs,
+              recoveryPlan = recoveryPlan,
             ),
           ),
           lastErrorCode = approvalErrorCode(runRecord?.lastResult, checkpoint),
@@ -251,6 +253,7 @@ internal class RecoveryAwareQueueSnapshotStore(
   private fun rewrittenTaskMetadata(
     entry: SessionQueueTaskSnapshot,
     restoreEpochMs: Long,
+    recoveryPlan: RunRecoveryPlan? = null,
   ): Map<String, String> {
     val shouldStampRestore = shouldStampRestoreMetadata(entry)
     return buildMap {
@@ -264,6 +267,13 @@ internal class RecoveryAwareQueueSnapshotStore(
       if (shouldStampRestore) {
         put(METADATA_QUEUE_RESTORE_EPOCH_MS, restoreEpochMs.toString())
         put(METADATA_PREVIOUS_LIFECYCLE_STATE, previousLifecycleState(entry))
+        recoveryPlan
+          ?.reasonCode
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?.let { reasonCode ->
+            put(METADATA_RECOVERY_REASON, reasonCode)
+          }
       }
     }
   }
@@ -285,6 +295,7 @@ internal class RecoveryAwareQueueSnapshotStore(
   ): AgentTaskApprovalState? = when (checkpoint?.checkpointKind) {
     PromptCheckpointKind.APPROVED_PENDING_RESUME -> AgentTaskApprovalState.APPROVED
     PromptCheckpointKind.REJECTED_PENDING_RESUME -> AgentTaskApprovalState.REJECTED
+    PromptCheckpointKind.GENERAL_RESUME,
     PromptCheckpointKind.WAITING_APPROVAL,
     null,
     -> null

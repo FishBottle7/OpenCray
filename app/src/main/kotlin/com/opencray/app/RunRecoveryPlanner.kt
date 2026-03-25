@@ -54,17 +54,47 @@ internal class RunRecoveryPlanner {
     val journalTailKind = recoveryJournalTailKind(input.lastJournalEvent)
 
     if (
+      isInterruptedRestoreRun(run) &&
+      checkpoint != null &&
+      checkpointSupersededByUncertainInFlightAction(
+        checkpoint = checkpoint,
+        event = input.lastJournalEvent,
+      )
+    ) {
+      return RunRecoveryPlan(
+        action = RunRecoveryAction.INTERRUPT_RECOVERY_REQUIRED,
+        reasonCode = "uncertain_inflight_mutation",
+        summary = "The host was rebuilt after an in-flight action advanced beyond the last durable checkpoint. Recovery should stop and require explicit user or model intervention.",
+        safeToAutoResume = false,
+        requiresUserAction = true,
+        checkpointKind = checkpoint.checkpointKind,
+        approvalState = input.approvalState,
+        journalTailKind = journalTailKind,
+      )
+    }
+
+    if (
+      checkpoint?.checkpointKind == PromptCheckpointKind.GENERAL_RESUME ||
       checkpoint?.checkpointKind == PromptCheckpointKind.APPROVED_PENDING_RESUME ||
       checkpoint?.checkpointKind == PromptCheckpointKind.REJECTED_PENDING_RESUME
     ) {
       return RunRecoveryPlan(
         action = RunRecoveryAction.RESUME_FROM_CHECKPOINT,
         reasonCode = when (checkpoint.checkpointKind) {
+          PromptCheckpointKind.GENERAL_RESUME -> "durable_general_resume_checkpoint"
           PromptCheckpointKind.APPROVED_PENDING_RESUME -> "approval_already_granted_resume_pending"
           PromptCheckpointKind.REJECTED_PENDING_RESUME -> "approval_already_rejected_resume_pending"
           PromptCheckpointKind.WAITING_APPROVAL -> "approval_waiting_checkpoint"
         },
-        summary = "The run has a durable post-approval checkpoint and should continue from that checkpoint instead of rerunning from task input.",
+        summary = when (checkpoint.checkpointKind) {
+          PromptCheckpointKind.GENERAL_RESUME ->
+            "The run has a durable general resume checkpoint and should continue from that checkpoint instead of rerunning from task input."
+          PromptCheckpointKind.APPROVED_PENDING_RESUME,
+          PromptCheckpointKind.REJECTED_PENDING_RESUME,
+          PromptCheckpointKind.WAITING_APPROVAL,
+          ->
+            "The run has a durable post-approval checkpoint and should continue from that checkpoint instead of rerunning from task input."
+        },
         safeToAutoResume = true,
         requiresUserAction = false,
         checkpointKind = checkpoint.checkpointKind,
@@ -159,6 +189,20 @@ internal class RunRecoveryPlanner {
     is OpenCrayLifecycleEvent -> event.phase == com.opencray.runtime.OpenCrayRunLifecyclePhase.START
     is OpenCrayToolResultEvent -> false
     else -> false
+  }
+
+  private fun checkpointSupersededByUncertainInFlightAction(
+    checkpoint: PersistedPromptCheckpoint,
+    event: OpenCrayAgentRunEvent?,
+  ): Boolean {
+    if (event == null || event.emittedAtEpochMs < checkpoint.updatedAtEpochMs) {
+      return false
+    }
+    return when (event) {
+      is OpenCrayToolCallEvent -> true
+      is OpenCraySubAgentEvent -> event.phase == OpenCraySubAgentPhase.STARTED
+      else -> false
+    }
   }
 
   private fun recoveryJournalTailKind(event: OpenCrayAgentRunEvent?): String? = when (event) {

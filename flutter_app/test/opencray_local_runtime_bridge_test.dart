@@ -153,7 +153,9 @@ void main() {
         'confidence': 'high',
         'usesExistingImporter': true,
         'needsManualSelection': false,
-        'notes': <Object?>['Detected ChatLab JSONL using header/member/message records.'],
+        'notes': <Object?>[
+          'Detected ChatLab JSONL using header/member/message records.',
+        ],
       });
     };
 
@@ -425,6 +427,90 @@ void main() {
     },
   );
 
+  test(
+    'local runtime bridge loads strong background snapshots over http',
+    () async {
+      requestHandler = (request) async {
+        expect(request.method, 'GET');
+        expect(request.uri.path, '/v1/strong_background_snapshot');
+        await writeJson(request, <String, Object?>{
+          'source': 'strong-background',
+          'available': true,
+          'tierId': 'strong_background',
+          'setupComplete': true,
+          'recommendedActionIds': const <Object?>[],
+          'notifications': <String, Object?>{
+            'permissionRequired': true,
+            'permissionGranted': true,
+            'enabled': true,
+            'configured': true,
+          },
+          'exactAlarms': <String, Object?>{
+            'accessRequired': true,
+            'accessGranted': true,
+            'configured': true,
+          },
+          'batteryOptimization': <String, Object?>{
+            'supported': true,
+            'exempt': true,
+            'configured': true,
+          },
+          'actions': <Object?>[
+            <String, Object?>{
+              'id': 'open_notification_settings',
+              'available': true,
+              'recommended': false,
+            },
+          ],
+          'runtimeServiceConnectionState': <String, Object?>{
+            'phase': 'binder_connected',
+            'binderAvailable': true,
+          },
+        });
+      };
+
+      final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+      final snapshot = await bridge.loadStrongBackgroundSnapshot();
+
+      expect(snapshot.available, isTrue);
+      expect(snapshot.tierId, 'strong_background');
+      expect(snapshot.setupComplete, isTrue);
+      expect(snapshot.notifications.configured, isTrue);
+      expect(snapshot.exactAlarms.accessGranted, isTrue);
+      expect(snapshot.batteryOptimization.exempt, isTrue);
+      expect(snapshot.actions.single.id, 'open_notification_settings');
+      expect(snapshot.runtimeServiceConnectionState?.binderAvailable, isTrue);
+    },
+  );
+
+  test(
+    'local runtime bridge posts strong background actions over http',
+    () async {
+      late Map<String, Object?> capturedBody;
+      requestHandler = (request) async {
+        expect(request.method, 'POST');
+        expect(request.uri.path, '/v1/perform_strong_background_action');
+        capturedBody = await readJsonBody(request);
+        await writeJson(request, <String, Object?>{
+          'source': 'strong-background-action',
+          'actionId': capturedBody['actionId'],
+          'available': true,
+          'launched': true,
+        });
+      };
+
+      final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+      final result = await bridge.performStrongBackgroundAction(
+        'open_notification_settings',
+      );
+
+      expect(capturedBody['actionId'], 'open_notification_settings');
+      expect(result.actionId, 'open_notification_settings');
+      expect(result.available, isTrue);
+      expect(result.launched, isTrue);
+    },
+  );
+
   test('local runtime bridge posts save custom provider requests', () async {
     late Map<String, Object?> capturedBody;
     requestHandler = (request) async {
@@ -516,6 +602,21 @@ void main() {
       capturedBody['relativePath'],
       '.opencray/chat-media/session-1/hash/voice-note.m4a',
     );
+  });
+
+  test('local runtime bridge posts external uri requests over http', () async {
+    late Map<String, Object?> capturedBody;
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/open_external_uri');
+      capturedBody = await readJsonBody(request);
+      await writeJson(request, null);
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    await bridge.openExternalUri('https://opencray.dev/docs');
+
+    expect(capturedBody['uri'], 'https://opencray.dev/docs');
   });
 
   test('local runtime bridge inspects skill sources over http', () async {

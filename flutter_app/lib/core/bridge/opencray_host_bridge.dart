@@ -15,6 +15,7 @@ import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
 import '../models/opencray_skills_snapshot.dart';
+import '../models/opencray_strong_background.dart';
 import '../models/opencray_twin_import_source_probe.dart';
 import '../models/opencray_workspace_text_document.dart';
 
@@ -40,6 +41,8 @@ abstract interface class OpenCrayHostBridge {
   );
 
   Future<void> openWorkspaceEntry(String relativePath);
+
+  Future<void> openExternalUri(String uri);
 
   Future<OpenCrayFilesSnapshot> createWorkspaceFolder({
     required String parentRelativePath,
@@ -80,6 +83,12 @@ abstract interface class OpenCrayHostBridge {
   Stream<OpenCraySettingsOverviewSnapshot> watchSettingsOverview();
 
   Future<OpenCraySettingsDetailSnapshot> loadSettingsDetail(String routeId);
+
+  Future<OpenCrayStrongBackgroundSnapshot> loadStrongBackgroundSnapshot();
+
+  Future<OpenCrayStrongBackgroundActionResult> performStrongBackgroundAction(
+    String actionId,
+  );
 
   Future<OpenCrayNetworkSearchConfigSnapshot> loadNetworkSearchConfig();
 

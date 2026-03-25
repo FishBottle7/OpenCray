@@ -15,19 +15,21 @@ import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayApprovalEvent
 import com.opencray.runtime.OpenCrayApprovalPhase
+import com.opencray.runtime.OpenCrayAssistantPhaseEvent
 import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayCancellationEvent
 import com.opencray.runtime.OpenCrayFinalAttachment
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
-import com.opencray.runtime.OpenCrayProgressEvent
+import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
 import java.nio.file.Path
 import java.util.Timer
 import java.util.TimerTask
@@ -745,35 +747,39 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       "errorCode" to event.errorCode,
       "errorMessage" to event.errorMessage,
     )
-    is OpenCrayAssistantEvent -> mapOf(
-      "kind" to "assistant",
+    is OpenCrayAssistantPhaseEvent -> mapOf(
+      "kind" to "assistant_phase",
       "runId" to event.runId,
       "taskId" to event.taskId,
       "turn" to event.turn,
       "emittedAtEpochMs" to event.emittedAtEpochMs,
+      "phase" to event.phase.name.lowercase(),
       "responseFormat" to event.responseFormat,
       "isFinal" to event.isFinal,
-      "text" to event.text,
-    )
-    is OpenCrayProgressEvent -> mapOf(
-      "kind" to "progress",
-      "runId" to event.runId,
-      "taskId" to event.taskId,
-      "turn" to event.turn,
-      "emittedAtEpochMs" to event.emittedAtEpochMs,
-      "text" to event.text,
       "stage" to event.stage,
-    )
-    is OpenCraySupplementEvent -> mapOf(
-      "kind" to "supplement",
-      "runId" to event.runId,
-      "taskId" to event.taskId,
-      "turn" to event.turn,
-      "emittedAtEpochMs" to event.emittedAtEpochMs,
-      "entryId" to event.entryId,
       "text" to event.text,
-      "checkpoint" to event.checkpoint,
     )
+    is OpenCraySupplementEvent -> buildMap<String, Any?> {
+      put("kind", "supplement")
+      put("runId", event.runId)
+      put("taskId", event.taskId)
+      put("turn", event.turn)
+      put("emittedAtEpochMs", event.emittedAtEpochMs)
+      put("entryId", event.entryId)
+      put("text", event.text)
+      put("checkpoint", event.checkpoint)
+      val metadataSnapshot = toolResultMetadataSnapshot(event.metadata)
+      if (metadataSnapshot.isNotEmpty()) {
+        put("metadata", metadataSnapshot)
+      }
+      if (
+        event.metadata[OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON]
+          ?.trim()
+          ?.isNotBlank() == true
+      ) {
+        put("hasResumeCheckpointMetadata", true)
+      }
+    }
     is OpenCrayApprovalEvent -> mapOf(
       "kind" to if (event.phase == OpenCrayApprovalPhase.REQUIRED) "approval_wait" else "approval_result",
       "runId" to event.runId,
@@ -933,16 +939,26 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     attachment.contentSha256?.let { contentSha256 -> put("contentSha256", contentSha256) }
   }
 
-  private fun toolResultMetadataSnapshot(metadata: Map<String, String>): Map<String, String> =
-    metadata.mapNotNull { (key, value) ->
+  private fun toolResultMetadataSnapshot(metadata: Map<String, String>): Map<String, String> {
+    val hiddenKeys = setOf(
+      "checkpointId",
+      OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON,
+      SubAgentApprovalResumeMetadata.KEY_PROMPT_RESUME_JSON,
+    )
+    return metadata.mapNotNull { (key, value) ->
       val normalizedKey = key.trim()
       val normalizedValue = value.trim()
-      if (normalizedKey.isBlank() || normalizedValue.isBlank()) {
+      if (
+        normalizedKey.isBlank() ||
+        normalizedValue.isBlank() ||
+        normalizedKey in hiddenKeys
+      ) {
         null
       } else {
         normalizedKey to normalizedValue
       }
     }.toMap(linkedMapOf())
+  }
 
   private fun isDebugOnlyRuntimeEvent(event: OpenCrayAgentRunEvent): Boolean =
     event is OpenCrayMemoryWriteEvent &&

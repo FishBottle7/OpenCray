@@ -7,8 +7,11 @@ import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.runtime.memory.MemoryToolContext
-import com.opencray.runtime.memory.formatMemoryDateStamp
 import java.nio.file.Files
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
@@ -34,7 +37,7 @@ class OpenCrayToolDispatcherMemoryToolTest {
   @Test
   fun dispatchMemorySearchAndGetReadProjectedCorpusInsteadOfRawStore() {
     val dispatcher = dispatcher()
-    val expectedPath = "memory/${formatMemoryDateStamp(DAY_2_EPOCH_MS)}.md"
+    val expectedPath = "memory/${formatDateStamp(DAY_2_EPOCH_MS)}.md"
 
     val searchResult = dispatcher.dispatch(
       task = task(),
@@ -118,6 +121,10 @@ class OpenCrayToolDispatcherMemoryToolTest {
     isCancellationRequested = { false },
     requestRetry = { _ -> Unit },
   )
+
+  private fun formatDateStamp(epochMs: Long): String = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+    timeZone = TimeZone.getTimeZone("UTC")
+  }.format(Date(epochMs))
 
   private fun memoryRecord(
     id: String,
