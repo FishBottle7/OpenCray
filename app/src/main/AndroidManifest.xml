@@ -13,6 +13,7 @@
         android:maxSdkVersion="32" />
     <application
         android:allowBackup="true"
+        android:extractNativeLibs="true"
         android:name="com.opencray.app.OpenCrayApplication"
         android:label="@string/app_name">
         <activity

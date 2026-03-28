@@ -1,0 +1,96 @@
+<svg width="1600" height="1180" viewBox="0 0 1600 1180" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1600" y2="1180" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7FAFC"/>
+      <stop offset="1" stop-color="#EEF4F8"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="14" flood-color="#8FA4B6" flood-opacity="0.14"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" orient="auto">
+      <path d="M2 2L10 6L2 10V2Z" fill="#5E768B"/>
+    </marker>
+    <style>
+      .title { font: 700 38px "Microsoft YaHei", "PingFang SC", sans-serif; fill: #17324A; }
+      .subtitle { font: 400 20px "Microsoft YaHei", "PingFang SC", sans-serif; fill: #587085; }
+      .box-title { font: 700 24px "Microsoft YaHei", "PingFang SC", sans-serif; fill: #17324A; }
+      .box-note { font: 400 17px "Microsoft YaHei", "PingFang SC", sans-serif; fill: #5D7488; }
+      .box-small { font: 500 16px "Microsoft YaHei", "PingFang SC", sans-serif; fill: #496378; }
+      .tag { font: 700 18px "Microsoft YaHei", "PingFang SC", sans-serif; fill: #FFFFFF; }
+      .arrow { stroke: #5E768B; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow); fill: none; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1180" fill="url(#bg)"/>
+
+  <text x="80" y="78" class="title">OpenCray 关键运行链路协作关系</text>
+  <text x="80" y="114" class="subtitle">几条核心链路并不是并列堆放，而是围绕任务执行链循环协作：</text>
+  <text x="80" y="142" class="subtitle">先装配上下文，再推进任务，期间受权限约束，并把结果写回个性化与恢复系统。</text>
+
+  <rect x="600" y="148" width="400" height="156" rx="28" fill="#FFF3D8" stroke="#E9D8B7" stroke-width="2" filter="url(#shadow)"/>
+  <text x="800" y="204" text-anchor="middle" class="box-title">技能扩展链</text>
+  <text x="800" y="232" text-anchor="middle" class="box-note">工作区技能集按需生效</text>
+  <text x="800" y="258" text-anchor="middle" class="box-note">通过上下文注入与工具限制</text>
+  <text x="800" y="284" text-anchor="middle" class="box-note">影响本轮任务</text>
+
+  <rect x="450" y="340" width="700" height="300" rx="34" fill="#E7F2FF" stroke="#D3E4F3" stroke-width="2"/>
+  <rect x="500" y="310" width="148" height="42" rx="21" fill="#2E5F7A"/>
+  <text x="574" y="337" text-anchor="middle" class="tag">主线</text>
+  <text x="800" y="404" text-anchor="middle" class="box-title">任务执行链</text>
+  <text x="800" y="434" text-anchor="middle" class="box-note">Agent 围绕当前目标自行组织顺序</text>
+  <text x="800" y="460" text-anchor="middle" class="box-note">运行时提供工具、状态、审批与产物回收支撑</text>
+
+  <rect x="500" y="496" width="280" height="56" rx="18" fill="#FFFFFF" filter="url(#shadow)"/>
+  <text x="640" y="531" text-anchor="middle" class="box-small">形成计划与待办</text>
+
+  <rect x="820" y="496" width="280" height="56" rx="18" fill="#FFFFFF" filter="url(#shadow)"/>
+  <text x="960" y="531" text-anchor="middle" class="box-small">按需调用搜索 / 文件 / Python</text>
+
+  <rect x="500" y="568" width="280" height="56" rx="18" fill="#FFFFFF" filter="url(#shadow)"/>
+  <text x="640" y="603" text-anchor="middle" class="box-small">审批后继续执行</text>
+
+  <rect x="820" y="568" width="280" height="56" rx="18" fill="#FFFFFF" filter="url(#shadow)"/>
+  <text x="960" y="603" text-anchor="middle" class="box-small">结果回写聊天与工作区</text>
+
+  <rect x="80" y="340" width="340" height="184" rx="28" fill="#EFF8F1" stroke="#D8E9DE" stroke-width="2" filter="url(#shadow)"/>
+  <text x="250" y="404" text-anchor="middle" class="box-title">上下文装配链</text>
+  <text x="250" y="434" text-anchor="middle" class="box-note">会话转录、历史压缩、记忆刷新</text>
+  <text x="250" y="460" text-anchor="middle" class="box-note">引导信息、可见技能和环境信息注入</text>
+  <text x="250" y="486" text-anchor="middle" class="box-note">决定本轮到底“看见什么”</text>
+
+  <rect x="1180" y="340" width="340" height="184" rx="28" fill="#FFF1E5" stroke="#F0DDCA" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1350" y="404" text-anchor="middle" class="box-title">权限审批链</text>
+  <text x="1350" y="434" text-anchor="middle" class="box-note">工具请求归一化与策略评估</text>
+  <text x="1350" y="460" text-anchor="middle" class="box-note">高风险动作进入审批</text>
+  <text x="1350" y="486" text-anchor="middle" class="box-note">批准、拒绝或放行后回到主线</text>
+
+  <rect x="80" y="620" width="340" height="208" rx="28" fill="#F8F0FF" stroke="#E4D8F2" stroke-width="2" filter="url(#shadow)"/>
+  <text x="250" y="676" text-anchor="middle" class="box-title">个性化协作链</text>
+  <text x="250" y="706" text-anchor="middle" class="box-note">用户偏好、工作区事实、会话事实</text>
+  <text x="250" y="732" text-anchor="middle" class="box-note">SOUL 风格参与当前生成</text>
+  <text x="250" y="758" text-anchor="middle" class="box-note">重要内容再写回本地记忆</text>
+  <text x="250" y="784" text-anchor="middle" class="box-note">形成长期稳定的协作习惯</text>
+
+  <rect x="480" y="844" width="640" height="236" rx="30" fill="#F5F8FB" stroke="#DCE5EC" stroke-width="2" filter="url(#shadow)"/>
+  <text x="800" y="902" text-anchor="middle" class="box-title">恢复与回放链</text>
+  <text x="800" y="934" text-anchor="middle" class="box-note">关键边界写入 checkpoint</text>
+  <text x="800" y="960" text-anchor="middle" class="box-note">审批等待或异常暂停后可从断点恢复</text>
+  <text x="800" y="986" text-anchor="middle" class="box-note">工具调用、工具结果、阶段性回复与补充输入</text>
+  <text x="800" y="1012" text-anchor="middle" class="box-note">都会形成可回看的运行事件</text>
+
+  <path d="M800 304V340" class="arrow"/>
+
+  <path d="M420 420H450" class="arrow"/>
+
+  <path d="M250 620V524" class="arrow"/>
+
+  <path d="M620 640V724H420" class="arrow"/>
+
+  <path d="M1150 432H1180" class="arrow"/>
+
+  <path d="M1180 486H1150" class="arrow"/>
+
+  <path d="M876 640V844" class="arrow"/>
+
+  <path d="M724 844V640" class="arrow"/>
+</svg>

@@ -1,0 +1,250 @@
+<svg width="1800" height="1260" viewBox="0 0 1800 1260" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#E6E9EE" stroke-width="1"/>
+    </pattern>
+    <marker id="arrow-blue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L0,12 L10,6 z" fill="#4C7BE8"/>
+    </marker>
+    <marker id="arrow-orange" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L0,12 L10,6 z" fill="#F39C12"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L0,12 L10,6 z" fill="#2CA36B"/>
+    </marker>
+    <marker id="arrow-gray" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L0,12 L10,6 z" fill="#7F8C8D"/>
+    </marker>
+    <style>
+      .title { font: 700 34px "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif; fill: #24313F; }
+      .subtitle { font: 400 16px "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif; fill: #5E6B78; }
+      .layer { font: 700 15px "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif; fill: #8E98A3; }
+      .tag { font: 700 12px "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif; fill: #FFFFFF; }
+      .container-title { font: 700 22px "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif; fill: #24313F; }
+      .container-note { font: 400 14px "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif; fill: #667482; }
+      .box-title { font: 700 17px "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif; fill: #2E3A47; }
+      .box-note { font: 400 13px "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif; fill: #6B7885; }
+      .box-mini { font: 700 13px "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif; fill: #4A5662; }
+      .flow-label { font: 700 12px "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif; fill: #5C6976; }
+      .main-arrow { stroke: #4C7BE8; stroke-width: 3.5; fill: none; marker-end: url(#arrow-blue); stroke-linecap: round; stroke-linejoin: round; }
+      .policy-arrow { stroke: #F39C12; stroke-width: 3.5; fill: none; marker-end: url(#arrow-orange); stroke-linecap: round; stroke-linejoin: round; }
+      .policy-return { stroke: #F39C12; stroke-width: 3.5; fill: none; marker-end: url(#arrow-orange); stroke-dasharray: 10 8; stroke-linecap: round; stroke-linejoin: round; }
+      .state-arrow { stroke: #2CA36B; stroke-width: 3.5; fill: none; marker-end: url(#arrow-green); stroke-linecap: round; stroke-linejoin: round; }
+      .state-return { stroke: #2CA36B; stroke-width: 3.5; fill: none; marker-end: url(#arrow-green); stroke-dasharray: 10 8; stroke-linecap: round; stroke-linejoin: round; }
+      .recovery-arrow { stroke: #7F8C8D; stroke-width: 3.2; fill: none; marker-end: url(#arrow-gray); stroke-linecap: round; stroke-linejoin: round; }
+      .recovery-return { stroke: #7F8C8D; stroke-width: 3.2; fill: none; marker-end: url(#arrow-gray); stroke-dasharray: 10 8; stroke-linecap: round; stroke-linejoin: round; }
+      .section-line { stroke: #E2E7ED; stroke-width: 2; }
+      .panel { fill: #FFFFFF; stroke: #D7DEE6; stroke-width: 2; }
+      .subpanel { fill: #FFFFFF; stroke: #DDE4EC; stroke-width: 1.6; }
+      .accent-blue { fill: #4C7BE8; }
+      .accent-orange { fill: #F39C12; }
+      .accent-green { fill: #2CA36B; }
+      .accent-gray { fill: #7F8C8D; }
+      .accent-dark { fill: #58616C; }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1260" fill="#FAFBFC"/>
+  <rect width="1800" height="1260" fill="url(#grid)"/>
+
+  <text x="60" y="56" class="title">OpenCray 关键运行链路协同图</text>
+  <rect x="520" y="28" width="154" height="26" rx="13" fill="#24313F"/>
+  <text x="597" y="45" text-anchor="middle" class="tag">[ 运行链路图 ]</text>
+  <text x="60" y="86" class="subtitle">替代版采用更偏系统论文的分层画法：上层给出输入基底，中层展示运行期协同，底层呈现记忆、恢复与可见投影。</text>
+
+  <text x="60" y="134" class="layer">第一层：输入基底</text>
+  <line x1="185" y1="129" x2="1740" y2="129" class="section-line"/>
+
+  <rect x="60" y="154" width="1680" height="140" rx="22" class="panel"/>
+  <rect x="84" y="176" width="332" height="96" rx="16" class="subpanel"/>
+  <rect x="84" y="176" width="8" height="96" rx="4" class="accent-dark"/>
+  <text x="112" y="208" class="box-title">用户目标与补充输入</text>
+  <text x="112" y="232" class="box-note">当前消息、追加说明、附件与补充输入</text>
+  <text x="112" y="252" class="box-note">决定这轮任务的直接目标</text>
+
+  <rect x="432" y="176" width="332" height="96" rx="16" class="subpanel"/>
+  <rect x="432" y="176" width="8" height="96" rx="4" class="accent-dark"/>
+  <text x="460" y="208" class="box-title">会话转录与压缩上下文</text>
+  <text x="460" y="232" class="box-note">历史消息、工具观察、压缩摘要与最近事件</text>
+  <text x="460" y="252" class="box-note">为上下文窗口提供可见会话基底</text>
+
+  <rect x="780" y="176" width="332" height="96" rx="16" class="subpanel"/>
+  <rect x="780" y="176" width="8" height="96" rx="4" class="accent-dark"/>
+  <text x="808" y="208" class="box-title">记忆系统与协作风格系统</text>
+  <text x="808" y="232" class="box-note">USER / WORKSPACE / SESSION 分层记忆</text>
+  <text x="808" y="252" class="box-note">协作风格与历史偏好共同作用</text>
+
+  <rect x="1128" y="176" width="588" height="96" rx="16" class="subpanel"/>
+  <rect x="1128" y="176" width="8" height="96" rx="4" class="accent-dark"/>
+  <text x="1156" y="208" class="box-title">工作区规则与技能条件</text>
+  <text x="1156" y="232" class="box-note">AGENTS.md、PROJECT.md、SOUL.md、启动上下文、技能清单</text>
+  <text x="1156" y="252" class="box-note">既影响提示装配，也会继续收窄工具可见边界</text>
+
+  <text x="60" y="344" class="layer">第二层：运行编排</text>
+  <line x1="185" y1="339" x2="1740" y2="339" class="section-line"/>
+
+  <rect x="70" y="372" width="460" height="358" rx="22" class="panel"/>
+  <rect x="90" y="394" width="170" height="24" rx="12" class="accent-blue"/>
+  <text x="175" y="410" text-anchor="middle" class="tag">[ 上下文装配 ]</text>
+  <text x="96" y="448" class="container-title">上下文装配链</text>
+  <text x="96" y="472" class="container-note">这条链路决定 Agent 本轮“看见什么、能用什么”。</text>
+
+  <rect x="96" y="500" width="408" height="58" rx="14" class="subpanel"/>
+  <text x="118" y="524" class="box-title">构建 base context 与可见会话窗口</text>
+  <text x="118" y="545" class="box-note">可见消息截面、排除消息与最近工具观察</text>
+
+  <rect x="96" y="572" width="408" height="58" rx="14" class="subpanel"/>
+  <text x="118" y="596" class="box-title">召回相关记忆并叠加协作风格</text>
+  <text x="118" y="617" class="box-note">相关记忆先筛选，再与 SOUL 设定和回合语义信号共同注入</text>
+
+  <rect x="96" y="644" width="408" height="58" rx="14" class="subpanel"/>
+  <text x="118" y="668" class="box-title">引入 bootstrap、规则文件与技能目录</text>
+  <text x="118" y="689" class="box-note">工作区边界、公共路径、技能说明在这里进入运行期</text>
+
+  <rect x="96" y="716" width="408" height="58" rx="14" class="subpanel"/>
+  <text x="118" y="740" class="box-title">组装 prompt，并确定本轮可见工具</text>
+  <text x="118" y="761" class="box-note">激活技能还能进一步收窄本轮可调用工具</text>
+
+  <rect x="560" y="372" width="630" height="414" rx="22" class="panel"/>
+  <rect x="580" y="394" width="154" height="24" rx="12" fill="#5B6EE1"/>
+  <text x="657" y="410" text-anchor="middle" class="tag">[ 任务执行 ]</text>
+  <text x="586" y="448" class="container-title">任务执行链</text>
+  <text x="586" y="472" class="container-note">运行时不预设固定业务流程，而是提供一条可塑的执行主线。</text>
+
+  <rect x="840" y="430" width="314" height="50" rx="12" fill="#F8FAFF" stroke="#C9D7FA" stroke-width="1.6" stroke-dasharray="6 4"/>
+  <text x="860" y="451" class="box-mini">技能约束</text>
+  <text x="860" y="470" class="box-note">激活技能会继续限制本轮可调用工具</text>
+
+  <rect x="586" y="500" width="568" height="60" rx="14" class="subpanel"/>
+  <text x="608" y="525" class="box-title">形成计划与待办，锁定当前子目标</text>
+  <text x="608" y="547" class="box-note">TodoWrite 记录阶段任务，但不替代 Agent 的自主决策</text>
+
+  <rect x="586" y="574" width="568" height="60" rx="14" class="subpanel"/>
+  <text x="608" y="599" class="box-title">按回合装配提示并发起模型请求</text>
+  <text x="608" y="621" class="box-note">上下文报告、原生工具调用与并行工具策略在此确定</text>
+
+  <rect x="586" y="648" width="568" height="60" rx="14" class="subpanel"/>
+  <text x="608" y="673" class="box-title">解析说明、工具调用与最终答复动作批次</text>
+  <text x="608" y="695" class="box-note">失败可恢复重试，成功则继续推进本轮动作</text>
+
+  <rect x="586" y="722" width="268" height="42" rx="12" class="subpanel"/>
+  <text x="720" y="748" text-anchor="middle" class="box-note">提交工具调用</text>
+  <rect x="886" y="722" width="268" height="42" rx="12" class="subpanel"/>
+  <text x="1020" y="748" text-anchor="middle" class="box-note">提交最终答复</text>
+
+  <rect x="586" y="772" width="568" height="42" rx="12" fill="#F7F9FC" stroke="#D8E0E8" stroke-width="1.6" stroke-dasharray="6 4"/>
+  <text x="608" y="798" class="box-note">若本轮使用过 TodoWrite，结束前会检查“进行中”项是否已闭合</text>
+
+  <rect x="1230" y="372" width="510" height="414" rx="22" class="panel"/>
+  <rect x="1250" y="394" width="214" height="24" rx="12" class="accent-orange"/>
+  <text x="1357" y="410" text-anchor="middle" class="tag">[ 策略与审批 ]</text>
+  <text x="1256" y="448" class="container-title">工具策略与审批链</text>
+  <text x="1256" y="472" class="container-note">工具跨越文件、进程、网络边界时，统一走共享策略管线。</text>
+
+  <rect x="1256" y="500" width="458" height="58" rx="14" class="subpanel"/>
+  <text x="1278" y="524" class="box-title">工具请求归一化与目标解析</text>
+  <text x="1278" y="545" class="box-note">路径、shell、进程、网络请求先转成统一运行意图</text>
+
+  <rect x="1256" y="572" width="458" height="58" rx="14" class="subpanel"/>
+  <text x="1278" y="596" class="box-title">ToolPolicyPipeline 统一评估允许、询问、阻止</text>
+  <text x="1278" y="617" class="box-note">共享元数据、风险级别与结果限制在同一条管线里汇总</text>
+
+  <rect x="1256" y="644" width="216" height="58" rx="14" class="subpanel"/>
+  <text x="1278" y="668" class="box-title">默认保守权限</text>
+  <text x="1278" y="689" class="box-note">粗粒度档位 + 细粒度覆盖</text>
+
+  <rect x="1498" y="644" width="216" height="58" rx="14" fill="#FFF7EB" stroke="#F2C978" stroke-width="1.6" stroke-dasharray="6 4"/>
+  <text x="1520" y="668" class="box-title">高风险橙色提醒</text>
+  <text x="1520" y="689" class="box-note">由用户决定批准、拒绝或放开</text>
+
+  <rect x="1256" y="716" width="458" height="58" rx="14" class="subpanel"/>
+  <text x="1278" y="740" class="box-title">用户审批、会话放行或自动放行</text>
+  <text x="1278" y="761" class="box-note">SAFE / AUTO / DEV 与公共路径授权共同作用</text>
+
+  <text x="60" y="806" class="layer">第三层：持久化与投影</text>
+  <line x1="215" y1="801" x2="1740" y2="801" class="section-line"/>
+
+  <rect x="70" y="834" width="560" height="362" rx="22" class="panel"/>
+  <rect x="90" y="856" width="220" height="24" rx="12" class="accent-green"/>
+  <text x="200" y="872" text-anchor="middle" class="tag">[ 个性化协作 ]</text>
+  <text x="96" y="910" class="container-title">个性化协作链</text>
+  <text x="96" y="934" class="container-note">它不是单点能力，而是让私人助理越用越懂用户的长期回流机制。</text>
+
+  <rect x="96" y="962" width="508" height="58" rx="14" class="subpanel"/>
+  <text x="118" y="986" class="box-title">记忆刷写先于上下文压缩</text>
+  <text x="118" y="1007" class="box-note">避免刚出现的重要事实在压缩前丢失</text>
+
+  <rect x="96" y="1034" width="508" height="58" rx="14" class="subpanel"/>
+  <text x="118" y="1058" class="box-title">层级召回 USER / WORKSPACE / SESSION</text>
+  <text x="118" y="1079" class="box-note">按当前输入取相关，不会把所有记忆一股脑注入</text>
+
+  <rect x="96" y="1106" width="508" height="58" rx="14" class="subpanel"/>
+  <text x="118" y="1130" class="box-title">记忆反哺协作风格系统</text>
+  <text x="118" y="1151" class="box-note">称呼、语气、边界偏好会持续影响当前协作体验</text>
+
+  <rect x="660" y="834" width="1080" height="362" rx="22" class="panel"/>
+  <rect x="680" y="856" width="204" height="24" rx="12" class="accent-gray"/>
+  <text x="782" y="872" text-anchor="middle" class="tag">[ 恢复与回放 ]</text>
+  <text x="686" y="910" class="container-title">恢复与回放链</text>
+  <text x="686" y="934" class="container-note">运行时既要能断点续跑，也要把过程投影成用户看得见的时间线。</text>
+
+  <rect x="686" y="962" width="468" height="206" rx="16" class="subpanel"/>
+  <text x="708" y="990" class="box-mini">检查点与恢复</text>
+  <rect x="708" y="1008" width="424" height="44" rx="10" class="subpanel"/>
+  <text x="728" y="1036" class="box-note">PRE_MODEL_REQUEST / ACTION_BATCH_PARSED / COMMENTARY_EMITTED</text>
+  <rect x="708" y="1062" width="424" height="44" rx="10" class="subpanel"/>
+  <text x="728" y="1090" class="box-note">TOOL_RESULT_COMMITTED / SUPPLEMENT_INGESTED</text>
+  <rect x="708" y="1116" width="424" height="36" rx="10" fill="#F7F9FC" stroke="#D8E0E8" stroke-width="1.6"/>
+  <text x="728" y="1139" class="box-note">审批通过、拒绝和一般中断都会生成可恢复 checkpoint</text>
+
+  <rect x="1182" y="962" width="532" height="206" rx="16" class="subpanel"/>
+  <text x="1204" y="990" class="box-mini">事件回放与界面投影</text>
+  <rect x="1204" y="1008" width="488" height="44" rx="10" class="subpanel"/>
+  <text x="1224" y="1036" class="box-note">工具调用、工具结果、审批结果、补充输入都会形成运行事件</text>
+  <rect x="1204" y="1062" width="488" height="44" rx="10" class="subpanel"/>
+  <text x="1224" y="1090" class="box-note">宿主层合并实时事件与历史回放，修复终态并维护运行历史</text>
+  <rect x="1204" y="1116" width="488" height="36" rx="10" fill="#F7F9FC" stroke="#D8E0E8" stroke-width="1.6"/>
+  <text x="1224" y="1139" class="box-note">聊天时间线、待办状态、审批提示和产物展示因此保持连续</text>
+
+  <path d="M300 294 V372" class="main-arrow"/>
+  <rect x="326" y="318" width="72" height="22" rx="11" fill="#FFFFFF" stroke="#C9D7FA" stroke-width="1.2"/>
+  <text x="362" y="333" text-anchor="middle" class="flow-label">装配输入</text>
+
+  <path d="M1460 294 V372" class="policy-arrow"/>
+  <rect x="1490" y="318" width="72" height="22" rx="11" fill="#FFFFFF" stroke="#F2C978" stroke-width="1.2"/>
+  <text x="1526" y="333" text-anchor="middle" class="flow-label">规则注入</text>
+
+  <path d="M530 556 H560" class="main-arrow"/>
+  <rect x="410" y="530" width="100" height="22" rx="11" fill="#FFFFFF" stroke="#C9D7FA" stroke-width="1.2"/>
+  <text x="460" y="545" text-anchor="middle" class="flow-label">可见上下文</text>
+
+  <path d="M1190 556 H1230" class="policy-arrow"/>
+  <rect x="1118" y="530" width="100" height="22" rx="11" fill="#FFFFFF" stroke="#F2C978" stroke-width="1.2"/>
+  <text x="1168" y="545" text-anchor="middle" class="flow-label">发起工具请求</text>
+
+  <path d="M1230 626 H1190" class="policy-return"/>
+  <rect x="1092" y="638" width="126" height="22" rx="11" fill="#FFFFFF" stroke="#F2C978" stroke-width="1.2"/>
+  <text x="1155" y="653" text-anchor="middle" class="flow-label">审批后继续执行</text>
+
+  <path d="M350 834 V780 H300 V730" class="state-arrow"/>
+  <rect x="356" y="812" width="86" height="18" rx="9" fill="#FFFFFF" stroke="#9AD6B5" stroke-width="1.2"/>
+  <text x="399" y="825" text-anchor="middle" class="flow-label">召回记忆</text>
+
+  <path d="M720 786 V810 H500 V834" class="state-return"/>
+  <rect x="540" y="812" width="86" height="18" rx="9" fill="#FFFFFF" stroke="#9AD6B5" stroke-width="1.2"/>
+  <text x="583" y="825" text-anchor="middle" class="flow-label">写回记忆</text>
+
+  <path d="M900 786 V810 H1200 V834" class="recovery-arrow"/>
+  <rect x="936" y="812" width="86" height="18" rx="9" fill="#FFFFFF" stroke="#CCD4DD" stroke-width="1.2"/>
+  <text x="979" y="825" text-anchor="middle" class="flow-label">写入检查点</text>
+
+  <path d="M820 834 V810 H980 V786" class="recovery-return"/>
+  <rect x="820" y="780" width="112" height="22" rx="11" fill="#FFFFFF" stroke="#CCD4DD" stroke-width="1.2"/>
+  <text x="876" y="795" text-anchor="middle" class="flow-label">恢复或回放</text>
+
+  <path d="M1485 786 V810 H1550 V834" class="policy-return"/>
+  <rect x="1452" y="812" width="100" height="18" rx="9" fill="#FFFFFF" stroke="#F2C978" stroke-width="1.2"/>
+  <text x="1502" y="825" text-anchor="middle" class="flow-label">记录审批结果</text>
+
+  <text x="900" y="1230" text-anchor="middle" class="subtitle">上下文装配链决定可见性，任务执行链推进主流程，策略审批链约束边界，个性化与恢复链则持续把结果回流为“越用越懂用户”的体验。</text>
+</svg>

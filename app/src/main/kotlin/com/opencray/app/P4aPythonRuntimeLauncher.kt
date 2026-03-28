@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import java.lang.reflect.Modifier
+import java.nio.file.Files
 import java.nio.file.Path
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -13,7 +14,7 @@ internal object P4aPythonRuntimeServiceContract {
   const val GENERATED_SERVICE_ID: String = "opencraypython"
   internal const val SERVICE_ARGUMENT_SCHEMA_VERSION: Int = 1
   internal const val SERVICE_START_ARGUMENT_FILE_NAME: String = "service-start-argument.json"
-  internal const val DEFAULT_NOTIFICATION_ICON_NAME: String = ""
+  internal const val DEFAULT_NOTIFICATION_ICON_NAME: String = "ic_python_runtime_notification"
   internal const val DEFAULT_NOTIFICATION_TITLE: String = "OpenCray Python Runtime"
   internal const val DEFAULT_NOTIFICATION_TEXT: String = "Running embedded Python service"
   private val serviceArgumentJson: Json = Json {
@@ -134,6 +135,95 @@ internal interface P4aPythonRuntimeServiceStarter {
   fun stop(spec: P4aPythonRuntimeServiceControlSpec): Map<String, String> = emptyMap()
 }
 
+internal object P4aPythonRuntimeExtractedPayloadRepair {
+  private const val APP_ROOT_DIR_NAME: String = "app"
+  private const val PRIVATE_VERSION_FILE_NAME: String = "private.version"
+  private const val PYBUNDLE_VERSION_FILE_NAME: String = "libpybundle.version"
+  private const val ENV_VARS_FILE_NAME: String = "p4a_env_vars.txt"
+  private const val SERVICE_ENTRYPOINT_DIR_NAME: String = "python_runner"
+  private val serviceEntrypointFileNames: List<String> = listOf(
+    "p4a_service_main.py",
+    "p4a_service_main.pyc",
+  )
+
+  fun repairIfNeeded(context: Context): Map<String, String> = runCatching {
+    val appRoot = context.applicationContext.filesDir.toPath().resolve(APP_ROOT_DIR_NAME)
+    repairIfNeeded(appRoot)
+  }.getOrElse { error ->
+    mapOf(
+      "launcherPayloadRepairState" to "skipped",
+      "launcherPayloadRepairReason" to (error.message ?: error::class.java.simpleName),
+    )
+  }
+
+  fun repairIfNeeded(appRoot: Path): Map<String, String> {
+    val privatePayloadAvailable = hasPrivatePayload(appRoot)
+    val pythonBundleAvailable = hasPythonBundle(appRoot)
+    val missingPayloads = mutableListOf<String>()
+    val clearedMarkers = mutableListOf<String>()
+
+    if (!privatePayloadAvailable) {
+      missingPayloads += "private_payload"
+      clearVersionMarker(
+        appRoot = appRoot,
+        markerFileName = PRIVATE_VERSION_FILE_NAME,
+        clearedMarkers = clearedMarkers,
+      )
+    }
+    if (!pythonBundleAvailable) {
+      missingPayloads += "python_bundle"
+      clearVersionMarker(
+        appRoot = appRoot,
+        markerFileName = PYBUNDLE_VERSION_FILE_NAME,
+        clearedMarkers = clearedMarkers,
+      )
+    }
+
+    val repairState = when {
+      missingPayloads.isEmpty() -> "not_needed"
+      clearedMarkers.isNotEmpty() -> "markers_cleared"
+      else -> "missing_payload"
+    }
+    return buildMap {
+      put("launcherPayloadRepairState", repairState)
+      if (missingPayloads.isNotEmpty()) {
+        put("launcherPayloadMissing", missingPayloads.joinToString(separator = ","))
+      }
+      if (clearedMarkers.isNotEmpty()) {
+        put("launcherPayloadClearedMarkers", clearedMarkers.joinToString(separator = ","))
+      }
+    }
+  }
+
+  private fun hasPrivatePayload(appRoot: Path): Boolean {
+    val envVarsPath = appRoot.resolve(ENV_VARS_FILE_NAME)
+    if (!Files.isRegularFile(envVarsPath)) {
+      return false
+    }
+    val serviceDir = appRoot.resolve(SERVICE_ENTRYPOINT_DIR_NAME)
+    return serviceEntrypointFileNames.any { fileName ->
+      Files.isRegularFile(serviceDir.resolve(fileName))
+    }
+  }
+
+  private fun hasPythonBundle(appRoot: Path): Boolean {
+    val pythonBundleDir = appRoot.resolve("_python_bundle")
+    return Files.isRegularFile(pythonBundleDir.resolve("stdlib.zip")) &&
+      Files.isDirectory(pythonBundleDir.resolve("modules"))
+  }
+
+  private fun clearVersionMarker(
+    appRoot: Path,
+    markerFileName: String,
+    clearedMarkers: MutableList<String>,
+  ) {
+    val markerPath = appRoot.resolve(markerFileName)
+    if (Files.deleteIfExists(markerPath)) {
+      clearedMarkers += markerFileName
+    }
+  }
+}
+
 internal class ServiceBackedP4aPythonRuntimeLauncher(
   private val packageName: String,
   private val serviceStarter: P4aPythonRuntimeServiceStarter,
@@ -212,6 +302,7 @@ internal class AndroidP4aPythonRuntimeServiceStarter(
     if (prepareMethod == null) {
       prepareMetadata["launcherPrepareState"] = "missing"
     } else {
+      prepareMetadata.putAll(P4aPythonRuntimeExtractedPayloadRepair.repairIfNeeded(context))
       try {
         prepareMethod.invoke(null, context)
         prepareMetadata["launcherPrepareState"] = "prepared"

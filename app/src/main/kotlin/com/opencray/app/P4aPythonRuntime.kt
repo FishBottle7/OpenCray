@@ -61,7 +61,7 @@ internal class P4aPythonRuntime private constructor(
       "scriptTimeoutMs" to scriptTimeoutMs.toString(),
       "startupTimeoutMs" to startupTimeoutMs.toString(),
       "servicePollIntervalMs" to servicePollIntervalMs.toString(),
-      "serviceRunMode" to "once",
+      "serviceRunMode" to "persistent_stop_after_result",
       "serviceStatePath" to serviceStatePath.toString(),
       "serviceReadyPath" to serviceReadyPath.toString(),
       "serviceStartArgumentPath" to serviceStartArgumentPath.toString(),
@@ -99,7 +99,7 @@ internal class P4aPythonRuntime private constructor(
         resultPath = resultPath,
         logPath = logPath,
         servicePollIntervalMs = servicePollIntervalMs,
-        runOnce = true,
+        runOnce = false,
       )
       writeServiceStartArgumentFile(
         path = serviceStartArgumentPath,
@@ -262,7 +262,7 @@ internal class P4aPythonRuntime private constructor(
       writeCancelMarker = true,
     )
     val stopMetadata = if (timeoutStage == "result") {
-      launcher.stop()
+      stopService()
     } else {
       emptyMap()
     }
@@ -322,6 +322,7 @@ internal class P4aPythonRuntime private constructor(
     val bridgeResult = json.decodeFromString<P4aPythonExecBridgeResult>(
       String(Files.readAllBytes(resultPath), StandardCharsets.UTF_8),
     )
+    val stopMetadata = stopService()
     ExecutionResult(
       taskId = bridgeResult.taskId.ifBlank { taskId },
       status = bridgeResult.toExecutionStatus(),
@@ -332,7 +333,7 @@ internal class P4aPythonRuntime private constructor(
       errorMessage = bridgeResult.errorMessage,
       startedAtEpochMs = bridgeResult.startedAtEpochMs,
       finishedAtEpochMs = bridgeResult.finishedAtEpochMs,
-      metadata = bridgeResult.metadata + metadata + cleanupRequestArtifacts(
+      metadata = bridgeResult.metadata + metadata + stopMetadata + cleanupRequestArtifacts(
         requestPath = requestPath,
         cancelPath = cancelPath,
         writeCancelMarker = false,
@@ -340,6 +341,7 @@ internal class P4aPythonRuntime private constructor(
     )
   } catch (error: Throwable) {
     val finishedAt = System.currentTimeMillis()
+    val stopMetadata = stopService()
     val cleanupMetadata = cleanupRequestArtifacts(
       requestPath = requestPath,
       cancelPath = cancelPath,
@@ -355,7 +357,16 @@ internal class P4aPythonRuntime private constructor(
       errorMessage = error.message ?: "Failed to parse embedded Python runtime result.",
       startedAtEpochMs = finishedAt,
       finishedAtEpochMs = finishedAt,
-      metadata = metadata + cleanupMetadata,
+      metadata = metadata + stopMetadata + cleanupMetadata,
+    )
+  }
+
+  private fun stopService(): Map<String, String> = runCatching {
+    launcher.stop()
+  }.getOrElse { error ->
+    mapOf(
+      "launcherStopState" to "stop_failed",
+      "launcherStopError" to (error.message ?: error::class.java.simpleName),
     )
   }
 

@@ -64,6 +64,7 @@
 /.tmp_aar_*/
 /.tmp_python_bridge_tests/
 /.tmp_p4a_aar*/
+/.tmp_p4a_*/
 *.hprof
 /pytest-*/
 /tmp_*

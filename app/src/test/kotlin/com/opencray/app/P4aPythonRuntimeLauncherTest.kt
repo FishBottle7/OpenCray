@@ -2,8 +2,11 @@ package com.opencray.app
 
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
+import java.nio.file.Files
 import java.nio.file.Path
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -112,7 +115,7 @@ class P4aPythonRuntimeLauncherTest {
       ),
     )
 
-    assertTrue(result is P4aPythonRuntimeServiceStartResult.Started)
+    assertTrue(result.toString(), result is P4aPythonRuntimeServiceStartResult.Started)
     val started = result as P4aPythonRuntimeServiceStartResult.Started
     assertEquals("prepared", started.metadata["launcherPrepareState"])
     assertEquals("generated_static_start", started.metadata["launcherStartMode"])
@@ -169,6 +172,121 @@ class P4aPythonRuntimeLauncherTest {
     assertEquals(listOf("stop"), FakeGeneratedService.invocations)
   }
 
+  @Test
+  fun androidServiceStarterBuildsDirectIntentWithNotificationIcon() {
+    FakeGeneratedForegroundService.reset()
+    val starter = AndroidP4aPythonRuntimeServiceStarter(
+      context = ContextWrapper(null),
+      classLoader = checkNotNull(FakeGeneratedForegroundService::class.java.classLoader),
+    )
+    val buildDirectStartIntent = AndroidP4aPythonRuntimeServiceStarter::class.java.getDeclaredMethod(
+      "buildDirectStartIntent",
+      Class::class.java,
+      P4aPythonRuntimeServiceStartSpec::class.java,
+    ).apply {
+      isAccessible = true
+    }
+    val serviceArgument = """{"runtimeRoot":"/tmp/opencray-python"}"""
+    val spec = P4aPythonRuntimeServiceStartSpec(
+      packageName = "org.opencray.app",
+      serviceId = "opencraypython",
+      generatedServiceClassName = FakeGeneratedForegroundService::class.java.name,
+      serviceArgument = serviceArgument,
+    )
+
+    val intent = buildDirectStartIntent.invoke(
+      starter,
+      FakeGeneratedForegroundService::class.java,
+      spec,
+    ) as? Intent
+
+    assertNotNull(intent)
+    assertEquals(
+      listOf("getDefaultIntent"),
+      FakeGeneratedForegroundService.invocations,
+    )
+    assertEquals(
+      P4aPythonRuntimeServiceContract.DEFAULT_NOTIFICATION_ICON_NAME,
+      FakeGeneratedForegroundService.capturedNotificationIconName,
+    )
+    assertEquals(
+      P4aPythonRuntimeServiceContract.DEFAULT_NOTIFICATION_TITLE,
+      FakeGeneratedForegroundService.capturedNotificationTitle,
+    )
+    assertEquals(
+      P4aPythonRuntimeServiceContract.DEFAULT_NOTIFICATION_TEXT,
+      FakeGeneratedForegroundService.capturedNotificationText,
+    )
+    assertEquals(
+      serviceArgument,
+      FakeGeneratedForegroundService.capturedServiceArgument,
+    )
+    assertEquals(
+      serviceArgument,
+      intent?.getStringExtra("pythonServiceArgument"),
+    )
+    assertEquals("true", intent?.getStringExtra("serviceStartAsForeground"))
+  }
+
+  @Test
+  fun payloadRepairClearsPybundleMarkerWhenPythonBundleIsMissing() {
+    val appRoot = temporaryFolder.newFolder("p4a-app-missing-pybundle").toPath()
+    val privateVersion = appRoot.resolve("private.version")
+    val pybundleVersion = appRoot.resolve("libpybundle.version")
+    val serviceDir = Files.createDirectories(appRoot.resolve("python_runner"))
+    Files.write(privateVersion, "version".toByteArray())
+    Files.write(pybundleVersion, "version".toByteArray())
+    Files.write(appRoot.resolve("p4a_env_vars.txt"), "env".toByteArray())
+    Files.write(serviceDir.resolve("p4a_service_main.pyc"), "compiled".toByteArray())
+
+    val metadata = P4aPythonRuntimeExtractedPayloadRepair.repairIfNeeded(appRoot)
+
+    assertEquals("markers_cleared", metadata["launcherPayloadRepairState"])
+    assertEquals("python_bundle", metadata["launcherPayloadMissing"])
+    assertEquals("libpybundle.version", metadata["launcherPayloadClearedMarkers"])
+    assertTrue(Files.exists(privateVersion))
+    assertTrue(Files.notExists(pybundleVersion))
+  }
+
+  @Test
+  fun payloadRepairClearsPrivateMarkerWhenPrivatePayloadIsMissing() {
+    val appRoot = temporaryFolder.newFolder("p4a-app-missing-private").toPath()
+    val privateVersion = appRoot.resolve("private.version")
+    val pybundleVersion = appRoot.resolve("libpybundle.version")
+    val pythonBundleDir = Files.createDirectories(appRoot.resolve("_python_bundle").resolve("modules"))
+    Files.write(privateVersion, "version".toByteArray())
+    Files.write(pybundleVersion, "version".toByteArray())
+    Files.write(pythonBundleDir.parent.resolve("stdlib.zip"), "stdlib".toByteArray())
+
+    val metadata = P4aPythonRuntimeExtractedPayloadRepair.repairIfNeeded(appRoot)
+
+    assertEquals("markers_cleared", metadata["launcherPayloadRepairState"])
+    assertEquals("private_payload", metadata["launcherPayloadMissing"])
+    assertEquals("private.version", metadata["launcherPayloadClearedMarkers"])
+    assertTrue(Files.notExists(privateVersion))
+    assertTrue(Files.exists(pybundleVersion))
+  }
+
+  @Test
+  fun payloadRepairLeavesVersionMarkersWhenPayloadIsComplete() {
+    val appRoot = temporaryFolder.newFolder("p4a-app-complete").toPath()
+    val privateVersion = appRoot.resolve("private.version")
+    val pybundleVersion = appRoot.resolve("libpybundle.version")
+    val serviceDir = Files.createDirectories(appRoot.resolve("python_runner"))
+    val modulesDir = Files.createDirectories(appRoot.resolve("_python_bundle").resolve("modules"))
+    Files.write(privateVersion, "version".toByteArray())
+    Files.write(pybundleVersion, "version".toByteArray())
+    Files.write(appRoot.resolve("p4a_env_vars.txt"), "env".toByteArray())
+    Files.write(serviceDir.resolve("p4a_service_main.pyc"), "compiled".toByteArray())
+    Files.write(modulesDir.parent.resolve("stdlib.zip"), "stdlib".toByteArray())
+
+    val metadata = P4aPythonRuntimeExtractedPayloadRepair.repairIfNeeded(appRoot)
+
+    assertEquals("not_needed", metadata["launcherPayloadRepairState"])
+    assertTrue(Files.exists(privateVersion))
+    assertTrue(Files.exists(pybundleVersion))
+  }
+
   private fun launchRequest(
     runtimeRoot: Path,
     requestId: String,
@@ -222,4 +340,57 @@ private class FakeGeneratedService {
       invocations += "stop"
     }
   }
+}
+
+private class FakeGeneratedForegroundService {
+  companion object {
+    val invocations: MutableList<String> = mutableListOf()
+    var capturedNotificationIconName: String? = null
+    var capturedNotificationTitle: String? = null
+    var capturedNotificationText: String? = null
+    var capturedServiceArgument: String? = null
+
+    @JvmStatic
+    fun reset() {
+      invocations.clear()
+      capturedNotificationIconName = null
+      capturedNotificationTitle = null
+      capturedNotificationText = null
+      capturedServiceArgument = null
+    }
+
+    @JvmStatic
+    fun prepare(context: Context) {
+      invocations += "prepare"
+    }
+
+    @JvmStatic
+    fun getDefaultIntent(
+      context: Context,
+      notificationIconName: String,
+      notificationTitle: String,
+      notificationText: String,
+      pythonServiceArgument: String,
+    ): Intent {
+      invocations += "getDefaultIntent"
+      capturedNotificationIconName = notificationIconName
+      capturedNotificationTitle = notificationTitle
+      capturedNotificationText = notificationText
+      capturedServiceArgument = pythonServiceArgument
+      return FakeForegroundStartIntent()
+    }
+  }
+}
+
+private class FakeForegroundStartIntent : Intent() {
+  private val extras: MutableMap<String, String?> = linkedMapOf()
+
+  override fun putExtra(name: String?, value: String?): Intent {
+    if (name != null) {
+      extras[name] = value
+    }
+    return this
+  }
+
+  override fun getStringExtra(name: String?): String? = name?.let(extras::get)
 }

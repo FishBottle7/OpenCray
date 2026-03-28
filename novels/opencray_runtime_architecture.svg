@@ -1,6 +1,6 @@
-<svg width="1600" height="1240" viewBox="0 0 1600 1240" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg width="1600" height="1320" viewBox="0 0 1600 1320" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1600" y2="1240" gradientUnits="userSpaceOnUse">
+    <linearGradient id="bg" x1="0" y1="0" x2="1600" y2="1320" gradientUnits="userSpaceOnUse">
       <stop stop-color="#F7FAFC"/>
       <stop offset="1" stop-color="#EEF4F8"/>
     </linearGradient>
@@ -22,12 +22,12 @@
     </style>
   </defs>
 
-  <rect width="1600" height="1240" fill="url(#bg)"/>
+  <rect width="1600" height="1320" fill="url(#bg)"/>
 
   <text x="80" y="78" class="title">OpenCray 运行时总体架构</text>
   <text x="80" y="114" class="subtitle">程序运行时的主线是“界面入口 → 宿主桥接 → 会话调度 → Agent 执行”，上下文、工具策略和本地持久化作为支撑能力挂接其上。</text>
 
-  <rect x="520" y="160" width="560" height="840" rx="34" fill="#F8FBFE" stroke="#DBE6EE" stroke-width="2"/>
+  <rect x="520" y="160" width="560" height="950" rx="34" fill="#F8FBFE" stroke="#DBE6EE" stroke-width="2"/>
   <rect x="550" y="132" width="142" height="42" rx="21" fill="#2E5F7A"/>
   <text x="621" y="159" text-anchor="middle" class="section-tag">主执行链</text>
 
@@ -91,18 +91,18 @@
 
   <path d="M1060 857H1120V702H1190" class="arrow"/>
 
-  <rect x="180" y="1060" width="1240" height="150" rx="30" fill="#F5F8FB" stroke="#DCE5EC" stroke-width="2"/>
-  <rect x="210" y="1032" width="178" height="42" rx="21" fill="#667C8D"/>
-  <text x="299" y="1059" text-anchor="middle" class="section-tag">本地持久化与恢复</text>
+  <rect x="180" y="1160" width="1240" height="150" rx="30" fill="#F5F8FB" stroke="#DCE5EC" stroke-width="2"/>
+  <rect x="210" y="1132" width="178" height="42" rx="21" fill="#667C8D"/>
+  <text x="299" y="1159" text-anchor="middle" class="section-tag">本地持久化与恢复</text>
 
-  <rect x="230" y="1106" width="330" height="70" rx="20" fill="#FFFFFF" filter="url(#shadow)"/>
-  <text x="395" y="1149" text-anchor="middle" class="small">会话快照 / Prompt Checkpoint</text>
+  <rect x="230" y="1206" width="330" height="70" rx="20" fill="#FFFFFF" filter="url(#shadow)"/>
+  <text x="395" y="1249" text-anchor="middle" class="small">会话快照 / Prompt Checkpoint</text>
 
-  <rect x="635" y="1106" width="250" height="70" rx="20" fill="#FFFFFF" filter="url(#shadow)"/>
-  <text x="760" y="1149" text-anchor="middle" class="small">Todo / 运行记录</text>
+  <rect x="635" y="1206" width="250" height="70" rx="20" fill="#FFFFFF" filter="url(#shadow)"/>
+  <text x="760" y="1249" text-anchor="middle" class="small">Todo / 运行记录</text>
 
-  <rect x="960" y="1106" width="410" height="70" rx="20" fill="#FFFFFF" filter="url(#shadow)"/>
-  <text x="1165" y="1149" text-anchor="middle" class="small">memory.json / SOUL.md / 其他本地状态</text>
+  <rect x="960" y="1206" width="410" height="70" rx="20" fill="#FFFFFF" filter="url(#shadow)"/>
+  <text x="1165" y="1249" text-anchor="middle" class="small">memory.json / SOUL.md / 其他本地状态</text>
 
-  <path d="M800 1072V1060" class="arrow"/>
+  <path d="M800 1072V1160" class="arrow"/>
 </svg>

@@ -78,7 +78,7 @@ class P4aPythonRuntimeTest {
       startArgumentJson.getValue("logPath").jsonPrimitive.content,
     )
     assertEquals("100", startArgumentJson.getValue("pollIntervalMs").jsonPrimitive.content)
-    assertEquals("true", startArgumentJson.getValue("once").jsonPrimitive.content)
+    assertEquals("false", startArgumentJson.getValue("once").jsonPrimitive.content)
     assertEquals(
       runtime.serviceStartArgumentPath().toString(),
       result.metadata["serviceStartArgumentPath"],
@@ -149,6 +149,7 @@ class P4aPythonRuntimeTest {
   fun execReturnsBridgeResultWhenLauncherWritesResultFile() {
     val runtimeRoot = temporaryFolder.newFolder("python-runtime-success").toPath()
     val workspaceRoot = temporaryFolder.newFolder("workspace-success").toPath()
+    var stopCalls = 0
     val launcher = object : P4aPythonRuntime.P4aPythonRuntimeLauncher {
       override fun launch(
         request: P4aPythonRuntime.P4aPythonLaunchRequest,
@@ -172,6 +173,11 @@ class P4aPythonRuntimeTest {
           metadata = mapOf("launcherState" to "test-dispatched"),
         )
       }
+
+      override fun stop(): Map<String, String> {
+        stopCalls += 1
+        return mapOf("launcherStopState" to "stop_requested")
+      }
     }
     val runtime = P4aPythonRuntime.fromRuntimeRoot(runtimeRoot = runtimeRoot, launcher = launcher, json = json)
 
@@ -193,7 +199,9 @@ class P4aPythonRuntimeTest {
     assertEquals("p4a", result.metadata["runtimeBackend"])
     assertEquals("file_json_bridge", result.metadata["runtimeTransport"])
     assertEquals("100", result.metadata["servicePollIntervalMs"])
-    assertEquals("once", result.metadata["serviceRunMode"])
+    assertEquals("persistent_stop_after_result", result.metadata["serviceRunMode"])
+    assertEquals("stop_requested", result.metadata["launcherStopState"])
+    assertEquals(1, stopCalls)
     assertEquals(100L, result.startedAtEpochMs)
     assertEquals(140L, result.finishedAtEpochMs)
     assertTrue(Files.notExists(runtimeRoot.resolve("requests").resolve("${result.metadata.getValue("requestId")}.json")))
@@ -204,6 +212,7 @@ class P4aPythonRuntimeTest {
     val runtimeRoot = temporaryFolder.newFolder("python-runtime-request-id").toPath()
     val workspaceRoot = temporaryFolder.newFolder("workspace-request-id").toPath()
     var capturedRequest: P4aPythonRuntime.P4aPythonLaunchRequest? = null
+    var stopCalls = 0
     val launcher = object : P4aPythonRuntime.P4aPythonRuntimeLauncher {
       override fun launch(
         request: P4aPythonRuntime.P4aPythonLaunchRequest,
@@ -225,6 +234,11 @@ class P4aPythonRuntimeTest {
         )
         return P4aPythonRuntime.P4aPythonRuntimeLaunchResult.Dispatched()
       }
+
+      override fun stop(): Map<String, String> {
+        stopCalls += 1
+        return mapOf("launcherStopState" to "stop_requested")
+      }
     }
     val runtime = P4aPythonRuntime.fromRuntimeRoot(runtimeRoot = runtimeRoot, launcher = launcher, json = json)
 
@@ -242,7 +256,9 @@ class P4aPythonRuntimeTest {
     assertEquals("proc-fixed-id", launchRequest.bridgeRequest.requestId)
     assertEquals(runtimeRoot.resolve("cancels").resolve("proc-fixed-id.cancel").toString(), launchRequest.bridgeRequest.cancelPath)
     assertEquals(100L, launchRequest.servicePollIntervalMs)
-    assertTrue(launchRequest.runOnce)
+    assertTrue(!launchRequest.runOnce)
+    assertEquals("stop_requested", result.metadata["launcherStopState"])
+    assertEquals(1, stopCalls)
     assertEquals("proc-fixed-id", result.metadata["requestId"])
     assertEquals(runtimeRoot.resolve("cancels").resolve("proc-fixed-id.cancel").toString(), result.metadata["cancelPath"])
     assertTrue(Files.notExists(runtimeRoot.resolve("requests").resolve("proc-fixed-id.json")))
@@ -284,6 +300,7 @@ class P4aPythonRuntimeTest {
   fun execCleansUpRequestArtifactsWhenBridgeResultParsingFails() {
     val runtimeRoot = temporaryFolder.newFolder("python-runtime-parse-failed").toPath()
     val workspaceRoot = temporaryFolder.newFolder("workspace-parse-failed").toPath()
+    var stopCalls = 0
     val launcher = object : P4aPythonRuntime.P4aPythonRuntimeLauncher {
       override fun launch(
         request: P4aPythonRuntime.P4aPythonLaunchRequest,
@@ -295,6 +312,11 @@ class P4aPythonRuntimeTest {
         return P4aPythonRuntime.P4aPythonRuntimeLaunchResult.Dispatched(
           metadata = mapOf("launcherState" to "test-dispatched"),
         )
+      }
+
+      override fun stop(): Map<String, String> {
+        stopCalls += 1
+        return mapOf("launcherStopState" to "stop_requested")
       }
     }
     val runtime = P4aPythonRuntime.fromRuntimeRoot(runtimeRoot = runtimeRoot, launcher = launcher, json = json)
@@ -311,6 +333,8 @@ class P4aPythonRuntimeTest {
     val requestId = result.metadata.getValue("requestId")
     assertEquals(ExecutionStatus.FAILED, result.status)
     assertEquals(P4aPythonRuntime.ERROR_P4A_RESULT_PARSE_FAILED, result.errorCode)
+    assertEquals("stop_requested", result.metadata["launcherStopState"])
+    assertEquals(1, stopCalls)
     assertEquals("true", result.metadata["cleanupRequestDeleted"])
     assertTrue(Files.notExists(runtimeRoot.resolve("requests/$requestId.json")))
   }

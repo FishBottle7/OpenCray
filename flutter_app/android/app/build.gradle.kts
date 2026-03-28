@@ -13,6 +13,9 @@ android {
 
     packaging {
         jniLibs {
+            // p4a unpacks libpybundle.so via nativeLibraryDir, so the runtime
+            // payload must be extracted onto disk instead of loaded only from the APK.
+            useLegacyPackaging = true
             keepDebugSymbols += setOf("**/libpybundle.so")
         }
     }
