@@ -93,6 +93,38 @@ internal class RunRecoveryPlanner {
       )
     }
 
+    if (
+      run.lifecycleState == QueueTaskLifecycleState.SUSPENDED &&
+      (
+        checkpoint?.checkpointKind == PromptCheckpointKind.APPROVED_PENDING_RESUME ||
+          checkpoint?.checkpointKind == PromptCheckpointKind.REJECTED_PENDING_RESUME
+        )
+    ) {
+      return RunRecoveryPlan(
+        action = RunRecoveryAction.RESUME_WAITING_FOR_USER,
+        reasonCode = when (checkpoint.checkpointKind) {
+          PromptCheckpointKind.APPROVED_PENDING_RESUME ->
+            "approval_granted_waiting_for_manual_resume"
+          PromptCheckpointKind.REJECTED_PENDING_RESUME ->
+            "approval_rejected_waiting_for_manual_resume"
+          else -> "approval_decision_waiting_for_manual_resume"
+        },
+        summary = when (checkpoint.checkpointKind) {
+          PromptCheckpointKind.APPROVED_PENDING_RESUME ->
+            "Approval was already granted, but this run was explicitly interrupted before it resumed. Keep it paused until the user explicitly resumes it."
+          PromptCheckpointKind.REJECTED_PENDING_RESUME ->
+            "Approval was already rejected, but this run was explicitly interrupted before the rejection path was applied. Keep it paused until the user explicitly resumes it."
+          else ->
+            "An approval decision was recorded before recovery, but the run still requires explicit user action before it continues."
+        },
+        safeToAutoResume = false,
+        requiresUserAction = true,
+        checkpointKind = checkpoint.checkpointKind,
+        approvalState = input.approvalState,
+        journalTailKind = journalTailKind,
+      )
+    }
+
     if (checkpoint?.checkpointKind?.isCheckpointResumeKind() == true) {
       return RunRecoveryPlan(
         action = RunRecoveryAction.RESUME_FROM_CHECKPOINT,

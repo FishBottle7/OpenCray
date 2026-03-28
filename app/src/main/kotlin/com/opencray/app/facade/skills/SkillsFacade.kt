@@ -3,9 +3,13 @@ package com.opencray.app.facade.skills
 import android.content.Context
 import com.opencray.app.AppSkillsStorage
 import com.opencray.app.OpenCrayLocaleManager
+import com.opencray.runtime.skills.SkillPackageBatchInstallAttempt
+import com.opencray.runtime.skills.SkillPackageCheckReport
 import com.opencray.runtime.skills.SkillInstallManifestStore
-import com.opencray.runtime.skills.SkillPackageManager
 import com.opencray.runtime.skills.SkillPackageInstallAttempt
+import com.opencray.runtime.skills.SkillPackageManager
+import com.opencray.runtime.skills.SkillPackageUpdateReport
+import com.opencray.runtime.skills.SkillSourceInspectionAttempt
 import com.opencray.skills.LoadedSkill
 import com.opencray.skills.SkillLoader
 import java.io.File
@@ -79,13 +83,27 @@ interface SkillsFacade {
 
   fun setSkillEnabled(skillId: String, enabled: Boolean): Boolean
 
-  fun installSkillSource(sourceRef: String): SkillInstallRequestResult
+  fun installSkillSource(
+    sourceRef: String,
+    selectedSkillName: String = "",
+  ): SkillInstallRequestResult
+
+  fun installSkillSourceBatch(
+    sourceRef: String,
+    selectedSkillNames: List<String>,
+  ): SkillPackageBatchInstallAttempt
+
+  fun inspectSkillSource(sourceRef: String): SkillSourceInspectionAttempt
 
   fun installSuggestedSkill(skillId: String): Boolean
 
   fun deleteInstalledSkill(skillId: String): Boolean
 
   fun refresh()
+
+  fun checkInstalledSkillUpdates(skillId: String = ""): SkillPackageCheckReport
+
+  fun updateInstalledSkill(skillId: String = ""): SkillPackageUpdateReport
 
   fun loadInstructions(skillId: String): SkillInstructionsSnapshot?
 
@@ -129,8 +147,12 @@ internal class LocalSkillsFacade private constructor(
     )
   }
 
-  override fun installSkillSource(sourceRef: String): SkillInstallRequestResult {
+  override fun installSkillSource(
+    sourceRef: String,
+    selectedSkillName: String,
+  ): SkillInstallRequestResult {
     val normalizedSourceRef = sourceRef.trim()
+    val normalizedSelectedSkillName = selectedSkillName.trim()
     if (normalizedSourceRef.isEmpty()) {
       return SkillInstallRequestResult(
         errorMessage = context.getString(R.string.skills_install_error_source_blank),
@@ -148,9 +170,15 @@ internal class LocalSkillsFacade private constructor(
       enableInstalledSkill(result.skillId)
       return SkillInstallRequestResult(installedSkillId = result.skillId)
     }
-    packageManager.resolveRemoteSource(normalizedSourceRef)?.let {
+    packageManager.resolveRemoteSource(
+      sourceRef = normalizedSourceRef,
+      selectedSkillName = normalizedSelectedSkillName.takeIf(String::isNotBlank),
+    )?.let {
       return installAttempt(
-        attempt = packageManager.installFromRemoteSource(normalizedSourceRef),
+        attempt = packageManager.installFromRemoteSource(
+          sourceRef = normalizedSourceRef,
+          selectedSkillName = normalizedSelectedSkillName.takeIf(String::isNotBlank),
+        ),
         fallbackMessage = context.getString(
           R.string.skills_install_error_source_failed,
           normalizedSourceRef,
@@ -162,6 +190,7 @@ internal class LocalSkillsFacade private constructor(
         attempt = packageManager.installFromLocalSource(
           sourcePath = File(normalizedSourceRef),
           sourceRef = normalizedSourceRef,
+          selectedSkillName = normalizedSelectedSkillName.takeIf(String::isNotBlank),
         ),
         fallbackMessage = context.getString(
           R.string.skills_install_error_source_failed,
@@ -191,8 +220,78 @@ internal class LocalSkillsFacade private constructor(
   }
 
   override fun installSuggestedSkill(skillId: String): Boolean {
-    val result = installSkillSource(skillId)
+    val result = installSkillSource(sourceRef = skillId, selectedSkillName = "")
     return result.succeeded
+  }
+
+  override fun installSkillSourceBatch(
+    sourceRef: String,
+    selectedSkillNames: List<String>,
+  ): SkillPackageBatchInstallAttempt {
+    val normalizedSourceRef = sourceRef.trim()
+    val normalizedSelectedSkillNames = selectedSkillNames
+      .asSequence()
+      .map(String::trim)
+      .filter(String::isNotBlank)
+      .distinct()
+      .toList()
+    if (normalizedSourceRef.isEmpty()) {
+      return SkillPackageBatchInstallAttempt(
+        errorCode = "SKILL_SOURCE_BLANK",
+        errorMessage = context.getString(R.string.skills_install_error_source_blank),
+      )
+    }
+    if (normalizedSelectedSkillNames.isEmpty()) {
+      return SkillPackageBatchInstallAttempt(
+        errorCode = "SKILL_SELECTION_EMPTY",
+        errorMessage = "At least one skill must be selected.",
+      )
+    }
+    if (looksLikeExplicitLocalSkillSource(normalizedSourceRef)) {
+      return packageManager.installFromLocalSourceBatch(
+        sourcePath = File(normalizedSourceRef),
+        sourceRef = normalizedSourceRef,
+        selectedSkillNames = normalizedSelectedSkillNames,
+        installAll = false,
+      )
+    }
+    if (packageManager.resolveRemoteSource(normalizedSourceRef) != null) {
+      return packageManager.installFromRemoteSourceBatch(
+        sourceRef = normalizedSourceRef,
+        selectedSkillNames = normalizedSelectedSkillNames,
+        installAll = false,
+      )
+    }
+    return SkillPackageBatchInstallAttempt(
+      errorCode = "SKILL_SOURCE_UNSUPPORTED",
+      errorMessage = "Batch installation requires an explicit local path, GitHub source, or GitLab source.",
+    )
+  }
+
+  override fun inspectSkillSource(sourceRef: String): SkillSourceInspectionAttempt {
+    val normalizedSourceRef = sourceRef.trim()
+    if (normalizedSourceRef.isEmpty()) {
+      return SkillSourceInspectionAttempt(
+        errorCode = "SKILL_SOURCE_BLANK",
+        errorMessage = context.getString(R.string.skills_install_error_source_blank),
+      )
+    }
+    if (looksLikeExplicitLocalSkillSource(normalizedSourceRef)) {
+      return packageManager.inspectLocalSource(
+        sourcePath = File(normalizedSourceRef),
+        sourceRef = normalizedSourceRef,
+      )
+    }
+    if (packageManager.resolveRemoteSource(normalizedSourceRef) != null) {
+      return packageManager.inspectRemoteSource(normalizedSourceRef)
+    }
+    return SkillSourceInspectionAttempt(
+      errorCode = "SKILL_SOURCE_UNSUPPORTED",
+      errorMessage = context.getString(
+        R.string.skills_install_error_source_unrecognized,
+        normalizedSourceRef,
+      ),
+    )
   }
 
   override fun deleteInstalledSkill(skillId: String): Boolean {
@@ -210,6 +309,24 @@ internal class LocalSkillsFacade private constructor(
     }
     loadManagedSkills()
     loadCatalogSkills()
+  }
+
+  override fun checkInstalledSkillUpdates(skillId: String): SkillPackageCheckReport {
+    val normalizedSkillId = skillId.trim().takeIf(String::isNotBlank)
+    packageManager.refreshManifest()
+    require(skillIsInstalledOrTracked(normalizedSkillId)) {
+      "Skill '${normalizedSkillId ?: ""}' is not installed in the host-managed skills directory."
+    }
+    return packageManager.checkInstalledSkills(normalizedSkillId)
+  }
+
+  override fun updateInstalledSkill(skillId: String): SkillPackageUpdateReport {
+    val normalizedSkillId = skillId.trim().takeIf(String::isNotBlank)
+    packageManager.refreshManifest()
+    require(skillIsInstalledOrTracked(normalizedSkillId)) {
+      "Skill '${normalizedSkillId ?: ""}' is not installed in the host-managed skills directory."
+    }
+    return packageManager.updateInstalledSkills(normalizedSkillId)
   }
 
   override fun loadInstructions(skillId: String): SkillInstructionsSnapshot? {
@@ -469,6 +586,17 @@ internal class LocalSkillsFacade private constructor(
     suggestedLimit.takeIf { it > 0 }?.coerceIn(1, MAX_REMOTE_SKILL_SEARCH_LIMIT)
       ?: DEFAULT_REMOTE_SKILL_SEARCH_LIMIT
 
+  private fun skillIsInstalledOrTracked(skillId: String?): Boolean {
+    if (skillId == null) {
+      return true
+    }
+    val managedSkillIds = loadManagedSkills().mapTo(linkedSetOf()) { skill -> skill.name }
+    if (skillId in managedSkillIds) {
+      return true
+    }
+    return packageManager.listInstallations().any { entry -> entry.skillId == skillId }
+  }
+
   private data class SuggestedSkillsSearchSnapshot(
     val skills: List<SuggestedSkillSnapshot>,
     val mayHaveMore: Boolean,
@@ -489,14 +617,33 @@ internal object EmptySkillsFacade : SkillsFacade {
 
   override fun setSkillEnabled(skillId: String, enabled: Boolean): Boolean = false
 
-  override fun installSkillSource(sourceRef: String): SkillInstallRequestResult =
+  override fun installSkillSource(
+    sourceRef: String,
+    selectedSkillName: String,
+  ): SkillInstallRequestResult =
     SkillInstallRequestResult(errorMessage = "Skills host support is unavailable.")
+
+  override fun installSkillSourceBatch(
+    sourceRef: String,
+    selectedSkillNames: List<String>,
+  ): SkillPackageBatchInstallAttempt = SkillPackageBatchInstallAttempt(
+    errorMessage = "Skills host support is unavailable.",
+  )
+
+  override fun inspectSkillSource(sourceRef: String): SkillSourceInspectionAttempt =
+    SkillSourceInspectionAttempt(errorMessage = "Skills host support is unavailable.")
 
   override fun installSuggestedSkill(skillId: String): Boolean = false
 
   override fun deleteInstalledSkill(skillId: String): Boolean = false
 
   override fun refresh() {}
+
+  override fun checkInstalledSkillUpdates(skillId: String): SkillPackageCheckReport =
+    SkillPackageCheckReport(results = emptyList())
+
+  override fun updateInstalledSkill(skillId: String): SkillPackageUpdateReport =
+    SkillPackageUpdateReport(results = emptyList())
 
   override fun loadInstructions(skillId: String): SkillInstructionsSnapshot? = null
 

@@ -158,17 +158,41 @@ internal data class OpenCrayRuntimeServiceClientSnapshot(
 internal interface OpenCrayRuntimeServiceClient {
   fun loadSnapshot(): OpenCrayRuntimeServiceClientSnapshot
 
+  fun peekSnapshot(): OpenCrayRuntimeServiceClientSnapshot? = null
+
   fun loadConnectionState(): RuntimeServiceConnectionState = loadSnapshot().connectionState
+
+  fun peekConnectionState(): RuntimeServiceConnectionState = loadConnectionState()
 
   fun loadShellGateway(): OpenCrayShellGateway? = null
 
+  fun peekShellGateway(): OpenCrayShellGateway? = null
+
   fun loadChatRuntimeGateway(): OpenCrayChatRuntimeGateway? = null
+
+  fun peekChatRuntimeGateway(): OpenCrayChatRuntimeGateway? = null
+
+  fun awaitChatRuntimeGateway(timeoutMs: Long): OpenCrayChatRuntimeGateway? =
+    loadChatRuntimeGateway()
 
   fun loadSkillsGateway(): OpenCraySkillsGateway? = null
 
+  fun peekSkillsGateway(): OpenCraySkillsGateway? = null
+
+  fun awaitSkillsGateway(timeoutMs: Long): OpenCraySkillsGateway? =
+    loadSkillsGateway()
+
   fun loadSettingsGateway(): OpenCraySettingsGateway? = null
 
+  fun peekSettingsGateway(): OpenCraySettingsGateway? = null
+
+  fun awaitSettingsGateway(timeoutMs: Long): OpenCraySettingsGateway? =
+    loadSettingsGateway()
+
   fun observeConnectionState(listener: (RuntimeServiceConnectionState) -> Unit): () -> Unit = { }
+
+  fun observePassiveConnectionState(listener: (RuntimeServiceConnectionState) -> Unit): () -> Unit =
+    observeConnectionState(listener)
 }
 
 internal interface OpenCrayRuntimeServiceBridge {
@@ -220,7 +244,12 @@ internal class BridgeBackedOpenCrayRuntimeServiceClient(
       connectionState = connectionState,
     )
 
+  override fun peekSnapshot(): OpenCrayRuntimeServiceClientSnapshot =
+    loadSnapshot()
+
   override fun loadConnectionState(): RuntimeServiceConnectionState = connectionState
+
+  override fun peekConnectionState(): RuntimeServiceConnectionState = connectionState
 }
 
 internal interface OpenCrayRuntimeServiceBindingAdapter {
@@ -289,8 +318,11 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
     Intent(context, OpenCrayAgentRuntimeService::class.java)
   },
   private val bindingFlags: Int = Context.BIND_AUTO_CREATE,
+  private val isMainThread: () -> Boolean = {
+    Looper.myLooper() == Looper.getMainLooper()
+  },
 ) : OpenCrayRuntimeServiceClient {
-  private val lock = Any()
+  private val lock: java.lang.Object = java.lang.Object()
   private val listeners = linkedSetOf<(RuntimeServiceConnectionState) -> Unit>()
   private var connectionObserverCount: Int = 0
   private var bindingEstablished: Boolean = false
@@ -329,6 +361,7 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
         cancelPendingBindingReleaseLocked()
         bindingEstablished = true
         binderAccess = access
+        lock.notifyAll()
       }
       if (access != null) {
         publishConnectionState(
@@ -352,6 +385,7 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
         bindingEstablished = false
         bindingRequested = false
         binderAccess = null
+        lock.notifyAll()
       }
       publishConnectionState(
         RuntimeServiceConnectionState.serviceDisconnected(
@@ -369,6 +403,7 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
         bindingEstablished = false
         binderAccess = null
         bindingRequested = false
+        lock.notifyAll()
       }
       publishConnectionState(
         RuntimeServiceConnectionState.nullBinding(
@@ -382,6 +417,7 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
         bindingEstablished = false
         bindingRequested = false
         binderAccess = null
+        lock.notifyAll()
       }
       publishConnectionState(
         RuntimeServiceConnectionState.bindingDied(
@@ -404,40 +440,62 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
     }
   }
 
+  override fun peekSnapshot(): OpenCrayRuntimeServiceClientSnapshot? {
+    val bridgeSnapshot = binderAccess
+      ?.let { access -> runCatching { access.loadSnapshot() }.getOrNull() }
+      ?: runCatching { fallbackBridge.loadSnapshot() }.getOrNull()
+      ?: return null
+    return OpenCrayRuntimeServiceClientSnapshot(
+      bridgeSnapshot = bridgeSnapshot,
+      connectionState = currentConnectionState(),
+    )
+  }
+
   override fun loadConnectionState(): RuntimeServiceConnectionState = currentConnectionState()
+
+  override fun peekConnectionState(): RuntimeServiceConnectionState = currentConnectionState()
 
   override fun loadShellGateway(): OpenCrayShellGateway? =
     withTransientBindingAccess { binderAccess?.loadShellGateway() }
 
+  override fun peekShellGateway(): OpenCrayShellGateway? = binderAccess?.loadShellGateway()
+
   override fun loadChatRuntimeGateway(): OpenCrayChatRuntimeGateway? =
     withTransientBindingAccess { binderAccess?.loadChatRuntimeGateway() }
+
+  override fun peekChatRuntimeGateway(): OpenCrayChatRuntimeGateway? =
+    binderAccess?.loadChatRuntimeGateway()
+
+  override fun awaitChatRuntimeGateway(timeoutMs: Long): OpenCrayChatRuntimeGateway? =
+    withAwaitedBindingAccess(timeoutMs) { binderAccess?.loadChatRuntimeGateway() }
 
   override fun loadSkillsGateway(): OpenCraySkillsGateway? =
     withTransientBindingAccess { binderAccess?.loadSkillsGateway() }
 
+  override fun peekSkillsGateway(): OpenCraySkillsGateway? = binderAccess?.loadSkillsGateway()
+
+  override fun awaitSkillsGateway(timeoutMs: Long): OpenCraySkillsGateway? =
+    withAwaitedBindingAccess(timeoutMs) { binderAccess?.loadSkillsGateway() }
+
   override fun loadSettingsGateway(): OpenCraySettingsGateway? =
     withTransientBindingAccess { binderAccess?.loadSettingsGateway() }
 
-  override fun observeConnectionState(listener: (RuntimeServiceConnectionState) -> Unit): () -> Unit {
-    ensureStartedAndBinding()
-    synchronized(lock) {
-      cancelPendingBindingReleaseLocked()
-      listeners += listener
-      connectionObserverCount += 1
-    }
-    return {
-      val shouldScheduleRelease = synchronized(lock) {
-        val removed = listeners.remove(listener)
-        if (removed && connectionObserverCount > 0) {
-          connectionObserverCount -= 1
-        }
-        connectionObserverCount == 0
-      }
-      if (shouldScheduleRelease) {
-        scheduleBindingReleaseIfIdle()
-      }
-    }
-  }
+  override fun peekSettingsGateway(): OpenCraySettingsGateway? = binderAccess?.loadSettingsGateway()
+
+  override fun awaitSettingsGateway(timeoutMs: Long): OpenCraySettingsGateway? =
+    withAwaitedBindingAccess(timeoutMs) { binderAccess?.loadSettingsGateway() }
+
+  override fun observeConnectionState(listener: (RuntimeServiceConnectionState) -> Unit): () -> Unit =
+    registerConnectionObserver(
+      listener = listener,
+      retainBinding = true,
+    )
+  override fun observePassiveConnectionState(
+    listener: (RuntimeServiceConnectionState) -> Unit,
+  ): () -> Unit = registerConnectionObserver(
+    listener = listener,
+    retainBinding = false,
+  )
 
   private inline fun <T> withTransientBindingAccess(
     block: () -> T,
@@ -447,6 +505,47 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
       block()
     } finally {
       scheduleBindingReleaseIfIdle()
+    }
+  }
+
+  private inline fun <T> withAwaitedBindingAccess(
+    timeoutMs: Long,
+    block: () -> T,
+  ): T {
+    ensureStartedAndBinding()
+    return try {
+      awaitBindingAccess(timeoutMs)
+      block()
+    } finally {
+      scheduleBindingReleaseIfIdle()
+    }
+  }
+
+  private fun registerConnectionObserver(
+    listener: (RuntimeServiceConnectionState) -> Unit,
+    retainBinding: Boolean,
+  ): () -> Unit {
+    if (retainBinding) {
+      ensureStartedAndBinding()
+    }
+    synchronized(lock) {
+      if (retainBinding) {
+        cancelPendingBindingReleaseLocked()
+        connectionObserverCount += 1
+      }
+      listeners += listener
+    }
+    return {
+      val shouldScheduleRelease = synchronized(lock) {
+        listeners.remove(listener)
+        if (retainBinding && connectionObserverCount > 0) {
+          connectionObserverCount -= 1
+        }
+        retainBinding && connectionObserverCount == 0
+      }
+      if (shouldScheduleRelease) {
+        scheduleBindingReleaseIfIdle()
+      }
     }
   }
 
@@ -463,6 +562,32 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
       startRequester(appContext)
     }
     requestBindingIfNeeded(force = false)
+  }
+
+  private fun awaitBindingAccess(timeoutMs: Long): Boolean {
+    if (binderAccess != null) {
+      return true
+    }
+    if (timeoutMs <= 0L || isMainThread()) {
+      return binderAccess != null
+    }
+    val deadlineNanos = System.nanoTime() + (timeoutMs * 1_000_000L)
+    synchronized(lock) {
+      while (binderAccess == null && bindingRequested) {
+        val remainingNanos = deadlineNanos - System.nanoTime()
+        if (remainingNanos <= 0L) {
+          break
+        }
+        val waitMs = maxOf(1L, remainingNanos / 1_000_000L)
+        try {
+          lock.wait(waitMs)
+        } catch (_: InterruptedException) {
+          Thread.currentThread().interrupt()
+          break
+        }
+      }
+      return binderAccess != null
+    }
   }
 
   private fun requestBindingIfNeeded(force: Boolean) {
@@ -499,6 +624,7 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
         synchronized(lock) {
           bindingEstablished = false
           bindingRequested = false
+          lock.notifyAll()
         }
         publishConnectionState(
           RuntimeServiceConnectionState.bindFailed(
@@ -512,6 +638,7 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
         synchronized(lock) {
           bindingEstablished = false
           bindingRequested = false
+          lock.notifyAll()
         }
         publishConnectionState(
           RuntimeServiceConnectionState.bindFailed(
@@ -557,6 +684,7 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
       binderAccess = null
       bindingEstablished = false
       bindingRequested = false
+      lock.notifyAll()
       nextState = RuntimeServiceConnectionState.bindingReleased(
         serviceStartRequested = serviceStartRequested,
       )

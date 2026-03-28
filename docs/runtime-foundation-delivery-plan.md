@@ -1,10 +1,10 @@
 # Runtime Foundation Delivery Plan
 
-Last updated: 2026-03-27
+Last updated: 2026-03-28
 
 ## Status
 
-Phase 1 complete; Phase 2 approval-boundary and first general checkpoint restore slice partially implemented; in-process detached-owner foundation, same-process service host, foreground keepalive, and scheduled wake bridges landed. True detached ownership and controller-level managed-process reconnect remain pending.
+Phase 1 complete; Phase 2 approval-boundary and first general checkpoint restore slice partially implemented; in-process detached-owner foundation, same-process service host, foreground keepalive, scheduled wake bridges, and a first interrupted-run repair wake path landed. True detached ownership and controller-level managed-process reconnect remain pending.
 
 ## Goal
 
@@ -214,7 +214,7 @@ First service-host slice landed:
 - host bootstrap now goes through a formal runtime service client that returns both the runtime snapshot and the host-visible connection state instead of reaching into the service bridge directly
 - runtime and shell snapshots now project `runtimeServiceConnectionState`, so binder-backed access and in-process fallback are distinguishable without inferring from implementation details
 - shell snapshots now also project `localRuntimeServerState`, so loopback HTTP server startup, listening, and bind-failure diagnostics are visible separately from binder transport state
-- app bootstrap now only ensures `OpenCrayAgentRuntimeService`, and that service bootstraps the local loopback runtime server on `onCreate()`, so both Android transports now initialize from the same runtime-service boundary
+- app bootstrap no longer eagerly ensures `OpenCrayAgentRuntimeService`; it only performs app-level bootstrap plus repair/schedule registration. When the runtime service is later started by an explicit wake or binder-demanding path, that service bootstraps the local loopback runtime server on `onCreate()`, so both Android transports still initialize from the same runtime-service boundary
 - the runtime service client now issues a real asynchronous `bindService(...)` request and keeps projecting connection transitions through the same snapshot field, without blocking synchronous host creation paths
 - host observers now refresh shell/runtime snapshots when the service client connection state changes, so later binder attachment is visible without rebuilding the host facade
 - production `OpenCrayHostRuntime` construction is now projection-only with respect to session bootstrap: active-session `resume()` plus terminal replay repair moved to one-time runtime service host startup instead of running from every host-facade init path
@@ -232,10 +232,12 @@ First service-host slice landed:
 - settings overview observers now switch dynamically between the fallback host gateway and the binder-backed service gateway based on service connection state, so the settings UI can follow the service-owned runtime path without recreating the host bridge
 - service-backed shell/chat/skills/settings observers now re-check the active gateway immediately after connection observation registration, which closes the binder-connect race that could otherwise leave a UI stream stuck on projection fallback until a later connection transition
 - the Android runtime-service client now treats binder attachment as an idle-released transport lease instead of a permanent process-wide bind: active connection observers keep the binder attached, transient reads or commands schedule an automatic unbind after a short quiet window, and detached execution still belongs to the started service plus keepalive path rather than the UI transport
+- service-backed shell/chat/skills/settings read observers now subscribe passively to connection-state changes, so startup-time UI snapshot streams no longer trigger runtime-service start/bind just to watch projection fallback state
 - workspace tree/document operations, local file open/share, native toast, twin import probing, and draft attachment import are now isolated behind `OpenCrayLocalHostGateway`, so the Flutter bridge and loopback HTTP server no longer need to hold a full `OpenCrayHostRuntime` just to reach pure local device/workspace capabilities
 - `OpenCrayHostRuntime` now implements that same local-only gateway by delegation, which keeps the remaining projection fallback compatible while separating service-owned runtime surfaces from local-only host helpers
 - shell, settings, and skills read fallback are now served by dedicated projection-only gateways instead of a full `OpenCrayHostRuntime`, so those surfaces no longer pull the UI-side host facade into existence just to satisfy binder-pending reads
 - projection-only skills fallback is now strictly local-only: it filters the local snapshot and local instructions without issuing `SkillsList` or `SkillsFind`, which keeps tool-executing skills discovery on the binder-owned pipeline
+- the existing repair worker can now preflight interrupted interactive repair candidates from non-terminal queue snapshots or prompt checkpoints and wake the runtime service with `ACTION_RESUME_INTERRUPTED_RUNS`, and the service host can rescan known sessions to resume runs that still project as active
 - this is still a same-process service host; stronger detached ownership, dedicated-runtime-process isolation, and true controller-level managed-process reconnect remain later slices
 
 ### Recommended checkpoint boundaries
@@ -385,13 +387,13 @@ Already landed in app process:
 
 - scheduled task registry, durable spec storage, and run records
 - `AlarmManager` wake path plus `WorkManager` wake and repair path
-- runtime-service wake entrypoints for scheduled dispatch and repair
+- runtime-service wake entrypoints for scheduled dispatch, schedule repair, and interrupted-run resume repair
 - schedule, approval, completion/interruption, and active-runtime notification surfaces
 
 Still pending in this phase:
 
 - richer schedule-side notification actions beyond the current approval/open flows
-- a scheduler-owned repair loop for active interactive runs that does not rely on normal startup/checkpoint recovery
+- broader autonomous repair policy for interrupted interactive runs beyond the current `WorkManager` precheck plus `ACTION_RESUME_INTERRUPTED_RUNS` wake-and-resume scan
 - any future periodic/task-automation expansions that need more than the current wake/dispatch bridge
 
 ### Components in this phase

@@ -21,6 +21,7 @@ import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.persistence.model.MemoryRecord
+import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.persistence.store.MemoryStore
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
@@ -756,6 +757,37 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun androidBindingClientPeekSnapshotDoesNotStartServiceOrBind() {
+    val expected = bridgeSnapshot(temporaryFolder.newFolder("binding-client-passive-peek"))
+    val bindingAdapter = RecordingBindingAdapter()
+    var startRequestCount = 0
+    val client = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
+        OpenCrayRuntimeServiceHost(
+          dependencies = expected.dependencies,
+          runtimeAccess = expected.runtimeAccess,
+          serviceLifecycle = expected.serviceLifecycle,
+          serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
+            expected.runtimeAccess.hostAccess::activeWorkSummary,
+          ).apply { refresh() },
+        )
+      },
+      bindingAdapter = bindingAdapter,
+      startRequester = { startRequestCount += 1 },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+    )
+
+    val snapshot = client.peekSnapshot()
+
+    assertSame(expected.dependencies, snapshot?.bridgeSnapshot?.dependencies)
+    assertEquals(0, startRequestCount)
+    assertEquals(0, bindingAdapter.bindCount)
+    assertEquals("fallback", snapshot?.connectionState?.phase)
+  }
+
+  @Test
   fun androidBindingClientExposesBinderSkillsGatewayWhenConnected() {
     val expected = bridgeSnapshot(temporaryFolder.newFolder("binding-client-skills-gateway"))
     val bindingAdapter = RecordingBindingAdapter()
@@ -1001,6 +1033,44 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun serviceBackedShellGatewayObservationDoesNotStartOrBindRuntimeService() {
+    val expected = bridgeSnapshot(temporaryFolder.newFolder("shell-gateway-passive-observe"))
+    val bindingAdapter = RecordingBindingAdapter()
+    var startRequestCount = 0
+    val client = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
+        OpenCrayRuntimeServiceHost(
+          dependencies = expected.dependencies,
+          runtimeAccess = expected.runtimeAccess,
+          serviceLifecycle = expected.serviceLifecycle,
+          serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
+            expected.runtimeAccess.hostAccess::activeWorkSummary,
+          ).apply { refresh() },
+        )
+      },
+      bindingAdapter = bindingAdapter,
+      startRequester = { startRequestCount += 1 },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+    )
+    val gateway = ServiceBackedOpenCrayShellGateway(
+      serviceClient = client,
+      fallbackGateway = RecordingShellGateway("fallback"),
+    )
+    val observedSources = mutableListOf<String?>()
+
+    gateway.observeShell { snapshot ->
+      observedSources += snapshot["source"] as String?
+    }
+
+    assertEquals(listOf("fallback-shell"), observedSources)
+    assertEquals(0, startRequestCount)
+    assertEquals(0, bindingAdapter.bindCount)
+    assertEquals("fallback", client.loadConnectionState().phase)
+  }
+
+  @Test
   fun androidBindingClientRebindsAfterServiceDisconnectWhileObserverIsActive() {
     val expected = bridgeSnapshot(temporaryFolder.newFolder("binding-client-disconnect-rebind"))
     val bindingAdapter = RecordingBindingAdapter()
@@ -1158,6 +1228,65 @@ class OpenCrayRuntimeServiceHostTest {
       listOf("fallback-runtime", "binder-runtime", "fallback-runtime"),
       observedRuntimeSources,
     )
+  }
+
+  @Test
+  fun serviceBackedChatRuntimeGatewayWaitsForPendingBinderBeforeSubmittingMessage() {
+    val expected = bridgeSnapshot(temporaryFolder.newFolder("chat-gateway-await-binder"))
+    val bindingAdapter = RecordingBindingAdapter()
+    val binderGateway = RecordingChatRuntimeGateway("binder")
+    val gateway = ServiceBackedOpenCrayChatRuntimeGateway(
+      serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
+        appContext = ContextWrapper(null),
+        fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
+          OpenCrayRuntimeServiceHost(
+            dependencies = expected.dependencies,
+            runtimeAccess = expected.runtimeAccess,
+            serviceLifecycle = expected.serviceLifecycle,
+            serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
+              expected.runtimeAccess.hostAccess::activeWorkSummary,
+            ).apply { refresh() },
+          )
+        },
+        bindingAdapter = bindingAdapter,
+        startRequester = { },
+        mainThreadPoster = ImmediateMainThreadPoster,
+        serviceIntentFactory = { Intent() },
+        isMainThread = { false },
+      ),
+      fallbackGateway = RecordingChatRuntimeGateway("fallback"),
+    )
+    var result: Map<String, Any?>? = null
+    var failure: Throwable? = null
+
+    val worker = Thread {
+      runCatching {
+        gateway.submitChatMessage(
+          text = "hello",
+          attachments = emptyList(),
+        )
+      }.onSuccess { payload ->
+        result = payload
+      }.onFailure { throwable ->
+        failure = throwable
+      }
+    }
+
+    worker.start()
+    waitForCondition(timeoutMs = 1_000L) { bindingAdapter.bindCount == 1 }
+    bindingAdapter.connect(
+      object : Binder(), OpenCrayRuntimeServiceBinderAccess {
+        override fun loadSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot = expected
+
+        override fun loadChatRuntimeGateway(): OpenCrayChatRuntimeGateway = binderGateway
+      },
+    )
+    worker.join(1_000L)
+
+    assertFalse(worker.isAlive)
+    assertEquals(null, failure)
+    assertEquals("hello", binderGateway.submittedText)
+    assertEquals("binder-submit", result?.get("source"))
   }
 
   @Test
@@ -1396,6 +1525,101 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals("running", runSnapshot?.get("lifecycleState"))
     assertEquals(1, messages.size)
     assertEquals("hello from user", messages.single()["text"])
+  }
+
+  @Test
+  fun projectionOnlyChatRuntimeGatewayKeepsDeferredApprovalRunPausedForManualResume() {
+    val chatRoot = temporaryFolder.newFolder("projection-chat-deferred-approval-store")
+    val runtimeRoot = temporaryFolder.newFolder("projection-runtime-deferred-approval-store")
+    val chatStore = ChatSessionLocalStore(chatRoot)
+    val sessionId = chatStore.loadState().activeSession.sessionId
+
+    val queueFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val runRecordFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
+    val journalFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val checkpointFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val processFactory = FileBackedAgentProcessRegistryFactory(runtimeRoot)
+    val supplementFactory = FileBackedAgentSessionSupplementStoreFactory(runtimeRoot)
+
+    val runId = "projection-deferred-approval-run-1"
+    val taskId = "projection-deferred-approval-task-1"
+    chatStore.appendMessage(sessionId, ChatTranscriptRole.USER, "Need approval")
+    queueFactory.forChatSession(sessionId).save(
+      SessionQueueSnapshot(
+        sessionId = sessionId,
+        agentId = "test-agent",
+        lifecycleState = SessionLifecycleState.RUNNING,
+        updatedAtEpochMs = 1_200L,
+        tasks = listOf(
+          SessionQueueTaskSnapshot(
+            enqueueOrder = 1L,
+            task = AgentTask(
+              id = taskId,
+              type = AgentTaskType.PROMPT,
+              input = "Need approval",
+              state = AgentTaskState.SUSPENDED,
+              policyDecision = PolicyDecision(
+                outcome = com.opencray.core.contracts.PolicyDecisionOutcome.ALLOW,
+                reasonCode = "test",
+              ),
+              createdAtEpochMs = 1_000L,
+              updatedAtEpochMs = 1_200L,
+              metadata = mapOf(
+                AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+              ),
+            ),
+            lifecycleState = QueueTaskLifecycleState.SUSPENDED,
+            attempt = 1,
+            lastErrorCode = "APPROVAL_REQUIRED",
+          ),
+        ),
+      ),
+    )
+    runRecordFactory.forChatSession(sessionId).upsert(
+      PersistedAgentRunRecord(
+        runId = runId,
+        taskId = taskId,
+        acceptedAtEpochMs = 1_000L,
+      ),
+    )
+    checkpointFactory.forChatSession(sessionId).upsert(
+      PersistedPromptCheckpoint(
+        sessionId = sessionId,
+        runId = runId,
+        taskId = taskId,
+        checkpointId = "checkpoint-1",
+        checkpointKind = PromptCheckpointKind.APPROVED_PENDING_RESUME,
+        createdAtEpochMs = 1_150L,
+        updatedAtEpochMs = 1_150L,
+      ),
+    )
+
+    val gateway = ProjectionOnlyOpenCrayChatRuntimeGateway(
+      chatSessionStore = chatStore,
+      queueSnapshotStoreFactory = queueFactory,
+      runRecordStoreFactory = runRecordFactory,
+      runEventJournalStoreFactory = journalFactory,
+      promptCheckpointStoreFactory = checkpointFactory,
+      processRegistryFactory = processFactory,
+      supplementStoreFactory = supplementFactory,
+      strings = projectionOnlyChatStrings(),
+      connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { 1_500L },
+    )
+
+    val chatSnapshot = gateway.loadChatSnapshot()
+    val runSnapshot = requireNotNull(gateway.loadChatRunSnapshot(runId))
+    val recoveryPlan = runSnapshot["recoveryPlan"] as Map<*, *>
+
+    assertEquals("Message OpenCray", chatSnapshot["composerPlaceholder"])
+    assertEquals(
+      "Waiting for your next instruction.",
+      (chatSnapshot["summary"] as Map<*, *>)["body"],
+    )
+    assertEquals("suspended", runSnapshot["lifecycleState"])
+    assertEquals("resume_waiting_for_user", recoveryPlan["action"])
+    assertEquals("approved_pending_resume", recoveryPlan["checkpointKind"])
   }
 
   @Test
@@ -2201,6 +2425,71 @@ class OpenCrayRuntimeServiceHostTest {
     )
   }
 
+  @Test
+  fun serviceBackedSettingsGatewayWaitsForPendingBinderBeforeSavingCustomProvider() {
+    val expected = bridgeSnapshot(temporaryFolder.newFolder("settings-gateway-await-binder"))
+    val bindingAdapter = RecordingBindingAdapter()
+    val binderGateway = RecordingSettingsGateway("binder")
+    val gateway = ServiceBackedOpenCraySettingsGateway(
+      serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
+        appContext = ContextWrapper(null),
+        fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
+          OpenCrayRuntimeServiceHost(
+            dependencies = expected.dependencies,
+            runtimeAccess = expected.runtimeAccess,
+            serviceLifecycle = expected.serviceLifecycle,
+            serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
+              expected.runtimeAccess.hostAccess::activeWorkSummary,
+            ).apply { refresh() },
+          )
+        },
+        bindingAdapter = bindingAdapter,
+        startRequester = { },
+        mainThreadPoster = ImmediateMainThreadPoster,
+        serviceIntentFactory = { Intent() },
+        isMainThread = { false },
+      ),
+      fallbackGateway = RecordingSettingsGateway("fallback"),
+    )
+    var result: Map<String, Any?>? = null
+    var failure: Throwable? = null
+
+    val worker = Thread {
+      runCatching {
+        gateway.saveCustomLlmProvider(
+          selectedProviderOptionId = "provider-option",
+          protocol = "responses",
+          providerName = "Test Provider",
+          providerNotes = "notes",
+          baseUrl = "https://example.com",
+          apiKey = "sk-test",
+          model = "gpt-test",
+          reasoningEffort = "medium",
+          systemPrompt = "prompt",
+        )
+      }.onSuccess { payload ->
+        result = payload
+      }.onFailure { throwable ->
+        failure = throwable
+      }
+    }
+
+    worker.start()
+    waitForCondition(timeoutMs = 1_000L) { bindingAdapter.bindCount == 1 }
+    bindingAdapter.connect(
+      object : Binder(), OpenCrayRuntimeServiceBinderAccess {
+        override fun loadSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot = expected
+
+        override fun loadSettingsGateway(): OpenCraySettingsGateway = binderGateway
+      },
+    )
+    worker.join(1_000L)
+
+    assertFalse(worker.isAlive)
+    assertEquals(null, failure)
+    assertEquals("binder-custom-llm", result?.get("source"))
+  }
+
   private class NoOpAgentSessionRuntimeManager : AgentSessionRuntimeManager {
     override fun forSession(sessionId: String): AgentSessionHandle = error("unused in test")
 
@@ -2417,18 +2706,32 @@ class OpenCrayRuntimeServiceHostTest {
 
     override fun loadConnectionState(): RuntimeServiceConnectionState = currentConnectionState
 
+    override fun peekConnectionState(): RuntimeServiceConnectionState = currentConnectionState
+
     override fun loadShellGateway(): OpenCrayShellGateway? = currentShellGateway
+
+    override fun peekShellGateway(): OpenCrayShellGateway? = currentShellGateway
 
     override fun loadChatRuntimeGateway(): OpenCrayChatRuntimeGateway? = currentChatGateway
 
+    override fun peekChatRuntimeGateway(): OpenCrayChatRuntimeGateway? = currentChatGateway
+
     override fun loadSkillsGateway(): OpenCraySkillsGateway? = currentSkillsGateway
 
+    override fun peekSkillsGateway(): OpenCraySkillsGateway? = currentSkillsGateway
+
     override fun loadSettingsGateway(): OpenCraySettingsGateway? = currentSettingsGateway
+
+    override fun peekSettingsGateway(): OpenCraySettingsGateway? = currentSettingsGateway
 
     override fun observeConnectionState(listener: (RuntimeServiceConnectionState) -> Unit): () -> Unit {
       listeners += listener
       return { listeners -= listener }
     }
+
+    override fun observePassiveConnectionState(
+      listener: (RuntimeServiceConnectionState) -> Unit,
+    ): () -> Unit = observeConnectionState(listener)
 
     fun emitConnectionStateChanged(state: RuntimeServiceConnectionState = RuntimeServiceConnectionState.binderConnected()) {
       currentConnectionState = state
@@ -2453,10 +2756,17 @@ class OpenCrayRuntimeServiceHostTest {
     override fun loadSkillsGateway(): OpenCraySkillsGateway? =
       if (observing) binderGateway else null
 
+    override fun peekSkillsGateway(): OpenCraySkillsGateway? =
+      if (observing) binderGateway else null
+
     override fun observeConnectionState(listener: (RuntimeServiceConnectionState) -> Unit): () -> Unit {
       observing = true
       return { }
     }
+
+    override fun observePassiveConnectionState(
+      listener: (RuntimeServiceConnectionState) -> Unit,
+    ): () -> Unit = observeConnectionState(listener)
   }
 
   private class RecordingChatRuntimeGateway(
@@ -2655,14 +2965,44 @@ class OpenCrayRuntimeServiceHostTest {
 
     override fun setSkillEnabled(skillId: String, enabled: Boolean): Boolean = false
 
-    override fun installSkillSource(sourceRef: String): com.opencray.app.facade.skills.SkillInstallRequestResult =
+    override fun installSkillSource(
+      sourceRef: String,
+      selectedSkillName: String,
+    ): com.opencray.app.facade.skills.SkillInstallRequestResult =
       com.opencray.app.facade.skills.SkillInstallRequestResult(errorMessage = "unused in test")
 
     override fun installSuggestedSkill(skillId: String): Boolean = false
 
+    override fun installSkillSourceBatch(
+      sourceRef: String,
+      selectedSkillNames: List<String>,
+    ): com.opencray.runtime.skills.SkillPackageBatchInstallAttempt =
+      com.opencray.runtime.skills.SkillPackageBatchInstallAttempt(
+        errorCode = "UNUSED",
+        errorMessage = "unused in test",
+      )
+
+    override fun inspectSkillSource(
+      sourceRef: String,
+    ): com.opencray.runtime.skills.SkillSourceInspectionAttempt =
+      com.opencray.runtime.skills.SkillSourceInspectionAttempt(
+        errorCode = "UNUSED",
+        errorMessage = "unused in test",
+      )
+
     override fun deleteInstalledSkill(skillId: String): Boolean = false
 
     override fun refresh() = Unit
+
+    override fun checkInstalledSkillUpdates(
+      skillId: String,
+    ): com.opencray.runtime.skills.SkillPackageCheckReport =
+      com.opencray.runtime.skills.SkillPackageCheckReport(results = emptyList())
+
+    override fun updateInstalledSkill(
+      skillId: String,
+    ): com.opencray.runtime.skills.SkillPackageUpdateReport =
+      com.opencray.runtime.skills.SkillPackageUpdateReport(results = emptyList())
 
     override fun loadInstructions(skillId: String): com.opencray.app.facade.skills.SkillInstructionsSnapshot? =
       com.opencray.app.facade.skills.SkillInstructionsSnapshot(
@@ -2940,6 +3280,7 @@ class OpenCrayRuntimeServiceHostTest {
     summaryReplyInProgress = "Reply in progress",
     summaryStartNewSession = "Start a new session",
     summaryRestored = "Restored",
+    summaryAwaitingDirection = "Waiting for your next instruction.",
     composerPlaceholder = "Message OpenCray",
     composerRejectedPlaceholder = "Message OpenCray differently",
   )

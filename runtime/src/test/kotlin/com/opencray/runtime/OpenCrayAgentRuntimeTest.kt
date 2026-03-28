@@ -933,7 +933,7 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
-  fun responsesContinuationMismatchFallsBackToTranscriptReplay() {
+  fun responsesContinuationFallsBackToTranscriptReplayWhenLegacyJsonFallbackIsEnabled() {
     val workspaceRoot = temporaryFolder.newFolder("agent-responses-continuation-replay")
     val selection = LiteLlmRouteSelectionMetadata(
       profileId = "test-profile",
@@ -979,33 +979,12 @@ class OpenCrayAgentRuntimeTest {
             finishedAtEpochMs = 50_001L,
           )
 
-          1 -> LiteLlmGatewayResult(
-            requestId = request.requestId,
-            status = LiteLlmGatewayStatus.FAILED,
-            completionMode = LiteLlmCompletionMode.PRIMARY,
-            selectedRoute = selection,
-            attempts = listOf(
-              LiteLlmAttemptRecord(
-                route = selection,
-                outcome = LiteLlmAttemptOutcome.FAILED,
-                outputChars = 0,
-                errorCode = "HTTP_400",
-                startedAtEpochMs = 50_002L,
-                finishedAtEpochMs = 50_003L,
-              ),
-            ),
-            errorCode = "HTTP_400",
-            errorMessage = "No tool call found for function call output with call_id call_1.",
-            startedAtEpochMs = 50_002L,
-            finishedAtEpochMs = 50_003L,
-          )
-
           else -> LiteLlmGatewayResult(
             requestId = request.requestId,
             status = LiteLlmGatewayStatus.SUCCESS,
             completionMode = LiteLlmCompletionMode.PRIMARY,
             completion = LiteLlmStructuredCompletion(
-              finalText = "Recovered after replay.",
+              finalText = "Replayed without provider-native continuation.",
             ),
             providerResponseId = "resp_cont_2",
             providerLineageId = "lineage_cont_2",
@@ -1054,18 +1033,23 @@ class OpenCrayAgentRuntimeTest {
     )
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
-    assertEquals("Recovered after replay.", result.stdout)
-    assertEquals("1", result.metadata["responsesContinuationRecoveryCount"])
-    assertEquals("missing_tool_call_for_output", result.metadata["responsesContinuationRecoveryLastReason"])
-    assertEquals(3, gatewayRequests.size)
+    assertEquals("Replayed without provider-native continuation.", result.stdout)
+    assertEquals("0", result.metadata["responsesContinuationRecoveryCount"])
+    assertEquals(null, result.metadata["responsesContinuationRecoveryLastReason"])
+    assertEquals(2, gatewayRequests.size)
     assertNull(gatewayRequests[0].previousResponseId)
-    assertEquals("resp_cont_1", gatewayRequests[1].previousResponseId)
-    assertEquals(1, gatewayRequests[1].messages.size)
-    assertEquals(LiteLlmGatewayMessageRole.TOOL, gatewayRequests[1].messages.single().role)
-    assertEquals("call_1", gatewayRequests[1].messages.single().toolResult?.toolCallId)
-    assertNull(gatewayRequests[2].previousResponseId)
+    assertNull(gatewayRequests[1].previousResponseId)
+    assertEquals("full_rebuild", gatewayRequests[1].metadata["localContinuationMode"])
+    assertEquals(
+      "responses_legacy_json_fallback_enabled",
+      gatewayRequests[1].metadata["localContinuationReason"],
+    )
+    assertEquals(
+      "responses_legacy_json_fallback_enabled",
+      result.metadata["localContinuationLastReason"],
+    )
     assertTrue(
-      gatewayRequests[2].messages.any { message ->
+      gatewayRequests[1].messages.any { message ->
         message.role == LiteLlmGatewayMessageRole.ASSISTANT &&
           message.toolCalls.any { toolCall ->
             toolCall.id == "call_1" && toolCall.toolName == "LS"
@@ -1073,20 +1057,17 @@ class OpenCrayAgentRuntimeTest {
       },
     )
     assertTrue(
-      gatewayRequests[2].messages.any { message ->
+      gatewayRequests[1].messages.any { message ->
         val toolResult = message.toolResult
         message.role == LiteLlmGatewayMessageRole.TOOL &&
         toolResult?.toolCallId == "call_1" &&
           toolResult.toolName == "LS"
       },
     )
-    val recoveryEvent = eventSink.events
-      .filterIsInstance<OpenCrayAssistantEvent>()
-      .singleOrNull { event -> event.stage == "responses_recovery" }
-    assertNotNull(recoveryEvent)
-    assertEquals(
-      "Responses continuation lost the pending tool call; retrying this turn with full transcript replay.",
-      recoveryEvent?.text,
+    assertTrue(
+      eventSink.events.none { event ->
+        event is OpenCrayAssistantEvent && event.stage == "responses_recovery"
+      },
     )
   }
 
@@ -1315,8 +1296,14 @@ class OpenCrayAgentRuntimeTest {
     assertNull(gatewayRequests[0].previousResponseId)
     assertNull(gatewayRequests[1].previousResponseId)
     assertEquals("full_rebuild", gatewayRequests[1].metadata["localContinuationMode"])
-    assertEquals("responses_pending_user_message", gatewayRequests[1].metadata["localContinuationReason"])
-    assertEquals("responses_pending_user_message", result.metadata["localContinuationLastReason"])
+    assertEquals(
+      "responses_legacy_json_fallback_enabled",
+      gatewayRequests[1].metadata["localContinuationReason"],
+    )
+    assertEquals(
+      "responses_legacy_json_fallback_enabled",
+      result.metadata["localContinuationLastReason"],
+    )
     assertTrue(
       gatewayRequests[1].messages.any { message ->
         message.role == LiteLlmGatewayMessageRole.USER &&
@@ -1339,6 +1326,165 @@ class OpenCrayAgentRuntimeTest {
           toolResult.toolName == "LS"
       },
     )
+  }
+
+  @Test
+  fun responsesContinuationFallsBackToFullRebuildWhenToolResultPublishesAttachmentArtifact() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-responses-attachment-artifact")
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "responses-route",
+      providerId = "openai",
+      model = "gpt-5-mini",
+      attemptIndex = 0,
+    )
+    val gatewayRequests = mutableListOf<LiteLlmGatewayRequest>()
+    var requestIndex = 0
+    var finalAttachmentArtifactId: String? = null
+    val gateway = object : LiteLlmGateway {
+      override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+        gatewayRequests += request
+        return if (requestIndex++ == 0) {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              toolCalls = listOf(
+                LiteLlmStructuredToolCall(
+                  id = "call_1",
+                  toolName = "Write",
+                  arguments = JsonObject(
+                    mapOf(
+                      "file_path" to JsonPrimitive("outputs/diagram.png"),
+                      "content" to JsonPrimitive("png-placeholder"),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            providerResponseId = "resp_attach_1",
+            providerLineageId = "lineage_attach_1",
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 0,
+                startedAtEpochMs = 53_000L,
+                finishedAtEpochMs = 53_001L,
+              ),
+            ),
+            startedAtEpochMs = 53_000L,
+            finishedAtEpochMs = 53_001L,
+          )
+        } else {
+          finalAttachmentArtifactId = request.messages
+            .mapNotNull { message ->
+              message.toolResult?.metadata?.get(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_ID)
+            }
+            .singleOrNull()
+            ?: error("Expected the replayed tool result to include one attachment artifact id.")
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            outputText = """
+            {
+              "type": "final",
+              "answer": "",
+              "attachments": [
+                {
+                  "artifact_id": "$finalAttachmentArtifactId",
+                  "kind": "image"
+                }
+              ]
+            }
+            """.trimIndent(),
+            providerResponseId = "resp_attach_2",
+            providerLineageId = "lineage_attach_2",
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 0,
+                startedAtEpochMs = 53_002L,
+                finishedAtEpochMs = 53_003L,
+              ),
+            ),
+            startedAtEpochMs = 53_002L,
+            finishedAtEpochMs = 53_003L,
+          )
+        }
+      }
+    }
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        llmMetadata = mapOf(
+          "protocol" to "openai_responses",
+          "responseApiPreferred" to "true",
+          "nativeToolCallingAvailable" to "true",
+          "responsesContinuationSupported" to "true",
+          "nativeWebSearchEnabled" to "false",
+        ),
+      ),
+      clock = IncrementingClock(start = 53_500L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Create a diagram image and send it back as an attachment."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("", result.stdout)
+    assertEquals(2, gatewayRequests.size)
+    assertNull(gatewayRequests[0].previousResponseId)
+    assertNull(gatewayRequests[1].previousResponseId)
+    assertEquals("full_rebuild", gatewayRequests[1].metadata["localContinuationMode"])
+    assertEquals(
+      "responses_legacy_json_fallback_enabled",
+      gatewayRequests[1].metadata["localContinuationReason"],
+    )
+    assertEquals(
+      "responses_legacy_json_fallback_enabled",
+      result.metadata["localContinuationLastReason"],
+    )
+    assertTrue(
+      gatewayRequests[1].messages.any { message ->
+        message.role == LiteLlmGatewayMessageRole.ASSISTANT &&
+          message.toolCalls.singleOrNull()?.id == "call_1" &&
+          message.toolCalls.singleOrNull()?.toolName == "Write"
+      },
+    )
+    assertTrue(
+      gatewayRequests[1].messages.any { message ->
+        val toolResult = message.toolResult
+        message.role == LiteLlmGatewayMessageRole.TOOL &&
+          toolResult?.toolCallId == "call_1" &&
+          toolResult.toolName == "Write" &&
+          toolResult.metadata[OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_RELATIVE_PATH] ==
+          "outputs/diagram.png"
+      },
+    )
+    val attachmentsJson = result.metadata[OpenCrayExecutionMetadataKeys.FINAL_ATTACHMENTS_JSON].orEmpty()
+    val attachments = Json.decodeFromString(
+      ListSerializer(OpenCrayFinalAttachment.serializer()),
+      attachmentsJson,
+    )
+    assertEquals(1, attachments.size)
+    assertEquals(finalAttachmentArtifactId, attachments.single().artifactId)
+    assertEquals("image", attachments.single().kind)
+    assertTrue(Files.exists(workspaceRoot.toPath().resolve("outputs").resolve("diagram.png")))
   }
 
   @Test
@@ -2877,6 +3023,94 @@ class OpenCrayAgentRuntimeTest {
       Files.isSameFile(
         pdfPath,
         java.nio.file.Paths.get(requireNotNull(supplementMessage.attachments.single().filePath)),
+      ),
+    )
+  }
+
+  @Test
+  fun viewWorkspaceDocumentInjectsImageIntoNextModelTurn() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-view-workspace-document-image").toPath()
+    val imagePath = workspaceRoot.resolve("screens").resolve("camera-first.png")
+    Files.createDirectories(imagePath.parent)
+    Files.write(imagePath, byteArrayOf(1, 2, 3, 4))
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"actions":[{"type":"tool_call","tool_name":"view_workspace_document","arguments":{"path":"screens/camera-first.png"}},{"type":"final","answer":"I guessed from the filename."}]}""",
+        """{"type":"final","answer":"I inspected the workspace document image after it was attached."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot),
+        ),
+      ),
+      clock = IncrementingClock(start = 4_800L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "What is in screens/camera-first.png?"),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("I inspected the workspace document image after it was attached.", result.stdout)
+    assertEquals(2, gateway.requests.size)
+    val attachedUserMessage = gateway.requests[1].messages.single { message ->
+      message.role == LiteLlmGatewayMessageRole.USER && message.attachments.isNotEmpty()
+    }
+    assertEquals(1, attachedUserMessage.attachments.size)
+    assertEquals("camera-first.png", attachedUserMessage.attachments.single().displayName)
+    assertEquals("image/png", attachedUserMessage.attachments.single().mimeType)
+    assertTrue(
+      Files.isSameFile(
+        imagePath,
+        java.nio.file.Paths.get(requireNotNull(attachedUserMessage.attachments.single().filePath)),
+      ),
+    )
+  }
+
+  @Test
+  fun viewWorkspaceDocumentInjectsPdfIntoNextModelTurn() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-view-workspace-document-pdf").toPath()
+    val pdfPath = workspaceRoot.resolve("docs").resolve("report.pdf")
+    Files.createDirectories(pdfPath.parent)
+    Files.write(pdfPath, byteArrayOf(0x25, 0x50, 0x44, 0x46))
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"actions":[{"type":"tool_call","tool_name":"view_workspace_document","arguments":{"path":"docs/report.pdf"}},{"type":"final","answer":"I guessed from the filename."}]}""",
+        """{"type":"final","answer":"I inspected the workspace document PDF after it was attached."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot),
+        ),
+      ),
+      clock = IncrementingClock(start = 5_200L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "What is in docs/report.pdf?"),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("I inspected the workspace document PDF after it was attached.", result.stdout)
+    assertEquals(2, gateway.requests.size)
+    val attachedUserMessage = gateway.requests[1].messages.single { message ->
+      message.role == LiteLlmGatewayMessageRole.USER && message.attachments.isNotEmpty()
+    }
+    assertEquals(1, attachedUserMessage.attachments.size)
+    assertEquals("report.pdf", attachedUserMessage.attachments.single().displayName)
+    assertEquals("application/pdf", attachedUserMessage.attachments.single().mimeType)
+    assertTrue(
+      Files.isSameFile(
+        pdfPath,
+        java.nio.file.Paths.get(requireNotNull(attachedUserMessage.attachments.single().filePath)),
       ),
     )
   }

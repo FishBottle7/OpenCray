@@ -647,6 +647,14 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
       );
 
   @override
+  Future<OpenCrayDebugPythonRunResult> runDebugPythonScript({
+    required String fileName,
+    required String scriptText,
+  }) async => throw UnsupportedError(
+    'Running embedded Python debug scripts requires the Android host bridge.',
+  );
+
+  @override
   Future<OpenCrayMemoryDebugSearchSnapshot> searchMemoryDebug({
     required String query,
     int maxResults = 4,

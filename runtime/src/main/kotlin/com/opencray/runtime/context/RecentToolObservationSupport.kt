@@ -3,6 +3,7 @@ package com.opencray.runtime.context
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.subagent.SubAgentResultMetadataKeys
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
@@ -190,6 +191,7 @@ class RecentToolObservationSupport(
     "LS" -> renderListObservation(parsed)
     "Grep" -> renderGrepObservation(parsed)
     "Glob" -> renderGlobObservation(parsed)
+    "search_workspace_document" -> renderWorkspaceDocumentSearchObservation(parsed)
     "Task" -> renderTaskObservation(parsed)
     "SkillsFind" -> renderSkillsFindObservation(parsed)
     "SkillsList" -> renderSkillsListObservation(parsed)
@@ -298,6 +300,45 @@ class RecentToolObservationSupport(
         path = path,
       ),
       summaryLine = "- Glob ${detailParts.joinToString(separator = " ")}",
+      body = boundMultiline(
+        text = parsed.content,
+        maxChars = config.maxListChars,
+        maxLines = config.maxListLines,
+      ),
+    )
+  }
+
+  private fun renderWorkspaceDocumentSearchObservation(parsed: ParsedToolResult): RenderedObservation? {
+    val path = parsed.metadata["path"]?.trim().takeUnless { it.isNullOrBlank() } ?: return null
+    val query = parsed.metadata["query"]?.trim().takeUnless { it.isNullOrBlank() }
+    val hitCount = parsed.metadata["hitCount"]?.toIntOrNull()
+    val pageCount = parsed.metadata["pageCount"]?.toIntOrNull()
+    val requestedPages = parsed.metadata["requestedPages"]?.trim().takeUnless { it.isNullOrBlank() }
+    val pageFrom = parsed.metadata["pageFrom"]?.trim().takeUnless { it.isNullOrBlank() }
+    val pageTo = parsed.metadata["pageTo"]?.trim().takeUnless { it.isNullOrBlank() }
+    val detailParts = mutableListOf(
+      "path=$path",
+      "query=${query ?: "<preview>"}",
+      "hits=${hitCount?.toString() ?: "unknown"}",
+    )
+    pageCount?.let { detailParts += "page_count=$it" }
+    requestedPages?.let { detailParts += "requested_pages=$it" }
+    if (pageFrom != null || pageTo != null) {
+      detailParts += "requested_range=${pageFrom ?: 1}-${pageTo ?: "end"}"
+    }
+    if (parsed.resultTruncated()) {
+      detailParts += "truncated=true"
+    }
+    parsed.resultLimitKind()?.let { detailParts += "limit_kind=$it" }
+    return RenderedObservation(
+      signature = buildWorkspaceDocumentSearchSignature(
+        path = path,
+        query = query,
+        requestedPages = requestedPages,
+        pageFrom = pageFrom,
+        pageTo = pageTo,
+      ),
+      summaryLine = "- search_workspace_document ${detailParts.joinToString(separator = " ")}",
       body = boundMultiline(
         text = parsed.content,
         maxChars = config.maxListChars,
@@ -529,6 +570,14 @@ class RecentToolObservationSupport(
         path = arguments.stringValue("path") ?: ".",
       )
 
+      "search_workspace_document" -> buildWorkspaceDocumentSearchSignature(
+        path = arguments.stringValue("path") ?: return null,
+        query = arguments.stringValue("query"),
+        requestedPages = arguments.intArrayCsvValue("pages"),
+        pageFrom = arguments.stringValue("page_from"),
+        pageTo = arguments.stringValue("page_to"),
+      )
+
       "SkillsFind" -> buildSkillsFindSignature(
         query = arguments.stringValue("query").orEmpty(),
       )
@@ -600,6 +649,21 @@ class RecentToolObservationSupport(
     normalizePathValue(path),
   ).joinToString(separator = "|")
 
+  private fun buildWorkspaceDocumentSearchSignature(
+    path: String,
+    query: String?,
+    requestedPages: String?,
+    pageFrom: String?,
+    pageTo: String?,
+  ): String = listOf(
+    "search_workspace_document",
+    normalizePathValue(path),
+    query?.trim().orEmpty(),
+    requestedPages?.trim().orEmpty(),
+    pageFrom?.trim().orEmpty(),
+    pageTo?.trim().orEmpty(),
+  ).joinToString(separator = "|")
+
   private fun buildSkillsFindSignature(query: String): String = listOf(
     "SkillsFind",
     query.trim(),
@@ -667,6 +731,8 @@ class RecentToolObservationSupport(
     "ls", "list" -> "LS"
     "grep" -> "Grep"
     "glob" -> "Glob"
+    "searchworkspacedocument" -> "search_workspace_document"
+    "viewworkspacedocument" -> "view_workspace_document"
     "task" -> "Task"
     "skillsfind", "skills_find" -> "SkillsFind"
     "skillslist", "skills_list" -> "SkillsList"
@@ -686,6 +752,7 @@ class RecentToolObservationSupport(
     "LS",
     "Grep",
     "Glob",
+    "search_workspace_document",
     "Task",
     "SkillsFind",
     "SkillsList",
@@ -702,6 +769,7 @@ class RecentToolObservationSupport(
     "MultiEdit",
     "ImportFile",
     "import_chat_attachment",
+    "view_workspace_document",
     "view_workspace_image",
     "view_workspace_pdf",
     "workspace_write_file",
@@ -735,6 +803,14 @@ class RecentToolObservationSupport(
 
   private fun JsonObject.intValue(key: String): Int? =
     stringValue(key)?.toIntOrNull()
+
+  private fun JsonObject.intArrayCsvValue(key: String): String? {
+    val array = this[key] as? JsonArray ?: return null
+    val values = array.mapNotNull { entry ->
+      (entry as? JsonPrimitive)?.content?.toIntOrNull()?.toString()
+    }
+    return values.takeIf(List<String>::isNotEmpty)?.joinToString(separator = ",")
+  }
 
   private data class ParsedToolResult(
     val toolName: String,

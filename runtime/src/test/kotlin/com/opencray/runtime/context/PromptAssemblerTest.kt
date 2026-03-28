@@ -100,6 +100,14 @@ class PromptAssemblerTest {
               description = "Import a chat attachment into the workspace.",
             ),
             AgentToolDefinition(
+              name = "search_workspace_document",
+              description = "Search a workspace PDF directly.",
+            ),
+            AgentToolDefinition(
+              name = "view_workspace_document",
+              description = "Inspect a workspace image or PDF directly.",
+            ),
+            AgentToolDefinition(
               name = "view_workspace_image",
               description = "Inspect a workspace image directly.",
             ),
@@ -164,6 +172,13 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("Uploaded chat attachments are chat resources, not workspace files."))
     assertTrue(prompt.taskPrompt.contains("If the model can already inspect an uploaded image directly, do not import it unless you need a workspace copy."))
     assertTrue(prompt.taskPrompt.contains("Use import_chat_attachment only when you intentionally want to save one existing chat attachment into the workspace."))
+    assertTrue(prompt.taskPrompt.contains("call search_workspace_document instead of guessing from the filename"))
+    assertTrue(prompt.taskPrompt.contains("search_workspace_document searches workspace PDFs locally and returns matching page numbers and excerpts."))
+    assertTrue(prompt.taskPrompt.contains("Use query, pages, page_from, and page_to to narrow the scan whenever you can."))
+    assertTrue(prompt.taskPrompt.contains("call view_workspace_document instead of guessing from the path, filename, or nearby text."))
+    assertTrue(prompt.taskPrompt.contains("prefer it over the format-specific workspace view tools"))
+    assertTrue(prompt.taskPrompt.contains("view_workspace_document attaches that workspace image or PDF into the next model turn for direct inspection."))
+    assertTrue(prompt.taskPrompt.contains("After calling view_workspace_document, wait for the next turn and inspect the attached document directly before taking further action."))
     assertTrue(prompt.taskPrompt.contains("If you need to inspect what a readable workspace image actually contains, call view_workspace_image instead of guessing from the path, filename, or nearby text."))
     assertTrue(prompt.taskPrompt.contains("view_workspace_image attaches that workspace image into the next model turn for direct visual inspection."))
     assertTrue(prompt.taskPrompt.contains("After calling view_workspace_image, wait for the next turn and inspect the attached image directly before taking further action."))

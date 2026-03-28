@@ -13,7 +13,7 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
   override fun observeChat(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeWithDynamicGateway(
       currentGateway = ::currentReadGateway,
-      observeConnectionState = serviceClient::observeConnectionState,
+      observeConnectionState = serviceClient::observePassiveConnectionState,
       observe = { gateway, callback -> gateway.observeChat(callback) },
       listener = listener,
     )
@@ -32,7 +32,7 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
   override fun observeChatRuntime(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeWithDynamicGateway(
       currentGateway = ::currentReadGateway,
-      observeConnectionState = serviceClient::observeConnectionState,
+      observeConnectionState = serviceClient::observePassiveConnectionState,
       observe = { gateway, callback -> gateway.observeChatRuntime(callback) },
       listener = listener,
     )
@@ -128,13 +128,13 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
   }
 
   private fun currentReadGateway(): OpenCrayChatRuntimeGateway =
-    serviceClient.loadChatRuntimeGateway() ?: fallbackGateway
+    serviceClient.peekChatRuntimeGateway() ?: fallbackGateway
 
   private fun currentWriteGateway(operation: String): OpenCrayChatRuntimeGateway =
     requireBinderBackedGateway(
       surface = "Chat runtime",
       operation = operation,
-      gateway = serviceClient.loadChatRuntimeGateway(),
+      gateway = serviceClient.awaitChatRuntimeGateway(SERVICE_GATEWAY_BIND_AWAIT_TIMEOUT_MS),
       connectionState = serviceClient.loadConnectionState(),
     )
 }
@@ -150,7 +150,7 @@ internal fun serviceBackedOpenCrayChatRuntimeGateway(
       context = appContext,
       connectionStateProvider = serviceClient::loadConnectionState,
       bridgeSnapshotProvider = {
-        runCatching { serviceClient.loadSnapshot().bridgeSnapshot }.getOrNull()
+        serviceClient.peekSnapshot()?.bridgeSnapshot
       },
     ),
   )

@@ -1260,6 +1260,14 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       );
 
   @override
+  Future<OpenCrayDebugPythonRunResult> runDebugPythonScript({
+    required String fileName,
+    required String scriptText,
+  }) async => throw UnsupportedError(
+    'Seed bridge does not support embedded Python execution.',
+  );
+
+  @override
   Future<OpenCrayMemoryDebugSearchSnapshot> searchMemoryDebug({
     required String query,
     int maxResults = 4,

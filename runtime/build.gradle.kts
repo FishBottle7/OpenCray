@@ -43,5 +43,6 @@ dependencies {
   api(project(":policy"))
   implementation(project(":skills"))
   api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
+  implementation("com.tom-roush:pdfbox-android:2.0.27.0")
   testImplementation("junit:junit:4.13.2")
 }

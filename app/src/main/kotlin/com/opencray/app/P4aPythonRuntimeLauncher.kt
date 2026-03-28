@@ -1,6 +1,8 @@
 package com.opencray.app
 
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import java.lang.reflect.Modifier
 import java.nio.file.Path
 import kotlinx.serialization.Serializable
@@ -11,6 +13,9 @@ internal object P4aPythonRuntimeServiceContract {
   const val GENERATED_SERVICE_ID: String = "opencraypython"
   internal const val SERVICE_ARGUMENT_SCHEMA_VERSION: Int = 1
   internal const val SERVICE_START_ARGUMENT_FILE_NAME: String = "service-start-argument.json"
+  internal const val DEFAULT_NOTIFICATION_ICON_NAME: String = ""
+  internal const val DEFAULT_NOTIFICATION_TITLE: String = "OpenCray Python Runtime"
+  internal const val DEFAULT_NOTIFICATION_TEXT: String = "Running embedded Python service"
   private val serviceArgumentJson: Json = Json {
     prettyPrint = false
     ignoreUnknownKeys = true
@@ -221,6 +226,49 @@ internal class AndroidP4aPythonRuntimeServiceStarter(
       }
     }
 
+    val directStartIntent = try {
+      buildDirectStartIntent(
+        generatedServiceClass = generatedServiceClass,
+        spec = spec,
+      )
+    } catch (error: Throwable) {
+      return P4aPythonRuntimeServiceStartResult.Unavailable(
+        reason = "service_intent_build_failed",
+        message = error.cause?.message ?: error.message ?: "Failed to prepare the embedded p4a service intent.",
+        metadata = prepareMetadata,
+      )
+    }
+    if (directStartIntent != null) {
+      return try {
+        val componentName = context.startForegroundService(directStartIntent)
+        if (componentName == null) {
+          P4aPythonRuntimeServiceStartResult.Unavailable(
+            reason = "service_start_returned_null",
+            message = "Android did not start the embedded p4a service.",
+            metadata = prepareMetadata + mapOf(
+              "launcherStartMode" to "foreground_service_direct_intent",
+            ),
+          )
+        } else {
+          P4aPythonRuntimeServiceStartResult.Started(
+            metadata = prepareMetadata + mapOf(
+              "launcherResolvedServiceClass" to spec.generatedServiceClassName,
+              "launcherComponent" to componentName.flattenToShortString(),
+              "launcherStartMode" to "foreground_service_direct_intent",
+            ),
+          )
+        }
+      } catch (error: Throwable) {
+        P4aPythonRuntimeServiceStartResult.Unavailable(
+          reason = "service_start_failed",
+          message = error.cause?.message ?: error.message ?: "Failed to start the embedded p4a service.",
+          metadata = prepareMetadata + mapOf(
+            "launcherStartMode" to "foreground_service_direct_intent",
+          ),
+        )
+      }
+    }
+
     val startMethod = generatedServiceClass.methods.firstOrNull { method ->
       method.name == "start" &&
         Modifier.isStatic(method.modifiers) &&
@@ -242,6 +290,7 @@ internal class AndroidP4aPythonRuntimeServiceStarter(
       P4aPythonRuntimeServiceStartResult.Started(
         metadata = prepareMetadata + mapOf(
           "launcherResolvedServiceClass" to spec.generatedServiceClassName,
+          "launcherStartMode" to "generated_static_start",
         ),
       )
     } catch (error: Throwable) {
@@ -296,5 +345,31 @@ internal class AndroidP4aPythonRuntimeServiceStarter(
     null
   } catch (error: Throwable) {
     throw error
+  }
+
+  private fun buildDirectStartIntent(
+    generatedServiceClass: Class<*>,
+    spec: P4aPythonRuntimeServiceStartSpec,
+  ): Intent? {
+    val defaultIntentMethod = generatedServiceClass.methods.firstOrNull { method ->
+      method.name == "getDefaultIntent" &&
+        Modifier.isStatic(method.modifiers) &&
+        method.parameterTypes.size == 5 &&
+        method.parameterTypes[0].isAssignableFrom(context.javaClass) &&
+        Intent::class.java.isAssignableFrom(method.returnType)
+    } ?: return null
+
+    val startIntent = defaultIntentMethod.invoke(
+      null,
+      context,
+      P4aPythonRuntimeServiceContract.DEFAULT_NOTIFICATION_ICON_NAME,
+      P4aPythonRuntimeServiceContract.DEFAULT_NOTIFICATION_TITLE,
+      P4aPythonRuntimeServiceContract.DEFAULT_NOTIFICATION_TEXT,
+      spec.serviceArgument,
+    ) as? Intent ?: return null
+
+    startIntent.putExtra("pythonServiceArgument", spec.serviceArgument)
+    startIntent.putExtra("serviceStartAsForeground", "true")
+    return startIntent
   }
 }

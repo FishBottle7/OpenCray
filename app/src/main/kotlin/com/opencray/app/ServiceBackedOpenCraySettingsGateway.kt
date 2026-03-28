@@ -12,7 +12,7 @@ internal class ServiceBackedOpenCraySettingsGateway(
   override fun observeSettingsOverview(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeWithDynamicGateway(
       currentGateway = ::currentReadGateway,
-      observeConnectionState = serviceClient::observeConnectionState,
+      observeConnectionState = serviceClient::observePassiveConnectionState,
       observe = { gateway, callback -> gateway.observeSettingsOverview(callback) },
       listener = listener,
     )
@@ -191,13 +191,13 @@ internal class ServiceBackedOpenCraySettingsGateway(
   )
 
   private fun currentReadGateway(): OpenCraySettingsGateway =
-    serviceClient.loadSettingsGateway() ?: fallbackGateway
+    serviceClient.peekSettingsGateway() ?: fallbackGateway
 
   private fun currentWriteGateway(operation: String): OpenCraySettingsGateway =
     requireBinderBackedGateway(
       surface = "Settings",
       operation = operation,
-      gateway = serviceClient.loadSettingsGateway(),
+      gateway = serviceClient.awaitSettingsGateway(SERVICE_GATEWAY_BIND_AWAIT_TIMEOUT_MS),
       connectionState = serviceClient.loadConnectionState(),
     )
 }

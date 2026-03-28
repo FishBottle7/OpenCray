@@ -261,6 +261,7 @@ class OpenCrayUiCopy {
   String get llmModelNameLabel => isChinese ? '模型名称' : 'Model name';
   String get llmModelHint => 'gpt-4o-mini';
   String get llmReasoningEffortLabel => isChinese ? '推理强度' : 'Reasoning effort';
+  String get llmThinkingLabel => isChinese ? '思考强度' : 'Thinking';
   String get llmAnthropicThinkingEnabled =>
       isChinese ? '已启用 Anthropic thinking' : 'Anthropic thinking enabled';
   String get llmGptModelDetected =>
@@ -403,6 +404,9 @@ class OpenCrayUiCopy {
   String get chatRunLlmRetryPausedBody => isChinese
       ? '语言模型重试次数已耗尽，这次运行已暂停。发送下一条消息或点击继续运行后，会从当前检查点恢复。'
       : 'LLM retries were exhausted, so this run is paused. Send another message or tap Resume run to continue from the current checkpoint.';
+  String get chatRunApprovalDecisionDeferredBody => isChinese
+      ? '审批决定已经记录。发送下一条消息或点击继续运行后，才会把这个决定应用到当前运行。'
+      : 'The approval decision has been recorded. Send another message or tap Resume run to apply it to this run.';
   String get chatRunInterruptAction => isChinese ? '中断' : 'Interrupt';
   String get chatRunInterruptBusy => isChinese ? '正在中断…' : 'Interrupting…';
   String get chatRunInterruptConfirmLabel =>

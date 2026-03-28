@@ -2517,6 +2517,27 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         retryLabel: widget.copy.chatRunResumeAction,
       );
     }
+    if (_isDeferredApprovalDecisionRun(run)) {
+      final pausedEntry = _mainHistoryEntry(
+        label: _pausedRunLabel(),
+        body: _deferredApprovalDecisionBody(),
+      );
+      if (history.isEmpty ||
+          history.last.label != pausedEntry.label ||
+          history.last.body != pausedEntry.body) {
+        history = <ChatRunTraceHistoryEntry>[...history, pausedEntry];
+      }
+      return buildTrace(
+        label: pausedEntry.label,
+        body: _buildCompactTraceBody(
+          history: history,
+          fallbackBody: pausedEntry.body,
+        ),
+        historyOverride: history,
+        canInterruptOverride: false,
+        retryLabel: widget.copy.chatRunResumeAction,
+      );
+    }
     final _ResolvedApprovalPreview? resolvedApprovalPreview =
         _shouldShowResolvedApprovalPreview(
           run: run,
@@ -3561,6 +3582,15 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       run.lifecycleState?.trim().toLowerCase() == 'suspended' &&
       run.errorCode == 'LLM_RETRY_EXHAUSTED_AWAITING_RESUME';
 
+  bool _isDeferredApprovalDecisionRun(OpenCrayChatRunSnapshot run) {
+    final String? checkpointKind =
+        run.recoveryPlan?.checkpointKind?.trim().toLowerCase();
+    return run.lifecycleState?.trim().toLowerCase() == 'suspended' &&
+        (checkpointKind == 'approved_pending_resume' ||
+            checkpointKind == 'rejected_pending_resume') &&
+        run.recoveryPlan?.action == 'resume_waiting_for_user';
+  }
+
   String _interruptedRunLabel() =>
       widget.copy.isChinese ? '运行已中断' : 'Run interrupted';
 
@@ -3580,6 +3610,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   String _pausedRunBody() => widget.copy.chatRunLlmRetryPausedBody;
+
+  String _deferredApprovalDecisionBody() =>
+      widget.copy.chatRunApprovalDecisionDeferredBody;
 
   List<OpenCrayChatRuntimeEventSnapshot> _runEventsFor({
     required OpenCrayChatRunSnapshot run,

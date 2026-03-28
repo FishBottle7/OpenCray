@@ -2368,6 +2368,60 @@ void main() {
   );
 
   testWidgets(
+    'compact suspended card shows deferred approval decision as awaiting direction',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-approval-deferred-1',
+              taskId: 'task-approval-deferred-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 2600,
+              lifecycleState: 'suspended',
+              attempt: 1,
+              isTerminal: false,
+              recoveryPlan: OpenCrayChatRunRecoveryPlanSnapshot(
+                action: 'resume_waiting_for_user',
+                checkpointKind: 'approved_pending_resume',
+              ),
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'approval_result',
+              runId: 'run-approval-deferred-1',
+              taskId: 'task-approval-deferred-1',
+              emittedAtEpochMs: 1000,
+              status: 'approved',
+              text:
+                  'Approval granted. The decision is recorded and will apply when you manually resume the run.',
+            ),
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('AWAITING'), findsOneWidget);
+      expect(find.text(copy.chatRunApprovalDecisionDeferredBody), findsOneWidget);
+      expect(find.text(copy.chatRunResumeAction), findsOneWidget);
+      expect(find.text(copy.chatRunInterruptAction), findsNothing);
+    },
+  );
+
+  testWidgets(
     'host-mapped run trace shows public assistant phase summaries in compact and full-screen views',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');

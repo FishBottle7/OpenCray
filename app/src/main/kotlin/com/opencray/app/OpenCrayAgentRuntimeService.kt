@@ -126,6 +126,11 @@ internal class OpenCrayAgentRuntimeService : Service() {
       serviceHost.serviceWorkStateTracker.refresh()
       return
     }
+    if (intent?.action == ACTION_RESUME_INTERRUPTED_RUNS) {
+      serviceHost.resumeInterruptedRuns()
+      serviceHost.serviceWorkStateTracker.refresh()
+      return
+    }
     if (intent?.action == ACTION_REPAIR_SCHEDULES) {
       val repairReason = intent.getStringExtra(EXTRA_REPAIR_REASON)
         ?.trim()
@@ -215,6 +220,20 @@ internal class OpenCrayAgentRuntimeService : Service() {
       }.getOrDefault(false)
     }
 
+    fun resumeInterruptedRuns(
+      context: Context,
+      repairReason: String,
+    ): Boolean {
+      val appContext = context.applicationContext
+      return runCatching {
+        ContextCompat.startForegroundService(
+          appContext,
+          resumeInterruptedRunsServiceIntent(appContext, repairReason),
+        )
+        true
+      }.getOrDefault(false)
+    }
+
     fun ensureClient(context: Context): OpenCrayRuntimeServiceClient {
       val appContext = context.applicationContext
       return client ?: synchronized(this) {
@@ -225,3 +244,13 @@ internal class OpenCrayAgentRuntimeService : Service() {
     }
   }
 }
+
+internal fun resumeInterruptedRunsServiceIntent(
+  context: Context,
+  repairReason: String,
+): Intent = Intent(context, OpenCrayAgentRuntimeService::class.java)
+  .setAction(ACTION_RESUME_INTERRUPTED_RUNS)
+  .putExtra(EXTRA_REPAIR_REASON, repairReason)
+
+internal const val ACTION_RESUME_INTERRUPTED_RUNS: String =
+  "com.opencray.app.action.RESUME_INTERRUPTED_RUNS"

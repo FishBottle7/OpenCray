@@ -46,6 +46,8 @@ internal class ToolCapabilityClassifier {
     "close_agent",
     "workspace_list_files",
     "workspace_read_file",
+    "search_workspace_document",
+    "view_workspace_document",
     "view_workspace_image",
     "view_workspace_pdf",
     "SkillsFind",
@@ -109,6 +111,8 @@ internal class ToolCapabilityClassifier {
       "Glob",
       "workspace_list_files",
       "workspace_read_file",
+      "search_workspace_document",
+      "view_workspace_document",
       "view_workspace_pdf",
       "view_workspace_image",
       -> "read_file"

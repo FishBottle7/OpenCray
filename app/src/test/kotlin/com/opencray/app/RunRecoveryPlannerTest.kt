@@ -130,6 +130,68 @@ class RunRecoveryPlannerTest {
   }
 
   @Test
+  fun suspendedApprovedResumeCheckpointStaysWaitingForManualResume() {
+    val plan = requireNotNull(
+      planner.plan(
+        RunRecoveryPlannerInput(
+          run = runSnapshot(
+            lifecycleState = QueueTaskLifecycleState.SUSPENDED,
+            executionStatus = ExecutionStatus.DENIED,
+            errorCode = "APPROVAL_REQUIRED",
+          ),
+          checkpoint = PersistedPromptCheckpoint(
+            sessionId = "session-1",
+            runId = "run-1",
+            taskId = "task-1",
+            checkpointId = "checkpoint-1",
+            checkpointKind = PromptCheckpointKind.APPROVED_PENDING_RESUME,
+            createdAtEpochMs = 100L,
+            updatedAtEpochMs = 100L,
+          ),
+          approvalState = AgentTaskApprovalState.APPROVED,
+        ),
+      ),
+    )
+
+    assertEquals(RunRecoveryAction.RESUME_WAITING_FOR_USER, plan.action)
+    assertEquals("approval_granted_waiting_for_manual_resume", plan.reasonCode)
+    assertEquals(PromptCheckpointKind.APPROVED_PENDING_RESUME, plan.checkpointKind)
+    assertFalse(plan.safeToAutoResume)
+    assertTrue(plan.requiresUserAction)
+  }
+
+  @Test
+  fun suspendedRejectedResumeCheckpointStaysWaitingForManualResume() {
+    val plan = requireNotNull(
+      planner.plan(
+        RunRecoveryPlannerInput(
+          run = runSnapshot(
+            lifecycleState = QueueTaskLifecycleState.SUSPENDED,
+            executionStatus = ExecutionStatus.DENIED,
+            errorCode = "APPROVAL_REQUIRED",
+          ),
+          checkpoint = PersistedPromptCheckpoint(
+            sessionId = "session-1",
+            runId = "run-1",
+            taskId = "task-1",
+            checkpointId = "checkpoint-1",
+            checkpointKind = PromptCheckpointKind.REJECTED_PENDING_RESUME,
+            createdAtEpochMs = 100L,
+            updatedAtEpochMs = 100L,
+          ),
+          approvalState = AgentTaskApprovalState.REJECTED,
+        ),
+      ),
+    )
+
+    assertEquals(RunRecoveryAction.RESUME_WAITING_FOR_USER, plan.action)
+    assertEquals("approval_rejected_waiting_for_manual_resume", plan.reasonCode)
+    assertEquals(PromptCheckpointKind.REJECTED_PENDING_RESUME, plan.checkpointKind)
+    assertFalse(plan.safeToAutoResume)
+    assertTrue(plan.requiresUserAction)
+  }
+
+  @Test
   fun preModelRequestCheckpointPlansResumeFromCheckpoint() {
     val plan = requireNotNull(
       planner.plan(

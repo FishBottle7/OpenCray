@@ -2,7 +2,15 @@ param(
   [ValidateSet("debug", "release")]
   [string]$Variant = "release",
 
-  [switch]$Clean
+  [switch]$Clean,
+
+  [switch]$Install,
+
+  [switch]$ClearData,
+
+  [switch]$UninstallFirst,
+
+  [string]$DeviceSerial
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,6 +36,29 @@ function Ensure-Directory {
   if (-not (Test-Path $Path)) {
     New-Item -ItemType Directory -Path $Path | Out-Null
   }
+}
+
+function Get-LocalPropertyValue {
+  param([string]$Key)
+
+  $propertyFiles = @(
+    (Join-Path $projectRoot "local.properties"),
+    (Join-Path $projectRoot "flutter_app\\android\\local.properties")
+  )
+  $escapedKey = [Regex]::Escape($Key)
+
+  foreach ($propertiesFile in $propertyFiles) {
+    if (-not (Test-Path $propertiesFile)) {
+      continue
+    }
+    foreach ($line in Get-Content -Path $propertiesFile -ErrorAction SilentlyContinue) {
+      if ($line -match "^\s*$escapedKey=(.*)$") {
+        return [Regex]::Unescape($Matches[1].Trim())
+      }
+    }
+  }
+
+  return $null
 }
 
 function Convert-ToWslPath {
@@ -94,8 +125,51 @@ function Get-FlutterCommand {
   throw "Flutter command not found. Please install Flutter or set FLUTTER_ROOT."
 }
 
+function Get-AdbCommand {
+  $pathAdb = Get-Command adb -ErrorAction SilentlyContinue
+  if ($pathAdb) {
+    return $pathAdb.Source
+  }
+
+  $sdkCandidates = @(
+    $env:ANDROID_SDK_ROOT,
+    $env:ANDROID_HOME,
+    (Get-LocalPropertyValue -Key "sdk.dir")
+  ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+
+  foreach ($sdkRoot in $sdkCandidates) {
+    $adbPath = Join-Path $sdkRoot "platform-tools\\adb.exe"
+    if (Test-Path $adbPath) {
+      return $adbPath
+    }
+  }
+
+  throw "adb command not found. Please install Android platform-tools or set ANDROID_SDK_ROOT/ANDROID_HOME."
+}
+
+function Invoke-AdbCommand {
+  param(
+    [string]$AdbCommand,
+    [string[]]$Arguments,
+    [string]$FailureMessage
+  )
+
+  & $AdbCommand @Arguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "$FailureMessage (exit code $LASTEXITCODE)"
+  }
+}
+
 if (-not (Test-Path $flutterAppDir)) {
   throw "flutter_app directory not found: $flutterAppDir"
+}
+
+if ($ClearData -and $UninstallFirst) {
+  throw "-ClearData and -UninstallFirst are mutually exclusive. Choose one reset mode."
+}
+
+if (($ClearData -or $UninstallFirst) -and -not $Install) {
+  throw "-ClearData and -UninstallFirst require -Install."
 }
 
 Assert-EmbeddedPythonRuntimeExists
@@ -147,6 +221,40 @@ $artifactName = "OpenCray-$Variant.apk"
 $artifactPath = Join-Path $artifactDir $artifactName
 Copy-Item -Path $primaryApk.FullName -Destination $artifactPath -Force
 
+if ($Install) {
+  $adbCommand = Get-AdbCommand
+  $adbTargetArgs = @()
+  if (-not [string]::IsNullOrWhiteSpace($DeviceSerial)) {
+    $adbTargetArgs += @("-s", $DeviceSerial.Trim())
+  }
+
+  if ($UninstallFirst) {
+    Write-Step "Uninstalling existing app"
+    Invoke-AdbCommand `
+      -AdbCommand $adbCommand `
+      -Arguments ($adbTargetArgs + @("uninstall", "org.opencray.app")) `
+      -FailureMessage "adb uninstall failed"
+  } elseif ($ClearData) {
+    Write-Step "Clearing existing app data"
+    Invoke-AdbCommand `
+      -AdbCommand $adbCommand `
+      -Arguments ($adbTargetArgs + @("shell", "pm", "clear", "org.opencray.app")) `
+      -FailureMessage "adb shell pm clear failed"
+  }
+
+  Write-Step "Installing APK"
+  Invoke-AdbCommand `
+    -AdbCommand $adbCommand `
+    -Arguments ($adbTargetArgs + @("install", "-r", $artifactPath)) `
+    -FailureMessage "adb install failed"
+}
+
 Write-Step "Build complete"
 Write-Host "Source APK: $($primaryApk.FullName)" -ForegroundColor Green
 Write-Host "Copied APK: $artifactPath" -ForegroundColor Green
+if ($Install) {
+  Write-Host "Installed package: org.opencray.app" -ForegroundColor Green
+  if (-not [string]::IsNullOrWhiteSpace($DeviceSerial)) {
+    Write-Host "Target device: $($DeviceSerial.Trim())" -ForegroundColor Green
+  }
+}

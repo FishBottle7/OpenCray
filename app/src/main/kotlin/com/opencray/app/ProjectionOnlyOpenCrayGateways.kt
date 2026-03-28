@@ -360,7 +360,7 @@ internal fun projectionOnlyOpenCrayShellGateway(
     hostSummary = localizedContext.getString(R.string.flutter_host_summary_android),
     connectionStateProvider = serviceClient::loadConnectionState,
     bridgeSnapshotProvider = {
-      runCatching { serviceClient.loadSnapshot().bridgeSnapshot }.getOrNull()
+      serviceClient.peekSnapshot()?.bridgeSnapshot
     },
     mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
   )

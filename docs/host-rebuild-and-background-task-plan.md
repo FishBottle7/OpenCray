@@ -1,10 +1,10 @@
 # Host Rebuild And Background Task Plan
 
-Last updated: 2026-03-27
+Last updated: 2026-03-28
 
 ## Status
 
-Phase 2 recovery slice partially implemented; in-process detached runtime owner foundation landed, and a first same-process Android service host now bootstraps that owner. Foreground keepalive, notifications, and scheduled wake bridges are in place, but full detached ownership semantics and true managed-process reconnect are still pending.
+Phase 2 recovery slice partially implemented; in-process detached runtime owner foundation landed, and a first same-process Android service host now bootstraps that owner. Foreground keepalive, notifications, scheduled wake bridges, and an interrupted-run repair wake path are in place, but full detached ownership semantics and true managed-process reconnect are still pending.
 
 ## Implementation Progress
 
@@ -32,17 +32,18 @@ Implemented in code:
 - interrupted runs without a recoverable checkpoint now stay explicitly interrupted in planner output instead of hinting that an automatic rerun is expected
 - runtime ownership is now split from the host facade inside the app process: an in-process runtime owner registry keeps `DefaultAgentSessionRuntimeManager`, journal/checkpoint stores, approval registry, and runtime callbacks alive even if `OpenCrayHostRuntime` is rebuilt
 - runtime snapshots now expose both `hostLifecycle` and `runtimeOwnerLifecycle`, so host recreation can be distinguished from runtime-owner continuity in diagnostics and UI projection
-- app startup and host access now both route through `OpenCrayAgentRuntimeService.ensureStarted(...)`, and the service eagerly bootstraps the shared in-process runtime owner on `onCreate()`
+- runtime service bootstrap now happens only when an explicit wake, binder-demanding command, or other service start path actually starts `OpenCrayAgentRuntimeService`; once started, the service bootstraps the shared in-process runtime owner on `onCreate()`
 - the service host now hands `OpenCrayHostRuntime` a narrowed runtime-access/replay-access bundle instead of the raw owner, which keeps the next binder/service-lifetime slice from changing host wiring again
 - `OpenCrayHostRuntime` now consumes that boundary through a single `OpenCrayRuntimeHostAccess` facade rather than directly reaching for session runtime manager, approval registry, or per-session store factories
 - host bootstrap now resolves a formal runtime service client, not the bridge directly, so transport choice and lifecycle projection are separated from host construction
 - runtime and shell snapshots now emit `runtimeServiceConnectionState`, which makes binder-backed access versus in-process fallback explicit during same-process service rollout
 - shell snapshots now also emit `localRuntimeServerState`, which makes loopback HTTP server startup and bind failures visible separately from binder transport churn
-- app bootstrap now only ensures the runtime service; the local loopback server is bootstrapped from `OpenCrayAgentRuntimeService.onCreate()`, so both Android transports initialize from the same service-side boundary
+- app bootstrap no longer eagerly ensures the runtime service; it only performs app-level registration, skill seeding, schedule resync, and repair enqueue. When the runtime service is later started by an explicit wake or binder-demanding path, the local loopback server is bootstrapped from `OpenCrayAgentRuntimeService.onCreate()`, so both Android transports still initialize from the same service-side boundary
 - the runtime service client now performs a real non-blocking `bindService(...)` attempt and keeps its connection state live, instead of inferring binder reachability only from same-process static access
 - host observers now emit fresh shell/runtime snapshots when that client state changes, so a late binder attachment no longer requires rebuilding the host singleton to become visible
 - production `OpenCrayHostRuntime` creation is now projection-only for session bootstrap: active-session `resume()` and terminal replay repair run once from runtime service host initialization instead of from every host-facade constructor
 - caller-side runtime-service entrypoints now only request service start or wake; runtime service host bootstrap happens inside `OpenCrayAgentRuntimeService.onCreate()`, and the client fallback snapshot bridge only reads an existing host instead of hiding a caller-side `getOrCreate(...)` bootstrap behind the first binder-pending snapshot load
+- the existing repair worker now preflights interrupted interactive repair candidates from persisted queue snapshots or prompt checkpoints and can wake `OpenCrayAgentRuntimeService` with `ACTION_RESUME_INTERRUPTED_RUNS`, after which the service host rescans known sessions and resumes those whose restored runs still project as active
 - service-backed chat/skills/settings gateways now keep fallback strictly projection-only for reads; binder-unavailable writes and tool-executing commands fail explicitly instead of silently dropping back to the UI-side facade
 - the shell snapshot surface now goes through a dedicated `OpenCrayShellGateway`, and the Flutter bridge plus loopback HTTP server prefer a binder-backed service shell gateway for shell loads and shell observation
 - chat/runtime commands and snapshots are now fronted by a dedicated `OpenCrayChatRuntimeGateway`, and both the Flutter host bridge and the loopback HTTP server use that gateway for the execution-facing path
@@ -56,6 +57,7 @@ Implemented in code:
 - settings observation now rebinds between the fallback host gateway and the binder-backed service gateway as service connection state changes, so the settings UI can follow the service-owned runtime without reconstructing the bridge
 - service-backed shell/chat/skills/settings observers now re-check the active gateway immediately after connection observation registration, which closes the binder-connect race that could otherwise leave a UI stream stuck on projection fallback until a later connection transition
 - the Android runtime-service client now treats binder attachment as an idle-released transport lease instead of a permanent process-wide bind: active connection observers keep the binder attached, transient reads or commands schedule an automatic unbind after a short quiet window, and detached execution still belongs to the started service plus keepalive path rather than the UI transport
+- service-backed shell/chat/skills/settings read observers now subscribe passively to connection-state changes, so startup-time UI snapshot streams no longer trigger `ensureStarted(...)` or `bindService(...)` just to watch fallback projection state
 - workspace tree/document operations, local file open/share, native toast, twin import probing, and draft attachment import are now fronted by a dedicated `OpenCrayLocalHostGateway`, so the Flutter host bridge and the loopback HTTP server no longer hold a full `OpenCrayHostRuntime` just to reach local-only device/workspace capabilities
 - `OpenCrayHostRuntime` now implements that same local-only gateway by delegation, which preserves the current projection fallback path while keeping service-owned runtime surfaces separate from local host helpers
 - shell, settings, and skills read fallback are now served by dedicated projection-only gateways rather than a full `OpenCrayHostRuntime`, so binder-pending reads on those surfaces no longer instantiate the UI-side host facade
@@ -171,7 +173,8 @@ Current restore behavior in `app`:
 
 Today that startup edge is split:
 
-- the first runtime service host creation resumes the active session queue once and repairs terminal replay state for that active session
+- the first runtime service host creation performs a bootstrap scan that resumes the active session plus any known session with pending work or live managed processes, then repairs terminal replay state for sessions with runs
+- later `ACTION_RESUME_INTERRUPTED_RUNS` wakes can rescan known sessions and resume those whose restored runs still project as active
 - production `OpenCrayHostRuntime` creation is projection-only and no longer resumes the active session from the host-facade initializer
 - test-only host construction can still opt into the old init-time resume behavior where assertions depend on it
 
@@ -217,7 +220,7 @@ Relevant files:
 
 Current state:
 
-- app bootstrap now ensures `OpenCrayAgentRuntimeService`, and that service bootstraps the local loopback server on `onCreate()`
+- app bootstrap no longer eagerly starts `OpenCrayAgentRuntimeService`; it only performs app-level bootstrap plus repair/schedule registration. When the runtime service is later started by an explicit wake or binder-demanding path, that service bootstraps the local loopback server on `onCreate()`
 - execution now routes through a same-process Android `Service` host boundary rather than directly through a UI-owned host facade
 - execution is still ultimately backed by same-process singletons and executors
 - `AlarmManager` plus `WorkManager` trigger bridges now exist for scheduled wake-up and repair, but interactive active runs still execute under the same-process owner
@@ -263,14 +266,14 @@ The reason is now narrower: lifecycle diagnostics exist, but there is still no s
 
 ## Root Problem Statement
 
-OpenCray is still task-durable, not execution-durable.
+OpenCray is now recovery-aware, but it is still not execution-durable.
 
-Today the system persists enough data to know that a task existed, but not enough data to resume the exact in-flight execution cursor safely after host loss.
+Today the system can persist durable journal and checkpoint state and recover some runs back into the same identity after host loss, but it still loses in-memory execution ownership whenever the app process or runtime host is recreated.
 
-That leads to two separate failures:
+That leaves two remaining failures:
 
-1. The queue restarts work from task input.
-2. The UI cannot fully explain the recovery because the detailed event stream is not durably journaled.
+1. runs outside the current safe checkpoint boundaries still fall back to explicit interruption or later repair/resume instead of seamless continuation
+2. UI continuity still depends on layered host, service, and bridge reattachment rather than a truly detached execution controller
 
 ## Design Requirements
 
@@ -557,13 +560,13 @@ The safest build order is:
 4. service-owned detached runtime
 5. scheduled/background triggers
 
-Do not start with `WorkManager` first. If we do that before solving run recovery and journaling, we will only create a more durable version of the current blind rerun behavior.
+Do not treat `WorkManager` alone as the fix. Without run recovery and journaling, it only creates a more durable way to wake the same restore logic.
 
 ## Concrete Answer To The Original Question
 
 Why can a run restart when the user did not intentionally restart the app?
 
-Because the system currently treats host/app-process recreation as a queue restore problem, not as an execution continuation problem. Once that recreation happens, non-terminal tasks are normalized back to `QUEUED`, and the restored host resumes them from the beginning.
+Because host/app-process recreation still tears down in-memory execution ownership. After that, restore consults journal and checkpoint state first: safe approval or `general_resume` boundaries can continue the same run, while runs without a safe boundary stay explicitly interrupted instead of silently replaying. The later `ACTION_RESUME_INTERRUPTED_RUNS` wake path can retry that checkpoint-aware repair scan, but it is still not the same as continuous ownership surviving the rebuild.
 
 Why does this still happen even if the UI page was not intentionally closed?
 
@@ -571,10 +574,10 @@ Because the current execution owner lives in the app process, not in the page. A
 
 What should we do?
 
-- first make the boundary observable with lifecycle IDs
-- then persist full run history
-- then add checkpoint-aware recovery
-- then move execution ownership into a detached service
-- finally add `WorkManager`-based scheduling on top
+- keep the lifecycle boundary observable with explicit IDs and recovery reasons
+- keep expanding durable journal and checkpoint coverage
+- keep moving execution ownership toward a more detached service owner
+- extend scheduler-owned repair beyond the current `ACTION_RESUME_INTERRUPTED_RUNS` wake-and-rescan path
+- layer richer `WorkManager`-based scheduling on top of that runtime foundation
 
 That is the path that fixes the current restart bug and also gives OpenCray a solid base for future keepalive and timed tasks.

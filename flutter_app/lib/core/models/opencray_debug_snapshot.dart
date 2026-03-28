@@ -44,9 +44,7 @@ class OpenCrayMemoryDebugSearchSnapshot {
   final int corpusFileCount;
   final List<OpenCrayMemoryDebugSearchResultSnapshot> results;
 
-  factory OpenCrayMemoryDebugSearchSnapshot.fromMap(
-    Map<Object?, Object?> map,
-  ) {
+  factory OpenCrayMemoryDebugSearchSnapshot.fromMap(Map<Object?, Object?> map) {
     final rawResults = map['results'] as List<Object?>? ?? const <Object?>[];
     return OpenCrayMemoryDebugSearchSnapshot(
       sessionId: map['sessionId'] as String? ?? '',
@@ -129,9 +127,7 @@ class OpenCrayMemoryDebugSliceSnapshot {
   final int totalLineCount;
   final List<String> recordIds;
 
-  factory OpenCrayMemoryDebugSliceSnapshot.fromMap(
-    Map<Object?, Object?> map,
-  ) {
+  factory OpenCrayMemoryDebugSliceSnapshot.fromMap(Map<Object?, Object?> map) {
     return OpenCrayMemoryDebugSliceSnapshot(
       sessionId: map['sessionId'] as String? ?? '',
       workspaceId: map['workspaceId'] as String? ?? '',
@@ -1029,6 +1025,55 @@ class OpenCrayMemoryMaintenanceActionLinkSnapshot {
       action: map['action'] as String? ?? '',
       occurredAtEpochMs: map['occurredAtEpochMs'] as int? ?? 0,
       run: OpenCrayDebugRunLinkSnapshot.fromMap(rawRun),
+    );
+  }
+}
+
+class OpenCrayDebugPythonRunResult {
+  const OpenCrayDebugPythonRunResult({
+    required this.taskId,
+    required this.fileName,
+    required this.scriptRelativePath,
+    required this.status,
+    required this.stdout,
+    required this.stderr,
+    required this.startedAtEpochMs,
+    required this.finishedAtEpochMs,
+    this.exitCode,
+    this.errorCode,
+    this.errorMessage,
+    this.metadata = const <String, String>{},
+  });
+
+  final String taskId;
+  final String fileName;
+  final String scriptRelativePath;
+  final String status;
+  final int? exitCode;
+  final String stdout;
+  final String stderr;
+  final String? errorCode;
+  final String? errorMessage;
+  final int startedAtEpochMs;
+  final int finishedAtEpochMs;
+  final Map<String, String> metadata;
+
+  int get durationMs => finishedAtEpochMs - startedAtEpochMs;
+
+  factory OpenCrayDebugPythonRunResult.fromMap(Map<Object?, Object?> map) {
+    return OpenCrayDebugPythonRunResult(
+      taskId: map['taskId'] as String? ?? '',
+      fileName: map['fileName'] as String? ?? '',
+      scriptRelativePath: map['scriptRelativePath'] as String? ?? '',
+      status: map['status'] as String? ?? '',
+      exitCode: map['exitCode'] as int?,
+      stdout: map['stdout'] as String? ?? '',
+      stderr: map['stderr'] as String? ?? '',
+      errorCode: map['errorCode'] as String?,
+      errorMessage: map['errorMessage'] as String?,
+      startedAtEpochMs: map['startedAtEpochMs'] as int? ?? 0,
+      finishedAtEpochMs: map['finishedAtEpochMs'] as int? ?? 0,
+      metadata: _readStringMap(map['metadata']),
     );
   }
 }

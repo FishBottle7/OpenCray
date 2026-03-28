@@ -215,6 +215,7 @@ data class OpenCrayToolDispatcherConfig(
   val imageGenerationClient: OpenCrayImageGenerationClient? = null,
   val speechSynthesisClient: OpenCraySpeechSynthesisClient? = null,
   val chatAttachmentResolver: ((String) -> OpenCrayChatAttachmentSource?)? = null,
+  val documentSearchProvider: WorkspaceDocumentSearchProvider = DefaultWorkspaceDocumentSearchProvider(),
   val memoryToolContext: MemoryToolContext? = null,
   val maxReadBytes: Int = 32_000,
   val maxDirectoryEntries: Int = 200,
@@ -558,8 +559,27 @@ class OpenCrayToolDispatcher(
         ),
       ),
       AgentToolDefinition(
+        name = "search_workspace_document",
+        description = "Search a readable workspace document for relevant PDF pages and text excerpts. Use this before attaching a large PDF when you need to locate the right pages or verify whether specific keywords appear.",
+        parameters = listOf(
+          AgentToolParameter("path", "string", required = true, description = "Workspace-relative path, or an absolute path inside an approved external read-only root."),
+          AgentToolParameter("query", "string", required = false, description = "Optional keyword or phrase to search for inside the document. When omitted, returns page previews instead."),
+          AgentToolParameter("pages", "number[]", required = false, description = "Optional explicit 1-based page numbers to inspect."),
+          AgentToolParameter("page_from", "number", required = false, description = "Optional inclusive 1-based page number to start scanning from."),
+          AgentToolParameter("page_to", "number", required = false, description = "Optional inclusive 1-based page number to stop scanning at."),
+          AgentToolParameter("max_results", "number", required = false, description = "Maximum number of preview or match results to return."),
+        ),
+      ),
+      AgentToolDefinition(
         name = "view_workspace_image",
         description = "Attach one readable workspace image into the next model turn for direct visual inspection. Use this when you need to see what an existing image actually contains instead of guessing from its path or filename.",
+        parameters = listOf(
+          AgentToolParameter("path", "string", required = true, description = "Workspace-relative path, or an absolute path inside an approved external read-only root."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "view_workspace_document",
+        description = "Attach one readable workspace image or PDF into the next model turn for direct inspection. Use this when you need the model to inspect the existing document itself instead of guessing from the path or filename.",
         parameters = listOf(
           AgentToolParameter("path", "string", required = true, description = "Workspace-relative path, or an absolute path inside an approved external read-only root."),
         ),
@@ -823,7 +843,9 @@ class OpenCrayToolDispatcher(
         "workspace_write_file" -> writeWorkspaceFile(task = task, arguments = invocation.arguments)
         "workspace_import_file" -> importFileIntoWorkspace(task = task, arguments = invocation.arguments)
         "import_chat_attachment" -> importChatAttachmentIntoWorkspace(task = task, arguments = invocation.arguments)
+        "search_workspace_document" -> searchWorkspaceDocument(task = task, arguments = invocation.arguments)
         "view_workspace_image" -> viewWorkspaceImage(task = task, arguments = invocation.arguments)
+        "view_workspace_document" -> viewWorkspaceDocument(task = task, arguments = invocation.arguments)
         "view_workspace_pdf" -> viewWorkspacePdf(task = task, arguments = invocation.arguments)
         "workspace_move_file" -> moveWorkspaceFile(task = task, arguments = invocation.arguments)
         "workspace_delete_file" -> deleteWorkspaceFile(task = task, arguments = invocation.arguments)
@@ -899,6 +921,7 @@ class OpenCrayToolDispatcher(
       when (invocation.normalizedToolName) {
         "workspace_list_files" -> preflightWorkspaceListFiles(task = task, arguments = invocation.arguments)
         "workspace_read_file" -> preflightWorkspaceReadFile(task = task, arguments = invocation.arguments)
+        "search_workspace_document" -> preflightSearchWorkspaceDocument(task = task, arguments = invocation.arguments)
         "LS" -> preflightListFilesForClaude(task = task, arguments = invocation.arguments)
         "Read" -> preflightReadFileForClaude(task = task, arguments = invocation.arguments)
         "Grep" -> preflightGrepWorkspace(task = task, arguments = invocation.arguments)
@@ -1149,6 +1172,46 @@ class OpenCrayToolDispatcher(
       affectedPaths = mapOf("url" to inlinePreview(url, maxChars = 256)),
       askDetail = "Approval is required before WebFetch can access the network.",
       denyDetail = "Policy denied WebFetch.",
+    ) == null
+  }
+
+  private fun preflightSearchWorkspaceDocument(task: AgentTask, arguments: JsonObject): Boolean {
+    val documentPath = toolTargetResolver.ensureReadableFile(
+      arguments.requiredString("path"),
+      label = "workspace document",
+    )
+    val displayPath = toolTargetResolver.displayModelPath(documentPath)
+    require(workspaceDocumentKindFor(documentPath) == WorkspaceDocumentKind.PDF) {
+      "search_workspace_document currently supports PDF files only: $displayPath"
+    }
+    val pageFrom = arguments.optionalInt("page_from")
+    val pageTo = arguments.optionalInt("page_to")
+    require(pageFrom == null || pageFrom >= 1) {
+      "page_from must be >= 1 when provided."
+    }
+    require(pageTo == null || pageTo >= 1) {
+      "page_to must be >= 1 when provided."
+    }
+    arguments.optionalIntArray("pages").forEach { pageNumber ->
+      require(pageNumber >= 1) {
+        "pages must contain only 1-based page numbers."
+      }
+    }
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "search_workspace_document",
+      targetPath = documentPath,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.FILE,
+        primaryPath = documentPath,
+      ),
+    )
+    return gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = buildMap {
+        put("path", displayPath)
+        arguments.optionalString("query")?.trim()?.takeIf(String::isNotBlank)?.let { put("query", it) }
+      },
     ) == null
   }
 
@@ -1545,18 +1608,157 @@ class OpenCrayToolDispatcher(
     )
   }
 
-  private fun viewWorkspaceImage(
+  private fun searchWorkspaceDocument(
     task: AgentTask,
     arguments: JsonObject,
   ): AgentToolResult {
-    val imagePath = toolTargetResolver.ensureReadableFile(
+    val documentPath = toolTargetResolver.ensureReadableFile(
+      arguments.requiredString("path"),
+      label = "workspace document",
+    )
+    val displayPath = toolTargetResolver.displayModelPath(documentPath)
+    require(workspaceDocumentKindFor(documentPath) == WorkspaceDocumentKind.PDF) {
+      "search_workspace_document currently supports PDF files only: $displayPath"
+    }
+    val query = arguments.optionalString("query")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val pageNumbers = arguments.optionalIntArray("pages")
+      .distinct()
+      .sorted()
+      .also { pages ->
+        require(pages.all { pageNumber -> pageNumber >= 1 }) {
+          "pages must contain only 1-based page numbers."
+        }
+      }
+    val pageFrom = arguments.optionalInt("page_from")
+      ?.also { pageNumber ->
+        require(pageNumber >= 1) {
+          "page_from must be >= 1 when provided."
+        }
+      }
+    val pageTo = arguments.optionalInt("page_to")
+      ?.also { pageNumber ->
+        require(pageNumber >= 1) {
+          "page_to must be >= 1 when provided."
+        }
+      }
+    val request = WorkspaceDocumentSearchRequest(
+      query = query,
+      pageNumbers = pageNumbers,
+      pageFrom = pageFrom,
+      pageTo = pageTo,
+      maxResults = arguments.optionalInt("max_results")?.coerceIn(1, config.maxDirectoryEntries)
+        ?: DEFAULT_WORKSPACE_DOCUMENT_SEARCH_RESULTS,
+    )
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "search_workspace_document",
+      targetPath = documentPath,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.FILE,
+        primaryPath = documentPath,
+        targetSummary = buildString {
+          append(displayPath)
+          query?.let { append(" query=").append(it) }
+        },
+      ),
+    )
+    gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = buildMap {
+        put("path", displayPath)
+        query?.let { put("query", it) }
+        if (pageNumbers.isNotEmpty()) {
+          put("pages", pageNumbers.joinToString(separator = ","))
+        }
+        pageFrom?.let { put("pageFrom", it.toString()) }
+        pageTo?.let { put("pageTo", it.toString()) }
+      },
+    )?.let { return it }
+
+    val result = config.documentSearchProvider.search(
+      path = documentPath,
+      request = request,
+    )
+    return AgentToolResult(
+      toolName = "search_workspace_document",
+      status = AgentToolResultStatus.SUCCESS,
+      content = renderWorkspaceDocumentSearchResult(
+        displayPath = displayPath,
+        request = request,
+        result = result,
+      ),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = buildMap {
+          put("path", displayPath)
+          put("documentKind", result.documentKind.name.lowercase(Locale.US))
+          put("pageCount", result.pageCount.toString())
+          put("hitCount", result.hits.size.toString())
+          put("requestedMaxResults", request.maxResults.toString())
+          query?.let { put("query", it) }
+          if (pageNumbers.isNotEmpty()) {
+            put("requestedPages", pageNumbers.joinToString(separator = ","))
+          }
+          pageFrom?.let { put("pageFrom", it.toString()) }
+          pageTo?.let { put("pageTo", it.toString()) }
+        },
+        resultEnvelope = ToolResultEnvelope(
+          limitApplied = true,
+          truncated = false,
+          limitKind = ToolResultLimitKind.SEARCH_MATCH_LIMIT,
+        ),
+      ),
+    )
+  }
+
+  private fun viewWorkspaceImage(
+    task: AgentTask,
+    arguments: JsonObject,
+  ): AgentToolResult = viewWorkspaceImagePath(
+    task = task,
+    imagePath = toolTargetResolver.ensureReadableFile(
       arguments.requiredString("path"),
       label = "workspace image",
+    ),
+    toolName = "view_workspace_image",
+  )
+
+  private fun viewWorkspaceDocument(
+    task: AgentTask,
+    arguments: JsonObject,
+  ): AgentToolResult {
+    val documentPath = toolTargetResolver.ensureReadableFile(
+      arguments.requiredString("path"),
+      label = "workspace document",
     )
+    return when (workspaceDocumentKindFor(documentPath)) {
+      WorkspaceDocumentKind.IMAGE -> viewWorkspaceImagePath(
+        task = task,
+        imagePath = documentPath,
+        toolName = "view_workspace_document",
+      )
+      WorkspaceDocumentKind.PDF -> viewWorkspacePdfPath(
+        task = task,
+        pdfPath = documentPath,
+        toolName = "view_workspace_document",
+      )
+      null -> throw IllegalArgumentException(
+        "view_workspace_document currently supports image and PDF files only: ${toolTargetResolver.displayModelPath(documentPath)}",
+      )
+    }
+  }
+
+  private fun viewWorkspaceImagePath(
+    task: AgentTask,
+    imagePath: Path,
+    toolName: String,
+  ): AgentToolResult {
     val displayPath = toolTargetResolver.displayModelPath(imagePath)
     val plan = toolPolicyPipeline.plan(
       task = task,
-      toolName = "view_workspace_image",
+      toolName = toolName,
       targetPath = imagePath,
       metadataRequest = ToolMetadataContextRequest(
         targetKind = ToolTargetKind.FILE,
@@ -1594,13 +1796,14 @@ class OpenCrayToolDispatcher(
     )
 
     return AgentToolResult(
-      toolName = "view_workspace_image",
+      toolName = toolName,
       status = AgentToolResultStatus.SUCCESS,
       content = "Attached workspace image $displayPath for direct visual inspection on the next turn.",
       metadata = toolPolicyPipeline.resultMetadata(
         plan = plan,
         metadata = mapOf(
           "path" to displayPath,
+          "documentKind" to WorkspaceDocumentKind.IMAGE.name.lowercase(Locale.US),
           "displayName" to displayName,
           "mimeType" to mimeType,
           "byteCount" to byteCount.toString(),
@@ -1612,15 +1815,24 @@ class OpenCrayToolDispatcher(
   private fun viewWorkspacePdf(
     task: AgentTask,
     arguments: JsonObject,
-  ): AgentToolResult {
-    val pdfPath = toolTargetResolver.ensureReadableFile(
+  ): AgentToolResult = viewWorkspacePdfPath(
+    task = task,
+    pdfPath = toolTargetResolver.ensureReadableFile(
       arguments.requiredString("path"),
       label = "workspace PDF",
-    )
+    ),
+    toolName = "view_workspace_pdf",
+  )
+
+  private fun viewWorkspacePdfPath(
+    task: AgentTask,
+    pdfPath: Path,
+    toolName: String,
+  ): AgentToolResult {
     val displayPath = toolTargetResolver.displayModelPath(pdfPath)
     val plan = toolPolicyPipeline.plan(
       task = task,
-      toolName = "view_workspace_pdf",
+      toolName = toolName,
       targetPath = pdfPath,
       metadataRequest = ToolMetadataContextRequest(
         targetKind = ToolTargetKind.FILE,
@@ -1658,13 +1870,14 @@ class OpenCrayToolDispatcher(
     )
 
     return AgentToolResult(
-      toolName = "view_workspace_pdf",
+      toolName = toolName,
       status = AgentToolResultStatus.SUCCESS,
       content = "Attached workspace PDF $displayPath for direct inspection on the next turn.",
       metadata = toolPolicyPipeline.resultMetadata(
         plan = plan,
         metadata = mapOf(
           "path" to displayPath,
+          "documentKind" to WorkspaceDocumentKind.PDF.name.lowercase(Locale.US),
           "displayName" to displayName,
           "mimeType" to mimeType,
           "byteCount" to byteCount.toString(),
@@ -5316,6 +5529,21 @@ class OpenCrayToolDispatcher(
     }
   }
 
+  private fun JsonObject.optionalIntArray(name: String): List<Int> {
+    val element = this[name] ?: return emptyList()
+    if (element == JsonNull) {
+      return emptyList()
+    }
+    val array = element as? JsonArray
+      ?: throw IllegalArgumentException("Argument '$name' must be a JSON array of numbers.")
+    return array.mapIndexed { index, entry ->
+      val primitive = entry as? JsonPrimitive
+        ?: throw IllegalArgumentException("Argument '$name' item $index must be a JSON number.")
+      primitive.content.toIntOrNull()
+        ?: throw IllegalArgumentException("Argument '$name' item $index must be a JSON number.")
+    }
+  }
+
   private fun JsonObject.optionalObjectArray(name: String): List<JsonObject>? {
     val element = this[name] ?: return null
     if (element == JsonNull) {
@@ -5433,6 +5661,7 @@ class OpenCrayToolDispatcher(
     private const val DEFAULT_BASH_WAIT_TIMEOUT_MS: Long = 1_000L
     private const val DEFAULT_MANAGED_PROCESS_TIMEOUT_MS: Long = 300_000L
     private const val DEFAULT_MANAGED_PROCESS_WAIT_TIMEOUT_MS: Long = 1_000L
+    private const val DEFAULT_WORKSPACE_DOCUMENT_SEARCH_RESULTS: Int = 5
     private const val MAX_VIEW_WORKSPACE_IMAGE_BYTES: Long = 20L * 1024L * 1024L
     private const val MAX_VIEW_WORKSPACE_PDF_BYTES: Long = 32L * 1024L * 1024L
     private const val DEFAULT_GENERATED_IMAGE_FORMAT: String = "png"
@@ -5526,6 +5755,56 @@ class OpenCrayToolDispatcher(
     } else {
       normalized.take(maxChars - 1).trimEnd() + "…"
     }
+  }
+
+  private fun renderWorkspaceDocumentSearchResult(
+    displayPath: String,
+    request: WorkspaceDocumentSearchRequest,
+    result: WorkspaceDocumentSearchResult,
+  ): String = buildString {
+    appendLine("Workspace document search: $displayPath")
+    appendLine(
+      buildString {
+        append("kind=")
+        append(result.documentKind.name.lowercase(Locale.US))
+        append(" page_count=")
+        append(result.pageCount)
+        append(" query=")
+        append(result.query ?: "<preview>")
+        append(" results=")
+        append(result.hits.size)
+      },
+    )
+    renderWorkspaceDocumentPageSelectionSummary(request)?.let(::appendLine)
+    if (result.hits.isEmpty()) {
+      appendLine(
+        if (result.query == null) {
+          "No preview pages were returned."
+        } else {
+          "No matches found."
+        },
+      )
+      return@buildString
+    }
+    result.hits.forEach { hit ->
+      appendLine()
+      append("page ")
+      append(hit.pageNumber)
+      if (hit.matchCount > 0) {
+        append(" matches=")
+        append(hit.matchCount)
+      }
+      appendLine()
+      appendLine(hit.excerpt)
+    }
+  }.trim()
+
+  private fun renderWorkspaceDocumentPageSelectionSummary(
+    request: WorkspaceDocumentSearchRequest,
+  ): String? = when {
+    request.pageNumbers.isNotEmpty() -> "requested_pages=${request.pageNumbers.joinToString(separator = ",")}"
+    request.pageFrom != null || request.pageTo != null -> "requested_range=${request.pageFrom ?: 1}-${request.pageTo ?: "end"}"
+    else -> null
   }
 
   private fun renderMemorySearchHeader(match: MemorySearchMatch): String = buildString {

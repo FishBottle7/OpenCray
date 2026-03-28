@@ -63,6 +63,10 @@
 *.log
 /.tmp_aar_*/
 /.tmp_python_bridge_tests/
+/.tmp_p4a_aar*/
+*.hprof
+/pytest-*/
+/tmp_*
 
 # Android/Gradle local files
 /local.properties

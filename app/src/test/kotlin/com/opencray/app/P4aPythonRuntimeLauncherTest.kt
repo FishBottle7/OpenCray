@@ -100,7 +100,7 @@ class P4aPythonRuntimeLauncherTest {
     FakeGeneratedService.reset()
     val starter = AndroidP4aPythonRuntimeServiceStarter(
       context = ContextWrapper(null),
-      classLoader = FakeGeneratedService::class.java.classLoader,
+      classLoader = checkNotNull(FakeGeneratedService::class.java.classLoader),
     )
 
     val result = starter.start(
@@ -115,6 +115,7 @@ class P4aPythonRuntimeLauncherTest {
     assertTrue(result is P4aPythonRuntimeServiceStartResult.Started)
     val started = result as P4aPythonRuntimeServiceStartResult.Started
     assertEquals("prepared", started.metadata["launcherPrepareState"])
+    assertEquals("generated_static_start", started.metadata["launcherStartMode"])
     assertEquals(
       listOf("prepare", "start"),
       FakeGeneratedService.invocations,
@@ -128,7 +129,7 @@ class P4aPythonRuntimeLauncherTest {
     FakeGeneratedService.prepareShouldThrow = true
     val starter = AndroidP4aPythonRuntimeServiceStarter(
       context = ContextWrapper(null),
-      classLoader = FakeGeneratedService::class.java.classLoader,
+      classLoader = checkNotNull(FakeGeneratedService::class.java.classLoader),
     )
 
     val result = starter.start(
@@ -152,7 +153,7 @@ class P4aPythonRuntimeLauncherTest {
     FakeGeneratedService.reset()
     val starter = AndroidP4aPythonRuntimeServiceStarter(
       context = ContextWrapper(null),
-      classLoader = FakeGeneratedService::class.java.classLoader,
+      classLoader = checkNotNull(FakeGeneratedService::class.java.classLoader),
     )
 
     val metadata = starter.stop(

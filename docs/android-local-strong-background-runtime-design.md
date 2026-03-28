@@ -1,6 +1,6 @@
 # Android Local Strong Background Runtime Design
 
-Last updated: 2026-03-27
+Last updated: 2026-03-28
 
 ## Status
 
@@ -38,7 +38,7 @@ But the background product surface is still incomplete:
 - `AlarmManager` and `WorkManager` trigger bridges now exist for scheduled wake-up and repair
 - active-runtime, approval-needed, completion/interruption, and scheduled-dispatch notifications now exist, including notification-side approve/reject entry for approval waits
 - file-backed managed-process registries can now reattach live controllers across registry or host rebuild while the same app process remains alive, but true cross-process reconnect after process death is still not implemented
-- startup plus boot/package-replaced repair paths now re-register scheduled work, but active interactive runs still rely on checkpoint-based recovery rather than an independent scheduler-owned repair loop
+- startup plus boot/package-replaced repair paths now re-register scheduled work, and the repair worker can also wake `OpenCrayAgentRuntimeService` with `ACTION_RESUME_INTERRUPTED_RUNS` when queue or checkpoint state suggests interrupted interactive work; continuation still reuses the normal checkpoint-aware resume path rather than a separate long-lived repair controller
 - notification/background settings now expose notification, exact-alarm, and battery-optimization system actions, including direct exemption request where Android allows it
 
 So the current system now has the first real strong-background primitives, but it is still not yet a full local strong-background product.
@@ -598,7 +598,7 @@ Exit criteria:
 
 Status:
 
-- substantially implemented for boot/package-replaced schedule repair and startup reconciliation
+- substantially implemented for boot/package-replaced schedule repair, startup reconciliation, and a first interrupted-interactive-run repair wake path
 
 - add boot receiver
 - re-register schedules on boot and package replace

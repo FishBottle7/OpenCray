@@ -1515,6 +1515,9 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     final showsReasoning =
         selectedProtocol == 'anthropic' ||
         _modelController.text.toLowerCase().contains('gpt');
+    final reasoningLabel = selectedProtocol == 'anthropic'
+        ? copy.llmThinkingLabel
+        : copy.llmReasoningEffortLabel;
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
       child: Column(
@@ -1678,7 +1681,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                 if (showsReasoning) ...[
                   const SizedBox(height: 12),
                   _PrototypeSelectionField(
-                    label: copy.llmReasoningEffortLabel,
+                    label: reasoningLabel,
                     title: _reasoningEffortTitle(_reasoningEffort),
                     trailingLabel: selectedProtocol == 'anthropic'
                         ? copy.llmAnthropicThinkingEnabled
@@ -1888,42 +1891,61 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                       style: _SettingsTextStyles.cardTitle,
                     ),
                     const SizedBox(height: 12),
-                    for (final option in snapshot.providerOptions)
-                      InkWell(
-                        borderRadius: BorderRadius.circular(14),
-                        onTap: () => Navigator.of(context).pop(option),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      option.title,
-                                      style: _SettingsTextStyles.rowTitle,
-                                    ),
-                                    if (option.subtitle.isNotEmpty) ...[
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        option.subtitle,
-                                        style: _SettingsTextStyles.rowSubtitle,
+                    Flexible(
+                      child: SingleChildScrollView(
+                        key: const ValueKey<String>(
+                          'settings-llm-provider-sheet-scroll',
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            for (final option in snapshot.providerOptions)
+                              InkWell(
+                                borderRadius: BorderRadius.circular(14),
+                                onTap: () => Navigator.of(context).pop(option),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 12,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              option.title,
+                                              style:
+                                                  _SettingsTextStyles.rowTitle,
+                                            ),
+                                            if (option.subtitle.isNotEmpty) ...[
+                                              const SizedBox(height: 4),
+                                              Text(
+                                                option.subtitle,
+                                                style: _SettingsTextStyles
+                                                    .rowSubtitle,
+                                              ),
+                                            ],
+                                          ],
+                                        ),
                                       ),
+                                      if (option.id ==
+                                          _selectedProviderOptionId)
+                                        const Icon(
+                                          Icons.check_rounded,
+                                          color: OpenCrayColors.primary,
+                                          size: 18,
+                                        ),
                                     ],
-                                  ],
+                                  ),
                                 ),
                               ),
-                              if (option.id == _selectedProviderOptionId)
-                                const Icon(
-                                  Icons.check_rounded,
-                                  color: OpenCrayColors.primary,
-                                  size: 18,
-                                ),
-                            ],
-                          ),
+                          ],
                         ),
                       ),
+                    ),
                   ],
                 ),
               ),
@@ -1939,6 +1961,9 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
 
   Future<void> _openReasoningSheet() async {
     final copy = _copyForSnapshot();
+    final label = _draftProtocol() == 'anthropic'
+        ? copy.llmThinkingLabel
+        : copy.llmReasoningEffortLabel;
     final selected = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: Colors.transparent,
@@ -1969,10 +1994,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                         ),
                       ),
                     ),
-                    Text(
-                      copy.llmReasoningEffortLabel,
-                      style: _SettingsTextStyles.cardTitle,
-                    ),
+                    Text(label, style: _SettingsTextStyles.cardTitle),
                     const SizedBox(height: 12),
                     for (final option in _reasoningOptions)
                       InkWell(

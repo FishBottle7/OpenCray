@@ -260,6 +260,8 @@ class ToolCallNormalizer(
       "importfile" to "ImportFile",
       "import" to "ImportFile",
       "importchatattachment" to "import_chat_attachment",
+      "searchworkspacedocument" to "search_workspace_document",
+      "viewworkspacedocument" to "view_workspace_document",
       "viewworkspaceimage" to "view_workspace_image",
       "viewworkspacepdf" to "view_workspace_pdf",
       "todowrite" to "TodoWrite",

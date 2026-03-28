@@ -53,6 +53,7 @@ internal data class ProjectionOnlyChatStrings(
   val summaryReplyInProgress: String,
   val summaryStartNewSession: String,
   val summaryRestored: String,
+  val summaryAwaitingDirection: String = "Waiting for your next instruction.",
   val composerPlaceholder: String,
   val composerRejectedPlaceholder: String,
 )
@@ -570,17 +571,24 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     messageCount: Int,
     runs: List<AgentRunSnapshot>,
   ): String = when {
+    latestRunFor(runs)?.let { run ->
+      isAwaitingDirectionRun(run) || isDeferredApprovalDecisionAwaitingResumeRun(run)
+    } == true -> strings.summaryAwaitingDirection
     runs.any(AgentRunSnapshot::isActive) -> strings.summaryReplyInProgress
     messageCount == 0 -> strings.summaryStartNewSession
     else -> strings.summaryRestored
   }
 
-  private fun composerPlaceholderFor(runs: List<AgentRunSnapshot>): String = if (
-    latestRunFor(runs)?.let(::isAwaitingDirectionRun) == true
-  ) {
-    strings.composerRejectedPlaceholder
-  } else {
-    strings.composerPlaceholder
+  private fun composerPlaceholderFor(runs: List<AgentRunSnapshot>): String {
+    val latestRun = latestRunFor(runs) ?: return strings.composerPlaceholder
+    if (isDeferredApprovalDecisionAwaitingResumeRun(latestRun)) {
+      return strings.composerPlaceholder
+    }
+    return if (isAwaitingDirectionRun(latestRun)) {
+      strings.composerRejectedPlaceholder
+    } else {
+      strings.composerPlaceholder
+    }
   }
 
   private fun isAwaitingDirectionRun(run: AgentRunSnapshot): Boolean =
@@ -590,6 +598,15 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
         run.lifecycleState == QueueTaskLifecycleState.SUSPENDED &&
           run.errorCode == ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
         )
+
+  private fun isDeferredApprovalDecisionAwaitingResumeRun(run: AgentRunSnapshot): Boolean =
+    run.lifecycleState == QueueTaskLifecycleState.SUSPENDED &&
+      promptCheckpointStoreFactory.forChatSession(run.sessionId)
+        .get(run.taskId)
+        ?.checkpointKind in setOf(
+        PromptCheckpointKind.APPROVED_PENDING_RESUME,
+        PromptCheckpointKind.REJECTED_PENDING_RESUME,
+      )
 
   private fun isInterruptedOnRestoreRun(run: AgentRunSnapshot): Boolean =
     run.errorCode == com.opencray.core.orchestrator.ERROR_RESTART_REQUIRES_EXPLICIT_RETRY ||
@@ -1164,6 +1181,9 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
       summaryReplyInProgress = localizedContext.getString(R.string.chat_summary_reply_in_progress),
       summaryStartNewSession = localizedContext.getString(R.string.chat_summary_start_new_session),
       summaryRestored = localizedContext.getString(R.string.chat_summary_restored),
+      summaryAwaitingDirection = localizedContext.getString(
+        R.string.chat_summary_awaiting_direction,
+      ),
       composerPlaceholder = localizedContext.getString(R.string.chat_message_opencray),
       composerRejectedPlaceholder = localizedContext.getString(
         R.string.chat_message_opencray_do_differently,

@@ -720,6 +720,20 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       );
 
   @override
+  Future<OpenCrayDebugPythonRunResult> runDebugPythonScript({
+    required String fileName,
+    required String scriptText,
+  }) async => OpenCrayDebugPythonRunResult.fromMap(
+    await _invokeMap(
+      'runDebugPythonScript',
+      arguments: <String, Object?>{
+        'fileName': fileName,
+        'scriptText': scriptText,
+      },
+    ),
+  );
+
+  @override
   Future<OpenCrayMemoryDebugSearchSnapshot> searchMemoryDebug({
     required String query,
     int maxResults = 4,

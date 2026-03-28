@@ -37,6 +37,8 @@ internal fun <T> requireBinderBackedGateway(
   ),
 )
 
+internal const val SERVICE_GATEWAY_BIND_AWAIT_TIMEOUT_MS: Long = 2_000L
+
 internal fun <TGateway, TPayload> observeWithDynamicGateway(
   currentGateway: () -> TGateway,
   observeConnectionState: ((RuntimeServiceConnectionState) -> Unit) -> (() -> Unit),

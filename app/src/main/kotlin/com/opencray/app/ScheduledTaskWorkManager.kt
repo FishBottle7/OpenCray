@@ -129,9 +129,17 @@ internal class ScheduledTaskRepairWorker(
         nowEpochMs = System.currentTimeMillis(),
         repairReason = reason,
       ).isNotEmpty()
+      val hasInteractiveRepairWork = hasPotentialInteractiveRunRepairWork(applicationContext)
+      val scheduledRepairStarted = when {
+        !hasDueCommands -> true
+        else -> OpenCrayAgentRuntimeService.repairSchedules(applicationContext, reason)
+      }
+      val interactiveRepairStarted = when {
+        !hasInteractiveRepairWork -> true
+        else -> OpenCrayAgentRuntimeService.resumeInterruptedRuns(applicationContext, reason)
+      }
       when {
-        !hasDueCommands -> Result.success()
-        OpenCrayAgentRuntimeService.repairSchedules(applicationContext, reason) -> Result.success()
+        scheduledRepairStarted && interactiveRepairStarted -> Result.success()
         else -> Result.retry()
       }
     }.getOrElse {
@@ -173,6 +181,41 @@ internal fun resyncEnabledScheduledTasksFromContext(context: Context) {
       .fromContext(appContext)
       .create(),
   )
+}
+
+internal fun hasPotentialInteractiveRunRepairWork(
+  context: Context,
+): Boolean {
+  val appContext = context.applicationContext
+  return hasPotentialInteractiveRunRepairWork(
+    chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
+    snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
+    promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext),
+  )
+}
+
+internal fun hasPotentialInteractiveRunRepairWork(
+  chatSessionStore: ChatSessionLocalStore,
+  snapshotStoreFactory: AgentQueueSnapshotStoreFactory,
+  promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
+): Boolean {
+  val state = chatSessionStore.loadState()
+  val knownSessionIds = buildList {
+    add(state.activeSession.sessionId)
+    addAll(state.sessions.map(ChatSessionLocalStore.SessionSummary::sessionId))
+  }.distinct()
+  return knownSessionIds.any { sessionId ->
+    val hasNonTerminalQueueTask = snapshotStoreFactory.forChatSession(sessionId)
+      .load()
+      ?.tasks
+      ?.any { taskSnapshot ->
+        taskSnapshot.lifecycleState != com.opencray.core.orchestrator.QueueTaskLifecycleState.COMPLETED &&
+          taskSnapshot.lifecycleState != com.opencray.core.orchestrator.QueueTaskLifecycleState.FAILED &&
+          taskSnapshot.lifecycleState != com.opencray.core.orchestrator.QueueTaskLifecycleState.CANCELLED
+      } == true
+    hasNonTerminalQueueTask ||
+      promptCheckpointStoreFactory.forChatSession(sessionId).list().isNotEmpty()
+  }
 }
 
 private fun scheduleWakeWorkName(scheduleId: String): String =

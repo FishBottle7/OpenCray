@@ -257,6 +257,7 @@ class OpenCrayAgentRuntime(
         nativeToolCallingEnabled = nativeToolCallingEnabled,
         priorFallbackEnabled = cursor.legacyJsonFallbackEnabled,
       )
+      cursor.legacyJsonFallbackEnabled = legacyJsonFallbackEnabled
       when (
         val outcome = executePromptActionBatch(
           task = task,
@@ -320,6 +321,7 @@ class OpenCrayAgentRuntime(
         nativeToolCallingEnabled = nativeToolCallingEnabled,
         priorFallbackEnabled = cursor.legacyJsonFallbackEnabled,
       )
+      cursor.legacyJsonFallbackEnabled = legacyJsonFallbackEnabled
       val turnAwareConversation = promptConversationForTurn(
         transcript = cursor.transcript,
         turn = cursor.turn,
@@ -1417,6 +1419,9 @@ class OpenCrayAgentRuntime(
     if (cursor.responsesFullReplayRequired) {
       return ResponsesContinuationDecision(reason = "responses_restored_replay_required")
     }
+    if (cursor.legacyJsonFallbackEnabled) {
+      return ResponsesContinuationDecision(reason = "responses_legacy_json_fallback_enabled")
+    }
     if (!hasResponsesLineage(cursor)) {
       return ResponsesContinuationDecision(reason = "responses_lineage_unavailable")
     }
@@ -1458,12 +1463,20 @@ class OpenCrayAgentRuntime(
         val toolResult = message.toolResult ?: return false
         !toolResult.toolCallId.isNullOrBlank() &&
           !toolResult.toolName.isNullOrBlank() &&
-          toolResult.content.isNotBlank()
+          toolResult.content.isNotBlank() &&
+          !toolResultPublishesAttachmentArtifacts(toolResult)
       }
 
       else -> false
     }
   }
+
+  private fun toolResultPublishesAttachmentArtifacts(
+    toolResult: LiteLlmGatewayToolResult,
+  ): Boolean = OpenCrayAttachmentArtifacts.decodeMetadata(
+    json = config.json,
+    metadata = toolResult.metadata,
+  ).isNotEmpty()
 
   private fun responsesContinuationFallbackReason(
     message: LiteLlmGatewayMessage,
@@ -1478,6 +1491,8 @@ class OpenCrayAgentRuntime(
         toolResult.toolCallId.isNullOrBlank() -> "responses_pending_tool_result_missing_call_id"
         toolResult.toolName.isNullOrBlank() -> "responses_pending_tool_result_missing_name"
         toolResult.content.isBlank() -> "responses_pending_tool_result_blank_content"
+        toolResultPublishesAttachmentArtifacts(toolResult) ->
+          "responses_pending_tool_result_attachment_artifact"
         else -> "responses_pending_tool_result_invalid"
       }
     }

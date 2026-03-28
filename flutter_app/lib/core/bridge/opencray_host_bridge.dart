@@ -270,6 +270,11 @@ abstract interface class OpenCrayHostBridge {
 
   Future<OpenCraySoulDebugSnapshot> loadSoulDebugSnapshot();
 
+  Future<OpenCrayDebugPythonRunResult> runDebugPythonScript({
+    required String fileName,
+    required String scriptText,
+  });
+
   Future<OpenCrayMemoryDebugSearchSnapshot> searchMemoryDebug({
     required String query,
     int maxResults = 4,

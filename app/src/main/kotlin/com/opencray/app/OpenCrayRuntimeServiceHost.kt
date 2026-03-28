@@ -478,6 +478,12 @@ internal data class RuntimeServiceBootstrapResult(
   val repairedSessionIds: List<String>,
 )
 
+internal data class RuntimeServiceInterruptedRunRepairResult(
+  val scannedSessionIds: List<String>,
+  val resumedSessionIds: List<String>,
+  val repairedSessionIds: List<String>,
+)
+
 internal object OpenCrayRuntimeServiceHostRegistry {
   @Volatile
   private var instance: OpenCrayRuntimeServiceHost? = null
@@ -578,10 +584,7 @@ internal fun bootstrapSessionsForRuntimeServiceHost(
   runtimeAccess: OpenCrayRuntimeOwnerAccess,
 ): RuntimeServiceBootstrapResult {
   val state = chatSessionStore.loadState()
-  val knownSessionIds = buildList {
-    add(state.activeSession.sessionId)
-    addAll(state.sessions.map(ChatSessionLocalStore.SessionSummary::sessionId))
-  }.distinct()
+  val knownSessionIds = knownRuntimeServiceSessionIds(chatSessionStore)
   val resumedSessionIds = mutableListOf<String>()
   val repairedSessionIds = mutableListOf<String>()
 
@@ -607,4 +610,52 @@ internal fun bootstrapSessionsForRuntimeServiceHost(
     resumedSessionIds = resumedSessionIds,
     repairedSessionIds = repairedSessionIds,
   )
+}
+
+internal fun resumeInterruptedRunsForRuntimeServiceHost(
+  chatSessionStore: ChatSessionLocalStore,
+  runtimeAccess: OpenCrayRuntimeOwnerAccess,
+): RuntimeServiceInterruptedRunRepairResult {
+  val knownSessionIds = knownRuntimeServiceSessionIds(chatSessionStore)
+  val resumedSessionIds = mutableListOf<String>()
+  val repairedSessionIds = mutableListOf<String>()
+
+  knownSessionIds.forEach { sessionId ->
+    val session = runtimeAccess.hostAccess.session(sessionId)
+    val runs = session.listRuns()
+    val shouldResume = runs.any(AgentRunSnapshot::isActive)
+    if (!shouldResume) {
+      return@forEach
+    }
+    session.resume()
+    resumedSessionIds += sessionId
+    val repairedRuns = session.listRuns()
+    if (repairedRuns.isNotEmpty()) {
+      runtimeAccess.replayAccess.terminalReplayRepairer(sessionId, repairedRuns)
+      repairedSessionIds += sessionId
+    }
+  }
+
+  return RuntimeServiceInterruptedRunRepairResult(
+    scannedSessionIds = knownSessionIds,
+    resumedSessionIds = resumedSessionIds,
+    repairedSessionIds = repairedSessionIds,
+  )
+}
+
+internal fun OpenCrayRuntimeServiceHost.resumeInterruptedRuns():
+  RuntimeServiceInterruptedRunRepairResult =
+  resumeInterruptedRunsForRuntimeServiceHost(
+    chatSessionStore = dependencies.chatSessionStore,
+    runtimeAccess = runtimeAccess,
+  )
+
+private fun knownRuntimeServiceSessionIds(
+  chatSessionStore: ChatSessionLocalStore,
+): List<String> {
+  val state = chatSessionStore.loadState()
+  return buildList {
+    add(state.activeSession.sessionId)
+    addAll(state.sessions.map(ChatSessionLocalStore.SessionSummary::sessionId))
+  }.distinct()
 }

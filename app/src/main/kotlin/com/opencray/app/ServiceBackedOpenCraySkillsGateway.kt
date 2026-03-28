@@ -17,7 +17,7 @@ internal class ServiceBackedOpenCraySkillsGateway(
   override fun observeSkills(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeWithDynamicGateway(
       currentGateway = ::currentReadGateway,
-      observeConnectionState = serviceClient::observeConnectionState,
+      observeConnectionState = serviceClient::observePassiveConnectionState,
       observe = { gateway, callback -> gateway.observeSkills(callback) },
       listener = listener,
     )
@@ -70,13 +70,13 @@ internal class ServiceBackedOpenCraySkillsGateway(
     currentWriteGateway("activateSkillsInstallSource").activateSkillsInstallSource(sourceId)
 
   private fun currentReadGateway(): OpenCraySkillsGateway =
-    serviceClient.loadSkillsGateway() ?: fallbackGateway
+    serviceClient.peekSkillsGateway() ?: fallbackGateway
 
   private fun currentWriteGateway(operation: String): OpenCraySkillsGateway =
     requireBinderBackedGateway(
       surface = "Skills",
       operation = operation,
-      gateway = serviceClient.loadSkillsGateway(),
+      gateway = serviceClient.awaitSkillsGateway(SERVICE_GATEWAY_BIND_AWAIT_TIMEOUT_MS),
       connectionState = serviceClient.loadConnectionState(),
     )
 }

@@ -195,6 +195,12 @@ class PromptAssembler {
     val hasChatAttachmentImportTool = toolDefinitions.any { definition ->
       definition.name == "import_chat_attachment"
     }
+    val hasWorkspaceDocumentSearchTool = toolDefinitions.any { definition ->
+      definition.name == "search_workspace_document"
+    }
+    val hasWorkspaceDocumentViewTool = toolDefinitions.any { definition ->
+      definition.name == "view_workspace_document"
+    }
     val hasWorkspaceImageViewTool = toolDefinitions.any { definition ->
       definition.name == "view_workspace_image"
     }
@@ -355,6 +361,17 @@ class PromptAssembler {
       appendLine("If the model can already inspect an uploaded image directly, do not import it unless you need a workspace copy.")
       appendLine("Use import_chat_attachment only when you intentionally want to save one existing chat attachment into the workspace.")
       appendLine("When you need to inspect a non-image chat attachment with normal file tools, first decide whether to call import_chat_attachment.")
+    }
+    if (hasWorkspaceDocumentSearchTool) {
+      appendLine("If you need to locate relevant content inside a readable workspace PDF before attaching it, call search_workspace_document instead of guessing from the filename.")
+      appendLine("search_workspace_document searches workspace PDFs locally and returns matching page numbers and excerpts.")
+      appendLine("Use query, pages, page_from, and page_to to narrow the scan whenever you can.")
+    }
+    if (hasWorkspaceDocumentViewTool) {
+      appendLine("If you need to inspect what a readable workspace image or PDF actually contains, call view_workspace_document instead of guessing from the path, filename, or nearby text.")
+      appendLine("When view_workspace_document is available, prefer it over the format-specific workspace view tools.")
+      appendLine("view_workspace_document attaches that workspace image or PDF into the next model turn for direct inspection.")
+      appendLine("After calling view_workspace_document, wait for the next turn and inspect the attached document directly before taking further action.")
     }
     if (hasWorkspaceImageViewTool) {
       appendLine("If you need to inspect what a readable workspace image actually contains, call view_workspace_image instead of guessing from the path, filename, or nearby text.")

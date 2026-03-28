@@ -34,7 +34,7 @@ class _DebugToolsPage extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               const Text(
-                'Inspect runtime ownership, trace, memory, and soul state.',
+                'Inspect runtime ownership, trace, memory, soul state, and the embedded Python runner.',
                 style: _SettingsTextStyles.subtitle,
               ),
               const SizedBox(height: 16),
@@ -48,7 +48,7 @@ class _DebugToolsPage extends StatelessWidget {
                     ),
                     SizedBox(height: 8),
                     Text(
-                      'Host/service lifecycle, trace runs, memory, and soul state.',
+                      'Host/service lifecycle, trace runs, memory, soul state, and embedded Python execution.',
                       style: _SettingsTextStyles.body,
                     ),
                   ],
@@ -64,6 +64,20 @@ class _DebugToolsPage extends StatelessWidget {
                       style: _SettingsTextStyles.cardTitle,
                     ),
                     const SizedBox(height: 8),
+                    _HomeEntryRow(
+                      title: 'Run Python Script',
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (context) => _DebugPythonRunnerPage(
+                              bridge: bridge,
+                              backLabel: 'Debug tools',
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                    const Divider(height: 1, color: OpenCrayColors.divider),
                     _HomeEntryRow(
                       title: 'Runtime Diagnostics',
                       onTap: () {
@@ -128,6 +142,317 @@ class _DebugToolsPage extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _DebugPythonRunnerPage extends StatefulWidget {
+  const _DebugPythonRunnerPage({required this.bridge, required this.backLabel});
+
+  final OpenCrayHostBridge bridge;
+  final String backLabel;
+
+  @override
+  State<_DebugPythonRunnerPage> createState() => _DebugPythonRunnerPageState();
+}
+
+class _DebugPythonRunnerPageState extends State<_DebugPythonRunnerPage> {
+  static const String _defaultFileName = 'hello.py';
+  static const String _defaultScript = '''print("hello from embedded Python")
+import os
+import sys
+
+print(sys.version)
+print(os.getcwd())
+''';
+
+  final TextEditingController _fileNameController = TextEditingController(
+    text: _defaultFileName,
+  );
+  final TextEditingController _scriptController = TextEditingController(
+    text: _defaultScript,
+  );
+
+  bool _isRunning = false;
+  String? _runError;
+  OpenCrayDebugPythonRunResult? _result;
+
+  @override
+  void dispose() {
+    _fileNameController.dispose();
+    _scriptController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final result = _result;
+    final canRun = !_isRunning && _scriptController.text.trim().isNotEmpty;
+    return Scaffold(
+      backgroundColor: OpenCrayColors.shellBackground,
+      body: SafeArea(
+        bottom: false,
+        child: SingleChildScrollView(
+          key: const ValueKey<String>('settings-debug-python-page'),
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _BackLink(
+                onTap: () => Navigator.of(context).pop(),
+                label: widget.backLabel,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Run Python Script',
+                style: _SettingsTextStyles.pageTitleSubpage,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Execute a script through the embedded Android Python runtime used by the p4a debug path.',
+                style: _SettingsTextStyles.subtitle,
+              ),
+              const SizedBox(height: 16),
+              _SettingsCard(
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Embedded runtime only',
+                            style: _SettingsTextStyles.cardTitle,
+                          ),
+                          SizedBox(height: 8),
+                          Text(
+                            'The script is written into `.opencray/debug-python/` inside the workspace, then executed via the embedded p4a runtime with a 20s startup budget and a 60s script timeout.',
+                            style: _SettingsTextStyles.body,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    _HeaderActionChip(
+                      label: _isRunning ? 'Running' : 'Run',
+                      onTap: canRun ? _runScript : null,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              _SettingsCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Script', style: _SettingsTextStyles.cardTitle),
+                    const SizedBox(height: 10),
+                    TextField(
+                      key: const ValueKey<String>('settings-debug-python-file'),
+                      controller: _fileNameController,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      enableIMEPersonalizedLearning: false,
+                      spellCheckConfiguration:
+                          const SpellCheckConfiguration.disabled(),
+                      smartDashesType: SmartDashesType.disabled,
+                      smartQuotesType: SmartQuotesType.disabled,
+                      decoration: const InputDecoration(
+                        labelText: 'File name',
+                        hintText: 'hello.py',
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (_) => setState(() {}),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      key: const ValueKey<String>(
+                        'settings-debug-python-script',
+                      ),
+                      controller: _scriptController,
+                      minLines: 12,
+                      maxLines: 18,
+                      keyboardType: TextInputType.multiline,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      enableIMEPersonalizedLearning: false,
+                      spellCheckConfiguration:
+                          const SpellCheckConfiguration.disabled(),
+                      smartDashesType: SmartDashesType.disabled,
+                      smartQuotesType: SmartQuotesType.disabled,
+                      style: _SettingsTextStyles.body.copyWith(
+                        fontFamily: 'monospace',
+                        height: 1.45,
+                      ),
+                      decoration: const InputDecoration(
+                        labelText: 'Python script',
+                        alignLabelWithHint: true,
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (_) => setState(() {}),
+                    ),
+                    if (_runError != null) ...[
+                      const SizedBox(height: 10),
+                      Text(_runError!, style: _SettingsTextStyles.bodyStrong),
+                    ],
+                  ],
+                ),
+              ),
+              if (result != null) ...[
+                const SizedBox(height: 16),
+                _buildResultOverviewCard(result),
+                const SizedBox(height: 16),
+                _buildResultTextCard(
+                  title: 'Stdout',
+                  text: result.stdout,
+                  emptyText: 'No stdout emitted.',
+                ),
+                const SizedBox(height: 16),
+                _buildResultTextCard(
+                  title: 'Stderr',
+                  text: result.stderr,
+                  emptyText: 'No stderr emitted.',
+                ),
+                if (result.metadata.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  _buildResultTextCard(
+                    title: 'Runtime metadata',
+                    text: _renderDebugStringMap(result.metadata),
+                    emptyText: 'No runtime metadata was emitted.',
+                  ),
+                ],
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildResultOverviewCard(OpenCrayDebugPythonRunResult result) {
+    final chips = <Widget>[
+      _DebugValueChip(
+        label: 'Status',
+        value: _humanizeDebugCode(result.status),
+      ),
+      if (result.exitCode != null)
+        _DebugValueChip(label: 'Exit', value: '${result.exitCode}'),
+      _DebugValueChip(
+        label: 'Duration',
+        value: _formatDebugDuration(result.durationMs),
+      ),
+      if (_trimmedDebugValue(result.errorCode) != null)
+        _DebugValueChip(label: 'Error', value: result.errorCode!),
+    ];
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Last result', style: _SettingsTextStyles.cardTitle),
+          const SizedBox(height: 10),
+          Wrap(spacing: 8, runSpacing: 8, children: chips),
+          const SizedBox(height: 12),
+          _DebugKeyValueLine(
+            'Script',
+            result.fileName.isEmpty ? 'Unavailable' : result.fileName,
+          ),
+          _DebugKeyValueLine(
+            'Workspace path',
+            result.scriptRelativePath.isEmpty
+                ? 'Unavailable'
+                : result.scriptRelativePath,
+          ),
+          _DebugKeyValueLine(
+            'Started',
+            _formatDebugClockTime(result.startedAtEpochMs),
+          ),
+          _DebugKeyValueLine(
+            'Finished',
+            _formatDebugClockTime(result.finishedAtEpochMs),
+          ),
+          if (_trimmedDebugValue(result.errorMessage) != null)
+            _DebugKeyValueLine('Message', result.errorMessage!),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildResultTextCard({
+    required String title,
+    required String text,
+    required String emptyText,
+  }) {
+    final normalizedText = text.trimRight();
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: _SettingsTextStyles.cardTitle),
+          const SizedBox(height: 10),
+          if (normalizedText.isEmpty)
+            Text(emptyText, style: _SettingsTextStyles.body)
+          else
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF7F8FA),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: OpenCrayColors.divider),
+              ),
+              child: SelectableText(
+                normalizedText,
+                style: _SettingsTextStyles.body.copyWith(
+                  fontFamily: 'monospace',
+                  height: 1.45,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _runScript() async {
+    if (_isRunning) {
+      return;
+    }
+    final scriptText = _scriptController.text;
+    if (scriptText.trim().isEmpty) {
+      setState(() {
+        _runError = 'Script content cannot be empty.';
+      });
+      return;
+    }
+    setState(() {
+      _isRunning = true;
+      _runError = null;
+      _result = null;
+    });
+    try {
+      final result = await widget.bridge.runDebugPythonScript(
+        fileName: _fileNameController.text,
+        scriptText: scriptText,
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _result = result;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _runError = '$error';
+      });
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isRunning = false;
+    });
   }
 }
 
@@ -1651,11 +1976,10 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
       return const <OpenCrayChatRuntimeEventSnapshot>[];
     }
     final events =
-        run.scopeRuntimeEvents(snapshot.events).toList(growable: false)
-          ..sort(
-            (left, right) =>
-                left.emittedAtEpochMs.compareTo(right.emittedAtEpochMs),
-          );
+        run.scopeRuntimeEvents(snapshot.events).toList(growable: false)..sort(
+          (left, right) =>
+              left.emittedAtEpochMs.compareTo(right.emittedAtEpochMs),
+        );
     return events;
   }
 }
@@ -2375,14 +2699,13 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
       setState(() {
         _actionError = 'Failed to apply $actionId: $error';
       });
-    } finally {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _isApplyingMemoryAction = false;
-      });
     }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isApplyingMemoryAction = false;
+    });
   }
 }
 
@@ -4153,6 +4476,12 @@ String _truncateDebugText(String value, int maxChars) {
     return value;
   }
   return '${value.substring(0, maxChars - 3)}...';
+}
+
+String _renderDebugStringMap(Map<String, String> values) {
+  final entries = values.entries.toList(growable: false)
+    ..sort((left, right) => left.key.compareTo(right.key));
+  return entries.map((entry) => '${entry.key}: ${entry.value}').join('\n');
 }
 
 String? _trimmedDebugValue(String? value) {

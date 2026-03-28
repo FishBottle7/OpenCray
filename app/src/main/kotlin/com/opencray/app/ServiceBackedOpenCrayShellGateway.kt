@@ -12,13 +12,13 @@ internal class ServiceBackedOpenCrayShellGateway(
   override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeWithDynamicGateway(
       currentGateway = ::currentGateway,
-      observeConnectionState = serviceClient::observeConnectionState,
+      observeConnectionState = serviceClient::observePassiveConnectionState,
       observe = { gateway, callback -> gateway.observeShell(callback) },
       listener = listener,
     )
 
   private fun currentGateway(): OpenCrayShellGateway =
-    serviceClient.loadShellGateway() ?: fallbackGateway
+    serviceClient.peekShellGateway() ?: fallbackGateway
 }
 
 internal fun serviceBackedOpenCrayShellGateway(

@@ -948,6 +948,82 @@ void main() {
     },
   );
 
+  testWidgets('primary provider sheet scrolls when the provider list is long', (
+    tester,
+  ) async {
+    final providerOptions = <LlmProviderOption>[
+      for (var index = 0; index < 18; index++)
+        LlmProviderOption(
+          id: 'provider-$index',
+          providerId: 'provider-$index',
+          title: 'Provider ${index.toString().padLeft(2, '0')}',
+          subtitle: 'Test provider $index',
+          defaultBaseUrl: 'https://provider$index.example.com/v1',
+          defaultModel: 'model-$index',
+          protocol: 'openai',
+          apiKey: '',
+          isCustom: false,
+        ),
+    ];
+    final initialOption = providerOptions.first;
+    final finalOption = providerOptions.last;
+    final facade = _FakeSettingsFacade(
+      llmConfig: LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: false,
+        providerId: initialOption.providerId,
+        selectedProviderOptionId: initialOption.id,
+        protocol: initialOption.protocol,
+        providerOptions: providerOptions,
+        providerName: initialOption.title,
+        providerNotes: initialOption.subtitle,
+        baseUrl: initialOption.defaultBaseUrl,
+        apiKey: '',
+        model: initialOption.defaultModel,
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.llm,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text(initialOption.title));
+    await tester.pumpAndSettle();
+
+    final scrollable = find.byKey(
+      const ValueKey<String>('settings-llm-provider-sheet-scroll'),
+    );
+    expect(scrollable, findsOneWidget);
+
+    await tester.dragUntilVisible(
+      find.text(finalOption.title),
+      scrollable,
+      const Offset(0, -200),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text(finalOption.title));
+    await tester.pumpAndSettle();
+
+    expect(facade.llmConfig.selectedProviderOptionId, finalOption.id);
+    expect(facade.llmConfig.providerId, finalOption.providerId);
+    expect(find.text(finalOption.title), findsOneWidget);
+  });
+
   testWidgets(
     'about version page opens debug tools and renders context trace details',
     (tester) async {
@@ -996,10 +1072,7 @@ void main() {
         findsOneWidget,
       );
       expect(
-        find.textContaining(
-          'Execution: 2',
-          findRichText: true,
-        ),
+        find.textContaining('Execution: 2', findRichText: true),
         findsOneWidget,
       );
       expect(
@@ -1010,10 +1083,7 @@ void main() {
         findsOneWidget,
       );
       expect(
-        find.textContaining(
-          'Retry code:',
-          findRichText: true,
-        ),
+        find.textContaining('Retry code:', findRichText: true),
         findsNothing,
       );
       expect(find.text('Outcome: written'), findsOneWidget);

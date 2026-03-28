@@ -84,6 +84,26 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun resumeInterruptedRunsOnlyRequestsServiceWakeWithoutCreatingRuntimeHost() {
+    val context = RecordingServiceContext()
+
+    val started = OpenCrayAgentRuntimeService.resumeInterruptedRuns(
+      context = context,
+      repairReason = ScheduledTaskRepairReasons.WORK_MANAGER,
+    )
+
+    val startedIntent = context.startedIntents.single()
+    assertTrue(started)
+    assertEquals(ACTION_RESUME_INTERRUPTED_RUNS, startedIntent.action)
+    assertEquals(
+      ScheduledTaskRepairReasons.WORK_MANAGER,
+      startedIntent.getStringExtra(EXTRA_REPAIR_REASON),
+    )
+    assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
+    assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
+  }
+
+  @Test
   fun repairSchedulesReturnsFalseWhenServiceWakeFailsWithoutCreatingRuntimeHost() {
     val context = RecordingServiceContext(throwOnStart = true)
 

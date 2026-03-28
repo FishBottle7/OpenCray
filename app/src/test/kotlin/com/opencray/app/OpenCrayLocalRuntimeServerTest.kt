@@ -2981,6 +2981,7 @@ class OpenCrayLocalRuntimeServerTest {
     var lastLoadedQuery: String? = null
     var lastSuggestedLimit: Int? = null
     var lastInstalledSourceRef: String? = null
+    var lastInstalledSelectedSkillName: String? = null
     var lastSuggestedInstructionsSourceRef: String? = null
     var lastSuggestedInstructionsSkillName: String? = null
     var snapshot: SkillsSnapshot = SkillsSnapshot(
@@ -3001,17 +3002,48 @@ class OpenCrayLocalRuntimeServerTest {
 
     override fun setSkillEnabled(skillId: String, enabled: Boolean): Boolean = true
 
-    override fun installSkillSource(sourceRef: String): SkillInstallRequestResult {
+    override fun installSkillSource(
+      sourceRef: String,
+      selectedSkillName: String,
+    ): SkillInstallRequestResult {
       lastInstalledSourceRef = sourceRef
+      lastInstalledSelectedSkillName = selectedSkillName
       return installResult
     }
 
     override fun installSuggestedSkill(skillId: String): Boolean =
-      installSkillSource(skillId).succeeded
+      installSkillSource(skillId, "").succeeded
+
+    override fun installSkillSourceBatch(
+      sourceRef: String,
+      selectedSkillNames: List<String>,
+    ): com.opencray.runtime.skills.SkillPackageBatchInstallAttempt =
+      com.opencray.runtime.skills.SkillPackageBatchInstallAttempt(
+        errorCode = "NOT_CONFIGURED",
+        errorMessage = "Not configured.",
+      )
+
+    override fun inspectSkillSource(
+      sourceRef: String,
+    ): com.opencray.runtime.skills.SkillSourceInspectionAttempt =
+      com.opencray.runtime.skills.SkillSourceInspectionAttempt(
+        errorCode = "NOT_CONFIGURED",
+        errorMessage = "Not configured.",
+      )
 
     override fun deleteInstalledSkill(skillId: String): Boolean = true
 
     override fun refresh() = Unit
+
+    override fun checkInstalledSkillUpdates(
+      skillId: String,
+    ): com.opencray.runtime.skills.SkillPackageCheckReport =
+      com.opencray.runtime.skills.SkillPackageCheckReport(results = emptyList())
+
+    override fun updateInstalledSkill(
+      skillId: String,
+    ): com.opencray.runtime.skills.SkillPackageUpdateReport =
+      com.opencray.runtime.skills.SkillPackageUpdateReport(results = emptyList())
 
     override fun loadInstructions(skillId: String): SkillInstructionsSnapshot? = null
 

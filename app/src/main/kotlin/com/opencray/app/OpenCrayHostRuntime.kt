@@ -61,7 +61,6 @@ import com.opencray.app.facade.skills.InstallSourceSnapshot
 import com.opencray.app.facade.skills.InstalledSkillSnapshot
 import com.opencray.app.facade.skills.LocalSkillsFacade
 import com.opencray.app.facade.skills.SkillInstructionsSnapshot
-import com.opencray.app.facade.skills.SkillInstallRequestResult
 import com.opencray.app.facade.skills.SkillsFacade
 import com.opencray.app.facade.skills.SkillsSnapshot
 import com.opencray.app.facade.skills.SuggestedSkillSnapshot
@@ -143,8 +142,14 @@ import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentHandleState
 import com.opencray.runtime.subagent.SubAgentExecutionState
-import com.opencray.runtime.skills.SkillInstallManifestStore
-import com.opencray.runtime.skills.SkillPackageManager
+import com.opencray.runtime.skills.SkillPackageCheckReport
+import com.opencray.runtime.skills.SkillPackageCheckResult
+import com.opencray.runtime.skills.SkillPackageCheckStatus
+import com.opencray.runtime.skills.SkillPackageUpdateReport
+import com.opencray.runtime.skills.SkillPackageUpdateResult
+import com.opencray.runtime.skills.SkillPackageUpdateStatus
+import com.opencray.runtime.skills.SkillSourceInspectionCandidate
+import com.opencray.runtime.skills.SkillSourceInspectionResult
 import com.opencray.runtime.soul.MemoryBackedSoulProfileResolver
 import com.opencray.runtime.soul.RuntimeSoulProfileSeedFactory
 import com.opencray.runtime.soul.SoulProfileResolver
@@ -973,27 +978,21 @@ internal class OpenCrayHostRuntime private constructor(
     require(normalizedSourceRef.isNotEmpty()) {
       "Skill source cannot be blank."
     }
-    val outcome = executeSkillsToolCall(
-      requestedCall = AgentToolCall(
-        toolName = "SkillsAdd",
-        arguments = buildJsonObject {
-          put("sourceRef", normalizedSourceRef)
-          normalizedSelectedSkillName.takeIf(String::isNotBlank)?.let { put("skill", it) }
-        },
-      ),
-      refreshSkillsSnapshot = true,
-      successFallbackMessage = strings.skillInstalled(
-        normalizedSelectedSkillName.takeIf(String::isNotBlank) ?: normalizedSourceRef,
-      ),
-    )
-    return requireSuccessfulSkillsToolCall(
-      outcome = outcome,
-      fallbackError = "Unable to install '$normalizedSourceRef'.",
-    ).metadata["skillId"]
+    val result = synchronized(lock) {
+      skillsFacade.installSkillSource(
+        sourceRef = normalizedSourceRef,
+        selectedSkillName = normalizedSelectedSkillName,
+      )
+    }
+    require(result.succeeded) {
+      result.errorMessage?.trim()?.takeIf(String::isNotBlank)
+        ?: "Unable to install '$normalizedSourceRef'."
+    }
+    emitSkillsSnapshot()
+    return result.installedSkillId
       ?.trim()
       ?.takeIf(String::isNotBlank)
       ?.let(strings.skillInstalled)
-      ?: outcome.content.trim().takeIf(String::isNotBlank)
       ?: strings.skillInstalled(
         normalizedSelectedSkillName.takeIf(String::isNotBlank) ?: normalizedSourceRef,
       )
@@ -1016,29 +1015,27 @@ internal class OpenCrayHostRuntime private constructor(
     require(normalizedSelectedSkillNames.isNotEmpty()) {
       "At least one skill must be selected."
     }
-    val outcome = executeSkillsToolCall(
-      requestedCall = AgentToolCall(
-        toolName = "SkillsAddBatch",
-        arguments = buildJsonObject {
-          put("sourceRef", normalizedSourceRef)
-          put("skills", buildJsonArray {
-            normalizedSelectedSkillNames.forEach { skillName ->
-              add(JsonPrimitive(skillName))
-            }
-          })
-        },
-      ),
-      refreshSkillsSnapshot = true,
-      successFallbackMessage = "",
-    )
-    requireSuccessfulSkillsToolCall(
-      outcome = outcome,
-      fallbackError = "Unable to install selected skills from '$normalizedSourceRef'.",
-    )
+    val attempt = synchronized(lock) {
+      skillsFacade.installSkillSourceBatch(
+        sourceRef = normalizedSourceRef,
+        selectedSkillNames = normalizedSelectedSkillNames,
+      )
+    }
+    val result = requireNotNull(attempt.result) {
+      attempt.errorMessage?.trim()?.takeIf(String::isNotBlank)
+        ?: "Unable to install selected skills from '$normalizedSourceRef'."
+    }
+    if (result.failedCount > 0) {
+      throw IllegalStateException(
+        result.entries.firstNotNullOfOrNull { entry -> entry.errorMessage?.trim()?.takeIf(String::isNotBlank) }
+          ?: "Unable to install selected skills from '$normalizedSourceRef'.",
+      )
+    }
+    emitSkillsSnapshot()
     return if (normalizedSelectedSkillNames.size == 1) {
       strings.skillInstalled(normalizedSelectedSkillNames.single())
     } else {
-      "Installed ${normalizedSelectedSkillNames.size} skills."
+      "Installed ${result.installedCount} skills."
     }
   }
 
@@ -1047,24 +1044,14 @@ internal class OpenCrayHostRuntime private constructor(
     require(normalizedSourceRef.isNotEmpty()) {
       "Skill source cannot be blank."
     }
-    val outcome = executeSkillsToolCall(
-      requestedCall = AgentToolCall(
-        toolName = "SkillsInspect",
-        arguments = buildJsonObject {
-          put("sourceRef", normalizedSourceRef)
-        },
-      ),
-      refreshSkillsSnapshot = false,
-      successFallbackMessage = "",
-    )
-    val successfulOutcome = requireSuccessfulSkillsToolCall(
-      outcome = outcome,
-      fallbackError = "Unable to inspect '$normalizedSourceRef'.",
-    )
-    return parseSkillSourceInspectionContent(
-      content = successfulOutcome.content,
-      metadata = successfulOutcome.metadata,
-    ).toMap()
+    val attempt = synchronized(lock) {
+      skillsFacade.inspectSkillSource(normalizedSourceRef)
+    }
+    val result = requireNotNull(attempt.result) {
+      attempt.errorMessage?.trim()?.takeIf(String::isNotBlank)
+        ?: "Unable to inspect '$normalizedSourceRef'."
+    }
+    return result.toMap()
   }
 
   override fun deleteInstalledSkill(skillId: String): String {
@@ -1072,25 +1059,14 @@ internal class OpenCrayHostRuntime private constructor(
     require(normalizedSkillId.isNotEmpty()) {
       "Skill id cannot be blank."
     }
-    val outcome = executeSkillsToolCall(
-      requestedCall = AgentToolCall(
-        toolName = "SkillsRemove",
-        arguments = buildJsonObject {
-          put("skillId", normalizedSkillId)
-        },
-      ),
-      refreshSkillsSnapshot = true,
-      successFallbackMessage = strings.skillRemoved(normalizedSkillId),
-    )
-    return requireSuccessfulSkillsToolCall(
-      outcome = outcome,
-      fallbackError = "Unable to remove '$normalizedSkillId'.",
-    ).metadata["skillId"]
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?.let(strings.skillRemoved)
-      ?: outcome.content.trim().takeIf(String::isNotBlank)
-      ?: strings.skillRemoved(normalizedSkillId)
+    val removed = synchronized(lock) {
+      skillsFacade.deleteInstalledSkill(normalizedSkillId)
+    }
+    require(removed) {
+      "Unable to remove '$normalizedSkillId'."
+    }
+    emitSkillsSnapshot()
+    return strings.skillRemoved(normalizedSkillId)
   }
 
   override fun refreshSkills(): String {
@@ -1103,52 +1079,158 @@ internal class OpenCrayHostRuntime private constructor(
 
   override fun checkInstalledSkillUpdates(skillId: String): String {
     val normalizedSkillId = skillId.trim()
-    val outcome = executeSkillsToolCall(
-      requestedCall = AgentToolCall(
-        toolName = "SkillsCheck",
-        arguments = buildJsonObject {
-          normalizedSkillId.takeIf(String::isNotBlank)?.let { put("skillId", it) }
-        },
-      ),
-      refreshSkillsSnapshot = false,
-      successFallbackMessage = defaultSkillsToolSuccessMessage(
-        toolName = "SkillsCheck",
-        skillId = normalizedSkillId.takeIf(String::isNotBlank),
-      ),
+    val report = synchronized(lock) {
+      skillsFacade.checkInstalledSkillUpdates(normalizedSkillId)
+    }
+    return renderInstalledSkillUpdateCheckMessage(
+      requestedSkillId = normalizedSkillId.takeIf(String::isNotBlank),
+      report = report,
     )
-    return requireSuccessfulSkillsToolCall(
-      outcome = outcome,
-      fallbackError = "SkillsCheck failed.",
-    ).content.trim().takeIf(String::isNotBlank)
-      ?: defaultSkillsToolSuccessMessage(
-        toolName = "SkillsCheck",
-        skillId = normalizedSkillId.takeIf(String::isNotBlank),
-      )
   }
 
   override fun updateInstalledSkill(skillId: String): String {
     val normalizedSkillId = skillId.trim()
-    val outcome = executeSkillsToolCall(
-      requestedCall = AgentToolCall(
-        toolName = "SkillsUpdate",
-        arguments = buildJsonObject {
-          normalizedSkillId.takeIf(String::isNotBlank)?.let { put("skillId", it) }
-        },
-      ),
-      refreshSkillsSnapshot = true,
-      successFallbackMessage = defaultSkillsToolSuccessMessage(
-        toolName = "SkillsUpdate",
-        skillId = normalizedSkillId.takeIf(String::isNotBlank),
-      ),
-    )
-    return requireSuccessfulSkillsToolCall(
-      outcome = outcome,
-      fallbackError = "SkillsUpdate failed.",
-    ).content.trim().takeIf(String::isNotBlank)
-      ?: defaultSkillsToolSuccessMessage(
-        toolName = "SkillsUpdate",
-        skillId = normalizedSkillId.takeIf(String::isNotBlank),
+    val report = synchronized(lock) {
+      skillsFacade.updateInstalledSkill(normalizedSkillId)
+    }
+    if (report.updatedCount == 0 && report.failedCount > 0 && report.skippedCount == 0) {
+      throw IllegalStateException(
+        report.results.firstNotNullOfOrNull { result -> result.errorMessage?.trim()?.takeIf(String::isNotBlank) }
+          ?: "SkillsUpdate failed.",
       )
+    }
+    emitSkillsSnapshot()
+    return renderInstalledSkillUpdateMessage(
+      requestedSkillId = normalizedSkillId.takeIf(String::isNotBlank),
+      report = report,
+    )
+  }
+
+  private fun renderInstalledSkillUpdateCheckMessage(
+    requestedSkillId: String?,
+    report: SkillPackageCheckReport,
+  ): String {
+    val requestedResult = requestedSkillId?.let { skillId ->
+      report.results.firstOrNull { result -> result.skillId == skillId }
+    }
+    if (requestedResult != null) {
+      return renderInstalledSkillUpdateCheckResult(requestedResult)
+    }
+    if (requestedSkillId != null) {
+      return if (isChineseHostLocale()) {
+        "未找到已安装的技能 '$requestedSkillId'。"
+      } else {
+        "Installed skill '$requestedSkillId' was not found."
+      }
+    }
+    if (report.results.isEmpty()) {
+      return if (isChineseHostLocale()) {
+        "没有可检查更新的已安装技能。"
+      } else {
+        "No installed skills to check for updates."
+      }
+    }
+    return if (isChineseHostLocale()) {
+      "已检查 ${report.results.size} 个技能：可更新 ${report.updateAvailableCount} 个，已是最新 ${report.upToDateCount} 个，检查失败 ${report.sourceUnavailableCount + report.unsupportedCount} 个。"
+    } else {
+      "Checked ${report.results.size} skills: ${report.updateAvailableCount} update available, ${report.upToDateCount} up to date, ${report.sourceUnavailableCount + report.unsupportedCount} failed."
+    }
+  }
+
+  private fun renderInstalledSkillUpdateCheckResult(
+    result: SkillPackageCheckResult,
+  ): String {
+    val errorMessage = result.errorMessage?.trim()?.takeIf(String::isNotBlank)
+    return when (result.status) {
+      SkillPackageCheckStatus.UP_TO_DATE -> if (isChineseHostLocale()) {
+        "技能 '${result.skillId}' 已是最新版本。"
+      } else {
+        "Skill '${result.skillId}' is up to date."
+      }
+
+      SkillPackageCheckStatus.UPDATE_AVAILABLE -> if (isChineseHostLocale()) {
+        "技能 '${result.skillId}' 有可用更新。"
+      } else {
+        "Update available for '${result.skillId}'."
+      }
+
+      SkillPackageCheckStatus.SOURCE_UNAVAILABLE,
+      SkillPackageCheckStatus.UNSUPPORTED_SOURCE,
+      -> errorMessage ?: if (isChineseHostLocale()) {
+        "无法检查技能 '${result.skillId}' 的更新。"
+      } else {
+        "Unable to check '${result.skillId}' for updates."
+      }
+    }
+  }
+
+  private fun renderInstalledSkillUpdateMessage(
+    requestedSkillId: String?,
+    report: SkillPackageUpdateReport,
+  ): String {
+    val requestedResult = requestedSkillId?.let { skillId ->
+      report.results.firstOrNull { result -> result.skillId == skillId }
+    }
+    if (requestedResult != null) {
+      return renderInstalledSkillUpdateResult(requestedResult)
+    }
+    if (requestedSkillId != null) {
+      return if (isChineseHostLocale()) {
+        "未找到已安装的技能 '$requestedSkillId'。"
+      } else {
+        "Installed skill '$requestedSkillId' was not found."
+      }
+    }
+    if (report.results.isEmpty()) {
+      return if (isChineseHostLocale()) {
+        "没有可更新的已安装技能。"
+      } else {
+        "No installed skills to update."
+      }
+    }
+    if (report.updatedCount == 0 && report.failedCount == 0) {
+      return if (isChineseHostLocale()) {
+        "所有已安装技能都已是最新版本。"
+      } else {
+        "All installed skills are already up to date."
+      }
+    }
+    return if (isChineseHostLocale()) {
+      "技能更新完成：已更新 ${report.updatedCount} 个，跳过 ${report.skippedCount} 个，失败 ${report.failedCount} 个。"
+    } else {
+      "Skill update finished: ${report.updatedCount} updated, ${report.skippedCount} skipped, ${report.failedCount} failed."
+    }
+  }
+
+  private fun renderInstalledSkillUpdateResult(
+    result: SkillPackageUpdateResult,
+  ): String {
+    val errorMessage = result.errorMessage?.trim()?.takeIf(String::isNotBlank)
+    return when (result.status) {
+      SkillPackageUpdateStatus.UPDATED -> if (isChineseHostLocale()) {
+        "已更新技能 '${result.skillId}'。"
+      } else {
+        "Updated '${result.skillId}'."
+      }
+
+      SkillPackageUpdateStatus.SKIPPED -> if (result.checkStatus == SkillPackageCheckStatus.UP_TO_DATE) {
+        if (isChineseHostLocale()) {
+          "技能 '${result.skillId}' 已是最新版本。"
+        } else {
+          "Skill '${result.skillId}' is already up to date."
+        }
+      } else if (isChineseHostLocale()) {
+        "已跳过技能 '${result.skillId}'。"
+      } else {
+        "Skipped '${result.skillId}'."
+      }
+
+      SkillPackageUpdateStatus.FAILED -> errorMessage ?: if (isChineseHostLocale()) {
+        "无法更新技能 '${result.skillId}'。"
+      } else {
+        "Unable to update '${result.skillId}'."
+      }
+    }
   }
 
   override fun loadSkillInstructions(skillId: String): Map<String, Any?> {
@@ -1198,411 +1280,6 @@ internal class OpenCrayHostRuntime private constructor(
     )
   }
 
-  private fun loadInstalledSkillsFromTool(
-    localInstalledSkills: List<InstalledSkillSnapshot>,
-  ): List<InstalledSkillSnapshot> {
-    val outcome = executeSkillsToolCall(
-      requestedCall = AgentToolCall(toolName = "SkillsList"),
-      refreshSkillsSnapshot = false,
-      successFallbackMessage = "",
-    )
-    return parseInstalledSkillsListContent(
-      content = outcome.content,
-      localInstalledSkills = localInstalledSkills,
-    )
-  }
-
-  private fun loadSuggestedSkillsFromTool(query: String): List<SuggestedSkillSnapshot> {
-    val outcome = executeSkillsToolCall(
-      requestedCall = AgentToolCall(
-        toolName = "SkillsFind",
-        arguments = buildJsonObject {
-          if (query.isNotBlank()) {
-            put("query", query)
-          }
-          put("max_results", SKILLS_FIND_MAX_RESULTS)
-        },
-      ),
-      refreshSkillsSnapshot = false,
-      successFallbackMessage = "",
-    )
-    return parseSuggestedSkillsFindContent(outcome.content)
-  }
-
-  private fun parseSkillSourceInspectionContent(
-    content: String,
-    metadata: Map<String, String>,
-  ): SkillSourceInspectionSnapshot {
-    var sourceType = metadata["sourceType"]?.trim().orEmpty()
-    var sourceRef = metadata["sourceRef"]?.trim().orEmpty()
-    var sourcePath = metadata["sourcePath"]?.trim().orEmpty()
-    var resolvedRevision = metadata["resolvedRevision"]?.trim().orEmpty()
-    var resolvedCommitSha = metadata["resolvedCommitSha"]?.trim().orEmpty()
-    val candidates = mutableListOf<SkillSourceInspectionCandidateSnapshot>()
-    content.lineSequence()
-      .map(String::trim)
-      .filter(String::isNotBlank)
-      .forEach { line ->
-        val segments = line.split('\t')
-        when (segments.firstOrNull()?.trim()) {
-          "inspection" -> {
-            if (segments.size >= 2) {
-              sourceType = segments[1].trim().ifBlank { sourceType }
-            }
-            val fields = parseTabFields(segments.drop(2))
-            sourceRef = fields["source_ref"].orEmpty().ifBlank { sourceRef }
-            sourcePath = fields["source_path"].orEmpty().ifBlank { sourcePath }
-            resolvedRevision = fields["resolved_revision"].orEmpty().ifBlank { resolvedRevision }
-            resolvedCommitSha = fields["resolved_commit"].orEmpty().ifBlank { resolvedCommitSha }
-          }
-
-          "candidate" -> {
-            val name = segments.getOrNull(1)?.trim().orEmpty()
-            if (name.isBlank()) {
-              return@forEach
-            }
-            val fields = parseTabFields(segments.drop(2))
-            candidates += SkillSourceInspectionCandidateSnapshot(
-              name = name,
-              description = fields["description"].orEmpty(),
-              relativePath = fields["relative_path"].orEmpty(),
-            )
-          }
-        }
-      }
-    require(sourceType.isNotBlank()) {
-      "SkillsInspect returned an invalid source type."
-    }
-    require(sourceRef.isNotBlank()) {
-      "SkillsInspect returned an invalid source ref."
-    }
-    return SkillSourceInspectionSnapshot(
-      sourceType = sourceType,
-      sourceRef = sourceRef,
-      candidates = candidates.toList(),
-      sourcePath = sourcePath,
-      resolvedRevision = resolvedRevision,
-      resolvedCommitSha = resolvedCommitSha,
-    )
-  }
-
-  private fun executeSkillsToolCall(
-    requestedCall: AgentToolCall,
-    refreshSkillsSnapshot: Boolean,
-    successFallbackMessage: String,
-  ): SkillsToolExecutionOutcome {
-    val executionContext = synchronized(lock) {
-      DirectToolExecutionContext(
-        sessionId = chatSessionStore.loadState().activeSession.sessionId,
-        safetyMetadata = safetyMetadataForTask(safetySettingsFacade.load()),
-      )
-    }
-    val call = AgentToolCall(
-      toolName = requestedCall.toolName,
-      arguments = requestedCall.arguments,
-    )
-    val runId = "host-tool-${executionContext.sessionId}-${UUID.randomUUID().toString().take(8)}"
-    val task = AgentTask(
-      id = "tool-${executionContext.sessionId}-${UUID.randomUUID().toString().take(8)}",
-      type = AgentTaskType.TOOL_CALL,
-      input = buildDirectToolCallPayload(call),
-      policyDecision = PolicyDecision(
-        outcome = PolicyDecisionOutcome.ALLOW,
-        reasonCode = "HOST_UI_ACTION_ALLOW",
-      ),
-      createdAtEpochMs = System.currentTimeMillis(),
-      metadata = executionContext.safetyMetadata +
-        lifecycleDescriptor.taskMetadata(
-          submissionSource = RunSubmissionSources.HOST_UI_TOOL_ACTION,
-        ) + mapOf(
-        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
-        AppAgentSessionTaskRuntimeFactory.METADATA_HOST_SESSION_ID to executionContext.sessionId,
-        RunLifecycleMetadataKeys.PREAPPROVED_TOOL_NAME to call.toolName,
-      ),
-    )
-    if (directTaskRuntimeFactory != null) {
-      return executeSkillsToolCallFallback(
-        executionContext = executionContext,
-        task = task,
-        call = call,
-        refreshSkillsSnapshot = refreshSkillsSnapshot,
-        successFallbackMessage = successFallbackMessage,
-      )
-    }
-
-    val handle = runtimeSession(executionContext.sessionId)
-    val submission = handle.submitTask(task)
-    handle.ensureProcessing()
-    emitChatRuntimeSnapshot()
-    val run = waitForDirectToolRun(
-      runId = submission.runId,
-      timeoutMs = DEFAULT_RUN_WAIT_TIMEOUT_MS,
-    ) ?: throw IllegalStateException("${call.toolName} timed out.")
-    if (refreshSkillsSnapshot &&
-      run.executionStatus == ExecutionStatus.SUCCESS
-    ) {
-      emitSkillsSnapshot()
-    }
-    val toolResult = latestToolResultForRun(
-      sessionId = executionContext.sessionId,
-      runId = submission.runId,
-    ) ?: (run.lastEvent as? OpenCrayToolResultEvent)?.result
-    val content = if (run.executionStatus == ExecutionStatus.SUCCESS) {
-      toolResult?.content?.trim()?.takeIf(String::isNotBlank)
-        ?: successFallbackMessage.trim().takeIf(String::isNotBlank)
-        .orEmpty()
-    } else {
-      toolResult?.content?.trim()?.takeIf(String::isNotBlank).orEmpty()
-    }
-    val errorMessage = toolResult?.errorMessage
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?: toolResult?.content
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-      ?: run.errorMessage?.trim()?.takeIf(String::isNotBlank)
-    return SkillsToolExecutionOutcome(
-      toolName = call.toolName,
-      executionStatus = run.executionStatus ?: ExecutionStatus.FAILED,
-      content = content,
-      metadata = toolResult?.metadata.orEmpty(),
-      errorCode = toolResult?.errorCode ?: run.errorCode,
-      errorMessage = errorMessage,
-    )
-  }
-
-  private fun executeSkillsToolCallFallback(
-    executionContext: DirectToolExecutionContext,
-    task: AgentTask,
-    call: AgentToolCall,
-    refreshSkillsSnapshot: Boolean,
-    successFallbackMessage: String,
-  ): SkillsToolExecutionOutcome {
-    val runtimeFactory = requireNotNull(directTaskRuntimeFactory) {
-      "${call.toolName} is unavailable in this host runtime."
-    }
-    val result = runtimeFactory.create(
-      sessionId = executionContext.sessionId,
-      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
-    ).execute(
-      task,
-      RuntimeExecutionHooks(
-        isCancellationRequested = { false },
-        requestRetry = { _ -> },
-      ),
-    )
-    if (result.status == ExecutionStatus.SUCCESS) {
-      if (refreshSkillsSnapshot) {
-        emitSkillsSnapshot()
-      }
-    }
-    return SkillsToolExecutionOutcome(
-      toolName = call.toolName,
-      executionStatus = result.status,
-      content = if (result.status == ExecutionStatus.SUCCESS) {
-        result.stdout.trim().takeIf(String::isNotBlank)
-          ?: successFallbackMessage.trim().takeIf(String::isNotBlank)
-          .orEmpty()
-      } else {
-        result.stdout.trim().takeIf(String::isNotBlank).orEmpty()
-      },
-      metadata = result.metadata,
-      errorCode = result.errorCode,
-      errorMessage = result.errorMessage
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-        ?: result.stderr.trim().takeIf(String::isNotBlank),
-    )
-  }
-
-  private fun buildDirectToolCallPayload(call: AgentToolCall): String = buildJsonObject {
-    put("type", "tool_call")
-    call.id?.let { toolCallId -> put("tool_call_id", toolCallId) }
-    put("tool_name", call.toolName)
-    put("arguments", call.arguments)
-    call.reason?.takeIf(String::isNotBlank)?.let { reason -> put("reason", reason) }
-  }.toString()
-
-  private fun defaultSkillsToolSuccessMessage(
-    toolName: String,
-    skillId: String?,
-  ): String = when (toolName) {
-    "SkillsAdd" -> skillId?.let(strings.skillInstalled) ?: "Installed skill."
-    "SkillsList" -> "Loaded installed skills."
-    "SkillsCheck" -> skillId?.let { "Checked '$it' for updates." } ?: "Checked installed skills for updates."
-    "SkillsRemove" -> skillId?.let(strings.skillRemoved) ?: "Removed skill."
-    "SkillsUpdate" -> skillId?.let { "Updated '$it'." } ?: "Updated installed skills."
-    else -> toolName
-  }
-
-  private fun requireSuccessfulSkillsToolCall(
-    outcome: SkillsToolExecutionOutcome,
-    fallbackError: String,
-  ): SkillsToolExecutionOutcome {
-    if (outcome.executionStatus == ExecutionStatus.SUCCESS) {
-      return outcome
-    }
-    throw IllegalStateException(
-      outcome.errorMessage?.trim()?.takeIf(String::isNotBlank)
-        ?: outcome.content.trim().takeIf(String::isNotBlank)
-        ?: fallbackError,
-    )
-  }
-
-  private fun latestToolResultForRun(
-    sessionId: String,
-    runId: String,
-  ): AgentToolResult? = synchronized(lock) {
-    latestToolResultForRunLocked(sessionId, runId)
-  }
-
-  private fun latestToolResultForRunLocked(
-    sessionId: String,
-    runId: String,
-  ): AgentToolResult? = runtimeEventsBySession[sessionId]
-      ?.toList()
-      ?.asReversed()
-      ?.firstNotNullOfOrNull { event ->
-        (event as? OpenCrayToolResultEvent)
-          ?.takeIf { toolEvent -> toolEvent.runId == runId }
-          ?.result
-      }
-
-  private fun parseSuggestedSkillsFindContent(content: String): List<SuggestedSkillSnapshot> {
-    val suggestionsByName = linkedMapOf<String, ParsedSuggestedSkill>()
-    content.lineSequence()
-      .map(String::trim)
-      .filter(String::isNotBlank)
-      .forEach { line ->
-        val parsed = parseSuggestedSkillFindLine(line) ?: return@forEach
-        val key = parsed.snapshot.name.trim().lowercase(Locale.US)
-        val existing = suggestionsByName[key]
-        if (existing == null || parsed.priority >= existing.priority) {
-          suggestionsByName[key] = parsed
-        }
-      }
-    return suggestionsByName.values.map(ParsedSuggestedSkill::snapshot)
-  }
-
-  private fun parseInstalledSkillsListContent(
-    content: String,
-    localInstalledSkills: List<InstalledSkillSnapshot>,
-  ): List<InstalledSkillSnapshot> {
-    val localInstalledById = localInstalledSkills.associateBy(InstalledSkillSnapshot::id)
-    return content.lineSequence()
-      .map(String::trim)
-      .filter(String::isNotBlank)
-      .mapNotNull { line ->
-        parseInstalledSkillListLine(
-          line = line,
-          localInstalledById = localInstalledById,
-        )
-      }
-      .toList()
-  }
-
-  private fun parseInstalledSkillListLine(
-    line: String,
-    localInstalledById: Map<String, InstalledSkillSnapshot>,
-  ): InstalledSkillSnapshot? {
-    val segments = line.split('\t')
-    if (segments.size < 2) {
-      return null
-    }
-    val skillId = segments[0].trim().takeIf(String::isNotBlank) ?: return null
-    val localInstalled = localInstalledById[skillId]
-    val fields = parseTabFields(segments.drop(2))
-    return InstalledSkillSnapshot(
-      id = skillId,
-      name = skillId,
-      description = fields["description"].orEmpty().ifBlank {
-        localInstalled?.description.orEmpty()
-      },
-      isEnabled = localInstalled?.isEnabled ?: true,
-      sourceDirectoryPath = localInstalled?.sourceDirectoryPath.orEmpty(),
-      canDelete = localInstalled?.canDelete ?: true,
-    )
-  }
-
-  private fun parseSuggestedSkillFindLine(line: String): ParsedSuggestedSkill? {
-    val segments = line.split('\t')
-    if (segments.size < 2) {
-      return null
-    }
-    val name = segments[0].trim().takeIf(String::isNotBlank) ?: return null
-    val installState = segments[1].trim()
-    if (installState == "installed_remote" || installState == "installed_local") {
-      return null
-    }
-    val fields = parseTabFields(segments.drop(2))
-    return when (installState) {
-      "catalog" -> ParsedSuggestedSkill(
-        snapshot = SuggestedSkillSnapshot(
-          id = name,
-          name = name,
-          description = fields["description"].orEmpty(),
-          sourceRef = name,
-          sourceLabel = localizedLocalCatalogSourceLabel(),
-        ),
-        priority = 2,
-      )
-
-      "remote" -> {
-        val installRef = fields["install_ref"]?.trim()?.takeIf(String::isNotBlank) ?: return null
-        val provider = fields["source"]?.trim()?.takeIf(String::isNotBlank) ?: localizedRemoteIndexSourceLabel()
-        val installs = fields["installs"]?.toIntOrNull()
-        ParsedSuggestedSkill(
-          snapshot = SuggestedSkillSnapshot(
-            id = installRef,
-            name = name,
-            description = localizedRemoteSuggestionDescription(
-              provider = provider,
-              installs = installs,
-            ),
-            sourceRef = installRef,
-            sourceLabel = localizedRemoteIndexSourceLabel(),
-          ),
-          priority = 1,
-        )
-      }
-
-      else -> null
-    }
-  }
-
-  private fun parseTabFields(segments: List<String>): Map<String, String> = segments
-    .mapNotNull { segment ->
-      val separatorIndex = segment.indexOf('=')
-      if (separatorIndex <= 0) {
-        null
-      } else {
-        segment.substring(0, separatorIndex).trim() to segment.substring(separatorIndex + 1).trim()
-      }
-    }
-    .toMap(linkedMapOf())
-
-  private fun localizedLocalCatalogSourceLabel(): String =
-    appContext?.getString(R.string.skills_suggested_source_local_catalog) ?: "Local catalog"
-
-  private fun localizedRemoteIndexSourceLabel(): String =
-    appContext?.getString(R.string.skills_suggested_source_remote_index) ?: "skills.sh"
-
-  private fun localizedRemoteSuggestionDescription(
-    provider: String,
-    installs: Int?,
-  ): String = if (installs != null && installs > 0) {
-    appContext?.getString(
-      R.string.skills_suggested_remote_description_with_installs,
-      provider,
-      installs,
-    ) ?: "$provider via skills.sh · $installs installs"
-  } else {
-    appContext?.getString(
-      R.string.skills_suggested_remote_description,
-      provider,
-    ) ?: "$provider via skills.sh"
-  }
-
   override fun loadChatSnapshot(): Map<String, Any?> {
     val (snapshot, visibleAttachments) = synchronized(lock) {
       buildChatSnapshotLocked()
@@ -1647,7 +1324,9 @@ internal class OpenCrayHostRuntime private constructor(
     val activeSessionTitle = displaySessionTitle(activeSession.title)
     val todoPresentation = todoSnapshotProvider(activeSession.sessionId)
     val todos = todoPresentation.todos.map(::todoSnapshotMap)
-    val awaitingDirection = latestRunForSnapshot(displayedRuns)?.let(::isAwaitingDirectionRun) == true
+    val awaitingDirection = latestRunForSnapshot(displayedRuns)?.let { run ->
+      isAwaitingDirectionRun(run) || isDeferredApprovalDecisionAwaitingResumeRun(run)
+    } == true
     val summaryBody = when {
       pendingApprovals.isEmpty() && awaitingDirection -> {
         strings.chatSummaryAwaitingDirection
@@ -2006,13 +1685,21 @@ internal class OpenCrayHostRuntime private constructor(
         ?: error("Pending approval '$taskIdOrRunId' is unavailable.")
       val sessionId = approvalMatch.sessionId
       val approval = approvalMatch.approval
-      runtimeHostAccess.markApprovalApproved(
-        sessionId = sessionId,
-        taskId = approval.taskId,
-        toolName = approval.resumeToolName ?: approval.toolName,
-        promptResumeState = approval.promptResumeState,
-        subAgentApprovalResume = approval.subAgentApprovalResume,
+      val run = findRunSnapshotForIdentifierLocked(approval.taskId)
+        ?: error("Run '${approval.runId}' is unavailable.")
+      val deferUntilManualResume = shouldDeferApprovalDecisionUntilManualResume(
+        run = run,
+        approval = approval,
       )
+      if (!deferUntilManualResume) {
+        runtimeHostAccess.markApprovalApproved(
+          sessionId = sessionId,
+          taskId = approval.taskId,
+          toolName = approval.resumeToolName ?: approval.toolName,
+          promptResumeState = approval.promptResumeState,
+          subAgentApprovalResume = approval.subAgentApprovalResume,
+        )
+      }
       persistPromptCheckpointLocked(
         sessionId = sessionId,
         checkpoint = pendingApprovalCheckpoint(
@@ -2022,11 +1709,13 @@ internal class OpenCrayHostRuntime private constructor(
           nowEpochMs = System.currentTimeMillis(),
         ),
       )
-      val resumed = runtimeSession(sessionId).requestResumeTask(approval.taskId)
-      if (!resumed) {
-        clearApproval(sessionId, approval.taskId)
-        clearPromptCheckpointLocked(sessionId, approval.taskId)
-        error("Unable to resume pending approval '$taskIdOrRunId'.")
+      if (!deferUntilManualResume) {
+        val resumed = runtimeSession(sessionId).requestResumeTask(approval.taskId)
+        if (!resumed) {
+          clearApproval(sessionId, approval.taskId)
+          clearPromptCheckpointLocked(sessionId, approval.taskId)
+          error("Unable to resume pending approval '$taskIdOrRunId'.")
+        }
       }
       approvalApprovedReplayRecorder(
         sessionId,
@@ -2037,16 +1726,18 @@ internal class OpenCrayHostRuntime private constructor(
         approval.replayExecutionContext(),
       )
       clearPendingApprovalLocked(sessionId, approval.taskId)
-      pendingApprovalSubAgentResumedEvent(
-        approval = approval,
-        summary = delegatedChildApprovalApprovedSummary(),
-        emittedAtEpochMs = System.currentTimeMillis(),
-      )?.let { event ->
-        subAgentReplayRecorder(sessionId, event)
-        recordRuntimeEventLocked(
-          sessionId = sessionId,
-          event = event,
-        )
+      if (!deferUntilManualResume) {
+        pendingApprovalSubAgentResumedEvent(
+          approval = approval,
+          summary = delegatedChildApprovalApprovedSummary(),
+          emittedAtEpochMs = System.currentTimeMillis(),
+        )?.let { event ->
+          subAgentReplayRecorder(sessionId, event)
+          recordRuntimeEventLocked(
+            sessionId = sessionId,
+            event = event,
+          )
+        }
       }
       recordRuntimeEventLocked(
         sessionId = sessionId,
@@ -2054,20 +1745,31 @@ internal class OpenCrayHostRuntime private constructor(
           approval = approval,
           phase = OpenCrayApprovalPhase.APPROVED,
           emittedAtEpochMs = System.currentTimeMillis(),
+          approvedText = if (deferUntilManualResume) {
+            deferredApprovalRecordedText()
+          } else {
+            strings.chatApprovalApproved
+          },
         ),
       )
-      approval.pendingMessageId?.let { pendingMessageId ->
-        chatSessionStore.replaceMessage(
-          sessionId = sessionId,
-          messageId = pendingMessageId,
-          role = ChatTranscriptRole.ASSISTANT,
-          text = strings.agentThinking,
-        )
+      if (!deferUntilManualResume) {
+        approval.pendingMessageId?.let { pendingMessageId ->
+          chatSessionStore.replaceMessage(
+            sessionId = sessionId,
+            messageId = pendingMessageId,
+            role = ChatTranscriptRole.ASSISTANT,
+            text = strings.agentThinking,
+          )
+        }
       }
       chatSessionStore.appendMessage(
         sessionId = sessionId,
         role = ChatTranscriptRole.TOOL,
-        text = strings.chatApprovalApproved,
+        text = if (deferUntilManualResume) {
+          deferredApprovalRecordedText()
+        } else {
+          strings.chatApprovalApproved
+        },
       )
     }
     emitChatSnapshot()
@@ -2083,17 +1785,25 @@ internal class OpenCrayHostRuntime private constructor(
       require(approval.supportsSessionApproval) {
         "Pending approval '$taskIdOrRunId' does not support session approval."
       }
+      val run = findRunSnapshotForIdentifierLocked(approval.taskId)
+        ?: error("Run '${approval.runId}' is unavailable.")
+      val deferUntilManualResume = shouldDeferApprovalDecisionUntilManualResume(
+        run = run,
+        approval = approval,
+      )
       chatSessionStore.setNativeWebSearchSessionApproved(
         sessionId = sessionId,
         approved = true,
       )
-      runtimeHostAccess.markApprovalApproved(
-        sessionId = sessionId,
-        taskId = approval.taskId,
-        toolName = approval.resumeToolName ?: approval.toolName,
-        promptResumeState = approval.promptResumeState,
-        subAgentApprovalResume = approval.subAgentApprovalResume,
-      )
+      if (!deferUntilManualResume) {
+        runtimeHostAccess.markApprovalApproved(
+          sessionId = sessionId,
+          taskId = approval.taskId,
+          toolName = approval.resumeToolName ?: approval.toolName,
+          promptResumeState = approval.promptResumeState,
+          subAgentApprovalResume = approval.subAgentApprovalResume,
+        )
+      }
       persistPromptCheckpointLocked(
         sessionId = sessionId,
         checkpoint = pendingApprovalCheckpoint(
@@ -2103,15 +1813,17 @@ internal class OpenCrayHostRuntime private constructor(
           nowEpochMs = System.currentTimeMillis(),
         ),
       )
-      val resumed = runtimeSession(sessionId).requestResumeTask(approval.taskId)
-      if (!resumed) {
-        chatSessionStore.setNativeWebSearchSessionApproved(
-          sessionId = sessionId,
-          approved = false,
-        )
-        clearApproval(sessionId, approval.taskId)
-        clearPromptCheckpointLocked(sessionId, approval.taskId)
-        error("Unable to resume pending approval '$taskIdOrRunId'.")
+      if (!deferUntilManualResume) {
+        val resumed = runtimeSession(sessionId).requestResumeTask(approval.taskId)
+        if (!resumed) {
+          chatSessionStore.setNativeWebSearchSessionApproved(
+            sessionId = sessionId,
+            approved = false,
+          )
+          clearApproval(sessionId, approval.taskId)
+          clearPromptCheckpointLocked(sessionId, approval.taskId)
+          error("Unable to resume pending approval '$taskIdOrRunId'.")
+        }
       }
       approvalApprovedReplayRecorder(
         sessionId,
@@ -2122,16 +1834,18 @@ internal class OpenCrayHostRuntime private constructor(
         approval.replayExecutionContext(),
       )
       clearPendingApprovalLocked(sessionId, approval.taskId)
-      pendingApprovalSubAgentResumedEvent(
-        approval = approval,
-        summary = delegatedChildApprovalApprovedSummary(),
-        emittedAtEpochMs = System.currentTimeMillis(),
-      )?.let { event ->
-        subAgentReplayRecorder(sessionId, event)
-        recordRuntimeEventLocked(
-          sessionId = sessionId,
-          event = event,
-        )
+      if (!deferUntilManualResume) {
+        pendingApprovalSubAgentResumedEvent(
+          approval = approval,
+          summary = delegatedChildApprovalApprovedSummary(),
+          emittedAtEpochMs = System.currentTimeMillis(),
+        )?.let { event ->
+          subAgentReplayRecorder(sessionId, event)
+          recordRuntimeEventLocked(
+            sessionId = sessionId,
+            event = event,
+          )
+        }
       }
       recordRuntimeEventLocked(
         sessionId = sessionId,
@@ -2139,21 +1853,31 @@ internal class OpenCrayHostRuntime private constructor(
           approval = approval,
           phase = OpenCrayApprovalPhase.APPROVED,
           emittedAtEpochMs = System.currentTimeMillis(),
-          approvedText = strings.chatApprovalApprovedForSession,
+          approvedText = if (deferUntilManualResume) {
+            deferredApprovalRecordedForSessionText()
+          } else {
+            strings.chatApprovalApprovedForSession
+          },
         ),
       )
-      approval.pendingMessageId?.let { pendingMessageId ->
-        chatSessionStore.replaceMessage(
-          sessionId = sessionId,
-          messageId = pendingMessageId,
-          role = ChatTranscriptRole.ASSISTANT,
-          text = strings.agentThinking,
-        )
+      if (!deferUntilManualResume) {
+        approval.pendingMessageId?.let { pendingMessageId ->
+          chatSessionStore.replaceMessage(
+            sessionId = sessionId,
+            messageId = pendingMessageId,
+            role = ChatTranscriptRole.ASSISTANT,
+            text = strings.agentThinking,
+          )
+        }
       }
       chatSessionStore.appendMessage(
         sessionId = sessionId,
         role = ChatTranscriptRole.TOOL,
-        text = strings.chatApprovalApprovedForSession,
+        text = if (deferUntilManualResume) {
+          deferredApprovalRecordedForSessionText()
+        } else {
+          strings.chatApprovalApprovedForSession
+        },
       )
     }
     emitChatSnapshot()
@@ -2166,9 +1890,17 @@ internal class OpenCrayHostRuntime private constructor(
         ?: error("Pending approval '$taskIdOrRunId' is unavailable.")
       val sessionId = approvalMatch.sessionId
       val approval = approvalMatch.approval
-      val cancelled = runtimeSession(sessionId).requestCancel(approval.taskId)
-      if (!cancelled) {
-        error("Unable to stop pending approval '$taskIdOrRunId' after rejection.")
+      val run = findRunSnapshotForIdentifierLocked(approval.taskId)
+        ?: error("Run '${approval.runId}' is unavailable.")
+      val deferUntilManualResume = shouldDeferApprovalDecisionUntilManualResume(
+        run = run,
+        approval = approval,
+      )
+      if (!deferUntilManualResume) {
+        val cancelled = runtimeSession(sessionId).requestCancel(approval.taskId)
+        if (!cancelled) {
+          error("Unable to stop pending approval '$taskIdOrRunId' after rejection.")
+        }
       }
       approvalReplayRecorder(
         sessionId,
@@ -2178,18 +1910,39 @@ internal class OpenCrayHostRuntime private constructor(
         approval.isHighRisk,
         approval.replayExecutionContext(),
       )
-      clearPendingApprovalLocked(sessionId, approval.taskId)
-      clearApproval(sessionId, approval.taskId)
-      clearPromptCheckpointLocked(sessionId, approval.taskId)
-      pendingApprovalSubAgentTerminalEvent(
-        approval = approval,
-        summary = delegatedChildApprovalRejectedStopSummary(),
-        emittedAtEpochMs = System.currentTimeMillis(),
-      )?.let { event ->
-        subAgentReplayRecorder(sessionId, event)
-        recordRuntimeEventLocked(
+      if (!deferUntilManualResume) {
+        runtimeHostAccess.markApprovalRejected(
           sessionId = sessionId,
-          event = event,
+          taskId = approval.taskId,
+          toolName = approval.resumeToolName ?: approval.toolName,
+          promptResumeState = approval.promptResumeState,
+          subAgentApprovalResume = approval.subAgentApprovalResume,
+        )
+      }
+      clearPendingApprovalLocked(sessionId, approval.taskId)
+      if (!deferUntilManualResume) {
+        clearApproval(sessionId, approval.taskId)
+        clearPromptCheckpointLocked(sessionId, approval.taskId)
+        pendingApprovalSubAgentTerminalEvent(
+          approval = approval,
+          summary = delegatedChildApprovalRejectedStopSummary(),
+          emittedAtEpochMs = System.currentTimeMillis(),
+        )?.let { event ->
+          subAgentReplayRecorder(sessionId, event)
+          recordRuntimeEventLocked(
+            sessionId = sessionId,
+            event = event,
+          )
+        }
+      } else {
+        persistPromptCheckpointLocked(
+          sessionId = sessionId,
+          checkpoint = pendingApprovalCheckpoint(
+            sessionId = sessionId,
+            approval = approval,
+            checkpointKind = PromptCheckpointKind.REJECTED_PENDING_RESUME,
+            nowEpochMs = System.currentTimeMillis(),
+          ),
         )
       }
       recordRuntimeEventLocked(
@@ -2198,20 +1951,31 @@ internal class OpenCrayHostRuntime private constructor(
           approval = approval,
           phase = OpenCrayApprovalPhase.REJECTED,
           emittedAtEpochMs = System.currentTimeMillis(),
+          rejectedText = if (deferUntilManualResume) {
+            deferredApprovalRejectedText()
+          } else {
+            strings.chatApprovalRejected
+          },
         ),
       )
-      approval.pendingMessageId?.let { pendingMessageId ->
-        chatSessionStore.replaceMessage(
-          sessionId = sessionId,
-          messageId = pendingMessageId,
-          role = ChatTranscriptRole.ASSISTANT,
-          text = strings.agentThinking,
-        )
+      if (!deferUntilManualResume) {
+        approval.pendingMessageId?.let { pendingMessageId ->
+          chatSessionStore.replaceMessage(
+            sessionId = sessionId,
+            messageId = pendingMessageId,
+            role = ChatTranscriptRole.ASSISTANT,
+            text = strings.agentThinking,
+          )
+        }
       }
       chatSessionStore.appendMessage(
         sessionId = sessionId,
         role = ChatTranscriptRole.TOOL,
-        text = strings.chatApprovalRejected,
+        text = if (deferUntilManualResume) {
+          deferredApprovalRejectedText()
+        } else {
+          strings.chatApprovalRejected
+        },
       )
     }
     emitChatSnapshot()
@@ -2223,9 +1987,12 @@ internal class OpenCrayHostRuntime private constructor(
       val run = findRunSnapshotForIdentifierLocked(taskIdOrRunId)
         ?: error("Run '$taskIdOrRunId' is unavailable.")
       val approval = pendingApprovalForIdentifier(run.sessionId, run.taskId)
-      val cancelled = runtimeSession(run.sessionId).requestCancel(run.taskId)
-      if (!cancelled) {
-        error("Unable to cancel run '$taskIdOrRunId'.")
+      val interruptedWaitingApproval = approval != null && isApprovalWaitingRun(run)
+      if (!interruptedWaitingApproval) {
+        val cancelled = runtimeSession(run.sessionId).requestCancel(run.taskId)
+        if (!cancelled) {
+          error("Unable to cancel run '$taskIdOrRunId'.")
+        }
       }
       runCancellationReplayRecorder(
         run.sessionId,
@@ -2234,20 +2001,22 @@ internal class OpenCrayHostRuntime private constructor(
         approval?.toolName,
         run.replayExecutionContext(),
       )
-      clearPendingApprovalLocked(run.sessionId, run.taskId)
-      clearApproval(run.sessionId, run.taskId)
-      clearPromptCheckpointLocked(run.sessionId, run.taskId)
-      approval?.let { pendingApproval ->
-        pendingApprovalSubAgentTerminalEvent(
-          approval = pendingApproval,
-          summary = delegatedChildCancelledWhileWaitingSummary(),
-          emittedAtEpochMs = System.currentTimeMillis(),
-        )?.let { event ->
-          subAgentReplayRecorder(run.sessionId, event)
-          recordRuntimeEventLocked(
-            sessionId = run.sessionId,
-            event = event,
-          )
+      if (!interruptedWaitingApproval) {
+        clearPendingApprovalLocked(run.sessionId, run.taskId)
+        clearApproval(run.sessionId, run.taskId)
+        clearPromptCheckpointLocked(run.sessionId, run.taskId)
+        approval?.let { pendingApproval ->
+          pendingApprovalSubAgentTerminalEvent(
+            approval = pendingApproval,
+            summary = delegatedChildCancelledWhileWaitingSummary(),
+            emittedAtEpochMs = System.currentTimeMillis(),
+          )?.let { event ->
+            subAgentReplayRecorder(run.sessionId, event)
+            recordRuntimeEventLocked(
+              sessionId = run.sessionId,
+              event = event,
+            )
+          }
         }
       }
       recordRuntimeEventLocked(
@@ -2273,6 +2042,8 @@ internal class OpenCrayHostRuntime private constructor(
           executionKind = EXECUTION_KIND_CHECKPOINT_RESUME,
           taskMetadataUpdates = emptyMap(),
         )
+      } else if (isDeferredApprovalDecisionAwaitingResumeRun(run)) {
+        runtimeSession(run.sessionId).requestResumeTask(run.taskId)
       } else {
         false
       }
@@ -2320,6 +2091,17 @@ internal class OpenCrayHostRuntime private constructor(
             userText = trimmed,
             attachments = archivedAttachments,
           )
+        } else if (isDeferredApprovalDecisionAwaitingResumeRun(liveRun)) {
+          chatSessionStore.enqueuePendingUserInput(
+            sessionId = sessionId,
+            text = trimmed,
+            attachments = archivedAttachments,
+          )
+          val resumed = runtimeSession(sessionId).requestResumeTask(liveRun.taskId)
+          if (!resumed) {
+            error("Unable to resume interrupted approval run '${liveRun.runId}'.")
+          }
+          null
         } else if (
           archivedAttachments.isNotEmpty() ||
           queuedBefore.isNotEmpty() ||
@@ -2746,6 +2528,38 @@ internal class OpenCrayHostRuntime private constructor(
   private fun isApprovalRejected(sessionId: String, taskId: String): Boolean =
     runtimeHostAccess.isApprovalRejected(sessionId = sessionId, taskId = taskId)
 
+  private fun approvalStateForTaskLocked(
+    sessionId: String,
+    taskId: String,
+  ): AgentTaskApprovalState? = when {
+    isApprovalApproved(sessionId, taskId) -> AgentTaskApprovalState.APPROVED
+    isApprovalRejected(sessionId, taskId) -> AgentTaskApprovalState.REJECTED
+    else -> checkpointApprovalState(promptCheckpointStoreForSession(sessionId).get(taskId))
+  }
+
+  private fun approvalDecisionCheckpointKind(
+    sessionId: String,
+    taskId: String,
+  ): PromptCheckpointKind? = promptCheckpointStoreForSession(sessionId)
+    .get(taskId)
+    ?.checkpointKind
+
+  private fun checkpointApprovalState(
+    checkpoint: PersistedPromptCheckpoint?,
+  ): AgentTaskApprovalState? = when (checkpoint?.checkpointKind) {
+    PromptCheckpointKind.APPROVED_PENDING_RESUME -> AgentTaskApprovalState.APPROVED
+    PromptCheckpointKind.REJECTED_PENDING_RESUME -> AgentTaskApprovalState.REJECTED
+    PromptCheckpointKind.GENERAL_RESUME,
+    PromptCheckpointKind.PRE_MODEL_REQUEST,
+    PromptCheckpointKind.ACTION_BATCH_PARSED,
+    PromptCheckpointKind.COMMENTARY_EMITTED,
+    PromptCheckpointKind.TOOL_RESULT_COMMITTED,
+    PromptCheckpointKind.SUPPLEMENT_INGESTED,
+    PromptCheckpointKind.WAITING_APPROVAL,
+    null,
+    -> null
+  }
+
   // Use run projection here so chat state settles immediately when a result is already known.
   private fun pendingTaskCount(sessionId: String): Int = runtimeSession(sessionId)
     .listRuns()
@@ -2894,8 +2708,7 @@ internal class OpenCrayHostRuntime private constructor(
       combined[approval.taskId] = approval
     }
     return combined.values.filter { approval ->
-      !isApprovalApproved(sessionId, approval.taskId) &&
-        !isApprovalRejected(sessionId, approval.taskId)
+      approvalStateForTaskLocked(sessionId, approval.taskId) == null
     }
   }
 
@@ -3629,13 +3442,19 @@ internal class OpenCrayHostRuntime private constructor(
   private fun composerPlaceholderForSnapshot(
     displayedRuns: List<AgentRunSnapshot>,
     hasPendingApprovals: Boolean,
-  ): String = if (
-    !hasPendingApprovals &&
-    latestRunForSnapshot(displayedRuns)?.let(::isAwaitingDirectionRun) == true
-  ) {
-    strings.composerRejectedPlaceholder
-  } else {
-    strings.composerPlaceholder
+  ): String {
+    if (hasPendingApprovals) {
+      return strings.composerPlaceholder
+    }
+    val latestRun = latestRunForSnapshot(displayedRuns) ?: return strings.composerPlaceholder
+    if (isDeferredApprovalDecisionAwaitingResumeRun(latestRun)) {
+      return strings.composerPlaceholder
+    }
+    return if (isAwaitingDirectionRun(latestRun)) {
+      strings.composerRejectedPlaceholder
+    } else {
+      strings.composerPlaceholder
+    }
   }
 
   private fun retainedRunsForSnapshot(
@@ -3681,8 +3500,39 @@ internal class OpenCrayHostRuntime private constructor(
       isUserInterruptedAwaitingDirectionRun(run) ||
       isLlmRetryPausedAwaitingResumeRun(run)
 
-  private fun isUserInterruptedAwaitingDirectionRun(run: AgentRunSnapshot): Boolean =
-    (run.lastEvent as? OpenCrayCancellationEvent)?.outcome == "user_interrupted"
+  private fun isDeferredApprovalDecisionAwaitingResumeRun(run: AgentRunSnapshot): Boolean =
+    run.lifecycleState == QueueTaskLifecycleState.SUSPENDED &&
+      approvalDecisionCheckpointKind(run.sessionId, run.taskId) in setOf(
+        PromptCheckpointKind.APPROVED_PENDING_RESUME,
+        PromptCheckpointKind.REJECTED_PENDING_RESUME,
+      )
+
+  private fun isUserInterruptedAwaitingDirectionRun(run: AgentRunSnapshot): Boolean {
+    val latestVisibleEvent = latestVisibleRunEventLocked(run)
+    return (latestVisibleEvent as? OpenCrayCancellationEvent)?.outcome == "user_interrupted"
+  }
+
+  private fun isApprovalWaitingRun(run: AgentRunSnapshot): Boolean =
+    run.lifecycleState == QueueTaskLifecycleState.SUSPENDED &&
+      run.executionStatus == ExecutionStatus.DENIED &&
+      isApprovalRequiredError(run.errorCode)
+
+  private fun shouldDeferApprovalDecisionUntilManualResume(
+    run: AgentRunSnapshot,
+    approval: PendingApprovalSnapshot,
+  ): Boolean = isApprovalWaitingRun(run) &&
+    isUserInterruptedAwaitingDirectionRun(run) &&
+    (approval.runId == run.runId || approval.taskId == run.taskId)
+
+  private fun latestVisibleRunEventLocked(
+    run: AgentRunSnapshot,
+  ): OpenCrayAgentRunEvent? = displayedLastEvent(
+    run = run,
+    recentEvents = mergedRuntimeEventsLocked(
+      sessionId = run.sessionId,
+      runs = runtimeSession(run.sessionId).listRuns(),
+    ),
+  ) ?: run.lastEvent
 
   private fun isLlmRetryPausedAwaitingResumeRun(run: AgentRunSnapshot): Boolean =
     run.lifecycleState == QueueTaskLifecycleState.SUSPENDED &&
@@ -5546,24 +5396,6 @@ internal class OpenCrayHostRuntime private constructor(
     }
   }
 
-  private fun waitForDirectToolRun(runId: String, timeoutMs: Long): AgentRunSnapshot? {
-    val deadline = System.currentTimeMillis() + timeoutMs.coerceAtLeast(0L)
-    while (true) {
-      val snapshot = synchronized(lock) { findRunSnapshotLocked(runId) }
-      if (snapshot != null) {
-        val approvalPending = snapshot.executionStatus == ExecutionStatus.DENIED &&
-          isApprovalRequiredError(snapshot.errorCode)
-        if (snapshot.isTerminal || approvalPending) {
-          return snapshot
-        }
-      }
-      if (System.currentTimeMillis() >= deadline) {
-        return synchronized(lock) { findRunSnapshotLocked(runId) }
-      }
-      Thread.sleep(RUN_LOOKUP_POLL_INTERVAL_MS)
-    }
-  }
-
   private fun runSubmissionToMap(submission: AgentRunSubmission): Map<String, Any?> = mapOf(
     "sessionId" to submission.sessionId,
     "runId" to submission.runId,
@@ -5609,11 +5441,7 @@ internal class OpenCrayHostRuntime private constructor(
   )
 
   private fun recoveryPlanForRunLocked(run: AgentRunSnapshot): RunRecoveryPlan? {
-    val approvalState = when {
-      isApprovalApproved(run.sessionId, run.taskId) -> AgentTaskApprovalState.APPROVED
-      isApprovalRejected(run.sessionId, run.taskId) -> AgentTaskApprovalState.REJECTED
-      else -> null
-    }
+    val approvalState = approvalStateForTaskLocked(run.sessionId, run.taskId)
     return recoveryPlanner.plan(
       RunRecoveryPlannerInput(
         run = run,
@@ -7114,6 +6942,7 @@ internal class OpenCrayHostRuntime private constructor(
     }
     val shouldOverride = pendingApproval != null ||
       isAwaitingDirectionRun(latestRun) ||
+      isDeferredApprovalDecisionAwaitingResumeRun(latestRun) ||
       isDrawerPlaceholderPreview(normalizedFallback)
     val runtimePreview = if (shouldOverride) {
       drawerRuntimePreviewText(
@@ -7139,7 +6968,7 @@ internal class OpenCrayHostRuntime private constructor(
         strings.chatSummaryApprovalRequired
       }
     }
-    if (isAwaitingDirectionRun(run)) {
+    if (isAwaitingDirectionRun(run) || isDeferredApprovalDecisionAwaitingResumeRun(run)) {
       return strings.chatSummaryAwaitingDirection
     }
     val lastEvent = run.lastEvent ?: return null
@@ -7366,6 +7195,7 @@ internal class OpenCrayHostRuntime private constructor(
     phase: OpenCrayApprovalPhase,
     emittedAtEpochMs: Long,
     approvedText: String = strings.chatApprovalApproved,
+    rejectedText: String = strings.chatApprovalRejected,
   ): OpenCrayApprovalEvent = OpenCrayApprovalEvent(
     runId = approval.runId,
     taskId = approval.taskId,
@@ -7377,7 +7207,7 @@ internal class OpenCrayHostRuntime private constructor(
     text = when (phase) {
       OpenCrayApprovalPhase.REQUIRED -> approvalTimelineText(approval)
       OpenCrayApprovalPhase.APPROVED -> approvedText
-      OpenCrayApprovalPhase.REJECTED -> strings.chatApprovalRejected
+      OpenCrayApprovalPhase.REJECTED -> rejectedText
     },
     isHighRisk = approval.isHighRisk,
     emittedAtEpochMs = emittedAtEpochMs,
@@ -7422,6 +7252,24 @@ internal class OpenCrayHostRuntime private constructor(
     } else {
       "Interrupted the pending $resolvedToolName request. The agent is waiting for your next instruction."
     }
+  }
+
+  private fun deferredApprovalRecordedText(): String = if (isChineseHostLocale()) {
+    "审批已通过。此决定已记录；手动继续运行后才会生效。"
+  } else {
+    "Approval granted. The decision is recorded and will apply when you manually resume the run."
+  }
+
+  private fun deferredApprovalRecordedForSessionText(): String = if (isChineseHostLocale()) {
+    "本会话审批已通过。此决定已记录；手动继续运行后才会生效。"
+  } else {
+    "Session approval granted. The decision is recorded and will apply when you manually resume the run."
+  }
+
+  private fun deferredApprovalRejectedText(): String = if (isChineseHostLocale()) {
+    "审批已拒绝。此决定已记录；手动继续运行后才会生效。"
+  } else {
+    "Approval rejected. The decision is recorded and will apply when you manually resume the run."
   }
 
   private fun approvalRequestSummary(metadata: Map<String, String>): String? =
@@ -7822,20 +7670,6 @@ internal class OpenCrayHostRuntime private constructor(
   private fun currentChatModeLabelLocked(): String =
     chatModeLabelFor(safetySettingsFacade.load().automationMode)
 
-  private data class DirectToolExecutionContext(
-    val sessionId: String,
-    val safetyMetadata: Map<String, String>,
-  )
-
-  private data class SkillsToolExecutionOutcome(
-    val toolName: String,
-    val executionStatus: ExecutionStatus,
-    val content: String,
-    val metadata: Map<String, String> = emptyMap(),
-    val errorCode: String? = null,
-    val errorMessage: String? = null,
-  )
-
   private data class ResolvedAttachmentArtifact(
     val relativePath: String,
     val displayName: String? = null,
@@ -7919,26 +7753,6 @@ internal class OpenCrayHostRuntime private constructor(
   private data class AttachmentMarkdownCompatibility(
     val rewrittenText: String,
     val attachments: List<OpenCrayFinalAttachment> = emptyList(),
-  )
-
-  private data class ParsedSuggestedSkill(
-    val snapshot: SuggestedSkillSnapshot,
-    val priority: Int,
-  )
-
-  private data class SkillSourceInspectionSnapshot(
-    val sourceType: String,
-    val sourceRef: String,
-    val candidates: List<SkillSourceInspectionCandidateSnapshot>,
-    val sourcePath: String = "",
-    val resolvedRevision: String = "",
-    val resolvedCommitSha: String = "",
-  )
-
-  private data class SkillSourceInspectionCandidateSnapshot(
-    val name: String,
-    val description: String,
-    val relativePath: String,
   )
 
   private fun chatModeLabelFor(mode: SafetyAutomationMode): String = when (mode) {
@@ -8280,16 +8094,16 @@ internal class OpenCrayHostRuntime private constructor(
     "detailUrl" to detailUrl,
   )
 
-  private fun SkillSourceInspectionSnapshot.toMap(): Map<String, Any?> = mapOf(
+  private fun SkillSourceInspectionResult.toMap(): Map<String, Any?> = mapOf(
     "sourceType" to sourceType,
     "sourceRef" to sourceRef,
-    "sourcePath" to sourcePath,
-    "resolvedRevision" to resolvedRevision,
-    "resolvedCommitSha" to resolvedCommitSha,
+    "sourcePath" to sourcePath.orEmpty(),
+    "resolvedRevision" to resolvedRevision.orEmpty(),
+    "resolvedCommitSha" to resolvedCommitSha.orEmpty(),
     "candidates" to candidates.map { candidate -> candidate.toMap() },
   )
 
-  private fun SkillSourceInspectionCandidateSnapshot.toMap(): Map<String, Any?> = mapOf(
+  private fun SkillSourceInspectionCandidate.toMap(): Map<String, Any?> = mapOf(
     "name" to name,
     "description" to description,
     "relativePath" to relativePath,
@@ -8382,7 +8196,6 @@ internal class OpenCrayHostRuntime private constructor(
   companion object {
     private const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
     private const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
-    private const val SKILLS_FIND_MAX_RESULTS: Int = 12
     private const val DEFAULT_RUN_WAIT_TIMEOUT_MS: Long = 15_000L
     private const val RUN_LOOKUP_POLL_INTERVAL_MS: Long = 50L
     private const val MAX_RUNTIME_EVENT_HISTORY: Int = 24

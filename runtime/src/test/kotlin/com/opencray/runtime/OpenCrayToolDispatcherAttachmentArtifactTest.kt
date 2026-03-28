@@ -241,15 +241,151 @@ class OpenCrayToolDispatcherAttachmentArtifactTest {
     )
   }
 
+  @Test
+  fun viewWorkspaceDocumentPublishesPromptSupplementAttachmentMetadataForImage() {
+    val workspaceRoot = temporaryFolder.newFolder("view-workspace-document-image").toPath()
+    val imagePath = workspaceRoot.resolve("screens").resolve("camera-first.png")
+    Files.createDirectories(imagePath.parent)
+    Files.write(imagePath, byteArrayOf(1, 2, 3, 4))
+    val dispatcher = dispatcher(workspaceRoot = workspaceRoot)
+
+    val result = dispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "view_workspace_document",
+        arguments = buildJsonObject {
+          put("path", "screens/camera-first.png")
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals("image", result.metadata["documentKind"])
+    val attachments = OpenCrayPromptSupplementMetadata.decodeAttachments(
+      metadata = result.metadata,
+      json = dispatcherJson,
+    )
+    assertEquals(1, attachments.size)
+    assertEquals("camera-first.png", attachments.single().displayName)
+    assertEquals("image/png", attachments.single().mimeType)
+    assertTrue(
+      Files.isSameFile(
+        imagePath,
+        java.nio.file.Paths.get(requireNotNull(attachments.single().filePath)),
+      ),
+    )
+  }
+
+  @Test
+  fun viewWorkspaceDocumentPublishesPromptSupplementAttachmentMetadataForPdf() {
+    val workspaceRoot = temporaryFolder.newFolder("view-workspace-document-pdf").toPath()
+    val pdfPath = workspaceRoot.resolve("docs").resolve("report.pdf")
+    Files.createDirectories(pdfPath.parent)
+    Files.write(pdfPath, byteArrayOf(0x25, 0x50, 0x44, 0x46))
+    val dispatcher = dispatcher(workspaceRoot = workspaceRoot)
+
+    val result = dispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "view_workspace_document",
+        arguments = buildJsonObject {
+          put("path", "docs/report.pdf")
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals("pdf", result.metadata["documentKind"])
+    val attachments = OpenCrayPromptSupplementMetadata.decodeAttachments(
+      metadata = result.metadata,
+      json = dispatcherJson,
+    )
+    assertEquals(1, attachments.size)
+    assertEquals("report.pdf", attachments.single().displayName)
+    assertEquals("application/pdf", attachments.single().mimeType)
+    assertTrue(
+      Files.isSameFile(
+        pdfPath,
+        java.nio.file.Paths.get(requireNotNull(attachments.single().filePath)),
+      ),
+    )
+  }
+
+  @Test
+  fun searchWorkspaceDocumentUsesConfiguredProviderAndPublishesSearchMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("search-workspace-document").toPath()
+    val pdfPath = workspaceRoot.resolve("docs").resolve("report.pdf")
+    Files.createDirectories(pdfPath.parent)
+    Files.write(pdfPath, byteArrayOf(0x25, 0x50, 0x44, 0x46))
+    var capturedPath: Path? = null
+    var capturedRequest: WorkspaceDocumentSearchRequest? = null
+    val dispatcher = dispatcher(
+      workspaceRoot = workspaceRoot,
+      documentSearchProvider = object : WorkspaceDocumentSearchProvider {
+        override fun search(
+          path: Path,
+          request: WorkspaceDocumentSearchRequest,
+        ): WorkspaceDocumentSearchResult {
+          capturedPath = path
+          capturedRequest = request
+          return WorkspaceDocumentSearchResult(
+            documentKind = WorkspaceDocumentKind.PDF,
+            pageCount = 8,
+            query = request.query,
+            hits = listOf(
+              WorkspaceDocumentSearchHit(
+                pageNumber = 3,
+                excerpt = "Quarterly revenue recognized in Q4.",
+                matchCount = 2,
+              ),
+            ),
+          )
+        }
+      },
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "search_workspace_document",
+        arguments = buildJsonObject {
+          put("path", "docs/report.pdf")
+          put("query", "revenue")
+          put("page_from", 2)
+          put("page_to", 4)
+          put("max_results", 3)
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertTrue(Files.isSameFile(pdfPath, requireNotNull(capturedPath)))
+    assertEquals("revenue", capturedRequest?.query)
+    assertEquals(2, capturedRequest?.pageFrom)
+    assertEquals(4, capturedRequest?.pageTo)
+    assertEquals(3, capturedRequest?.maxResults)
+    assertTrue(result.content.contains("Workspace document search: docs/report.pdf"))
+    assertTrue(result.content.contains("page 3 matches=2"))
+    assertEquals("pdf", result.metadata["documentKind"])
+    assertEquals("8", result.metadata["pageCount"])
+    assertEquals("1", result.metadata["hitCount"])
+    assertEquals("revenue", result.metadata["query"])
+  }
+
   private fun dispatcher(
     workspaceRoot: Path,
     readRoots: Set<Path> = setOf(workspaceRoot),
     chatAttachmentResolver: ((String) -> OpenCrayChatAttachmentSource?)? = null,
+    documentSearchProvider: WorkspaceDocumentSearchProvider = DefaultWorkspaceDocumentSearchProvider(),
   ): OpenCrayToolDispatcher = OpenCrayToolDispatcher(
     OpenCrayToolDispatcherConfig(
       workspaceRoots = setOf(workspaceRoot),
       readRoots = readRoots,
       chatAttachmentResolver = chatAttachmentResolver,
+      documentSearchProvider = documentSearchProvider,
     ),
   )
 
