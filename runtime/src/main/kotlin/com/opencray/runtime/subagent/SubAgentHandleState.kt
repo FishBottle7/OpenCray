@@ -17,6 +17,7 @@ data class SubAgentHandleState(
   val parentTurn: Int,
   val depth: Int,
   val activeSkillName: String? = null,
+  val activeSkillActivationSource: String? = null,
   val snapshot: SubAgentExecutionSnapshot,
   val pendingApprovalResume: SubAgentApprovalResume? = null,
   val childExecutionStatus: String? = null,
@@ -76,6 +77,7 @@ data class SubAgentHandleState(
     parentTurn = parentTurn,
     depth = depth,
     activeSkillName = activeSkillName,
+    activeSkillActivationSource = activeSkillActivationSource,
   )
 
   companion object {
@@ -92,6 +94,7 @@ data class SubAgentHandleState(
       parentTurn: Int,
       depth: Int,
       activeSkillName: String?,
+      activeSkillActivationSource: String?,
       createdAtEpochMs: Long,
     ): SubAgentHandleState = SubAgentHandleState(
       agentId = agentId,
@@ -106,6 +109,7 @@ data class SubAgentHandleState(
       parentTurn = parentTurn,
       depth = depth,
       activeSkillName = activeSkillName,
+      activeSkillActivationSource = activeSkillActivationSource,
       snapshot = SubAgentExecutionSnapshot.backgroundQueued(
         headline = "Queued delegated child run '$description'.",
       ),

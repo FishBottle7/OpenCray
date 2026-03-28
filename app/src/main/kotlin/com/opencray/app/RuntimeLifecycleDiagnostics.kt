@@ -10,6 +10,7 @@ internal object RunLifecycleMetadataKeys {
   const val HOST_INSTANCE_ID: String = "_host.hostInstanceId"
   const val RUNTIME_OWNER_ID: String = "_host.runtimeOwnerId"
   const val SUBMISSION_SOURCE: String = "_host.submissionSource"
+  const val PREAPPROVED_TOOL_NAME: String = "_host.preapprovedToolName"
 }
 
 internal object RunLifecycleRecoveryReasons {

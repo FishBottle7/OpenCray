@@ -8,9 +8,8 @@ internal object LiteLlmJsonExtractionSupport {
   private const val DEFAULT_TEMPERATURE: String = "0"
 
   fun routeMetadata(settings: LlmSettingsState): Map<String, String> =
-    LlmProviderProtocols.routeMetadata(
-      protocol = settings.protocol,
-      model = settings.model,
+    effectiveLlmRouteMetadata(
+      settings = settings,
       reasoningEffort = DEFAULT_REASONING_EFFORT,
     ) + mapOf(
       "max_tokens" to DEFAULT_MAX_TOKENS,

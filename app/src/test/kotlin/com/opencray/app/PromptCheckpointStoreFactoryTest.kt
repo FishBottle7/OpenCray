@@ -151,4 +151,76 @@ class PromptCheckpointStoreFactoryTest {
     assertEquals("TOOL", resumeState.responsesPendingMessages.single().role)
     assertEquals("call_1", resumeState.responsesPendingMessages.single().toolResult?.toolCallId)
   }
+
+  @Test
+  fun fileBackedStoreConsumesCheckpointOnlyOnceAcrossStoreInstances() {
+    val runtimeRoot = temporaryFolder.newFolder("runtime-prompt-checkpoints-consume")
+    val factory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val firstStore = factory.forChatSession("session-1")
+    val secondStore = factory.forChatSession("session-1")
+
+    firstStore.upsert(
+      PersistedPromptCheckpoint(
+        sessionId = "session-1",
+        runId = "run-1",
+        taskId = "task-1",
+        checkpointId = "checkpoint-1",
+        checkpointKind = PromptCheckpointKind.APPROVED_PENDING_RESUME,
+        createdAtEpochMs = 100L,
+        updatedAtEpochMs = 100L,
+        toolName = "Read",
+      ),
+    )
+
+    val consumed = firstStore.consume(
+      taskId = "task-1",
+      checkpointKinds = setOf(PromptCheckpointKind.APPROVED_PENDING_RESUME),
+    )
+
+    assertEquals("checkpoint-1", consumed?.checkpointId)
+    assertNull(
+      secondStore.consume(
+        taskId = "task-1",
+        checkpointKinds = setOf(PromptCheckpointKind.APPROVED_PENDING_RESUME),
+      ),
+    )
+    assertNull(factory.forChatSession("session-1").get("task-1"))
+  }
+
+  @Test
+  fun fileBackedStoreRestoresSubAgentApprovalIdentityFromCheckpoint() {
+    val runtimeRoot = temporaryFolder.newFolder("runtime-prompt-checkpoints-subagent-identity")
+    val store = FileBackedPromptCheckpointStoreFactory(runtimeRoot).forChatSession("session-1")
+
+    store.upsert(
+      PersistedPromptCheckpoint(
+        sessionId = "session-1",
+        runId = "run-1",
+        taskId = "task-1",
+        checkpointId = "checkpoint-1",
+        checkpointKind = PromptCheckpointKind.APPROVED_PENDING_RESUME,
+        createdAtEpochMs = 100L,
+        updatedAtEpochMs = 100L,
+        toolName = "Read",
+        promptResumeState = OpenCrayPromptResumeState(turnIndex = 1, toolCallCount = 1),
+        subAgentApprovedToolName = "Read",
+        subAgentPromptResumeState = OpenCrayPromptResumeState(turnIndex = 0, toolCallCount = 1),
+        subAgentIsHighRisk = true,
+        subAgentAgentId = "child-agent-1",
+        subAgentChildRunId = "child-run-1",
+        subAgentChildTaskId = "child-task-1",
+      ),
+    )
+
+    val restored = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+      .forChatSession("session-1")
+      .get("task-1")
+      ?.toApprovalGrantOrNull()
+
+    assertEquals("Read", restored?.subAgentApprovalResume?.approvedToolName)
+    assertEquals(true, restored?.subAgentApprovalResume?.isHighRisk)
+    assertEquals("child-agent-1", restored?.subAgentApprovalResume?.agentId)
+    assertEquals("child-run-1", restored?.subAgentApprovalResume?.childRunId)
+    assertEquals("child-task-1", restored?.subAgentApprovalResume?.childTaskId)
+  }
 }

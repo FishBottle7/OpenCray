@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
+
 import '../models/opencray_chat_draft_attachment.dart';
 import '../models/opencray_chat_snapshot.dart';
 import '../models/opencray_debug_snapshot.dart';
@@ -14,7 +16,9 @@ import '../models/opencray_llm_validation.dart';
 import '../models/opencray_media_speech_config.dart';
 import '../models/opencray_mcp_settings.dart';
 import '../models/opencray_network_search_config.dart';
+import '../models/opencray_notification_settings.dart';
 import '../models/opencray_personalization_config.dart';
+import '../models/opencray_sandbox_settings.dart';
 import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
@@ -96,6 +100,12 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   @override
   Future<void> openExternalUri(String uri) =>
       _postVoid('v1/open_external_uri', <String, Object?>{'uri': uri});
+
+  @override
+  Future<void> copyRichTextToClipboard({
+    required String plainText,
+    String? htmlText,
+  }) => Clipboard.setData(ClipboardData(text: plainText));
 
   @override
   Future<OpenCrayFilesSnapshot> createWorkspaceFolder({
@@ -191,6 +201,20 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   );
 
   @override
+  Future<OpenCrayNotificationSettingsSnapshot>
+  loadNotificationSettings() async =>
+      OpenCrayNotificationSettingsSnapshot.fromMap(
+        await _getMap('v1/notification_settings'),
+      );
+
+  @override
+  Future<OpenCrayNotificationSettingsSnapshot> saveNotificationSettings(
+    OpenCrayNotificationSettingsSnapshot snapshot,
+  ) async => OpenCrayNotificationSettingsSnapshot.fromMap(
+    await _postMap('v1/save_notification_settings', snapshot.toMap()),
+  );
+
+  @override
   Future<OpenCrayStrongBackgroundSnapshot>
   loadStrongBackgroundSnapshot() async =>
       OpenCrayStrongBackgroundSnapshot.fromMap(
@@ -232,6 +256,19 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     OpenCrayMediaSpeechConfigSnapshot snapshot,
   ) async => OpenCrayMediaSpeechConfigSnapshot.fromMap(
     await _postMap('v1/save_media_speech_config', snapshot.toMap()),
+  );
+
+  @override
+  Future<OpenCraySandboxSettingsSnapshot> loadSandboxSettings() async =>
+      OpenCraySandboxSettingsSnapshot.fromMap(
+        await _getMap('v1/sandbox_settings'),
+      );
+
+  @override
+  Future<OpenCraySandboxSettingsSnapshot> saveSandboxSettings(
+    OpenCraySandboxSettingsSnapshot snapshot,
+  ) async => OpenCraySandboxSettingsSnapshot.fromMap(
+    await _postMap('v1/save_sandbox_settings', snapshot.toMap()),
   );
 
   @override
@@ -436,12 +473,20 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCraySkillsSnapshot> loadSkillsSnapshot({
     String query = '',
+    int? suggestedLimit,
   }) async => OpenCraySkillsSnapshot.fromMap(
     await _getMap(
       'v1/skills_snapshot',
-      queryParameters: query.trim().isEmpty
-          ? null
-          : <String, String>{'query': query},
+      queryParameters: () {
+        final queryParameters = <String, String>{};
+        if (query.trim().isNotEmpty) {
+          queryParameters['query'] = query;
+          if (suggestedLimit != null) {
+            queryParameters['suggestedLimit'] = suggestedLimit.toString();
+          }
+        }
+        return queryParameters.isEmpty ? null : queryParameters;
+      }(),
     ),
   );
 
@@ -522,6 +567,25 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     final payload = await _getJson(
       'v1/skill_instructions',
       queryParameters: <String, String>{'skillId': skillId},
+    );
+    if (payload == null) {
+      return null;
+    }
+    return OpenCraySkillInstructionsSnapshot.fromMap(_requireMap(payload));
+  }
+
+  @override
+  Future<OpenCraySkillInstructionsSnapshot?> loadSuggestedSkillInstructions(
+    String sourceRef, {
+    String selectedSkillName = '',
+  }) async {
+    final payload = await _getJson(
+      'v1/suggested_skill_instructions',
+      queryParameters: <String, String>{
+        'sourceRef': sourceRef,
+        if (selectedSkillName.trim().isNotEmpty)
+          'selectedSkillName': selectedSkillName,
+      },
     );
     if (payload == null) {
       return null;
@@ -718,9 +782,21 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   );
 
   @override
+  Future<void> approveChatApprovalForSession(String approvalId) => _postVoid(
+    'v1/approve_chat_approval_for_session',
+    <String, Object?>{'runId': approvalId, 'taskId': approvalId},
+  );
+
+  @override
   Future<void> rejectChatApproval(String approvalId) => _postVoid(
     'v1/reject_chat_approval',
     <String, Object?>{'runId': approvalId, 'taskId': approvalId},
+  );
+
+  @override
+  Future<void> interruptChatRun(String runIdOrTaskId) => _postVoid(
+    'v1/interrupt_chat_run',
+    <String, Object?>{'runId': runIdOrTaskId, 'taskId': runIdOrTaskId},
   );
 
   @override

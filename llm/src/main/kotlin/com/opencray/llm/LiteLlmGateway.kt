@@ -65,6 +65,40 @@ enum class LiteLlmAssistantPhase(
   FINAL_ANSWER("final_answer"),
 }
 
+enum class LiteLlmGatewayAttachmentKind {
+  IMAGE,
+  VOICE,
+  AUDIO,
+  FILE,
+}
+
+data class LiteLlmGatewayAttachment(
+  val attachmentId: String? = null,
+  val kind: LiteLlmGatewayAttachmentKind,
+  val displayName: String? = null,
+  val filePath: String? = null,
+  val mimeType: String? = null,
+  val transcriptText: String? = null,
+) {
+  init {
+    require(attachmentId == null || attachmentId.isNotBlank()) {
+      "LiteLlmGatewayAttachment attachmentId must not be blank."
+    }
+    require(displayName == null || displayName.isNotBlank()) {
+      "LiteLlmGatewayAttachment displayName must not be blank."
+    }
+    require(filePath == null || filePath.isNotBlank()) {
+      "LiteLlmGatewayAttachment filePath must not be blank."
+    }
+    require(mimeType == null || mimeType.isNotBlank()) {
+      "LiteLlmGatewayAttachment mimeType must not be blank."
+    }
+    require(transcriptText == null || transcriptText.isNotBlank()) {
+      "LiteLlmGatewayAttachment transcriptText must not be blank."
+    }
+  }
+}
+
 data class LiteLlmGatewayToolResult(
   val toolCallId: String? = null,
   val toolName: String? = null,
@@ -98,14 +132,15 @@ data class LiteLlmGatewayToolResult(
 data class LiteLlmGatewayMessage(
   val role: LiteLlmGatewayMessageRole,
   val content: String? = null,
+  val attachments: List<LiteLlmGatewayAttachment> = emptyList(),
   val toolCalls: List<LiteLlmStructuredToolCall> = emptyList(),
   val toolResult: LiteLlmGatewayToolResult? = null,
   val assistantPhase: LiteLlmAssistantPhase? = null,
 ) {
   init {
     val hasContent = !content.isNullOrBlank()
-    require(hasContent || toolCalls.isNotEmpty() || toolResult != null) {
-      "LiteLlmGatewayMessage must carry content, toolCalls, or toolResult."
+    require(hasContent || attachments.isNotEmpty() || toolCalls.isNotEmpty() || toolResult != null) {
+      "LiteLlmGatewayMessage must carry content, attachments, toolCalls, or toolResult."
     }
     require(role != LiteLlmGatewayMessageRole.ASSISTANT || toolResult == null) {
       "LiteLlmGatewayMessage assistant messages cannot carry toolResult."
@@ -214,6 +249,9 @@ data class LiteLlmStructuredToolCall(
   val reason: String? = null,
 ) {
   init {
+    require(id == null || id.isNotBlank()) {
+      "LiteLlmStructuredToolCall id must not be blank."
+    }
     require(toolName.isNotBlank()) { "LiteLlmStructuredToolCall toolName must not be blank." }
   }
 }
@@ -221,7 +259,7 @@ data class LiteLlmStructuredToolCall(
 data class LiteLlmStructuredCompletion(
   val toolCalls: List<LiteLlmStructuredToolCall> = emptyList(),
   val finalText: String? = null,
-  val progressText: String? = null,
+  val commentaryText: String? = null,
   val reasoningText: String? = null,
   val rawText: String? = null,
   val toolCallErrors: List<String> = emptyList(),
@@ -229,7 +267,7 @@ data class LiteLlmStructuredCompletion(
   val hasStructuredActions: Boolean
     get() = toolCalls.isNotEmpty() ||
       !finalText.isNullOrBlank() ||
-      !progressText.isNullOrBlank()
+      !commentaryText.isNullOrBlank()
 
   val hasRecoverableDiagnostics: Boolean
     get() = toolCallErrors.isNotEmpty()
@@ -749,7 +787,7 @@ private fun LiteLlmProviderResult.Success.outputTextChars(): Int =
   outputText.length.takeIf { it > 0 }
     ?: completion?.rawText?.length
     ?: completion?.finalText?.length
-    ?: completion?.progressText?.length
+    ?: completion?.commentaryText?.length
     ?: completion?.reasoningText?.length
     ?: 0
 

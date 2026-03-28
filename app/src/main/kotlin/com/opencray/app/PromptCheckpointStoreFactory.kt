@@ -6,6 +6,7 @@ import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.Serializable
 
 internal interface PromptCheckpointStoreFactory {
@@ -16,6 +17,11 @@ internal interface PromptCheckpointStore {
   fun list(): List<PersistedPromptCheckpoint>
 
   fun get(taskId: String): PersistedPromptCheckpoint?
+
+  fun consume(
+    taskId: String,
+    checkpointKinds: Set<PromptCheckpointKind>,
+  ): PersistedPromptCheckpoint?
 
   fun upsert(checkpoint: PersistedPromptCheckpoint)
 
@@ -82,9 +88,44 @@ internal data class PromptCheckpointStoreConfig(
 @Serializable
 internal enum class PromptCheckpointKind {
   GENERAL_RESUME,
+  PRE_MODEL_REQUEST,
+  ACTION_BATCH_PARSED,
+  COMMENTARY_EMITTED,
+  TOOL_RESULT_COMMITTED,
+  SUPPLEMENT_INGESTED,
   WAITING_APPROVAL,
   APPROVED_PENDING_RESUME,
   REJECTED_PENDING_RESUME,
+}
+
+internal fun PromptCheckpointKind.isCheckpointResumeKind(): Boolean = when (this) {
+  PromptCheckpointKind.GENERAL_RESUME,
+  PromptCheckpointKind.PRE_MODEL_REQUEST,
+  PromptCheckpointKind.ACTION_BATCH_PARSED,
+  PromptCheckpointKind.COMMENTARY_EMITTED,
+  PromptCheckpointKind.TOOL_RESULT_COMMITTED,
+  PromptCheckpointKind.SUPPLEMENT_INGESTED,
+  PromptCheckpointKind.APPROVED_PENDING_RESUME,
+  -> true
+
+  PromptCheckpointKind.WAITING_APPROVAL,
+  PromptCheckpointKind.REJECTED_PENDING_RESUME,
+  -> false
+}
+
+internal fun PromptCheckpointKind.isGeneralPromptResumeKind(): Boolean = when (this) {
+  PromptCheckpointKind.GENERAL_RESUME,
+  PromptCheckpointKind.PRE_MODEL_REQUEST,
+  PromptCheckpointKind.ACTION_BATCH_PARSED,
+  PromptCheckpointKind.COMMENTARY_EMITTED,
+  PromptCheckpointKind.TOOL_RESULT_COMMITTED,
+  PromptCheckpointKind.SUPPLEMENT_INGESTED,
+  -> true
+
+  PromptCheckpointKind.WAITING_APPROVAL,
+  PromptCheckpointKind.APPROVED_PENDING_RESUME,
+  PromptCheckpointKind.REJECTED_PENDING_RESUME,
+  -> false
 }
 
 @Serializable
@@ -104,6 +145,9 @@ internal data class PersistedPromptCheckpoint(
   val subAgentApprovedToolName: String? = null,
   val subAgentPromptResumeState: com.opencray.runtime.OpenCrayPromptResumeState? = null,
   val subAgentIsHighRisk: Boolean? = null,
+  val subAgentAgentId: String? = null,
+  val subAgentChildRunId: String? = null,
+  val subAgentChildTaskId: String? = null,
 ) {
   init {
     require(sessionId.isNotBlank()) { "PersistedPromptCheckpoint sessionId must not be blank." }
@@ -112,6 +156,15 @@ internal data class PersistedPromptCheckpoint(
     require(checkpointId.isNotBlank()) { "PersistedPromptCheckpoint checkpointId must not be blank." }
     require(createdAtEpochMs >= 0L) { "PersistedPromptCheckpoint createdAtEpochMs must be >= 0." }
     require(updatedAtEpochMs >= 0L) { "PersistedPromptCheckpoint updatedAtEpochMs must be >= 0." }
+    require(subAgentAgentId == null || subAgentAgentId.isNotBlank()) {
+      "PersistedPromptCheckpoint subAgentAgentId must not be blank."
+    }
+    require(subAgentChildRunId == null || subAgentChildRunId.isNotBlank()) {
+      "PersistedPromptCheckpoint subAgentChildRunId must not be blank."
+    }
+    require(subAgentChildTaskId == null || subAgentChildTaskId.isNotBlank()) {
+      "PersistedPromptCheckpoint subAgentChildTaskId must not be blank."
+    }
   }
 }
 
@@ -147,6 +200,9 @@ private fun PersistedPromptCheckpoint.restoredSubAgentApprovalResume():
     approvedToolName = approvedToolName,
     promptResumeState = promptResumeState,
     isHighRisk = subAgentIsHighRisk == true,
+    agentId = subAgentAgentId?.trim()?.takeIf(String::isNotBlank),
+    childRunId = subAgentChildRunId?.trim()?.takeIf(String::isNotBlank),
+    childTaskId = subAgentChildTaskId?.trim()?.takeIf(String::isNotBlank),
   )
 }
 
@@ -163,6 +219,18 @@ private class InMemoryPromptCheckpointStore(
 
   override fun get(taskId: String): PersistedPromptCheckpoint? = synchronized(lock) {
     checkpointsByTaskId[taskId]
+  }
+
+  override fun consume(
+    taskId: String,
+    checkpointKinds: Set<PromptCheckpointKind>,
+  ): PersistedPromptCheckpoint? = synchronized(lock) {
+    val checkpoint = checkpointsByTaskId[taskId] ?: return null
+    if (checkpoint.checkpointKind !in checkpointKinds) {
+      return null
+    }
+    checkpointsByTaskId.remove(taskId)
+    checkpoint
   }
 
   override fun upsert(checkpoint: PersistedPromptCheckpoint) {
@@ -199,7 +267,7 @@ private class FileBackedPromptCheckpointStore(
   private val config: PromptCheckpointStoreConfig,
   private val clock: () -> Long = { System.currentTimeMillis() },
 ) : PromptCheckpointStore {
-  private val lock = Any()
+  private val lock = lockFor(directory)
   private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory)
 
   override fun list(): List<PersistedPromptCheckpoint> = synchronized(lock) {
@@ -208,6 +276,24 @@ private class FileBackedPromptCheckpointStore(
 
   override fun get(taskId: String): PersistedPromptCheckpoint? = synchronized(lock) {
     loadNormalizedRecord().checkpoints.firstOrNull { checkpoint -> checkpoint.taskId == taskId }
+  }
+
+  override fun consume(
+    taskId: String,
+    checkpointKinds: Set<PromptCheckpointKind>,
+  ): PersistedPromptCheckpoint? = synchronized(lock) {
+    val existing = loadNormalizedRecord()
+    val checkpoint = existing.checkpoints.firstOrNull { persisted ->
+      persisted.taskId == taskId && persisted.checkpointKind in checkpointKinds
+    } ?: return null
+    saveRecord(
+      existing.copy(
+        recordVersion = existing.recordVersion + 1L,
+        updatedAtEpochMs = clock(),
+        checkpoints = existing.checkpoints.filterNot { persisted -> persisted.taskId == taskId },
+      ),
+    )
+    checkpoint
   }
 
   override fun upsert(checkpoint: PersistedPromptCheckpoint) {
@@ -308,6 +394,12 @@ private class FileBackedPromptCheckpointStore(
           deduped[checkpoint.taskId] = checkpoint.copy(
             toolName = checkpoint.toolName?.trim()?.takeIf(String::isNotBlank),
             pendingMessageId = checkpoint.pendingMessageId?.trim()?.takeIf(String::isNotBlank),
+            subAgentApprovedToolName = checkpoint.subAgentApprovedToolName
+              ?.trim()
+              ?.takeIf(String::isNotBlank),
+            subAgentAgentId = checkpoint.subAgentAgentId?.trim()?.takeIf(String::isNotBlank),
+            subAgentChildRunId = checkpoint.subAgentChildRunId?.trim()?.takeIf(String::isNotBlank),
+            subAgentChildTaskId = checkpoint.subAgentChildTaskId?.trim()?.takeIf(String::isNotBlank),
           )
         }
       }
@@ -336,5 +428,10 @@ private class FileBackedPromptCheckpointStore(
 
   private companion object {
     private const val FILE_NAME: String = "runtime-prompt-checkpoints.json"
+
+    private val FILE_LOCKS = ConcurrentHashMap<String, Any>()
+
+    private fun lockFor(directory: File): Any =
+      FILE_LOCKS.computeIfAbsent(File(directory, FILE_NAME).absolutePath) { Any() }
   }
 }

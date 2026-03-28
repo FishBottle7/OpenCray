@@ -7,6 +7,7 @@ import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.Serializable
 
 internal interface AgentSessionSupplementStoreFactory {
@@ -141,7 +142,7 @@ internal class InMemorySessionSupplementStore(
 private class FileBackedSessionSupplementStore(
   directory: File,
 ) : SessionSupplementStore {
-  private val lock = Any()
+  private val lock = lockFor(directory)
   private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory)
 
   override fun snapshot(): List<MidLoopSupplementEntry> = synchronized(lock) {
@@ -269,6 +270,11 @@ private class FileBackedSessionSupplementStore(
 
   private companion object {
     private const val FILE_NAME = "runtime-supplements.json"
+
+    private val FILE_LOCKS = ConcurrentHashMap<String, Any>()
+
+    private fun lockFor(directory: File): Any =
+      FILE_LOCKS.computeIfAbsent(File(directory, FILE_NAME).absolutePath) { Any() }
   }
 }
 

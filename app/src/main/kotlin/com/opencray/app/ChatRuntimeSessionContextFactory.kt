@@ -3,11 +3,16 @@ package com.opencray.app
 import com.opencray.persistence.model.ChatTranscriptMessageEntry
 import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.runtime.context.AgentRuntimeSessionContext
+import com.opencray.runtime.context.RuntimeConversationAttachment
+import com.opencray.runtime.context.RuntimeConversationAttachmentKind
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
+import java.nio.file.Files
+import java.nio.file.Path
 
 internal class ChatRuntimeSessionContextFactory(
   private val chatSessionStore: ChatSessionLocalStore,
+  private val workspaceRootProvider: (() -> Path)? = null,
 ) {
   fun create(
     sessionId: String,
@@ -71,8 +76,12 @@ internal class ChatRuntimeSessionContextFactory(
     }
 
     val resolvedBody = message.text ?: chatSessionStore.promptTemplateBody(message.promptTemplateRefId).orEmpty()
-    val content = ChatRuntimeTextFormatter.formatMessage(message, resolvedBody)
-    if (content.isBlank()) {
+    val attachments = message.attachments.map(::toRuntimeConversationAttachment)
+    val content = ChatRuntimeTextFormatter.formatTextOnly(
+      text = resolvedBody,
+      commandLabel = message.commandLabel,
+    )
+    if (content.isBlank() && attachments.isEmpty()) {
       return null
     }
 
@@ -84,6 +93,66 @@ internal class ChatRuntimeSessionContextFactory(
         ChatTranscriptRole.SYSTEM -> return null
       },
       content = content,
+      attachments = attachments,
     )
+  }
+
+  internal fun resolveChatAttachmentEntry(
+    sessionId: String,
+    attachmentId: String,
+  ): com.opencray.persistence.model.ChatAttachmentEntry? {
+    val normalizedAttachmentId = attachmentId.trim()
+    if (normalizedAttachmentId.isEmpty()) {
+      return null
+    }
+    return chatSessionStore.loadSession(sessionId)
+      ?.messages
+      ?.asReversed()
+      ?.firstNotNullOfOrNull { message ->
+        message.attachments
+          .asReversed()
+          .firstOrNull { attachment -> attachment.attachmentId.trim() == normalizedAttachmentId }
+      }
+  }
+
+  internal fun resolveChatAttachmentFilePath(
+    attachment: com.opencray.persistence.model.ChatAttachmentEntry,
+  ): Path? = resolveAttachmentFilePath(
+    localPath = attachment.localPath,
+  )
+
+  private fun toRuntimeConversationAttachment(
+    attachment: com.opencray.persistence.model.ChatAttachmentEntry,
+  ): RuntimeConversationAttachment = RuntimeConversationAttachment(
+    attachmentId = attachment.attachmentId,
+    kind = attachment.kind.toRuntimeKind(),
+    displayName = attachment.displayName,
+    filePath = resolveAttachmentFilePath(localPath = attachment.localPath)
+      ?.toString()
+      ?.replace('\\', '/'),
+    mimeType = attachment.mimeType?.trim()?.takeIf(String::isNotBlank),
+    transcriptText = attachment.transcriptText?.trim()?.takeIf(String::isNotBlank),
+  )
+
+  private fun resolveAttachmentFilePath(
+    localPath: String,
+  ): Path? {
+    val normalizedLocalPath = localPath.trim().takeIf(String::isNotBlank) ?: return null
+    val candidate = runCatching { Path.of(normalizedLocalPath) }.getOrNull() ?: return null
+    val resolved = if (candidate.isAbsolute) {
+      candidate
+    } else {
+      val workspaceRoot = workspaceRootProvider?.invoke() ?: return null
+      workspaceRoot.resolve(candidate)
+    }.toAbsolutePath().normalize()
+    return resolved.takeIf { path -> Files.exists(path) && Files.isRegularFile(path) }
+  }
+
+  private fun com.opencray.persistence.model.ChatAttachmentKind.toRuntimeKind():
+    RuntimeConversationAttachmentKind = when (this) {
+    com.opencray.persistence.model.ChatAttachmentKind.IMAGE -> RuntimeConversationAttachmentKind.IMAGE
+    com.opencray.persistence.model.ChatAttachmentKind.VOICE -> RuntimeConversationAttachmentKind.VOICE
+    com.opencray.persistence.model.ChatAttachmentKind.AUDIO -> RuntimeConversationAttachmentKind.AUDIO
+    com.opencray.persistence.model.ChatAttachmentKind.FILE -> RuntimeConversationAttachmentKind.FILE
   }
 }

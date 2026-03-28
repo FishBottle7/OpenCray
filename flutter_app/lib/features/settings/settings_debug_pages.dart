@@ -908,6 +908,12 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
   }
 
   Widget _buildRunOverviewCard(OpenCrayChatRunSnapshot run) {
+    final attemptReasonSummary = run.attempt > 1
+        ? _runAttemptReasonSummary(run)
+        : null;
+    final attemptReasonCode = run.attempt > 1
+        ? _runAttemptReasonCode(run)
+        : null;
     return _SettingsCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -944,6 +950,21 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
           ),
           _DebugKeyValueLine('Task state', run.taskState ?? 'unknown'),
           _DebugKeyValueLine('Attempt', '${run.attempt}'),
+          _DebugKeyValueLine(
+            'Execution',
+            run.executionOrdinal > 0 ? '${run.executionOrdinal}' : 'n/a',
+          ),
+          if (run.executionKind?.trim().isNotEmpty == true)
+            _DebugKeyValueLine('Execution kind', run.executionKind!.trim()),
+          if (run.pendingExecutionKind?.trim().isNotEmpty == true)
+            _DebugKeyValueLine(
+              'Pending execution',
+              run.pendingExecutionKind!.trim(),
+            ),
+          if (attemptReasonSummary != null)
+            _DebugKeyValueLine('Retry reason', attemptReasonSummary),
+          if (attemptReasonCode != null)
+            _DebugKeyValueLine('Retry code', attemptReasonCode),
           if (run.errorCode?.isNotEmpty == true)
             _DebugKeyValueLine(
               'Error',
@@ -955,8 +976,8 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
   }
 
   Widget _buildMemoryWritesCard(OpenCrayChatRunSnapshot run) {
-    final memoryWriteEvent = _latestEventOfKind(run.runId, 'memory_write');
-    final memoryFlushEvent = _latestEventOfKind(run.runId, 'memory_flush');
+    final memoryWriteEvent = _latestEventOfKind(run, 'memory_write');
+    final memoryFlushEvent = _latestEventOfKind(run, 'memory_flush');
     return _SettingsCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1580,7 +1601,7 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
   }
 
   Widget _buildRawTraceCard(OpenCrayChatRunSnapshot run) {
-    final events = _eventsForRun(run.runId);
+    final events = _eventsForRun(run);
     return _SettingsCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1604,16 +1625,16 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
   }
 
   OpenCrayChatRuntimeEventSnapshot? _latestEventOfKind(
-    String runId,
+    OpenCrayChatRunSnapshot run,
     String kind,
   ) {
     final matching = _eventsForRun(
-      runId,
+      run,
     ).where((event) => event.kind == kind).toList(growable: false);
     if (matching.isEmpty) {
       final lastEvent = _selectedRunSnapshot?.lastEvent;
       if (lastEvent != null &&
-          lastEvent.runId == runId &&
+          run.matchesRuntimeEvent(lastEvent) &&
           lastEvent.kind == kind) {
         return lastEvent;
       }
@@ -1622,15 +1643,15 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
     return matching.last;
   }
 
-  List<OpenCrayChatRuntimeEventSnapshot> _eventsForRun(String runId) {
+  List<OpenCrayChatRuntimeEventSnapshot> _eventsForRun(
+    OpenCrayChatRunSnapshot run,
+  ) {
     final snapshot = _runtimeSnapshot;
     if (snapshot == null) {
       return const <OpenCrayChatRuntimeEventSnapshot>[];
     }
     final events =
-        snapshot.events
-            .where((event) => event.runId == runId)
-            .toList(growable: false)
+        run.scopeRuntimeEvents(snapshot.events).toList(growable: false)
           ..sort(
             (left, right) =>
                 left.emittedAtEpochMs.compareTo(right.emittedAtEpochMs),
@@ -4134,6 +4155,938 @@ String _truncateDebugText(String value, int maxChars) {
   return '${value.substring(0, maxChars - 3)}...';
 }
 
+String? _trimmedDebugValue(String? value) {
+  final normalized = value?.trim();
+  if (normalized == null || normalized.isEmpty) {
+    return null;
+  }
+  return normalized;
+}
+
+Map<String, dynamic>? _decodeDebugJsonObject(String? value) {
+  final normalized = _trimmedDebugValue(value);
+  if (normalized == null) {
+    return null;
+  }
+  try {
+    final decoded = jsonDecode(normalized);
+    if (decoded is! Map) {
+      return null;
+    }
+    return decoded.map<String, dynamic>(
+      (key, rawValue) => MapEntry(key.toString(), rawValue),
+    );
+  } catch (_) {
+    return null;
+  }
+}
+
+String? _debugArgumentString(
+  Map<String, dynamic>? arguments,
+  String key, {
+  String? fallbackKey,
+}) {
+  final dynamic rawValue =
+      arguments?[key] ?? (fallbackKey == null ? null : arguments?[fallbackKey]);
+  final normalized = rawValue?.toString().trim();
+  if (normalized == null || normalized.isEmpty) {
+    return null;
+  }
+  return normalized;
+}
+
+int? _debugArgumentInt(Map<String, dynamic>? arguments, String key) {
+  final dynamic rawValue = arguments?[key];
+  if (rawValue is int) {
+    return rawValue;
+  }
+  if (rawValue is num) {
+    return rawValue.toInt();
+  }
+  if (rawValue is String) {
+    return int.tryParse(rawValue.trim());
+  }
+  return null;
+}
+
+List<dynamic>? _debugArgumentList(Map<String, dynamic>? arguments, String key) {
+  final dynamic rawValue = arguments?[key];
+  if (rawValue is List<dynamic>) {
+    return rawValue;
+  }
+  if (rawValue is List) {
+    return rawValue.cast<dynamic>();
+  }
+  return null;
+}
+
+List<String> _debugArgumentStringList(
+  Map<String, dynamic>? arguments,
+  String key,
+) {
+  final values = _debugArgumentList(arguments, key);
+  if (values == null || values.isEmpty) {
+    return const <String>[];
+  }
+  return values
+      .map((value) => value?.toString().trim() ?? '')
+      .where((value) => value.isNotEmpty)
+      .toList(growable: false);
+}
+
+String _debugReadRangeSummary({required int? offset, required int? limit}) {
+  if (offset == null && limit == null) {
+    return '';
+  }
+  if (offset != null && limit != null) {
+    final int endLine = offset + limit - 1;
+    return 'lines $offset-$endLine';
+  }
+  if (offset != null) {
+    return 'from line $offset';
+  }
+  return 'first $limit lines';
+}
+
+String _debugSubagentTypeDisplay(String rawValue) => rawValue
+    .split(RegExp(r'[-_\s]+'))
+    .where((segment) => segment.isNotEmpty)
+    .map(
+      (segment) =>
+          '${segment[0].toUpperCase()}${segment.substring(1).toLowerCase()}',
+    )
+    .join(' ');
+
+String _debugToolActionSummary({
+  required String toolName,
+  required Map<String, dynamic>? arguments,
+}) {
+  switch (toolName) {
+    case 'Read':
+      final String? path = _debugArgumentString(
+        arguments,
+        'file_path',
+        fallbackKey: 'path',
+      );
+      if (path == null) {
+        return 'Call $toolName';
+      }
+      final int? offset = _debugArgumentInt(arguments, 'offset');
+      final int? limit = _debugArgumentInt(arguments, 'limit');
+      final String range = _debugReadRangeSummary(offset: offset, limit: limit);
+      return range.isEmpty ? 'Read $path' : 'Read $path $range';
+    case 'LS':
+      final String path =
+          _debugArgumentString(arguments, 'path', fallbackKey: 'file_path') ??
+          '.';
+      return 'List $path';
+    case 'Grep':
+      final String? pattern = _debugArgumentString(arguments, 'pattern');
+      if (pattern == null) {
+        return 'Call $toolName';
+      }
+      final String path = _debugArgumentString(arguments, 'path') ?? '.';
+      final String? glob = _debugArgumentString(arguments, 'glob');
+      return glob == null
+          ? 'Search "$pattern" in $path'
+          : 'Search "$pattern" in $path (glob: $glob)';
+    case 'Glob':
+      final String? pattern = _debugArgumentString(arguments, 'pattern');
+      if (pattern == null) {
+        return 'Call $toolName';
+      }
+      final String path = _debugArgumentString(arguments, 'path') ?? '.';
+      return 'Match $pattern in $path';
+    case 'Write':
+      final String? path = _debugArgumentString(
+        arguments,
+        'file_path',
+        fallbackKey: 'path',
+      );
+      return path == null ? 'Call $toolName' : 'Write $path';
+    case 'Edit':
+      final String? path = _debugArgumentString(
+        arguments,
+        'file_path',
+        fallbackKey: 'path',
+      );
+      return path == null ? 'Call $toolName' : 'Edit $path';
+    case 'MultiEdit':
+      final String? path = _debugArgumentString(
+        arguments,
+        'file_path',
+        fallbackKey: 'path',
+      );
+      if (path == null) {
+        return 'Call $toolName';
+      }
+      final int editCount = _debugArgumentList(arguments, 'edits')?.length ?? 0;
+      return editCount <= 0
+          ? 'MultiEdit $path'
+          : 'Apply $editCount edit(s) to $path';
+    case 'WebSearch':
+      final String operation =
+          _debugArgumentString(arguments, 'operation')?.toLowerCase() ?? '';
+      final String? directQuery = _debugArgumentString(arguments, 'query');
+      final List<String> queryList = _debugArgumentStringList(
+        arguments,
+        'queries',
+      );
+      final String? query =
+          directQuery ?? (queryList.isEmpty ? null : queryList.first);
+      final String? url = _debugArgumentString(arguments, 'url');
+      final String? text =
+          _debugArgumentString(arguments, 'text') ??
+          _debugArgumentString(arguments, 'pattern');
+      final List<String> domains = _debugArgumentStringList(
+        arguments,
+        'domains',
+      );
+      final String domainSuffix = domains.isEmpty
+          ? ''
+          : ' within ${domains.join(', ')}';
+      switch (operation) {
+        case 'open_page':
+          return url == null
+              ? 'Call $toolName'
+              : 'Open search result page $url';
+        case 'find_in_page':
+          if (url == null && text == null) {
+            return 'Call $toolName';
+          }
+          final String target = text == null ? '' : ' "$text"';
+          final String location = url == null ? '' : ' in $url';
+          return 'Find in page$target$location';
+        default:
+          return query == null
+              ? 'Search the web$domainSuffix'
+              : 'Search the web for "$query"$domainSuffix';
+      }
+    case 'TodoWrite':
+      if (arguments?.containsKey('todos') != true) {
+        return 'Read current todo list';
+      }
+      final int todoCount = _debugArgumentList(arguments, 'todos')?.length ?? 0;
+      return todoCount <= 0
+          ? 'Update todo list'
+          : 'Update $todoCount todo item(s)';
+    case 'Task':
+      final String? description = _debugArgumentString(
+        arguments,
+        'description',
+      );
+      final String? subagentType =
+          _debugArgumentString(arguments, 'subagent_type') ??
+          _debugArgumentString(arguments, 'subagentType');
+      final String target = subagentType == null
+          ? 'subagent'
+          : _debugSubagentTypeDisplay(subagentType);
+      return description == null
+          ? 'Delegate to $target'
+          : 'Delegate to $target: ${_truncateDebugText(description, 64)}';
+    default:
+      return toolName.trim().isEmpty ? 'Tool call' : 'Call $toolName';
+  }
+}
+
+String? _debugPreviewValue(dynamic rawValue) {
+  if (rawValue == null) {
+    return null;
+  }
+  if (rawValue is String) {
+    final normalized = rawValue.trim();
+    return normalized.isEmpty ? null : _truncateDebugText(normalized, 48);
+  }
+  if (rawValue is bool) {
+    return rawValue ? 'true' : 'false';
+  }
+  if (rawValue is num) {
+    return '$rawValue';
+  }
+  if (rawValue is List) {
+    if (rawValue.isEmpty) {
+      return null;
+    }
+    final List<String> preview = rawValue
+        .map(_debugPreviewValue)
+        .whereType<String>()
+        .take(2)
+        .toList(growable: false);
+    if (preview.isEmpty) {
+      return '${rawValue.length} item(s)';
+    }
+    final String suffix = rawValue.length > preview.length ? ', ...' : '';
+    return '${preview.join(', ')}$suffix';
+  }
+  if (rawValue is Map) {
+    return '${rawValue.length} field(s)';
+  }
+  final normalized = rawValue.toString().trim();
+  return normalized.isEmpty ? null : _truncateDebugText(normalized, 48);
+}
+
+String? _debugMapPreview(Map<String, dynamic>? values) {
+  if (values == null || values.isEmpty) {
+    return null;
+  }
+  const priorityKeys = <String>[
+    'file_path',
+    'path',
+    'query',
+    'pattern',
+    'url',
+    'command',
+    'script_path',
+    'name',
+    'process_id',
+    'agent_id',
+    'description',
+    'prompt',
+    'text',
+  ];
+  final parts = <String>[];
+  for (final key in priorityKeys) {
+    final String? preview = _debugPreviewValue(values[key]);
+    if (preview == null) {
+      continue;
+    }
+    parts.add('$key $preview');
+    if (parts.length >= 2) {
+      return parts.join(' · ');
+    }
+  }
+  for (final entry in values.entries) {
+    if (priorityKeys.contains(entry.key)) {
+      continue;
+    }
+    final String? preview = _debugPreviewValue(entry.value);
+    if (preview == null) {
+      continue;
+    }
+    parts.add('${entry.key} $preview');
+    if (parts.length >= 2) {
+      break;
+    }
+  }
+  return parts.isEmpty ? null : parts.join(' · ');
+}
+
+String? _debugToolCallDetailPreview({
+  required String toolName,
+  required Map<String, dynamic>? arguments,
+  required String? rawArgumentsJson,
+}) {
+  switch (toolName) {
+    case 'Task':
+      final String? prompt = _debugArgumentString(arguments, 'prompt');
+      final String? contextMode = _debugArgumentString(
+        arguments,
+        'context_mode',
+      );
+      final parts = <String>[
+        if (prompt != null) 'prompt ${_truncateDebugText(prompt, 72)}',
+        if (contextMode != null) 'context $contextMode',
+      ];
+      final List<String> allowedTools = _debugArgumentStringList(
+        arguments,
+        'allowed_tools',
+      );
+      if (allowedTools.isNotEmpty) {
+        parts.add('allowed ${_truncateDebugText(allowedTools.join(', '), 72)}');
+      }
+      return parts.isEmpty ? null : parts.join(' · ');
+    case 'WebSearch':
+      final List<String> sourceUrls = _debugArgumentStringList(
+        arguments,
+        'sourceUrls',
+      );
+      if (sourceUrls.isEmpty) {
+        return null;
+      }
+      return 'sources ${_truncateDebugText(sourceUrls.join(', '), 72)}';
+    case 'TodoWrite':
+      final List<dynamic>? todos = _debugArgumentList(arguments, 'todos');
+      if (todos == null || todos.isEmpty) {
+        return null;
+      }
+      final List<String> preview = <String>[];
+      for (final dynamic rawTodo in todos) {
+        if (rawTodo is! Map) {
+          continue;
+        }
+        final Map<String, dynamic> todo = rawTodo.map<String, dynamic>(
+          (key, value) => MapEntry(key.toString(), value),
+        );
+        final String? content = _debugArgumentString(todo, 'content');
+        if (content == null) {
+          continue;
+        }
+        final String? status = _debugArgumentString(todo, 'status');
+        preview.add(
+          status == null
+              ? _truncateDebugText(content, 48)
+              : '${_truncateDebugText(content, 40)} [$status]',
+        );
+        if (preview.length >= 2) {
+          break;
+        }
+      }
+      return preview.isEmpty ? null : preview.join(' · ');
+    default:
+      final String? mapPreview = _debugMapPreview(arguments);
+      if (mapPreview != null) {
+        return mapPreview;
+      }
+      final String? normalizedRawArguments = _trimmedDebugValue(
+        rawArgumentsJson,
+      );
+      return normalizedRawArguments == null
+          ? null
+          : _truncateDebugText(normalizedRawArguments, 120);
+  }
+}
+
+String? _debugResultMetadataValue(
+  OpenCrayChatRuntimeEventSnapshot event,
+  String key,
+) {
+  final normalized = event.resultMetadata[key]?.trim();
+  if (normalized == null || normalized.isEmpty) {
+    return null;
+  }
+  return normalized;
+}
+
+int? _debugResultMetadataInt(
+  OpenCrayChatRuntimeEventSnapshot event,
+  String key,
+) {
+  final String? value = _debugResultMetadataValue(event, key);
+  return value == null ? null : int.tryParse(value);
+}
+
+bool? _debugResultMetadataBool(
+  OpenCrayChatRuntimeEventSnapshot event,
+  String key,
+) {
+  final String? value = _debugResultMetadataValue(event, key)?.toLowerCase();
+  if (value == 'true') {
+    return true;
+  }
+  if (value == 'false') {
+    return false;
+  }
+  return null;
+}
+
+List<String> _debugCsvValues(String? value) {
+  final normalized = _trimmedDebugValue(value);
+  if (normalized == null) {
+    return const <String>[];
+  }
+  return normalized
+      .split(',')
+      .map((entry) => entry.trim())
+      .where((entry) => entry.isNotEmpty)
+      .toList(growable: false);
+}
+
+bool _debugResultMetadataTruncated(OpenCrayChatRuntimeEventSnapshot event) {
+  const candidateKeys = <String>[
+    'truncated',
+    'outputTruncated',
+    'contentTruncated',
+    'resultTruncated',
+  ];
+  for (final key in candidateKeys) {
+    if (_debugResultMetadataBool(event, key) == true) {
+      return true;
+    }
+  }
+  return false;
+}
+
+Map<String, dynamic>? _debugToolResultArgumentsFallback({
+  required String toolName,
+  required OpenCrayChatRuntimeEventSnapshot event,
+}) {
+  switch (toolName) {
+    case 'Read':
+      final String? filePath = _debugResultMetadataValue(event, 'filePath');
+      if (filePath == null) {
+        return null;
+      }
+      return <String, dynamic>{
+        'file_path': filePath,
+        if (_debugResultMetadataInt(event, 'offset') != null)
+          'offset': _debugResultMetadataInt(event, 'offset'),
+        if (_debugResultMetadataInt(event, 'limit') != null)
+          'limit': _debugResultMetadataInt(event, 'limit'),
+      };
+    case 'LS':
+      return <String, dynamic>{
+        if (_debugResultMetadataValue(event, 'path') != null)
+          'path': _debugResultMetadataValue(event, 'path'),
+      };
+    case 'Grep':
+      final String? pattern = _debugResultMetadataValue(event, 'pattern');
+      if (pattern == null) {
+        return null;
+      }
+      return <String, dynamic>{
+        'pattern': pattern,
+        if (_debugResultMetadataValue(event, 'path') != null)
+          'path': _debugResultMetadataValue(event, 'path'),
+        if (_debugResultMetadataValue(event, 'glob') != null)
+          'glob': _debugResultMetadataValue(event, 'glob'),
+      };
+    case 'Glob':
+      final String? pattern = _debugResultMetadataValue(event, 'pattern');
+      if (pattern == null) {
+        return null;
+      }
+      return <String, dynamic>{
+        'pattern': pattern,
+        if (_debugResultMetadataValue(event, 'path') != null)
+          'path': _debugResultMetadataValue(event, 'path'),
+      };
+    case 'WebSearch':
+      final String? operation = _debugResultMetadataValue(
+        event,
+        'providerManagedOperation',
+      );
+      final String? query = _debugResultMetadataValue(event, 'query');
+      final String? url = _debugResultMetadataValue(event, 'url');
+      final String? text = _debugResultMetadataValue(event, 'text');
+      final List<String> sourceUrls = _debugCsvValues(
+        _debugResultMetadataValue(event, 'sourceUrls'),
+      );
+      if (operation == null &&
+          query == null &&
+          url == null &&
+          text == null &&
+          sourceUrls.isEmpty) {
+        return null;
+      }
+      return <String, dynamic>{
+        if (operation != null) 'operation': operation,
+        if (query != null) 'query': query,
+        if (url != null) 'url': url,
+        if (text != null) 'text': text,
+        if (sourceUrls.isNotEmpty) 'sourceUrls': sourceUrls,
+      };
+    case 'Write':
+    case 'Edit':
+    case 'MultiEdit':
+      final String? filePath = _debugResultMetadataValue(event, 'filePath');
+      if (filePath == null) {
+        return null;
+      }
+      return <String, dynamic>{'file_path': filePath};
+    case 'Task':
+      final String? description = _debugResultMetadataValue(
+        event,
+        'delegationDescription',
+      );
+      final String? prompt = _debugResultMetadataValue(
+        event,
+        'delegationPromptPreview',
+      );
+      final String? subagentType =
+          _debugResultMetadataValue(event, 'delegationSubagentType') ??
+          _debugResultMetadataValue(event, 'subagentType');
+      final String? contextMode =
+          _debugResultMetadataValue(event, 'delegationContextMode') ??
+          _debugResultMetadataValue(event, 'subagentContextMode');
+      final List<String> allowedTools = _debugCsvValues(
+        _debugResultMetadataValue(event, 'delegationAllowedTools'),
+      );
+      if (description == null &&
+          prompt == null &&
+          subagentType == null &&
+          contextMode == null &&
+          allowedTools.isEmpty) {
+        return null;
+      }
+      return <String, dynamic>{
+        if (description != null) 'description': description,
+        if (prompt != null) 'prompt': prompt,
+        if (subagentType != null) 'subagent_type': subagentType,
+        if (contextMode != null) 'context_mode': contextMode,
+        if (allowedTools.isNotEmpty) 'allowed_tools': allowedTools,
+      };
+    default:
+      return null;
+  }
+}
+
+String _debugToolResultActionSummary({
+  required String toolName,
+  required OpenCrayChatRuntimeEventSnapshot event,
+}) => _debugToolActionSummary(
+  toolName: toolName,
+  arguments: _debugToolResultArgumentsFallback(
+    toolName: toolName,
+    event: event,
+  ),
+);
+
+String? _debugGenericResultMetadataPreview(
+  OpenCrayChatRuntimeEventSnapshot event,
+) {
+  if (event.resultMetadata.isEmpty) {
+    return null;
+  }
+  final parts = <String>[];
+  for (final entry in event.resultMetadata.entries) {
+    final String key = entry.key.trim();
+    final String value = entry.value.trim();
+    if (key.isEmpty || value.isEmpty) {
+      continue;
+    }
+    parts.add('$key ${_truncateDebugText(value, 48)}');
+    if (parts.length >= 3) {
+      break;
+    }
+  }
+  return parts.isEmpty ? null : parts.join(' · ');
+}
+
+String? _debugToolResultMetadataSummary({
+  required String toolName,
+  required OpenCrayChatRuntimeEventSnapshot event,
+}) {
+  switch (toolName) {
+    case 'LS':
+      final int? entryCount = _debugResultMetadataInt(event, 'entryCount');
+      final String? path = _debugResultMetadataValue(event, 'path');
+      final bool truncated = _debugResultMetadataTruncated(event);
+      if (entryCount == null) {
+        return null;
+      }
+      final String summary = path == null
+          ? 'Listed $entryCount entr${entryCount == 1 ? 'y' : 'ies'}'
+          : 'Listed $entryCount entr${entryCount == 1 ? 'y' : 'ies'} in $path';
+      return truncated
+          ? '$summary. Output truncated at the tool result limit.'
+          : summary;
+    case 'Read':
+      final int? returnedLineCount = _debugResultMetadataInt(
+        event,
+        'returnedLineCount',
+      );
+      final int? totalLineCount = _debugResultMetadataInt(
+        event,
+        'totalLineCount',
+      );
+      final bool truncated = _debugResultMetadataTruncated(event);
+      final String? filePath = _debugResultMetadataValue(event, 'filePath');
+      if (returnedLineCount == null &&
+          totalLineCount == null &&
+          !truncated &&
+          filePath == null) {
+        return null;
+      }
+      final parts = <String>[
+        if (returnedLineCount != null)
+          returnedLineCount == 1
+              ? 'Returned 1 line'
+              : 'Returned $returnedLineCount lines',
+        if (filePath != null) 'from $filePath',
+        if (totalLineCount != null)
+          totalLineCount == 1 ? '(1-line file)' : '($totalLineCount-line file)',
+        if (truncated) 'Output truncated to the read budget.',
+      ];
+      return parts.join(' ');
+    case 'Grep':
+      final int? matchCount = _debugResultMetadataInt(event, 'matchCount');
+      final String? pattern = _debugResultMetadataValue(event, 'pattern');
+      final String? path = _debugResultMetadataValue(event, 'path');
+      final bool truncated = _debugResultMetadataTruncated(event);
+      if (matchCount == null) {
+        return null;
+      }
+      final String target = path ?? '.';
+      final String summary = pattern == null
+          ? (matchCount == 1
+                ? 'Found 1 match in $target'
+                : 'Found $matchCount matches in $target')
+          : (matchCount == 1
+                ? 'Found 1 match for "$pattern" in $target'
+                : 'Found $matchCount matches for "$pattern" in $target');
+      return truncated
+          ? '$summary. Output truncated at the tool result limit.'
+          : summary;
+    case 'Glob':
+      final int? matchCount = _debugResultMetadataInt(event, 'matchCount');
+      final String? pattern = _debugResultMetadataValue(event, 'pattern');
+      final String? path = _debugResultMetadataValue(event, 'path');
+      final bool truncated = _debugResultMetadataTruncated(event);
+      if (matchCount == null) {
+        return null;
+      }
+      final String target = path ?? '.';
+      final String summary = pattern == null
+          ? 'Matched $matchCount path(s) in $target'
+          : 'Matched $matchCount path(s) for $pattern in $target';
+      return truncated
+          ? '$summary. Output truncated at the tool result limit.'
+          : summary;
+    case 'WebSearch':
+      final int? sourceCount = _debugResultMetadataInt(event, 'sourceCount');
+      final String? operation = _debugResultMetadataValue(
+        event,
+        'providerManagedOperation',
+      )?.toLowerCase();
+      final String? status = _debugResultMetadataValue(
+        event,
+        'providerManagedStatus',
+      );
+      final String? query = _debugResultMetadataValue(event, 'query');
+      final String? url = _debugResultMetadataValue(event, 'url');
+      final String? text = _debugResultMetadataValue(event, 'text');
+      final bool managed =
+          _debugResultMetadataValue(event, 'providerManaged') == 'true';
+      if (sourceCount == null &&
+          operation == null &&
+          status == null &&
+          query == null &&
+          url == null &&
+          text == null) {
+        return null;
+      }
+      return <String>[
+        if (managed) 'Provider-managed search',
+        switch (operation) {
+          'open_page' => url == null ? '' : 'opened $url',
+          'find_in_page' => <String>[
+            if (text != null) 'find "$text"',
+            if (url != null) 'in $url',
+          ].where((part) => part.isNotEmpty).join(' '),
+          _ => query == null ? '' : 'search "$query"',
+        },
+        if (sourceCount != null)
+          sourceCount == 1 ? '1 source' : '$sourceCount sources',
+        if (status != null) 'status $status',
+      ].where((part) => part.isNotEmpty).join(' ');
+    case 'Edit':
+      final int? replacementCount = _debugResultMetadataInt(
+        event,
+        'replacementCount',
+      );
+      final String? filePath = _debugResultMetadataValue(event, 'filePath');
+      if (replacementCount == null && filePath == null) {
+        return null;
+      }
+      return <String>[
+        if (replacementCount != null)
+          replacementCount == 1
+              ? 'Applied 1 replacement'
+              : 'Applied $replacementCount replacements',
+        if (filePath != null) 'in $filePath',
+      ].join(' ');
+    case 'MultiEdit':
+      final int? replacementCount = _debugResultMetadataInt(
+        event,
+        'replacementCount',
+      );
+      final int? editCount = _debugResultMetadataInt(event, 'editCount');
+      final String? filePath = _debugResultMetadataValue(event, 'filePath');
+      if (replacementCount == null && editCount == null && filePath == null) {
+        return null;
+      }
+      return <String>[
+        if (editCount != null)
+          editCount == 1 ? 'Applied 1 edit' : 'Applied $editCount edits',
+        if (replacementCount != null)
+          replacementCount == 1
+              ? '(1 replacement)'
+              : '($replacementCount replacements)',
+        if (filePath != null) 'in $filePath',
+      ].join(' ');
+    case 'Task':
+      final String? executionState = _debugResultMetadataValue(
+        event,
+        'executionState',
+      );
+      final String? childStatus =
+          _debugResultMetadataValue(event, 'status') ??
+          _debugResultMetadataValue(event, 'delegationStatus');
+      final String? subagentType =
+          _debugResultMetadataValue(event, 'delegationSubagentType') ??
+          _debugResultMetadataValue(event, 'subagentType');
+      final String? contextMode =
+          _debugResultMetadataValue(event, 'delegationContextMode') ??
+          _debugResultMetadataValue(event, 'subagentContextMode');
+      final int? turnCount = _debugResultMetadataInt(event, 'childTurnCount');
+      final int? toolCallCount = _debugResultMetadataInt(
+        event,
+        'childToolCallCount',
+      );
+      final List<String> allowedTools = _debugCsvValues(
+        _debugResultMetadataValue(event, 'delegationAllowedTools'),
+      );
+      final parts = <String>[
+        if (executionState != null) 'state $executionState',
+        if (childStatus != null) 'status $childStatus',
+        if (subagentType != null)
+          'subagent ${_debugSubagentTypeDisplay(subagentType)}',
+        if (contextMode != null) 'context $contextMode',
+        if (turnCount != null) 'turns $turnCount',
+        if (toolCallCount != null) 'tool calls $toolCallCount',
+        if (allowedTools.isNotEmpty)
+          'allowed ${_truncateDebugText(allowedTools.join(', '), 72)}',
+      ];
+      return parts.isEmpty ? null : parts.join(' · ');
+    case 'TodoWrite':
+      final int? todoCount = _debugResultMetadataInt(event, 'todoCount');
+      final int addedTodoCount =
+          _debugResultMetadataInt(event, 'addedTodoCount') ?? 0;
+      final int removedTodoCount =
+          _debugResultMetadataInt(event, 'removedTodoCount') ?? 0;
+      final int statusChangedTodoCount =
+          _debugResultMetadataInt(event, 'statusChangedTodoCount') ?? 0;
+      final bool mutated = _debugResultMetadataBool(event, 'mutated') ?? false;
+      if (todoCount == null &&
+          addedTodoCount == 0 &&
+          removedTodoCount == 0 &&
+          statusChangedTodoCount == 0 &&
+          !mutated) {
+        return null;
+      }
+      return <String>[
+        if (todoCount != null)
+          todoCount == 1 ? '1 todo in list' : '$todoCount todos in list',
+        if (mutated) 'mutated',
+        if (addedTodoCount > 0)
+          addedTodoCount == 1 ? 'added 1' : 'added $addedTodoCount',
+        if (removedTodoCount > 0)
+          removedTodoCount == 1 ? 'removed 1' : 'removed $removedTodoCount',
+        if (statusChangedTodoCount > 0)
+          statusChangedTodoCount == 1
+              ? '1 status change'
+              : '$statusChangedTodoCount status changes',
+      ].join(' · ');
+    default:
+      return _debugGenericResultMetadataPreview(event);
+  }
+}
+
+String _summarizeToolCallEvent(OpenCrayChatRuntimeEventSnapshot event) {
+  final String? toolName = _trimmedDebugValue(event.toolName);
+  final Map<String, dynamic>? arguments = _decodeDebugJsonObject(
+    event.argumentsJson,
+  );
+  final parts = <String>[
+    toolName == null
+        ? 'Tool call'
+        : _debugToolActionSummary(toolName: toolName, arguments: arguments),
+  ];
+  final String? reason = _trimmedDebugValue(event.toolReason);
+  if (reason != null) {
+    parts.add('reason ${_truncateDebugText(reason, 72)}');
+  }
+  if (toolName != null) {
+    final String? detail = _debugToolCallDetailPreview(
+      toolName: toolName,
+      arguments: arguments,
+      rawArgumentsJson: event.argumentsJson,
+    );
+    if (detail != null) {
+      parts.add(detail);
+    }
+  } else {
+    final String? normalizedArguments = _trimmedDebugValue(event.argumentsJson);
+    if (normalizedArguments != null) {
+      parts.add(_truncateDebugText(normalizedArguments, 120));
+    }
+  }
+  return parts.join(' · ');
+}
+
+String _summarizeToolResultEvent(OpenCrayChatRuntimeEventSnapshot event) {
+  final String? toolName = _trimmedDebugValue(event.toolName);
+  final parts = <String>[
+    toolName == null
+        ? 'Tool result'
+        : _debugToolResultActionSummary(toolName: toolName, event: event),
+  ];
+  final String? status =
+      _trimmedDebugValue(event.toolStatus) ?? _trimmedDebugValue(event.status);
+  if (status != null) {
+    parts.add(status);
+  }
+  if (toolName != null) {
+    final String? metadataSummary = _debugToolResultMetadataSummary(
+      toolName: toolName,
+      event: event,
+    );
+    if (metadataSummary != null) {
+      parts.add(metadataSummary);
+    }
+  } else {
+    final String? metadataPreview = _debugGenericResultMetadataPreview(event);
+    if (metadataPreview != null) {
+      parts.add(metadataPreview);
+    }
+  }
+  final String? errorCode = _trimmedDebugValue(event.errorCode);
+  final String? errorMessage = _trimmedDebugValue(event.errorMessage);
+  if (errorCode != null) {
+    parts.add(errorCode);
+  }
+  if (errorMessage != null) {
+    parts.add(_truncateDebugText(errorMessage, 96));
+  } else {
+    final String? contentPreview =
+        _trimmedDebugValue(event.contentPreview) ??
+        _trimmedDebugValue(event.content);
+    if (contentPreview != null) {
+      parts.add(_truncateDebugText(contentPreview, 96));
+    }
+  }
+  return parts.join(' · ');
+}
+
+String? _runAttemptReasonSummary(OpenCrayChatRunSnapshot run) {
+  final recoverySummary = _trimmedDebugValue(run.recoveryPlan?.summary);
+  if (recoverySummary != null) {
+    return recoverySummary;
+  }
+  final recoveryReason = _trimmedDebugValue(run.diagnostics?.recoveryReason);
+  if (recoveryReason != null) {
+    return _debugRecoveryReasonSummary(recoveryReason);
+  }
+  final continuationKind = _trimmedDebugValue(run.lastEvent?.continuationKind);
+  if (continuationKind != null) {
+    return 'Continued via ${_humanizeDebugCode(continuationKind)}.';
+  }
+  return null;
+}
+
+String? _runAttemptReasonCode(OpenCrayChatRunSnapshot run) =>
+    _trimmedDebugValue(run.recoveryPlan?.reasonCode) ??
+    _trimmedDebugValue(run.diagnostics?.recoveryReason) ??
+    _trimmedDebugValue(run.lastEvent?.continuationKind);
+
+String _debugRecoveryReasonSummary(String code) {
+  switch (code) {
+    case 'host_restart_inflight_task_interrupted':
+      return 'The host restarted while this run was in flight, so it required an explicit retry before continuing.';
+    default:
+      return '${_humanizeDebugCode(code)}.';
+  }
+}
+
+String _humanizeDebugCode(String value) => value
+    .split(RegExp(r'[_-]+'))
+    .where((segment) => segment.isNotEmpty)
+    .map(
+      (segment) =>
+          '${segment[0].toUpperCase()}${segment.substring(1).toLowerCase()}',
+    )
+    .join(' ');
+
 String _summarizeRuntimeEvent(OpenCrayChatRuntimeEventSnapshot event) {
   switch (event.kind) {
     case 'memory_write':
@@ -4154,6 +5107,10 @@ String _summarizeRuntimeEvent(OpenCrayChatRuntimeEventSnapshot event) {
       return event.writtenRecordIds.isEmpty
           ? 'no durable writes'
           : 'wrote ${event.writtenRecordIds.length} durable records';
+    case 'tool_call':
+      return _summarizeToolCallEvent(event);
+    case 'tool_result':
+      return _summarizeToolResultEvent(event);
     default:
       final parts = <String>[];
       if (event.status?.trim().isNotEmpty == true) {

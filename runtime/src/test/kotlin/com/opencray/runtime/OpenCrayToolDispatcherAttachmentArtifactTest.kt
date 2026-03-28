@@ -12,6 +12,7 @@ import java.nio.file.Path
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -108,13 +109,147 @@ class OpenCrayToolDispatcherAttachmentArtifactTest {
     assertEquals("file", result.metadata[OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_KIND_HINT])
   }
 
+  @Test
+  fun importChatAttachmentPublishesArtifactMetadataWithoutLeakingChatStoragePath() {
+    val workspaceRoot = temporaryFolder.newFolder("artifact-chat-attachment-workspace").toPath()
+    val sourcePath = workspaceRoot
+      .resolve(".opencray")
+      .resolve("chat-media")
+      .resolve("session-1")
+      .resolve("hash")
+      .resolve("camera-first.jpg")
+    Files.createDirectories(sourcePath.parent)
+    Files.write(sourcePath, byteArrayOf(7, 8, 9))
+    val dispatcher = dispatcher(
+      workspaceRoot = workspaceRoot,
+      chatAttachmentResolver = { attachmentId ->
+        if (attachmentId == "user-image-1") {
+          OpenCrayChatAttachmentSource(
+            attachmentId = "user-image-1",
+            displayName = "camera-first.jpg",
+            sourcePath = sourcePath,
+            mimeType = "image/jpeg",
+          )
+        } else {
+          null
+        }
+      },
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "import_chat_attachment",
+        arguments = buildJsonObject {
+          put("chat_attachment_id", "user-image-1")
+          put("destination_path", "imports/camera-first.jpg")
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertTrue(Files.exists(workspaceRoot.resolve("imports").resolve("camera-first.jpg")))
+    assertTrue(result.metadata[OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_ID].orEmpty().startsWith("artifact-camera-first-"))
+    assertEquals("imports/camera-first.jpg", result.metadata[OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_RELATIVE_PATH])
+    assertEquals("camera-first.jpg", result.metadata[OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_DISPLAY_NAME])
+    assertEquals("image", result.metadata[OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_KIND_HINT])
+    assertEquals("image/jpeg", result.metadata[OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_MIME_TYPE])
+    assertFalse(result.content.contains(".opencray/chat-media"))
+    assertFalse(result.metadata.values.any { value ->
+      value.contains(".opencray/chat-media") || value.contains(sourcePath.toString())
+    })
+  }
+
+  @Test
+  fun viewWorkspaceImagePublishesPromptSupplementAttachmentMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("view-workspace-image-workspace").toPath()
+    val imagePath = workspaceRoot.resolve("screens").resolve("camera-first.png")
+    Files.createDirectories(imagePath.parent)
+    Files.write(imagePath, byteArrayOf(1, 2, 3, 4))
+    val dispatcher = dispatcher(workspaceRoot = workspaceRoot)
+
+    val result = dispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "view_workspace_image",
+        arguments = buildJsonObject {
+          put("path", "screens/camera-first.png")
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals("screens/camera-first.png", result.metadata["path"])
+    assertEquals("camera-first.png", result.metadata["displayName"])
+    assertEquals("image/png", result.metadata["mimeType"])
+    val supplementText = OpenCrayPromptSupplementMetadata.decodeText(result.metadata)
+    assertTrue(supplementText.orEmpty().contains("screens/camera-first.png"))
+    val attachments = OpenCrayPromptSupplementMetadata.decodeAttachments(
+      metadata = result.metadata,
+      json = dispatcherJson,
+    )
+    assertEquals(1, attachments.size)
+    assertEquals("camera-first.png", attachments.single().displayName)
+    assertEquals("image/png", attachments.single().mimeType)
+    assertTrue(
+      Files.isSameFile(
+        imagePath,
+        java.nio.file.Paths.get(requireNotNull(attachments.single().filePath)),
+      ),
+    )
+  }
+
+  @Test
+  fun viewWorkspacePdfPublishesPromptSupplementAttachmentMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("view-workspace-pdf-workspace").toPath()
+    val pdfPath = workspaceRoot.resolve("docs").resolve("report.pdf")
+    Files.createDirectories(pdfPath.parent)
+    Files.write(pdfPath, byteArrayOf(0x25, 0x50, 0x44, 0x46))
+    val dispatcher = dispatcher(workspaceRoot = workspaceRoot)
+
+    val result = dispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "view_workspace_pdf",
+        arguments = buildJsonObject {
+          put("path", "docs/report.pdf")
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals("docs/report.pdf", result.metadata["path"])
+    assertEquals("report.pdf", result.metadata["displayName"])
+    assertEquals("application/pdf", result.metadata["mimeType"])
+    val supplementText = OpenCrayPromptSupplementMetadata.decodeText(result.metadata)
+    assertTrue(supplementText.orEmpty().contains("docs/report.pdf"))
+    val attachments = OpenCrayPromptSupplementMetadata.decodeAttachments(
+      metadata = result.metadata,
+      json = dispatcherJson,
+    )
+    assertEquals(1, attachments.size)
+    assertEquals("report.pdf", attachments.single().displayName)
+    assertEquals("application/pdf", attachments.single().mimeType)
+    assertTrue(
+      Files.isSameFile(
+        pdfPath,
+        java.nio.file.Paths.get(requireNotNull(attachments.single().filePath)),
+      ),
+    )
+  }
+
   private fun dispatcher(
     workspaceRoot: Path,
     readRoots: Set<Path> = setOf(workspaceRoot),
+    chatAttachmentResolver: ((String) -> OpenCrayChatAttachmentSource?)? = null,
   ): OpenCrayToolDispatcher = OpenCrayToolDispatcher(
     OpenCrayToolDispatcherConfig(
       workspaceRoots = setOf(workspaceRoot),
       readRoots = readRoots,
+      chatAttachmentResolver = chatAttachmentResolver,
     ),
   )
 
@@ -138,4 +273,11 @@ class OpenCrayToolDispatcherAttachmentArtifactTest {
       error("Retry not expected in OpenCrayToolDispatcherAttachmentArtifactTest.")
     },
   )
+
+  companion object {
+    private val dispatcherJson = kotlinx.serialization.json.Json {
+      prettyPrint = true
+      ignoreUnknownKeys = true
+    }
+  }
 }

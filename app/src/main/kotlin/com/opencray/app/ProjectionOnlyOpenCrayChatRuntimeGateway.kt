@@ -7,6 +7,10 @@ import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.AgentTaskState
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
+import com.opencray.core.orchestrator.METADATA_EXECUTION_ID
+import com.opencray.core.orchestrator.METADATA_EXECUTION_KIND
+import com.opencray.core.orchestrator.METADATA_EXECUTION_ORDINAL
+import com.opencray.core.orchestrator.METADATA_PENDING_EXECUTION_KIND
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.persistence.model.ChatAttachmentEntry
@@ -27,6 +31,8 @@ import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
@@ -187,11 +193,14 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   override fun approveChatApproval(taskIdOrRunId: String) =
     throw unavailable("approveChatApproval")
 
+  override fun approveChatApprovalForSession(taskIdOrRunId: String) =
+    throw unavailable("approveChatApprovalForSession")
+
   override fun rejectChatApproval(taskIdOrRunId: String) =
     throw unavailable("rejectChatApproval")
 
-  override fun cancelChatRun(taskIdOrRunId: String) =
-    throw unavailable("cancelChatRun")
+  override fun interruptChatRun(taskIdOrRunId: String) =
+    throw unavailable("interruptChatRun")
 
   override fun retryChatRun(taskIdOrRunId: String) =
     throw unavailable("retryChatRun")
@@ -369,6 +378,8 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       val acceptedAtEpochMs = record?.acceptedAtEpochMs ?: taskSnapshot?.task?.createdAtEpochMs ?: 0L
       val lastEvent = journalStore.listForRun(runId).lastOrNull()?.payload?.toRuntimeEvent()
         ?: record?.lastEvent?.toRuntimeEvent()
+      val taskMetadata = taskSnapshot?.task?.metadata.orEmpty()
+      val resultMetadata = result?.metadata.orEmpty()
       AgentRunSnapshot(
         sessionId = sessionId,
         runId = runId,
@@ -386,6 +397,22 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
         lifecycleState = projectedLifecycleState(taskSnapshot?.lifecycleState, result),
         taskState = projectedTaskState(taskSnapshot?.task?.state, result),
         attempt = taskSnapshot?.attempt ?: 0,
+        executionOrdinal = taskSnapshot?.executionOrdinal
+          ?: taskMetadata[METADATA_EXECUTION_ORDINAL]?.toIntOrNull()
+          ?: resultMetadata[METADATA_EXECUTION_ORDINAL]?.toIntOrNull()
+          ?: lastEvent?.executionOrdinal
+          ?: 0,
+        executionId = taskSnapshot?.executionId
+          ?: taskMetadata[METADATA_EXECUTION_ID]?.trim()?.takeIf(String::isNotBlank)
+          ?: resultMetadata[METADATA_EXECUTION_ID]?.trim()?.takeIf(String::isNotBlank)
+          ?: lastEvent?.executionId?.trim()?.takeIf(String::isNotBlank),
+        executionKind = taskSnapshot?.executionKind
+          ?: taskMetadata[METADATA_EXECUTION_KIND]?.trim()?.takeIf(String::isNotBlank)
+          ?: resultMetadata[METADATA_EXECUTION_KIND]?.trim()?.takeIf(String::isNotBlank)
+          ?: lastEvent?.executionKind?.trim()?.takeIf(String::isNotBlank),
+        pendingExecutionKind = taskMetadata[METADATA_PENDING_EXECUTION_KIND]
+          ?.trim()
+          ?.takeIf(String::isNotBlank),
         executionStatus = result?.status,
         errorCode = if (result != null) {
           result.errorCode
@@ -451,10 +478,13 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     run: AgentRunSnapshot,
     sessionId: String,
   ): OpenCrayAgentRunEvent? {
-    val runEvents = runEventJournalStoreFactory.forChatSession(sessionId)
-      .listRuntimeEvents()
-      .filter { event -> event.runId == run.runId }
-    val latest = runEvents.lastOrNull() ?: return run.lastEvent
+    val runEvents = executionScopedRunEvents(
+      run = run,
+      sessionId = sessionId,
+    )
+    val latest = runEvents.lastOrNull() ?: return run.lastEvent?.takeIf { event ->
+      eventMatchesRunExecution(run = run, event = event)
+    }
     if (latest is OpenCrayApprovalEvent && latest.phase != OpenCrayApprovalPhase.REQUIRED) {
       val previousMeaningful = runEvents
         .dropLast(1)
@@ -465,6 +495,57 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       return previousMeaningful ?: latest
     }
     return latest
+  }
+
+  private fun executionScopedRunEvents(
+    run: AgentRunSnapshot,
+    sessionId: String,
+  ): List<OpenCrayAgentRunEvent> {
+    val runEvents = runEventJournalStoreFactory.forChatSession(sessionId)
+      .listRuntimeEvents()
+      .filter { event -> event.runId == run.runId }
+    val currentExecutionId = run.executionId?.trim()?.takeIf(String::isNotBlank)
+    if (currentExecutionId == null) {
+      return if (
+        run.pendingExecutionKind?.trim()?.takeIf(String::isNotBlank) != null &&
+        run.isActive
+      ) {
+        emptyList()
+      } else {
+        runEvents
+      }
+    }
+    val matching = runEvents.filter { event -> event.executionId?.trim() == currentExecutionId }
+    if (matching.isNotEmpty()) {
+      return matching
+    }
+    val hasTaggedEvents = runEvents.any { event ->
+      !event.executionId?.trim().isNullOrEmpty() ||
+        event.executionOrdinal != null ||
+        !event.executionKind?.trim().isNullOrEmpty()
+    }
+    if (hasTaggedEvents || run.executionOrdinal > 0) {
+      return emptyList()
+    }
+    return runEvents.filter { event ->
+      event.executionId?.trim().isNullOrEmpty() &&
+        event.executionOrdinal == null &&
+        event.executionKind?.trim().isNullOrEmpty()
+    }
+  }
+
+  private fun eventMatchesRunExecution(
+    run: AgentRunSnapshot,
+    event: OpenCrayAgentRunEvent,
+  ): Boolean {
+    if (event.runId != run.runId) {
+      return false
+    }
+    val currentExecutionId = run.executionId?.trim()?.takeIf(String::isNotBlank)
+    if (currentExecutionId == null) {
+      return run.pendingExecutionKind?.trim()?.takeIf(String::isNotBlank) == null || !run.isActive
+    }
+    return event.executionId?.trim() == currentExecutionId
   }
 
   private fun retainedRunsFor(runs: List<AgentRunSnapshot>): List<AgentRunSnapshot> {
@@ -504,7 +585,11 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
 
   private fun isAwaitingDirectionRun(run: AgentRunSnapshot): Boolean =
     (run.lastEvent as? OpenCrayApprovalEvent)?.phase == OpenCrayApprovalPhase.REJECTED ||
-      (run.lastEvent as? OpenCrayCancellationEvent)?.outcome == "user_cancelled"
+      (run.lastEvent as? OpenCrayCancellationEvent)?.outcome == "user_interrupted" ||
+      (
+        run.lifecycleState == QueueTaskLifecycleState.SUSPENDED &&
+          run.errorCode == ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
+        )
 
   private fun isInterruptedOnRestoreRun(run: AgentRunSnapshot): Boolean =
     run.errorCode == com.opencray.core.orchestrator.ERROR_RESTART_REQUIRES_EXPLICIT_RETRY ||
@@ -721,6 +806,10 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     put("lifecycleState", run.lifecycleState?.name?.lowercase())
     put("taskState", run.taskState?.name?.lowercase())
     put("attempt", run.attempt)
+    put("executionOrdinal", run.executionOrdinal)
+    put("executionId", run.executionId)
+    put("executionKind", run.executionKind)
+    put("pendingExecutionKind", run.pendingExecutionKind)
     put("executionStatus", run.executionStatus?.name?.lowercase())
     put("errorCode", run.errorCode)
     put("errorMessage", run.errorMessage)
@@ -733,13 +822,32 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     if (!run.lifecycleDiagnostics.isEmpty) {
       put("diagnostics", run.lifecycleDiagnostics.toMap())
     }
+    recoveryPlanForRun(run)?.let { recoveryPlan ->
+      put("recoveryPlan", recoveryPlan.toMap())
+    }
   }
+
+  private fun recoveryPlanForRun(run: AgentRunSnapshot): RunRecoveryPlan? =
+    recoveryPlanner.plan(
+      RunRecoveryPlannerInput(
+        run = run,
+        checkpoint = promptCheckpointStoreFactory.forChatSession(run.sessionId).get(run.taskId),
+        lastJournalEvent = run.lastEvent ?: runEventJournalStoreFactory.forChatSession(run.sessionId)
+          .listForRun(run.runId)
+          .lastOrNull()
+          ?.payload
+          ?.toRuntimeEvent(),
+      ),
+    )
 
   private fun runtimeEventToMap(event: OpenCrayAgentRunEvent): Map<String, Any?> = when (event) {
     is OpenCrayLifecycleEvent -> mapOf(
       "kind" to "lifecycle",
       "runId" to event.runId,
       "taskId" to event.taskId,
+      "executionId" to event.executionId,
+      "executionOrdinal" to event.executionOrdinal,
+      "executionKind" to event.executionKind,
       "turn" to event.turn,
       "emittedAtEpochMs" to event.emittedAtEpochMs,
       "phase" to event.phase.name.lowercase(),
@@ -747,22 +855,35 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       "errorCode" to event.errorCode,
       "errorMessage" to event.errorMessage,
     )
-    is OpenCrayAssistantPhaseEvent -> mapOf(
-      "kind" to "assistant_phase",
-      "runId" to event.runId,
-      "taskId" to event.taskId,
-      "turn" to event.turn,
-      "emittedAtEpochMs" to event.emittedAtEpochMs,
-      "phase" to event.phase.name.lowercase(),
-      "responseFormat" to event.responseFormat,
-      "isFinal" to event.isFinal,
-      "stage" to event.stage,
-      "text" to event.text,
-    )
+    is OpenCrayAssistantPhaseEvent -> buildMap<String, Any?> {
+      put("kind", "assistant_phase")
+      put("runId", event.runId)
+      put("taskId", event.taskId)
+      put("executionId", event.executionId)
+      put("executionOrdinal", event.executionOrdinal)
+      put("executionKind", event.executionKind)
+      put("turn", event.turn)
+      put("emittedAtEpochMs", event.emittedAtEpochMs)
+      put("phase", event.phase.name.lowercase())
+      put("responseFormat", event.responseFormat)
+      put("isFinal", event.isFinal)
+      put("stage", event.stage)
+      put("text", event.text)
+      if (
+        event.metadata[OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON]
+          ?.trim()
+          ?.isNotBlank() == true
+      ) {
+        put("hasResumeCheckpointMetadata", true)
+      }
+    }
     is OpenCraySupplementEvent -> buildMap<String, Any?> {
       put("kind", "supplement")
       put("runId", event.runId)
       put("taskId", event.taskId)
+      put("executionId", event.executionId)
+      put("executionOrdinal", event.executionOrdinal)
+      put("executionKind", event.executionKind)
       put("turn", event.turn)
       put("emittedAtEpochMs", event.emittedAtEpochMs)
       put("entryId", event.entryId)
@@ -784,6 +905,9 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       "kind" to if (event.phase == OpenCrayApprovalPhase.REQUIRED) "approval_wait" else "approval_result",
       "runId" to event.runId,
       "taskId" to event.taskId,
+      "executionId" to event.executionId,
+      "executionOrdinal" to event.executionOrdinal,
+      "executionKind" to event.executionKind,
       "turn" to event.turn,
       "emittedAtEpochMs" to event.emittedAtEpochMs,
       "toolName" to event.toolName,
@@ -796,6 +920,9 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       "kind" to "subagent",
       "runId" to event.runId,
       "taskId" to event.taskId,
+      "executionId" to event.executionId,
+      "executionOrdinal" to event.executionOrdinal,
+      "executionKind" to event.executionKind,
       "turn" to event.turn,
       "emittedAtEpochMs" to event.emittedAtEpochMs,
       "phase" to event.phase.name.lowercase(),
@@ -814,6 +941,9 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       "kind" to "tool_call",
       "runId" to event.runId,
       "taskId" to event.taskId,
+      "executionId" to event.executionId,
+      "executionOrdinal" to event.executionOrdinal,
+      "executionKind" to event.executionKind,
       "turn" to event.turn,
       "emittedAtEpochMs" to event.emittedAtEpochMs,
       "toolName" to event.call.toolName,
@@ -824,12 +954,20 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       "kind" to "tool_result",
       "runId" to event.runId,
       "taskId" to event.taskId,
+      "executionId" to event.executionId,
+      "executionOrdinal" to event.executionOrdinal,
+      "executionKind" to event.executionKind,
       "turn" to event.turn,
       "emittedAtEpochMs" to event.emittedAtEpochMs,
       "toolName" to event.call.toolName,
       "toolStatus" to event.result.status.name.lowercase(),
       "errorCode" to event.result.errorCode,
       "errorMessage" to event.result.errorMessage,
+      "content" to if (event.result.status == AgentToolResultStatus.SUCCESS) {
+        null
+      } else {
+        event.result.content.trim().takeIf(String::isNotBlank)?.take(MAX_PROJECTION_RUNTIME_EVENT_FAILURE_CONTENT_CHARS)
+      },
       "contentPreview" to event.result.content.take(MAX_PROJECTION_RUNTIME_EVENT_PREVIEW_CHARS),
       "resultMetadata" to toolResultMetadataSnapshot(event.result.metadata),
     )
@@ -837,6 +975,9 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       "kind" to "memory_retrieval",
       "runId" to event.runId,
       "taskId" to event.taskId,
+      "executionId" to event.executionId,
+      "executionOrdinal" to event.executionOrdinal,
+      "executionKind" to event.executionKind,
       "turn" to event.turn,
       "emittedAtEpochMs" to event.emittedAtEpochMs,
       "toolName" to event.toolName,
@@ -857,6 +998,9 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       "kind" to "memory_write",
       "runId" to event.runId,
       "taskId" to event.taskId,
+      "executionId" to event.executionId,
+      "executionOrdinal" to event.executionOrdinal,
+      "executionKind" to event.executionKind,
       "turn" to event.turn,
       "emittedAtEpochMs" to event.emittedAtEpochMs,
       "writtenRecordIds" to event.writtenRecordIds,
@@ -867,9 +1011,12 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       "expiredRecordIds" to event.expiredRecordIds,
     )
     is OpenCrayCancellationEvent -> mapOf(
-      "kind" to "cancelled",
+      "kind" to "interrupted",
       "runId" to event.runId,
       "taskId" to event.taskId,
+      "executionId" to event.executionId,
+      "executionOrdinal" to event.executionOrdinal,
+      "executionKind" to event.executionKind,
       "turn" to event.turn,
       "emittedAtEpochMs" to event.emittedAtEpochMs,
       "toolName" to event.toolName,
@@ -943,6 +1090,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     val hiddenKeys = setOf(
       "checkpointId",
       OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON,
+      OpenCrayPromptResumeMetadata.KEY_PROMPT_CHECKPOINT_BOUNDARY,
       SubAgentApprovalResumeMetadata.KEY_PROMPT_RESUME_JSON,
     )
     return metadata.mapNotNull { (key, value) ->
@@ -975,6 +1123,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     private const val MEMORY_DEBUG_TASK_ID_PREFIX: String = "memory-debug-task"
     private const val MAX_PROJECTION_RUNTIME_EVENT_HISTORY: Int = 24
     private const val MAX_PROJECTION_RUNTIME_EVENT_PREVIEW_CHARS: Int = 240
+    private const val MAX_PROJECTION_RUNTIME_EVENT_FAILURE_CONTENT_CHARS: Int = 16_384
     private const val PROJECTION_RUN_WAIT_POLL_INTERVAL_MS: Long = 50L
     private const val DEFAULT_PROJECTION_POLL_INTERVAL_MS: Long = 350L
   }

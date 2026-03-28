@@ -3,6 +3,8 @@ package com.opencray.runtime
 import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
+import com.opencray.core.contracts.PolicyDecision
+import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.filesystem.FileMutationOperation
 import com.opencray.filesystem.FileOpsService
 import com.opencray.llm.LiteLlmToolDefinition
@@ -39,6 +41,8 @@ import com.opencray.runtime.process.InMemoryAgentProcessRegistry
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.context.RuntimeConversationAttachment
+import com.opencray.runtime.context.RuntimeConversationAttachmentKind
 import com.opencray.runtime.skills.SkillPackageBatchInstallEntry
 import com.opencray.runtime.skills.SkillPackageCheckResult
 import com.opencray.runtime.skills.SkillInstallManifestEntry
@@ -57,7 +61,6 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
-import java.security.MessageDigest
 import java.util.Locale
 import java.util.UUID
 import kotlinx.serialization.builtins.ListSerializer
@@ -168,10 +171,26 @@ data class AgentToolResult(
   )
 }
 
+data class OpenCrayChatAttachmentSource(
+  val attachmentId: String,
+  val displayName: String,
+  val sourcePath: Path,
+  val mimeType: String? = null,
+) {
+  init {
+    require(attachmentId.isNotBlank()) { "OpenCrayChatAttachmentSource attachmentId must not be blank." }
+    require(displayName.isNotBlank()) { "OpenCrayChatAttachmentSource displayName must not be blank." }
+    require(mimeType == null || mimeType.isNotBlank()) {
+      "OpenCrayChatAttachmentSource mimeType must not be blank when provided."
+    }
+  }
+}
+
 data class OpenCrayToolDispatcherConfig(
   val workspaceRoots: Set<Path>,
   val readRoots: Set<Path> = workspaceRoots,
   val allowedToolNames: Set<String>? = null,
+  val hiddenToolNamePrefixes: Set<String> = emptySet(),
   val extraPolicyReadRoots: Set<Path> = emptySet(),
   val extraPolicyWriteRoots: Set<Path> = emptySet(),
   val skillsRoots: List<File> = emptyList(),
@@ -191,9 +210,11 @@ data class OpenCrayToolDispatcherConfig(
   val processRegistry: AgentProcessRegistry = InMemoryAgentProcessRegistry(),
   val webContentFetcher: WebContentFetcher = HttpUrlWebContentFetcher(),
   val webSearchProvider: WebSearchProvider = UnconfiguredWebSearchProvider,
+  val sandboxPreviewService: SandboxPreviewService? = null,
   val mediaToolSettingsProvider: () -> OpenCrayMediaToolSettings? = { null },
   val imageGenerationClient: OpenCrayImageGenerationClient? = null,
   val speechSynthesisClient: OpenCraySpeechSynthesisClient? = null,
+  val chatAttachmentResolver: ((String) -> OpenCrayChatAttachmentSource?)? = null,
   val memoryToolContext: MemoryToolContext? = null,
   val maxReadBytes: Int = 32_000,
   val maxDirectoryEntries: Int = 200,
@@ -258,6 +279,11 @@ class OpenCrayToolDispatcher(
     ?.map(String::trim)
     ?.filter(String::isNotBlank)
     ?.toSet()
+  private val hiddenToolNamePrefixes: Set<String> = config.hiddenToolNamePrefixes
+    .map(String::trim)
+    .filter(String::isNotBlank)
+    .map { prefix -> prefix.lowercase(Locale.US) }
+    .toSet()
 
   fun todoSnapshot(): List<AgentTodoEntry> = todoStore.snapshot()
 
@@ -396,11 +422,11 @@ class OpenCrayToolDispatcher(
       ),
       AgentToolDefinition(
         name = "Task",
-        description = "Delegate one bounded subtask to a child runtime and wait for its summarized result before continuing. Use researcher, reviewer, or general-purpose for read-only work, and worker for bounded workspace edits.",
+        description = "Delegate one bounded subtask to a child runtime and wait for its summarized result before continuing. Prefer explorer or default for read-only work, and worker for bounded workspace edits. Legacy aliases researcher, reviewer, and general-purpose are still accepted.",
         parameters = listOf(
           AgentToolParameter("description", "string", required = true, description = "Short task label for the delegated child run."),
           AgentToolParameter("prompt", "string", required = true, description = "Exact instructions for the child run."),
-          AgentToolParameter("subagent_type", "string", required = true, description = "Child profile id such as general-purpose, researcher, reviewer, or worker."),
+          AgentToolParameter("subagent_type", "string", required = true, description = "Child profile id such as explorer, default, or worker. Legacy aliases researcher, reviewer, and general-purpose also work."),
           AgentToolParameter("context_mode", "string", required = false, description = "Optional child context override. Supported values: minimal, delegated, mirrored."),
         ),
       ),
@@ -411,7 +437,7 @@ class OpenCrayToolDispatcher(
           AgentToolParameter("agent_id", "string", required = false, description = "Optional explicit handle id for the delegated child run."),
           AgentToolParameter("description", "string", required = true, description = "Short task label for the delegated child run."),
           AgentToolParameter("prompt", "string", required = true, description = "Exact instructions for the child run."),
-          AgentToolParameter("subagent_type", "string", required = true, description = "Child profile id such as general-purpose, researcher, reviewer, or worker."),
+          AgentToolParameter("subagent_type", "string", required = true, description = "Child profile id such as explorer, default, or worker. Legacy aliases researcher, reviewer, and general-purpose also work."),
           AgentToolParameter("context_mode", "string", required = false, description = "Optional child context override. Supported values: minimal, delegated, mirrored."),
         ),
       ),
@@ -524,6 +550,28 @@ class OpenCrayToolDispatcher(
         ),
       ),
       AgentToolDefinition(
+        name = "import_chat_attachment",
+        description = "Copy one existing chat attachment from the current session into the writable workspace without exposing the chat-media storage path.",
+        parameters = listOf(
+          AgentToolParameter("chat_attachment_id", "string", required = true, description = "Attachment id from the current chat history."),
+          AgentToolParameter("destination_path", "string", required = true, description = "Destination path inside the writable workspace root."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "view_workspace_image",
+        description = "Attach one readable workspace image into the next model turn for direct visual inspection. Use this when you need to see what an existing image actually contains instead of guessing from its path or filename.",
+        parameters = listOf(
+          AgentToolParameter("path", "string", required = true, description = "Workspace-relative path, or an absolute path inside an approved external read-only root."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "view_workspace_pdf",
+        description = "Attach one readable workspace PDF into the next model turn for direct inspection. Use this when you need the model to inspect the PDF contents directly instead of guessing from the path or filename.",
+        parameters = listOf(
+          AgentToolParameter("path", "string", required = true, description = "Workspace-relative path, or an absolute path inside an approved external read-only root."),
+        ),
+      ),
+      AgentToolDefinition(
         name = "workspace_move_file",
         description = "Move or rename a file inside the approved workspace.",
         parameters = listOf(
@@ -557,6 +605,16 @@ class OpenCrayToolDispatcher(
           AgentToolParameter("startup_timeout_ms", "number", required = false, description = "Optional extra startup budget before Python script timeout accounting begins."),
         ),
       ),
+      config.sandboxPreviewService?.let {
+        AgentToolDefinition(
+          name = "sandbox_preview_open",
+          description = "Return a preview URL for one port exposed by the active cloud sandbox session and run a short reachability probe against it. Use this only when cloud execution is enabled and the target service is expected to be running inside the sandbox.",
+          parameters = listOf(
+            AgentToolParameter("port", "number", required = true, description = "TCP port exposed by the sandbox service."),
+            AgentToolParameter("path", "string", required = false, description = "Optional path suffix such as / or /health."),
+          ),
+        )
+      },
       AgentToolDefinition(
         name = "skills_list",
         description = "List discovered skills from configured skills roots.",
@@ -632,10 +690,14 @@ class OpenCrayToolDispatcher(
         name = "mcp_list_servers",
         description = "Inspect currently exposed MCP servers and their trust state. This runtime does not proxy remote MCP tools yet.",
       ),
-    ) + memoryToolDefinitions()
-    val visibleCanonicalDefinitions = allowedToolNames?.let { allowed ->
-      canonicalDefinitions.filter { definition -> definition.name in allowed }
-    } ?: canonicalDefinitions
+    ).filterNotNull() + memoryToolDefinitions()
+    val visibleCanonicalDefinitions = canonicalDefinitions
+      .filter { definition -> !isToolHiddenByConfig(definition.name) }
+      .let { visibleDefinitions ->
+        allowedToolNames?.let { allowed ->
+          visibleDefinitions.filter { definition -> definition.name in allowed }
+        } ?: visibleDefinitions
+      }
     val aliasDefinitions = toolCallNormalizer.aliasDefinitions(visibleCanonicalDefinitions)
     return visibleCanonicalDefinitions + aliasDefinitions
   }
@@ -724,6 +786,21 @@ class OpenCrayToolDispatcher(
     hooks: com.opencray.core.orchestrator.RuntimeExecutionHooks,
   ): AgentToolResult {
     val invocation = toolCallNormalizer.normalize(call)
+    if (isToolHiddenByConfig(invocation.normalizedToolName)) {
+      return toolCallNormalizer.decorateResult(
+        result = AgentToolResult(
+          toolName = invocation.requestedToolName,
+          status = AgentToolResultStatus.DENIED,
+          content = "Tool '${invocation.requestedToolName}' is unavailable in the current execution environment.",
+          errorCode = "TOOL_UNAVAILABLE_IN_RUNTIME",
+          errorMessage = "Tool '${invocation.requestedToolName}' is unavailable in the current execution environment.",
+          metadata = mapOf(
+            "hiddenToolNamePrefixes" to hiddenToolNamePrefixes.sorted().joinToString(separator = ","),
+          ),
+        ),
+        invocation = invocation,
+      )
+    }
     if (allowedToolNames != null && invocation.normalizedToolName !in allowedToolNames) {
       return toolCallNormalizer.decorateResult(
         result = AgentToolResult(
@@ -745,6 +822,9 @@ class OpenCrayToolDispatcher(
         "workspace_read_file" -> readWorkspaceFile(task = task, arguments = invocation.arguments)
         "workspace_write_file" -> writeWorkspaceFile(task = task, arguments = invocation.arguments)
         "workspace_import_file" -> importFileIntoWorkspace(task = task, arguments = invocation.arguments)
+        "import_chat_attachment" -> importChatAttachmentIntoWorkspace(task = task, arguments = invocation.arguments)
+        "view_workspace_image" -> viewWorkspaceImage(task = task, arguments = invocation.arguments)
+        "view_workspace_pdf" -> viewWorkspacePdf(task = task, arguments = invocation.arguments)
         "workspace_move_file" -> moveWorkspaceFile(task = task, arguments = invocation.arguments)
         "workspace_delete_file" -> deleteWorkspaceFile(task = task, arguments = invocation.arguments)
         "LS" -> listFilesForClaude(task = task, arguments = invocation.arguments)
@@ -768,6 +848,7 @@ class OpenCrayToolDispatcher(
         "ProcessTerminate" -> terminateManagedProcess(task = task, arguments = invocation.arguments)
         "command_exec" -> executeCommand(task = task, arguments = invocation.arguments, hooks = hooks)
         "python_exec" -> executePython(task = task, arguments = invocation.arguments)
+        "sandbox_preview_open" -> openSandboxPreview(task = task, arguments = invocation.arguments)
         "skills_list" -> listSkills()
         "skill_read" -> readSkill(invocation.arguments)
         "SkillsFind" -> findSkillPackages(task = task, arguments = invocation.arguments)
@@ -808,6 +889,9 @@ class OpenCrayToolDispatcher(
     call: AgentToolCall,
   ): Boolean {
     val invocation = toolCallNormalizer.normalize(call)
+    if (isToolHiddenByConfig(invocation.normalizedToolName)) {
+      return false
+    }
     if (allowedToolNames != null && invocation.normalizedToolName !in allowedToolNames) {
       return false
     }
@@ -854,6 +938,14 @@ class OpenCrayToolDispatcher(
       plan = plan,
       affectedPaths = mapOf("path" to toolTargetResolver.displayModelPath(directory)),
     ) == null
+  }
+
+  private fun isToolHiddenByConfig(toolName: String): Boolean {
+    if (hiddenToolNamePrefixes.isEmpty()) {
+      return false
+    }
+    val normalizedName = toolName.trim().lowercase(Locale.US)
+    return hiddenToolNamePrefixes.any { prefix -> normalizedName.startsWith(prefix) }
   }
 
   private fun preflightWorkspaceReadFile(task: AgentTask, arguments: JsonObject): Boolean {
@@ -967,19 +1059,17 @@ class OpenCrayToolDispatcher(
   }
 
   private fun preflightWebSearch(task: AgentTask, arguments: JsonObject): Boolean {
+    if (!webSearchEnabled(task)) {
+      return false
+    }
     val query = arguments.requiredString("query")
     val domains = arguments.optionalStringArray("domains")
       .map(String::trim)
       .filter(String::isNotEmpty)
       .distinct()
-    val plan = toolPolicyPipeline.plan(
+    val plan = webSearchPolicyPlan(
       task = task,
-      toolName = "WebSearch",
-      metadataRequest = ToolMetadataContextRequest(
-        targetKind = ToolTargetKind.NETWORK,
-        workspaceRelation = ToolWorkspaceRelation.NONE,
-        targetSummary = inlinePreview(query, maxChars = 256),
-      ),
+      query = query,
     )
     return toolPolicyPipeline.gate(
       plan = plan,
@@ -993,6 +1083,54 @@ class OpenCrayToolDispatcher(
       denyDetail = "Policy denied WebSearch.",
     ) == null
   }
+
+  private fun webSearchEnabled(task: AgentTask): Boolean =
+    task.metadata["webSearchEnabled"]
+      ?.trim()
+      ?.lowercase()
+      ?.let { rawValue ->
+        when (rawValue) {
+          "true" -> true
+          "false" -> false
+          else -> null
+        }
+      } ?: true
+
+  private fun webSearchPolicyPlan(
+    task: AgentTask,
+    query: String,
+  ): ToolPolicyPlan {
+    val basePlan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "WebSearch",
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        workspaceRelation = ToolWorkspaceRelation.NONE,
+        targetSummary = inlinePreview(query, maxChars = 256),
+      ),
+    )
+    return basePlan.copy(
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "WEB_SEARCH_DEFAULT_ALLOW",
+      ),
+    )
+  }
+
+  private fun webSearchDisabledResult(
+    query: String,
+    domains: List<String>,
+  ): AgentToolResult = AgentToolResult(
+    toolName = "WebSearch",
+    status = AgentToolResultStatus.DENIED,
+    content = "Web search is disabled for this run.",
+    errorCode = "WEB_SEARCH_DISABLED",
+    errorMessage = "Web search is disabled for this run.",
+    metadata = mapOf(
+      "query" to query,
+      "webSearchEnabled" to "false",
+    ) + domainsMetadata(domains),
+  )
 
   private fun preflightWebFetch(task: AgentTask, arguments: JsonObject): Boolean {
     val url = arguments.requiredString("url")
@@ -1344,6 +1482,197 @@ class OpenCrayToolDispatcher(
     )
   }
 
+  private fun importChatAttachmentIntoWorkspace(
+    task: AgentTask,
+    arguments: JsonObject,
+  ): AgentToolResult {
+    val resolver = config.chatAttachmentResolver
+      ?: error("Chat attachment importing is unavailable in this runtime.")
+    val chatAttachmentId = arguments.requiredString("chat_attachment_id")
+    val source = resolver(chatAttachmentId)
+      ?: error("Chat attachment '$chatAttachmentId' was not found in the current session.")
+    val sourcePath = source.sourcePath.toAbsolutePath().normalize()
+    require(Files.exists(sourcePath) && Files.isRegularFile(sourcePath)) {
+      "Chat attachment source is unavailable: ${source.displayName}"
+    }
+    val destination = toolTargetResolver.resolveWritablePath(
+      arguments.requiredString("destination_path"),
+      label = "import destination",
+      defaultToRoot = false,
+    )
+    require(!Files.exists(destination)) {
+      "Import destination already exists: ${toolTargetResolver.displayWritablePath(destination)}"
+    }
+
+    val destinationPath = toolTargetResolver.displayWritablePath(destination)
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "import_chat_attachment",
+      targetPath = destination,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.FILE,
+        primaryPath = sourcePath,
+        secondaryPath = destination,
+        primaryTargetPath = "chat_attachment:${source.attachmentId}",
+        secondaryTargetPath = destinationPath,
+        targetSummary = "${source.displayName} -> $destinationPath",
+      ),
+    )
+    toolPolicyPipeline.gateFileMutation(
+      plan = plan,
+      affectedPaths = mapOf(
+        "chatAttachmentId" to source.attachmentId,
+        "chatAttachmentDisplayName" to source.displayName,
+        "destinationPath" to destinationPath,
+      ),
+    )?.let { return it }
+
+    copyIntoWorkspace(source = sourcePath, destination = destination)
+    val artifactMetadata = attachmentArtifactMetadata(destination)
+
+    return AgentToolResult(
+      toolName = "import_chat_attachment",
+      status = AgentToolResultStatus.SUCCESS,
+      content = "Imported chat attachment ${source.displayName} into $destinationPath.",
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "chatAttachmentId" to source.attachmentId,
+          "chatAttachmentDisplayName" to source.displayName,
+          "destinationPath" to destinationPath,
+        ) + artifactMetadata,
+      ),
+    )
+  }
+
+  private fun viewWorkspaceImage(
+    task: AgentTask,
+    arguments: JsonObject,
+  ): AgentToolResult {
+    val imagePath = toolTargetResolver.ensureReadableFile(
+      arguments.requiredString("path"),
+      label = "workspace image",
+    )
+    val displayPath = toolTargetResolver.displayModelPath(imagePath)
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "view_workspace_image",
+      targetPath = imagePath,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.FILE,
+        primaryPath = imagePath,
+      ),
+    )
+    gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = mapOf("path" to displayPath),
+    )?.let { return it }
+
+    val displayName = imagePath.fileName?.toString()
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: error("Workspace image path must point to a file.")
+    val mimeType = workspaceImageMimeType(path = imagePath, displayName = displayName)
+      ?: error("Workspace image must be a supported image file: $displayPath")
+    val byteCount = Files.size(imagePath)
+    require(byteCount in 1..MAX_VIEW_WORKSPACE_IMAGE_BYTES) {
+      "Workspace image must be between 1 byte and ${MAX_VIEW_WORKSPACE_IMAGE_BYTES / (1024 * 1024)} MB: $displayPath"
+    }
+
+    val promptSupplement = OpenCrayPromptSupplementMetadata.encodeMetadata(
+      json = config.json,
+      text = "Inspect the attached workspace image from $displayPath directly before deciding what it contains.",
+      attachments = listOf(
+        RuntimeConversationAttachment(
+          attachmentId = "workspace-image-${UUID.randomUUID().toString().take(8)}",
+          kind = RuntimeConversationAttachmentKind.IMAGE,
+          displayName = displayName,
+          filePath = imagePath.toAbsolutePath().normalize().toString().replace('\\', '/'),
+          mimeType = mimeType,
+        ),
+      ),
+    )
+
+    return AgentToolResult(
+      toolName = "view_workspace_image",
+      status = AgentToolResultStatus.SUCCESS,
+      content = "Attached workspace image $displayPath for direct visual inspection on the next turn.",
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "path" to displayPath,
+          "displayName" to displayName,
+          "mimeType" to mimeType,
+          "byteCount" to byteCount.toString(),
+        ) + promptSupplement,
+      ),
+    )
+  }
+
+  private fun viewWorkspacePdf(
+    task: AgentTask,
+    arguments: JsonObject,
+  ): AgentToolResult {
+    val pdfPath = toolTargetResolver.ensureReadableFile(
+      arguments.requiredString("path"),
+      label = "workspace PDF",
+    )
+    val displayPath = toolTargetResolver.displayModelPath(pdfPath)
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "view_workspace_pdf",
+      targetPath = pdfPath,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.FILE,
+        primaryPath = pdfPath,
+      ),
+    )
+    gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = mapOf("path" to displayPath),
+    )?.let { return it }
+
+    val displayName = pdfPath.fileName?.toString()
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: error("Workspace PDF path must point to a file.")
+    val mimeType = workspacePdfMimeType(path = pdfPath, displayName = displayName)
+      ?: error("Workspace PDF must be a supported PDF file: $displayPath")
+    val byteCount = Files.size(pdfPath)
+    require(byteCount in 1..MAX_VIEW_WORKSPACE_PDF_BYTES) {
+      "Workspace PDF must be between 1 byte and ${MAX_VIEW_WORKSPACE_PDF_BYTES / (1024 * 1024)} MB: $displayPath"
+    }
+
+    val promptSupplement = OpenCrayPromptSupplementMetadata.encodeMetadata(
+      json = config.json,
+      text = "Inspect the attached workspace PDF from $displayPath directly before deciding what it contains.",
+      attachments = listOf(
+        RuntimeConversationAttachment(
+          attachmentId = "workspace-pdf-${UUID.randomUUID().toString().take(8)}",
+          kind = RuntimeConversationAttachmentKind.FILE,
+          displayName = displayName,
+          filePath = pdfPath.toAbsolutePath().normalize().toString().replace('\\', '/'),
+          mimeType = mimeType,
+        ),
+      ),
+    )
+
+    return AgentToolResult(
+      toolName = "view_workspace_pdf",
+      status = AgentToolResultStatus.SUCCESS,
+      content = "Attached workspace PDF $displayPath for direct inspection on the next turn.",
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "path" to displayPath,
+          "displayName" to displayName,
+          "mimeType" to mimeType,
+          "byteCount" to byteCount.toString(),
+        ) + promptSupplement,
+      ),
+    )
+  }
+
   private fun grepWorkspace(task: AgentTask, arguments: JsonObject): AgentToolResult {
     val pattern = arguments.requiredString("pattern")
     val regex = runCatching { Regex(pattern) }
@@ -1485,14 +1814,12 @@ class OpenCrayToolDispatcher(
       .map(String::trim)
       .filter(String::isNotEmpty)
       .distinct()
-    val plan = toolPolicyPipeline.plan(
+    if (!webSearchEnabled(task)) {
+      return webSearchDisabledResult(query = query, domains = domains)
+    }
+    val plan = webSearchPolicyPlan(
       task = task,
-      toolName = "WebSearch",
-      metadataRequest = ToolMetadataContextRequest(
-        targetKind = ToolTargetKind.NETWORK,
-        workspaceRelation = ToolWorkspaceRelation.NONE,
-        targetSummary = inlinePreview(query, maxChars = 256),
-      ),
+      query = query,
     )
     toolPolicyPipeline.gate(
       plan = plan,
@@ -2674,32 +3001,7 @@ class OpenCrayToolDispatcher(
     artifacts: List<OpenCrayGeneratedWorkspaceArtifact>,
   ): Map<String, String> {
     val descriptors = artifacts.mapNotNull(::attachmentArtifactDescriptor)
-    if (descriptors.isEmpty()) {
-      return emptyMap()
-    }
-    val primary = descriptors.first()
-    return buildMap {
-      put(
-        OpenCrayAttachmentArtifactMetadataKeys.ARTIFACTS_JSON,
-        config.json.encodeToString(
-          ListSerializer(OpenCrayAttachmentArtifact.serializer()),
-          descriptors,
-        ),
-      )
-      put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_ID, primary.artifactId)
-      put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_RELATIVE_PATH, primary.relativePath)
-      primary.displayName?.let { put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_DISPLAY_NAME, it) }
-      primary.kindHint?.let { put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_KIND_HINT, it) }
-      primary.mimeType?.let { put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_MIME_TYPE, it) }
-      primary.durationMs?.let { put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_DURATION_MS, it.toString()) }
-      if (primary.waveformBars.isNotEmpty()) {
-        put(
-          OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_WAVEFORM_BARS,
-          primary.waveformBars.joinToString(separator = ","),
-        )
-      }
-      primary.transcriptText?.let { put(OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_TRANSCRIPT_TEXT, it) }
-    }
+    return OpenCrayAttachmentArtifacts.encodeMetadata(config.json, descriptors)
   }
 
   private fun attachmentArtifactDescriptor(
@@ -2718,11 +3020,11 @@ class OpenCrayToolDispatcher(
         ?.takeIf(String::isNotBlank)
       ?: return null
     val kindHint = artifact.kindHint?.trim()?.takeIf(String::isNotBlank)
-      ?: attachmentArtifactKindHint(displayName)
+      ?: OpenCrayAttachmentArtifacts.kindHintForDisplayName(displayName)
     val mimeType = artifact.mimeType?.trim()?.takeIf(String::isNotBlank)
-      ?: attachmentArtifactMimeType(displayName)
+      ?: OpenCrayAttachmentArtifacts.mimeTypeForDisplayName(displayName)
     return OpenCrayAttachmentArtifact(
-      artifactId = buildAttachmentArtifactId(
+      artifactId = OpenCrayAttachmentArtifacts.buildArtifactId(
         relativePath = relativePath,
         displayName = displayName,
       ),
@@ -2743,11 +3045,45 @@ class OpenCrayToolDispatcher(
       ?.let { displayName ->
         OpenCrayGeneratedWorkspaceArtifact(
           path = path,
-          kindHint = attachmentArtifactKindHint(displayName),
-          mimeType = attachmentArtifactMimeType(displayName),
+          kindHint = OpenCrayAttachmentArtifacts.kindHintForDisplayName(displayName),
+          mimeType = OpenCrayAttachmentArtifacts.mimeTypeForDisplayName(displayName),
           displayName = displayName,
         )
       }
+
+  private fun workspaceImageMimeType(
+    path: Path,
+    displayName: String,
+  ): String? {
+    val probedMimeType = Files.probeContentType(path)
+      ?.trim()
+      ?.lowercase(Locale.US)
+      ?.takeIf { mimeType -> mimeType.startsWith("image/") }
+    if (probedMimeType != null) {
+      return probedMimeType
+    }
+    return OpenCrayAttachmentArtifacts.mimeTypeForDisplayName(displayName)
+      ?.trim()
+      ?.lowercase(Locale.US)
+      ?.takeIf { mimeType -> mimeType.startsWith("image/") }
+  }
+
+  private fun workspacePdfMimeType(
+    path: Path,
+    displayName: String,
+  ): String? {
+    val probedMimeType = Files.probeContentType(path)
+      ?.trim()
+      ?.lowercase(Locale.US)
+      ?.takeIf { mimeType -> mimeType == "application/pdf" }
+    if (probedMimeType != null) {
+      return probedMimeType
+    }
+    return OpenCrayAttachmentArtifacts.mimeTypeForDisplayName(displayName)
+      ?.trim()
+      ?.lowercase(Locale.US)
+      ?.takeIf { mimeType -> mimeType == "application/pdf" }
+  }
 
   private fun unavailableMediaTool(
     toolName: String,
@@ -2841,7 +3177,7 @@ class OpenCrayToolDispatcher(
       path = outputPath,
       kindHint = kindHint,
       mimeType = asset.mimeType?.trim()?.takeIf(String::isNotBlank)
-        ?: attachmentArtifactMimeType(outputPath.fileName.toString()),
+        ?: OpenCrayAttachmentArtifacts.mimeTypeForDisplayName(outputPath.fileName.toString()),
       displayName = outputPath.fileName.toString(),
       durationMs = durationMs,
       transcriptText = transcriptText,
@@ -2901,37 +3237,6 @@ class OpenCrayToolDispatcher(
     "wav" -> "wav"
     "m4a" -> "m4a"
     else -> throw IllegalArgumentException("SynthesizeSpeech format must be mp3, wav, or m4a.")
-  }
-
-  private fun buildAttachmentArtifactId(
-    relativePath: String,
-    displayName: String,
-  ): String {
-    val baseName = displayName.substringBeforeLast('.', displayName)
-      .lowercase(Locale.US)
-      .replace(Regex("[^a-z0-9]+"), "-")
-      .trim('-')
-      .ifBlank { "file" }
-      .take(48)
-    val digest = MessageDigest.getInstance("SHA-256")
-      .digest(relativePath.toByteArray(StandardCharsets.UTF_8))
-      .joinToString(separator = "") { byte -> "%02x".format(byte) }
-      .take(8)
-    return "artifact-$baseName-$digest"
-  }
-
-  private fun attachmentArtifactKindHint(displayName: String): String? {
-    val extension = displayName.substringAfterLast('.', "").lowercase(Locale.US)
-    return when {
-      extension in ATTACHMENT_IMAGE_EXTENSIONS -> "image"
-      extension in ATTACHMENT_AUDIO_EXTENSIONS -> "voice"
-      else -> "file"
-    }
-  }
-
-  private fun attachmentArtifactMimeType(displayName: String): String? {
-    val extension = displayName.substringAfterLast('.', "").lowercase(Locale.US)
-    return ATTACHMENT_FALLBACK_MIME_TYPES[extension]
   }
 
   private fun copyIntoWorkspace(source: Path, destination: Path) {
@@ -3184,6 +3489,101 @@ class OpenCrayToolDispatcher(
           "scriptPath" to toolTargetResolver.displayWritablePath(scriptPath),
         ),
         resultEnvelope = commandResultEnvelope(toolResult),
+      ),
+    )
+  }
+
+  private fun openSandboxPreview(task: AgentTask, arguments: JsonObject): AgentToolResult {
+    val previewService = config.sandboxPreviewService ?: return AgentToolResult(
+      toolName = "sandbox_preview_open",
+      status = AgentToolResultStatus.FAILED,
+      content = "Sandbox preview support is unavailable on this runtime.",
+      errorCode = "SANDBOX_PREVIEW_UNAVAILABLE",
+      errorMessage = "Sandbox preview support is unavailable on this runtime.",
+    )
+    val port = arguments.optionalInt("port")
+      ?.also { value ->
+        require(value in 1..65_535) { "sandbox_preview_open port must be between 1 and 65535." }
+      }
+      ?: throw IllegalArgumentException("Required argument 'port' must be a JSON number.")
+    val rawPath = arguments.optionalString("path")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val normalizedPath = rawPath?.let { value ->
+      if (value.startsWith("/")) value else "/$value"
+    }
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "sandbox_preview_open",
+      targetPath = writeBoundary.defaultRoot,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        primaryPath = writeBoundary.defaultRoot,
+        primaryTargetPath = toolTargetResolver.displayWritablePath(writeBoundary.defaultRoot),
+        workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+        targetSummary = "sandbox port $port${normalizedPath.orEmpty()}",
+      ),
+    )
+    toolPolicyPipeline.gate(
+      plan = plan,
+      affectedPaths = buildMap {
+        put("workspaceRoot", toolTargetResolver.displayWritablePath(writeBoundary.defaultRoot))
+        put("port", port.toString())
+        normalizedPath?.let { put("path", it) }
+      },
+      askDetail = "Approval is required before sandbox_preview_open can expose a sandbox preview URL.",
+      denyDetail = "Policy denied sandbox_preview_open.",
+    )?.let { return it }
+    val preview = previewService.open(
+      SandboxPreviewRequest(
+        workspaceRoot = writeBoundary.defaultRoot,
+        port = port,
+        path = normalizedPath,
+      ),
+    )
+    val content = buildString {
+      when (preview.probeStatus) {
+        SandboxPreviewProbeStatus.READY -> appendLine("Sandbox preview is available and responded to the probe.")
+        SandboxPreviewProbeStatus.REACHABLE -> appendLine("Sandbox preview URL is available and the sandbox endpoint responded.")
+        SandboxPreviewProbeStatus.UNREACHABLE -> appendLine("Sandbox preview URL was generated, but the sandbox endpoint did not respond to the probe yet.")
+        SandboxPreviewProbeStatus.SKIPPED -> appendLine("Sandbox preview is available.")
+      }
+      appendLine("preview_url=${preview.url}")
+      appendLine("port=${preview.port}")
+      normalizedPath?.let { appendLine("path=$it") }
+      appendLine("probe_status=${preview.probeStatus.wireValue}")
+      preview.probeHttpStatusCode?.let { appendLine("probe_http_status=$it") }
+      preview.probeMessage?.let { appendLine("probe_message=$it") }
+      appendLine("provider=${preview.providerId}")
+      preview.sandboxId?.let { appendLine("sandbox_id=$it") }
+      preview.sandboxDomain?.let { appendLine("sandbox_domain=$it") }
+      preview.accessHeaderName?.let { headerName ->
+        appendLine("access_header=$headerName")
+        if (preview.accessTokenConfigured) {
+          append("If preview access is restricted by the provider, use the recorded access token with that header.")
+        }
+      }
+    }.trim()
+    return AgentToolResult(
+      toolName = "sandbox_preview_open",
+      status = AgentToolResultStatus.SUCCESS,
+      content = content,
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = buildMap {
+          put("workspaceRoot", toolTargetResolver.displayWritablePath(writeBoundary.defaultRoot))
+          put("previewUrl", preview.url)
+          put("previewPort", preview.port.toString())
+          put("sandboxProvider", preview.providerId)
+          put("previewProbeStatus", preview.probeStatus.wireValue)
+          preview.sandboxId?.let { put("sandboxId", it) }
+          preview.sandboxDomain?.let { put("sandboxDomain", it) }
+          normalizedPath?.let { put("previewPath", it) }
+          preview.accessHeaderName?.let { put("previewAccessHeader", it) }
+          put("previewAccessTokenConfigured", preview.accessTokenConfigured.toString())
+          preview.probeHttpStatusCode?.let { put("previewProbeHttpStatus", it.toString()) }
+          preview.probeMessage?.let { put("previewProbeMessage", it) }
+        },
       ),
     )
   }
@@ -3445,6 +3845,7 @@ class OpenCrayToolDispatcher(
       task = task,
       toolName = "SkillsFind",
       targetPath = catalogRoot,
+      approvedHostManagedReadRoots = skillPackageHostManagedReadRoots(packageManager),
       metadataRequest = ToolMetadataContextRequest(
         targetKind = ToolTargetKind.DIRECTORY,
         primaryPath = catalogRoot,
@@ -3560,6 +3961,7 @@ class OpenCrayToolDispatcher(
       task = task,
       toolName = "SkillsList",
       targetPath = managedRoot,
+      approvedHostManagedReadRoots = skillPackageHostManagedReadRoots(packageManager),
       metadataRequest = ToolMetadataContextRequest(
         targetKind = ToolTargetKind.DIRECTORY,
         primaryPath = managedRoot,
@@ -3753,6 +4155,7 @@ class OpenCrayToolDispatcher(
       task = task,
       toolName = "SkillsCheck",
       targetPath = managedRoot,
+      approvedHostManagedReadRoots = skillPackageHostManagedReadRoots(packageManager),
       metadataRequest = ToolMetadataContextRequest(
         targetKind = ToolTargetKind.DIRECTORY,
         primaryPath = managedRoot,
@@ -4495,6 +4898,11 @@ class OpenCrayToolDispatcher(
     return normalized.toString().replace('\\', '/')
   }
 
+  private fun skillPackageHostManagedReadRoots(packageManager: SkillPackageManager): Set<Path> =
+    packageManager.policyReadRoots()
+      .map { root -> root.toPath().toAbsolutePath().normalize() }
+      .toSet()
+
   private fun labeledHostPath(
     label: String,
     root: Path,
@@ -4759,6 +5167,7 @@ class OpenCrayToolDispatcher(
       result.copy(
         toolName = resultToolName,
         metadata = result.metadata + mapOf(
+          OpenCrayExecutionMetadataKeys.APPROVAL_RESUME_TOOL_NAME to plan.toolName,
           "requestedToolName" to resultToolName,
           "normalizedToolName" to resultToolName,
         ),
@@ -4792,6 +5201,7 @@ class OpenCrayToolDispatcher(
       result.copy(
         toolName = resultToolName,
         metadata = result.metadata + mapOf(
+          OpenCrayExecutionMetadataKeys.APPROVAL_RESUME_TOOL_NAME to plan.toolName,
           "requestedToolName" to resultToolName,
           "normalizedToolName" to resultToolName,
         ),
@@ -4869,6 +5279,10 @@ class OpenCrayToolDispatcher(
       ?: throw IllegalArgumentException("Argument '$name' must be a JSON number.")
   }
 
+  private fun JsonObject.requiredInt(name: String): Int =
+    optionalInt(name)
+      ?: throw IllegalArgumentException("Required argument '$name' must be a JSON number.")
+
   private fun JsonObject.optionalLong(name: String): Long? {
     val element = this[name] ?: return null
     val primitive = element as? JsonPrimitive
@@ -4933,10 +5347,15 @@ class OpenCrayToolDispatcher(
       errorMessage != null -> errorMessage.orEmpty()
       else -> "Tool finished with status ${status.name.lowercase()}."
     }
+    val renderedContent = appendExecutionAttachmentArtifactSummary(
+      toolName = toolName,
+      content = content,
+      metadata = metadata,
+    )
     return AgentToolResult(
       toolName = toolName,
       status = status,
-      content = content,
+      content = renderedContent,
       exitCode = exitCode,
       stdout = stdout,
       stderr = stderr,
@@ -4944,6 +5363,43 @@ class OpenCrayToolDispatcher(
       errorMessage = errorMessage,
       metadata = metadata,
     )
+  }
+
+  private fun appendExecutionAttachmentArtifactSummary(
+    toolName: String,
+    content: String,
+    metadata: Map<String, String>,
+  ): String {
+    if (toolName != "python_exec" && toolName != "command_exec") {
+      return content
+    }
+    val artifacts = OpenCrayAttachmentArtifacts.decodeMetadata(config.json, metadata)
+    if (artifacts.isEmpty()) {
+      return content
+    }
+    val previewArtifacts = artifacts.take(MAX_EXECUTION_ATTACHMENT_ARTIFACT_PREVIEW_COUNT)
+    if (previewArtifacts.any { artifact -> content.contains("artifact_id=${artifact.artifactId}") }) {
+      return content
+    }
+    val summary = buildString {
+      appendLine("Workspace artifact(s) available:")
+      previewArtifacts.forEachIndexed { index, artifact ->
+        appendLine("${index + 1}. artifact_id=${artifact.artifactId}")
+        appendLine("   relative_path=${artifact.relativePath}")
+      }
+      val remainingCount = artifacts.size - previewArtifacts.size
+      if (remainingCount > 0) {
+        appendLine("...and $remainingCount more artifact(s).")
+      }
+      append("You may attach these artifact_id values in the final response attachments array.")
+    }.trim()
+    return buildString {
+      if (content.isNotBlank()) {
+        append(content.trimEnd())
+        append("\n\n")
+      }
+      append(summary)
+    }
   }
 
   private data class TextEdit(
@@ -4977,38 +5433,13 @@ class OpenCrayToolDispatcher(
     private const val DEFAULT_BASH_WAIT_TIMEOUT_MS: Long = 1_000L
     private const val DEFAULT_MANAGED_PROCESS_TIMEOUT_MS: Long = 300_000L
     private const val DEFAULT_MANAGED_PROCESS_WAIT_TIMEOUT_MS: Long = 1_000L
+    private const val MAX_VIEW_WORKSPACE_IMAGE_BYTES: Long = 20L * 1024L * 1024L
+    private const val MAX_VIEW_WORKSPACE_PDF_BYTES: Long = 32L * 1024L * 1024L
     private const val DEFAULT_GENERATED_IMAGE_FORMAT: String = "png"
     private const val DEFAULT_GENERATED_AUDIO_FORMAT: String = "mp3"
     private const val MAX_GENERATED_IMAGE_COUNT: Int = 9
+    private const val MAX_EXECUTION_ATTACHMENT_ARTIFACT_PREVIEW_COUNT: Int = 12
     private val WINDOWS_ABSOLUTE_PATH_REGEX: Regex = Regex("^[A-Za-z]:[\\\\/].+")
-    private val ATTACHMENT_IMAGE_EXTENSIONS: Set<String> = setOf(
-      "png",
-      "jpg",
-      "jpeg",
-      "webp",
-      "gif",
-      "bmp",
-      "heic",
-      "heif",
-    )
-    private val ATTACHMENT_AUDIO_EXTENSIONS: Set<String> = setOf(
-      "mp3",
-      "wav",
-      "m4a",
-    )
-    private val ATTACHMENT_FALLBACK_MIME_TYPES: Map<String, String> = mapOf(
-      "png" to "image/png",
-      "jpg" to "image/jpeg",
-      "jpeg" to "image/jpeg",
-      "webp" to "image/webp",
-      "gif" to "image/gif",
-      "bmp" to "image/bmp",
-      "heic" to "image/heic",
-      "heif" to "image/heif",
-      "mp3" to "audio/mpeg",
-      "wav" to "audio/wav",
-      "m4a" to "audio/mp4",
-    )
     private val MANAGED_PROCESS_RESERVED_METADATA_KEYS: Set<String> = setOf(
       "capabilityKind",
       "targetKind",

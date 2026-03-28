@@ -105,7 +105,7 @@ void main() {
       expect(find.text(copy.chatSelectionCount(1)), findsOneWidget);
       expect(
         _rowHighlightColor(tester, 'seed-main-inbound-2'),
-        const Color(0xFFE4E5EA),
+        const Color(0xFFE5E5EA),
       );
       expect(
         _rowHighlightColor(tester, 'seed-main-outbound-2'),
@@ -122,7 +122,7 @@ void main() {
       expect(find.text(copy.chatSelectionCount(2)), findsOneWidget);
       expect(
         _rowHighlightColor(tester, 'seed-main-outbound-2'),
-        const Color(0xFFE4E5EA),
+        const Color(0xFFE5E5EA),
       );
     },
   );
@@ -206,6 +206,227 @@ void main() {
       expect(platformCalls.last.arguments, <String, dynamic>{
         'text': 'before edits',
       });
+    },
+  );
+
+  testWidgets(
+    'copy action preserves hyperlink payloads for a fully selected markdown link',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final bridge = OpenCraySeedBridge(
+        initialChatSnapshot: const OpenCrayChatSnapshot(
+          screenTitle: 'Chat',
+          modeLabel: 'SEED',
+          sessionButtonLabel: 'Sessions',
+          composerPlaceholder: 'Message OpenCray',
+          summary: OpenCrayChatSummarySnapshot(
+            title: 'Seed summary',
+            badge: 'Ready',
+            body: 'Body',
+          ),
+          messages: <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              messageId: 'seed-main-timeline',
+              kind: 'timeline',
+              text: 'Today',
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'seed-main-inbound-2',
+              kind: 'inbound',
+              text: 'Open [docs](https://opencray.dev/docs) now',
+            ),
+          ],
+          drawer: OpenCrayChatDrawerSnapshot(
+            eyebrow: 'Recent sessions',
+            title: 'Recent sessions',
+            ctaLabel: 'New session',
+            sessions: <OpenCrayChatSessionItemSnapshot>[
+              OpenCrayChatSessionItemSnapshot(
+                sessionId: 'seed-session',
+                title: 'Seed session',
+                preview: 'Flutter chat is attached to a seed bridge.',
+                meta: '2 messages',
+                isSelected: true,
+              ),
+            ],
+          ),
+          isInputEnabled: true,
+        ),
+      );
+      await tester.pumpWidget(_buildHarness(copy, bridge: bridge));
+      await tester.pumpAndSettle();
+
+      final targetBubble = find.byKey(
+        const ValueKey<String>('chat-bubble-seed-main-inbound-2'),
+      );
+      final selectionArea = find.descendant(
+        of: targetBubble,
+        matching: find.byType(SelectionArea),
+      );
+      final selectionWidget = tester.widget<SelectionArea>(selectionArea);
+
+      selectionWidget.onSelectionChanged!(
+        const SelectedContent(plainText: 'docs'),
+      );
+      await tester.pump();
+
+      await _openMessageMenu(tester, targetBubble);
+      await tester.tap(find.text(copy.chatMessageCopyAction));
+      await tester.pumpAndSettle();
+
+      expect(bridge.lastCopiedPlainText, 'https://opencray.dev/docs');
+      expect(
+        bridge.lastCopiedHtmlText,
+        contains('href="https://opencray.dev/docs"'),
+      );
+      expect(bridge.lastCopiedHtmlText, contains('>docs<'));
+    },
+  );
+
+  testWidgets(
+    'copy action falls back to plain text for a partial markdown link selection',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final bridge = OpenCraySeedBridge(
+        initialChatSnapshot: const OpenCrayChatSnapshot(
+          screenTitle: 'Chat',
+          modeLabel: 'SEED',
+          sessionButtonLabel: 'Sessions',
+          composerPlaceholder: 'Message OpenCray',
+          summary: OpenCrayChatSummarySnapshot(
+            title: 'Seed summary',
+            badge: 'Ready',
+            body: 'Body',
+          ),
+          messages: <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              messageId: 'seed-main-timeline',
+              kind: 'timeline',
+              text: 'Today',
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'seed-main-inbound-2',
+              kind: 'inbound',
+              text: 'Open [docs](https://opencray.dev/docs) now',
+            ),
+          ],
+          drawer: OpenCrayChatDrawerSnapshot(
+            eyebrow: 'Recent sessions',
+            title: 'Recent sessions',
+            ctaLabel: 'New session',
+            sessions: <OpenCrayChatSessionItemSnapshot>[
+              OpenCrayChatSessionItemSnapshot(
+                sessionId: 'seed-session',
+                title: 'Seed session',
+                preview: 'Flutter chat is attached to a seed bridge.',
+                meta: '2 messages',
+                isSelected: true,
+              ),
+            ],
+          ),
+          isInputEnabled: true,
+        ),
+      );
+      final List<MethodCall> platformCalls = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+            platformCalls.add(call);
+            return null;
+          });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(SystemChannels.platform, null);
+      });
+      await tester.pumpWidget(_buildHarness(copy, bridge: bridge));
+      await tester.pumpAndSettle();
+
+      final targetBubble = find.byKey(
+        const ValueKey<String>('chat-bubble-seed-main-inbound-2'),
+      );
+      final selectionArea = find.descendant(
+        of: targetBubble,
+        matching: find.byType(SelectionArea),
+      );
+      final selectionWidget = tester.widget<SelectionArea>(selectionArea);
+
+      selectionWidget.onSelectionChanged!(
+        const SelectedContent(plainText: 'doc'),
+      );
+      await tester.pump();
+
+      await _openMessageMenu(tester, targetBubble);
+      await tester.tap(find.text(copy.chatMessageCopyAction));
+      await tester.pumpAndSettle();
+
+      expect(platformCalls, isNotEmpty);
+      expect(platformCalls.last.method, 'Clipboard.setData');
+      expect(platformCalls.last.arguments, <String, dynamic>{'text': 'doc'});
+      expect(bridge.lastCopiedPlainText, isNull);
+      expect(bridge.lastCopiedHtmlText, isNull);
+    },
+  );
+
+  testWidgets(
+    'copy action preserves markdown hyperlinks when copying the full message',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final bridge = OpenCraySeedBridge(
+        initialChatSnapshot: const OpenCrayChatSnapshot(
+          screenTitle: 'Chat',
+          modeLabel: 'SEED',
+          sessionButtonLabel: 'Sessions',
+          composerPlaceholder: 'Message OpenCray',
+          summary: OpenCrayChatSummarySnapshot(
+            title: 'Seed summary',
+            badge: 'Ready',
+            body: 'Body',
+          ),
+          messages: <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              messageId: 'seed-main-timeline',
+              kind: 'timeline',
+              text: 'Today',
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'seed-main-inbound-2',
+              kind: 'inbound',
+              text: 'Open [docs](https://opencray.dev/docs)',
+            ),
+          ],
+          drawer: OpenCrayChatDrawerSnapshot(
+            eyebrow: 'Recent sessions',
+            title: 'Recent sessions',
+            ctaLabel: 'New session',
+            sessions: <OpenCrayChatSessionItemSnapshot>[
+              OpenCrayChatSessionItemSnapshot(
+                sessionId: 'seed-session',
+                title: 'Seed session',
+                preview: 'Flutter chat is attached to a seed bridge.',
+                meta: '2 messages',
+                isSelected: true,
+              ),
+            ],
+          ),
+          isInputEnabled: true,
+        ),
+      );
+      await tester.pumpWidget(_buildHarness(copy, bridge: bridge));
+      await tester.pumpAndSettle();
+
+      final targetBubble = find.byKey(
+        const ValueKey<String>('chat-bubble-seed-main-inbound-2'),
+      );
+
+      await _openMessageMenu(tester, targetBubble);
+      await tester.tap(find.text(copy.chatMessageCopyAction));
+      await tester.pumpAndSettle();
+
+      expect(bridge.lastCopiedPlainText, 'Open https://opencray.dev/docs');
+      expect(
+        bridge.lastCopiedHtmlText,
+        contains('href="https://opencray.dev/docs"'),
+      );
+      expect(bridge.lastCopiedHtmlText, contains('>docs<'));
     },
   );
 
@@ -359,7 +580,7 @@ void main() {
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');
       final bridge = OpenCraySeedBridge(
-        initialChatSnapshot: _seedBridgeChatSnapshot(copy),
+        initialChatSnapshot: _seedBridgeChatSnapshotWithPromptAttachment(copy),
       );
       await tester.pumpWidget(_buildHarness(copy, bridge: bridge));
       await tester.pumpAndSettle();
@@ -378,11 +599,25 @@ void main() {
       await tester.tap(find.text(copy.chatMessageRedoAction));
       await tester.pumpAndSettle();
 
+      final snapshot = await bridge.loadChatSnapshot();
+      final outboundMessage = snapshot.messages[snapshot.messages.length - 2];
+
       expect(find.text(copy.chatSeedSafeModeAsks), findsNothing);
       expect(find.text(copy.chatSeedShowCurrentLimits), findsNothing);
       expect(
         find.text('Seed bridge stored your message locally.'),
         findsOneWidget,
+      );
+      expect(outboundMessage.kind, 'outbound');
+      expect(outboundMessage.text, copy.chatSeedWhyWritePending);
+      expect(outboundMessage.attachments, hasLength(1));
+      expect(
+        outboundMessage.attachments.single.displayName,
+        'camera_first.jpg',
+      );
+      expect(
+        outboundMessage.attachments.single.localPath,
+        '.opencray/chat/camera_first.jpg',
       );
     },
   );
@@ -392,7 +627,7 @@ void main() {
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');
       final bridge = OpenCraySeedBridge(
-        initialChatSnapshot: _seedBridgeChatSnapshot(copy),
+        initialChatSnapshot: _seedBridgeChatSnapshotWithPromptAttachment(copy),
       );
       await tester.pumpWidget(_buildHarness(copy, bridge: bridge));
       await tester.pumpAndSettle();
@@ -415,6 +650,7 @@ void main() {
 
       final composer = tester.widget<TextField>(find.byType(TextField));
       expect(composer.controller?.text, copy.chatSeedWhyWritePending);
+      expect(find.text('camera_first.jpg'), findsOneWidget);
       expect(
         find.byKey(const ValueKey<String>('chat-bubble-seed-main-outbound-1')),
         findsNothing,
@@ -422,6 +658,23 @@ void main() {
       expect(
         find.byKey(const ValueKey<String>('chat-bubble-seed-main-inbound-2')),
         findsNothing,
+      );
+
+      await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+      await tester.pumpAndSettle();
+
+      final snapshot = await bridge.loadChatSnapshot();
+      final outboundMessage = snapshot.messages[snapshot.messages.length - 2];
+      expect(outboundMessage.kind, 'outbound');
+      expect(outboundMessage.text, copy.chatSeedWhyWritePending);
+      expect(outboundMessage.attachments, hasLength(1));
+      expect(
+        outboundMessage.attachments.single.displayName,
+        'camera_first.jpg',
+      );
+      expect(
+        outboundMessage.attachments.single.localPath,
+        '.opencray/chat/camera_first.jpg',
       );
     },
   );
@@ -531,6 +784,48 @@ OpenCrayChatSnapshot _seedBridgeChatSnapshot(OpenCrayUiCopy copy) {
       ],
     ),
     isInputEnabled: true,
+  );
+}
+
+OpenCrayChatSnapshot _seedBridgeChatSnapshotWithPromptAttachment(
+  OpenCrayUiCopy copy,
+) {
+  final base = _seedBridgeChatSnapshot(copy);
+  return OpenCrayChatSnapshot(
+    screenTitle: base.screenTitle,
+    modeLabel: base.modeLabel,
+    sessionButtonLabel: base.sessionButtonLabel,
+    composerPlaceholder: base.composerPlaceholder,
+    summary: base.summary,
+    messages: base.messages
+        .map(
+          (message) => message.messageId == 'seed-main-outbound-1'
+              ? OpenCrayChatMessageSnapshot(
+                  messageId: message.messageId,
+                  kind: message.kind,
+                  text: message.text,
+                  meta: message.meta,
+                  createdAtEpochMs: message.createdAtEpochMs,
+                  isEphemeral: message.isEphemeral,
+                  attachments: const <OpenCrayChatAttachmentSnapshot>[
+                    OpenCrayChatAttachmentSnapshot(
+                      attachmentId: 'prompt-image-1',
+                      kind: 'image',
+                      displayName: 'camera_first.jpg',
+                      localPath: '.opencray/chat/camera_first.jpg',
+                      mimeType: 'image/jpeg',
+                      sizeBytes: 2048,
+                      widthPx: 1440,
+                      heightPx: 1080,
+                    ),
+                  ],
+                )
+              : message,
+        )
+        .toList(growable: false),
+    drawer: base.drawer,
+    isInputEnabled: base.isInputEnabled,
+    pendingApprovals: base.pendingApprovals,
   );
 }
 

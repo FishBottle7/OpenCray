@@ -39,6 +39,34 @@ class AgentProcessRegistryFactoryTest {
   }
 
   @Test
+  fun sameChatSessionReattachesLiveManagedProcessControllerWithinSameProcess() {
+    val factory = FileBackedAgentProcessRegistryFactory(
+      runtimeRootDirectory = temporaryFolder.root,
+      controllerFactory = ManagedProcessControllerFactory { request ->
+        FakeManagedProcessController(
+          snapshot = runningSnapshot(request.processId, request.taskId),
+          awaitSnapshot = successSnapshot(request.processId, request.taskId),
+        )
+      },
+    )
+
+    val firstRegistry = factory.forChatSession("session/a")
+    firstRegistry.start(startRequest(processId = "proc-live", taskId = "task-live"))
+
+    val restoredRegistry = factory.forChatSession("session/a")
+    val restored = restoredRegistry.read("proc-live")
+
+    assertEquals(ManagedProcessStatus.RUNNING, restored?.status)
+    assertEquals(null, restored?.errorCode)
+    assertEquals(null, restored?.finishedAtEpochMs)
+
+    val waited = restoredRegistry.wait("proc-live", 250L)
+
+    assertEquals(ManagedProcessStatus.SUCCESS, waited?.status)
+    assertEquals("server ready", waited?.stdout)
+  }
+
+  @Test
   fun differentChatSessionsDoNotSharePersistedManagedProcessSnapshots() {
     val factory = FileBackedAgentProcessRegistryFactory(
       runtimeRootDirectory = temporaryFolder.root,

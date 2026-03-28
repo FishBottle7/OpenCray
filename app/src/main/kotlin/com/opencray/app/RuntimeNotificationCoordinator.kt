@@ -75,6 +75,9 @@ internal class RuntimeNotificationCoordinator(
   private val scheduledTaskRunRecordStore: ScheduledTaskRunRecordStore,
   private val terminalDeliveryStore: RuntimeNotificationDeliveryStore =
     FileBackedRuntimeNotificationDeliveryStoreFactory.fromContext(appContext).create(),
+  private val notificationSettingsProvider: () -> RuntimeNotificationSettingsState = {
+    RuntimeNotificationSettingsStore.fromContext(appContext).load()
+  },
   private val notificationManager: NotificationManager = checkNotNull(
     appContext.getSystemService(NotificationManager::class.java),
   ) {
@@ -414,12 +417,16 @@ internal class RuntimeNotificationCoordinator(
     outcome: ScheduledTaskDispatchOutcome,
     spec: ScheduledTaskSpec?,
   ): RuntimeScheduleNotificationModel? {
+    val userEvent = when (outcome.result) {
+      ScheduledTaskRunResult.SKIPPED_SESSION_BUSY -> RuntimeNotificationUserEvent.BACKGROUND_TASK_PAUSED
+      else -> RuntimeNotificationUserEvent.SCHEDULED_WAKE
+    }
     val shouldNotify = when (outcome.result) {
       ScheduledTaskRunResult.ACCEPTED -> spec?.policy?.notifyOnQueued == true
       ScheduledTaskRunResult.SKIPPED_DUPLICATE -> false
       else -> true
     }
-    if (!shouldNotify) {
+    if (!shouldNotify || !shouldDeliverUserNotification(userEvent)) {
       return null
     }
     val sessionId = outcome.sessionId ?: spec?.sessionId
@@ -567,7 +574,8 @@ internal class RuntimeNotificationCoordinator(
     .build()
 
   private fun shouldNotifyApproval(task: AgentTask): Boolean =
-    scheduledSpecFor(task)?.policy?.notifyOnApproval ?: true
+    (scheduledSpecFor(task)?.policy?.notifyOnApproval ?: true) &&
+      shouldDeliverUserNotification(RuntimeNotificationUserEvent.APPROVAL_REQUEST)
 
   private fun shouldNotifyTerminal(
     spec: ScheduledTaskSpec?,
@@ -577,12 +585,25 @@ internal class RuntimeNotificationCoordinator(
     if (result.status == ExecutionStatus.CANCELLED) {
       return false
     }
-    return if (interrupted) {
+    val scheduleAllows = if (interrupted) {
       spec?.policy?.notifyOnInterruption ?: true
     } else {
       spec?.policy?.notifyOnCompletion ?: true
     }
+    val userEvent = if (interrupted || result.status != ExecutionStatus.SUCCESS) {
+      RuntimeNotificationUserEvent.TASK_FAILED
+    } else {
+      RuntimeNotificationUserEvent.TASK_FINISHED
+    }
+    return scheduleAllows && shouldDeliverUserNotification(userEvent)
   }
+
+  private fun shouldDeliverUserNotification(event: RuntimeNotificationUserEvent): Boolean =
+    RuntimeNotificationUserPolicy.allows(
+      settings = notificationSettingsProvider().sanitized(),
+      event = event,
+      minutesOfDay = currentLocalMinutesOfDay(),
+    )
 
   private fun terminalPreviewText(
     sessionId: String,

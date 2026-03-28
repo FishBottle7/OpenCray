@@ -25,17 +25,17 @@
 - provider 结构化 completion 已明确拆分为：
   - `toolCalls`
   - `finalText`
-  - `progressText`
+  - `commentaryText`
   - `reasoningText`
   - `rawText`
-- OpenAI / Anthropic provider 侧已把“公开 commentary/progress”与“内部 reasoning/thinking”分离解析
+- OpenAI / Anthropic provider 侧已把“公开 commentary”与“内部 reasoning/thinking”分离解析
 - reasoning-only 响应即使最后判定成 `PROVIDER_EMPTY_RESPONSE`，也会保留结构化 completion，并带出 reasoning 观测元数据
-- host durable replay 已优先按 `RuntimeConversationMessage.kind` 与结构化字段回放，不再只依赖 `tool_call ` / `tool_result ` / `progress ` 前缀
-- 新生成的 `tool_call / tool_result / progress / supplement / subagent` transcript 已统一落成 canonical JSON payload
+- host durable replay 已优先按 `RuntimeConversationMessage.kind` 与结构化字段回放，不再只依赖 `tool_call ` / `tool_result ` / `commentary ` 前缀
+- 新生成的 `tool_call / tool_result / commentary / supplement / subagent` transcript 已统一落成 canonical JSON payload
 - transcript window / pruning / compaction / recent observation / memory flush / session transcript normalization 这些 common 层已统一走 shared replay helper，优先消费 canonical JSON payload
 - runtime 在重建 provider 下一跳 `tool_result` message 时，已改为回传 canonical 工具输出内容，不再把整个 replay envelope 原样塞回 provider
 - `MultiEdit.edits` 与 `TodoWrite.todos` 已从薄 `object[]` 升级为展开字段的 JSON schema，strict readiness 的 schema fidelity 基线已补齐
-- host replay 侧已补上独立 replay helper，除了 `kind + canonical JSON` 之外，也能从 plain JSON durable transcript 中推断 `tool_call / tool_result / progress / supplement / subagent` 事件类型
+- host replay 侧已补上独立 replay helper，除了 `kind + canonical JSON` 之外，也能从 plain JSON durable transcript 中推断 `tool_call / tool_result / commentary / supplement / subagent` 事件类型
 - runtime / app 两侧旧的 replay 前缀读取分支与 `content_preview` 兜底已从主实现中移除，开发期按 canonical message-first 收口
 - app runtime factory 已把 provider `protocol` / native tool capability 元数据下发给 runtime，用来判断首轮是否 native-only，而不是按 provider 品牌字符串硬编码
 - settings store 已引入按 `(protocol, baseUrl, model)` 路由指纹持久化的 agent capability cache
@@ -161,7 +161,7 @@
 
 - `native tool calling 可用且本 run 未降级` 时，prompt 不再注入 legacy JSON fallback 指令
 - `native tool calling 不可用` 或 `本 run 已降级` 时，才重新打开 JSON fallback 协议
-- runtime 会优先消费 provider 返回的 `toolCalls / finalText / progressText / reasoningText / rawText`
+- runtime 会优先消费 provider 返回的 `toolCalls / finalText / commentaryText / reasoningText / rawText`
 - 只有当 provider structured path 不可用，或文本里仍出现 legacy JSON 时，才走 fallback parser / protocol recovery
 
 代码位置：
@@ -209,7 +209,7 @@
 
 - OpenAI 风格 `tool_calls`
 - Anthropic `tool_use`
-- structured `progressText`
+- structured `commentaryText`
 - `reasoningText`
 - native-first / degraded-fallback 的 runtime 行为
 
@@ -507,7 +507,7 @@ LiteLLM 后续应被视为“可选 backend”，而不是“协议真相层”�
 - canonical conversation / tool result contract
 - capability state machine
 - native-first / degraded-fallback 策略
-- user-visible progress / reasoning / final phase 语义
+- user-visible commentary / reasoning / final phase 语义
 - replay / retry 的安全边界
 
 推荐目标架构：
@@ -704,7 +704,7 @@ LiteLLM 后续应被视为“可选 backend”，而不是“协议真相层”�
 - 按 capability 选择是否发送 `parallel_tool_calls`
 - 解析 `message.tool_calls`
 - 兼容 `content` 字符串与数组文本段
-- 继续提取公开 progress 与内部 reasoning
+- 继续提取公开 commentary 与内部 reasoning
 
 兼容目标：
 

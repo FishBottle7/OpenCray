@@ -23,6 +23,8 @@ import org.opencray.app.R
 enum class SettingsRouteId(
   val wireValue: String,
 ) {
+  NOTIFICATIONS_BACKGROUND("notifications_background"),
+  NOTIFICATION_CHANNELS("notification_channels"),
   WORKSPACE_ACCESS("workspace_access"),
   LLM("llm"),
   MCP("mcp"),
@@ -152,6 +154,10 @@ internal class LocalSettingsFacade(
       deviceSummary = context.getString(R.string.settings_home_profile_meta_api_routes),
       entries = listOf(
         SettingsHomeEntrySnapshot(
+          routeId = SettingsRouteId.NOTIFICATIONS_BACKGROUND,
+          title = context.getString(R.string.settings_card_notifications_background),
+        ),
+        SettingsHomeEntrySnapshot(
           routeId = SettingsRouteId.WORKSPACE_ACCESS,
           title = context.getString(R.string.settings_card_workspace_access),
         ),
@@ -188,6 +194,28 @@ internal class LocalSettingsFacade(
   }
 
   override fun loadDetail(routeId: SettingsRouteId): SettingsDetailSnapshot = when (routeId) {
+    SettingsRouteId.NOTIFICATIONS_BACKGROUND -> SettingsDetailSnapshot(
+      routeId = routeId,
+      title = context.getString(R.string.settings_card_notifications_background),
+      subtitle = context.getString(R.string.settings_notifications_background_subtitle),
+      sections = listOf(
+        SettingsSectionSnapshot(
+          title = "Notifications",
+          helperText = "Notification and background controls are rendered by the Flutter settings page.",
+        ),
+      ),
+    )
+    SettingsRouteId.NOTIFICATION_CHANNELS -> SettingsDetailSnapshot(
+      routeId = routeId,
+      title = context.getString(R.string.settings_notification_channels_title),
+      subtitle = context.getString(R.string.settings_notification_channels_subtitle),
+      sections = listOf(
+        SettingsSectionSnapshot(
+          title = "Notification channels",
+          helperText = "Notification channel controls are rendered by the Flutter settings page.",
+        ),
+      ),
+    )
     SettingsRouteId.WORKSPACE_ACCESS -> SettingsDetailSnapshot(
       routeId = routeId,
       title = context.getString(R.string.settings_card_workspace_access),

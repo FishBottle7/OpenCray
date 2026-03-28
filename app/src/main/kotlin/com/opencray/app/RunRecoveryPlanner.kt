@@ -9,11 +9,14 @@ import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
 
 internal enum class RunRecoveryAction {
   RESUME_FROM_CHECKPOINT,
   RESUME_WAITING_FOR_APPROVAL,
+  RESUME_WAITING_FOR_USER,
   RESUME_RECONNECT_PROCESS,
+  STOP_REJECTED_AWAITING_DIRECTION,
   INTERRUPT_RECOVERY_REQUIRED,
   LEGACY_REQUEUE,
 }
@@ -74,21 +77,49 @@ internal class RunRecoveryPlanner {
     }
 
     if (
-      checkpoint?.checkpointKind == PromptCheckpointKind.GENERAL_RESUME ||
-      checkpoint?.checkpointKind == PromptCheckpointKind.APPROVED_PENDING_RESUME ||
-      checkpoint?.checkpointKind == PromptCheckpointKind.REJECTED_PENDING_RESUME
+      run.lifecycleState == QueueTaskLifecycleState.SUSPENDED &&
+      run.errorCode == ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME &&
+      checkpoint?.checkpointKind?.isGeneralPromptResumeKind() == true
     ) {
+      return RunRecoveryPlan(
+        action = RunRecoveryAction.RESUME_WAITING_FOR_USER,
+        reasonCode = "llm_retry_exhausted_waiting_for_resume",
+        summary = "Recoverable LLM retries were exhausted before recovery. Keep the run paused until the user sends another message or explicitly resumes it.",
+        safeToAutoResume = false,
+        requiresUserAction = true,
+        checkpointKind = checkpoint.checkpointKind,
+        approvalState = input.approvalState,
+        journalTailKind = journalTailKind,
+      )
+    }
+
+    if (checkpoint?.checkpointKind?.isCheckpointResumeKind() == true) {
       return RunRecoveryPlan(
         action = RunRecoveryAction.RESUME_FROM_CHECKPOINT,
         reasonCode = when (checkpoint.checkpointKind) {
           PromptCheckpointKind.GENERAL_RESUME -> "durable_general_resume_checkpoint"
+          PromptCheckpointKind.PRE_MODEL_REQUEST -> "durable_pre_model_request_checkpoint"
+          PromptCheckpointKind.ACTION_BATCH_PARSED -> "durable_action_batch_parsed_checkpoint"
+          PromptCheckpointKind.COMMENTARY_EMITTED -> "durable_commentary_emitted_checkpoint"
+          PromptCheckpointKind.TOOL_RESULT_COMMITTED -> "durable_tool_result_checkpoint"
+          PromptCheckpointKind.SUPPLEMENT_INGESTED -> "durable_supplement_ingested_checkpoint"
           PromptCheckpointKind.APPROVED_PENDING_RESUME -> "approval_already_granted_resume_pending"
-          PromptCheckpointKind.REJECTED_PENDING_RESUME -> "approval_already_rejected_resume_pending"
+          PromptCheckpointKind.REJECTED_PENDING_RESUME -> "approval_already_rejected_waiting_for_instruction"
           PromptCheckpointKind.WAITING_APPROVAL -> "approval_waiting_checkpoint"
         },
         summary = when (checkpoint.checkpointKind) {
           PromptCheckpointKind.GENERAL_RESUME ->
             "The run has a durable general resume checkpoint and should continue from that checkpoint instead of rerunning from task input."
+          PromptCheckpointKind.PRE_MODEL_REQUEST ->
+            "The run was already durably staged at the next model-request boundary and should resume from that boundary instead of rerunning from task input."
+          PromptCheckpointKind.ACTION_BATCH_PARSED ->
+            "The run already durably captured the parsed model action batch and should resume from that action cursor instead of rerunning from task input."
+          PromptCheckpointKind.COMMENTARY_EMITTED ->
+            "The run durably committed a commentary update and should continue from the remaining parsed actions instead of rerunning from task input."
+          PromptCheckpointKind.TOOL_RESULT_COMMITTED ->
+            "The run durably committed a tool-result boundary and should continue from that boundary instead of rerunning from task input."
+          PromptCheckpointKind.SUPPLEMENT_INGESTED ->
+            "The run durably committed a supplement-ingestion boundary and should continue from that boundary instead of rerunning from task input."
           PromptCheckpointKind.APPROVED_PENDING_RESUME,
           PromptCheckpointKind.REJECTED_PENDING_RESUME,
           PromptCheckpointKind.WAITING_APPROVAL,
@@ -96,6 +127,19 @@ internal class RunRecoveryPlanner {
             "The run has a durable post-approval checkpoint and should continue from that checkpoint instead of rerunning from task input."
         },
         safeToAutoResume = true,
+        requiresUserAction = false,
+        checkpointKind = checkpoint.checkpointKind,
+        approvalState = input.approvalState,
+        journalTailKind = journalTailKind,
+      )
+    }
+
+    if (checkpoint?.checkpointKind == PromptCheckpointKind.REJECTED_PENDING_RESUME) {
+      return RunRecoveryPlan(
+        action = RunRecoveryAction.STOP_REJECTED_AWAITING_DIRECTION,
+        reasonCode = "approval_already_rejected_waiting_for_instruction",
+        summary = "Approval was already rejected before recovery. Keep the run stopped and wait for a new user instruction.",
+        safeToAutoResume = false,
         requiresUserAction = false,
         checkpointKind = checkpoint.checkpointKind,
         approvalState = input.approvalState,
@@ -120,9 +164,9 @@ internal class RunRecoveryPlanner {
       return RunRecoveryPlan(
         action = RunRecoveryAction.RESUME_RECONNECT_PROCESS,
         reasonCode = "live_managed_process_detected",
-        summary = "A managed process is still live for this run, so recovery should reconnect to that process instead of replaying the task.",
-        safeToAutoResume = true,
-        requiresUserAction = false,
+        summary = "A managed process is still live for this run, but current recovery can only preserve that live process and surface reconnect state. Automatic continuation should not replay the task without a durable checkpoint.",
+        safeToAutoResume = false,
+        requiresUserAction = true,
         checkpointKind = checkpoint?.checkpointKind,
         approvalState = input.approvalState,
         journalTailKind = journalTailKind,
@@ -185,7 +229,9 @@ internal class RunRecoveryPlanner {
 
   private fun isUncertainInFlightAction(event: OpenCrayAgentRunEvent?): Boolean = when (event) {
     is OpenCrayToolCallEvent -> true
-    is OpenCraySubAgentEvent -> event.phase == OpenCraySubAgentPhase.STARTED
+    is OpenCraySubAgentEvent ->
+      event.phase == OpenCraySubAgentPhase.STARTED ||
+        event.phase == OpenCraySubAgentPhase.RESUMED
     is OpenCrayLifecycleEvent -> event.phase == com.opencray.runtime.OpenCrayRunLifecyclePhase.START
     is OpenCrayToolResultEvent -> false
     else -> false
@@ -200,7 +246,9 @@ internal class RunRecoveryPlanner {
     }
     return when (event) {
       is OpenCrayToolCallEvent -> true
-      is OpenCraySubAgentEvent -> event.phase == OpenCraySubAgentPhase.STARTED
+      is OpenCraySubAgentEvent ->
+        event.phase == OpenCraySubAgentPhase.STARTED ||
+          event.phase == OpenCraySubAgentPhase.RESUMED
       else -> false
     }
   }

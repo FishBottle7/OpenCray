@@ -71,9 +71,11 @@ internal interface OpenCrayChatRuntimeGateway {
 
   fun approveChatApproval(taskIdOrRunId: String)
 
+  fun approveChatApprovalForSession(taskIdOrRunId: String)
+
   fun rejectChatApproval(taskIdOrRunId: String)
 
-  fun cancelChatRun(taskIdOrRunId: String)
+  fun interruptChatRun(taskIdOrRunId: String)
 
   fun retryChatRun(taskIdOrRunId: String)
 }

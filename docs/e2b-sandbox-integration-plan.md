@@ -1,6 +1,109 @@
 # OpenCray 沙盒能力接入计划
 
-Last updated: 2026-03-25
+Last updated: 2026-03-27
+
+## 当前实现状态
+
+截至 2026-03-27，`python_exec` 这条链路已经从“仅有设置和路由骨架”推进到了“本地 / E2B 双后端可切换的可运行状态”，且当前实现边界已经固定：
+
+- 已补齐沙盒配置模型与安全凭据链路
+  - 新增独立 `SandboxSettingsStore`
+  - 保存 `enabled`、`default backend`、`session mode`、超时策略、`templateId`、`E2B API key CredentialRef`
+  - E2B API key 通过 Android Keystore 支撑的安全存储读取，不走普通设置项明文持久化
+- 已补齐 UI 与入口
+  - `Settings > API Integrations > Sandbox Providers > E2B`
+  - Chat 界面右上角新增运行环境切换入口
+  - 下拉菜单为英文，并带本地 / 云端图标示意
+- 已补齐 `python_exec` 的 runtime 路由层
+  - 新增 `RoutingPythonScriptRuntime`
+  - 当前可以根据 `local / auto / sandbox` 做选择
+  - `auto` 在远端 backend 不可用时会安全回落到本地
+  - `sandbox` 显式选择时，如果远端 backend 不可用，会返回明确错误，不会偷偷走本地
+- 已落地真实的 `E2BCodeInterpreterPythonRuntime`
+  - 通过 E2B 官方 `code-interpreter` HTTP 端点实现
+  - 调用链路包括：
+    - 创建 / 连接 sandbox
+    - 上传本地 workspace 文件到远端执行镜像
+    - 创建临时代码 context
+    - 执行脚本
+    - 收集 stdout / stderr / execution error
+    - 根据远端执行后生成的 workspace diff manifest，把变更文件下载回本地 workspace
+    - 处理超时 / 取消 / 会话清理
+- `python_exec` 的 tool name 和参数目前保持不变
+- 已把 E2B runtime 注入现有 owner/runtime 装配路径
+  - 本地 `P4aPythonRuntime` 保持不变
+  - 云端 backend 已接入到同一条 `python_exec` 路由
+- 已把 `command_exec` 接入本地 / E2B 双后端路由
+  - 显式 `local` 只走本地 `CommandExecutor`
+  - 显式 `sandbox` 只走 E2B
+  - 当前 E2B 命令执行实现为 `python-backed wrapper`
+  - wrapper 会把本地 `workingDirectory` 映射到远端 workspace 路径，避免把宿主机绝对路径错误带进云端 subprocess
+- 已把命令型 `ProcessStart` 接入本地 / E2B 双后端路由
+  - `ProcessStart(script_path=...)` 继续复用已经接好的 `python_exec` runtime 路由
+  - `ProcessStart(command=...)` 在 E2B 下走 `python-backed managed command controller`
+  - `ProcessRead/Wait/Terminate` 继续走现有 registry/tool surface，不改工具名与参数
+- 已补齐未来 sandbox-native tools 的模型可见性规则
+  - 约定所有沙盒原生能力工具统一使用 `sandbox_` 前缀
+  - 本地模式下不向模型暴露 `sandbox_*` tool definitions
+  - 显式云端模式且 E2B 可用时才向模型暴露这些 definitions
+  - 过滤发生在 dispatcher/tool definition 层，不靠 prompt 文案硬编码隐藏
+- 已补齐最小可用的 preview tool
+  - 新增 `sandbox_preview_open`
+  - 当前会基于活动中的 E2B sandbox session 和指定端口拼出 preview URL，并对该 URL 做一次短超时 reachability probe
+  - probe 结果会区分 `ready`、`reachable`、`unreachable`
+  - 仅在显式云端模式下向模型暴露
+- 已补齐最小可用的 preview UI 宿主
+  - Chat 主流里的 run trace 气泡现在可以把最新一次 `sandbox_preview_open` 结果映射成 preview 卡片
+  - `Run inspector` 顶部滚动内容现在也会显示同一条 preview 的详细区块
+  - 卡片当前展示标题、URL、provider / port / path / HTTP 状态、probe 状态
+  - 卡片提供 `Open` 与 `Copy URL` 两个动作
+  - 当前只在显式 `Run in cloud` 时显示；切回 `Run locally` 后不会渲染
+  - preview service 现在会优先读取运行时内存里的活动 sticky sandbox session，再回落到持久化 session store
+  - 这修复了 `sessionMode=sticky` 且 `autoResume=false` 时 preview 能力拿不到当前活动会话的问题
+
+当前这一步的真实语义是：
+
+- 如果用户选择 `Run locally`，`python_exec` 仍走本地 Python runtime
+- 如果用户选择 `Run in cloud`，`python_exec` 会路由到 E2B
+- 如果用户选择 `Run locally`，`command_exec` 与命令型 `ProcessStart` 仍走本地 backend
+- 如果用户选择 `Run in cloud`，`command_exec` 与命令型 `ProcessStart` 会路由到 E2B
+
+当前已额外验证的路由边界是：
+
+- 当 backend 明确选择 `local` 时，不只是不执行 E2B，连 `sandboxRuntimeProvider` 都不会被 resolve
+- 当 backend 明确选择 `sandbox` 时，不会触碰本地 Python runtime
+- 当 backend 选择 `auto` 且 E2B 可用时，会优先走 E2B，不会先执行一次本地再切换
+- 当 backend 明确选择 `sandbox` 但 E2B 不可用时，会返回明确错误，不会静默回落到本地
+
+当前实现里几个关键技术决定也已经固定：
+
+- Sticky 模式只复用 sandbox，不复用 Python code context
+- 每次 `python_exec` 都会新建一个 code context，执行完成后删除
+- 每次执行都会使用新的远端 workspace 子目录，避免 sticky 模式下远端残留文件污染下一次运行
+- 远端文件系统当前仍是“执行镜像”，本地 workspace 仍是事实来源
+- `python_exec` 在 E2B 执行后，会基于远端打印的 workspace diff manifest 回传 changed files 到本地 workspace
+- 回传到本地的 changed files 现在会进一步暴露为现有 attachment artifact 元数据
+  - agent 可以直接在后续 final response 中使用 `artifact_id`
+- 远端删除当前不会直接应用到本地文件系统
+  - 只会通过 metadata 暴露 `remoteDeletedFiles` / `skippedRemoteDeletes`
+- `.opencray`、`.git`、`node_modules`、`venv`、`__pycache__` 等内部或缓存目录不会参与回传下载
+- `command_exec` 当前不直接调用独立的 E2B command API，而是复用已接好的 E2B code-interpreter，在远端通过 Python wrapper 运行 shell command
+- E2B 下的命令型 `ProcessStart` 当前也是 wrapper-based
+  - 好处是复用了现有 `python_exec` 的取消与路由能力
+  - 当前限制是运行中的增量 stdout/stderr 不是流式可读，通常会在 wrapper 完成后一次性落到快照里
+
+当前仍未完成的部分：
+
+- 还没有做完整 preview 生命周期管理 / artifact download / snapshot / MCP gateway
+- 还没有做执行前增量上传、远端删除回放、artifact 归档、preview 端口发现与完整 preview 暴露
+- 还没有把 provider 级能力从 E2B 泛化到 Daytona / Modal
+
+这意味着第一步当前达到的是：
+
+- 本地执行能力保持不变
+- 本地 / 云端切换对 `python_exec`、`command_exec`、命令型 `ProcessStart` 已经真实生效
+- 现有 UI、设置、runtime wiring、取消语义和基础测试已经打通
+- 下一步应继续把 preview / artifact / snapshot / MCP gateway 这些 sandbox-native 能力补齐，而不是再回到“是否保留本地执行”这类已经定板的问题
 
 ## 目标
 
@@ -758,6 +861,12 @@ V2 可新增 sandbox-native tool：
 - `sandbox_run_code`
 - `sandbox_desktop_screenshot`
 
+这些工具应遵守一个额外约束：
+
+- 工具名统一使用 `sandbox_` 前缀
+- 仅当运行环境显式选择 `sandbox` 且远端 provider 已可用时，才把这些 tool definitions 暴露给模型
+- `local` 与 `auto` 模式下默认不揭露这些 definitions，避免模型在非云端回合里规划依赖沙盒原生能力
+
 ## 三、策略模型扩展
 
 当前 `ExecutionIntent` 不足以表达远端沙盒。
@@ -874,6 +983,94 @@ E2B 场景下建议支持两种模式：
 
 ## Phase 1: `python_exec` 的 E2B backend Spike
 
+### 当前状态
+
+截至 2026-03-27，本阶段已经基本完成，当前已落地内容如下：
+
+- `python_exec` 继续保持原有 tool surface
+- `RoutingPythonScriptRuntime` 已支持本地 / E2B 路由
+- `E2BCodeInterpreterPythonRuntime` 已接入真实 E2B code-interpreter HTTP 链路
+- 取消时会终止当前 sandbox
+- sticky 模式会复用 sandbox，但每次调用都会重新创建 code context
+- E2B 执行完成后，会把远端 changed files 下载回本地 workspace
+- 回传结果会落到统一 metadata 中，包括：
+  - `workspaceSyncManifestObserved`
+  - `workspaceSyncManifestParseFailed`
+  - `remoteChangedFiles`
+  - `remoteDeletedFiles`
+  - `downloadedFiles`
+  - `downloadedBytes`
+  - `skippedDownloadFiles`
+  - `skippedRemoteDeletes`
+  - `downloadFailures`
+- 对成功回传的文件，当前还会额外写入：
+  - `attachmentArtifactsJson`
+  - `attachmentArtifactId`
+  - `attachmentArtifactRelativePath`
+- 关键单测已覆盖：
+  - create + upload + execute happy path
+  - sticky reconnect
+  - changed-files download back to local workspace
+  - cancellation
+  - path escape deny
+
+本阶段仍留给后续阶段处理的内容：
+
+- 增量同步
+- 远端删除回放
+- 通用 artifact 归档 / 选择性下载
+- preview / snapshot / MCP gateway
+
+### 当前验证结果
+
+截至 2026-03-27，以下测试已通过，用来锁定 `python_exec` 的本地 / 云端路由边界：
+
+- `RoutingPythonScriptRuntimeTest.localPreferenceUsesLocalRuntimeWithoutResolvingSandboxRuntime`
+  - 验证显式 `local` 时，本地 runtime 被调用，sandbox provider 调用次数为 `0`
+- `RoutingPythonScriptRuntimeTest.autoPrefersSandboxRuntimeWhenAvailableWithoutTouchingLocalRuntime`
+  - 验证 `auto` 且 E2B 可用时，直接走 sandbox runtime，本地 runtime 不被触碰
+- `RoutingPythonScriptRuntimeTest.sandboxPreferenceDispatchesToSandboxRuntimeWhenAvailable`
+  - 验证显式 `sandbox` 时，执行落到 E2B runtime
+- `PythonExecToolRoutingIntegrationTest.pythonExecUsesLocalRuntimeOnlyWhenBackendPreferenceIsLocal`
+  - 从 `python_exec` tool dispatch 入口验证显式 `local` 只走本地 runtime
+- `PythonExecToolRoutingIntegrationTest.pythonExecUsesSandboxRuntimeOnlyWhenBackendPreferenceIsSandbox`
+  - 从 `python_exec` tool dispatch 入口验证显式 `sandbox` 只走 E2B runtime
+- `E2BCodeInterpreterPythonRuntimeTest`
+  - 已覆盖真实 E2B runtime 的 happy path、sticky reconnect、changed-files download、cancellation、path escape deny
+- `PythonBackedCommandExecutionTest`
+  - 验证云端 `command_exec` wrapper 会把本地 `workingDirectory` 映射为远端 workspace 路径
+- `ExecutionAttachmentArtifactSummaryTest`
+  - 验证 `python_exec` / `command_exec` 在 execution metadata 带有 attachment artifacts 时，会把 `artifact_id` 摘要显式追加到 tool result content
+- `SandboxPreviewToolTest`
+  - 验证 `sandbox_preview_open` 的 definition 可见性、隐藏规则和 preview URL 返回结果
+- `RoutingCommandExecutorTest`
+  - 验证显式 `local` 时不 resolve sandbox executor
+  - 验证 `auto` 且 sandbox executor 可用时直接走 sandbox
+  - 验证显式 `sandbox` 但 sandbox executor 不可用时返回明确错误
+- `CommandExecToolRoutingIntegrationTest`
+  - 从 `command_exec` tool dispatch 入口验证显式 `local` / `sandbox` 分别只走对应 executor
+- `RoutingManagedProcessControllerFactoryTest`
+  - 验证命令型 `ProcessStart` 在 `local` / `sandbox` 下只走对应 controller factory
+  - 验证 `ProcessStart(script_path=...)` 仍优先复用 python runtime factory
+- `ProcessStartToolRoutingIntegrationTest`
+  - 从 `ProcessStart` tool dispatch 入口验证命令型 managed process 的本地 / 云端路由边界
+
+本轮验证命令：
+
+- `./gradlew.bat "-Dkotlin.compiler.execution.strategy=in-process" :app:compileDebugKotlin`
+- `./gradlew.bat "-Dkotlin.compiler.execution.strategy=in-process" :app:testDebugUnitTest --tests "com.opencray.app.RoutingPythonScriptRuntimeTest" --tests "com.opencray.app.E2BCodeInterpreterPythonRuntimeTest" --tests "com.opencray.app.PythonExecToolRoutingIntegrationTest"`
+- `./gradlew.bat :app:testDebugUnitTest --tests=com.opencray.app.PythonBackedCommandExecutionTest --tests=com.opencray.app.E2BCodeInterpreterPythonRuntimeTest`
+- `./gradlew.bat :runtime:testDebugUnitTest --tests=com.opencray.runtime.SandboxPreviewToolTest --tests=com.opencray.runtime.ExecutionAttachmentArtifactSummaryTest --tests=com.opencray.runtime.policy.ToolCapabilityClassifierTest`
+- `./gradlew.bat :app:testDebugUnitTest --tests=com.opencray.app.E2BSandboxPreviewServiceTest --tests=com.opencray.app.E2BCodeInterpreterPythonRuntimeTest --tests=com.opencray.app.PythonBackedCommandExecutionTest`
+
+本轮新增实现的验证说明：
+
+- `PythonBackedCommandExecutionTest` 与 `E2BCodeInterpreterPythonRuntimeTest` 已在当前 dirty worktree 上再次完整通过
+- 为了让目标测试重新编译，补了两处无关沙盒实现的旧测试签名兼容：
+  - `OpenCrayRuntimeServiceHostTest`
+  - `OpenCrayHostRuntimeTest`
+- 这些兼容改动只是在 replay recorder lambda 上补齐新增的 `RuntimeReplayExecutionContext` 参数，没有改变测试断言语义
+
 ### 目标
 
 在尽量不改 tool surface 的前提下，让 `python_exec` 在保留本地执行的同时，新增可选的 E2B backend。
@@ -883,8 +1080,9 @@ E2B 场景下建议支持两种模式：
 - `runtime/.../PythonScriptRuntime.kt`
 - `runtime/.../PythonExecRequest.kt`
 - `runtime/.../AgentTooling.kt`
-- `runtime/.../OpenCrayToolDispatcherConfig`
-- 新增 `runtime/.../sandbox/E2BPythonScriptRuntime.kt`
+- `app/src/main/kotlin/com/opencray/app/RoutingPythonScriptRuntime.kt`
+- `app/src/main/kotlin/com/opencray/app/E2BCodeInterpreterPythonRuntime.kt`
+- `app/src/main/kotlin/com/opencray/app/InProcessOpenCrayRuntimeOwner.kt`
 
 ### 设计
 
@@ -898,9 +1096,10 @@ E2B 场景下建议支持两种模式：
   - 在 sandbox `/workspace` 内运行
 - 执行后：
   - 回收 stdout/stderr
-  - 下载输出产物到本地 workspace 的受控目录
+  - 当前已支持按 workspace diff manifest 把 changed files 回传到本地 workspace
+  - 通用 artifact 受控目录仍留在后续阶段
 
-### 这一阶段不做
+### 原始阶段范围内不做
 
 - 不做 `command_exec`
 - 不做 MCP tool proxy
@@ -916,6 +1115,21 @@ E2B 场景下建议支持两种模式：
 - prompt 不再误导模型把 sandbox backend 视为“总是本地”
 
 ## Phase 2: `command_exec` 与进程工具的 sandbox 化
+
+### 当前状态
+
+截至 2026-03-27，本阶段也已经进入“可运行但仍偏保守”的状态：
+
+- 已完成：
+  - `command_exec` 已支持 `local / auto / sandbox` 路由
+  - E2B 下的 `command_exec` 当前通过 `python-backed wrapper` 执行
+  - wrapper 会把本地 `workingDirectory` 映射到远端 workspace
+  - 命令型 `ProcessStart` 已支持本地 / 云端双后端分流
+  - `ProcessTerminate` 在云端模式下会通过 `CancellablePythonScriptRuntime` 触发终止
+- 仍未完成：
+  - 直接接入 provider 原生命令 API / background session API
+  - 运行中 stdout/stderr 的增量流式读取
+  - 远端后台进程更细粒度的状态恢复与重连
 
 ### 目标
 
@@ -967,6 +1181,31 @@ E2B 场景下建议支持两种模式：
 
 ## Phase 3: workspace sync、artifact、preview
 
+### 当前状态
+
+截至 2026-03-27，本阶段已经开始落地，但仍只完成了最小可用子集：
+
+- 已完成：
+  - `python_exec` 在 E2B 执行后把远端 changed files 下载回本地 workspace
+  - 当前下载范围被限制在 workspace 内，且会跳过 `.opencray`、`.git`、缓存目录和虚拟环境目录
+  - 成功回传的文件已接到现有 attachment artifact 元数据链路
+  - 已新增 `sandbox_preview_open`
+    - 当前会为现有 E2B sandbox session 的指定端口生成 preview URL
+    - 当前会对该 URL 执行短超时 HEAD 探测，并把状态写入 tool result metadata
+    - 当前可区分 `ready`、`reachable`、`unreachable`
+    - 不负责启动服务，也不负责自动端口发现
+  - 已补齐最小可用的 preview 卡片 UI
+    - 当前会把最新一次 `sandbox_preview_open` 的 tool result 映射到 Chat 主流的 run trace 卡片
+    - 当前也会把同一份 preview 数据映射到 `Run inspector` 顶部的详细区块
+    - 卡片只在显式云端模式显示，本地模式隐藏
+    - 已支持 `Open` / `Copy URL`
+  - 远端删除不会直接删除本地文件，而是只写入 metadata，避免误删本地事实来源
+- 仍未完成：
+  - 执行前增量上传
+  - 通用 artifact 归档与受控下载目录
+  - preview 自动端口发现、preview 生命周期管理、preview 宿主内嵌渲染与完整 session 可视化
+  - 远端删除回放策略
+
 ### 目标
 
 把执行后端变成可实际使用的 coding environment，而不是只能跑一条命令。
@@ -975,6 +1214,7 @@ E2B 场景下建议支持两种模式：
 
 - 增量同步本地文件到 sandbox
 - 结果文件回传本地
+  - 当前状态：`python_exec` changed files 已回传，但还不是完整 artifact 管线
 - 对 build/test/log/report 产物做 artifact 归档
 - provider 支持 preview URL 时，把 URL 暴露给 runtime
 

@@ -1,16 +1,42 @@
 package com.opencray.runtime
 
 import com.opencray.llm.LiteLlmAssistantPhase
+import com.opencray.llm.LiteLlmGatewayAttachment
+import com.opencray.llm.LiteLlmGatewayAttachmentKind
 import com.opencray.llm.LiteLlmGatewayMessage
 import com.opencray.llm.LiteLlmGatewayMessageRole
 import com.opencray.llm.LiteLlmGatewayToolResult
 import com.opencray.llm.LiteLlmStructuredToolCall
 import com.opencray.runtime.context.RuntimeConversationMessage
+import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.subagent.SubAgentHandleState
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+
+@Serializable
+enum class OpenCrayPromptCheckpointBoundary(
+  val wireValue: String,
+) {
+  PRE_MODEL_REQUEST("pre_model_request"),
+  ACTION_BATCH_PARSED("action_batch_parsed"),
+  COMMENTARY_EMITTED("commentary_emitted"),
+  TOOL_RESULT_COMMITTED("tool_result_committed"),
+  SUPPLEMENT_INGESTED("supplement_ingested");
+
+  companion object {
+    fun fromWireValue(raw: String): OpenCrayPromptCheckpointBoundary? =
+      entries.firstOrNull { boundary -> boundary.wireValue.equals(raw, ignoreCase = true) }
+  }
+}
+
+data class OpenCrayPromptCheckpointEmission(
+  val boundary: OpenCrayPromptCheckpointBoundary,
+  val state: OpenCrayPromptResumeState,
+  val emittedAtEpochMs: Long,
+  val toolName: String? = null,
+)
 
 @Serializable
 data class OpenCraySerializableToolCall(
@@ -97,9 +123,60 @@ data class OpenCraySerializableGatewayToolResult(
 }
 
 @Serializable
+data class OpenCraySerializableGatewayAttachment(
+  val attachmentId: String? = null,
+  val kind: String,
+  val displayName: String? = null,
+  val filePath: String? = null,
+  val mimeType: String? = null,
+  val transcriptText: String? = null,
+) {
+  init {
+    require(kind.isNotBlank()) { "OpenCraySerializableGatewayAttachment kind must not be blank." }
+    require(attachmentId == null || attachmentId.isNotBlank()) {
+      "OpenCraySerializableGatewayAttachment attachmentId must not be blank."
+    }
+    require(displayName == null || displayName.isNotBlank()) {
+      "OpenCraySerializableGatewayAttachment displayName must not be blank."
+    }
+    require(filePath == null || filePath.isNotBlank()) {
+      "OpenCraySerializableGatewayAttachment filePath must not be blank."
+    }
+    require(mimeType == null || mimeType.isNotBlank()) {
+      "OpenCraySerializableGatewayAttachment mimeType must not be blank."
+    }
+    require(transcriptText == null || transcriptText.isNotBlank()) {
+      "OpenCraySerializableGatewayAttachment transcriptText must not be blank."
+    }
+  }
+
+  fun toGatewayAttachment(): LiteLlmGatewayAttachment = LiteLlmGatewayAttachment(
+    attachmentId = attachmentId,
+    kind = LiteLlmGatewayAttachmentKind.valueOf(kind),
+    displayName = displayName,
+    filePath = filePath,
+    mimeType = mimeType,
+    transcriptText = transcriptText,
+  )
+
+  companion object {
+    fun from(attachment: LiteLlmGatewayAttachment): OpenCraySerializableGatewayAttachment =
+      OpenCraySerializableGatewayAttachment(
+        attachmentId = attachment.attachmentId,
+        kind = attachment.kind.name,
+        displayName = attachment.displayName,
+        filePath = attachment.filePath,
+        mimeType = attachment.mimeType,
+        transcriptText = attachment.transcriptText,
+      )
+  }
+}
+
+@Serializable
 data class OpenCraySerializableGatewayMessage(
   val role: String,
   val content: String? = null,
+  val attachments: List<OpenCraySerializableGatewayAttachment> = emptyList(),
   val toolCalls: List<OpenCraySerializableToolCall> = emptyList(),
   val toolResult: OpenCraySerializableGatewayToolResult? = null,
   val assistantPhase: String? = null,
@@ -107,9 +184,9 @@ data class OpenCraySerializableGatewayMessage(
   init {
     require(role.isNotBlank()) { "OpenCraySerializableGatewayMessage role must not be blank." }
     require(
-      !content.isNullOrBlank() || toolCalls.isNotEmpty() || toolResult != null,
+      !content.isNullOrBlank() || attachments.isNotEmpty() || toolCalls.isNotEmpty() || toolResult != null,
     ) {
-      "OpenCraySerializableGatewayMessage must carry content, toolCalls, or toolResult."
+      "OpenCraySerializableGatewayMessage must carry content, attachments, toolCalls, or toolResult."
     }
     require(assistantPhase == null || assistantPhase.isNotBlank()) {
       "OpenCraySerializableGatewayMessage assistantPhase must not be blank."
@@ -119,6 +196,7 @@ data class OpenCraySerializableGatewayMessage(
   fun toGatewayMessage(): LiteLlmGatewayMessage = LiteLlmGatewayMessage(
     role = LiteLlmGatewayMessageRole.valueOf(role),
     content = content,
+    attachments = attachments.map(OpenCraySerializableGatewayAttachment::toGatewayAttachment),
     toolCalls = toolCalls.map { call ->
       LiteLlmStructuredToolCall(
         id = call.id,
@@ -138,6 +216,7 @@ data class OpenCraySerializableGatewayMessage(
     fun from(message: LiteLlmGatewayMessage): OpenCraySerializableGatewayMessage = OpenCraySerializableGatewayMessage(
       role = message.role.name,
       content = message.content,
+      attachments = message.attachments.map(OpenCraySerializableGatewayAttachment::from),
       toolCalls = message.toolCalls.map { toolCall ->
         OpenCraySerializableToolCall(
           id = toolCall.id,
@@ -180,13 +259,13 @@ data class OpenCraySerializableLocalContinuationEnvelope(
 @Serializable
 sealed interface OpenCraySerializableModelAction {
   @Serializable
-  @SerialName("progress")
-  data class Progress(
+  @SerialName("commentary")
+  data class Commentary(
     val text: String,
     val stage: String? = null,
   ) : OpenCraySerializableModelAction {
     init {
-      require(text.isNotBlank()) { "OpenCraySerializableModelAction.Progress text must not be blank." }
+      require(text.isNotBlank()) { "OpenCraySerializableModelAction.Commentary text must not be blank." }
     }
   }
 
@@ -262,20 +341,51 @@ data class OpenCrayPromptResumeState(
 
   fun restoredResponsesPendingMessages(): List<LiteLlmGatewayMessage> =
     responsesPendingMessages.map(OpenCraySerializableGatewayMessage::toGatewayMessage)
+
+  fun withAppendedUserInput(input: String): OpenCrayPromptResumeState {
+    val normalizedInput = input.trim()
+    if (normalizedInput.isBlank()) {
+      return this
+    }
+    return withAppendedUserMessage(
+      RuntimeConversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = normalizedInput,
+      ),
+    )
+  }
+
+  fun withAppendedUserMessage(message: RuntimeConversationMessage): OpenCrayPromptResumeState {
+    require(message.role == RuntimeConversationRole.USER) {
+      "OpenCrayPromptResumeState can only append user messages."
+    }
+    if (message.content.trim().isBlank() && message.attachments.isEmpty()) {
+      return this
+    }
+    return if (transcript.isNotEmpty()) {
+      copy(transcript = transcript + message)
+    } else {
+      copy(transcriptDelta = transcriptDelta + message)
+    }
+  }
 }
 
 object OpenCrayPromptResumeMetadata {
   const val KEY_PROMPT_RESUME_JSON: String = "opencray_prompt_resume_json"
+  const val KEY_PROMPT_CHECKPOINT_BOUNDARY: String = "opencray_prompt_checkpoint_boundary"
 
   fun encodeToMetadata(
     state: OpenCrayPromptResumeState,
     json: Json,
+    checkpointBoundary: OpenCrayPromptCheckpointBoundary? = null,
   ): Map<String, String> = mapOf(
     KEY_PROMPT_RESUME_JSON to json.encodeToString(
       serializer = OpenCrayPromptResumeState.serializer(),
       value = state,
     ),
-  )
+  ) + checkpointBoundary?.let { boundary ->
+    mapOf(KEY_PROMPT_CHECKPOINT_BOUNDARY to boundary.wireValue)
+  }.orEmpty()
 
   fun decodeFromMetadata(
     metadata: Map<String, String>,
@@ -292,4 +402,11 @@ object OpenCrayPromptResumeMetadata {
       )
     }.getOrNull()
   }
+
+  fun decodeCheckpointBoundary(
+    metadata: Map<String, String>,
+  ): OpenCrayPromptCheckpointBoundary? = metadata[KEY_PROMPT_CHECKPOINT_BOUNDARY]
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?.let(OpenCrayPromptCheckpointBoundary::fromWireValue)
 }

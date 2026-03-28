@@ -3,8 +3,11 @@ package com.opencray.app
 import android.content.Context
 import com.opencray.app.facade.mcp.McpSettingsFacade
 import com.opencray.app.facade.skills.SkillsFacade
+import com.opencray.runtime.CommandExecutor
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.memory.MemoryCandidateExtractor
+import com.opencray.runtime.process.LocalManagedProcessControllerFactory
+import com.opencray.runtime.process.RoutedManagedProcessControllerFactory
 import com.opencray.runtime.skills.SkillInstallManifestStore
 import com.opencray.runtime.skills.SkillPackageManager
 import com.opencray.runtime.soul.SoulPlasticity
@@ -32,6 +35,12 @@ internal object InProcessOpenCrayRuntimeOwnerRegistry {
 
   fun peek(): InProcessOpenCrayRuntimeOwner? = instance
 
+  fun clearForTest() {
+    synchronized(this) {
+      instance = null
+    }
+  }
+
   fun getOrCreate(factory: () -> InProcessOpenCrayRuntimeOwner): InProcessOpenCrayRuntimeOwner =
     instance ?: synchronized(this) {
       instance ?: factory().also { created ->
@@ -43,6 +52,7 @@ internal object InProcessOpenCrayRuntimeOwnerRegistry {
 internal fun createInProcessOpenCrayRuntimeOwner(
   appContext: Context,
   llmSettingsStore: LlmSettingsStore,
+  sandboxSettingsRepository: SandboxSettingsRepository,
   personalizationStore: PersonalizationLocalStore,
   chatSessionStore: ChatSessionLocalStore,
   skillsFacade: SkillsFacade,
@@ -58,9 +68,66 @@ internal fun createInProcessOpenCrayRuntimeOwner(
 ): InProcessOpenCrayRuntimeOwner {
   val lifecycleDescriptor = HostRuntimeLifecycleDescriptor()
   val chatExecutor = Executors.newSingleThreadExecutor()
-  val chatContextFactory = ChatRuntimeSessionContextFactory(chatSessionStore)
+  val chatContextFactory = ChatRuntimeSessionContextFactory(
+    chatSessionStore = chatSessionStore,
+    workspaceRootProvider = workspaceRootProvider,
+  )
   val approvalRegistry = AgentTaskApprovalRegistry()
-  val pythonRuntime = P4aPythonRuntime.fromContext(appContext)
+  val localPythonRuntime = P4aPythonRuntime.fromContext(appContext)
+  val e2bPythonRuntime = E2BCodeInterpreterPythonRuntime(
+    settingsProvider = sandboxSettingsRepository::load,
+    sessionStore = E2BSandboxSessionStore.fromContext(appContext),
+  )
+  val e2bSandboxPreviewService = E2BSandboxPreviewService(
+    settingsProvider = sandboxSettingsRepository::load,
+    sessionStore = E2BSandboxSessionStore.fromContext(appContext),
+    activeSessionProvider = e2bPythonRuntime::activeStickySessionSnapshot,
+  )
+  val pythonRuntime = RoutingPythonScriptRuntime(
+    settingsProvider = sandboxSettingsRepository::load,
+    localRuntime = localPythonRuntime,
+    sandboxRuntimeProvider = { settings ->
+      when (SandboxProviderId.fromWireValue(settings.state.providerId)) {
+        SandboxProviderId.E2B -> e2bPythonRuntime
+        null -> null
+      }
+    },
+  )
+  val commandExecutor = RoutingCommandExecutor(
+    settingsProvider = sandboxSettingsRepository::load,
+    localExecutor = CommandExecutor(),
+    sandboxExecutorProvider = { settings ->
+      when (SandboxProviderId.fromWireValue(settings.state.providerId)) {
+        SandboxProviderId.E2B -> CommandExecutor(
+          runner = PythonBackedCommandProcessRunner(
+            workspaceRoot = workspaceRootProvider(),
+            pythonRuntime = e2bPythonRuntime,
+          ),
+        )
+
+        null -> null
+      }
+    },
+  )
+  val pythonManagedProcessFactory = RoutedManagedProcessControllerFactory(
+    workspaceRoot = workspaceRootProvider(),
+    pythonRuntime = pythonRuntime,
+  )
+  val managedProcessControllerFactory = RoutingManagedProcessControllerFactory(
+    settingsProvider = sandboxSettingsRepository::load,
+    pythonRuntimeFactory = pythonManagedProcessFactory,
+    localFactory = LocalManagedProcessControllerFactory(),
+    sandboxFactoryProvider = { settings ->
+      when (SandboxProviderId.fromWireValue(settings.state.providerId)) {
+        SandboxProviderId.E2B -> SandboxPythonManagedCommandControllerFactory(
+          workspaceRoot = workspaceRootProvider(),
+          pythonRuntime = e2bPythonRuntime,
+        )
+
+        null -> null
+      }
+    },
+  )
   val compactionStoreFactory = FileBackedAgentSessionCompactionStoreFactory.fromContext(appContext)
   val transcriptStoreFactory = FileBackedAgentSessionTranscriptStoreFactory.fromContext(appContext)
   val supplementStoreFactory = FileBackedAgentSessionSupplementStoreFactory.fromContext(appContext)
@@ -70,10 +137,7 @@ internal fun createInProcessOpenCrayRuntimeOwner(
       appContext.filesDir,
       FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
     ),
-    controllerFactory = com.opencray.runtime.process.RoutedManagedProcessControllerFactory(
-      workspaceRoot = workspaceRootProvider(),
-      pythonRuntime = pythonRuntime,
-    ),
+    controllerFactory = managedProcessControllerFactory,
   )
   val liteLlmProviderClient = OpenAiCompatibleLiteLlmProviderClient(
     userAgent = providerUserAgent,
@@ -166,6 +230,7 @@ internal fun createInProcessOpenCrayRuntimeOwner(
     compactionStoreProvider = compactionStoreFactory::forChatSession,
     memoryIngestionCoordinator = memoryIngestionCoordinator,
     soulTurnSemanticSignalInterpreter = soulTurnSignalInterpreter,
+    commandExecutorProvider = { commandExecutor },
     pythonRuntimeProvider = { pythonRuntime },
     webSearchProviderFactory = {
       AppConfiguredWebSearchProviderFactory.create(
@@ -180,7 +245,19 @@ internal fun createInProcessOpenCrayRuntimeOwner(
       )
     },
     imageGenerationClientProvider = { mediaProviderClient },
-    speechSynthesisClientProvider = { mediaProviderClient },
+      speechSynthesisClientProvider = { mediaProviderClient },
+      sandboxPreviewServiceProvider = {
+        when (SandboxProviderId.fromWireValue(sandboxSettingsRepository.load().state.providerId)) {
+          SandboxProviderId.E2B -> e2bSandboxPreviewService
+          null -> null
+        }
+      },
+      nativeWebSearchSessionApprovalProvider = { sessionId ->
+      chatSessionStore.isNativeWebSearchSessionApproved(sessionId)
+    },
+    hiddenToolNamePrefixesProvider = {
+      SandboxNativeToolVisibility.hiddenToolNamePrefixes(sandboxSettingsRepository.load())
+    },
     skillPackageManagerProvider = {
       SkillPackageManager(
         managedRoot = AppSkillsStorage.managedSkillsRootForContext(appContext),

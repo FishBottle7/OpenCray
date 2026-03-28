@@ -5,6 +5,8 @@ import org.json.JSONObject
 data class LlmAgentCapabilitySnapshot(
   val routeFingerprint: String = "",
   val verifiedAtEpochMs: Long? = null,
+  val visionInputSupported: Boolean = false,
+  val pdfInputSupported: Boolean = false,
   val nativeToolCallingAvailable: Boolean = false,
   val toolChoiceSupported: Boolean = false,
   val parallelToolCallsSupported: Boolean = false,
@@ -51,6 +53,8 @@ data class LlmAgentCapabilitySnapshot(
   fun toJson(): JSONObject = JSONObject()
     .put("routeFingerprint", routeFingerprint)
     .put("verifiedAtEpochMs", verifiedAtEpochMs)
+    .put("visionInputSupported", visionInputSupported)
+    .put("pdfInputSupported", pdfInputSupported)
     .put("nativeToolCallingAvailable", nativeToolCallingAvailable)
     .put("toolChoiceSupported", toolChoiceSupported)
     .put("parallelToolCallsSupported", parallelToolCallsSupported)
@@ -82,6 +86,8 @@ data class LlmAgentCapabilitySnapshot(
         routeFingerprint = routeFingerprint,
         verifiedAtEpochMs = payload.optLong("verifiedAtEpochMs")
           .takeIf { value -> value > 0L },
+        visionInputSupported = payload.optBoolean("visionInputSupported", false),
+        pdfInputSupported = payload.optBoolean("pdfInputSupported", false),
         nativeToolCallingAvailable = payload.optBoolean("nativeToolCallingAvailable", false),
         toolChoiceSupported = payload.optBoolean("toolChoiceSupported", false),
         parallelToolCallsSupported = payload.optBoolean("parallelToolCallsSupported", false),
@@ -107,6 +113,10 @@ internal fun llmRouteFingerprint(
 }
 
 internal fun LlmAgentCapabilitySnapshot.runtimeMetadataOverrides(): Map<String, String> = buildMap {
+  if (wasVerified) {
+    put("visionInputSupported", visionInputSupported.toString())
+    put("pdfInputSupported", pdfInputSupported.toString())
+  }
   put(
     "nativeToolCallingAvailable",
     if (wasVerified) {

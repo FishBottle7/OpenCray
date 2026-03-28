@@ -117,6 +117,13 @@ internal class OpenCrayFlutterHostBridge(
           )
           null
         }
+        "copyRichTextToClipboard" -> {
+          localHostGateway.copyRichTextToClipboard(
+            plainText = call.argument<String>("plainText").orEmpty(),
+            htmlText = call.argument<String>("htmlText"),
+          )
+          null
+        }
         "createWorkspaceFolder" -> localHostGateway.createWorkspaceFolder(
           parentRelativePath = call.argument<String>("parentRelativePath").orEmpty(),
           name = call.argument<String>("name").orEmpty(),
@@ -157,6 +164,10 @@ internal class OpenCrayFlutterHostBridge(
         "loadSettingsDetail" -> settingsGateway.loadSettingsDetail(
           routeIdRaw = call.argument<String>("routeId").orEmpty(),
         )
+        "loadNotificationSettings" -> settingsGateway.loadNotificationSettings()
+        "saveNotificationSettings" -> settingsGateway.saveNotificationSettings(
+          payload = call.arguments<Map<String, Any?>>() ?: emptyMap(),
+        )
         "loadStrongBackgroundSnapshot" -> settingsGateway.loadStrongBackgroundSnapshot()
         "performStrongBackgroundAction" -> settingsGateway.performStrongBackgroundAction(
           actionId = call.argument<String>("actionId").orEmpty(),
@@ -170,6 +181,10 @@ internal class OpenCrayFlutterHostBridge(
         )
         "loadMediaSpeechConfig" -> settingsGateway.loadMediaSpeechConfig()
         "saveMediaSpeechConfig" -> settingsGateway.saveMediaSpeechConfig(
+          payload = call.arguments<Map<String, Any?>>() ?: emptyMap(),
+        )
+        "loadSandboxSettings" -> settingsGateway.loadSandboxSettings()
+        "saveSandboxSettings" -> settingsGateway.saveSandboxSettings(
           payload = call.arguments<Map<String, Any?>>() ?: emptyMap(),
         )
         "loadLlmConfig" -> settingsGateway.loadLlmConfig()
@@ -274,6 +289,7 @@ internal class OpenCrayFlutterHostBridge(
           runAsync(result) {
             skillsGateway.loadSkillsSnapshot(
               query = call.argument<String>("query").orEmpty(),
+              suggestedLimit = call.argument<Int>("suggestedLimit") ?: 0,
             )
           }
           return
@@ -338,6 +354,15 @@ internal class OpenCrayFlutterHostBridge(
         "loadSkillInstructions" -> skillsGateway.loadSkillInstructions(
           call.argument<String>("skillId").orEmpty(),
         )
+        "loadSuggestedSkillInstructions" -> {
+          runAsync(result) {
+            skillsGateway.loadSuggestedSkillInstructions(
+              sourceRef = call.argument<String>("sourceRef").orEmpty(),
+              selectedSkillName = call.argument<String>("selectedSkillName").orEmpty(),
+            )
+          }
+          return
+        }
         "activateSkillsInstallSource" -> skillsGateway.activateSkillsInstallSource(
           call.argument<String>("sourceId").orEmpty(),
         )
@@ -428,6 +453,13 @@ internal class OpenCrayFlutterHostBridge(
           )
           null
         }
+        "approveChatApprovalForSession" -> {
+          chatRuntimeGateway.approveChatApprovalForSession(
+            call.argument<String>("runId")?.takeIf(String::isNotBlank)
+              ?: call.argument<String>("taskId").orEmpty(),
+          )
+          null
+        }
         "rejectChatApproval" -> {
           chatRuntimeGateway.rejectChatApproval(
             call.argument<String>("runId")?.takeIf(String::isNotBlank)
@@ -435,8 +467,8 @@ internal class OpenCrayFlutterHostBridge(
           )
           null
         }
-        "cancelChatRun" -> {
-          chatRuntimeGateway.cancelChatRun(
+        "interruptChatRun" -> {
+          chatRuntimeGateway.interruptChatRun(
             call.argument<String>("runId")?.takeIf(String::isNotBlank)
               ?: call.argument<String>("taskId").orEmpty(),
           )

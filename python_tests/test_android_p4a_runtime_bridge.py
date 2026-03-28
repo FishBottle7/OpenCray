@@ -80,6 +80,32 @@ def _service_state_paths(workspace: pathlib.Path, name: str) -> tuple[pathlib.Pa
     return state_dir / "service-state.json", state_dir / "service-ready.json"
 
 
+def _write_service_start_argument(
+    runtime_root: pathlib.Path,
+    *,
+    request_id: str,
+    request_path: pathlib.Path,
+    result_path: pathlib.Path,
+    log_path: pathlib.Path,
+    poll_interval_ms: int = 50,
+    once: bool = True,
+) -> pathlib.Path:
+    path = runtime_root / "service_state" / "service-start-argument.json"
+    payload = {
+        "schemaVersion": 1,
+        "runtimeRoot": str(runtime_root),
+        "requestId": request_id,
+        "requestPath": str(request_path),
+        "resultPath": str(result_path),
+        "logPath": str(log_path),
+        "pollIntervalMs": poll_interval_ms,
+        "once": once,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
+
+
 def test_android_p4a_bridge_executes_workspace_script(workspace: pathlib.Path) -> None:
     request_path, result_path, log_path = _bridge_paths(workspace, "request-success")
     script_path = workspace / "hello_android_runtime.py"
@@ -380,3 +406,118 @@ def test_android_p4a_service_once_mode_only_processes_startup_request(workspace:
 
     assert slow_result["status"] == "success"
     assert slow_result["stdout"] == "slow request done\n"
+
+
+def test_android_p4a_service_reads_fallback_start_argument_when_env_argument_missing(
+    workspace: pathlib.Path,
+) -> None:
+    files_root = workspace / ".android-files" / "files"
+    runtime_root = files_root / "python_runtime"
+    request_id = "request-fallback-start-argument"
+    request_path = runtime_root / "requests" / f"{request_id}.json"
+    result_path = runtime_root / "results" / f"{request_id}.json"
+    log_path = runtime_root / "logs" / f"{request_id}.log"
+    script_path = workspace / "fallback_start_argument.py"
+    script_path.write_text("print('fallback start argument ok')\n", encoding="utf-8")
+    _write_request(
+        request_path,
+        task_id="task-fallback-start-argument",
+        workspace_root=workspace,
+        script_path=script_path,
+    )
+    _write_service_start_argument(
+        runtime_root,
+        request_id=request_id,
+        request_path=request_path,
+        result_path=result_path,
+        log_path=log_path,
+    )
+    android_argument_path = files_root / "app"
+    android_argument_path.mkdir(parents=True, exist_ok=True)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            SCRIPT_MODULE,
+            "--once",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+        env={
+            **os.environ,
+            "PYTHON_SERVICE_ARGUMENT": "",
+            "OPENCRAY_P4A_RUNTIME_ROOT": "",
+            "ANDROID_ARGUMENT": str(android_argument_path),
+            "ANDROID_PRIVATE": "",
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert result["status"] == "success"
+    assert result["stdout"] == "fallback start argument ok\n"
+
+
+def test_android_p4a_service_reads_fallback_start_argument_from_service_file_location(
+    workspace: pathlib.Path,
+) -> None:
+    from python_runner import p4a_service_main
+
+    files_root = workspace / ".android-files" / "files"
+    runtime_root = files_root / "python_runtime"
+    request_id = "request-file-location-fallback"
+    request_path = runtime_root / "requests" / f"{request_id}.json"
+    result_path = runtime_root / "results" / f"{request_id}.json"
+    log_path = runtime_root / "logs" / f"{request_id}.log"
+    script_path = workspace / "file_location_fallback.py"
+    script_path.write_text("print('file location fallback ok')\n", encoding="utf-8")
+    _write_request(
+        request_path,
+        task_id="task-file-location-fallback",
+        workspace_root=workspace,
+        script_path=script_path,
+    )
+    _write_service_start_argument(
+        runtime_root,
+        request_id=request_id,
+        request_path=request_path,
+        result_path=result_path,
+        log_path=log_path,
+    )
+
+    fake_service_path = files_root / "app" / "python_runner" / "p4a_service_main.py"
+    fake_service_path.parent.mkdir(parents=True, exist_ok=True)
+    fake_service_path.write_text("# synthetic service path for fallback resolution\n", encoding="utf-8")
+
+    original_module_file = p4a_service_main.__file__
+    original_cwd = pathlib.Path.cwd()
+    original_env = {
+        "PYTHON_SERVICE_ARGUMENT": os.environ.get("PYTHON_SERVICE_ARGUMENT"),
+        "OPENCRAY_P4A_RUNTIME_ROOT": os.environ.get("OPENCRAY_P4A_RUNTIME_ROOT"),
+        "ANDROID_ARGUMENT": os.environ.get("ANDROID_ARGUMENT"),
+        "ANDROID_PRIVATE": os.environ.get("ANDROID_PRIVATE"),
+    }
+    try:
+        p4a_service_main.__file__ = str(fake_service_path)
+        os.chdir(workspace)
+        os.environ["PYTHON_SERVICE_ARGUMENT"] = ""
+        os.environ["OPENCRAY_P4A_RUNTIME_ROOT"] = ""
+        os.environ["ANDROID_ARGUMENT"] = ""
+        os.environ["ANDROID_PRIVATE"] = ""
+        exit_code = p4a_service_main.main(["--once"])
+    finally:
+        p4a_service_main.__file__ = original_module_file
+        os.chdir(original_cwd)
+        for key, value in original_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    assert exit_code == 0
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert result["status"] == "success"
+    assert result["stdout"] == "file location fallback ok\n"

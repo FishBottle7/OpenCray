@@ -20,6 +20,7 @@ data class ToolPolicyEvaluationRequest(
   val destinationPath: Path? = null,
   val approvedReadRoots: Set<Path> = setOf(workspaceRoot),
   val approvedWriteRoots: Set<Path> = setOf(workspaceRoot),
+  val approvedHostManagedReadRoots: Set<Path> = emptySet(),
 ) {
   constructor(
     task: AgentTask,
@@ -37,6 +38,7 @@ data class ToolPolicyEvaluationRequest(
     destinationPath = destinationPath,
     approvedReadRoots = setOf(workspaceRoot),
     approvedWriteRoots = setOf(workspaceRoot),
+    approvedHostManagedReadRoots = emptySet(),
   )
 }
 
@@ -57,6 +59,7 @@ internal class ToolPolicyEvaluator(
         destinationPath = request.destinationPath,
         approvedReadRoots = request.approvedReadRoots,
         approvedWriteRoots = request.approvedWriteRoots,
+        approvedHostManagedReadRoots = request.approvedHostManagedReadRoots,
       ),
     )
     val overriddenDecision = applySettingsPolicyOverride(

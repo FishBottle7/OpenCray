@@ -1,5 +1,7 @@
 package com.opencray.app
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -21,6 +23,8 @@ internal interface OpenCrayLocalHostGateway {
   fun openWorkspaceEntry(relativePath: String)
 
   fun openExternalUri(uri: String)
+
+  fun copyRichTextToClipboard(plainText: String, htmlText: String?)
 
   fun createWorkspaceFolder(parentRelativePath: String, name: String): Map<String, Any?>
 
@@ -116,6 +120,36 @@ internal class DefaultOpenCrayLocalHostGateway(
           uri = uri,
         )
     }
+  }
+
+  override fun copyRichTextToClipboard(plainText: String, htmlText: String?) {
+    if (plainText.isEmpty() && htmlText.isNullOrBlank()) {
+      return
+    }
+    val context = requireNotNull(appContext) {
+      "Clipboard access is unavailable."
+    }
+    val copyAction = {
+      val clipboard = context.getSystemService(ClipboardManager::class.java)
+        ?: throw IllegalStateException("Clipboard access is unavailable.")
+      val clip = htmlText?.takeIf(String::isNotBlank)?.let { richHtml ->
+        ClipData.newHtmlText("OpenCray", plainText, richHtml)
+      } ?: ClipData.newPlainText("OpenCray", plainText)
+      clipboard.setPrimaryClip(clip)
+    }
+    if (Looper.myLooper() == Looper.getMainLooper()) {
+      copyAction()
+      return
+    }
+    val completion = CountDownLatch(1)
+    var failure: Throwable? = null
+    mainThreadPoster.post {
+      runCatching(copyAction)
+        .onFailure { throwable -> failure = throwable }
+      completion.countDown()
+    }
+    completion.await()
+    failure?.let { throwable -> throw throwable }
   }
 
   override fun createWorkspaceFolder(

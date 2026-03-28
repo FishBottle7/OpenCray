@@ -5,8 +5,16 @@ import com.opencray.core.contracts.AgentTaskState
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
+import com.opencray.core.orchestrator.EXECUTION_KIND_APPROVAL_RESUME
+import com.opencray.core.orchestrator.EXECUTION_KIND_CHECKPOINT_RESUME
+import com.opencray.core.orchestrator.EXECUTION_KIND_INITIAL
+import com.opencray.core.orchestrator.EXECUTION_KIND_RETRY
 import com.opencray.core.orchestrator.AgentLoop
 import com.opencray.core.orchestrator.ERROR_RESTART_REQUIRES_EXPLICIT_RETRY
+import com.opencray.core.orchestrator.METADATA_EXECUTION_ID
+import com.opencray.core.orchestrator.METADATA_EXECUTION_KIND
+import com.opencray.core.orchestrator.METADATA_EXECUTION_ORDINAL
+import com.opencray.core.orchestrator.METADATA_PENDING_EXECUTION_KIND
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.SessionLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
@@ -40,6 +48,10 @@ internal data class AgentRunSnapshot(
   val lifecycleState: QueueTaskLifecycleState?,
   val taskState: AgentTaskState?,
   val attempt: Int = 0,
+  val executionOrdinal: Int = 0,
+  val executionId: String? = null,
+  val executionKind: String? = null,
+  val pendingExecutionKind: String? = null,
   val executionStatus: ExecutionStatus? = null,
   val errorCode: String? = null,
   val errorMessage: String? = null,
@@ -133,6 +145,12 @@ internal interface AgentSessionHandle {
   fun requestRetry(taskId: String): Boolean
 
   fun requestResumeTask(taskId: String): Boolean
+
+  fun requestResumeTask(
+    taskId: String,
+    executionKind: String,
+    taskMetadataUpdates: Map<String, String>,
+  ): Boolean = requestResumeTask(taskId)
 
   fun listRuns(): List<AgentRunSnapshot>
 
@@ -305,22 +323,26 @@ private class ManagedAgentSessionHandle(
     sessionId = sessionId,
     eventSink = object : OpenCrayAgentRuntimeEventSink {
       override fun onRunEvent(task: AgentTask, event: OpenCrayAgentRunEvent) {
-        recordRunEvent(event)
+        val enrichedEvent = enrichEventExecutionContext(
+          event = event,
+          metadata = task.metadata,
+        )
+        recordRunEvent(enrichedEvent)
         listenerProvider().forEach { listener ->
-          listener.onRunEvent(sessionId = sessionId, task = task, event = event)
-          when (event) {
+          listener.onRunEvent(sessionId = sessionId, task = task, event = enrichedEvent)
+          when (enrichedEvent) {
             is com.opencray.runtime.OpenCrayToolCallEvent -> listener.onToolCall(
               sessionId = sessionId,
               task = task,
-              turn = event.turn,
-              call = event.call,
+              turn = enrichedEvent.turn,
+              call = enrichedEvent.call,
             )
             is com.opencray.runtime.OpenCrayToolResultEvent -> listener.onToolResult(
               sessionId = sessionId,
               task = task,
-              turn = event.turn,
-              call = event.call,
-              result = event.result,
+              turn = enrichedEvent.turn,
+              call = enrichedEvent.call,
+              result = enrichedEvent.result,
             )
             else -> Unit
           }
@@ -333,7 +355,10 @@ private class ManagedAgentSessionHandle(
       listenerProvider().forEach { listener ->
         listener.onTaskStarted(sessionId = sessionId, task = task)
       }
-      val result = baseRuntime.execute(task, hooks)
+      val result = enrichResultExecutionContext(
+        task = task,
+        result = baseRuntime.execute(task, hooks),
+      )
       recordRunResult(task = task, result = result)
       listenerProvider().forEach { listener ->
         listener.onTaskFinished(sessionId = sessionId, task = task, result = result)
@@ -471,8 +496,24 @@ private class ManagedAgentSessionHandle(
   }
 
   override fun requestResumeTask(taskId: String): Boolean {
+    return requestResumeTask(
+      taskId = taskId,
+      executionKind = EXECUTION_KIND_APPROVAL_RESUME,
+      taskMetadataUpdates = emptyMap(),
+    )
+  }
+
+  override fun requestResumeTask(
+    taskId: String,
+    executionKind: String,
+    taskMetadataUpdates: Map<String, String>,
+  ): Boolean {
     touch()
-    val resumed = loop.requestResumeTask(taskId)
+    val resumed = loop.requestResumeTask(
+      taskId = taskId,
+      executionKind = executionKind,
+      taskMetadataUpdates = taskMetadataUpdates,
+    )
     if (resumed) {
       ensureProcessing()
     }
@@ -655,6 +696,12 @@ private class ManagedAgentSessionHandle(
         taskSnapshot = taskSnapshot,
         result = record?.lastResult,
       )
+      val executionContext = runExecutionContext(
+        taskSnapshot = taskSnapshot,
+        result = result,
+        fallbackResult = record?.lastResult,
+        lastEvent = record?.lastEvent,
+      )
       val taskMetadata = taskSnapshot?.task?.metadata.orEmpty()
       val taskId = taskSnapshot?.task?.id ?: record?.submission?.taskId ?: runId
       val managedProcessIds = associatedManagedProcessIds(
@@ -694,6 +741,10 @@ private class ManagedAgentSessionHandle(
         lifecycleState = projectedLifecycleState,
         taskState = projectedTaskState,
         attempt = taskSnapshot?.attempt ?: 0,
+        executionOrdinal = executionContext.executionOrdinal,
+        executionId = executionContext.executionId,
+        executionKind = executionContext.executionKind,
+        pendingExecutionKind = executionContext.pendingExecutionKind,
         executionStatus = result?.status,
         errorCode = if (result != null) {
           result.errorCode
@@ -839,6 +890,109 @@ private class ManagedAgentSessionHandle(
     .fold(existing) { current, processId ->
       if (processId in current) current else current + processId
     }
+
+  private fun enrichResultExecutionContext(
+    task: AgentTask,
+    result: ExecutionResult,
+  ): ExecutionResult {
+    val executionMetadata = executionMetadataFrom(task.metadata)
+    if (executionMetadata.isEmpty()) {
+      return result
+    }
+    val mergedMetadata = result.metadata.toMutableMap()
+    executionMetadata.forEach { (key, value) ->
+      if (mergedMetadata[key].isNullOrBlank()) {
+        mergedMetadata[key] = value
+      }
+    }
+    return if (mergedMetadata == result.metadata) {
+      result
+    } else {
+      result.copy(metadata = mergedMetadata)
+    }
+  }
+
+  private fun executionMetadataFrom(
+    metadata: Map<String, String>,
+  ): Map<String, String> = buildMap {
+    metadata[METADATA_EXECUTION_ID]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { put(METADATA_EXECUTION_ID, it) }
+    metadata[METADATA_EXECUTION_KIND]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { put(METADATA_EXECUTION_KIND, it) }
+    metadata[METADATA_EXECUTION_ORDINAL]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { put(METADATA_EXECUTION_ORDINAL, it) }
+  }
+
+  private fun enrichEventExecutionContext(
+    event: OpenCrayAgentRunEvent,
+    metadata: Map<String, String>,
+  ): OpenCrayAgentRunEvent {
+    val executionId = metadata[METADATA_EXECUTION_ID]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val executionKind = metadata[METADATA_EXECUTION_KIND]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val executionOrdinal = metadata[METADATA_EXECUTION_ORDINAL]
+      ?.trim()
+      ?.toIntOrNull()
+    if (
+      executionId == null &&
+      executionKind == null &&
+      executionOrdinal == null
+    ) {
+      return event
+    }
+    return event.withExecutionContext(
+      executionId = executionId,
+      executionOrdinal = executionOrdinal,
+      executionKind = executionKind,
+    )
+  }
+
+  private fun runExecutionContext(
+    taskSnapshot: SessionQueueTaskSnapshot?,
+    result: ExecutionResult?,
+    fallbackResult: ExecutionResult?,
+    lastEvent: OpenCrayAgentRunEvent?,
+  ): RunExecutionContext {
+    val taskMetadata = taskSnapshot?.task?.metadata.orEmpty()
+    val resultMetadata = result?.metadata ?: fallbackResult?.metadata.orEmpty()
+    val executionOrdinal = taskSnapshot?.executionOrdinal
+      ?: taskMetadata[METADATA_EXECUTION_ORDINAL]?.toIntOrNull()
+      ?: resultMetadata[METADATA_EXECUTION_ORDINAL]?.toIntOrNull()
+      ?: lastEvent?.executionOrdinal
+      ?: 0
+    val executionId = if (taskSnapshot != null) {
+      taskSnapshot.executionId
+        ?: taskMetadata[METADATA_EXECUTION_ID]?.trim()?.takeIf(String::isNotBlank)
+    } else {
+      resultMetadata[METADATA_EXECUTION_ID]?.trim()?.takeIf(String::isNotBlank)
+        ?: lastEvent?.executionId?.trim()?.takeIf(String::isNotBlank)
+    }
+    val executionKind = if (taskSnapshot != null) {
+      taskSnapshot.executionKind
+        ?: taskMetadata[METADATA_EXECUTION_KIND]?.trim()?.takeIf(String::isNotBlank)
+    } else {
+      resultMetadata[METADATA_EXECUTION_KIND]?.trim()?.takeIf(String::isNotBlank)
+        ?: lastEvent?.executionKind?.trim()?.takeIf(String::isNotBlank)
+    }
+    val pendingExecutionKind = taskMetadata[METADATA_PENDING_EXECUTION_KIND]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    return RunExecutionContext(
+      executionOrdinal = executionOrdinal,
+      executionId = executionId,
+      executionKind = executionKind,
+      pendingExecutionKind = pendingExecutionKind,
+    )
+  }
 
   private fun shouldRepairRestoredInterruptedRun(
     taskSnapshot: com.opencray.core.orchestrator.SessionQueueTaskSnapshot?,
@@ -1031,7 +1185,71 @@ private class ManagedAgentSessionHandle(
     val lastResult: ExecutionResult? = null,
   )
 
+  private data class RunExecutionContext(
+    val executionOrdinal: Int,
+    val executionId: String?,
+    val executionKind: String?,
+    val pendingExecutionKind: String?,
+  )
+
   private companion object {
     const val RUN_WAIT_POLL_INTERVAL_MS: Long = 50L
   }
+}
+
+private fun OpenCrayAgentRunEvent.withExecutionContext(
+  executionId: String?,
+  executionOrdinal: Int?,
+  executionKind: String?,
+): OpenCrayAgentRunEvent = when (this) {
+  is com.opencray.runtime.OpenCrayLifecycleEvent -> copy(
+    executionId = executionId ?: this.executionId,
+    executionOrdinal = executionOrdinal ?: this.executionOrdinal,
+    executionKind = executionKind ?: this.executionKind,
+  )
+  is com.opencray.runtime.OpenCrayAssistantEvent -> copy(
+    executionId = executionId ?: this.executionId,
+    executionOrdinal = executionOrdinal ?: this.executionOrdinal,
+    executionKind = executionKind ?: this.executionKind,
+  )
+  is com.opencray.runtime.OpenCraySupplementEvent -> copy(
+    executionId = executionId ?: this.executionId,
+    executionOrdinal = executionOrdinal ?: this.executionOrdinal,
+    executionKind = executionKind ?: this.executionKind,
+  )
+  is com.opencray.runtime.OpenCrayApprovalEvent -> copy(
+    executionId = executionId ?: this.executionId,
+    executionOrdinal = executionOrdinal ?: this.executionOrdinal,
+    executionKind = executionKind ?: this.executionKind,
+  )
+  is com.opencray.runtime.OpenCraySubAgentEvent -> copy(
+    executionId = executionId ?: this.executionId,
+    executionOrdinal = executionOrdinal ?: this.executionOrdinal,
+    executionKind = executionKind ?: this.executionKind,
+  )
+  is com.opencray.runtime.OpenCrayToolCallEvent -> copy(
+    executionId = executionId ?: this.executionId,
+    executionOrdinal = executionOrdinal ?: this.executionOrdinal,
+    executionKind = executionKind ?: this.executionKind,
+  )
+  is com.opencray.runtime.OpenCrayToolResultEvent -> copy(
+    executionId = executionId ?: this.executionId,
+    executionOrdinal = executionOrdinal ?: this.executionOrdinal,
+    executionKind = executionKind ?: this.executionKind,
+  )
+  is com.opencray.runtime.OpenCrayMemoryWriteEvent -> copy(
+    executionId = executionId ?: this.executionId,
+    executionOrdinal = executionOrdinal ?: this.executionOrdinal,
+    executionKind = executionKind ?: this.executionKind,
+  )
+  is com.opencray.runtime.OpenCrayMemoryRetrievalEvent -> copy(
+    executionId = executionId ?: this.executionId,
+    executionOrdinal = executionOrdinal ?: this.executionOrdinal,
+    executionKind = executionKind ?: this.executionKind,
+  )
+  is com.opencray.runtime.OpenCrayCancellationEvent -> copy(
+    executionId = executionId ?: this.executionId,
+    executionOrdinal = executionOrdinal ?: this.executionOrdinal,
+    executionKind = executionKind ?: this.executionKind,
+  )
 }

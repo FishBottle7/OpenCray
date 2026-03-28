@@ -6,8 +6,13 @@ internal class ServiceBackedOpenCraySkillsGateway(
   private val serviceClient: OpenCrayRuntimeServiceClient,
   private val fallbackGateway: OpenCraySkillsGateway,
 ) : OpenCraySkillsGateway {
-  override fun loadSkillsSnapshot(query: String): Map<String, Any?> =
-    currentReadGateway().loadSkillsSnapshot(query)
+  override fun loadSkillsSnapshot(
+    query: String,
+    suggestedLimit: Int,
+  ): Map<String, Any?> = currentReadGateway().loadSkillsSnapshot(
+    query = query,
+    suggestedLimit = suggestedLimit,
+  )
 
   override fun observeSkills(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeWithDynamicGateway(
@@ -52,6 +57,14 @@ internal class ServiceBackedOpenCraySkillsGateway(
 
   override fun loadSkillInstructions(skillId: String): Map<String, Any?> =
     currentReadGateway().loadSkillInstructions(skillId)
+
+  override fun loadSuggestedSkillInstructions(
+    sourceRef: String,
+    selectedSkillName: String,
+  ): Map<String, Any?> = currentReadGateway().loadSuggestedSkillInstructions(
+    sourceRef = sourceRef,
+    selectedSkillName = selectedSkillName,
+  )
 
   override fun activateSkillsInstallSource(sourceId: String): String =
     currentWriteGateway("activateSkillsInstallSource").activateSkillsInstallSource(sourceId)

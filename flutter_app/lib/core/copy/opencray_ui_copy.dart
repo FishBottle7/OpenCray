@@ -143,6 +143,8 @@ class OpenCrayUiCopy {
       isChinese ? '安装 $name 失败。' : 'Failed to install $name.';
   String skillsPreviewFailed(String name) =>
       isChinese ? '加载 $name 的说明失败。' : 'Failed to load $name instructions.';
+  String skillsSuggestedPreviewFailed(String name) =>
+      isChinese ? '加载 $name 的技能内容失败。' : 'Failed to load $name skill contents.';
   String get skillsRefreshFailed =>
       isChinese ? '刷新技能失败。' : 'Failed to refresh skills.';
   String skillsRemoveFailed(String name) =>
@@ -169,6 +171,7 @@ class OpenCrayUiCopy {
   String get skillsManageTab => isChinese ? '管理' : 'Manage';
   String get skillsInstallTab => isChinese ? '安装' : 'Install';
   String get skillsInstallButton => isChinese ? '安装' : 'Install';
+  String get skillsPreviewButton => isChinese ? '查看内容' : 'Preview';
   String get skillsInspectButton => isChinese ? '检查' : 'Inspect';
   String get skillsCancelAction => isChinese ? '取消' : 'Cancel';
   String get skillsSearchHint => isChinese
@@ -179,6 +182,9 @@ class OpenCrayUiCopy {
   String skillsDirectInstallBody(String sourceRef) => isChinese
       ? '将“$sourceRef”直接交给 SkillsAdd 安装。'
       : 'Send "$sourceRef" straight to SkillsAdd for installation.';
+  String get skillsShowMoreResults => isChinese ? '显示更多结果' : 'Show more';
+  String skillsInstallsCount(int installs) =>
+      isChinese ? '$installs 次安装' : '$installs installs';
   String skillsInspectSourceTitle(String sourceTitle) =>
       isChinese ? '检查$sourceTitle' : 'Inspect $sourceTitle';
   String skillsSourceInputLabel(String sourceTitle) =>
@@ -359,6 +365,19 @@ class OpenCrayUiCopy {
       isChinese ? '已添加引用到输入框。' : 'Added quote to the composer.';
   String get chatMessageActionFailed =>
       isChinese ? '处理消息操作失败。' : 'Failed to process the message action.';
+  String get markdownLinkUnsupported =>
+      isChinese ? '暂不支持这种链接。' : 'This link target is not supported.';
+  String get markdownLinkHttpOnly => isChinese
+      ? '只支持 http 或 https 链接。'
+      : 'Only http and https links are supported.';
+  String get markdownLinkNoAppAvailable =>
+      isChinese ? '没有可用的应用可以打开这个链接。' : 'No application can open this link.';
+  String get markdownLinkOpenFailed =>
+      isChinese ? '打开外部链接失败。' : 'Failed to open the external link.';
+  String get markdownLinkExternalUnavailable =>
+      isChinese ? '当前无法打开外部链接。' : 'External links are unavailable right now.';
+  String get markdownLinkHostUnavailable =>
+      isChinese ? '当前无法处理这个链接。' : 'Link handling is temporarily unavailable.';
   String get chatMessageMultiSelectPending =>
       isChinese ? '多选模式还没接入。' : 'Multi-select mode is not wired yet.';
   String get chatPendingApprovalsTitle =>
@@ -380,6 +399,26 @@ class OpenCrayUiCopy {
       isChinese ? '等待审批' : 'Waiting for approval';
   String get chatRunAwaitingDirectionLabel =>
       isChinese ? '等待指示' : 'Awaiting direction';
+  String get chatRunResumeAction => isChinese ? '继续运行' : 'Resume run';
+  String get chatRunLlmRetryPausedBody => isChinese
+      ? '语言模型重试次数已耗尽，这次运行已暂停。发送下一条消息或点击继续运行后，会从当前检查点恢复。'
+      : 'LLM retries were exhausted, so this run is paused. Send another message or tap Resume run to continue from the current checkpoint.';
+  String get chatRunInterruptAction => isChinese ? '中断' : 'Interrupt';
+  String get chatRunInterruptBusy => isChinese ? '正在中断…' : 'Interrupting…';
+  String get chatRunInterruptConfirmLabel =>
+      isChinese ? '左滑以中断任务' : 'Slide left to interrupt';
+  String get chatRunInterruptFailed =>
+      isChinese ? '无法中断这次运行。' : 'Unable to interrupt this run.';
+  String get chatRunPreviewTitle => isChinese ? '沙盒预览' : 'Sandbox Preview';
+  String get chatRunPreviewOpenAction => 'Open';
+  String get chatRunPreviewCopyUrlAction => isChinese ? '复制链接' : 'Copy URL';
+  String get chatRunPreviewCopied =>
+      isChinese ? '已复制预览链接。' : 'Preview URL copied.';
+  String get chatRunPreviewStatusReady => isChinese ? '已就绪' : 'Ready';
+  String get chatRunPreviewStatusReachable => isChinese ? '可达' : 'Reachable';
+  String get chatRunPreviewStatusUnreachable =>
+      isChinese ? '未就绪' : 'Unreachable';
+  String get chatRunPreviewStatusSkipped => isChinese ? '未探测' : 'Skipped';
   String get chatRunThinkingActive => isChinese
       ? '正在分析请求，并决定下一步要做什么。'
       : 'Analyzing the request and deciding the next step.';

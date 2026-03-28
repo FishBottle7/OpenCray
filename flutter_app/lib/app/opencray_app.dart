@@ -143,7 +143,7 @@ Map<OpenCrayTab, OpenCrayTabBuilder> _defaultBuilders(
       controller: chatController,
     ),
     OpenCrayTab.skills: (context, isActive) =>
-        SkillsFeatureScreen(bridge: bridge, copy: copy),
+        SkillsFeatureScreen(bridge: bridge, copy: copy, isTabActive: isActive),
     OpenCrayTab.files: (context, isActive) => FilesFeatureScreen(
       bridge: bridge,
       copy: copy,

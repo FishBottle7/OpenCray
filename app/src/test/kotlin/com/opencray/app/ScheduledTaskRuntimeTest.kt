@@ -26,6 +26,7 @@ class ScheduledTaskRuntimeTest {
     val runtimeRoot = temporaryFolder.newFolder("scheduled-runtime-root")
     val specStore = FileBackedScheduledTaskSpecStoreFactory(runtimeRoot).create()
     val runRecordStore = FileBackedScheduledTaskRunRecordStoreFactory(runtimeRoot).create()
+    val triggerSyncStateStore = FileBackedScheduledTaskTriggerSyncStateStoreFactory(runtimeRoot).create()
     val sessionId = "session-store"
     val original = scheduledTaskSpec(
       sessionId = sessionId,
@@ -65,9 +66,14 @@ class ScheduledTaskRuntimeTest {
         updatedAtEpochMs = 3_100L,
       ),
     )
+    triggerSyncStateStore.replaceScheduleIds(
+      linkedSetOf(" schedule-store ", "", "schedule-store", "schedule-two"),
+    )
 
     val reloadedSpecStore = FileBackedScheduledTaskSpecStoreFactory(runtimeRoot).create()
     val reloadedRunRecordStore = FileBackedScheduledTaskRunRecordStoreFactory(runtimeRoot).create()
+    val reloadedTriggerSyncStateStore =
+      FileBackedScheduledTaskTriggerSyncStateStoreFactory(runtimeRoot).create()
 
     assertEquals(listOf("Updated"), reloadedSpecStore.list().map(ScheduledTaskSpec::title))
     assertEquals(1, reloadedSpecStore.listEnabled().size)
@@ -78,6 +84,10 @@ class ScheduledTaskRuntimeTest {
     assertEquals(
       listOf("run-store"),
       reloadedRunRecordStore.listForSchedule(updated.scheduleId).mapNotNull(ScheduledTaskRunRecord::createdRunId),
+    )
+    assertEquals(
+      linkedSetOf("schedule-store", "schedule-two"),
+      reloadedTriggerSyncStateStore.loadScheduleIds(),
     )
   }
 
@@ -229,6 +239,134 @@ class ScheduledTaskRuntimeTest {
         triggerReason = null,
         targetSessionId = null,
       ),
+    )
+  }
+
+  @Test
+  fun resyncEnabledScheduledTasksSyncsOnlyEnabledSpecs() {
+    val specStore = InMemoryScheduledTaskSpecStoreFactory().create()
+    val registrar = RecordingScheduledTriggerRegistrar()
+    val triggerSyncStateStore = inMemoryScheduledTaskTriggerSyncStateStoreFactory().create()
+    specStore.upsert(
+      scheduledTaskSpec(
+        sessionId = "session-enabled",
+        scheduleId = "schedule-enabled",
+      ),
+    )
+    specStore.upsert(
+      scheduledTaskSpec(
+        sessionId = "session-disabled",
+        scheduleId = "schedule-disabled",
+      ).copy(enabled = false, updatedAtEpochMs = 3_000L),
+    )
+
+    resyncEnabledScheduledTasks(
+      specStore = specStore,
+      triggerRegistrar = registrar,
+      triggerSyncStateStore = triggerSyncStateStore,
+    )
+
+    assertEquals(listOf("schedule-enabled"), registrar.syncedScheduleIds)
+    assertEquals(listOf("schedule-disabled"), registrar.cancelledScheduleIds)
+    assertEquals(
+      linkedSetOf("schedule-enabled"),
+      triggerSyncStateStore.loadScheduleIds(),
+    )
+  }
+
+  @Test
+  fun resyncEnabledScheduledTasksCancelsDisabledAndRemovedSchedulesBeforePersistingEnabledIds() {
+    val specStore = InMemoryScheduledTaskSpecStoreFactory().create()
+    val registrar = RecordingScheduledTriggerRegistrar()
+    val triggerSyncStateStore = inMemoryScheduledTaskTriggerSyncStateStoreFactory().create()
+    triggerSyncStateStore.replaceScheduleIds(
+      linkedSetOf("schedule-enabled", "schedule-disabled", "schedule-removed"),
+    )
+    specStore.upsert(
+      scheduledTaskSpec(
+        sessionId = "session-enabled",
+        scheduleId = "schedule-enabled",
+        updatedAtEpochMs = 4_000L,
+      ),
+    )
+    specStore.upsert(
+      scheduledTaskSpec(
+        sessionId = "session-disabled",
+        scheduleId = "schedule-disabled",
+        updatedAtEpochMs = 3_000L,
+      ).copy(enabled = false, updatedAtEpochMs = 5_000L),
+    )
+
+    resyncEnabledScheduledTasks(
+      specStore = specStore,
+      triggerRegistrar = registrar,
+      triggerSyncStateStore = triggerSyncStateStore,
+    )
+
+    assertEquals(listOf("schedule-disabled", "schedule-removed"), registrar.cancelledScheduleIds)
+    assertEquals(listOf("schedule-enabled"), registrar.syncedScheduleIds)
+    assertEquals(
+      linkedSetOf("schedule-enabled"),
+      triggerSyncStateStore.loadScheduleIds(),
+    )
+  }
+
+  @Test
+  fun resyncEnabledScheduledTasksClearsPersistedIdsWhenNoEnabledSchedulesRemain() {
+    val specStore = InMemoryScheduledTaskSpecStoreFactory().create()
+    val registrar = RecordingScheduledTriggerRegistrar()
+    val triggerSyncStateStore = inMemoryScheduledTaskTriggerSyncStateStoreFactory().create()
+    triggerSyncStateStore.replaceScheduleIds(
+      linkedSetOf("schedule-disabled", "schedule-removed"),
+    )
+    specStore.upsert(
+      scheduledTaskSpec(
+        sessionId = "session-disabled",
+        scheduleId = "schedule-disabled",
+        updatedAtEpochMs = 6_000L,
+      ).copy(enabled = false, updatedAtEpochMs = 7_000L),
+    )
+
+    resyncEnabledScheduledTasks(
+      specStore = specStore,
+      triggerRegistrar = registrar,
+      triggerSyncStateStore = triggerSyncStateStore,
+    )
+
+    assertTrue(registrar.syncedScheduleIds.isEmpty())
+    assertEquals(
+      listOf("schedule-disabled", "schedule-removed"),
+      registrar.cancelledScheduleIds,
+    )
+    assertTrue(triggerSyncStateStore.loadScheduleIds().isEmpty())
+  }
+
+  @Test
+  fun plannedRepairWakeCommandsReturnsOnlyDueEnabledSchedules() {
+    val dueSpec = scheduledTaskSpec(
+      sessionId = "session-due",
+      scheduleId = "schedule-due",
+    )
+    val futureSpec = scheduledTaskSpec(
+      sessionId = "session-future",
+      scheduleId = "schedule-future",
+    ).copy(
+      trigger = ScheduledTrigger.RunAtTimestamp(triggerAtEpochMs = 12_000L),
+      updatedAtEpochMs = 3_000L,
+    )
+
+    val commands = plannedRepairWakeCommands(
+      enabledSpecs = listOf(dueSpec, futureSpec),
+      nowEpochMs = 10_000L,
+      repairReason = ScheduledTaskRepairReasons.BOOT_COMPLETED,
+    )
+
+    assertEquals(1, commands.size)
+    assertEquals("schedule-due", commands.single().scheduleId)
+    assertEquals(ScheduledTaskTriggerReasons.REPAIR, commands.single().triggerReason)
+    assertEquals(
+      scheduledTaskRunId("schedule-due", 9_000L),
+      commands.single().scheduleRunId,
     )
   }
 

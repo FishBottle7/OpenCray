@@ -18,11 +18,17 @@ internal data class RuntimeServiceLifecycleDescriptor(
   )
 }
 
+internal data class RuntimeReplayExecutionContext(
+  val executionId: String? = null,
+  val executionOrdinal: Int? = null,
+  val executionKind: String? = null,
+)
+
 internal data class OpenCrayRuntimeReplayAccess(
-  val approvalRejectionRecorder: (String, String, String, String?, Boolean) -> Unit,
-  val approvalApprovedRecorder: (String, String, String, String?, Boolean) -> Unit,
+  val approvalRejectionRecorder: (String, String, String, String?, Boolean, RuntimeReplayExecutionContext) -> Unit,
+  val approvalApprovedRecorder: (String, String, String, String?, Boolean, RuntimeReplayExecutionContext) -> Unit,
   val subAgentReplayRecorder: (String, OpenCraySubAgentEvent) -> Unit,
-  val runCancellationRecorder: (String, String, String, String?) -> Unit,
+  val runCancellationRecorder: (String, String, String, String?, RuntimeReplayExecutionContext) -> Unit,
   val terminalReplayRepairer: (String, List<AgentRunSnapshot>) -> Unit,
 )
 
@@ -211,6 +217,12 @@ internal interface OpenCrayRuntimeSessionAccess {
 
   fun requestResumeTask(taskId: String): Boolean
 
+  fun requestResumeTask(
+    taskId: String,
+    executionKind: String,
+    taskMetadataUpdates: Map<String, String>,
+  ): Boolean = requestResumeTask(taskId)
+
   fun listRuns(): List<AgentRunSnapshot>
 
   fun findRun(runId: String): AgentRunSnapshot?
@@ -306,6 +318,16 @@ private class AgentSessionHandleRuntimeSessionAccess(
   override fun requestRetry(taskId: String): Boolean = delegate.requestRetry(taskId)
 
   override fun requestResumeTask(taskId: String): Boolean = delegate.requestResumeTask(taskId)
+
+  override fun requestResumeTask(
+    taskId: String,
+    executionKind: String,
+    taskMetadataUpdates: Map<String, String>,
+  ): Boolean = delegate.requestResumeTask(
+    taskId = taskId,
+    executionKind = executionKind,
+    taskMetadataUpdates = taskMetadataUpdates,
+  )
 
   override fun listRuns(): List<AgentRunSnapshot> = delegate.listRuns()
 
@@ -445,6 +467,8 @@ internal data class OpenCrayRuntimeServiceHost(
   val scheduledTaskSpecStore: ScheduledTaskSpecStore = inMemoryScheduledTaskSpecStoreFactory().create(),
   val scheduledTaskRunRecordStore: ScheduledTaskRunRecordStore =
     inMemoryScheduledTaskRunRecordStoreFactory().create(),
+  val scheduledTaskTriggerSyncStateStore: ScheduledTaskTriggerSyncStateStore =
+    inMemoryScheduledTaskTriggerSyncStateStoreFactory().create(),
   val scheduledTriggerRegistrar: ScheduledTriggerRegistrar = NoOpScheduledTriggerRegistrar,
 )
 
@@ -459,6 +483,12 @@ internal object OpenCrayRuntimeServiceHostRegistry {
   private var instance: OpenCrayRuntimeServiceHost? = null
 
   fun peek(): OpenCrayRuntimeServiceHost? = instance
+
+  fun clearForTest() {
+    synchronized(this) {
+      instance = null
+    }
+  }
 
   fun getOrCreate(
     context: Context,
@@ -487,6 +517,9 @@ private fun createOpenCrayRuntimeServiceHost(
   val runtimeAccess = owner.toRuntimeOwnerAccess()
   val scheduledTaskSpecStore = FileBackedScheduledTaskSpecStoreFactory.fromContext(appContext).create()
   val scheduledTaskRunRecordStore = FileBackedScheduledTaskRunRecordStoreFactory.fromContext(appContext).create()
+  val scheduledTaskTriggerSyncStateStore = FileBackedScheduledTaskTriggerSyncStateStoreFactory
+    .fromContext(appContext)
+    .create()
   val scheduledWorkScheduler = WorkManagerScheduledWorkScheduler.fromContext(appContext)
   val scheduledTriggerRegistrar = DefaultScheduledTriggerRegistrar(
     alarmScheduler = AlarmManagerScheduledAlarmScheduler.fromContext(appContext),
@@ -496,7 +529,11 @@ private fun createOpenCrayRuntimeServiceHost(
     chatSessionStore = dependencies.chatSessionStore,
     runtimeAccess = runtimeAccess,
   )
-  scheduledTriggerRegistrar.syncAll(scheduledTaskSpecStore.listEnabled())
+  resyncEnabledScheduledTasks(
+    specStore = scheduledTaskSpecStore,
+    triggerRegistrar = scheduledTriggerRegistrar,
+    triggerSyncStateStore = scheduledTaskTriggerSyncStateStore,
+  )
   val serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
     workSummaryProvider = runtimeAccess.hostAccess::activeWorkSummary,
   )
@@ -531,6 +568,7 @@ private fun createOpenCrayRuntimeServiceHost(
     serviceWorkStateTracker = serviceWorkStateTracker,
     scheduledTaskSpecStore = scheduledTaskSpecStore,
     scheduledTaskRunRecordStore = scheduledTaskRunRecordStore,
+    scheduledTaskTriggerSyncStateStore = scheduledTaskTriggerSyncStateStore,
     scheduledTriggerRegistrar = scheduledTriggerRegistrar,
   )
 }

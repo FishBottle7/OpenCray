@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
@@ -8,12 +9,15 @@ import '../../core/models/opencray_debug_snapshot.dart';
 import '../../core/models/opencray_shell_snapshot.dart';
 import '../../core/copy/opencray_ui_copy.dart';
 import '../../core/design/opencray_tokens.dart';
+import 'notification_settings_models.dart';
 import 'safety_settings_copy.dart';
 import 'safety_settings_models.dart';
 import 'settings_facade.dart';
 import 'settings_models.dart';
+import 'strong_background_settings_models.dart';
 
 part 'agent_settings_pages.dart';
+part 'settings_notification_pages.dart';
 part 'settings_api_pages.dart';
 part 'safety_settings_pages.dart';
 part 'settings_debug_pages.dart';
@@ -124,6 +128,21 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
           snapshot: overview,
           onOpenPage: _openPage,
         );
+      case SettingsPage.notificationsBackground:
+        return _NotificationsBackgroundSettingsPage(
+          key: const ValueKey<String>('settings-notifications-background'),
+          facade: widget.facade,
+          onBack: onBack,
+          backLabel: backLabel,
+          onOpenPage: _openPage,
+        );
+      case SettingsPage.notificationChannels:
+        return _NotificationChannelsSettingsPage(
+          key: const ValueKey<String>('settings-notification-channels'),
+          facade: widget.facade,
+          onBack: onBack,
+          backLabel: backLabel,
+        );
       case SettingsPage.llm:
         return _LlmSettingsPage(
           key: const ValueKey<String>('settings-llm-editor'),
@@ -168,6 +187,21 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
       case SettingsPage.mediaSpeech:
         return _MediaSpeechSettingsPage(
           key: const ValueKey<String>('settings-media-speech-editor'),
+          facade: widget.facade,
+          onBack: onBack,
+          backLabel: backLabel,
+        );
+      case SettingsPage.sandboxProviders:
+        return _SandboxProvidersSettingsPage(
+          key: const ValueKey<String>('settings-sandbox-providers-editor'),
+          facade: widget.facade,
+          onBack: onBack,
+          backLabel: backLabel,
+          onOpenPage: _openPage,
+        );
+      case SettingsPage.sandboxE2b:
+        return _SandboxE2bSettingsPage(
+          key: const ValueKey<String>('settings-sandbox-e2b-editor'),
           facade: widget.facade,
           onBack: onBack,
           backLabel: backLabel,
@@ -250,10 +284,14 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
   }
 
   bool _usesDedicatedPage(SettingsPage page) =>
+      page == SettingsPage.notificationsBackground ||
+      page == SettingsPage.notificationChannels ||
       page == SettingsPage.llm ||
       page == SettingsPage.apiIntegrations ||
       page == SettingsPage.networkSearch ||
       page == SettingsPage.mediaSpeech ||
+      page == SettingsPage.sandboxProviders ||
+      page == SettingsPage.sandboxE2b ||
       page == SettingsPage.personalization ||
       page == SettingsPage.agents ||
       page == SettingsPage.mcp ||
@@ -262,9 +300,14 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
 
   SettingsPage? _nestedBackTargetForPage(SettingsPage page) {
     switch (page) {
+      case SettingsPage.notificationChannels:
+        return SettingsPage.notificationsBackground;
       case SettingsPage.networkSearch:
       case SettingsPage.mediaSpeech:
+      case SettingsPage.sandboxProviders:
         return SettingsPage.apiIntegrations;
+      case SettingsPage.sandboxE2b:
+        return SettingsPage.sandboxProviders;
       default:
         return null;
     }
@@ -272,12 +315,30 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
 
   String _backLabelForPage(SettingsPage page) {
     switch (page) {
+      case SettingsPage.notificationChannels:
+        return _homeEntryTitleFor(SettingsPage.notificationsBackground);
       case SettingsPage.networkSearch:
       case SettingsPage.mediaSpeech:
+      case SettingsPage.sandboxProviders:
         return 'API Integrations';
+      case SettingsPage.sandboxE2b:
+        return 'Sandbox Providers';
       default:
         return _overview?.title ?? '';
     }
+  }
+
+  String _homeEntryTitleFor(SettingsPage page) {
+    final overview = _overview;
+    if (overview == null) {
+      return '';
+    }
+    for (final entry in overview.entries) {
+      if (entry.page == page) {
+        return entry.title;
+      }
+    }
+    return '';
   }
 }
 

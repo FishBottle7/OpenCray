@@ -2,6 +2,7 @@ package com.opencray.app
 
 import android.content.Context
 import java.lang.reflect.Modifier
+import java.nio.file.Path
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -9,6 +10,7 @@ import kotlinx.serialization.json.Json
 internal object P4aPythonRuntimeServiceContract {
   const val GENERATED_SERVICE_ID: String = "opencraypython"
   internal const val SERVICE_ARGUMENT_SCHEMA_VERSION: Int = 1
+  internal const val SERVICE_START_ARGUMENT_FILE_NAME: String = "service-start-argument.json"
   private val serviceArgumentJson: Json = Json {
     prettyPrint = false
     ignoreUnknownKeys = true
@@ -36,7 +38,7 @@ internal object P4aPythonRuntimeServiceContract {
     packageName: String,
     request: P4aPythonRuntime.P4aPythonLaunchRequest,
   ): P4aPythonRuntimeServiceStartSpec {
-    val runtimeRoot = request.requestPath.parent.parent.toString()
+    val serviceArgument = buildServiceArgument(request)
     return P4aPythonRuntimeServiceStartSpec(
       packageName = packageName,
       serviceId = GENERATED_SERVICE_ID,
@@ -44,20 +46,29 @@ internal object P4aPythonRuntimeServiceContract {
         packageName = packageName,
         serviceId = GENERATED_SERVICE_ID,
       ),
-      serviceArgument = serviceArgumentJson.encodeToString(
-        P4aPythonRuntimeServiceArgument(
-          schemaVersion = SERVICE_ARGUMENT_SCHEMA_VERSION,
-          runtimeRoot = runtimeRoot,
-          requestId = request.bridgeRequest.requestId,
-          requestPath = request.requestPath.toString(),
-          resultPath = request.resultPath.toString(),
-          logPath = request.logPath.toString(),
-          pollIntervalMs = request.servicePollIntervalMs,
-          once = request.runOnce,
-        ),
-      ),
+      serviceArgument = serviceArgumentJson.encodeToString(serviceArgument),
     )
   }
+
+  fun buildServiceArgument(
+    request: P4aPythonRuntime.P4aPythonLaunchRequest,
+  ): P4aPythonRuntimeServiceArgument {
+    val runtimeRoot = request.requestPath.parent.parent.toString()
+    return P4aPythonRuntimeServiceArgument(
+      schemaVersion = SERVICE_ARGUMENT_SCHEMA_VERSION,
+      runtimeRoot = runtimeRoot,
+      requestId = request.bridgeRequest.requestId,
+      requestPath = request.requestPath.toString(),
+      resultPath = request.resultPath.toString(),
+      logPath = request.logPath.toString(),
+      pollIntervalMs = request.servicePollIntervalMs,
+      once = request.runOnce,
+    )
+  }
+
+  fun encodeServiceArgument(
+    argument: P4aPythonRuntimeServiceArgument,
+  ): String = serviceArgumentJson.encodeToString(argument)
 
   fun buildControlSpec(
     packageName: String,
@@ -70,6 +81,9 @@ internal object P4aPythonRuntimeServiceContract {
       serviceId = serviceId,
     ),
   )
+
+  fun serviceStartArgumentPath(runtimeRoot: Path): Path =
+    runtimeRoot.resolve("service_state").resolve(SERVICE_START_ARGUMENT_FILE_NAME)
 }
 
 @Serializable

@@ -1,10 +1,10 @@
 # Host Rebuild And Background Task Plan
 
-Last updated: 2026-03-25
+Last updated: 2026-03-27
 
 ## Status
 
-Phase 2 recovery slice partially implemented; in-process detached runtime owner foundation landed, and a first same-process Android service host now bootstraps that owner. Full service ownership semantics are still pending.
+Phase 2 recovery slice partially implemented; in-process detached runtime owner foundation landed, and a first same-process Android service host now bootstraps that owner. Foreground keepalive, notifications, and scheduled wake bridges are in place, but full detached ownership semantics and true managed-process reconnect are still pending.
 
 ## Implementation Progress
 
@@ -21,9 +21,14 @@ Implemented in code:
 - a first general prompt-resume slice now persists `general_resume` checkpoints after committed tool results, and runtime task creation plus app-layer restore can continue from that durable post-tool-result boundary after host rebuild
 - a first recovery planner now projects per-run recovery intent from queue state, checkpoints, journal tail, and managed-process presence into chat run snapshots
 - app-layer restore now preprocesses persisted queue snapshots before `SessionQueue` restore, so approval-boundary recoveries can keep the same run non-terminal instead of falling straight into explicit-retry failure
-- `approved_pending_resume`, `rejected_pending_resume`, and `general_resume` checkpoints restore back to the same queued run when safe, and `waiting_approval` restores back to the same suspended run when safe
+- `approved_pending_resume` and `general_resume` checkpoints restore back to the same queued run when safe, `waiting_approval` restores back to the same suspended run when safe, and `rejected_pending_resume` restores into a stopped run awaiting the next user instruction
+- live managed-process restores now also fall back to that same queued checkpoint-resume path when a safe `general_resume` checkpoint exists, instead of staying in a reconnect state that cannot yet continue end-to-end
+- file-backed managed-process registries can now reattach a live controller across registry or host rebuild while the same app process is still alive, so same-process rebuild no longer always degrades into `PROCESS_INTERRUPTED_ON_RESTORE`
+- provider-native builtin web-search observations now also persist recoverable `general_resume` metadata through their synthetic tool-result events, so a host rebuild after provider-managed search no longer loses that safe continuation boundary
 - session resume no longer spins the executor on approval-waiting runs that have no runnable queue work
 - restore planning now prefers durable journal tail over `lastEvent` summary, so interruption classification is based on the append-only runtime history when available
+- if the explicit `general_resume` checkpoint is missing, restore can now synthesize one from the durable journal tail or persisted `lastEvent` when that safe boundary already contains `OpenCrayPromptResumeMetadata`, which lets the same run continue without falling back to interruption solely because the checkpoint store lost that row
+- if explicit approval checkpoints are missing, restore can now synthesize `waiting_approval`, `approved_pending_resume`, or `rejected_pending_resume` from durable approval-denial result metadata plus the durable tail approval event, which preserves approval-state recovery even when the checkpoint store loses that task row
 - interrupted runs without a recoverable checkpoint now stay explicitly interrupted in planner output instead of hinting that an automatic rerun is expected
 - runtime ownership is now split from the host facade inside the app process: an in-process runtime owner registry keeps `DefaultAgentSessionRuntimeManager`, journal/checkpoint stores, approval registry, and runtime callbacks alive even if `OpenCrayHostRuntime` is rebuilt
 - runtime snapshots now expose both `hostLifecycle` and `runtimeOwnerLifecycle`, so host recreation can be distinguished from runtime-owner continuity in diagnostics and UI projection
@@ -37,7 +42,7 @@ Implemented in code:
 - the runtime service client now performs a real non-blocking `bindService(...)` attempt and keeps its connection state live, instead of inferring binder reachability only from same-process static access
 - host observers now emit fresh shell/runtime snapshots when that client state changes, so a late binder attachment no longer requires rebuilding the host singleton to become visible
 - production `OpenCrayHostRuntime` creation is now projection-only for session bootstrap: active-session `resume()` and terminal replay repair run once from runtime service host initialization instead of from every host-facade constructor
-- runtime service host bootstrap is now explicit on `ensureStarted(...)`; the client fallback snapshot bridge only reads an existing host and no longer hides a `getOrCreate(...)` bootstrap behind the first binder-pending snapshot load
+- caller-side runtime-service entrypoints now only request service start or wake; runtime service host bootstrap happens inside `OpenCrayAgentRuntimeService.onCreate()`, and the client fallback snapshot bridge only reads an existing host instead of hiding a caller-side `getOrCreate(...)` bootstrap behind the first binder-pending snapshot load
 - service-backed chat/skills/settings gateways now keep fallback strictly projection-only for reads; binder-unavailable writes and tool-executing commands fail explicitly instead of silently dropping back to the UI-side facade
 - the shell snapshot surface now goes through a dedicated `OpenCrayShellGateway`, and the Flutter bridge plus loopback HTTP server prefer a binder-backed service shell gateway for shell loads and shell observation
 - chat/runtime commands and snapshots are now fronted by a dedicated `OpenCrayChatRuntimeGateway`, and both the Flutter host bridge and the loopback HTTP server use that gateway for the execution-facing path
@@ -63,7 +68,7 @@ Not yet implemented:
 
 - fully detached runtime ownership via Android service with binder-driven control as the primary execution path
 - additional prompt checkpoint boundaries beyond the current approval and post-tool-result slices
-- managed-process reconnect restore path
+- true cross-process managed-process controller reconnect restore path
 - generalized checkpoint-aware queue restore in `core` beyond the current app-layer approval-boundary rewrite
 
 ## Purpose
@@ -86,8 +91,8 @@ That distinction matters:
 - a normal Flutter page rebuild does not directly recreate the run owner
 - a host/app-process recreation does recreate the run owner
 - when that happens, the core queue now normalizes in-flight work into an explicit interrupted state instead of blindly replaying it
-- approval-boundary restores can already be rewritten at the app layer back into the same `QUEUED` or `SUSPENDED` run when a durable checkpoint proves that recovery is safe
-- non-approval prompt boundaries still fall back to interruption because there is no general checkpoint yet
+- approval-boundary restores can already be rewritten at the app layer into the same safe continuation shape when a durable checkpoint proves that recovery is safe: `QUEUED` after approved/general resume, `SUSPENDED` while waiting for approval, or stopped awaiting a new instruction after rejection
+- post-tool-result `general_resume` checkpoints can already recover the same run when that boundary is durably committed, but checkpoint coverage is still incomplete outside the current safe slices
 
 So the user-visible "run restarted" behavior is real. It is not only a UI illusion.
 
@@ -158,9 +163,11 @@ are normalized into an explicit interrupted failure in `SessionQueue.normalizeAf
 
 Current restore behavior in `app`:
 
-- approval-boundary checkpoints can rewrite a restored run back into the same `QUEUED` run when the user had already approved or rejected and the durable resume payload still exists
+- approval-boundary checkpoints can rewrite a restored run back into the same `QUEUED` run when the user had already approved and the durable resume payload still exists
 - approval-boundary checkpoints can rewrite a restored run back into the same `SUSPENDED` run when the task was waiting for approval
-- managed-process reconnect and general prompt checkpoint recovery are still not implemented
+- rejected approval checkpoints restore into a stopped run that waits for the user's next instruction instead of resuming execution
+- post-tool-result general prompt checkpoint recovery is implemented for the current safe slices, including live-process restores when a durable checkpoint exists
+- true controller-level managed-process reconnect is still not implemented
 
 Today that startup edge is split:
 
@@ -174,33 +181,32 @@ Conclusion:
 - approval-boundary runs can already recover into the same run identity when recovery is proven safe
 - everything outside those safe boundaries still lacks a general checkpoint model, so interruption remains the default fallback
 
-### 4. Expanded run history is still too memory-backed
+### 4. Expanded run history is no longer purely memory-backed, but replay is still layered
 
 Relevant files:
 
 - `app/src/main/kotlin/com/opencray/app/OpenCrayHostRuntime.kt`
 - `app/src/main/kotlin/com/opencray/app/AppAgentSessionTaskRuntimeFactory.kt`
 - `app/src/main/kotlin/com/opencray/app/AgentRunRecordStoreFactory.kt`
+- `app/src/main/kotlin/com/opencray/app/RunEventJournalStoreFactory.kt`
 
 Current snapshot composition:
 
 - live runtime events come from in-memory `runtimeEventsBySession`
-- restore-time replay comes from transcript messages
-- durable run record only stores `lastEvent` and `lastResult`
+- restore-time replay now prefers the append-only run journal when it exists
+- transcript replay remains a compatibility fallback for older runs or gaps that predate the journal
+- durable run record still stores only `lastEvent` and `lastResult`, but that record is no longer the full replay source of truth
 
-Current replay gaps:
+Current remaining replay limits:
 
-- supplements are persisted
-- progress events are persisted
-- successful tool interactions are persisted
-- failed tool results are not durably replayed
-- denied/in-flight transitions are not durably replayed
-- the full append-only event stream is not durably stored
+- journal-backed runs retain far more detail after host recreation than the old transcript-only fallback
+- pre-journal or compatibility-fallback runs can still look sparse after restore
+- the live in-memory tail can still be richer than the last durably committed journal event if the host dies between event emission and later UI observation
 
 Conclusion:
 
-- after host recreation, the expanded run card loses most of the detail needed to explain what happened before the rerun
-- that makes a genuine rerun feel even more abrupt
+- host recreation no longer erases most recorded runtime detail for journal-backed runs
+- continuity issues now come more from incomplete checkpoint coverage and execution ownership boundaries than from total loss of replayable event history
 
 ### 5. Detached execution ownership is only partially implemented
 
@@ -214,7 +220,7 @@ Current state:
 - app bootstrap now ensures `OpenCrayAgentRuntimeService`, and that service bootstraps the local loopback server on `onCreate()`
 - execution now routes through a same-process Android `Service` host boundary rather than directly through a UI-owned host facade
 - execution is still ultimately backed by same-process singletons and executors
-- there is no `WorkManager` or scheduler responsible for delayed/background tasks
+- `AlarmManager` plus `WorkManager` trigger bridges now exist for scheduled wake-up and repair, but interactive active runs still execute under the same-process owner
 
 Conclusion:
 
@@ -241,14 +247,19 @@ What does not fit well:
 - event stream detach/reattach
 - selecting a different screen inside the same app shell
 
-What we cannot currently distinguish with confidence:
+What we can now distinguish better:
 
-- true process recreation
-- host singleton recreation
-- Dart app restart
-- observer reset with incomplete restore
+- host-facade recreation versus runtime-owner continuity
+- binder transport churn versus loopback server churn
+- per-run recovery intent and restore reason when a recovery plan or restore diagnostic exists
 
-The reason is simple: the code does not currently stamp runtime snapshots and submissions with stable lifecycle identifiers.
+What we still cannot distinguish with confidence:
+
+- the exact OS-level reason an app process died
+- every Dart-side observer glitch versus a real host rebuild
+- true controller-level live managed-process reattachment versus checkpoint-based recovery fallback
+
+The reason is now narrower: lifecycle diagnostics exist, but there is still no single durable controller/process identity spanning every layer and restart cause.
 
 ## Root Problem Statement
 

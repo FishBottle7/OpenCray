@@ -1,3 +1,4 @@
+import 'notification_settings_models.dart';
 import 'settings_models.dart';
 import 'safety_settings_models.dart';
 import 'strong_background_settings_models.dart';
@@ -8,6 +9,12 @@ abstract interface class SettingsFacade {
   Stream<SettingsOverviewSnapshot> watchOverview();
 
   Future<SettingsDetailSnapshot> loadDetail(SettingsPage page);
+
+  Future<NotificationSettingsSnapshot> loadNotificationSettings();
+
+  Future<NotificationSettingsSnapshot> saveNotificationSettings(
+    NotificationSettingsSnapshot snapshot,
+  );
 
   Future<StrongBackgroundSnapshot> loadStrongBackgroundSnapshot();
 
@@ -25,6 +32,12 @@ abstract interface class SettingsFacade {
 
   Future<MediaSpeechConfigSnapshot> saveMediaSpeechConfig(
     MediaSpeechConfigSnapshot snapshot,
+  );
+
+  Future<SandboxSettingsSnapshot> loadSandboxSettings();
+
+  Future<SandboxSettingsSnapshot> saveSandboxSettings(
+    SandboxSettingsSnapshot snapshot,
   );
 
   Future<LlmConfigSnapshot> loadLlmConfig();

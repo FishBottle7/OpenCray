@@ -10,7 +10,9 @@ import '../models/opencray_llm_validation.dart';
 import '../models/opencray_media_speech_config.dart';
 import '../models/opencray_mcp_settings.dart';
 import '../models/opencray_network_search_config.dart';
+import '../models/opencray_notification_settings.dart';
 import '../models/opencray_personalization_config.dart';
+import '../models/opencray_sandbox_settings.dart';
 import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
@@ -43,6 +45,11 @@ abstract interface class OpenCrayHostBridge {
   Future<void> openWorkspaceEntry(String relativePath);
 
   Future<void> openExternalUri(String uri);
+
+  Future<void> copyRichTextToClipboard({
+    required String plainText,
+    String? htmlText,
+  });
 
   Future<OpenCrayFilesSnapshot> createWorkspaceFolder({
     required String parentRelativePath,
@@ -84,6 +91,12 @@ abstract interface class OpenCrayHostBridge {
 
   Future<OpenCraySettingsDetailSnapshot> loadSettingsDetail(String routeId);
 
+  Future<OpenCrayNotificationSettingsSnapshot> loadNotificationSettings();
+
+  Future<OpenCrayNotificationSettingsSnapshot> saveNotificationSettings(
+    OpenCrayNotificationSettingsSnapshot snapshot,
+  );
+
   Future<OpenCrayStrongBackgroundSnapshot> loadStrongBackgroundSnapshot();
 
   Future<OpenCrayStrongBackgroundActionResult> performStrongBackgroundAction(
@@ -100,6 +113,12 @@ abstract interface class OpenCrayHostBridge {
 
   Future<OpenCrayMediaSpeechConfigSnapshot> saveMediaSpeechConfig(
     OpenCrayMediaSpeechConfigSnapshot snapshot,
+  );
+
+  Future<OpenCraySandboxSettingsSnapshot> loadSandboxSettings();
+
+  Future<OpenCraySandboxSettingsSnapshot> saveSandboxSettings(
+    OpenCraySandboxSettingsSnapshot snapshot,
   );
 
   Future<OpenCrayLlmConfigSnapshot> loadLlmConfig();
@@ -193,7 +212,10 @@ abstract interface class OpenCrayHostBridge {
     bool memoryToolsEnabled = true,
   });
 
-  Future<OpenCraySkillsSnapshot> loadSkillsSnapshot({String query = ''});
+  Future<OpenCraySkillsSnapshot> loadSkillsSnapshot({
+    String query = '',
+    int? suggestedLimit,
+  });
 
   Stream<OpenCraySkillsSnapshot> watchSkillsSnapshot();
 
@@ -226,6 +248,11 @@ abstract interface class OpenCrayHostBridge {
   Future<OpenCraySkillInstructionsSnapshot?> loadSkillInstructions(
     String skillId,
   );
+
+  Future<OpenCraySkillInstructionsSnapshot?> loadSuggestedSkillInstructions(
+    String sourceRef, {
+    String selectedSkillName = '',
+  });
 
   Future<OpenCrayChatSnapshot> loadChatSnapshot();
 
@@ -299,7 +326,11 @@ abstract interface class OpenCrayHostBridge {
 
   Future<void> approveChatApproval(String approvalId);
 
+  Future<void> approveChatApprovalForSession(String approvalId);
+
   Future<void> rejectChatApproval(String approvalId);
+
+  Future<void> interruptChatRun(String runIdOrTaskId);
 
   Future<void> retryChatRun(String runIdOrTaskId);
 }

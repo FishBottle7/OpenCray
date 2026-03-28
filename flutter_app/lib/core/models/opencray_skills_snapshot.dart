@@ -3,11 +3,13 @@ class OpenCraySkillsSnapshot {
     required this.installedSkills,
     required this.installSources,
     required this.suggestedSkills,
+    this.suggestedSkillsMayHaveMore = false,
   });
 
   final List<OpenCrayInstalledSkillSnapshot> installedSkills;
   final List<OpenCraySkillInstallSourceSnapshot> installSources;
   final List<OpenCraySuggestedSkillSnapshot> suggestedSkills;
+  final bool suggestedSkillsMayHaveMore;
 
   factory OpenCraySkillsSnapshot.fromMap(Map<Object?, Object?> payload) {
     return OpenCraySkillsSnapshot(
@@ -23,6 +25,8 @@ class OpenCraySkillsSnapshot {
           .map(_requireMap)
           .map(OpenCraySuggestedSkillSnapshot.fromMap)
           .toList(growable: false),
+      suggestedSkillsMayHaveMore:
+          payload['suggestedSkillsMayHaveMore'] as bool? ?? false,
     );
   }
 }
@@ -96,6 +100,8 @@ class OpenCraySuggestedSkillSnapshot {
     required this.description,
     required this.sourceRef,
     required this.sourceLabel,
+    this.installs,
+    this.detailUrl = '',
   });
 
   final String id;
@@ -103,10 +109,13 @@ class OpenCraySuggestedSkillSnapshot {
   final String description;
   final String sourceRef;
   final String sourceLabel;
+  final int? installs;
+  final String detailUrl;
 
   factory OpenCraySuggestedSkillSnapshot.fromMap(
     Map<Object?, Object?> payload,
   ) {
+    final installsValue = payload['installs'] as num?;
     return OpenCraySuggestedSkillSnapshot(
       id: payload['id'] as String? ?? '',
       name: payload['name'] as String? ?? '',
@@ -117,6 +126,8 @@ class OpenCraySuggestedSkillSnapshot {
           payload['id'] as String? ??
           '',
       sourceLabel: payload['sourceLabel'] as String? ?? '',
+      installs: installsValue?.toInt(),
+      detailUrl: payload['detailUrl'] as String? ?? '',
     );
   }
 }

@@ -39,6 +39,7 @@ internal class OpenCrayAgentRuntimeService : Service() {
   private val runtimeNotificationController: RuntimeNotificationCoordinator by lazy(
     LazyThreadSafetyMode.SYNCHRONIZED,
   ) {
+    val notificationSettingsStore = RuntimeNotificationSettingsStore.fromContext(applicationContext)
     RuntimeNotificationCoordinator(
       appContext = applicationContext,
       localizedContext = serviceHost.dependencies.localizedContext,
@@ -46,6 +47,7 @@ internal class OpenCrayAgentRuntimeService : Service() {
       hostAccess = serviceHost.runtimeAccess.hostAccess,
       scheduledTaskSpecStore = serviceHost.scheduledTaskSpecStore,
       scheduledTaskRunRecordStore = serviceHost.scheduledTaskRunRecordStore,
+      notificationSettingsProvider = notificationSettingsStore::load,
     )
   }
   private var serviceWorkStateObservationDisposer: (() -> Unit)? = null
@@ -179,10 +181,6 @@ internal class OpenCrayAgentRuntimeService : Service() {
 
     fun ensureStarted(context: Context) {
       val appContext = context.applicationContext
-      OpenCrayRuntimeServiceHostRegistry.getOrCreate(
-        context = appContext,
-        serviceLifecycleFactory = { RuntimeServiceLifecycleDescriptor() },
-      )
       runCatching {
         appContext.startService(
           Intent(appContext, OpenCrayAgentRuntimeService::class.java),
@@ -195,10 +193,6 @@ internal class OpenCrayAgentRuntimeService : Service() {
       command: ScheduledTaskWakeCommand,
     ) {
       val appContext = context.applicationContext
-      OpenCrayRuntimeServiceHostRegistry.getOrCreate(
-        context = appContext,
-        serviceLifecycleFactory = { RuntimeServiceLifecycleDescriptor() },
-      )
       runCatching {
         ContextCompat.startForegroundService(
           appContext,
@@ -210,18 +204,15 @@ internal class OpenCrayAgentRuntimeService : Service() {
     fun repairSchedules(
       context: Context,
       repairReason: String,
-    ) {
+    ): Boolean {
       val appContext = context.applicationContext
-      OpenCrayRuntimeServiceHostRegistry.getOrCreate(
-        context = appContext,
-        serviceLifecycleFactory = { RuntimeServiceLifecycleDescriptor() },
-      )
-      runCatching {
+      return runCatching {
         ContextCompat.startForegroundService(
           appContext,
           scheduledTaskRepairServiceIntent(appContext, repairReason),
         )
-      }
+        true
+      }.getOrDefault(false)
     }
 
     fun ensureClient(context: Context): OpenCrayRuntimeServiceClient {

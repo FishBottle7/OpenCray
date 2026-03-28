@@ -18,6 +18,9 @@ import com.opencray.app.facade.media.MediaSpeechConfigSnapshot
 import com.opencray.app.facade.media.MediaSpeechSettingsFacade
 import com.opencray.app.facade.media.OnDeviceSttSnapshot
 import com.opencray.app.facade.media.VoiceProviderSnapshot
+import com.opencray.app.facade.notifications.LocalNotificationSettingsFacade
+import com.opencray.app.facade.notifications.NotificationSettingsFacade
+import com.opencray.app.facade.notifications.NotificationSettingsSnapshot
 import com.opencray.app.facade.personalization.LocalPersonalizationFacade
 import com.opencray.app.facade.personalization.PersonalizationConfigSnapshot
 import com.opencray.app.facade.personalization.PersonalizationFacade
@@ -101,13 +104,16 @@ internal class ProjectionOnlyOpenCrayShellGateway(
 
 internal class ProjectionOnlyOpenCraySettingsGateway(
   private val settingsFacade: SettingsFacade,
+  private val notificationSettingsFacade: NotificationSettingsFacade,
   private val networkSearchConfigFacade: NetworkSearchConfigFacade,
   private val mediaSpeechSettingsFacade: MediaSpeechSettingsFacade,
+  private val sandboxSettingsRepository: SandboxSettingsRepository,
   private val llmConfigFacade: LlmConfigFacade,
   private val personalizationFacade: PersonalizationFacade,
   private val mcpSettingsFacade: McpSettingsFacade,
   private val safetySettingsFacade: SafetySettingsFacade,
   private val strongBackgroundSettingsAccess: StrongBackgroundSettingsAccess,
+  private val localeTagProvider: () -> String,
   private val connectionStateProvider: () -> RuntimeServiceConnectionState,
   private val mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
 ) : OpenCraySettingsGateway {
@@ -125,6 +131,12 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
     val routeId = SettingsRouteId.fromWireValue(routeIdRaw) ?: SettingsRouteId.WORKSPACE_ACCESS
     return settingsFacade.loadDetail(routeId).toGatewayMap()
   }
+
+  override fun loadNotificationSettings(): Map<String, Any?> =
+    notificationSettingsFacade.load().toGatewayMap()
+
+  override fun saveNotificationSettings(payload: Map<String, Any?>): Map<String, Any?> =
+    throw writeUnavailable("saveNotificationSettings")
 
   override fun loadStrongBackgroundSnapshot(): Map<String, Any?> = buildMap {
     putAll(strongBackgroundSettingsAccess.loadSnapshot())
@@ -145,6 +157,12 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
 
   override fun saveMediaSpeechConfig(payload: Map<String, Any?>): Map<String, Any?> =
     throw writeUnavailable("saveMediaSpeechConfig")
+
+  override fun loadSandboxSettings(): Map<String, Any?> =
+    sandboxSettingsRepository.load().toGatewayMap(localeTagProvider())
+
+  override fun saveSandboxSettings(payload: Map<String, Any?>): Map<String, Any?> =
+    throw writeUnavailable("saveSandboxSettings")
 
   override fun loadLlmConfig(): Map<String, Any?> =
     llmConfigFacade.load().toGatewayMap()
@@ -248,24 +266,18 @@ internal class ProjectionOnlyOpenCraySkillsGateway(
   private val connectionStateProvider: () -> RuntimeServiceConnectionState,
   private val mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
 ) : OpenCraySkillsGateway {
-  override fun loadSkillsSnapshot(query: String): Map<String, Any?> {
-    val baseSnapshot = skillsFacade.loadSnapshot(query = "")
-    val normalizedQuery = query.trim()
-    if (normalizedQuery.isEmpty()) {
-      return baseSnapshot.toGatewayMap()
-    }
-    return baseSnapshot.copy(
-      suggestedSkills = baseSnapshot.suggestedSkills.filter { suggestion ->
-        suggestion.name.contains(normalizedQuery, ignoreCase = true) ||
-          suggestion.description.contains(normalizedQuery, ignoreCase = true)
-      },
-    ).toGatewayMap()
-  }
+  override fun loadSkillsSnapshot(
+    query: String,
+    suggestedLimit: Int,
+  ): Map<String, Any?> = skillsFacade.loadSnapshot(
+    query = query,
+    suggestedLimit = suggestedLimit,
+  ).toGatewayMap()
 
   override fun observeSkills(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeProjectionWithInitial(
       mainThreadPoster = mainThreadPoster,
-      payloadProvider = { loadSkillsSnapshot(query = "") },
+      payloadProvider = { loadSkillsSnapshot(query = "", suggestedLimit = 0) },
       listener = listener,
     )
 
@@ -308,6 +320,21 @@ internal class ProjectionOnlyOpenCraySkillsGateway(
     return instructions.toGatewayMap()
   }
 
+  override fun loadSuggestedSkillInstructions(
+    sourceRef: String,
+    selectedSkillName: String,
+  ): Map<String, Any?> {
+    val instructions = requireNotNull(
+      skillsFacade.loadSuggestedInstructions(
+        sourceRef = sourceRef,
+        selectedSkillName = selectedSkillName,
+      ),
+    ) {
+      "Skill source '$sourceRef' is unavailable."
+    }
+    return instructions.toGatewayMap()
+  }
+
   override fun activateSkillsInstallSource(sourceId: String): String =
     throw writeUnavailable("activateSkillsInstallSource")
 
@@ -346,13 +373,16 @@ internal fun projectionOnlyOpenCraySettingsGateway(
   val appContext = context.applicationContext
   return ProjectionOnlyOpenCraySettingsGateway(
     settingsFacade = LocalSettingsFacade.fromContext(appContext),
+    notificationSettingsFacade = LocalNotificationSettingsFacade.fromContext(appContext),
     networkSearchConfigFacade = LocalNetworkSearchConfigFacade.fromContext(appContext),
     mediaSpeechSettingsFacade = LocalMediaSpeechSettingsFacade.fromContext(appContext),
+    sandboxSettingsRepository = SandboxSettingsRepository.fromContext(appContext),
     llmConfigFacade = LocalLlmConfigFacade.fromContext(appContext),
     personalizationFacade = LocalPersonalizationFacade.fromContext(appContext),
     mcpSettingsFacade = LocalMcpSettingsFacade.fromContext(appContext),
     safetySettingsFacade = LocalSafetySettingsFacade.fromContext(appContext),
     strongBackgroundSettingsAccess = AndroidStrongBackgroundSettingsAccess.fromContext(appContext),
+    localeTagProvider = { LocaleSettingsStore.fromContext(appContext).loadLanguage().tag },
     connectionStateProvider = connectionStateProvider,
     mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
   )
@@ -448,6 +478,22 @@ private fun SettingsDetailSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "title" to title,
   "subtitle" to subtitle,
   "sections" to sections.map { section -> section.toGatewayMap() },
+)
+
+private fun NotificationSettingsSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
+  "masterEnabled" to masterEnabled,
+  "defaultDeliveryModeId" to defaultDeliveryMode.wireValue,
+  "quietHoursEnabled" to quietHoursEnabled,
+  "quietHoursStartMinutes" to quietHoursStartMinutes,
+  "quietHoursEndMinutes" to quietHoursEndMinutes,
+  "approvalRequestsEnabled" to approvalRequestsEnabled,
+  "approvalReminderEnabled" to approvalReminderEnabled,
+  "taskFinishedEnabled" to taskFinishedEnabled,
+  "taskFailedEnabled" to taskFailedEnabled,
+  "newUserMessageEnabled" to newUserMessageEnabled,
+  "scheduledWakeEnabled" to scheduledWakeEnabled,
+  "backgroundTaskPausedEnabled" to backgroundTaskPausedEnabled,
+  "serviceRecoveredEnabled" to serviceRecoveredEnabled,
 )
 
 private fun NetworkSearchConfigSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
@@ -667,6 +713,7 @@ private fun SkillsSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "installedSkills" to installedSkills.map { skill -> skill.toGatewayMap() },
   "installSources" to installSources.map { source -> source.toGatewayMap() },
   "suggestedSkills" to suggestedSkills.map { suggestion -> suggestion.toGatewayMap() },
+  "suggestedSkillsMayHaveMore" to suggestedSkillsMayHaveMore,
 )
 
 private fun InstalledSkillSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
@@ -692,6 +739,8 @@ private fun SuggestedSkillSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "description" to description,
   "sourceRef" to sourceRef,
   "sourceLabel" to sourceLabel,
+  "installs" to installs,
+  "detailUrl" to detailUrl,
 )
 
 private fun SkillInstructionsSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(

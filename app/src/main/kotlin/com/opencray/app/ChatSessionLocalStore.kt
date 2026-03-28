@@ -32,10 +32,33 @@ internal open class ChatSessionLocalStore(
     )
   }
 
-  fun createSession(): ChatSessionsState = createSessionInternal(loadWorkspaceOrCreate())
+  fun createSession(): ChatSessionsState {
+    val workspace = loadWorkspaceOrCreate()
+    val reusableSession = reusableEmptySessionFrom(workspace)
+    return if (reusableSession == null) {
+      createSessionInternal(workspace)
+    } else {
+      reuseEmptySessionInternal(
+        workspace = workspace,
+        session = reusableSession,
+      )
+    }
+  }
 
   fun loadSession(sessionId: String): ChatTranscriptSessionEntry? =
     loadWorkspaceOrCreate().sessions.firstOrNull { session -> session.sessionId == sessionId }
+
+  internal fun isReusableEmptySession(sessionId: String): Boolean {
+    if (sessionId.isBlank()) {
+      return false
+    }
+    val workspace = loadWorkspaceOrCreate()
+    val session = workspace.sessions.firstOrNull { entry -> entry.sessionId == sessionId } ?: return false
+    return isReusableEmptySession(
+      workspace = workspace,
+      session = session,
+    )
+  }
 
   fun selectSession(sessionId: String): ChatSessionsState {
     val workspace = loadWorkspaceOrCreate()
@@ -118,7 +141,8 @@ internal open class ChatSessionLocalStore(
       extensions = workspace.extensions -
         pendingUserInputExtensionKey(sessionId) -
         todoExtensionKey(sessionId) -
-        archivedTodoExtensionKey(sessionId),
+        archivedTodoExtensionKey(sessionId) -
+        nativeWebSearchApprovalExtensionKey(sessionId),
       recordVersion = workspace.recordVersion + 1,
       updatedAtEpochMs = now,
     )
@@ -514,6 +538,43 @@ internal open class ChatSessionLocalStore(
     }
   }
 
+  fun isNativeWebSearchSessionApproved(sessionId: String): Boolean {
+    if (sessionId.isBlank()) {
+      return false
+    }
+    val workspace = loadWorkspaceOrCreate()
+    return nativeWebSearchApprovalFrom(workspace = workspace, sessionId = sessionId)
+  }
+
+  fun setNativeWebSearchSessionApproved(
+    sessionId: String,
+    approved: Boolean,
+  ) {
+    if (sessionId.isBlank()) {
+      return
+    }
+    val workspace = loadWorkspaceOrCreate()
+    if (workspace.sessions.none { session -> session.sessionId == sessionId }) {
+      return
+    }
+    val key = nativeWebSearchApprovalExtensionKey(sessionId)
+    val updatedExtensions = if (approved) {
+      workspace.extensions + (key to "true")
+    } else {
+      workspace.extensions - key
+    }
+    if (updatedExtensions == workspace.extensions) {
+      return
+    }
+    workspaceStore.save(
+      workspace.copy(
+        extensions = updatedExtensions,
+        recordVersion = workspace.recordVersion + 1,
+        updatedAtEpochMs = nowEpochMs(),
+      ),
+    )
+  }
+
   fun replaceTodos(
     sessionId: String,
     todos: List<AgentTodoEntry>,
@@ -812,6 +873,29 @@ internal open class ChatSessionLocalStore(
     )
   }
 
+  private fun reuseEmptySessionInternal(
+    workspace: ChatWorkspaceRecord,
+    session: ChatTranscriptSessionEntry,
+  ): ChatSessionsState {
+    val now = nowEpochMs()
+    val reusedSession = session.copy(
+      title = DEFAULT_SESSION_TITLE,
+      createdAtEpochMs = now,
+      updatedAtEpochMs = now,
+    )
+    val updatedWorkspace = replaceSession(
+      workspace = workspace,
+      updatedSession = reusedSession,
+      activeSessionId = reusedSession.sessionId,
+      updatedAtEpochMs = now,
+    )
+    workspaceStore.save(updatedWorkspace)
+    return ChatSessionsState(
+      sessions = sessionsForUi(updatedWorkspace),
+      activeSession = reusedSession,
+    )
+  }
+
   private fun loadWorkspaceOrCreate(): ChatWorkspaceRecord = workspaceStore.load() ?: createWorkspaceWithSeedSession()
 
   private fun createWorkspaceWithSeedSession(): ChatWorkspaceRecord {
@@ -838,6 +922,45 @@ internal open class ChatSessionLocalStore(
   private fun activeSessionFrom(workspace: ChatWorkspaceRecord): ChatTranscriptSessionEntry? =
     workspace.activeSessionId?.let { activeId -> workspace.sessions.firstOrNull { it.sessionId == activeId } }
       ?: workspace.sessions.maxByOrNull { it.updatedAtEpochMs }
+
+  private fun reusableEmptySessionFrom(workspace: ChatWorkspaceRecord): ChatTranscriptSessionEntry? =
+    workspace.sessions
+      .sortedByDescending(ChatTranscriptSessionEntry::updatedAtEpochMs)
+      .firstOrNull { session ->
+        isReusableEmptySession(
+          workspace = workspace,
+          session = session,
+        )
+      }
+
+  private fun isReusableEmptySession(
+    workspace: ChatWorkspaceRecord,
+    session: ChatTranscriptSessionEntry,
+  ): Boolean {
+    if (session.title != DEFAULT_SESSION_TITLE) {
+      return false
+    }
+    if (pendingUserInputsFrom(workspace = workspace, sessionId = session.sessionId).isNotEmpty()) {
+      return false
+    }
+    if (todoSnapshotFrom(workspace = workspace, sessionId = session.sessionId).state != ChatSessionTodoState.EMPTY) {
+      return false
+    }
+    if (nativeWebSearchApprovalFrom(workspace = workspace, sessionId = session.sessionId)) {
+      return false
+    }
+    if (session.messages.size != 1) {
+      return false
+    }
+    return isDefaultSeedSystemMessage(session.messages.single())
+  }
+
+  private fun isDefaultSeedSystemMessage(message: ChatTranscriptMessageEntry): Boolean =
+    message.role == ChatTranscriptRole.SYSTEM &&
+      message.promptTemplateRefId == DEFAULT_SYSTEM_TEMPLATE_ID &&
+      message.text.isNullOrBlank() &&
+      message.commandLabel.isNullOrBlank() &&
+      message.attachments.isEmpty()
 
   private fun preservedActiveSessionId(
     workspace: ChatWorkspaceRecord,
@@ -878,6 +1001,13 @@ internal open class ChatSessionLocalStore(
     sessionId: String,
   ): PersistedArchivedTodoSnapshot? = workspace.extensions[archivedTodoExtensionKey(sessionId)]
     ?.let(::decodePersistedArchivedTodos)
+
+  private fun nativeWebSearchApprovalFrom(
+    workspace: ChatWorkspaceRecord,
+    sessionId: String,
+  ): Boolean = workspace.extensions[nativeWebSearchApprovalExtensionKey(sessionId)]
+    ?.trim()
+    ?.lowercase() == "true"
 
   private fun todoSnapshotFrom(
     workspace: ChatWorkspaceRecord,
@@ -964,6 +1094,8 @@ internal open class ChatSessionLocalStore(
 
   private fun todoExtensionKey(sessionId: String): String = "todos.$sessionId"
   private fun archivedTodoExtensionKey(sessionId: String): String = "todosArchived.$sessionId"
+  private fun nativeWebSearchApprovalExtensionKey(sessionId: String): String =
+    "nativeWebSearchApproval.$sessionId"
 
   private fun copySessionTodoExtension(
     extensions: Map<String, String>,

@@ -291,6 +291,10 @@ internal class OpenCrayLocalRuntimeServer(
       "GET" to "/v1/settings_detail" -> settingsGateway.loadSettingsDetail(
         routeIdRaw = request.queryParameter("routeId"),
       )
+      "GET" to "/v1/notification_settings" -> settingsGateway.loadNotificationSettings()
+      "POST" to "/v1/save_notification_settings" -> settingsGateway.saveNotificationSettings(
+        payload = jsonObjectToMap(body),
+      )
       "GET" to "/v1/strong_background_snapshot" -> settingsGateway.loadStrongBackgroundSnapshot()
       "POST" to "/v1/perform_strong_background_action" -> settingsGateway.performStrongBackgroundAction(
         actionId = body.optString("actionId"),
@@ -301,6 +305,10 @@ internal class OpenCrayLocalRuntimeServer(
       )
       "GET" to "/v1/media_speech_config" -> settingsGateway.loadMediaSpeechConfig()
       "POST" to "/v1/save_media_speech_config" -> settingsGateway.saveMediaSpeechConfig(
+        payload = jsonObjectToMap(body),
+      )
+      "GET" to "/v1/sandbox_settings" -> settingsGateway.loadSandboxSettings()
+      "POST" to "/v1/save_sandbox_settings" -> settingsGateway.saveSandboxSettings(
         payload = jsonObjectToMap(body),
       )
       "GET" to "/v1/llm_config" -> settingsGateway.loadLlmConfig()
@@ -388,6 +396,7 @@ internal class OpenCrayLocalRuntimeServer(
       )
       "GET" to "/v1/skills_snapshot" -> skillsGateway.loadSkillsSnapshot(
         query = request.queryParameter("query"),
+        suggestedLimit = request.queryParameter("suggestedLimit").toIntOrNull() ?: 0,
       )
       "POST" to "/v1/set_skill_enabled" -> {
         skillsGateway.setSkillEnabled(
@@ -422,6 +431,10 @@ internal class OpenCrayLocalRuntimeServer(
       )
       "GET" to "/v1/skill_instructions" -> skillsGateway.loadSkillInstructions(
         skillId = request.queryParameter("skillId"),
+      )
+      "GET" to "/v1/suggested_skill_instructions" -> skillsGateway.loadSuggestedSkillInstructions(
+        sourceRef = request.queryParameter("sourceRef"),
+        selectedSkillName = request.queryParameter("selectedSkillName"),
       )
       "GET" to "/v1/chat_snapshot" -> chatRuntimeGateway.loadChatSnapshot()
       "GET" to "/v1/chat_runtime_snapshot" -> chatRuntimeGateway.loadChatRuntimeSnapshot()
@@ -496,14 +509,20 @@ internal class OpenCrayLocalRuntimeServer(
         )
         null
       }
+      "POST" to "/v1/approve_chat_approval_for_session" -> {
+        chatRuntimeGateway.approveChatApprovalForSession(
+          body.optString("runId").takeIf(String::isNotBlank) ?: body.optString("taskId"),
+        )
+        null
+      }
       "POST" to "/v1/reject_chat_approval" -> {
         chatRuntimeGateway.rejectChatApproval(
           body.optString("runId").takeIf(String::isNotBlank) ?: body.optString("taskId"),
         )
         null
       }
-      "POST" to "/v1/cancel_chat_run" -> {
-        chatRuntimeGateway.cancelChatRun(
+      "POST" to "/v1/interrupt_chat_run" -> {
+        chatRuntimeGateway.interruptChatRun(
           body.optString("runId").takeIf(String::isNotBlank) ?: body.optString("taskId"),
         )
         null

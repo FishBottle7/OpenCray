@@ -216,6 +216,8 @@ class SessionQueueOrderingTest {
     assertEquals(ExecutionStatus.DENIED, firstResults.single().status)
     assertEquals(QueueTaskLifecycleState.SUSPENDED, suspendedSnapshot.lifecycleState)
     assertEquals(1, suspendedSnapshot.attempt)
+    assertEquals(1, suspendedSnapshot.executionOrdinal)
+    assertEquals(EXECUTION_KIND_INITIAL, suspendedSnapshot.executionKind)
 
     assertTrue(queue.requestResumeTask("task-approval"))
 
@@ -224,7 +226,9 @@ class SessionQueueOrderingTest {
 
     assertEquals(ExecutionStatus.SUCCESS, resumedResults.single().status)
     assertEquals(QueueTaskLifecycleState.COMPLETED, completedSnapshot.lifecycleState)
-    assertEquals(2, completedSnapshot.attempt)
+    assertEquals(1, completedSnapshot.attempt)
+    assertEquals(2, completedSnapshot.executionOrdinal)
+    assertEquals(EXECUTION_KIND_APPROVAL_RESUME, completedSnapshot.executionKind)
 
     val approvalTransitions = store.history
       .mapNotNull { snapshot ->
@@ -402,6 +406,57 @@ class SessionQueueOrderingTest {
     assertEquals(
       QueueTaskLifecycleState.COMPLETED,
       queue.snapshot().tasks.single().lifecycleState,
+    )
+  }
+
+  @Test
+  fun restorePreservesExistingRecoveryMetadataForNonInterruptedTask() {
+    val queue = SessionQueue(
+      sessionId = "session-restore-preserve",
+      agentId = "agent-restore-preserve",
+      runtime = SessionTaskRuntime { task, _ ->
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.SUCCESS,
+          startedAtEpochMs = 120_000L,
+          finishedAtEpochMs = 120_001L,
+        )
+      },
+      snapshotStore = InMemorySessionQueueSnapshotStore(
+        SessionQueueSnapshot(
+          sessionId = "session-restore-preserve",
+          agentId = "agent-restore-preserve",
+          lifecycleState = SessionLifecycleState.RUNNING,
+          nextEnqueueOrder = 2,
+          tasks = listOf(
+            SessionQueueTaskSnapshot(
+              enqueueOrder = 1,
+              task = task(id = "task-restore-preserve", createdAt = 6_000L).copy(
+                metadata = mapOf(
+                  METADATA_QUEUE_RESTORE_EPOCH_MS to "5000",
+                  METADATA_PREVIOUS_LIFECYCLE_STATE to "running",
+                  METADATA_RECOVERY_REASON to "live_managed_process_detected",
+                ),
+              ),
+              lifecycleState = QueueTaskLifecycleState.SUSPENDED,
+              attempt = 1,
+            ),
+          ),
+          updatedAtEpochMs = 6_100L,
+        ),
+      ),
+      clock = IncrementingClock(start = 100_000L),
+      config = SessionQueueConfig(maxAttempts = 3),
+    )
+
+    val restoredTask = queue.snapshot().tasks.single()
+
+    assertEquals(QueueTaskLifecycleState.SUSPENDED, restoredTask.lifecycleState)
+    assertEquals("5000", restoredTask.task.metadata[METADATA_QUEUE_RESTORE_EPOCH_MS])
+    assertEquals("running", restoredTask.task.metadata[METADATA_PREVIOUS_LIFECYCLE_STATE])
+    assertEquals(
+      "live_managed_process_detected",
+      restoredTask.task.metadata[METADATA_RECOVERY_REASON],
     )
   }
 

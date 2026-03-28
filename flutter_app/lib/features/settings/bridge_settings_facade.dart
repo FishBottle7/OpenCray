@@ -4,10 +4,13 @@ import '../../core/models/opencray_llm_validation.dart';
 import '../../core/models/opencray_media_speech_config.dart';
 import '../../core/models/opencray_mcp_settings.dart';
 import '../../core/models/opencray_network_search_config.dart';
+import '../../core/models/opencray_notification_settings.dart';
 import '../../core/models/opencray_personalization_config.dart';
+import '../../core/models/opencray_sandbox_settings.dart';
 import '../../core/models/opencray_safety_settings.dart';
 import '../../core/models/opencray_settings_snapshot.dart';
 import '../../core/models/opencray_strong_background.dart';
+import 'notification_settings_models.dart';
 import 'safety_settings_models.dart';
 import 'settings_facade.dart';
 import 'settings_models.dart';
@@ -30,6 +33,33 @@ class BridgeSettingsFacade implements SettingsFacade {
   @override
   Future<SettingsDetailSnapshot> loadDetail(SettingsPage page) async =>
       _mapDetail(await _bridge.loadSettingsDetail(page.routeId));
+
+  @override
+  Future<NotificationSettingsSnapshot> loadNotificationSettings() async =>
+      _mapNotificationSettings(await _bridge.loadNotificationSettings());
+
+  @override
+  Future<NotificationSettingsSnapshot> saveNotificationSettings(
+    NotificationSettingsSnapshot snapshot,
+  ) async => _mapNotificationSettings(
+    await _bridge.saveNotificationSettings(
+      OpenCrayNotificationSettingsSnapshot(
+        masterEnabled: snapshot.masterEnabled,
+        defaultDeliveryModeId: snapshot.defaultDeliveryMode.id,
+        quietHoursEnabled: snapshot.quietHoursEnabled,
+        quietHoursStartMinutes: snapshot.quietHoursStartMinutes,
+        quietHoursEndMinutes: snapshot.quietHoursEndMinutes,
+        approvalRequestsEnabled: snapshot.approvalRequestsEnabled,
+        approvalReminderEnabled: snapshot.approvalReminderEnabled,
+        taskFinishedEnabled: snapshot.taskFinishedEnabled,
+        taskFailedEnabled: snapshot.taskFailedEnabled,
+        newUserMessageEnabled: snapshot.newUserMessageEnabled,
+        scheduledWakeEnabled: snapshot.scheduledWakeEnabled,
+        backgroundTaskPausedEnabled: snapshot.backgroundTaskPausedEnabled,
+        serviceRecoveredEnabled: snapshot.serviceRecoveredEnabled,
+      ),
+    ),
+  );
 
   @override
   Future<StrongBackgroundSnapshot> loadStrongBackgroundSnapshot() async =>
@@ -103,6 +133,33 @@ class BridgeSettingsFacade implements SettingsFacade {
           modelPackage: snapshot.onDeviceModel.modelPackage,
           downloadStatus: snapshot.onDeviceModel.downloadStatus,
         ),
+      ),
+    ),
+  );
+
+  @override
+  Future<SandboxSettingsSnapshot> loadSandboxSettings() async =>
+      _mapSandboxSettings(await _bridge.loadSandboxSettings());
+
+  @override
+  Future<SandboxSettingsSnapshot> saveSandboxSettings(
+    SandboxSettingsSnapshot snapshot,
+  ) async => _mapSandboxSettings(
+    await _bridge.saveSandboxSettings(
+      OpenCraySandboxSettingsSnapshot(
+        localeTag: snapshot.localeTag,
+        enabled: snapshot.enabled,
+        providerId: snapshot.providerId,
+        defaultBackend: snapshot.defaultBackend,
+        sessionMode: snapshot.sessionMode,
+        autoResume: snapshot.autoResume,
+        idleTimeoutMinutes: snapshot.idleTimeoutMinutes,
+        startupTimeoutMs: snapshot.startupTimeoutMs,
+        requestTimeoutMs: snapshot.requestTimeoutMs,
+        timeoutAction: snapshot.timeoutAction,
+        templateId: snapshot.templateId,
+        e2bApiKey: snapshot.e2bApiKey,
+        apiKeyConfigured: snapshot.apiKeyConfigured,
       ),
     ),
   );
@@ -370,6 +427,28 @@ class BridgeSettingsFacade implements SettingsFacade {
     );
   }
 
+  static NotificationSettingsSnapshot _mapNotificationSettings(
+    OpenCrayNotificationSettingsSnapshot snapshot,
+  ) {
+    return NotificationSettingsSnapshot(
+      masterEnabled: snapshot.masterEnabled,
+      defaultDeliveryMode: notificationDeliveryModeFromId(
+        snapshot.defaultDeliveryModeId,
+      ),
+      quietHoursEnabled: snapshot.quietHoursEnabled,
+      quietHoursStartMinutes: snapshot.quietHoursStartMinutes,
+      quietHoursEndMinutes: snapshot.quietHoursEndMinutes,
+      approvalRequestsEnabled: snapshot.approvalRequestsEnabled,
+      approvalReminderEnabled: snapshot.approvalReminderEnabled,
+      taskFinishedEnabled: snapshot.taskFinishedEnabled,
+      taskFailedEnabled: snapshot.taskFailedEnabled,
+      newUserMessageEnabled: snapshot.newUserMessageEnabled,
+      scheduledWakeEnabled: snapshot.scheduledWakeEnabled,
+      backgroundTaskPausedEnabled: snapshot.backgroundTaskPausedEnabled,
+      serviceRecoveredEnabled: snapshot.serviceRecoveredEnabled,
+    );
+  }
+
   static StrongBackgroundActionResult _mapStrongBackgroundActionResult(
     OpenCrayStrongBackgroundActionResult result,
   ) {
@@ -471,6 +550,26 @@ class BridgeSettingsFacade implements SettingsFacade {
         modelPackage: snapshot.onDeviceModel.modelPackage,
         downloadStatus: snapshot.onDeviceModel.downloadStatus,
       ),
+    );
+  }
+
+  static SandboxSettingsSnapshot _mapSandboxSettings(
+    OpenCraySandboxSettingsSnapshot snapshot,
+  ) {
+    return SandboxSettingsSnapshot(
+      localeTag: snapshot.localeTag,
+      enabled: snapshot.enabled,
+      providerId: snapshot.providerId,
+      defaultBackend: snapshot.defaultBackend,
+      sessionMode: snapshot.sessionMode,
+      autoResume: snapshot.autoResume,
+      idleTimeoutMinutes: snapshot.idleTimeoutMinutes,
+      startupTimeoutMs: snapshot.startupTimeoutMs,
+      requestTimeoutMs: snapshot.requestTimeoutMs,
+      timeoutAction: snapshot.timeoutAction,
+      templateId: snapshot.templateId,
+      e2bApiKey: snapshot.e2bApiKey,
+      apiKeyConfigured: snapshot.apiKeyConfigured,
     );
   }
 

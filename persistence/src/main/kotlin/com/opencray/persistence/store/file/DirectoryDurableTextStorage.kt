@@ -3,6 +3,10 @@ package com.opencray.persistence.store.file
 import com.opencray.persistence.store.DurableTextStorage
 import java.io.File
 import java.io.IOException
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.concurrent.ConcurrentHashMap
 
 class DirectoryDurableTextStorage(
   private val directory: File,
@@ -24,23 +28,24 @@ class DirectoryDurableTextStorage(
     val file = fileFor(name)
     ensureDirectory()
 
-    val tmp = File(file.parentFile, "${file.name}.tmp")
-    tmp.writeText(text, Charsets.UTF_8)
-
-    // Best-effort atomic replace within same directory.
-    if (file.exists() && !file.delete()) {
-      throw IOException("Failed to delete existing file for replace: ${file.path}")
-    }
-    if (!tmp.renameTo(file)) {
-      // Fallback: copy then delete tmp.
-      file.writeText(tmp.readText(Charsets.UTF_8), Charsets.UTF_8)
-      tmp.delete()
+    synchronized(lockFor(file)) {
+      val tmp = Files.createTempFile(file.parentFile.toPath(), "${file.name}.", ".tmp").toFile()
+      try {
+        tmp.writeText(text, Charsets.UTF_8)
+        replaceAtomically(tmp = tmp, destination = file)
+      } finally {
+        if (tmp.exists()) {
+          tmp.delete()
+        }
+      }
     }
   }
 
   override fun delete(name: String): Boolean {
     val file = fileFor(name)
-    return file.exists() && file.delete()
+    synchronized(lockFor(file)) {
+      return file.exists() && file.delete()
+    }
   }
 
   private fun ensureDirectory() {
@@ -58,7 +63,28 @@ class DirectoryDurableTextStorage(
     return File(directory, name)
   }
 
+  private fun replaceAtomically(tmp: File, destination: File) {
+    try {
+      Files.move(
+        tmp.toPath(),
+        destination.toPath(),
+        StandardCopyOption.REPLACE_EXISTING,
+        StandardCopyOption.ATOMIC_MOVE,
+      )
+    } catch (_: AtomicMoveNotSupportedException) {
+      Files.move(
+        tmp.toPath(),
+        destination.toPath(),
+        StandardCopyOption.REPLACE_EXISTING,
+      )
+    }
+  }
+
+  private fun lockFor(file: File): Any =
+    FILE_LOCKS.computeIfAbsent(file.absolutePath) { Any() }
+
   private companion object {
     private val VALID_NAME = Regex("^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+    private val FILE_LOCKS = ConcurrentHashMap<String, Any>()
   }
 }

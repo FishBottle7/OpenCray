@@ -5,6 +5,7 @@ import com.opencray.core.contracts.AgentTaskState
 import com.opencray.core.contracts.ContractSchemaVersion
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
+import java.util.UUID
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -32,12 +33,18 @@ data class SessionQueueTaskSnapshot(
   val task: AgentTask,
   val lifecycleState: QueueTaskLifecycleState = QueueTaskLifecycleState.QUEUED,
   val attempt: Int = 0,
+  val executionOrdinal: Int = 0,
+  val executionId: String? = null,
+  val executionKind: String? = null,
   val lastErrorCode: String? = null,
   val lastErrorMessage: String? = null,
 ) {
   init {
     require(enqueueOrder >= 0) { "SessionQueueTaskSnapshot enqueueOrder must be >= 0." }
     require(attempt >= 0) { "SessionQueueTaskSnapshot attempt must be >= 0." }
+    require(executionOrdinal >= 0) {
+      "SessionQueueTaskSnapshot executionOrdinal must be >= 0."
+    }
   }
 }
 
@@ -128,6 +135,14 @@ const val ERROR_RESTART_REQUIRES_EXPLICIT_RETRY: String = "RESTART_REQUIRES_EXPL
 const val METADATA_QUEUE_RESTORE_EPOCH_MS: String = "_queue.restoreEpochMs"
 const val METADATA_PREVIOUS_LIFECYCLE_STATE: String = "_queue.previousLifecycleState"
 const val METADATA_RECOVERY_REASON: String = "_queue.recoveryReason"
+const val METADATA_EXECUTION_ID: String = "_host.executionId"
+const val METADATA_EXECUTION_KIND: String = "_host.executionKind"
+const val METADATA_EXECUTION_ORDINAL: String = "_host.executionOrdinal"
+const val METADATA_PENDING_EXECUTION_KIND: String = "_host.pendingExecutionKind"
+const val EXECUTION_KIND_INITIAL: String = "initial"
+const val EXECUTION_KIND_RETRY: String = "retry"
+const val EXECUTION_KIND_APPROVAL_RESUME: String = "approval_resume"
+const val EXECUTION_KIND_CHECKPOINT_RESUME: String = "checkpoint_resume"
 const val RECOVERY_REASON_HOST_RESTART_INFLIGHT_TASK_INTERRUPTED: String =
   "host_restart_inflight_task_interrupted"
 
@@ -164,6 +179,9 @@ class SessionQueue(
     val queuedTask = task.copy(
       state = AgentTaskState.QUEUED,
       updatedAtEpochMs = maxOf(now, task.createdAtEpochMs),
+      metadata = task.metadata + mapOf(
+        METADATA_PENDING_EXECUTION_KIND to EXECUTION_KIND_INITIAL,
+      ),
     )
 
     taskEntries += SessionQueueTaskSnapshot(
@@ -259,20 +277,50 @@ class SessionQueue(
     val restartInterrupted = current.lastErrorCode == ERROR_RESTART_REQUIRES_EXPLICIT_RETRY
     if (!restartInterrupted && current.attempt >= config.maxAttempts) return false
 
+    markPendingExecutionKindLocked(index, EXECUTION_KIND_RETRY)
     transitionTaskLocked(index, QueueTaskLifecycleState.RETRY_PENDING)
-    transitionTaskLocked(index, QueueTaskLifecycleState.QUEUED)
+    transitionTaskLocked(
+      index = index,
+      to = QueueTaskLifecycleState.QUEUED,
+      clearExecutionContext = true,
+    )
     return true
   }
 
   /**
    * Resume a task that is explicitly suspended, for example while awaiting approval.
    */
-  fun requestResumeTask(taskId: String): Boolean = synchronized(lock) {
+  fun requestResumeTask(taskId: String): Boolean =
+    requestResumeTask(
+      taskId = taskId,
+      executionKind = EXECUTION_KIND_APPROVAL_RESUME,
+    )
+
+  fun requestResumeTask(
+    taskId: String,
+    executionKind: String,
+    taskMetadataUpdates: Map<String, String> = emptyMap(),
+  ): Boolean = synchronized(lock) {
     val index = indexOfTaskLocked(taskId) ?: return false
     val current = taskEntries[index]
     if (current.lifecycleState != QueueTaskLifecycleState.SUSPENDED) return false
 
-    transitionTaskLocked(index, QueueTaskLifecycleState.QUEUED)
+    require(
+      executionKind == EXECUTION_KIND_APPROVAL_RESUME ||
+        executionKind == EXECUTION_KIND_CHECKPOINT_RESUME,
+    ) {
+      "Unsupported resume execution kind: $executionKind"
+    }
+
+    if (taskMetadataUpdates.isNotEmpty()) {
+      applyTaskMetadataUpdatesLocked(index = index, updates = taskMetadataUpdates)
+    }
+    markPendingExecutionKindLocked(index, executionKind)
+    transitionTaskLocked(
+      index = index,
+      to = QueueTaskLifecycleState.QUEUED,
+      clearExecutionContext = true,
+    )
     return true
   }
 
@@ -333,18 +381,43 @@ class SessionQueue(
       entry.lifecycleState
     }
     val mappedTaskState = mapLifecycleToAgentTaskState(normalizedLifecycle)
+    val preservedRestoreEpochMs = entry.task.metadata[METADATA_QUEUE_RESTORE_EPOCH_MS]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val preservedPreviousLifecycleState = entry.task.metadata[METADATA_PREVIOUS_LIFECYCLE_STATE]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val preservedRecoveryReason = entry.task.metadata[METADATA_RECOVERY_REASON]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
     val normalizedMetadata = buildMap<String, String> {
       putAll(
-        entry.task.metadata.filterKeys { key ->
-          key != METADATA_QUEUE_RESTORE_EPOCH_MS &&
-            key != METADATA_PREVIOUS_LIFECYCLE_STATE &&
-            key != METADATA_RECOVERY_REASON
+        if (wasInterruptedInFlight) {
+          entry.task.metadata.filterKeys { key ->
+            key != METADATA_QUEUE_RESTORE_EPOCH_MS &&
+              key != METADATA_PREVIOUS_LIFECYCLE_STATE &&
+              key != METADATA_RECOVERY_REASON
+          }
+        } else {
+          entry.task.metadata
         },
       )
-      put(METADATA_QUEUE_RESTORE_EPOCH_MS, restoreEpochMs.toString())
-      put(METADATA_PREVIOUS_LIFECYCLE_STATE, entry.lifecycleState.name.lowercase())
       if (wasInterruptedInFlight) {
+        put(METADATA_QUEUE_RESTORE_EPOCH_MS, restoreEpochMs.toString())
+        put(METADATA_PREVIOUS_LIFECYCLE_STATE, entry.lifecycleState.name.lowercase())
         put(METADATA_RECOVERY_REASON, RECOVERY_REASON_HOST_RESTART_INFLIGHT_TASK_INTERRUPTED)
+      } else {
+        put(
+          METADATA_QUEUE_RESTORE_EPOCH_MS,
+          preservedRestoreEpochMs ?: restoreEpochMs.toString(),
+        )
+        put(
+          METADATA_PREVIOUS_LIFECYCLE_STATE,
+          preservedPreviousLifecycleState ?: entry.lifecycleState.name.lowercase(),
+        )
+        preservedRecoveryReason?.let { reason ->
+          put(METADATA_RECOVERY_REASON, reason)
+        }
       }
     }
     val normalizedTask = entry.task.copy(
@@ -393,7 +466,11 @@ class SessionQueue(
     val runningSnapshot = synchronized(lock) {
       val preRun = taskEntries[index]
       if (preRun.lifecycleState == QueueTaskLifecycleState.RETRY_PENDING) {
-        transitionTaskLocked(index, QueueTaskLifecycleState.QUEUED)
+        transitionTaskLocked(
+          index = index,
+          to = QueueTaskLifecycleState.QUEUED,
+          clearExecutionContext = true,
+        )
       }
 
       val current = taskEntries[index]
@@ -442,13 +519,18 @@ class SessionQueue(
 
       if (shouldRetry) {
         val request = retryRequest!!
+        markPendingExecutionKindLocked(index, EXECUTION_KIND_RETRY)
         transitionTaskLocked(
           index = index,
           to = QueueTaskLifecycleState.RETRY_PENDING,
           errorCode = request.reasonCode,
           errorMessage = request.detail ?: normalizedResult.errorMessage,
         )
-        transitionTaskLocked(index, QueueTaskLifecycleState.QUEUED)
+        transitionTaskLocked(
+          index = index,
+          to = QueueTaskLifecycleState.QUEUED,
+          clearExecutionContext = true,
+        )
         return normalizedResult
       }
 
@@ -508,6 +590,7 @@ class SessionQueue(
     to: QueueTaskLifecycleState,
     errorCode: String? = null,
     errorMessage: String? = null,
+    clearExecutionContext: Boolean = false,
   ) {
     val current = taskEntries[index]
     val allowed = ALLOWED_TASK_TRANSITIONS.getValue(current.lifecycleState)
@@ -516,20 +599,189 @@ class SessionQueue(
     }
 
     val now = clock.nowEpochMs()
-    val nextAttempt = if (to == QueueTaskLifecycleState.RUNNING) current.attempt + 1 else current.attempt
+    val nextExecutionKind = if (to == QueueTaskLifecycleState.RUNNING) {
+      resolvedExecutionKindForRun(current)
+    } else {
+      null
+    }
+    val nextAttempt = if (to == QueueTaskLifecycleState.RUNNING) {
+      nextAttemptForRun(
+        currentAttempt = current.attempt,
+        executionKind = requireNotNull(nextExecutionKind),
+      )
+    } else {
+      current.attempt
+    }
+    val nextExecutionOrdinal = if (to == QueueTaskLifecycleState.RUNNING) {
+      current.executionOrdinal + 1
+    } else {
+      current.executionOrdinal
+    }
+    val nextExecutionId = if (to == QueueTaskLifecycleState.RUNNING) {
+      queueExecutionId(
+        taskId = current.task.id,
+        executionOrdinal = nextExecutionOrdinal,
+        nowEpochMs = now,
+      )
+    } else if (clearExecutionContext) {
+      null
+    } else {
+      current.executionId
+    }
+    val retainedExecutionKind = when {
+      to == QueueTaskLifecycleState.RUNNING -> nextExecutionKind
+      clearExecutionContext -> null
+      else -> current.executionKind
+    }
     val nextTask = current.task.copy(
       state = mapLifecycleToAgentTaskState(to),
       updatedAtEpochMs = maxOf(now, current.task.createdAtEpochMs),
+      metadata = nextTaskMetadata(
+        current = current,
+        to = to,
+        executionId = nextExecutionId,
+        executionOrdinal = nextExecutionOrdinal,
+        executionKind = retainedExecutionKind,
+        clearExecutionContext = clearExecutionContext,
+      ),
     )
 
     taskEntries[index] = current.copy(
       lifecycleState = to,
       task = nextTask,
       attempt = nextAttempt,
+      executionOrdinal = nextExecutionOrdinal,
+      executionId = nextExecutionId,
+      executionKind = retainedExecutionKind,
       lastErrorCode = errorCode ?: current.lastErrorCode,
       lastErrorMessage = errorMessage ?: current.lastErrorMessage,
     )
     persistSnapshotLocked()
+  }
+
+  private fun markPendingExecutionKindLocked(index: Int, executionKind: String) {
+    val current = taskEntries[index]
+    taskEntries[index] = current.copy(
+      task = current.task.copy(
+        metadata = current.task.metadata + mapOf(
+          METADATA_PENDING_EXECUTION_KIND to executionKind,
+        ),
+      ),
+    )
+    persistSnapshotLocked()
+  }
+
+  private fun applyTaskMetadataUpdatesLocked(index: Int, updates: Map<String, String>) {
+    if (updates.isEmpty()) {
+      return
+    }
+    val current = taskEntries[index]
+    val normalizedUpdates = updates.filterKeys { key -> key.isNotBlank() }
+    if (normalizedUpdates.isEmpty()) {
+      return
+    }
+    taskEntries[index] = current.copy(
+      task = current.task.copy(
+        updatedAtEpochMs = maxOf(clock.nowEpochMs(), current.task.createdAtEpochMs),
+        metadata = current.task.metadata + normalizedUpdates,
+      ),
+    )
+    persistSnapshotLocked()
+  }
+
+  private fun nextTaskMetadata(
+    current: SessionQueueTaskSnapshot,
+    to: QueueTaskLifecycleState,
+    executionId: String?,
+    executionOrdinal: Int,
+    executionKind: String?,
+    clearExecutionContext: Boolean,
+  ): Map<String, String> = buildMap {
+    current.task.metadata.forEach { (key, value) ->
+      if (
+        key != METADATA_EXECUTION_ID &&
+        key != METADATA_EXECUTION_KIND &&
+        key != METADATA_EXECUTION_ORDINAL &&
+        key != METADATA_PENDING_EXECUTION_KIND
+      ) {
+        put(key, value)
+      }
+    }
+    if (to == QueueTaskLifecycleState.RUNNING) {
+      executionId?.let { put(METADATA_EXECUTION_ID, it) }
+      executionKind?.let { put(METADATA_EXECUTION_KIND, it) }
+      put(METADATA_EXECUTION_ORDINAL, executionOrdinal.toString())
+    } else if (!clearExecutionContext) {
+      current.executionId?.let { put(METADATA_EXECUTION_ID, it) }
+      current.executionKind?.let { put(METADATA_EXECUTION_KIND, it) }
+      if (current.executionOrdinal > 0) {
+        put(METADATA_EXECUTION_ORDINAL, current.executionOrdinal.toString())
+      }
+      current.task.metadata[METADATA_PENDING_EXECUTION_KIND]
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { pendingKind ->
+          put(METADATA_PENDING_EXECUTION_KIND, pendingKind)
+        }
+    } else if (executionOrdinal > 0) {
+      put(METADATA_EXECUTION_ORDINAL, executionOrdinal.toString())
+      current.task.metadata[METADATA_PENDING_EXECUTION_KIND]
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { pendingKind ->
+          put(METADATA_PENDING_EXECUTION_KIND, pendingKind)
+        }
+    }
+  }
+
+  private fun resolvedExecutionKindForRun(
+    current: SessionQueueTaskSnapshot,
+  ): String {
+    val pendingKind = current.task.metadata[METADATA_PENDING_EXECUTION_KIND]
+      ?.trim()
+      ?.lowercase()
+      ?.takeIf(String::isNotBlank)
+    return when (pendingKind) {
+      EXECUTION_KIND_INITIAL,
+      EXECUTION_KIND_RETRY,
+      EXECUTION_KIND_APPROVAL_RESUME,
+      EXECUTION_KIND_CHECKPOINT_RESUME,
+      -> pendingKind
+
+      else -> if (current.executionOrdinal == 0) {
+        EXECUTION_KIND_INITIAL
+      } else {
+        EXECUTION_KIND_RETRY
+      }
+    }
+  }
+
+  private fun nextAttemptForRun(
+    currentAttempt: Int,
+    executionKind: String,
+  ): Int = when (executionKind) {
+    EXECUTION_KIND_INITIAL -> maxOf(currentAttempt, 1)
+    EXECUTION_KIND_RETRY -> currentAttempt + 1
+    EXECUTION_KIND_APPROVAL_RESUME,
+    EXECUTION_KIND_CHECKPOINT_RESUME,
+    -> maxOf(currentAttempt, 1)
+
+    else -> maxOf(currentAttempt, 1)
+  }
+
+  private fun queueExecutionId(
+    taskId: String,
+    executionOrdinal: Int,
+    nowEpochMs: Long,
+  ): String = buildString {
+    append("exec-")
+    append(taskId.take(24))
+    append('-')
+    append(executionOrdinal)
+    append('-')
+    append(nowEpochMs)
+    append('-')
+    append(UUID.randomUUID().toString().take(8))
   }
 
   private fun transitionSessionStateLocked(to: SessionLifecycleState) {

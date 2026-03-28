@@ -1,10 +1,10 @@
 # Android Local Strong Background Runtime Design
 
-Last updated: 2026-03-25
+Last updated: 2026-03-27
 
 ## Status
 
-Design proposal
+Design with partial implementation
 
 ## Purpose
 
@@ -29,6 +29,7 @@ Today OpenCray already has a service-host boundary:
 - `OpenCrayAgentRuntimeService` exists and bootstraps the runtime owner
 - `OpenCrayHostRuntime` is no longer the production execution owner
 - UI transport can detach without immediately destroying runtime ownership
+- caller-side runtime entrypoints now only request service start or wake, so the UI process no longer pre-creates the runtime host before the service lifecycle begins
 
 But the background product surface is still incomplete:
 
@@ -36,8 +37,9 @@ But the background product surface is still incomplete:
 - the runtime service now promotes itself to foreground while keepalive-required work exists, but execution ownership is still same-process and not yet a separate stronger runtime process
 - `AlarmManager` and `WorkManager` trigger bridges now exist for scheduled wake-up and repair
 - active-runtime, approval-needed, completion/interruption, and scheduled-dispatch notifications now exist, including notification-side approve/reject entry for approval waits
+- file-backed managed-process registries can now reattach live controllers across registry or host rebuild while the same app process remains alive, but true cross-process reconnect after process death is still not implemented
 - startup plus boot/package-replaced repair paths now re-register scheduled work, but active interactive runs still rely on checkpoint-based recovery rather than an independent scheduler-owned repair loop
-- there is no battery-optimization guidance or exemption flow
+- notification/background settings now expose notification, exact-alarm, and battery-optimization system actions, including direct exemption request where Android allows it
 
 So the current system now has the first real strong-background primitives, but it is still not yet a full local strong-background product.
 
@@ -293,7 +295,6 @@ Extend `OpenCrayAgentRuntimeService` with explicit wake actions:
 - `ACTION_REPAIR_SCHEDULES`
 - `ACTION_RESUME_INTERRUPTED_RUNS`
 - `ACTION_APPROVAL_DECISION`
-- `ACTION_CANCEL_RUN`
 
 Recommended command extras:
 
@@ -332,7 +333,7 @@ Responsibilities:
 - decide when to enter foreground mode
 - publish the active-task notification
 - downgrade and stop foreground mode when no eligible active work remains
-- attach notification actions for open, cancel, and approve flows
+- attach notification actions for open and approve/reject flows
 
 ## 5. Notification model
 
@@ -356,7 +357,6 @@ Include:
 - current run summary
 - elapsed time
 - `Open`
-- `Cancel`
 
 ### Approval-needed notification
 
@@ -546,9 +546,13 @@ But the design should preserve a later path to:
 
 as a dedicated process for stronger isolation from UI crashes and Flutter engine churn.
 
-## Recommended Rollout
+## Rollout Status
 
 ### Phase 0: Product scaffolding
+
+Status:
+
+- substantially implemented in the current same-process service host
 
 - add notification channels
 - add runtime notification factory
@@ -560,6 +564,10 @@ Exit criteria:
 - detached active runs can show a stable active notification
 
 ### Phase 1: Scheduled model and wake bridge
+
+Status:
+
+- substantially implemented for timestamp/delay scheduling, wake dispatch, and repair
 
 - add `ScheduledTaskSpec`
 - add `ScheduledTaskRunRecord`
@@ -573,6 +581,10 @@ Exit criteria:
 
 ### Phase 2: Strong background mode
 
+Status:
+
+- partially implemented; capability checks, settings actions, and the in-app notifications/background page are already present, but the overall detached/background runtime is still same-process and not yet a stronger isolated runtime
+
 - add exact alarm capability checks
 - add battery optimization checks and guidance
 - add in-app setup flow
@@ -584,6 +596,10 @@ Exit criteria:
 
 ### Phase 3: Boot and repair
 
+Status:
+
+- substantially implemented for boot/package-replaced schedule repair and startup reconciliation
+
 - add boot receiver
 - re-register schedules on boot and package replace
 - add startup reconciliation worker
@@ -593,6 +609,10 @@ Exit criteria:
 - schedules survive reboot and upgrade cleanly
 
 ### Phase 4: Extended survivability
+
+Status:
+
+- still pending
 
 - evaluate dedicated runtime process
 - harden process-safe stores and service command protocol

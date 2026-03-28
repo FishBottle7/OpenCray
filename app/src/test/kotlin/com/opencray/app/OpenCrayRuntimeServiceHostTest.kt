@@ -63,10 +63,10 @@ class OpenCrayRuntimeServiceHostTest {
       memoryStore = InMemoryMemoryStore(),
     )
     val replayAccess = OpenCrayRuntimeReplayAccess(
-      approvalRejectionRecorder = { _, _, _, _, _ -> },
-      approvalApprovedRecorder = { _, _, _, _, _ -> },
+      approvalRejectionRecorder = { _, _, _, _, _, _ -> },
+      approvalApprovedRecorder = { _, _, _, _, _, _ -> },
       subAgentReplayRecorder = { _, _ -> },
-      runCancellationRecorder = { _, _, _, _ -> },
+      runCancellationRecorder = { _, _, _, _, _ -> },
       terminalReplayRepairer = { _, _ -> },
     )
     val owner = InProcessOpenCrayRuntimeOwner(
@@ -399,10 +399,10 @@ class OpenCrayRuntimeServiceHostTest {
         memoryStore = InMemoryMemoryStore(),
       ),
       replayAccess = OpenCrayRuntimeReplayAccess(
-        approvalRejectionRecorder = { _, _, _, _, _ -> },
-        approvalApprovedRecorder = { _, _, _, _, _ -> },
+        approvalRejectionRecorder = { _, _, _, _, _, _ -> },
+        approvalApprovedRecorder = { _, _, _, _, _, _ -> },
         subAgentReplayRecorder = { _, _ -> },
-        runCancellationRecorder = { _, _, _, _ -> },
+        runCancellationRecorder = { _, _, _, _, _ -> },
         terminalReplayRepairer = { sessionId, runs ->
           repairCalls += sessionId to runs
         },
@@ -478,10 +478,10 @@ class OpenCrayRuntimeServiceHostTest {
         memoryStore = InMemoryMemoryStore(),
       ),
       replayAccess = OpenCrayRuntimeReplayAccess(
-        approvalRejectionRecorder = { _, _, _, _, _ -> },
-        approvalApprovedRecorder = { _, _, _, _, _ -> },
+        approvalRejectionRecorder = { _, _, _, _, _, _ -> },
+        approvalApprovedRecorder = { _, _, _, _, _, _ -> },
         subAgentReplayRecorder = { _, _ -> },
-        runCancellationRecorder = { _, _, _, _ -> },
+        runCancellationRecorder = { _, _, _, _, _ -> },
         terminalReplayRepairer = { sessionId, runs ->
           repairCalls += sessionId to runs
         },
@@ -1175,7 +1175,10 @@ class OpenCrayRuntimeServiceHostTest {
       fallbackGateway = fallbackGateway,
     )
 
-    assertEquals("binder-skills", gateway.loadSkillsSnapshot(query = "")["source"])
+    assertEquals(
+      "binder-skills",
+      gateway.loadSkillsSnapshot(query = "", suggestedLimit = 0)["source"],
+    )
     assertEquals(
       "Installed roin-orca/skills via binder.",
       gateway.installSkillSource(sourceRef = "roin-orca/skills", selectedSkillName = ""),
@@ -1185,7 +1188,10 @@ class OpenCrayRuntimeServiceHostTest {
 
     serviceClient.currentSkillsGateway = null
 
-    assertEquals("fallback-skills", gateway.loadSkillsSnapshot(query = "")["source"])
+    assertEquals(
+      "fallback-skills",
+      gateway.loadSkillsSnapshot(query = "", suggestedLimit = 0)["source"],
+    )
     val failure = runCatching {
       gateway.installSkillSource(sourceRef = "fallback/skills", selectedSkillName = "")
     }.exceptionOrNull()
@@ -1246,7 +1252,7 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun projectionOnlySkillsGatewayUsesLocalOnlySnapshotFilteringForQueries() {
+  fun projectionOnlySkillsGatewayDelegatesQuerySearchToSkillsFacade() {
     val skillsFacade = RecordingProjectionSkillsFacade()
     val gateway = ProjectionOnlyOpenCraySkillsGateway(
       skillsFacade = skillsFacade,
@@ -1254,11 +1260,12 @@ class OpenCrayRuntimeServiceHostTest {
       mainThreadPoster = ImmediateMainThreadPoster,
     )
 
-    val payload = gateway.loadSkillsSnapshot(query = "voice")
+    val payload = gateway.loadSkillsSnapshot(query = "voice", suggestedLimit = 8)
     @Suppress("UNCHECKED_CAST")
     val suggestedSkills = payload["suggestedSkills"] as List<Map<String, Any?>>
 
-    assertEquals(listOf(""), skillsFacade.loadQueries)
+    assertEquals(listOf("voice"), skillsFacade.loadQueries)
+    assertEquals(listOf(8), skillsFacade.loadSuggestedLimits)
     assertEquals(1, suggestedSkills.size)
     assertEquals("voice-notes", suggestedSkills.single()["name"])
 
@@ -2067,19 +2074,55 @@ class OpenCrayRuntimeServiceHostTest {
     )
 
     assertEquals("binder-settings", gateway.loadSettingsOverview()["source"])
+    assertEquals("binder-notification-settings", gateway.loadNotificationSettings()["source"])
+    assertEquals("binder-sandbox-settings", gateway.loadSandboxSettings()["source"])
+    assertEquals(
+      "binder-notification-settings-save",
+      gateway.saveNotificationSettings(
+        mapOf(
+          "masterEnabled" to false,
+          "defaultDeliveryModeId" to "all",
+        ),
+      )["source"],
+    )
+    assertEquals(
+      "binder-sandbox-settings-save",
+      gateway.saveSandboxSettings(
+        mapOf(
+          "enabled" to true,
+          "defaultBackend" to "sandbox",
+        ),
+      )["source"],
+    )
     assertEquals(true, gateway.setMcpMasterEnabled(true)["enabled"])
     assertEquals(true, binderGateway.lastMcpMasterEnabled)
+    assertEquals("all", binderGateway.lastNotificationSettingsPayload?.get("defaultDeliveryModeId"))
+    assertEquals("sandbox", binderGateway.lastSandboxSettingsPayload?.get("defaultBackend"))
     assertEquals(null, fallbackGateway.lastMcpMasterEnabled)
 
     serviceClient.currentSettingsGateway = null
 
     assertEquals("fallback-settings", gateway.loadSettingsOverview()["source"])
+    assertEquals("fallback-notification-settings", gateway.loadNotificationSettings()["source"])
+    assertEquals("fallback-sandbox-settings", gateway.loadSandboxSettings()["source"])
+    val notificationFailure = runCatching {
+      gateway.saveNotificationSettings(mapOf("masterEnabled" to true))
+    }.exceptionOrNull()
+    val sandboxFailure = runCatching {
+      gateway.saveSandboxSettings(mapOf("enabled" to true))
+    }.exceptionOrNull()
     val failure = runCatching {
       gateway.setMcpMasterEnabled(false)
     }.exceptionOrNull()
+    assertTrue(notificationFailure is IllegalStateException)
+    assertTrue(notificationFailure?.message?.contains("saveNotificationSettings") == true)
+    assertTrue(sandboxFailure is IllegalStateException)
+    assertTrue(sandboxFailure?.message?.contains("saveSandboxSettings") == true)
     assertTrue(failure is IllegalStateException)
     assertTrue(failure?.message?.contains("setMcpMasterEnabled") == true)
     assertTrue(failure?.message?.contains("phase=fallback") == true)
+    assertEquals(null, fallbackGateway.lastNotificationSettingsPayload)
+    assertEquals(null, fallbackGateway.lastSandboxSettingsPayload)
     assertEquals(null, fallbackGateway.lastMcpMasterEnabled)
   }
 
@@ -2486,9 +2529,11 @@ class OpenCrayRuntimeServiceHostTest {
 
     override fun approveChatApproval(taskIdOrRunId: String) = Unit
 
+    override fun approveChatApprovalForSession(taskIdOrRunId: String) = Unit
+
     override fun rejectChatApproval(taskIdOrRunId: String) = Unit
 
-    override fun cancelChatRun(taskIdOrRunId: String) = Unit
+    override fun interruptChatRun(taskIdOrRunId: String) = Unit
 
     override fun retryChatRun(taskIdOrRunId: String) = Unit
   }
@@ -2499,13 +2544,14 @@ class OpenCrayRuntimeServiceHostTest {
     var lastInstalledSourceRef: String? = null
       private set
 
-    override fun loadSkillsSnapshot(query: String): Map<String, Any?> = mapOf(
+    override fun loadSkillsSnapshot(query: String, suggestedLimit: Int): Map<String, Any?> = mapOf(
       "source" to "$label-skills",
       "query" to query,
+      "suggestedLimit" to suggestedLimit,
     )
 
     override fun observeSkills(listener: (Map<String, Any?>) -> Unit): () -> Unit {
-      listener(loadSkillsSnapshot(query = ""))
+      listener(loadSkillsSnapshot(query = "", suggestedLimit = 0))
       return { }
     }
 
@@ -2541,14 +2587,48 @@ class OpenCrayRuntimeServiceHostTest {
     override fun loadSkillInstructions(skillId: String): Map<String, Any?> =
       mapOf("source" to "$label-instructions", "skillId" to skillId)
 
+    override fun loadSuggestedSkillInstructions(
+      sourceRef: String,
+      selectedSkillName: String,
+    ): Map<String, Any?> = mapOf(
+      "source" to "$label-suggested-instructions",
+      "sourceRef" to sourceRef,
+      "selectedSkillName" to selectedSkillName,
+    )
+
     override fun activateSkillsInstallSource(sourceId: String): String = sourceId
   }
 
   private class RecordingProjectionSkillsFacade : com.opencray.app.facade.skills.SkillsFacade {
     val loadQueries = mutableListOf<String>()
+    val loadSuggestedLimits = mutableListOf<Int>()
 
-    override fun loadSnapshot(query: String): com.opencray.app.facade.skills.SkillsSnapshot {
+    override fun loadSnapshot(
+      query: String,
+      suggestedLimit: Int,
+    ): com.opencray.app.facade.skills.SkillsSnapshot {
       loadQueries += query
+      loadSuggestedLimits += suggestedLimit
+      val suggestions = listOf(
+        com.opencray.app.facade.skills.SuggestedSkillSnapshot(
+          id = "voice-notes",
+          name = "voice-notes",
+          description = "Capture voice notes into the workspace",
+          sourceRef = "voice-notes",
+          sourceLabel = "Local catalog",
+        ),
+        com.opencray.app.facade.skills.SuggestedSkillSnapshot(
+          id = "git-sync",
+          name = "git-sync",
+          description = "Synchronize git branches",
+          sourceRef = "git-sync",
+          sourceLabel = "Local catalog",
+        ),
+      ).filter { item ->
+        query.isBlank() ||
+          item.name.contains(query, ignoreCase = true) ||
+          item.description.contains(query, ignoreCase = true)
+      }
       return com.opencray.app.facade.skills.SkillsSnapshot(
         installedSkills = listOf(
           com.opencray.app.facade.skills.InstalledSkillSnapshot(
@@ -2569,22 +2649,7 @@ class OpenCrayRuntimeServiceHostTest {
             isAvailable = true,
           ),
         ),
-        suggestedSkills = listOf(
-          com.opencray.app.facade.skills.SuggestedSkillSnapshot(
-            id = "voice-notes",
-            name = "voice-notes",
-            description = "Capture voice notes into the workspace",
-            sourceRef = "voice-notes",
-            sourceLabel = "Local catalog",
-          ),
-          com.opencray.app.facade.skills.SuggestedSkillSnapshot(
-            id = "git-sync",
-            name = "git-sync",
-            description = "Synchronize git branches",
-            sourceRef = "git-sync",
-            sourceLabel = "Local catalog",
-          ),
-        ),
+        suggestedSkills = suggestions,
       )
     }
 
@@ -2610,6 +2675,20 @@ class OpenCrayRuntimeServiceHostTest {
         canDelete = true,
       )
 
+    override fun loadSuggestedInstructions(
+      sourceRef: String,
+      selectedSkillName: String,
+    ): com.opencray.app.facade.skills.SkillInstructionsSnapshot? =
+      com.opencray.app.facade.skills.SkillInstructionsSnapshot(
+        id = selectedSkillName.ifBlank { sourceRef },
+        name = selectedSkillName.ifBlank { sourceRef },
+        description = "Suggested instructions for ${selectedSkillName.ifBlank { sourceRef }}",
+        body = "# ${selectedSkillName.ifBlank { sourceRef }}",
+        sourceDirectoryPath = "/skills/${selectedSkillName.ifBlank { sourceRef }}",
+        isEnabled = false,
+        canDelete = false,
+      )
+
     override fun enabledSkillRoots(): List<java.io.File> = emptyList()
 
     override fun activateInstallSource(sourceId: String): String = sourceId
@@ -2619,6 +2698,10 @@ class OpenCrayRuntimeServiceHostTest {
     private val label: String,
   ) : OpenCraySettingsGateway {
     var lastMcpMasterEnabled: Boolean? = null
+      private set
+    var lastNotificationSettingsPayload: Map<String, Any?>? = null
+      private set
+    var lastSandboxSettingsPayload: Map<String, Any?>? = null
       private set
     var lastStrongBackgroundActionId: String? = null
       private set
@@ -2632,6 +2715,14 @@ class OpenCrayRuntimeServiceHostTest {
 
     override fun loadSettingsDetail(routeIdRaw: String): Map<String, Any?> =
       mapOf("source" to "$label-settings-detail", "routeId" to routeIdRaw)
+
+    override fun loadNotificationSettings(): Map<String, Any?> =
+      mapOf("source" to "$label-notification-settings")
+
+    override fun saveNotificationSettings(payload: Map<String, Any?>): Map<String, Any?> {
+      lastNotificationSettingsPayload = payload
+      return mapOf("source" to "$label-notification-settings-save")
+    }
 
     override fun loadStrongBackgroundSnapshot(): Map<String, Any?> =
       mapOf("source" to "$label-strong-background")
@@ -2652,6 +2743,14 @@ class OpenCrayRuntimeServiceHostTest {
 
     override fun saveMediaSpeechConfig(payload: Map<String, Any?>): Map<String, Any?> =
       mapOf("source" to "$label-media-speech-save", "keys" to payload.keys.sorted())
+
+    override fun loadSandboxSettings(): Map<String, Any?> =
+      mapOf("source" to "$label-sandbox-settings")
+
+    override fun saveSandboxSettings(payload: Map<String, Any?>): Map<String, Any?> {
+      lastSandboxSettingsPayload = payload
+      return mapOf("source" to "$label-sandbox-settings-save")
+    }
 
     override fun loadLlmConfig(): Map<String, Any?> = mapOf("source" to "$label-llm")
 
@@ -2766,10 +2865,10 @@ class OpenCrayRuntimeServiceHostTest {
       memoryStore = InMemoryMemoryStore(),
     )
     val replayAccess = OpenCrayRuntimeReplayAccess(
-      approvalRejectionRecorder = { _, _, _, _, _ -> },
-      approvalApprovedRecorder = { _, _, _, _, _ -> },
+      approvalRejectionRecorder = { _, _, _, _, _, _ -> },
+      approvalApprovedRecorder = { _, _, _, _, _, _ -> },
       subAgentReplayRecorder = { _, _ -> },
-      runCancellationRecorder = { _, _, _, _ -> },
+      runCancellationRecorder = { _, _, _, _, _ -> },
       terminalReplayRepairer = { _, _ -> },
     )
     val lifecycleDescriptor = HostRuntimeLifecycleDescriptor()
@@ -2789,13 +2888,14 @@ class OpenCrayRuntimeServiceHostTest {
     )
     val workspaceRoot = root.toPath()
     return OpenCrayRuntimeServiceBridgeSnapshot(
-      dependencies = OpenCrayRuntimeContextDependencies(
-        appContext = ContextWrapper(null),
-        localizedContext = ContextWrapper(null),
-        llmSettingsStore = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore()),
-        personalizationStore = PersonalizationLocalStore(root.resolve("personalization")),
-        chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session")),
-        skillsFacade = EmptySkillsFacade,
+        dependencies = OpenCrayRuntimeContextDependencies(
+          appContext = ContextWrapper(null),
+          localizedContext = ContextWrapper(null),
+          llmSettingsStore = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore()),
+          sandboxSettingsRepository = testSandboxSettingsRepository(),
+          personalizationStore = PersonalizationLocalStore(root.resolve("personalization")),
+          chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session")),
+          skillsFacade = EmptySkillsFacade,
         mcpSettingsFacade = EmptyMcpSettingsFacade,
         webSearchSettingsStore = WebSearchSettingsStore(InMemoryWebSearchSettingsKeyValueStore()),
         providerUserAgent = "OpenCrayRuntimeServiceHostTest",

@@ -83,6 +83,34 @@ internal object NoOpScheduledTriggerRegistrar : ScheduledTriggerRegistrar {
   override fun cancel(scheduleId: String) = Unit
 }
 
+internal fun resyncEnabledScheduledTasks(
+  specStore: ScheduledTaskSpecStore,
+  triggerRegistrar: ScheduledTriggerRegistrar,
+  triggerSyncStateStore: ScheduledTaskTriggerSyncStateStore,
+) {
+  val allSpecs = specStore.list()
+  val enabledSpecs = allSpecs.filter(ScheduledTaskSpec::enabled)
+  val enabledScheduleIds = enabledSpecs
+    .map(ScheduledTaskSpec::scheduleId)
+    .toCollection(linkedSetOf())
+  val previouslySyncedScheduleIds = triggerSyncStateStore.loadScheduleIds()
+  val scheduleIdsToCancel = linkedSetOf<String>().apply {
+    addAll(
+      allSpecs
+        .filterNot(ScheduledTaskSpec::enabled)
+        .map(ScheduledTaskSpec::scheduleId),
+    )
+    addAll(previouslySyncedScheduleIds - enabledScheduleIds)
+  }
+  scheduleIdsToCancel.forEach(triggerRegistrar::cancel)
+  triggerRegistrar.syncAll(enabledSpecs)
+  if (enabledScheduleIds.isEmpty()) {
+    triggerSyncStateStore.clear()
+  } else {
+    triggerSyncStateStore.replaceScheduleIds(enabledScheduleIds)
+  }
+}
+
 internal data class ScheduledAlarmRequest(
   val scheduleId: String,
   val triggerAtEpochMs: Long,
@@ -522,27 +550,43 @@ internal fun OpenCrayRuntimeServiceHost.repairScheduledTasks(
 ): List<ScheduledTaskDispatchOutcome> {
   val enabledSpecs = scheduledTaskSpecStore.listEnabled()
   val dispatcher = scheduledTaskDispatcher(clock = { nowEpochMs })
-  val outcomes = enabledSpecs.mapNotNull { spec ->
-    val dueEpochMs = dueScheduledTriggerAtEpochMs(spec, nowEpochMs) ?: return@mapNotNull null
-    dispatcher.dispatch(
-      ScheduledTaskWakeCommand(
-        scheduleId = spec.scheduleId,
-        scheduleRunId = scheduledTaskRunId(spec.scheduleId, dueEpochMs),
-        triggeredAtEpochMs = nowEpochMs,
-        triggerReason = when (repairReason) {
-          ScheduledTaskRepairReasons.WORK_MANAGER,
-          ScheduledTaskRepairReasons.BOOT_COMPLETED,
-          ScheduledTaskRepairReasons.PACKAGE_REPLACED,
-          ScheduledTaskRepairReasons.APP_START,
-          ScheduledTaskRepairReasons.BROADCAST,
-          -> ScheduledTaskTriggerReasons.REPAIR
-          else -> ScheduledTaskTriggerReasons.REPAIR
-        },
-      ),
-    )
-  }
-  scheduledTriggerRegistrar.syncAll(scheduledTaskSpecStore.listEnabled())
+  val outcomes = plannedRepairWakeCommands(
+    enabledSpecs = enabledSpecs,
+    nowEpochMs = nowEpochMs,
+    repairReason = repairReason,
+  ).map(dispatcher::dispatch)
+  resyncEnabledScheduledTasks(
+    specStore = scheduledTaskSpecStore,
+    triggerRegistrar = scheduledTriggerRegistrar,
+    triggerSyncStateStore = scheduledTaskTriggerSyncStateStore,
+  )
   return outcomes
+}
+
+internal fun plannedRepairWakeCommands(
+  enabledSpecs: List<ScheduledTaskSpec>,
+  nowEpochMs: Long,
+  repairReason: String,
+): List<ScheduledTaskWakeCommand> = enabledSpecs.mapNotNull { spec ->
+  val dueEpochMs = dueScheduledTriggerAtEpochMs(spec, nowEpochMs) ?: return@mapNotNull null
+  ScheduledTaskWakeCommand(
+    scheduleId = spec.scheduleId,
+    scheduleRunId = scheduledTaskRunId(spec.scheduleId, dueEpochMs),
+    triggeredAtEpochMs = nowEpochMs,
+    triggerReason = scheduledTaskTriggerReasonForRepair(repairReason),
+  )
+}
+
+internal fun scheduledTaskTriggerReasonForRepair(
+  repairReason: String,
+): String = when (repairReason) {
+  ScheduledTaskRepairReasons.WORK_MANAGER,
+  ScheduledTaskRepairReasons.BOOT_COMPLETED,
+  ScheduledTaskRepairReasons.PACKAGE_REPLACED,
+  ScheduledTaskRepairReasons.APP_START,
+  ScheduledTaskRepairReasons.BROADCAST,
+  -> ScheduledTaskTriggerReasons.REPAIR
+  else -> ScheduledTaskTriggerReasons.REPAIR
 }
 
 internal class ScheduledTaskWakeReceiver : BroadcastReceiver() {
@@ -701,7 +745,7 @@ private fun nextScheduledTriggerAtEpochMs(
   }
 }
 
-private fun dueScheduledTriggerAtEpochMs(
+internal fun dueScheduledTriggerAtEpochMs(
   spec: ScheduledTaskSpec,
   nowEpochMs: Long,
 ): Long? = when (val trigger = spec.trigger) {

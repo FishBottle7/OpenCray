@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+
 import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_draft_attachment.dart';
 import '../models/opencray_chat_snapshot.dart';
@@ -14,7 +17,9 @@ import '../models/opencray_llm_validation.dart';
 import '../models/opencray_media_speech_config.dart';
 import '../models/opencray_mcp_settings.dart';
 import '../models/opencray_network_search_config.dart';
+import '../models/opencray_notification_settings.dart';
 import '../models/opencray_personalization_config.dart';
+import '../models/opencray_sandbox_settings.dart';
 import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
@@ -32,10 +37,12 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     OpenCrayLlmConfigSnapshot? initialLlmConfig,
     OpenCrayPersonalizationConfigSnapshot? initialPersonalizationConfig,
     OpenCrayMcpSettingsSnapshot? initialMcpSettings,
+    OpenCrayNotificationSettingsSnapshot? initialNotificationSettings,
     OpenCraySafetySettingsSnapshot? initialSafetySettings,
     OpenCrayStrongBackgroundSnapshot? initialStrongBackgroundSnapshot,
     OpenCraySkillsSnapshot? initialSkillsSnapshot,
     OpenCrayChatSnapshot? initialChatSnapshot,
+    OpenCraySandboxSettingsSnapshot? initialSandboxSettings,
   }) : _snapshot =
            initialSnapshot ??
            const OpenCrayShellSnapshot(
@@ -58,6 +65,10 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
              deviceTitle: 'OpenCray on this device',
              deviceSummary: 'API routes: Search + Media',
              entries: <OpenCraySettingsHomeEntrySnapshot>[
+               OpenCraySettingsHomeEntrySnapshot(
+                 routeId: 'notifications_background',
+                 title: 'Notifications & Background',
+               ),
                OpenCraySettingsHomeEntrySnapshot(
                  routeId: 'workspace_access',
                  title: 'Workspace Access',
@@ -132,6 +143,23 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
        _personalizationConfig =
            initialPersonalizationConfig ?? _buildSeedPersonalizationConfig(),
        _mcpSettings = initialMcpSettings ?? _buildSeedMcpSettings(),
+       _notificationSettings =
+           initialNotificationSettings ??
+           const OpenCrayNotificationSettingsSnapshot(
+             masterEnabled: true,
+             defaultDeliveryModeId: 'critical',
+             quietHoursEnabled: true,
+             quietHoursStartMinutes: 1380,
+             quietHoursEndMinutes: 480,
+             approvalRequestsEnabled: true,
+             approvalReminderEnabled: true,
+             taskFinishedEnabled: false,
+             taskFailedEnabled: true,
+             newUserMessageEnabled: true,
+             scheduledWakeEnabled: false,
+             backgroundTaskPausedEnabled: true,
+             serviceRecoveredEnabled: false,
+           ),
        _safetySettings =
            initialSafetySettings ??
            const OpenCraySafetySettingsSnapshot(
@@ -289,7 +317,33 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
                ],
              ),
              isInputEnabled: true,
+           ),
+       _sandboxSettings =
+           initialSandboxSettings ??
+           const OpenCraySandboxSettingsSnapshot(
+             localeTag: 'en',
+             enabled: false,
+             providerId: 'e2b',
+             defaultBackend: 'local',
+             sessionMode: 'ephemeral',
+             autoResume: false,
+             idleTimeoutMinutes: 15,
+             startupTimeoutMs: 30000,
+             requestTimeoutMs: 300000,
+             timeoutAction: 'kill',
+             templateId: '',
+             e2bApiKey: '',
+             apiKeyConfigured: false,
            );
+
+  String? _lastCopiedPlainText;
+  String? _lastCopiedHtmlText;
+
+  @visibleForTesting
+  String? get lastCopiedPlainText => _lastCopiedPlainText;
+
+  @visibleForTesting
+  String? get lastCopiedHtmlText => _lastCopiedHtmlText;
 
   final StreamController<OpenCrayShellSnapshot> _controller =
       StreamController<OpenCrayShellSnapshot>.broadcast();
@@ -362,10 +416,12 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   OpenCrayLlmConfigSnapshot _llmConfig;
   OpenCrayPersonalizationConfigSnapshot _personalizationConfig;
   OpenCrayMcpSettingsSnapshot _mcpSettings;
+  OpenCrayNotificationSettingsSnapshot _notificationSettings;
   OpenCraySafetySettingsSnapshot _safetySettings;
   final OpenCrayStrongBackgroundSnapshot _strongBackgroundSnapshot;
   OpenCraySkillsSnapshot _skillsSnapshot;
   OpenCrayChatSnapshot _chatSnapshot;
+  OpenCraySandboxSettingsSnapshot _sandboxSettings;
   int _seedMessageCounter = 1;
 
   List<String> get shownNativeToasts =>
@@ -476,6 +532,16 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   @override
   Future<void> openExternalUri(String uri) async {
     throw StateError('Seed bridge does not support opening external links.');
+  }
+
+  @override
+  Future<void> copyRichTextToClipboard({
+    required String plainText,
+    String? htmlText,
+  }) async {
+    _lastCopiedPlainText = plainText;
+    _lastCopiedHtmlText = htmlText;
+    await Clipboard.setData(ClipboardData(text: plainText));
   }
 
   @override
@@ -635,6 +701,18 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   ) async => _seedSettingsDetailFor(routeId);
 
   @override
+  Future<OpenCrayNotificationSettingsSnapshot>
+  loadNotificationSettings() async => _notificationSettings;
+
+  @override
+  Future<OpenCrayNotificationSettingsSnapshot> saveNotificationSettings(
+    OpenCrayNotificationSettingsSnapshot snapshot,
+  ) async {
+    _notificationSettings = snapshot;
+    return _notificationSettings;
+  }
+
+  @override
   Future<OpenCrayStrongBackgroundSnapshot>
   loadStrongBackgroundSnapshot() async => _strongBackgroundSnapshot;
 
@@ -677,6 +755,18 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   ) async {
     _mediaSpeechConfig = snapshot;
     return _mediaSpeechConfig;
+  }
+
+  @override
+  Future<OpenCraySandboxSettingsSnapshot> loadSandboxSettings() async =>
+      _sandboxSettings;
+
+  @override
+  Future<OpenCraySandboxSettingsSnapshot> saveSandboxSettings(
+    OpenCraySandboxSettingsSnapshot snapshot,
+  ) async {
+    _sandboxSettings = snapshot;
+    return _sandboxSettings;
   }
 
   @override
@@ -992,6 +1082,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCraySkillsSnapshot> loadSkillsSnapshot({
     String query = '',
+    int? suggestedLimit,
   }) async => _skillsSnapshot;
 
   @override
@@ -1019,6 +1110,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
           .toList(growable: false),
       installSources: _skillsSnapshot.installSources,
       suggestedSkills: _skillsSnapshot.suggestedSkills,
+      suggestedSkillsMayHaveMore: _skillsSnapshot.suggestedSkillsMayHaveMore,
     );
     _emitSkillsSnapshot();
   }
@@ -1082,6 +1174,36 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       sourceDirectoryPath: skill.sourceDirectoryPath,
       isEnabled: skill.isEnabled,
       canDelete: skill.canDelete,
+    );
+  }
+
+  @override
+  Future<OpenCraySkillInstructionsSnapshot?> loadSuggestedSkillInstructions(
+    String sourceRef, {
+    String selectedSkillName = '',
+  }) async {
+    final suggestion = _skillsSnapshot.suggestedSkills
+        .cast<OpenCraySuggestedSkillSnapshot?>()
+        .firstWhere(
+          (candidate) =>
+              candidate?.sourceRef == sourceRef &&
+              (selectedSkillName.trim().isEmpty ||
+                  candidate?.name == selectedSkillName),
+          orElse: () => null,
+        );
+    if (suggestion == null) {
+      return null;
+    }
+    return OpenCraySkillInstructionsSnapshot(
+      id: suggestion.id,
+      name: suggestion.name,
+      description: suggestion.description,
+      markdownBody: 'Seed bridge preview is not backed by the Android host.',
+      sourceDirectoryPath: suggestion.detailUrl.isNotEmpty
+          ? suggestion.detailUrl
+          : suggestion.sourceRef,
+      isEnabled: false,
+      canDelete: false,
     );
   }
 
@@ -1525,9 +1647,17 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<void> approveChatApprovalForSession(String approvalId) async {
+    _resolveChatApproval(approvalId);
+  }
+
+  @override
   Future<void> rejectChatApproval(String approvalId) async {
     _resolveChatApproval(approvalId);
   }
+
+  @override
+  Future<void> interruptChatRun(String runIdOrTaskId) async {}
 
   @override
   Future<void> retryChatRun(String runIdOrTaskId) async {}
@@ -1664,6 +1794,32 @@ String _seedChatSessionPreviewFromMessages(
 
 OpenCraySettingsDetailSnapshot _seedSettingsDetailFor(String routeId) {
   switch (routeId) {
+    case 'notifications_background':
+      return const OpenCraySettingsDetailSnapshot(
+        routeId: 'notifications_background',
+        title: 'Notifications & Background',
+        subtitle: 'Control alerts, service visibility, and wakeups.',
+        sections: <OpenCraySettingsSectionSnapshot>[
+          OpenCraySettingsSectionSnapshot(
+            title: 'Notifications',
+            helperText:
+                'Notification and background controls are rendered by the Flutter settings page.',
+          ),
+        ],
+      );
+    case 'notification_channels':
+      return const OpenCraySettingsDetailSnapshot(
+        routeId: 'notification_channels',
+        title: 'Notification Channels',
+        subtitle: 'Choose which events can interrupt you.',
+        sections: <OpenCraySettingsSectionSnapshot>[
+          OpenCraySettingsSectionSnapshot(
+            title: 'Notification channels',
+            helperText:
+                'Notification channel controls are rendered by the Flutter settings page.',
+          ),
+        ],
+      );
     case 'workspace_access':
       return const OpenCraySettingsDetailSnapshot(
         routeId: 'workspace_access',

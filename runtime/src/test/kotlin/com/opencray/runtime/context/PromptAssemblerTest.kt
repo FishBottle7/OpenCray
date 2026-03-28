@@ -95,6 +95,18 @@ class PromptAssemblerTest {
               name = "SynthesizeSpeech",
               description = "Generate a voice clip.",
             ),
+            AgentToolDefinition(
+              name = "import_chat_attachment",
+              description = "Import a chat attachment into the workspace.",
+            ),
+            AgentToolDefinition(
+              name = "view_workspace_image",
+              description = "Inspect a workspace image directly.",
+            ),
+            AgentToolDefinition(
+              name = "view_workspace_pdf",
+              description = "Inspect a workspace PDF directly.",
+            ),
           ),
           liveConversation = listOf(
             RuntimeConversationMessage(RuntimeConversationRole.USER, "Older request."),
@@ -117,11 +129,11 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("On each turn, return exactly one JSON object"))
     assertTrue(prompt.taskPrompt.contains("the runtime will execute it, append the tool result"))
     assertTrue(prompt.taskPrompt.contains("If you need multiple tools, call only the next tool now"))
-    assertTrue(prompt.taskPrompt.contains("Keep the user updated with short public progress as you work"))
+    assertTrue(prompt.taskPrompt.contains("Keep the user updated with short public commentary as you work"))
     assertTrue(prompt.taskPrompt.contains("Before the first tool call, give a brief public plan"))
     assertTrue(prompt.taskPrompt.contains("Before making tool calls, send a brief public preamble"))
-    assertTrue(prompt.taskPrompt.contains("use a progress action for that preamble"))
-    assertTrue(prompt.taskPrompt.contains("A progress action is a short public status update"))
+    assertTrue(prompt.taskPrompt.contains("use a commentary action for that preamble"))
+    assertTrue(prompt.taskPrompt.contains("A commentary action is a short public status update"))
     assertTrue(prompt.taskPrompt.contains("Group related tool reads or searches under one preamble"))
     assertTrue(prompt.taskPrompt.contains("connect the next preamble to that new context"))
     assertTrue(prompt.taskPrompt.contains("use TodoWrite to keep a short live plan"))
@@ -143,8 +155,27 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("Do not use Bash to invoke python, python3, or py for workspace scripts or Python-related diagnostics"))
     assertTrue(prompt.taskPrompt.contains("reason or justification"))
     assertTrue(prompt.taskPrompt.contains("it must not include a final answer"))
+    assertTrue(prompt.taskPrompt.contains("\"attachments\":[{\"relative_path\":\"docs/diagram.png\",\"kind\":\"image\"}]"))
+    assertTrue(prompt.taskPrompt.contains("\"attachments\":[{\"relative_path\":\"docs/report.pdf\",\"kind\":\"file\"}]"))
     assertTrue(prompt.taskPrompt.contains("\"attachments\":[{\"artifact_id\":\"artifact-example-1234abcd\",\"kind\":\"image\"}]"))
+    assertTrue(prompt.taskPrompt.contains("\"attachments\":[{\"chat_attachment_id\":\"user-image-1\",\"kind\":\"image\"}]"))
     assertTrue(prompt.taskPrompt.contains("When a tool result produces attachment artifacts"))
+    assertTrue(prompt.taskPrompt.contains("chat_attachment_id"))
+    assertTrue(prompt.taskPrompt.contains("Uploaded chat attachments are chat resources, not workspace files."))
+    assertTrue(prompt.taskPrompt.contains("If the model can already inspect an uploaded image directly, do not import it unless you need a workspace copy."))
+    assertTrue(prompt.taskPrompt.contains("Use import_chat_attachment only when you intentionally want to save one existing chat attachment into the workspace."))
+    assertTrue(prompt.taskPrompt.contains("If you need to inspect what a readable workspace image actually contains, call view_workspace_image instead of guessing from the path, filename, or nearby text."))
+    assertTrue(prompt.taskPrompt.contains("view_workspace_image attaches that workspace image into the next model turn for direct visual inspection."))
+    assertTrue(prompt.taskPrompt.contains("After calling view_workspace_image, wait for the next turn and inspect the attached image directly before taking further action."))
+    assertTrue(prompt.taskPrompt.contains("If you need to inspect what a readable workspace PDF actually contains, call view_workspace_pdf instead of guessing from the path, filename, or nearby text."))
+    assertTrue(prompt.taskPrompt.contains("view_workspace_pdf attaches that workspace PDF into the next model turn for direct inspection when the current model accepts PDF inputs."))
+    assertTrue(prompt.taskPrompt.contains("After calling view_workspace_pdf, wait for the next turn and inspect the attached PDF directly before taking further action."))
+    assertTrue(prompt.taskPrompt.contains("Do not rely on markdown alone to send an attachment"))
+    assertTrue(prompt.taskPrompt.contains("you must do both"))
+    assertTrue(prompt.taskPrompt.contains("For ordinary file cards, you may omit markdown and just attach the file in the attachments array."))
+    assertTrue(prompt.taskPrompt.contains("attachment:<token>"))
+    assertTrue(prompt.taskPrompt.contains("relative_path, artifact_id, or chat_attachment_id"))
+    assertTrue(prompt.taskPrompt.contains("Do not use a generic placeholder such as attachment:artifact"))
     assertTrue(prompt.taskPrompt.contains("Generated speech should usually be attached with kind=voice"))
     assertTrue(prompt.taskPrompt.contains("Available tools:"))
     assertTrue(prompt.taskPrompt.contains("[Task Metadata]"))
@@ -298,7 +329,7 @@ class PromptAssemblerTest {
   }
 
   @Test
-  fun assembleCanReEnableLegacyJsonFallbackWhenNativeToolCallingDegrades() {
+  fun assembleKeepsNativeToolGuidanceWhenLegacyFallbackCompatibilityIsEnabled() {
     val assembler = PromptAssembler()
 
     val prompt = assembler.assemble(
@@ -322,13 +353,13 @@ class PromptAssemblerTest {
       ),
     )
 
-    assertTrue(prompt.taskPrompt.contains("legacy JSON fallback compatibility enabled"))
-    assertTrue(prompt.taskPrompt.contains("Keep the user updated with short public progress as you work"))
+    assertTrue(prompt.taskPrompt.contains("Keep the user updated with short public commentary as you work"))
     assertTrue(prompt.taskPrompt.contains("Before the first tool call, give a brief public plan"))
     assertTrue(prompt.taskPrompt.contains("Before making tool calls, send a brief public preamble"))
-    assertTrue(prompt.taskPrompt.contains("represent it as a progress action"))
-    assertTrue(prompt.taskPrompt.contains("If native tool calling works, prefer it. Otherwise, return exactly one JSON object"))
-    assertTrue(prompt.taskPrompt.contains("\"type\":\"final\""))
+    assertTrue(prompt.taskPrompt.contains("use the provider's native tool-calling interface"))
+    assertFalse(prompt.taskPrompt.contains("legacy JSON fallback"))
+    assertFalse(prompt.taskPrompt.contains("\"type\":\"tool_call\""))
+    assertFalse(prompt.taskPrompt.contains("\"type\":\"final\""))
   }
 
   @Test

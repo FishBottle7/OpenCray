@@ -74,6 +74,7 @@ data class CommandSpawnResult(
   val timedOut: Boolean = false,
   val cancelled: Boolean = false,
   val outputLimitExceeded: Boolean = false,
+  val metadata: Map<String, String> = emptyMap(),
 )
 
 fun interface CommandProcessRunner {
@@ -260,13 +261,13 @@ class LocalCommandProcessRunner : CommandProcessRunner {
   }
 }
 
-class CommandExecutor(
+open class CommandExecutor(
   private val runner: CommandProcessRunner = LocalCommandProcessRunner(),
   private val config: CommandExecutionConfig = CommandExecutionConfig(),
   private val auditSink: CommandAuditSink = CommandAuditSink { _ -> },
   private val clock: () -> Long = { System.currentTimeMillis() },
 ) {
-  fun execute(
+  open fun execute(
     request: CommandExecutionRequest,
     policyDecision: com.opencray.core.contracts.PolicyDecision,
     approvalToken: CommandApprovalToken? = null,
@@ -374,7 +375,11 @@ class CommandExecutor(
         policyDecision = policyDecision,
         startedAtEpochMs = startedAt,
         finishedAtEpochMs = maxOf(startedAt, clock()),
-        metadata = executionMetadata(request, gateDecision, spawned = true),
+        metadata = executionMetadata(
+          request = request,
+          gateDecision = gateDecision,
+          spawned = true,
+        ),
       )
       auditSink.record(auditRecordFor(request, gateDecision, result, spawned = true))
       return result
@@ -393,7 +398,12 @@ class CommandExecutor(
         policyDecision = policyDecision,
         startedAtEpochMs = startedAt,
         finishedAtEpochMs = finishedAt,
-        metadata = executionMetadata(request, gateDecision, spawned = false),
+        metadata = executionMetadata(
+          request = request,
+          gateDecision = gateDecision,
+          spawned = false,
+          runtimeMetadata = spawnResult.metadata,
+        ),
       )
 
       spawnResult.timedOut -> ExecutionResult(
@@ -407,7 +417,12 @@ class CommandExecutor(
         policyDecision = policyDecision,
         startedAtEpochMs = startedAt,
         finishedAtEpochMs = finishedAt,
-        metadata = executionMetadata(request, gateDecision, spawned = processStarted),
+        metadata = executionMetadata(
+          request = request,
+          gateDecision = gateDecision,
+          spawned = processStarted,
+          runtimeMetadata = spawnResult.metadata,
+        ),
       )
 
       spawnResult.cancelled -> ExecutionResult(
@@ -421,7 +436,12 @@ class CommandExecutor(
         policyDecision = policyDecision,
         startedAtEpochMs = startedAt,
         finishedAtEpochMs = finishedAt,
-        metadata = executionMetadata(request, gateDecision, spawned = processStarted),
+        metadata = executionMetadata(
+          request = request,
+          gateDecision = gateDecision,
+          spawned = processStarted,
+          runtimeMetadata = spawnResult.metadata,
+        ),
       )
 
       spawnResult.outputLimitExceeded -> ExecutionResult(
@@ -435,7 +455,12 @@ class CommandExecutor(
         policyDecision = policyDecision,
         startedAtEpochMs = startedAt,
         finishedAtEpochMs = finishedAt,
-        metadata = executionMetadata(request, gateDecision, spawned = processStarted),
+        metadata = executionMetadata(
+          request = request,
+          gateDecision = gateDecision,
+          spawned = processStarted,
+          runtimeMetadata = spawnResult.metadata,
+        ),
       )
 
       spawnResult.exitCode == 0 -> ExecutionResult(
@@ -447,7 +472,12 @@ class CommandExecutor(
         policyDecision = policyDecision,
         startedAtEpochMs = startedAt,
         finishedAtEpochMs = finishedAt,
-        metadata = executionMetadata(request, gateDecision, spawned = processStarted),
+        metadata = executionMetadata(
+          request = request,
+          gateDecision = gateDecision,
+          spawned = processStarted,
+          runtimeMetadata = spawnResult.metadata,
+        ),
       )
 
       else -> ExecutionResult(
@@ -461,7 +491,12 @@ class CommandExecutor(
         policyDecision = policyDecision,
         startedAtEpochMs = startedAt,
         finishedAtEpochMs = finishedAt,
-        metadata = executionMetadata(request, gateDecision, spawned = processStarted),
+        metadata = executionMetadata(
+          request = request,
+          gateDecision = gateDecision,
+          spawned = processStarted,
+          runtimeMetadata = spawnResult.metadata,
+        ),
       )
     }
 
@@ -520,9 +555,11 @@ class CommandExecutor(
     request: CommandExecutionRequest,
     gateDecision: CommandGateDecision,
     spawned: Boolean,
+    runtimeMetadata: Map<String, String> = emptyMap(),
   ): Map<String, String> {
     val metadata = LinkedHashMap<String, String>()
     metadata.putAll(request.metadata)
+    metadata.putAll(runtimeMetadata)
     metadata["command"] = request.command
     metadata["args"] = request.args.joinToString("\u0000")
     metadata["gateStatus"] = gateDecision.status.name

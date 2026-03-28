@@ -155,14 +155,14 @@ class PromptAssembler {
     )
   }
 
+  @Suppress("UNUSED_PARAMETER")
   private fun renderToolProtocolLayer(
     toolDefinitions: List<AgentToolDefinition>,
     nativeToolCallingEnabled: Boolean,
     parallelToolCallsEnabled: Boolean,
     legacyJsonFallbackEnabled: Boolean,
   ): String = buildString {
-    val jsonProtocolEnabled = legacyJsonFallbackEnabled || !nativeToolCallingEnabled
-    val nativeToolCallingOnly = nativeToolCallingEnabled && !legacyJsonFallbackEnabled
+    val jsonProtocolEnabled = !nativeToolCallingEnabled
     val normalizedToolNames = toolDefinitions
       .map { definition -> definition.name.trim().lowercase() }
       .filter(String::isNotBlank)
@@ -182,10 +182,24 @@ class PromptAssembler {
     val hasProcessStartTool = hasAnyTool(normalizedToolNames, "processstart")
     val hasProcessReadTool = hasAnyTool(normalizedToolNames, "processread")
     val hasProcessWaitTool = hasAnyTool(normalizedToolNames, "processwait")
+    val hasTaskTool = hasAnyTool(normalizedToolNames, "task")
+    val hasSpawnAgentTool = hasAnyTool(normalizedToolNames, "spawn_agent")
+    val hasWaitAgentTool = hasAnyTool(normalizedToolNames, "wait_agent")
+    val hasSendInputTool = hasAnyTool(normalizedToolNames, "send_input")
+    val hasCloseAgentTool = hasAnyTool(normalizedToolNames, "close_agent")
     val hasMemorySearchTool = toolDefinitions.any { definition -> definition.name == "memory_search" }
     val hasMemoryGetTool = toolDefinitions.any { definition -> definition.name == "memory_get" }
     val hasImportTool = toolDefinitions.any { definition ->
       definition.name == "ImportFile" || definition.name == "workspace_import_file"
+    }
+    val hasChatAttachmentImportTool = toolDefinitions.any { definition ->
+      definition.name == "import_chat_attachment"
+    }
+    val hasWorkspaceImageViewTool = toolDefinitions.any { definition ->
+      definition.name == "view_workspace_image"
+    }
+    val hasWorkspacePdfViewTool = toolDefinitions.any { definition ->
+      definition.name == "view_workspace_pdf"
     }
     val primaryToolCallExample = when {
       hasReadTool -> """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}"""
@@ -228,7 +242,7 @@ class PromptAssembler {
     appendLine("Decide the next step for this OpenCray task.")
     appendLine()
     when {
-      nativeToolCallingOnly -> {
+      nativeToolCallingEnabled -> {
         appendLine("Native tool calling is enabled for this run.")
         appendLine("Keep the user updated with short public commentary as you work.")
         appendLine("Before the first tool call, give a brief public plan that states the goal, key constraints, and immediate next step.")
@@ -239,61 +253,49 @@ class PromptAssembler {
         appendLine("When you are ready to answer the user, return a plain assistant text answer.")
       }
 
-      nativeToolCallingEnabled -> {
-        appendLine("Native tool calling is enabled for this run.")
-        appendLine("Keep the user updated with short public progress as you work.")
-        appendLine("Before the first tool call, give a brief public plan that states the goal, key constraints, and immediate next step.")
-        appendLine("Before making tool calls, send a brief public preamble explaining what you are about to do.")
-        appendLine("When you need that preamble while using legacy JSON fallback, represent it as a progress action.")
-        appendLine("This endpoint is currently running with legacy JSON fallback compatibility enabled.")
-        appendLine("If native tool calling works, prefer it. Otherwise, return exactly one JSON object and nothing else.")
-        appendLine("Use one of these legacy JSON fallback shapes:")
-      }
-
       else -> {
-        appendLine("Keep the user updated with short public progress as you work.")
+        appendLine("Keep the user updated with short public commentary as you work.")
         appendLine("Before the first tool call, give a brief public plan that states the goal, key constraints, and immediate next step.")
         appendLine("Before making tool calls, send a brief public preamble explaining what you are about to do.")
-        appendLine("In this protocol, use a progress action for that preamble.")
+        appendLine("In this protocol, use a commentary action for that preamble.")
         appendLine("On each turn, return exactly one JSON object and nothing else.")
         appendLine("Use one of these shapes:")
       }
     }
     if (jsonProtocolEnabled) {
-      appendLine("""{"type":"progress","text":"Scanning README and Gradle files before editing."}""")
+      appendLine("""{"type":"commentary","text":"Scanning README and Gradle files before editing."}""")
       toolCallExamples.forEach { example ->
         appendLine(example)
       }
       primaryToolCallExample?.let { toolCallExample ->
-        appendLine("""{"actions":[{"type":"progress","text":"Scanning README and Gradle files before editing."},$toolCallExample]}""")
+        appendLine("""{"actions":[{"type":"commentary","text":"Scanning README and Gradle files before editing."},$toolCallExample]}""")
       }
-      appendLine("""{"actions":[{"type":"progress","text":"Summarizing the confirmed workspace facts."},{"type":"final","answer":"Concise answer for the user."}]}""")
+      appendLine("""{"actions":[{"type":"commentary","text":"Summarizing the confirmed workspace facts."},{"type":"final","answer":"Concise answer for the user."}]}""")
       appendLine("""{"type":"final","answer":"Concise answer for the user."}""")
-      if (hasImageGenerationTool || hasSpeechSynthesisTool || hasWriteTool || hasImportTool) {
+      appendLine("""{"type":"final","answer":"Here is the workspace image.\n\n![diagram.png](attachment:docs/diagram.png)","attachments":[{"relative_path":"docs/diagram.png","kind":"image"}]}""")
+      appendLine("""{"type":"final","answer":"Attached the workspace file.","attachments":[{"relative_path":"docs/report.pdf","kind":"file"}]}""")
+      if (hasImageGenerationTool || hasSpeechSynthesisTool || hasWriteTool || hasImportTool || hasChatAttachmentImportTool) {
         appendLine("""{"type":"final","answer":"Attached the generated media.","attachments":[{"artifact_id":"artifact-example-1234abcd","kind":"image"}]}""")
+        appendLine("""{"type":"final","answer":"Here is the generated image inline.\n\n![diagram.png](attachment:artifact-example-1234abcd)","attachments":[{"artifact_id":"artifact-example-1234abcd","kind":"image"}]}""")
+        appendLine("""{"type":"final","answer":"Here is the uploaded image.\n\n![camera_first.jpg](attachment:user-image-1)","attachments":[{"chat_attachment_id":"user-image-1","kind":"image"}]}""")
       }
     }
-    if (nativeToolCallingOnly) {
-      appendLine("A progress update is a short public status update for the user.")
+    if (nativeToolCallingEnabled) {
+      appendLine("A commentary update is a short public status update for the user.")
     } else {
-      appendLine("A progress action is a short public status update for the user.")
+      appendLine("A commentary action is a short public status update for the user.")
     }
     appendLine("Group related tool reads or searches under one preamble instead of repeating trivial updates for every tiny action.")
     appendLine("After you learn something important, connect the next preamble to that new context so the user can follow your reasoning and momentum.")
-    appendLine("Never expose raw private chain-of-thought, hidden safety reasoning, or secrets inside progress.")
+    appendLine("Never expose raw private chain-of-thought, hidden safety reasoning, or secrets inside commentary.")
     if (jsonProtocolEnabled) {
       if (parallelToolCallsEnabled) {
-        appendLine("If you use an actions array, emit at most one progress action first, then either one or more tool_call actions, or exactly one final action.")
+        appendLine("If you use an actions array, emit at most one commentary action first, then either one or more tool_call actions, or exactly one final action.")
       } else {
-        appendLine("If you use an actions array, emit at most one progress action first, then exactly one terminal action.")
+        appendLine("If you use an actions array, emit at most one commentary action first, then exactly one terminal action.")
       }
       appendLine("If you return type=tool_call, the runtime will execute it, append the tool result, and ask you for the next action.")
-      if (nativeToolCallingEnabled) {
-        appendLine("When native tool calling works, prefer it over the legacy JSON tool_call shape.")
-        appendLine("Do not describe a tool call in plain prose.")
-        appendLine("A plain assistant text answer is preferred over the legacy JSON final shape when you are ready to answer.")
-      }
-      appendLine("If you return only type=progress, the runtime will record it and ask you for the next action on the following turn.")
+      appendLine("If you return only type=commentary, the runtime will record it and ask you for the next action on the following turn.")
     } else {
       appendLine("Do not describe a tool call in plain prose.")
     }
@@ -322,6 +324,22 @@ class PromptAssembler {
       appendLine("For workspace-local Python scripts, prefer python_exec instead of Bash.")
       appendLine("For Python runtime inspection or diagnostics such as version checks, sys.path, imports, or environment behavior, do not use Bash. Create or reuse a small workspace-local probe script and run it with python_exec.")
     }
+    if (hasTaskTool) {
+      appendLine("Use Task for simple synchronous delegation when you want to wait immediately for one child result.")
+    }
+    if (hasSpawnAgentTool && hasWaitAgentTool) {
+      appendLine("Use spawn_agent when you need an explicit child handle that you may wait on later.")
+      appendLine("Use wait_agent to execute or resume a queued child handle after spawn_agent.")
+    }
+    if (hasSendInputTool) {
+      appendLine("Use send_input only before a queued child starts running. It appends more parent instructions; it is not a mid-run interrupt.")
+    }
+    if (hasCloseAgentTool) {
+      appendLine("Use close_agent to stop tracking a queued or waiting child handle when that child should not continue.")
+    }
+    if (hasTaskTool && hasSpawnAgentTool && hasWaitAgentTool) {
+      appendLine("Prefer Task for one-off delegation. Prefer spawn_agent plus wait_agent when you need explicit control over the child handle.")
+    }
     if (hasProcessStartTool && hasPythonExecTool) {
       appendLine("If you need to manage a long-running Python task across multiple turns, use ProcessStart with script_path only when the runtime supports managed Python process launches.")
     }
@@ -332,8 +350,33 @@ class PromptAssembler {
       appendLine("When task metadata includes approvedReadRoots, you may inspect those roots with absolute paths.")
       appendLine("Approved external roots are read-only. Use ImportFile to copy files or folders into the writable workspace before editing, deleting, or other mutating operations.")
     }
-    if (hasImageGenerationTool || hasSpeechSynthesisTool || hasWriteTool || hasImportTool) {
+    if (hasChatAttachmentImportTool) {
+      appendLine("Uploaded chat attachments are chat resources, not workspace files.")
+      appendLine("If the model can already inspect an uploaded image directly, do not import it unless you need a workspace copy.")
+      appendLine("Use import_chat_attachment only when you intentionally want to save one existing chat attachment into the workspace.")
+      appendLine("When you need to inspect a non-image chat attachment with normal file tools, first decide whether to call import_chat_attachment.")
+    }
+    if (hasWorkspaceImageViewTool) {
+      appendLine("If you need to inspect what a readable workspace image actually contains, call view_workspace_image instead of guessing from the path, filename, or nearby text.")
+      appendLine("view_workspace_image attaches that workspace image into the next model turn for direct visual inspection.")
+      appendLine("After calling view_workspace_image, wait for the next turn and inspect the attached image directly before taking further action.")
+    }
+    if (hasWorkspacePdfViewTool) {
+      appendLine("If you need to inspect what a readable workspace PDF actually contains, call view_workspace_pdf instead of guessing from the path, filename, or nearby text.")
+      appendLine("view_workspace_pdf attaches that workspace PDF into the next model turn for direct inspection when the current model accepts PDF inputs.")
+      appendLine("After calling view_workspace_pdf, wait for the next turn and inspect the attached PDF directly before taking further action.")
+    }
+    if (jsonProtocolEnabled) {
       appendLine("When a tool result produces attachment artifacts, you may send them in the final action by adding attachments with artifact_id.")
+      appendLine("When you need to resend a file or image that already exists in the chat history, attach it with chat_attachment_id.")
+      appendLine("Use chat_attachment_id to resend an existing chat upload back to the user. Use import_chat_attachment to copy that upload into the workspace.")
+      appendLine("Do not claim that you attached or sent a file unless the final action attachments array actually includes it.")
+      appendLine("Do not rely on markdown alone to send an attachment. Markdown attachment references only control inline placement in the rendered answer.")
+      appendLine("If you want an attachment to appear inline inside the written answer, you must do both: include it in the attachments array and reference the same token with markdown using attachment:<token>.")
+      appendLine("For ordinary file cards, you may omit markdown and just attach the file in the attachments array.")
+      appendLine("For inline attachment markdown, use the attachment display name as the markdown label.")
+      appendLine("Use the concrete relative_path, artifact_id, or chat_attachment_id as the attachment:<token> value. Do not use a generic placeholder such as attachment:artifact unless that literal token is the real identifier.")
+      appendLine("When resending an existing chat upload, prefer chat_attachment_id over guessing by filename.")
       appendLine("Use relative_path only for files that already exist inside the workspace.")
       appendLine("Generated speech should usually be attached with kind=voice so the chat uses the built-in voice player.")
       appendLine("If you intentionally want an audio file card instead of a voice message, attach the same artifact_id with kind=file.")

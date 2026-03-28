@@ -476,7 +476,11 @@ def run_request_file(
         if isinstance(payload, dict):
             request_id = str(payload.get("requestId", request_id))
             task_id = str(payload.get("taskId", task_id))
-            if execution_started_at_epoch_ms is not None and execution_started_at_epoch_ms > 0:
+            if (
+                execution_started_at_epoch_ms is not None
+                and execution_started_at_epoch_ms > 0
+                and int(payload.get("executionStartedAtEpochMs", 0) or 0) <= 0
+            ):
                 payload["executionStartedAtEpochMs"] = execution_started_at_epoch_ms
         request = BridgeRequest.from_json_dict(payload)
         result = execute_request(request)

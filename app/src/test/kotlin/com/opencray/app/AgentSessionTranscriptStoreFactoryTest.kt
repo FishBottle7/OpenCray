@@ -2,7 +2,7 @@ package com.opencray.app
 
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationMessageKind
-import com.opencray.runtime.context.RuntimeConversationProgress
+import com.opencray.runtime.context.RuntimeConversationCommentary
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.RuntimeConversationToolCall
 import com.opencray.runtime.context.RuntimeConversationToolResult
@@ -114,8 +114,8 @@ class AgentSessionTranscriptStoreFactoryTest {
       RuntimeConversationMessage(
         role = RuntimeConversationRole.TOOL,
         content = """{"event_kind":"assistant_phase","phase":"commentary","run_id":"run-1","task_id":"task-1","turn":1,"text":"Planning the edit.","stage":"Planning"}""",
-        kind = RuntimeConversationMessageKind.PROGRESS,
-        progress = RuntimeConversationProgress(
+        kind = RuntimeConversationMessageKind.COMMENTARY,
+        commentary = RuntimeConversationCommentary(
           runId = "run-1",
           taskId = "task-1",
           turn = 1,

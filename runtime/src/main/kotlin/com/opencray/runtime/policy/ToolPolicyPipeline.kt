@@ -39,6 +39,7 @@ internal class ToolPolicyPipeline(
     destinationPath: Path? = null,
     metadataRequest: ToolMetadataContextRequest = ToolMetadataContextRequest(),
     intent: ToolRuntimeIntent? = null,
+    approvedHostManagedReadRoots: Set<Path> = emptySet(),
   ): ToolPolicyPlan = ToolPolicyPlan(
     task = task,
     toolName = toolName,
@@ -52,6 +53,7 @@ internal class ToolPolicyPipeline(
         destinationPath = destinationPath,
         approvedReadRoots = readRoots,
         approvedWriteRoots = writeRoots,
+        approvedHostManagedReadRoots = approvedHostManagedReadRoots,
       ),
     ),
     metadataContext = metadataContext(

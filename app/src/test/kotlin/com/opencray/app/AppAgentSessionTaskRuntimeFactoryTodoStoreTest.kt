@@ -17,6 +17,7 @@ import com.opencray.runtime.NoOpOpenCrayAgentRuntimeEventSink
 import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCrayPromptResumeState
+import com.opencray.runtime.OpenCrayPromptSupplementMetadata
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCraySupplementEvent
@@ -37,6 +38,8 @@ import com.opencray.runtime.memory.UserMemoryIntentInterpreter
 import com.opencray.runtime.memory.UserMemoryIntentRequest
 import com.opencray.runtime.context.ContextManager
 import com.opencray.runtime.context.PromptAssembler
+import com.opencray.runtime.context.RuntimeConversationAttachment
+import com.opencray.runtime.context.RuntimeConversationAttachmentKind
 import com.opencray.runtime.context.RuntimeConversationMessageKind
 import com.opencray.runtime.soul.SoulProfileExtensionKeys
 import com.opencray.runtime.soul.SoulMemoryObjectTypes
@@ -345,11 +348,11 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
 
     assertEquals(1, snapshot.size)
     assertEquals(RuntimeConversationRole.TOOL, snapshot.single().role)
-    assertTrue(snapshot.single().content.contains("run_cancelled"))
+    assertTrue(snapshot.single().content.contains("run_interrupted"))
     assertTrue(snapshot.single().content.contains("task_id=task-1"))
     assertTrue(snapshot.single().content.contains("run_id=run-1"))
     assertTrue(snapshot.single().content.contains("tool_name=Write"))
-    assertTrue(snapshot.single().content.contains("outcome=user_cancelled"))
+    assertTrue(snapshot.single().content.contains("outcome=user_interrupted"))
   }
 
   @Test
@@ -674,6 +677,70 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     assertEquals("manual", replayMetadata?.get("source")?.jsonPrimitive?.content)
     assertEquals(1, replayMetadata?.size)
     assertFalse(replayMetadata?.containsKey(OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON) == true)
+  }
+
+  @Test
+  fun transcriptAwareEventSinkRestoresSupplementAttachmentsIntoUserReplayMessage() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-supplement-replay-attachments"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-supplement-replay-attachments").toPath()
+    val imagePath = workspaceRoot.resolve("screens").resolve("camera-first.png")
+    Files.createDirectories(imagePath.parent)
+    Files.write(imagePath, byteArrayOf(1, 2, 3, 4))
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    val sessionId = "session-1"
+    val transcriptStore = factory.transcriptStoreForSession(sessionId)
+    val eventSink = factory.transcriptAwareEventSinkForTest(
+      sessionId = sessionId,
+      transcriptStore = transcriptStore,
+    )
+    val resumeState = OpenCrayPromptResumeState(turnIndex = 2, toolCallCount = 1)
+
+    eventSink.onRunEvent(
+      promptTask("Inspect the image."),
+      OpenCraySupplementEvent(
+        runId = "run-1",
+        taskId = "task-live-context",
+        turn = 1,
+        entryId = "supplement-image-1",
+        text = "Inspect the attached workspace image directly.",
+        metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(resumeState, Json) +
+          OpenCrayPromptSupplementMetadata.encodeMetadata(
+            json = Json,
+            attachments = listOf(
+              RuntimeConversationAttachment(
+                attachmentId = "workspace-image-test",
+                kind = RuntimeConversationAttachmentKind.IMAGE,
+                displayName = "camera-first.png",
+                filePath = imagePath.toString().replace('\\', '/'),
+                mimeType = "image/png",
+              ),
+            ),
+          ),
+        emittedAtEpochMs = 1_003L,
+      ),
+    )
+
+    val snapshot = transcriptStore.snapshot()
+
+    assertEquals(2, snapshot.size)
+    assertEquals(RuntimeConversationRole.USER, snapshot[0].role)
+    assertEquals("Inspect the attached workspace image directly.", snapshot[0].content)
+    assertEquals(1, snapshot[0].attachments.size)
+    assertEquals("camera-first.png", snapshot[0].attachments.single().displayName)
+    assertEquals("image/png", snapshot[0].attachments.single().mimeType)
+    assertTrue(
+      Files.isSameFile(
+        imagePath,
+        java.nio.file.Paths.get(requireNotNull(snapshot[0].attachments.single().filePath)),
+      ),
+    )
   }
 
   @Test

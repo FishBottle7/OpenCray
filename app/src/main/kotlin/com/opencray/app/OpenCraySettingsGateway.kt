@@ -7,6 +7,10 @@ internal interface OpenCraySettingsGateway {
 
   fun loadSettingsDetail(routeIdRaw: String): Map<String, Any?>
 
+  fun loadNotificationSettings(): Map<String, Any?>
+
+  fun saveNotificationSettings(payload: Map<String, Any?>): Map<String, Any?>
+
   fun loadStrongBackgroundSnapshot(): Map<String, Any?>
 
   fun performStrongBackgroundAction(actionId: String): Map<String, Any?>
@@ -18,6 +22,10 @@ internal interface OpenCraySettingsGateway {
   fun loadMediaSpeechConfig(): Map<String, Any?>
 
   fun saveMediaSpeechConfig(payload: Map<String, Any?>): Map<String, Any?>
+
+  fun loadSandboxSettings(): Map<String, Any?>
+
+  fun saveSandboxSettings(payload: Map<String, Any?>): Map<String, Any?>
 
   fun loadLlmConfig(): Map<String, Any?>
 

@@ -128,11 +128,11 @@ data class CompactionPolicy(
         fallbackGroupKey = "tool_call:$index",
       )
     }
-    message.progressJsonPayloadOrNull()?.let {
-      return ToolActivity(groupKey = "progress:$index", category = ToolSummaryCategory.GENERIC)
+    message.commentaryJsonPayloadOrNull()?.let {
+      return ToolActivity(groupKey = "commentary:$index", category = ToolSummaryCategory.GENERIC)
     }
     when (message.kind) {
-      RuntimeConversationMessageKind.PROGRESS,
+      RuntimeConversationMessageKind.COMMENTARY,
       RuntimeConversationMessageKind.TOOL_RESULT,
       RuntimeConversationMessageKind.TOOL_CALL,
       -> Unit

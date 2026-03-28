@@ -67,6 +67,7 @@ data class PolicyRequest(
   val destinationPath: Path? = null,
   val approvedReadRoots: Set<Path> = setOf(workspaceRoot),
   val approvedWriteRoots: Set<Path> = setOf(workspaceRoot),
+  val approvedHostManagedReadRoots: Set<Path> = emptySet(),
 ) {
   constructor(
     mode: ExecutionMode,
@@ -82,6 +83,7 @@ data class PolicyRequest(
     destinationPath = destinationPath,
     approvedReadRoots = setOf(workspaceRoot),
     approvedWriteRoots = setOf(workspaceRoot),
+    approvedHostManagedReadRoots = emptySet(),
   )
 }
 
@@ -292,6 +294,10 @@ class ModePolicy(
     )
     val canonicalTarget = canonicalize(resolveAgainstWorkspace(canonicalWorkspaceRoot, targetPath))
     if (canonicalTarget.startsWith(canonicalWorkspaceRoot)) {
+      return null
+    }
+    val canonicalHostManagedRoots = request.approvedHostManagedReadRoots.map(::canonicalize)
+    if (canonicalHostManagedRoots.any { root -> canonicalTarget.startsWith(root) }) {
       return null
     }
     return PolicyDecision(

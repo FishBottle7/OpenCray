@@ -18,12 +18,15 @@ private const val INSTALL_SOURCE_CURATED = "curated-library"
 private const val INSTALL_SOURCE_LOCAL = "local-path"
 private const val INSTALL_SOURCE_GITHUB = "github-url"
 private const val INSTALL_SOURCE_GITLAB = "gitlab-url"
+private const val DEFAULT_REMOTE_SKILL_SEARCH_LIMIT = 12
+private const val MAX_REMOTE_SKILL_SEARCH_LIMIT = 20
 private val WINDOWS_ABSOLUTE_PATH_REGEX: Regex = Regex("^[A-Za-z]:[\\\\/].+")
 
 data class SkillsSnapshot(
   val installedSkills: List<InstalledSkillSnapshot>,
   val installSources: List<InstallSourceSnapshot>,
   val suggestedSkills: List<SuggestedSkillSnapshot>,
+  val suggestedSkillsMayHaveMore: Boolean = false,
 )
 
 data class InstalledSkillSnapshot(
@@ -49,6 +52,8 @@ data class SuggestedSkillSnapshot(
   val description: String,
   val sourceRef: String,
   val sourceLabel: String,
+  val installs: Int? = null,
+  val detailUrl: String = "",
 )
 
 data class SkillInstructionsSnapshot(
@@ -70,7 +75,7 @@ data class SkillInstallRequestResult(
 }
 
 interface SkillsFacade {
-  fun loadSnapshot(query: String = ""): SkillsSnapshot
+  fun loadSnapshot(query: String = "", suggestedLimit: Int = 0): SkillsSnapshot
 
   fun setSkillEnabled(skillId: String, enabled: Boolean): Boolean
 
@@ -83,6 +88,11 @@ interface SkillsFacade {
   fun refresh()
 
   fun loadInstructions(skillId: String): SkillInstructionsSnapshot?
+
+  fun loadSuggestedInstructions(
+    sourceRef: String,
+    selectedSkillName: String = "",
+  ): SkillInstructionsSnapshot?
 
   fun enabledSkillRoots(): List<File>
 
@@ -103,16 +113,19 @@ internal class LocalSkillsFacade private constructor(
     ),
   )
 
-  override fun loadSnapshot(query: String): SkillsSnapshot {
+  override fun loadSnapshot(query: String, suggestedLimit: Int): SkillsSnapshot {
     val normalizedQuery = query.trim()
     val installedSkills = loadInstalledSkills()
+    val suggestedSnapshot = loadSuggestedSkills(
+      query = normalizedQuery,
+      installedSkills = installedSkills,
+      suggestedLimit = suggestedLimit,
+    )
     return SkillsSnapshot(
       installedSkills = installedSkills,
       installSources = installSources(),
-      suggestedSkills = loadSuggestedSkills(
-        query = normalizedQuery,
-        installedSkills = installedSkills,
-      ),
+      suggestedSkills = suggestedSnapshot.skills,
+      suggestedSkillsMayHaveMore = suggestedSnapshot.mayHaveMore,
     )
   }
 
@@ -215,6 +228,49 @@ internal class LocalSkillsFacade private constructor(
     )
   }
 
+  override fun loadSuggestedInstructions(
+    sourceRef: String,
+    selectedSkillName: String,
+  ): SkillInstructionsSnapshot? {
+    val normalizedSourceRef = sourceRef.trim()
+    val normalizedSelectedSkillName = selectedSkillName.trim()
+    if (normalizedSourceRef.isEmpty()) {
+      return null
+    }
+    val localSkill = loadCatalogSkills().firstOrNull { skill ->
+      when {
+        normalizedSelectedSkillName.isNotEmpty() -> skill.name == normalizedSelectedSkillName
+        else -> skill.name == normalizedSourceRef
+      }
+    }
+    if (localSkill != null) {
+      val sourceDirectory = File(localSkill.source.skillDirectoryPath)
+      return SkillInstructionsSnapshot(
+        id = localSkill.name,
+        name = localSkill.name,
+        description = localSkill.metadata.skillSpec.description,
+        body = localSkill.document.markdownBody,
+        sourceDirectoryPath = sourceDirectory.invariantSeparatorsPath,
+        isEnabled = preferences.getBoolean(preferenceKey(localSkill.name), true),
+        canDelete = isInsideManagedRoot(sourceDirectory),
+      )
+    }
+    val remoteAttempt = packageManager.loadRemoteSkillInstructions(
+      sourceRef = normalizedSourceRef,
+      selectedSkillName = normalizedSelectedSkillName.takeIf(String::isNotBlank),
+    )
+    val remoteResult = remoteAttempt.result ?: return null
+    return SkillInstructionsSnapshot(
+      id = remoteResult.skill.name,
+      name = remoteResult.skill.name,
+      description = remoteResult.skill.metadata.skillSpec.description,
+      body = remoteResult.skill.document.markdownBody,
+      sourceDirectoryPath = remoteResult.sourcePath,
+      isEnabled = preferences.getBoolean(preferenceKey(remoteResult.skill.name), true),
+      canDelete = false,
+    )
+  }
+
   override fun enabledSkillRoots(): List<File> = loadManagedSkills()
     .filter { skill -> preferences.getBoolean(preferenceKey(skill.name), true) }
     .map { skill -> File(skill.source.skillDirectoryPath) }
@@ -249,7 +305,8 @@ internal class LocalSkillsFacade private constructor(
   private fun loadSuggestedSkills(
     query: String,
     installedSkills: List<InstalledSkillSnapshot>,
-  ): List<SuggestedSkillSnapshot> {
+    suggestedLimit: Int,
+  ): SuggestedSkillsSearchSnapshot {
     val installedNames = installedSkills.mapTo(linkedSetOf()) { item -> item.name }
     val localMatches = loadCatalogSkills()
       .asSequence()
@@ -269,44 +326,58 @@ internal class LocalSkillsFacade private constructor(
           item.description.contains(query, ignoreCase = true)
       }
       .toMutableList()
-    if (query.isNotEmpty()) {
-      val remoteResponse = packageManager.searchRemoteSkills(
-        query = query,
-        limit = 12,
+    if (query.isEmpty()) {
+      return SuggestedSkillsSearchSnapshot(
+        skills = localMatches,
+        mayHaveMore = false,
       )
-      remoteResponse.hits
-        .asSequence()
-        .filter { hit -> hit.name !in installedNames }
-        .map { hit ->
-          SuggestedSkillSnapshot(
-            id = hit.id,
-            name = hit.name,
-            description = if (hit.installs > 0) {
-              context.getString(
-                R.string.skills_suggested_remote_description_with_installs,
-                hit.source,
-                hit.installs,
-              )
-            } else {
-              context.getString(
-                R.string.skills_suggested_remote_description,
-                hit.source,
-              )
-            },
-            sourceRef = hit.installRef,
-            sourceLabel = context.getString(R.string.skills_suggested_source_remote_index),
-          )
-        }
-        .forEach { remote ->
-          val alreadyPresent = localMatches.any { local ->
-            local.name.equals(remote.name, ignoreCase = true)
-          }
-          if (!alreadyPresent) {
-            localMatches += remote
-          }
-        }
     }
-    return localMatches
+    val requestedLimit = normalizeRemoteSuggestedLimit(suggestedLimit)
+    val remoteResponse = packageManager.searchRemoteSkills(
+      query = query,
+      limit = requestedLimit,
+    )
+    val remoteMatches = remoteResponse.hits
+      .asSequence()
+      .filter { hit -> hit.name !in installedNames }
+      .map { hit ->
+        SuggestedSkillSnapshot(
+          id = hit.id,
+          name = hit.name,
+          description = if (hit.installs > 0) {
+            context.getString(
+              R.string.skills_suggested_remote_description_with_installs,
+              hit.source,
+              hit.installs,
+            )
+          } else {
+            context.getString(
+              R.string.skills_suggested_remote_description,
+              hit.source,
+            )
+          },
+          sourceRef = hit.installRef,
+          sourceLabel = context.getString(R.string.skills_suggested_source_remote_index),
+          installs = hit.installs,
+          detailUrl = hit.detailUrl,
+        )
+      }
+      .sortedWith(
+        compareByDescending<SuggestedSkillSnapshot> { it.installs ?: 0 }
+          .thenBy { it.name.lowercase() },
+      )
+      .toList()
+    val remoteNames = remoteMatches.mapTo(linkedSetOf()) { item -> item.name.lowercase() }
+    val mergedMatches = buildList {
+      addAll(remoteMatches)
+      addAll(localMatches.filterNot { local -> local.name.lowercase() in remoteNames })
+    }
+    val mayHaveMore = requestedLimit < MAX_REMOTE_SKILL_SEARCH_LIMIT &&
+      remoteResponse.hits.size >= requestedLimit
+    return SuggestedSkillsSearchSnapshot(
+      skills = mergedMatches.take(requestedLimit),
+      mayHaveMore = mayHaveMore,
+    )
   }
 
   private fun installSources(): List<InstallSourceSnapshot> {
@@ -394,6 +465,15 @@ internal class LocalSkillsFacade private constructor(
       WINDOWS_ABSOLUTE_PATH_REGEX.matches(normalized)
   }
 
+  private fun normalizeRemoteSuggestedLimit(suggestedLimit: Int): Int =
+    suggestedLimit.takeIf { it > 0 }?.coerceIn(1, MAX_REMOTE_SKILL_SEARCH_LIMIT)
+      ?: DEFAULT_REMOTE_SKILL_SEARCH_LIMIT
+
+  private data class SuggestedSkillsSearchSnapshot(
+    val skills: List<SuggestedSkillSnapshot>,
+    val mayHaveMore: Boolean,
+  )
+
   companion object {
     fun fromContext(context: Context): LocalSkillsFacade =
       LocalSkillsFacade(OpenCrayLocaleManager.wrap(context.applicationContext))
@@ -401,7 +481,7 @@ internal class LocalSkillsFacade private constructor(
 }
 
 internal object EmptySkillsFacade : SkillsFacade {
-  override fun loadSnapshot(query: String): SkillsSnapshot = SkillsSnapshot(
+  override fun loadSnapshot(query: String, suggestedLimit: Int): SkillsSnapshot = SkillsSnapshot(
     installedSkills = emptyList(),
     installSources = emptyList(),
     suggestedSkills = emptyList(),
@@ -419,6 +499,11 @@ internal object EmptySkillsFacade : SkillsFacade {
   override fun refresh() {}
 
   override fun loadInstructions(skillId: String): SkillInstructionsSnapshot? = null
+
+  override fun loadSuggestedInstructions(
+    sourceRef: String,
+    selectedSkillName: String,
+  ): SkillInstructionsSnapshot? = null
 
   override fun enabledSkillRoots(): List<File> = emptyList()
 

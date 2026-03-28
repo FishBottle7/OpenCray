@@ -126,6 +126,22 @@ data class SkillSourceInspectionAttempt(
     get() = result != null && errorCode == null
 }
 
+data class SkillPackageInstructionsResult(
+  val skill: LoadedSkill,
+  val sourcePath: String,
+  val resolvedRevision: String? = null,
+  val resolvedCommitSha: String? = null,
+)
+
+data class SkillPackageInstructionsAttempt(
+  val result: SkillPackageInstructionsResult? = null,
+  val errorCode: String? = null,
+  val errorMessage: String? = null,
+) {
+  val succeeded: Boolean
+    get() = result != null && errorCode == null
+}
+
 enum class SkillPackageCheckStatus(
   val wireValue: String,
 ) {
@@ -508,6 +524,54 @@ class SkillPackageManager(
     } catch (error: Exception) {
       SkillSourceInspectionAttempt(
         errorCode = "SKILL_SOURCE_INSPECTION_FAILED",
+        errorMessage = error.message ?: error::class.java.simpleName,
+      )
+    }
+  }
+
+  fun loadRemoteSkillInstructions(
+    sourceRef: String,
+    selectedSkillName: String? = null,
+  ): SkillPackageInstructionsAttempt {
+    val resolvedSource = resolveRemoteSource(
+      sourceRef = sourceRef,
+      selectedSkillName = selectedSkillName,
+    ) ?: return SkillPackageInstructionsAttempt(
+      errorCode = "SKILL_SOURCE_UNSUPPORTED",
+      errorMessage = "Source '$sourceRef' is not a supported remote skill source.",
+    )
+    return try {
+      val stagingRoot = File(stagingRootPath(), UUID.randomUUID().toString())
+      val fetched = remoteSourceFetcher.fetch(
+        source = resolvedSource,
+        stagingRoot = stagingRoot,
+      )
+      try {
+        val selection = selectSkillFromRoot(
+          searchRoot = fetched.searchRoot,
+          selectedSkillName = selectedSkillName ?: resolvedSource.selectedSkillName,
+          sourceHint = resolvedSource.repo,
+          sourceRef = resolvedSource.requestedSourceRef,
+        )
+        SkillPackageInstructionsAttempt(
+          result = SkillPackageInstructionsResult(
+            skill = selection,
+            sourcePath = fetched.repositoryUrl,
+            resolvedRevision = fetched.resolvedRevision,
+            resolvedCommitSha = fetched.resolvedCommitSha,
+          ),
+        )
+      } finally {
+        stagingRoot.deleteRecursively()
+      }
+    } catch (error: SkillPackageException) {
+      SkillPackageInstructionsAttempt(
+        errorCode = error.errorCode,
+        errorMessage = error.message,
+      )
+    } catch (error: Exception) {
+      SkillPackageInstructionsAttempt(
+        errorCode = "SKILL_INSTRUCTIONS_LOAD_FAILED",
         errorMessage = error.message ?: error::class.java.simpleName,
       )
     }

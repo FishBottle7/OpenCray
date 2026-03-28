@@ -179,6 +179,8 @@ class OpenCrayChatPendingApprovalSnapshot {
     required this.approveLabel,
     required this.rejectLabel,
     required this.isHighRisk,
+    this.supportsSessionApproval = false,
+    this.approveForSessionLabel = '',
     this.toolName = '',
     this.requestSummary = '',
     this.primaryDetail = '',
@@ -195,6 +197,8 @@ class OpenCrayChatPendingApprovalSnapshot {
   final String approveLabel;
   final String rejectLabel;
   final bool isHighRisk;
+  final bool supportsSessionApproval;
+  final String approveForSessionLabel;
   final String toolName;
   final String requestSummary;
   final String primaryDetail;
@@ -216,6 +220,8 @@ class OpenCrayChatPendingApprovalSnapshot {
       approveLabel: map['approveLabel'] as String? ?? 'Approve',
       rejectLabel: map['rejectLabel'] as String? ?? 'Reject',
       isHighRisk: map['isHighRisk'] as bool? ?? false,
+      supportsSessionApproval: map['supportsSessionApproval'] as bool? ?? false,
+      approveForSessionLabel: map['approveForSessionLabel'] as String? ?? '',
       toolName: map['toolName'] as String? ?? '',
       requestSummary: map['requestSummary'] as String? ?? '',
       primaryDetail: map['primaryDetail'] as String? ?? '',
@@ -237,6 +243,9 @@ class OpenCrayChatRuntimeEventSnapshot {
     required this.runId,
     required this.taskId,
     required this.emittedAtEpochMs,
+    this.executionId,
+    this.executionOrdinal,
+    this.executionKind,
     this.entryId,
     this.checkpoint,
     this.turn,
@@ -261,6 +270,7 @@ class OpenCrayChatRuntimeEventSnapshot {
     this.toolReason,
     this.argumentsJson,
     this.toolStatus,
+    this.content,
     this.contentPreview,
     this.resultMetadata = const <String, String>{},
     this.operation,
@@ -287,6 +297,9 @@ class OpenCrayChatRuntimeEventSnapshot {
   final String runId;
   final String taskId;
   final int emittedAtEpochMs;
+  final String? executionId;
+  final int? executionOrdinal;
+  final String? executionKind;
   final String? entryId;
   final String? checkpoint;
   final int? turn;
@@ -311,6 +324,7 @@ class OpenCrayChatRuntimeEventSnapshot {
   final String? toolReason;
   final String? argumentsJson;
   final String? toolStatus;
+  final String? content;
   final String? contentPreview;
   final Map<String, String> resultMetadata;
   final String? operation;
@@ -360,6 +374,9 @@ class OpenCrayChatRuntimeEventSnapshot {
       runId: map['runId'] as String? ?? '',
       taskId: map['taskId'] as String? ?? '',
       emittedAtEpochMs: map['emittedAtEpochMs'] as int? ?? 0,
+      executionId: map['executionId'] as String?,
+      executionOrdinal: map['executionOrdinal'] as int?,
+      executionKind: map['executionKind'] as String?,
       entryId: map['entryId'] as String?,
       checkpoint: map['checkpoint'] as String?,
       turn: map['turn'] as int?,
@@ -384,6 +401,7 @@ class OpenCrayChatRuntimeEventSnapshot {
       toolReason: map['toolReason'] as String?,
       argumentsJson: map['argumentsJson'] as String?,
       toolStatus: map['toolStatus'] as String?,
+      content: map['content'] as String?,
       contentPreview: map['contentPreview'] as String?,
       resultMetadata:
           rawResultMetadata.map(
@@ -903,6 +921,43 @@ class OpenCrayChatRunDiagnosticsSnapshot {
   }
 }
 
+class OpenCrayChatRunRecoveryPlanSnapshot {
+  const OpenCrayChatRunRecoveryPlanSnapshot({
+    this.action,
+    this.reasonCode,
+    this.summary,
+    this.safeToAutoResume,
+    this.requiresUserAction,
+    this.checkpointKind,
+    this.approvalState,
+    this.journalTailKind,
+  });
+
+  final String? action;
+  final String? reasonCode;
+  final String? summary;
+  final bool? safeToAutoResume;
+  final bool? requiresUserAction;
+  final String? checkpointKind;
+  final String? approvalState;
+  final String? journalTailKind;
+
+  factory OpenCrayChatRunRecoveryPlanSnapshot.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    return OpenCrayChatRunRecoveryPlanSnapshot(
+      action: map['action'] as String?,
+      reasonCode: map['reasonCode'] as String?,
+      summary: map['summary'] as String?,
+      safeToAutoResume: map['safeToAutoResume'] as bool?,
+      requiresUserAction: map['requiresUserAction'] as bool?,
+      checkpointKind: map['checkpointKind'] as String?,
+      approvalState: map['approvalState'] as String?,
+      journalTailKind: map['journalTailKind'] as String?,
+    );
+  }
+}
+
 class OpenCrayChatRunSnapshot {
   const OpenCrayChatRunSnapshot({
     required this.sessionId,
@@ -912,6 +967,10 @@ class OpenCrayChatRunSnapshot {
     required this.updatedAtEpochMs,
     required this.attempt,
     required this.isTerminal,
+    this.executionOrdinal = 0,
+    this.executionId,
+    this.executionKind,
+    this.pendingExecutionKind,
     this.lifecycleState,
     this.taskState,
     this.executionStatus,
@@ -928,6 +987,7 @@ class OpenCrayChatRunSnapshot {
     this.skillInventory,
     this.activeSkill,
     this.diagnostics,
+    this.recoveryPlan,
   });
 
   final String sessionId;
@@ -938,6 +998,10 @@ class OpenCrayChatRunSnapshot {
   final String? lifecycleState;
   final String? taskState;
   final int attempt;
+  final int executionOrdinal;
+  final String? executionId;
+  final String? executionKind;
+  final String? pendingExecutionKind;
   final String? executionStatus;
   final String? errorCode;
   final String? errorMessage;
@@ -953,6 +1017,7 @@ class OpenCrayChatRunSnapshot {
   final OpenCrayChatRunSkillInventorySnapshot? skillInventory;
   final OpenCrayChatRunActiveSkillSnapshot? activeSkill;
   final OpenCrayChatRunDiagnosticsSnapshot? diagnostics;
+  final OpenCrayChatRunRecoveryPlanSnapshot? recoveryPlan;
 
   factory OpenCrayChatRunSnapshot.fromMap(Map<Object?, Object?> map) {
     final rawLastEvent = map['lastEvent'];
@@ -964,6 +1029,7 @@ class OpenCrayChatRunSnapshot {
     final rawSkillInventory = map['skillInventory'];
     final rawActiveSkill = map['activeSkill'];
     final rawDiagnostics = map['diagnostics'];
+    final rawRecoveryPlan = map['recoveryPlan'];
     return OpenCrayChatRunSnapshot(
       sessionId: map['sessionId'] as String? ?? '',
       runId: map['runId'] as String? ?? '',
@@ -973,6 +1039,10 @@ class OpenCrayChatRunSnapshot {
       lifecycleState: map['lifecycleState'] as String?,
       taskState: map['taskState'] as String?,
       attempt: map['attempt'] as int? ?? 0,
+      executionOrdinal: map['executionOrdinal'] as int? ?? 0,
+      executionId: map['executionId'] as String?,
+      executionKind: map['executionKind'] as String?,
+      pendingExecutionKind: map['pendingExecutionKind'] as String?,
       executionStatus: map['executionStatus'] as String?,
       errorCode: map['errorCode'] as String?,
       errorMessage: map['errorMessage'] as String?,
@@ -1008,7 +1078,91 @@ class OpenCrayChatRunSnapshot {
       diagnostics: rawDiagnostics is Map<Object?, Object?>
           ? OpenCrayChatRunDiagnosticsSnapshot.fromMap(rawDiagnostics)
           : null,
+      recoveryPlan: rawRecoveryPlan is Map<Object?, Object?>
+          ? OpenCrayChatRunRecoveryPlanSnapshot.fromMap(rawRecoveryPlan)
+          : null,
     );
+  }
+}
+
+extension OpenCrayChatRunExecutionScope on OpenCrayChatRunSnapshot {
+  List<OpenCrayChatRuntimeEventSnapshot> scopeRuntimeEvents(
+    Iterable<OpenCrayChatRuntimeEventSnapshot> events,
+  ) {
+    final List<OpenCrayChatRuntimeEventSnapshot> runEvents =
+        events
+            .where((event) => event.runId == runId)
+            .toList(growable: false);
+    final bool preserveHistoryAcrossExecutions =
+        _preservesHistoryAcrossExecutions(executionKind) ||
+        _preservesHistoryAcrossExecutions(pendingExecutionKind);
+    final String? currentExecutionId = _normalizedExecutionValue(executionId);
+    if (currentExecutionId == null) {
+      if (_normalizedExecutionValue(pendingExecutionKind) != null && !isTerminal) {
+        return preserveHistoryAcrossExecutions
+            ? runEvents
+            : const <OpenCrayChatRuntimeEventSnapshot>[];
+      }
+      return runEvents;
+    }
+    final List<OpenCrayChatRuntimeEventSnapshot> matching =
+        runEvents
+            .where(
+              (event) =>
+                  _normalizedExecutionValue(event.executionId) ==
+                  currentExecutionId,
+            )
+            .toList(growable: false);
+    if (matching.isNotEmpty) {
+      return preserveHistoryAcrossExecutions ? runEvents : matching;
+    }
+    if (preserveHistoryAcrossExecutions) {
+      return runEvents;
+    }
+    final bool hasTaggedEvents = runEvents.any(
+      (event) =>
+          _normalizedExecutionValue(event.executionId) != null ||
+          event.executionOrdinal != null ||
+          _normalizedExecutionValue(event.executionKind) != null,
+    );
+    if (hasTaggedEvents || executionOrdinal > 0) {
+      return const <OpenCrayChatRuntimeEventSnapshot>[];
+    }
+    return runEvents
+        .where(
+          (event) =>
+              _normalizedExecutionValue(event.executionId) == null &&
+              event.executionOrdinal == null &&
+              _normalizedExecutionValue(event.executionKind) == null,
+        )
+        .toList(growable: false);
+  }
+
+  bool matchesRuntimeEvent(OpenCrayChatRuntimeEventSnapshot event) {
+    if (event.runId != runId) {
+      return false;
+    }
+    final String? currentExecutionId = _normalizedExecutionValue(executionId);
+    if (currentExecutionId == null) {
+      return _normalizedExecutionValue(pendingExecutionKind) == null ||
+          isTerminal;
+    }
+    return _normalizedExecutionValue(event.executionId) == currentExecutionId;
+  }
+}
+
+String? _normalizedExecutionValue(String? raw) {
+  final String value = raw?.trim() ?? '';
+  return value.isEmpty ? null : value;
+}
+
+bool _preservesHistoryAcrossExecutions(String? executionKind) {
+  switch (_normalizedExecutionValue(executionKind)) {
+    case 'approval_resume':
+    case 'checkpoint_resume':
+      return true;
+    default:
+      return false;
   }
 }
 

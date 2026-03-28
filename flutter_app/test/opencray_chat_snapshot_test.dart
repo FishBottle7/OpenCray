@@ -98,6 +98,16 @@ void main() {
             'previousLifecycleState': 'running',
             'restoredFromDurableStore': true,
           },
+          'recoveryPlan': <Object?, Object?>{
+            'action': 'resume_from_checkpoint',
+            'reasonCode': 'durable_general_resume_checkpoint',
+            'summary':
+                'The run has a durable general resume checkpoint and should continue from that checkpoint instead of rerunning from task input.',
+            'safeToAutoResume': true,
+            'requiresUserAction': false,
+            'checkpointKind': 'general_resume',
+            'journalTailKind': 'tool_result',
+          },
         },
       ],
       'events': <Object?>[],
@@ -118,7 +128,89 @@ void main() {
     expect(diagnostics.queueRestoreEpochMs, 2050);
     expect(diagnostics.previousLifecycleState, 'running');
     expect(diagnostics.restoredFromDurableStore, isTrue);
+
+    final recoveryPlan = snapshot.activeRuns.single.recoveryPlan;
+    expect(recoveryPlan, isNotNull);
+    expect(recoveryPlan!.action, 'resume_from_checkpoint');
+    expect(recoveryPlan.reasonCode, 'durable_general_resume_checkpoint');
+    expect(recoveryPlan.safeToAutoResume, isTrue);
+    expect(recoveryPlan.requiresUserAction, isFalse);
+    expect(recoveryPlan.checkpointKind, 'general_resume');
+    expect(recoveryPlan.journalTailKind, 'tool_result');
   });
+
+  test('chat run snapshot parses execution fields from map payload', () {
+    final snapshot = OpenCrayChatRunSnapshot.fromMap(<Object?, Object?>{
+      'sessionId': 'session-1',
+      'runId': 'run-exec',
+      'taskId': 'task-exec',
+      'acceptedAtEpochMs': 1000,
+      'updatedAtEpochMs': 2000,
+      'attempt': 1,
+      'executionOrdinal': 2,
+      'executionId': 'exec-2',
+      'executionKind': 'approval_resume',
+      'pendingExecutionKind': 'checkpoint_resume',
+      'isTerminal': false,
+    });
+
+    expect(snapshot.executionOrdinal, 2);
+    expect(snapshot.executionId, 'exec-2');
+    expect(snapshot.executionKind, 'approval_resume');
+    expect(snapshot.pendingExecutionKind, 'checkpoint_resume');
+  });
+
+  test(
+    'chat run snapshot preserves trace history across approval resume while keeping event matching scoped',
+    () {
+    const run = OpenCrayChatRunSnapshot(
+      sessionId: 'session-1',
+      runId: 'run-1',
+      taskId: 'task-1',
+      acceptedAtEpochMs: 1000,
+      updatedAtEpochMs: 2200,
+      attempt: 1,
+      executionOrdinal: 2,
+      executionId: 'exec-2',
+      executionKind: 'approval_resume',
+      isTerminal: false,
+    );
+    const previousExecution = OpenCrayChatRuntimeEventSnapshot(
+      kind: 'assistant_phase',
+      runId: 'run-1',
+      taskId: 'task-1',
+      executionId: 'exec-1',
+      executionOrdinal: 1,
+      executionKind: 'initial',
+      emittedAtEpochMs: 1800,
+      text: 'Old execution commentary.',
+    );
+    const currentExecution = OpenCrayChatRuntimeEventSnapshot(
+      kind: 'assistant_phase',
+      runId: 'run-1',
+      taskId: 'task-1',
+      executionId: 'exec-2',
+      executionOrdinal: 2,
+      executionKind: 'approval_resume',
+      emittedAtEpochMs: 2200,
+      text: 'Current execution commentary.',
+    );
+
+    final scoped = run.scopeRuntimeEvents(
+      const <OpenCrayChatRuntimeEventSnapshot>[
+        previousExecution,
+        currentExecution,
+      ],
+    );
+
+    expect(
+      scoped,
+      <OpenCrayChatRuntimeEventSnapshot>[previousExecution, currentExecution],
+    );
+    expect(run.matchesRuntimeEvent(previousExecution), isFalse);
+    expect(run.matchesRuntimeEvent(currentExecution), isTrue);
+    },
+  );
 
   test('chat run submission parses lifecycle diagnostics from map payload', () {
     final submission = OpenCrayChatRunSubmission.fromMap(<Object?, Object?>{

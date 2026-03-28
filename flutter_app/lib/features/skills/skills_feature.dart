@@ -17,6 +17,12 @@ const _textSecondary = Color(0xFF6E6E73);
 const _border = Color(0xFFE5E5EA);
 const _danger = Color(0xFFFF3B30);
 const _accent = Color(0xFF007AFF);
+const _initialSearchResultLimit = 8;
+const _expandedSearchResultLimit = 20;
+final RegExp _windowsAbsolutePathPattern = RegExp(r'^[A-Za-z]:[\\/].+');
+final RegExp _explicitRepoSourcePattern = RegExp(
+  r'^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:[@#][^\s]+)?$',
+);
 
 class SkillsFeatureScreen extends StatefulWidget {
   const SkillsFeatureScreen({
@@ -25,22 +31,28 @@ class SkillsFeatureScreen extends StatefulWidget {
     required this.copy,
     this.initialPage = SkillsPage.manage,
     this.showActionsMenuOnStart = false,
+    this.isTabActive = true,
+    this.autoRefreshPollInterval = const Duration(seconds: 2),
   });
 
   final OpenCrayHostBridge bridge;
   final OpenCrayUiCopy copy;
   final SkillsPage initialPage;
   final bool showActionsMenuOnStart;
+  final bool isTabActive;
+  final Duration autoRefreshPollInterval;
 
   @override
   State<SkillsFeatureScreen> createState() => _SkillsFeatureScreenState();
 }
 
-class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
+class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
+    with WidgetsBindingObserver {
   late SkillsPage _selectedPage = widget.initialPage;
   late final TextEditingController _searchController = TextEditingController()
     ..addListener(_onQueryChanged);
   Timer? _searchDebounce;
+  Timer? _autoRefreshTimer;
   StreamSubscription<OpenCraySkillsSnapshot>? _skillsSubscription;
 
   OpenCraySkillsSnapshot _snapshot = const OpenCraySkillsSnapshot(
@@ -53,12 +65,21 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
   bool _hasOpenedInitialActions = false;
   String? _pendingInstallSourceRef;
   String _query = '';
+  int _searchResultLimit = _initialSearchResultLimit;
   int _skillsRequestEpoch = 0;
+  late AppLifecycleState _appLifecycleState;
+  bool _isReloadInFlight = false;
+  bool _hasQueuedReload = false;
+  bool _queuedReloadShowErrorMessage = false;
+  bool _queuedReloadShowProgressIndicator = false;
 
   @override
   void initState() {
     super.initState();
-    _hydrate();
+    _appLifecycleState =
+        WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(_hydrate());
     _skillsSubscription = widget.bridge.watchSkillsSnapshot().listen((
       snapshot,
     ) {
@@ -73,17 +94,48 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
         });
         _openInitialActionsIfNeeded();
       } else {
-        _reloadSkillsSnapshot(showErrorMessage: false);
+        unawaited(
+          _reloadSkillsSnapshot(
+            showErrorMessage: false,
+            showProgressIndicator: false,
+          ),
+        );
       }
     });
+    _syncAutoRefreshTimer();
+  }
+
+  @override
+  void didUpdateWidget(covariant SkillsFeatureScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!oldWidget.isTabActive &&
+        widget.isTabActive &&
+        _appLifecycleState == AppLifecycleState.resumed) {
+      _scheduleSilentRefresh();
+    }
+    if (oldWidget.isTabActive != widget.isTabActive ||
+        oldWidget.autoRefreshPollInterval != widget.autoRefreshPollInterval) {
+      _syncAutoRefreshTimer();
+    }
   }
 
   @override
   void dispose() {
+    _autoRefreshTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     _skillsSubscription?.cancel();
     _searchDebounce?.cancel();
     _searchController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appLifecycleState = state;
+    _syncAutoRefreshTimer();
+    if (state == AppLifecycleState.resumed && widget.isTabActive) {
+      _scheduleSilentRefresh();
+    }
   }
 
   @override
@@ -216,6 +268,8 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
     List<OpenCraySuggestedSkillSnapshot> availableSkills,
   ) {
     final trimmedQuery = _query.trim();
+    final hasQuery = trimmedQuery.isNotEmpty;
+    final showDirectInstall = _looksLikeExplicitInstallSource(trimmedQuery);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -230,7 +284,48 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
             child: LinearProgressIndicator(minHeight: 3),
           ),
         ],
-        const SizedBox(height: 14),
+        if (hasQuery) ...[
+          const SizedBox(height: 14),
+          _buildSuggestedSkillsSection(
+            title: widget.copy.skillsResultsTitle,
+            emptyTitle: widget.copy.skillsNoResultsTitle,
+            emptyBody: widget.copy.skillsNoResultsBody(trimmedQuery),
+            availableSkills: availableSkills,
+            showMore:
+                _snapshot.suggestedSkillsMayHaveMore &&
+                _searchResultLimit < _expandedSearchResultLimit,
+          ),
+          if (showDirectInstall) ...[
+            const SizedBox(height: 14),
+            _DirectInstallCard(
+              title: widget.copy.skillsDirectInstallTitle,
+              body: widget.copy.skillsDirectInstallBody(trimmedQuery),
+              buttonLabel: widget.copy.skillsInstallButton,
+              isInstalling: _pendingInstallSourceRef == trimmedQuery,
+              onInstall: () => _installFromSource(trimmedQuery),
+            ),
+          ],
+          const SizedBox(height: 14),
+          _buildInstallSourcesSection(),
+        ] else ...[
+          const SizedBox(height: 14),
+          _buildInstallSourcesSection(),
+          const SizedBox(height: 14),
+          _buildSuggestedSkillsSection(
+            title: widget.copy.skillsSuggestedTitle,
+            emptyTitle: widget.copy.skillsNoCatalogTitle,
+            emptyBody: widget.copy.skillsNoCatalogBody,
+            availableSkills: availableSkills,
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildInstallSourcesSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
         Text(
           widget.copy.skillsInstallFromTitle,
           style: const TextStyle(
@@ -270,21 +365,22 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
             ],
           ),
         ),
-        if (trimmedQuery.isNotEmpty) ...[
-          const SizedBox(height: 14),
-          _DirectInstallCard(
-            title: widget.copy.skillsDirectInstallTitle,
-            body: widget.copy.skillsDirectInstallBody(trimmedQuery),
-            buttonLabel: widget.copy.skillsInstallButton,
-            isInstalling: _pendingInstallSourceRef == trimmedQuery,
-            onInstall: () => _installFromSource(trimmedQuery),
-          ),
-        ],
-        const SizedBox(height: 14),
+      ],
+    );
+  }
+
+  Widget _buildSuggestedSkillsSection({
+    required String title,
+    required String emptyTitle,
+    required String emptyBody,
+    required List<OpenCraySuggestedSkillSnapshot> availableSkills,
+    bool showMore = false,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
         Text(
-          trimmedQuery.isEmpty
-              ? widget.copy.skillsSuggestedTitle
-              : widget.copy.skillsResultsTitle,
+          title,
           style: const TextStyle(
             fontSize: 13,
             height: 1.2,
@@ -296,15 +392,8 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
         if (!_isLoaded)
           const _LoadingCard()
         else if (availableSkills.isEmpty)
-          _EmptyCard(
-            title: trimmedQuery.isEmpty
-                ? widget.copy.skillsNoCatalogTitle
-                : widget.copy.skillsNoResultsTitle,
-            body: trimmedQuery.isEmpty
-                ? widget.copy.skillsNoCatalogBody
-                : widget.copy.skillsNoResultsBody(trimmedQuery),
-          )
-        else
+          _EmptyCard(title: emptyTitle, body: emptyBody)
+        else ...[
           DecoratedBox(
             decoration: const BoxDecoration(
               color: _surface,
@@ -319,10 +408,18 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
                 ) ...[
                   _SuggestedRow(
                     item: availableSkills[index],
+                    installsLabel: availableSkills[index].installs == null
+                        ? null
+                        : widget.copy.skillsInstallsCount(
+                            availableSkills[index].installs!,
+                          ),
+                    previewLabel: widget.copy.skillsPreviewButton,
                     installLabel: widget.copy.skillsInstallButton,
                     isInstalling:
                         _pendingInstallSourceRef ==
                         availableSkills[index].sourceRef,
+                    onPreview: () =>
+                        _previewSuggestedSkill(availableSkills[index]),
                     onInstall: () =>
                         _installSuggestedSkill(availableSkills[index]),
                   ),
@@ -337,6 +434,17 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
               ],
             ),
           ),
+          if (showMore) ...[
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                onPressed: _isSearching ? null : _loadMoreSearchResults,
+                child: Text(widget.copy.skillsShowMoreResults),
+              ),
+            ),
+          ],
+        ],
       ],
     );
   }
@@ -348,23 +456,55 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
   void _onQueryChanged() {
     setState(() {
       _query = _searchController.text;
+      _searchResultLimit = _initialSearchResultLimit;
     });
     _searchDebounce?.cancel();
     _searchDebounce = Timer(const Duration(milliseconds: 250), () {
-      _reloadSkillsSnapshot(showErrorMessage: false);
+      unawaited(
+        _reloadSkillsSnapshot(
+          showErrorMessage: false,
+          showProgressIndicator: true,
+        ),
+      );
     });
   }
 
-  Future<void> _reloadSkillsSnapshot({required bool showErrorMessage}) async {
+  Future<void> _reloadSkillsSnapshot({
+    required bool showErrorMessage,
+    bool showProgressIndicator = true,
+  }) async {
     final requestEpoch = ++_skillsRequestEpoch;
+    if (_isReloadInFlight) {
+      _queueReload(
+        showErrorMessage: showErrorMessage,
+        showProgressIndicator: showProgressIndicator,
+      );
+      return;
+    }
+    return _runSkillsReload(
+      requestEpoch: requestEpoch,
+      showErrorMessage: showErrorMessage,
+      showProgressIndicator: showProgressIndicator,
+    );
+  }
+
+  Future<void> _runSkillsReload({
+    required int requestEpoch,
+    required bool showErrorMessage,
+    required bool showProgressIndicator,
+  }) async {
+    _isReloadInFlight = true;
     final query = _query.trim();
-    if (mounted) {
+    if (mounted && showProgressIndicator) {
       setState(() {
         _isSearching = query.isNotEmpty;
       });
     }
     try {
-      final snapshot = await widget.bridge.loadSkillsSnapshot(query: query);
+      final snapshot = await widget.bridge.loadSkillsSnapshot(
+        query: query,
+        suggestedLimit: query.isEmpty ? null : _searchResultLimit,
+      );
       if (!mounted || requestEpoch != _skillsRequestEpoch) {
         return;
       }
@@ -385,7 +525,66 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
       if (showErrorMessage) {
         _showMessage(_errorMessage(error) ?? widget.copy.skillsLoadFailed);
       }
+    } finally {
+      _isReloadInFlight = false;
+      _flushQueuedReload();
     }
+  }
+
+  bool get _shouldAutoRefresh =>
+      widget.isTabActive &&
+      _appLifecycleState == AppLifecycleState.resumed &&
+      widget.autoRefreshPollInterval > Duration.zero;
+
+  void _scheduleSilentRefresh() {
+    if (!mounted || !widget.isTabActive) {
+      return;
+    }
+    unawaited(
+      _reloadSkillsSnapshot(
+        showErrorMessage: false,
+        showProgressIndicator: false,
+      ),
+    );
+  }
+
+  void _syncAutoRefreshTimer() {
+    _autoRefreshTimer?.cancel();
+    if (!_shouldAutoRefresh) {
+      _autoRefreshTimer = null;
+      return;
+    }
+    _autoRefreshTimer = Timer.periodic(widget.autoRefreshPollInterval, (_) {
+      _scheduleSilentRefresh();
+    });
+  }
+
+  void _queueReload({
+    required bool showErrorMessage,
+    required bool showProgressIndicator,
+  }) {
+    _hasQueuedReload = true;
+    _queuedReloadShowErrorMessage =
+        _queuedReloadShowErrorMessage || showErrorMessage;
+    _queuedReloadShowProgressIndicator =
+        _queuedReloadShowProgressIndicator || showProgressIndicator;
+  }
+
+  void _flushQueuedReload() {
+    if (!mounted || !_hasQueuedReload || _isReloadInFlight) {
+      return;
+    }
+    final showErrorMessage = _queuedReloadShowErrorMessage;
+    final showProgressIndicator = _queuedReloadShowProgressIndicator;
+    _hasQueuedReload = false;
+    _queuedReloadShowErrorMessage = false;
+    _queuedReloadShowProgressIndicator = false;
+    unawaited(
+      _reloadSkillsSnapshot(
+        showErrorMessage: showErrorMessage,
+        showProgressIndicator: showProgressIndicator,
+      ),
+    );
   }
 
   void _openInitialActionsIfNeeded() {
@@ -426,6 +625,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
             .toList(growable: false),
         installSources: _snapshot.installSources,
         suggestedSkills: _snapshot.suggestedSkills,
+        suggestedSkillsMayHaveMore: _snapshot.suggestedSkillsMayHaveMore,
       );
     });
     try {
@@ -452,6 +652,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
               .toList(growable: false),
           installSources: _snapshot.installSources,
           suggestedSkills: _snapshot.suggestedSkills,
+          suggestedSkillsMayHaveMore: _snapshot.suggestedSkillsMayHaveMore,
         );
       });
       _showMessage(widget.copy.skillsUpdateFailed(skill.name));
@@ -462,6 +663,19 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
     OpenCraySuggestedSkillSnapshot skill,
   ) async {
     await _installFromSource(skill.sourceRef, fallbackName: skill.name);
+  }
+
+  Future<void> _loadMoreSearchResults() async {
+    if (_searchResultLimit >= _expandedSearchResultLimit) {
+      return;
+    }
+    setState(() {
+      _searchResultLimit = _expandedSearchResultLimit;
+    });
+    await _reloadSkillsSnapshot(
+      showErrorMessage: true,
+      showProgressIndicator: true,
+    );
   }
 
   Future<void> _installFromSource(
@@ -541,7 +755,9 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
         return;
       }
       if (inspection.candidates.isEmpty) {
-        _showMessage(widget.copy.skillsNoInstallableSkills(normalizedSourceRef));
+        _showMessage(
+          widget.copy.skillsNoInstallableSkills(normalizedSourceRef),
+        );
         return;
       }
       if (inspection.candidates.length == 1) {
@@ -554,7 +770,9 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
         return;
       }
       final selectedSkillNames = await _promptSkillSelection(inspection);
-      if (!mounted || selectedSkillNames == null || selectedSkillNames.isEmpty) {
+      if (!mounted ||
+          selectedSkillNames == null ||
+          selectedSkillNames.isEmpty) {
         return;
       }
       await _installSelectedSkills(
@@ -569,6 +787,23 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
         );
       }
     }
+  }
+
+  bool _looksLikeExplicitInstallSource(String query) {
+    final normalizedQuery = query.trim();
+    if (normalizedQuery.isEmpty) {
+      return false;
+    }
+    return normalizedQuery.startsWith('http://') ||
+        normalizedQuery.startsWith('https://') ||
+        normalizedQuery.startsWith('github:') ||
+        normalizedQuery.startsWith('gitlab:') ||
+        normalizedQuery.startsWith('.') ||
+        normalizedQuery.startsWith('/') ||
+        normalizedQuery.startsWith('\\') ||
+        normalizedQuery.contains('\\') ||
+        _windowsAbsolutePathPattern.hasMatch(normalizedQuery) ||
+        _explicitRepoSourcePattern.hasMatch(normalizedQuery);
   }
 
   Future<String?> _promptInstallSource(
@@ -880,61 +1115,86 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen> {
       if (!mounted || details == null) {
         return;
       }
-      await showDialog<void>(
-        context: context,
-        builder: (context) {
-          return AlertDialog(
-            title: Text(details.name),
-            content: SizedBox(
-              width: 520,
-              child: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      details.description,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        height: 1.35,
-                        color: _textSecondary,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      details.sourceDirectoryPath,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        height: 1.3,
-                        color: _textSecondary,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    SelectableText(
-                      details.markdownBody,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        height: 1.4,
-                        color: _textPrimary,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: Text(widget.copy.skillsClose),
-              ),
-            ],
-          );
-        },
-      );
+      await _showSkillInstructionsDialog(details);
     } catch (_) {
       if (mounted) {
         _showMessage(widget.copy.skillsPreviewFailed(skill.name));
       }
     }
+  }
+
+  Future<void> _previewSuggestedSkill(
+    OpenCraySuggestedSkillSnapshot skill,
+  ) async {
+    try {
+      final details = await widget.bridge.loadSuggestedSkillInstructions(
+        skill.sourceRef,
+        selectedSkillName: skill.name,
+      );
+      if (!mounted || details == null) {
+        return;
+      }
+      await _showSkillInstructionsDialog(details);
+    } catch (_) {
+      if (mounted) {
+        _showMessage(widget.copy.skillsSuggestedPreviewFailed(skill.name));
+      }
+    }
+  }
+
+  Future<void> _showSkillInstructionsDialog(
+    OpenCraySkillInstructionsSnapshot details,
+  ) {
+    return showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text(details.name),
+          content: SizedBox(
+            width: 520,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    details.description,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      height: 1.35,
+                      color: _textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    details.sourceDirectoryPath,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      height: 1.3,
+                      color: _textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  SelectableText(
+                    details.markdownBody,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      height: 1.4,
+                      color: _textPrimary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text(widget.copy.skillsClose),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> _updateInstalledSkill(
@@ -1298,14 +1558,20 @@ class _SourceRow extends StatelessWidget {
 class _SuggestedRow extends StatelessWidget {
   const _SuggestedRow({
     required this.item,
+    required this.installsLabel,
+    required this.previewLabel,
     required this.installLabel,
     required this.isInstalling,
+    required this.onPreview,
     required this.onInstall,
   });
 
   final OpenCraySuggestedSkillSnapshot item;
+  final String? installsLabel;
+  final String previewLabel;
   final String installLabel;
   final bool isInstalling;
+  final VoidCallback onPreview;
   final VoidCallback onInstall;
 
   @override
@@ -1319,24 +1585,50 @@ class _SuggestedRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 3,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF1F2F6),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    item.sourceLabel,
-                    style: const TextStyle(
-                      fontSize: 11,
-                      height: 1.1,
-                      fontWeight: FontWeight.w600,
-                      color: _textSecondary,
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF1F2F6),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        item.sourceLabel,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          height: 1.1,
+                          fontWeight: FontWeight.w600,
+                          color: _textSecondary,
+                        ),
+                      ),
                     ),
-                  ),
+                    if (installsLabel != null)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEEF5FF),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(
+                          installsLabel!,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            height: 1.1,
+                            fontWeight: FontWeight.w600,
+                            color: _accent,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
                 const SizedBox(height: 8),
                 Text(
@@ -1361,27 +1653,59 @@ class _SuggestedRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          InkWell(
-            borderRadius: BorderRadius.circular(999),
-            onTap: isInstalling ? null : onInstall,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: isInstalling
-                    ? const Color(0xFFF1F2F6)
-                    : const Color(0xFFEEF5FF),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              InkWell(
                 borderRadius: BorderRadius.circular(999),
-              ),
-              child: Text(
-                isInstalling ? '...' : installLabel,
-                style: TextStyle(
-                  fontSize: 12,
-                  height: 1.1,
-                  fontWeight: FontWeight.w600,
-                  color: isInstalling ? _textSecondary : _accent,
+                onTap: onPreview,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF1F2F6),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    previewLabel,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      height: 1.1,
+                      fontWeight: FontWeight.w600,
+                      color: _textSecondary,
+                    ),
+                  ),
                 ),
               ),
-            ),
+              const SizedBox(height: 8),
+              InkWell(
+                borderRadius: BorderRadius.circular(999),
+                onTap: isInstalling ? null : onInstall,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: isInstalling
+                        ? const Color(0xFFF1F2F6)
+                        : const Color(0xFFEEF5FF),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    isInstalling ? '...' : installLabel,
+                    style: TextStyle(
+                      fontSize: 12,
+                      height: 1.1,
+                      fontWeight: FontWeight.w600,
+                      color: isInstalling ? _textSecondary : _accent,
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),

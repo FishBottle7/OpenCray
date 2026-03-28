@@ -26,6 +26,66 @@ class P4aPythonRuntimeTest {
   private val json: Json = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
 
   @Test
+  fun execWritesFallbackServiceStartArgumentBeforeLaunch() {
+    val runtimeRoot = temporaryFolder.newFolder("python-runtime-start-argument").toPath()
+    val workspaceRoot = temporaryFolder.newFolder("workspace-start-argument").toPath()
+    lateinit var runtime: P4aPythonRuntime
+    var capturedStartArgumentJson = ""
+    val launcher = object : P4aPythonRuntime.P4aPythonRuntimeLauncher {
+      override fun launch(
+        request: P4aPythonRuntime.P4aPythonLaunchRequest,
+      ): P4aPythonRuntime.P4aPythonRuntimeLaunchResult {
+        val startArgumentPath = runtime.serviceStartArgumentPath()
+        assertTrue(Files.exists(startArgumentPath))
+        capturedStartArgumentJson = String(Files.readAllBytes(startArgumentPath), StandardCharsets.UTF_8)
+        return P4aPythonRuntime.P4aPythonRuntimeLaunchResult.Unavailable(
+          errorCode = P4aPythonRuntime.ERROR_P4A_RUNTIME_UNAVAILABLE,
+          errorMessage = "runtime unavailable",
+        )
+      }
+    }
+    runtime = P4aPythonRuntime.fromRuntimeRoot(runtimeRoot = runtimeRoot, launcher = launcher, json = json)
+
+    val result = runtime.exec(
+      PythonExecRequest(
+        taskId = "task-start-argument",
+        workspaceRoot = workspaceRoot,
+        scriptPath = workspaceRoot.resolve("demo.py"),
+        timeoutMs = 12_000L,
+        requestId = "proc-start-argument",
+      ),
+    )
+
+    val startArgumentJson = json.parseToJsonElement(capturedStartArgumentJson).jsonObject
+    assertEquals(
+      runtimeRoot.toString(),
+      startArgumentJson.getValue("runtimeRoot").jsonPrimitive.content,
+    )
+    assertEquals(
+      "proc-start-argument",
+      startArgumentJson.getValue("requestId").jsonPrimitive.content,
+    )
+    assertEquals(
+      runtimeRoot.resolve("requests/proc-start-argument.json").toString(),
+      startArgumentJson.getValue("requestPath").jsonPrimitive.content,
+    )
+    assertEquals(
+      runtimeRoot.resolve("results/proc-start-argument.json").toString(),
+      startArgumentJson.getValue("resultPath").jsonPrimitive.content,
+    )
+    assertEquals(
+      runtimeRoot.resolve("logs/proc-start-argument.log").toString(),
+      startArgumentJson.getValue("logPath").jsonPrimitive.content,
+    )
+    assertEquals("100", startArgumentJson.getValue("pollIntervalMs").jsonPrimitive.content)
+    assertEquals("true", startArgumentJson.getValue("once").jsonPrimitive.content)
+    assertEquals(
+      runtime.serviceStartArgumentPath().toString(),
+      result.metadata["serviceStartArgumentPath"],
+    )
+  }
+
+  @Test
   fun execWritesBridgeRequestBeforeReturningUnavailable() {
     val runtimeRoot = temporaryFolder.newFolder("python-runtime-unavailable").toPath()
     val workspaceRoot = temporaryFolder.newFolder("workspace-unavailable").toPath()

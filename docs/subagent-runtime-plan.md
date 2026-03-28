@@ -925,6 +925,21 @@ child 不能只留下最后一句摘要。
 - 复用 `spawn_agent + wait_agent`
 - 不再保留第二套同步 child execution 语义
 
+当前进展：
+
+- 已把 `Task` 收敛到同一套 child handle 控制面上
+- `Task` 现在和 `spawn_agent / wait_agent` 共享：
+  - delegation 预校验
+  - child handle 模型
+  - approval continuation 恢复锚点
+  - child runtime 执行路径
+- `Task` 仍保持原有的对外语义：
+  - 继续表现为一个同步 tool call
+  - 继续返回 `Task` 自己的 tool result 形态
+  - 继续向 host / replay 发 `subagent` lifecycle event
+- 当前还没有做成“字面上内部再发一个 `spawn_agent` tool call 再发一个 `wait_agent` tool call”，而是共享同一套内部 helper 和 handle state。
+  这样做是为了先收敛 runtime 语义，同时避免把 prompt transcript 和 tool trace 额外膨胀一层。
+
 ### P2-6 `send_input`
 
 - 先支持 boundary-based supplement

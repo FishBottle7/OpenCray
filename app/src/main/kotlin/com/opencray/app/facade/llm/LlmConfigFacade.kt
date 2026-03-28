@@ -2,6 +2,7 @@ package com.opencray.app.facade.llm
 
 import android.content.Context
 import com.opencray.app.LlmAgentCapabilitySnapshot
+import com.opencray.app.LlmModelCapabilityRegistry
 import com.opencray.app.LlmProviderCatalog
 import com.opencray.app.LlmProviderPreset
 import com.opencray.app.LlmProviderProtocols
@@ -12,6 +13,7 @@ import com.opencray.app.OpenAiCompatibleLiteLlmProviderClient
 import com.opencray.app.OpenCrayLocaleManager
 import com.opencray.app.OpenCrayUserAgent
 import com.opencray.app.SavedCustomLlmProvider
+import com.opencray.app.effectiveLlmRouteMetadata
 import com.opencray.llm.DefaultLiteLlmGateway
 import com.opencray.llm.InMemoryLiteLlmRoutingSettingsStore
 import com.opencray.llm.LiteLlmGatewayRequest
@@ -225,6 +227,7 @@ internal class LocalLlmConfigFacade private constructor(
       model = model,
       timeoutMs = VALIDATION_TIMEOUT_MS,
       metadata = validationMetadataFor(
+        providerId = providerPreset.id,
         protocol = protocol,
         model = model,
         reasoningEffort = request.reasoningEffort,
@@ -260,6 +263,16 @@ internal class LocalLlmConfigFacade private constructor(
     )?.let { failure ->
       return failure
     }
+    val visionInputSupported = detectVisionInputSupport(
+      providerId = providerPreset.id,
+      protocol = protocol,
+      model = model,
+    )
+    val pdfInputSupported = detectPdfInputSupport(
+      providerId = providerPreset.id,
+      protocol = protocol,
+      model = model,
+    )
     val nativeProbe = executeCapabilityProbe(
       gateway = gateway,
       authHeaders = authHeaders,
@@ -271,6 +284,8 @@ internal class LocalLlmConfigFacade private constructor(
         protocol = protocol,
         baseUrl = baseUrl,
         model = model,
+        visionInputSupported = visionInputSupported,
+        pdfInputSupported = pdfInputSupported,
         nativeToolCallingAvailable = false,
       )
     } else {
@@ -317,13 +332,23 @@ internal class LocalLlmConfigFacade private constructor(
       } else {
         CapabilityProbeOutcome.unsupported()
       }
-      val responsesBuiltinWebSearchProbe = if (protocol == LlmProviderProtocols.OPENAI_RESPONSES) {
-        executeResponsesBuiltinWebSearchProbe(
+      val builtinWebSearchProbe = when (protocol) {
+        LlmProviderProtocols.OPENAI_RESPONSES -> executeResponsesBuiltinWebSearchProbe(
           gateway = gateway,
           authHeaders = authHeaders,
         )
-      } else {
-        CapabilityProbeOutcome.unsupported()
+
+        LlmProviderProtocols.OPENAI -> executeOpenAiBuiltinWebSearchProbe(
+          gateway = gateway,
+          authHeaders = authHeaders,
+        )
+
+        LlmProviderProtocols.ANTHROPIC -> executeAnthropicBuiltinWebSearchProbe(
+          gateway = gateway,
+          authHeaders = authHeaders,
+        )
+
+        else -> CapabilityProbeOutcome.unsupported()
       }
       val responsesAssistantPhaseProbeSupported = if (protocol == LlmProviderProtocols.OPENAI_RESPONSES) {
         executeResponsesAssistantPhaseProbe(
@@ -335,7 +360,7 @@ internal class LocalLlmConfigFacade private constructor(
         false
       }
       val assistantPhaseSupported = responsesAssistantPhaseProbeSupported
-      val citationIncludeSupported = responsesBuiltinWebSearchProbe.result
+      val citationIncludeSupported = builtinWebSearchProbe.result
         ?.metadata
         ?.get(LiteLlmMetadataKeys.PROVIDER_CITATION_COUNT)
         ?.toIntOrNull()
@@ -345,12 +370,14 @@ internal class LocalLlmConfigFacade private constructor(
         protocol = protocol,
         baseUrl = baseUrl,
         model = model,
+        visionInputSupported = visionInputSupported,
+        pdfInputSupported = pdfInputSupported,
         nativeToolCallingAvailable = true,
         toolChoiceSupported = controlProbe.supported,
         parallelToolCallsSupported = parallelToolCallsProbe.supported,
         strictToolSchemaSupported = strictProbe.supported,
         responsesContinuationSupported = responsesContinuationProbe.supported,
-        builtinWebSearchSupported = responsesBuiltinWebSearchProbe.supported,
+        builtinWebSearchSupported = builtinWebSearchProbe.supported,
         assistantPhaseSupported = assistantPhaseSupported,
         citationIncludeSupported = citationIncludeSupported,
       )
@@ -479,13 +506,20 @@ internal class LocalLlmConfigFacade private constructor(
   }
 
   private fun validationMetadataFor(
+    providerId: String,
     protocol: String,
     model: String,
     reasoningEffort: String,
-  ): Map<String, String> = LlmProviderProtocols.routeMetadata(
+  ): Map<String, String> = effectiveLlmRouteMetadata(
+    providerId = providerId,
     protocol = protocol,
     model = model,
     reasoningEffort = reasoningEffort,
+    agentCapability = LlmAgentCapabilitySnapshot.unknown(
+      protocol = protocol,
+      baseUrl = "",
+      model = model,
+    ),
   )
 
   private fun resolvedProtocol(
@@ -745,6 +779,56 @@ internal class LocalLlmConfigFacade private constructor(
     )
   }
 
+  private fun executeOpenAiBuiltinWebSearchProbe(
+    gateway: DefaultLiteLlmGateway,
+    authHeaders: Map<String, String>,
+  ): CapabilityProbeOutcome {
+    val result = executeValidationRequest(
+      gateway = gateway,
+      authHeaders = authHeaders,
+      stage = "openai_builtin_web_search_probe",
+      prompt = "Use web search to find the canonical https://example.com URL and reply with that URL.",
+      builtinTools = listOf(
+        LiteLlmBuiltinToolDefinition(
+          type = LiteLlmBuiltinToolType.WEB_SEARCH,
+          includeSources = false,
+        ),
+      ),
+    )
+    return CapabilityProbeOutcome(
+      supported = result.status == LiteLlmGatewayStatus.SUCCESS &&
+        result.metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_USED]
+          ?.trim()
+          ?.lowercase() == "true",
+      result = result,
+    )
+  }
+
+  private fun executeAnthropicBuiltinWebSearchProbe(
+    gateway: DefaultLiteLlmGateway,
+    authHeaders: Map<String, String>,
+  ): CapabilityProbeOutcome {
+    val result = executeValidationRequest(
+      gateway = gateway,
+      authHeaders = authHeaders,
+      stage = "anthropic_builtin_web_search_probe",
+      prompt = "Use web search to find the canonical https://example.com URL and cite one source.",
+      builtinTools = listOf(
+        LiteLlmBuiltinToolDefinition(
+          type = LiteLlmBuiltinToolType.WEB_SEARCH,
+          includeSources = true,
+        ),
+      ),
+    )
+    return CapabilityProbeOutcome(
+      supported = result.status == LiteLlmGatewayStatus.SUCCESS &&
+        result.metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_USED]
+          ?.trim()
+          ?.lowercase() == "true",
+      result = result,
+    )
+  }
+
   private fun executeResponsesAssistantPhaseProbe(
     gateway: DefaultLiteLlmGateway,
     authHeaders: Map<String, String>,
@@ -856,6 +940,8 @@ internal class LocalLlmConfigFacade private constructor(
     protocol: String,
     baseUrl: String,
     model: String,
+    visionInputSupported: Boolean = false,
+    pdfInputSupported: Boolean = false,
     nativeToolCallingAvailable: Boolean,
     toolChoiceSupported: Boolean = false,
     parallelToolCallsSupported: Boolean = false,
@@ -871,6 +957,8 @@ internal class LocalLlmConfigFacade private constructor(
       model = model,
     ),
     verifiedAtEpochMs = System.currentTimeMillis(),
+    visionInputSupported = visionInputSupported,
+    pdfInputSupported = pdfInputSupported,
     nativeToolCallingAvailable = nativeToolCallingAvailable,
     toolChoiceSupported = toolChoiceSupported,
     parallelToolCallsSupported = parallelToolCallsSupported,
@@ -880,6 +968,26 @@ internal class LocalLlmConfigFacade private constructor(
     assistantPhaseSupported = assistantPhaseSupported,
     citationIncludeSupported = citationIncludeSupported,
   )
+
+  private fun detectVisionInputSupport(
+    providerId: String,
+    protocol: String,
+    model: String,
+  ): Boolean = LlmModelCapabilityRegistry.resolveVisionInputSupport(
+    providerId = providerId,
+    protocol = protocol,
+    model = model,
+  )?.visionInputSupported == true
+
+  private fun detectPdfInputSupport(
+    providerId: String,
+    protocol: String,
+    model: String,
+  ): Boolean = LlmModelCapabilityRegistry.resolvePdfInputSupport(
+    providerId = providerId,
+    protocol = protocol,
+    model = model,
+  )?.pdfInputSupported == true
 
   private fun resolvedCustomProviderName(
     requestedName: String,

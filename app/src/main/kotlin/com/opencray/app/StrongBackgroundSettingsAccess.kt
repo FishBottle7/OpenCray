@@ -22,6 +22,7 @@ internal object StrongBackgroundActionIds {
 
 internal object StrongBackgroundTierIds {
   const val BASELINE: String = "baseline"
+  const val ACTIVE_BACKGROUND: String = "active_background"
   const val STRONG_BACKGROUND: String = "strong_background"
 }
 
@@ -98,13 +99,14 @@ internal object StrongBackgroundSnapshotProjector {
         }
       }
     }
-    val tierId = if (notificationsConfigured &&
-      exactAlarmsConfigured &&
-      batteryOptimizationConfigured
-    ) {
-      StrongBackgroundTierIds.STRONG_BACKGROUND
-    } else {
-      StrongBackgroundTierIds.BASELINE
+    val tierId = when {
+      notificationsConfigured && exactAlarmsConfigured && batteryOptimizationConfigured ->
+        StrongBackgroundTierIds.STRONG_BACKGROUND
+
+      notificationsConfigured && exactAlarmsConfigured ->
+        StrongBackgroundTierIds.ACTIVE_BACKGROUND
+
+      else -> StrongBackgroundTierIds.BASELINE
     }
     val availableActionIds = setOfNotNull(
       StrongBackgroundActionIds.OPEN_NOTIFICATION_SETTINGS.takeIf {

@@ -27,6 +27,12 @@ import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentMetadataKeys
 import com.opencray.runtime.subagent.SubAgentResultMetadataKeys
+import com.opencray.runtime.skills.SkillCatalog
+import com.opencray.runtime.skills.SkillCatalogEntry
+import com.opencray.skills.SkillExecutionContext
+import com.opencray.skills.SkillInvocationControl
+import com.opencray.skills.SkillPermissionDecision
+import com.opencray.skills.SkillPermissionRule
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import org.junit.Assert.assertEquals
@@ -113,6 +119,53 @@ class OpenCrayAgentRuntimeSubAgentTest {
   }
 
   @Test
+  fun taskToolAcceptsExplorerAliasAndPreservesAliasInMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-explorer-alias").toPath()
+    Files.write(
+      workspaceRoot.resolve("README.md"),
+      "hello".toByteArray(StandardCharsets.UTF_8),
+    )
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Task","arguments":{"description":"inspect readme","prompt":"Read README.md and summarize it.","subagent_type":"explorer"}}""",
+        """{"type":"final","answer":"README says hello."}""",
+        """{"type":"final","answer":"Explorer child summary: README says hello."}""",
+      ),
+    )
+    val eventSink = RecordingEventSink()
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      eventSink = eventSink,
+    )
+
+    val result = runtime.execute(
+      task = promptTask("Please delegate README inspection through the explorer alias."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Explorer child summary: README says hello.", result.stdout)
+    val taskResultMetadata = eventSink.events
+      .filterIsInstance<OpenCrayToolResultEvent>()
+      .single()
+      .result
+      .metadata
+    assertEquals("explorer", taskResultMetadata["delegationSubagentType"])
+    assertEquals("minimal", taskResultMetadata["delegationContextMode"])
+    assertFalse(gateway.requests[1].prompt.contains("Please delegate README inspection through the explorer alias."))
+    val childToolNames = gateway.requests[1].tools.map { definition -> definition.name }
+    assertTrue(childToolNames.contains("Read"))
+    assertFalse(childToolNames.contains("Task"))
+    assertFalse(childToolNames.contains("Write"))
+    assertTrue(
+      gateway.requests[2].prompt.contains(
+        "Task description=inspect readme subagent=explorer state=completed context=minimal",
+      ),
+    )
+  }
+
+  @Test
   fun taskToolRunsGeneralPurposeChildWithDelegatedParentSummary() {
     val workspaceRoot = temporaryFolder.newFolder("subagent-delegated").toPath()
     val gateway = RecordingGateway(
@@ -135,6 +188,42 @@ class OpenCrayAgentRuntimeSubAgentTest {
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("Delegated result received.", result.stdout)
     assertEquals(3, gateway.requests.size)
+    assertTrue(gateway.requests[1].prompt.contains("Delegated parent context for this child run."))
+    assertTrue(gateway.requests[1].prompt.contains("user_goal=Investigate the codebase and continue carefully."))
+    assertTrue(gateway.requests[1].prompt.contains("Check the repo layout and report back."))
+  }
+
+  @Test
+  fun taskToolAcceptsDefaultAliasAndUsesDelegatedContext() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-default-alias").toPath()
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Task","arguments":{"description":"continue investigation","prompt":"Check the repo layout and report back.","subagent_type":"default"}}""",
+        """{"type":"final","answer":"Layout inspected through default."}""",
+        """{"type":"final","answer":"Default child result received."}""",
+      ),
+    )
+    val eventSink = RecordingEventSink()
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      eventSink = eventSink,
+    )
+
+    val result = runtime.execute(
+      task = promptTask("Investigate the codebase and continue carefully."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Default child result received.", result.stdout)
+    val taskResultMetadata = eventSink.events
+      .filterIsInstance<OpenCrayToolResultEvent>()
+      .single()
+      .result
+      .metadata
+    assertEquals("default", taskResultMetadata["delegationSubagentType"])
+    assertEquals("delegated", taskResultMetadata["delegationContextMode"])
     assertTrue(gateway.requests[1].prompt.contains("Delegated parent context for this child run."))
     assertTrue(gateway.requests[1].prompt.contains("user_goal=Investigate the codebase and continue carefully."))
     assertTrue(gateway.requests[1].prompt.contains("Check the repo layout and report back."))
@@ -215,6 +304,50 @@ class OpenCrayAgentRuntimeSubAgentTest {
     assertTrue(gateway.requests[2].prompt.contains("Read file_path=README.md"))
     assertFalse(gateway.requests[2].prompt.contains("tool_result Read"))
     assertFalse(gateway.requests[2].prompt.contains("hello"))
+  }
+
+  @Test
+  fun taskToolInheritsParentActiveSkillCapsuleAndRestrictsChildTools() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-active-skill-task").toPath()
+    Files.write(
+      workspaceRoot.resolve("README.md"),
+      "hello".toByteArray(StandardCharsets.UTF_8),
+    )
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Task","arguments":{"description":"inspect readme","prompt":"Read README.md and summarize it.","subagent_type":"researcher"}}""",
+        """{"type":"final","answer":"README says hello."}""",
+        """{"type":"final","answer":"Parent received the child result."}""",
+      ),
+    )
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      sessionContext = sessionContextWithSkillCatalog(
+        allowedToolPatterns = listOf("task", "read"),
+      ),
+      promptResumeState = activeSkillPromptResumeState(),
+    )
+
+    val result = runtime.execute(
+      task = promptTask("Delegate the README inspection under the active skill."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Parent received the child result.", result.stdout)
+    assertEquals(3, gateway.requests.size)
+    val childPrompt = gateway.requests[1].prompt
+    assertTrue(childPrompt.contains("A skill is now active for this run."))
+    assertTrue(childPrompt.contains("name=focused-read"))
+    assertTrue(childPrompt.contains("activation_source=skill_read"))
+    assertTrue(childPrompt.contains("Follow the focused-read workflow."))
+    val childToolNames = gateway.requests[1].tools.map { definition -> definition.name }
+    assertTrue(childToolNames.contains("Read"))
+    assertFalse(childToolNames.contains("LS"))
+    assertFalse(childToolNames.contains("Grep"))
+    assertFalse(childToolNames.contains("Glob"))
+    assertFalse(childToolNames.contains("Task"))
   }
 
   @Test
@@ -995,6 +1128,50 @@ class OpenCrayAgentRuntimeSubAgentTest {
   }
 
   @Test
+  fun queuedWaitAgentKeepsInheritedActiveSkillRestrictions() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-active-skill-spawn-wait").toPath()
+    Files.write(
+      workspaceRoot.resolve("README.md"),
+      "hello".toByteArray(StandardCharsets.UTF_8),
+    )
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"inspect readme","prompt":"Read README.md and summarize it.","subagent_type":"researcher"}}""",
+        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
+        """{"type":"final","answer":"README says hello."}""",
+        """{"type":"final","answer":"Queued child finished under the inherited skill."}""",
+      ),
+    )
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      sessionContext = sessionContextWithSkillCatalog(
+        allowedToolPatterns = listOf("spawn_agent", "wait_agent", "read"),
+      ),
+      promptResumeState = activeSkillPromptResumeState(),
+    )
+
+    val result = runtime.execute(
+      task = promptTask("Queue the child and wait for it under the active skill."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Queued child finished under the inherited skill.", result.stdout)
+    assertEquals(4, gateway.requests.size)
+    val childPrompt = gateway.requests[2].prompt
+    assertTrue(childPrompt.contains("A skill is now active for this run."))
+    assertTrue(childPrompt.contains("name=focused-read"))
+    val childToolNames = gateway.requests[2].tools.map { definition -> definition.name }
+    assertTrue(childToolNames.contains("Read"))
+    assertFalse(childToolNames.contains("LS"))
+    assertFalse(childToolNames.contains("Grep"))
+    assertFalse(childToolNames.contains("Glob"))
+    assertFalse(childToolNames.contains("spawn_agent"))
+    assertFalse(childToolNames.contains("wait_agent"))
+  }
+
+  @Test
   fun sendInputAppendsSupplementalParentInstructionBeforeWait() {
     val workspaceRoot = temporaryFolder.newFolder("subagent-send-input").toPath()
     val gateway = RecordingGateway(
@@ -1166,6 +1343,110 @@ class OpenCrayAgentRuntimeSubAgentTest {
     )
   }
 
+  @Test
+  fun sendInputAppendsSupplementalParentInstructionWhileChildIsWaitingApproval() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-send-input-waiting-approval").toPath()
+    val notesFile = workspaceRoot.resolve("notes.txt")
+    Files.write(
+      notesFile,
+      "draft\nTODO\n".toByteArray(StandardCharsets.UTF_8),
+    )
+    val initialGateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"edit notes","prompt":"Replace TODO with DONE in notes.txt.","subagent_type":"worker"}}""",
+        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
+        """{"type":"tool_call","tool_name":"Edit","arguments":{"file_path":"notes.txt","old_string":"TODO","new_string":"DONE"}}""",
+      ),
+    )
+    val initialRuntime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = initialGateway,
+    )
+
+    val initialResult = initialRuntime.execute(
+      task = promptTask(
+        "Queue a worker child and wait for it.",
+        metadata = mapOf(
+          SafetySettingsMetadataKeys.EXECUTION_MODE to "safe",
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.DENIED, initialResult.status)
+    assertEquals("APPROVAL_REQUIRED", initialResult.errorCode)
+    val approvedResume = requireNotNull(
+      SubAgentApprovalResumeMetadata.decodeFromMetadata(
+        metadata = initialResult.metadata,
+        json = TEST_JSON,
+      ),
+    )
+    val promptResumeState = requireNotNull(
+      OpenCrayPromptResumeMetadata.decodeFromMetadata(
+        metadata = initialResult.metadata,
+        json = TEST_JSON,
+      ),
+    )
+    val resumedGateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"send_input","arguments":{"agent_id":"child-1","message":"After the edit, confirm whether notes.txt now contains DONE."}}""",
+        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
+        """{"type":"final","answer":"Approved edit completed with follow-up."}""",
+        """{"type":"final","answer":"Approved wait with supplement completed."}""",
+      ),
+    )
+    val resumedEventSink = RecordingEventSink()
+    val resumedRuntime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = resumedGateway,
+      promptResumeState = promptResumeState.copy(
+        pendingActions = emptyList(),
+        pendingToolCall = null,
+        nextActionIndex = 0,
+      ),
+      approvedSubAgentResume = approvedResume,
+      eventSink = resumedEventSink,
+    )
+
+    val resumedResult = resumedRuntime.execute(
+      task = promptTask(
+        "Queue a worker child and wait for it.",
+        metadata = mapOf(
+          SafetySettingsMetadataKeys.EXECUTION_MODE to "safe",
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, resumedResult.status)
+    assertEquals("Approved wait with supplement completed.", resumedResult.stdout)
+    assertEquals("draft\nDONE\n", String(Files.readAllBytes(notesFile), StandardCharsets.UTF_8))
+    assertEquals(4, resumedGateway.requests.size)
+    val sendInputResultMetadata = resumedEventSink.events
+      .filterIsInstance<OpenCrayToolResultEvent>()
+      .first { event -> event.call.toolName == "send_input" }
+      .result
+      .metadata
+    assertEquals("1", sendInputResultMetadata["supplementalInputCount"])
+    assertTrue(
+      resumedGateway.requests[2].prompt.contains(
+        "After the edit, confirm whether notes.txt now contains DONE.",
+      ),
+    )
+    assertTrue(
+      resumedGateway.requests[2].messages.any { message ->
+        message.role == LiteLlmGatewayMessageRole.USER &&
+          message.content == "After the edit, confirm whether notes.txt now contains DONE."
+      },
+    )
+    assertEquals(
+      listOf(OpenCraySubAgentPhase.RESUMED, OpenCraySubAgentPhase.COMPLETED),
+      resumedEventSink.events
+        .filterIsInstance<OpenCraySubAgentEvent>()
+        .map(OpenCraySubAgentEvent::phase),
+    )
+  }
+
   private fun runtime(
     workspaceRoot: java.nio.file.Path,
     readRoots: Set<java.nio.file.Path> = setOf(workspaceRoot),
@@ -1231,6 +1512,37 @@ class OpenCrayAgentRuntimeSubAgentTest {
   ): RuntimeExecutionHooks = RuntimeExecutionHooks(
     isCancellationRequested = isCancellationRequested,
     requestRetry = { _: RetryRequest -> error("Retry not expected in subagent runtime test.") },
+  )
+
+  private fun sessionContextWithSkillCatalog(
+    allowedToolPatterns: List<String> = listOf("read"),
+  ): AgentRuntimeSessionContext = AgentRuntimeSessionContext(
+    skillCatalog = SkillCatalog(
+      skillsByName = mapOf(
+        "focused-read" to SkillCatalogEntry(
+          name = "focused-read",
+          description = "Keep the child focused on direct file reads only.",
+          relativePath = ".codex/skills/focused-read/SKILL.md",
+          invocationControl = SkillInvocationControl.EXPLICIT_ONLY,
+          userInvocable = true,
+          executionContext = SkillExecutionContext.INLINE,
+          markdownBody = "# focused-read\n\nFollow the focused-read workflow.",
+          toolPermissions = allowedToolPatterns.map { pattern ->
+            SkillPermissionRule(
+              pattern = pattern,
+              decision = SkillPermissionDecision.ALLOW,
+            )
+          },
+        ),
+      ),
+    ),
+  )
+
+  private fun activeSkillPromptResumeState(): OpenCrayPromptResumeState = OpenCrayPromptResumeState(
+    turnIndex = 0,
+    toolCallCount = 0,
+    activeSkillName = "focused-read",
+    activeSkillActivationSource = "skill_read",
   )
 
   private fun jsonEscape(value: String): String = value.replace("\\", "\\\\")

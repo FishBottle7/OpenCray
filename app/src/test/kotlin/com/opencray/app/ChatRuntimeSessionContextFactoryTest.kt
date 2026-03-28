@@ -7,6 +7,7 @@ import com.opencray.runtime.soul.SoulProfileExtensionKeys
 import com.opencray.runtime.context.RuntimeConversationRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -19,6 +20,10 @@ class ChatRuntimeSessionContextFactoryTest {
   @Test
   fun createBuildsConversationWithoutDefaultSystemPromptOrPendingPlaceholder() {
     val store = ChatSessionLocalStore(temporaryFolder.root, nowEpochMs = IncrementingClock(1_000L)::next)
+    val workspaceRoot = temporaryFolder.newFolder("chat-runtime-session-context-workspace").toPath()
+    val attachmentPath = workspaceRoot.resolve("chat-media").resolve("release-notes.md")
+    java.nio.file.Files.createDirectories(attachmentPath.parent)
+    attachmentPath.toFile().writeText("# Release notes")
     val state = store.loadState()
     val sessionId = state.activeSession.sessionId
     store.appendUserMessage(
@@ -30,7 +35,7 @@ class ChatRuntimeSessionContextFactoryTest {
           attachmentId = "attachment-1",
           kind = ChatAttachmentKind.FILE,
           displayName = "release-notes.md",
-          localPath = "D:/tmp/release-notes.md",
+          localPath = "chat-media/release-notes.md",
         ),
       ),
     )
@@ -50,7 +55,10 @@ class ChatRuntimeSessionContextFactoryTest {
       text = "Thinking...",
     ).messageId
 
-    val context = ChatRuntimeSessionContextFactory(store).create(
+    val context = ChatRuntimeSessionContextFactory(
+      chatSessionStore = store,
+      workspaceRootProvider = { workspaceRoot },
+    ).create(
       sessionId = sessionId,
       excludedMessageIds = setOf(pendingMessageId),
       soulProfile = WorkspaceSoulProfile(
@@ -77,9 +85,13 @@ class ChatRuntimeSessionContextFactoryTest {
     assertEquals(2, context.conversation.size)
     assertEquals(RuntimeConversationRole.USER, context.conversation[0].role)
     assertTrue(context.conversation[0].content.contains("Command: Summarize"))
-    assertTrue(context.conversation[0].content.contains("Attachments:"))
-    assertTrue(context.conversation[0].content.contains("release-notes.md"))
     assertTrue(context.conversation[0].content.contains("Please prepare the release summary."))
+    assertFalse(context.conversation[0].content.contains("Attachments:"))
+    assertEquals(1, context.conversation[0].attachments.size)
+    assertEquals("attachment-1", context.conversation[0].attachments.single().attachmentId)
+    assertEquals("release-notes.md", context.conversation[0].attachments.single().displayName)
+    assertNotNull(context.conversation[0].attachments.single().filePath)
+    assertTrue(context.conversation[0].attachments.single().filePath?.endsWith("chat-media/release-notes.md") == true)
     assertEquals(RuntimeConversationRole.ASSISTANT, context.conversation[1].role)
     assertEquals("I am collecting the diff now.", context.conversation[1].content)
     assertTrue(context.conversation.none { message -> message.content.contains("Host-only note") })

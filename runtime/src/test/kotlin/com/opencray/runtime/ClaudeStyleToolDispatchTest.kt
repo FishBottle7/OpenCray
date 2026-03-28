@@ -397,7 +397,7 @@ class ClaudeStyleToolDispatchTest {
     )
 
     val result = dispatcher.dispatch(
-      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      task = agentTask(metadata = mapOf("chatMode" to "AUTO")),
       call = AgentToolCall(
         toolName = "WebSearch",
         arguments = buildJsonObject {
@@ -418,6 +418,37 @@ class ClaudeStyleToolDispatchTest {
     assertEquals("false", result.metadata["resultTruncated"])
     assertEquals("web_search_result_limit", result.metadata["resultLimitKind"])
     assertEquals("opencray tools", provider.requests.single().query)
+  }
+
+  @Test
+  fun webSearchCanBeDisabledPerRun() {
+    val workspaceRoot = temporaryFolder.newFolder("claude-websearch-disabled").toPath()
+    val provider = FakeWebSearchProvider()
+    val dispatcher = dispatcher(
+      workspaceRoot = workspaceRoot,
+      webSearchProvider = provider,
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(
+        metadata = mapOf(
+          "chatMode" to "AUTO",
+          "webSearchEnabled" to "false",
+        ),
+      ),
+      call = AgentToolCall(
+        toolName = "WebSearch",
+        arguments = buildJsonObject {
+          put("query", "opencray tools")
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.DENIED, result.status)
+    assertEquals("WEB_SEARCH_DISABLED", result.errorCode)
+    assertEquals("false", result.metadata["webSearchEnabled"])
+    assertTrue(provider.requests.isEmpty())
   }
 
   @Test

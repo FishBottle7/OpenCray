@@ -10,6 +10,7 @@ data class SubAgentTask(
   val parentTurn: Int,
   val depth: Int = 1,
   val activeSkillName: String? = null,
+  val activeSkillActivationSource: String? = null,
 ) {
   init {
     require(description.isNotBlank()) { "SubAgentTask description must not be blank." }
@@ -34,6 +35,12 @@ data class SubAgentTask(
       ?.let { skillName ->
         put(SubAgentMetadataKeys.ACTIVE_SKILL_NAME, skillName)
       }
+    activeSkillActivationSource
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { activationSource ->
+        put(SubAgentMetadataKeys.ACTIVE_SKILL_ACTIVATION_SOURCE, activationSource)
+      }
   }
 }
 
@@ -45,4 +52,5 @@ object SubAgentMetadataKeys {
   const val PARENT_TURN: String = "parentTurn"
   const val DEPTH: String = "subagentDepth"
   const val ACTIVE_SKILL_NAME: String = "activeSkillName"
+  const val ACTIVE_SKILL_ACTIVATION_SOURCE: String = "activeSkillActivationSource"
 }

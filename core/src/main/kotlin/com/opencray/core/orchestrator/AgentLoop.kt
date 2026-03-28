@@ -21,6 +21,16 @@ class AgentLoop(
 
   fun requestResumeTask(taskId: String): Boolean = queue.requestResumeTask(taskId)
 
+  fun requestResumeTask(
+    taskId: String,
+    executionKind: String,
+    taskMetadataUpdates: Map<String, String> = emptyMap(),
+  ): Boolean = queue.requestResumeTask(
+    taskId = taskId,
+    executionKind = executionKind,
+    taskMetadataUpdates = taskMetadataUpdates,
+  )
+
   fun stop(): SessionLifecycleState = queue.stop()
 
   fun resume(): SessionLifecycleState = queue.resume()

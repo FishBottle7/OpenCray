@@ -68,4 +68,24 @@ class AgentSessionSupplementStoreFactoryTest {
     assertTrue(sessionAStore.snapshot().isEmpty())
     assertEquals(listOf("Session B"), factory.forChatSession("session-b").snapshot().map(MidLoopSupplementEntry::text))
   }
+
+  @Test
+  fun fileBackedStoreConsumesRunSupplementsOnlyOnceAcrossStoreInstances() {
+    val root = temporaryFolder.newFolder("agent-runtime-supplements-consume-once")
+    val factory = FileBackedAgentSessionSupplementStoreFactory(root)
+    val firstStore = factory.forChatSession("session-1")
+    val secondStore = factory.forChatSession("session-1")
+
+    firstStore.append(
+      runId = "run-1",
+      taskId = "task-1",
+      text = "First supplement",
+    )
+
+    val consumed = firstStore.consumeForRun(runId = "run-1", taskId = "task-1")
+
+    assertEquals(listOf("First supplement"), consumed.map(MidLoopSupplementEntry::text))
+    assertTrue(secondStore.consumeForRun(runId = "run-1", taskId = "task-1").isEmpty())
+    assertTrue(factory.forChatSession("session-1").snapshot().isEmpty())
+  }
 }

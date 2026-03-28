@@ -33,6 +33,9 @@ enum class OpenCraySubAgentPhase {
 sealed interface OpenCrayAgentRunEvent {
   val runId: String
   val taskId: String
+  val executionId: String?
+  val executionOrdinal: Int?
+  val executionKind: String?
   val turn: Int?
   val emittedAtEpochMs: Long
 }
@@ -42,6 +45,7 @@ sealed interface OpenCrayAssistantPhaseEvent : OpenCrayAgentRunEvent {
   val responseFormat: String?
   val isFinal: Boolean
   val stage: String?
+  val metadata: Map<String, String>
   val phase: OpenCrayAssistantPhase
 
   fun toAssistantEvent(): OpenCrayAssistantEvent
@@ -50,6 +54,9 @@ sealed interface OpenCrayAssistantPhaseEvent : OpenCrayAgentRunEvent {
 data class OpenCrayLifecycleEvent(
   override val runId: String,
   override val taskId: String,
+  override val executionId: String? = null,
+  override val executionOrdinal: Int? = null,
+  override val executionKind: String? = null,
   val phase: OpenCrayRunLifecyclePhase,
   val status: ExecutionStatus? = null,
   val errorCode: String? = null,
@@ -61,11 +68,15 @@ data class OpenCrayLifecycleEvent(
 data class OpenCrayAssistantEvent(
   override val runId: String,
   override val taskId: String,
+  override val executionId: String? = null,
+  override val executionOrdinal: Int? = null,
+  override val executionKind: String? = null,
   override val turn: Int,
   override val text: String,
   override val responseFormat: String? = null,
   override val isFinal: Boolean = false,
   override val stage: String? = null,
+  override val metadata: Map<String, String> = emptyMap(),
   override val emittedAtEpochMs: Long,
 ) : OpenCrayAssistantPhaseEvent {
   override val phase: OpenCrayAssistantPhase
@@ -87,6 +98,9 @@ data class OpenCraySupplementInput(
 data class OpenCraySupplementEvent(
   override val runId: String,
   override val taskId: String,
+  override val executionId: String? = null,
+  override val executionOrdinal: Int? = null,
+  override val executionKind: String? = null,
   override val turn: Int,
   val entryId: String,
   val text: String,
@@ -98,6 +112,9 @@ data class OpenCraySupplementEvent(
 data class OpenCrayApprovalEvent(
   override val runId: String,
   override val taskId: String,
+  override val executionId: String? = null,
+  override val executionOrdinal: Int? = null,
+  override val executionKind: String? = null,
   val phase: OpenCrayApprovalPhase,
   val toolName: String? = null,
   val text: String,
@@ -109,6 +126,9 @@ data class OpenCrayApprovalEvent(
 data class OpenCraySubAgentEvent(
   override val runId: String,
   override val taskId: String,
+  override val executionId: String? = null,
+  override val executionOrdinal: Int? = null,
+  override val executionKind: String? = null,
   val phase: OpenCraySubAgentPhase,
   val childRunId: String,
   val childTaskId: String,
@@ -129,6 +149,9 @@ data class OpenCraySubAgentEvent(
 data class OpenCrayToolCallEvent(
   override val runId: String,
   override val taskId: String,
+  override val executionId: String? = null,
+  override val executionOrdinal: Int? = null,
+  override val executionKind: String? = null,
   override val turn: Int,
   val call: AgentToolCall,
   override val emittedAtEpochMs: Long,
@@ -137,6 +160,9 @@ data class OpenCrayToolCallEvent(
 data class OpenCrayToolResultEvent(
   override val runId: String,
   override val taskId: String,
+  override val executionId: String? = null,
+  override val executionOrdinal: Int? = null,
+  override val executionKind: String? = null,
   override val turn: Int,
   val call: AgentToolCall,
   val result: AgentToolResult,
@@ -146,6 +172,9 @@ data class OpenCrayToolResultEvent(
 data class OpenCrayMemoryWriteEvent(
   override val runId: String,
   override val taskId: String,
+  override val executionId: String? = null,
+  override val executionOrdinal: Int? = null,
+  override val executionKind: String? = null,
   val writtenRecordIds: List<String> = emptyList(),
   val writtenKinds: List<String> = emptyList(),
   val resolvedRecordIds: List<String> = emptyList(),
@@ -159,6 +188,9 @@ data class OpenCrayMemoryWriteEvent(
 data class OpenCrayCancellationEvent(
   override val runId: String,
   override val taskId: String,
+  override val executionId: String? = null,
+  override val executionOrdinal: Int? = null,
+  override val executionKind: String? = null,
   val toolName: String? = null,
   val outcome: String? = null,
   val text: String,
@@ -169,6 +201,9 @@ data class OpenCrayCancellationEvent(
 data class OpenCrayMemoryRetrievalEvent(
   override val runId: String,
   override val taskId: String,
+  override val executionId: String? = null,
+  override val executionOrdinal: Int? = null,
+  override val executionKind: String? = null,
   override val turn: Int,
   val toolName: String,
   val operation: String,

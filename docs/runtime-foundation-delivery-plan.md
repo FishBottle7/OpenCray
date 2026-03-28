@@ -1,10 +1,10 @@
 # Runtime Foundation Delivery Plan
 
-Last updated: 2026-03-25
+Last updated: 2026-03-27
 
 ## Status
 
-Phase 1 complete; Phase 2 approval-boundary checkpoint and planner-aware restore slice partially implemented; in-process detached-owner foundation and first same-process service host landed
+Phase 1 complete; Phase 2 approval-boundary and first general checkpoint restore slice partially implemented; in-process detached-owner foundation, same-process service host, foreground keepalive, and scheduled wake bridges landed. True detached ownership and controller-level managed-process reconnect remain pending.
 
 ## Goal
 
@@ -179,19 +179,24 @@ Implemented so far in Phase 2:
 - runtime execution now falls back to those durable checkpoints when the in-memory approval registry is empty after host rebuild
 - a first non-approval general resume slice now persists durable prompt resume state after committed tool results, and runtime execution can rebuild from that `general_resume` checkpoint
 - once resumed execution emits the next real runtime event, the approval checkpoint is cleared conservatively so stale resume state is not reused later
-- a first `RunRecoveryPlanner` skeleton now classifies runs into checkpoint resume, approval wait, managed-process reconnect, interrupted recovery required, or legacy requeue
+- a first `RunRecoveryPlanner` skeleton now classifies runs into checkpoint resume, approval wait, rejected-stop-awaiting-direction, managed-process reconnect, interrupted recovery required, or legacy requeue
 - run snapshots now project that planner output so recovery intent is explicit even before queue restore behavior is switched over
 - app-layer restore now wraps the queue snapshot store and rewrites approval-boundary restores before `SessionQueue` sees them
 - app-layer restore can now also rewrite interrupted runs back to the same queued run when a durable `general_resume` checkpoint proves that post-tool-result continuation is safe
-- interrupted runs with `approved_pending_resume` or `rejected_pending_resume` can restore as the same queued run instead of being stranded in explicit-retry failure
+- interrupted runs with `approved_pending_resume` can restore as the same queued run, while `rejected_pending_resume` now restores as a stopped run awaiting the next user instruction instead of being stranded in explicit-retry failure
 - interrupted runs with `waiting_approval` can restore as the same suspended run instead of silently changing recovery shape after host rebuild
+- live managed-process restores now prefer durable checkpoint replay when a safe `general_resume` checkpoint exists, instead of projecting a reconnect state that cannot yet continue end-to-end
+- file-backed managed-process registries can now reattach a live controller across registry or host rebuild inside the same app process, which avoids falsely marking still-live managed processes as interrupted in that narrow same-process restore case
+- provider-native builtin web-search observations now emit the same general resume checkpoint metadata as normal tool results, so host rebuild after provider-managed search can still resume from a durable post-tool boundary
 - app-layer restore now prefers durable journal tail over `lastEvent` summary when feeding recovery decisions
+- when an explicit `general_resume` checkpoint is missing, app-layer restore can now synthesize one from the durable journal tail or persisted `lastEvent` if that boundary already carries `OpenCrayPromptResumeMetadata`, so safe post-tool-result continuation no longer depends solely on the checkpoint store still being present
+- when explicit approval checkpoints are missing, app-layer restore can now also synthesize `waiting_approval`, `approved_pending_resume`, or `rejected_pending_resume` from durable approval-denial result metadata plus the durable tail approval event, so host rebuild no longer loses the user's approval state solely because the checkpoint row is missing
 - interrupted runs without a recoverable checkpoint now surface as explicit interruption in planner output instead of implying automatic legacy rerun
 
 Still pending in Phase 2:
 
 - additional generalized checkpoint boundaries beyond the current post-tool-result `general_resume` slice
-- managed-process reconnect restore
+- true cross-process managed-process controller reconnect restore
 - generalized planner integration inside `core` queue restore and detached runtime ownership
 
 Detached-owner foundation landed in app process:
@@ -213,7 +218,7 @@ First service-host slice landed:
 - the runtime service client now issues a real asynchronous `bindService(...)` request and keeps projecting connection transitions through the same snapshot field, without blocking synchronous host creation paths
 - host observers now refresh shell/runtime snapshots when the service client connection state changes, so later binder attachment is visible without rebuilding the host facade
 - production `OpenCrayHostRuntime` construction is now projection-only with respect to session bootstrap: active-session `resume()` plus terminal replay repair moved to one-time runtime service host startup instead of running from every host-facade init path
-- runtime service host bootstrap is now explicit in `OpenCrayAgentRuntimeService.ensureStarted(...)`; the binding client fallback bridge only projects an already-initialized host and no longer lazily `getOrCreate(...)`s the runtime host during first snapshot reads
+- caller-side runtime-service entrypoints now only request service start or wake; runtime service host bootstrap happens inside `OpenCrayAgentRuntimeService.onCreate()`, and the binding client fallback bridge only projects an already-initialized host without lazily `getOrCreate(...)`ing the runtime host during first snapshot reads
 - service-backed chat/skills/settings gateways now treat binder fallback as projection-only for reads: `load*` and `observe*` paths may still project through the fallback facade, but mutating or tool-executing operations now fail explicitly unless a binder-backed service gateway is attached
 - the shell snapshot surface is now normalized behind `OpenCrayShellGateway`, and both the Flutter bridge and loopback HTTP server prefer a binder-backed service shell gateway for `loadShellSnapshot()` and shell observation when the binder is available
 - the execution-facing chat/runtime surface is now normalized behind `OpenCrayChatRuntimeGateway`, and both the Flutter bridge and loopback HTTP server dispatch that path through the gateway instead of calling chat/runtime host methods directly
@@ -231,7 +236,7 @@ First service-host slice landed:
 - `OpenCrayHostRuntime` now implements that same local-only gateway by delegation, which keeps the remaining projection fallback compatible while separating service-owned runtime surfaces from local-only host helpers
 - shell, settings, and skills read fallback are now served by dedicated projection-only gateways instead of a full `OpenCrayHostRuntime`, so those surfaces no longer pull the UI-side host facade into existence just to satisfy binder-pending reads
 - projection-only skills fallback is now strictly local-only: it filters the local snapshot and local instructions without issuing `SkillsList` or `SkillsFind`, which keeps tool-executing skills discovery on the binder-owned pipeline
-- this is still a same-process service host; foreground keepalive, binder-owned control flow, and scheduled wake-up handoff remain later slices
+- this is still a same-process service host; stronger detached ownership, dedicated-runtime-process isolation, and true controller-level managed-process reconnect remain later slices
 
 ### Recommended checkpoint boundaries
 
@@ -284,9 +289,16 @@ Planner outputs:
 
 - `resume_from_checkpoint`
 - `resume_waiting_for_approval`
+- `stop_rejected_awaiting_direction`
 - `resume_reconnect_process`
 - `interrupt_recovery_required`
 - `legacy_requeue` for work that was already safely queued before restore, not for interrupted in-flight recovery
+
+Current implementation note:
+
+- queue restore now prefers `resume_from_checkpoint` whenever a durable safe checkpoint exists, even if a managed process is still live
+- `stop_rejected_awaiting_direction` is now used for durable rejected-approval restores so the run stays stopped instead of re-entering a queued resume path
+- `resume_reconnect_process` remains a projected recovery intent for live managed-process state, but true reconnect without checkpoint replay is still not implemented end-to-end
 
 ### Safety rule
 
@@ -367,12 +379,27 @@ Recommended service modes:
 
 Prepare delayed execution and future periodic tasks without reintroducing UI ownership.
 
-### New components
+### Current implementation status
+
+Already landed in app process:
+
+- scheduled task registry, durable spec storage, and run records
+- `AlarmManager` wake path plus `WorkManager` wake and repair path
+- runtime-service wake entrypoints for scheduled dispatch and repair
+- schedule, approval, completion/interruption, and active-runtime notification surfaces
+
+Still pending in this phase:
+
+- richer schedule-side notification actions beyond the current approval/open flows
+- a scheduler-owned repair loop for active interactive runs that does not rely on normal startup/checkpoint recovery
+- any future periodic/task-automation expansions that need more than the current wake/dispatch bridge
+
+### Components in this phase
 
 - scheduled task registry
 - `WorkManager` trigger bridge
 - service wake entrypoints
-- notification actions for resume and cancel
+- notification actions for approval and open flows
 
 ### Behavior
 

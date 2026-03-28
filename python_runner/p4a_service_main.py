@@ -11,6 +11,7 @@ from python_runner.p4a_bridge import run_request_file
 
 SERVICE_STATE_SCHEMA_VERSION = 1
 SERVICE_HEARTBEAT_INTERVAL_MS = 1000
+SERVICE_START_ARGUMENT_FILE_NAME = "service-start-argument.json"
 
 
 def _now_ms() -> int:
@@ -31,8 +32,8 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     )
 
 
-def _service_argument_payload() -> dict[str, object]:
-    raw_argument = os.environ.get("PYTHON_SERVICE_ARGUMENT", "").strip()
+def _normalize_service_argument(raw_argument: str) -> dict[str, object]:
+    raw_argument = raw_argument.strip()
     if not raw_argument:
         return {}
     try:
@@ -44,12 +45,119 @@ def _service_argument_payload() -> dict[str, object]:
     return {"runtimeRoot": str(payload)}
 
 
+def _service_state_dir(runtime_root: Path) -> Path:
+    return runtime_root / "service_state"
+
+
+def _service_start_argument_path(runtime_root: Path) -> Path:
+    return _service_state_dir(runtime_root) / SERVICE_START_ARGUMENT_FILE_NAME
+
+
+def _read_json_dict(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _append_unique_path(candidates: list[Path], seen: set[str], path: Path) -> None:
+    candidate_key = str(path)
+    if candidate_key and candidate_key not in seen:
+        seen.add(candidate_key)
+        candidates.append(path)
+
+
+def _append_files_root_candidates_from_path(
+    raw_path: Path | None,
+    candidates: list[Path],
+    seen: set[str],
+) -> None:
+    if raw_path is None:
+        return
+    try:
+        path = raw_path.resolve()
+    except Exception:
+        path = raw_path
+    path_parts = path.parts
+    for index, part in enumerate(path_parts):
+        if part != "files":
+            continue
+        candidate = Path(path_parts[0], *path_parts[1 : index + 1]) if path_parts else path
+        _append_unique_path(candidates, seen, candidate)
+    if path.name == "files":
+        _append_unique_path(candidates, seen, path)
+    elif path.parent.name == "files":
+        _append_unique_path(candidates, seen, path.parent)
+
+
+def _android_files_root_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[str] = set()
+    for env_name in ("ANDROID_ARGUMENT", "ANDROID_PRIVATE"):
+        raw_value = os.environ.get(env_name, "").strip()
+        if not raw_value:
+            continue
+        _append_files_root_candidates_from_path(Path(raw_value), candidates, seen)
+
+    # Some p4a service builds do not surface ANDROID_ARGUMENT/ANDROID_PRIVATE.
+    # In that case, recover the files root from the extracted service script itself.
+    _append_files_root_candidates_from_path(
+        Path(globals().get("__file__", "")) if globals().get("__file__") else None,
+        candidates,
+        seen,
+    )
+    _append_files_root_candidates_from_path(Path.cwd(), candidates, seen)
+    return candidates
+
+
+def _runtime_root_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    explicit_runtime_root = os.environ.get("OPENCRAY_P4A_RUNTIME_ROOT", "").strip()
+    if explicit_runtime_root:
+        explicit_path = Path(explicit_runtime_root)
+        seen.add(str(explicit_path))
+        candidates.append(explicit_path)
+
+    for files_root in _android_files_root_candidates():
+        runtime_root = files_root / "python_runtime"
+        runtime_root_key = str(runtime_root)
+        if runtime_root_key not in seen:
+            seen.add(runtime_root_key)
+            candidates.append(runtime_root)
+    return candidates
+
+
+def _fallback_service_argument_payload() -> dict[str, object]:
+    for runtime_root in _runtime_root_candidates():
+        start_argument_path = _service_start_argument_path(runtime_root)
+        if start_argument_path.exists():
+            payload = _read_json_dict(start_argument_path)
+            if payload:
+                return payload
+    return {}
+
+
+def _service_argument_payload() -> dict[str, object]:
+    raw_argument = os.environ.get("PYTHON_SERVICE_ARGUMENT", "").strip()
+    if raw_argument:
+        return _normalize_service_argument(raw_argument)
+    return _fallback_service_argument_payload()
+
+
 def _default_runtime_root() -> str:
     payload = _service_argument_payload()
     runtime_root = str(payload.get("runtimeRoot", "")).strip()
     if runtime_root:
         return runtime_root
-    return os.environ.get("OPENCRAY_P4A_RUNTIME_ROOT", "").strip()
+    explicit_runtime_root = os.environ.get("OPENCRAY_P4A_RUNTIME_ROOT", "").strip()
+    if explicit_runtime_root:
+        return explicit_runtime_root
+    for candidate in _runtime_root_candidates():
+        return str(candidate)
+    return ""
 
 
 def _default_poll_interval_ms() -> int:
@@ -86,7 +194,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _service_state_paths(runtime_root: Path) -> tuple[Path, Path]:
-    state_dir = runtime_root / "service_state"
+    state_dir = _service_state_dir(runtime_root)
     return state_dir / "service-state.json", state_dir / "service-ready.json"
 
 

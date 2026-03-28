@@ -523,8 +523,61 @@ class OpenCrayToolDispatcherSkillPackageToolTest {
     assertEquals("SkillsFind", result.toolName)
     assertEquals("SkillsFind", result.metadata["requestedToolName"])
     assertEquals("SkillsFind", result.metadata["normalizedToolName"])
+    assertEquals("WebFetch", result.metadata[OpenCrayExecutionMetadataKeys.APPROVAL_RESUME_TOOL_NAME])
     assertEquals("network_access", result.metadata["capabilityKind"])
     assertEquals("network", result.metadata["targetKind"])
+  }
+
+  @Test
+  fun skillsFindApprovalGrantResumesRemoteSearchWithoutReasking() {
+    val packageManager = packageManager(
+      remoteSearchClient = FakeRemoteSkillSearchClient(
+        hits = listOf(
+          RemoteSkillSearchHit(
+            id = "roin-orca/skills/find-skills",
+            name = "find-skills",
+            source = "roin-orca/skills",
+            installs = 42,
+            installRef = "roin-orca/skills@find-skills",
+            detailUrl = "https://skills.sh/roin-orca/skills",
+          ),
+        ),
+      ),
+    )
+    val task = task(metadata = mapOf("chatMode" to "SAFE"))
+    val dispatcher = dispatcher(packageManager)
+    val call = AgentToolCall(
+      toolName = "SkillsFind",
+      arguments = buildJsonObject {
+        put("query", "find")
+      },
+    )
+
+    val denied = dispatcher.dispatch(
+      task = task,
+      call = call,
+      hooks = runtimeHooks(),
+    )
+    val approvalToolName = requireNotNull(
+      denied.metadata[OpenCrayExecutionMetadataKeys.APPROVAL_RESUME_TOOL_NAME],
+    )
+
+    val resumed = dispatcher
+      .withApprovalGrant(
+        approvedTaskId = task.id,
+        approvedToolName = approvalToolName,
+      )
+      .dispatch(
+        task = task,
+        call = call,
+        hooks = runtimeHooks(),
+      )
+
+    assertEquals(AgentToolResultStatus.DENIED, denied.status)
+    assertEquals("WebFetch", approvalToolName)
+    assertEquals(AgentToolResultStatus.SUCCESS, resumed.status)
+    assertEquals("1", resumed.metadata["remoteResultCount"])
+    assertTrue(resumed.content.contains("install_ref=roin-orca/skills@find-skills"))
   }
 
   @Test
@@ -546,12 +599,39 @@ class OpenCrayToolDispatcherSkillPackageToolTest {
     )
 
     assertEquals(AgentToolResultStatus.DENIED, result.status)
-    assertEquals("APPROVAL_REQUIRED", result.errorCode)
+    assertEquals("HIGH_RISK_APPROVAL_REQUIRED", result.errorCode)
     assertEquals("SkillsCheck", result.toolName)
     assertEquals("SkillsCheck", result.metadata["requestedToolName"])
     assertEquals("SkillsCheck", result.metadata["normalizedToolName"])
-    assertEquals("check_skill_update", result.metadata["capabilityKind"])
-    assertEquals("directory", result.metadata["targetKind"])
+    assertEquals("network_access", result.metadata["capabilityKind"])
+    assertEquals("network", result.metadata["targetKind"])
+  }
+
+  @Test
+  fun skillsListAllowsManagedRootReadInSafeMode() {
+    val packageManager = packageManager()
+    writeSkill(
+      root = packageManager.catalogRootPath(),
+      relativeDirectory = "find-skills",
+      frontMatter = """
+        name: find-skills
+        description: Discover skills from the local catalog.
+      """.trimIndent(),
+      body = "Use the local catalog first.",
+    )
+    requireNotNull(packageManager.installFromCatalog("find-skills"))
+    val dispatcher = dispatcher(packageManager)
+
+    val result = dispatcher.dispatch(
+      task = task(metadata = mapOf("chatMode" to "SAFE")),
+      call = AgentToolCall(toolName = "SkillsList", arguments = JsonObject(emptyMap())),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals("ALLOW_SAFE_READ", result.metadata["policyReasonCode"])
+    assertEquals("read_skill_package", result.metadata["capabilityKind"])
+    assertEquals("outside_workspace", result.metadata["workspaceRelation"])
   }
 
   @Test

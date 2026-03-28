@@ -101,6 +101,9 @@ internal data class PersistedAgentRunEvent(
   val kind: PersistedAgentRunEventKind,
   val runId: String,
   val taskId: String,
+  val executionId: String? = null,
+  val executionOrdinal: Int? = null,
+  val executionKind: String? = null,
   val turn: Int? = null,
   val emittedAtEpochMs: Long,
   val phase: String? = null,
@@ -130,6 +133,7 @@ internal data class PersistedAgentRunEvent(
   val toolReason: String? = null,
   val argumentsJson: String? = null,
   val toolStatus: String? = null,
+  val content: String? = null,
   val contentPreview: String? = null,
   val resultMetadata: Map<String, String> = emptyMap(),
   val operation: String? = null,
@@ -283,6 +287,9 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     kind = PersistedAgentRunEventKind.LIFECYCLE,
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
     phase = phase.name,
@@ -294,6 +301,9 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     kind = PersistedAgentRunEventKind.ASSISTANT_PHASE,
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
     phase = phase.name,
@@ -301,11 +311,15 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     isFinal = isFinal,
     text = text,
     stage = stage,
+    resultMetadata = metadata,
   )
   is OpenCraySupplementEvent -> PersistedAgentRunEvent(
     kind = PersistedAgentRunEventKind.SUPPLEMENT,
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
     supplementEntryId = entryId,
@@ -317,6 +331,9 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     kind = PersistedAgentRunEventKind.APPROVAL,
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
     approvalPhase = phase.name,
@@ -328,6 +345,9 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     kind = PersistedAgentRunEventKind.SUBAGENT,
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
     phase = phase.name,
@@ -348,6 +368,9 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     kind = PersistedAgentRunEventKind.TOOL_CALL,
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
     toolName = call.toolName,
@@ -358,6 +381,9 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     kind = PersistedAgentRunEventKind.TOOL_RESULT,
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
     toolName = call.toolName,
@@ -366,6 +392,11 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     toolStatus = result.status.name,
     errorCode = result.errorCode,
     errorMessage = result.errorMessage,
+    content = if (result.status == AgentToolResultStatus.SUCCESS) {
+      null
+    } else {
+      result.content.take(MAX_PERSISTED_FAILURE_TOOL_CONTENT_CHARS)
+    },
     contentPreview = result.content.take(MAX_PERSISTED_TOOL_CONTENT_CHARS),
     resultMetadata = result.metadata,
   )
@@ -373,6 +404,9 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     kind = PersistedAgentRunEventKind.MEMORY_RETRIEVAL,
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
     toolName = toolName,
@@ -393,6 +427,9 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     kind = PersistedAgentRunEventKind.MEMORY_WRITE,
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
     writtenRecordIds = writtenRecordIds,
@@ -406,6 +443,9 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     kind = PersistedAgentRunEventKind.CANCELLATION,
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
     toolName = toolName,
@@ -418,6 +458,9 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
   PersistedAgentRunEventKind.LIFECYCLE -> OpenCrayLifecycleEvent(
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     phase = phase
       ?.trim()
       ?.takeIf(String::isNotBlank)
@@ -435,6 +478,9 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
   PersistedAgentRunEventKind.ASSISTANT_PHASE -> OpenCrayAssistantEvent(
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     turn = turn ?: 0,
     text = text.orEmpty(),
     responseFormat = responseFormat?.trim()?.takeIf(String::isNotBlank),
@@ -444,11 +490,15 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
       ?.equals("FINAL_ANSWER", ignoreCase = true)
       ?: (isFinal == true),
     stage = stage,
+    metadata = resultMetadata,
     emittedAtEpochMs = emittedAtEpochMs,
   )
   PersistedAgentRunEventKind.SUPPLEMENT -> OpenCraySupplementEvent(
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     turn = turn ?: 0,
     entryId = supplementEntryId?.trim()?.takeIf(String::isNotBlank)
       ?: "supplement-$emittedAtEpochMs",
@@ -461,6 +511,9 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
   PersistedAgentRunEventKind.APPROVAL -> OpenCrayApprovalEvent(
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     phase = approvalPhase
       ?.trim()
       ?.takeIf(String::isNotBlank)
@@ -499,6 +552,9 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
     OpenCraySubAgentEvent(
       runId = runId,
       taskId = taskId,
+      executionId = executionId,
+      executionOrdinal = executionOrdinal,
+      executionKind = executionKind,
       phase = restoredPhase,
       childRunId = childRunId?.trim()?.takeIf(String::isNotBlank) ?: runId,
       childTaskId = childTaskId?.trim()?.takeIf(String::isNotBlank) ?: taskId,
@@ -524,6 +580,9 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
   PersistedAgentRunEventKind.TOOL_CALL -> OpenCrayToolCallEvent(
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     turn = turn ?: 0,
     call = AgentToolCall(
       toolName = toolName?.trim()?.takeIf(String::isNotBlank) ?: "unknown",
@@ -535,6 +594,9 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
   PersistedAgentRunEventKind.TOOL_RESULT -> OpenCrayToolResultEvent(
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     turn = turn ?: 0,
     call = AgentToolCall(
       toolName = toolName?.trim()?.takeIf(String::isNotBlank) ?: "unknown",
@@ -548,7 +610,8 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
         ?.takeIf(String::isNotBlank)
         ?.let { raw -> runCatching { AgentToolResultStatus.valueOf(raw) }.getOrNull() }
         ?: AgentToolResultStatus.SUCCESS,
-      content = contentPreview?.takeIf(String::isNotBlank)
+      content = content?.takeIf(String::isNotBlank)
+        ?: contentPreview?.takeIf(String::isNotBlank)
         ?: "Tool result restored from durable run record.",
       errorCode = errorCode,
       errorMessage = errorMessage,
@@ -559,6 +622,9 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
   PersistedAgentRunEventKind.MEMORY_RETRIEVAL -> OpenCrayMemoryRetrievalEvent(
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     turn = turn ?: 0,
     toolName = toolName.orEmpty(),
     operation = operation.orEmpty(),
@@ -578,6 +644,9 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
   PersistedAgentRunEventKind.MEMORY_WRITE -> OpenCrayMemoryWriteEvent(
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     writtenRecordIds = writtenRecordIds,
     writtenKinds = writtenKinds,
     resolvedRecordIds = resolvedRecordIds,
@@ -590,6 +659,9 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
   PersistedAgentRunEventKind.CANCELLATION -> OpenCrayCancellationEvent(
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
     toolName = toolName,
     outcome = stage,
     text = text.orEmpty(),
@@ -622,3 +694,4 @@ private fun parseArgumentsJson(argumentsJson: String?): JsonObject {
 }
 
 private const val MAX_PERSISTED_TOOL_CONTENT_CHARS: Int = 1_024
+private const val MAX_PERSISTED_FAILURE_TOOL_CONTENT_CHARS: Int = 16_384

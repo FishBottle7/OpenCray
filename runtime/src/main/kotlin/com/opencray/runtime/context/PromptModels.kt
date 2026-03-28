@@ -23,22 +23,25 @@ import kotlinx.serialization.json.JsonObject
 data class RuntimeConversationMessage(
   val role: RuntimeConversationRole,
   val content: String,
+  val attachments: List<RuntimeConversationAttachment> = emptyList(),
   val kind: RuntimeConversationMessageKind = RuntimeConversationMessageKind.PLAIN,
   val toolCall: RuntimeConversationToolCall? = null,
   val toolResult: RuntimeConversationToolResult? = null,
-  val progress: RuntimeConversationProgress? = null,
+  val commentary: RuntimeConversationCommentary? = null,
   val assistantPhase: RuntimeConversationAssistantPhase? = null,
 ) {
   init {
-    require(content.isNotBlank()) { "RuntimeConversationMessage content must not be blank." }
+    require(content.isNotBlank() || attachments.isNotEmpty()) {
+      "RuntimeConversationMessage content must not be blank unless attachments are present."
+    }
     require(kind == RuntimeConversationMessageKind.TOOL_CALL || toolCall == null) {
       "RuntimeConversationMessage toolCall metadata is only valid for TOOL_CALL messages."
     }
     require(kind == RuntimeConversationMessageKind.TOOL_RESULT || toolResult == null) {
       "RuntimeConversationMessage toolResult metadata is only valid for TOOL_RESULT messages."
     }
-    require(kind == RuntimeConversationMessageKind.PROGRESS || progress == null) {
-      "RuntimeConversationMessage progress metadata is only valid for PROGRESS messages."
+    require(kind == RuntimeConversationMessageKind.COMMENTARY || commentary == null) {
+      "RuntimeConversationMessage commentary metadata is only valid for COMMENTARY messages."
     }
     require(kind != RuntimeConversationMessageKind.TOOL_CALL || toolCall != null) {
       "RuntimeConversationMessage TOOL_CALL messages must carry toolCall metadata."
@@ -46,8 +49,8 @@ data class RuntimeConversationMessage(
     require(kind != RuntimeConversationMessageKind.TOOL_RESULT || toolResult != null) {
       "RuntimeConversationMessage TOOL_RESULT messages must carry toolResult metadata."
     }
-    require(kind != RuntimeConversationMessageKind.PROGRESS || progress != null) {
-      "RuntimeConversationMessage PROGRESS messages must carry progress metadata."
+    require(kind != RuntimeConversationMessageKind.COMMENTARY || commentary != null) {
+      "RuntimeConversationMessage COMMENTARY messages must carry commentary metadata."
     }
     require(role == RuntimeConversationRole.ASSISTANT || assistantPhase == null) {
       "RuntimeConversationMessage assistantPhase is only valid for assistant messages."
@@ -68,13 +71,49 @@ enum class RuntimeConversationMessageKind {
   PLAIN,
   TOOL_CALL,
   TOOL_RESULT,
-  PROGRESS,
+  COMMENTARY,
 }
 
 @Serializable
 enum class RuntimeConversationAssistantPhase {
   COMMENTARY,
   FINAL_ANSWER,
+}
+
+@Serializable
+enum class RuntimeConversationAttachmentKind {
+  IMAGE,
+  VOICE,
+  AUDIO,
+  FILE,
+}
+
+@Serializable
+data class RuntimeConversationAttachment(
+  val attachmentId: String,
+  val kind: RuntimeConversationAttachmentKind,
+  val displayName: String,
+  val filePath: String? = null,
+  val mimeType: String? = null,
+  val transcriptText: String? = null,
+) {
+  init {
+    require(attachmentId.isNotBlank()) {
+      "RuntimeConversationAttachment attachmentId must not be blank."
+    }
+    require(displayName.isNotBlank()) {
+      "RuntimeConversationAttachment displayName must not be blank."
+    }
+    require(filePath == null || filePath.isNotBlank()) {
+      "RuntimeConversationAttachment filePath must not be blank when provided."
+    }
+    require(mimeType == null || mimeType.isNotBlank()) {
+      "RuntimeConversationAttachment mimeType must not be blank when provided."
+    }
+    require(transcriptText == null || transcriptText.isNotBlank()) {
+      "RuntimeConversationAttachment transcriptText must not be blank when provided."
+    }
+  }
 }
 
 @Serializable
@@ -106,7 +145,7 @@ data class RuntimeConversationToolResult(
 }
 
 @Serializable
-data class RuntimeConversationProgress(
+data class RuntimeConversationCommentary(
   val runId: String? = null,
   val taskId: String? = null,
   val turn: Int? = null,
@@ -114,7 +153,7 @@ data class RuntimeConversationProgress(
   val stage: String? = null,
 ) {
   init {
-    require(text.isNotBlank()) { "RuntimeConversationProgress text must not be blank." }
+    require(text.isNotBlank()) { "RuntimeConversationCommentary text must not be blank." }
   }
 }
 

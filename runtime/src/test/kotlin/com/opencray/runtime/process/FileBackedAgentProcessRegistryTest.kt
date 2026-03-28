@@ -1,7 +1,9 @@
 package com.opencray.runtime.process
 
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -10,6 +12,11 @@ import org.junit.rules.TemporaryFolder
 class FileBackedAgentProcessRegistryTest {
   @get:Rule
   val temporaryFolder: TemporaryFolder = TemporaryFolder()
+
+  @After
+  fun tearDown() {
+    ManagedProcessControllerRegistry.clearForTest()
+  }
 
   @Test
   fun sameDirectoryRestoresPersistedTerminalSnapshot() {
@@ -69,6 +76,8 @@ class FileBackedAgentProcessRegistryTest {
       ),
     )
 
+    ManagedProcessControllerRegistry.clearForTest()
+
     val restored = FileBackedAgentProcessRegistry(directory = directory).read("proc-running")
 
     assertNotNull(restored)
@@ -77,6 +86,49 @@ class FileBackedAgentProcessRegistryTest {
     assertTrue(restored.finishedAtEpochMs != null)
     assertEquals("true", restored.metadata["restoredFromDurableStore"])
     assertEquals("interrupted", restored.metadata["restoredTerminalState"])
+  }
+
+  @Test
+  fun sameProcessRestoreReattachesLiveControllerInsteadOfMarkingInterrupted() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-reattach")
+    val controller = FakeManagedProcessController(
+      snapshot = runningSnapshot(processId = "proc-live", taskId = "task-live"),
+      awaitSnapshot = successSnapshot(processId = "proc-live", taskId = "task-live"),
+    )
+    val registry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = ManagedProcessControllerFactory { controller },
+    )
+
+    registry.start(
+      ManagedProcessStartRequest(
+        processId = "proc-live",
+        taskId = "task-live",
+        command = "npm",
+        args = listOf("run", "dev"),
+        workingDirectory = ".",
+        timeoutMs = 120_000L,
+        requestedAtEpochMs = 1_000L,
+      ),
+    )
+
+    val restoredRegistry = FileBackedAgentProcessRegistry(directory = directory)
+    val restored = restoredRegistry.read("proc-live")
+
+    assertNotNull(restored)
+    assertEquals(ManagedProcessStatus.RUNNING, restored!!.status)
+    assertNull(restored.errorCode)
+    assertNull(restored.finishedAtEpochMs)
+
+    val waited = restoredRegistry.wait("proc-live", 250L)
+    assertNotNull(waited)
+    assertEquals(ManagedProcessStatus.SUCCESS, waited!!.status)
+
+    val reopened = FileBackedAgentProcessRegistry(directory = directory).read("proc-live")
+
+    assertNotNull(reopened)
+    assertEquals(ManagedProcessStatus.SUCCESS, reopened!!.status)
+    assertEquals("server ready", reopened.stdout)
   }
 
   private fun runningSnapshot(

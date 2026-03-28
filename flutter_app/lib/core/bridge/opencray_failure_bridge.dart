@@ -1,3 +1,5 @@
+import 'package:flutter/services.dart';
+
 import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_draft_attachment.dart';
 import '../models/opencray_chat_snapshot.dart';
@@ -11,7 +13,9 @@ import '../models/opencray_llm_validation.dart';
 import '../models/opencray_media_speech_config.dart';
 import '../models/opencray_mcp_settings.dart';
 import '../models/opencray_network_search_config.dart';
+import '../models/opencray_notification_settings.dart';
 import '../models/opencray_personalization_config.dart';
+import '../models/opencray_sandbox_settings.dart';
 import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
@@ -73,6 +77,12 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   @override
   Future<void> openExternalUri(String uri) async =>
       throw StateError(_failureMessage);
+
+  @override
+  Future<void> copyRichTextToClipboard({
+    required String plainText,
+    String? htmlText,
+  }) async => Clipboard.setData(ClipboardData(text: plainText));
 
   @override
   Future<OpenCrayFilesSnapshot> createWorkspaceFolder({
@@ -142,6 +152,30 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     subtitle: _failureMessage,
     sections: const <OpenCraySettingsSectionSnapshot>[],
   );
+
+  @override
+  Future<OpenCrayNotificationSettingsSnapshot>
+  loadNotificationSettings() async =>
+      const OpenCrayNotificationSettingsSnapshot(
+        masterEnabled: false,
+        defaultDeliveryModeId: 'critical',
+        quietHoursEnabled: true,
+        quietHoursStartMinutes: 1380,
+        quietHoursEndMinutes: 480,
+        approvalRequestsEnabled: true,
+        approvalReminderEnabled: true,
+        taskFinishedEnabled: false,
+        taskFailedEnabled: true,
+        newUserMessageEnabled: true,
+        scheduledWakeEnabled: false,
+        backgroundTaskPausedEnabled: true,
+        serviceRecoveredEnabled: false,
+      );
+
+  @override
+  Future<OpenCrayNotificationSettingsSnapshot> saveNotificationSettings(
+    OpenCrayNotificationSettingsSnapshot snapshot,
+  ) async => throw StateError(_failureMessage);
 
   @override
   Future<OpenCrayStrongBackgroundSnapshot>
@@ -239,6 +273,29 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayMediaSpeechConfigSnapshot> saveMediaSpeechConfig(
     OpenCrayMediaSpeechConfigSnapshot snapshot,
+  ) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCraySandboxSettingsSnapshot> loadSandboxSettings() async =>
+      const OpenCraySandboxSettingsSnapshot(
+        localeTag: 'en',
+        enabled: false,
+        providerId: 'e2b',
+        defaultBackend: 'local',
+        sessionMode: 'ephemeral',
+        autoResume: false,
+        idleTimeoutMinutes: 15,
+        startupTimeoutMs: 30000,
+        requestTimeoutMs: 300000,
+        timeoutAction: 'kill',
+        templateId: '',
+        e2bApiKey: '',
+        apiKeyConfigured: false,
+      );
+
+  @override
+  Future<OpenCraySandboxSettingsSnapshot> saveSandboxSettings(
+    OpenCraySandboxSettingsSnapshot snapshot,
   ) async => throw StateError(_failureMessage);
 
   @override
@@ -511,6 +568,7 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCraySkillsSnapshot> loadSkillsSnapshot({
     String query = '',
+    int? suggestedLimit,
   }) async => const OpenCraySkillsSnapshot(
     installedSkills: <OpenCrayInstalledSkillSnapshot>[],
     installSources: <OpenCraySkillInstallSourceSnapshot>[
@@ -592,6 +650,12 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   Future<OpenCraySkillInstructionsSnapshot?> loadSkillInstructions(
     String skillId,
   ) async => null;
+
+  @override
+  Future<OpenCraySkillInstructionsSnapshot?> loadSuggestedSkillInstructions(
+    String sourceRef, {
+    String selectedSkillName = '',
+  }) async => null;
 
   @override
   Future<OpenCrayChatSnapshot> loadChatSnapshot() async => OpenCrayChatSnapshot(
@@ -749,7 +813,13 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   Future<void> approveChatApproval(String approvalId) async {}
 
   @override
+  Future<void> approveChatApprovalForSession(String approvalId) async {}
+
+  @override
   Future<void> rejectChatApproval(String approvalId) async {}
+
+  @override
+  Future<void> interruptChatRun(String runIdOrTaskId) async {}
 
   @override
   Future<void> retryChatRun(String runIdOrTaskId) async {}

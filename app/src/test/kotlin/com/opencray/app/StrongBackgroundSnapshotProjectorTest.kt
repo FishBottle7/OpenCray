@@ -77,6 +77,8 @@ class StrongBackgroundSnapshotProjectorTest {
       ),
     )
 
+    assertEquals(StrongBackgroundTierIds.ACTIVE_BACKGROUND, snapshot["tierId"])
+    assertEquals(false, snapshot["setupComplete"])
     assertEquals(
       listOf(StrongBackgroundActionIds.OPEN_BATTERY_OPTIMIZATION_SETTINGS),
       snapshot["recommendedActionIds"],

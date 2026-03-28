@@ -47,7 +47,7 @@ internal fun RuntimeConversationMessage.replayedRuntimePayloadOrNull(): Replayed
         }
       }
 
-    RuntimeConversationMessageKind.PROGRESS ->
+    RuntimeConversationMessageKind.COMMENTARY ->
       if (role == RuntimeConversationRole.TOOL || role == RuntimeConversationRole.ASSISTANT) {
         plainJsonPayloadOrNull(normalized)?.let { payload ->
           return ReplayedRuntimePayload(

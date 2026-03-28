@@ -8,6 +8,8 @@ object LiteLlmMetadataKeys {
   const val NATIVE_TOOL_CALL_REQUESTED: String = "nativeToolCallRequested"
   const val BUILTIN_WEB_SEARCH_REQUESTED: String = "builtinWebSearchRequested"
   const val BUILTIN_WEB_SEARCH_USED: String = "builtinWebSearchUsed"
+  const val BUILTIN_WEB_SEARCH_OBSERVATIONS_JSON: String = "builtinWebSearchObservationsJson"
+  const val BUILTIN_WEB_SEARCH_DIALECT: String = "builtinWebSearchDialect"
   const val PROVIDER_CITATION_COUNT: String = "providerCitationCount"
   const val PROVIDER_RESPONSE_SHAPE: String = "providerResponseShape"
   const val NATIVE_TOOL_CALL_OBSERVED: String = "nativeToolCallObserved"

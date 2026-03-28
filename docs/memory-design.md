@@ -21,6 +21,16 @@ The target is not "store more notes". The target is a memory subsystem with dist
 3. explicit on-demand memory retrieval tools during a turn
 4. pre-compaction memory flush before durable history compaction
 
+Important boundary:
+
+- durable memory is not the same thing as short-term procedural working state
+- the current task or run should have its own `Working State layer`
+- durable memory should preserve stable facts, not become a noisy log of recent actions
+
+Related design:
+
+- `docs/working-state-layer-design.md`
+
 ## OpenClaw patterns that matter
 
 Based on local source inspection:
@@ -96,6 +106,14 @@ This path should stay:
 - traceable
 - secondary to fresh user instructions
 
+It should not be asked to preserve:
+
+- the exact recent file-edit sequence
+- the exact recent command sequence
+- active branch-decision state for the current investigation
+
+Those belong in a separate working-state layer.
+
 ### 3. On-demand memory tools
 
 OpenCray should add an explicit memory-tool surface similar to OpenClaw:
@@ -162,6 +180,9 @@ The first write set remains:
 - `project_fact`
 - `durable_instruction`
 - `task_commitment`
+
+That write set is still durable memory, not working-state state.
+If a piece of information only matters for the active task's short-term continuation, it should usually stay in working state unless memory policy explicitly promotes it.
 
 ## Planned runtime paths
 

@@ -3,6 +3,7 @@ package com.opencray.app
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.content.ActivityNotFoundException
 import java.util.Locale
 
 internal object AppExternalUriOpener {
@@ -19,15 +20,17 @@ internal object AppExternalUriOpener {
     require(scheme == "http" || scheme == "https") {
       "Only http and https links are supported."
     }
-    val intent = Intent(Intent.ACTION_VIEW, targetUri).apply {
+    val viewIntent = Intent(Intent.ACTION_VIEW, targetUri).apply {
+      addCategory(Intent.CATEGORY_BROWSABLE)
+    }
+    val chooserIntent = Intent.createChooser(viewIntent, null).apply {
       addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
-    require(intent.resolveActivity(appContext.packageManager) != null) {
-      "No application can open this link."
-    }
-    runCatching {
-      appContext.startActivity(intent)
-    }.getOrElse { throwable ->
+    try {
+      appContext.startActivity(chooserIntent)
+    } catch (_: ActivityNotFoundException) {
+      throw IllegalStateException("No application can open this link.")
+    } catch (throwable: Throwable) {
       throw IllegalStateException("Failed to open the external link.", throwable)
     }
   }

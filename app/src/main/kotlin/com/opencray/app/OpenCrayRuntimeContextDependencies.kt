@@ -13,6 +13,7 @@ internal data class OpenCrayRuntimeContextDependencies(
   val appContext: Context,
   val localizedContext: Context,
   val llmSettingsStore: LlmSettingsStore,
+  val sandboxSettingsRepository: SandboxSettingsRepository,
   val personalizationStore: PersonalizationLocalStore,
   val chatSessionStore: ChatSessionLocalStore,
   val skillsFacade: SkillsFacade,
@@ -35,6 +36,7 @@ internal fun loadOpenCrayRuntimeContextDependencies(
 ): OpenCrayRuntimeContextDependencies {
   val localizedContext = OpenCrayLocaleManager.wrap(appContext)
   val llmSettingsStore = LlmSettingsStore.fromContext(appContext)
+  val sandboxSettingsRepository = SandboxSettingsRepository.fromContext(appContext)
   val personalizationStore = PersonalizationLocalStore.fromContext(appContext)
   val chatSessionStore = ChatSessionLocalStore.fromContext(appContext)
   val skillsFacade = LocalSkillsFacade.fromContext(localizedContext)
@@ -67,6 +69,7 @@ internal fun loadOpenCrayRuntimeContextDependencies(
     appContext = appContext,
     localizedContext = localizedContext,
     llmSettingsStore = llmSettingsStore,
+    sandboxSettingsRepository = sandboxSettingsRepository,
     personalizationStore = personalizationStore,
     chatSessionStore = chatSessionStore,
     skillsFacade = skillsFacade,
@@ -96,6 +99,7 @@ internal fun ensureInProcessRuntimeOwner(
     createInProcessOpenCrayRuntimeOwner(
       appContext = dependencies.appContext,
       llmSettingsStore = dependencies.llmSettingsStore,
+      sandboxSettingsRepository = dependencies.sandboxSettingsRepository,
       personalizationStore = dependencies.personalizationStore,
       chatSessionStore = dependencies.chatSessionStore,
       skillsFacade = dependencies.skillsFacade,

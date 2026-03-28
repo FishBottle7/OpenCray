@@ -858,6 +858,22 @@ Subagents should inherit a purpose-built capsule, not the entire parent prompt.
 
 OpenCray must manage budget pressure proactively instead of waiting for context window failures.
 
+Important refinement:
+
+- OpenCray should not make Codex-style global compression its default architecture
+- OpenCray should keep layered context ownership and layer-local reducers
+- OpenCray should add one model-aware global budget coordinator above those reducers
+
+That means:
+
+- local pruning, transcript windowing, working-state caps, memory caps, bootstrap caps, and skill caps still matter
+- but one runtime-level allocator must decide which layers keep space under total prompt pressure
+
+Related designs:
+
+- `docs/working-state-layer-design.md`
+- `docs/global-context-budget-coordination-design.md`
+
 ### Goal 7: observable assembly
 
 Every run should be inspectable after the fact.
@@ -971,19 +987,37 @@ Role:
 
 - describe how this session differs from defaults
 
-### Layer 4: session working context
+### Layer 4: session working state
+
+Source:
+
+- compact operational projection of the active task or run
+- recent findings, actions, branch decisions, blockers, and next actions
+
+Role:
+
+- short-term procedural continuity
+- preserve what the agent is doing now
+- survive transcript pressure better than raw replay alone
+
+Important boundary:
+
+- this layer should not be treated as only a bounded transcript reconstruction
+- transcript replay and working state should be separate layers with different compaction rules
+
+### Layer 5: bounded session transcript
 
 Source:
 
 - bounded reconstruction of recent transcript
-- optional compaction summaries
+- optional compaction summaries where needed
 
 Role:
 
 - conversational continuity
-- local working memory
+- provenance and recent replay
 
-### Layer 5: retrieved durable context
+### Layer 6: retrieved durable context
 
 Source:
 
@@ -996,7 +1030,7 @@ Role:
 - durable continuity
 - externalized recall
 
-### Layer 6: skill and execution capsules
+### Layer 7: skill and execution capsules
 
 Source:
 
@@ -1008,7 +1042,7 @@ Role:
 
 - give the model the correct execution playbook for the current task
 
-### Layer 7: task protocol
+### Layer 8: task protocol
 
 Source:
 
@@ -1057,6 +1091,7 @@ flowchart TD
 user sends message
   -> SessionRuntimeManager(sessionId)
   -> load session state
+  -> resolve short-term working state
   -> reconstruct bounded working transcript
   -> resolve soul layer
   -> resolve session policy layer
@@ -1119,7 +1154,34 @@ data class AssembledContext(
 )
 ```
 
-## Pattern 3: Transcript Window Builder
+## Pattern 3: Global Context Budget Coordinator
+
+OpenCray should add one model-aware coordinator above all layer-local reducers.
+
+Responsibilities:
+
+- compute the total input budget for the current model and route
+- classify layers by retention priority
+- apply a global reduction order after local layer caps have already run
+- preserve identity and working state longer than replay and archive layers
+- choose when stronger replay compaction or provider-native continuation is worth using
+- emit a structured per-run budget report
+
+Suggested modules:
+
+- `runtime/src/main/kotlin/com/opencray/runtime/context/ModelContextBudgetPolicy.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/context/GlobalContextBudgetCoordinator.kt`
+
+Important boundary:
+
+- this is not the same thing as making generic global compression the default
+- transcript compaction remains one reduction operator inside the larger budget strategy
+
+Related design:
+
+- `docs/global-context-budget-coordination-design.md`
+
+## Pattern 4: Transcript Window Builder
 
 This component rebuilds the in-run message window from persisted history.
 
@@ -1137,7 +1199,7 @@ Suggested module:
 
 This is the minimal feature OpenCray must add first.
 
-## Pattern 4: Structured Soul Resolver
+## Pattern 5: Structured Soul Resolver
 
 Soul should become typed runtime data.
 

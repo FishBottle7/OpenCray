@@ -135,6 +135,8 @@ class LlmConfigFacadeTest {
     assertTrue(result.isSuccess)
     assertEquals("Connection verified for gpt-4o-mini.", result.message)
     assertTrue(result.agentCapability?.nativeToolCallingAvailable == true)
+    assertTrue(result.agentCapability?.visionInputSupported == true)
+    assertTrue(result.agentCapability?.pdfInputSupported == true)
     assertTrue(result.agentCapability?.toolChoiceSupported == true)
     assertTrue(result.agentCapability?.strictToolSchemaSupported == true)
     assertTrue(result.agentCapability?.parallelToolCallsSupported == true)
@@ -143,6 +145,7 @@ class LlmConfigFacadeTest {
     assertEquals("https://api.openai.com/v1", providerClient.requests[0].route.baseUrl)
     assertEquals("gpt-4o-mini", providerClient.requests[0].route.model)
     assertEquals("high", providerClient.requests[0].route.metadata["reasoning_effort"])
+    assertEquals("true", providerClient.requests[0].route.metadata["pdfInputSupported"])
     assertEquals("Bearer test-key", providerClient.requests[0].request.authHeaders["Authorization"])
     assertEquals("Reply with OK.", providerClient.requests[0].request.prompt)
     assertEquals("capability_probe", providerClient.requests[1].request.tools.single().name)
@@ -161,6 +164,102 @@ class LlmConfigFacadeTest {
           model = "gpt-4o-mini",
         ),
       ).agentCapability.strictToolSchemaSupported,
+    )
+  }
+
+  @Test
+  fun validateMarksEmbeddingModelsAsTextOnlyForVisionInput() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val providerClient = RecordingProviderClient(
+      LiteLlmProviderResult.Success(outputText = "OK"),
+      LiteLlmProviderResult.Success(
+        outputText = "I cannot call tools here.",
+        completion = LiteLlmStructuredCompletion(
+          finalText = "I cannot call tools here.",
+        ),
+      ),
+    )
+    val facade = LocalLlmConfigFacade.createForTest(
+      llmSettingsStore = store,
+      providerClient = providerClient,
+    )
+
+    val result = facade.validate(
+      ValidateLlmConfigRequest(
+        providerId = "custom",
+        protocol = LlmProviderProtocols.OPENAI,
+        baseUrl = "https://example.com/v1",
+        apiKey = "test-key",
+        model = "text-embedding-3-large",
+        reasoningEffort = "medium",
+      ),
+    )
+
+    assertFalse(result.isSuccess)
+    assertFalse(result.agentCapability?.visionInputSupported == true)
+    assertFalse(result.agentCapability?.pdfInputSupported == true)
+    assertFalse(
+      store.load(
+        defaults = LlmSettingsState(
+          protocol = LlmProviderProtocols.OPENAI,
+          baseUrl = "https://example.com/v1",
+          apiKey = "test-key",
+          model = "text-embedding-3-large",
+        ),
+      ).agentCapability.visionInputSupported,
+    )
+    assertFalse(
+      store.load(
+        defaults = LlmSettingsState(
+          protocol = LlmProviderProtocols.OPENAI,
+          baseUrl = "https://example.com/v1",
+          apiKey = "test-key",
+          model = "text-embedding-3-large",
+        ),
+      ).agentCapability.pdfInputSupported,
+    )
+  }
+
+  @Test
+  fun validateMarksQwenVlModelsAsVisionCapableForCustomOpenAiRoutes() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val providerClient = RecordingProviderClient(
+      LiteLlmProviderResult.Success(outputText = "OK"),
+      LiteLlmProviderResult.Success(
+        outputText = "I cannot call tools here.",
+        completion = LiteLlmStructuredCompletion(
+          finalText = "I cannot call tools here.",
+        ),
+      ),
+    )
+    val facade = LocalLlmConfigFacade.createForTest(
+      llmSettingsStore = store,
+      providerClient = providerClient,
+    )
+
+    val result = facade.validate(
+      ValidateLlmConfigRequest(
+        providerId = "custom",
+        protocol = LlmProviderProtocols.OPENAI,
+        baseUrl = "https://example.com/v1",
+        apiKey = "test-key",
+        model = "qwen2.5-vl-72b-instruct",
+        reasoningEffort = "medium",
+      ),
+    )
+
+    assertFalse(result.isSuccess)
+    assertTrue(result.agentCapability?.visionInputSupported == true)
+    assertEquals("true", providerClient.requests[0].route.metadata["visionInputSupported"])
+    assertTrue(
+      store.load(
+        defaults = LlmSettingsState(
+          protocol = LlmProviderProtocols.OPENAI,
+          baseUrl = "https://example.com/v1",
+          apiKey = "test-key",
+          model = "qwen2.5-vl-72b-instruct",
+        ),
+      ).agentCapability.visionInputSupported,
     )
   }
 
@@ -270,6 +369,111 @@ class LlmConfigFacadeTest {
     assertEquals("16000", providerClient.requests[0].route.metadata["thinking_budget_tokens"])
     assertEquals("anthropic-secret", providerClient.requests[0].request.authHeaders["x-api-key"])
     assertEquals("2023-06-01", providerClient.requests[0].request.authHeaders["anthropic-version"])
+  }
+
+  @Test
+  fun validateOpenAiProtocolCapturesBuiltinWebSearchCapability() {
+    val providerClient = RecordingProviderClient(
+      LiteLlmProviderResult.Success(outputText = "OK"),
+      capabilityProbeResult(expectedEcho = "native_tool_probe"),
+      capabilityProbeResult(expectedEcho = "tool_choice_probe"),
+      capabilityProbeResult(expectedEcho = "strict_schema_probe"),
+      parallelCapabilityProbeResult(),
+      LiteLlmProviderResult.Success(
+        outputText = "https://example.com",
+        metadata = mapOf(
+          LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_USED to "true",
+          LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_DIALECT to "openai_chat_web_search",
+        ),
+      ),
+    )
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val facade = LocalLlmConfigFacade.createForTest(
+      llmSettingsStore = store,
+      providerClient = providerClient,
+    )
+
+    val result = facade.validate(
+      ValidateLlmConfigRequest(
+        providerId = "custom",
+        protocol = LlmProviderProtocols.OPENAI,
+        baseUrl = "https://open.bigmodel.cn/api/paas/v4",
+        apiKey = "test-key",
+        model = "glm-4.6",
+        reasoningEffort = "medium",
+      ),
+    )
+
+    assertTrue(result.isSuccess)
+    assertTrue(result.agentCapability?.nativeToolCallingAvailable == true)
+    assertTrue(result.agentCapability?.builtinWebSearchSupported == true)
+    assertEquals(
+      LiteLlmBuiltinToolType.WEB_SEARCH,
+      providerClient.requests[5].request.builtinTools.single().type,
+    )
+    assertEquals(
+      true,
+      store.load(
+        defaults = LlmSettingsState(
+          protocol = LlmProviderProtocols.OPENAI,
+          baseUrl = "https://open.bigmodel.cn/api/paas/v4",
+          model = "glm-4.6",
+        ),
+      ).agentCapability.builtinWebSearchSupported,
+    )
+  }
+
+  @Test
+  fun validateAnthropicProtocolCapturesBuiltinWebSearchCapability() {
+    val providerClient = RecordingProviderClient(
+      LiteLlmProviderResult.Success(outputText = "OK"),
+      capabilityProbeResult(expectedEcho = "native_tool_probe"),
+      capabilityProbeResult(expectedEcho = "tool_choice_probe"),
+      capabilityProbeResult(expectedEcho = "strict_schema_probe"),
+      parallelCapabilityProbeResult(),
+      LiteLlmProviderResult.Success(
+        outputText = "https://example.com",
+        metadata = mapOf(
+          LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_USED to "true",
+          LiteLlmMetadataKeys.PROVIDER_CITATION_COUNT to "1",
+        ),
+      ),
+    )
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val facade = LocalLlmConfigFacade.createForTest(
+      llmSettingsStore = store,
+      providerClient = providerClient,
+    )
+
+    val result = facade.validate(
+      ValidateLlmConfigRequest(
+        providerId = "custom",
+        protocol = LlmProviderProtocols.ANTHROPIC,
+        baseUrl = "https://api.anthropic.com",
+        apiKey = "anthropic-secret",
+        model = "claude-3-7-sonnet",
+        reasoningEffort = "xhigh",
+      ),
+    )
+
+    assertTrue(result.isSuccess)
+    assertTrue(result.agentCapability?.nativeToolCallingAvailable == true)
+    assertTrue(result.agentCapability?.builtinWebSearchSupported == true)
+    assertTrue(result.agentCapability?.citationIncludeSupported == true)
+    assertEquals(
+      LiteLlmBuiltinToolType.WEB_SEARCH,
+      providerClient.requests[5].request.builtinTools.single().type,
+    )
+    assertEquals(
+      true,
+      store.load(
+        defaults = LlmSettingsState(
+          protocol = LlmProviderProtocols.ANTHROPIC,
+          baseUrl = "https://api.anthropic.com",
+          model = "claude-3-7-sonnet",
+        ),
+      ).agentCapability.builtinWebSearchSupported,
+    )
   }
 
   @Test

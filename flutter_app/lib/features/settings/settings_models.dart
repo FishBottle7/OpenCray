@@ -1,11 +1,15 @@
 enum SettingsPage {
   home,
+  notificationsBackground,
+  notificationChannels,
   workspaceAccess,
   llm,
   mcp,
   apiIntegrations,
   networkSearch,
   mediaSpeech,
+  sandboxProviders,
+  sandboxE2b,
   safetyLimits,
   personalization,
   agents,
@@ -17,6 +21,10 @@ extension SettingsPageRouteId on SettingsPage {
     switch (this) {
       case SettingsPage.home:
         return 'home';
+      case SettingsPage.notificationsBackground:
+        return 'notifications_background';
+      case SettingsPage.notificationChannels:
+        return 'notification_channels';
       case SettingsPage.workspaceAccess:
         return 'workspace_access';
       case SettingsPage.llm:
@@ -29,6 +37,10 @@ extension SettingsPageRouteId on SettingsPage {
         return 'network_search';
       case SettingsPage.mediaSpeech:
         return 'media_speech';
+      case SettingsPage.sandboxProviders:
+        return 'sandbox_providers';
+      case SettingsPage.sandboxE2b:
+        return 'sandbox_e2b';
       case SettingsPage.safetyLimits:
         return 'safety_limits';
       case SettingsPage.personalization:
@@ -43,6 +55,10 @@ extension SettingsPageRouteId on SettingsPage {
 
 SettingsPage settingsPageFromRouteId(String routeId) {
   switch (routeId) {
+    case 'notifications_background':
+      return SettingsPage.notificationsBackground;
+    case 'notification_channels':
+      return SettingsPage.notificationChannels;
     case 'workspace_access':
       return SettingsPage.workspaceAccess;
     case 'llm':
@@ -57,6 +73,10 @@ SettingsPage settingsPageFromRouteId(String routeId) {
       return SettingsPage.networkSearch;
     case 'media_speech':
       return SettingsPage.mediaSpeech;
+    case 'sandbox_providers':
+      return SettingsPage.sandboxProviders;
+    case 'sandbox_e2b':
+      return SettingsPage.sandboxE2b;
     case 'safety_limits':
       return SettingsPage.safetyLimits;
     case 'personalization':
@@ -353,6 +373,70 @@ class MediaSpeechConfigSnapshot {
       sttRoute: sttRoute ?? this.sttRoute,
       externalStt: externalStt ?? this.externalStt,
       onDeviceModel: onDeviceModel ?? this.onDeviceModel,
+    );
+  }
+}
+
+class SandboxSettingsSnapshot {
+  const SandboxSettingsSnapshot({
+    required this.localeTag,
+    required this.enabled,
+    required this.providerId,
+    required this.defaultBackend,
+    required this.sessionMode,
+    required this.autoResume,
+    required this.idleTimeoutMinutes,
+    required this.startupTimeoutMs,
+    required this.requestTimeoutMs,
+    required this.timeoutAction,
+    required this.templateId,
+    required this.e2bApiKey,
+    required this.apiKeyConfigured,
+  });
+
+  final String localeTag;
+  final bool enabled;
+  final String providerId;
+  final String defaultBackend;
+  final String sessionMode;
+  final bool autoResume;
+  final int idleTimeoutMinutes;
+  final int startupTimeoutMs;
+  final int requestTimeoutMs;
+  final String timeoutAction;
+  final String templateId;
+  final String e2bApiKey;
+  final bool apiKeyConfigured;
+
+  SandboxSettingsSnapshot copyWith({
+    String? localeTag,
+    bool? enabled,
+    String? providerId,
+    String? defaultBackend,
+    String? sessionMode,
+    bool? autoResume,
+    int? idleTimeoutMinutes,
+    int? startupTimeoutMs,
+    int? requestTimeoutMs,
+    String? timeoutAction,
+    String? templateId,
+    String? e2bApiKey,
+    bool? apiKeyConfigured,
+  }) {
+    return SandboxSettingsSnapshot(
+      localeTag: localeTag ?? this.localeTag,
+      enabled: enabled ?? this.enabled,
+      providerId: providerId ?? this.providerId,
+      defaultBackend: defaultBackend ?? this.defaultBackend,
+      sessionMode: sessionMode ?? this.sessionMode,
+      autoResume: autoResume ?? this.autoResume,
+      idleTimeoutMinutes: idleTimeoutMinutes ?? this.idleTimeoutMinutes,
+      startupTimeoutMs: startupTimeoutMs ?? this.startupTimeoutMs,
+      requestTimeoutMs: requestTimeoutMs ?? this.requestTimeoutMs,
+      timeoutAction: timeoutAction ?? this.timeoutAction,
+      templateId: templateId ?? this.templateId,
+      e2bApiKey: e2bApiKey ?? this.e2bApiKey,
+      apiKeyConfigured: apiKeyConfigured ?? this.apiKeyConfigured,
     );
   }
 }

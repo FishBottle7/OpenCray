@@ -6,10 +6,19 @@ import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
+import com.opencray.policy.SafetyAutomationMode
+import com.opencray.policy.SafetySettingsMetadataKeys
+import com.opencray.policy.ToolPolicyOverride
 import com.opencray.runtime.NoOpOpenCrayAgentRuntimeEventSink
 import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.skills.SkillInstallManifestStore
+import com.opencray.runtime.skills.SkillPackageManager
+import java.io.File
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -141,4 +150,398 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
       },
     )
   }
+
+  @Test
+  fun hostUiPreapprovedToolCallAllowsMatchingToolWithoutChatApproval() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-host-ui-preapproved").toPath()
+    val targetFile = workspaceRoot.resolve("delete-me.txt")
+    targetFile.toFile().writeText("remove")
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-host-ui-preapproved"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    val runtime = runtimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val task = AgentTask(
+      id = "host-ui-preapproved-delete",
+      type = AgentTaskType.TOOL_CALL,
+      input = """{"type":"tool_call","tool_name":"workspace_delete_file","arguments":{"path":"delete-me.txt"}}""",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+      metadata = mapOf(
+        SafetySettingsMetadataKeys.FILE_DELETES_POLICY_ID to ToolPolicyOverride.ASK.wireValue,
+        RunLifecycleMetadataKeys.SUBMISSION_SOURCE to RunSubmissionSources.HOST_UI_TOOL_ACTION,
+        RunLifecycleMetadataKeys.PREAPPROVED_TOOL_NAME to "workspace_delete_file",
+      ),
+    )
+
+    val result = runtime.execute(
+      task,
+      RuntimeExecutionHooks(
+        isCancellationRequested = { false },
+        requestRetry = { _ -> error("Retry was not expected for host-ui preapproval test.") },
+      ),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertFalse(Files.exists(targetFile))
+    assertEquals("USER_APPROVED_RETRY", result.metadata["policyReasonCode"])
+  }
+
+  @Test
+  fun hostUiPreapprovedToolCallRequiresExactToolMatch() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-host-ui-mismatch").toPath()
+    val targetFile = workspaceRoot.resolve("delete-me.txt")
+    targetFile.toFile().writeText("remove")
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-host-ui-mismatch"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    val runtime = runtimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val task = AgentTask(
+      id = "host-ui-preapproved-delete-mismatch",
+      type = AgentTaskType.TOOL_CALL,
+      input = """{"type":"tool_call","tool_name":"workspace_delete_file","arguments":{"path":"delete-me.txt"}}""",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+      metadata = mapOf(
+        SafetySettingsMetadataKeys.FILE_DELETES_POLICY_ID to ToolPolicyOverride.ASK.wireValue,
+        RunLifecycleMetadataKeys.SUBMISSION_SOURCE to RunSubmissionSources.HOST_UI_TOOL_ACTION,
+        RunLifecycleMetadataKeys.PREAPPROVED_TOOL_NAME to "workspace_write_file",
+      ),
+    )
+
+    val result = runtime.execute(
+      task,
+      RuntimeExecutionHooks(
+        isCancellationRequested = { false },
+        requestRetry = { _ -> error("Retry was not expected for host-ui mismatch test.") },
+      ),
+    )
+
+    assertEquals(ExecutionStatus.DENIED, result.status)
+    assertEquals("APPROVAL_REQUIRED", result.errorCode)
+    assertTrue(Files.exists(targetFile))
+  }
+
+  @Test
+  fun hostUiPreapprovedSkillsAddAllowsNestedApprovalGates() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-host-ui-skills-add").toPath()
+    val sourceRoot = temporaryFolder.newFolder("external-skill-source")
+    writeSkill(
+      root = sourceRoot,
+      relativeDirectory = "find-skills",
+      frontMatter = """
+        name: find-skills
+        description: Installs from an external source.
+        invocation-control: explicit-only
+        user-invocable: true
+        allowed-tools: [ read ]
+      """.trimIndent(),
+      body = """
+        # Find Skills
+
+        External install fixture.
+      """.trimIndent(),
+    )
+    val packageManager = createSkillPackageManager("skills-add")
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-skills-add"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      safetySettingsProvider = { SafetySettingsState(automationMode = SafetyAutomationMode.SAFE) },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      readRootsProvider = { setOf(workspaceRoot, sourceRoot.toPath()) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      skillPackageManagerProvider = { packageManager },
+    )
+    val runtime = runtimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val sourceRef = jsonPath(sourceRoot)
+    val task = AgentTask(
+      id = "host-ui-preapproved-skills-add",
+      type = AgentTaskType.TOOL_CALL,
+      input = """{"type":"tool_call","tool_name":"SkillsAdd","arguments":{"sourceRef":"$sourceRef","skill":"find-skills"}}""",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+      metadata = mapOf(
+        RunLifecycleMetadataKeys.SUBMISSION_SOURCE to RunSubmissionSources.HOST_UI_TOOL_ACTION,
+        RunLifecycleMetadataKeys.PREAPPROVED_TOOL_NAME to "SkillsAdd",
+      ),
+    )
+
+    val result = runtime.execute(
+      task,
+      RuntimeExecutionHooks(
+        isCancellationRequested = { false },
+        requestRetry = { _ -> error("Retry was not expected for host-ui skills add test.") },
+      ),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("USER_APPROVED_RETRY", result.metadata["policyReasonCode"])
+    assertTrue(Files.exists(packageManager.managedRootPath().toPath().resolve("find-skills").resolve("SKILL.md")))
+  }
+
+  @Test
+  fun hostUiPreapprovedSkillsFindAllowsNestedNetworkGate() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-host-ui-skills-find").toPath()
+    val packageManager = createSkillPackageManager("skills-find")
+    writeSkill(
+      root = packageManager.catalogRootPath(),
+      relativeDirectory = "find-skills",
+      frontMatter = """
+        name: find-skills
+        description: Search fixture from catalog.
+        invocation-control: explicit-only
+        user-invocable: true
+        allowed-tools: [ read ]
+      """.trimIndent(),
+      body = """
+        # Find Skills
+
+        Catalog search fixture.
+      """.trimIndent(),
+    )
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-skills-find"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      safetySettingsProvider = { SafetySettingsState(automationMode = SafetyAutomationMode.SAFE) },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      skillPackageManagerProvider = { packageManager },
+    )
+    val runtime = runtimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val task = AgentTask(
+      id = "host-ui-preapproved-skills-find",
+      type = AgentTaskType.TOOL_CALL,
+      input = """{"type":"tool_call","tool_name":"SkillsFind","arguments":{"query":"find","max_results":4}}""",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+      metadata = mapOf(
+        RunLifecycleMetadataKeys.SUBMISSION_SOURCE to RunSubmissionSources.HOST_UI_TOOL_ACTION,
+        RunLifecycleMetadataKeys.PREAPPROVED_TOOL_NAME to "SkillsFind",
+      ),
+    )
+
+    val result = runtime.execute(
+      task,
+      RuntimeExecutionHooks(
+        isCancellationRequested = { false },
+        requestRetry = { _ -> error("Retry was not expected for host-ui skills find test.") },
+      ),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertTrue(result.stdout.contains("find-skills"))
+  }
+
+  @Test
+  fun hostUiPreapprovedSkillsInspectAllowsNestedLocalReadGate() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-host-ui-skills-inspect").toPath()
+    val sourceRoot = temporaryFolder.newFolder("external-skill-inspect-source")
+    writeSkill(
+      root = sourceRoot,
+      relativeDirectory = "find-skills",
+      frontMatter = """
+        name: find-skills
+        description: Inspect fixture from external source.
+        invocation-control: explicit-only
+        user-invocable: true
+        allowed-tools: [ read ]
+      """.trimIndent(),
+      body = """
+        # Find Skills
+
+        Inspect fixture.
+      """.trimIndent(),
+    )
+    val packageManager = createSkillPackageManager("skills-inspect")
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-skills-inspect"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      safetySettingsProvider = { SafetySettingsState(automationMode = SafetyAutomationMode.SAFE) },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      readRootsProvider = { setOf(workspaceRoot, sourceRoot.toPath()) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      skillPackageManagerProvider = { packageManager },
+    )
+    val runtime = runtimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val sourceRef = jsonPath(sourceRoot)
+    val task = AgentTask(
+      id = "host-ui-preapproved-skills-inspect",
+      type = AgentTaskType.TOOL_CALL,
+      input = """{"type":"tool_call","tool_name":"SkillsInspect","arguments":{"sourceRef":"$sourceRef"}}""",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+      metadata = mapOf(
+        RunLifecycleMetadataKeys.SUBMISSION_SOURCE to RunSubmissionSources.HOST_UI_TOOL_ACTION,
+        RunLifecycleMetadataKeys.PREAPPROVED_TOOL_NAME to "SkillsInspect",
+      ),
+    )
+
+    val result = runtime.execute(
+      task,
+      RuntimeExecutionHooks(
+        isCancellationRequested = { false },
+        requestRetry = { _ -> error("Retry was not expected for host-ui skills inspect test.") },
+      ),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertTrue(result.stdout.contains("inspection"))
+    assertTrue(result.stdout.contains("find-skills"))
+  }
+
+  @Test
+  fun hostUiPreapprovedSkillsUpdateAllowsNestedApprovalGates() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-host-ui-skills-update").toPath()
+    val sourceRoot = temporaryFolder.newFolder("external-skill-update-source")
+    writeSkill(
+      root = sourceRoot,
+      relativeDirectory = "find-skills",
+      frontMatter = """
+        name: find-skills
+        description: Updates from an external source.
+        invocation-control: explicit-only
+        user-invocable: true
+        allowed-tools: [ read ]
+      """.trimIndent(),
+      body = """
+        # Find Skills
+
+        External update fixture.
+      """.trimIndent(),
+    )
+    val packageManager = createSkillPackageManager("skills-update")
+    val installAttempt = packageManager.installFromLocalSource(
+      sourcePath = sourceRoot,
+      sourceRef = sourceRoot.invariantSeparatorsPath,
+      selectedSkillName = "find-skills",
+    )
+    assertNotNull(installAttempt.result)
+
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-skills-update"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      safetySettingsProvider = { SafetySettingsState(automationMode = SafetyAutomationMode.SAFE) },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      readRootsProvider = { setOf(workspaceRoot, sourceRoot.toPath()) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      skillPackageManagerProvider = { packageManager },
+    )
+    val runtime = runtimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val task = AgentTask(
+      id = "host-ui-preapproved-skills-update",
+      type = AgentTaskType.TOOL_CALL,
+      input = """{"type":"tool_call","tool_name":"SkillsUpdate","arguments":{"skillId":"find-skills"}}""",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+      metadata = mapOf(
+        RunLifecycleMetadataKeys.SUBMISSION_SOURCE to RunSubmissionSources.HOST_UI_TOOL_ACTION,
+        RunLifecycleMetadataKeys.PREAPPROVED_TOOL_NAME to "SkillsUpdate",
+      ),
+    )
+
+    val result = runtime.execute(
+      task,
+      RuntimeExecutionHooks(
+        isCancellationRequested = { false },
+        requestRetry = { _ -> error("Retry was not expected for host-ui skills update test.") },
+      ),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertTrue(result.stdout.contains("find-skills"))
+  }
+
+  private fun createSkillPackageManager(name: String): SkillPackageManager = SkillPackageManager(
+    managedRoot = temporaryFolder.newFolder("$name-managed"),
+    catalogRoot = temporaryFolder.newFolder("$name-catalog"),
+    manifestStore = SkillInstallManifestStore.fromFile(
+      temporaryFolder.newFile("$name-manifest.json"),
+    ),
+  )
+
+  private fun writeSkill(
+    root: File,
+    relativeDirectory: String,
+    frontMatter: String,
+    body: String,
+  ): File {
+    val skillDirectory = root.resolve(relativeDirectory)
+    Files.createDirectories(skillDirectory.toPath())
+    val skillFile = skillDirectory.resolve("SKILL.md")
+    val content = """
+      ---
+      $frontMatter
+      ---
+      $body
+    """.trimIndent()
+    Files.write(skillFile.toPath(), content.toByteArray(StandardCharsets.UTF_8))
+    return skillFile
+  }
+
+  private fun jsonPath(file: File): String = file.invariantSeparatorsPath.replace("/", "\\/")
 }

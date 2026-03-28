@@ -108,6 +108,48 @@ interface AgentProcessRegistry {
   fun terminate(processId: String): ManagedProcessSnapshot?
 }
 
+internal object ManagedProcessControllerRegistry {
+  private val lock = Any()
+  private val controllersByScopeId =
+    linkedMapOf<String, MutableMap<String, ManagedProcessController>>()
+
+  fun register(
+    scopeId: String,
+    processId: String,
+    controller: ManagedProcessController,
+  ) {
+    synchronized(lock) {
+      controllersByScopeId.getOrPut(scopeId) { linkedMapOf() }[processId] = controller
+    }
+  }
+
+  fun find(
+    scopeId: String,
+    processId: String,
+  ): ManagedProcessController? = synchronized(lock) {
+    controllersByScopeId[scopeId]?.get(processId)
+  }
+
+  fun retain(
+    scopeId: String,
+    retainedProcessIds: Set<String>,
+  ) {
+    synchronized(lock) {
+      val scopedControllers = controllersByScopeId[scopeId] ?: return
+      scopedControllers.keys.retainAll(retainedProcessIds)
+      if (scopedControllers.isEmpty()) {
+        controllersByScopeId.remove(scopeId)
+      }
+    }
+  }
+
+  fun clearForTest() {
+    synchronized(lock) {
+      controllersByScopeId.clear()
+    }
+  }
+}
+
 class InMemoryAgentProcessRegistry(
   private val controllerFactory: ManagedProcessControllerFactory = LocalManagedProcessControllerFactory(),
   private val config: AgentProcessRegistryConfig = AgentProcessRegistryConfig(),
@@ -166,6 +208,7 @@ class FileBackedAgentProcessRegistry(
 ) : AgentProcessRegistry {
   private val lock = Any()
   private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory)
+  private val controllerScopeId: String = directory.absoluteFile.normalize().path
   private val controllersByProcessId = linkedMapOf<String, ManagedProcessController>()
 
   init {
@@ -183,6 +226,11 @@ class FileBackedAgentProcessRegistry(
         "Managed process '${request.processId}' already exists."
       }
       controllersByProcessId[request.processId] = controller
+      ManagedProcessControllerRegistry.register(
+        scopeId = controllerScopeId,
+        processId = request.processId,
+        controller = controller,
+      )
       return persistSnapshotsLocked(existing.snapshots + snapshot).first { persisted ->
         persisted.processId == request.processId
       }
@@ -245,7 +293,7 @@ class FileBackedAgentProcessRegistry(
     val existing = loadNormalizedRecordLocked()
     var changed = false
     val syncedSnapshots = existing.snapshots.map { snapshot ->
-      val controller = controllersByProcessId[snapshot.processId] ?: return@map snapshot
+      val controller = controllerForProcessId(snapshot.processId) ?: return@map snapshot
       val liveSnapshot = controller.snapshot()
       if (liveSnapshot != snapshot) {
         changed = true
@@ -333,8 +381,11 @@ class FileBackedAgentProcessRegistry(
   private fun repairRestoredRunningSnapshot(
     snapshot: ManagedProcessSnapshot,
   ): ManagedProcessSnapshot {
-    if (snapshot.status != ManagedProcessStatus.RUNNING || snapshot.processId in controllersByProcessId) {
+    if (snapshot.status != ManagedProcessStatus.RUNNING) {
       return snapshot
+    }
+    controllerForProcessId(snapshot.processId)?.let { controller ->
+      return controller.snapshot()
     }
     val repairedAt = maxOf(clock(), snapshot.updatedAtEpochMs)
     return snapshot.copy(
@@ -362,7 +413,21 @@ class FileBackedAgentProcessRegistry(
 
   private fun synchronizeControllersLocked(retainedProcessIds: Set<String>) {
     controllersByProcessId.keys.retainAll(retainedProcessIds)
+    retainedProcessIds.forEach(::controllerForProcessId)
+    ManagedProcessControllerRegistry.retain(
+      scopeId = controllerScopeId,
+      retainedProcessIds = retainedProcessIds,
+    )
   }
+
+  private fun controllerForProcessId(processId: String): ManagedProcessController? =
+    controllersByProcessId[processId]
+      ?: ManagedProcessControllerRegistry.find(
+        scopeId = controllerScopeId,
+        processId = processId,
+      )?.also { controller ->
+        controllersByProcessId[processId] = controller
+      }
 
   @Serializable
   private data class ManagedProcessRegistryRecord(

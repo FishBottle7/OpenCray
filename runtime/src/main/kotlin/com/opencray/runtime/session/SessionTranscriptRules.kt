@@ -6,7 +6,7 @@ import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.isSubAgentReplayPayload
 import com.opencray.runtime.context.isSupplementReplayPayload
 import com.opencray.runtime.context.plainReplayJsonObjectOrNull
-import com.opencray.runtime.context.progressJsonPayloadOrNull
+import com.opencray.runtime.context.commentaryJsonPayloadOrNull
 import com.opencray.runtime.context.toolCallJsonPayloadOrNull
 import com.opencray.runtime.context.toolResultJsonPayloadOrNull
 import kotlinx.serialization.json.Json
@@ -19,7 +19,7 @@ object SessionTranscriptRules {
   const val MAX_DISCOVERY_TOOL_INTERACTIONS: Int = 2
   const val MAX_EXECUTION_TOOL_INTERACTIONS: Int = 1
   const val MAX_STATEFUL_TOOL_INTERACTIONS: Int = 1
-  const val MAX_PROGRESS_OBSERVATIONS: Int = 3
+  const val MAX_COMMENTARY_OBSERVATIONS: Int = 3
   const val MAX_SUBAGENT_INTERACTIONS: Int = 2
   const val MAX_GENERIC_TOOL_INTERACTIONS: Int = 1
 
@@ -70,7 +70,7 @@ object SessionTranscriptRules {
       .filterByCategory(ToolReplayCategory.STATEFUL, MAX_STATEFUL_TOOL_INTERACTIONS)
       .forEach { interaction -> interaction.forEach { indexesToKeep += it.index } }
     groupedObservations.values
-      .filterByCategory(ToolReplayCategory.PROGRESS, MAX_PROGRESS_OBSERVATIONS)
+      .filterByCategory(ToolReplayCategory.COMMENTARY, MAX_COMMENTARY_OBSERVATIONS)
       .forEach { interaction -> interaction.forEach { indexesToKeep += it.index } }
     groupedObservations.values
       .filterByCategory(ToolReplayCategory.SUBAGENT, MAX_SUBAGENT_INTERACTIONS)
@@ -108,8 +108,8 @@ object SessionTranscriptRules {
         payload = payload,
       )
     }
-    message.progressJsonPayloadOrNull()?.let { payload ->
-      return parseReplayProgressObservation(
+    message.commentaryJsonPayloadOrNull()?.let { payload ->
+      return parseReplayCommentaryObservation(
         index = index,
         payload = payload,
       )
@@ -142,15 +142,15 @@ object SessionTranscriptRules {
     )
   }
 
-  private fun parseReplayProgressObservation(
+  private fun parseReplayCommentaryObservation(
     index: Int,
     payload: String,
   ): ToolReplayObservation {
     val decoded = runCatching { replayJson.parseToJsonElement(payload).jsonObject }.getOrNull()
       ?: return ToolReplayObservation(
         index = index,
-        groupKey = "progress:$index",
-        category = ToolReplayCategory.PROGRESS,
+        groupKey = "commentary:$index",
+        category = ToolReplayCategory.COMMENTARY,
       )
 
     val groupKey = listOf(
@@ -160,12 +160,12 @@ object SessionTranscriptRules {
       decoded.stringValue("stage").orEmpty(),
     ).joinToString(separator = "|")
       .takeIf(String::isNotBlank)
-      ?.let { key -> "progress:$key" }
-      ?: "progress:$index"
+      ?.let { key -> "commentary:$key" }
+      ?: "commentary:$index"
     return ToolReplayObservation(
       index = index,
       groupKey = groupKey,
-      category = ToolReplayCategory.PROGRESS,
+      category = ToolReplayCategory.COMMENTARY,
     )
   }
 
@@ -319,7 +319,7 @@ object SessionTranscriptRules {
     DISCOVERY,
     EXECUTION,
     STATEFUL,
-    PROGRESS,
+    COMMENTARY,
     SUBAGENT,
     GENERIC,
   }

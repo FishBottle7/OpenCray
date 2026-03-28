@@ -62,7 +62,7 @@
   - 代码位置：[llm/src/main/kotlin/com/opencray/llm/LiteLlmGateway.kt](../llm/src/main/kotlin/com/opencray/llm/LiteLlmGateway.kt)
 - runtime 已可从 `llmMetadata` 透传 `previousResponseId` 与 `responseApiPreferred`
   - 代码位置：[runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt](../runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt)
-- provider 结构化 completion 已拆分为 `toolCalls / finalText / progressText / reasoningText / rawText`
+- provider 结构化 completion 已拆分为 `toolCalls / finalText / commentaryText / reasoningText / rawText`
   - 代码位置：[llm/src/main/kotlin/com/opencray/llm/LiteLlmGateway.kt](../llm/src/main/kotlin/com/opencray/llm/LiteLlmGateway.kt)
 - runtime 已优先消费 provider 返回的结构化 completion
   - 代码位置：[runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt](../runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt)
@@ -479,7 +479,7 @@ v1 推荐默认策略：
 
 - function call 能正确转成 `toolCalls`
 - 最终文本能落到 `finalText`
-- reasoning 不污染公开 progress
+- reasoning 不污染公开 commentary
 
 ### 7.5 Continuation：provider lineage 与 runtime transcript 的桥接
 

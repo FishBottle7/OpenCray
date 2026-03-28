@@ -6,6 +6,7 @@ import 'package:opencray/core/bridge/opencray_host_bridge.dart';
 import 'package:opencray/core/bridge/opencray_host_bridge_bootstrap.dart';
 import 'package:opencray/core/bridge/opencray_local_runtime_bridge.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
+import 'package:opencray/core/models/opencray_notification_settings.dart';
 
 void main() {
   HttpServer? server;
@@ -426,6 +427,114 @@ void main() {
       expect(snapshot.memoryToolsEnabled, false);
     },
   );
+
+  test('local runtime bridge loads notification settings over http', () async {
+    requestHandler = (request) async {
+      expect(request.method, 'GET');
+      expect(request.uri.path, '/v1/notification_settings');
+      await writeJson(request, <String, Object?>{
+        'masterEnabled': true,
+        'defaultDeliveryModeId': 'time_sensitive',
+        'quietHoursEnabled': true,
+        'quietHoursStartMinutes': 1380,
+        'quietHoursEndMinutes': 480,
+        'approvalRequestsEnabled': true,
+        'approvalReminderEnabled': true,
+        'taskFinishedEnabled': false,
+        'taskFailedEnabled': true,
+        'newUserMessageEnabled': false,
+        'scheduledWakeEnabled': true,
+        'backgroundTaskPausedEnabled': true,
+        'serviceRecoveredEnabled': false,
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final snapshot = await bridge.loadNotificationSettings();
+
+    expect(snapshot.masterEnabled, isTrue);
+    expect(snapshot.defaultDeliveryModeId, 'time_sensitive');
+    expect(snapshot.quietHoursEnabled, isTrue);
+    expect(snapshot.quietHoursStartMinutes, 1380);
+    expect(snapshot.quietHoursEndMinutes, 480);
+    expect(snapshot.approvalRequestsEnabled, isTrue);
+    expect(snapshot.approvalReminderEnabled, isTrue);
+    expect(snapshot.taskFinishedEnabled, isFalse);
+    expect(snapshot.taskFailedEnabled, isTrue);
+    expect(snapshot.newUserMessageEnabled, isFalse);
+    expect(snapshot.scheduledWakeEnabled, isTrue);
+    expect(snapshot.backgroundTaskPausedEnabled, isTrue);
+    expect(snapshot.serviceRecoveredEnabled, isFalse);
+  });
+
+  test('local runtime bridge posts notification settings over http', () async {
+    late Map<String, Object?> capturedBody;
+    const settings = OpenCrayNotificationSettingsSnapshot(
+      masterEnabled: false,
+      defaultDeliveryModeId: 'critical',
+      quietHoursEnabled: false,
+      quietHoursStartMinutes: 1320,
+      quietHoursEndMinutes: 420,
+      approvalRequestsEnabled: true,
+      approvalReminderEnabled: false,
+      taskFinishedEnabled: true,
+      taskFailedEnabled: true,
+      newUserMessageEnabled: true,
+      scheduledWakeEnabled: true,
+      backgroundTaskPausedEnabled: false,
+      serviceRecoveredEnabled: true,
+    );
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/save_notification_settings');
+      capturedBody = await readJsonBody(request);
+      await writeJson(request, <String, Object?>{
+        'masterEnabled': capturedBody['masterEnabled'],
+        'defaultDeliveryModeId': capturedBody['defaultDeliveryModeId'],
+        'quietHoursEnabled': capturedBody['quietHoursEnabled'],
+        'quietHoursStartMinutes': capturedBody['quietHoursStartMinutes'],
+        'quietHoursEndMinutes': capturedBody['quietHoursEndMinutes'],
+        'approvalRequestsEnabled': capturedBody['approvalRequestsEnabled'],
+        'approvalReminderEnabled': capturedBody['approvalReminderEnabled'],
+        'taskFinishedEnabled': capturedBody['taskFinishedEnabled'],
+        'taskFailedEnabled': capturedBody['taskFailedEnabled'],
+        'newUserMessageEnabled': capturedBody['newUserMessageEnabled'],
+        'scheduledWakeEnabled': capturedBody['scheduledWakeEnabled'],
+        'backgroundTaskPausedEnabled': capturedBody['backgroundTaskPausedEnabled'],
+        'serviceRecoveredEnabled': capturedBody['serviceRecoveredEnabled'],
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final snapshot = await bridge.saveNotificationSettings(settings);
+
+    expect(capturedBody['masterEnabled'], isFalse);
+    expect(capturedBody['defaultDeliveryModeId'], 'critical');
+    expect(capturedBody['quietHoursEnabled'], isFalse);
+    expect(capturedBody['quietHoursStartMinutes'], 1320);
+    expect(capturedBody['quietHoursEndMinutes'], 420);
+    expect(capturedBody['approvalRequestsEnabled'], isTrue);
+    expect(capturedBody['approvalReminderEnabled'], isFalse);
+    expect(capturedBody['taskFinishedEnabled'], isTrue);
+    expect(capturedBody['taskFailedEnabled'], isTrue);
+    expect(capturedBody['newUserMessageEnabled'], isTrue);
+    expect(capturedBody['scheduledWakeEnabled'], isTrue);
+    expect(capturedBody['backgroundTaskPausedEnabled'], isFalse);
+    expect(capturedBody['serviceRecoveredEnabled'], isTrue);
+    expect(snapshot.masterEnabled, isFalse);
+    expect(snapshot.defaultDeliveryModeId, 'critical');
+    expect(snapshot.quietHoursEnabled, isFalse);
+    expect(snapshot.quietHoursStartMinutes, 1320);
+    expect(snapshot.quietHoursEndMinutes, 420);
+    expect(snapshot.approvalRequestsEnabled, isTrue);
+    expect(snapshot.approvalReminderEnabled, isFalse);
+    expect(snapshot.taskFinishedEnabled, isTrue);
+    expect(snapshot.taskFailedEnabled, isTrue);
+    expect(snapshot.newUserMessageEnabled, isTrue);
+    expect(snapshot.scheduledWakeEnabled, isTrue);
+    expect(snapshot.backgroundTaskPausedEnabled, isFalse);
+    expect(snapshot.serviceRecoveredEnabled, isTrue);
+  });
 
   test(
     'local runtime bridge loads strong background snapshots over http',

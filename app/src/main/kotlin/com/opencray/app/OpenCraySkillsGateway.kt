@@ -1,7 +1,10 @@
 package com.opencray.app
 
 internal interface OpenCraySkillsGateway {
-  fun loadSkillsSnapshot(query: String = ""): Map<String, Any?>
+  fun loadSkillsSnapshot(
+    query: String = "",
+    suggestedLimit: Int = 0,
+  ): Map<String, Any?>
 
   fun observeSkills(listener: (Map<String, Any?>) -> Unit): () -> Unit
 
@@ -30,6 +33,11 @@ internal interface OpenCraySkillsGateway {
   fun updateInstalledSkill(skillId: String = ""): String
 
   fun loadSkillInstructions(skillId: String): Map<String, Any?>
+
+  fun loadSuggestedSkillInstructions(
+    sourceRef: String,
+    selectedSkillName: String = "",
+  ): Map<String, Any?>
 
   fun activateSkillsInstallSource(sourceId: String): String
 }

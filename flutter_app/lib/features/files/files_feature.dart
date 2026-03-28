@@ -12,6 +12,7 @@ import '../../core/models/opencray_file_image_preview.dart';
 import '../../core/models/opencray_file_text_preview.dart';
 import '../../core/models/opencray_files_snapshot.dart';
 import '../../core/models/opencray_workspace_text_document.dart';
+import '../../core/widgets/opencray_markdown.dart';
 
 class FilesFeatureController {
   bool Function()? _backPressHandler;
@@ -45,12 +46,14 @@ class FilesFeatureScreen extends StatefulWidget {
     required this.copy,
     this.isTabActive = true,
     this.controller,
+    this.autoRefreshPollInterval = const Duration(seconds: 2),
   });
 
   final OpenCrayHostBridge bridge;
   final OpenCrayUiCopy copy;
   final bool isTabActive;
   final FilesFeatureController? controller;
+  final Duration autoRefreshPollInterval;
 
   static const Color shellBackground = Color(0xFFF5F5F7);
   static const Color surface = Colors.white;
@@ -67,7 +70,8 @@ class FilesFeatureScreen extends StatefulWidget {
   State<FilesFeatureScreen> createState() => _FilesFeatureScreenState();
 }
 
-class _FilesFeatureScreenState extends State<FilesFeatureScreen> {
+class _FilesFeatureScreenState extends State<FilesFeatureScreen>
+    with WidgetsBindingObserver {
   late final TextEditingController _searchController = TextEditingController()
     ..addListener(_handleQueryChanged);
   late final ScrollController _scrollController = ScrollController()
@@ -84,6 +88,11 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen> {
   bool _showStickyBrowseBar = false;
   Set<String> _selectedPaths = <String>{};
   _PendingTransfer? _pendingTransfer;
+  Timer? _autoRefreshTimer;
+  late AppLifecycleState _appLifecycleState;
+  bool _isSnapshotLoadInFlight = false;
+  bool _hasQueuedSnapshotLoad = false;
+  bool _queuedSnapshotLoadShowBusyIndicator = false;
 
   bool get _hasPendingTransfer => _pendingTransfer != null;
   bool get _handlesBackPress => _isSelectionMode || _hasPendingTransfer;
@@ -92,8 +101,12 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen> {
   @override
   void initState() {
     super.initState();
+    _appLifecycleState =
+        WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
+    WidgetsBinding.instance.addObserver(this);
     widget.controller?._backPressHandler = _consumeBackPress;
     unawaited(_loadSnapshot());
+    _syncAutoRefreshTimer();
   }
 
   @override
@@ -112,14 +125,34 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen> {
         _pendingTransfer = null;
       });
     }
+    if (!oldWidget.isTabActive &&
+        widget.isTabActive &&
+        _appLifecycleState == AppLifecycleState.resumed) {
+      _scheduleSilentRefresh();
+    }
+    if (oldWidget.isTabActive != widget.isTabActive ||
+        oldWidget.autoRefreshPollInterval != widget.autoRefreshPollInterval) {
+      _syncAutoRefreshTimer();
+    }
   }
 
   @override
   void dispose() {
+    _autoRefreshTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     widget.controller?._backPressHandler = null;
     _searchController.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appLifecycleState = state;
+    _syncAutoRefreshTimer();
+    if (state == AppLifecycleState.resumed && widget.isTabActive) {
+      _scheduleSilentRefresh();
+    }
   }
 
   @override
@@ -182,7 +215,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen> {
                         actionRowKey: _locationActionRowKey,
                         breadcrumbs: _visibleBreadcrumbs(),
                         breadcrumbsEnabled: !_isSelectionMode,
-                        onRefresh: _loadSnapshot,
+                        onRefresh: _handleManualRefresh,
                         onCreateFolder: _handleCreateFolder,
                         onBreadcrumbTap: _handleBreadcrumbTap,
                       ),
@@ -258,11 +291,21 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen> {
     );
   }
 
-  Future<void> _loadSnapshot() async {
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
+  Future<void> _handleManualRefresh() => _loadSnapshot(showBusyIndicator: true);
+
+  Future<void> _loadSnapshot({bool showBusyIndicator = true}) async {
+    if (_isMutating || _isSnapshotLoadInFlight) {
+      _queueSnapshotLoad(showBusyIndicator: showBusyIndicator);
+      return;
+    }
+    _isSnapshotLoadInFlight = true;
+    final showLoading = showBusyIndicator || _snapshot == null;
+    if (showLoading) {
+      setState(() {
+        _isLoading = true;
+        _errorMessage = null;
+      });
+    }
     try {
       final snapshot = await widget.bridge.loadFilesSnapshot();
       if (!mounted) {
@@ -284,10 +327,18 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen> {
       if (!mounted) {
         return;
       }
-      setState(() {
-        _isLoading = false;
-        _errorMessage = _userFacingErrorMessage(error);
-      });
+      final message = _userFacingErrorMessage(error);
+      if (showLoading || _snapshot == null || showBusyIndicator) {
+        setState(() {
+          _isLoading = false;
+          if (_snapshot == null || showBusyIndicator) {
+            _errorMessage = message;
+          }
+        });
+      }
+    } finally {
+      _isSnapshotLoadInFlight = false;
+      _flushQueuedSnapshotLoad();
     }
   }
 
@@ -426,6 +477,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen> {
     setState(() {
       _currentDirectoryPath = relativePath;
     });
+    _scheduleSilentRefresh();
   }
 
   void _handleEntryTap(OpenCrayFileTreeNodeSnapshot entry) {
@@ -447,6 +499,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen> {
       setState(() {
         _currentDirectoryPath = entry.relativePath;
       });
+      _scheduleSilentRefresh();
       return;
     }
     if (_supportsImagePreview(entry.name)) {
@@ -708,7 +761,50 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen> {
           _isMutating = false;
         });
       }
+      _flushQueuedSnapshotLoad();
     }
+  }
+
+  bool get _shouldAutoRefresh =>
+      widget.isTabActive &&
+      _appLifecycleState == AppLifecycleState.resumed &&
+      widget.autoRefreshPollInterval > Duration.zero;
+
+  void _scheduleSilentRefresh() {
+    if (!mounted || !widget.isTabActive) {
+      return;
+    }
+    unawaited(_loadSnapshot(showBusyIndicator: false));
+  }
+
+  void _syncAutoRefreshTimer() {
+    _autoRefreshTimer?.cancel();
+    if (!_shouldAutoRefresh) {
+      _autoRefreshTimer = null;
+      return;
+    }
+    _autoRefreshTimer = Timer.periodic(widget.autoRefreshPollInterval, (_) {
+      _scheduleSilentRefresh();
+    });
+  }
+
+  void _queueSnapshotLoad({required bool showBusyIndicator}) {
+    _hasQueuedSnapshotLoad = true;
+    _queuedSnapshotLoadShowBusyIndicator =
+        _queuedSnapshotLoadShowBusyIndicator || showBusyIndicator;
+  }
+
+  void _flushQueuedSnapshotLoad() {
+    if (!mounted ||
+        !_hasQueuedSnapshotLoad ||
+        _isMutating ||
+        _isSnapshotLoadInFlight) {
+      return;
+    }
+    final showBusyIndicator = _queuedSnapshotLoadShowBusyIndicator;
+    _hasQueuedSnapshotLoad = false;
+    _queuedSnapshotLoadShowBusyIndicator = false;
+    unawaited(_loadSnapshot(showBusyIndicator: showBusyIndicator));
   }
 
   Future<void> _openTextPreview(OpenCrayFileTreeNodeSnapshot entry) async {
@@ -790,6 +886,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen> {
       child: Builder(
         builder: (dialogContext) => _TextPreviewDialog(
           key: const ValueKey<String>('files-text-preview-dialog'),
+          bridge: widget.bridge,
           copy: widget.copy,
           preview: preview,
           onEdit: () =>
@@ -1868,14 +1965,86 @@ class _ToolbarItem extends StatelessWidget {
 class _TextPreviewDialog extends StatelessWidget {
   const _TextPreviewDialog({
     super.key,
+    required this.bridge,
     required this.copy,
     required this.preview,
     required this.onEdit,
   });
 
+  final OpenCrayHostBridge bridge;
   final OpenCrayUiCopy copy;
   final OpenCrayFileTextPreview preview;
   final VoidCallback onEdit;
+
+  Future<void> _handleMarkdownLinkTap(
+    BuildContext context,
+    String? href,
+  ) async {
+    final String target = href?.trim() ?? '';
+    if (target.isEmpty) {
+      return;
+    }
+    try {
+      final String? routeName = openCrayResolveMarkdownInternalRoute(target);
+      if (routeName != null) {
+        final NavigatorState navigator = Navigator.of(context);
+        navigator.pop();
+        await navigator.pushNamed(routeName);
+        return;
+      }
+      final Uri? externalUri = openCrayResolveMarkdownExternalUri(target);
+      if (externalUri != null) {
+        await bridge.openExternalUri(externalUri.toString());
+        return;
+      }
+      throw StateError('Unsupported markdown link target.');
+    } catch (error) {
+      final String message = openCrayMarkdownLocalizedErrorMessage(error, copy);
+      if (message.isNotEmpty) {
+        unawaited(bridge.showNativeToast(message).catchError((Object _) {}));
+      }
+    }
+  }
+
+  Widget _buildMarkdownSelectionContextMenu(
+    BuildContext context,
+    SelectableRegionState selectableRegionState,
+    OpenCrayMarkdownSelectionSnapshot? selection,
+    String markdown,
+  ) {
+    final List<ContextMenuButtonItem> buttonItems = selectableRegionState
+        .contextMenuButtonItems
+        .map((item) {
+          if (item.type != ContextMenuButtonType.copy) {
+            return item;
+          }
+          return item.copyWith(
+            onPressed: () async {
+              final OpenCrayMarkdownClipboardPayload? payload =
+                  openCrayBuildMarkdownSelectionClipboardPayload(
+                    markdown,
+                    selectedText: selection?.plainText ?? '',
+                    selectionStartOffset: selection?.range?.startOffset,
+                    selectionEndOffset: selection?.range?.endOffset,
+                  );
+              if (payload == null) {
+                item.onPressed?.call();
+                return;
+              }
+              await bridge.copyRichTextToClipboard(
+                plainText: payload.plainText,
+                htmlText: payload.htmlText,
+              );
+              openCrayFinalizeSelectionCopyUi(selectableRegionState);
+            },
+          );
+        })
+        .toList(growable: false);
+    return AdaptiveTextSelectionToolbar.buttonItems(
+      anchors: selectableRegionState.contextMenuAnchors,
+      buttonItems: buttonItems,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2021,16 +2190,47 @@ class _TextPreviewDialog extends StatelessWidget {
                               ),
                             )
                           : SingleChildScrollView(
-                              child: _isMarkdownName(preview.name)
-                                  ? MarkdownBody(
+                              child: openCrayIsMarkdownFileName(preview.name)
+                                  ? OpenCraySelectableMarkdownBody(
                                       key: const ValueKey<String>(
                                         'files-text-preview-markdown',
                                       ),
                                       data: preview.content,
-                                      selectable: true,
+                                      hostBridge: bridge,
+                                      documentRelativePath:
+                                          preview.relativePath,
+                                      onTapLink: (_, href, __) {
+                                        unawaited(
+                                          _handleMarkdownLinkTap(context, href),
+                                        );
+                                      },
+                                      latexTextStyle: const TextStyle(
+                                        fontSize: 14,
+                                        height: 1.55,
+                                        color: FilesFeatureScreen.textPrimary,
+                                      ),
                                       styleSheet: _filesMarkdownStyleSheet(
                                         context,
                                       ),
+                                      imageBackgroundColor: const Color(
+                                        0xFFEDEFF4,
+                                      ),
+                                      imageBorderColor:
+                                          FilesFeatureScreen.divider,
+                                      contextMenuBuilder:
+                                          (
+                                            BuildContext context,
+                                            SelectableRegionState
+                                            selectableRegionState,
+                                            OpenCrayMarkdownSelectionSnapshot?
+                                            selection,
+                                          ) =>
+                                              _buildMarkdownSelectionContextMenu(
+                                                context,
+                                                selectableRegionState,
+                                                selection,
+                                                preview.content,
+                                              ),
                                     )
                                   : SelectionArea(
                                       child: Text(
@@ -2682,14 +2882,6 @@ bool _supportsTextDocumentName(String name) {
   return _textPreviewExtensions.contains(extension);
 }
 
-bool _isMarkdownName(String name) {
-  final normalizedName = name.trim().toLowerCase();
-  final extension = normalizedName.contains('.')
-      ? normalizedName.substring(normalizedName.lastIndexOf('.') + 1)
-      : '';
-  return extension == 'md' || extension == 'markdown';
-}
-
 String _formatBytes(int bytes) {
   if (bytes <= 0) {
     return '0 B';
@@ -2724,7 +2916,16 @@ Size _resolveImagePreviewSize({
 
 MarkdownStyleSheet _filesMarkdownStyleSheet(BuildContext context) {
   final base = MarkdownStyleSheet.fromTheme(Theme.of(context));
+  final Color linkColor = Theme.of(context).colorScheme.primary;
   return base.copyWith(
+    a: TextStyle(
+      fontSize: 14,
+      height: 1.55,
+      fontWeight: FontWeight.w600,
+      color: linkColor,
+      decoration: TextDecoration.underline,
+      decorationColor: linkColor.withValues(alpha: 0.75),
+    ),
     p: const TextStyle(
       fontSize: 14,
       height: 1.55,

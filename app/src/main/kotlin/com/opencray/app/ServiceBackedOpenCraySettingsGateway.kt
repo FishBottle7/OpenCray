@@ -20,6 +20,12 @@ internal class ServiceBackedOpenCraySettingsGateway(
   override fun loadSettingsDetail(routeIdRaw: String): Map<String, Any?> =
     currentReadGateway().loadSettingsDetail(routeIdRaw)
 
+  override fun loadNotificationSettings(): Map<String, Any?> =
+    currentReadGateway().loadNotificationSettings()
+
+  override fun saveNotificationSettings(payload: Map<String, Any?>): Map<String, Any?> =
+    currentWriteGateway("saveNotificationSettings").saveNotificationSettings(payload)
+
   override fun loadStrongBackgroundSnapshot(): Map<String, Any?> =
     currentReadGateway().loadStrongBackgroundSnapshot()
 
@@ -37,6 +43,12 @@ internal class ServiceBackedOpenCraySettingsGateway(
 
   override fun saveMediaSpeechConfig(payload: Map<String, Any?>): Map<String, Any?> =
     currentWriteGateway("saveMediaSpeechConfig").saveMediaSpeechConfig(payload)
+
+  override fun loadSandboxSettings(): Map<String, Any?> =
+    currentReadGateway().loadSandboxSettings()
+
+  override fun saveSandboxSettings(payload: Map<String, Any?>): Map<String, Any?> =
+    currentWriteGateway("saveSandboxSettings").saveSandboxSettings(payload)
 
   override fun loadLlmConfig(): Map<String, Any?> =
     currentReadGateway().loadLlmConfig()

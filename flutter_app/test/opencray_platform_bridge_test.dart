@@ -6,6 +6,7 @@ import 'package:opencray/core/bridge/opencray_failure_bridge.dart';
 import 'package:opencray/core/bridge/opencray_host_bridge_bootstrap.dart';
 import 'package:opencray/core/bridge/opencray_platform_bridge.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
+import 'package:opencray/core/models/opencray_notification_settings.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -103,6 +104,32 @@ void main() {
     expect(result.isSuccess, isTrue);
     expect(result.message, 'Validated.');
   });
+
+  test(
+    'platform bridge sends rich clipboard payloads over the host channel',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return null;
+          });
+
+      await bridge.copyRichTextToClipboard(
+        plainText: 'Open https://opencray.dev/docs',
+        htmlText: '<p>Open <a href="https://opencray.dev/docs">docs</a></p>',
+      );
+
+      expect(capturedCall.method, 'copyRichTextToClipboard');
+      final arguments = capturedCall.arguments as Map<Object?, Object?>;
+      expect(arguments['plainText'], 'Open https://opencray.dev/docs');
+      expect(
+        arguments['htmlText'],
+        '<p>Open <a href="https://opencray.dev/docs">docs</a></p>',
+      );
+    },
+  );
 
   test('platform bridge sends save custom provider requests', () async {
     late MethodCall capturedCall;
@@ -208,6 +235,126 @@ void main() {
       'docs/report.md',
     );
   });
+
+  test(
+    'platform bridge loads notification settings over the host channel',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return <String, Object?>{
+              'masterEnabled': true,
+              'defaultDeliveryModeId': 'time_sensitive',
+              'quietHoursEnabled': true,
+              'quietHoursStartMinutes': 1380,
+              'quietHoursEndMinutes': 480,
+              'approvalRequestsEnabled': true,
+              'approvalReminderEnabled': true,
+              'taskFinishedEnabled': false,
+              'taskFailedEnabled': true,
+              'newUserMessageEnabled': false,
+              'scheduledWakeEnabled': true,
+              'backgroundTaskPausedEnabled': true,
+              'serviceRecoveredEnabled': false,
+            };
+          });
+
+      final snapshot = await bridge.loadNotificationSettings();
+
+      expect(capturedCall.method, 'loadNotificationSettings');
+      expect(snapshot.masterEnabled, isTrue);
+      expect(snapshot.defaultDeliveryModeId, 'time_sensitive');
+      expect(snapshot.quietHoursEnabled, isTrue);
+      expect(snapshot.quietHoursStartMinutes, 1380);
+      expect(snapshot.quietHoursEndMinutes, 480);
+      expect(snapshot.approvalRequestsEnabled, isTrue);
+      expect(snapshot.approvalReminderEnabled, isTrue);
+      expect(snapshot.taskFinishedEnabled, isFalse);
+      expect(snapshot.taskFailedEnabled, isTrue);
+      expect(snapshot.newUserMessageEnabled, isFalse);
+      expect(snapshot.scheduledWakeEnabled, isTrue);
+      expect(snapshot.backgroundTaskPausedEnabled, isTrue);
+      expect(snapshot.serviceRecoveredEnabled, isFalse);
+    },
+  );
+
+  test(
+    'platform bridge saves notification settings over the host channel',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      const settings = OpenCrayNotificationSettingsSnapshot(
+        masterEnabled: false,
+        defaultDeliveryModeId: 'critical',
+        quietHoursEnabled: false,
+        quietHoursStartMinutes: 1320,
+        quietHoursEndMinutes: 420,
+        approvalRequestsEnabled: true,
+        approvalReminderEnabled: false,
+        taskFinishedEnabled: true,
+        taskFailedEnabled: true,
+        newUserMessageEnabled: true,
+        scheduledWakeEnabled: true,
+        backgroundTaskPausedEnabled: false,
+        serviceRecoveredEnabled: true,
+      );
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            final arguments = call.arguments as Map<Object?, Object?>;
+            return <String, Object?>{
+              'masterEnabled': arguments['masterEnabled'],
+              'defaultDeliveryModeId': arguments['defaultDeliveryModeId'],
+              'quietHoursEnabled': arguments['quietHoursEnabled'],
+              'quietHoursStartMinutes': arguments['quietHoursStartMinutes'],
+              'quietHoursEndMinutes': arguments['quietHoursEndMinutes'],
+              'approvalRequestsEnabled': arguments['approvalRequestsEnabled'],
+              'approvalReminderEnabled': arguments['approvalReminderEnabled'],
+              'taskFinishedEnabled': arguments['taskFinishedEnabled'],
+              'taskFailedEnabled': arguments['taskFailedEnabled'],
+              'newUserMessageEnabled': arguments['newUserMessageEnabled'],
+              'scheduledWakeEnabled': arguments['scheduledWakeEnabled'],
+              'backgroundTaskPausedEnabled':
+                  arguments['backgroundTaskPausedEnabled'],
+              'serviceRecoveredEnabled': arguments['serviceRecoveredEnabled'],
+            };
+          });
+
+      final snapshot = await bridge.saveNotificationSettings(settings);
+
+      expect(capturedCall.method, 'saveNotificationSettings');
+      expect(capturedCall.arguments, isA<Map<Object?, Object?>>());
+      final arguments = capturedCall.arguments as Map<Object?, Object?>;
+      expect(arguments['masterEnabled'], isFalse);
+      expect(arguments['defaultDeliveryModeId'], 'critical');
+      expect(arguments['quietHoursEnabled'], isFalse);
+      expect(arguments['quietHoursStartMinutes'], 1320);
+      expect(arguments['quietHoursEndMinutes'], 420);
+      expect(arguments['approvalRequestsEnabled'], isTrue);
+      expect(arguments['approvalReminderEnabled'], isFalse);
+      expect(arguments['taskFinishedEnabled'], isTrue);
+      expect(arguments['taskFailedEnabled'], isTrue);
+      expect(arguments['newUserMessageEnabled'], isTrue);
+      expect(arguments['scheduledWakeEnabled'], isTrue);
+      expect(arguments['backgroundTaskPausedEnabled'], isFalse);
+      expect(arguments['serviceRecoveredEnabled'], isTrue);
+      expect(snapshot.masterEnabled, isFalse);
+      expect(snapshot.defaultDeliveryModeId, 'critical');
+      expect(snapshot.quietHoursEnabled, isFalse);
+      expect(snapshot.quietHoursStartMinutes, 1320);
+      expect(snapshot.quietHoursEndMinutes, 420);
+      expect(snapshot.approvalRequestsEnabled, isTrue);
+      expect(snapshot.approvalReminderEnabled, isFalse);
+      expect(snapshot.taskFinishedEnabled, isTrue);
+      expect(snapshot.taskFailedEnabled, isTrue);
+      expect(snapshot.newUserMessageEnabled, isTrue);
+      expect(snapshot.scheduledWakeEnabled, isTrue);
+      expect(snapshot.backgroundTaskPausedEnabled, isFalse);
+      expect(snapshot.serviceRecoveredEnabled, isTrue);
+    },
+  );
 
   test('platform bridge saves safety settings over the host channel', () async {
     late MethodCall capturedCall;

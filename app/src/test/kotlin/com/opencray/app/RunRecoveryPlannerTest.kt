@@ -3,6 +3,7 @@ package com.opencray.app
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.runtime.AgentToolCall
+import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCrayToolCallEvent
@@ -100,6 +101,63 @@ class RunRecoveryPlannerTest {
   }
 
   @Test
+  fun pausedLlmRetryCheckpointStaysWaitingForUserResume() {
+    val plan = requireNotNull(
+      planner.plan(
+        RunRecoveryPlannerInput(
+          run = runSnapshot(
+            lifecycleState = QueueTaskLifecycleState.SUSPENDED,
+            executionStatus = ExecutionStatus.FAILED,
+            errorCode = ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME,
+          ),
+          checkpoint = PersistedPromptCheckpoint(
+            sessionId = "session-1",
+            runId = "run-1",
+            taskId = "task-1",
+            checkpointId = "checkpoint-1",
+            checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
+            createdAtEpochMs = 100L,
+            updatedAtEpochMs = 100L,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(RunRecoveryAction.RESUME_WAITING_FOR_USER, plan.action)
+    assertEquals("llm_retry_exhausted_waiting_for_resume", plan.reasonCode)
+    assertFalse(plan.safeToAutoResume)
+    assertTrue(plan.requiresUserAction)
+  }
+
+  @Test
+  fun preModelRequestCheckpointPlansResumeFromCheckpoint() {
+    val plan = requireNotNull(
+      planner.plan(
+        RunRecoveryPlannerInput(
+          run = runSnapshot(
+            lifecycleState = QueueTaskLifecycleState.QUEUED,
+          ),
+          checkpoint = PersistedPromptCheckpoint(
+            sessionId = "session-1",
+            runId = "run-1",
+            taskId = "task-1",
+            checkpointId = "checkpoint-1",
+            checkpointKind = PromptCheckpointKind.PRE_MODEL_REQUEST,
+            createdAtEpochMs = 100L,
+            updatedAtEpochMs = 100L,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(RunRecoveryAction.RESUME_FROM_CHECKPOINT, plan.action)
+    assertEquals("durable_pre_model_request_checkpoint", plan.reasonCode)
+    assertEquals(PromptCheckpointKind.PRE_MODEL_REQUEST, plan.checkpointKind)
+    assertTrue(plan.safeToAutoResume)
+    assertFalse(plan.requiresUserAction)
+  }
+
+  @Test
   fun liveManagedProcessPlansReconnect() {
     val plan = requireNotNull(
       planner.plan(
@@ -114,6 +172,37 @@ class RunRecoveryPlannerTest {
 
     assertEquals(RunRecoveryAction.RESUME_RECONNECT_PROCESS, plan.action)
     assertEquals("live_managed_process_detected", plan.reasonCode)
+    assertFalse(plan.safeToAutoResume)
+    assertTrue(plan.requiresUserAction)
+  }
+
+  @Test
+  fun checkpointReplayTakesPriorityOverLiveManagedProcess() {
+    val plan = requireNotNull(
+      planner.plan(
+        RunRecoveryPlannerInput(
+          run = runSnapshot(
+            lifecycleState = QueueTaskLifecycleState.RUNNING,
+            hasLiveManagedProcesses = true,
+          ),
+          checkpoint = PersistedPromptCheckpoint(
+            sessionId = "session-1",
+            runId = "run-1",
+            taskId = "task-1",
+            checkpointId = "checkpoint-1",
+            checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
+            createdAtEpochMs = 100L,
+            updatedAtEpochMs = 100L,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(RunRecoveryAction.RESUME_FROM_CHECKPOINT, plan.action)
+    assertEquals("durable_general_resume_checkpoint", plan.reasonCode)
+    assertEquals(PromptCheckpointKind.GENERAL_RESUME, plan.checkpointKind)
+    assertTrue(plan.safeToAutoResume)
+    assertFalse(plan.requiresUserAction)
   }
 
   @Test
@@ -249,6 +338,37 @@ class RunRecoveryPlannerTest {
   }
 
   @Test
+  fun rejectedResumeCheckpointStopsRunAndWaitsForNewInstruction() {
+    val plan = requireNotNull(
+      planner.plan(
+        RunRecoveryPlannerInput(
+          run = runSnapshot(
+            lifecycleState = QueueTaskLifecycleState.SUSPENDED,
+            executionStatus = ExecutionStatus.DENIED,
+            errorCode = "APPROVAL_REQUIRED",
+          ),
+          checkpoint = PersistedPromptCheckpoint(
+            sessionId = "session-1",
+            runId = "run-1",
+            taskId = "task-1",
+            checkpointId = "checkpoint-1",
+            checkpointKind = PromptCheckpointKind.REJECTED_PENDING_RESUME,
+            createdAtEpochMs = 100L,
+            updatedAtEpochMs = 100L,
+          ),
+          approvalState = AgentTaskApprovalState.REJECTED,
+        ),
+      ),
+    )
+
+    assertEquals(RunRecoveryAction.STOP_REJECTED_AWAITING_DIRECTION, plan.action)
+    assertEquals("approval_already_rejected_waiting_for_instruction", plan.reasonCode)
+    assertEquals(PromptCheckpointKind.REJECTED_PENDING_RESUME, plan.checkpointKind)
+    assertFalse(plan.safeToAutoResume)
+    assertFalse(plan.requiresUserAction)
+  }
+
+  @Test
   fun interruptedRestoreWithStaleGeneralResumeCheckpointAndStartedSubAgentRequiresExplicitRecovery() {
     val plan = requireNotNull(
       planner.plan(
@@ -283,6 +403,45 @@ class RunRecoveryPlannerTest {
     assertEquals("uncertain_inflight_mutation", plan.reasonCode)
     assertEquals(PromptCheckpointKind.GENERAL_RESUME, plan.checkpointKind)
     assertEquals("subagent_started", plan.journalTailKind)
+    assertFalse(plan.safeToAutoResume)
+    assertTrue(plan.requiresUserAction)
+  }
+
+  @Test
+  fun interruptedRestoreWithStaleGeneralResumeCheckpointAndResumedSubAgentRequiresExplicitRecovery() {
+    val plan = requireNotNull(
+      planner.plan(
+        RunRecoveryPlannerInput(
+          run = interruptedRestoreRun(),
+          checkpoint = PersistedPromptCheckpoint(
+            sessionId = "session-1",
+            runId = "run-1",
+            taskId = "task-1",
+            checkpointId = "checkpoint-1",
+            checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
+            createdAtEpochMs = 100L,
+            updatedAtEpochMs = 100L,
+          ),
+          lastJournalEvent = OpenCraySubAgentEvent(
+            runId = "run-1",
+            taskId = "task-1",
+            phase = OpenCraySubAgentPhase.RESUMED,
+            childRunId = "child-run-1",
+            childTaskId = "child-task-1",
+            label = "Inspect docs",
+            subagentType = "explorer",
+            contextMode = "fork",
+            depth = 1,
+            emittedAtEpochMs = 150L,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(RunRecoveryAction.INTERRUPT_RECOVERY_REQUIRED, plan.action)
+    assertEquals("uncertain_inflight_mutation", plan.reasonCode)
+    assertEquals(PromptCheckpointKind.GENERAL_RESUME, plan.checkpointKind)
+    assertEquals("subagent_resumed", plan.journalTailKind)
     assertFalse(plan.safeToAutoResume)
     assertTrue(plan.requiresUserAction)
   }

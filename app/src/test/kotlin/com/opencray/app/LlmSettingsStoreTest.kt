@@ -191,4 +191,42 @@ class LlmSettingsStoreTest {
       state.agentCapability.routeFingerprint,
     )
   }
+
+  @Test
+  fun saveAndLoadPersistsVisionInputSupportInCapabilityCache() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val saved = LlmSettingsState(
+      enabled = true,
+      protocol = LlmProviderProtocols.OPENAI,
+      baseUrl = "https://api.openai.com/v1",
+      apiKey = "token",
+      model = "gpt-4o-mini",
+      agentCapability = LlmAgentCapabilitySnapshot(
+        routeFingerprint = llmRouteFingerprint(
+          protocol = LlmProviderProtocols.OPENAI,
+          baseUrl = "https://api.openai.com/v1",
+          model = "gpt-4o-mini",
+        ),
+        verifiedAtEpochMs = 1234L,
+        visionInputSupported = true,
+        pdfInputSupported = true,
+        nativeToolCallingAvailable = true,
+      ),
+    )
+
+    store.save(saved)
+
+    val loaded = store.load(
+      defaults = LlmSettingsState(
+        protocol = LlmProviderProtocols.OPENAI,
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-4o-mini",
+      ),
+    )
+
+    assertTrue(loaded.agentCapability.visionInputSupported)
+    assertTrue(loaded.agentCapability.pdfInputSupported)
+    assertTrue(loaded.agentCapability.nativeToolCallingAvailable)
+  }
 }

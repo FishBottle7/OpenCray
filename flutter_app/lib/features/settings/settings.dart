@@ -1,4 +1,5 @@
 export 'bridge_settings_facade.dart';
+export 'notification_settings_models.dart';
 export 'safety_settings_models.dart';
 export 'settings_facade.dart';
 export 'settings_feature.dart';

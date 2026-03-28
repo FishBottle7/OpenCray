@@ -24,11 +24,11 @@ internal fun RuntimeConversationMessage.toolResultJsonPayloadOrNull(): String? {
   return plainJsonPayloadOrNull(content)
 }
 
-internal fun RuntimeConversationMessage.progressJsonPayloadOrNull(): String? {
+internal fun RuntimeConversationMessage.commentaryJsonPayloadOrNull(): String? {
   if (
     role != RuntimeConversationRole.TOOL &&
       role != RuntimeConversationRole.ASSISTANT ||
-      kind != RuntimeConversationMessageKind.PROGRESS
+      kind != RuntimeConversationMessageKind.COMMENTARY
   ) {
     return null
   }

@@ -27,6 +27,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -70,6 +71,34 @@ class AgentToolAliasDispatchTest {
     assertTrue("bash" in definitionNames)
     assertTrue(readDefinition.description.contains("Compatibility alias for Read"))
     assertTrue(pythonDefinition.description.contains("Use this instead of Bash for workspace Python scripts"))
+  }
+
+  @Test
+  fun hiddenToolNamePrefixesRemoveMatchingDefinitionsAndDenyDispatch() {
+    val dispatcher = dispatcher(hiddenToolNamePrefixes = setOf("web"))
+
+    val definitionNames = dispatcher.definitions().map { definition -> definition.name }.toSet()
+
+    assertFalse("WebSearch" in definitionNames)
+    assertFalse("WebFetch" in definitionNames)
+    assertFalse("websearch" in definitionNames)
+    assertFalse("webfetch" in definitionNames)
+
+    val result = dispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "webfetch",
+        arguments = JsonObject(
+          mapOf("url" to JsonPrimitive("https://example.com")),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.DENIED, result.status)
+    assertEquals("TOOL_UNAVAILABLE_IN_RUNTIME", result.errorCode)
+    assertEquals("WebFetch", result.metadata["canonicalToolName"])
+    assertTrue(result.content.contains("unavailable in the current execution environment"))
   }
 
   @Test
@@ -300,6 +329,7 @@ class AgentToolAliasDispatchTest {
     webContentFetcher: WebContentFetcher = FakeWebContentFetcher(),
     webSearchProvider: WebSearchProvider = FakeWebSearchProvider(),
     pythonRuntime: PythonScriptRuntime = RecordingPythonScriptRuntime(),
+    hiddenToolNamePrefixes: Set<String> = emptySet(),
   ): OpenCrayToolDispatcher = OpenCrayToolDispatcher(
     OpenCrayToolDispatcherConfig(
       workspaceRoots = setOf(workspaceRoot),
@@ -307,6 +337,7 @@ class AgentToolAliasDispatchTest {
       webContentFetcher = webContentFetcher,
       webSearchProvider = webSearchProvider,
       pythonRuntimeAdapter = pythonRuntime,
+      hiddenToolNamePrefixes = hiddenToolNamePrefixes,
     ),
   )
 

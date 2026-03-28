@@ -75,16 +75,30 @@ object BuiltInSubAgentProfiles {
     worker,
   )
 
+  private val profilesById: Map<String, SubAgentProfile> = profiles.associateBy { profile ->
+    profile.id.lowercase(Locale.US)
+  }
+
+  private val aliasesById: Map<String, String> = mapOf(
+    "default" to generalPurpose.id,
+    generalPurpose.id to generalPurpose.id,
+    "explorer" to researcher.id,
+    researcher.id to researcher.id,
+    reviewer.id to reviewer.id,
+    worker.id to worker.id,
+  )
+
   fun all(): List<SubAgentProfile> = profiles
 
+  fun normalizedRequestedId(id: String?): String? = id
+    ?.trim()
+    ?.lowercase(Locale.US)
+    ?.takeIf { normalized -> aliasesById.containsKey(normalized) }
+
   fun resolve(id: String?): SubAgentProfile? {
-    val normalized = id
-      ?.trim()
-      ?.lowercase(Locale.US)
-      ?.takeIf(String::isNotBlank)
+    val normalized = normalizedRequestedId(id)
       ?: return null
-    return profiles.firstOrNull { profile ->
-      profile.id.lowercase(Locale.US) == normalized
-    }
+    val canonicalId = aliasesById[normalized] ?: return null
+    return profilesById[canonicalId.lowercase(Locale.US)]
   }
 }

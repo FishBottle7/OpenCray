@@ -469,7 +469,7 @@ class RecentToolObservationSupport(
     if (message.role != RuntimeConversationRole.TOOL) {
       return null
     }
-    if (message.progressJsonPayloadOrNull() != null) {
+    if (message.commentaryJsonPayloadOrNull() != null) {
       return null
     }
     val decoded = message.toolResultJsonPayloadOrNull()
@@ -701,6 +701,9 @@ class RecentToolObservationSupport(
     "Edit",
     "MultiEdit",
     "ImportFile",
+    "import_chat_attachment",
+    "view_workspace_image",
+    "view_workspace_pdf",
     "workspace_write_file",
     "workspace_move_file",
     "workspace_delete_file",

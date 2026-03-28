@@ -236,7 +236,7 @@ class LiveLlmInterpreterSmokeTest {
         result.completion?.let { completion ->
           "{" +
             "finalText=${preview(completion.finalText)}, " +
-            "progressText=${preview(completion.progressText)}, " +
+            "commentaryText=${preview(completion.commentaryText)}, " +
             "reasoningText=${preview(completion.reasoningText)}, " +
             "rawText=${preview(completion.rawText)}, " +
             "toolCalls=${completion.toolCalls}" +

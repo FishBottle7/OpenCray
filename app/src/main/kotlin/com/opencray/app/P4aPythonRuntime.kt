@@ -49,6 +49,7 @@ internal class P4aPythonRuntime private constructor(
     val cancelPath = cancelPathFor(requestId)
     val serviceStatePath = serviceStatePath()
     val serviceReadyPath = serviceReadyPath()
+    val serviceStartArgumentPath = serviceStartArgumentPath()
     val runtimeMetadata = linkedMapOf(
       "runtimeBackend" to "p4a",
       "runtimeTransport" to "file_json_bridge",
@@ -63,6 +64,7 @@ internal class P4aPythonRuntime private constructor(
       "serviceRunMode" to "once",
       "serviceStatePath" to serviceStatePath.toString(),
       "serviceReadyPath" to serviceReadyPath.toString(),
+      "serviceStartArgumentPath" to serviceStartArgumentPath.toString(),
     )
 
     return try {
@@ -91,17 +93,22 @@ internal class P4aPythonRuntime private constructor(
         requestPath,
         json.encodeToString(payload) + "\n",
       )
+      val launchRequest = P4aPythonLaunchRequest(
+        bridgeRequest = payload,
+        requestPath = requestPath,
+        resultPath = resultPath,
+        logPath = logPath,
+        servicePollIntervalMs = servicePollIntervalMs,
+        runOnce = true,
+      )
+      writeServiceStartArgumentFile(
+        path = serviceStartArgumentPath,
+        request = launchRequest,
+      )
 
       val launcherDispatchStartedAt = System.currentTimeMillis()
       val launchResult = launcher.launch(
-        P4aPythonLaunchRequest(
-          bridgeRequest = payload,
-          requestPath = requestPath,
-          resultPath = resultPath,
-          logPath = logPath,
-          servicePollIntervalMs = servicePollIntervalMs,
-          runOnce = true,
-        ),
+        launchRequest,
       )
       val launcherDispatchCompletedAt = System.currentTimeMillis()
       val launchTimingMetadata = mapOf(
@@ -569,6 +576,16 @@ internal class P4aPythonRuntime private constructor(
     }
   }
 
+  private fun writeServiceStartArgumentFile(
+    path: Path,
+    request: P4aPythonLaunchRequest,
+  ) {
+    val payload = P4aPythonRuntimeServiceContract.encodeServiceArgument(
+      P4aPythonRuntimeServiceContract.buildServiceArgument(request),
+    )
+    writeAtomicText(path, payload + "\n")
+  }
+
   private fun cleanupRequestArtifacts(
     requestPath: Path,
     cancelPath: Path?,
@@ -714,6 +731,8 @@ internal class P4aPythonRuntime private constructor(
   internal fun cancelPathFor(requestId: String): Path = cancelsDir.resolve("$requestId.cancel")
   internal fun serviceStatePath(): Path = serviceStateDir.resolve("service-state.json")
   internal fun serviceReadyPath(): Path = serviceStateDir.resolve("service-ready.json")
+  internal fun serviceStartArgumentPath(): Path =
+    P4aPythonRuntimeServiceContract.serviceStartArgumentPath(runtimeRoot)
 
   private data class FileSnapshot(
     val path: Path,

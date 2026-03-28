@@ -10,6 +10,7 @@ internal class ToolCapabilityClassifier {
     "ImportFile",
     "workspace_write_file",
     "workspace_import_file",
+    "import_chat_attachment",
     "SkillsAdd",
     "SkillsAddBatch",
     "SkillsUpdate",
@@ -31,6 +32,7 @@ internal class ToolCapabilityClassifier {
     "WebFetch",
     "GenerateImage",
     "SynthesizeSpeech",
+    "sandbox_preview_open",
     -> PolicyToolClass.NETWORK_ACCESS
 
     "LS",
@@ -44,6 +46,8 @@ internal class ToolCapabilityClassifier {
     "close_agent",
     "workspace_list_files",
     "workspace_read_file",
+    "view_workspace_image",
+    "view_workspace_pdf",
     "SkillsFind",
     "SkillsInspect",
     "SkillsList",
@@ -105,6 +109,8 @@ internal class ToolCapabilityClassifier {
       "Glob",
       "workspace_list_files",
       "workspace_read_file",
+      "view_workspace_pdf",
+      "view_workspace_image",
       -> "read_file"
 
       else -> when (classifyPolicyToolClass(toolName)) {

@@ -1,7 +1,7 @@
 import '../../core/models/opencray_shell_snapshot.dart'
     show OpenCrayRuntimeServiceConnectionStateSnapshot;
 
-enum StrongBackgroundTier { baseline, strongBackground }
+enum StrongBackgroundTier { baseline, activeBackground, strongBackground }
 
 enum StrongBackgroundActionId {
   openNotificationSettings,
@@ -15,6 +15,8 @@ extension StrongBackgroundTierWire on StrongBackgroundTier {
     switch (this) {
       case StrongBackgroundTier.baseline:
         return 'baseline';
+      case StrongBackgroundTier.activeBackground:
+        return 'active_background';
       case StrongBackgroundTier.strongBackground:
         return 'strong_background';
     }
@@ -38,6 +40,8 @@ extension StrongBackgroundActionIdWire on StrongBackgroundActionId {
 
 StrongBackgroundTier strongBackgroundTierFromId(String id) {
   switch (id) {
+    case 'active_background':
+      return StrongBackgroundTier.activeBackground;
     case 'strong_background':
       return StrongBackgroundTier.strongBackground;
     default:

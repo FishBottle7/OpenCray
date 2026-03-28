@@ -84,7 +84,9 @@ class ChatRunTraceData {
     required this.body,
     this.history = const <ChatRunTraceHistoryEntry>[],
     this.isHighRisk = false,
+    this.canInterrupt = false,
     this.retryLabel,
+    this.previewCard,
   });
 
   final String runId;
@@ -93,12 +95,39 @@ class ChatRunTraceData {
   final String body;
   final List<ChatRunTraceHistoryEntry> history;
   final bool isHighRisk;
+  final bool canInterrupt;
   final String? retryLabel;
+  final ChatRunTracePreviewCardData? previewCard;
 
   bool get isRetryable => retryLabel?.trim().isNotEmpty == true;
 
   String get retryId => runId.trim().isNotEmpty ? runId : taskId;
+
+  String get interruptId => runId.trim().isNotEmpty ? runId : taskId;
 }
+
+@immutable
+class ChatRunTracePreviewCardData {
+  const ChatRunTracePreviewCardData({
+    required this.url,
+    required this.status,
+    this.port,
+    this.path,
+    this.provider,
+    this.httpStatusCode,
+    this.message,
+  });
+
+  final String url;
+  final ChatRunTracePreviewStatus status;
+  final int? port;
+  final String? path;
+  final String? provider;
+  final int? httpStatusCode;
+  final String? message;
+}
+
+enum ChatRunTracePreviewStatus { ready, reachable, unreachable, skipped }
 
 @immutable
 class ChatRunTraceHistoryEntry {
@@ -225,6 +254,8 @@ class ChatPendingApprovalData {
     required this.approveLabel,
     required this.rejectLabel,
     required this.isHighRisk,
+    this.supportsSessionApproval = false,
+    this.approveForSessionLabel = '',
     this.toolName = '',
     this.requestSummary = '',
     this.primaryDetail = '',
@@ -241,6 +272,8 @@ class ChatPendingApprovalData {
   final String approveLabel;
   final String rejectLabel;
   final bool isHighRisk;
+  final bool supportsSessionApproval;
+  final String approveForSessionLabel;
   final String toolName;
   final String requestSummary;
   final String primaryDetail;

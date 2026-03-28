@@ -257,6 +257,291 @@ void main() {
     expect(find.text('OpenAI Responses'), findsOneWidget);
   });
 
+  testWidgets(
+    'standalone notifications page saves the master switch and opens channels',
+    (tester) async {
+      final facade = _FakeSettingsFacade(
+        llmConfig: const LlmConfigSnapshot(
+          localeTag: 'en',
+          enabled: false,
+          providerId: 'openai',
+          selectedProviderOptionId: 'openai',
+          protocol: 'openai',
+          providerOptions: <LlmProviderOption>[
+            LlmProviderOption(
+              id: 'openai',
+              providerId: 'openai',
+              title: 'OpenAI',
+              subtitle: 'Official OpenAI-compatible endpoint.',
+              defaultBaseUrl: 'https://api.openai.com/v1',
+              defaultModel: 'gpt-4o-mini',
+              protocol: 'openai',
+              apiKey: '',
+              isCustom: false,
+            ),
+          ],
+          providerName: 'OpenAI',
+          providerNotes: '',
+          baseUrl: 'https://api.openai.com/v1',
+          apiKey: '',
+          model: 'gpt-4o-mini',
+          reasoningEffort: 'medium',
+          systemPrompt: '',
+          helperText: 'Helper text',
+        ),
+        validationResult: const LlmValidationResult(
+          isSuccess: true,
+          message: 'Validated.',
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.notificationsBackground,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      await tester.tap(find.byType(Switch).first);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(facade.notificationSaveCallCount, 1);
+      expect(facade.notificationSettings.masterEnabled, isFalse);
+
+      await tester.tap(find.text('Manage notification channels'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('Notification Channels'), findsOneWidget);
+      expect(find.text('Approval requests'), findsOneWidget);
+    },
+  );
+
+  testWidgets('notification channels page saves per-channel toggles', (
+    tester,
+  ) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: false,
+        providerId: 'openai',
+        selectedProviderOptionId: 'openai',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'openai',
+            providerId: 'openai',
+            title: 'OpenAI',
+            subtitle: 'Official OpenAI-compatible endpoint.',
+            defaultBaseUrl: 'https://api.openai.com/v1',
+            defaultModel: 'gpt-4o-mini',
+            protocol: 'openai',
+            apiKey: '',
+            isCustom: false,
+          ),
+        ],
+        providerName: 'OpenAI',
+        providerNotes: '',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: '',
+        model: 'gpt-4o-mini',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.notificationChannels,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byType(Switch).first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(facade.notificationSaveCallCount, 1);
+    expect(facade.notificationSettings.approvalRequestsEnabled, isFalse);
+    expect(find.text('Approval requests'), findsOneWidget);
+  });
+
+  testWidgets(
+    'notifications page launches strong background action from system row',
+    (tester) async {
+      final facade = _FakeSettingsFacade(
+        llmConfig: const LlmConfigSnapshot(
+          localeTag: 'en',
+          enabled: false,
+          providerId: 'openai',
+          selectedProviderOptionId: 'openai',
+          protocol: 'openai',
+          providerOptions: <LlmProviderOption>[
+            LlmProviderOption(
+              id: 'openai',
+              providerId: 'openai',
+              title: 'OpenAI',
+              subtitle: 'Official OpenAI-compatible endpoint.',
+              defaultBaseUrl: 'https://api.openai.com/v1',
+              defaultModel: 'gpt-4o-mini',
+              protocol: 'openai',
+              apiKey: '',
+              isCustom: false,
+            ),
+          ],
+          providerName: 'OpenAI',
+          providerNotes: '',
+          baseUrl: 'https://api.openai.com/v1',
+          apiKey: '',
+          model: 'gpt-4o-mini',
+          reasoningEffort: 'medium',
+          systemPrompt: '',
+          helperText: 'Helper text',
+        ),
+        validationResult: const LlmValidationResult(
+          isSuccess: true,
+          message: 'Validated.',
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.notificationsBackground,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      await tester.ensureVisible(find.text('Foreground service notice'));
+      await tester.pump();
+      await tester.tap(find.text('Foreground service notice'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(
+        facade.strongBackgroundActionRequests,
+        contains(StrongBackgroundActionId.openNotificationSettings),
+      );
+    },
+  );
+
+  testWidgets(
+    'notifications page shows active profile when notifications and alarms are ready',
+    (tester) async {
+      final facade =
+          _FakeSettingsFacade(
+              llmConfig: const LlmConfigSnapshot(
+                localeTag: 'en',
+                enabled: false,
+                providerId: 'openai',
+                selectedProviderOptionId: 'openai',
+                protocol: 'openai',
+                providerOptions: <LlmProviderOption>[
+                  LlmProviderOption(
+                    id: 'openai',
+                    providerId: 'openai',
+                    title: 'OpenAI',
+                    subtitle: 'Official OpenAI-compatible endpoint.',
+                    defaultBaseUrl: 'https://api.openai.com/v1',
+                    defaultModel: 'gpt-4o-mini',
+                    protocol: 'openai',
+                    apiKey: '',
+                    isCustom: false,
+                  ),
+                ],
+                providerName: 'OpenAI',
+                providerNotes: '',
+                baseUrl: 'https://api.openai.com/v1',
+                apiKey: '',
+                model: 'gpt-4o-mini',
+                reasoningEffort: 'medium',
+                systemPrompt: '',
+                helperText: 'Helper text',
+              ),
+              validationResult: const LlmValidationResult(
+                isSuccess: true,
+                message: 'Validated.',
+              ),
+            )
+            ..strongBackgroundSnapshot = const StrongBackgroundSnapshot(
+              source: 'strong-background',
+              available: true,
+              tier: StrongBackgroundTier.activeBackground,
+              setupComplete: false,
+              recommendedActionIds: <StrongBackgroundActionId>[
+                StrongBackgroundActionId.requestIgnoreBatteryOptimizations,
+              ],
+              notifications: StrongBackgroundNotificationsSnapshot(
+                permissionRequired: true,
+                permissionGranted: true,
+                enabled: true,
+                configured: true,
+              ),
+              exactAlarms: StrongBackgroundExactAlarmSnapshot(
+                accessRequired: true,
+                accessGranted: true,
+                configured: true,
+              ),
+              batteryOptimization: StrongBackgroundBatteryOptimizationSnapshot(
+                supported: true,
+                exempt: false,
+                configured: false,
+              ),
+              actions: <StrongBackgroundActionSnapshot>[
+                StrongBackgroundActionSnapshot(
+                  id: StrongBackgroundActionId
+                      .requestIgnoreBatteryOptimizations,
+                  available: true,
+                  recommended: true,
+                ),
+              ],
+            );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.notificationsBackground,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          'Notifications and exact alarms are ready, but the device is not yet in the strongest local background tier.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.text(
+          'ACTIVE means notifications and exact alarms are configured, so alerts and scheduled wakes are ready, but battery exemption is still missing.',
+        ),
+        findsOneWidget,
+      );
+    },
+  );
+
   testWidgets('home settings includes Agent entry and opens agents page', (
     tester,
   ) async {
@@ -706,6 +991,31 @@ void main() {
       expect(find.text('Mode: full'), findsOneWidget);
       expect(find.text('Soul: disabled'), findsOneWidget);
       expect(find.text('Memory recall: enabled'), findsOneWidget);
+      expect(
+        find.textContaining('Attempt: 1', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Execution: 2',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Execution kind: checkpoint_resume',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Retry code:',
+          findRichText: true,
+        ),
+        findsNothing,
+      );
       expect(find.text('Outcome: written'), findsOneWidget);
       expect(find.text('Compacted: yes'), findsOneWidget);
       expect(find.text('Restricted: yes'), findsOneWidget);
@@ -773,6 +1083,27 @@ void main() {
         ),
         findsOneWidget,
       );
+      expect(
+        find.textContaining('Read workspace/AGENTS.md lines 1-14'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'reason Inspect workspace instructions before planning.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Returned 14 lines from workspace/AGENTS.md (56-line file)',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Repository guidelines for mobile work.'),
+        findsOneWidget,
+      );
+      expect(find.text('No additional payload.'), findsNothing);
     },
   );
 
@@ -1435,6 +1766,67 @@ void main() {
     expect(find.text('Media & Speech'), findsOneWidget);
   });
 
+  testWidgets(
+    'api integrations page opens sandbox providers and the E2B detail page',
+    (tester) async {
+      final facade = _buildSettingsFacade();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.apiIntegrations,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Sandbox Providers'), findsOneWidget);
+
+      await tester.tap(find.text('Sandbox Providers'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Disabled by default; local execution remains available'),
+        findsOneWidget,
+      );
+      expect(find.text('E2B'), findsWidgets);
+
+      await tester.tap(find.text('E2B').first);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Default backend'), findsOneWidget);
+      expect(find.text('Run locally'), findsOneWidget);
+      expect(find.text('Run in cloud'), findsOneWidget);
+    },
+  );
+
+  testWidgets('standalone E2B page saves backend routing changes', (
+    tester,
+  ) async {
+    final facade = _buildSettingsFacade();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.sandboxE2b,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.text('Run in cloud'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Run in cloud'));
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(facade.sandboxSaveCallCount, 1);
+    expect(facade.sandboxSettings.defaultBackend, 'sandbox');
+  });
+
   testWidgets('media speech page saves edited fields and stt route', (
     tester,
   ) async {
@@ -1863,6 +2255,8 @@ _FakeDebugBridge _buildDebugBridge() {
           acceptedAtEpochMs: 1000,
           updatedAtEpochMs: 2400,
           attempt: 1,
+          executionOrdinal: 2,
+          executionKind: 'checkpoint_resume',
           isTerminal: true,
           executionStatus: 'success',
           taskState: 'completed',
@@ -1878,6 +2272,30 @@ _FakeDebugBridge _buildDebugBridge() {
           operation: 'search',
           queryTerms: <String>['chinese', 'gradle'],
           resultCount: 2,
+        ),
+        OpenCrayChatRuntimeEventSnapshot(
+          kind: 'tool_call',
+          runId: 'run-memory',
+          taskId: 'task-memory',
+          emittedAtEpochMs: 1700,
+          toolName: 'Read',
+          toolReason: 'Inspect workspace instructions before planning.',
+          argumentsJson:
+              '{"file_path":"workspace/AGENTS.md","offset":1,"limit":14}',
+        ),
+        OpenCrayChatRuntimeEventSnapshot(
+          kind: 'tool_result',
+          runId: 'run-memory',
+          taskId: 'task-memory',
+          emittedAtEpochMs: 1800,
+          toolName: 'Read',
+          toolStatus: 'success',
+          contentPreview: 'Repository guidelines for mobile work.',
+          resultMetadata: <String, String>{
+            'filePath': 'workspace/AGENTS.md',
+            'returnedLineCount': '14',
+            'totalLineCount': '56',
+          },
         ),
         OpenCrayChatRuntimeEventSnapshot(
           kind: 'memory_write',
@@ -1915,10 +2333,25 @@ _FakeDebugBridge _buildDebugBridge() {
         acceptedAtEpochMs: 1000,
         updatedAtEpochMs: 2400,
         attempt: 1,
+        executionOrdinal: 2,
+        executionKind: 'checkpoint_resume',
         isTerminal: true,
         executionStatus: 'success',
         taskState: 'completed',
         responseFormat: 'json_final',
+        recoveryPlan: OpenCrayChatRunRecoveryPlanSnapshot(
+          action: 'resume_from_checkpoint',
+          reasonCode: 'durable_general_resume_checkpoint',
+          summary:
+              'Resumed from durable checkpoint instead of rerunning from task input.',
+          safeToAutoResume: true,
+          requiresUserAction: false,
+          checkpointKind: 'general_resume',
+          journalTailKind: 'tool_result',
+        ),
+        diagnostics: OpenCrayChatRunDiagnosticsSnapshot(
+          recoveryReason: 'host_restart_inflight_task_interrupted',
+        ),
         liveContext: OpenCrayChatRunLiveContextSnapshot(
           mode: 'no_soul',
           soulEnabled: false,
@@ -2827,6 +3260,37 @@ class _FakeSettingsFacade implements SettingsFacade {
     workspaceAccessProfile: WorkspaceAccessProfile.work,
     readOnlyOutsideWorkspace: true,
   );
+  SandboxSettingsSnapshot sandboxSettings = const SandboxSettingsSnapshot(
+    localeTag: 'en',
+    enabled: false,
+    providerId: 'e2b',
+    defaultBackend: 'local',
+    sessionMode: 'ephemeral',
+    autoResume: false,
+    idleTimeoutMinutes: 15,
+    startupTimeoutMs: 30000,
+    requestTimeoutMs: 300000,
+    timeoutAction: 'kill',
+    templateId: '',
+    e2bApiKey: '',
+    apiKeyConfigured: false,
+  );
+  NotificationSettingsSnapshot notificationSettings =
+      const NotificationSettingsSnapshot(
+        masterEnabled: true,
+        defaultDeliveryMode: NotificationDeliveryMode.critical,
+        quietHoursEnabled: true,
+        quietHoursStartMinutes: 23 * 60,
+        quietHoursEndMinutes: 8 * 60,
+        approvalRequestsEnabled: true,
+        approvalReminderEnabled: true,
+        taskFinishedEnabled: false,
+        taskFailedEnabled: true,
+        newUserMessageEnabled: true,
+        scheduledWakeEnabled: false,
+        backgroundTaskPausedEnabled: true,
+        serviceRecoveredEnabled: false,
+      );
   StrongBackgroundSnapshot strongBackgroundSnapshot =
       const StrongBackgroundSnapshot(
         source: 'strong-background',
@@ -2866,6 +3330,8 @@ class _FakeSettingsFacade implements SettingsFacade {
       <StrongBackgroundActionId>[];
   final SettingsOverviewSnapshot overviewSnapshot;
   int saveCallCount = 0;
+  int notificationSaveCallCount = 0;
+  int sandboxSaveCallCount = 0;
   int safetySaveCallCount = 0;
 
   @override
@@ -2879,10 +3345,20 @@ class _FakeSettingsFacade implements SettingsFacade {
   Future<SettingsDetailSnapshot> loadDetail(SettingsPage page) async =>
       SettingsDetailSnapshot(
         page: page,
-        title: page == SettingsPage.aboutVersion ? 'About & Version' : '',
-        subtitle: page == SettingsPage.aboutVersion
-            ? 'Build information and app diagnostics.'
-            : '',
+        title: switch (page) {
+          SettingsPage.notificationsBackground => 'Notifications & Background',
+          SettingsPage.notificationChannels => 'Notification Channels',
+          SettingsPage.aboutVersion => 'About & Version',
+          _ => '',
+        },
+        subtitle: switch (page) {
+          SettingsPage.notificationsBackground =>
+            'Control alerts, service visibility, and wakeups.',
+          SettingsPage.notificationChannels =>
+            'Choose which events can interrupt you.',
+          SettingsPage.aboutVersion => 'Build information and app diagnostics.',
+          _ => '',
+        },
         sections: page == SettingsPage.aboutVersion
             ? const <SettingsSectionSnapshot>[
                 SettingsSectionSnapshot(
@@ -2897,6 +3373,19 @@ class _FakeSettingsFacade implements SettingsFacade {
               ]
             : const <SettingsSectionSnapshot>[],
       );
+
+  @override
+  Future<NotificationSettingsSnapshot> loadNotificationSettings() async =>
+      notificationSettings;
+
+  @override
+  Future<NotificationSettingsSnapshot> saveNotificationSettings(
+    NotificationSettingsSnapshot snapshot,
+  ) async {
+    notificationSaveCallCount += 1;
+    notificationSettings = snapshot;
+    return notificationSettings;
+  }
 
   @override
   Future<StrongBackgroundSnapshot> loadStrongBackgroundSnapshot() async =>
@@ -2942,6 +3431,22 @@ class _FakeSettingsFacade implements SettingsFacade {
   ) async {
     mediaSpeechConfig = snapshot;
     return mediaSpeechConfig;
+  }
+
+  @override
+  Future<SandboxSettingsSnapshot> loadSandboxSettings() async =>
+      sandboxSettings;
+
+  @override
+  Future<SandboxSettingsSnapshot> saveSandboxSettings(
+    SandboxSettingsSnapshot snapshot,
+  ) async {
+    sandboxSaveCallCount += 1;
+    sandboxSettings = snapshot.copyWith(
+      apiKeyConfigured:
+          snapshot.e2bApiKey.trim().isNotEmpty || snapshot.apiKeyConfigured,
+    );
+    return sandboxSettings;
   }
 
   @override

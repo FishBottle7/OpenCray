@@ -38,11 +38,13 @@ import com.opencray.persistence.model.MemoryRecord
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.OpenCrayExecutionMetadataKeys
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.ProviderNativeWebSearchSupport
 import com.opencray.runtime.memory.MemoryPreferenceKeys
 import com.opencray.runtime.memory.MemoryRecordExtensionKeys
 import com.opencray.runtime.memory.MemorySoulExtensionKeys
@@ -407,6 +409,85 @@ class OpenCrayLocalRuntimeServerTest {
 
       assertEquals(200, response.statusCode)
       assertEquals(listOf(task.id), handle.resumedTaskIds)
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun forwardsSessionApprovalRequestsToHostRuntime() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-approval-session-route"),
+    )
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeManager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      resumeResult = true,
+    )
+    runtimeManager.handle = handle
+    val hostRuntime = OpenCrayHostRuntime.createForTest(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      chatSessionStore = chatStore,
+      settingsFacade = NoOpSettingsFacade,
+      llmConfigFacade = EmptyLlmConfigFacade,
+      sessionRuntimeManager = runtimeManager,
+      strings = hostRuntimeStrings(),
+    )
+    val task = AgentTask(
+      id = "task-approval-session",
+      type = AgentTaskType.PROMPT,
+      input = "Need provider-native search approval",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      metadata = mapOf(
+        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to "run-approval-session",
+        AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to "assistant-1",
+      ),
+      createdAtEpochMs = 1_000L,
+    )
+    runtimeManager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = ExecutionStatus.DENIED,
+        errorCode = "APPROVAL_REQUIRED",
+        errorMessage = "Approval is required before WebSearch can run.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          "normalizedToolName" to "WebSearch",
+          OpenCrayExecutionMetadataKeys.APPROVAL_RESUME_TOOL_NAME to
+            ProviderNativeWebSearchSupport.RESUME_TOOL_NAME,
+          ProviderNativeWebSearchSupport.METADATA_APPROVAL_KIND to
+            ProviderNativeWebSearchSupport.APPROVAL_KIND,
+          ProviderNativeWebSearchSupport.METADATA_SUPPORTS_SESSION_APPROVAL to "true",
+        ),
+      ),
+    )
+    val server = OpenCrayLocalRuntimeServer(
+      hostRuntimeProvider = { hostRuntime },
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/approve_chat_approval_for_session",
+        body = JSONObject().apply {
+          put("runId", "run-approval-session")
+        }.toString(),
+      )
+
+      assertEquals(200, response.statusCode)
+      assertEquals(listOf(task.id), handle.resumedTaskIds)
+      assertTrue(chatStore.isNativeWebSearchSessionApproved(activeSessionId))
     } finally {
       server.close()
     }
@@ -799,7 +880,7 @@ class OpenCrayLocalRuntimeServerTest {
       val response = request(
         server,
         "POST",
-        "/v1/cancel_chat_run",
+        "/v1/interrupt_chat_run",
         body = JSONObject().apply {
           put("runId", submission["runId"])
         }.toString(),
@@ -1859,6 +1940,44 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun forwardsSandboxSettingsRoutesToSettingsGateway() {
+    val gateway = RecordingSettingsGateway()
+    val server = localRuntimeServer(
+      settingsGatewayResolver = { gateway },
+    )
+    server.ensureStarted()
+
+    try {
+      val loadResponse = request(server, "GET", "/v1/sandbox_settings")
+      val saveResponse = request(
+        server,
+        "POST",
+        "/v1/save_sandbox_settings",
+        body = JSONObject().apply {
+          put("enabled", true)
+          put("defaultBackend", "sandbox")
+          put("e2bApiKey", "e2b_secret")
+        }.toString(),
+      )
+
+      assertEquals(200, loadResponse.statusCode)
+      assertEquals(
+        "gateway-sandbox-settings",
+        JSONObject(loadResponse.body).getString("source"),
+      )
+      assertEquals(200, saveResponse.statusCode)
+      assertEquals(
+        "gateway-sandbox-settings-save",
+        JSONObject(saveResponse.body).getString("source"),
+      )
+      assertEquals("sandbox", gateway.lastSandboxSettingsPayload?.get("defaultBackend"))
+      assertEquals("e2b_secret", gateway.lastSandboxSettingsPayload?.get("e2bApiKey"))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun skillsEndpointsSupportQueryAndDirectSourceInstall() {
     val skillsFacade = RecordingSkillsFacade().apply {
       snapshot = SkillsSnapshot(
@@ -1872,19 +1991,34 @@ class OpenCrayLocalRuntimeServerTest {
             isAvailable = true,
           ),
         ),
-        suggestedSkills = emptyList(),
+        suggestedSkills = listOf(
+          SuggestedSkillSnapshot(
+            id = "roin-orca/skills/find-skills",
+            name = "find-skills",
+            description = "roin-orca/skills via skills.sh",
+            sourceRef = "roin-orca/skills@find-skills",
+            sourceLabel = "skills.sh",
+            installs = 42,
+            detailUrl = "https://skills.sh/roin-orca/skills",
+          ),
+        ),
+        suggestedSkillsMayHaveMore = true,
+      )
+      suggestedInstructions = SkillInstructionsSnapshot(
+        id = "find-skills",
+        name = "find-skills",
+        description = "Find and install useful skills.",
+        body = "## Usage\nUse this skill to discover skills.",
+        sourceDirectoryPath = "https://skills.sh/roin-orca/skills",
+        isEnabled = false,
+        canDelete = false,
       )
     }
     val runtimeManager = RecordingRuntimeManager()
     val handle = RecordingSessionHandle(
       sessionId = "skills-session",
       resumeResult = false,
-    ).apply {
-      queuedToolCompletion = QueuedToolCompletion(
-        toolName = "SkillsFind",
-        content = "find-skills\tremote\tinstall_ref=roin-orca/skills@find-skills\tsource=roin-orca/skills\tinstalls=42",
-      )
-    }
+    )
     runtimeManager.handle = handle
     val server = localRuntimeServer(
       skillsFacade = skillsFacade,
@@ -1893,13 +2027,32 @@ class OpenCrayLocalRuntimeServerTest {
     server.ensureStarted()
 
     try {
-      val queryResponse = request(server, "GET", "/v1/skills_snapshot?query=find")
+      val queryResponse = request(
+        server,
+        "GET",
+        "/v1/skills_snapshot?query=find&suggestedLimit=8",
+      )
 
       assertEquals(200, queryResponse.statusCode)
-      assertEquals("", skillsFacade.lastLoadedQuery)
+      assertEquals("find", skillsFacade.lastLoadedQuery)
+      assertEquals(8, skillsFacade.lastSuggestedLimit)
       assertTrue(queryResponse.body.contains("roin-orca/skills@find-skills"))
-      assertTrue(handle.submittedTasks.first().input.contains("\"tool_name\":\"SkillsFind\""))
-      assertTrue(handle.submittedTasks.first().input.contains("\"query\":\"find\""))
+      assertTrue(queryResponse.body.contains("\"installs\":42"))
+      assertTrue(queryResponse.body.contains("\"detailUrl\":\"https://skills.sh/roin-orca/skills\""))
+      assertTrue(queryResponse.body.contains("\"suggestedSkillsMayHaveMore\":true"))
+      assertTrue(handle.submittedTasks.isEmpty())
+
+      val previewResponse = request(
+        server,
+        "GET",
+        "/v1/suggested_skill_instructions?sourceRef=roin-orca%2Fskills%40find-skills&selectedSkillName=find-skills",
+      )
+
+      assertEquals(200, previewResponse.statusCode)
+      assertEquals("roin-orca/skills@find-skills", skillsFacade.lastSuggestedInstructionsSourceRef)
+      assertEquals("find-skills", skillsFacade.lastSuggestedInstructionsSkillName)
+      assertTrue(previewResponse.body.contains("\"name\":\"find-skills\""))
+      assertTrue(previewResponse.body.contains("Use this skill to discover skills"))
 
       handle.queuedToolCompletion = QueuedToolCompletion(
         toolName = "SkillsInspect",
@@ -2277,14 +2430,40 @@ class OpenCrayLocalRuntimeServerTest {
     server.ensureStarted()
 
     try {
-      val overviewResponse = request(server, "GET", "/v1/settings_overview")
-      val overviewPayload = JSONObject(overviewResponse.body)
-      assertEquals(200, overviewResponse.statusCode)
-      assertEquals("gateway-settings", overviewPayload.getString("source"))
+        val overviewResponse = request(server, "GET", "/v1/settings_overview")
+        val overviewPayload = JSONObject(overviewResponse.body)
+        assertEquals(200, overviewResponse.statusCode)
+        assertEquals("gateway-settings", overviewPayload.getString("source"))
 
-      val strongBackgroundResponse = request(server, "GET", "/v1/strong_background_snapshot")
-      val strongBackgroundPayload = JSONObject(strongBackgroundResponse.body)
-      assertEquals(200, strongBackgroundResponse.statusCode)
+        val notificationSettingsResponse = request(server, "GET", "/v1/notification_settings")
+        val notificationSettingsPayload = JSONObject(notificationSettingsResponse.body)
+        assertEquals(200, notificationSettingsResponse.statusCode)
+        assertEquals(
+          "gateway-notification-settings",
+          notificationSettingsPayload.getString("source"),
+        )
+
+        val saveNotificationSettingsResponse = request(
+          server,
+          "POST",
+          "/v1/save_notification_settings",
+          body = JSONObject().apply {
+            put("masterEnabled", false)
+            put("defaultDeliveryModeId", "all")
+          }.toString(),
+        )
+        val saveNotificationSettingsPayload = JSONObject(saveNotificationSettingsResponse.body)
+        assertEquals(200, saveNotificationSettingsResponse.statusCode)
+        assertEquals(
+          "gateway-notification-settings-save",
+          saveNotificationSettingsPayload.getString("source"),
+        )
+        assertEquals(false, settingsGateway.lastNotificationSettingsPayload?.get("masterEnabled"))
+        assertEquals("all", settingsGateway.lastNotificationSettingsPayload?.get("defaultDeliveryModeId"))
+
+        val strongBackgroundResponse = request(server, "GET", "/v1/strong_background_snapshot")
+        val strongBackgroundPayload = JSONObject(strongBackgroundResponse.body)
+        assertEquals(200, strongBackgroundResponse.statusCode)
       assertEquals("gateway-strong-background", strongBackgroundPayload.getString("source"))
 
       val strongBackgroundActionResponse = request(
@@ -2540,9 +2719,11 @@ class OpenCrayLocalRuntimeServerTest {
 
     override fun approveChatApproval(taskIdOrRunId: String) = Unit
 
+    override fun approveChatApprovalForSession(taskIdOrRunId: String) = Unit
+
     override fun rejectChatApproval(taskIdOrRunId: String) = Unit
 
-    override fun cancelChatRun(taskIdOrRunId: String) = Unit
+    override fun interruptChatRun(taskIdOrRunId: String) = Unit
 
     override fun retryChatRun(taskIdOrRunId: String) {
       lastRetriedTaskIdOrRunId = taskIdOrRunId
@@ -2564,13 +2745,14 @@ class OpenCrayLocalRuntimeServerTest {
     var lastBatchSkillNames: List<String> = emptyList()
       private set
 
-    override fun loadSkillsSnapshot(query: String): Map<String, Any?> = mapOf(
+    override fun loadSkillsSnapshot(query: String, suggestedLimit: Int): Map<String, Any?> = mapOf(
       "source" to "gateway-skills",
       "query" to query,
+      "suggestedLimit" to suggestedLimit,
     )
 
     override fun observeSkills(listener: (Map<String, Any?>) -> Unit): () -> Unit {
-      listener(loadSkillsSnapshot(query = ""))
+      listener(loadSkillsSnapshot(query = "", suggestedLimit = 0))
       return { }
     }
 
@@ -2610,11 +2792,24 @@ class OpenCrayLocalRuntimeServerTest {
     override fun loadSkillInstructions(skillId: String): Map<String, Any?> =
       mapOf("source" to "gateway-instructions", "skillId" to skillId)
 
+    override fun loadSuggestedSkillInstructions(
+      sourceRef: String,
+      selectedSkillName: String,
+    ): Map<String, Any?> = mapOf(
+      "source" to "gateway-suggested-instructions",
+      "sourceRef" to sourceRef,
+      "selectedSkillName" to selectedSkillName,
+    )
+
     override fun activateSkillsInstallSource(sourceId: String): String = sourceId
   }
 
   private class RecordingSettingsGateway : OpenCraySettingsGateway {
     var lastMcpMasterEnabled: Boolean? = null
+      private set
+    var lastNotificationSettingsPayload: Map<String, Any?>? = null
+      private set
+    var lastSandboxSettingsPayload: Map<String, Any?>? = null
       private set
     var lastStrongBackgroundActionId: String? = null
       private set
@@ -2628,6 +2823,14 @@ class OpenCrayLocalRuntimeServerTest {
 
     override fun loadSettingsDetail(routeIdRaw: String): Map<String, Any?> =
       mapOf("source" to "gateway-settings-detail", "routeId" to routeIdRaw)
+
+    override fun loadNotificationSettings(): Map<String, Any?> =
+      mapOf("source" to "gateway-notification-settings")
+
+    override fun saveNotificationSettings(payload: Map<String, Any?>): Map<String, Any?> {
+      lastNotificationSettingsPayload = payload
+      return mapOf("source" to "gateway-notification-settings-save")
+    }
 
     override fun loadStrongBackgroundSnapshot(): Map<String, Any?> =
       mapOf("source" to "gateway-strong-background")
@@ -2648,6 +2851,14 @@ class OpenCrayLocalRuntimeServerTest {
 
     override fun saveMediaSpeechConfig(payload: Map<String, Any?>): Map<String, Any?> =
       mapOf("source" to "gateway-media-speech-save", "keys" to payload.keys.sorted())
+
+    override fun loadSandboxSettings(): Map<String, Any?> =
+      mapOf("source" to "gateway-sandbox-settings")
+
+    override fun saveSandboxSettings(payload: Map<String, Any?>): Map<String, Any?> {
+      lastSandboxSettingsPayload = payload
+      return mapOf("source" to "gateway-sandbox-settings-save")
+    }
 
     override fun loadLlmConfig(): Map<String, Any?> =
       mapOf("source" to "gateway-llm")
@@ -2768,7 +2979,10 @@ class OpenCrayLocalRuntimeServerTest {
 
   private class RecordingSkillsFacade : SkillsFacade {
     var lastLoadedQuery: String? = null
+    var lastSuggestedLimit: Int? = null
     var lastInstalledSourceRef: String? = null
+    var lastSuggestedInstructionsSourceRef: String? = null
+    var lastSuggestedInstructionsSkillName: String? = null
     var snapshot: SkillsSnapshot = SkillsSnapshot(
       installedSkills = emptyList(),
       installSources = emptyList(),
@@ -2777,9 +2991,11 @@ class OpenCrayLocalRuntimeServerTest {
     var installResult: SkillInstallRequestResult = SkillInstallRequestResult(
       errorMessage = "Not configured.",
     )
+    var suggestedInstructions: SkillInstructionsSnapshot? = null
 
-    override fun loadSnapshot(query: String): SkillsSnapshot {
+    override fun loadSnapshot(query: String, suggestedLimit: Int): SkillsSnapshot {
       lastLoadedQuery = query
+      lastSuggestedLimit = suggestedLimit
       return snapshot
     }
 
@@ -2798,6 +3014,15 @@ class OpenCrayLocalRuntimeServerTest {
     override fun refresh() = Unit
 
     override fun loadInstructions(skillId: String): SkillInstructionsSnapshot? = null
+
+    override fun loadSuggestedInstructions(
+      sourceRef: String,
+      selectedSkillName: String,
+    ): SkillInstructionsSnapshot? {
+      lastSuggestedInstructionsSourceRef = sourceRef
+      lastSuggestedInstructionsSkillName = selectedSkillName
+      return suggestedInstructions
+    }
 
     override fun enabledSkillRoots(): List<java.io.File> = emptyList()
 

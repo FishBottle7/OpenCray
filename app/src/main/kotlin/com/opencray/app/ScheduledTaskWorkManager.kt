@@ -120,11 +120,20 @@ internal class ScheduledTaskRepairWorker(
       ?.takeIf(String::isNotBlank)
       ?: ScheduledTaskRepairReasons.WORK_MANAGER
     return runCatching {
-      OpenCrayAgentRuntimeService.repairSchedules(
-        applicationContext,
-        reason,
-      )
-      Result.success()
+      resyncEnabledScheduledTasksFromContext(applicationContext)
+      val hasDueCommands = plannedRepairWakeCommands(
+        enabledSpecs = FileBackedScheduledTaskSpecStoreFactory
+          .fromContext(applicationContext)
+          .create()
+          .listEnabled(),
+        nowEpochMs = System.currentTimeMillis(),
+        repairReason = reason,
+      ).isNotEmpty()
+      when {
+        !hasDueCommands -> Result.success()
+        OpenCrayAgentRuntimeService.repairSchedules(applicationContext, reason) -> Result.success()
+        else -> Result.retry()
+      }
     }.getOrElse {
       Result.retry()
     }
@@ -136,13 +145,34 @@ internal class ScheduledTaskRepairReceiver : BroadcastReceiver() {
     context: Context,
     intent: Intent?,
   ) {
-    val reason = when (intent?.action) {
-      Intent.ACTION_BOOT_COMPLETED -> ScheduledTaskRepairReasons.BOOT_COMPLETED
-      Intent.ACTION_MY_PACKAGE_REPLACED -> ScheduledTaskRepairReasons.PACKAGE_REPLACED
-      else -> ScheduledTaskRepairReasons.BROADCAST
+    val appContext = context.applicationContext
+    val reason = scheduledTaskRepairReasonForAction(intent?.action) ?: return
+    runCatching {
+      resyncEnabledScheduledTasksFromContext(appContext)
     }
-    WorkManagerScheduledWorkScheduler.fromContext(context).enqueueRepair(reason)
+    WorkManagerScheduledWorkScheduler.fromContext(appContext).enqueueRepair(reason)
   }
+}
+
+internal fun scheduledTaskRepairReasonForAction(action: String?): String? =
+  when (action) {
+    Intent.ACTION_BOOT_COMPLETED -> ScheduledTaskRepairReasons.BOOT_COMPLETED
+    Intent.ACTION_MY_PACKAGE_REPLACED -> ScheduledTaskRepairReasons.PACKAGE_REPLACED
+    else -> null
+  }
+
+internal fun resyncEnabledScheduledTasksFromContext(context: Context) {
+  val appContext = context.applicationContext
+  resyncEnabledScheduledTasks(
+    specStore = FileBackedScheduledTaskSpecStoreFactory.fromContext(appContext).create(),
+    triggerRegistrar = DefaultScheduledTriggerRegistrar(
+      alarmScheduler = AlarmManagerScheduledAlarmScheduler.fromContext(appContext),
+      workScheduler = WorkManagerScheduledWorkScheduler.fromContext(appContext),
+    ),
+    triggerSyncStateStore = FileBackedScheduledTaskTriggerSyncStateStoreFactory
+      .fromContext(appContext)
+      .create(),
+  )
 }
 
 private fun scheduleWakeWorkName(scheduleId: String): String =

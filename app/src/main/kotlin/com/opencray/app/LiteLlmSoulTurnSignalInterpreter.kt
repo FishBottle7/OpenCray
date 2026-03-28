@@ -85,11 +85,7 @@ internal class LiteLlmSoulTurnSignalInterpreter(
       baseUrl = settings.baseUrl,
       model = settings.model,
       timeoutMs = INTERPRETER_TIMEOUT_MS,
-      metadata = LlmProviderProtocols.routeMetadata(
-        protocol = settings.protocol,
-        model = settings.model,
-        reasoningEffort = settings.reasoningEffort,
-      ),
+      metadata = effectiveLlmRouteMetadata(settings),
     )
     return ProviderRouting(
       activeProfileId = INTERPRETER_PROFILE_ID,

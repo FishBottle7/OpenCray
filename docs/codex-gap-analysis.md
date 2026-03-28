@@ -138,8 +138,8 @@ The provider client now does more than older docs assumed.
 Notable improvements:
 
 - Responses message `phase=commentary` is parsed
-- commentary text is folded into `progressText`
-- runtime already maps `progressText` into a public progress action
+- provider structured completion now carries `commentaryText`
+- runtime consumes that `commentaryText` as commentary-phase assistant output
 
 Evidence:
 
@@ -147,9 +147,7 @@ Evidence:
 - `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRuntime.kt`
 
 So the old statement "provider-native commentary is not carried through the structured path" is no longer accurate.
-
-The remaining gap is not the total absence of commentary.
-The remaining gap is that commentary is still not modeled as a single first-class assistant phase across provider parsing, runtime events, persistence, and UI.
+After the latest cleanup, commentary is now modeled as one continuous first-class lane across provider parsing, runtime actions, transcript/persistence, and UI replay.
 
 ### 2.4 Resume, recovery, compaction, and memory stewardship are real
 
@@ -302,10 +300,10 @@ The remaining gap is narrower and mostly about product enforcement:
 - assistant-phase is now the only public runtime event lane for commentary/final emissions
 - the deprecated `OpenCrayProgressEvent` compatibility wrapper has been removed
 - old persisted run-event payloads are no longer migration targets during development
-- the "commentary before tool call" behavior is now explicitly encoded in the prompt contract, but still not enforced as a hard runtime requirement
+- the remaining internal `progressText` / `Progress` compatibility naming has been removed in favor of `commentaryText` / commentary-phase naming
 
-So the big gap here is no longer event-model absence.
-It is finishing the migration and tightening the product contract around commentary-first behavior.
+So the big gap here is no longer event-model absence or commentary naming drift.
+The remaining work has moved on to lineage trust, subagent control, and broader orchestration semantics.
 
 ### 3.5 Assistant phase is now unified on the mainline
 
@@ -640,6 +638,34 @@ Reference:
 
 That difference matters most on very long or deeply branching tasks.
 
+Additional verified details as of 2026-03-27:
+
+- OpenCray currently compacts through `ContextPruner` + `TranscriptWindowBuilder` + `CompactionPolicy` + `MemoryFlushCoordinator` + `DurableCompactionCoordinator`
+- the default transcript window is still a local `12`-message tail, not a single model-aware total-token allocator
+- durable compaction persists host-authored text summaries and can rewrite the retained transcript through `SessionTranscriptStore.replace(...)`
+- the recent observation layer is strongest for discovery and delegation traces and is weaker at restoring recent write / edit / command / process history
+
+This means the current likely failure mode is no longer "the system has no compaction."
+The more realistic failure mode is:
+
+- the system remembers the rough direction
+- but can lose the exact short-term procedural state needed for clean continuation on long, tool-heavy tasks
+
+For the full verified limits, trigger points, and failure modes, see:
+
+- `docs/context-compaction-verified-findings-2026-03-27.md`
+
+Recommended design direction:
+
+- do not replace OpenCray's layered context model with generic global compression
+- add a model-aware global context budget coordinator above the current layer-local reducers
+- add a distinct working-state layer so short-term procedural continuity does not depend on transcript replay alone
+
+Design references:
+
+- `docs/global-context-budget-coordination-design.md`
+- `docs/working-state-layer-design.md`
+
 ### 4.6 Commentary-first behavior now has an explicit prompt contract, but runtime enforcement is still softer than Codex
 
 This section needs a more precise statement than some older notes.
@@ -662,11 +688,11 @@ OpenCray now mirrors that pattern in its own prompt protocol layer.
 Current OpenCray prompt contract:
 
 - `runtime/src/main/kotlin/com/opencray/runtime/context/PromptAssembler.kt`
-  - tells the model to keep the user updated with short public commentary or progress
+  - tells the model to keep the user updated with short public commentary
   - tells the model that before the first tool call it should give a brief public plan
   - tells the model that before making tool calls it should send a brief public preamble
   - teaches native-tool routes to put that preamble in assistant text
-  - teaches legacy JSON routes to express that preamble as a `progress` action
+  - only teaches legacy JSON commentary/tool_call/final shapes when native tool calling is unavailable
 - `runtime/src/test/kotlin/com/opencray/runtime/context/PromptAssemblerTest.kt`
   - asserts that those prompt instructions are present
 
@@ -674,10 +700,10 @@ So one older conclusion is no longer accurate:
 
 - OpenCray no longer lacks a Codex-style prompt contract for "quick plan / preamble before tool calls"
 
-The remaining gap is narrower and more product-level:
+The remaining distinction is product choice rather than a blocking architecture gap:
 
-- the contract is still mostly prompt-shaped rather than runtime-mandated
-- the runtime does not yet hard-fail or auto-recover when a first tool call omits the intended commentary-first UX
+- the contract is intentionally still prompt-shaped rather than runtime-hard-failed
+- not auto-failing a first tool call that omits commentary is currently treated as acceptable behavior, not as a priority defect
 
 Codex-like systems are strongest when this behavior converges across:
 
@@ -687,28 +713,27 @@ Codex-like systems are strongest when this behavior converges across:
 - UI
 
 OpenCray is now stronger on the first of those layers and materially better on the middle two.
-The remaining work is to make the behavior more consistently guaranteed, not to invent the contract from scratch.
+For current planning, this is not being treated as one of the key remaining architecture gaps.
 
 ## 5. Priority Order For Closing The Remaining Gap
 
 If the goal is "make OpenCray feel more like Codex on long tasks", the highest-leverage order is now:
 
-1. Promote the existing commentary-first prompt contract into a stronger runtime and product guarantee so native tool calls consistently emit an intent/update before tool execution when that UX is desired.
-2. Tighten Responses lineage semantics beyond `previous_response_id`, and decide whether `providerLineageId` should become a stronger continuation/trust input.
-3. Upgrade subagents from synchronous bounded delegation into a real parallel orchestration surface.
-4. Promote `TodoWrite` from a validated todo list into a richer planning protocol.
-5. Decide how much more of the mutating/process tool surface should become parallel-safe.
-6. Add worktree-class task isolation if product direction ever expands toward IDE-style coding workflows.
-7. Continue hardening scheduler-backed background execution and notification flows rather than treating them as missing.
+1. Tighten Responses lineage semantics beyond `previous_response_id`, and decide whether `providerLineageId` should become a stronger continuation/trust input.
+2. Upgrade subagents from synchronous bounded delegation into a real parallel orchestration surface.
+3. Promote `TodoWrite` from a validated todo list into a richer planning protocol.
+4. Decide how much more of the mutating/process tool surface should become parallel-safe.
+5. Add worktree-class task isolation if product direction ever expands toward IDE-style coding workflows.
+6. Continue hardening scheduler-backed background execution and notification flows rather than treating them as missing.
 
 If only one item can be prioritized, the best next move is usually:
 
-- promoting the existing commentary-first prompt contract into stronger runtime enforcement
+- tighter Responses lineage and continuation trust
 
 If two items can be prioritized, the best pair is usually:
 
-- promoting the existing commentary-first prompt contract into stronger runtime enforcement
-- stronger subagent and lineage contracts
+- stronger subagent contracts
+- tighter lineage contracts
 
 ## 6. What Should No Longer Be Said
 

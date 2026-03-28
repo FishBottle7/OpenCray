@@ -110,12 +110,17 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
     currentWriteGateway("approveChatApproval").approveChatApproval(taskIdOrRunId)
   }
 
+  override fun approveChatApprovalForSession(taskIdOrRunId: String) {
+    currentWriteGateway("approveChatApprovalForSession")
+      .approveChatApprovalForSession(taskIdOrRunId)
+  }
+
   override fun rejectChatApproval(taskIdOrRunId: String) {
     currentWriteGateway("rejectChatApproval").rejectChatApproval(taskIdOrRunId)
   }
 
-  override fun cancelChatRun(taskIdOrRunId: String) {
-    currentWriteGateway("cancelChatRun").cancelChatRun(taskIdOrRunId)
+  override fun interruptChatRun(taskIdOrRunId: String) {
+    currentWriteGateway("interruptChatRun").interruptChatRun(taskIdOrRunId)
   }
 
   override fun retryChatRun(taskIdOrRunId: String) {
