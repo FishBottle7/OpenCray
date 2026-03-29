@@ -135,7 +135,9 @@ import com.opencray.runtime.soul.SoulMemoryObjectTypes
 import com.opencray.runtime.soul.SoulProfileExtensionKeys
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
+import java.util.concurrent.TimeUnit
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -6169,8 +6171,8 @@ class OpenCrayHostRuntimeTest {
       PromptCheckpointKind.APPROVED_PENDING_RESUME,
       promptCheckpointStore.get(task.id)?.checkpointKind,
     )
-    assertEquals("resume_from_checkpoint", recoveryPlan["action"])
-    assertEquals("approval_already_granted_resume_pending", recoveryPlan["reasonCode"])
+    assertEquals("resume_waiting_for_user", recoveryPlan["action"])
+    assertEquals("approval_granted_waiting_for_manual_resume", recoveryPlan["reasonCode"])
 
     manager.emitRunEvent(
       sessionId = activeSessionId,
@@ -7827,9 +7829,53 @@ class OpenCrayHostRuntimeTest {
     assertEquals("Connection verified for gpt-4o-mini.", payload["message"])
     val capability = payload["agentCapability"] as Map<*, *>
     assertEquals(true, capability["visionInputSupported"])
-    assertEquals(true, capability["pdfInputSupported"])
     assertEquals(true, capability["nativeToolCallingAvailable"])
     assertEquals(true, capability["strictToolSchemaSupported"])
+  }
+
+  @Test
+  fun validateLlmConfigDoesNotBlockSettingsOverviewLoads() {
+    val validationStarted = CountDownLatch(1)
+    val allowValidationToFinish = CountDownLatch(1)
+    val facade = RecordingLlmConfigFacade(
+      onValidate = {
+        validationStarted.countDown()
+        assertTrue(allowValidationToFinish.await(3, TimeUnit.SECONDS))
+      },
+    )
+    val hostRuntime = hostRuntime(
+      chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-validation-lock")),
+      runtimeManager = RecordingRuntimeManager(),
+      llmConfigFacade = facade,
+    )
+
+    val validationThread = Thread {
+      hostRuntime.validateLlmConfig(
+        providerId = "custom",
+        protocol = LlmProviderProtocols.ANTHROPIC,
+        baseUrl = "https://api.anthropic.com",
+        apiKey = "secret",
+        model = "claude-3-7-sonnet",
+        reasoningEffort = "medium",
+      )
+    }
+    validationThread.start()
+    assertTrue(validationStarted.await(1, TimeUnit.SECONDS))
+
+    val overviewLoadedAtStartNs = System.nanoTime()
+    val overview = hostRuntime.loadSettingsOverview()
+    val overviewLoadDurationMs = TimeUnit.NANOSECONDS.toMillis(
+      System.nanoTime() - overviewLoadedAtStartNs,
+    )
+
+    allowValidationToFinish.countDown()
+    validationThread.join(3_000L)
+
+    assertNotNull(overview)
+    assertTrue(
+      "Expected settings overview load to stay responsive during validation, but it took ${overviewLoadDurationMs}ms.",
+      overviewLoadDurationMs < 500L,
+    )
   }
 
   @Test
@@ -9413,6 +9459,7 @@ class OpenCrayHostRuntimeTest {
       isSuccess = false,
       message = "Not configured.",
     ),
+    private val onValidate: (() -> Unit)? = null,
   ) : LlmConfigFacade {
     var lastSavedCustomRequest: SaveCustomLlmProviderRequest? = null
 
@@ -9441,8 +9488,10 @@ class OpenCrayHostRuntimeTest {
       )
     }
 
-    override fun validate(request: ValidateLlmConfigRequest): LlmValidationResult =
-      validationResult
+    override fun validate(request: ValidateLlmConfigRequest): LlmValidationResult {
+      onValidate?.invoke()
+      return validationResult
+    }
   }
 
   private class RecordingPersonalizationFacade : PersonalizationFacade {

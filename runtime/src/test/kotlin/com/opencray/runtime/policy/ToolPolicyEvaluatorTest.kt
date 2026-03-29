@@ -14,6 +14,25 @@ class ToolPolicyEvaluatorTest {
   private val workspaceRoot = Paths.get("D:/workspace-root").toAbsolutePath().normalize()
 
   @Test
+  fun autoModeWebFetchIsAllowedWithoutApproval() {
+    val evaluator = ToolPolicyEvaluator(modePolicy = ModePolicy())
+
+    val decision = evaluator.evaluate(
+      ToolPolicyEvaluationRequest(
+        task = task(
+          metadata = mapOf("chatMode" to "AUTO"),
+        ),
+        toolName = "WebFetch",
+        toolClass = PolicyToolClass.NETWORK_ACCESS,
+        workspaceRoot = workspaceRoot,
+      ),
+    )
+
+    assertEquals(PolicyDecisionOutcome.ALLOW, decision.outcome)
+    assertEquals("ALLOW_AUTO_STANDARD", decision.reasonCode)
+  }
+
+  @Test
   fun settingsOverrideCanRequireApprovalForDeveloperWrite() {
     val evaluator = ToolPolicyEvaluator(modePolicy = ModePolicy())
 

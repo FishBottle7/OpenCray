@@ -48,6 +48,11 @@
 /.pytest-basetemp-*/
 /.pytest-temp-*/
 /.pytest-tmp-*/
+**/.pytest_cache/
+**/.pytest-cache/
+**/.ruff_cache/
+**/.cache/
+**/.dart_tool/
 /*.pytest-tmp/
 /%TEMP%/
 /tmp_refs/

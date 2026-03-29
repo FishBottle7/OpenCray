@@ -2415,7 +2415,10 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('AWAITING'), findsOneWidget);
-      expect(find.text(copy.chatRunApprovalDecisionDeferredBody), findsOneWidget);
+      expect(
+        find.text(copy.chatRunApprovalDecisionDeferredBody),
+        findsOneWidget,
+      );
       expect(find.text(copy.chatRunResumeAction), findsOneWidget);
       expect(find.text(copy.chatRunInterruptAction), findsNothing);
     },
@@ -3526,6 +3529,78 @@ void main() {
   );
 
   testWidgets(
+    'host-backed approval surface appears as soon as a pending approval snapshot arrives',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final snapshots = StreamController<OpenCrayChatSnapshot>.broadcast();
+      addTearDown(snapshots.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+        ),
+        chatSnapshotStream: snapshots.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey<String>('chat-approval-surface')),
+        findsNothing,
+      );
+      expect(find.text(copy.chatComposerPlaceholder), findsOneWidget);
+
+      snapshots.add(
+        _hostChatSnapshot(
+          pendingApprovals: const <OpenCrayChatPendingApprovalSnapshot>[
+            OpenCrayChatPendingApprovalSnapshot(
+              runId: 'run-approval-live-1',
+              taskId: 'task-approval-live-1',
+              title: 'Approval required',
+              body:
+                  'Command: git status --short\nWorking directory: .\nAgent reason: Check repository state before editing.\n\nApproval is required before Bash can run.',
+              approveLabel: 'Approve',
+              rejectLabel: 'Reject',
+              isHighRisk: false,
+              toolName: 'Bash',
+              requestSummary: 'git status --short',
+              primaryDetail: 'git status --short',
+              workingDirectory: '.',
+              reason: 'Check repository state before editing.',
+              message: 'Approval is required before Bash can run.',
+            ),
+          ],
+        ),
+      );
+
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey<String>('chat-approval-surface')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(
+          const ValueKey<String>('chat-approval-card-run-approval-live-1'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text(copy.chatComposerPlaceholder), findsNothing);
+      expect(find.text('git status --short'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
     'multiple approvals render as a stacked queue and only the first one is actionable',
     (tester) async {
       final bridge = _FakeChatBridge(
@@ -3671,6 +3746,130 @@ void main() {
     );
     expect(
       find.byKey(const ValueKey<String>('chat-message-time-message-3')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('message menu stays open after a long press ends', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(
+        messages: <OpenCrayChatMessageSnapshot>[
+          const OpenCrayChatMessageSnapshot(
+            messageId: 'message-long-press',
+            kind: 'inbound',
+            text: 'Long press this message',
+          ),
+        ],
+      ),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.longPress(
+      find.byKey(const ValueKey<String>('chat-bubble-message-long-press')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text(copy.chatMessageCopyAction), findsOneWidget);
+    expect(find.text(copy.chatMessageDeleteAction), findsOneWidget);
+  });
+
+  testWidgets('message menu actions remain tappable after opening', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final Map<String, Object?> clipboardState = <String, Object?>{};
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (
+          MethodCall methodCall,
+        ) async {
+          switch (methodCall.method) {
+            case 'Clipboard.setData':
+              final Map<Object?, Object?> arguments =
+                  methodCall.arguments as Map<Object?, Object?>;
+              clipboardState['text'] = arguments['text'];
+              return null;
+            case 'Clipboard.getData':
+              final Object? text = clipboardState['text'];
+              return text == null ? null : <String, Object?>{'text': text};
+          }
+          return null;
+        });
+    addTearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, null);
+    });
+
+    const messageText = 'Long press this message';
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(
+        messages: <OpenCrayChatMessageSnapshot>[
+          const OpenCrayChatMessageSnapshot(
+            messageId: 'message-long-press-action',
+            kind: 'inbound',
+            text: messageText,
+          ),
+        ],
+      ),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.longPress(
+      find.byKey(
+        const ValueKey<String>('chat-bubble-message-long-press-action'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(
+        const ValueKey<String>('chat-message-menu-message-long-press-action'),
+      ),
+      findsOneWidget,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('chat-message-menu-action-copy')),
+    );
+    await tester.pumpAndSettle();
+
+    final ClipboardData? clipboardData = await Clipboard.getData(
+      Clipboard.kTextPlain,
+    );
+    expect(clipboardData?.text, messageText);
+    expect(find.text(copy.chatMessageCopied), findsOneWidget);
+    expect(
+      find.byKey(
+        const ValueKey<String>('chat-message-menu-message-long-press-action'),
+      ),
       findsNothing,
     );
   });

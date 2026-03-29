@@ -556,7 +556,7 @@ class AgentToolPolicyGateTest {
   }
 
   @Test
-  fun autoModeWebFetchRequiresApprovalBeforeNetworkAccess() {
+  fun autoModeWebFetchExecutesWithoutApproval() {
     val workspaceRoot = temporaryFolder.newFolder("tool-policy-webfetch").toPath()
     val fetcher = RecordingWebContentFetcher()
     val dispatcher = OpenCrayToolDispatcher(
@@ -579,14 +579,48 @@ class AgentToolPolicyGateTest {
       hooks = runtimeHooks(),
     )
 
-    assertEquals(AgentToolResultStatus.DENIED, result.status)
-    assertEquals("APPROVAL_REQUIRED", result.errorCode)
-    assertEquals("ASK_AUTO_NETWORK", result.metadata["policyReasonCode"])
-    assertEquals("STANDARD", result.metadata["approvalRisk"])
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals("ALLOW_AUTO_STANDARD", result.metadata["policyReasonCode"])
     assertEquals("network_access", result.metadata["capabilityKind"])
     assertEquals("network", result.metadata["targetKind"])
     assertEquals("none", result.metadata["workspaceRelation"])
+    assertEquals("https://example.com/post", result.metadata["primaryTargetPath"])
     assertEquals("https://example.com/post", result.metadata["targetSummary"])
+    assertEquals("https://example.com/post", result.metadata["requestedUrl"])
+    assertEquals("https://example.com/post", result.metadata["finalUrl"])
+    assertEquals("200", result.metadata["statusCode"])
+    assertEquals("text/plain", result.metadata["contentType"])
+    assertEquals("true", result.metadata["resultLimitApplied"])
+    assertEquals("false", result.metadata["resultTruncated"])
+    assertEquals("web_fetch_char_limit", result.metadata["resultLimitKind"])
+    assertTrue(result.content.contains("url=https://example.com/post"))
+    assertEquals(1, fetcher.requestCount)
+  }
+
+  @Test
+  fun autoModeWebFetchPreflightAllowsParallelExecutionWithoutApproval() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-webfetch-preflight-auto").toPath()
+    val fetcher = RecordingWebContentFetcher()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        webContentFetcher = fetcher,
+      ),
+    )
+
+    val canExecuteInParallel = dispatcher.canExecuteInParallel(
+      task = agentTask(
+        metadata = mapOf("chatMode" to "AUTO"),
+      ),
+      call = AgentToolCall(
+        toolName = "WebFetch",
+        arguments = JsonObject(
+          mapOf("url" to JsonPrimitive("https://example.com/post")),
+        ),
+      ),
+    )
+
+    assertTrue(canExecuteInParallel)
     assertEquals(0, fetcher.requestCount)
   }
 
@@ -618,6 +652,34 @@ class AgentToolPolicyGateTest {
     assertEquals("HIGH_RISK_APPROVAL_REQUIRED", result.errorCode)
     assertEquals("ASK_SAFE_NETWORK_HIGH_RISK", result.metadata["policyReasonCode"])
     assertEquals("HIGH_RISK", result.metadata["approvalRisk"])
+    assertEquals("https://example.com/post", result.metadata["primaryTargetPath"])
+    assertEquals(0, fetcher.requestCount)
+  }
+
+  @Test
+  fun safeModeWebFetchPreflightBlocksParallelExecutionUntilApproval() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-webfetch-preflight-safe").toPath()
+    val fetcher = RecordingWebContentFetcher()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        webContentFetcher = fetcher,
+      ),
+    )
+
+    val canExecuteInParallel = dispatcher.canExecuteInParallel(
+      task = agentTask(
+        metadata = mapOf("chatMode" to "SAFE"),
+      ),
+      call = AgentToolCall(
+        toolName = "WebFetch",
+        arguments = JsonObject(
+          mapOf("url" to JsonPrimitive("https://example.com/post")),
+        ),
+      ),
+    )
+
+    assertFalse(canExecuteInParallel)
     assertEquals(0, fetcher.requestCount)
   }
 

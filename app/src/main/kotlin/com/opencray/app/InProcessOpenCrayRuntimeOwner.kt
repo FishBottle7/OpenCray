@@ -83,6 +83,7 @@ internal fun createInProcessOpenCrayRuntimeOwner(
     sessionStore = E2BSandboxSessionStore.fromContext(appContext),
     activeSessionProvider = e2bPythonRuntime::activeStickySessionSnapshot,
   )
+  val pythonRuntimeManifestProvider = PythonRuntimeManifestAssetProvider.fromContext(appContext)
   val pythonRuntime = RoutingPythonScriptRuntime(
     settingsProvider = sandboxSettingsRepository::load,
     localRuntime = localPythonRuntime,
@@ -232,6 +233,7 @@ internal fun createInProcessOpenCrayRuntimeOwner(
     soulTurnSemanticSignalInterpreter = soulTurnSignalInterpreter,
     commandExecutorProvider = { commandExecutor },
     pythonRuntimeProvider = { pythonRuntime },
+    pythonRuntimeManifestProvider = pythonRuntimeManifestProvider::currentManifest,
     webSearchProviderFactory = {
       AppConfiguredWebSearchProviderFactory.create(
         slots = webSearchSettingsStore.load(),

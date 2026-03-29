@@ -33,6 +33,7 @@ import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
+import com.opencray.runtime.ProviderNativeWebSearchSupport
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
@@ -42,6 +43,7 @@ import java.util.TimerTask
 import org.opencray.app.R
 
 internal data class ProjectionOnlyChatStrings(
+  val localeTag: String,
   val screenTitle: String,
   val modeLabel: String,
   val sessionButtonLabel: String,
@@ -53,6 +55,13 @@ internal data class ProjectionOnlyChatStrings(
   val summaryReplyInProgress: String,
   val summaryStartNewSession: String,
   val summaryRestored: String,
+  val summaryApprovalRequired: String,
+  val approvalRequiredTitle: String,
+  val highRiskApprovalRequiredTitle: String,
+  val highRiskApprovalRequiredBody: String,
+  val approvalApproveLabel: String,
+  val approvalApproveForSessionLabel: String,
+  val approvalRejectLabel: String,
   val summaryAwaitingDirection: String = "Waiting for your next instruction.",
   val composerPlaceholder: String,
   val composerRejectedPlaceholder: String,
@@ -122,7 +131,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     val activeSessionId = activeSessionId()
     val allRuns = sessions.flatMap { session -> loadRunSnapshots(session.sessionId) }
     val runtimeEventsBySession = sessions.associate { session ->
-      session.sessionId to runEventJournalStoreFactory.forChatSession(session.sessionId).listRuntimeEvents()
+      session.sessionId to sessionJournalRuntimeEvents(session.sessionId)
     }
     return debugProjector.loadMemoryDebugLinksSnapshot(
       activeSessionId = sessions.firstOrNull { session ->
@@ -212,6 +221,10 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     val state = chatSessionStore.loadState()
     val activeSession = state.activeSession
     val runtimeProjection = runtimeProjectionForSession(activeSession.sessionId)
+    val pendingApprovals = projectedPendingApprovals(
+      sessionId = activeSession.sessionId,
+      runs = runtimeProjection.runs,
+    )
     val visibleMessages = activeSession.messages.filter { message ->
       message.role != ChatTranscriptRole.SYSTEM
     }
@@ -220,11 +233,18 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       "screenTitle" to strings.screenTitle,
       "modeLabel" to strings.modeLabel,
       "sessionButtonLabel" to strings.sessionButtonLabel,
-      "composerPlaceholder" to composerPlaceholderFor(runtimeProjection.runs),
+      "composerPlaceholder" to composerPlaceholderFor(
+        runs = runtimeProjection.runs,
+        hasPendingApprovals = pendingApprovals.isNotEmpty(),
+      ),
       "summary" to mapOf(
         "title" to displaySessionTitle(activeSession.title),
         "badge" to strings.messagesBadge(messageCount),
-        "body" to summaryBody(messageCount, runtimeProjection.runs),
+        "body" to summaryBody(
+          messageCount = messageCount,
+          runs = runtimeProjection.runs,
+          hasPendingApprovals = pendingApprovals.isNotEmpty(),
+        ),
       ),
       "messages" to (
         visibleMessages.map(::chatMessageToMap) +
@@ -255,6 +275,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
           "activeForm" to todo.activeForm,
         )
       },
+      "pendingApprovals" to pendingApprovals,
       "runtimeActivity" to runtimeProjection.snapshot,
     )
   }
@@ -302,8 +323,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     val runs = loadRunSnapshots(sessionId).map { run ->
       run.copy(lastEvent = displayedLastEvent(run, sessionId))
     }
-    val events = runEventJournalStoreFactory.forChatSession(sessionId)
-      .listRuntimeEvents()
+    val events = sessionJournalRuntimeEvents(sessionId)
       .filterNot(::isDebugOnlyRuntimeEvent)
       .takeLast(MAX_PROJECTION_RUNTIME_EVENT_HISTORY)
       .map(::runtimeEventToMap)
@@ -377,7 +397,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
         ),
       )
       val acceptedAtEpochMs = record?.acceptedAtEpochMs ?: taskSnapshot?.task?.createdAtEpochMs ?: 0L
-      val lastEvent = journalStore.listForRun(runId).lastOrNull()?.payload?.toRuntimeEvent()
+      val lastEvent = runJournalRuntimeEvents(sessionId = sessionId, runId = runId).lastOrNull()
         ?: record?.lastEvent?.toRuntimeEvent()
       val taskMetadata = taskSnapshot?.task?.metadata.orEmpty()
       val resultMetadata = result?.metadata.orEmpty()
@@ -502,8 +522,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     run: AgentRunSnapshot,
     sessionId: String,
   ): List<OpenCrayAgentRunEvent> {
-    val runEvents = runEventJournalStoreFactory.forChatSession(sessionId)
-      .listRuntimeEvents()
+    val runEvents = sessionJournalRuntimeEvents(sessionId)
       .filter { event -> event.runId == run.runId }
     val currentExecutionId = run.executionId?.trim()?.takeIf(String::isNotBlank)
     if (currentExecutionId == null) {
@@ -534,6 +553,20 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
         event.executionKind?.trim().isNullOrEmpty()
     }
   }
+
+  private fun sessionJournalRuntimeEvents(sessionId: String): List<OpenCrayAgentRunEvent> =
+    dedupeRuntimeEventsPreservingOrder(
+      runEventJournalStoreFactory.forChatSession(sessionId).listRuntimeEvents(),
+    )
+
+  private fun runJournalRuntimeEvents(
+    sessionId: String,
+    runId: String,
+  ): List<OpenCrayAgentRunEvent> = dedupeRuntimeEventsPreservingOrder(
+    runEventJournalStoreFactory.forChatSession(sessionId)
+      .listForRun(runId)
+      .map { entry -> entry.payload.toRuntimeEvent() },
+  )
 
   private fun eventMatchesRunExecution(
     run: AgentRunSnapshot,
@@ -570,7 +603,9 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private fun summaryBody(
     messageCount: Int,
     runs: List<AgentRunSnapshot>,
+    hasPendingApprovals: Boolean,
   ): String = when {
+    hasPendingApprovals -> strings.summaryApprovalRequired
     latestRunFor(runs)?.let { run ->
       isAwaitingDirectionRun(run) || isDeferredApprovalDecisionAwaitingResumeRun(run)
     } == true -> strings.summaryAwaitingDirection
@@ -579,7 +614,13 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     else -> strings.summaryRestored
   }
 
-  private fun composerPlaceholderFor(runs: List<AgentRunSnapshot>): String {
+  private fun composerPlaceholderFor(
+    runs: List<AgentRunSnapshot>,
+    hasPendingApprovals: Boolean,
+  ): String {
+    if (hasPendingApprovals) {
+      return strings.composerPlaceholder
+    }
     val latestRun = latestRunFor(runs) ?: return strings.composerPlaceholder
     if (isDeferredApprovalDecisionAwaitingResumeRun(latestRun)) {
       return strings.composerPlaceholder
@@ -618,6 +659,395 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     } else {
       rawTitle
     }
+
+  private fun projectedPendingApprovals(
+    sessionId: String,
+    runs: List<AgentRunSnapshot>,
+  ): List<Map<String, Any?>> {
+    val runRecordStore = runRecordStoreFactory.forChatSession(sessionId)
+    val journalStore = runEventJournalStoreFactory.forChatSession(sessionId)
+    val checkpointStore = promptCheckpointStoreFactory.forChatSession(sessionId)
+    val processRegistry = processRegistryFactory.forChatSession(sessionId)
+    val queueStore = RecoveryAwareQueueSnapshotStore(
+      sessionId = sessionId,
+      delegate = queueSnapshotStoreFactory.forChatSession(sessionId),
+      runRecordStore = runRecordStore,
+      runEventJournalStore = journalStore,
+      promptCheckpointStore = checkpointStore,
+      managedProcessesProvider = processRegistry::list,
+      clock = clock,
+    )
+    val runsByTaskId = runs.associateBy(AgentRunSnapshot::taskId)
+    return queueStore.load()
+      ?.tasks
+      .orEmpty()
+      .asSequence()
+      .filter { taskSnapshot ->
+        (taskSnapshot.lifecycleState == QueueTaskLifecycleState.SUSPENDED ||
+          taskSnapshot.lifecycleState == QueueTaskLifecycleState.FAILED) &&
+          isProjectionApprovalRequiredError(taskSnapshot.lastErrorCode)
+      }
+      .filter { taskSnapshot ->
+        checkpointStore.get(taskSnapshot.task.id)?.checkpointKind !in setOf(
+          PromptCheckpointKind.APPROVED_PENDING_RESUME,
+          PromptCheckpointKind.REJECTED_PENDING_RESUME,
+        )
+      }
+      .map { taskSnapshot ->
+        val runSnapshot = runsByTaskId[taskSnapshot.task.id]
+        val metadata = runSnapshot?.resultMetadata.orEmpty()
+        val isHighRisk = projectionApprovalIsHighRisk(
+          errorCode = taskSnapshot.lastErrorCode,
+          metadata = metadata,
+        )
+        val toolReason = metadata["toolReason"] ?: runSnapshot?.lastEvent?.let(::projectionToolReasonFromEvent)
+        val supportsSessionApproval = projectionApprovalSupportsSessionScope(metadata)
+        val title = if (isHighRisk) {
+          strings.highRiskApprovalRequiredTitle
+        } else {
+          strings.approvalRequiredTitle
+        }
+        val message = projectionSanitizeApprovalBody(
+          body = runSnapshot?.errorMessage ?: taskSnapshot.lastErrorMessage,
+          isHighRisk = isHighRisk,
+        )
+        val body = composeProjectionApprovalBody(
+          body = message,
+          toolReason = toolReason,
+          metadata = metadata,
+        )
+        mapOf(
+          "runId" to (runSnapshot?.runId ?: runIdFor(taskSnapshot.task)),
+          "taskId" to taskSnapshot.task.id,
+          "pendingMessageId" to (
+            runSnapshot?.pendingMessageId
+              ?: taskSnapshot.task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
+                ?.takeIf(String::isNotBlank)
+          ),
+          "toolName" to projectionApprovalToolName(metadata),
+          "requestSummary" to projectionApprovalRequestSummary(metadata),
+          "primaryDetail" to projectionApprovalPrimaryDetailValue(metadata),
+          "pathDetails" to projectionApprovalPathDetailLines(metadata),
+          "workingDirectory" to projectionApprovalWorkingDirectoryValue(metadata),
+          "reason" to projectionApprovalReasonValue(toolReason),
+          "message" to message,
+          "risk" to if (isHighRisk) "high_risk" else "standard",
+          "isHighRisk" to isHighRisk,
+          "title" to title,
+          "body" to body,
+          "approveLabel" to strings.approvalApproveLabel,
+          "supportsSessionApproval" to supportsSessionApproval,
+          "approveForSessionLabel" to if (supportsSessionApproval) {
+            strings.approvalApproveForSessionLabel
+          } else {
+            ""
+          },
+          "rejectLabel" to strings.approvalRejectLabel,
+        )
+      }
+      .toList()
+  }
+
+  private fun isProjectionApprovalRequiredError(errorCode: String?): Boolean =
+    errorCode == "APPROVAL_REQUIRED" || errorCode == "HIGH_RISK_APPROVAL_REQUIRED"
+
+  private fun projectionApprovalIsHighRisk(
+    errorCode: String?,
+    metadata: Map<String, String>,
+  ): Boolean =
+    errorCode == "HIGH_RISK_APPROVAL_REQUIRED" ||
+      metadata[SubAgentApprovalResumeMetadata.KEY_IS_HIGH_RISK]
+        ?.trim()
+        ?.equals("true", ignoreCase = true) == true
+
+  private fun projectionApprovalSupportsSessionScope(
+    metadata: Map<String, String>,
+  ): Boolean =
+    metadata[ProviderNativeWebSearchSupport.METADATA_APPROVAL_KIND]
+      ?.trim()
+      ?.equals(ProviderNativeWebSearchSupport.APPROVAL_KIND, ignoreCase = true) == true &&
+      metadata[ProviderNativeWebSearchSupport.METADATA_SUPPORTS_SESSION_APPROVAL]
+        ?.trim()
+        ?.equals("true", ignoreCase = true) == true
+
+  private fun projectionApprovalToolName(metadata: Map<String, String>): String? =
+    metadata["normalizedToolName"]
+      ?.takeIf(String::isNotBlank)
+      ?: metadata[SubAgentApprovalResumeMetadata.KEY_APPROVED_TOOL_NAME]
+        ?.takeIf(String::isNotBlank)
+      ?: metadata["canonicalToolName"]
+        ?.takeIf(String::isNotBlank)
+      ?: metadata["toolName"]
+        ?.takeIf(String::isNotBlank)
+
+  private fun projectionToolReasonFromEvent(event: OpenCrayAgentRunEvent): String? = when (event) {
+    is OpenCrayToolCallEvent -> event.call.reason
+    else -> null
+  }
+
+  private fun composeProjectionApprovalBody(
+    body: String,
+    toolReason: String?,
+    metadata: Map<String, String>,
+  ): String {
+    val details = mutableListOf<String>()
+    projectionApprovalPrimaryDetailLine(metadata)?.let(details::add)
+    projectionApprovalPathDetailLines(metadata).forEach(details::add)
+    projectionApprovalWorkingDirectoryLine(metadata)?.let(details::add)
+    projectionApprovalReasonLine(toolReason)?.let(details::add)
+    if (details.isEmpty()) {
+      return body
+    }
+    return buildString {
+      details.forEach { line -> appendLine(line) }
+      appendLine()
+      append(body)
+    }.trim()
+  }
+
+  private fun projectionApprovalRequestSummary(metadata: Map<String, String>): String? =
+    metadata["targetSummary"]?.trim()?.takeIf(String::isNotBlank)
+      ?: projectionApprovalPrimaryDetailValue(metadata)
+
+  private fun projectionApprovalPrimaryDetailValue(metadata: Map<String, String>): String? {
+    metadata["scriptPath"]?.takeIf(String::isNotBlank)?.let { scriptPath ->
+      return scriptPath
+    }
+    projectionShellCommandSummary(metadata)?.let { command ->
+      return command
+    }
+    metadata["query"]?.takeIf(String::isNotBlank)?.let { query ->
+      return query
+    }
+    metadata["requestedUrl"]?.takeIf(String::isNotBlank)?.let { url ->
+      return url
+    }
+    metadata["finalUrl"]?.takeIf(String::isNotBlank)?.let { url ->
+      return url
+    }
+    metadata["processId"]?.takeIf(String::isNotBlank)?.let { processId ->
+      if (metadata["targetKind"] == "process") {
+        return processId
+      }
+    }
+    metadata["delegationDescription"]?.takeIf(String::isNotBlank)?.let { description ->
+      return description
+    }
+    metadata["targetSummary"]?.takeIf(String::isNotBlank)?.let { summary ->
+      val primaryTargetPath = metadata["primaryTargetPath"]?.trim().orEmpty()
+      val secondaryTargetPath = metadata["secondaryTargetPath"]?.trim().orEmpty()
+      val duplicateSummaries = buildSet {
+        if (primaryTargetPath.isNotEmpty()) {
+          add(primaryTargetPath)
+        }
+        if (secondaryTargetPath.isNotEmpty()) {
+          add(secondaryTargetPath)
+        }
+        if (primaryTargetPath.isNotEmpty() && secondaryTargetPath.isNotEmpty()) {
+          add("$primaryTargetPath -> $secondaryTargetPath")
+        }
+      }
+      if (summary !in duplicateSummaries) {
+        return summary
+      }
+    }
+    return null
+  }
+
+  private fun projectionApprovalPrimaryDetailLine(metadata: Map<String, String>): String? =
+    when {
+      metadata["scriptPath"]?.isNotBlank() == true ->
+        projectionApprovalPrimaryDetailValue(metadata)?.let { detail ->
+          "${projectionApprovalLabel("script")}: $detail"
+        }
+      projectionShellCommandSummary(metadata) != null ->
+        projectionApprovalPrimaryDetailValue(metadata)?.let { detail ->
+          "${projectionApprovalLabel("command")}: $detail"
+        }
+      metadata["query"]?.isNotBlank() == true ->
+        projectionApprovalPrimaryDetailValue(metadata)?.let { detail ->
+          "${projectionApprovalLabel("query")}: $detail"
+        }
+      metadata["requestedUrl"]?.isNotBlank() == true || metadata["finalUrl"]?.isNotBlank() == true ->
+        projectionApprovalPrimaryDetailValue(metadata)?.let { detail ->
+          "${projectionApprovalLabel("url")}: $detail"
+        }
+      metadata["processId"]?.isNotBlank() == true && metadata["targetKind"] == "process" ->
+        projectionApprovalPrimaryDetailValue(metadata)?.let { detail ->
+          "${projectionApprovalLabel("process")}: $detail"
+        }
+      else ->
+        projectionApprovalPrimaryDetailValue(metadata)?.let { detail ->
+          "${projectionApprovalLabel("request")}: $detail"
+        }
+    }
+
+  private fun projectionApprovalPathDetailLines(metadata: Map<String, String>): List<String> {
+    val sourcePath = metadata["sourcePath"]?.trim().orEmpty()
+    val destinationPath = metadata["destinationPath"]?.trim().orEmpty()
+    val delegationPromptPreview = metadata["delegationPromptPreview"]?.trim().orEmpty()
+    val delegationAllowedTools = metadata["delegationAllowedTools"]?.trim().orEmpty()
+    if (sourcePath.isNotEmpty() || destinationPath.isNotEmpty()) {
+      return buildList {
+        if (sourcePath.isNotEmpty()) {
+          add("${projectionApprovalLabel("from")}: $sourcePath")
+        }
+        if (destinationPath.isNotEmpty()) {
+          add("${projectionApprovalLabel("to")}: $destinationPath")
+        }
+        if (delegationPromptPreview.isNotEmpty()) {
+          add("${projectionApprovalLabel("prompt")}: $delegationPromptPreview")
+        }
+        if (delegationAllowedTools.isNotEmpty()) {
+          add("${projectionApprovalLabel("allowed_tools")}: $delegationAllowedTools")
+        }
+      }
+    }
+    val primaryTargetPath = metadata["primaryTargetPath"]?.trim().orEmpty()
+    val secondaryTargetPath = metadata["secondaryTargetPath"]?.trim().orEmpty()
+    val scriptPath = metadata["scriptPath"]?.trim().orEmpty()
+    val workingDirectory = metadata["workingDirectory"]?.trim().orEmpty()
+    return buildList {
+      if (
+        primaryTargetPath.isNotEmpty() &&
+        primaryTargetPath != scriptPath &&
+        primaryTargetPath != workingDirectory
+      ) {
+        add("${projectionApprovalLabel("target")}: $primaryTargetPath")
+      }
+      if (secondaryTargetPath.isNotEmpty()) {
+        add("${projectionApprovalLabel("to")}: $secondaryTargetPath")
+      }
+      if (delegationPromptPreview.isNotEmpty()) {
+        add("${projectionApprovalLabel("prompt")}: $delegationPromptPreview")
+      }
+      if (delegationAllowedTools.isNotEmpty()) {
+        add("${projectionApprovalLabel("allowed_tools")}: $delegationAllowedTools")
+      }
+    }
+  }
+
+  private fun projectionApprovalWorkingDirectoryValue(metadata: Map<String, String>): String? =
+    metadata["workingDirectory"]?.trim()?.takeIf(String::isNotBlank)
+
+  private fun projectionApprovalWorkingDirectoryLine(metadata: Map<String, String>): String? {
+    val workingDirectory = projectionApprovalWorkingDirectoryValue(metadata).orEmpty()
+    if (workingDirectory.isEmpty()) {
+      return null
+    }
+    return "${projectionApprovalLabel("working_directory")}: $workingDirectory"
+  }
+
+  private fun projectionApprovalReasonValue(toolReason: String?): String? =
+    projectionSanitizePotentialInternalAgentText(
+      text = toolReason?.trim().orEmpty(),
+      fallback = "",
+    ).trim().takeIf(String::isNotBlank)
+
+  private fun projectionApprovalReasonLine(toolReason: String?): String? {
+    val reason = projectionApprovalReasonValue(toolReason) ?: return null
+    return "${projectionApprovalLabel("reason")}: $reason"
+  }
+
+  private fun projectionShellCommandSummary(metadata: Map<String, String>): String? {
+    metadata["shellCommand"]?.takeIf(String::isNotBlank)?.let { return it }
+    val command = metadata["command"]?.trim().orEmpty()
+    if (command.isEmpty()) {
+      return null
+    }
+    val args = metadata["args"]
+      ?.split('\u0000')
+      ?.map(String::trim)
+      ?.filter(String::isNotEmpty)
+      .orEmpty()
+    return buildString {
+      append(command)
+      if (args.isNotEmpty()) {
+        append(' ')
+        append(args.joinToString(separator = " "))
+      }
+    }.trim()
+  }
+
+  private fun projectionApprovalLabel(kind: String): String {
+    val isChinese = strings.localeTag.startsWith("zh", ignoreCase = true)
+    return when (kind) {
+      "command" -> if (isChinese) "命令" else "Command"
+      "script" -> if (isChinese) "脚本" else "Script"
+      "query" -> if (isChinese) "查询" else "Query"
+      "url" -> if (isChinese) "地址" else "URL"
+      "process" -> if (isChinese) "进程" else "Process"
+      "request" -> if (isChinese) "操作" else "Request"
+      "prompt" -> if (isChinese) "委派内容" else "Prompt"
+      "allowed_tools" -> if (isChinese) "可用工具" else "Allowed tools"
+      "from" -> if (isChinese) "来源" else "From"
+      "to" -> if (isChinese) "目标" else "To"
+      "target" -> if (isChinese) "目标" else "Target"
+      "working_directory" -> if (isChinese) "工作目录" else "Working directory"
+      "reason" -> if (isChinese) "理由" else "Agent reason"
+      else -> if (isChinese) "详情" else "Details"
+    }
+  }
+
+  private fun projectionSanitizeApprovalBody(body: String?, isHighRisk: Boolean): String {
+    val fallback = if (isHighRisk) {
+      strings.highRiskApprovalRequiredBody
+    } else {
+      strings.summaryApprovalRequired
+    }
+    val resolved = body?.takeIf(String::isNotBlank) ?: return fallback
+    return projectionSanitizePotentialInternalAgentText(
+      text = resolved,
+      fallback = fallback,
+    )
+  }
+
+  private fun projectionSanitizePotentialInternalAgentText(text: String, fallback: String): String {
+    val trimmed = text.trim()
+    if (trimmed.isBlank()) return text
+    return if (projectionLooksLikeInternalToolPayload(trimmed)) fallback else text
+  }
+
+  private fun projectionLooksLikeInternalToolPayload(text: String): Boolean {
+    val jsonCandidate = projectionExtractEmbeddedJsonObject(text) ?: return false
+    val normalized = jsonCandidate.lowercase()
+    val explicitToolAction =
+      "\"type\"" in normalized &&
+        ("\"tool_call\"" in normalized || "\"tool\"" in normalized)
+    val toolArgumentShape = "\"tool_name\"" in normalized && "\"arguments\"" in normalized
+    return explicitToolAction || toolArgumentShape
+  }
+
+  private fun projectionExtractEmbeddedJsonObject(raw: String): String? {
+    val trimmed = raw.trim()
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      return trimmed
+    }
+    var depth = 0
+    var startIndex = -1
+    var inString = false
+    var escaped = false
+    for ((index, character) in raw.withIndex()) {
+      when {
+        inString && escaped -> escaped = false
+        inString && character == '\\' -> escaped = true
+        character == '"' -> inString = !inString
+        !inString && character == '{' -> {
+          if (depth == 0) {
+            startIndex = index
+          }
+          depth += 1
+        }
+        !inString && character == '}' -> {
+          depth -= 1
+          if (depth == 0 && startIndex >= 0) {
+            return raw.substring(startIndex, index + 1)
+          }
+        }
+      }
+    }
+    return null
+  }
 
   private fun observeProjectionWithPolling(
     payloadProvider: () -> Map<String, Any?>,
@@ -1170,6 +1600,7 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
     processRegistryFactory = FileBackedAgentProcessRegistryFactory.fromContext(appContext),
     supplementStoreFactory = FileBackedAgentSessionSupplementStoreFactory.fromContext(appContext),
     strings = ProjectionOnlyChatStrings(
+      localeTag = LocaleSettingsStore.fromContext(appContext).loadLanguage().tag,
       screenTitle = localizedContext.getString(R.string.shell_tab_chat),
       modeLabel = localizedContext.getString(R.string.chat_mode_auto),
       sessionButtonLabel = localizedContext.getString(R.string.chat_sessions_button),
@@ -1181,6 +1612,27 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
       summaryReplyInProgress = localizedContext.getString(R.string.chat_summary_reply_in_progress),
       summaryStartNewSession = localizedContext.getString(R.string.chat_summary_start_new_session),
       summaryRestored = localizedContext.getString(R.string.chat_summary_restored),
+      summaryApprovalRequired = localizedContext.getString(
+        R.string.chat_summary_approval_required,
+      ),
+      approvalRequiredTitle = localizedContext.getString(
+        R.string.chat_approval_required_title,
+      ),
+      highRiskApprovalRequiredTitle = localizedContext.getString(
+        R.string.chat_high_risk_approval_required_title,
+      ),
+      highRiskApprovalRequiredBody = localizedContext.getString(
+        R.string.chat_high_risk_approval_required_body,
+      ),
+      approvalApproveLabel = localizedContext.getString(
+        R.string.chat_approval_approve_label,
+      ),
+      approvalApproveForSessionLabel = localizedContext.getString(
+        R.string.chat_approval_approve_for_session_label,
+      ),
+      approvalRejectLabel = localizedContext.getString(
+        R.string.chat_approval_reject_label,
+      ),
       summaryAwaitingDirection = localizedContext.getString(
         R.string.chat_summary_awaiting_direction,
       ),

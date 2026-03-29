@@ -141,7 +141,7 @@ class LlmConfigFacadeTest {
     assertTrue(result.agentCapability?.strictToolSchemaSupported == true)
     assertTrue(result.agentCapability?.parallelToolCallsSupported == true)
     assertEquals("true", result.agentCapability?.runtimeMetadataOverrides()?.get("parallelToolCalls"))
-    assertEquals(5, providerClient.requests.size)
+    assertEquals(6, providerClient.requests.size)
     assertEquals("https://api.openai.com/v1", providerClient.requests[0].route.baseUrl)
     assertEquals("gpt-4o-mini", providerClient.requests[0].route.model)
     assertEquals("high", providerClient.requests[0].route.metadata["reasoning_effort"])
@@ -156,6 +156,10 @@ class LlmConfigFacadeTest {
     assertEquals(true, providerClient.requests[3].request.tools.single().strict)
     assertEquals(true, providerClient.requests[4].request.parallelToolCalls)
     assertEquals(2, providerClient.requests[4].request.tools.size)
+    assertEquals(
+      LiteLlmBuiltinToolType.WEB_SEARCH,
+      providerClient.requests[5].request.builtinTools.single().type,
+    )
     assertTrue(
       store.load(
         defaults = LlmSettingsState(
@@ -258,6 +262,51 @@ class LlmConfigFacadeTest {
           baseUrl = "https://example.com/v1",
           apiKey = "test-key",
           model = "qwen2.5-vl-72b-instruct",
+        ),
+      ).agentCapability.visionInputSupported,
+    )
+  }
+
+  @Test
+  fun validateMarksKimiK25AsVisionCapableForCustomAnthropicRoutes() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val providerClient = RecordingProviderClient(
+      LiteLlmProviderResult.Success(outputText = "OK"),
+      LiteLlmProviderResult.Success(
+        outputText = "I cannot call tools here.",
+        completion = LiteLlmStructuredCompletion(
+          finalText = "I cannot call tools here.",
+        ),
+      ),
+    )
+    val facade = LocalLlmConfigFacade.createForTest(
+      llmSettingsStore = store,
+      providerClient = providerClient,
+    )
+
+    val result = facade.validate(
+      ValidateLlmConfigRequest(
+        providerId = "custom",
+        protocol = LlmProviderProtocols.ANTHROPIC,
+        baseUrl = "https://third-party.example/anthropic",
+        apiKey = "test-key",
+        model = "kimi-k2.5",
+        reasoningEffort = "medium",
+      ),
+    )
+
+    assertFalse(result.isSuccess)
+    assertTrue(result.agentCapability?.visionInputSupported == true)
+    assertEquals("true", providerClient.requests[0].route.metadata["visionInputSupported"])
+    assertEquals(60_000L, providerClient.requests[0].route.timeoutMs)
+    assertFalse(result.agentCapability?.pdfInputSupported == true)
+    assertTrue(
+      store.load(
+        defaults = LlmSettingsState(
+          protocol = LlmProviderProtocols.ANTHROPIC,
+          baseUrl = "https://third-party.example/anthropic",
+          apiKey = "test-key",
+          model = "kimi-k2.5",
         ),
       ).agentCapability.visionInputSupported,
     )
@@ -367,6 +416,39 @@ class LlmConfigFacadeTest {
     assertTrue(result.agentCapability?.nativeToolCallingAvailable == true)
     assertEquals("anthropic", providerClient.requests[0].route.metadata["protocol"])
     assertEquals("16000", providerClient.requests[0].route.metadata["thinking_budget_tokens"])
+    assertEquals("anthropic-secret", providerClient.requests[0].request.authHeaders["x-api-key"])
+    assertEquals("2023-06-01", providerClient.requests[0].request.authHeaders["anthropic-version"])
+  }
+
+  @Test
+  fun validateAnthropicProtocolCanDisableThinking() {
+    val providerClient = RecordingProviderClient(
+      LiteLlmProviderResult.Success(outputText = "OK"),
+      capabilityProbeResult(expectedEcho = "native_tool_probe"),
+      capabilityProbeResult(expectedEcho = "tool_choice_probe"),
+      capabilityProbeResult(expectedEcho = "strict_schema_probe"),
+      parallelCapabilityProbeResult(),
+    )
+    val facade = LocalLlmConfigFacade.createForTest(
+      llmSettingsStore = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore()),
+      providerClient = providerClient,
+    )
+
+    val result = facade.validate(
+      ValidateLlmConfigRequest(
+        providerId = "custom",
+        protocol = LlmProviderProtocols.ANTHROPIC,
+        baseUrl = "https://api.anthropic.com",
+        apiKey = "anthropic-secret",
+        model = "claude-3-7-sonnet",
+        reasoningEffort = "off",
+      ),
+    )
+
+    assertTrue(result.isSuccess)
+    assertTrue(result.agentCapability?.nativeToolCallingAvailable == true)
+    assertEquals("anthropic", providerClient.requests[0].route.metadata["protocol"])
+    assertNull(providerClient.requests[0].route.metadata["thinking_budget_tokens"])
     assertEquals("anthropic-secret", providerClient.requests[0].request.authHeaders["x-api-key"])
     assertEquals("2023-06-01", providerClient.requests[0].request.authHeaders["anthropic-version"])
   }

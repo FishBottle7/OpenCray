@@ -43,6 +43,7 @@ import com.opencray.runtime.OpenCrayToolDispatcher
 import com.opencray.runtime.OpenCrayToolDispatcherConfig
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.ProviderNativeWebSearchSupport
+import com.opencray.runtime.PythonRuntimeManifestSnapshot
 import com.opencray.runtime.SandboxPreviewService
 import com.opencray.runtime.bootstrap.BootstrapContextResolver
 import com.opencray.runtime.bootstrap.BootstrapMode
@@ -116,6 +117,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     NoOpSoulTurnSemanticSignalInterpreter,
   private val commandExecutorProvider: () -> CommandExecutor? = { null },
   private val pythonRuntimeProvider: () -> PythonScriptRuntime = { HostProcessPythonRuntime() },
+  private val pythonRuntimeManifestProvider: (() -> PythonRuntimeManifestSnapshot?)? = null,
   private val webSearchProviderFactory: () -> WebSearchProvider = { UnconfiguredWebSearchProvider },
   private val sandboxPreviewServiceProvider: () -> SandboxPreviewService? = { null },
   private val skillPackageManagerProvider: () -> SkillPackageManager? = { null },
@@ -199,6 +201,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
         providerId = routeProviderId,
         baseUrl = llmSettings.baseUrl,
         model = llmSettings.model,
+        timeoutMs = recommendedInteractiveProviderRouteTimeoutMs(llmSettings.model),
         metadata = routeMetadata,
       )
       DefaultLiteLlmGateway(
@@ -297,6 +300,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
           rejectedToolName = approvalRejection?.toolName,
           commandExecutor = commandExecutorProvider(),
           pythonRuntimeAdapter = pythonRuntimeProvider(),
+          pythonRuntimeManifestProvider = pythonRuntimeManifestProvider,
           supportsManagedPythonProcessStart = true,
           managedPythonProcessUsesRuntimeAdapter = true,
           todoStore = todoStoreForSession(sessionId),

@@ -14,6 +14,7 @@ import com.opencray.app.OpenCrayLocaleManager
 import com.opencray.app.OpenCrayUserAgent
 import com.opencray.app.SavedCustomLlmProvider
 import com.opencray.app.effectiveLlmRouteMetadata
+import com.opencray.app.recommendedValidationProviderRouteTimeoutMs
 import com.opencray.llm.DefaultLiteLlmGateway
 import com.opencray.llm.InMemoryLiteLlmRoutingSettingsStore
 import com.opencray.llm.LiteLlmGatewayRequest
@@ -220,12 +221,13 @@ internal class LocalLlmConfigFacade private constructor(
     }
     requireValidBaseUrl(baseUrl)
 
+    val validationTimeoutMs = recommendedValidationProviderRouteTimeoutMs(model)
     val route = ProviderRoute(
       id = "validate-${providerPreset.id}",
       providerId = providerPreset.id,
       baseUrl = baseUrl,
       model = model,
-      timeoutMs = VALIDATION_TIMEOUT_MS,
+      timeoutMs = validationTimeoutMs,
       metadata = validationMetadataFor(
         providerId = providerPreset.id,
         protocol = protocol,
@@ -260,6 +262,7 @@ internal class LocalLlmConfigFacade private constructor(
         stage = "text_connectivity",
         prompt = VALIDATION_PROMPT,
       ),
+      timeoutMs = validationTimeoutMs,
     )?.let { failure ->
       return failure
     }
@@ -854,13 +857,16 @@ internal class LocalLlmConfigFacade private constructor(
     return commentaryObserved && finalObserved
   }
 
-  private fun validationFailureFor(result: LiteLlmGatewayResult): LlmValidationResult? = when (result.status) {
+  private fun validationFailureFor(
+    result: LiteLlmGatewayResult,
+    timeoutMs: Long,
+  ): LlmValidationResult? = when (result.status) {
     LiteLlmGatewayStatus.SUCCESS -> null
     LiteLlmGatewayStatus.TIMEOUT -> LlmValidationResult(
       isSuccess = false,
       message = result.errorMessage?.ifBlank {
-        strings.validationTimeout(VALIDATION_TIMEOUT_MS / 1000)
-      } ?: strings.validationTimeout(VALIDATION_TIMEOUT_MS / 1000),
+        strings.validationTimeout(timeoutMs / 1000)
+      } ?: strings.validationTimeout(timeoutMs / 1000),
     )
 
     LiteLlmGatewayStatus.RATE_LIMITED -> LlmValidationResult(
@@ -1069,7 +1075,6 @@ internal class LocalLlmConfigFacade private constructor(
     )
 
     private const val VALIDATION_PROFILE_ID: String = "profile-validation"
-    private const val VALIDATION_TIMEOUT_MS: Long = 15_000L
     private const val VALIDATION_PROMPT: String = "Reply with OK."
     private const val CAPABILITY_PROBE_TOOL_NAME: String = "capability_probe"
     private const val NATIVE_TOOL_PROBE_ECHO: String = "native_tool_probe"

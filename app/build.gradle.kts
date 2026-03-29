@@ -1,9 +1,47 @@
+import java.io.File
 import java.util.Properties
 
 plugins {
   id("com.android.application")
   id("org.jetbrains.kotlin.android")
   id("org.jetbrains.kotlin.plugin.serialization") version "1.9.22"
+}
+
+fun parsePythonRequirementsLock(file: File): List<String> =
+  if (!file.exists()) {
+    emptyList()
+  } else {
+    file.readLines()
+      .map { line -> line.substringBefore("#").trim() }
+      .filter(String::isNotBlank)
+      .distinct()
+  }
+
+fun jsonStringLiteral(value: String): String =
+  "\"" + value
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"") + "\""
+
+fun renderFallbackPythonRuntimeManifestJson(packages: List<String>): String {
+  val manifestPackages = packages.filter { packageName -> packageName != "python3" }
+  val packageEntries = manifestPackages.joinToString(separator = ",\n    ") { packageName ->
+    jsonStringLiteral(packageName)
+  }
+  return """
+    {
+      "schemaVersion": 1,
+      "runtimeBackend": "p4a",
+      "packageInstallPolicy": "preinstalled_only",
+      "supportsDynamicInstall": false,
+      "interpreter": "python3",
+      "packages": [
+        $packageEntries
+      ],
+      "notes": [
+        "Generated from tools/android_python_runtime_p4a/requirements.lock because no dist manifest was present during app build."
+      ]
+    }
+  """.trimIndent() + "\n"
 }
 
 fun resolveFlutterSdkPath(): String? {
@@ -32,6 +70,30 @@ fun resolveFlutterJar() =
 
 val hasFlutterModule = rootProject.file("flutter_app/.android/include_flutter.groovy").exists()
 val flutterJar = resolveFlutterJar()
+val generatedPythonRuntimeManifestAssetsDir = layout.buildDirectory.dir("generated/assets/pythonRuntimeManifest")
+val distPythonRuntimeManifest = rootProject.file("tools/android_python_runtime_p4a/dist/python-runtime-manifest.json")
+val requirementsLockFile = rootProject.file("tools/android_python_runtime_p4a/requirements.lock")
+val generatePythonRuntimeManifestAsset = tasks.register("generatePythonRuntimeManifestAsset") {
+  inputs.files(distPythonRuntimeManifest, requirementsLockFile)
+  outputs.file(generatedPythonRuntimeManifestAssetsDir.map { directory ->
+    directory.file("python-runtime/python-runtime-manifest.json")
+  })
+  doLast {
+    val outputFile = generatedPythonRuntimeManifestAssetsDir.get()
+      .file("python-runtime/python-runtime-manifest.json")
+      .asFile
+    outputFile.parentFile.mkdirs()
+    if (distPythonRuntimeManifest.exists()) {
+      outputFile.writeText(distPythonRuntimeManifest.readText())
+    } else {
+      outputFile.writeText(
+        renderFallbackPythonRuntimeManifestJson(
+          parsePythonRequirementsLock(requirementsLockFile),
+        ),
+      )
+    }
+  }
+}
 
 android {
   namespace = "org.opencray.app"
@@ -65,6 +127,12 @@ android {
       isMinifyEnabled = false
     }
   }
+
+  sourceSets.getByName("main").assets.srcDir(generatedPythonRuntimeManifestAssetsDir)
+}
+
+tasks.named("preBuild").configure {
+  dependsOn(generatePythonRuntimeManifestAsset)
 }
 
 dependencies {

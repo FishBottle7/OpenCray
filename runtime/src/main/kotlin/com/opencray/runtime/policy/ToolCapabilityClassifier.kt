@@ -82,6 +82,8 @@ internal class ToolCapabilityClassifier {
     "skill_read",
     -> "read_skill"
 
+    "python_runtime_manifest" -> "read_python_runtime"
+
     "SkillsFind",
     "SkillsInspect",
     "SkillsList",

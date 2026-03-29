@@ -326,6 +326,11 @@ internal object LlmModelCapabilityRegistry {
         "gemini-2.5-flash",
       ),
     ),
+    LlmStaticCapabilityRule(
+      id = "kimi_k2_5_vision_exact",
+      visionInputSupported = true,
+      exactModels = setOf("kimi-k2.5"),
+    ),
   )
 
   private val FAMILY_VISION_RULES: List<LlmStaticCapabilityRule> = listOf(
@@ -371,6 +376,11 @@ internal object LlmModelCapabilityRegistry {
         "gemini-2.5",
       ),
       substrings = setOf("gemini-exp"),
+    ),
+    LlmStaticCapabilityRule(
+      id = "kimi_k2_5_vision_family",
+      visionInputSupported = true,
+      prefixes = setOf("kimi-k2.5"),
     ),
     LlmStaticCapabilityRule(
       id = "qwen_vl_family",

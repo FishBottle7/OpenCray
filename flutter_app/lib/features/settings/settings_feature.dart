@@ -1437,6 +1437,13 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     'high',
     'xhigh',
   ];
+  static const List<String> _anthropicReasoningOptions = <String>[
+    'off',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+  ];
 
   final TextEditingController _providerNameController = TextEditingController();
   final TextEditingController _providerNotesController =
@@ -1684,7 +1691,9 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                     label: reasoningLabel,
                     title: _reasoningEffortTitle(_reasoningEffort),
                     trailingLabel: selectedProtocol == 'anthropic'
-                        ? copy.llmAnthropicThinkingEnabled
+                        ? (_reasoningEffort == 'off'
+                              ? copy.llmAnthropicThinkingDisabled
+                              : copy.llmAnthropicThinkingEnabled)
                         : copy.llmGptModelDetected,
                     onTap: _openReasoningSheet,
                   ),
@@ -1810,21 +1819,27 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
   }
 
   Future<void> _validateLlmConfig() async {
+    if (_isValidating) {
+      return;
+    }
     final copy = _copyForSnapshot();
-    FocusScope.of(context).unfocus();
-    await _saveDraft();
-    if (_baseUrlController.text.trim().isEmpty) {
-      _showMessage(copy.llmValidateRequiresBaseUrl);
-      return;
-    }
-    if (_modelController.text.trim().isEmpty) {
-      _showMessage(copy.llmValidateRequiresModel);
-      return;
-    }
     setState(() {
       _isValidating = true;
     });
     try {
+      FocusScope.of(context).unfocus();
+      await _saveDraft();
+      if (!mounted) {
+        return;
+      }
+      if (_baseUrlController.text.trim().isEmpty) {
+        _showMessage(copy.llmValidateRequiresBaseUrl);
+        return;
+      }
+      if (_modelController.text.trim().isEmpty) {
+        _showMessage(copy.llmValidateRequiresModel);
+        return;
+      }
       final validationResult = await widget.facade.validateLlmConfig(
         providerId: _providerId,
         protocol: _draftProtocol(),
@@ -1964,6 +1979,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     final label = _draftProtocol() == 'anthropic'
         ? copy.llmThinkingLabel
         : copy.llmReasoningEffortLabel;
+    final options = _reasoningOptionsForProtocol(_draftProtocol());
     final selected = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: Colors.transparent,
@@ -1996,7 +2012,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                     ),
                     Text(label, style: _SettingsTextStyles.cardTitle),
                     const SizedBox(height: 12),
-                    for (final option in _reasoningOptions)
+                    for (final option in options)
                       InkWell(
                         borderRadius: BorderRadius.circular(14),
                         onTap: () => Navigator.of(context).pop(option),
@@ -2104,7 +2120,12 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
       },
     );
     if (selected != null && mounted) {
-      setState(() => _protocol = selected);
+      setState(() {
+        _protocol = selected;
+        if (selected != 'anthropic' && _reasoningEffort == 'off') {
+          _reasoningEffort = 'medium';
+        }
+      });
       _handleCustomProviderDraftChanged();
       unawaited(_saveDraft());
     }
@@ -2306,6 +2327,9 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         return copy.llmProtocolOpenAiCompatible;
     }
   }
+
+  List<String> _reasoningOptionsForProtocol(String protocol) =>
+      protocol == 'anthropic' ? _anthropicReasoningOptions : _reasoningOptions;
 
   String _reasoningEffortTitle(String reasoningEffort) =>
       _copyForSnapshot().llmReasoningTitle(reasoningEffort);

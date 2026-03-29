@@ -243,6 +243,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   final Map<String, SelectedContentRange> _selectedTextRangeByMessageId =
       <String, SelectedContentRange>{};
   _ActiveChatMessageMenu? _activeMessageMenu;
+  bool _suppressNextTransientUiDismiss = false;
   Timer? _todoArchiveHideTimer;
   String? _hiddenArchivedTodoFingerprint;
   String? _scheduledTodoArchiveFingerprint;
@@ -360,6 +361,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       return;
     }
     setState(() {
+      _suppressNextTransientUiDismiss = false;
       _activeMessageMenu = null;
     });
   }
@@ -369,11 +371,16 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       return;
     }
     setState(() {
+      _suppressNextTransientUiDismiss = false;
       _activeMessageMenu = null;
     });
   }
 
   void _dismissTransientUi() {
+    if (_suppressNextTransientUiDismiss) {
+      _suppressNextTransientUiDismiss = false;
+      return;
+    }
     FocusManager.instance.primaryFocus?.unfocus();
     final bool shouldCloseComposerMenus =
         _state.composer.showAddMenu ||
@@ -391,6 +398,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           ),
         );
       }
+      _suppressNextTransientUiDismiss = false;
       _activeMessageMenu = null;
     });
   }
@@ -540,6 +548,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       _selectedMessageIds
         ..clear()
         ..add(message.messageId);
+      _suppressNextTransientUiDismiss = false;
       _activeMessageMenu = null;
       _state = _state.copyWith(
         drawerOpen: false,
@@ -562,6 +571,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     setState(() {
       _selectedMessageIds.clear();
+      _suppressNextTransientUiDismiss = false;
       _activeMessageMenu = null;
     });
   }
@@ -678,6 +688,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           clearSelectedCommand: true,
         ),
       );
+      _suppressNextTransientUiDismiss = true;
       _activeMessageMenu = _ActiveChatMessageMenu(
         message: message,
         bubbleRect: bubbleRect,
@@ -1164,14 +1175,24 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           ),
           if (_activeMessageMenu != null)
             Positioned.fill(
-              child: GestureDetector(
-                onTap: _dismissMessageMenu,
-                behavior: HitTestBehavior.translucent,
-                child: _ChatMessageMenuOverlay(
-                  copy: widget.copy,
-                  menu: _activeMessageMenu!,
-                  onActionSelected: _handleMessageMenuAction,
-                ),
+              child: Stack(
+                children: <Widget>[
+                  Positioned.fill(
+                    child: GestureDetector(
+                      key: const ValueKey<String>(
+                        'chat-message-menu-dismiss-layer',
+                      ),
+                      onTap: _dismissMessageMenu,
+                      behavior: HitTestBehavior.translucent,
+                      child: const SizedBox.expand(),
+                    ),
+                  ),
+                  _ChatMessageMenuOverlay(
+                    copy: widget.copy,
+                    menu: _activeMessageMenu!,
+                    onActionSelected: _handleMessageMenuAction,
+                  ),
+                ],
               ),
             ),
           Positioned(
@@ -1296,6 +1317,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
 
   void _showDrawer() {
     setState(() {
+      _suppressNextTransientUiDismiss = false;
       _activeMessageMenu = null;
       _state = _state.copyWith(drawerOpen: true);
     });
@@ -1303,6 +1325,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
 
   void _closeDrawer() {
     setState(() {
+      _suppressNextTransientUiDismiss = false;
       _activeMessageMenu = null;
       _state = _state.copyWith(drawerOpen: false);
     });
@@ -1339,6 +1362,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
 
   void _togglePlusMenu() {
     setState(() {
+      _suppressNextTransientUiDismiss = false;
       _activeMessageMenu = null;
       final composer = _state.composer;
       _state = _state.copyWith(
@@ -1470,6 +1494,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
 
   void _showCommandMenu() {
     setState(() {
+      _suppressNextTransientUiDismiss = false;
       _activeMessageMenu = null;
       _state = _state.copyWith(
         composer: _state.composer.copyWith(
@@ -1647,6 +1672,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         )
         .toSet();
     setState(() {
+      _suppressNextTransientUiDismiss = false;
       _activeMessageMenu = null;
       _state = nextState.copyWith(
         drawerOpen: _state.drawerOpen,
@@ -3583,8 +3609,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       run.errorCode == 'LLM_RETRY_EXHAUSTED_AWAITING_RESUME';
 
   bool _isDeferredApprovalDecisionRun(OpenCrayChatRunSnapshot run) {
-    final String? checkpointKind =
-        run.recoveryPlan?.checkpointKind?.trim().toLowerCase();
+    final String? checkpointKind = run.recoveryPlan?.checkpointKind
+        ?.trim()
+        .toLowerCase();
     return run.lifecycleState?.trim().toLowerCase() == 'suspended' &&
         (checkpointKind == 'approved_pending_resume' ||
             checkpointKind == 'rejected_pending_resume') &&
@@ -8621,32 +8648,28 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                                   .detailLines
                                   .isNotEmpty) ...<Widget>[
                                 const SizedBox(height: 10),
-                                ...compactPresentation.detailLines
-                                    .map(
-                                      (line) => Padding(
-                                        padding: const EdgeInsets.only(
-                                          bottom: 6,
-                                        ),
-                                        child: Text.rich(
+                                ...compactPresentation.detailLines.map(
+                                  (line) => Padding(
+                                    padding: const EdgeInsets.only(bottom: 6),
+                                    child: Text.rich(
+                                      TextSpan(
+                                        children: <InlineSpan>[
                                           TextSpan(
-                                            children: <InlineSpan>[
-                                              TextSpan(
-                                                text:
-                                                    '${line.label}${copy.isChinese ? '  ' : '  '}',
-                                                style: _ChatTextStyles
-                                                    .runTraceDetailLabel,
-                                              ),
-                                              TextSpan(
-                                                text: line.value,
-                                                style: _ChatTextStyles
-                                                    .runTraceDetailValue,
-                                              ),
-                                            ],
+                                            text:
+                                                '${line.label}${copy.isChinese ? '  ' : '  '}',
+                                            style: _ChatTextStyles
+                                                .runTraceDetailLabel,
                                           ),
-                                        ),
+                                          TextSpan(
+                                            text: line.value,
+                                            style: _ChatTextStyles
+                                                .runTraceDetailValue,
+                                          ),
+                                        ],
                                       ),
-                                    )
-                                    ,
+                                    ),
+                                  ),
+                                ),
                               ],
                             ],
                           ],
@@ -9738,6 +9761,9 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
               child: BackdropFilter(
                 filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
                 child: Container(
+                  key: ValueKey<String>(
+                    'chat-message-menu-${menu.message.messageId}',
+                  ),
                   width: menuWidth,
                   padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
@@ -9751,6 +9777,9 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
                       Row(
                         children: <Widget>[
                           _ChatMessageMenuItem(
+                            itemKey: const ValueKey<String>(
+                              'chat-message-menu-action-copy',
+                            ),
                             icon: CupertinoIcons.doc_on_doc,
                             label: copy.chatMessageCopyAction,
                             onTap: () =>
@@ -9758,6 +9787,9 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
                           ),
                           const SizedBox(width: 12),
                           _ChatMessageMenuItem(
+                            itemKey: ValueKey<String>(
+                              'chat-message-menu-action-${secondaryAction.name}',
+                            ),
                             icon: secondaryIcon,
                             label: secondaryLabel,
                             enabled: secondaryEnabled,
@@ -9767,6 +9799,9 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
                           ),
                           const SizedBox(width: 12),
                           _ChatMessageMenuItem(
+                            itemKey: ValueKey<String>(
+                              'chat-message-menu-action-${tertiaryAction.name}',
+                            ),
                             icon: tertiaryIcon,
                             label: tertiaryLabel,
                             enabled: tertiaryEnabled,
@@ -9780,6 +9815,9 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
                       Row(
                         children: <Widget>[
                           _ChatMessageMenuItem(
+                            itemKey: const ValueKey<String>(
+                              'chat-message-menu-action-delete',
+                            ),
                             icon: CupertinoIcons.delete_left,
                             label: copy.chatMessageDeleteAction,
                             isDestructive: true,
@@ -9792,6 +9830,9 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
                           ),
                           const SizedBox(width: 12),
                           _ChatMessageMenuItem(
+                            itemKey: const ValueKey<String>(
+                              'chat-message-menu-action-multiSelect',
+                            ),
                             icon: CupertinoIcons.check_mark_circled,
                             label: copy.chatMessageSelectAction,
                             onTap: () => onActionSelected(
@@ -9800,6 +9841,9 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
                           ),
                           const SizedBox(width: 12),
                           _ChatMessageMenuItem(
+                            itemKey: const ValueKey<String>(
+                              'chat-message-menu-action-quote',
+                            ),
                             icon: CupertinoIcons.reply,
                             label: copy.chatMessageQuoteAction,
                             onTap: () =>
@@ -9821,6 +9865,7 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
 
 class _ChatMessageMenuItem extends StatelessWidget {
   const _ChatMessageMenuItem({
+    this.itemKey,
     required this.icon,
     required this.label,
     required this.onTap,
@@ -9828,6 +9873,7 @@ class _ChatMessageMenuItem extends StatelessWidget {
     this.isDestructive = false,
   });
 
+  final Key? itemKey;
   final IconData icon;
   final String label;
   final VoidCallback? onTap;
@@ -9843,6 +9889,7 @@ class _ChatMessageMenuItem extends StatelessWidget {
         ? const Color(0xFFFF3B30)
         : const Color(0xFF636366);
     return GestureDetector(
+      key: itemKey,
       onTap: enabled ? onTap : null,
       behavior: HitTestBehavior.opaque,
       child: Opacity(

@@ -264,6 +264,8 @@ class OpenCrayUiCopy {
   String get llmThinkingLabel => isChinese ? '思考强度' : 'Thinking';
   String get llmAnthropicThinkingEnabled =>
       isChinese ? '已启用 Anthropic thinking' : 'Anthropic thinking enabled';
+  String get llmAnthropicThinkingDisabled =>
+      isChinese ? '已关闭 Anthropic thinking' : 'Anthropic thinking disabled';
   String get llmGptModelDetected =>
       isChinese ? '已检测到 GPT 模型' : 'GPT model detected';
   String get llmAdvancedPromptTitle => isChinese ? '高级提示词' : 'Advanced prompt';
@@ -326,12 +328,17 @@ class OpenCrayUiCopy {
 
   String llmReasoningTitle(String reasoningEffort) {
     if (!isChinese) {
+      if (reasoningEffort == 'off') {
+        return 'Off';
+      }
       if (reasoningEffort == 'xhigh') {
         return 'XHigh';
       }
       return '${reasoningEffort[0].toUpperCase()}${reasoningEffort.substring(1)}';
     }
     switch (reasoningEffort) {
+      case 'off':
+        return '关闭';
       case 'low':
         return '低';
       case 'high':

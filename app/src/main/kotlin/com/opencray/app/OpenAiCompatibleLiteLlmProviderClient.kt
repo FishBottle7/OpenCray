@@ -92,6 +92,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     }
 
     val protocol = resolvedProtocol(request)
+    val streamResponses = shouldStreamResponses(request, protocol)
     val requestDiagnostics = requestDiagnosticsMetadata(request)
     invalidToolMessageContract(request.request.messages)?.let { validationError ->
       return LiteLlmProviderResult.Failure(
@@ -101,14 +102,22 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       )
     }
     val endpoint = buildEndpointUrl(baseUrl, protocol)
+    val timeoutMs = request.route.timeoutMs
     val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
       requestMethod = "POST"
-      connectTimeout = request.route.timeoutMs.toInt()
-      readTimeout = request.route.timeoutMs.toInt()
+      connectTimeout = timeoutMs.toInt()
+      readTimeout = timeoutMs.toInt()
       doInput = true
       doOutput = true
       setRequestProperty("Content-Type", "application/json")
-      setRequestProperty("Accept", "application/json")
+      setRequestProperty(
+        "Accept",
+        if (streamResponses) {
+          "text/event-stream, application/json"
+        } else {
+          "application/json"
+        },
+      )
       request.request.authHeaders.forEach { (name, value) ->
         if (name.isNotBlank() && value.isNotBlank()) {
           setRequestProperty(name, value)
@@ -118,20 +127,34 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     }
 
     return try {
-      val body = buildRequestBody(request)
+      val body = buildRequestBody(request, streamResponses = streamResponses)
       connection.outputStream.use { output ->
         output.write(body.toByteArray(StandardCharsets.UTF_8))
       }
 
       val responseCode = connection.responseCode
-      val responseText = readStream(
-        input = if (responseCode in 200..299) connection.inputStream else connection.errorStream,
-      )
+      val responseText = if (responseCode in 200..299) {
+        readSuccessResponse(
+          input = connection.inputStream,
+          protocol = protocol,
+          streamResponses = streamResponses,
+          contentType = connection.contentType,
+        )
+      } else {
+        readStream(connection.errorStream)
+      }
 
       when {
         responseCode == 429 -> LiteLlmProviderResult.RateLimited(
           retryAfterMs = parseRetryAfterMillis(connection.getHeaderField("Retry-After")),
           errorMessage = extractErrorMessage(responseText).ifBlank { "Provider returned HTTP 429." },
+          metadata = requestDiagnostics + mapOf("statusCode" to responseCode.toString()),
+        )
+
+        responseCode == 449 || responseCode == 499 -> LiteLlmProviderResult.Timeout(
+          errorMessage = extractErrorMessage(responseText).ifBlank {
+            "Provider request timed out or was cancelled upstream (HTTP $responseCode)."
+          },
           metadata = requestDiagnostics + mapOf("statusCode" to responseCode.toString()),
         )
 
@@ -158,7 +181,24 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
             completion = completion,
           )
           val content = extractMessageContent(parsed, protocol)
-          if (content.isBlank() && (completion?.hasVisibleContent != true)) {
+          val success = LiteLlmProviderResult.Success(
+            outputText = content,
+            completion = completion,
+            finishReason = finishReason,
+            providerResponseId = providerResponseId,
+            providerLineageId = providerLineageId(
+              request = request,
+              protocol = protocol,
+              providerResponseId = providerResponseId,
+            ),
+            metadata = responseMetadata,
+          )
+          maybeAutoContinueBuiltinWebSearch(
+            request = request,
+            payload = parsed,
+            completion = completion,
+            success = success,
+          ) ?: if (content.isBlank() && (completion?.hasVisibleContent != true)) {
             LiteLlmProviderResult.Failure(
               errorCode = "PROVIDER_EMPTY_RESPONSE",
               errorMessage = "Provider returned an empty completion payload.",
@@ -172,24 +212,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
               metadata = responseMetadata,
             )
           } else {
-            val success = LiteLlmProviderResult.Success(
-              outputText = content,
-              completion = completion,
-              finishReason = finishReason,
-              providerResponseId = providerResponseId,
-              providerLineageId = providerLineageId(
-                request = request,
-                protocol = protocol,
-                providerResponseId = providerResponseId,
-              ),
-              metadata = responseMetadata,
-            )
-            maybeAutoContinueOpenAiBuiltinWebSearch(
-              request = request,
-              payload = parsed,
-              completion = completion,
-              success = success,
-            ) ?: success
+            success
           }
         }
       }
@@ -238,7 +261,25 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   private fun buildRequestBody(request: LiteLlmProviderRequest): String {
     val protocol = resolvedProtocol(request)
     return when (protocol) {
-      LlmProviderProtocols.ANTHROPIC -> buildAnthropicRequestBody(request)
+      LlmProviderProtocols.ANTHROPIC -> buildAnthropicRequestBody(
+        request,
+        streamResponses = shouldStreamResponses(request, protocol),
+      )
+      LlmProviderProtocols.OPENAI_RESPONSES -> buildOpenAiResponsesRequestBody(request)
+      else -> buildOpenAiRequestBody(request)
+    }
+  }
+
+  private fun buildRequestBody(
+    request: LiteLlmProviderRequest,
+    streamResponses: Boolean,
+  ): String {
+    val protocol = resolvedProtocol(request)
+    return when (protocol) {
+      LlmProviderProtocols.ANTHROPIC -> buildAnthropicRequestBody(
+        request,
+        streamResponses = streamResponses,
+      )
       LlmProviderProtocols.OPENAI_RESPONSES -> buildOpenAiResponsesRequestBody(request)
       else -> buildOpenAiRequestBody(request)
     }
@@ -271,7 +312,10 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     return payload.toString()
   }
 
-  private fun buildAnthropicRequestBody(request: LiteLlmProviderRequest): String {
+  private fun buildAnthropicRequestBody(
+    request: LiteLlmProviderRequest,
+    streamResponses: Boolean = false,
+  ): String {
     val payload = JSONObject()
       .put("model", request.route.model)
       .put("messages", buildAnthropicMessagesArray(request))
@@ -288,13 +332,24 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     request.request.systemPrompt?.takeIf { it.isNotBlank() }?.let { systemPrompt ->
       payload.put("system", systemPrompt)
     }
-    request.route.metadata["thinking_budget_tokens"]?.toIntOrNull()?.let { budgetTokens ->
+    if (shouldDisableAnthropicThinking(request)) {
       payload.put(
         "thinking",
         JSONObject()
-          .put("type", "enabled")
-          .put("budget_tokens", budgetTokens),
+          .put("type", "disabled"),
       )
+    } else {
+      request.route.metadata["thinking_budget_tokens"]?.toIntOrNull()?.let { budgetTokens ->
+        payload.put(
+          "thinking",
+          JSONObject()
+            .put("type", "enabled")
+            .put("budget_tokens", budgetTokens),
+        )
+      }
+    }
+    if (streamResponses) {
+      payload.put("stream", true)
     }
     return payload.toString()
   }
@@ -1172,6 +1227,28 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     return null
   }
 
+  private fun maybeAutoContinueBuiltinWebSearch(
+    request: LiteLlmProviderRequest,
+    payload: JSONObject,
+    completion: LiteLlmStructuredCompletion?,
+    success: LiteLlmProviderResult.Success,
+  ): LiteLlmProviderResult? = when (resolvedProtocol(request)) {
+    LlmProviderProtocols.OPENAI -> maybeAutoContinueOpenAiBuiltinWebSearch(
+      request = request,
+      payload = payload,
+      completion = completion,
+      success = success,
+    )
+
+    LlmProviderProtocols.ANTHROPIC -> maybeAutoContinueAnthropicBuiltinWebSearch(
+      request = request,
+      payload = payload,
+      success = success,
+    )
+
+    else -> null
+  }
+
   private fun maybeAutoContinueOpenAiBuiltinWebSearch(
     request: LiteLlmProviderRequest,
     payload: JSONObject,
@@ -1266,6 +1343,94 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     }
   }
 
+  private fun maybeAutoContinueAnthropicBuiltinWebSearch(
+    request: LiteLlmProviderRequest,
+    payload: JSONObject,
+    success: LiteLlmProviderResult.Success,
+  ): LiteLlmProviderResult? {
+    if (request.request.builtinTools.none { tool -> tool.type == LiteLlmBuiltinToolType.WEB_SEARCH }) {
+      return null
+    }
+    if (!payload.optString("stop_reason").trim().equals("pause_turn", ignoreCase = true)) {
+      return null
+    }
+    val content = payload.optJSONArray("content") ?: return null
+    if (!hasAnthropicServerToolUse(content)) {
+      return null
+    }
+    val observations = anthropicBuiltinWebSearchObservations(
+      request = request,
+      payload = payload,
+    )
+    val loopDepth = request.request.metadata[ANTHROPIC_BUILTIN_WEB_SEARCH_LOOP_DEPTH_KEY]
+      ?.toIntOrNull()
+      ?: 0
+    if (loopDepth >= MAX_ANTHROPIC_BUILTIN_WEB_SEARCH_AUTO_TURNS) {
+      return LiteLlmProviderResult.Failure(
+        errorCode = "ANTHROPIC_BUILTIN_WEB_SEARCH_LOOP_EXHAUSTED",
+        errorMessage = "Anthropic builtin web search did not converge to a final answer.",
+        completion = success.completion,
+        providerResponseId = success.providerResponseId,
+        providerLineageId = success.providerLineageId,
+        metadata = mergeBuiltinWebSearchMetadata(
+          metadata = success.metadata,
+          observations = observations,
+        ),
+      )
+    }
+    val followupRequest = request.copy(
+      request = request.request.copy(
+        messages = anthropicConversationMessages(request.request),
+        metadata = request.request.metadata + mapOf(
+          ANTHROPIC_SERVER_TOOL_CONTINUATION_CONTENT_KEY to content.toString(),
+          ANTHROPIC_BUILTIN_WEB_SEARCH_LOOP_DEPTH_KEY to (loopDepth + 1).toString(),
+        ),
+      ),
+    )
+    val followupResult = execute(followupRequest)
+    return when (followupResult) {
+      is LiteLlmProviderResult.Success -> followupResult.copy(
+        metadata = mergeBuiltinWebSearchMetadata(
+          metadata = followupResult.metadata,
+          observations = observations,
+        ),
+      )
+
+      is LiteLlmProviderResult.Failure -> followupResult.copy(
+        metadata = mergeBuiltinWebSearchMetadata(
+          metadata = followupResult.metadata,
+          observations = observations,
+        ),
+      )
+
+      is LiteLlmProviderResult.Timeout -> followupResult.copy(
+        metadata = mergeBuiltinWebSearchMetadata(
+          metadata = followupResult.metadata,
+          observations = observations,
+        ),
+      )
+
+      is LiteLlmProviderResult.RateLimited -> followupResult.copy(
+        metadata = mergeBuiltinWebSearchMetadata(
+          metadata = followupResult.metadata,
+          observations = observations,
+        ),
+      )
+    }
+  }
+
+  private fun hasAnthropicServerToolUse(
+    content: JSONArray,
+  ): Boolean {
+    for (index in 0 until content.length()) {
+      val block = content.optJSONObject(index) ?: continue
+      if (block.optString("type") == "server_tool_use") {
+        return true
+      }
+    }
+    return false
+  }
+
   private fun openAiConversationMessages(
     request: LiteLlmGatewayRequest,
   ): List<LiteLlmGatewayMessage> = if (request.messages.isNotEmpty()) {
@@ -1277,6 +1442,45 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         content = request.prompt,
       ),
     )
+  }
+
+  private fun anthropicConversationMessages(
+    request: LiteLlmGatewayRequest,
+  ): List<LiteLlmGatewayMessage> = openAiConversationMessages(request)
+
+  private fun mergeBuiltinWebSearchMetadata(
+    metadata: Map<String, String>,
+    observations: List<LiteLlmBuiltinWebSearchObservation>,
+  ): Map<String, String> {
+    if (observations.isEmpty() && metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_USED] == "true") {
+      return metadata
+    }
+    val mergedObservations = (
+      decodeBuiltinWebSearchObservations(metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_OBSERVATIONS_JSON]) +
+        observations
+      )
+      .distinctBy { observation ->
+        listOf(
+          observation.actionType,
+          observation.status.orEmpty(),
+          observation.url.orEmpty(),
+          observation.findText.orEmpty(),
+          observation.queries.joinToString(separator = "|"),
+          observation.domains.joinToString(separator = "|"),
+        ).joinToString(separator = "::")
+      }
+    return metadata.toMutableMap().apply {
+      put(LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_USED, "true")
+      if (mergedObservations.isNotEmpty()) {
+        put(
+          LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_OBSERVATIONS_JSON,
+          JSON_CODEC.encodeToString(
+            ListSerializer(LiteLlmBuiltinWebSearchObservation.serializer()),
+            mergedObservations,
+          ),
+        )
+      }
+    }
   }
 
   private fun openAiAssistantMessageFromPayload(
@@ -1302,38 +1506,12 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     metadata: Map<String, String>,
     dialect: OpenAiBuiltinWebSearchDialect,
     observations: List<LiteLlmBuiltinWebSearchObservation>,
-  ): Map<String, String> {
-    if (observations.isEmpty() && metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_USED] == "true") {
-      return metadata
-    }
-    val mergedObservations = (
-      decodeBuiltinWebSearchObservations(metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_OBSERVATIONS_JSON]) +
-        observations
-      )
-      .distinctBy { observation ->
-        listOf(
-          observation.actionType,
-          observation.status.orEmpty(),
-          observation.url.orEmpty(),
-          observation.findText.orEmpty(),
-          observation.queries.joinToString(separator = "|"),
-          observation.domains.joinToString(separator = "|"),
-        ).joinToString(separator = "::")
-      }
-    return metadata.toMutableMap().apply {
-      put(LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_USED, "true")
+  ): Map<String, String> = mergeBuiltinWebSearchMetadata(
+    metadata = metadata,
+    observations = observations,
+  ).toMutableMap().apply {
       put(LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_DIALECT, dialect.wireValue)
-      if (mergedObservations.isNotEmpty()) {
-        put(
-          LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_OBSERVATIONS_JSON,
-          JSON_CODEC.encodeToString(
-            ListSerializer(LiteLlmBuiltinWebSearchObservation.serializer()),
-            mergedObservations,
-          ),
-        )
-      }
     }
-  }
 
   private fun decodeBuiltinWebSearchObservations(
     rawValue: String?,
@@ -2110,6 +2288,20 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         }
       }
     }
+    anthropicServerToolContinuationMessage(request.request.metadata)?.let(::put)
+  }
+
+  private fun anthropicServerToolContinuationMessage(
+    metadata: Map<String, String>,
+  ): JSONObject? {
+    val rawContent = metadata[ANTHROPIC_SERVER_TOOL_CONTINUATION_CONTENT_KEY]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return null
+    val parsedContent = runCatching { JSONArray(rawContent) }.getOrNull() ?: return null
+    return JSONObject()
+      .put("role", "assistant")
+      .put("content", parsedContent)
   }
 
   private fun buildAnthropicUserMessage(
@@ -2879,6 +3071,157 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     return seconds * 1_000L
   }
 
+  private fun readSuccessResponse(
+    input: InputStream?,
+    protocol: String,
+    streamResponses: Boolean,
+    contentType: String?,
+  ): String = when {
+    input == null -> ""
+    streamResponses &&
+      protocol == LlmProviderProtocols.ANTHROPIC &&
+      contentType.orEmpty().contains("text/event-stream", ignoreCase = true) ->
+      readAnthropicStream(input)
+    else -> readStream(input)
+  }
+
+  private fun readAnthropicStream(input: InputStream): String {
+    val payload = JSONObject()
+    val contentBlocks = linkedMapOf<Int, JSONObject>()
+    val toolInputBuffers = mutableMapOf<Int, StringBuilder>()
+    BufferedReader(InputStreamReader(input, StandardCharsets.UTF_8)).use { reader ->
+      var currentEvent = ""
+      val dataLines = mutableListOf<String>()
+
+      fun flushEvent() {
+        if (dataLines.isEmpty()) {
+          currentEvent = ""
+          return
+        }
+        processAnthropicStreamEvent(
+          eventName = currentEvent,
+          data = dataLines.joinToString(separator = "\n"),
+          payload = payload,
+          contentBlocks = contentBlocks,
+          toolInputBuffers = toolInputBuffers,
+        )
+        currentEvent = ""
+        dataLines.clear()
+      }
+
+      var line = reader.readLine()
+      while (line != null) {
+        when {
+          line.isBlank() -> flushEvent()
+          line.startsWith(":") -> Unit
+          line.startsWith("event:") -> currentEvent = line.substringAfter(':').trim()
+          line.startsWith("data:") -> dataLines += line.substringAfter(':').trimStart()
+        }
+        line = reader.readLine()
+      }
+      flushEvent()
+    }
+    val content = JSONArray()
+    contentBlocks.toSortedMap().values.forEach(content::put)
+    payload.put("content", content)
+    return payload.toString()
+  }
+
+  private fun processAnthropicStreamEvent(
+    eventName: String,
+    data: String,
+    payload: JSONObject,
+    contentBlocks: MutableMap<Int, JSONObject>,
+    toolInputBuffers: MutableMap<Int, StringBuilder>,
+  ) {
+    val trimmedData = data.trim()
+    if (trimmedData.isBlank() || trimmedData == "[DONE]") {
+      return
+    }
+    val eventPayload = runCatching { JSONObject(trimmedData) }.getOrElse { error ->
+      throw IllegalStateException("Failed to parse Anthropic streaming event.", error)
+    }
+    val eventType = eventPayload.optString("type").ifBlank { eventName }
+    when (eventType) {
+      "message_start" -> {
+        val message = eventPayload.optJSONObject("message") ?: return
+        message.nonBlankString("id")?.let { payload.put("id", it) }
+        if (message.has("stop_reason")) {
+          payload.put("stop_reason", message.opt("stop_reason"))
+        }
+        message.optJSONObject("usage")?.let { payload.put("usage", JSONObject(it.toString())) }
+      }
+
+      "content_block_start" -> {
+        val index = eventPayload.optInt("index", -1)
+        if (index < 0) return
+        val block = eventPayload.optJSONObject("content_block") ?: return
+        val normalizedBlock = JSONObject(block.toString())
+        if (normalizedBlock.optString("type") == "tool_use" && !normalizedBlock.has("input")) {
+          normalizedBlock.put("input", JSONObject())
+        }
+        contentBlocks[index] = normalizedBlock
+      }
+
+      "content_block_delta" -> {
+        val index = eventPayload.optInt("index", -1)
+        if (index < 0) return
+        val delta = eventPayload.optJSONObject("delta") ?: return
+        val block = contentBlocks.getOrPut(index) { JSONObject() }
+        when (delta.optString("type")) {
+          "text_delta" -> appendJsonStringField(block, "text", delta.optString("text"))
+          "thinking_delta" -> {
+            if (!block.has("type")) {
+              block.put("type", "thinking")
+            }
+            appendJsonStringField(block, "thinking", delta.optString("thinking"))
+          }
+
+          "input_json_delta" -> {
+            toolInputBuffers.getOrPut(index) { StringBuilder() }
+              .append(delta.optString("partial_json"))
+          }
+        }
+      }
+
+      "content_block_stop" -> {
+        val index = eventPayload.optInt("index", -1)
+        if (index < 0) return
+        val block = contentBlocks[index] ?: return
+        val bufferedInput = toolInputBuffers.remove(index)?.toString()?.trim().orEmpty()
+        if (bufferedInput.isNotBlank()) {
+          val parsedInput = runCatching { JSONObject(bufferedInput) }.getOrDefault(JSONObject())
+          block.put("input", parsedInput)
+        }
+      }
+
+      "message_delta" -> {
+        eventPayload.optJSONObject("delta")
+          ?.nonBlankString("stop_reason")
+          ?.let { payload.put("stop_reason", it) }
+        eventPayload.optJSONObject("usage")?.let { payload.put("usage", JSONObject(it.toString())) }
+      }
+
+      "error" -> {
+        val errorObject = eventPayload.optJSONObject("error")
+        val message = errorObject?.nonBlankString("message")
+          ?: eventPayload.nonBlankString("message")
+          ?: "Anthropic streaming request failed."
+        throw IllegalStateException(message)
+      }
+    }
+  }
+
+  private fun appendJsonStringField(
+    target: JSONObject,
+    key: String,
+    value: String?,
+  ) {
+    val delta = value?.takeIf(String::isNotBlank) ?: return
+    val existing = target.optString(key)
+    target.put(key, existing + delta)
+  }
+
   private fun readStream(input: InputStream?): String {
     if (input == null) return ""
     return BufferedReader(InputStreamReader(input, StandardCharsets.UTF_8)).use { reader ->
@@ -2893,6 +3236,40 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         }
       }
     }
+  }
+
+  private fun shouldStreamResponses(
+    request: LiteLlmProviderRequest,
+    protocol: String = resolvedProtocol(request),
+  ): Boolean {
+    explicitStreamPreference(request.route.metadata)?.let { return it }
+    return protocol == LlmProviderProtocols.ANTHROPIC &&
+      isKimiModel(request.route.model)
+  }
+
+  private fun explicitStreamPreference(
+    metadata: Map<String, String>,
+  ): Boolean? = when (metadata["stream"]?.trim()?.lowercase()) {
+    "true" -> true
+    "false" -> false
+    else -> null
+  }
+
+  private fun isKimiModel(model: String?): Boolean =
+    model?.trim()?.lowercase()?.contains("kimi") == true
+
+  private fun shouldDisableAnthropicThinking(
+    request: LiteLlmProviderRequest,
+  ): Boolean = resolvedProtocol(request) == LlmProviderProtocols.ANTHROPIC &&
+    isKimiModel(request.route.model) &&
+    !isKimiThinkingModel(request.route.model)
+
+  private fun isKimiThinkingModel(model: String?): Boolean {
+    val normalized = model?.trim()?.lowercase().orEmpty()
+    if (normalized.isBlank()) {
+      return false
+    }
+    return normalized.contains("kimi") && normalized.contains("thinking")
   }
 
   private fun resolvedProtocol(request: LiteLlmProviderRequest): String =
@@ -2970,6 +3347,11 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     private const val ANTHROPIC_WEB_SEARCH_TOOL_TYPE: String = "web_search_20250305"
     private const val ANTHROPIC_WEB_SEARCH_TOOL_NAME: String = "web_search"
     private const val DEFAULT_ANTHROPIC_WEB_SEARCH_MAX_USES: Int = 5
+    private const val ANTHROPIC_SERVER_TOOL_CONTINUATION_CONTENT_KEY: String =
+      "_host.anthropicServerToolContinuationContent"
+    private const val ANTHROPIC_BUILTIN_WEB_SEARCH_LOOP_DEPTH_KEY: String =
+      "_host.anthropicBuiltinWebSearchLoopDepth"
+    private const val MAX_ANTHROPIC_BUILTIN_WEB_SEARCH_AUTO_TURNS: Int = 4
     private const val KIMI_BUILTIN_WEB_SEARCH_FUNCTION_NAME: String = "\$web_search"
     private const val KIMI_BUILTIN_WEB_SEARCH_LOOP_DEPTH_KEY: String = "_host.kimiBuiltinWebSearchLoopDepth"
     private const val MAX_KIMI_BUILTIN_WEB_SEARCH_AUTO_TURNS: Int = 4

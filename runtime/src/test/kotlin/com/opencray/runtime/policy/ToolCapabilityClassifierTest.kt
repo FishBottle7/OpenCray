@@ -50,6 +50,7 @@ class ToolCapabilityClassifierTest {
     assertEquals("read_file", classifier.classifyCapabilityKind("view_workspace_document"))
     assertEquals("read_file", classifier.classifyCapabilityKind("view_workspace_image"))
     assertEquals("read_file", classifier.classifyCapabilityKind("view_workspace_pdf"))
+    assertEquals("read_python_runtime", classifier.classifyCapabilityKind("python_runtime_manifest"))
     assertEquals("todo_management", classifier.classifyCapabilityKind("TodoWrite"))
   }
 }

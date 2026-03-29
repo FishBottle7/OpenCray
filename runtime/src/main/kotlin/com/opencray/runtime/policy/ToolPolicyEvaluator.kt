@@ -4,7 +4,9 @@ import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.PolicyApprovalRisk
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
+import com.opencray.policy.ExecutionMode
 import com.opencray.policy.ModePolicy
+import com.opencray.policy.PolicyReasonCode
 import com.opencray.policy.PolicyRequest
 import com.opencray.policy.PolicyToolClass
 import com.opencray.policy.SafetySettingsMetadataKeys
@@ -50,9 +52,10 @@ internal class ToolPolicyEvaluator(
   private val rejectedToolName: String? = null,
 ) {
   fun evaluate(request: ToolPolicyEvaluationRequest): PolicyDecision {
+    val executionMode = ToolExecutionModeResolver.infer(request.task)
     val baseDecision = modePolicy.decide(
       PolicyRequest(
-        mode = ToolExecutionModeResolver.infer(request.task),
+        mode = executionMode,
         toolClass = request.toolClass,
         workspaceRoot = request.workspaceRoot,
         targetPath = request.targetPath,
@@ -62,10 +65,15 @@ internal class ToolPolicyEvaluator(
         approvedHostManagedReadRoots = request.approvedHostManagedReadRoots,
       ),
     )
+    val toolSpecificDecision = applyToolSpecificOverride(
+      executionMode = executionMode,
+      toolName = request.toolName,
+      policyDecision = baseDecision,
+    )
     val overriddenDecision = applySettingsPolicyOverride(
       task = request.task,
       toolClass = request.toolClass,
-      policyDecision = baseDecision,
+      policyDecision = toolSpecificDecision,
     )
     val mergedDecision = mergePolicyDecisions(
       coarseDecision = request.task.policyDecision,
@@ -88,6 +96,30 @@ internal class ToolPolicyEvaluator(
       task = request.task,
       toolName = request.toolName,
       policyDecision = rejectedTaskDecision,
+    )
+  }
+
+  private fun applyToolSpecificOverride(
+    executionMode: ExecutionMode,
+    toolName: String,
+    policyDecision: PolicyDecision,
+  ): PolicyDecision {
+    if (executionMode != ExecutionMode.AUTO) {
+      return policyDecision
+    }
+    if (!toolName.equals("WebFetch", ignoreCase = true)) {
+      return policyDecision
+    }
+    if (
+      policyDecision.outcome != PolicyDecisionOutcome.ASK ||
+      policyDecision.reasonCode != PolicyReasonCode.ASK_AUTO_NETWORK
+    ) {
+      return policyDecision
+    }
+    return PolicyDecision(
+      outcome = PolicyDecisionOutcome.ALLOW,
+      reasonCode = PolicyReasonCode.ALLOW_AUTO_STANDARD,
+      detail = "AUTO mode allows WebFetch without approval.",
     )
   }
 

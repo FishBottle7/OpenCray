@@ -423,7 +423,9 @@ class OpenCrayRuntimeServiceHostTest {
     val root = temporaryFolder.newFolder("service-host-bootstrap-multi-session")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
     val firstSessionId = chatSessionStore.loadState().activeSession.sessionId
+    chatSessionStore.appendUserMessage(firstSessionId, "Keep the first session")
     val retainedWorkSessionId = chatSessionStore.createSession().activeSession.sessionId
+    chatSessionStore.appendUserMessage(retainedWorkSessionId, "Keep the retained-work session")
     val idleSessionId = chatSessionStore.createSession().activeSession.sessionId
     chatSessionStore.selectSession(firstSessionId)
 
@@ -1483,6 +1485,7 @@ class OpenCrayRuntimeServiceHostTest {
       processRegistryFactory = processFactory,
       supplementStoreFactory = supplementFactory,
       strings = ProjectionOnlyChatStrings(
+        localeTag = "en",
         screenTitle = "Chat",
         modeLabel = "AUTO",
         sessionButtonLabel = "Sessions",
@@ -1494,6 +1497,14 @@ class OpenCrayRuntimeServiceHostTest {
         summaryReplyInProgress = "Reply in progress",
         summaryStartNewSession = "Start a new session",
         summaryRestored = "Restored",
+        summaryApprovalRequired = "Approval required before the agent can continue.",
+        approvalRequiredTitle = "Approval required",
+        highRiskApprovalRequiredTitle = "High-risk approval required",
+        highRiskApprovalRequiredBody =
+          "High-risk approval required. Review this request carefully before approving.",
+        approvalApproveLabel = "Approve",
+        approvalApproveForSessionLabel = "Allow session",
+        approvalRejectLabel = "Reject",
         composerPlaceholder = "Message OpenCray",
         composerRejectedPlaceholder = "Message OpenCray differently",
       ),
@@ -1620,6 +1631,208 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals("suspended", runSnapshot["lifecycleState"])
     assertEquals("resume_waiting_for_user", recoveryPlan["action"])
     assertEquals("approved_pending_resume", recoveryPlan["checkpointKind"])
+  }
+
+  @Test
+  fun projectionOnlyChatRuntimeGatewayProjectsPendingApprovalsIntoChatSnapshot() {
+    val chatRoot = temporaryFolder.newFolder("projection-chat-approval-store")
+    val runtimeRoot = temporaryFolder.newFolder("projection-runtime-approval-store")
+    val chatStore = ChatSessionLocalStore(chatRoot)
+    val sessionId = chatStore.loadState().activeSession.sessionId
+
+    val queueFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val runRecordFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
+    val journalFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val checkpointFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val processFactory = FileBackedAgentProcessRegistryFactory(runtimeRoot)
+    val supplementFactory = FileBackedAgentSessionSupplementStoreFactory(runtimeRoot)
+
+    val runId = "projection-approval-run-1"
+    val taskId = "projection-approval-task-1"
+    chatStore.appendMessage(sessionId, ChatTranscriptRole.USER, "Need shell approval")
+    queueFactory.forChatSession(sessionId).save(
+      SessionQueueSnapshot(
+        sessionId = sessionId,
+        agentId = "test-agent",
+        lifecycleState = SessionLifecycleState.RUNNING,
+        updatedAtEpochMs = 1_200L,
+        tasks = listOf(
+          SessionQueueTaskSnapshot(
+            enqueueOrder = 1L,
+            task = AgentTask(
+              id = taskId,
+              type = AgentTaskType.PROMPT,
+              input = "Need shell approval",
+              state = AgentTaskState.SUSPENDED,
+              policyDecision = PolicyDecision(
+                outcome = com.opencray.core.contracts.PolicyDecisionOutcome.ALLOW,
+                reasonCode = "test",
+              ),
+              createdAtEpochMs = 1_000L,
+              updatedAtEpochMs = 1_200L,
+              metadata = mapOf(
+                AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+                AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to "pending-approval-1",
+              ),
+            ),
+            lifecycleState = QueueTaskLifecycleState.SUSPENDED,
+            attempt = 1,
+            lastErrorCode = "APPROVAL_REQUIRED",
+            lastErrorMessage = "Approval is required before Bash can run.",
+          ),
+        ),
+      ),
+    )
+    runRecordFactory.forChatSession(sessionId).upsert(
+      PersistedAgentRunRecord(
+        runId = runId,
+        taskId = taskId,
+        acceptedAtEpochMs = 1_000L,
+        pendingMessageId = "pending-approval-1",
+        lastResult = ExecutionResult(
+          taskId = taskId,
+          status = ExecutionStatus.DENIED,
+          errorCode = "APPROVAL_REQUIRED",
+          errorMessage = "Approval is required before Bash can run.",
+          startedAtEpochMs = 1_100L,
+          finishedAtEpochMs = 1_200L,
+          metadata = mapOf(
+            "toolName" to "Bash",
+            "command" to "git",
+            "args" to "status\u0000--short",
+            "workingDirectory" to ".",
+            "toolReason" to "Check repository state before editing.",
+          ),
+        ),
+      ),
+    )
+
+    val gateway = ProjectionOnlyOpenCrayChatRuntimeGateway(
+      chatSessionStore = chatStore,
+      queueSnapshotStoreFactory = queueFactory,
+      runRecordStoreFactory = runRecordFactory,
+      runEventJournalStoreFactory = journalFactory,
+      promptCheckpointStoreFactory = checkpointFactory,
+      processRegistryFactory = processFactory,
+      supplementStoreFactory = supplementFactory,
+      strings = projectionOnlyChatStrings(),
+      connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { 1_500L },
+    )
+
+    val chatSnapshot = gateway.loadChatSnapshot()
+    @Suppress("UNCHECKED_CAST")
+    val summary = chatSnapshot["summary"] as Map<String, Any?>
+    @Suppress("UNCHECKED_CAST")
+    val pendingApprovals = chatSnapshot["pendingApprovals"] as List<Map<String, Any?>>
+    val approval = pendingApprovals.single()
+
+    assertEquals("Approval required before the agent can continue.", summary["body"])
+    assertEquals("Bash", approval["toolName"])
+    assertEquals("git status --short", approval["requestSummary"])
+    assertEquals("git status --short", approval["primaryDetail"])
+    assertEquals(".", approval["workingDirectory"])
+    assertEquals("Check repository state before editing.", approval["reason"])
+    assertEquals("Approval required", approval["title"])
+    assertEquals("Approve", approval["approveLabel"])
+    assertEquals("Reject", approval["rejectLabel"])
+    assertEquals(false, approval["supportsSessionApproval"])
+  }
+
+  @Test
+  fun projectionOnlyChatRuntimeGatewayDeduplicatesRepeatedRuntimeEventsInSnapshot() {
+    val chatRoot = temporaryFolder.newFolder("projection-chat-dedup-store")
+    val runtimeRoot = temporaryFolder.newFolder("projection-runtime-dedup-store")
+    val chatStore = ChatSessionLocalStore(chatRoot)
+    val sessionId = chatStore.loadState().activeSession.sessionId
+
+    val queueFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val runRecordFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
+    val journalFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val checkpointFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val processFactory = FileBackedAgentProcessRegistryFactory(runtimeRoot)
+    val supplementFactory = FileBackedAgentSessionSupplementStoreFactory(runtimeRoot)
+
+    val runId = "projection-dedup-run-1"
+    val taskId = "projection-dedup-task-1"
+    queueFactory.forChatSession(sessionId).save(
+      SessionQueueSnapshot(
+        sessionId = sessionId,
+        agentId = "test-agent",
+        lifecycleState = SessionLifecycleState.RUNNING,
+        updatedAtEpochMs = 1_200L,
+        tasks = listOf(
+          SessionQueueTaskSnapshot(
+            enqueueOrder = 1L,
+            task = AgentTask(
+              id = taskId,
+              type = AgentTaskType.PROMPT,
+              input = "deduplicate repeated events",
+              state = AgentTaskState.RUNNING,
+              policyDecision = PolicyDecision(
+                outcome = com.opencray.core.contracts.PolicyDecisionOutcome.ALLOW,
+                reasonCode = "test",
+              ),
+              createdAtEpochMs = 1_000L,
+              updatedAtEpochMs = 1_200L,
+              metadata = mapOf(
+                AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+              ),
+            ),
+            lifecycleState = QueueTaskLifecycleState.RUNNING,
+            attempt = 1,
+          ),
+        ),
+      ),
+    )
+    runRecordFactory.forChatSession(sessionId).upsert(
+      PersistedAgentRunRecord(
+        runId = runId,
+        taskId = taskId,
+        acceptedAtEpochMs = 1_000L,
+      ),
+    )
+    val duplicateEvent = OpenCrayToolResultEvent(
+      runId = runId,
+      taskId = taskId,
+      turn = 1,
+      call = AgentToolCall(toolName = "Read"),
+      result = AgentToolResult(
+        toolName = "Read",
+        status = AgentToolResultStatus.SUCCESS,
+        content = "README.md loaded",
+      ),
+      emittedAtEpochMs = 1_250L,
+    )
+    journalFactory.forChatSession(sessionId).append(duplicateEvent)
+    journalFactory.forChatSession(sessionId).append(duplicateEvent)
+
+    val gateway = ProjectionOnlyOpenCrayChatRuntimeGateway(
+      chatSessionStore = chatStore,
+      queueSnapshotStoreFactory = queueFactory,
+      runRecordStoreFactory = runRecordFactory,
+      runEventJournalStoreFactory = journalFactory,
+      promptCheckpointStoreFactory = checkpointFactory,
+      processRegistryFactory = processFactory,
+      supplementStoreFactory = supplementFactory,
+      strings = projectionOnlyChatStrings(),
+      connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { 1_500L },
+    )
+
+    val runtimeSnapshot = gateway.loadChatRuntimeSnapshot()
+    @Suppress("UNCHECKED_CAST")
+    val events = runtimeSnapshot["events"] as List<Map<String, Any?>>
+    val runSnapshot = requireNotNull(gateway.loadChatRunSnapshot(runId))
+    val lastEvent = runSnapshot["lastEvent"] as Map<*, *>
+
+    assertEquals(1, events.size)
+    assertEquals("tool_result", events.single()["kind"])
+    assertEquals("Read", events.single()["toolName"])
+    assertEquals("tool_result", lastEvent["kind"])
+    assertEquals("Read", lastEvent["toolName"])
   }
 
   @Test
@@ -1933,6 +2146,7 @@ class OpenCrayRuntimeServiceHostTest {
       processRegistryFactory = processFactory,
       supplementStoreFactory = supplementFactory,
       strings = ProjectionOnlyChatStrings(
+        localeTag = "en",
         screenTitle = "Chat",
         modeLabel = "AUTO",
         sessionButtonLabel = "Sessions",
@@ -1944,6 +2158,14 @@ class OpenCrayRuntimeServiceHostTest {
         summaryReplyInProgress = "Reply in progress",
         summaryStartNewSession = "Start a new session",
         summaryRestored = "Restored",
+        summaryApprovalRequired = "Approval required before the agent can continue.",
+        approvalRequiredTitle = "Approval required",
+        highRiskApprovalRequiredTitle = "High-risk approval required",
+        highRiskApprovalRequiredBody =
+          "High-risk approval required. Review this request carefully before approving.",
+        approvalApproveLabel = "Approve",
+        approvalApproveForSessionLabel = "Allow session",
+        approvalRejectLabel = "Reject",
         composerPlaceholder = "Message OpenCray",
         composerRejectedPlaceholder = "Message OpenCray differently",
       ),
@@ -3269,6 +3491,7 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   private fun projectionOnlyChatStrings(): ProjectionOnlyChatStrings = ProjectionOnlyChatStrings(
+    localeTag = "en",
     screenTitle = "Chat",
     modeLabel = "AUTO",
     sessionButtonLabel = "Sessions",
@@ -3280,6 +3503,14 @@ class OpenCrayRuntimeServiceHostTest {
     summaryReplyInProgress = "Reply in progress",
     summaryStartNewSession = "Start a new session",
     summaryRestored = "Restored",
+    summaryApprovalRequired = "Approval required before the agent can continue.",
+    approvalRequiredTitle = "Approval required",
+    highRiskApprovalRequiredTitle = "High-risk approval required",
+    highRiskApprovalRequiredBody =
+      "High-risk approval required. Review this request carefully before approving.",
+    approvalApproveLabel = "Approve",
+    approvalApproveForSessionLabel = "Allow session",
+    approvalRejectLabel = "Reject",
     summaryAwaitingDirection = "Waiting for your next instruction.",
     composerPlaceholder = "Message OpenCray",
     composerRejectedPlaceholder = "Message OpenCray differently",

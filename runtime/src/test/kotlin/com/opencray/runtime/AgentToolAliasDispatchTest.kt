@@ -21,11 +21,13 @@ import com.opencray.runtime.web.WebSearchResult
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -71,6 +73,41 @@ class AgentToolAliasDispatchTest {
     assertTrue("bash" in definitionNames)
     assertTrue(readDefinition.description.contains("Compatibility alias for Read"))
     assertTrue(pythonDefinition.description.contains("Use this instead of Bash for workspace Python scripts"))
+  }
+
+  @Test
+  fun pythonRuntimeManifestToolAppearsWhenManifestProviderExists() {
+    val dispatcher = dispatcher(
+      pythonRuntimeManifestProvider = {
+        PythonRuntimeManifestSnapshot(
+          runtimeBackend = "p4a",
+          packageInstallPolicy = "preinstalled_only",
+          supportsDynamicInstall = false,
+          interpreter = "python3",
+          packages = listOf("numpy", "python-docx"),
+        )
+      },
+    )
+
+    val definitionNames = dispatcher.definitions().map { definition -> definition.name }.toSet()
+    val pythonDefinition = requireNotNull(dispatcher.definitions().firstOrNull { definition -> definition.name == "python_exec" })
+
+    assertTrue("python_runtime_manifest" in definitionNames)
+    assertTrue(pythonDefinition.description.contains("python_runtime_manifest"))
+
+    val result = dispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(toolName = "python_runtime_manifest"),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    val payload = Json.parseToJsonElement(result.content).jsonObject
+    assertEquals("p4a", payload.getValue("runtime_backend").jsonPrimitive.content)
+    assertTrue(payload.getValue("packages").jsonArray.any { entry -> entry.jsonPrimitive.content == "numpy" })
+    assertEquals("read_python_runtime", result.metadata["capabilityKind"])
+    assertEquals("2", result.metadata["packageCount"])
+    assertEquals("false", result.metadata["supportsDynamicInstall"])
   }
 
   @Test
@@ -329,6 +366,7 @@ class AgentToolAliasDispatchTest {
     webContentFetcher: WebContentFetcher = FakeWebContentFetcher(),
     webSearchProvider: WebSearchProvider = FakeWebSearchProvider(),
     pythonRuntime: PythonScriptRuntime = RecordingPythonScriptRuntime(),
+    pythonRuntimeManifestProvider: (() -> PythonRuntimeManifestSnapshot?)? = null,
     hiddenToolNamePrefixes: Set<String> = emptySet(),
   ): OpenCrayToolDispatcher = OpenCrayToolDispatcher(
     OpenCrayToolDispatcherConfig(
@@ -337,6 +375,7 @@ class AgentToolAliasDispatchTest {
       webContentFetcher = webContentFetcher,
       webSearchProvider = webSearchProvider,
       pythonRuntimeAdapter = pythonRuntime,
+      pythonRuntimeManifestProvider = pythonRuntimeManifestProvider,
       hiddenToolNamePrefixes = hiddenToolNamePrefixes,
     ),
   )

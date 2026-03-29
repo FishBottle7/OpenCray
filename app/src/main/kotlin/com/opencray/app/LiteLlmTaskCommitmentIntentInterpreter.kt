@@ -96,7 +96,7 @@ internal class LiteLlmTaskCommitmentIntentInterpreter(
       providerId = settings.providerId,
       baseUrl = settings.baseUrl,
       model = settings.model,
-      timeoutMs = INTERPRETER_TIMEOUT_MS,
+      timeoutMs = recommendedInterpreterProviderRouteTimeoutMs(settings.model),
       metadata = effectiveLlmRouteMetadata(settings),
     )
     return ProviderRouting(

@@ -128,7 +128,144 @@ void main() {
     },
   );
 
-  testWidgets('custom provider supports Anthropic protocol and xhigh reasoning', (
+  testWidgets(
+    'standalone llm page can validate repeatedly after a completed attempt',
+    (tester) async {
+      final facade = _FakeSettingsFacade(
+        llmConfig: const LlmConfigSnapshot(
+          localeTag: 'en',
+          enabled: true,
+          providerId: 'openai',
+          selectedProviderOptionId: 'openai',
+          protocol: 'openai',
+          providerOptions: <LlmProviderOption>[
+            LlmProviderOption(
+              id: 'openai',
+              providerId: 'openai',
+              title: 'OpenAI',
+              subtitle: 'Official OpenAI-compatible endpoint.',
+              defaultBaseUrl: 'https://api.openai.com/v1',
+              defaultModel: 'gpt-4o-mini',
+              protocol: 'openai',
+              apiKey: '',
+              isCustom: false,
+            ),
+          ],
+          providerName: 'OpenAI',
+          providerNotes: '',
+          baseUrl: 'https://api.openai.com/v1',
+          apiKey: 'secret',
+          model: 'gpt-4o-mini',
+          reasoningEffort: 'medium',
+          systemPrompt: '',
+          helperText: 'Helper text',
+        ),
+        validationResult: const LlmValidationResult(
+          isSuccess: true,
+          message: 'Validated.',
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.llm,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Validate Model'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Validate Model'));
+      await tester.pumpAndSettle();
+
+      expect(facade.validationCallCount, 2);
+      expect(find.text('Validated.'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'standalone llm page ignores repeated validate taps while draft save is pending',
+    (tester) async {
+      final saveStarted = Completer<void>();
+      final allowSaveToFinish = Completer<void>();
+      final facade = _FakeSettingsFacade(
+        llmConfig: const LlmConfigSnapshot(
+          localeTag: 'en',
+          enabled: false,
+          providerId: 'openai',
+          selectedProviderOptionId: 'openai',
+          protocol: 'openai',
+          providerOptions: <LlmProviderOption>[
+            LlmProviderOption(
+              id: 'openai',
+              providerId: 'openai',
+              title: 'OpenAI',
+              subtitle: 'Official OpenAI-compatible endpoint.',
+              defaultBaseUrl: 'https://api.openai.com/v1',
+              defaultModel: 'gpt-4o-mini',
+              protocol: 'openai',
+              apiKey: '',
+              isCustom: false,
+            ),
+          ],
+          providerName: 'OpenAI',
+          providerNotes: '',
+          baseUrl: 'https://api.openai.com/v1',
+          apiKey: '',
+          model: 'gpt-4o-mini',
+          reasoningEffort: 'medium',
+          systemPrompt: '',
+          helperText: 'Helper text',
+        ),
+        validationResult: const LlmValidationResult(
+          isSuccess: true,
+          message: 'Validated.',
+        ),
+        onSaveLlmConfig: () async {
+          if (!saveStarted.isCompleted) {
+            saveStarted.complete();
+          }
+          await allowSaveToFinish.future;
+        },
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.llm,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField).at(1), 'secret');
+      await tester.pump();
+
+      await tester.tap(find.text('Validate Model'));
+      await tester.tap(find.text('Validate Model'));
+      await tester.pump();
+
+      expect(saveStarted.isCompleted, isTrue);
+      expect(facade.saveCallCount, 1);
+      expect(facade.validationCallCount, 0);
+
+      allowSaveToFinish.complete();
+      await tester.pumpAndSettle();
+
+      expect(facade.validationCallCount, 1);
+      expect(find.text('Validated.'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('custom provider supports Anthropic protocol and thinking off', (
     tester,
   ) async {
     final facade = _FakeSettingsFacade(
@@ -195,6 +332,16 @@ void main() {
 
     expect(facade.saveCallCount, 2);
     expect(facade.llmConfig.reasoningEffort, 'xhigh');
+
+    await tester.ensureVisible(find.text('XHigh'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('XHigh'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Off'));
+    await tester.pumpAndSettle();
+
+    expect(facade.saveCallCount, 3);
+    expect(facade.llmConfig.reasoningEffort, 'off');
   });
 
   testWidgets('custom provider supports OpenAI Responses protocol', (
@@ -3146,6 +3293,7 @@ class _FakeSettingsFacade implements SettingsFacade {
   _FakeSettingsFacade({
     required this.llmConfig,
     required this.validationResult,
+    this.onSaveLlmConfig,
     PersonalizationConfigSnapshot? personalizationConfig,
     SettingsOverviewSnapshot? overviewSnapshot,
   }) : personalizationConfig =
@@ -3282,6 +3430,7 @@ class _FakeSettingsFacade implements SettingsFacade {
   );
   LlmConfigSnapshot llmConfig;
   final LlmValidationResult validationResult;
+  final Future<void> Function()? onSaveLlmConfig;
   final PersonalizationConfigSnapshot personalizationConfig;
   final McpSettingsSnapshot mcpSettings = const McpSettingsSnapshot(
     title: 'MCP',
@@ -3400,6 +3549,7 @@ class _FakeSettingsFacade implements SettingsFacade {
       <StrongBackgroundActionId>[];
   final SettingsOverviewSnapshot overviewSnapshot;
   int saveCallCount = 0;
+  int validationCallCount = 0;
   int notificationSaveCallCount = 0;
   int sandboxSaveCallCount = 0;
   int safetySaveCallCount = 0;
@@ -3537,6 +3687,7 @@ class _FakeSettingsFacade implements SettingsFacade {
     required String systemPrompt,
   }) async {
     saveCallCount += 1;
+    await onSaveLlmConfig?.call();
     llmConfig = LlmConfigSnapshot(
       localeTag: llmConfig.localeTag,
       enabled: enabled,
@@ -3614,7 +3765,10 @@ class _FakeSettingsFacade implements SettingsFacade {
     required String apiKey,
     required String model,
     required String reasoningEffort,
-  }) async => validationResult;
+  }) async {
+    validationCallCount += 1;
+    return validationResult;
+  }
 
   @override
   Future<PersonalizationConfigSnapshot> loadPersonalizationConfig() async =>

@@ -35,6 +35,20 @@ class LlmModelCapabilityRegistryTest {
   }
 
   @Test
+  fun resolveVisionInputSupportMatchesKimiK25OnAnthropicRoutes() {
+    val resolution = LlmModelCapabilityRegistry.resolveVisionInputSupport(
+      providerId = "custom",
+      protocol = LlmProviderProtocols.ANTHROPIC,
+      model = "kimi-k2.5",
+    )
+
+    assertNotNull(resolution)
+    assertTrue(resolution?.visionInputSupported == true)
+    assertEquals(LlmModelCapabilitySource.STATIC_EXACT, resolution?.source)
+    assertEquals("kimi_k2_5_vision_exact", resolution?.matchedRuleId)
+  }
+
+  @Test
   fun resolveVisionInputSupportPrefersProviderDeclaredOverride() {
     val resolution = LlmModelCapabilityRegistry.resolveVisionInputSupport(
       providerId = "custom",

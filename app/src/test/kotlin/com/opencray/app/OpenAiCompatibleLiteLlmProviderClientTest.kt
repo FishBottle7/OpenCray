@@ -112,6 +112,281 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
   }
 
   @Test
+  fun executeTreatsHttp499AsTimeout() {
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference())
+          writeHttpResponse(
+            client = client,
+            statusCode = 499,
+            statusText = "Client Closed Request",
+            body = """
+              {
+                "error": {
+                  "message": "Upstream request timed out."
+                }
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-timeout-499",
+            providerId = "custom",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "kimi-k2.5",
+            timeoutMs = 5_000L,
+            metadata = mapOf("protocol" to LlmProviderProtocols.ANTHROPIC),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Reply with OK.",
+            authHeaders = mapOf("x-api-key" to "test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-timeout-499",
+            providerId = "custom",
+            model = "kimi-k2.5",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val timeout = result as LiteLlmProviderResult.Timeout
+      assertEquals("Upstream request timed out.", timeout.errorMessage)
+      assertEquals("499", timeout.metadata["statusCode"])
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeTreatsHttp449AsTimeout() {
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference())
+          writeHttpResponse(
+            client = client,
+            statusCode = 449,
+            statusText = "Retry With",
+            body = """
+              {
+                "error": {
+                  "message": "Upstream request timed out."
+                }
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-timeout-449",
+            providerId = "custom",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "kimi-k2.5",
+            timeoutMs = 5_000L,
+            metadata = mapOf("protocol" to LlmProviderProtocols.ANTHROPIC),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Reply with OK.",
+            authHeaders = mapOf("x-api-key" to "test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-timeout-449",
+            providerId = "custom",
+            model = "kimi-k2.5",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val timeout = result as LiteLlmProviderResult.Timeout
+      assertEquals("Upstream request timed out.", timeout.errorMessage)
+      assertEquals("449", timeout.metadata["statusCode"])
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeAutoStreamsAnthropicKimiRequestsForThirdPartyRoutes() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpResponse(
+            client = client,
+            body = """
+              {
+                "id": "req_third_party_kimi",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "OK"
+                  }
+                ],
+                "stop_reason": "end_turn"
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-third-party-kimi-anthropic",
+            providerId = "custom",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "kimi-k2.5",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.ANTHROPIC,
+              "thinking_budget_tokens" to "4096",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Reply with OK.",
+            authHeaders = mapOf("x-api-key" to "test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-third-party-kimi-anthropic",
+            providerId = "custom",
+            model = "kimi-k2.5",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      assertEquals("disabled", payload.getJSONObject("thinking").getString("type"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("OK", success.outputText)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeRespectsExplicitStreamFalseForAnthropicKimiThirdPartyRoutes() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpResponse(
+            client = client,
+            body = """
+              {
+                "id": "req_third_party_kimi_no_stream",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "OK"
+                  }
+                ],
+                "stop_reason": "end_turn"
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-third-party-kimi-anthropic-no-stream",
+            providerId = "custom",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "kimi-k2.5",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.ANTHROPIC,
+              "thinking_budget_tokens" to "4096",
+              "stream" to "false",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Reply with OK.",
+            authHeaders = mapOf("x-api-key" to "test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-third-party-kimi-anthropic-no-stream",
+            providerId = "custom",
+            model = "kimi-k2.5",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertFalse(payload.has("stream"))
+      assertEquals("disabled", payload.getJSONObject("thinking").getString("type"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("OK", success.outputText)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
   fun executeInfersGlmBuiltinWebSearchDialectFromModelName() {
     val requestBody = AtomicReference<String>()
     val responseSent = CountDownLatch(1)
@@ -1400,6 +1675,7 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
       assertEquals("web_search", tool.getString("name"))
       assertEquals(5, tool.getInt("max_uses"))
       assertEquals("example.com", tool.getJSONArray("allowed_domains").getString(0))
+      assertFalse(payload.has("thinking"))
 
       val success = result as LiteLlmProviderResult.Success
       assertEquals(
@@ -1423,6 +1699,306 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
         "https://example.com",
         observations.getJSONObject(0).getJSONArray("sources").getJSONObject(0).getString("url"),
       )
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeAutoContinuesAnthropicBuiltinWebSearchPauseTurnForKimi() {
+    val requestBodies = mutableListOf<String>()
+    val responseSent = CountDownLatch(2)
+    val server = ServerSocket(0, 2, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        repeat(2) { index ->
+          listeningSocket.accept().use { client ->
+            val body = AtomicReference<String>()
+            readHttpRequest(client, AtomicReference(), AtomicReference(), body)
+            requestBodies += body.get()
+            val responseBody = if (index == 0) {
+              """
+              {
+                "id": "kimi_anthropic_search_round_1",
+                "content": [
+                  {
+                    "type": "server_tool_use",
+                    "id": "srvtoolu_1",
+                    "name": "web_search",
+                    "input": {
+                      "query": "example canonical url"
+                    }
+                  },
+                  {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": "srvtoolu_1",
+                    "content": [
+                      {
+                        "type": "web_search_result",
+                        "title": "Example Domain",
+                        "url": "https://example.com"
+                      }
+                    ]
+                  }
+                ],
+                "usage": {
+                  "server_tool_use": {
+                    "web_search_requests": 1
+                  }
+                },
+                "stop_reason": "pause_turn"
+              }
+              """.trimIndent()
+            } else {
+              """
+              {
+                "id": "kimi_anthropic_search_round_2",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "The canonical URL is https://example.com."
+                  }
+                ],
+                "stop_reason": "end_turn"
+              }
+              """.trimIndent()
+            }
+            writeHttpResponse(client = client, body = responseBody)
+            responseSent.countDown()
+          }
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-kimi-anthropic-builtin-web-search",
+            providerId = "custom",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "kimi-k2.5",
+            timeoutMs = 5_000L,
+            metadata = mapOf("protocol" to LlmProviderProtocols.ANTHROPIC),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Use web search to find the canonical https://example.com URL.",
+            builtinTools = listOf(
+              LiteLlmBuiltinToolDefinition(
+                type = LiteLlmBuiltinToolType.WEB_SEARCH,
+                includeSources = true,
+              ),
+            ),
+            authHeaders = mapOf("x-api-key" to "test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-kimi-anthropic-builtin-web-search",
+            providerId = "custom",
+            model = "kimi-k2.5",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      assertEquals(2, requestBodies.size)
+
+      val firstPayload = JSONObject(requestBodies[0])
+      val firstTool = firstPayload.getJSONArray("tools").getJSONObject(0)
+      assertEquals("web_search_20250305", firstTool.getString("type"))
+      assertEquals("web_search", firstTool.getString("name"))
+
+      val secondPayload = JSONObject(requestBodies[1])
+      val secondMessages = secondPayload.getJSONArray("messages")
+      assertEquals("user", secondMessages.getJSONObject(0).getString("role"))
+      assertEquals("assistant", secondMessages.getJSONObject(1).getString("role"))
+      val continuedBlocks = secondMessages.getJSONObject(1).getJSONArray("content")
+      assertEquals("server_tool_use", continuedBlocks.getJSONObject(0).getString("type"))
+      assertEquals("web_search_tool_result", continuedBlocks.getJSONObject(1).getString("type"))
+
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("The canonical URL is https://example.com.", success.outputText)
+      assertEquals("true", success.metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_USED])
+      val observations = JSONArray(
+        success.metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_OBSERVATIONS_JSON],
+      )
+      assertEquals(
+        "example canonical url",
+        observations.getJSONObject(0).getJSONArray("queries").getString(0),
+      )
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeStreamsAnthropicKimiTextResponses() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: message_start
+              data: {"type":"message_start","message":{"id":"msg_kimi_stream","type":"message","role":"assistant","content":[],"model":"kimi-k2.5","stop_reason":null}}
+              
+              event: content_block_start
+              data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+              
+              event: content_block_delta
+              data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+              
+              event: content_block_delta
+              data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}
+              
+              event: content_block_stop
+              data: {"type":"content_block_stop","index":0}
+              
+              event: message_delta
+              data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}
+              
+              event: message_stop
+              data: {"type":"message_stop"}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-kimi-anthropic-stream",
+            providerId = "custom",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "kimi-k2.5",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.ANTHROPIC,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Say hello.",
+            authHeaders = mapOf("x-api-key" to "test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-kimi-anthropic-stream",
+            providerId = "custom",
+            model = "kimi-k2.5",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("Hello world", success.outputText)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeStreamsAnthropicKimiToolUseResponses() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: message_start
+              data: {"type":"message_start","message":{"id":"msg_kimi_tool_stream","type":"message","role":"assistant","content":[],"model":"kimi-k2.5","stop_reason":null}}
+              
+              event: content_block_start
+              data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_kimi_1","name":"EchoProbe"}}
+              
+              event: content_block_delta
+              data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"echo\":"}}
+              
+              event: content_block_delta
+              data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"hello\"}"}}
+              
+              event: content_block_stop
+              data: {"type":"content_block_stop","index":0}
+              
+              event: message_delta
+              data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
+              
+              event: message_stop
+              data: {"type":"message_stop"}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-kimi-anthropic-tool-stream",
+            providerId = "custom",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "kimi-k2.5",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.ANTHROPIC,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Call EchoProbe.",
+            tools = listOf(sampleToolDefinition()),
+            authHeaders = mapOf("x-api-key" to "test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-kimi-anthropic-tool-stream",
+            providerId = "custom",
+            model = "kimi-k2.5",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals(1, success.completion?.toolCalls?.size)
+      assertEquals("EchoProbe", success.completion?.toolCalls?.single()?.toolName)
+      assertEquals("\"hello\"", success.completion?.toolCalls?.single()?.arguments?.get("echo")?.toString())
     } finally {
       runCatching { server.close() }
       serverThread.join(5_000L)
@@ -2823,12 +3399,34 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
 
   private fun writeHttpResponse(
     client: Socket,
+    statusCode: Int = 200,
+    statusText: String = "OK",
+    body: String,
+  ) {
+    val bodyBytes = body.toByteArray(StandardCharsets.UTF_8)
+    val header = buildString {
+      append("HTTP/1.1 $statusCode $statusText\r\n")
+      append("Content-Type: application/json\r\n")
+      append("Content-Length: ${bodyBytes.size}\r\n")
+      append("Connection: close\r\n")
+      append("\r\n")
+    }.toByteArray(StandardCharsets.UTF_8)
+    client.getOutputStream().use { output ->
+      output.write(header)
+      output.write(bodyBytes)
+      output.flush()
+    }
+  }
+
+  private fun writeHttpEventStreamResponse(
+    client: Socket,
     body: String,
   ) {
     val bodyBytes = body.toByteArray(StandardCharsets.UTF_8)
     val header = buildString {
       append("HTTP/1.1 200 OK\r\n")
-      append("Content-Type: application/json\r\n")
+      append("Content-Type: text/event-stream\r\n")
+      append("Cache-Control: no-cache\r\n")
       append("Content-Length: ${bodyBytes.size}\r\n")
       append("Connection: close\r\n")
       append("\r\n")

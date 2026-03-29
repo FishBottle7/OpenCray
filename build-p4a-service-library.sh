@@ -827,6 +827,38 @@ copy_built_aar_to_dist() {
   echo "Copied runtime AAR to $DIST_DIR/$(basename "$latest_aar")"
 }
 
+write_runtime_manifest_to_dist() {
+  local manifest_path="$DIST_DIR/python-runtime-manifest.json"
+  "$P4A_PYTHON_BIN" - "$manifest_path" "$REQUIREMENTS" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+raw_requirements = sys.argv[2]
+requirements = [item.strip() for item in raw_requirements.split(",") if item.strip()]
+packages = [item for item in requirements if item != "python3"]
+
+manifest = {
+    "schemaVersion": 1,
+    "runtimeBackend": "p4a",
+    "packageInstallPolicy": "preinstalled_only",
+    "supportsDynamicInstall": False,
+    "interpreter": "python3",
+    "packages": packages,
+    "notes": [
+        "Generated alongside the bundled p4a runtime AAR.",
+    ],
+}
+
+manifest_path.write_text(
+    json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+)
+PY
+  echo "Wrote runtime manifest to $manifest_path"
+}
+
 run_p4a() {
   if [[ -n "$P4A_BIN" ]]; then
     "$P4A_BIN" "$@"
@@ -889,3 +921,4 @@ run_p4a aar \
   --arch "$ARCH"
 
 copy_built_aar_to_dist "$DIST_NAME"
+write_runtime_manifest_to_dist

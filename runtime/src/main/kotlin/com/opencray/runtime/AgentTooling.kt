@@ -63,7 +63,9 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.Locale
 import java.util.UUID
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
@@ -186,6 +188,18 @@ data class OpenCrayChatAttachmentSource(
   }
 }
 
+@Serializable
+data class PythonRuntimeManifestSnapshot(
+  val schemaVersion: Int = 1,
+  val runtimeBackend: String,
+  val packageInstallPolicy: String,
+  val supportsDynamicInstall: Boolean,
+  val interpreter: String? = null,
+  val packages: List<String> = emptyList(),
+  val packageVersions: Map<String, String> = emptyMap(),
+  val notes: List<String> = emptyList(),
+)
+
 data class OpenCrayToolDispatcherConfig(
   val workspaceRoots: Set<Path>,
   val readRoots: Set<Path> = workspaceRoots,
@@ -203,6 +217,7 @@ data class OpenCrayToolDispatcherConfig(
   val rejectedToolName: String? = null,
   val commandExecutor: CommandExecutor? = null,
   val pythonRuntimeAdapter: PythonScriptRuntime = HostProcessPythonRuntime(),
+  val pythonRuntimeManifestProvider: (() -> PythonRuntimeManifestSnapshot?)? = null,
   val supportsManagedPythonProcessStart: Boolean = true,
   val managedPythonProcessUsesRuntimeAdapter: Boolean = false,
   val commandApprovalToken: CommandApprovalToken? = null,
@@ -289,6 +304,7 @@ class OpenCrayToolDispatcher(
   fun todoSnapshot(): List<AgentTodoEntry> = todoStore.snapshot()
 
   fun definitions(): List<AgentToolDefinition> {
+    val pythonManifestProviderAvailable = config.pythonRuntimeManifestProvider != null
     val canonicalDefinitions = listOf(
       AgentToolDefinition(
         name = "LS",
@@ -617,7 +633,13 @@ class OpenCrayToolDispatcher(
       ),
       AgentToolDefinition(
         name = "python_exec",
-        description = "Execute one workspace-local Python script through the active Python runtime backend. Use this instead of Bash for workspace Python scripts and Python runtime diagnostics.",
+        description = buildString {
+          append("Execute one workspace-local Python script through the active Python runtime backend. ")
+          append("Use this instead of Bash for workspace Python scripts and Python runtime diagnostics.")
+          if (pythonManifestProviderAvailable) {
+            append(" Runtime packages are preinstalled-only; call python_runtime_manifest for exact available packages when imports matter.")
+          }
+        },
         parameters = listOf(
           AgentToolParameter("script_path", "string", required = true, description = "Script path relative to the workspace root."),
           AgentToolParameter("args", "string[]", required = false, description = "Script arguments."),
@@ -625,6 +647,12 @@ class OpenCrayToolDispatcher(
           AgentToolParameter("startup_timeout_ms", "number", required = false, description = "Optional extra startup budget before Python script timeout accounting begins."),
         ),
       ),
+      config.pythonRuntimeManifestProvider?.let {
+        AgentToolDefinition(
+          name = "python_runtime_manifest",
+          description = "Inspect the active Python runtime package policy and exact preinstalled packages. Use this before writing Python imports when package availability matters.",
+        )
+      },
       config.sandboxPreviewService?.let {
         AgentToolDefinition(
           name = "sandbox_preview_open",
@@ -870,6 +898,7 @@ class OpenCrayToolDispatcher(
         "ProcessTerminate" -> terminateManagedProcess(task = task, arguments = invocation.arguments)
         "command_exec" -> executeCommand(task = task, arguments = invocation.arguments, hooks = hooks)
         "python_exec" -> executePython(task = task, arguments = invocation.arguments)
+        "python_runtime_manifest" -> inspectPythonRuntimeManifest(task = task)
         "sandbox_preview_open" -> openSandboxPreview(task = task, arguments = invocation.arguments)
         "skills_list" -> listSkills()
         "skill_read" -> readSkill(invocation.arguments)
@@ -930,6 +959,7 @@ class OpenCrayToolDispatcher(
         "WebFetch" -> preflightWebFetch(task = task, arguments = invocation.arguments)
         "ProcessList",
         "ProcessRead",
+        "python_runtime_manifest",
         "skills_list",
         "skill_read",
         "SkillsList",
@@ -2135,6 +2165,7 @@ class OpenCrayToolDispatcher(
       metadataRequest = ToolMetadataContextRequest(
         targetKind = ToolTargetKind.NETWORK,
         workspaceRelation = ToolWorkspaceRelation.NONE,
+        primaryTargetPath = url,
         targetSummary = inlinePreview(url, maxChars = 512),
       ),
     )
@@ -3702,6 +3733,84 @@ class OpenCrayToolDispatcher(
           "scriptPath" to toolTargetResolver.displayWritablePath(scriptPath),
         ),
         resultEnvelope = commandResultEnvelope(toolResult),
+      ),
+    )
+  }
+
+  private fun inspectPythonRuntimeManifest(task: AgentTask): AgentToolResult {
+    val metadataRequest = ToolMetadataContextRequest(
+      targetKind = ToolTargetKind.NONE,
+      workspaceRelation = ToolWorkspaceRelation.NONE,
+      targetSummary = "python runtime manifest",
+    )
+
+    val manifest = config.pythonRuntimeManifestProvider?.invoke()
+      ?: return AgentToolResult(
+        toolName = "python_runtime_manifest",
+        status = AgentToolResultStatus.FAILED,
+        content = "Python runtime manifest is unavailable in this execution environment.",
+        errorCode = "PYTHON_RUNTIME_MANIFEST_UNAVAILABLE",
+        errorMessage = "Python runtime manifest is unavailable in this execution environment.",
+        metadata = toolPolicyPipeline.resultMetadata(
+          toolName = "python_runtime_manifest",
+          request = metadataRequest,
+          metadata = mapOf(
+            "manifestAvailable" to "false",
+          ),
+        ),
+      )
+
+    val payload = buildJsonObject {
+      put("schema_version", manifest.schemaVersion)
+      put("runtime_backend", manifest.runtimeBackend)
+      put("package_install_policy", manifest.packageInstallPolicy)
+      put("supports_dynamic_install", manifest.supportsDynamicInstall)
+      manifest.interpreter?.let { put("interpreter", it) }
+      put(
+        "packages",
+        buildJsonArray {
+          manifest.packages.forEach { packageName ->
+            add(JsonPrimitive(packageName))
+          }
+        },
+      )
+      if (manifest.packageVersions.isNotEmpty()) {
+        put(
+          "package_versions",
+          buildJsonObject {
+            manifest.packageVersions.toSortedMap().forEach { (packageName, version) ->
+              put(packageName, version)
+            }
+          },
+        )
+      }
+      if (manifest.notes.isNotEmpty()) {
+        put(
+          "notes",
+          buildJsonArray {
+            manifest.notes.forEach { note ->
+              add(JsonPrimitive(note))
+            }
+          },
+        )
+      }
+    }
+
+    return AgentToolResult(
+      toolName = "python_runtime_manifest",
+      status = AgentToolResultStatus.SUCCESS,
+      content = config.json.encodeToString(JsonObject.serializer(), payload),
+      metadata = toolPolicyPipeline.resultMetadata(
+        toolName = "python_runtime_manifest",
+        request = metadataRequest,
+        metadata = buildMap {
+          put("manifestAvailable", "true")
+          put("runtimeBackend", manifest.runtimeBackend)
+          put("packageInstallPolicy", manifest.packageInstallPolicy)
+          put("supportsDynamicInstall", manifest.supportsDynamicInstall.toString())
+          put("packageCount", manifest.packages.size.toString())
+          manifest.interpreter?.let { put("interpreter", it) }
+        },
       ),
     )
   }
