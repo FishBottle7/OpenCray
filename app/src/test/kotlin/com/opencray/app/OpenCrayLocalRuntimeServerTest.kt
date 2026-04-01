@@ -166,6 +166,220 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun resolvesSandboxPreviewEmbedConfigOverLoopbackHttp() {
+    var capturedPreviewUrl: String? = null
+    val server = localRuntimeServerWithLocalGateway(
+      object : UnsupportedLocalGateway() {
+        override fun resolveSandboxPreviewEmbedConfig(previewUrl: String): Map<String, Any?> {
+          capturedPreviewUrl = previewUrl
+          return mapOf(
+            "previewUrl" to previewUrl,
+            "providerId" to "e2b",
+            "headers" to mapOf(
+              "E2B-Traffic-Access-Token" to "traffic-preview",
+            ),
+            "sessionMatched" to true,
+            "accessTokenConfigured" to true,
+          )
+        }
+      },
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/resolve_sandbox_preview_embed_config",
+        body = JSONObject().apply {
+          put("previewUrl", "https://3000-sb-preview.e2b.app/")
+        }.toString(),
+      )
+      val payload = JSONObject(response.body)
+      val headers = payload.getJSONObject("headers")
+
+      assertEquals(200, response.statusCode)
+      assertEquals(
+        "https://3000-sb-preview.e2b.app/",
+        capturedPreviewUrl,
+      )
+      assertEquals("e2b", payload.getString("providerId"))
+      assertTrue(payload.getBoolean("sessionMatched"))
+      assertTrue(payload.getBoolean("accessTokenConfigured"))
+      assertEquals(
+        "traffic-preview",
+        headers.getString("E2B-Traffic-Access-Token"),
+      )
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun exposesSoulVisualIdentityOverLoopbackHttp() {
+    val server = localRuntimeServerWithLocalGateway(
+      object : UnsupportedLocalGateway() {
+        override fun loadSoulVisualIdentity(): Map<String, Any?> = mapOf(
+          "portraitSummary" to "Calm expression with short dark hair.",
+          "primaryPortrait" to mapOf(
+            "refId" to "portrait-1",
+            "role" to "portrait",
+            "storageScope" to "agent_private",
+            "relativePath" to "soul-assets/portrait/portrait-1.png",
+            "summary" to "Front-facing portrait with a calm expression.",
+            "caption" to "Primary portrait",
+            "createdAtEpochMs" to 1_234L,
+          ),
+          "referenceImages" to listOf(
+            mapOf(
+              "refId" to "reference-1",
+              "role" to "reference",
+              "storageScope" to "agent_private",
+              "relativePath" to "soul-assets/reference/reference-1.png",
+              "summary" to "Three-quarter portrait under warm light.",
+              "caption" to "Warm light",
+              "createdAtEpochMs" to 1_235L,
+            ),
+          ),
+        )
+      },
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(server, "GET", "/v1/soul_visual_identity")
+      val payload = JSONObject(response.body)
+      val primaryPortrait = payload.getJSONObject("primaryPortrait")
+      val referenceImages = payload.getJSONArray("referenceImages")
+
+      assertEquals(200, response.statusCode)
+      assertEquals(
+        "Calm expression with short dark hair.",
+        payload.getString("portraitSummary"),
+      )
+      assertEquals("portrait-1", primaryPortrait.getString("refId"))
+      assertEquals("agent_private", primaryPortrait.getString("storageScope"))
+      assertEquals(1, referenceImages.length())
+      assertEquals("reference-1", referenceImages.getJSONObject(0).getString("refId"))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun exposesMemoryImageReferencesOverLoopbackHttp() {
+    var capturedMemoryId: String? = null
+    val server = localRuntimeServerWithLocalGateway(
+      object : UnsupportedLocalGateway() {
+        override fun listMemoryImageReferences(memoryId: String): List<Map<String, Any?>> {
+          capturedMemoryId = memoryId
+          return listOf(
+            mapOf(
+              "refId" to "memory-image-1",
+              "role" to "evidence",
+              "storageScope" to "workspace",
+              "relativePath" to "memory-assets/whiteboard.png",
+              "summary" to "Whiteboard photo from the planning session.",
+              "caption" to "Whiteboard",
+              "createdAtEpochMs" to 4_200L,
+            ),
+          )
+        }
+      },
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "GET",
+        "/v1/memory_image_references?memoryId=memory-whiteboard",
+      )
+      val payload = JSONArray(response.body)
+
+      assertEquals(200, response.statusCode)
+      assertEquals("memory-whiteboard", capturedMemoryId)
+      assertEquals(1, payload.length())
+      assertEquals("memory-image-1", payload.getJSONObject(0).getString("refId"))
+      assertEquals("workspace", payload.getJSONObject(0).getString("storageScope"))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun attachMemoryImageReferenceRouteForwardsPayload() {
+    var capturedMemoryId: String? = null
+    var capturedPreferredMode: String? = null
+    var capturedSource: Map<String, Any?>? = null
+    val server = localRuntimeServerWithLocalGateway(
+      object : UnsupportedLocalGateway() {
+        override fun attachMemoryImageReference(
+          memoryId: String,
+          source: Map<String, Any?>,
+          preferredMode: String?,
+        ): Map<String, Any?> {
+          capturedMemoryId = memoryId
+          capturedPreferredMode = preferredMode
+          capturedSource = source
+          return mapOf(
+            "memoryId" to memoryId,
+            "recordVersion" to 3,
+            "updatedAtEpochMs" to 9_999L,
+            "imageReferences" to listOf(
+              mapOf(
+                "refId" to "memory-image-1",
+                "role" to "evidence",
+                "storageScope" to "workspace",
+                "relativePath" to "memory-assets/whiteboard.png",
+                "summary" to "Whiteboard photo from the planning session.",
+                "caption" to "Whiteboard",
+                "createdAtEpochMs" to 4_200L,
+              ),
+            ),
+          )
+        }
+      },
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/attach_memory_image_reference",
+        body = JSONObject().apply {
+          put("memoryId", "memory-whiteboard")
+          put("preferredMode", "copy_promote")
+          put(
+            "source",
+            JSONObject().apply {
+              put("sourceKind", "settings_asset")
+              put("settingsAssetId", "settings-asset-1")
+              put("displayName", "whiteboard.png")
+              put("mimeType", "image/png")
+            },
+          )
+        }.toString(),
+      )
+      val payload = JSONObject(response.body)
+      val imageReferences = payload.getJSONArray("imageReferences")
+
+      assertEquals(200, response.statusCode)
+      assertEquals("memory-whiteboard", capturedMemoryId)
+      assertEquals("copy_promote", capturedPreferredMode)
+      assertEquals("settings_asset", capturedSource?.get("sourceKind"))
+      assertEquals("settings-asset-1", capturedSource?.get("settingsAssetId"))
+      assertEquals("memory-whiteboard", payload.getString("memoryId"))
+      assertEquals(3, payload.getInt("recordVersion"))
+      assertEquals(1, imageReferences.length())
+      assertEquals("memory-image-1", imageReferences.getJSONObject(0).getString("refId"))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun forwardsValidationRequestsToHostRuntime() {
     val llmConfigFacade = RecordingLlmConfigFacade()
     val server = localRuntimeServer(llmConfigFacade = llmConfigFacade)
@@ -347,53 +561,9 @@ class OpenCrayLocalRuntimeServerTest {
 
   @Test
   fun forwardsApprovalRequestsToHostRuntime() {
-    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approval-route"))
-    val activeSessionId = chatStore.loadState().activeSession.sessionId
-    val runtimeManager = RecordingRuntimeManager()
-    val handle = RecordingSessionHandle(
-      sessionId = activeSessionId,
-      resumeResult = true,
-    )
-    runtimeManager.handle = handle
-    val hostRuntime = OpenCrayHostRuntime.createForTest(
-      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
-      chatSessionStore = chatStore,
-      settingsFacade = NoOpSettingsFacade,
-      llmConfigFacade = EmptyLlmConfigFacade,
-      sessionRuntimeManager = runtimeManager,
-      strings = hostRuntimeStrings(),
-    )
-    val task = AgentTask(
-      id = "task-approval",
-      type = AgentTaskType.PROMPT,
-      input = "Need approval",
-      policyDecision = PolicyDecision(
-        outcome = PolicyDecisionOutcome.ALLOW,
-        reasonCode = "TEST_ALLOW",
-      ),
-      metadata = mapOf(
-        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to "run-approval",
-        AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to "assistant-1",
-      ),
-      createdAtEpochMs = 1_000L,
-    )
-    runtimeManager.emitTaskFinished(
-      sessionId = activeSessionId,
-      task = task,
-      result = ExecutionResult(
-        taskId = task.id,
-        status = ExecutionStatus.DENIED,
-        errorCode = "APPROVAL_REQUIRED",
-        errorMessage = "Approval is required before Write can run.",
-        startedAtEpochMs = 1_000L,
-        finishedAtEpochMs = 1_001L,
-        metadata = task.metadata,
-      ),
-    )
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
+    val chatRuntimeGateway = RecordingChatRuntimeGateway()
+    val server = localRuntimeServer(
+      chatRuntimeGatewayResolver = { chatRuntimeGateway },
     )
     server.ensureStarted()
 
@@ -408,7 +578,7 @@ class OpenCrayLocalRuntimeServerTest {
       )
 
       assertEquals(200, response.statusCode)
-      assertEquals(listOf(task.id), handle.resumedTaskIds)
+      assertEquals("run-approval", chatRuntimeGateway.lastApprovedTaskIdOrRunId)
     } finally {
       server.close()
     }
@@ -416,62 +586,9 @@ class OpenCrayLocalRuntimeServerTest {
 
   @Test
   fun forwardsSessionApprovalRequestsToHostRuntime() {
-    val chatStore = ChatSessionLocalStore(
-      temporaryFolder.newFolder("chat-store-approval-session-route"),
-    )
-    val activeSessionId = chatStore.loadState().activeSession.sessionId
-    val runtimeManager = RecordingRuntimeManager()
-    val handle = RecordingSessionHandle(
-      sessionId = activeSessionId,
-      resumeResult = true,
-    )
-    runtimeManager.handle = handle
-    val hostRuntime = OpenCrayHostRuntime.createForTest(
-      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
-      chatSessionStore = chatStore,
-      settingsFacade = NoOpSettingsFacade,
-      llmConfigFacade = EmptyLlmConfigFacade,
-      sessionRuntimeManager = runtimeManager,
-      strings = hostRuntimeStrings(),
-    )
-    val task = AgentTask(
-      id = "task-approval-session",
-      type = AgentTaskType.PROMPT,
-      input = "Need provider-native search approval",
-      policyDecision = PolicyDecision(
-        outcome = PolicyDecisionOutcome.ALLOW,
-        reasonCode = "TEST_ALLOW",
-      ),
-      metadata = mapOf(
-        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to "run-approval-session",
-        AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to "assistant-1",
-      ),
-      createdAtEpochMs = 1_000L,
-    )
-    runtimeManager.emitTaskFinished(
-      sessionId = activeSessionId,
-      task = task,
-      result = ExecutionResult(
-        taskId = task.id,
-        status = ExecutionStatus.DENIED,
-        errorCode = "APPROVAL_REQUIRED",
-        errorMessage = "Approval is required before WebSearch can run.",
-        startedAtEpochMs = 1_000L,
-        finishedAtEpochMs = 1_001L,
-        metadata = task.metadata + mapOf(
-          "normalizedToolName" to "WebSearch",
-          OpenCrayExecutionMetadataKeys.APPROVAL_RESUME_TOOL_NAME to
-            ProviderNativeWebSearchSupport.RESUME_TOOL_NAME,
-          ProviderNativeWebSearchSupport.METADATA_APPROVAL_KIND to
-            ProviderNativeWebSearchSupport.APPROVAL_KIND,
-          ProviderNativeWebSearchSupport.METADATA_SUPPORTS_SESSION_APPROVAL to "true",
-        ),
-      ),
-    )
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
+    val chatRuntimeGateway = RecordingChatRuntimeGateway()
+    val server = localRuntimeServer(
+      chatRuntimeGatewayResolver = { chatRuntimeGateway },
     )
     server.ensureStarted()
 
@@ -486,8 +603,7 @@ class OpenCrayLocalRuntimeServerTest {
       )
 
       assertEquals(200, response.statusCode)
-      assertEquals(listOf(task.id), handle.resumedTaskIds)
-      assertTrue(chatStore.isNativeWebSearchSessionApproved(activeSessionId))
+      assertEquals("run-approval-session", chatRuntimeGateway.lastSessionApprovedTaskIdOrRunId)
     } finally {
       server.close()
     }
@@ -2013,16 +2129,47 @@ class OpenCrayLocalRuntimeServerTest {
         isEnabled = false,
         canDelete = false,
       )
+      inspectAttempt = com.opencray.runtime.skills.SkillSourceInspectionAttempt(
+        result = com.opencray.runtime.skills.SkillSourceInspectionResult(
+          sourceType = "remote_github",
+          sourceRef = "roin-orca/skills",
+          sourcePath = "https://github.com/roin-orca/skills",
+          resolvedRevision = "main",
+          resolvedCommitSha = "deadbeef",
+          candidates = listOf(
+            com.opencray.runtime.skills.SkillSourceInspectionCandidate(
+              name = "find-skills",
+              description = "Discover skills",
+              relativePath = "skills/find-skills/SKILL.md",
+            ),
+            com.opencray.runtime.skills.SkillSourceInspectionCandidate(
+              name = "review-skills",
+              description = "Review changes",
+              relativePath = "skills/review-skills/SKILL.md",
+            ),
+          ),
+        ),
+      )
+      batchInstallAttempt = com.opencray.runtime.skills.SkillPackageBatchInstallAttempt(
+        result = com.opencray.runtime.skills.SkillPackageBatchInstallResult(
+          sourceType = "remote_github",
+          sourceRef = "roin-orca/skills",
+          entries = listOf(
+            com.opencray.runtime.skills.SkillPackageBatchInstallEntry(
+              requestedSkillName = "find-skills",
+              installedSkillId = "find-skills",
+            ),
+            com.opencray.runtime.skills.SkillPackageBatchInstallEntry(
+              requestedSkillName = "review-skills",
+              installedSkillId = "review-skills",
+            ),
+          ),
+        ),
+      )
+      installResult = SkillInstallRequestResult(installedSkillId = "review-skills")
     }
-    val runtimeManager = RecordingRuntimeManager()
-    val handle = RecordingSessionHandle(
-      sessionId = "skills-session",
-      resumeResult = false,
-    )
-    runtimeManager.handle = handle
     val server = localRuntimeServer(
       skillsFacade = skillsFacade,
-      runtimeManager = runtimeManager,
     )
     server.ensureStarted()
 
@@ -2040,7 +2187,6 @@ class OpenCrayLocalRuntimeServerTest {
       assertTrue(queryResponse.body.contains("\"installs\":42"))
       assertTrue(queryResponse.body.contains("\"detailUrl\":\"https://skills.sh/roin-orca/skills\""))
       assertTrue(queryResponse.body.contains("\"suggestedSkillsMayHaveMore\":true"))
-      assertTrue(handle.submittedTasks.isEmpty())
 
       val previewResponse = request(
         server,
@@ -2054,20 +2200,6 @@ class OpenCrayLocalRuntimeServerTest {
       assertTrue(previewResponse.body.contains("\"name\":\"find-skills\""))
       assertTrue(previewResponse.body.contains("Use this skill to discover skills"))
 
-      handle.queuedToolCompletion = QueuedToolCompletion(
-        toolName = "SkillsInspect",
-        content = """
-          inspection	remote_github	source_ref=roin-orca/skills	source_path=https://github.com/roin-orca/skills	resolved_revision=main	resolved_commit=deadbeef	candidate_count=2
-          candidate	find-skills	description=Discover skills	relative_path=skills/find-skills/SKILL.md
-          candidate	review-skills	description=Review changes	relative_path=skills/review-skills/SKILL.md
-        """.trimIndent(),
-        metadata = mapOf(
-          "sourceType" to "remote_github",
-          "sourceRef" to "roin-orca/skills",
-          "candidateCount" to "2",
-        ),
-      )
-
       val inspectResponse = request(
         server,
         "POST",
@@ -2078,26 +2210,7 @@ class OpenCrayLocalRuntimeServerTest {
       assertEquals(200, inspectResponse.statusCode)
       assertTrue(inspectResponse.body.contains("\"sourceType\":\"remote_github\""))
       assertTrue(inspectResponse.body.contains("\"name\":\"find-skills\""))
-      assertTrue(handle.submittedTasks.any { task ->
-        task.input.contains("\"tool_name\":\"SkillsInspect\"") &&
-          task.input.contains("\"sourceRef\":\"roin-orca/skills\"")
-      })
-
-      handle.queuedToolCompletion = QueuedToolCompletion(
-        toolName = "SkillsAddBatch",
-        content = """
-          batch_install	remote_github	source_ref=roin-orca/skills	requested_count=2	installed_count=2	failed_count=0
-          installed	find-skills	requested=find-skills	relative_path=skills/find-skills/SKILL.md
-          installed	review-skills	requested=review-skills	relative_path=skills/review-skills/SKILL.md
-        """.trimIndent(),
-        metadata = mapOf(
-          "sourceType" to "remote_github",
-          "sourceRef" to "roin-orca/skills",
-          "requestedCount" to "2",
-          "installedCount" to "2",
-          "failedCount" to "0",
-        ),
-      )
+      assertEquals("roin-orca/skills", skillsFacade.lastInspectedSourceRef)
 
       val batchInstallResponse = request(
         server,
@@ -2108,17 +2221,8 @@ class OpenCrayLocalRuntimeServerTest {
 
       assertEquals(200, batchInstallResponse.statusCode)
       assertTrue(batchInstallResponse.body.contains("Installed 2 skills."))
-      assertTrue(handle.submittedTasks.any { task ->
-        task.input.contains("\"tool_name\":\"SkillsAddBatch\"") &&
-          task.input.contains("\"sourceRef\":\"roin-orca/skills\"") &&
-          task.input.contains("\"skills\":[\"find-skills\",\"review-skills\"]")
-      })
-
-      handle.queuedToolCompletion = QueuedToolCompletion(
-        toolName = "SkillsAdd",
-        content = "Installed skill 'review-skills' from remote source 'roin-orca/skills'.",
-        metadata = mapOf("skillId" to "review-skills"),
-      )
+      assertEquals("roin-orca/skills", skillsFacade.lastBatchInstalledSourceRef)
+      assertEquals(listOf("find-skills", "review-skills"), skillsFacade.lastBatchInstalledSelectedSkillNames)
 
       val installResponse = request(
         server,
@@ -2129,23 +2233,28 @@ class OpenCrayLocalRuntimeServerTest {
 
       assertEquals(200, installResponse.statusCode)
       assertTrue(installResponse.body.contains("Installed review-skills."))
-      assertTrue(handle.submittedTasks.any { task ->
-        task.input.contains("\"tool_name\":\"SkillsAdd\"") &&
-          task.input.contains("\"sourceRef\":\"roin-orca/skills\"") &&
-          task.input.contains("\"skill\":\"review-skills\"")
-      })
+      assertEquals("roin-orca/skills", skillsFacade.lastInstalledSourceRef)
+      assertEquals("review-skills", skillsFacade.lastInstalledSelectedSkillName)
     } finally {
       server.close()
     }
   }
 
   @Test
-  fun skillsUpdateEndpointUsesDirectToolRuntimeFactory() {
-    val directTaskRuntimeFactory = RecordingDirectTaskRuntimeFactory(
-      status = ExecutionStatus.SUCCESS,
-      stdout = "find-skills: updated",
-    )
-    val server = localRuntimeServer(directTaskRuntimeFactory = directTaskRuntimeFactory)
+  fun skillsUpdateEndpointUsesSkillsGateway() {
+    val skillsFacade = RecordingSkillsFacade().apply {
+      updateReport = com.opencray.runtime.skills.SkillPackageUpdateReport(
+        results = listOf(
+          com.opencray.runtime.skills.SkillPackageUpdateResult(
+            skillId = "find-skills",
+            sourceType = "remote_github",
+            sourceRef = "roin-orca/skills",
+            status = com.opencray.runtime.skills.SkillPackageUpdateStatus.UPDATED,
+          ),
+        ),
+      )
+    }
+    val server = localRuntimeServer(skillsFacade = skillsFacade)
     server.ensureStarted()
 
     try {
@@ -2157,31 +2266,19 @@ class OpenCrayLocalRuntimeServerTest {
       )
 
       assertEquals(200, response.statusCode)
-      assertTrue(response.body.contains("find-skills: updated"))
-      assertTrue(directTaskRuntimeFactory.submittedTasks.any { task ->
-        task.input.contains("\"tool_name\":\"SkillsUpdate\"") &&
-          task.input.contains("\"skillId\":\"find-skills\"")
-      })
+      assertTrue(response.body.contains("Updated 'find-skills'."))
+      assertEquals("find-skills", skillsFacade.lastUpdatedSkillId)
     } finally {
       server.close()
     }
   }
 
   @Test
-  fun deleteInstalledSkillEndpointUsesSessionPipeline() {
-    val runtimeManager = RecordingRuntimeManager()
-    val handle = RecordingSessionHandle(
-      sessionId = "skills-session",
-      resumeResult = false,
-    ).apply {
-      queuedToolCompletion = QueuedToolCompletion(
-        toolName = "SkillsRemove",
-        content = "Removed skill 'find-skills' from the host-managed skills directory.",
-        metadata = mapOf("skillId" to "find-skills"),
-      )
+  fun deleteInstalledSkillEndpointUsesSkillsGateway() {
+    val skillsFacade = RecordingSkillsFacade().apply {
+      deleteResult = true
     }
-    runtimeManager.handle = handle
-    val server = localRuntimeServer(runtimeManager = runtimeManager)
+    val server = localRuntimeServer(skillsFacade = skillsFacade)
     server.ensureStarted()
 
     try {
@@ -2194,10 +2291,7 @@ class OpenCrayLocalRuntimeServerTest {
 
       assertEquals(200, response.statusCode)
       assertTrue(response.body.contains("Removed find-skills."))
-      assertTrue(handle.submittedTasks.any { task ->
-        task.input.contains("\"tool_name\":\"SkillsRemove\"") &&
-          task.input.contains("\"skillId\":\"find-skills\"")
-      })
+      assertEquals("find-skills", skillsFacade.lastDeletedSkillId)
     } finally {
       server.close()
     }
@@ -2332,6 +2426,22 @@ class OpenCrayLocalRuntimeServerTest {
       )
       assertEquals(200, retryResponse.statusCode)
       assertEquals("task-123", chatGateway.lastRetriedTaskIdOrRunId)
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun routesSandboxSessionRefreshThroughChatGateway() {
+    val chatGateway = RecordingChatRuntimeGateway()
+    val server = localRuntimeServer(chatRuntimeGatewayResolver = { chatGateway })
+    server.ensureStarted()
+
+    try {
+      val response = request(server, "POST", "/v1/refresh_sandbox_session_info")
+
+      assertEquals(200, response.statusCode)
+      assertEquals(1, chatGateway.refreshSandboxSessionInfoCallCount)
     } finally {
       server.close()
     }
@@ -2593,6 +2703,30 @@ class OpenCrayLocalRuntimeServerTest {
     )
   }
 
+  private fun localRuntimeServerWithLocalGateway(
+    localGateway: OpenCrayLocalHostGateway,
+  ): OpenCrayLocalRuntimeServer {
+    val hostRuntime = OpenCrayHostRuntime.createForTest(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      chatSessionStore = ChatSessionLocalStore(
+        temporaryFolder.newFolder("chat-store-local-gateway-${System.nanoTime()}"),
+      ),
+      settingsFacade = NoOpSettingsFacade,
+      llmConfigFacade = EmptyLlmConfigFacade,
+      sessionRuntimeManager = NoOpRuntimeManager(),
+      strings = hostRuntimeStrings(),
+    )
+    return OpenCrayLocalRuntimeServer(
+      localGatewayProvider = { localGateway },
+      shellGatewayProvider = { hostRuntime },
+      chatRuntimeGatewayProvider = { hostRuntime },
+      skillsGatewayProvider = { hostRuntime },
+      settingsGatewayProvider = { hostRuntime },
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+    )
+  }
+
   private fun request(
     server: OpenCrayLocalRuntimeServer,
     method: String,
@@ -2658,7 +2792,16 @@ class OpenCrayLocalRuntimeServerTest {
     var submittedText: String? = null
       private set
 
+    var refreshSandboxSessionInfoCallCount: Int = 0
+      private set
+
     var lastRetriedTaskIdOrRunId: String? = null
+      private set
+
+    var lastApprovedTaskIdOrRunId: String? = null
+      private set
+
+    var lastSessionApprovedTaskIdOrRunId: String? = null
       private set
 
     override fun loadChatSnapshot(): Map<String, Any?> = mapOf("source" to "gateway-chat")
@@ -2678,6 +2821,10 @@ class OpenCrayLocalRuntimeServerTest {
     override fun observeChatRuntime(listener: (Map<String, Any?>) -> Unit): () -> Unit {
       listener(loadChatRuntimeSnapshot())
       return { }
+    }
+
+    override fun refreshSandboxSessionInfo() {
+      refreshSandboxSessionInfoCallCount += 1
     }
 
     override fun loadMemoryDebugSnapshot(): Map<String, Any?> = emptyMap()
@@ -2717,9 +2864,13 @@ class OpenCrayLocalRuntimeServerTest {
       return mapOf("submittedText" to text, "attachmentCount" to attachments.size)
     }
 
-    override fun approveChatApproval(taskIdOrRunId: String) = Unit
+    override fun approveChatApproval(taskIdOrRunId: String) {
+      lastApprovedTaskIdOrRunId = taskIdOrRunId
+    }
 
-    override fun approveChatApprovalForSession(taskIdOrRunId: String) = Unit
+    override fun approveChatApprovalForSession(taskIdOrRunId: String) {
+      lastSessionApprovedTaskIdOrRunId = taskIdOrRunId
+    }
 
     override fun rejectChatApproval(taskIdOrRunId: String) = Unit
 
@@ -2982,6 +3133,11 @@ class OpenCrayLocalRuntimeServerTest {
     var lastSuggestedLimit: Int? = null
     var lastInstalledSourceRef: String? = null
     var lastInstalledSelectedSkillName: String? = null
+    var lastBatchInstalledSourceRef: String? = null
+    var lastBatchInstalledSelectedSkillNames: List<String> = emptyList()
+    var lastInspectedSourceRef: String? = null
+    var lastDeletedSkillId: String? = null
+    var lastUpdatedSkillId: String? = null
     var lastSuggestedInstructionsSourceRef: String? = null
     var lastSuggestedInstructionsSkillName: String? = null
     var snapshot: SkillsSnapshot = SkillsSnapshot(
@@ -2992,6 +3148,19 @@ class OpenCrayLocalRuntimeServerTest {
     var installResult: SkillInstallRequestResult = SkillInstallRequestResult(
       errorMessage = "Not configured.",
     )
+    var batchInstallAttempt: com.opencray.runtime.skills.SkillPackageBatchInstallAttempt =
+      com.opencray.runtime.skills.SkillPackageBatchInstallAttempt(
+        errorCode = "NOT_CONFIGURED",
+        errorMessage = "Not configured.",
+      )
+    var inspectAttempt: com.opencray.runtime.skills.SkillSourceInspectionAttempt =
+      com.opencray.runtime.skills.SkillSourceInspectionAttempt(
+        errorCode = "NOT_CONFIGURED",
+        errorMessage = "Not configured.",
+      )
+    var deleteResult: Boolean = true
+    var updateReport: com.opencray.runtime.skills.SkillPackageUpdateReport =
+      com.opencray.runtime.skills.SkillPackageUpdateReport(results = emptyList())
     var suggestedInstructions: SkillInstructionsSnapshot? = null
 
     override fun loadSnapshot(query: String, suggestedLimit: Int): SkillsSnapshot {
@@ -3017,21 +3186,23 @@ class OpenCrayLocalRuntimeServerTest {
     override fun installSkillSourceBatch(
       sourceRef: String,
       selectedSkillNames: List<String>,
-    ): com.opencray.runtime.skills.SkillPackageBatchInstallAttempt =
-      com.opencray.runtime.skills.SkillPackageBatchInstallAttempt(
-        errorCode = "NOT_CONFIGURED",
-        errorMessage = "Not configured.",
-      )
+    ): com.opencray.runtime.skills.SkillPackageBatchInstallAttempt {
+      lastBatchInstalledSourceRef = sourceRef
+      lastBatchInstalledSelectedSkillNames = selectedSkillNames
+      return batchInstallAttempt
+    }
 
     override fun inspectSkillSource(
       sourceRef: String,
-    ): com.opencray.runtime.skills.SkillSourceInspectionAttempt =
-      com.opencray.runtime.skills.SkillSourceInspectionAttempt(
-        errorCode = "NOT_CONFIGURED",
-        errorMessage = "Not configured.",
-      )
+    ): com.opencray.runtime.skills.SkillSourceInspectionAttempt {
+      lastInspectedSourceRef = sourceRef
+      return inspectAttempt
+    }
 
-    override fun deleteInstalledSkill(skillId: String): Boolean = true
+    override fun deleteInstalledSkill(skillId: String): Boolean {
+      lastDeletedSkillId = skillId
+      return deleteResult
+    }
 
     override fun refresh() = Unit
 
@@ -3042,8 +3213,10 @@ class OpenCrayLocalRuntimeServerTest {
 
     override fun updateInstalledSkill(
       skillId: String,
-    ): com.opencray.runtime.skills.SkillPackageUpdateReport =
-      com.opencray.runtime.skills.SkillPackageUpdateReport(results = emptyList())
+    ): com.opencray.runtime.skills.SkillPackageUpdateReport {
+      lastUpdatedSkillId = skillId
+      return updateReport
+    }
 
     override fun loadInstructions(skillId: String): SkillInstructionsSnapshot? = null
 
@@ -3424,3 +3597,68 @@ class OpenCrayLocalRuntimeServerTest {
 }
 
 private val TOOL_NAME_REGEX: Regex = Regex("""\"tool_name\"\s*:\s*\"([^\"]+)\"""")
+
+private open class UnsupportedLocalGateway : OpenCrayLocalHostGateway {
+  override fun loadFilesSnapshot(): Map<String, Any?> = throw UnsupportedOperationException()
+
+  override fun loadWorkspaceImagePreview(relativePath: String): Map<String, Any?> =
+    throw UnsupportedOperationException()
+
+  override fun loadWorkspaceTextPreview(relativePath: String): Map<String, Any?> =
+    throw UnsupportedOperationException()
+
+  override fun loadWorkspaceVoicePlaybackSource(relativePath: String): Map<String, Any?> =
+    throw UnsupportedOperationException()
+
+  override fun loadWorkspaceTextDocument(relativePath: String): Map<String, Any?> =
+    throw UnsupportedOperationException()
+
+  override fun openWorkspaceEntry(relativePath: String) {
+    throw UnsupportedOperationException()
+  }
+
+  override fun openExternalUri(uri: String) {
+    throw UnsupportedOperationException()
+  }
+
+  override fun copyRichTextToClipboard(plainText: String, htmlText: String?) {
+    throw UnsupportedOperationException()
+  }
+
+  override fun createWorkspaceFolder(parentRelativePath: String, name: String): Map<String, Any?> =
+    throw UnsupportedOperationException()
+
+  override fun createWorkspaceTextFile(parentRelativePath: String, name: String): Map<String, Any?> =
+    throw UnsupportedOperationException()
+
+  override fun renameWorkspaceEntry(targetRelativePath: String, newName: String): Map<String, Any?> =
+    throw UnsupportedOperationException()
+
+  override fun deleteWorkspaceEntries(relativePaths: List<String>): Map<String, Any?> =
+    throw UnsupportedOperationException()
+
+  override fun saveWorkspaceTextDocument(targetRelativePath: String, content: String): Map<String, Any?> =
+    throw UnsupportedOperationException()
+
+  override fun pasteWorkspaceEntries(
+    sourceRelativePaths: List<String>,
+    destinationRelativePath: String,
+    move: Boolean,
+  ): Map<String, Any?> = throw UnsupportedOperationException()
+
+  override fun shareWorkspaceEntries(relativePaths: List<String>) {
+    throw UnsupportedOperationException()
+  }
+
+  override fun showNativeToast(message: String) {
+    throw UnsupportedOperationException()
+  }
+
+  override fun importDraftChatAttachments(
+    requestedKind: String,
+    uriStrings: List<String>,
+  ): List<Map<String, Any?>> = throw UnsupportedOperationException()
+
+  override fun probeTwinImportSource(filePath: String): Map<String, Any?> =
+    throw UnsupportedOperationException()
+}

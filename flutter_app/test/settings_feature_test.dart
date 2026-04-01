@@ -5,7 +5,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:opencray/app/opencray_tabs.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
 import 'package:opencray/core/models/opencray_chat_snapshot.dart';
+import 'package:opencray/core/models/opencray_agent_snapshot.dart';
 import 'package:opencray/core/models/opencray_debug_snapshot.dart';
+import 'package:opencray/core/models/opencray_image_reference.dart';
 import 'package:opencray/core/models/opencray_shell_snapshot.dart';
 import 'package:opencray/features/settings/settings.dart';
 
@@ -753,6 +755,144 @@ void main() {
     expect(find.text('New agent'), findsOneWidget);
   });
 
+  testWidgets('agents page loads host-backed agents and persists creation', (
+    tester,
+  ) async {
+    final facade = _buildSettingsFacade();
+    final bridge = OpenCraySeedBridge(
+      initialAgents: const <OpenCrayAgentSnapshot>[
+        OpenCrayAgentSnapshot(
+          agentId: 'agent-aster',
+          displayName: 'Aster',
+          presetName: 'steady',
+          plasticity: 'medium',
+          mode: 'full',
+          baseDescription:
+              'Calm, concrete, and good at turning ideas into steps.',
+          llm: OpenCrayAgentLlmConfig(
+            provider: 'openai',
+            protocol: 'openai',
+            model: 'gpt-4o-mini',
+          ),
+          createdAtEpochMs: 1000,
+          updatedAtEpochMs: 2000,
+        ),
+        OpenCrayAgentSnapshot(
+          agentId: 'agent-nova',
+          displayName: 'Nova',
+          presetName: 'builder',
+          plasticity: 'low',
+          mode: 'noSoul',
+          baseDescription:
+              'Execution-focused agent for repo cleanup and patch review.',
+          llm: OpenCrayAgentLlmConfig(
+            provider: 'anthropic',
+            protocol: 'anthropic',
+            model: 'claude-3-7-sonnet',
+          ),
+          createdAtEpochMs: 1100,
+          updatedAtEpochMs: 2100,
+        ),
+      ],
+      initialActiveAgentId: 'agent-aster',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.agents,
+          standalone: true,
+          debugBridge: bridge,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('2 saved agents'), findsOneWidget);
+    expect(find.text('Aster'), findsOneWidget);
+    expect(find.text('Nova'), findsOneWidget);
+
+    await tester.tap(find.text('New agent'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField).first, 'Rhea');
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.text('Create agent').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Create agent').last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('3 saved agents'), findsOneWidget);
+    expect(find.text('Rhea'), findsOneWidget);
+
+    final activeAgent = await bridge.loadActiveAgent();
+    expect(activeAgent?.displayName, 'Rhea');
+  });
+
+  testWidgets('host-backed agents page selects an existing agent in place', (
+    tester,
+  ) async {
+    final facade = _buildSettingsFacade();
+    final bridge = OpenCraySeedBridge(
+      initialAgents: const <OpenCrayAgentSnapshot>[
+        OpenCrayAgentSnapshot(
+          agentId: 'agent-aster',
+          displayName: 'Aster',
+          presetName: 'steady',
+          plasticity: 'medium',
+          mode: 'full',
+          llm: OpenCrayAgentLlmConfig(
+            provider: 'openai',
+            protocol: 'openai',
+            model: 'gpt-4o-mini',
+          ),
+          createdAtEpochMs: 1000,
+          updatedAtEpochMs: 2000,
+        ),
+        OpenCrayAgentSnapshot(
+          agentId: 'agent-nova',
+          displayName: 'Nova',
+          presetName: 'builder',
+          plasticity: 'medium',
+          mode: 'lightweight',
+          llm: OpenCrayAgentLlmConfig(
+            provider: 'anthropic',
+            protocol: 'anthropic',
+            model: 'claude-3-7-sonnet',
+          ),
+          createdAtEpochMs: 1100,
+          updatedAtEpochMs: 2100,
+        ),
+      ],
+      initialActiveAgentId: 'agent-aster',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.agents,
+          standalone: true,
+          debugBridge: bridge,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Create agent'), findsNothing);
+
+    await tester.tap(find.text('Nova'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Create agent'), findsNothing);
+    expect(find.text('2 saved agents'), findsOneWidget);
+
+    final activeAgent = await bridge.loadActiveAgent();
+    expect(activeAgent?.agentId, 'agent-nova');
+  });
+
   testWidgets('agents media page supports naming additional image references', (
     tester,
   ) async {
@@ -829,6 +969,69 @@ void main() {
     expect(find.text('Image label'), findsNothing);
     expect(find.text('Side profile'), findsOneWidget);
   });
+
+  testWidgets(
+    'agents media page imports settings image assets through the debug bridge',
+    (tester) async {
+      final facade = _buildSettingsFacade();
+      final debugBridge = _buildDebugBridge(
+        pickedSettingsImageAssetBatches: const <List<OpenCraySettingsImageAsset>>[
+          <OpenCraySettingsImageAsset>[
+            OpenCraySettingsImageAsset(
+              assetId: 'settings-asset-11',
+              displayName: 'studio-angle.png',
+              relativePath: 'settings-image-assets/studio-angle.png',
+              mimeType: 'image/png',
+              sha256:
+                  '1111111111111111111111111111111111111111111111111111111111111111',
+              sizeBytes: 1024,
+              createdAtEpochMs: 3100,
+            ),
+            OpenCraySettingsImageAsset(
+              assetId: 'settings-asset-12',
+              displayName: 'linen_coat.jpg',
+              relativePath: 'settings-image-assets/linen_coat.jpg',
+              mimeType: 'image/jpeg',
+              sha256:
+                  '2222222222222222222222222222222222222222222222222222222222222222',
+              sizeBytes: 2048,
+              createdAtEpochMs: 3200,
+            ),
+          ],
+        ],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.agents,
+            standalone: true,
+            debugBridge: debugBridge,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('New agent'));
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(find.text('Media samples'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Media samples'));
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(find.text('Add more'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Add more'));
+      await tester.pumpAndSettle();
+
+      expect(debugBridge.pickSettingsImageAssetsCallCount, 1);
+      expect(find.text('Image label'), findsNothing);
+      expect(find.text('Studio Angle'), findsOneWidget);
+      expect(find.text('Linen Coat'), findsOneWidget);
+    },
+  );
 
   testWidgets(
     'agent create flow exposes twin import page and updates summary',
@@ -1210,7 +1413,24 @@ void main() {
       expect(find.text('Skill context'), findsOneWidget);
       expect(find.text('Soul resolution'), findsOneWidget);
       expect(find.text('Raw trace'), findsOneWidget);
+      expect(find.text('Projected subagents'), findsOneWidget);
       expect(find.text('run-memory'), findsWidgets);
+      expect(find.text('Subagent: Inspect detached recovery'), findsOneWidget);
+      expect(find.text('Status: background running'), findsOneWidget);
+      expect(find.text('Mailbox: 1 pending / 2 total'), findsOneWidget);
+      expect(
+        find.textContaining(
+          'Last delivered: mailbox-memory-1',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'researcher · minimal · depth 1 · Detached child runtime is still running in the background.',
+        ),
+        findsOneWidget,
+      );
       expect(find.text('Mode: full'), findsOneWidget);
       expect(find.text('Soul: disabled'), findsOneWidget);
       expect(find.text('Memory recall: enabled'), findsOneWidget);
@@ -2389,8 +2609,12 @@ _FakeSettingsFacade _buildDebugSettingsFacade({
   );
 }
 
-_FakeDebugBridge _buildDebugBridge() {
+_FakeDebugBridge _buildDebugBridge({
+  List<List<OpenCraySettingsImageAsset>> pickedSettingsImageAssetBatches =
+      const <List<OpenCraySettingsImageAsset>>[],
+}) {
   return _FakeDebugBridge(
+    pickedSettingsImageAssetBatches: pickedSettingsImageAssetBatches,
     shellSnapshot: const OpenCrayShellSnapshot(
       initialTab: OpenCrayTab.chat,
       localeTag: 'en',
@@ -2478,6 +2702,30 @@ _FakeDebugBridge _buildDebugBridge() {
           executionStatus: 'success',
           taskState: 'completed',
           responseFormat: 'json_final',
+        ),
+      ],
+      subAgents: <OpenCrayChatSubAgentSnapshot>[
+        OpenCrayChatSubAgentSnapshot(
+          parentRunId: 'run-memory',
+          parentTaskId: 'task-memory',
+          childRunId: 'child-run-detached-memory',
+          childTaskId: 'child-task-detached-memory',
+          label: 'Inspect detached recovery',
+          subagentType: 'researcher',
+          contextMode: 'minimal',
+          depth: 1,
+          phase: 'resumed',
+          status: 'background_running',
+          executionState: 'background_running',
+          continuationKind: 'background_resume',
+          resumable: true,
+          summary: 'Detached child runtime is still running in the background.',
+          startedAtEpochMs: 1750,
+          updatedAtEpochMs: 2350,
+          eventCount: 0,
+          mailboxMessageCount: 2,
+          mailboxPendingMessageCount: 1,
+          mailboxLastDeliveredMessageId: 'mailbox-memory-1',
         ),
       ],
       events: <OpenCrayChatRuntimeEventSnapshot>[
@@ -3833,7 +4081,15 @@ class _FakeDebugBridge extends OpenCraySeedBridge {
     required this.memorySearchSnapshot,
     required this.memorySliceSnapshot,
     required this.soulSnapshot,
+    List<List<OpenCraySettingsImageAsset>> pickedSettingsImageAssetBatches =
+        const <List<OpenCraySettingsImageAsset>>[],
   }) : _runSnapshots = runSnapshots,
+       _pickedSettingsImageAssetBatches = pickedSettingsImageAssetBatches
+           .map(
+             (batch) =>
+                 List<OpenCraySettingsImageAsset>.from(batch, growable: false),
+           )
+           .toList(growable: true),
        _currentRuntimeSnapshot = runtimeSnapshot,
        _currentMemorySnapshot = memorySnapshot,
        _currentLinksSnapshot = linksSnapshot,
@@ -3851,6 +4107,7 @@ class _FakeDebugBridge extends OpenCraySeedBridge {
   final OpenCrayMemoryDebugSearchSnapshot memorySearchSnapshot;
   final OpenCrayMemoryDebugSliceSnapshot memorySliceSnapshot;
   final OpenCraySoulDebugSnapshot soulSnapshot;
+  final List<List<OpenCraySettingsImageAsset>> _pickedSettingsImageAssetBatches;
   final OpenCrayChatRuntimeSnapshot _currentRuntimeSnapshot;
   OpenCrayMemoryDebugSnapshot _currentMemorySnapshot;
   OpenCrayMemoryDebugLinksSnapshot _currentLinksSnapshot;
@@ -3858,6 +4115,7 @@ class _FakeDebugBridge extends OpenCraySeedBridge {
   final OpenCrayMemoryDebugSliceSnapshot _currentMemorySliceSnapshot;
   final OpenCraySoulDebugSnapshot _seedSoulSnapshot;
   OpenCraySoulDebugSnapshot _currentSoulSnapshot;
+  int pickSettingsImageAssetsCallCount = 0;
   String? lastMemorySearchQuery;
   String? lastMemorySlicePath;
   int? lastMemorySliceFromLine;
@@ -3887,6 +4145,15 @@ class _FakeDebugBridge extends OpenCraySeedBridge {
   @override
   Future<OpenCraySoulDebugSnapshot> loadSoulDebugSnapshot() async =>
       _currentSoulSnapshot;
+
+  @override
+  Future<List<OpenCraySettingsImageAsset>> pickSettingsImageAssets() async {
+    pickSettingsImageAssetsCallCount += 1;
+    if (_pickedSettingsImageAssetBatches.isEmpty) {
+      return const <OpenCraySettingsImageAsset>[];
+    }
+    return _pickedSettingsImageAssetBatches.removeAt(0);
+  }
 
   @override
   Future<OpenCrayMemoryDebugSearchSnapshot> searchMemoryDebug({

@@ -1,5 +1,7 @@
 package com.opencray.runtime.subagent
 
+import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
+import com.opencray.runtime.OpenCrayPromptResumeState
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -10,6 +12,7 @@ data class SubAgentHandleState(
   val description: String,
   val prompt: String,
   val supplementalInputs: List<String> = emptyList(),
+  val mailbox: SubAgentMailbox = SubAgentMailbox(),
   val subagentType: String,
   val contextMode: String,
   val parentRunId: String,
@@ -20,6 +23,9 @@ data class SubAgentHandleState(
   val activeSkillActivationSource: String? = null,
   val snapshot: SubAgentExecutionSnapshot,
   val pendingApprovalResume: SubAgentApprovalResume? = null,
+  val childPromptResumeState: OpenCrayPromptResumeState? = null,
+  val childPromptCheckpointBoundary: OpenCrayPromptCheckpointBoundary? = null,
+  val childPromptCheckpointAtEpochMs: Long? = null,
   val childExecutionStatus: String? = null,
   val childTurnCount: Int? = null,
   val childToolCallCount: Int? = null,
@@ -38,13 +44,84 @@ data class SubAgentHandleState(
     require(parentTaskId.isNotBlank()) { "SubAgentHandleState parentTaskId must not be blank." }
     require(parentTurn >= 0) { "SubAgentHandleState parentTurn must be >= 0." }
     require(depth >= 1) { "SubAgentHandleState depth must be >= 1." }
+    require(childPromptCheckpointAtEpochMs == null || childPromptCheckpointAtEpochMs >= 0L) {
+      "SubAgentHandleState childPromptCheckpointAtEpochMs must be >= 0 when present."
+    }
     require(createdAtEpochMs >= 0) { "SubAgentHandleState createdAtEpochMs must be >= 0." }
     require(updatedAtEpochMs >= 0) { "SubAgentHandleState updatedAtEpochMs must be >= 0." }
   }
 
-  fun effectivePrompt(): String {
+  val handleId: String
+    get() = agentId
+
+  fun normalizedMailbox(): SubAgentMailbox = when {
+    mailbox.messages.isNotEmpty() -> mailbox
+    supplementalInputs.isEmpty() -> mailbox
+    else -> {
+      val legacyMessages = supplementalInputs.mapIndexed { index, input ->
+        SubAgentMailboxMessage(
+          messageId = "legacy-$agentId-${index + 1}",
+          text = input.trim(),
+          createdAtEpochMs = createdAtEpochMs + index,
+        )
+      }
+      SubAgentMailbox(
+        messages = legacyMessages,
+        lastDeliveredMessageId = if (
+          legacyMessages.isNotEmpty() &&
+          (
+            childPromptResumeState != null ||
+              pendingApprovalResume != null ||
+              snapshot.state != SubAgentExecutionState.BACKGROUND_QUEUED
+            )
+        ) {
+          legacyMessages.last().messageId
+        } else {
+          null
+        },
+      )
+    }
+  }
+
+  fun withNormalizedMailbox(
+    updatedAtEpochMs: Long = this.updatedAtEpochMs,
+  ): SubAgentHandleState {
+    val normalizedMailbox = normalizedMailbox()
+    if (supplementalInputs.isEmpty() && normalizedMailbox == mailbox) {
+      return this
+    }
+    return copy(
+      supplementalInputs = emptyList(),
+      mailbox = normalizedMailbox,
+      updatedAtEpochMs = maxOf(this.updatedAtEpochMs, updatedAtEpochMs),
+    )
+  }
+
+  fun withQueuedMailboxInput(
+    messageId: String,
+    message: String,
+    createdAtEpochMs: Long,
+  ): SubAgentHandleState {
+    val normalized = withNormalizedMailbox()
+    return normalized.copy(
+      supplementalInputs = emptyList(),
+      mailbox = normalized.mailbox.enqueue(
+        SubAgentMailboxMessage(
+          messageId = messageId,
+          text = message.trim(),
+          createdAtEpochMs = createdAtEpochMs,
+        ),
+      ),
+      updatedAtEpochMs = maxOf(normalized.updatedAtEpochMs, createdAtEpochMs),
+    )
+  }
+
+  fun effectivePrompt(
+    mailboxMessages: List<SubAgentMailboxMessage> = normalizedMailbox().messages,
+  ): String {
     val normalizedPrompt = prompt.trim()
-    val supplements = supplementalInputs
+    val supplements = mailboxMessages
+      .map(SubAgentMailboxMessage::text)
       .map(String::trim)
       .filter(String::isNotBlank)
     if (supplements.isEmpty()) {
@@ -67,9 +144,15 @@ data class SubAgentHandleState(
     "Unknown subagent context mode '$contextMode'."
   }
 
-  fun toTask(): SubAgentTask = SubAgentTask(
+  fun toTask(
+    includeMailboxMessagesInPrompt: Boolean = true,
+  ): SubAgentTask = SubAgentTask(
     description = description,
-    prompt = effectivePrompt(),
+    prompt = if (includeMailboxMessagesInPrompt) {
+      effectivePrompt()
+    } else {
+      prompt.trim()
+    },
     subagentType = subagentType,
     contextMode = resolvedContextMode(),
     parentRunId = parentRunId,

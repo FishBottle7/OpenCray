@@ -260,6 +260,23 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
   }
 
   @Test
+  fun createSessionDoesNotReuseSeedSessionOnceSessionScopedStateExists() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-session-state-reuse"))
+    val seedSessionId = chatStore.loadState().activeSession.sessionId
+
+    chatStore.setSessionScopedStatePresent(
+      sessionId = seedSessionId,
+      present = true,
+    )
+
+    val created = chatStore.createSession().activeSession
+
+    assertTrue(created.sessionId != seedSessionId)
+    assertTrue(chatStore.isReusableEmptySession(created.sessionId))
+    assertFalse(chatStore.isReusableEmptySession(seedSessionId))
+  }
+
+  @Test
   fun recordApprovalRejectionAppendsReplayToolObservation() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-approval-rejection"))
     val workspaceRoot = temporaryFolder.newFolder("workspace-root-approval-rejection").toPath()
@@ -1014,6 +1031,12 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
       memoryStore = memoryStore,
       workspaceIdProvider = { workspaceId },
       candidateExtractor = semanticUserCandidateExtractor(),
+      sessionScopedStateMarker = { sessionId ->
+        chatStore.setSessionScopedStatePresent(
+          sessionId = sessionId,
+          present = true,
+        )
+      },
     )
     val factory = AppAgentSessionTaskRuntimeFactory(
       llmSettingsProvider = { LlmSettingsState() },
@@ -1089,6 +1112,7 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     )
 
     val sessionTwoId = chatStore.createSession().activeSession.sessionId
+    assertTrue(sessionTwoId != sessionOneId)
     val sessionTwoPrepared = factory.prepareSessionContext(
       sessionId = sessionTwoId,
       workspaceId = workspaceId,

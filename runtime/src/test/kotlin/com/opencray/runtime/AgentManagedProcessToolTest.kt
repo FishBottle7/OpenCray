@@ -214,6 +214,223 @@ class AgentManagedProcessToolTest {
   }
 
   @Test
+  fun processReadAndWaitRenderSandboxBackendMetadataForHostedNativeSnapshots() {
+    val workspaceRoot = temporaryFolder.newFolder("process-tool-native-render").toPath()
+    val registry = RecordingProcessRegistry(
+      workspaceRoot = workspaceRoot,
+      startedSnapshotMetadata = mapOf(
+        "runtimeBackend" to "e2b_envd_native_command",
+        "runtimeTransport" to "connect_proto_minimal",
+        "sandboxCommandBackendKind" to "provider_native",
+        "sandboxCommandBackendResolvedKind" to "provider_native",
+        "sandboxCommandProviderNative" to "true",
+        "sandboxCommandSupportsStreamingLogs" to "false",
+        "sandboxCommandSupportsReconnect" to "true",
+        "sandboxCommandObservationMode" to "host_managed_snapshot",
+        "sandboxCommandApi" to "envd_process_start",
+        "sandboxCommandReconnectApi" to "envd_process_connect",
+        "sandboxCommandReconnectStatus" to "attached",
+        "sandboxCommandReconnectRecoveryState" to "attached_live",
+        "sandboxCommandReconnectSource" to "durable_registry_restore",
+        "sandboxCommandReconnectResumeMode" to "seed_snapshot_then_live_attach",
+        "sandboxCommandReconnectBackfillSupported" to "false",
+        "sandboxCommandReconnectOutputGapRisk" to "true",
+        "sandboxCommandReconnectRetryable" to "false",
+        "sandboxCommandReconnectAttemptCount" to "2",
+        "sandboxCommandReconnectLastAttachedAtEpochMs" to "1500",
+        "sandboxCommandReconnectLastEventAtEpochMs" to "1600",
+        "sandboxCommandReconnectLastEventKind" to "data",
+        "sandboxCommandReconnectSeededStdoutBytes" to "7",
+        "sandboxCommandReconnectSeededStderrBytes" to "0",
+        "sandboxCommandNativeProtocol" to "envd_connect_process_v1",
+        "sandboxCommandSessionSource" to "persisted",
+        "sandboxCommandPid" to "654",
+      ),
+      waitedSnapshotMetadata = mapOf(
+        "sandboxCommandReconnectStatus" to "completed",
+        "sandboxCommandReconnectRecoveryState" to "completed",
+        "sandboxCommandReconnectHttpStatusCode" to "200",
+      ),
+    )
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        processRegistry = registry,
+      ),
+    )
+
+    val startResult = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessStart",
+        arguments = JsonObject(
+          mapOf(
+            "command" to JsonPrimitive("npm"),
+            "args" to kotlinx.serialization.json.buildJsonArray {
+              add(JsonPrimitive("run"))
+              add(JsonPrimitive("dev"))
+            },
+            "working_directory" to JsonPrimitive("."),
+            "timeout_ms" to JsonPrimitive(120000),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+    val processId = requireNotNull(startResult.metadata["processId"])
+
+    val readResult = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessRead",
+        arguments = JsonObject(mapOf("process_id" to JsonPrimitive(processId))),
+      ),
+      hooks = runtimeHooks(),
+    )
+    val waitResult = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessWait",
+        arguments = JsonObject(
+          mapOf(
+            "process_id" to JsonPrimitive(processId),
+            "timeout_ms" to JsonPrimitive(250),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertTrue(readResult.content.contains("runtime_backend=e2b_envd_native_command"))
+    assertTrue(readResult.content.contains("runtime_transport=connect_proto_minimal"))
+    assertTrue(readResult.content.contains("sandbox_backend_resolved_kind=provider_native"))
+    assertTrue(readResult.content.contains("sandbox_supports_reconnect=true"))
+    assertTrue(readResult.content.contains("sandbox_observation_mode=host_managed_snapshot"))
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_api=envd_process_connect"))
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_status=attached"))
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_recovery_state=attached_live"))
+    assertTrue(
+      readResult.content.contains(
+        "sandbox_command_reconnect_resume_mode=seed_snapshot_then_live_attach",
+      ),
+    )
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_backfill_supported=false"))
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_output_gap_risk=true"))
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_retryable=false"))
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_attempt_count=2"))
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_last_attached_at_epoch_ms=1500"))
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_last_event_at_epoch_ms=1600"))
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_last_event_kind=data"))
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_seeded_stdout_bytes=7"))
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_seeded_stderr_bytes=0"))
+    assertTrue(
+      readResult.content.contains(
+        "observation_warning=provider reconnect resumed from persisted snapshot without log backfill; output emitted before attach may be missing",
+      ),
+    )
+    assertTrue(readResult.content.contains("sandbox_command_pid=654"))
+    assertEquals("e2b_envd_native_command", readResult.metadata["runtimeBackend"])
+    assertEquals("host_managed_snapshot", readResult.metadata["sandboxCommandObservationMode"])
+    assertEquals("true", readResult.metadata["sandboxCommandSupportsReconnect"])
+    assertEquals(
+      "seed_snapshot_then_live_attach",
+      readResult.metadata["sandboxCommandReconnectResumeMode"],
+    )
+    assertEquals("attached_live", readResult.metadata["sandboxCommandReconnectRecoveryState"])
+    assertEquals("true", readResult.metadata["sandboxCommandReconnectOutputGapRisk"])
+    assertEquals("1500", readResult.metadata["sandboxCommandReconnectLastAttachedAtEpochMs"])
+    assertEquals("1600", readResult.metadata["sandboxCommandReconnectLastEventAtEpochMs"])
+    assertEquals("data", readResult.metadata["sandboxCommandReconnectLastEventKind"])
+
+    assertTrue(waitResult.content.contains("runtime_backend=e2b_envd_native_command"))
+    assertTrue(waitResult.content.contains("sandbox_command_api=envd_process_start"))
+    assertTrue(waitResult.content.contains("sandbox_command_native_protocol=envd_connect_process_v1"))
+    assertTrue(waitResult.content.contains("sandbox_command_session_source=persisted"))
+    assertTrue(waitResult.content.contains("sandbox_command_reconnect_recovery_state=completed"))
+    assertTrue(waitResult.content.contains("sandbox_command_reconnect_output_gap_risk=true"))
+    assertTrue(waitResult.content.contains("status=success"))
+    assertEquals("provider_native", waitResult.metadata["sandboxCommandBackendResolvedKind"])
+    assertEquals("completed", waitResult.metadata["sandboxCommandReconnectRecoveryState"])
+  }
+
+  @Test
+  fun processReadRendersRetryableReconnectWarningForRunningNativeSnapshot() {
+    val workspaceRoot = temporaryFolder.newFolder("process-tool-native-retryable-render").toPath()
+    val registry = RecordingProcessRegistry(
+      workspaceRoot = workspaceRoot,
+      startedSnapshotMetadata = mapOf(
+        "runtimeBackend" to "e2b_envd_native_command",
+        "runtimeTransport" to "connect_proto_minimal",
+        "sandboxCommandBackendKind" to "provider_native",
+        "sandboxCommandBackendResolvedKind" to "provider_native",
+        "sandboxCommandProviderNative" to "true",
+        "sandboxCommandSupportsStreamingLogs" to "false",
+        "sandboxCommandSupportsReconnect" to "true",
+        "sandboxCommandObservationMode" to "host_managed_snapshot",
+        "sandboxCommandReconnectApi" to "envd_process_connect",
+        "sandboxCommandReconnectStatus" to "retryable_failure",
+        "sandboxCommandReconnectRecoveryState" to "retry_scheduled",
+        "sandboxCommandReconnectSource" to "durable_registry_restore",
+        "sandboxCommandReconnectRetryable" to "true",
+        "sandboxCommandReconnectRetryAfterEpochMs" to "2200",
+        "sandboxCommandReconnectAttemptCount" to "1",
+        "sandboxCommandReconnectFailureStage" to "transport_exception_after_connect",
+        "sandboxCommandReconnectLastFailureAtEpochMs" to "1200",
+      ),
+    )
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        processRegistry = registry,
+      ),
+    )
+
+    val startResult = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessStart",
+        arguments = JsonObject(
+          mapOf(
+            "command" to JsonPrimitive("npm"),
+            "args" to kotlinx.serialization.json.buildJsonArray {
+              add(JsonPrimitive("run"))
+              add(JsonPrimitive("dev"))
+            },
+            "working_directory" to JsonPrimitive("."),
+            "timeout_ms" to JsonPrimitive(120000),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+    val processId = requireNotNull(startResult.metadata["processId"])
+
+    val readResult = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessRead",
+        arguments = JsonObject(mapOf("process_id" to JsonPrimitive(processId))),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_status=retryable_failure"))
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_recovery_state=retry_scheduled"))
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_retryable=true"))
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_retry_after_epoch_ms=2200"))
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_attempt_count=1"))
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_last_failure_at_epoch_ms=1200"))
+    assertTrue(
+      readResult.content.contains(
+        "observation_warning=provider reconnect failed without terminal process state; a later ProcessRead or ProcessWait may retry attach after backoff",
+      ),
+    )
+    assertEquals("true", readResult.metadata["sandboxCommandReconnectRetryable"])
+    assertEquals("retry_scheduled", readResult.metadata["sandboxCommandReconnectRecoveryState"])
+    assertEquals("1200", readResult.metadata["sandboxCommandReconnectLastFailureAtEpochMs"])
+  }
+
+  @Test
   fun safeModeProcessTerminateRequiresHighRiskApprovalBeforeTermination() {
     val workspaceRoot = temporaryFolder.newFolder("process-tool-safe-terminate").toPath()
     val registry = RecordingProcessRegistry(workspaceRoot = workspaceRoot)
@@ -617,6 +834,8 @@ class AgentManagedProcessToolTest {
 
   private class RecordingProcessRegistry(
     private val workspaceRoot: Path,
+    private val startedSnapshotMetadata: Map<String, String> = emptyMap(),
+    private val waitedSnapshotMetadata: Map<String, String> = emptyMap(),
   ) : AgentProcessRegistry {
     val startRequests = mutableListOf<ManagedProcessStartRequest>()
     val waitSnapshots = mutableListOf<ManagedProcessSnapshot>()
@@ -640,7 +859,7 @@ class AgentManagedProcessToolTest {
         timeoutMs = request.timeoutMs,
         startedAtEpochMs = 1_000L,
         updatedAtEpochMs = 1_000L,
-        metadata = request.metadata,
+        metadata = request.metadata + startedSnapshotMetadata,
       )
       snapshotsById[request.processId] = snapshot
       return snapshot
@@ -658,6 +877,7 @@ class AgentManagedProcessToolTest {
         exitCode = 0,
         updatedAtEpochMs = existing.updatedAtEpochMs + timeoutMs,
         finishedAtEpochMs = existing.updatedAtEpochMs + timeoutMs,
+        metadata = existing.metadata + waitedSnapshotMetadata,
       )
       snapshotsById[processId] = waited
       waitSnapshots += waited

@@ -15,6 +15,7 @@ import com.opencray.runtime.memory.MemoryPreferenceKeys
 import com.opencray.runtime.memory.MemoryRecordExtensionKeys
 import com.opencray.runtime.memory.MemoryScope
 import com.opencray.runtime.memory.MemoryStewardshipService
+import com.opencray.runtime.memory.MemoryStatus
 import com.opencray.runtime.memory.TaskCommitmentResolver
 import com.opencray.runtime.memory.MemoryTurnEvidence
 import com.opencray.runtime.memory.MemoryWriter
@@ -51,6 +52,7 @@ internal class ChatMemoryIngestionCoordinator(
   private val interactionPreferenceWritePlanner: InteractionPreferenceMemoryWritePlanner = InteractionPreferenceMemoryWritePlanner(),
   private val relationshipEventInterpreter: RelationshipEventInterpreter = NoOpRelationshipEventInterpreter,
   private val relationshipWritePlanner: RelationshipMemoryWritePlanner = RelationshipMemoryWritePlanner(),
+  private val sessionScopedStateMarker: (String) -> Unit = {},
   private val flushCoordinator: MemoryFlushCoordinator = MemoryFlushCoordinator(
     candidateExtractor = candidateExtractor,
     writer = writer,
@@ -166,12 +168,19 @@ internal class ChatMemoryIngestionCoordinator(
         ).candidates,
       ).writtenRecords
     }
-    return MemoryIngestionSummary(
+    val summary = MemoryIngestionSummary(
       writtenRecords = writeSummary.writtenRecords + interactionPreferenceWriteSummary + relationshipWriteSummary,
       resolvedRecords = maintenance.resolvedRecords + stewardshipPlan.resolvedRecords,
       reaffirmedRecords = maintenance.reaffirmedRecords + stewardshipPlan.reaffirmedRecords,
       expiredRecordIds = maintenance.expiredRecordIds,
     )
+    if (
+      (summary.writtenRecords + summary.resolvedRecords + summary.reaffirmedRecords)
+        .any(::isActiveSessionScopedRecord)
+    ) {
+      sessionScopedStateMarker(sessionId)
+    }
+    return summary
   }
 
   private fun isApprovalRequired(result: ExecutionResult): Boolean =
@@ -223,6 +232,10 @@ internal class ChatMemoryIngestionCoordinator(
       else -> null
     }
   }
+
+  private fun isActiveSessionScopedRecord(record: MemoryRecord): Boolean =
+    record.extensions[MemoryRecordExtensionKeys.SCOPE] == MemoryScope.SESSION.name.lowercase() &&
+      record.extensions[MemoryRecordExtensionKeys.STATUS] != MemoryStatus.RESOLVED.name.lowercase()
 
   private companion object {
     const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"

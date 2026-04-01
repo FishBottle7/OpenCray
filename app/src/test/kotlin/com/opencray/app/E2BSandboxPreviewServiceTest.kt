@@ -3,6 +3,7 @@ package com.opencray.app
 import com.opencray.runtime.SandboxPreviewRequest
 import com.opencray.runtime.SandboxPreviewProbeStatus
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -71,6 +72,14 @@ class E2BSandboxPreviewServiceTest {
       "traffic-token",
       probeRequests.single().headers[E2BSandboxPreviewService.TRAFFIC_ACCESS_HEADER_NAME],
     )
+    val persistedSession = sessionStore.load()
+    assertEquals("https://4173-sb-preview.e2b.app/preview", persistedSession?.lastPreviewUrl)
+    assertEquals(4173, persistedSession?.lastPreviewPort)
+    assertEquals("/preview", persistedSession?.lastPreviewPath)
+    assertEquals(SandboxPreviewProbeStatus.READY.wireValue, persistedSession?.lastPreviewProbeStatus)
+    assertEquals(200, persistedSession?.lastPreviewProbeHttpStatusCode)
+    assertEquals(SandboxPreviewProbeSource.PREVIEW_OPEN, persistedSession?.lastPreviewProbeSource)
+    assertEquals(persistedSession?.lastPreviewOpenedAtEpochMs, persistedSession?.lastPreviewProbeObservedAtEpochMs)
   }
 
   @Test(expected = IllegalArgumentException::class)
@@ -147,6 +156,72 @@ class E2BSandboxPreviewServiceTest {
   }
 
   @Test
+  fun openUsesSingleCandidatePortWhenRequestPortIsMissing() {
+    val workspaceRoot = temporaryFolder.newFolder("e2b-preview-auto-port").toPath()
+    val sessionStore = E2BSandboxSessionStore(InMemoryE2BSandboxSessionKeyValueStore()).apply {
+      save(
+        E2BSandboxSessionSnapshot(
+          sandboxId = "sb-preview-auto-port",
+          sandboxDomain = "e2b.app",
+          workspaceRoot = workspaceRoot.toString(),
+          templateId = E2BCodeInterpreterPythonRuntime.DEFAULT_TEMPLATE_ID,
+          updatedAtEpochMs = 1L,
+          previewCandidatePorts = listOf(4173),
+        ),
+      )
+    }
+    val service = E2BSandboxPreviewService(
+      settingsProvider = { sandboxSettings() },
+      sessionStore = sessionStore,
+      probeTransport = SandboxPreviewProbeTransport {
+        SandboxPreviewProbeResponse(statusCode = 200)
+      },
+    )
+
+    val preview = service.open(
+      SandboxPreviewRequest(
+        workspaceRoot = workspaceRoot,
+        path = "/",
+      ),
+    )
+
+    assertEquals(4173, preview.port)
+    assertEquals("https://4173-sb-preview-auto-port.e2b.app/", preview.url)
+  }
+
+  @Test
+  fun openRejectsMissingPortWhenMultipleCandidatePortsAreAvailable() {
+    val workspaceRoot = temporaryFolder.newFolder("e2b-preview-multi-port").toPath()
+    val sessionStore = E2BSandboxSessionStore(InMemoryE2BSandboxSessionKeyValueStore()).apply {
+      save(
+        E2BSandboxSessionSnapshot(
+          sandboxId = "sb-preview-multi-port",
+          sandboxDomain = "e2b.app",
+          workspaceRoot = workspaceRoot.toString(),
+          templateId = E2BCodeInterpreterPythonRuntime.DEFAULT_TEMPLATE_ID,
+          updatedAtEpochMs = 1L,
+          previewCandidatePorts = listOf(3000, 4173),
+        ),
+      )
+    }
+    val service = E2BSandboxPreviewService(
+      settingsProvider = { sandboxSettings() },
+      sessionStore = sessionStore,
+    )
+
+    val error = runCatching {
+      service.open(
+        SandboxPreviewRequest(
+          workspaceRoot = workspaceRoot,
+        ),
+      )
+    }.exceptionOrNull()
+
+    assertTrue(error is IllegalArgumentException)
+    assertTrue(error?.message.orEmpty().contains("3000, 4173"))
+  }
+
+  @Test
   fun openUsesActiveInMemorySessionWhenPreviewSessionIsNotPersisted() {
     val workspaceRoot = temporaryFolder.newFolder("e2b-preview-active-session").toPath()
     val probeRequests = mutableListOf<SandboxPreviewProbeRequest>()
@@ -183,6 +258,43 @@ class E2BSandboxPreviewServiceTest {
       "traffic-token",
       probeRequests.single().headers[E2BSandboxPreviewService.TRAFFIC_ACCESS_HEADER_NAME],
     )
+  }
+
+  @Test
+  fun openDoesNotCreateStoredSnapshotWhenOnlyActiveSessionExists() {
+    val workspaceRoot = temporaryFolder.newFolder("e2b-preview-active-only-no-store").toPath()
+    var latestActiveSession: E2BSandboxSessionSnapshot? = E2BSandboxSessionSnapshot(
+      sandboxId = "sb-active-only-no-store",
+      sandboxDomain = "e2b.app",
+      workspaceRoot = workspaceRoot.toString(),
+      templateId = E2BCodeInterpreterPythonRuntime.DEFAULT_TEMPLATE_ID,
+      updatedAtEpochMs = 1L,
+    )
+    val sessionStore = E2BSandboxSessionStore(InMemoryE2BSandboxSessionKeyValueStore())
+    val service = E2BSandboxPreviewService(
+      settingsProvider = { sandboxSettings() },
+      sessionStore = sessionStore,
+      activeSessionProvider = { latestActiveSession },
+      activeSessionRecorder = { snapshot -> latestActiveSession = snapshot },
+      probeTransport = SandboxPreviewProbeTransport {
+        SandboxPreviewProbeResponse(statusCode = 200)
+      },
+      clock = { 1234L },
+    )
+
+    val preview = service.open(
+      SandboxPreviewRequest(
+        workspaceRoot = workspaceRoot,
+        port = 4173,
+      ),
+    )
+
+    assertEquals("https://4173-sb-active-only-no-store.e2b.app/", preview.url)
+    assertNull(sessionStore.load())
+    assertEquals("https://4173-sb-active-only-no-store.e2b.app/", latestActiveSession?.lastPreviewUrl)
+    assertEquals(1234L, latestActiveSession?.lastPreviewOpenedAtEpochMs)
+    assertEquals(1234L, latestActiveSession?.lastPreviewProbeObservedAtEpochMs)
+    assertEquals(SandboxPreviewProbeSource.PREVIEW_OPEN, latestActiveSession?.lastPreviewProbeSource)
   }
 
   @Test

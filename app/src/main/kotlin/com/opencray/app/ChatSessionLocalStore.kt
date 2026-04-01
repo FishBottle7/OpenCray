@@ -10,6 +10,7 @@ import com.opencray.persistence.model.ChatWorkspaceRecord
 import com.opencray.persistence.store.file.JsonFileChatWorkspaceStore
 import com.opencray.runtime.AgentTodoEntry
 import com.opencray.runtime.AgentTodoStatus
+import com.opencray.runtime.workingstate.WorkingState
 import java.io.File
 import java.util.UUID
 import kotlinx.serialization.Serializable
@@ -96,10 +97,11 @@ internal open class ChatSessionLocalStore(
       sessions = (workspace.sessions.filterNot { it.sessionId == copiedSessionId } + copiedSession)
         .sortedByDescending { it.updatedAtEpochMs },
       activeSessionId = copiedSessionId,
-      extensions = copySessionTodoExtension(
+      extensions = copySessionExtensions(
         extensions = workspace.extensions,
         sourceSessionId = sourceSession.sessionId,
         targetSessionId = copiedSessionId,
+        includeWorkingState = true,
       ),
       recordVersion = workspace.recordVersion + 1,
       updatedAtEpochMs = now,
@@ -142,7 +144,9 @@ internal open class ChatSessionLocalStore(
         pendingUserInputExtensionKey(sessionId) -
         todoExtensionKey(sessionId) -
         archivedTodoExtensionKey(sessionId) -
-        nativeWebSearchApprovalExtensionKey(sessionId),
+        workingStateExtensionKey(sessionId) -
+        nativeWebSearchApprovalExtensionKey(sessionId) -
+        sessionScopedStateExtensionKey(sessionId),
       recordVersion = workspace.recordVersion + 1,
       updatedAtEpochMs = now,
     )
@@ -395,10 +399,11 @@ internal open class ChatSessionLocalStore(
       sessions = (workspace.sessions.filterNot { it.sessionId == branchSessionId } + branchSession)
         .sortedByDescending { it.updatedAtEpochMs },
       activeSessionId = branchSessionId,
-      extensions = copySessionTodoExtension(
+      extensions = copySessionExtensions(
         extensions = workspace.extensions,
         sourceSessionId = sourceSession.sessionId,
         targetSessionId = branchSessionId,
+        includeWorkingState = false,
       ),
       recordVersion = workspace.recordVersion + 1,
       updatedAtEpochMs = now,
@@ -503,6 +508,14 @@ internal open class ChatSessionLocalStore(
     return todoSnapshotFrom(workspace = workspace, sessionId = sessionId)
   }
 
+  fun loadWorkingState(sessionId: String): WorkingState {
+    if (sessionId.isBlank()) {
+      return WorkingState()
+    }
+    val workspace = loadWorkspaceOrCreate()
+    return workingStateFrom(workspace = workspace, sessionId = sessionId)
+  }
+
   fun loadTodoPresentation(
     sessionId: String,
     archivedVisibilityDurationMs: Long,
@@ -575,6 +588,35 @@ internal open class ChatSessionLocalStore(
     )
   }
 
+  fun setSessionScopedStatePresent(
+    sessionId: String,
+    present: Boolean,
+  ) {
+    if (sessionId.isBlank()) {
+      return
+    }
+    val workspace = loadWorkspaceOrCreate()
+    if (workspace.sessions.none { session -> session.sessionId == sessionId }) {
+      return
+    }
+    val key = sessionScopedStateExtensionKey(sessionId)
+    val updatedExtensions = if (present) {
+      workspace.extensions + (key to "true")
+    } else {
+      workspace.extensions - key
+    }
+    if (updatedExtensions == workspace.extensions) {
+      return
+    }
+    workspaceStore.save(
+      workspace.copy(
+        extensions = updatedExtensions,
+        recordVersion = workspace.recordVersion + 1,
+        updatedAtEpochMs = nowEpochMs(),
+      ),
+    )
+  }
+
   fun replaceTodos(
     sessionId: String,
     todos: List<AgentTodoEntry>,
@@ -590,6 +632,29 @@ internal open class ChatSessionLocalStore(
       workspace = workspace,
       sessionId = sessionId,
       todos = normalizeTodos(todos),
+      updatedAtEpochMs = nowEpochMs(),
+    )
+    if (updatedWorkspace == workspace) {
+      return
+    }
+    workspaceStore.save(updatedWorkspace)
+  }
+
+  fun replaceWorkingState(
+    sessionId: String,
+    workingState: WorkingState,
+  ) {
+    if (sessionId.isBlank()) {
+      return
+    }
+    val workspace = loadWorkspaceOrCreate()
+    if (workspace.sessions.none { session -> session.sessionId == sessionId }) {
+      return
+    }
+    val updatedWorkspace = workspaceWithWorkingState(
+      workspace = workspace,
+      sessionId = sessionId,
+      workingState = workingState,
       updatedAtEpochMs = nowEpochMs(),
     )
     if (updatedWorkspace == workspace) {
@@ -946,7 +1011,13 @@ internal open class ChatSessionLocalStore(
     if (todoSnapshotFrom(workspace = workspace, sessionId = session.sessionId).state != ChatSessionTodoState.EMPTY) {
       return false
     }
+    if (!workingStateFrom(workspace = workspace, sessionId = session.sessionId).isEmpty) {
+      return false
+    }
     if (nativeWebSearchApprovalFrom(workspace = workspace, sessionId = session.sessionId)) {
+      return false
+    }
+    if (sessionScopedStatePresentFrom(workspace = workspace, sessionId = session.sessionId)) {
       return false
     }
     if (session.messages.size != 1) {
@@ -1002,10 +1073,24 @@ internal open class ChatSessionLocalStore(
   ): PersistedArchivedTodoSnapshot? = workspace.extensions[archivedTodoExtensionKey(sessionId)]
     ?.let(::decodePersistedArchivedTodos)
 
+  private fun workingStateFrom(
+    workspace: ChatWorkspaceRecord,
+    sessionId: String,
+  ): WorkingState = workspace.extensions[workingStateExtensionKey(sessionId)]
+    ?.let(::decodePersistedWorkingState)
+    ?: WorkingState()
+
   private fun nativeWebSearchApprovalFrom(
     workspace: ChatWorkspaceRecord,
     sessionId: String,
   ): Boolean = workspace.extensions[nativeWebSearchApprovalExtensionKey(sessionId)]
+    ?.trim()
+    ?.lowercase() == "true"
+
+  private fun sessionScopedStatePresentFrom(
+    workspace: ChatWorkspaceRecord,
+    sessionId: String,
+  ): Boolean = workspace.extensions[sessionScopedStateExtensionKey(sessionId)]
     ?.trim()
     ?.lowercase() == "true"
 
@@ -1092,15 +1177,47 @@ internal open class ChatSessionLocalStore(
     }
   }
 
+  private fun workspaceWithWorkingState(
+    workspace: ChatWorkspaceRecord,
+    sessionId: String,
+    workingState: WorkingState,
+    updatedAtEpochMs: Long,
+  ): ChatWorkspaceRecord {
+    val key = workingStateExtensionKey(sessionId)
+    val updatedExtensions = if (workingState.isEmpty) {
+      workspace.extensions - key
+    } else {
+      workspace.extensions + (
+        key to workingStateJson.encodeToString(
+          serializer = WorkingState.serializer(),
+          value = workingState,
+        )
+      )
+    }
+    return if (updatedExtensions == workspace.extensions) {
+      workspace
+    } else {
+      workspace.copy(
+        extensions = updatedExtensions,
+        recordVersion = workspace.recordVersion + 1,
+        updatedAtEpochMs = updatedAtEpochMs,
+      )
+    }
+  }
+
   private fun todoExtensionKey(sessionId: String): String = "todos.$sessionId"
   private fun archivedTodoExtensionKey(sessionId: String): String = "todosArchived.$sessionId"
+  private fun workingStateExtensionKey(sessionId: String): String = "workingState.$sessionId"
   private fun nativeWebSearchApprovalExtensionKey(sessionId: String): String =
     "nativeWebSearchApproval.$sessionId"
+  private fun sessionScopedStateExtensionKey(sessionId: String): String =
+    "sessionScopedState.$sessionId"
 
-  private fun copySessionTodoExtension(
+  private fun copySessionExtensions(
     extensions: Map<String, String>,
     sourceSessionId: String,
     targetSessionId: String,
+    includeWorkingState: Boolean,
   ): Map<String, String> {
     var updatedExtensions = extensions
     extensions[todoExtensionKey(sourceSessionId)]?.let { sourceValue ->
@@ -1109,6 +1226,11 @@ internal open class ChatSessionLocalStore(
     extensions[archivedTodoExtensionKey(sourceSessionId)]?.let { sourceValue ->
       updatedExtensions =
         updatedExtensions + (archivedTodoExtensionKey(targetSessionId) to sourceValue)
+    }
+    if (includeWorkingState) {
+      extensions[workingStateExtensionKey(sourceSessionId)]?.let { sourceValue ->
+        updatedExtensions = updatedExtensions + (workingStateExtensionKey(targetSessionId) to sourceValue)
+      }
     }
     return updatedExtensions
   }
@@ -1137,6 +1259,13 @@ internal open class ChatSessionLocalStore(
     }.getOrNull()
       ?.takeIf { archivedTodos -> archivedTodos.completedAtEpochMs >= 0L }
       ?.takeIf { archivedTodos -> archivedTodos.todos.isNotEmpty() }
+
+  private fun decodePersistedWorkingState(raw: String): WorkingState = runCatching {
+    workingStateJson.decodeFromString(
+      deserializer = WorkingState.serializer(),
+      string = raw,
+    )
+  }.getOrDefault(WorkingState())
 
   private fun normalizeTodos(todos: List<AgentTodoEntry>): List<AgentTodoEntry> =
     todos.mapIndexed { index, entry ->
@@ -1261,6 +1390,7 @@ internal open class ChatSessionLocalStore(
       "You are OpenCray. Keep the session transcript complete and preserve user-visible context."
     private val pendingUserInputJson = Json { ignoreUnknownKeys = true }
     private val todoJson = Json { ignoreUnknownKeys = true }
+    private val workingStateJson = Json { ignoreUnknownKeys = true }
 
     fun fromContext(
       context: Context,

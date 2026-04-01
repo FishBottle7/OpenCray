@@ -479,7 +479,6 @@ def run_request_file(
             if (
                 execution_started_at_epoch_ms is not None
                 and execution_started_at_epoch_ms > 0
-                and int(payload.get("executionStartedAtEpochMs", 0) or 0) <= 0
             ):
                 payload["executionStartedAtEpochMs"] = execution_started_at_epoch_ms
         request = BridgeRequest.from_json_dict(payload)

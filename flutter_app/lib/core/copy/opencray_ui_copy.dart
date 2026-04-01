@@ -425,11 +425,54 @@ class OpenCrayUiCopy {
   String get chatRunPreviewCopyUrlAction => isChinese ? '复制链接' : 'Copy URL';
   String get chatRunPreviewCopied =>
       isChinese ? '已复制预览链接。' : 'Preview URL copied.';
+  String get chatRunPreviewEmbedLoading =>
+      isChinese ? '正在载入内嵌预览…' : 'Loading embedded preview...';
+  String get chatRunPreviewEmbedUnavailable =>
+      isChinese ? '当前无法显示内嵌预览。' : 'Embedded preview is unavailable.';
+  String get chatRunPreviewEmbedUnsupported => isChinese
+      ? '当前宿主环境不支持内嵌网页预览。'
+      : 'This host does not support embedded web previews.';
   String get chatRunPreviewStatusReady => isChinese ? '已就绪' : 'Ready';
   String get chatRunPreviewStatusReachable => isChinese ? '可达' : 'Reachable';
   String get chatRunPreviewStatusUnreachable =>
       isChinese ? '未就绪' : 'Unreachable';
   String get chatRunPreviewStatusSkipped => isChinese ? '未探测' : 'Skipped';
+  String get chatRunSandboxSessionTitle => isChinese ? '云端会话' : 'Cloud Session';
+  String get chatRunSandboxSessionMissing => isChinese
+      ? '当前工作区还没有可复用的云端沙盒会话。'
+      : 'No reusable cloud sandbox session is recorded for this workspace.';
+  String get chatRunSandboxSessionSourceActive => isChinese ? '活动中' : 'Active';
+  String get chatRunSandboxSessionSourcePersisted =>
+      isChinese ? '已保存' : 'Saved';
+  String get chatRunSandboxSessionSourceActiveAndPersisted =>
+      isChinese ? '活动 + 已保存' : 'Active + Saved';
+  String get chatRunSandboxSessionSourceNone =>
+      isChinese ? '无会话' : 'No session';
+  String get chatRunSandboxSessionLifecycleActive =>
+      isChinese ? '正常' : 'Healthy';
+  String get chatRunSandboxSessionLifecycleStale => isChinese ? '陈旧' : 'Stale';
+  String get chatRunSandboxSessionLifecycleReclaimed =>
+      isChinese ? '已回收' : 'Reclaimed';
+  String get chatRunSandboxSessionLifecycleNone =>
+      isChinese ? '无会话' : 'No session';
+  String chatRunSandboxSessionPorts(String ports) =>
+      isChinese ? '端口 $ports' : 'Ports $ports';
+  String chatRunSandboxSessionTemplate(String templateId) =>
+      isChinese ? '模板 $templateId' : 'Template $templateId';
+  String chatRunSandboxSessionRunningCount(int count) =>
+      isChinese ? '运行中 $count' : 'Running $count';
+  String chatRunSandboxSessionUpdated(String label) =>
+      isChinese ? '更新于 $label' : 'Updated $label';
+  String chatRunSandboxSessionLastActive(String label) =>
+      isChinese ? '最近活跃于 $label' : 'Last active $label';
+  String chatRunSandboxSessionStaleAfter(String label) =>
+      isChinese ? '预计在 $label 判定陈旧' : 'Stales after $label';
+  String chatRunSandboxSessionPreviewChecked(String label) =>
+      isChinese ? '预览探测于 $label' : 'Preview checked $label';
+  String chatRunSandboxSessionPreviewStatus(String label) =>
+      isChinese ? '预览 $label' : 'Preview $label';
+  String get chatRunSandboxSessionRunningRequestsTitle =>
+      isChinese ? '运行中的请求' : 'Running requests';
   String get chatRunThinkingActive => isChinese
       ? '正在分析请求，并决定下一步要做什么。'
       : 'Analyzing the request and deciding the next step.';

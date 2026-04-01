@@ -41,6 +41,15 @@ class SubAgentContextBuilderTest {
   private val builder = SubAgentContextBuilder()
 
   @Test
+  fun mirroredModeIsReservedForInternalOnlyPaths() {
+    assertEquals(
+      listOf("minimal", "delegated"),
+      SubAgentContextMode.publicModes().map(SubAgentContextMode::wireValue),
+    )
+    assertFalse(SubAgentContextMode.MIRRORED.publicControlPlaneEnabled)
+  }
+
+  @Test
   fun minimalContextDropsParentTranscriptAndHeavyContextLayers() {
     val parentContext = parentSessionContext()
     val activeSkillCapsule = activeSkillCapsule()
@@ -117,7 +126,7 @@ class SubAgentContextBuilderTest {
   }
 
   @Test
-  fun mirroredContextPreservesParentContextLayersButDropsTurnSignal() {
+  fun mirroredContextBuilderPathRemainsAvailableForInternalRecoveryOnly() {
     val parentContext = parentSessionContext()
     val activeSkillCapsule = activeSkillCapsule()
     val parentConversation = listOf(

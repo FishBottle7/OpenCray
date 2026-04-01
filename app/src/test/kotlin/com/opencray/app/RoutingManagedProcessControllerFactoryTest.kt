@@ -5,8 +5,10 @@ import com.opencray.runtime.process.ManagedProcessControllerFactory
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.process.ReconnectableManagedProcessControllerFactory
 import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -102,6 +104,51 @@ class RoutingManagedProcessControllerFactoryTest {
     assertEquals("python", snapshot.metadata["factoryBackend"])
   }
 
+  @Test
+  fun reconnectUsesSandboxFactoryForPersistedSandboxSnapshotEvenWhenCurrentPreferenceIsLocal() {
+    val localFactory = RecordingManagedProcessControllerFactory("local")
+    val sandboxFactory = RecordingManagedProcessControllerFactory("sandbox")
+    val factory = RoutingManagedProcessControllerFactory(
+      settingsProvider = {
+        ResolvedSandboxSettings(
+          state = SandboxSettingsState(
+            enabled = true,
+            defaultBackend = SandboxExecutionBackendPreference.LOCAL.wireValue,
+            e2bApiKeyCredentialRef = SandboxSettingsRepository.E2B_API_KEY_REF.uri,
+          ),
+          e2bApiKey = "secret-token",
+        )
+      },
+      pythonRuntimeFactory = RecordingManagedProcessControllerFactory("python"),
+      localFactory = localFactory,
+      sandboxFactoryProvider = { sandboxFactory },
+    )
+
+    val controller = factory.reconnect(
+      ManagedProcessSnapshot(
+        processId = "proc-sandbox",
+        taskId = "task-sandbox",
+        command = "npm",
+        args = listOf("run", "dev"),
+        workingDirectory = ".",
+        status = ManagedProcessStatus.RUNNING,
+        processStarted = true,
+        timeoutMs = 5_000L,
+        startedAtEpochMs = 100L,
+        updatedAtEpochMs = 100L,
+        metadata = mapOf(
+          "executionBackend" to ResolvedExecutionBackend.SANDBOX_REMOTE.wireValue,
+          "sandboxProvider" to SandboxProviderId.E2B.wireValue,
+        ),
+      ),
+    )
+
+    assertNotNull(controller)
+    assertTrue(localFactory.reconnectSnapshots.isEmpty())
+    assertEquals(1, sandboxFactory.reconnectSnapshots.size)
+    assertEquals("sandbox", controller!!.snapshot().metadata["factoryBackend"])
+  }
+
   private fun commandRequest(
     metadata: Map<String, String> = emptyMap(),
   ): ManagedProcessStartRequest = ManagedProcessStartRequest(
@@ -117,8 +164,9 @@ class RoutingManagedProcessControllerFactoryTest {
 
   private class RecordingManagedProcessControllerFactory(
     private val backend: String,
-  ) : ManagedProcessControllerFactory {
+  ) : ReconnectableManagedProcessControllerFactory {
     val requests = mutableListOf<ManagedProcessStartRequest>()
+    val reconnectSnapshots = mutableListOf<ManagedProcessSnapshot>()
 
     override fun start(request: ManagedProcessStartRequest): ManagedProcessController {
       requests += request
@@ -135,6 +183,19 @@ class RoutingManagedProcessControllerFactoryTest {
           startedAtEpochMs = 100L,
           updatedAtEpochMs = 100L,
           metadata = request.metadata + mapOf("factoryBackend" to backend),
+        )
+
+        override fun await(timeoutMs: Long): ManagedProcessSnapshot = snapshot()
+
+        override fun terminate(): ManagedProcessSnapshot = snapshot()
+      }
+    }
+
+    override fun reconnect(snapshot: ManagedProcessSnapshot): ManagedProcessController {
+      reconnectSnapshots += snapshot
+      return object : ManagedProcessController {
+        override fun snapshot(): ManagedProcessSnapshot = snapshot.copy(
+          metadata = snapshot.metadata + mapOf("factoryBackend" to backend),
         )
 
         override fun await(timeoutMs: Long): ManagedProcessSnapshot = snapshot()

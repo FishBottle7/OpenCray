@@ -1,6 +1,6 @@
 # Codex Long-Task Workflow Gap Analysis
 
-Updated: 2026-03-25
+Updated: 2026-03-31
 
 This document summarizes the currently verified gap between OpenCray and Codex for long, tool-heavy, self-driven tasks.
 
@@ -176,18 +176,43 @@ This means OpenCray is not a "single fresh loop per prompt" system anymore.
 OpenCray already has:
 
 - a real delegated child-runtime path
+- an explicit subagent control plane:
+  - `Task`
+  - `spawn_agent`
+  - `send_input`
+  - `wait_agent`
+  - `close_agent`
 - subagent lifecycle events
 - subagent context modes
 - resumable subagent approval states
+- a session-scoped durable child handle plane
+- host/runtime `subAgents` snapshots backed by durable handle state plus replay/checkpoint state
 
 Evidence:
 
+- `runtime/src/main/kotlin/com/opencray/runtime/AgentTooling.kt`
 - `runtime/src/main/kotlin/com/opencray/runtime/subagent/SubAgentRuntime.kt`
 - `runtime/src/main/kotlin/com/opencray/runtime/subagent/SubAgentContextBuilder.kt`
 - `runtime/src/main/kotlin/com/opencray/runtime/subagent/SubAgentResultCompressor.kt`
 - `runtime/src/main/kotlin/com/opencray/runtime/OpenCrayAgentRunEvents.kt`
+- `runtime/src/test/kotlin/com/opencray/runtime/OpenCrayAgentRuntimeSubAgentTest.kt`
+- `app/src/main/kotlin/com/opencray/app/AgentSessionRuntimeManager.kt`
+- `app/src/main/kotlin/com/opencray/app/OpenCrayRuntimeServiceHost.kt`
+- `app/src/main/kotlin/com/opencray/app/OpenCrayHostRuntime.kt`
 
-But the currently exposed subagent control surface is still much narrower than Codex. That matters for the remaining gap.
+But this still does not mean Codex-grade parallel orchestration.
+
+The current shape is:
+
+- `spawn_agent` starts a child handle immediately
+- child execution can now continue in the background within the same runtime host/process even after the parent run returns `final`
+- `wait_agent` waits for that handle to reach its latest stable state later, or resumes it after approval unlocks a paused child
+- a later run can harvest that child through `wait_agent`
+- session/runtime keepalive now treats live subagents as active work, so idle release does not tear them down while they are still running
+- latest child handle state is now durable across runtime/host rebuild through the session handle store
+- but that child is still not a detached actor that survives process death or cold restart
+
+That narrower execution model still matters for the remaining gap.
 
 ## 3. What Is Still Not Fully Done In Tool Calling And Responses
 
@@ -533,12 +558,25 @@ The remaining Codex gap is higher-level planning ergonomics:
 - no richer task graph or dependency structure
 - no automatic plan adoption discipline across more agent profiles
 
-### 4.2 Subagents are still mostly synchronous and bounded, even though they are no longer all read-only
+### 4.2 Subagents are now cold-restart resumable, but still not independent child actors
 
-The current exposed `Task` tool says:
+The current exposed subagent surface now includes:
 
-- delegate one bounded subtask
-- wait for its summarized result before continuing
+- `Task` as a convenience wrapper
+- `spawn_agent`
+- `send_input`
+- `wait_agent`
+- `close_agent`
+
+But the execution semantics are still narrower than Codex:
+
+- `spawn_agent` launches a background child worker immediately and that worker can outlive the parent run within the same runtime host/process
+- child runtime checkpoints are now persisted back into the durable handle store, not just approval resume state
+- cold restart repair now turns checkpointed `BACKGROUND_RUNNING` children into resumable `BACKGROUND_QUEUED` handles instead of blindly failing them
+- `wait_agent` joins or harvests that child later, and resumes it after approval when needed
+- session/runtime keepalive now also treats live subagents as active work, so background children are not released as idle session noise
+- runtime service bootstrap/recovery now auto-submits internal `wait_agent` recovery tasks for detached queued handles, so cold restart can continue child execution from its last durable checkpoint
+- the result is still narrower than Codex because this recovery still reuses the parent session queue and `wait_agent` path instead of a truly independent child actor/scheduler
 
 The built-in subagent profiles now include:
 
@@ -553,9 +591,10 @@ Evidence:
 
 Compared with Codex, the main missing pieces are:
 
-- an explicit multi-step subagent control plane
-- parallel worker orchestration
-- more productized spawn/wait/route/close semantics
+- removing `Task` is not one of the gaps here; keeping it as sugar over the explicit handle control plane is fine
+- broader multi-worker orchestration
+- a truly independent child scheduler/session instead of recovery through the parent session queue
+- stronger route/close/interrupt semantics around independently running children across resumes and restarts
 
 Codex's public subagent docs are ahead here:
 
@@ -720,7 +759,7 @@ For current planning, this is not being treated as one of the key remaining arch
 If the goal is "make OpenCray feel more like Codex on long tasks", the highest-leverage order is now:
 
 1. Tighten Responses lineage semantics beyond `previous_response_id`, and decide whether `providerLineageId` should become a stronger continuation/trust input.
-2. Upgrade subagents from synchronous bounded delegation into a real parallel orchestration surface.
+2. Upgrade subagents from host-local background execution into a cold-restart durable orchestration surface.
 3. Promote `TodoWrite` from a validated todo list into a richer planning protocol.
 4. Decide how much more of the mutating/process tool surface should become parallel-safe.
 5. Add worktree-class task isolation if product direction ever expands toward IDE-style coding workflows.

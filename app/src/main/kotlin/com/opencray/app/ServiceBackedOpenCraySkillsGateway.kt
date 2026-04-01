@@ -23,37 +23,72 @@ internal class ServiceBackedOpenCraySkillsGateway(
     )
 
   override fun setSkillEnabled(skillId: String, enabled: Boolean) {
-    currentWriteGateway("setSkillEnabled").setSkillEnabled(skillId, enabled)
+    dispatchWriteCommand(
+      operation = "setSkillEnabled",
+      command = OpenCraySkillsWriteCommand.SetSkillEnabled(
+        skillId = skillId,
+        enabled = enabled,
+      ),
+    )
   }
 
   override fun installSuggestedSkill(skillId: String): String =
-    currentWriteGateway("installSuggestedSkill").installSuggestedSkill(skillId)
+    dispatchWriteCommand(
+      operation = "installSuggestedSkill",
+      command = OpenCraySkillsWriteCommand.InstallSuggestedSkill(skillId),
+    ).messageOrNull()
 
   override fun installSkillSource(
     sourceRef: String,
     selectedSkillName: String,
-  ): String = currentWriteGateway("installSkillSource").installSkillSource(sourceRef, selectedSkillName)
+  ): String = dispatchWriteCommand(
+    operation = "installSkillSource",
+    command = OpenCraySkillsWriteCommand.InstallSkillSource(
+      sourceRef = sourceRef,
+      selectedSkillName = selectedSkillName,
+    ),
+  ).messageOrNull()
 
   override fun installSkillSourceBatch(
     sourceRef: String,
     selectedSkillNames: List<String>,
-  ): String = currentWriteGateway("installSkillSourceBatch")
-    .installSkillSourceBatch(sourceRef, selectedSkillNames)
+  ): String = dispatchWriteCommand(
+    operation = "installSkillSourceBatch",
+    command = OpenCraySkillsWriteCommand.InstallSkillSourceBatch(
+      sourceRef = sourceRef,
+      selectedSkillNames = selectedSkillNames,
+    ),
+  ).messageOrNull()
 
   override fun inspectSkillSource(sourceRef: String): Map<String, Any?> =
-    currentWriteGateway("inspectSkillSource").inspectSkillSource(sourceRef)
+    dispatchWriteCommand(
+      operation = "inspectSkillSource",
+      command = OpenCraySkillsWriteCommand.InspectSkillSource(sourceRef),
+    ).payloadOrNull()
 
   override fun deleteInstalledSkill(skillId: String): String =
-    currentWriteGateway("deleteInstalledSkill").deleteInstalledSkill(skillId)
+    dispatchWriteCommand(
+      operation = "deleteInstalledSkill",
+      command = OpenCraySkillsWriteCommand.DeleteInstalledSkill(skillId),
+    ).messageOrNull()
 
   override fun refreshSkills(): String =
-    currentWriteGateway("refreshSkills").refreshSkills()
+    dispatchWriteCommand(
+      operation = "refreshSkills",
+      command = OpenCraySkillsWriteCommand.RefreshSkills,
+    ).messageOrNull()
 
   override fun checkInstalledSkillUpdates(skillId: String): String =
-    currentWriteGateway("checkInstalledSkillUpdates").checkInstalledSkillUpdates(skillId)
+    dispatchWriteCommand(
+      operation = "checkInstalledSkillUpdates",
+      command = OpenCraySkillsWriteCommand.CheckInstalledSkillUpdates(skillId),
+    ).messageOrNull()
 
   override fun updateInstalledSkill(skillId: String): String =
-    currentWriteGateway("updateInstalledSkill").updateInstalledSkill(skillId)
+    dispatchWriteCommand(
+      operation = "updateInstalledSkill",
+      command = OpenCraySkillsWriteCommand.UpdateInstalledSkill(skillId),
+    ).messageOrNull()
 
   override fun loadSkillInstructions(skillId: String): Map<String, Any?> =
     currentReadGateway().loadSkillInstructions(skillId)
@@ -67,18 +102,43 @@ internal class ServiceBackedOpenCraySkillsGateway(
   )
 
   override fun activateSkillsInstallSource(sourceId: String): String =
-    currentWriteGateway("activateSkillsInstallSource").activateSkillsInstallSource(sourceId)
+    dispatchWriteCommand(
+      operation = "activateSkillsInstallSource",
+      command = OpenCraySkillsWriteCommand.ActivateSkillsInstallSource(sourceId),
+    ).messageOrNull()
 
   private fun currentReadGateway(): OpenCraySkillsGateway =
     serviceClient.peekSkillsGateway() ?: fallbackGateway
 
-  private fun currentWriteGateway(operation: String): OpenCraySkillsGateway =
+  private fun dispatchWriteCommand(
+    operation: String,
+    command: OpenCraySkillsWriteCommand,
+  ): OpenCraySkillsWriteDispatchResult =
     requireBinderBackedGateway(
       surface = "Skills",
       operation = operation,
-      gateway = serviceClient.awaitSkillsGateway(SERVICE_GATEWAY_BIND_AWAIT_TIMEOUT_MS),
+      gateway = serviceClient.dispatchSkillsWriteCommand(command),
       connectionState = serviceClient.loadConnectionState(),
     )
+}
+
+private fun OpenCraySkillsWriteDispatchResult.messageOrNull(): String = when (this) {
+  OpenCraySkillsWriteDispatchResult.Completed ->
+    error("Skills operation completed without a message payload.")
+
+  is OpenCraySkillsWriteDispatchResult.Message -> value
+  is OpenCraySkillsWriteDispatchResult.Payload ->
+    error("Skills operation returned an object payload where a message was expected.")
+}
+
+private fun OpenCraySkillsWriteDispatchResult.payloadOrNull(): Map<String, Any?> = when (this) {
+  OpenCraySkillsWriteDispatchResult.Completed ->
+    error("Skills operation completed without an object payload.")
+
+  is OpenCraySkillsWriteDispatchResult.Message ->
+    error("Skills operation returned a message payload where an object was expected.")
+
+  is OpenCraySkillsWriteDispatchResult.Payload -> value
 }
 
 internal fun serviceBackedOpenCraySkillsGateway(

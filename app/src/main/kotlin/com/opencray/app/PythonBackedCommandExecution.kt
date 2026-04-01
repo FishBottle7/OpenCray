@@ -32,6 +32,12 @@ internal class PythonBackedCommandProcessRunner(
   private val workspaceRoot: Path,
   private val pythonRuntime: PythonScriptRuntime,
   private val json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true },
+  private val capabilities: SandboxCommandBackendCapabilities = SandboxCommandBackendCapabilities(
+    backendKind = "python_wrapper",
+    providerNative = false,
+    supportsStreamingLogs = false,
+    supportsReconnect = false,
+  ),
 ) : CommandProcessRunner {
   override fun run(
     commandLine: List<String>,
@@ -46,6 +52,7 @@ internal class PythonBackedCommandProcessRunner(
         stderr = "",
         processStarted = false,
         cancelled = true,
+        metadata = capabilities.metadata(),
       )
     }
 
@@ -125,7 +132,7 @@ internal class PythonBackedCommandProcessRunner(
         timedOut = payload.timedOut,
         cancelled = payload.cancelled,
         outputLimitExceeded = payload.outputLimitExceeded,
-        metadata = metadata,
+        metadata = metadata + capabilities.metadata(),
       )
 
       else -> CommandSpawnResult(
@@ -134,7 +141,7 @@ internal class PythonBackedCommandProcessRunner(
         stderr = stderr,
         spawnErrorMessage = errorMessage ?: errorCode,
         processStarted = false,
-        metadata = metadata,
+        metadata = metadata + capabilities.metadata(),
       )
     }
   }
@@ -253,6 +260,12 @@ internal class SandboxPythonManagedCommandControllerFactory(
   private val workspaceRoot: Path,
   private val pythonRuntime: PythonScriptRuntime,
   private val json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true },
+  private val capabilities: SandboxCommandBackendCapabilities = SandboxCommandBackendCapabilities(
+    backendKind = "python_wrapper",
+    providerNative = false,
+    supportsStreamingLogs = false,
+    supportsReconnect = false,
+  ),
   private val clock: () -> Long = { System.currentTimeMillis() },
 ) : ManagedProcessControllerFactory {
   override fun start(request: ManagedProcessStartRequest): ManagedProcessController =
@@ -261,6 +274,7 @@ internal class SandboxPythonManagedCommandControllerFactory(
       workspaceRoot = workspaceRoot,
       pythonRuntime = pythonRuntime,
       json = json,
+      capabilities = capabilities,
       clock = clock,
     )
 }
@@ -270,12 +284,18 @@ private class SandboxPythonManagedCommandController(
   private val workspaceRoot: Path,
   private val pythonRuntime: PythonScriptRuntime,
   private val json: Json,
+  private val capabilities: SandboxCommandBackendCapabilities,
   private val clock: () -> Long,
 ) : ManagedProcessController {
   private val lock = Any()
   private val completion = CountDownLatch(1)
   private val cancellationRuntime = pythonRuntime as? CancellablePythonScriptRuntime
-  private val helperRunner = PythonBackedCommandProcessRunner(workspaceRoot = workspaceRoot, pythonRuntime = pythonRuntime, json = json)
+  private val helperRunner = PythonBackedCommandProcessRunner(
+    workspaceRoot = workspaceRoot,
+    pythonRuntime = pythonRuntime,
+    json = json,
+    capabilities = capabilities,
+  )
 
   private var status: ManagedProcessStatus = ManagedProcessStatus.RUNNING
   private var processStarted: Boolean = true
@@ -290,10 +310,12 @@ private class SandboxPythonManagedCommandController(
   private var timedOut: Boolean = false
   private var cancelled: Boolean = false
   private var outputLimitExceeded: Boolean = false
-  private var runtimeMetadata: Map<String, String> = request.metadata + mapOf(
-    "runtimeKind" to "command_exec",
-    "terminationSupport" to if (cancellationRuntime != null) "cooperative" else "unsupported",
-  )
+  private var runtimeMetadata: Map<String, String> = request.metadata +
+    capabilities.metadata() +
+    mapOf(
+      "runtimeKind" to "command_exec",
+      "terminationSupport" to if (cancellationRuntime != null) "cooperative" else "unsupported",
+    )
   private var terminationRequested: Boolean = false
   private var terminationRequestAccepted: Boolean? = null
 

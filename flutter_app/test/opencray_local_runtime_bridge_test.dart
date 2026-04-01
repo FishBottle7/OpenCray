@@ -6,6 +6,7 @@ import 'package:opencray/core/bridge/opencray_host_bridge.dart';
 import 'package:opencray/core/bridge/opencray_host_bridge_bootstrap.dart';
 import 'package:opencray/core/bridge/opencray_local_runtime_bridge.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
+import 'package:opencray/core/models/opencray_image_reference.dart';
 import 'package:opencray/core/models/opencray_notification_settings.dart';
 
 void main() {
@@ -116,6 +117,37 @@ void main() {
     expect(snapshot.children.single.name, 'docs');
     expect(snapshot.children.single.children.single.sizeBytes, 1024);
   });
+
+  test(
+    'local runtime bridge loads sandbox preview embed config over http',
+    () async {
+      late Map<String, Object?> capturedBody;
+      requestHandler = (request) async {
+        expect(request.method, 'POST');
+        expect(request.uri.path, '/v1/resolve_sandbox_preview_embed_config');
+        capturedBody = await readJsonBody(request);
+        await writeJson(request, <String, Object?>{
+          'previewUrl': 'https://3000-sb-preview.e2b.app/',
+          'providerId': 'e2b',
+          'headers': <String, Object?>{
+            'E2B-Traffic-Access-Token': 'traffic-preview',
+          },
+          'sessionMatched': true,
+          'accessTokenConfigured': true,
+        });
+      };
+
+      final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+      final config = await bridge.resolveSandboxPreviewEmbedConfig(
+        'https://3000-sb-preview.e2b.app/',
+      );
+
+      expect(capturedBody['previewUrl'], 'https://3000-sb-preview.e2b.app/');
+      expect(config.providerId, 'e2b');
+      expect(config.sessionMatched, isTrue);
+      expect(config.headers['E2B-Traffic-Access-Token'], 'traffic-preview');
+    },
+  );
 
   test('local runtime bridge loads text preview over http', () async {
     requestHandler = (request) async {
@@ -294,6 +326,221 @@ void main() {
     expect(preview.height, 1);
     expect(preview.bytes, base64Decode(_tinyPngBase64));
   });
+
+  test('local runtime bridge loads settings image assets over http', () async {
+    requestHandler = (request) async {
+      expect(request.method, 'GET');
+      expect(request.uri.path, '/v1/settings_image_assets');
+      await writeJson(request, <Object?>[
+        <String, Object?>{
+          'assetId': 'settings-asset-1',
+          'displayName': 'portrait.png',
+          'relativePath': 'settings-image-assets/portrait.png',
+          'mimeType': 'image/png',
+          'sha256':
+              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          'sizeBytes': 2048,
+          'createdAtEpochMs': 1200,
+        },
+      ]);
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final assets = await bridge.listSettingsImageAssets();
+
+    expect(assets.single.assetId, 'settings-asset-1');
+    expect(assets.single.displayName, 'portrait.png');
+    expect(assets.single.sizeBytes, 2048);
+  });
+
+  test(
+    'local runtime bridge leaves interactive settings image picking to the platform host',
+    () async {
+      var requested = false;
+      requestHandler = (request) async {
+        requested = true;
+        await writeJson(request, const <Object?>[]);
+      };
+
+      final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+      final assets = await bridge.pickSettingsImageAssets();
+
+      expect(assets, isEmpty);
+      expect(requested, isFalse);
+    },
+  );
+
+  test('local runtime bridge imports settings image assets over http', () async {
+    late Map<String, Object?> capturedBody;
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/import_settings_image_assets');
+      capturedBody = await readJsonBody(request);
+      await writeJson(request, <Object?>[
+        <String, Object?>{
+          'assetId': 'settings-asset-2',
+          'displayName': 'reference.png',
+          'relativePath': 'settings-image-assets/reference.png',
+          'mimeType': 'image/png',
+          'sha256':
+              'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          'sizeBytes': 4096,
+          'createdAtEpochMs': 1400,
+        },
+      ]);
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final assets = await bridge.importSettingsImageAssets(<String>[
+      'content://images/reference.png',
+    ]);
+
+    expect(capturedBody['uriStrings'], <Object?>[
+      'content://images/reference.png',
+    ]);
+    expect(assets.single.assetId, 'settings-asset-2');
+    expect(assets.single.relativePath, 'settings-image-assets/reference.png');
+  });
+
+  test('local runtime bridge loads soul visual identity over http', () async {
+    requestHandler = (request) async {
+      expect(request.method, 'GET');
+      expect(request.uri.path, '/v1/soul_visual_identity');
+      await writeJson(request, <String, Object?>{
+        'portraitSummary': 'Calm expression with short dark hair.',
+        'primaryPortrait': <String, Object?>{
+          'refId': 'portrait-1',
+          'role': 'portrait',
+          'storageScope': 'agent_private',
+          'relativePath': 'soul-assets/portrait/portrait-1.png',
+          'summary': 'Front-facing portrait with a calm expression.',
+          'caption': 'Primary portrait',
+          'createdAtEpochMs': 1200,
+        },
+        'referenceImages': <Object?>[
+          <String, Object?>{
+            'refId': 'reference-1',
+            'role': 'reference',
+            'storageScope': 'agent_private',
+            'relativePath': 'soul-assets/reference/reference-1.png',
+            'summary': 'Three-quarter portrait under warm light.',
+            'caption': 'Warm light',
+            'createdAtEpochMs': 1300,
+          },
+        ],
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final identity = await bridge.loadSoulVisualIdentity();
+
+    expect(identity?.portraitSummary, 'Calm expression with short dark hair.');
+    expect(identity?.primaryPortrait?.refId, 'portrait-1');
+    expect(identity?.referenceImages.single.refId, 'reference-1');
+  });
+
+  test(
+    'local runtime bridge posts save soul reference image requests',
+    () async {
+      late Map<String, Object?> capturedBody;
+      requestHandler = (request) async {
+        expect(request.method, 'POST');
+        expect(request.uri.path, '/v1/save_soul_reference_image');
+        capturedBody = await readJsonBody(request);
+        await writeJson(request, <String, Object?>{
+          'portraitSummary': 'Calm expression with short dark hair.',
+          'primaryPortrait': <String, Object?>{
+            'refId': 'portrait-1',
+            'role': 'portrait',
+            'storageScope': 'agent_private',
+            'relativePath': 'soul-assets/portrait/portrait-1.png',
+            'summary': 'Front-facing portrait with a calm expression.',
+            'caption': 'Primary portrait',
+            'createdAtEpochMs': 1200,
+          },
+          'referenceImages': <Object?>[
+            <String, Object?>{
+              'refId': 'reference-2',
+              'role': 'reference',
+              'storageScope': 'agent_private',
+              'relativePath': 'soul-assets/reference/reference-2.png',
+              'summary': 'Red outfit reference image.',
+              'caption': 'Red outfit',
+              'createdAtEpochMs': 1400,
+            },
+          ],
+        });
+      };
+
+      final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+      final identity = await bridge.saveSoulReferenceImage(
+        refId: 'reference-2',
+        source: const OpenCrayImageReferenceSource(
+          sourceKind: OpenCrayImageReferenceSourceKind.settingsAsset,
+          settingsAssetId: 'settings-asset-2',
+          displayName: 'reference.png',
+          mimeType: 'image/png',
+        ),
+      );
+
+      expect(capturedBody['refId'], 'reference-2');
+      expect(
+        (capturedBody['source'] as Map<String, Object?>)['settingsAssetId'],
+        'settings-asset-2',
+      );
+      expect(identity?.referenceImages.single.refId, 'reference-2');
+      expect(identity?.referenceImages.single.caption, 'Red outfit');
+    },
+  );
+
+  test(
+    'local runtime bridge posts memory image reference attachment requests',
+    () async {
+      late Map<String, Object?> capturedBody;
+      requestHandler = (request) async {
+        expect(request.method, 'POST');
+        expect(request.uri.path, '/v1/attach_memory_image_reference');
+        capturedBody = await readJsonBody(request);
+        await writeJson(request, <String, Object?>{
+          'memoryId': 'memory-1',
+          'recordVersion': 4,
+          'updatedAtEpochMs': 9000,
+          'imageReferences': <Object?>[
+            <String, Object?>{
+              'refId': 'memory-image-1',
+              'role': 'evidence',
+              'storageScope': 'workspace',
+              'relativePath': 'memory-assets/whiteboard.png',
+              'summary': 'Whiteboard photo from the planning session.',
+              'caption': 'Whiteboard',
+              'createdAtEpochMs': 4200,
+            },
+          ],
+        });
+      };
+
+      final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+      final result = await bridge.attachMemoryImageReference(
+        memoryId: 'memory-1',
+        preferredMode: 'copy_promote',
+        source: const OpenCrayImageReferenceSource(
+          sourceKind: OpenCrayImageReferenceSourceKind.settingsAsset,
+          settingsAssetId: 'settings-asset-1',
+          displayName: 'whiteboard.png',
+          mimeType: 'image/png',
+        ),
+      );
+
+      expect(capturedBody['memoryId'], 'memory-1');
+      expect(capturedBody['preferredMode'], 'copy_promote');
+      expect(
+        (capturedBody['source'] as Map<String, Object?>)['settingsAssetId'],
+        'settings-asset-1',
+      );
+      expect(result?.recordVersion, 4);
+      expect(result?.imageReferences.single.refId, 'memory-image-1');
+    },
+  );
 
   test('local runtime bridge loads voice playback sources over http', () async {
     requestHandler = (request) async {
@@ -500,7 +747,8 @@ void main() {
         'taskFailedEnabled': capturedBody['taskFailedEnabled'],
         'newUserMessageEnabled': capturedBody['newUserMessageEnabled'],
         'scheduledWakeEnabled': capturedBody['scheduledWakeEnabled'],
-        'backgroundTaskPausedEnabled': capturedBody['backgroundTaskPausedEnabled'],
+        'backgroundTaskPausedEnabled':
+            capturedBody['backgroundTaskPausedEnabled'],
         'serviceRecoveredEnabled': capturedBody['serviceRecoveredEnabled'],
       });
     };

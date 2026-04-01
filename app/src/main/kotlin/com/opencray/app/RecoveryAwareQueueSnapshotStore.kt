@@ -64,10 +64,12 @@ internal class RecoveryAwareQueueSnapshotStore(
     val rewrittenTasks = snapshot.tasks.map { entry ->
       val runId = runIdFor(entry.task)
       val runRecord = runRecordsByRunId[runId]
-      val lastJournalEvent = runEventJournalStore.listForRun(runId)
-        .lastOrNull()
-        ?.payload
-        ?.toRuntimeEvent()
+      val journalEntries = runEventJournalStore.listForRun(runId)
+      val lastJournalEvent = journalEntries
+        .asReversed()
+        .asSequence()
+        .mapNotNull { journalEntry -> journalEntry.payload.toRuntimeEventOrNull() }
+        .firstOrNull()
         ?: runRecord?.lastEvent?.toRuntimeEvent()
       val checkpoint = checkpointsByTaskId[entry.task.id]
         ?: synthesizeApprovalCheckpoint(
@@ -83,6 +85,7 @@ internal class RecoveryAwareQueueSnapshotStore(
           entry = entry,
           runId = runId,
           runRecord = runRecord,
+          journalEntries = journalEntries,
           lastJournalEvent = lastJournalEvent,
         )?.also { syntheticCheckpoint ->
           promptCheckpointStore.upsert(syntheticCheckpoint)
@@ -167,6 +170,7 @@ internal class RecoveryAwareQueueSnapshotStore(
           ?.trim()
           ?.takeIf(String::isNotBlank),
       isHighRisk = boundary.isHighRisk,
+      promptCheckpointBoundary = boundary.promptCheckpointBoundary,
       promptResumeState = boundary.promptResumeState,
       subAgentApprovedToolName = boundary.subAgentApprovalResume?.approvedToolName,
       subAgentPromptResumeState = boundary.subAgentApprovalResume?.promptResumeState,
@@ -181,15 +185,25 @@ internal class RecoveryAwareQueueSnapshotStore(
     entry: SessionQueueTaskSnapshot,
     runId: String,
     runRecord: PersistedAgentRunRecord?,
+    journalEntries: List<PersistedRunJournalEntry>,
     lastJournalEvent: OpenCrayAgentRunEvent?,
   ): PersistedPromptCheckpoint? {
     if (entry.task.type != AgentTaskType.PROMPT) {
       return null
     }
-    val checkpointBoundary = generalResumeBoundary(lastJournalEvent) ?: return null
-    if (checkpointBoundary.runId != runId || checkpointBoundary.taskId != entry.task.id) {
-      return null
-    }
+    val checkpointBoundary = latestGeneralResumeBoundary(
+      journalEntries = journalEntries,
+      fallbackEvent = lastJournalEvent,
+    )
+      ?.takeIf { boundary ->
+        boundary.runId == runId && boundary.taskId == entry.task.id
+      }
+      ?: generalResumeBoundary(
+        runId = runId,
+        taskId = entry.task.id,
+        result = runRecord?.lastResult,
+      )
+      ?: return null
     val promptResumeState = OpenCrayPromptResumeMetadata.decodeFromMetadata(
       metadata = checkpointBoundary.metadata,
       json = promptResumeJson,
@@ -211,6 +225,7 @@ internal class RecoveryAwareQueueSnapshotStore(
       updatedAtEpochMs = checkpointBoundary.emittedAtEpochMs,
       toolName = checkpointBoundary.toolName,
       pendingMessageId = pendingMessageId,
+      promptCheckpointBoundary = checkpointBoundary.promptCheckpointBoundary,
       promptResumeState = promptResumeState,
     )
   }
@@ -342,6 +357,30 @@ internal class RecoveryAwareQueueSnapshotStore(
         entry
       }
 
+    RunRecoveryAction.INTERRUPT_RECOVERY_REQUIRED ->
+      if (canInterruptQueuedRecovery(entry)) {
+        entry.copy(
+          lifecycleState = QueueTaskLifecycleState.FAILED,
+          task = entry.task.copy(
+            state = AgentTaskState.FAILED,
+            updatedAtEpochMs = maxOf(
+              entry.task.updatedAtEpochMs,
+              entry.task.createdAtEpochMs,
+              restoreEpochMs,
+            ),
+            metadata = rewrittenTaskMetadata(
+              entry = entry,
+              restoreEpochMs = restoreEpochMs,
+              recoveryPlan = recoveryPlan,
+            ),
+          ),
+          lastErrorCode = ERROR_RESTART_REQUIRES_EXPLICIT_RETRY,
+          lastErrorMessage = interruptRecoveryMessage(entry, recoveryPlan),
+        )
+      } else {
+        entry
+      }
+
     else -> entry
   }
 
@@ -382,6 +421,9 @@ internal class RecoveryAwareQueueSnapshotStore(
     isRestartRestoreFailure(entry) -> true
     else -> false
   }
+
+  private fun canInterruptQueuedRecovery(entry: SessionQueueTaskSnapshot): Boolean =
+    entry.lifecycleState == QueueTaskLifecycleState.QUEUED
 
   private fun plannerProjection(
     entry: SessionQueueTaskSnapshot,
@@ -662,6 +704,19 @@ internal class RecoveryAwareQueueSnapshotStore(
       "The app host restarted before this run could finish. OpenCray stopped it to avoid silently rerunning from the beginning. Retry explicitly when you want to continue."
   }
 
+  private fun interruptRecoveryMessage(
+    entry: SessionQueueTaskSnapshot,
+    recoveryPlan: RunRecoveryPlan?,
+  ): String = when (recoveryPlan?.reasonCode) {
+    "queued_progress_without_checkpoint" ->
+      "This run was queued to continue, but recovery found prior execution progress without a durable checkpoint. OpenCray stopped it to avoid silently rerunning from the beginning. Retry explicitly when you want to continue."
+
+    "uncertain_inflight_mutation" ->
+      "The app host restarted after this run advanced beyond the last durable checkpoint. OpenCray stopped it to avoid replaying an uncertain in-flight action. Retry explicitly when you want to continue."
+
+    else -> restoreInterruptedMessage(entry.lifecycleState)
+  }
+
   private companion object {
   }
 }
@@ -671,6 +726,7 @@ private data class GeneralResumeBoundary(
   val taskId: String,
   val checkpointKind: PromptCheckpointKind,
   val toolName: String?,
+  val promptCheckpointBoundary: OpenCrayPromptCheckpointBoundary?,
   val metadata: Map<String, String>,
   val emittedAtEpochMs: Long,
 )
@@ -682,6 +738,7 @@ private data class ApprovalCheckpointBoundary(
   val toolName: String?,
   val pendingMessageId: String?,
   val isHighRisk: Boolean,
+  val promptCheckpointBoundary: OpenCrayPromptCheckpointBoundary?,
   val promptResumeState: com.opencray.runtime.OpenCrayPromptResumeState?,
   val subAgentApprovalResume: SubAgentApprovalResume?,
   val emittedAtEpochMs: Long,
@@ -694,6 +751,7 @@ private fun generalResumeBoundary(event: OpenCrayAgentRunEvent?): GeneralResumeB
       taskId = event.taskId,
       checkpointKind = promptCheckpointKindFromMetadata(event.result.metadata) ?: PromptCheckpointKind.GENERAL_RESUME,
       toolName = event.result.toolName,
+      promptCheckpointBoundary = OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(event.result.metadata),
       metadata = event.result.metadata,
       emittedAtEpochMs = event.emittedAtEpochMs,
     )
@@ -703,6 +761,7 @@ private fun generalResumeBoundary(event: OpenCrayAgentRunEvent?): GeneralResumeB
       taskId = event.taskId,
       checkpointKind = promptCheckpointKindFromMetadata(event.metadata) ?: PromptCheckpointKind.GENERAL_RESUME,
       toolName = null,
+      promptCheckpointBoundary = OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(event.metadata),
       metadata = event.metadata,
       emittedAtEpochMs = event.emittedAtEpochMs,
     )
@@ -714,6 +773,7 @@ private fun generalResumeBoundary(event: OpenCrayAgentRunEvent?): GeneralResumeB
           taskId = event.taskId,
           checkpointKind = checkpointKind,
           toolName = null,
+          promptCheckpointBoundary = OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(event.metadata),
           metadata = event.metadata,
           emittedAtEpochMs = event.emittedAtEpochMs,
         )
@@ -721,6 +781,53 @@ private fun generalResumeBoundary(event: OpenCrayAgentRunEvent?): GeneralResumeB
 
     else -> null
   }
+}
+
+private fun latestGeneralResumeBoundary(
+  journalEntries: List<PersistedRunJournalEntry>,
+  fallbackEvent: OpenCrayAgentRunEvent?,
+): GeneralResumeBoundary? = journalEntries
+  .asReversed()
+  .asSequence()
+  .mapNotNull { entry -> generalResumeBoundary(entry.payload) }
+  .firstOrNull()
+  ?: generalResumeBoundary(fallbackEvent)
+
+private fun generalResumeBoundary(payload: PersistedAgentRunEvent): GeneralResumeBoundary? = when (payload.kind) {
+  PersistedAgentRunEventKind.CHECKPOINT ->
+    promptCheckpointKindFromMetadata(payload.resultMetadata)?.let { checkpointKind ->
+      GeneralResumeBoundary(
+        runId = payload.runId,
+        taskId = payload.taskId,
+        checkpointKind = checkpointKind,
+        toolName = payload.toolName?.trim()?.takeIf(String::isNotBlank),
+        promptCheckpointBoundary = OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(payload.resultMetadata),
+        metadata = payload.resultMetadata,
+        emittedAtEpochMs = payload.emittedAtEpochMs,
+      )
+    }
+
+  else -> payload.toRuntimeEventOrNull()?.let(::generalResumeBoundary)
+}
+
+private fun generalResumeBoundary(
+  runId: String,
+  taskId: String,
+  result: ExecutionResult?,
+): GeneralResumeBoundary? {
+  val metadata = result?.metadata.orEmpty()
+  if (metadata.isEmpty()) {
+    return null
+  }
+  return GeneralResumeBoundary(
+    runId = runId,
+    taskId = taskId,
+    checkpointKind = promptCheckpointKindFromMetadata(metadata) ?: PromptCheckpointKind.GENERAL_RESUME,
+    toolName = null,
+    promptCheckpointBoundary = OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(metadata),
+    metadata = metadata,
+    emittedAtEpochMs = result?.finishedAtEpochMs ?: return null,
+  )
 }
 
 private fun promptCheckpointKindFromMetadata(
@@ -757,6 +864,7 @@ private fun approvalCheckpointBoundary(
       metadata[SubAgentApprovalResumeMetadata.KEY_IS_HIGH_RISK]
         ?.trim()
         ?.equals("true", ignoreCase = true) == true,
+    promptCheckpointBoundary = OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(metadata),
     promptResumeState = OpenCrayPromptResumeMetadata.decodeFromMetadata(
       metadata = metadata,
       json = json,

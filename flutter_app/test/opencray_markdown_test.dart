@@ -1,6 +1,7 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:opencray/core/copy/opencray_ui_copy.dart';
 import 'package:opencray/core/widgets/opencray_markdown.dart';
@@ -41,36 +42,39 @@ void main() {
     expect(openCrayResolveMarkdownExternalUri('README.md'), isNull);
   });
 
-  test('resolve markdown workspace image paths from document-relative paths', () {
-    expect(
-      openCrayResolveMarkdownWorkspaceRelativePath(
-        Uri.parse('./images/diagram.png'),
-        documentRelativePath: 'docs/guide.md',
-      ),
-      'docs/images/diagram.png',
-    );
-    expect(
-      openCrayResolveMarkdownWorkspaceRelativePath(
-        Uri.parse('../shared/chart.png'),
-        documentRelativePath: 'docs/guides/setup.md',
-      ),
-      'docs/shared/chart.png',
-    );
-    expect(
-      openCrayResolveMarkdownWorkspaceRelativePath(
-        Uri.parse('/assets/hero.png'),
-        documentRelativePath: 'docs/guides/setup.md',
-      ),
-      'assets/hero.png',
-    );
-    expect(
-      openCrayResolveMarkdownWorkspaceRelativePath(
-        Uri.parse('../../../escape.png'),
-        documentRelativePath: 'docs/guides/setup.md',
-      ),
-      isNull,
-    );
-  });
+  test(
+    'resolve markdown workspace image paths from document-relative paths',
+    () {
+      expect(
+        openCrayResolveMarkdownWorkspaceRelativePath(
+          Uri.parse('./images/diagram.png'),
+          documentRelativePath: 'docs/guide.md',
+        ),
+        'docs/images/diagram.png',
+      );
+      expect(
+        openCrayResolveMarkdownWorkspaceRelativePath(
+          Uri.parse('../shared/chart.png'),
+          documentRelativePath: 'docs/guides/setup.md',
+        ),
+        'docs/shared/chart.png',
+      );
+      expect(
+        openCrayResolveMarkdownWorkspaceRelativePath(
+          Uri.parse('/assets/hero.png'),
+          documentRelativePath: 'docs/guides/setup.md',
+        ),
+        'assets/hero.png',
+      );
+      expect(
+        openCrayResolveMarkdownWorkspaceRelativePath(
+          Uri.parse('../../../escape.png'),
+          documentRelativePath: 'docs/guides/setup.md',
+        ),
+        isNull,
+      );
+    },
+  );
 
   test('extract user-facing markdown link errors', () {
     expect(
@@ -241,9 +245,7 @@ void main() {
 
     await tester.pumpWidget(
       const MaterialApp(
-        home: Scaffold(
-          body: OpenCrayMarkdownBody(data: markdown),
-        ),
+        home: Scaffold(body: OpenCrayMarkdownBody(data: markdown)),
       ),
     );
     await tester.pumpAndSettle();
@@ -253,6 +255,35 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    expect(
+      find.byKey(
+        const ValueKey<String>('opencray-markdown-image-preview-dialog'),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('markdown svg data images render through flutter_svg', (
+    tester,
+  ) async {
+    const String markdown =
+        '![vector](data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNiAxNiI+PHJlY3Qgd2lkdGg9IjE2IiBoZWlnaHQ9IjE2IiBmaWxsPSIjMDA3QUZGIi8+PC9zdmc+)';
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(body: OpenCrayMarkdownBody(data: markdown)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(SvgPicture), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('opencray-markdown-image-tappable')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(SvgPicture), findsWidgets);
     expect(
       find.byKey(
         const ValueKey<String>('opencray-markdown-image-preview-dialog'),

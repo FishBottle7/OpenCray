@@ -2,10 +2,14 @@ package com.opencray.app
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.RectF
+import com.caverock.androidsvg.SVG
 import java.io.ByteArrayOutputStream
 import java.nio.file.Path
 import java.util.Base64
 import java.util.Locale
+import kotlin.math.roundToInt
 import kotlin.io.path.exists
 import kotlin.io.path.isDirectory
 import kotlin.io.path.name
@@ -29,7 +33,27 @@ internal object AppAgentWorkspaceImagePreviewer {
     require(isPreviewableName(target.name)) {
       "Image preview is available for image files only."
     }
+    val preview = loadPreviewBitmap(target)
+    val normalizedRelativePath = relativePath.trim().replace('\\', '/').removePrefix("/")
+    val compressed = compressBitmap(preview.bitmap)
+    return mapOf(
+      "name" to target.name,
+      "relativePath" to normalizedRelativePath,
+      "mimeType" to compressed.mimeType,
+      "width" to preview.width,
+      "height" to preview.height,
+      "bytesBase64" to Base64.getEncoder().encodeToString(compressed.bytes),
+    )
+  }
 
+  private fun loadPreviewBitmap(target: Path): LoadedPreviewBitmap =
+    if (isSvgName(target.name)) {
+      loadSvgPreviewBitmap(target)
+    } else {
+      loadRasterPreviewBitmap(target)
+    }
+
+  private fun loadRasterPreviewBitmap(target: Path): LoadedPreviewBitmap {
     val boundsOptions = BitmapFactory.Options().apply {
       inJustDecodeBounds = true
     }
@@ -47,15 +71,69 @@ internal object AppAgentWorkspaceImagePreviewer {
     val bitmap = requireNotNull(BitmapFactory.decodeFile(target.toString(), decodeOptions)) {
       "This file can't be previewed as an image."
     }
-    val normalizedRelativePath = relativePath.trim().replace('\\', '/').removePrefix("/")
-    val compressed = compressBitmap(bitmap)
-    return mapOf(
-      "name" to target.name,
-      "relativePath" to normalizedRelativePath,
-      "mimeType" to compressed.mimeType,
-      "width" to bitmap.width,
-      "height" to bitmap.height,
-      "bytesBase64" to Base64.getEncoder().encodeToString(compressed.bytes),
+    return LoadedPreviewBitmap(
+      bitmap = bitmap,
+      width = bitmap.width,
+      height = bitmap.height,
+    )
+  }
+
+  private fun loadSvgPreviewBitmap(target: Path): LoadedPreviewBitmap {
+    val svg = runCatching {
+      target.toFile().inputStream().use { input ->
+        SVG.getFromInputStream(input)
+      }
+    }.getOrElse {
+      throw IllegalArgumentException("This file can't be previewed as an image.")
+    }
+    val dimensions = resolveSvgDimensions(svg)
+    val inSampleSize = calculateInSampleSize(dimensions.width, dimensions.height)
+    val outputWidth = (dimensions.width / inSampleSize.toFloat()).roundToInt().coerceAtLeast(1)
+    val outputHeight = (dimensions.height / inSampleSize.toFloat()).roundToInt().coerceAtLeast(1)
+    val bitmap = Bitmap.createBitmap(outputWidth, outputHeight, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    svg.renderToCanvas(
+      canvas,
+      RectF(0f, 0f, outputWidth.toFloat(), outputHeight.toFloat()),
+    )
+    return LoadedPreviewBitmap(
+      bitmap = bitmap,
+      width = outputWidth,
+      height = outputHeight,
+    )
+  }
+
+  private fun resolveSvgDimensions(svg: SVG): PreviewDimensions {
+    val viewBox = svg.documentViewBox
+    val viewBoxWidth = viewBox?.width()?.takeIf { width -> width > 0f }
+    val viewBoxHeight = viewBox?.height()?.takeIf { height -> height > 0f }
+    val aspectRatio = if (
+      viewBoxWidth != null &&
+      viewBoxHeight != null &&
+      viewBoxHeight > 0f
+    ) {
+      viewBoxWidth / viewBoxHeight
+    } else {
+      null
+    }
+    val documentWidth = svg.documentWidth.takeIf { width -> width > 0f && width.isFinite() }
+    val documentHeight = svg.documentHeight.takeIf { height -> height > 0f && height.isFinite() }
+    val resolvedWidth = when {
+      documentWidth != null -> documentWidth
+      documentHeight != null && aspectRatio != null -> documentHeight * aspectRatio
+      viewBoxWidth != null -> viewBoxWidth
+      else -> DEFAULT_SVG_DIMENSION.toFloat()
+    }
+    val resolvedHeight = when {
+      documentHeight != null -> documentHeight
+      documentWidth != null && aspectRatio != null -> documentWidth / aspectRatio
+      viewBoxHeight != null -> viewBoxHeight
+      aspectRatio != null && aspectRatio > 0f -> resolvedWidth / aspectRatio
+      else -> DEFAULT_SVG_DIMENSION.toFloat()
+    }
+    return PreviewDimensions(
+      width = resolvedWidth.roundToInt().coerceAtLeast(1),
+      height = resolvedHeight.roundToInt().coerceAtLeast(1),
     )
   }
 
@@ -104,6 +182,11 @@ internal object AppAgentWorkspaceImagePreviewer {
     return extension in PREVIEWABLE_EXTENSIONS
   }
 
+  private fun isSvgName(name: String): Boolean {
+    val normalizedName = name.trim().lowercase(Locale.US)
+    return normalizedName.substringAfterLast('.', "") == "svg"
+  }
+
   private fun resolvePath(
     workspaceRoot: Path,
     relativePath: String,
@@ -127,8 +210,20 @@ internal object AppAgentWorkspaceImagePreviewer {
     val mimeType: String,
   )
 
+  private data class LoadedPreviewBitmap(
+    val bitmap: Bitmap,
+    val width: Int,
+    val height: Int,
+  )
+
+  private data class PreviewDimensions(
+    val width: Int,
+    val height: Int,
+  )
+
   private const val MAX_PREVIEW_DIMENSION: Int = 2_048
   private const val MAX_PREVIEW_PIXELS: Int = 5_242_880
+  private const val DEFAULT_SVG_DIMENSION: Int = 512
 
   private val PREVIEWABLE_EXTENSIONS = setOf(
     "png",
@@ -139,5 +234,6 @@ internal object AppAgentWorkspaceImagePreviewer {
     "bmp",
     "heic",
     "heif",
+    "svg",
   )
 }

@@ -11,20 +11,28 @@ import io.flutter.plugin.common.MethodChannel
 
 internal class OpenCrayFlutterHostBridge(
   private val context: Context,
-) {
-  private val localHostGateway: OpenCrayLocalHostGateway = openCrayLocalHostGateway(context)
-  private val shellGateway: OpenCrayShellGateway = serviceBackedOpenCrayShellGateway(context)
-  private val chatRuntimeGateway: OpenCrayChatRuntimeGateway = serviceBackedOpenCrayChatRuntimeGateway(context)
-  private val skillsGateway: OpenCraySkillsGateway = serviceBackedOpenCraySkillsGateway(context)
-  private val settingsGateway: OpenCraySettingsGateway = serviceBackedOpenCraySettingsGateway(context)
-  private val debugPythonScriptRunner: DebugPythonScriptRunner = DebugPythonScriptRunner(
-    context.applicationContext,
-  )
+  private val localHostGateway: OpenCrayLocalHostGateway = openCrayLocalHostGateway(context),
+  private val shellGateway: OpenCrayShellGateway = serviceBackedOpenCrayShellGateway(context),
+  private val chatRuntimeGateway: OpenCrayChatRuntimeGateway = serviceBackedOpenCrayChatRuntimeGateway(context),
+  private val skillsGateway: OpenCraySkillsGateway = serviceBackedOpenCraySkillsGateway(context),
+  private val settingsGateway: OpenCraySettingsGateway = serviceBackedOpenCraySettingsGateway(context),
+  private val debugPythonScriptRunnerFactory: () -> DebugPythonScriptRunner = {
+    DebugPythonScriptRunner(context.applicationContext)
+  },
   private val permissionHost: ExternalAccessPermissionRequestHost? =
-    context as? ExternalAccessPermissionRequestHost
+    context as? ExternalAccessPermissionRequestHost,
   private val chatAttachmentPickerHost: ChatAttachmentPickerHost? =
-    context as? ChatAttachmentPickerHost
-  private val mainHandler = Handler(Looper.getMainLooper())
+    context as? ChatAttachmentPickerHost,
+  private val backgroundRunner: ((() -> Unit) -> Unit) = { action ->
+    Thread { action() }.start()
+  },
+  private val mainThreadPoster: ((() -> Unit) -> Unit) = { action ->
+    Handler(Looper.getMainLooper()).post { action() }
+  },
+) {
+  private val debugPythonScriptRunner: DebugPythonScriptRunner by lazy(LazyThreadSafetyMode.NONE) {
+    debugPythonScriptRunnerFactory()
+  }
   private var shellObserverDisposer: (() -> Unit)? = null
   private var settingsObserverDisposer: (() -> Unit)? = null
   private var skillsObserverDisposer: (() -> Unit)? = null
@@ -87,15 +95,52 @@ internal class OpenCrayFlutterHostBridge(
     chatRuntimeObserverDisposer = null
   }
 
-  private fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+  internal fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
     if (call.method == "pickChatAttachments") {
       handlePickChatAttachments(call, result)
+      return
+    }
+    if (call.method == "pickSettingsImageAssets") {
+      handlePickSettingsImageAssets(result)
       return
     }
     runCatching {
       when (call.method) {
         "loadShellSnapshot" -> shellGateway.loadShellSnapshot()
         "loadFilesSnapshot" -> localHostGateway.loadFilesSnapshot()
+        "resolveSandboxPreviewEmbedConfig" -> localHostGateway.resolveSandboxPreviewEmbedConfig(
+          previewUrl = call.argument<String>("previewUrl").orEmpty(),
+        )
+        "listSettingsImageAssets" -> localHostGateway.listSettingsImageAssets()
+        "listAgents" -> {
+          runAsync(result) {
+            localHostGateway.listAgents()
+          }
+          return
+        }
+        "loadActiveAgent" -> {
+          runAsync(result) {
+            localHostGateway.loadActiveAgent()
+          }
+          return
+        }
+        "createAgent" -> {
+          runAsync(result) {
+            localHostGateway.createAgent(
+              payload = call.arguments<Map<String, Any?>>() ?: emptyMap(),
+            )
+          }
+          return
+        }
+        "selectAgent" -> {
+          runAsync(result) {
+            localHostGateway.selectAgent(
+              agentId = call.argument<String>("agentId").orEmpty(),
+            )
+          }
+          return
+        }
+        "loadSoulVisualIdentity" -> localHostGateway.loadSoulVisualIdentity()
         "loadWorkspaceImagePreview" -> localHostGateway.loadWorkspaceImagePreview(
           relativePath = call.argument<String>("relativePath").orEmpty(),
         )
@@ -289,6 +334,49 @@ internal class OpenCrayFlutterHostBridge(
           runAsync(result) {
             localHostGateway.probeTwinImportSource(
               filePath = call.argument<String>("filePath").orEmpty(),
+            )
+          }
+          return
+        }
+        "importSettingsImageAssets" -> {
+          runAsync(result) {
+            localHostGateway.importSettingsImageAssets(
+              uriStrings = (call.argument<List<String>>("uriStrings") ?: emptyList()),
+            )
+          }
+          return
+        }
+        "saveSoulPrimaryPortrait" -> {
+          runAsync(result) {
+            localHostGateway.saveSoulPrimaryPortrait(
+              source = call.argument<Map<String, Any?>>("source") ?: emptyMap(),
+            )
+          }
+          return
+        }
+        "saveSoulReferenceImage" -> {
+          runAsync(result) {
+            localHostGateway.saveSoulReferenceImage(
+              refId = call.argument<String>("refId").orEmpty(),
+              source = call.argument<Map<String, Any?>>("source") ?: emptyMap(),
+            )
+          }
+          return
+        }
+        "listMemoryImageReferences" -> {
+          runAsync(result) {
+            localHostGateway.listMemoryImageReferences(
+              memoryId = call.argument<String>("memoryId").orEmpty(),
+            )
+          }
+          return
+        }
+        "attachMemoryImageReference" -> {
+          runAsync(result) {
+            localHostGateway.attachMemoryImageReference(
+              memoryId = call.argument<String>("memoryId").orEmpty(),
+              source = call.argument<Map<String, Any?>>("source") ?: emptyMap(),
+              preferredMode = call.argument<String>("preferredMode"),
             )
           }
           return
@@ -498,6 +586,13 @@ internal class OpenCrayFlutterHostBridge(
           }
           return
         }
+        "refreshSandboxSessionInfo" -> {
+          runAsync(result) {
+            chatRuntimeGateway.refreshSandboxSessionInfo()
+            null
+          }
+          return
+        }
         "createChatSession" -> {
           runAsync(result) {
             chatRuntimeGateway.createChatSession()
@@ -640,15 +735,40 @@ internal class OpenCrayFlutterHostBridge(
   }
 
   private fun handlePickChatAttachments(call: MethodCall, result: MethodChannel.Result) {
+    val requestedKind = call.argument<String>("kind").orEmpty()
+    handlePickedImports(
+      requestedKind = requestedKind,
+      result = result,
+    ) { pickedUris ->
+      localHostGateway.importDraftChatAttachments(
+        requestedKind = requestedKind,
+        uriStrings = pickedUris,
+      )
+    }
+  }
+
+  private fun handlePickSettingsImageAssets(result: MethodChannel.Result) {
+    handlePickedImports(
+      requestedKind = "image",
+      result = result,
+    ) { pickedUris ->
+      localHostGateway.importSettingsImageAssets(pickedUris)
+    }
+  }
+
+  private fun handlePickedImports(
+    requestedKind: String,
+    result: MethodChannel.Result,
+    importAction: (List<String>) -> Any?,
+  ) {
     val pickerHost = chatAttachmentPickerHost
     if (pickerHost == null) {
       result.error("HOST_BRIDGE_ERROR", "Chat attachment picker host is unavailable.", null)
       return
     }
-    val requestedKind = call.argument<String>("kind").orEmpty()
     pickerHost.pickChatAttachments(requestedKind) { pickedUrisResult ->
       pickedUrisResult.onFailure { throwable ->
-        mainHandler.post {
+        mainThreadPoster {
           result.error(
             "HOST_BRIDGE_ERROR",
             throwable.message ?: throwable::class.java.simpleName,
@@ -658,27 +778,24 @@ internal class OpenCrayFlutterHostBridge(
       }
       pickedUrisResult.onSuccess { pickedUris ->
         if (pickedUris.isEmpty()) {
-          mainHandler.post { result.success(emptyList<Map<String, Any?>>()) }
+          mainThreadPoster { result.success(emptyList<Map<String, Any?>>()) }
           return@onSuccess
         }
-        Thread {
-          runCatching {
-            localHostGateway.importDraftChatAttachments(
-              requestedKind = requestedKind,
-              uriStrings = pickedUris,
-            )
-          }.onSuccess { payload ->
-            mainHandler.post { result.success(payload) }
-          }.onFailure { throwable ->
-            mainHandler.post {
-              result.error(
-                "HOST_BRIDGE_ERROR",
-                throwable.message ?: throwable::class.java.simpleName,
-                null,
-              )
+        backgroundRunner {
+          runCatching { importAction(pickedUris) }
+            .onSuccess { payload ->
+              mainThreadPoster { result.success(payload) }
             }
-          }
-        }.start()
+            .onFailure { throwable ->
+              mainThreadPoster {
+                result.error(
+                  "HOST_BRIDGE_ERROR",
+                  throwable.message ?: throwable::class.java.simpleName,
+                  null,
+                )
+              }
+            }
+        }
       }
     }
   }
@@ -713,13 +830,13 @@ internal class OpenCrayFlutterHostBridge(
     result: MethodChannel.Result,
     action: () -> Any?,
   ) {
-    Thread {
+    backgroundRunner {
       runCatching(action)
         .onSuccess { payload ->
-          mainHandler.post { result.success(payload) }
+          mainThreadPoster { result.success(payload) }
         }
         .onFailure { throwable ->
-          mainHandler.post {
+          mainThreadPoster {
             result.error(
               "HOST_BRIDGE_ERROR",
               throwable.message ?: throwable::class.java.simpleName,
@@ -727,7 +844,7 @@ internal class OpenCrayFlutterHostBridge(
             )
           }
         }
-    }.start()
+    }
   }
 
   private fun authorizeExternalAccessLocation(
@@ -755,7 +872,7 @@ internal class OpenCrayFlutterHostBridge(
       )
       return
     }
-    mainHandler.post {
+    mainThreadPoster {
       host.requestExternalAccessPermissions(permissions) { granted ->
         result.success(
           granted && ApprovedReadRootsResolver.hasAccessibleLocation(

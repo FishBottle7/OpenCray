@@ -108,3 +108,225 @@ internal interface OpenCraySettingsGateway {
     memoryToolsEnabled: Boolean = true,
   ): Map<String, Any?>
 }
+
+internal sealed interface OpenCraySettingsWriteCommand {
+  data class SaveNotificationSettings(
+    val payload: Map<String, Any?>,
+  ) : OpenCraySettingsWriteCommand
+
+  data class PerformStrongBackgroundAction(
+    val actionId: String,
+  ) : OpenCraySettingsWriteCommand
+
+  data class SaveNetworkSearchConfig(
+    val slots: List<Map<String, Any?>>,
+  ) : OpenCraySettingsWriteCommand
+
+  data class SaveMediaSpeechConfig(
+    val payload: Map<String, Any?>,
+  ) : OpenCraySettingsWriteCommand
+
+  data class SaveSandboxSettings(
+    val payload: Map<String, Any?>,
+  ) : OpenCraySettingsWriteCommand
+
+  data class SaveLlmConfig(
+    val enabled: Boolean,
+    val providerId: String,
+    val selectedProviderOptionId: String,
+    val protocol: String,
+    val providerName: String,
+    val providerNotes: String,
+    val baseUrl: String,
+    val apiKey: String,
+    val model: String,
+    val reasoningEffort: String,
+    val systemPrompt: String,
+  ) : OpenCraySettingsWriteCommand
+
+  data class SaveCustomLlmProvider(
+    val selectedProviderOptionId: String,
+    val protocol: String,
+    val providerName: String,
+    val providerNotes: String,
+    val baseUrl: String,
+    val apiKey: String,
+    val model: String,
+    val reasoningEffort: String,
+    val systemPrompt: String,
+  ) : OpenCraySettingsWriteCommand
+
+  data class ValidateLlmConfig(
+    val providerId: String,
+    val protocol: String,
+    val baseUrl: String,
+    val apiKey: String,
+    val model: String,
+    val reasoningEffort: String,
+  ) : OpenCraySettingsWriteCommand
+
+  data class SavePersonalizationConfig(
+    val presetId: String,
+    val customLabel: String,
+    val customGuidance: String,
+  ) : OpenCraySettingsWriteCommand
+
+  data class SetAppLanguage(
+    val languageId: String,
+  ) : OpenCraySettingsWriteCommand
+
+  data class RunPersonalizationReset(
+    val scopeId: String,
+  ) : OpenCraySettingsWriteCommand
+
+  data class SetMcpMasterEnabled(
+    val enabled: Boolean,
+  ) : OpenCraySettingsWriteCommand
+
+  data class SetMcpServerEnabled(
+    val serverId: String,
+    val enabled: Boolean,
+  ) : OpenCraySettingsWriteCommand
+
+  data class SaveSafetySettings(
+    val automationModeId: String,
+    val rollbackJournalEnabled: Boolean,
+    val maxFilesPerBatch: Int,
+    val maxAgentTurns: Int,
+    val maxToolCalls: Int,
+    val undoWindowHours: Int,
+    val fileChangesPolicyId: String,
+    val fileDeletesPolicyId: String,
+    val shellCommandsPolicyId: String,
+    val externalAccessModeId: String,
+    val photoLibraryEnabled: Boolean,
+    val downloadsEnabled: Boolean,
+    val documentsEnabled: Boolean,
+    val recordingsEnabled: Boolean,
+    val workspaceAccessProfileId: String,
+    val readOnlyOutsideWorkspace: Boolean,
+    val liveContextModeId: String,
+    val memoryToolsEnabled: Boolean,
+  ) : OpenCraySettingsWriteCommand
+}
+
+internal sealed interface OpenCraySettingsWriteDispatchResult {
+  data class Payload(
+    val value: Map<String, Any?>,
+  ) : OpenCraySettingsWriteDispatchResult
+}
+
+internal fun OpenCraySettingsGateway.dispatchSettingsWriteCommand(
+  command: OpenCraySettingsWriteCommand,
+): OpenCraySettingsWriteDispatchResult = when (command) {
+  is OpenCraySettingsWriteCommand.SaveNotificationSettings -> OpenCraySettingsWriteDispatchResult.Payload(
+    saveNotificationSettings(command.payload),
+  )
+
+  is OpenCraySettingsWriteCommand.PerformStrongBackgroundAction -> OpenCraySettingsWriteDispatchResult.Payload(
+    performStrongBackgroundAction(command.actionId),
+  )
+
+  is OpenCraySettingsWriteCommand.SaveNetworkSearchConfig -> OpenCraySettingsWriteDispatchResult.Payload(
+    saveNetworkSearchConfig(command.slots),
+  )
+
+  is OpenCraySettingsWriteCommand.SaveMediaSpeechConfig -> OpenCraySettingsWriteDispatchResult.Payload(
+    saveMediaSpeechConfig(command.payload),
+  )
+
+  is OpenCraySettingsWriteCommand.SaveSandboxSettings -> OpenCraySettingsWriteDispatchResult.Payload(
+    saveSandboxSettings(command.payload),
+  )
+
+  is OpenCraySettingsWriteCommand.SaveLlmConfig -> OpenCraySettingsWriteDispatchResult.Payload(
+    saveLlmConfig(
+      enabled = command.enabled,
+      providerId = command.providerId,
+      selectedProviderOptionId = command.selectedProviderOptionId,
+      protocol = command.protocol,
+      providerName = command.providerName,
+      providerNotes = command.providerNotes,
+      baseUrl = command.baseUrl,
+      apiKey = command.apiKey,
+      model = command.model,
+      reasoningEffort = command.reasoningEffort,
+      systemPrompt = command.systemPrompt,
+    ),
+  )
+
+  is OpenCraySettingsWriteCommand.SaveCustomLlmProvider -> OpenCraySettingsWriteDispatchResult.Payload(
+    saveCustomLlmProvider(
+      selectedProviderOptionId = command.selectedProviderOptionId,
+      protocol = command.protocol,
+      providerName = command.providerName,
+      providerNotes = command.providerNotes,
+      baseUrl = command.baseUrl,
+      apiKey = command.apiKey,
+      model = command.model,
+      reasoningEffort = command.reasoningEffort,
+      systemPrompt = command.systemPrompt,
+    ),
+  )
+
+  is OpenCraySettingsWriteCommand.ValidateLlmConfig -> OpenCraySettingsWriteDispatchResult.Payload(
+    validateLlmConfig(
+      providerId = command.providerId,
+      protocol = command.protocol,
+      baseUrl = command.baseUrl,
+      apiKey = command.apiKey,
+      model = command.model,
+      reasoningEffort = command.reasoningEffort,
+    ),
+  )
+
+  is OpenCraySettingsWriteCommand.SavePersonalizationConfig -> OpenCraySettingsWriteDispatchResult.Payload(
+    savePersonalizationConfig(
+      presetId = command.presetId,
+      customLabel = command.customLabel,
+      customGuidance = command.customGuidance,
+    ),
+  )
+
+  is OpenCraySettingsWriteCommand.SetAppLanguage -> OpenCraySettingsWriteDispatchResult.Payload(
+    setAppLanguage(command.languageId),
+  )
+
+  is OpenCraySettingsWriteCommand.RunPersonalizationReset -> OpenCraySettingsWriteDispatchResult.Payload(
+    runPersonalizationReset(command.scopeId),
+  )
+
+  is OpenCraySettingsWriteCommand.SetMcpMasterEnabled -> OpenCraySettingsWriteDispatchResult.Payload(
+    setMcpMasterEnabled(command.enabled),
+  )
+
+  is OpenCraySettingsWriteCommand.SetMcpServerEnabled -> OpenCraySettingsWriteDispatchResult.Payload(
+    setMcpServerEnabled(
+      serverId = command.serverId,
+      enabled = command.enabled,
+    ),
+  )
+
+  is OpenCraySettingsWriteCommand.SaveSafetySettings -> OpenCraySettingsWriteDispatchResult.Payload(
+    saveSafetySettings(
+      automationModeId = command.automationModeId,
+      rollbackJournalEnabled = command.rollbackJournalEnabled,
+      maxFilesPerBatch = command.maxFilesPerBatch,
+      maxAgentTurns = command.maxAgentTurns,
+      maxToolCalls = command.maxToolCalls,
+      undoWindowHours = command.undoWindowHours,
+      fileChangesPolicyId = command.fileChangesPolicyId,
+      fileDeletesPolicyId = command.fileDeletesPolicyId,
+      shellCommandsPolicyId = command.shellCommandsPolicyId,
+      externalAccessModeId = command.externalAccessModeId,
+      photoLibraryEnabled = command.photoLibraryEnabled,
+      downloadsEnabled = command.downloadsEnabled,
+      documentsEnabled = command.documentsEnabled,
+      recordingsEnabled = command.recordingsEnabled,
+      workspaceAccessProfileId = command.workspaceAccessProfileId,
+      readOnlyOutsideWorkspace = command.readOnlyOutsideWorkspace,
+      liveContextModeId = command.liveContextModeId,
+      memoryToolsEnabled = command.memoryToolsEnabled,
+    ),
+  )
+}

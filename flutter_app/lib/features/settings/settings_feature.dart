@@ -4,8 +4,10 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 
 import '../../core/bridge/opencray_host_bridge.dart';
+import '../../core/models/opencray_agent_snapshot.dart';
 import '../../core/models/opencray_chat_snapshot.dart';
 import '../../core/models/opencray_debug_snapshot.dart';
+import '../../core/models/opencray_image_reference.dart';
 import '../../core/models/opencray_shell_snapshot.dart';
 import '../../core/copy/opencray_ui_copy.dart';
 import '../../core/design/opencray_tokens.dart';
@@ -162,6 +164,7 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
           key: const ValueKey<String>('settings-agents-editor'),
           onBack: onBack,
           backLabel: backLabel,
+          debugBridge: widget.debugBridge,
         );
       case SettingsPage.mcp:
         return _McpSettingsPage(
@@ -550,6 +553,7 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
   bool _isLoading = true;
   bool _isRefreshing = false;
   String? _loadError;
+  OpenCrayChatRuntimeSnapshot? _runtimeSnapshot;
   List<String> _recentRunIds = const <String>[];
   String? _selectedRunId;
   OpenCrayChatRunSnapshot? _selectedRunSnapshot;
@@ -620,6 +624,10 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
                 )
               else ...[
                 _buildRunSelectorCard(),
+                if (_runtimeSnapshot != null) ...[
+                  const SizedBox(height: 16),
+                  _buildSubAgentCard(_runtimeSnapshot!),
+                ],
                 if (_selectedRunSnapshot != null) ...[
                   const SizedBox(height: 16),
                   _buildRunDetailsCard(_selectedRunSnapshot!),
@@ -803,6 +811,89 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
     );
   }
 
+  Widget _buildSubAgentCard(OpenCrayChatRuntimeSnapshot snapshot) {
+    final List<OpenCrayChatSubAgentSnapshot> subAgents =
+        snapshot.subAgents.toList(growable: false)..sort((left, right) {
+          final int updatedComparison = right.updatedAtEpochMs.compareTo(
+            left.updatedAtEpochMs,
+          );
+          if (updatedComparison != 0) {
+            return updatedComparison;
+          }
+          return left.label.compareTo(right.label);
+        });
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Projected subagents',
+            style: _SettingsTextStyles.cardTitle,
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Uses runtimeActivity.subAgents directly, even when no parent run is currently selectable.',
+            style: _SettingsTextStyles.body,
+          ),
+          const SizedBox(height: 10),
+          if (subAgents.isEmpty)
+            const Text(
+              'No projected subagents are visible in the current runtime activity snapshot.',
+              style: _SettingsTextStyles.body,
+            )
+          else
+            for (int index = 0; index < subAgents.length; index++) ...[
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _DebugValueChip(
+                    label: 'Subagent',
+                    value: subAgents[index].label,
+                  ),
+                  _DebugValueChip(
+                    label: 'Status',
+                    value: _formatSubAgentStatus(subAgents[index]),
+                  ),
+                  _DebugValueChip(
+                    label: 'Parent',
+                    value: subAgents[index].parentRunId,
+                  ),
+                  if (subAgents[index].mailboxMessageCount > 0 ||
+                      subAgents[index].mailboxPendingMessageCount > 0)
+                    _DebugValueChip(
+                      label: 'Mailbox',
+                      value:
+                          '${subAgents[index].mailboxPendingMessageCount} pending / ${subAgents[index].mailboxMessageCount} total',
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _formatSubAgentSummary(subAgents[index]),
+                style: _SettingsTextStyles.body,
+              ),
+              if (subAgents[index].mailboxLastDeliveredMessageId
+                      ?.trim()
+                      .isNotEmpty ==
+                  true) ...[
+                const SizedBox(height: 8),
+                _DebugKeyValueLine(
+                  'Last delivered',
+                  subAgents[index].mailboxLastDeliveredMessageId!.trim(),
+                ),
+              ],
+              if (index < subAgents.length - 1) ...[
+                const SizedBox(height: 12),
+                const Divider(height: 1, color: OpenCrayColors.divider),
+                const SizedBox(height: 12),
+              ],
+            ],
+        ],
+      ),
+    );
+  }
+
   Future<void> _refresh() async {
     final shouldShowLoading = _recentRunIds.isEmpty && !_isRefreshing;
     setState(() {
@@ -823,6 +914,7 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
         return;
       }
       setState(() {
+        _runtimeSnapshot = runtimeSnapshot;
         _recentRunIds = recentRunIds;
         _selectedRunId = nextSelectedRunId;
         _selectedRunSnapshot = nextSnapshot;
@@ -892,6 +984,25 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
         .where((runId) => runId.trim().isNotEmpty)
         .take(8)
         .toList(growable: false);
+  }
+
+  String _formatSubAgentStatus(OpenCrayChatSubAgentSnapshot subAgent) {
+    final String rawStatus =
+        subAgent.executionState ??
+        subAgent.status ??
+        subAgent.phase ??
+        'unknown';
+    return rawStatus.trim().replaceAll(RegExp(r'[_-]+'), ' ').toLowerCase();
+  }
+
+  String _formatSubAgentSummary(OpenCrayChatSubAgentSnapshot subAgent) {
+    final List<String> parts = <String>[
+      if (subAgent.subagentType.trim().isNotEmpty) subAgent.subagentType.trim(),
+      if (subAgent.contextMode.trim().isNotEmpty) subAgent.contextMode.trim(),
+      if (subAgent.depth > 0) 'depth ${subAgent.depth}',
+      if (subAgent.summary?.trim().isNotEmpty == true) subAgent.summary!.trim(),
+    ];
+    return parts.join(' · ');
   }
 }
 

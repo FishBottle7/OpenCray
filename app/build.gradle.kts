@@ -160,6 +160,7 @@ dependencies {
   implementation(project(":persistence"))
   implementation(project(":skills"))
   implementation(project(":mcp"))
+  implementation("com.caverock:androidsvg-aar:1.4")
   implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
   coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
   testImplementation("junit:junit:4.13.2")

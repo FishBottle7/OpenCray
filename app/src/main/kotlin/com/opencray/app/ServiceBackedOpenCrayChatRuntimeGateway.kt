@@ -37,6 +37,13 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
       listener = listener,
     )
 
+  override fun refreshSandboxSessionInfo() {
+    dispatchWriteCommand(
+      operation = "refreshSandboxSessionInfo",
+      command = OpenCrayChatWriteCommand.RefreshSandboxSessionInfo,
+    )
+  }
+
   override fun loadMemoryDebugSnapshot(): Map<String, Any?> =
     currentReadGateway().loadMemoryDebugSnapshot()
 
@@ -61,82 +68,149 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
   override fun applyMemoryDebugAction(
     recordId: String,
     actionId: String,
-  ): Map<String, Any?> = currentWriteGateway("applyMemoryDebugAction")
-    .applyMemoryDebugAction(recordId, actionId)
+  ): Map<String, Any?> = requireNotNull(
+    dispatchWriteCommand(
+      operation = "applyMemoryDebugAction",
+      command = OpenCrayChatWriteCommand.ApplyMemoryDebugAction(
+        recordId = recordId,
+        actionId = actionId,
+      ),
+    ).payloadOrNull(),
+  ) {
+    "Chat runtime operation 'applyMemoryDebugAction' completed without a payload."
+  }
 
   override fun createChatSession() {
-    currentWriteGateway("createChatSession").createChatSession()
+    dispatchWriteCommand(
+      operation = "createChatSession",
+      command = OpenCrayChatWriteCommand.CreateChatSession,
+    )
   }
 
   override fun copyChatSession(sessionId: String) {
-    currentWriteGateway("copyChatSession").copyChatSession(sessionId)
+    dispatchWriteCommand(
+      operation = "copyChatSession",
+      command = OpenCrayChatWriteCommand.CopyChatSession(sessionId),
+    )
   }
 
   override fun deleteChatSession(sessionId: String) {
-    currentWriteGateway("deleteChatSession").deleteChatSession(sessionId)
+    dispatchWriteCommand(
+      operation = "deleteChatSession",
+      command = OpenCrayChatWriteCommand.DeleteChatSession(sessionId),
+    )
   }
 
   override fun selectChatSession(sessionId: String) {
-    currentWriteGateway("selectChatSession").selectChatSession(sessionId)
+    dispatchWriteCommand(
+      operation = "selectChatSession",
+      command = OpenCrayChatWriteCommand.SelectChatSession(sessionId),
+    )
   }
 
   override fun branchChatSessionFromMessage(
     sessionId: String,
     messageId: String,
   ) {
-    currentWriteGateway("branchChatSessionFromMessage").branchChatSessionFromMessage(sessionId, messageId)
+    dispatchWriteCommand(
+      operation = "branchChatSessionFromMessage",
+      command = OpenCrayChatWriteCommand.BranchChatSessionFromMessage(
+        sessionId = sessionId,
+        messageId = messageId,
+      ),
+    )
   }
 
   override fun deleteChatMessage(
     sessionId: String,
     messageId: String,
   ) {
-    currentWriteGateway("deleteChatMessage").deleteChatMessage(sessionId, messageId)
+    dispatchWriteCommand(
+      operation = "deleteChatMessage",
+      command = OpenCrayChatWriteCommand.DeleteChatMessage(
+        sessionId = sessionId,
+        messageId = messageId,
+      ),
+    )
   }
 
   override fun recallChatMessage(
     sessionId: String,
     messageId: String,
   ) {
-    currentWriteGateway("recallChatMessage").recallChatMessage(sessionId, messageId)
+    dispatchWriteCommand(
+      operation = "recallChatMessage",
+      command = OpenCrayChatWriteCommand.RecallChatMessage(
+        sessionId = sessionId,
+        messageId = messageId,
+      ),
+    )
   }
 
   override fun submitChatMessage(
     text: String,
     attachments: List<OpenCrayFinalAttachment>,
-  ): Map<String, Any?>? = currentWriteGateway("submitChatMessage").submitChatMessage(text, attachments)
+  ): Map<String, Any?>? = dispatchWriteCommand(
+    operation = "submitChatMessage",
+    command = OpenCrayChatWriteCommand.SubmitChatMessage(
+      text = text,
+      attachments = attachments,
+    ),
+  ).payloadOrNull()
 
   override fun approveChatApproval(taskIdOrRunId: String) {
-    currentWriteGateway("approveChatApproval").approveChatApproval(taskIdOrRunId)
+    dispatchWriteCommand(
+      operation = "approveChatApproval",
+      command = OpenCrayChatWriteCommand.ApproveChatApproval(taskIdOrRunId),
+    )
   }
 
   override fun approveChatApprovalForSession(taskIdOrRunId: String) {
-    currentWriteGateway("approveChatApprovalForSession")
-      .approveChatApprovalForSession(taskIdOrRunId)
+    dispatchWriteCommand(
+      operation = "approveChatApprovalForSession",
+      command = OpenCrayChatWriteCommand.ApproveChatApprovalForSession(taskIdOrRunId),
+    )
   }
 
   override fun rejectChatApproval(taskIdOrRunId: String) {
-    currentWriteGateway("rejectChatApproval").rejectChatApproval(taskIdOrRunId)
+    dispatchWriteCommand(
+      operation = "rejectChatApproval",
+      command = OpenCrayChatWriteCommand.RejectChatApproval(taskIdOrRunId),
+    )
   }
 
   override fun interruptChatRun(taskIdOrRunId: String) {
-    currentWriteGateway("interruptChatRun").interruptChatRun(taskIdOrRunId)
+    dispatchWriteCommand(
+      operation = "interruptChatRun",
+      command = OpenCrayChatWriteCommand.InterruptChatRun(taskIdOrRunId),
+    )
   }
 
   override fun retryChatRun(taskIdOrRunId: String) {
-    currentWriteGateway("retryChatRun").retryChatRun(taskIdOrRunId)
+    dispatchWriteCommand(
+      operation = "retryChatRun",
+      command = OpenCrayChatWriteCommand.RetryChatRun(taskIdOrRunId),
+    )
   }
 
   private fun currentReadGateway(): OpenCrayChatRuntimeGateway =
     serviceClient.peekChatRuntimeGateway() ?: fallbackGateway
 
-  private fun currentWriteGateway(operation: String): OpenCrayChatRuntimeGateway =
+  private fun dispatchWriteCommand(
+    operation: String,
+    command: OpenCrayChatWriteCommand,
+  ): OpenCrayChatWriteDispatchResult =
     requireBinderBackedGateway(
       surface = "Chat runtime",
       operation = operation,
-      gateway = serviceClient.awaitChatRuntimeGateway(SERVICE_GATEWAY_BIND_AWAIT_TIMEOUT_MS),
+      gateway = serviceClient.dispatchChatWriteCommand(command),
       connectionState = serviceClient.loadConnectionState(),
     )
+}
+
+private fun OpenCrayChatWriteDispatchResult.payloadOrNull(): Map<String, Any?>? = when (this) {
+  OpenCrayChatWriteDispatchResult.Completed -> null
+  is OpenCrayChatWriteDispatchResult.Payload -> value
 }
 
 internal fun serviceBackedOpenCrayChatRuntimeGateway(
@@ -149,9 +223,7 @@ internal fun serviceBackedOpenCrayChatRuntimeGateway(
     fallbackGateway = projectionOnlyOpenCrayChatRuntimeGateway(
       context = appContext,
       connectionStateProvider = serviceClient::loadConnectionState,
-      bridgeSnapshotProvider = {
-        serviceClient.peekSnapshot()?.bridgeSnapshot
-      },
+      projectionSnapshotProvider = serviceClient::peekProjectionSnapshot,
     ),
   )
 }

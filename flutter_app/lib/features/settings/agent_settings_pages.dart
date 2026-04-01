@@ -33,16 +33,19 @@ class _AgentImageReference {
     required this.id,
     required this.label,
     required this.colors,
+    this.settingsAsset,
   });
 
   final String id;
   final String label;
   final List<Color> colors;
+  final OpenCraySettingsImageAsset? settingsAsset;
 
   _AgentImageReference copy() => _AgentImageReference(
     id: id,
     label: label,
     colors: List<Color>.from(colors),
+    settingsAsset: settingsAsset,
   );
 }
 
@@ -62,6 +65,7 @@ class _AgentDraft {
     required this.imageReferences,
     required this.avatarSource,
     required this.avatarColors,
+    required this.customAvatarAsset,
     required this.twinImportConfigured,
     required this.twinImportCorpusType,
     required this.twinImportFileName,
@@ -118,6 +122,7 @@ class _AgentDraft {
     ],
     avatarSource: _AgentAvatarSource.generated,
     avatarColors: _agentGradientSets[0],
+    customAvatarAsset: null,
     twinImportConfigured: false,
     twinImportCorpusType: _AgentTwinImportCorpusType.chatHistory,
     twinImportFileName: 'aster_chat_export.chatlab.jsonl',
@@ -157,6 +162,7 @@ class _AgentDraft {
   List<_AgentImageReference> imageReferences;
   _AgentAvatarSource avatarSource;
   List<Color> avatarColors;
+  OpenCraySettingsImageAsset? customAvatarAsset;
   bool twinImportConfigured;
   _AgentTwinImportCorpusType twinImportCorpusType;
   String twinImportFileName;
@@ -197,6 +203,7 @@ class _AgentDraft {
         .toList(growable: false),
     avatarSource: avatarSource,
     avatarColors: List<Color>.from(avatarColors),
+    customAvatarAsset: customAvatarAsset,
     twinImportConfigured: twinImportConfigured,
     twinImportCorpusType: twinImportCorpusType,
     twinImportFileName: twinImportFileName,
@@ -264,32 +271,93 @@ class _AgentDraft {
   String get avatarStatusLabel =>
       avatarSource == _AgentAvatarSource.generated ? 'Generated' : 'Custom';
 
+  String get customAvatarUploadLabel {
+    final fileName = customAvatarAsset?.displayName.trim() ?? '';
+    if (fileName.isEmpty) {
+      return 'PNG / JPG';
+    }
+    return fileName;
+  }
+
   int get referenceImageCount => imageReferences.length;
 
   String get twinImportSummary =>
       twinImportConfigured ? twinImportFormatLabel : 'Not set';
+
+  OpenCrayAgentCreateRequest toHostCreateRequest() {
+    final OpenCrayAgentAvatarConfig avatarConfig =
+        avatarSource == _AgentAvatarSource.custom && customAvatarAsset != null
+        ? OpenCrayAgentAvatarConfig(
+            source: 'custom',
+            settingsAssetId: customAvatarAsset!.assetId,
+          )
+        : const OpenCrayAgentAvatarConfig(source: 'generated');
+    return OpenCrayAgentCreateRequest(
+      displayName: nameOrFallback,
+      presetName: soulPreset.name,
+      plasticity: plasticity.name,
+      callsYou: callsYou.trim(),
+      addressStyle: addressStyle.name,
+      mode: mode.name,
+      voiceSummary: voiceSummary.name,
+      verbosity: verbosity.name,
+      relationshipStyle: relationshipStyle.name,
+      riskTolerance: riskTolerance.name,
+      toolUseBias: toolUseBias.name,
+      baseDescription: baseDescription.trim(),
+      collaborationGuidance: collaborationGuidance.trim(),
+      escalationRules: escalationRules.trim(),
+      forbiddenBehaviors: forbiddenBehaviors.trim(),
+      llm: OpenCrayAgentLlmConfig(
+        provider: provider.name,
+        protocol: protocol == _AgentProtocol.anthropic
+            ? 'anthropic'
+            : 'openai',
+        baseUrl: baseUrl.trim().isEmpty ? null : baseUrl.trim(),
+        apiKey: apiKey.trim().isEmpty ? null : apiKey.trim(),
+        model: model.trim().isEmpty ? 'model' : model.trim(),
+        reasoningEffort: reasoningEffort.name,
+      ),
+      avatar: avatarConfig,
+      imageReferences: imageReferences
+          .map(
+            (_AgentImageReference image) => OpenCrayAgentImageReferenceConfig(
+              referenceId: image.id,
+              label: image.label,
+              settingsAssetId: image.settingsAsset?.assetId,
+            ),
+          )
+          .toList(growable: false),
+      activateOnCreate: true,
+    );
+  }
 }
 
 class _SavedAgent {
   const _SavedAgent({
+    this.agentId,
     required this.name,
     required this.summary,
     required this.description,
     required this.meta,
     required this.avatarColors,
-    required this.template,
+    this.template,
+    this.isActive = false,
   });
 
+  final String? agentId;
   final String name;
   final String summary;
   final String description;
   final String meta;
   final List<Color> avatarColors;
-  final _AgentDraft template;
+  final _AgentDraft? template;
+  final bool isActive;
 
   factory _SavedAgent.fromDraft(_AgentDraft draft) {
     final modelLabel = draft.model.trim().isEmpty ? 'Model' : draft.model.trim();
     return _SavedAgent(
+      agentId: null,
       name: draft.nameOrFallback,
       summary: '${draft.soulPresetLabel} · ${draft.modeLabel}',
       description: draft.baseDescription.trim().isEmpty
@@ -298,10 +366,41 @@ class _SavedAgent {
       meta: '${_labelForProvider(draft.provider)} · $modelLabel · updated just now',
       avatarColors: List<Color>.from(draft.avatarColors),
       template: draft.copy(),
+      isActive: false,
     );
   }
 
-  _AgentDraft toDraft() => template.copy();
+  factory _SavedAgent.fromSnapshot(OpenCrayAgentSnapshot snapshot) {
+    final providerLabel = snapshot.llm == null
+        ? 'Model'
+        : _labelForProviderFromRaw(snapshot.llm!.provider);
+    final modelLabel = snapshot.llm?.model.trim().isNotEmpty == true
+        ? snapshot.llm!.model.trim()
+        : 'Model';
+    final description = snapshot.baseDescription.trim().isEmpty
+        ? 'No base description yet.'
+        : snapshot.baseDescription.trim();
+    final metaSuffix = snapshot.isActive ? 'active' : 'saved';
+    return _SavedAgent(
+      agentId: snapshot.agentId,
+      name: snapshot.displayName.trim().isEmpty
+          ? 'Untitled agent'
+          : snapshot.displayName.trim(),
+      summary:
+          '${_labelForSoulPresetFromRaw(snapshot.presetName)} · ${_labelForAgentModeFromRaw(snapshot.mode)}',
+      description: description,
+      meta: '$providerLabel · $modelLabel · $metaSuffix',
+      avatarColors: _agentGradientForSeed(
+        snapshot.avatarSeed?.trim().isNotEmpty == true
+            ? snapshot.avatarSeed!
+            : snapshot.agentId,
+      ),
+      template: null,
+      isActive: snapshot.isActive,
+    );
+  }
+
+  _AgentDraft toDraft() => template!.copy();
 }
 
 const List<List<Color>> _agentGradientSets = <List<Color>>[
@@ -311,6 +410,70 @@ const List<List<Color>> _agentGradientSets = <List<Color>>[
   <Color>[Color(0xFFEFE6F3), Color(0xFFD8C6E7)],
   <Color>[Color(0xFFE6EDF8), Color(0xFFC7D5F0)],
 ];
+
+List<Color> _agentGradientForSeed(String seed) {
+  final normalizedSeed = seed.trim();
+  var hash = 17;
+  for (final codeUnit in normalizedSeed.codeUnits) {
+    hash = 37 * hash + codeUnit;
+  }
+  final gradient = _agentGradientSets[hash.abs() % _agentGradientSets.length];
+  return List<Color>.from(gradient, growable: false);
+}
+
+List<Color> _agentGradientForSettingsAsset(OpenCraySettingsImageAsset asset) {
+  final seed = [
+    asset.assetId,
+    asset.displayName,
+    asset.relativePath,
+    asset.sha256,
+  ].join('|');
+  return _agentGradientForSeed(seed);
+}
+
+String _deriveAgentImageLabelFromSettingsAsset(OpenCraySettingsImageAsset asset) {
+  final rawName = asset.displayName.trim().isNotEmpty
+      ? asset.displayName.trim()
+      : asset.relativePath.trim();
+  final fileName = rawName.split(RegExp(r'[\\/]')).last;
+  final extensionIndex = fileName.lastIndexOf('.');
+  final baseName = extensionIndex > 0
+      ? fileName.substring(0, extensionIndex)
+      : fileName;
+  final normalized = baseName
+      .replaceAll(RegExp(r'[_\-]+'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  if (normalized.isEmpty) {
+    return 'Reference image';
+  }
+  return normalized
+      .split(' ')
+      .where((String token) => token.isNotEmpty)
+      .map(_capitalizeAgentImageLabelToken)
+      .join(' ');
+}
+
+String _capitalizeAgentImageLabelToken(String token) {
+  if (token.isEmpty) {
+    return token;
+  }
+  return '${token.substring(0, 1).toUpperCase()}${token.substring(1)}';
+}
+
+_AgentImageReference _agentImageReferenceFromSettingsAsset(
+  OpenCraySettingsImageAsset asset, {
+  String? label,
+}) {
+  return _AgentImageReference(
+    id: asset.assetId,
+    label: label?.trim().isNotEmpty == true
+        ? label!.trim()
+        : _deriveAgentImageLabelFromSettingsAsset(asset),
+    colors: _agentGradientForSettingsAsset(asset),
+    settingsAsset: asset,
+  );
+}
 
 List<_SavedAgent> _buildPrototypeAgents() {
   final _AgentDraft aster = _AgentDraft.prototype();
@@ -574,6 +737,42 @@ String _labelForToolUseBias(_AgentToolUseBias bias) {
   }
 }
 
+String _labelForSoulPresetFromRaw(String raw) =>
+    _labelForSoulPreset(_agentSoulPresetFromRaw(raw));
+
+String _labelForAgentModeFromRaw(String raw) =>
+    _labelForAgentMode(_agentModeFromRaw(raw));
+
+String _labelForProviderFromRaw(String raw) =>
+    _labelForProvider(_agentProviderFromRaw(raw));
+
+_AgentSoulPreset _agentSoulPresetFromRaw(String raw) {
+  for (final preset in _AgentSoulPreset.values) {
+    if (preset.name.toLowerCase() == raw.trim().toLowerCase()) {
+      return preset;
+    }
+  }
+  return _AgentSoulPreset.steady;
+}
+
+_AgentMode _agentModeFromRaw(String raw) {
+  for (final mode in _AgentMode.values) {
+    if (mode.name.toLowerCase() == raw.trim().toLowerCase()) {
+      return mode;
+    }
+  }
+  return _AgentMode.full;
+}
+
+_AgentProvider _agentProviderFromRaw(String raw) {
+  for (final provider in _AgentProvider.values) {
+    if (provider.name.toLowerCase() == raw.trim().toLowerCase()) {
+      return provider;
+    }
+  }
+  return _AgentProvider.openai;
+}
+
 void _applyTwinImportCorpusPreset(
   _AgentDraft draft,
   _AgentTwinImportCorpusType type, {
@@ -634,17 +833,28 @@ class _AgentsSettingsPage extends StatefulWidget {
     super.key,
     required this.onBack,
     required this.backLabel,
+    this.debugBridge,
   });
 
   final VoidCallback onBack;
   final String backLabel;
+  final OpenCrayHostBridge? debugBridge;
 
   @override
   State<_AgentsSettingsPage> createState() => _AgentsSettingsPageState();
 }
 
 class _AgentsSettingsPageState extends State<_AgentsSettingsPage> {
-  late final List<_SavedAgent> _savedAgents = _buildPrototypeAgents();
+  List<_SavedAgent> _savedAgents = _buildPrototypeAgents();
+  bool _usesHostBackedAgents = false;
+  bool _isLoadingAgents = false;
+  bool _isSelectingAgent = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAgentsFromBridge();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -670,7 +880,9 @@ class _AgentsSettingsPageState extends State<_AgentsSettingsPage> {
             child: Row(
               children: [
                 Text(
-                  '${_savedAgents.length} saved agents',
+                  _isLoadingAgents
+                      ? 'Loading agents...'
+                      : '${_savedAgents.length} saved agents',
                   style: _SettingsTextStyles.body.copyWith(
                     fontWeight: FontWeight.w600,
                   ),
@@ -688,7 +900,7 @@ class _AgentsSettingsPageState extends State<_AgentsSettingsPage> {
           for (int index = 0; index < _savedAgents.length; index++) ...[
             _AgentListCard(
               agent: _savedAgents[index],
-              onTap: () => _reuseAgent(_savedAgents[index]),
+              onTap: () => _handleSavedAgentTap(_savedAgents[index]),
             ),
             if (index < _savedAgents.length - 1) const SizedBox(height: 10),
           ],
@@ -703,15 +915,29 @@ class _AgentsSettingsPageState extends State<_AgentsSettingsPage> {
         builder: (BuildContext context) => _AgentCreatePage(
           draft: _AgentDraft.prototype(),
           backLabel: 'Agents',
+          debugBridge: widget.debugBridge,
+          persistToHost: _usesHostBackedAgents,
         ),
       ),
     );
     if (!mounted || savedAgent == null) {
       return;
     }
+    if (_usesHostBackedAgents) {
+      await _loadAgentsFromBridge();
+      return;
+    }
     setState(() {
       _savedAgents.insert(0, savedAgent);
     });
+  }
+
+  Future<void> _handleSavedAgentTap(_SavedAgent agent) async {
+    if (_usesHostBackedAgents && agent.agentId != null) {
+      await _selectAgent(agent);
+      return;
+    }
+    await _reuseAgent(agent);
   }
 
   Future<void> _reuseAgent(_SavedAgent agent) async {
@@ -720,6 +946,8 @@ class _AgentsSettingsPageState extends State<_AgentsSettingsPage> {
         builder: (BuildContext context) => _AgentCreatePage(
           draft: agent.toDraft(),
           backLabel: 'Agents',
+          debugBridge: widget.debugBridge,
+          persistToHost: false,
         ),
       ),
     );
@@ -730,13 +958,91 @@ class _AgentsSettingsPageState extends State<_AgentsSettingsPage> {
       _savedAgents.insert(0, savedAgent);
     });
   }
+
+  Future<void> _selectAgent(_SavedAgent agent) async {
+    final bridge = widget.debugBridge;
+    final agentId = agent.agentId;
+    if (bridge == null || agentId == null || _isSelectingAgent) {
+      return;
+    }
+    try {
+      setState(() {
+        _isSelectingAgent = true;
+      });
+      await bridge.selectAgent(agentId);
+      if (!mounted) {
+        return;
+      }
+      await _loadAgentsFromBridge();
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to select agent: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSelectingAgent = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _loadAgentsFromBridge() async {
+    final bridge = widget.debugBridge;
+    if (bridge == null) {
+      return;
+    }
+    setState(() {
+      _isLoadingAgents = true;
+    });
+    try {
+      final List<OpenCrayAgentSnapshot> snapshots = await bridge.listAgents();
+      final OpenCrayAgentSnapshot? activeAgent = await bridge.loadActiveAgent();
+      if (!mounted) {
+        return;
+      }
+      final activeAgentId = activeAgent?.agentId;
+      setState(() {
+        _savedAgents = snapshots
+            .map(
+              (OpenCrayAgentSnapshot snapshot) => _SavedAgent.fromSnapshot(
+                activeAgentId == null
+                    ? snapshot
+                    : snapshot.copyWith(isActive: snapshot.agentId == activeAgentId),
+              ),
+            )
+            .toList(growable: false);
+        _usesHostBackedAgents = true;
+        _isLoadingAgents = false;
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _savedAgents = _buildPrototypeAgents();
+        _usesHostBackedAgents = false;
+        _isLoadingAgents = false;
+      });
+    }
+  }
 }
 
 class _AgentCreatePage extends StatefulWidget {
-  const _AgentCreatePage({required this.draft, required this.backLabel});
+  const _AgentCreatePage({
+    required this.draft,
+    required this.backLabel,
+    this.debugBridge,
+    this.persistToHost = false,
+  });
 
   final _AgentDraft draft;
   final String backLabel;
+  final OpenCrayHostBridge? debugBridge;
+  final bool persistToHost;
 
   @override
   State<_AgentCreatePage> createState() => _AgentCreatePageState();
@@ -751,6 +1057,7 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
   );
   late final TextEditingController _descriptionController =
       TextEditingController(text: widget.draft.baseDescription);
+  bool _isSubmitting = false;
 
   @override
   void dispose() {
@@ -925,10 +1232,8 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
               ),
               const SizedBox(height: 8),
               _AgentPrimaryButton(
-                label: 'Create agent',
-                onTap: () => Navigator.of(context).pop(
-                  _SavedAgent.fromDraft(_syncedDraft()),
-                ),
+                label: _isSubmitting ? 'Creating...' : 'Create agent',
+                onTap: _submitAgent,
               ),
             ],
           ),
@@ -945,11 +1250,47 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
     return widget.draft;
   }
 
+  Future<void> _submitAgent() async {
+    if (_isSubmitting) {
+      return;
+    }
+    final _AgentDraft draft = _syncedDraft();
+    if (!widget.persistToHost || widget.debugBridge == null) {
+      Navigator.of(context).pop(_SavedAgent.fromDraft(draft));
+      return;
+    }
+    try {
+      setState(() {
+        _isSubmitting = true;
+      });
+      final snapshot = await widget.debugBridge!.createAgent(
+        draft.toHostCreateRequest(),
+      );
+      if (!mounted) {
+        return;
+      }
+      Navigator.of(context).pop(_SavedAgent.fromSnapshot(snapshot));
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isSubmitting = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to create agent: $error')),
+      );
+    }
+  }
+
   Future<void> _openAvatarPage() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder: (BuildContext context) =>
-            _AgentAvatarPage(draft: _syncedDraft()),
+            _AgentAvatarPage(
+              draft: _syncedDraft(),
+              bridge: widget.debugBridge,
+            ),
       ),
     );
     if (mounted) {
@@ -1008,7 +1349,10 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder: (BuildContext context) =>
-            _AgentMediaSamplesPage(draft: _syncedDraft()),
+            _AgentMediaSamplesPage(
+              draft: _syncedDraft(),
+              bridge: widget.debugBridge,
+            ),
       ),
     );
     if (mounted) {
@@ -1528,9 +1872,10 @@ class _AgentAddressStylePageState extends State<_AgentAddressStylePage> {
 }
 
 class _AgentAvatarPage extends StatefulWidget {
-  const _AgentAvatarPage({required this.draft});
+  const _AgentAvatarPage({required this.draft, this.bridge});
 
   final _AgentDraft draft;
+  final OpenCrayHostBridge? bridge;
 
   @override
   State<_AgentAvatarPage> createState() => _AgentAvatarPageState();
@@ -1601,6 +1946,7 @@ class _AgentAvatarPageState extends State<_AgentAvatarPage> {
                           setState(() {
                             widget.draft.avatarSource =
                                 _AgentAvatarSource.generated;
+                            widget.draft.customAvatarAsset = null;
                             widget.draft.avatarColors = widget
                                 .draft.imageReferences.first.colors
                                 .toList(growable: false);
@@ -1612,13 +1958,8 @@ class _AgentAvatarPageState extends State<_AgentAvatarPage> {
                   title: 'Upload custom avatar',
                   subtitle:
                       'Pick a PNG or JPG that should override the generated avatar',
-                  trailingLabel: 'PNG / JPG',
-                  onTap: () {
-                    setState(() {
-                      widget.draft.avatarSource = _AgentAvatarSource.custom;
-                      widget.draft.avatarColors = _agentGradientSets[3];
-                    });
-                  },
+                  trailingLabel: widget.draft.customAvatarUploadLabel,
+                  onTap: _pickCustomAvatar,
                 ),
                 const SizedBox(height: 10),
                 const Text(
@@ -1631,6 +1972,57 @@ class _AgentAvatarPageState extends State<_AgentAvatarPage> {
         ],
       ),
     );
+  }
+
+  Future<void> _pickCustomAvatar() async {
+    final bridge = widget.bridge;
+    if (bridge == null) {
+      setState(() {
+        widget.draft.avatarSource = _AgentAvatarSource.custom;
+        widget.draft.customAvatarAsset = null;
+        widget.draft.avatarColors = _agentGradientSets[3];
+      });
+      return;
+    }
+    try {
+      final assets = await bridge.pickSettingsImageAssets();
+      if (!mounted || assets.isEmpty) {
+        return;
+      }
+      final OpenCraySettingsImageAsset selectedAsset = assets.first;
+      if (assets.length > 1) {
+        final fileName = selectedAsset.displayName.trim().isEmpty
+            ? 'the first selected image'
+            : selectedAsset.displayName.trim();
+        await _showBridgeMessage(
+          'Picked ${assets.length} images. Using $fileName for the avatar.',
+        );
+      }
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        widget.draft.avatarSource = _AgentAvatarSource.custom;
+        widget.draft.customAvatarAsset = selectedAsset;
+        widget.draft.avatarColors = _agentGradientForSettingsAsset(
+          selectedAsset,
+        );
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      await _showBridgeMessage('Could not pick a custom avatar.');
+    }
+  }
+
+  Future<void> _showBridgeMessage(String message) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.hideCurrentSnackBar();
+    messenger?.showSnackBar(SnackBar(content: Text(message)));
+    try {
+      await widget.bridge?.showNativeToast(message);
+    } catch (_) {}
   }
 }
 
@@ -1675,9 +2067,10 @@ class _AgentSubpageScaffold extends StatelessWidget {
 }
 
 class _AgentMediaSamplesPage extends StatefulWidget {
-  const _AgentMediaSamplesPage({required this.draft});
+  const _AgentMediaSamplesPage({required this.draft, this.bridge});
 
   final _AgentDraft draft;
+  final OpenCrayHostBridge? bridge;
 
   @override
   State<_AgentMediaSamplesPage> createState() => _AgentMediaSamplesPageState();
@@ -1977,8 +2370,29 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
   }
 
   Future<void> _addImageReference() async {
+    final bridge = widget.bridge;
+    if (bridge == null) {
+      await _addPrototypeImageReference();
+      return;
+    }
+    try {
+      final importedAssets = await bridge.pickSettingsImageAssets();
+      if (!mounted || importedAssets.isEmpty) {
+        return;
+      }
+      await _addImportedImageReferences(importedAssets);
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      await _showBridgeMessage('Could not add image references.');
+    }
+  }
+
+  Future<void> _addPrototypeImageReference() async {
     final int nextIndex = widget.draft.imageReferences.length;
-    final List<Color> colors = _agentGradientSets[nextIndex % _agentGradientSets.length];
+    final List<Color> colors =
+        _agentGradientSets[nextIndex % _agentGradientSets.length];
     final String? label = await _showImageNamingDialog(context, colors: colors);
     if (!mounted || label == null) {
       return;
@@ -1998,6 +2412,75 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
             widget.draft.imageReferences.first.colors.toList(growable: false);
       }
     });
+  }
+
+  Future<void> _addImportedImageReferences(
+    List<OpenCraySettingsImageAsset> importedAssets,
+  ) async {
+    final Set<String> existingAssetIds = widget.draft.imageReferences
+        .map((image) => image.settingsAsset?.assetId ?? '')
+        .where((String assetId) => assetId.isNotEmpty)
+        .toSet();
+    final freshAssets = importedAssets
+        .where(
+          (OpenCraySettingsImageAsset asset) =>
+              asset.assetId.trim().isEmpty ||
+              !existingAssetIds.contains(asset.assetId),
+        )
+        .toList(growable: false);
+    if (freshAssets.isEmpty) {
+      await _showBridgeMessage('Those images are already attached.');
+      return;
+    }
+    List<_AgentImageReference> nextReferences;
+    if (freshAssets.length == 1) {
+      final OpenCraySettingsImageAsset asset = freshAssets.single;
+      final String? label = await _showImageNamingDialog(
+        context,
+        colors: _agentGradientForSettingsAsset(asset),
+      );
+      if (!mounted || label == null) {
+        return;
+      }
+      nextReferences = <_AgentImageReference>[
+        _agentImageReferenceFromSettingsAsset(asset, label: label),
+      ];
+    } else {
+      nextReferences = freshAssets
+          .map(_agentImageReferenceFromSettingsAsset)
+          .toList(growable: false);
+    }
+    if (!mounted || nextReferences.isEmpty) {
+      return;
+    }
+    setState(() {
+      widget.draft.imageReferences = <_AgentImageReference>[
+        ...widget.draft.imageReferences,
+        ...nextReferences,
+      ];
+      if (widget.draft.avatarSource == _AgentAvatarSource.generated &&
+          widget.draft.imageReferences.isNotEmpty) {
+        widget.draft.avatarColors =
+            widget.draft.imageReferences.first.colors.toList(growable: false);
+      }
+    });
+    final skippedCount = importedAssets.length - freshAssets.length;
+    if (skippedCount > 0) {
+      await _showBridgeMessage(
+        skippedCount == 1
+            ? '1 image was already attached.'
+            : '$skippedCount images were already attached.',
+      );
+    }
+  }
+
+  Future<void> _showBridgeMessage(String message) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.hideCurrentSnackBar();
+    messenger?.showSnackBar(SnackBar(content: Text(message)));
+    try {
+      await widget.bridge?.showNativeToast(message);
+    } catch (_) {}
   }
 }
 

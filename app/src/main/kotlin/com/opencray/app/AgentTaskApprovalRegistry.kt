@@ -11,6 +11,7 @@ internal enum class AgentTaskApprovalState {
 internal data class AgentTaskApprovalGrant(
   val taskId: String,
   val toolName: String? = null,
+  val promptCheckpointBoundary: com.opencray.runtime.OpenCrayPromptCheckpointBoundary? = null,
   val promptResumeState: com.opencray.runtime.OpenCrayPromptResumeState? = null,
   val subAgentApprovalResume: com.opencray.runtime.subagent.SubAgentApprovalResume? = null,
 )
@@ -18,6 +19,7 @@ internal data class AgentTaskApprovalGrant(
 internal data class AgentTaskApprovalRejection(
   val taskId: String,
   val toolName: String? = null,
+  val promptCheckpointBoundary: com.opencray.runtime.OpenCrayPromptCheckpointBoundary? = null,
   val promptResumeState: com.opencray.runtime.OpenCrayPromptResumeState? = null,
   val subAgentApprovalResume: com.opencray.runtime.subagent.SubAgentApprovalResume? = null,
 )

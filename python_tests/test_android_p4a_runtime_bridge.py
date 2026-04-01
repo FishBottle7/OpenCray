@@ -298,9 +298,10 @@ def test_android_p4a_bridge_uses_execution_start_for_timeout_budget(
 
     assert result["status"] == "success"
     assert result["stdout"] == "execution start budget ok\n"
-    assert result["metadata"]["executionStartedAtEpochMs"] == str(now_ms)
-    assert result["metadata"]["timeoutClockStartEpochMs"] == str(now_ms)
-    assert int(result["metadata"]["queueDelayMs"]) >= 2_000
+    execution_started_at = int(result["metadata"]["executionStartedAtEpochMs"])
+    assert execution_started_at >= now_ms
+    assert result["metadata"]["timeoutClockStartEpochMs"] == str(execution_started_at)
+    assert int(result["metadata"]["queueDelayMs"]) >= execution_started_at - (now_ms - 2_000)
 
 
 def test_android_p4a_service_writes_ready_and_state_markers(workspace: pathlib.Path) -> None:

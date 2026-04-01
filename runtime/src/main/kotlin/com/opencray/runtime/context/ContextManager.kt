@@ -10,6 +10,8 @@ import com.opencray.runtime.skills.ActiveSkillPromptLayer
 import com.opencray.runtime.skills.SkillInventoryPromptLayer
 import com.opencray.runtime.soul.RuntimeSoulPromptComposer
 import com.opencray.runtime.soul.RuntimeSoulTurnPolicyComposer
+import com.opencray.runtime.workingstate.WorkingStatePromptLayer
+import com.opencray.runtime.workingstate.WorkingStateSupport
 
 data class ContextManagerConfig(
   val maxInjectedMemoryRecords: Int = 4,
@@ -28,6 +30,8 @@ class ContextManager(
   private val soulPromptComposer: RuntimeSoulPromptComposer = RuntimeSoulPromptComposer(),
   private val soulTurnPolicyComposer: RuntimeSoulTurnPolicyComposer = RuntimeSoulTurnPolicyComposer(),
   private val memoryPromptLayer: MemoryPromptLayer = MemoryPromptLayer(),
+  private val workingStateSupport: WorkingStateSupport = WorkingStateSupport(),
+  private val workingStatePromptLayer: WorkingStatePromptLayer = WorkingStatePromptLayer(),
   private val skillInventoryPromptLayer: SkillInventoryPromptLayer = SkillInventoryPromptLayer(),
   private val activeSkillPromptLayer: ActiveSkillPromptLayer = ActiveSkillPromptLayer(),
   private val recentToolObservationSupport: RecentToolObservationSupport = RecentToolObservationSupport(),
@@ -36,6 +40,27 @@ class ContextManager(
   fun prepare(input: PromptAssemblyInput): ManagedPromptContext {
     val injectionPolicy = input.sessionContext.injectionPolicy
     val recentToolObservationLayer = recentToolObservationSupport.buildLayer(input.liveConversation)
+    val recentToolObservationLines = recentToolObservationSupport.summaryLines(input.liveConversation)
+    val recentWorkingStateActions = recentToolObservationSupport.workingStateEntries(
+      messages = input.liveConversation,
+    )
+    val recentDecisionEntries = recentToolObservationSupport.decisionEntries(
+      messages = input.liveConversation,
+    )
+    val recentBlockerEntries = recentToolObservationSupport.blockerEntries(
+      messages = input.liveConversation,
+    )
+    val workingStateResolution = workingStateSupport.resolve(
+      task = input.task,
+      runId = input.runId,
+      seededState = input.sessionContext.workingState,
+      resumeContext = input.resumeContext,
+      recentActionEntries = recentWorkingStateActions,
+      decisionEntries = recentDecisionEntries,
+      blockerEntries = recentBlockerEntries,
+      recentObservationLines = recentToolObservationLines,
+      todoSnapshot = input.todoSnapshot,
+    )
     val prunedTranscript = contextPruner.prune(input.liveConversation)
     val transcriptSelection = transcriptWindowBuilder.buildSelection(prunedTranscript.messages)
     val selectedMemory = if (injectionPolicy.automaticMemoryInjectionEnabled) {
@@ -65,6 +90,8 @@ class ContextManager(
         ""
       },
       bootstrapFiles = input.sessionContext.bootstrapContext.files,
+      workingState = workingStateResolution.state,
+      workingStateText = workingStatePromptLayer.render(workingStateResolution.state),
       memoryText = memoryPromptLayer.render(selectedMemory),
       durableCompactionText = input.sessionContext.durableCompaction.text,
       skillInventoryText = renderedSkillInventory.text,
@@ -96,6 +123,7 @@ class ContextManager(
         memoryRecallTrace = selectedMemory.trace,
         memoryFlushTrace = input.sessionContext.memoryFlushTrace,
         durableCompactionTrace = input.sessionContext.durableCompaction.trace,
+        workingStateTrace = workingStateResolution.trace,
         liveContextTrace = input.sessionContext.liveContextTrace,
         bootstrapTrace = input.sessionContext.bootstrapContext.trace,
         visibleSkillCount = input.sessionContext.skillInventory.visibleSkillCount,

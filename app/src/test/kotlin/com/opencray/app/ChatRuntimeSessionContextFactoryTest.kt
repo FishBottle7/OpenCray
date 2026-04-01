@@ -5,6 +5,9 @@ import com.opencray.persistence.model.ChatAttachmentKind
 import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.runtime.soul.SoulProfileExtensionKeys
 import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.workingstate.WorkingState
+import com.opencray.runtime.workingstate.WorkingStateEntry
+import com.opencray.runtime.workingstate.WorkingStateObjective
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -158,6 +161,32 @@ class ChatRuntimeSessionContextFactoryTest {
     )
     assertEquals("balanced", context.soulProfile?.extensions?.get(SoulProfileExtensionKeys.RISK_TOLERANCE))
     assertEquals("tool_forward", context.soulProfile?.extensions?.get(SoulProfileExtensionKeys.TOOL_USE_BIAS))
+  }
+
+  @Test
+  fun createIncludesProvidedWorkingState() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-working-state-context"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val workingState = WorkingState(
+      objective = WorkingStateObjective(
+        primaryGoal = "Keep the current implementation thread warm.",
+        currentSubgoal = "Inject persisted working state.",
+        status = "in_progress",
+      ),
+      blockers = listOf(
+        WorkingStateEntry(
+          text = "Need to verify store persistence.",
+          sourceType = "test_gap",
+        ),
+      ),
+    )
+
+    val context = ChatRuntimeSessionContextFactory(chatStore).create(
+      sessionId = sessionId,
+      workingState = workingState,
+    )
+
+    assertEquals(workingState, context.workingState)
   }
 
   private class IncrementingClock(

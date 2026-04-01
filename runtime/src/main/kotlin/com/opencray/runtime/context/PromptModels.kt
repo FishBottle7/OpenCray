@@ -2,6 +2,7 @@ package com.opencray.runtime.context
 
 import com.opencray.core.contracts.AgentTask
 import com.opencray.runtime.AgentToolDefinition
+import com.opencray.runtime.AgentTodoEntry
 import com.opencray.runtime.bootstrap.BootstrapContext
 import com.opencray.runtime.bootstrap.BootstrapSnippet
 import com.opencray.runtime.bootstrap.BootstrapTrace
@@ -16,6 +17,9 @@ import com.opencray.runtime.skills.ActiveSkillTrace
 import com.opencray.runtime.skills.SkillCatalog
 import com.opencray.runtime.skills.SkillInventory
 import com.opencray.runtime.skills.SkillInventoryTrace
+import com.opencray.runtime.workingstate.WorkingState
+import com.opencray.runtime.workingstate.WorkingStateResumeContext
+import com.opencray.runtime.workingstate.WorkingStateTrace
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 
@@ -185,6 +189,7 @@ data class AgentRuntimeSessionContext(
   val recalledMemory: MemoryRecallResult = MemoryRecallResult(),
   val memoryFlushTrace: MemoryFlushTrace = MemoryFlushTrace(),
   val durableCompaction: DurableCompactionContext = DurableCompactionContext(),
+  val workingState: WorkingState = WorkingState(),
   val skillInventory: SkillInventory = SkillInventory(),
   val skillCatalog: SkillCatalog = SkillCatalog(),
   val conversation: List<RuntimeConversationMessage> = emptyList(),
@@ -192,6 +197,7 @@ data class AgentRuntimeSessionContext(
 
 data class PromptAssemblyInput(
   val task: AgentTask,
+  val runId: String? = null,
   val baseSystemPrompt: String,
   val sessionContext: AgentRuntimeSessionContext,
   val activeSkillCapsule: ActiveSkillCapsule? = null,
@@ -200,6 +206,8 @@ data class PromptAssemblyInput(
   val legacyJsonFallbackEnabled: Boolean = false,
   val toolDefinitions: List<AgentToolDefinition>,
   val liveConversation: List<RuntimeConversationMessage>,
+  val todoSnapshot: List<AgentTodoEntry> = emptyList(),
+  val resumeContext: WorkingStateResumeContext? = null,
 )
 
 data class ManagedPromptContext(
@@ -209,6 +217,8 @@ data class ManagedPromptContext(
   val personalizationText: String = "",
   val turnResponsePolicyText: String = "",
   val bootstrapFiles: List<BootstrapSnippet> = emptyList(),
+  val workingState: WorkingState = WorkingState(),
+  val workingStateText: String = "",
   val memoryText: String = "",
   val durableCompactionText: String = "",
   val skillInventoryText: String = "",
@@ -247,6 +257,7 @@ data class ContextSelectionReport(
   val memoryRecallTrace: MemoryRecallTrace = MemoryRecallTrace(),
   val memoryFlushTrace: MemoryFlushTrace = MemoryFlushTrace(),
   val durableCompactionTrace: DurableCompactionTrace = DurableCompactionTrace(),
+  val workingStateTrace: WorkingStateTrace = WorkingStateTrace(),
   val liveContextTrace: LiveContextTrace = LiveContextTrace(),
   val bootstrapTrace: BootstrapTrace = BootstrapTrace(),
   val visibleSkillCount: Int = 0,
@@ -305,6 +316,7 @@ data class ContextAssemblyReport(
   val memoryRecallTrace: MemoryRecallTrace = MemoryRecallTrace(),
   val memoryFlushTrace: MemoryFlushTrace = MemoryFlushTrace(),
   val durableCompactionTrace: DurableCompactionTrace = DurableCompactionTrace(),
+  val workingStateTrace: WorkingStateTrace = WorkingStateTrace(),
   val liveContextTrace: LiveContextTrace = LiveContextTrace(),
   val bootstrapTrace: BootstrapTrace = BootstrapTrace(),
   val visibleSkillCount: Int = 0,

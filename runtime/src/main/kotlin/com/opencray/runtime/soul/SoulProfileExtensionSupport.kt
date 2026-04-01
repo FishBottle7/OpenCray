@@ -27,6 +27,7 @@ object SoulProfileExtensionKeys {
   const val FORBIDDEN_BEHAVIORS: String = "forbidden_behaviors"
   const val COLLABORATION_PREFERENCES: String = "collaboration_preferences"
   const val CUSTOM_GUIDANCE: String = "custom_guidance"
+  const val VISUAL_IDENTITY_JSON: String = "visual_identity_json"
 }
 
 internal fun normalizeSoulExtensionKeyOrNull(raw: String?): String? =

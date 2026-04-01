@@ -1,5 +1,6 @@
 package com.opencray.app
 
+import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
 import com.opencray.runtime.OpenCrayPromptResumeState
 import com.opencray.runtime.OpenCraySerializableGatewayMessage
 import org.junit.Assert.assertEquals
@@ -41,6 +42,7 @@ class PromptCheckpointStoreFactoryTest {
         createdAtEpochMs = 150L,
         updatedAtEpochMs = 200L,
         toolName = "Read",
+        promptCheckpointBoundary = OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
         promptResumeState = OpenCrayPromptResumeState(turnIndex = 1, toolCallCount = 1),
       ),
     )
@@ -66,6 +68,10 @@ class PromptCheckpointStoreFactoryTest {
       checkpoints.map(PersistedPromptCheckpoint::taskId),
     )
     assertEquals(PromptCheckpointKind.APPROVED_PENDING_RESUME, restoredStore.get("task-1")?.checkpointKind)
+    assertEquals(
+      OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
+      restoredStore.get("task-1")?.promptCheckpointBoundary,
+    )
     assertEquals(PromptCheckpointKind.REJECTED_PENDING_RESUME, restoredStore.get("task-2")?.checkpointKind)
   }
 
@@ -202,6 +208,7 @@ class PromptCheckpointStoreFactoryTest {
         createdAtEpochMs = 100L,
         updatedAtEpochMs = 100L,
         toolName = "Read",
+        promptCheckpointBoundary = OpenCrayPromptCheckpointBoundary.SUPPLEMENT_INGESTED,
         promptResumeState = OpenCrayPromptResumeState(turnIndex = 1, toolCallCount = 1),
         subAgentApprovedToolName = "Read",
         subAgentPromptResumeState = OpenCrayPromptResumeState(turnIndex = 0, toolCallCount = 1),
@@ -217,6 +224,7 @@ class PromptCheckpointStoreFactoryTest {
       .get("task-1")
       ?.toApprovalGrantOrNull()
 
+    assertEquals(OpenCrayPromptCheckpointBoundary.SUPPLEMENT_INGESTED, restored?.promptCheckpointBoundary)
     assertEquals("Read", restored?.subAgentApprovalResume?.approvedToolName)
     assertEquals(true, restored?.subAgentApprovalResume?.isHighRisk)
     assertEquals("child-agent-1", restored?.subAgentApprovalResume?.agentId)

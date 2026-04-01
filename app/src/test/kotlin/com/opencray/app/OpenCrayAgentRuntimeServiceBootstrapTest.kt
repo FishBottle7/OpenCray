@@ -3,7 +3,6 @@ package com.opencray.app
 import android.content.ComponentName
 import android.content.Context
 import android.content.ContextWrapper
-import android.content.Intent
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -13,32 +12,36 @@ import org.junit.Before
 import org.junit.Test
 
 class OpenCrayAgentRuntimeServiceBootstrapTest {
+  private val recordingStarter = RecordingRuntimeServiceStarter()
+
   @Before
   fun setUp() {
     clearRuntimeSingletons()
+    OpenCrayAgentRuntimeService.setRuntimeServiceStarterForTest(recordingStarter)
   }
 
   @After
   fun tearDown() {
+    OpenCrayAgentRuntimeService.setRuntimeServiceStarterForTest(null)
     clearRuntimeSingletons()
   }
 
   @Test
   fun ensureStartedOnlyRequestsServiceStartWithoutCreatingRuntimeHost() {
-    val context = RecordingServiceContext()
+    val context = MinimalContext()
 
     OpenCrayAgentRuntimeService.ensureStarted(context)
 
-    val startedIntent = context.startedIntents.single()
-    assertEquals(null, startedIntent.action)
-    assertEquals(OpenCrayAgentRuntimeService::class.java.name, startedIntent.component?.className)
+    val startedRequest = recordingStarter.startedRequests.single()
+    assertEquals(null, startedRequest.request.action)
+    assertFalse(startedRequest.foreground)
     assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
     assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
   }
 
   @Test
   fun startScheduledTaskOnlyRequestsServiceWakeWithoutCreatingRuntimeHost() {
-    val context = RecordingServiceContext()
+    val context = MinimalContext()
     val command = ScheduledTaskWakeCommand(
       scheduleId = "schedule-alpha",
       scheduleRunId = "schedule-run-alpha",
@@ -49,35 +52,37 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
 
     OpenCrayAgentRuntimeService.startScheduledTask(context, command)
 
-    val startedIntent = context.startedIntents.single()
-    assertEquals(ACTION_RUN_SCHEDULED_TASK, startedIntent.action)
-    assertEquals("schedule-alpha", startedIntent.getStringExtra(EXTRA_SCHEDULE_ID))
-    assertEquals("schedule-run-alpha", startedIntent.getStringExtra(EXTRA_SCHEDULE_RUN_ID))
-    assertEquals(1234L, startedIntent.getLongExtra(EXTRA_TRIGGERED_AT_EPOCH_MS, -1L))
+    val startedRequest = recordingStarter.startedRequests.single()
+    assertTrue(startedRequest.foreground)
+    assertEquals(ACTION_RUN_SCHEDULED_TASK, startedRequest.request.action)
+    assertEquals("schedule-alpha", startedRequest.request.extras[EXTRA_SCHEDULE_ID])
+    assertEquals("schedule-run-alpha", startedRequest.request.extras[EXTRA_SCHEDULE_RUN_ID])
+    assertEquals(1234L, startedRequest.request.extras[EXTRA_TRIGGERED_AT_EPOCH_MS])
     assertEquals(
       ScheduledTaskTriggerReasons.WORK_MANAGER,
-      startedIntent.getStringExtra(EXTRA_TRIGGER_REASON),
+      startedRequest.request.extras[EXTRA_TRIGGER_REASON],
     )
-    assertEquals("session-alpha", startedIntent.getStringExtra(EXTRA_TARGET_SESSION_ID))
+    assertEquals("session-alpha", startedRequest.request.extras[EXTRA_TARGET_SESSION_ID])
     assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
     assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
   }
 
   @Test
   fun repairSchedulesOnlyRequestsServiceWakeWithoutCreatingRuntimeHost() {
-    val context = RecordingServiceContext()
+    val context = MinimalContext()
 
     val started = OpenCrayAgentRuntimeService.repairSchedules(
       context = context,
       repairReason = ScheduledTaskRepairReasons.WORK_MANAGER,
     )
 
-    val startedIntent = context.startedIntents.single()
+    val startedRequest = recordingStarter.startedRequests.single()
     assertTrue(started)
-    assertEquals(ACTION_REPAIR_SCHEDULES, startedIntent.action)
+    assertTrue(startedRequest.foreground)
+    assertEquals(ACTION_REPAIR_SCHEDULES, startedRequest.request.action)
     assertEquals(
       ScheduledTaskRepairReasons.WORK_MANAGER,
-      startedIntent.getStringExtra(EXTRA_REPAIR_REASON),
+      startedRequest.request.extras[EXTRA_REPAIR_REASON],
     )
     assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
     assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
@@ -85,19 +90,20 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
 
   @Test
   fun resumeInterruptedRunsOnlyRequestsServiceWakeWithoutCreatingRuntimeHost() {
-    val context = RecordingServiceContext()
+    val context = MinimalContext()
 
     val started = OpenCrayAgentRuntimeService.resumeInterruptedRuns(
       context = context,
       repairReason = ScheduledTaskRepairReasons.WORK_MANAGER,
     )
 
-    val startedIntent = context.startedIntents.single()
+    val startedRequest = recordingStarter.startedRequests.single()
     assertTrue(started)
-    assertEquals(ACTION_RESUME_INTERRUPTED_RUNS, startedIntent.action)
+    assertTrue(startedRequest.foreground)
+    assertEquals(ACTION_RESUME_INTERRUPTED_RUNS, startedRequest.request.action)
     assertEquals(
       ScheduledTaskRepairReasons.WORK_MANAGER,
-      startedIntent.getStringExtra(EXTRA_REPAIR_REASON),
+      startedRequest.request.extras[EXTRA_REPAIR_REASON],
     )
     assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
     assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
@@ -105,7 +111,8 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
 
   @Test
   fun repairSchedulesReturnsFalseWhenServiceWakeFailsWithoutCreatingRuntimeHost() {
-    val context = RecordingServiceContext(throwOnStart = true)
+    val context = MinimalContext()
+    recordingStarter.throwOnStart = true
 
     val started = OpenCrayAgentRuntimeService.repairSchedules(
       context = context,
@@ -113,7 +120,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     )
 
     assertFalse(started)
-    assertEquals(1, context.startedIntentAttempts.size)
+    assertEquals(1, recordingStarter.startAttempts.size)
     assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
     assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
   }
@@ -123,36 +130,39 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     InProcessOpenCrayRuntimeOwnerRegistry.clearForTest()
   }
 
-  private class RecordingServiceContext(
-    private val throwOnStart: Boolean = false,
-  ) : ContextWrapper(null) {
-    val startedIntents = mutableListOf<Intent>()
-    val startedIntentAttempts = mutableListOf<Intent>()
-    private val serviceComponent = ComponentName(
-      "org.opencray.app",
-      OpenCrayAgentRuntimeService::class.java.name,
-    )
-
+  private class MinimalContext : ContextWrapper(null) {
     override fun getApplicationContext(): Context = this
 
     override fun getPackageName(): String = "org.opencray.app"
+  }
 
-    override fun startService(service: Intent?): ComponentName? {
-      return recordStart(service)
-    }
+  private class RecordingRuntimeServiceStarter : RuntimeServiceStarter {
+    var throwOnStart: Boolean = false
+    val startAttempts = mutableListOf<RecordedStart>()
+    val startedRequests = mutableListOf<RecordedStart>()
 
-    override fun startForegroundService(service: Intent?): ComponentName? {
-      return recordStart(service)
-    }
-
-    private fun recordStart(service: Intent?): ComponentName? {
-      val normalizedIntent = requireNotNull(service) { "Service intent must not be null." }
-      startedIntentAttempts += normalizedIntent
+    override fun start(
+      context: Context,
+      request: RuntimeServiceStartRequest,
+      foreground: Boolean,
+    ): Boolean {
+      val attempt = RecordedStart(
+        contextPackageName = context.packageName,
+        request = request,
+        foreground = foreground,
+      )
+      startAttempts += attempt
       if (throwOnStart) {
-        error("synthetic start failure")
+        return false
       }
-      startedIntents += normalizedIntent
-      return serviceComponent
+      startedRequests += attempt
+      return true
     }
   }
+
+  private data class RecordedStart(
+    val contextPackageName: String,
+    val request: RuntimeServiceStartRequest,
+    val foreground: Boolean,
+  )
 }

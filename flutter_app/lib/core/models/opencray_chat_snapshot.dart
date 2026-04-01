@@ -1089,30 +1089,29 @@ extension OpenCrayChatRunExecutionScope on OpenCrayChatRunSnapshot {
   List<OpenCrayChatRuntimeEventSnapshot> scopeRuntimeEvents(
     Iterable<OpenCrayChatRuntimeEventSnapshot> events,
   ) {
-    final List<OpenCrayChatRuntimeEventSnapshot> runEvents =
-        events
-            .where((event) => event.runId == runId)
-            .toList(growable: false);
+    final List<OpenCrayChatRuntimeEventSnapshot> runEvents = events
+        .where((event) => event.runId == runId)
+        .toList(growable: false);
     final bool preserveHistoryAcrossExecutions =
         _preservesHistoryAcrossExecutions(executionKind) ||
         _preservesHistoryAcrossExecutions(pendingExecutionKind);
     final String? currentExecutionId = _normalizedExecutionValue(executionId);
     if (currentExecutionId == null) {
-      if (_normalizedExecutionValue(pendingExecutionKind) != null && !isTerminal) {
+      if (_normalizedExecutionValue(pendingExecutionKind) != null &&
+          !isTerminal) {
         return preserveHistoryAcrossExecutions
             ? runEvents
             : const <OpenCrayChatRuntimeEventSnapshot>[];
       }
       return runEvents;
     }
-    final List<OpenCrayChatRuntimeEventSnapshot> matching =
-        runEvents
-            .where(
-              (event) =>
-                  _normalizedExecutionValue(event.executionId) ==
-                  currentExecutionId,
-            )
-            .toList(growable: false);
+    final List<OpenCrayChatRuntimeEventSnapshot> matching = runEvents
+        .where(
+          (event) =>
+              _normalizedExecutionValue(event.executionId) ==
+              currentExecutionId,
+        )
+        .toList(growable: false);
     if (matching.isNotEmpty) {
       return preserveHistoryAcrossExecutions ? runEvents : matching;
     }
@@ -1230,6 +1229,9 @@ class OpenCrayChatSubAgentSnapshot {
     required this.startedAtEpochMs,
     required this.updatedAtEpochMs,
     required this.eventCount,
+    this.mailboxMessageCount = 0,
+    this.mailboxPendingMessageCount = 0,
+    this.mailboxLastDeliveredMessageId,
     this.phase,
     this.status,
     this.executionState,
@@ -1259,6 +1261,9 @@ class OpenCrayChatSubAgentSnapshot {
   final int startedAtEpochMs;
   final int updatedAtEpochMs;
   final int eventCount;
+  final int mailboxMessageCount;
+  final int mailboxPendingMessageCount;
+  final String? mailboxLastDeliveredMessageId;
 
   factory OpenCrayChatSubAgentSnapshot.fromMap(Map<Object?, Object?> map) {
     return OpenCrayChatSubAgentSnapshot(
@@ -1281,6 +1286,11 @@ class OpenCrayChatSubAgentSnapshot {
       startedAtEpochMs: map['startedAtEpochMs'] as int? ?? 0,
       updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
       eventCount: map['eventCount'] as int? ?? 0,
+      mailboxMessageCount: map['mailboxMessageCount'] as int? ?? 0,
+      mailboxPendingMessageCount:
+          map['mailboxPendingMessageCount'] as int? ?? 0,
+      mailboxLastDeliveredMessageId:
+          map['mailboxLastDeliveredMessageId'] as String?,
     );
   }
 }

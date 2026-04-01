@@ -88,6 +88,10 @@ fun interface ManagedProcessControllerFactory {
   fun start(request: ManagedProcessStartRequest): ManagedProcessController
 }
 
+interface ReconnectableManagedProcessControllerFactory : ManagedProcessControllerFactory {
+  fun reconnect(snapshot: ManagedProcessSnapshot): ManagedProcessController?
+}
+
 data class AgentProcessRegistryConfig(
   val maxTrackedProcesses: Int = 16,
 ) {
@@ -210,6 +214,8 @@ class FileBackedAgentProcessRegistry(
   private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory)
   private val controllerScopeId: String = directory.absoluteFile.normalize().path
   private val controllersByProcessId = linkedMapOf<String, ManagedProcessController>()
+  private val reconnectableControllerFactory =
+    controllerFactory as? ReconnectableManagedProcessControllerFactory
 
   init {
     synchronized(lock) {
@@ -249,8 +255,9 @@ class FileBackedAgentProcessRegistry(
 
   override fun wait(processId: String, timeoutMs: Long): ManagedProcessSnapshot? {
     val controller = synchronized(lock) {
-      loadNormalizedRecordLocked()
-      controllersByProcessId[processId]
+      val existing = loadNormalizedRecordLocked()
+      val snapshot = existing.snapshots.firstOrNull { persisted -> persisted.processId == processId }
+      snapshot?.let(::controllerForSnapshot)
     }
     if (controller == null) {
       return synchronized(lock) {
@@ -270,8 +277,9 @@ class FileBackedAgentProcessRegistry(
 
   override fun terminate(processId: String): ManagedProcessSnapshot? {
     val controller = synchronized(lock) {
-      loadNormalizedRecordLocked()
-      controllersByProcessId[processId]
+      val existing = loadNormalizedRecordLocked()
+      val snapshot = existing.snapshots.firstOrNull { persisted -> persisted.processId == processId }
+      snapshot?.let(::controllerForSnapshot)
     }
     if (controller == null) {
       return synchronized(lock) {
@@ -293,7 +301,7 @@ class FileBackedAgentProcessRegistry(
     val existing = loadNormalizedRecordLocked()
     var changed = false
     val syncedSnapshots = existing.snapshots.map { snapshot ->
-      val controller = controllerForProcessId(snapshot.processId) ?: return@map snapshot
+      val controller = controllerForSnapshot(snapshot) ?: return@map snapshot
       val liveSnapshot = controller.snapshot()
       if (liveSnapshot != snapshot) {
         changed = true
@@ -384,7 +392,7 @@ class FileBackedAgentProcessRegistry(
     if (snapshot.status != ManagedProcessStatus.RUNNING) {
       return snapshot
     }
-    controllerForProcessId(snapshot.processId)?.let { controller ->
+    controllerForSnapshot(snapshot)?.let { controller ->
       return controller.snapshot()
     }
     val repairedAt = maxOf(clock(), snapshot.updatedAtEpochMs)
@@ -428,6 +436,60 @@ class FileBackedAgentProcessRegistry(
       )?.also { controller ->
         controllersByProcessId[processId] = controller
       }
+
+  private fun controllerForSnapshot(
+    snapshot: ManagedProcessSnapshot,
+  ): ManagedProcessController? =
+    controllerForProcessId(snapshot.processId)
+      ?.takeUnless { controller ->
+        shouldReplaceRetryableReconnectController(
+          persistedSnapshot = snapshot,
+          liveSnapshot = controller.snapshot(),
+        )
+      }
+      ?: reconnectControllerForSnapshot(snapshot)
+
+  private fun shouldReplaceRetryableReconnectController(
+    persistedSnapshot: ManagedProcessSnapshot,
+    liveSnapshot: ManagedProcessSnapshot,
+  ): Boolean {
+    if (persistedSnapshot.status != ManagedProcessStatus.RUNNING) {
+      return false
+    }
+    if (liveSnapshot.status != ManagedProcessStatus.RUNNING) {
+      return false
+    }
+    val reconnectRecoveryState = liveSnapshot.metadata["sandboxCommandReconnectRecoveryState"]
+    val retryScheduled =
+      reconnectRecoveryState == "retry_scheduled" ||
+        (
+          reconnectRecoveryState == null &&
+            liveSnapshot.metadata["sandboxCommandReconnectRetryable"] == "true"
+          )
+    if (!retryScheduled) {
+      return false
+    }
+    val retryAfterEpochMs = liveSnapshot.metadata["sandboxCommandReconnectRetryAfterEpochMs"]
+      ?.toLongOrNull()
+      ?: return true
+    return clock() >= retryAfterEpochMs
+  }
+
+  private fun reconnectControllerForSnapshot(
+    snapshot: ManagedProcessSnapshot,
+  ): ManagedProcessController? {
+    if (snapshot.status != ManagedProcessStatus.RUNNING) {
+      return null
+    }
+    val controller = reconnectableControllerFactory?.reconnect(snapshot) ?: return null
+    controllersByProcessId[snapshot.processId] = controller
+    ManagedProcessControllerRegistry.register(
+      scopeId = controllerScopeId,
+      processId = snapshot.processId,
+      controller = controller,
+    )
+    return controller
+  }
 
   @Serializable
   private data class ManagedProcessRegistryRecord(

@@ -1,5 +1,6 @@
 package com.opencray.app
 
+import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
 import com.opencray.runtime.OpenCrayPromptResumeState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -30,6 +31,7 @@ class AppAgentSessionTaskRuntimeFactoryApprovalResumeTest {
         createdAtEpochMs = 100L,
         updatedAtEpochMs = 100L,
         toolName = "Read",
+        promptCheckpointBoundary = OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
         promptResumeState = resumeState,
         subAgentApprovedToolName = "Read",
         subAgentPromptResumeState = OpenCrayPromptResumeState(turnIndex = 0, toolCallCount = 1),
@@ -57,6 +59,10 @@ class AppAgentSessionTaskRuntimeFactoryApprovalResumeTest {
     )
 
     assertEquals("Read", continuation.grant?.toolName)
+    assertEquals(
+      OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
+      continuation.grant?.promptCheckpointBoundary,
+    )
     assertEquals(resumeState, continuation.grant?.promptResumeState)
     assertEquals("Read", continuation.grant?.subAgentApprovalResume?.approvedToolName)
     assertEquals(true, continuation.grant?.subAgentApprovalResume?.isHighRisk)
@@ -89,6 +95,7 @@ class AppAgentSessionTaskRuntimeFactoryApprovalResumeTest {
         createdAtEpochMs = 100L,
         updatedAtEpochMs = 100L,
         toolName = "LS",
+        promptCheckpointBoundary = OpenCrayPromptCheckpointBoundary.COMMENTARY_EMITTED,
         promptResumeState = resumeState,
       ),
     )
@@ -107,6 +114,13 @@ class AppAgentSessionTaskRuntimeFactoryApprovalResumeTest {
     assertEquals(
       resumeState,
       factory.generalPromptResumeStateForExecution(
+        sessionId = sessionId,
+        taskId = "task-1",
+      ),
+    )
+    assertEquals(
+      OpenCrayPromptCheckpointBoundary.COMMENTARY_EMITTED,
+      factory.promptResumeCheckpointBoundaryForExecution(
         sessionId = sessionId,
         taskId = "task-1",
       ),
@@ -135,6 +149,7 @@ class AppAgentSessionTaskRuntimeFactoryApprovalResumeTest {
         checkpointKind = PromptCheckpointKind.PRE_MODEL_REQUEST,
         createdAtEpochMs = 100L,
         updatedAtEpochMs = 100L,
+        promptCheckpointBoundary = OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST,
         promptResumeState = resumeState,
       ),
     )
@@ -157,5 +172,61 @@ class AppAgentSessionTaskRuntimeFactoryApprovalResumeTest {
         taskId = "task-1",
       ),
     )
+    assertEquals(
+      OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST,
+      factory.promptResumeCheckpointBoundaryForExecution(
+        sessionId = sessionId,
+        taskId = "task-1",
+      ),
+    )
+  }
+
+  @Test
+  fun rejectionContinuationForExecutionFallsBackToDurableCheckpointBoundary() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-rejected-resume").toPath()
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-rejected-resume-factory"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val checkpointFactory = com.opencray.app.inMemoryPromptCheckpointStoreFactoryForTest()
+    val checkpointStore = checkpointFactory.forChatSession(sessionId)
+    val resumeState = OpenCrayPromptResumeState(turnIndex = 3, toolCallCount = 2)
+
+    checkpointStore.upsert(
+      PersistedPromptCheckpoint(
+        sessionId = sessionId,
+        runId = "run-1",
+        taskId = "task-1",
+        checkpointId = "checkpoint-rejected",
+        checkpointKind = PromptCheckpointKind.REJECTED_PENDING_RESUME,
+        createdAtEpochMs = 100L,
+        updatedAtEpochMs = 100L,
+        toolName = "Write",
+        promptCheckpointBoundary = OpenCrayPromptCheckpointBoundary.ACTION_BATCH_PARSED,
+        promptResumeState = resumeState,
+      ),
+    )
+
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      approvalRegistry = AgentTaskApprovalRegistry(),
+      promptCheckpointStoreProvider = checkpointFactory::forChatSession,
+    )
+
+    val continuation = factory.approvalContinuationForExecution(
+      sessionId = sessionId,
+      taskId = "task-1",
+    )
+
+    assertNull(continuation.grant)
+    assertEquals("Write", continuation.rejection?.toolName)
+    assertEquals(
+      OpenCrayPromptCheckpointBoundary.ACTION_BATCH_PARSED,
+      continuation.rejection?.promptCheckpointBoundary,
+    )
+    assertEquals(resumeState, continuation.rejection?.promptResumeState)
   }
 }

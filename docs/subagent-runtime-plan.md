@@ -2,6 +2,70 @@
 
 ## 目标
 
+## 状态更新（2026-03-31）
+
+这份文档最早是按“先做一期，再补二期 control plane”的思路写的。
+
+当前代码状态已经比文档前半段更往前了一步：
+
+- `Task` 仍然保留，作为简单委派入口
+- 显式 subagent control plane 已落地：
+  - `spawn_agent`
+  - `send_input`
+  - `wait_agent`
+  - `close_agent`
+  - `list_subagents`
+- child handle、approval resume、checkpoint / replay / recovery、host `subAgents` 投影都已接通
+- `AppAgentSessionTaskRuntimeFactory` 现在会给同一个 session 注入 session-scoped 的 `SubAgentExecutionCoordinator`
+- subagent handle 已经有独立 durable store：
+  - session 目录下的 `runtime-subagent-handles.json`
+  - host snapshot 会把 durable handle source 和 prompt checkpoint handle 一起合并
+  - app / runtime 重建后，latest child handle state 不再只靠父 prompt checkpoint 恢复
+- `send_input` 不再只是直接改 child prompt / resume state：
+  - child handle 现在有显式 `SubAgentMailbox`
+  - mailbox 会 durable 保存 pending follow-up messages
+  - child 真正启动 / 恢复时，runtime 才会把 mailbox delivery 物化进 prompt 或 resume transcript，并推进 last delivered marker
+- active child execution 已经不再挂在 `PromptTurnCursor.activeSubAgentExecutions` 里
+- 父 run 现在不会在 `final` 退出时自动取消仍在后台运行的 child
+- `AgentSessionRuntimeManager` / `OpenCrayRuntimeServiceHost` 现在会把 live subagent 当作 active work，避免 session 在 child 还活着时被 idle release
+
+但这不等于已经做成“真正并行”的 Codex 式 subagent orchestration。
+
+当前真实语义是：
+
+- `spawn_agent` 会立刻启动 child，并让它在同一个 runtime host / process 里后台运行；父 run 返回 `final` 后不会默认把它取消掉
+- `wait_agent` 负责在后续 turn / 后续 run 里等待 child 到达一个稳定状态，或在 approval 已解锁后恢复 paused child
+- `send_input` 现在会把 follow-up 输入排进 child mailbox；它仍然不是 mid-run interrupt，只会在 child 下一次启动 / 恢复时投递
+- `close_agent` 可以取消一个正在运行或等待中的 child handle
+- session keepalive 现在会因为 live subagent 持续保活，所以 child 已经可以跨父 run completion 继续推进
+- child runtime 现在会把自己的 durable prompt checkpoint 持久化回 handle store，而不再只靠 approval suspend/resume 特判
+- 如果 runtime / host 实例重建，`BACKGROUND_RUNNING` child 在有 durable checkpoint 时会被修复成可恢复的 `BACKGROUND_QUEUED`
+- runtime service bootstrap / interrupted-run repair 现在会为这些 detached queued handle 自动投递内部 `wait_agent` 恢复任务，所以 cold restart 后 child 可以继续推进
+- 现在已经支持“显式 handle + host-local 后台 child，可跨父 run completion，并可在 cold restart 后从 durable checkpoint 自动续跑”
+- 但 child 仍不是独立 child session / child queue actor；恢复仍复用宿主 session queue 和 `wait_agent` 路径
+- 之前的 Flutter 消费层缺口已经补齐：
+  - Flutter 模型层已解析 `runtimeActivity.subAgents`
+  - 主聊天 trace、settings runtime memory trace、Context & Memory Trace 页面现在都会直接消费 `runtimeActivity.subAgents`
+  - detached child state 现在不会再因为父 run 离开 recent run list 就只剩 host/runtime 内部投影
+- 额外说明：
+  - 审计后保留的少量 `activeRuns`-only 路径不算问题
+  - 它们本来就只服务“父 run 可见时的 selector / assistant phase 投影”，不应该把 detached child 伪装成 recent run
+  - 当前刻意维持的 UI 策略是：
+    - 父 run 可见时，把 durable `subAgents` 补进父 trace
+    - 父 run 不可见时，单独渲染 detached subagent trace / debug card
+
+## 已写死的架构不变量（2026-03-31）
+
+这部分不是后面再讨论的偏好，而是当前单主 agent 架构的硬边界：
+
+- OpenCray 当前只有一个持久 main agent identity。
+- subagent 只是 main agent 在 runtime 内派生出的 delegated child handle，不注册成独立 agent，也不是独立产品实体。
+- 公开 control plane 继续沿用 `spawn_agent / wait_agent / send_input / close_agent` 和 `agent_id` 这套名字做兼容，但这里的 `agent_id` 语义一律解释为 child handle id，不代表独立 persistent agent identity。
+- subagent 不拥有独立 `SOUL.md`、独立 soul store、独立长期 memory store、独立 session queue，也不拥有独立 workspace root。
+- subagent 只继承父 run 已经解出来的 effective soul contract，以及父级授予的 workspace / tool / policy 边界；它借用主 agent 的工作区，不获得新的“人格/记忆/工作区所有权”。
+- child 产出的结果、观察和候选事实先回到父级；是否写入 durable memory、是否改变后续对话里的长期状态，只能由 main agent / host 侧主链决定。
+- 公开 child context mode 只允许 `minimal` 和 `delegated`；`mirrored` 仅保留为内部恢复/测试路径，不再对模型公开暴露。
+
 先做一个收敛的一期 subagent runtime，让 OpenCray 在运行逻辑上更接近：
 
 - Claude Code 的 `Task` 风格委派入口
@@ -122,11 +186,18 @@ Claude Code 官方 SDK 文档已经暴露了 `Task` 这个委派入口，参数�
 - `Task` tool result metadata、subagent runtime event、durable run record 都会携带这一层状态
 - `subagent` lifecycle 现在也会写进 durable transcript replay
 - transcript pruning / repair 会把 `subagent` lifecycle 当作受控 delegation 交互，而不是 generic 噪音
+- 显式 control plane 已落地：
+  - `spawn_agent`
+  - `send_input`
+  - `wait_agent`
+  - `close_agent`
+- `Task` 现在本质上是共享同一套 subagent handle / lifecycle helper 的 sugar，而不是另一条完全独立的老路径
+- `Task` 继续保留这件事本身不是 gap；真正还没做的是 detached / durable child actor，而不是把 `Task` 拿掉
 - waiting child approval 在通过后，host 也会补一个显式 `subagent resumed` event，避免 timeline 只看到 approval result 却看不到 child lifecycle 已续上
 - 如果 waiting child approval 被用户拒绝，或 waiting child 所在 run 被用户取消，host 会补一个 terminal `subagent` event，避免 timeline 永远停在 `waiting_approval`
 - 当前仍然只是“预抽象”：
   - child approval suspend / resume 还没有独立 UI / 调度
-  - background child execution 还没有真正落地
+  - child 已经能在同一个 runtime host 里后台执行，并可跨父 run completion、cold restart 继续推进，但还不是独立 child session / child queue actor
   - 但 replay / host 不再需要靠错误码猜 child 是否可继续
 
 ### 先不做
@@ -186,6 +257,13 @@ child 不重新从 host UI 取上下文，也不直接继承父 transcript 全�
 
 child context 必须来自一个显式的 `SubAgentContextBuilder`。
 
+公开 control plane 只允许模型使用：
+
+- `minimal`
+- `delegated`
+
+`mirrored` 只允许作为内部恢复/测试分支存在，不能再作为对模型开放的正常委派模式。
+
 ### 1. `minimal`
 
 用途：
@@ -236,7 +314,7 @@ child context 必须来自一个显式的 `SubAgentContextBuilder`。
 
 ### 3. `mirrored`
 
-一期先保留模型，不对 prompt 暴露，也不实现真实继承。
+运行时仍保留这个枚举和 builder 分支，但它只用于内部恢复/测试，不再允许通过 `Task` / `spawn_agent` 显式请求。
 
 原因：
 
@@ -259,13 +337,19 @@ child context 必须来自一个显式的 `SubAgentContextBuilder`。
 
 ### Memory
 
-一期 child 默认不做自动 memory recall。
+一期 child 默认不做自动 memory recall，也不直接写 durable memory。
 
 原因：
 
 - 一期 child 是 read-only delegation
 - 当前最有价值的是让 child 看仓库、总结结果，而不是把 memory 复杂度也复制一份
 - 如果确实需要历史事实，父级应该先在自己的上下文里拿到，再通过 delegated summary 传下去
+
+也就是说：
+
+- child 可以产出“候选观察 / 候选结论”
+- 但长期记忆写入权仍然留在父级主链
+- subagent handle store 是运行时恢复状态，不是 child 自己的长期 memory store
 
 后续二期再考虑：
 
@@ -559,18 +643,29 @@ child context 必须来自一个显式的 `SubAgentContextBuilder`。
 - host / runtime snapshot 现在也已经有轻量 child registry 投影：
   - session runtime snapshot 会暴露 `subAgents`
   - 每个 child 会携带 latest phase / execution state / continuation kind / resumable / requires user action / summary
+- Flutter 消费层现在已经直接使用这份投影：
+  - chat 主界面会把 durable `subAgents` 合并进父 trace，或在父 run 不可见时单独渲染 detached trace
+  - settings 的 runtime memory trace / Context & Memory Trace 会直接显示 `Projected subagents`
+
+这里也顺手澄清一个之前列出来但实际不算问题的点：
+
+- 不是所有仍然读取 `activeRuns` 的 UI 路径都应该改成读 `subAgents`
+- recent run selector、父 run assistant phase 泡泡这类逻辑本来就只该围绕可见父 run 工作
+- 真正需要补的是“detached child 不能随着父 run 消失而从 UI 消失”的链路，这部分已经补齐
 
 所以当前正确的判断是：
 
 - OpenCray 已经不是“只有 explorer 型 child”
-- 但 OpenCray 还不是 Codex 那种显式 `spawn / wait / send_input / close` 控制面
-- 当前更像一个同步的 `delegate_and_wait`
+- OpenCray 已经有显式 `spawn / wait / send_input / close` 控制面
+- 这些 handle 已经能在同一个 runtime host 内后台推进，并且可跨父 run completion、cold restart 继续推进
+- live subagent 现在也会进入 session / service keepalive 判定，不会被 idle 回收误杀
+- 但这些 handle 还不是独立 child session / child queue actor
 
-## 二期目标：补成更接近 Codex 的 subagent control plane
+## 下一阶段目标：补成更接近 Codex 的 detached subagent orchestration
 
-这一步的目标，不是继续把更多隐式行为塞进 `Task`，而是把 child runtime 从“同步工具调用”提升成“显式 runtime actor”。
+这一步的目标，不是再重复发明 control plane，而是把已经存在的 handle / lifecycle 模型，从“host-local 后台 child，可跨父 run completion / cold restart 继续推进”继续提升成“真正独立于宿主 session queue 的 detached runtime actor”。
 
-二期做完之后，希望 OpenCray 的抽象更接近：
+下一阶段做完之后，希望 OpenCray 的抽象更接近：
 
 - `spawn_agent(...)`
 - `send_input(...)`
@@ -622,6 +717,14 @@ OpenCray 当前产品目标不是 Codex 的完整执行环境矩阵。
 
 ## 二期工具表面建议
 
+下面继续沿用现有 tool name 和 `agent_id` 这套 wire surface 做兼容。
+
+但语义上必须始终按下面理解：
+
+- `agent_id` = delegated child handle id
+- 不是独立 persistent agent id
+- 后续新增内部字段/调试字段时优先用 `handleId` / `subAgentHandleId` 一类名字，避免继续加深混淆
+
 ### 1. `spawn_agent`
 
 用途：
@@ -644,6 +747,7 @@ OpenCray 当前产品目标不是 Codex 的完整执行环境矩阵。
 建议返回：
 
 - `agent_id`
+  - 语义上是 child handle id
 - `status`
 - `subagent_type`
 - `context_mode`
@@ -659,11 +763,13 @@ OpenCray 当前产品目标不是 Codex 的完整执行环境矩阵。
 建议参数：
 
 - `agent_id: string`
+  - 语义上是 child handle id
 - `message: string`
 
 建议返回：
 
 - `agent_id`
+  - 语义上是 child handle id
 - `status`
 - `queued: boolean`
 
@@ -691,6 +797,7 @@ OpenCray 当前产品目标不是 Codex 的完整执行环境矩阵。
 
 - 每个 child 的：
   - `agent_id`
+    - 语义上是 child handle id
   - `status`
   - `execution_state`
   - `summary`
@@ -713,10 +820,12 @@ OpenCray 当前产品目标不是 Codex 的完整执行环境矩阵。
 建议参数：
 
 - `agent_id: string`
+  - 语义上是 child handle id
 
 建议返回：
 
 - `agent_id`
+  - 语义上是 child handle id
 - `closed: boolean`
 - `final_status`
 
@@ -725,20 +834,27 @@ OpenCray 当前产品目标不是 Codex 的完整执行环境矩阵。
 - 关闭 child control-plane handle
 - 让 replay / host / UI 知道这个 child 生命周期已经收束
 
-### 5. 可选补一个 `list_agents`
+### 5. 如需补枚举接口，优先叫 `list_handles` / `list_subagents`
 
-如果后面模型真的需要枚举 child，或者 UI 想更干净地调试，可以补：
+这项现在已经落地为：
 
-- `list_agents()`
+- `list_subagents()`
 
-但这不是第一优先级。
+它当前会返回 delegated child handle registry 的摘要，包含：
 
-第一优先级仍然是：
+- parent / child linkage
+- lifecycle state / continuation kind
+- mailbox backlog
+- latest summarized child result
 
-- `spawn_agent`
-- `send_input`
-- `wait_agent`
-- `close_agent`
+`list_handles()` 目前仍只保留为命名建议和兼容别名方向，不需要再新增一个语义重复的公开工具。
+
+不建议再新增 `list_agents` 这种继续把 runtime handle 和 persistent agent identity 混在一起的名字。
+
+现在真正还没做完的重点，不再是“能不能列出来”，而是：
+
+- detached child actor / child queue
+- 把恢复链路从宿主 session queue 的隐藏 `wait_agent` 任务里彻底拔出来
 
 ## profile 命名建议
 
@@ -798,27 +914,39 @@ OpenCray 当前产品目标不是 Codex 的完整执行环境矩阵。
 
 ### 2. child mailbox
 
-需要把 child 的 follow-up 输入显式存起来，而不是靠拼 prompt。
-
-建议新增：
+这块现在已经做了第一版落地，不再只是建议项：
 
 - `SubAgentMailbox`
 
-最小能力：
+当前已具备：
 
 - pending messages queue
 - last delivered message id
-- approval wait 时可挂起
+- old `supplementalInputs` 句柄会在 store / runtime 读取时迁移进 mailbox
+- `send_input` 会写 mailbox，而不是直接改 child prompt
+- child 启动 / 恢复时才会真正消费 mailbox，并把已投递边界 durable 记下来
+
+但还没做到：
+
+- mid-loop arbitrary interrupt delivery
+- 独立 child actor 自己消费 mailbox
+- mailbox 级别的单独 host/UI 检查面
 
 ### 3. child registry
 
-当前 host snapshot 的 `subAgents` 只是投影层。
+这一层已经不再只是 host projection：
+
+- runtime 现在已经有显式 child handle registry
+- `list_subagents` 已经把它暴露成一等 runtime control-plane read surface
+- host snapshot / Flutter 消费层也已经直接消费 `runtimeActivity.subAgents`
+
+但它还没完全做到“独立 child runtime registry”。
 
 二期要把它补成真正的 runtime registry：
 
-- runtime 持有 active child handles
-- host 可恢复 child latest state
-- replay 可恢复 child 生命周期边界
+- runtime 持有真正独立于父 prompt loop 的 active child handles / child queue
+- host 可恢复 child latest state，而不需要再借宿主 session queue 注入隐藏恢复任务
+- replay 可恢复 child 生命周期边界，并能直接驱动 detached child 恢复
 
 ### 4. `Task` 改成 sugar
 
@@ -907,10 +1035,16 @@ child 不能只留下最后一句摘要。
 - host snapshot 改为优先读 registry，而不是只读 event 聚合
 - durable store 能恢复 latest child state
 
+当前进展：
+
+- 上面三件事已经基本成立
+- 额外已补 `list_subagents`，所以 child registry 现在已经有 runtime 一等读接口
+- 真正剩下的是把 registry 后面的 live execution owner 从“宿主 queue + 隐藏恢复 wait”继续推进成“独立 child actor / child queue”
+
 ### P2-3 `spawn_agent`
 
 - child 可被显式启动
-- 先只支持同 parent run 下的 local child
+- 先只支持同 app / process / session host 内的 local child
 - 第一版仍限制深度和工具面
 
 ### P2-4 `wait_agent`
@@ -972,17 +1106,17 @@ child 不能只留下最后一句摘要。
 
 ## 最终建议
 
-如果目标是“更接近 Codex 的 subagent 行为”，下一步最重要的不是继续增强 `Task` 的单次能力，而是：
+如果目标是“更接近 Codex 的 subagent 行为”，下一步最重要的不是继续补控制面命名，而是：
 
-- 把 child 变成显式 handle
-- 把控制动作显式化
-- 把 `Task` 下沉成 sugar
+- 把已启动的 child handle 从“可 cold-restart 自动续跑”继续补成“独立 child actor / child queue”
+- 保持 `wait_agent` 作为等待/收割结果入口
+- 把 `Task` 继续维持为 `spawn_agent + wait_agent` 的 sugar
 
 只有这一步做完，后面的：
 
 - 更复杂的 worker 任务
 - child follow-up
-- child background execution
+- cold-restart durable detached child background execution
 - child close / cleanup
 - 更接近 Codex 的 UI 和 runtime 行为
 

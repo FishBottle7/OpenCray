@@ -37,9 +37,9 @@ class SandboxPreviewToolTest {
       ),
     )
 
-    val toolNames = dispatcher.definitions().map { definition -> definition.name }
+    val definition = dispatcher.definitions().first { tool -> tool.name == "sandbox_preview_open" }
 
-    assertTrue(toolNames.contains("sandbox_preview_open"))
+    assertFalse(definition.parameters.first { parameter -> parameter.name == "port" }.required)
   }
 
   @Test
@@ -71,12 +71,13 @@ class SandboxPreviewToolTest {
       OpenCrayToolDispatcherConfig(
         workspaceRoots = setOf(workspaceRoot),
         sandboxPreviewService = SandboxPreviewService { request ->
+          val requestedPort = requireNotNull(request.port)
           SandboxPreviewResult(
-            url = "https://${request.port}-sb-1.e2b.app${request.path.orEmpty()}",
+            url = "https://${requestedPort}-sb-1.e2b.app${request.path.orEmpty()}",
             providerId = "e2b",
             sandboxId = "sb-1",
             sandboxDomain = "e2b.app",
-            port = request.port,
+            port = requestedPort,
             path = request.path,
             accessHeaderName = "E2B-Traffic-Access-Token",
             accessTokenConfigured = true,
@@ -105,6 +106,7 @@ class SandboxPreviewToolTest {
     assertTrue(result.content.contains("preview_url=https://3000-sb-1.e2b.app/health"))
     assertEquals("https://3000-sb-1.e2b.app/health", result.metadata["previewUrl"])
     assertEquals("3000", result.metadata["previewPort"])
+    assertEquals("explicit", result.metadata["previewPortSelection"])
     assertEquals("/health", result.metadata["previewPath"])
     assertEquals("e2b", result.metadata["sandboxProvider"])
     assertEquals("sb-1", result.metadata["sandboxId"])
@@ -113,6 +115,42 @@ class SandboxPreviewToolTest {
     assertEquals("true", result.metadata["previewAccessTokenConfigured"])
     assertTrue(result.content.contains("probe_status=ready"))
     assertTrue(result.content.contains("probe_http_status=200"))
+  }
+
+  @Test
+  fun sandboxPreviewOpenAllowsServiceResolvedPortWhenArgumentIsOmitted() {
+    val workspaceRoot = temporaryFolder.newFolder("sandbox-preview-auto-port").toPath()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        sandboxPreviewService = SandboxPreviewService { request ->
+          assertEquals(null, request.port)
+          SandboxPreviewResult(
+            url = "https://4173-sb-1.e2b.app/",
+            providerId = "e2b",
+            sandboxId = "sb-1",
+            sandboxDomain = "e2b.app",
+            port = 4173,
+            probeStatus = SandboxPreviewProbeStatus.READY,
+            probeHttpStatusCode = 200,
+          )
+        },
+      ),
+    )
+
+    val result = dispatcher.dispatch(
+      task = developerTask(),
+      call = AgentToolCall(
+        toolName = "sandbox_preview_open",
+        arguments = JsonObject(emptyMap()),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertTrue(result.content.contains("preview_url=https://4173-sb-1.e2b.app/"))
+    assertEquals("4173", result.metadata["previewPort"])
+    assertEquals("auto", result.metadata["previewPortSelection"])
   }
 
   private fun developerTask(): AgentTask = AgentTask(

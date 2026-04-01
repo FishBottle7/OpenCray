@@ -32,8 +32,6 @@ import com.opencray.app.facade.mcp.McpSettingsSnapshot
 import com.opencray.app.facade.notifications.EmptyNotificationSettingsFacade
 import com.opencray.app.facade.notifications.LocalNotificationSettingsFacade
 import com.opencray.app.facade.notifications.NotificationSettingsFacade
-import com.opencray.app.facade.notifications.NotificationSettingsSnapshot
-import com.opencray.app.facade.notifications.SaveNotificationSettingsRequest
 import com.opencray.app.facade.personalization.EmptyPersonalizationFacade
 import com.opencray.app.facade.personalization.LocalPersonalizationFacade
 import com.opencray.app.facade.personalization.PersonalizationConfigSnapshot
@@ -57,13 +55,10 @@ import com.opencray.app.facade.safety.SafetySettingsFacade
 import com.opencray.app.facade.safety.SafetySettingsLocationSnapshot
 import com.opencray.app.facade.safety.SafetySettingsSnapshot
 import com.opencray.app.facade.skills.EmptySkillsFacade
-import com.opencray.app.facade.skills.InstallSourceSnapshot
-import com.opencray.app.facade.skills.InstalledSkillSnapshot
 import com.opencray.app.facade.skills.LocalSkillsFacade
 import com.opencray.app.facade.skills.SkillInstructionsSnapshot
 import com.opencray.app.facade.skills.SkillsFacade
 import com.opencray.app.facade.skills.SkillsSnapshot
-import com.opencray.app.facade.skills.SuggestedSkillSnapshot
 import com.opencray.app.facade.settings.LocalSettingsFacade
 import com.opencray.app.facade.settings.SettingsDetailSnapshot
 import com.opencray.app.facade.settings.SettingsFacade
@@ -115,6 +110,7 @@ import com.opencray.runtime.OpenCrayFinalAttachment
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
+import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCrayPromptResumeState
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
@@ -148,8 +144,6 @@ import com.opencray.runtime.skills.SkillPackageCheckStatus
 import com.opencray.runtime.skills.SkillPackageUpdateReport
 import com.opencray.runtime.skills.SkillPackageUpdateResult
 import com.opencray.runtime.skills.SkillPackageUpdateStatus
-import com.opencray.runtime.skills.SkillSourceInspectionCandidate
-import com.opencray.runtime.skills.SkillSourceInspectionResult
 import com.opencray.runtime.soul.MemoryBackedSoulProfileResolver
 import com.opencray.runtime.soul.RuntimeSoulProfileSeedFactory
 import com.opencray.runtime.soul.SoulProfileResolver
@@ -536,31 +530,13 @@ internal class OpenCrayHostRuntime private constructor(
   }
 
   override fun loadNotificationSettings(): Map<String, Any?> =
-    synchronized(lock) { notificationSettingsFacade.load() }.toMap()
+    synchronized(lock) { notificationSettingsFacade.load() }.toGatewayMap()
 
   override fun saveNotificationSettings(payload: Map<String, Any?>): Map<String, Any?> {
     val snapshot = synchronized(lock) {
-      notificationSettingsFacade.save(
-        SaveNotificationSettingsRequest(
-          masterEnabled = payload["masterEnabled"] as? Boolean ?: true,
-          defaultDeliveryModeId = payload["defaultDeliveryModeId"]?.toString().orEmpty(),
-          quietHoursEnabled = payload["quietHoursEnabled"] as? Boolean ?: true,
-          quietHoursStartMinutes = (payload["quietHoursStartMinutes"] as? Number)?.toInt()
-            ?: RuntimeNotificationSettingsState.DEFAULT_QUIET_HOURS_START_MINUTES,
-          quietHoursEndMinutes = (payload["quietHoursEndMinutes"] as? Number)?.toInt()
-            ?: RuntimeNotificationSettingsState.DEFAULT_QUIET_HOURS_END_MINUTES,
-          approvalRequestsEnabled = payload["approvalRequestsEnabled"] as? Boolean ?: true,
-          approvalReminderEnabled = payload["approvalReminderEnabled"] as? Boolean ?: true,
-          taskFinishedEnabled = payload["taskFinishedEnabled"] as? Boolean ?: false,
-          taskFailedEnabled = payload["taskFailedEnabled"] as? Boolean ?: true,
-          newUserMessageEnabled = payload["newUserMessageEnabled"] as? Boolean ?: true,
-          scheduledWakeEnabled = payload["scheduledWakeEnabled"] as? Boolean ?: false,
-          backgroundTaskPausedEnabled = payload["backgroundTaskPausedEnabled"] as? Boolean ?: true,
-          serviceRecoveredEnabled = payload["serviceRecoveredEnabled"] as? Boolean ?: false,
-        ),
-      )
+      notificationSettingsFacade.save(payload.toSaveNotificationSettingsRequest())
     }
-    return snapshot.toMap()
+    return snapshot.toGatewayMap()
   }
 
   override fun loadStrongBackgroundSnapshot(): Map<String, Any?> = buildMap {
@@ -875,7 +851,7 @@ internal class OpenCrayHostRuntime private constructor(
         suggestedLimit = suggestedLimit,
       )
     }
-    return snapshot.toMap()
+    return snapshot.toGatewayMap()
   }
 
   override fun observeSkills(listener: (Map<String, Any?>) -> Unit): () -> Unit =
@@ -1048,7 +1024,7 @@ internal class OpenCrayHostRuntime private constructor(
       attempt.errorMessage?.trim()?.takeIf(String::isNotBlank)
         ?: "Unable to inspect '$normalizedSourceRef'."
     }
-    return result.toMap()
+    return result.toGatewayMap()
   }
 
   override fun deleteInstalledSkill(skillId: String): String {
@@ -1237,7 +1213,7 @@ internal class OpenCrayHostRuntime private constructor(
     requireNotNull(instructions) {
       "Skill '$skillId' is unavailable."
     }
-    return instructions.toMap()
+    return instructions.toGatewayMap()
   }
 
   override fun loadSuggestedSkillInstructions(
@@ -1257,7 +1233,7 @@ internal class OpenCrayHostRuntime private constructor(
     requireNotNull(instructions) {
       "Skill source '$normalizedSourceRef' is unavailable."
     }
-    return instructions.toMap()
+    return instructions.toGatewayMap()
   }
 
   override fun activateSkillsInstallSource(sourceId: String): String =
@@ -1299,9 +1275,12 @@ internal class OpenCrayHostRuntime private constructor(
     val pendingUserInputs = chatSessionStore.loadPendingUserInputs(activeSession.sessionId)
     val pendingSupplements = supplementStoreForSession(activeSession.sessionId).snapshot()
     val runs = runtimeSession(activeSession.sessionId).listRuns()
-    val recentEvents = mergedRuntimeEventsLocked(
-      sessionId = activeSession.sessionId,
+    val recentEvents = userVisibleRuntimeEvents(
       runs = runs,
+      recentEvents = mergedRuntimeEventsLocked(
+        sessionId = activeSession.sessionId,
+        runs = runs,
+      ),
     )
     val displayedRuns = displayedRunsForSnapshot(
       runs = runs,
@@ -1309,12 +1288,12 @@ internal class OpenCrayHostRuntime private constructor(
     )
     val renderedMessages = renderedChatMessagesLocked(
       visibleMessages = visibleMessages,
-      runs = runs,
+      runs = displayedRuns,
       runtimeEvents = recentEvents,
       pendingUserInputs = pendingUserInputs,
       pendingSupplements = pendingSupplements,
     )
-    val pendingCount = pendingTaskCount(activeSession.sessionId)
+    val pendingCount = visiblePendingTaskCount(activeSession.sessionId)
     val pendingApprovals = pendingApprovalsForSession(activeSession.sessionId)
     val pendingUserInputCount = pendingUserInputs.size
     val pendingSupplementCount = pendingSupplements.size
@@ -1446,13 +1425,17 @@ internal class OpenCrayHostRuntime private constructor(
   }
 
   override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? = synchronized(lock) {
-    findRunSnapshotLocked(runId)?.let(::runSnapshotToMap)
+    findRunSnapshotLocked(runId)
+      ?.takeIf(::isUserVisibleRun)
+      ?.let(::runSnapshotToMap)
   }
 
   override fun waitForChatRun(
     runId: String,
     timeoutMs: Long,
-  ): Map<String, Any?>? = waitForRunSnapshot(runId, timeoutMs)?.let(::runSnapshotToMap)
+  ): Map<String, Any?>? = waitForRunSnapshot(runId, timeoutMs)
+    ?.takeIf(::isUserVisibleRun)
+    ?.let(::runSnapshotToMap)
 
   fun waitForChatRun(runId: String): Map<String, Any?>? =
     waitForChatRun(runId = runId, timeoutMs = DEFAULT_RUN_WAIT_TIMEOUT_MS)
@@ -1463,6 +1446,42 @@ internal class OpenCrayHostRuntime private constructor(
       initialPayload = loadChatRuntimeSnapshot(),
       listener = listener,
     )
+
+  override fun refreshSandboxSessionInfo() {
+    synchronized(lock) {
+      val sessionId = chatSessionStore.loadState().activeSession.sessionId
+      val handle = runtimeSession(sessionId)
+      val now = System.currentTimeMillis()
+      val task = AgentTask(
+        id = "tool-$sessionId-${UUID.randomUUID().toString().take(8)}",
+        type = AgentTaskType.TOOL_CALL,
+        input = buildJsonObject {
+          put("type", "tool_call")
+          put("tool_name", "sandbox_session_info")
+          put("arguments", buildJsonObject {})
+        }.toString(),
+        policyDecision = PolicyDecision(
+          outcome = PolicyDecisionOutcome.ALLOW,
+          reasonCode = "HOST_UI_TOOL_ACTION_ALLOW",
+        ),
+        createdAtEpochMs = now,
+        metadata = safetyMetadataForTask(safetySettingsFacade.load()) +
+          lifecycleDescriptor.taskMetadata(
+            submissionSource = RunSubmissionSources.HOST_UI_TOOL_ACTION,
+          ) +
+          mapOf(
+            RunLifecycleMetadataKeys.PREAPPROVED_TOOL_NAME to "sandbox_session_info",
+            AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to
+              "run-$sessionId-${UUID.randomUUID().toString().take(8)}",
+            AppAgentSessionTaskRuntimeFactory.METADATA_HOST_SESSION_ID to sessionId,
+          ),
+      )
+      handle.submitTask(task)
+      handle.ensureProcessing()
+    }
+    emitChatSnapshot()
+    emitChatRuntimeSnapshot()
+  }
 
   override fun loadMemoryDebugSnapshot(): Map<String, Any?> = synchronized(lock) {
     chatDebugProjector.loadMemoryDebugSnapshot(
@@ -2562,6 +2581,41 @@ internal class OpenCrayHostRuntime private constructor(
     .listRuns()
     .count { run -> !run.isTerminal }
 
+  private fun visiblePendingTaskCount(sessionId: String): Int = userVisibleRuns(
+    runtimeSession(sessionId).listRuns(),
+  ).count(AgentRunSnapshot::isActive)
+
+  private fun userVisibleRuns(
+    runs: List<AgentRunSnapshot>,
+  ): List<AgentRunSnapshot> = runs.filter(::isUserVisibleRun)
+
+  private fun userVisibleRuntimeEvents(
+    runs: List<AgentRunSnapshot>,
+    recentEvents: List<OpenCrayAgentRunEvent>,
+  ): List<OpenCrayAgentRunEvent> {
+    if (recentEvents.isEmpty()) {
+      return emptyList()
+    }
+    val runsByRunId = runs.associateBy(AgentRunSnapshot::runId)
+    val runsByTaskId = runs.associateBy(AgentRunSnapshot::taskId)
+    return recentEvents.filter { event ->
+      if (isInternalPromptCheckpointEvent(event)) {
+        return@filter false
+      }
+      val matchingRun = runsByRunId[event.runId]
+        ?: runsByTaskId[event.taskId]
+        ?: findRunSnapshotForIdentifierLocked(event.runId)
+        ?: findRunSnapshotForIdentifierLocked(event.taskId)
+      matchingRun?.let(::isUserVisibleRun) != false
+    }
+  }
+
+  private fun isUserVisibleRun(run: AgentRunSnapshot): Boolean =
+    !isInternalDetachedSubAgentRecoveryRun(run)
+
+  private fun isInternalDetachedSubAgentRecoveryRun(run: AgentRunSnapshot): Boolean =
+    run.lifecycleDiagnostics.submissionSource == RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY
+
   private fun supplementStoreForSession(sessionId: String): SessionSupplementStore =
     runtimeHostAccess.supplementStore(sessionId)
 
@@ -2831,6 +2885,7 @@ internal class OpenCrayHostRuntime private constructor(
     toolName = approval.resumeToolName ?: approval.toolName,
     pendingMessageId = approval.pendingMessageId,
     isHighRisk = approval.isHighRisk,
+    promptCheckpointBoundary = approval.promptCheckpointBoundary,
     promptResumeState = approval.promptResumeState,
     subAgentApprovedToolName = approval.subAgentApprovalResume?.approvedToolName,
     subAgentPromptResumeState = approval.subAgentApprovalResume?.promptResumeState,
@@ -2894,6 +2949,7 @@ internal class OpenCrayHostRuntime private constructor(
       metadata = eventMetadata,
       json = replayJson,
     ) ?: return
+    val promptCheckpointBoundary = OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(eventMetadata)
     persistPromptCheckpointLocked(
       sessionId = sessionId,
       checkpoint = PersistedPromptCheckpoint(
@@ -2907,6 +2963,7 @@ internal class OpenCrayHostRuntime private constructor(
         toolName = eventToolName,
         pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
           ?.takeIf(String::isNotBlank),
+        promptCheckpointBoundary = promptCheckpointBoundary,
         promptResumeState = promptResumeState,
       ),
     )
@@ -2921,6 +2978,7 @@ internal class OpenCrayHostRuntime private constructor(
       metadata = result.metadata,
       json = replayJson,
     ) ?: return
+    val promptCheckpointBoundary = OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(result.metadata)
     persistPromptCheckpointLocked(
       sessionId = sessionId,
       checkpoint = PersistedPromptCheckpoint(
@@ -2933,6 +2991,7 @@ internal class OpenCrayHostRuntime private constructor(
         updatedAtEpochMs = result.finishedAtEpochMs,
         pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
           ?.takeIf(String::isNotBlank),
+        promptCheckpointBoundary = promptCheckpointBoundary,
         promptResumeState = promptResumeState,
       ),
     )
@@ -3093,9 +3152,17 @@ internal class OpenCrayHostRuntime private constructor(
 
   private fun runtimeActivitySnapshotLocked(sessionId: String): Map<String, Any?> {
     val runs = runtimeSession(sessionId).listRuns()
-    val recentEvents = mergedRuntimeEventsLocked(
-      sessionId = sessionId,
+    if (runs.isNotEmpty()) {
+      runtimeSession(sessionId).retainKnownSubAgentParentRuns(
+        runs.mapTo(linkedSetOf(), AgentRunSnapshot::runId),
+      )
+    }
+    val recentEvents = userVisibleRuntimeEvents(
       runs = runs,
+      recentEvents = mergedRuntimeEventsLocked(
+        sessionId = sessionId,
+        runs = runs,
+      ),
     )
     val displayedRuns = displayedRunsForSnapshot(
       runs = runs,
@@ -3141,7 +3208,7 @@ internal class OpenCrayHostRuntime private constructor(
     displayedRuns: List<AgentRunSnapshot>,
     recentEvents: List<OpenCrayAgentRunEvent>,
   ): List<SubAgentActivitySnapshot> {
-    val registrySnapshots = subAgentSnapshotsFromPromptCheckpoints(sessionId)
+    val registrySnapshots = subAgentSnapshotsFromDurableSources(sessionId)
     val visibleRunIds = displayedRuns
       .mapTo(linkedSetOf(), AgentRunSnapshot::runId)
       .ifEmpty {
@@ -3203,6 +3270,9 @@ internal class OpenCrayHostRuntime private constructor(
         startedAtEpochMs = firstEvent.emittedAtEpochMs,
         updatedAtEpochMs = latestEvent.emittedAtEpochMs,
         eventCount = accumulator.eventCount,
+        mailboxMessageCount = 0,
+        mailboxPendingMessageCount = 0,
+        mailboxLastDeliveredMessageId = null,
       )
       eventSnapshotsByKey[subAgentRegistryKey(snapshot)] = snapshot
     }
@@ -3218,6 +3288,9 @@ internal class OpenCrayHostRuntime private constructor(
             startedAtEpochMs = minOf(existing.startedAtEpochMs, snapshot.startedAtEpochMs),
             updatedAtEpochMs = maxOf(existing.updatedAtEpochMs, snapshot.updatedAtEpochMs),
             eventCount = maxOf(existing.eventCount, snapshot.eventCount),
+            mailboxMessageCount = snapshot.mailboxMessageCount,
+            mailboxPendingMessageCount = snapshot.mailboxPendingMessageCount,
+            mailboxLastDeliveredMessageId = snapshot.mailboxLastDeliveredMessageId,
           )
         }
       }
@@ -3242,10 +3315,20 @@ internal class OpenCrayHostRuntime private constructor(
       ?: snapshot.label.trim(),
   ).joinToString(separator = "|")
 
-  private fun subAgentSnapshotsFromPromptCheckpoints(
+  private fun subAgentSnapshotsFromDurableSources(
     sessionId: String,
   ): List<SubAgentActivitySnapshot> {
     val latestByKey = linkedMapOf<String, SubAgentActivitySnapshot>()
+    runtimeSession(sessionId)
+      .listSubAgentHandles()
+      .forEach { handle ->
+        val snapshot = subAgentActivitySnapshot(handle)
+        val key = subAgentRegistryKey(snapshot)
+        val existing = latestByKey[key]
+        if (existing == null || snapshot.updatedAtEpochMs >= existing.updatedAtEpochMs) {
+          latestByKey[key] = snapshot
+        }
+      }
     promptCheckpointStoreForSession(sessionId)
       .list()
       .asReversed()
@@ -3271,27 +3354,33 @@ internal class OpenCrayHostRuntime private constructor(
 
   private fun subAgentActivitySnapshot(
     handle: SubAgentHandleState,
-  ): SubAgentActivitySnapshot = SubAgentActivitySnapshot(
-    parentRunId = handle.parentRunId,
-    parentTaskId = handle.parentTaskId,
-    childRunId = handle.childRunId,
-    childTaskId = handle.childTaskId,
-    label = handle.description,
-    subagentType = handle.subagentType,
-    contextMode = handle.contextMode,
-    depth = handle.depth,
-    phase = subAgentPhaseFor(handle.snapshot.state),
-    status = handle.snapshot.state.wireValue,
-    executionState = handle.snapshot.state.wireValue,
-    continuationKind = handle.snapshot.continuationKind.wireValue,
-    resumable = handle.snapshot.resumable,
-    requiresUserAction = handle.snapshot.requiresUserAction,
-    isHighRisk = handle.snapshot.isHighRisk,
-    summary = handle.snapshot.headline,
-    startedAtEpochMs = handle.createdAtEpochMs,
-    updatedAtEpochMs = handle.updatedAtEpochMs,
-    eventCount = 0,
-  )
+  ): SubAgentActivitySnapshot {
+    val mailbox = handle.normalizedMailbox()
+    return SubAgentActivitySnapshot(
+      parentRunId = handle.parentRunId,
+      parentTaskId = handle.parentTaskId,
+      childRunId = handle.childRunId,
+      childTaskId = handle.childTaskId,
+      label = handle.description,
+      subagentType = handle.subagentType,
+      contextMode = handle.contextMode,
+      depth = handle.depth,
+      phase = subAgentPhaseFor(handle.snapshot.state),
+      status = handle.snapshot.state.wireValue,
+      executionState = handle.snapshot.state.wireValue,
+      continuationKind = handle.snapshot.continuationKind.wireValue,
+      resumable = handle.snapshot.resumable,
+      requiresUserAction = handle.snapshot.requiresUserAction,
+      isHighRisk = handle.snapshot.isHighRisk,
+      summary = handle.snapshot.headline,
+      startedAtEpochMs = handle.createdAtEpochMs,
+      updatedAtEpochMs = handle.updatedAtEpochMs,
+      eventCount = 0,
+      mailboxMessageCount = mailbox.messages.size,
+      mailboxPendingMessageCount = mailbox.pendingMessages().size,
+      mailboxLastDeliveredMessageId = mailbox.lastDeliveredMessageId,
+    )
+  }
 
   private fun subAgentPhaseFor(
     state: SubAgentExecutionState,
@@ -3335,12 +3424,15 @@ internal class OpenCrayHostRuntime private constructor(
     "startedAtEpochMs" to snapshot.startedAtEpochMs,
     "updatedAtEpochMs" to snapshot.updatedAtEpochMs,
     "eventCount" to snapshot.eventCount,
+    "mailboxMessageCount" to snapshot.mailboxMessageCount,
+    "mailboxPendingMessageCount" to snapshot.mailboxPendingMessageCount,
+    "mailboxLastDeliveredMessageId" to snapshot.mailboxLastDeliveredMessageId,
   )
 
   private fun displayedRunsForSnapshot(
     runs: List<AgentRunSnapshot>,
     recentEvents: List<OpenCrayAgentRunEvent>,
-  ): List<AgentRunSnapshot> = runs.map { run ->
+  ): List<AgentRunSnapshot> = userVisibleRuns(runs).map { run ->
     displayRunSnapshot(
       run = run,
       recentEvents = recentEvents,
@@ -3366,7 +3458,8 @@ internal class OpenCrayHostRuntime private constructor(
       recentEvents = recentEvents,
     )
     val latest = runEvents.lastOrNull() ?: return run.lastEvent?.takeIf { event ->
-      eventMatchesRunExecution(run = run, event = event)
+      !isInternalPromptCheckpointEvent(event) &&
+        eventMatchesRunExecution(run = run, event = event)
     }
     if (latest is OpenCrayApprovalEvent && latest.phase != OpenCrayApprovalPhase.REQUIRED) {
       val previousMeaningful = runEvents
@@ -4806,6 +4899,10 @@ internal class OpenCrayHostRuntime private constructor(
     event is OpenCrayMemoryWriteEvent &&
       event.runId.startsWith(MEMORY_DEBUG_RUN_ID_PREFIX) &&
       event.taskId.startsWith(MEMORY_DEBUG_TASK_ID_PREFIX)
+
+  private fun isInternalPromptCheckpointEvent(event: OpenCrayAgentRunEvent): Boolean =
+    event is OpenCraySupplementEvent &&
+      event.checkpoint == INTERNAL_PROMPT_CHECKPOINT_MARKER
 
   private fun supplementalApprovalEventsLocked(
     sessionId: String,
@@ -6783,9 +6880,12 @@ internal class OpenCrayHostRuntime private constructor(
     if (runs.isEmpty()) {
       return normalizedFallback
     }
-    val recentEvents = mergedRuntimeEventsLocked(
-      sessionId = sessionId,
+    val recentEvents = userVisibleRuntimeEvents(
       runs = runs,
+      recentEvents = mergedRuntimeEventsLocked(
+        sessionId = sessionId,
+        runs = runs,
+      ),
     )
     val displayedRuns = displayedRunsForSnapshot(
       runs = runs,
@@ -6905,6 +7005,7 @@ internal class OpenCrayHostRuntime private constructor(
   ): PendingApprovalSnapshot {
     val toolName = approvalToolName(metadata)
     val resumeToolName = approvalResumeToolName(metadata) ?: toolName
+    val promptCheckpointBoundary = OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(metadata)
     val promptResumeState = OpenCrayPromptResumeMetadata.decodeFromMetadata(
       metadata = metadata,
       json = replayJson,
@@ -6938,6 +7039,7 @@ internal class OpenCrayHostRuntime private constructor(
       executionKind = executionKind,
       toolName = toolName,
       resumeToolName = resumeToolName,
+      promptCheckpointBoundary = promptCheckpointBoundary,
       promptResumeState = promptResumeState,
       subAgentApprovalResume = subAgentApprovalResume,
       requestSummary = requestSummary,
@@ -7669,22 +7771,6 @@ internal class OpenCrayHostRuntime private constructor(
     "sections" to sections.map { section -> section.toMap() },
   )
 
-  private fun NotificationSettingsSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "masterEnabled" to masterEnabled,
-    "defaultDeliveryModeId" to defaultDeliveryMode.wireValue,
-    "quietHoursEnabled" to quietHoursEnabled,
-    "quietHoursStartMinutes" to quietHoursStartMinutes,
-    "quietHoursEndMinutes" to quietHoursEndMinutes,
-    "approvalRequestsEnabled" to approvalRequestsEnabled,
-    "approvalReminderEnabled" to approvalReminderEnabled,
-    "taskFinishedEnabled" to taskFinishedEnabled,
-    "taskFailedEnabled" to taskFailedEnabled,
-    "newUserMessageEnabled" to newUserMessageEnabled,
-    "scheduledWakeEnabled" to scheduledWakeEnabled,
-    "backgroundTaskPausedEnabled" to backgroundTaskPausedEnabled,
-    "serviceRecoveredEnabled" to serviceRecoveredEnabled,
-  )
-
   private fun NetworkSearchConfigSnapshot.toMap(): Map<String, Any?> = mapOf(
     "localeTag" to localeTag,
     "title" to title,
@@ -7915,65 +8001,6 @@ internal class OpenCrayHostRuntime private constructor(
     "enabled" to enabled,
   )
 
-  private fun SkillsSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "installedSkills" to installedSkills.map { skill -> skill.toMap() },
-    "installSources" to installSources.map { source -> source.toMap() },
-    "suggestedSkills" to suggestedSkills.map { suggestion -> suggestion.toMap() },
-    "suggestedSkillsMayHaveMore" to suggestedSkillsMayHaveMore,
-  )
-
-  private fun InstalledSkillSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "id" to id,
-    "name" to name,
-    "description" to description,
-    "isEnabled" to isEnabled,
-    "sourceDirectoryPath" to sourceDirectoryPath,
-    "canDelete" to canDelete,
-  )
-
-  private fun InstallSourceSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "id" to id,
-    "title" to title,
-    "subtitle" to subtitle,
-    "actionLabel" to actionLabel,
-    "isAvailable" to isAvailable,
-  )
-
-  private fun SuggestedSkillSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "id" to id,
-    "name" to name,
-    "description" to description,
-    "sourceRef" to sourceRef,
-    "sourceLabel" to sourceLabel,
-    "installs" to installs,
-    "detailUrl" to detailUrl,
-  )
-
-  private fun SkillSourceInspectionResult.toMap(): Map<String, Any?> = mapOf(
-    "sourceType" to sourceType,
-    "sourceRef" to sourceRef,
-    "sourcePath" to sourcePath.orEmpty(),
-    "resolvedRevision" to resolvedRevision.orEmpty(),
-    "resolvedCommitSha" to resolvedCommitSha.orEmpty(),
-    "candidates" to candidates.map { candidate -> candidate.toMap() },
-  )
-
-  private fun SkillSourceInspectionCandidate.toMap(): Map<String, Any?> = mapOf(
-    "name" to name,
-    "description" to description,
-    "relativePath" to relativePath,
-  )
-
-  private fun SkillInstructionsSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "id" to id,
-    "name" to name,
-    "description" to description,
-    "body" to body,
-    "sourceDirectoryPath" to sourceDirectoryPath,
-    "isEnabled" to isEnabled,
-    "canDelete" to canDelete,
-  )
-
   private fun observeWithInitial(
     listeners: LinkedHashSet<(Map<String, Any?>) -> Unit>,
     initialPayload: Map<String, Any?>,
@@ -7996,6 +8023,23 @@ internal class OpenCrayHostRuntime private constructor(
 
   private fun emitChatRuntimeSnapshot() {
     emitSnapshotLazy(chatRuntimeListeners, ::loadChatRuntimeSnapshot)
+  }
+
+  internal fun notifyChatSnapshotsChanged() {
+    emitChatSnapshot()
+    emitChatRuntimeSnapshot()
+  }
+
+  internal fun notifyChatSnapshotChanged() {
+    emitChatSnapshot()
+  }
+
+  internal fun notifySkillsSnapshotChanged() {
+    emitSkillsSnapshot()
+  }
+
+  internal fun notifySettingsOverviewChanged() {
+    emitSettingsOverview()
   }
 
   private fun emitShellSnapshot() {
@@ -8056,6 +8100,7 @@ internal class OpenCrayHostRuntime private constructor(
     private const val MAX_RUNTIME_EVENT_HISTORY: Int = 24
     private const val MAX_RUNTIME_EVENT_PREVIEW_CHARS: Int = 240
     private const val MAX_RUNTIME_EVENT_FAILURE_CONTENT_CHARS: Int = 16_384
+    private const val INTERNAL_PROMPT_CHECKPOINT_MARKER: String = "internal_prompt_checkpoint"
     private val HIDDEN_ASSISTANT_CHAT_STAGES: Set<String> = setOf(
       "llm_retry",
       "responses_recovery",
@@ -8395,7 +8440,7 @@ internal class OpenCrayHostRuntime private constructor(
     private val NoOpVoiceMetadataAnalyzer: AppAgentWorkspaceVoiceMetadataAnalyzer =
       AppAgentWorkspaceVoiceMetadataAnalyzer { _, _ -> null }
 
-    private fun localizedHostRuntimeStrings(context: Context): HostRuntimeStrings = HostRuntimeStrings(
+    internal fun localizedHostRuntimeStrings(context: Context): HostRuntimeStrings = HostRuntimeStrings(
       localeTag = LocaleSettingsStore.fromContext(context).loadLanguage().tag,
       shellHostLabel = context.getString(R.string.flutter_host_label_android),
       shellHostSummary = context.getString(R.string.flutter_host_summary_android),
@@ -8573,6 +8618,7 @@ private data class PendingApprovalSnapshot(
   val executionKind: String?,
   val toolName: String?,
   val resumeToolName: String?,
+  val promptCheckpointBoundary: com.opencray.runtime.OpenCrayPromptCheckpointBoundary?,
   val promptResumeState: OpenCrayPromptResumeState?,
   val subAgentApprovalResume: SubAgentApprovalResume?,
   val requestSummary: String?,
@@ -8658,6 +8704,9 @@ private data class SubAgentActivitySnapshot(
   val startedAtEpochMs: Long,
   val updatedAtEpochMs: Long,
   val eventCount: Int,
+  val mailboxMessageCount: Int,
+  val mailboxPendingMessageCount: Int,
+  val mailboxLastDeliveredMessageId: String?,
 )
 
 private fun OpenCrayAgentRunEvent.withEmittedAtEpochMs(emittedAtEpochMs: Long): OpenCrayAgentRunEvent =

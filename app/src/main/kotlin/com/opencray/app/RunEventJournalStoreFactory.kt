@@ -3,10 +3,13 @@ package com.opencray.app
 import android.content.Context
 import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
+import com.opencray.runtime.OpenCrayPromptCheckpointEmission
+import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import java.io.File
 import java.util.Locale
 import java.util.UUID
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 
 internal interface RunEventJournalStoreFactory {
   fun forChatSession(sessionId: String): RunEventJournalStore
@@ -15,6 +18,12 @@ internal interface RunEventJournalStoreFactory {
 internal interface RunEventJournalStore {
   fun append(event: com.opencray.runtime.OpenCrayAgentRunEvent): PersistedRunJournalEntry
 
+  fun appendCheckpoint(
+    runId: String,
+    taskId: String,
+    emission: OpenCrayPromptCheckpointEmission,
+  ): PersistedRunJournalEntry
+
   fun hasEntries(): Boolean
 
   fun list(): List<PersistedRunJournalEntry>
@@ -22,7 +31,7 @@ internal interface RunEventJournalStore {
   fun listForRun(runId: String): List<PersistedRunJournalEntry>
 
   fun listRuntimeEvents(): List<com.opencray.runtime.OpenCrayAgentRunEvent> =
-    list().map { entry -> entry.payload.toRuntimeEvent() }
+    list().mapNotNull { entry -> entry.payload.toRuntimeEventOrNull() }
 
   fun clear()
 }
@@ -107,24 +116,22 @@ private class InMemoryRunEventJournalStore(
 
   override fun append(event: com.opencray.runtime.OpenCrayAgentRunEvent): PersistedRunJournalEntry =
     synchronized(lock) {
-      val payload = event.toPersistedRecord()
-      val seq = nextSeqByRunId[payload.runId] ?: 1L
-      nextSeqByRunId[payload.runId] = seq + 1L
-      val persistedAtEpochMs = clock()
-      val entry = PersistedRunJournalEntry(
-        sessionId = sessionId,
-        runId = payload.runId,
-        taskId = payload.taskId,
-        seq = seq,
-        eventId = journalEventId(persistedAtEpochMs),
-        kind = payload.kind,
-        emittedAtEpochMs = payload.emittedAtEpochMs,
-        persistedAtEpochMs = persistedAtEpochMs,
-        payload = payload,
-      )
-      entriesByRunId.getOrPut(payload.runId) { mutableListOf() } += entry
-      entry
+      appendPayloadLocked(event.toPersistedRecord())
     }
+
+  override fun appendCheckpoint(
+    runId: String,
+    taskId: String,
+    emission: OpenCrayPromptCheckpointEmission,
+  ): PersistedRunJournalEntry = synchronized(lock) {
+    appendPayloadLocked(
+      checkpointPayload(
+        runId = runId,
+        taskId = taskId,
+        emission = emission,
+      ),
+    )
+  }
 
   override fun list(): List<PersistedRunJournalEntry> = synchronized(lock) {
     entriesByRunId.values
@@ -150,6 +157,27 @@ private class InMemoryRunEventJournalStore(
       nextSeqByRunId.clear()
     }
   }
+
+  private fun appendPayloadLocked(
+    payload: PersistedAgentRunEvent,
+  ): PersistedRunJournalEntry {
+    val seq = nextSeqByRunId[payload.runId] ?: 1L
+    nextSeqByRunId[payload.runId] = seq + 1L
+    val persistedAtEpochMs = clock()
+    val entry = PersistedRunJournalEntry(
+      sessionId = sessionId,
+      runId = payload.runId,
+      taskId = payload.taskId,
+      seq = seq,
+      eventId = journalEventId(persistedAtEpochMs),
+      kind = payload.kind,
+      emittedAtEpochMs = payload.emittedAtEpochMs,
+      persistedAtEpochMs = persistedAtEpochMs,
+      payload = payload,
+    )
+    entriesByRunId.getOrPut(payload.runId) { mutableListOf() } += entry
+    return entry
+  }
 }
 
 private class FileBackedRunEventJournalStore(
@@ -163,35 +191,22 @@ private class FileBackedRunEventJournalStore(
 
   override fun append(event: com.opencray.runtime.OpenCrayAgentRunEvent): PersistedRunJournalEntry =
     synchronized(lock) {
-      val payload = event.toPersistedRecord()
-      val runDirectory = directoryForRun(payload.runId).apply {
-        if (!exists()) {
-          mkdirs()
-        }
-      }
-      val seq = nextSeqByRunId[payload.runId] ?: inferNextSeq(runDirectory)
-      nextSeqByRunId[payload.runId] = seq + 1L
-      val persistedAtEpochMs = clock()
-      val entry = PersistedRunJournalEntry(
-        sessionId = sessionId,
-        runId = payload.runId,
-        taskId = payload.taskId,
-        seq = seq,
-        eventId = journalEventId(persistedAtEpochMs),
-        kind = payload.kind,
-        emittedAtEpochMs = payload.emittedAtEpochMs,
-        persistedAtEpochMs = persistedAtEpochMs,
-        payload = payload,
-      )
-      journalFileFor(runDirectory, entry).writeText(
-        PersistenceJson.instance.encodeToString(
-          serializer = PersistedRunJournalEntry.serializer(),
-          value = entry,
-        ),
-        Charsets.UTF_8,
-      )
-      entry
+      appendPayloadLocked(event.toPersistedRecord())
     }
+
+  override fun appendCheckpoint(
+    runId: String,
+    taskId: String,
+    emission: OpenCrayPromptCheckpointEmission,
+  ): PersistedRunJournalEntry = synchronized(lock) {
+    appendPayloadLocked(
+      checkpointPayload(
+        runId = runId,
+        taskId = taskId,
+        emission = emission,
+      ),
+    )
+  }
 
   override fun list(): List<PersistedRunJournalEntry> = synchronized(lock) {
     journalDirectory.listFiles()
@@ -261,6 +276,38 @@ private class FileBackedRunEventJournalStore(
     },
   )
 
+  private fun appendPayloadLocked(
+    payload: PersistedAgentRunEvent,
+  ): PersistedRunJournalEntry {
+    val runDirectory = directoryForRun(payload.runId).apply {
+      if (!exists()) {
+        mkdirs()
+      }
+    }
+    val seq = nextSeqByRunId[payload.runId] ?: inferNextSeq(runDirectory)
+    nextSeqByRunId[payload.runId] = seq + 1L
+    val persistedAtEpochMs = clock()
+    val entry = PersistedRunJournalEntry(
+      sessionId = sessionId,
+      runId = payload.runId,
+      taskId = payload.taskId,
+      seq = seq,
+      eventId = journalEventId(persistedAtEpochMs),
+      kind = payload.kind,
+      emittedAtEpochMs = payload.emittedAtEpochMs,
+      persistedAtEpochMs = persistedAtEpochMs,
+      payload = payload,
+    )
+    journalFileFor(runDirectory, entry).writeText(
+      PersistenceJson.instance.encodeToString(
+        serializer = PersistedRunJournalEntry.serializer(),
+        value = entry,
+      ),
+      Charsets.UTF_8,
+    )
+    return entry
+  }
+
   private fun decodeJournalEntry(file: File): PersistedRunJournalEntry? = runCatching {
     PersistenceJson.instance.decodeFromString(
       deserializer = PersistedRunJournalEntry.serializer(),
@@ -277,9 +324,28 @@ private class FileBackedRunEventJournalStore(
 private fun journalEventId(nowEpochMs: Long): String =
   "event-$nowEpochMs-${UUID.randomUUID().toString().take(8)}"
 
+private fun checkpointPayload(
+  runId: String,
+  taskId: String,
+  emission: OpenCrayPromptCheckpointEmission,
+): PersistedAgentRunEvent = PersistedAgentRunEvent(
+  kind = PersistedAgentRunEventKind.CHECKPOINT,
+  runId = runId,
+  taskId = taskId,
+  emittedAtEpochMs = emission.emittedAtEpochMs,
+  toolName = emission.toolName?.trim()?.takeIf(String::isNotBlank),
+  resultMetadata = OpenCrayPromptResumeMetadata.encodeToMetadata(
+    state = emission.state,
+    json = PROMPT_CHECKPOINT_JSON,
+    checkpointBoundary = emission.boundary,
+  ),
+)
+
 private val PERSISTED_JOURNAL_ENTRY_COMPARATOR = compareBy<PersistedRunJournalEntry>(
   PersistedRunJournalEntry::emittedAtEpochMs,
   PersistedRunJournalEntry::persistedAtEpochMs,
   PersistedRunJournalEntry::runId,
   PersistedRunJournalEntry::seq,
 )
+
+private val PROMPT_CHECKPOINT_JSON: Json = Json { prettyPrint = false }

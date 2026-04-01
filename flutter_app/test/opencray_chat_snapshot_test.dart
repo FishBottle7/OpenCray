@@ -139,6 +139,70 @@ void main() {
     expect(recoveryPlan.journalTailKind, 'tool_result');
   });
 
+  test('chat runtime snapshot parses projected subagent payloads', () {
+    final snapshot = OpenCrayChatRuntimeSnapshot.fromMap(<Object?, Object?>{
+      'sessionId': 'session-1',
+      'activeRuns': <Object?>[],
+      'retainedRuns': <Object?>[],
+      'subAgents': <Object?>[
+        <Object?, Object?>{
+          'parentRunId': 'run-parent',
+          'parentTaskId': 'task-parent',
+          'childRunId': 'run-child',
+          'childTaskId': 'task-child',
+          'label': 'Inspect README',
+          'subagentType': 'researcher',
+          'contextMode': 'minimal',
+          'depth': 1,
+          'phase': 'resumed',
+          'status': 'background_running',
+          'executionState': 'background_running',
+          'continuationKind': 'background_resume',
+          'resumable': true,
+          'requiresUserAction': false,
+          'isHighRisk': false,
+          'summary':
+              'Delegated child runtime is still running in the background.',
+          'startedAtEpochMs': 1800,
+          'updatedAtEpochMs': 2400,
+          'eventCount': 0,
+          'mailboxMessageCount': 2,
+          'mailboxPendingMessageCount': 1,
+          'mailboxLastDeliveredMessageId': 'mailbox-1',
+        },
+      ],
+      'events': <Object?>[],
+    });
+
+    final subAgent = snapshot.subAgents.single;
+
+    expect(subAgent.parentRunId, 'run-parent');
+    expect(subAgent.parentTaskId, 'task-parent');
+    expect(subAgent.childRunId, 'run-child');
+    expect(subAgent.childTaskId, 'task-child');
+    expect(subAgent.label, 'Inspect README');
+    expect(subAgent.subagentType, 'researcher');
+    expect(subAgent.contextMode, 'minimal');
+    expect(subAgent.depth, 1);
+    expect(subAgent.phase, 'resumed');
+    expect(subAgent.status, 'background_running');
+    expect(subAgent.executionState, 'background_running');
+    expect(subAgent.continuationKind, 'background_resume');
+    expect(subAgent.resumable, isTrue);
+    expect(subAgent.requiresUserAction, isFalse);
+    expect(subAgent.isHighRisk, isFalse);
+    expect(
+      subAgent.summary,
+      'Delegated child runtime is still running in the background.',
+    );
+    expect(subAgent.startedAtEpochMs, 1800);
+    expect(subAgent.updatedAtEpochMs, 2400);
+    expect(subAgent.eventCount, 0);
+    expect(subAgent.mailboxMessageCount, 2);
+    expect(subAgent.mailboxPendingMessageCount, 1);
+    expect(subAgent.mailboxLastDeliveredMessageId, 'mailbox-1');
+  });
+
   test('chat run snapshot parses execution fields from map payload', () {
     final snapshot = OpenCrayChatRunSnapshot.fromMap(<Object?, Object?>{
       'sessionId': 'session-1',
@@ -163,52 +227,52 @@ void main() {
   test(
     'chat run snapshot preserves trace history across approval resume while keeping event matching scoped',
     () {
-    const run = OpenCrayChatRunSnapshot(
-      sessionId: 'session-1',
-      runId: 'run-1',
-      taskId: 'task-1',
-      acceptedAtEpochMs: 1000,
-      updatedAtEpochMs: 2200,
-      attempt: 1,
-      executionOrdinal: 2,
-      executionId: 'exec-2',
-      executionKind: 'approval_resume',
-      isTerminal: false,
-    );
-    const previousExecution = OpenCrayChatRuntimeEventSnapshot(
-      kind: 'assistant_phase',
-      runId: 'run-1',
-      taskId: 'task-1',
-      executionId: 'exec-1',
-      executionOrdinal: 1,
-      executionKind: 'initial',
-      emittedAtEpochMs: 1800,
-      text: 'Old execution commentary.',
-    );
-    const currentExecution = OpenCrayChatRuntimeEventSnapshot(
-      kind: 'assistant_phase',
-      runId: 'run-1',
-      taskId: 'task-1',
-      executionId: 'exec-2',
-      executionOrdinal: 2,
-      executionKind: 'approval_resume',
-      emittedAtEpochMs: 2200,
-      text: 'Current execution commentary.',
-    );
+      const run = OpenCrayChatRunSnapshot(
+        sessionId: 'session-1',
+        runId: 'run-1',
+        taskId: 'task-1',
+        acceptedAtEpochMs: 1000,
+        updatedAtEpochMs: 2200,
+        attempt: 1,
+        executionOrdinal: 2,
+        executionId: 'exec-2',
+        executionKind: 'approval_resume',
+        isTerminal: false,
+      );
+      const previousExecution = OpenCrayChatRuntimeEventSnapshot(
+        kind: 'assistant_phase',
+        runId: 'run-1',
+        taskId: 'task-1',
+        executionId: 'exec-1',
+        executionOrdinal: 1,
+        executionKind: 'initial',
+        emittedAtEpochMs: 1800,
+        text: 'Old execution commentary.',
+      );
+      const currentExecution = OpenCrayChatRuntimeEventSnapshot(
+        kind: 'assistant_phase',
+        runId: 'run-1',
+        taskId: 'task-1',
+        executionId: 'exec-2',
+        executionOrdinal: 2,
+        executionKind: 'approval_resume',
+        emittedAtEpochMs: 2200,
+        text: 'Current execution commentary.',
+      );
 
-    final scoped = run.scopeRuntimeEvents(
-      const <OpenCrayChatRuntimeEventSnapshot>[
+      final scoped = run.scopeRuntimeEvents(
+        const <OpenCrayChatRuntimeEventSnapshot>[
+          previousExecution,
+          currentExecution,
+        ],
+      );
+
+      expect(scoped, <OpenCrayChatRuntimeEventSnapshot>[
         previousExecution,
         currentExecution,
-      ],
-    );
-
-    expect(
-      scoped,
-      <OpenCrayChatRuntimeEventSnapshot>[previousExecution, currentExecution],
-    );
-    expect(run.matchesRuntimeEvent(previousExecution), isFalse);
-    expect(run.matchesRuntimeEvent(currentExecution), isTrue);
+      ]);
+      expect(run.matchesRuntimeEvent(previousExecution), isFalse);
+      expect(run.matchesRuntimeEvent(currentExecution), isTrue);
     },
   );
 

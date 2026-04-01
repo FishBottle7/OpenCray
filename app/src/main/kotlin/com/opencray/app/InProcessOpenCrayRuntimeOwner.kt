@@ -27,6 +27,7 @@ internal data class InProcessOpenCrayRuntimeOwner(
   val approvalRegistry: AgentTaskApprovalRegistry,
   val memoryIngestionCoordinator: ChatMemoryIngestionCoordinator,
   val replayAccess: OpenCrayRuntimeReplayAccess,
+  val sandboxPreviewEmbedConfigService: SandboxPreviewEmbedConfigService? = null,
 )
 
 internal object InProcessOpenCrayRuntimeOwnerRegistry {
@@ -74,14 +75,35 @@ internal fun createInProcessOpenCrayRuntimeOwner(
   )
   val approvalRegistry = AgentTaskApprovalRegistry()
   val localPythonRuntime = P4aPythonRuntime.fromContext(appContext)
+  val e2bSessionStore = E2BSandboxSessionStore.fromContext(appContext)
   val e2bPythonRuntime = E2BCodeInterpreterPythonRuntime(
     settingsProvider = sandboxSettingsRepository::load,
-    sessionStore = E2BSandboxSessionStore.fromContext(appContext),
+    sessionStore = e2bSessionStore,
   )
   val e2bSandboxPreviewService = E2BSandboxPreviewService(
     settingsProvider = sandboxSettingsRepository::load,
-    sessionStore = E2BSandboxSessionStore.fromContext(appContext),
+    sessionStore = e2bSessionStore,
     activeSessionProvider = e2bPythonRuntime::activeStickySessionSnapshot,
+    activeSessionRecorder = e2bPythonRuntime::recordStickySessionSnapshot,
+  )
+  val e2bSandboxPreviewEmbedConfigService = E2BSandboxPreviewEmbedConfigService(
+    settingsProvider = sandboxSettingsRepository::load,
+    sessionStore = e2bSessionStore,
+    activeSessionProvider = e2bPythonRuntime::activeStickySessionSnapshot,
+  )
+  val e2bSandboxSessionControlService = E2BSandboxSessionControlService(
+    settingsProvider = sandboxSettingsRepository::load,
+    sessionStore = e2bSessionStore,
+    activeSessionProvider = e2bPythonRuntime::activeStickySessionSnapshot,
+    sessionCloser = e2bPythonRuntime::closeReusableSession,
+  )
+  val e2bSandboxSessionInfoService = E2BSandboxSessionInfoService(
+    settingsProvider = sandboxSettingsRepository::load,
+    sessionStore = e2bSessionStore,
+    activeSessionProvider = e2bPythonRuntime::activeStickySessionSnapshot,
+    activeSessionRecorder = e2bPythonRuntime::recordStickySessionSnapshot,
+    runningRequestIdsProvider = e2bPythonRuntime::runningRequestIdsForSandbox,
+    sessionCloser = e2bPythonRuntime::closeReusableSession,
   )
   val pythonRuntimeManifestProvider = PythonRuntimeManifestAssetProvider.fromContext(appContext)
   val pythonRuntime = RoutingPythonScriptRuntime(
@@ -94,17 +116,19 @@ internal fun createInProcessOpenCrayRuntimeOwner(
       }
     },
   )
+  val e2bSandboxCommandBackend = E2BSandboxCommandExecutionBackendFactory.create(
+    workspaceRootProvider = workspaceRootProvider,
+    settingsProvider = sandboxSettingsRepository::load,
+    sessionStore = e2bSessionStore,
+    activeSessionProvider = e2bPythonRuntime::activeStickySessionSnapshot,
+    pythonRuntime = e2bPythonRuntime,
+  )
   val commandExecutor = RoutingCommandExecutor(
     settingsProvider = sandboxSettingsRepository::load,
     localExecutor = CommandExecutor(),
     sandboxExecutorProvider = { settings ->
       when (SandboxProviderId.fromWireValue(settings.state.providerId)) {
-        SandboxProviderId.E2B -> CommandExecutor(
-          runner = PythonBackedCommandProcessRunner(
-            workspaceRoot = workspaceRootProvider(),
-            pythonRuntime = e2bPythonRuntime,
-          ),
-        )
+        SandboxProviderId.E2B -> e2bSandboxCommandBackend.createCommandExecutor()
 
         null -> null
       }
@@ -120,10 +144,7 @@ internal fun createInProcessOpenCrayRuntimeOwner(
     localFactory = LocalManagedProcessControllerFactory(),
     sandboxFactoryProvider = { settings ->
       when (SandboxProviderId.fromWireValue(settings.state.providerId)) {
-        SandboxProviderId.E2B -> SandboxPythonManagedCommandControllerFactory(
-          workspaceRoot = workspaceRootProvider(),
-          pythonRuntime = e2bPythonRuntime,
-        )
+        SandboxProviderId.E2B -> e2bSandboxCommandBackend.createManagedProcessControllerFactory()
 
         null -> null
       }
@@ -133,6 +154,8 @@ internal fun createInProcessOpenCrayRuntimeOwner(
   val transcriptStoreFactory = FileBackedAgentSessionTranscriptStoreFactory.fromContext(appContext)
   val supplementStoreFactory = FileBackedAgentSessionSupplementStoreFactory.fromContext(appContext)
   val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext)
+  val runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext)
+  val subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext)
   val processRegistryFactory = FileBackedAgentProcessRegistryFactory(
     runtimeRootDirectory = File(
       appContext.filesDir,
@@ -204,6 +227,12 @@ internal fun createInProcessOpenCrayRuntimeOwner(
       }
     },
     relationshipEventInterpreter = relationshipEventInterpreter,
+    sessionScopedStateMarker = { sessionId ->
+      chatSessionStore.setSessionScopedStatePresent(
+        sessionId = sessionId,
+        present = true,
+      )
+    },
   )
   val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
     llmSettingsProvider = { llmSettingsStore.load() },
@@ -219,6 +248,7 @@ internal fun createInProcessOpenCrayRuntimeOwner(
     providerUserAgent = providerUserAgent,
     approvalRegistry = approvalRegistry,
     promptCheckpointStoreProvider = promptCheckpointStoreFactory::forChatSession,
+    runEventJournalStoreFactory = runEventJournalStoreFactory,
     todoStoreProvider = { sessionId ->
       ChatSessionBackedAgentTodoStore(
         chatSessionStore = chatSessionStore,
@@ -229,6 +259,7 @@ internal fun createInProcessOpenCrayRuntimeOwner(
     transcriptStoreProvider = transcriptStoreFactory::forChatSession,
     supplementStoreProvider = supplementStoreFactory::forChatSession,
     compactionStoreProvider = compactionStoreFactory::forChatSession,
+    subAgentHandleStoreProvider = subAgentHandleStoreFactory::forChatSession,
     memoryIngestionCoordinator = memoryIngestionCoordinator,
     soulTurnSemanticSignalInterpreter = soulTurnSignalInterpreter,
     commandExecutorProvider = { commandExecutor },
@@ -247,14 +278,26 @@ internal fun createInProcessOpenCrayRuntimeOwner(
       )
     },
     imageGenerationClientProvider = { mediaProviderClient },
-      speechSynthesisClientProvider = { mediaProviderClient },
-      sandboxPreviewServiceProvider = {
-        when (SandboxProviderId.fromWireValue(sandboxSettingsRepository.load().state.providerId)) {
-          SandboxProviderId.E2B -> e2bSandboxPreviewService
-          null -> null
-        }
-      },
-      nativeWebSearchSessionApprovalProvider = { sessionId ->
+    speechSynthesisClientProvider = { mediaProviderClient },
+    sandboxPreviewServiceProvider = {
+      when (SandboxProviderId.fromWireValue(sandboxSettingsRepository.load().state.providerId)) {
+        SandboxProviderId.E2B -> e2bSandboxPreviewService
+        null -> null
+      }
+    },
+    sandboxSessionControlServiceProvider = {
+      when (SandboxProviderId.fromWireValue(sandboxSettingsRepository.load().state.providerId)) {
+        SandboxProviderId.E2B -> e2bSandboxSessionControlService
+        null -> null
+      }
+    },
+    sandboxSessionInfoServiceProvider = {
+      when (SandboxProviderId.fromWireValue(sandboxSettingsRepository.load().state.providerId)) {
+        SandboxProviderId.E2B -> e2bSandboxSessionInfoService
+        null -> null
+      }
+    },
+    nativeWebSearchSessionApprovalProvider = { sessionId ->
       chatSessionStore.isNativeWebSearchSessionApproved(sessionId)
     },
     hiddenToolNamePrefixesProvider = {
@@ -277,12 +320,12 @@ internal fun createInProcessOpenCrayRuntimeOwner(
       runtimeFactory = runtimeFactory,
       snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
       runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(appContext),
-      runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext),
+      runEventJournalStoreFactory = runEventJournalStoreFactory,
       promptCheckpointStoreFactory = promptCheckpointStoreFactory,
       executor = chatExecutor,
       runtimeLifecycle = lifecycleDescriptor,
     ),
-    runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext),
+    runEventJournalStoreFactory = runEventJournalStoreFactory,
     promptCheckpointStoreFactory = promptCheckpointStoreFactory,
     supplementStoreFactory = supplementStoreFactory,
     transcriptMessagesProvider = { sessionId ->
@@ -297,5 +340,6 @@ internal fun createInProcessOpenCrayRuntimeOwner(
       runCancellationRecorder = runtimeFactory::recordRunCancellation,
       terminalReplayRepairer = runtimeFactory::repairTerminalReplayFromRunSnapshots,
     ),
+    sandboxPreviewEmbedConfigService = e2bSandboxPreviewEmbedConfigService,
   )
 }

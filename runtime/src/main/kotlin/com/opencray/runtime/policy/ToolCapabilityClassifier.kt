@@ -11,6 +11,7 @@ internal class ToolCapabilityClassifier {
     "workspace_write_file",
     "workspace_import_file",
     "import_chat_attachment",
+    "extract_workspace_package",
     "SkillsAdd",
     "SkillsAddBatch",
     "SkillsUpdate",
@@ -33,6 +34,7 @@ internal class ToolCapabilityClassifier {
     "GenerateImage",
     "SynthesizeSpeech",
     "sandbox_preview_open",
+    "sandbox_session_close",
     -> PolicyToolClass.NETWORK_ACCESS
 
     "LS",
@@ -44,9 +46,11 @@ internal class ToolCapabilityClassifier {
     "wait_agent",
     "send_input",
     "close_agent",
+    "list_subagents",
     "workspace_list_files",
     "workspace_read_file",
     "search_workspace_document",
+    "inspect_workspace_package",
     "view_workspace_document",
     "view_workspace_image",
     "view_workspace_pdf",
@@ -54,6 +58,7 @@ internal class ToolCapabilityClassifier {
     "SkillsInspect",
     "SkillsList",
     "SkillsCheck",
+    "sandbox_session_info",
     -> PolicyToolClass.READ_FILE
 
     else -> error("No PolicyToolClass mapping is registered for tool '$toolName'.")
@@ -67,10 +72,12 @@ internal class ToolCapabilityClassifier {
     "wait_agent",
     "send_input",
     "close_agent",
+    "list_subagents",
     -> "delegate_task"
 
     "GenerateImage",
     "SynthesizeSpeech",
+    "sandbox_session_close",
     -> "network_access"
 
     "ProcessList",
@@ -83,6 +90,8 @@ internal class ToolCapabilityClassifier {
     -> "read_skill"
 
     "python_runtime_manifest" -> "read_python_runtime"
+
+    "sandbox_session_info" -> "read_sandbox_session"
 
     "SkillsFind",
     "SkillsInspect",
@@ -114,6 +123,7 @@ internal class ToolCapabilityClassifier {
       "workspace_list_files",
       "workspace_read_file",
       "search_workspace_document",
+      "inspect_workspace_package",
       "view_workspace_document",
       "view_workspace_pdf",
       "view_workspace_image",

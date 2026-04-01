@@ -38,6 +38,11 @@ class PromptAssembler {
         )
       }
       addLayer(
+        name = "Working State",
+        kind = PromptLayerKind.CONTEXT,
+        content = input.workingStateText,
+      )
+      addLayer(
         name = "Retrieved Memory",
         kind = PromptLayerKind.CONTEXT,
         content = input.memoryText,
@@ -122,6 +127,7 @@ class PromptAssembler {
         memoryRecallTrace = input.report.memoryRecallTrace,
         memoryFlushTrace = input.report.memoryFlushTrace,
         durableCompactionTrace = input.report.durableCompactionTrace,
+        workingStateTrace = input.report.workingStateTrace,
         liveContextTrace = input.report.liveContextTrace,
         bootstrapTrace = input.report.bootstrapTrace,
         visibleSkillCount = input.report.visibleSkillCount,
@@ -187,6 +193,7 @@ class PromptAssembler {
     val hasWaitAgentTool = hasAnyTool(normalizedToolNames, "wait_agent")
     val hasSendInputTool = hasAnyTool(normalizedToolNames, "send_input")
     val hasCloseAgentTool = hasAnyTool(normalizedToolNames, "close_agent")
+    val hasListSubAgentsTool = hasAnyTool(normalizedToolNames, "list_subagents")
     val hasMemorySearchTool = toolDefinitions.any { definition -> definition.name == "memory_search" }
     val hasMemoryGetTool = toolDefinitions.any { definition -> definition.name == "memory_get" }
     val hasImportTool = toolDefinitions.any { definition ->
@@ -197,6 +204,12 @@ class PromptAssembler {
     }
     val hasWorkspaceDocumentSearchTool = toolDefinitions.any { definition ->
       definition.name == "search_workspace_document"
+    }
+    val hasWorkspacePackageInspectTool = toolDefinitions.any { definition ->
+      definition.name == "inspect_workspace_package"
+    }
+    val hasWorkspacePackageExtractTool = toolDefinitions.any { definition ->
+      definition.name == "extract_workspace_package"
     }
     val hasWorkspaceDocumentViewTool = toolDefinitions.any { definition ->
       definition.name == "view_workspace_document"
@@ -334,14 +347,18 @@ class PromptAssembler {
       appendLine("Use Task for simple synchronous delegation when you want to wait immediately for one child result.")
     }
     if (hasSpawnAgentTool && hasWaitAgentTool) {
-      appendLine("Use spawn_agent when you need an explicit child handle that you may wait on later.")
-      appendLine("Use wait_agent to execute or resume a queued child handle after spawn_agent.")
+      appendLine("Use spawn_agent when you need an explicit child handle and want that child to start immediately.")
+      appendLine("Use wait_agent to block until a running child reaches its latest stable state, or to resume a paused child after user approval.")
     }
     if (hasSendInputTool) {
-      appendLine("Use send_input only before a queued child starts running. It appends more parent instructions; it is not a mid-run interrupt.")
+      appendLine("Use send_input only while a child is queued or paused and waiting to resume. It queues mailbox input for the next child resume; it is not a mid-run interrupt.")
     }
     if (hasCloseAgentTool) {
-      appendLine("Use close_agent to stop tracking a queued or waiting child handle when that child should not continue.")
+      appendLine("Use close_agent to cancel a running or paused delegated child handle when that child should not continue, or to forget a completed one.")
+      appendLine("Do not return a final answer while any delegated child handle is still open. Use wait_agent or close_agent first.")
+    }
+    if (hasListSubAgentsTool) {
+      appendLine("Use list_subagents to inspect the delegated child registry when you need to see handle ids, parent linkage, lifecycle state, approval wait state, or mailbox backlog before choosing wait_agent, send_input, or close_agent.")
     }
     if (hasTaskTool && hasSpawnAgentTool && hasWaitAgentTool) {
       appendLine("Prefer Task for one-off delegation. Prefer spawn_agent plus wait_agent when you need explicit control over the child handle.")
@@ -366,6 +383,16 @@ class PromptAssembler {
       appendLine("If you need to locate relevant content inside a readable workspace PDF before attaching it, call search_workspace_document instead of guessing from the filename.")
       appendLine("search_workspace_document searches workspace PDFs locally and returns matching page numbers and excerpts.")
       appendLine("Use query, pages, page_from, and page_to to narrow the scan whenever you can.")
+    }
+    if (hasWorkspacePackageInspectTool) {
+      appendLine("If you need to inspect the internal structure of a readable ZIP-based package such as zip, docx, xlsx, pptx, odt, ods, or odp, call inspect_workspace_package before guessing from the filename.")
+      appendLine("inspect_workspace_package lists internal entries, previews specific safe text or XML parts, and returns package kind hints such as main document parts and relationship parts.")
+      appendLine("Use glob and preview_entries to narrow inspection to the exact entries you need.")
+    }
+    if (hasWorkspacePackageExtractTool) {
+      appendLine("If you need files from inside a readable ZIP-based package in the workspace, call extract_workspace_package with explicit entries or glob.")
+      appendLine("extract_workspace_package requires entries or glob, writes only the selected package contents into destination_dir, and never defaults to full-package extraction.")
+      appendLine("After extracting package files, use Read, Grep, Glob, or the workspace document view tools on the extracted workspace paths.")
     }
     if (hasWorkspaceDocumentViewTool) {
       appendLine("If you need to inspect what a readable workspace image or PDF actually contains, call view_workspace_document instead of guessing from the path, filename, or nearby text.")

@@ -160,6 +160,8 @@ internal interface OpenCrayRuntimeServiceClient {
 
   fun peekSnapshot(): OpenCrayRuntimeServiceClientSnapshot? = null
 
+  fun peekProjectionSnapshot(): RuntimeServiceProjectionSnapshot? = null
+
   fun loadConnectionState(): RuntimeServiceConnectionState = loadSnapshot().connectionState
 
   fun peekConnectionState(): RuntimeServiceConnectionState = loadConnectionState()
@@ -175,6 +177,10 @@ internal interface OpenCrayRuntimeServiceClient {
   fun awaitChatRuntimeGateway(timeoutMs: Long): OpenCrayChatRuntimeGateway? =
     loadChatRuntimeGateway()
 
+  fun dispatchChatWriteCommand(
+    command: OpenCrayChatWriteCommand,
+  ): OpenCrayChatWriteDispatchResult? = null
+
   fun loadSkillsGateway(): OpenCraySkillsGateway? = null
 
   fun peekSkillsGateway(): OpenCraySkillsGateway? = null
@@ -182,12 +188,20 @@ internal interface OpenCrayRuntimeServiceClient {
   fun awaitSkillsGateway(timeoutMs: Long): OpenCraySkillsGateway? =
     loadSkillsGateway()
 
+  fun dispatchSkillsWriteCommand(
+    command: OpenCraySkillsWriteCommand,
+  ): OpenCraySkillsWriteDispatchResult? = null
+
   fun loadSettingsGateway(): OpenCraySettingsGateway? = null
 
   fun peekSettingsGateway(): OpenCraySettingsGateway? = null
 
   fun awaitSettingsGateway(timeoutMs: Long): OpenCraySettingsGateway? =
     loadSettingsGateway()
+
+  fun dispatchSettingsWriteCommand(
+    command: OpenCraySettingsWriteCommand,
+  ): OpenCraySettingsWriteDispatchResult? = null
 
   fun observeConnectionState(listener: (RuntimeServiceConnectionState) -> Unit): () -> Unit = { }
 
@@ -206,9 +220,21 @@ internal interface OpenCrayRuntimeServiceBinderAccess {
 
   fun loadChatRuntimeGateway(): OpenCrayChatRuntimeGateway? = null
 
+  fun dispatchChatWriteCommand(
+    command: OpenCrayChatWriteCommand,
+  ): OpenCrayChatWriteDispatchResult? = null
+
   fun loadSkillsGateway(): OpenCraySkillsGateway? = null
 
+  fun dispatchSkillsWriteCommand(
+    command: OpenCraySkillsWriteCommand,
+  ): OpenCraySkillsWriteDispatchResult? = null
+
   fun loadSettingsGateway(): OpenCraySettingsGateway? = null
+
+  fun dispatchSettingsWriteCommand(
+    command: OpenCraySettingsWriteCommand,
+  ): OpenCraySettingsWriteDispatchResult? = null
 }
 
 internal class InProcessOpenCrayRuntimeServiceBridge(
@@ -225,6 +251,14 @@ internal class ExistingOpenCrayRuntimeServiceBridge(
 ) : OpenCrayRuntimeServiceBridge {
   override fun loadSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot =
     checkNotNull(hostProvider()) { missingHostMessage }.toBridgeSnapshot()
+}
+
+internal class MissingOpenCrayRuntimeServiceBridge(
+  private val missingSnapshotMessage: String =
+    "Runtime service binder snapshot is unavailable. Use peekProjectionSnapshot() for binder-unavailable projection reads.",
+) : OpenCrayRuntimeServiceBridge {
+  override fun loadSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot =
+    error(missingSnapshotMessage)
 }
 
 internal class BinderBackedOpenCrayRuntimeServiceBridge(
@@ -246,6 +280,9 @@ internal class BridgeBackedOpenCrayRuntimeServiceClient(
 
   override fun peekSnapshot(): OpenCrayRuntimeServiceClientSnapshot =
     loadSnapshot()
+
+  override fun peekProjectionSnapshot(): RuntimeServiceProjectionSnapshot =
+    bridge.loadSnapshot().toProjectionSnapshot()
 
   override fun loadConnectionState(): RuntimeServiceConnectionState = connectionState
 
@@ -301,9 +338,8 @@ private fun defaultBindingReleaseScheduler(
 internal class AndroidBindingOpenCrayRuntimeServiceClient(
   private val appContext: Context,
   private val fallbackBridge: OpenCrayRuntimeServiceBridge =
-    ExistingOpenCrayRuntimeServiceBridge(
-      hostProvider = { OpenCrayRuntimeServiceHostRegistry.peek() },
-    ),
+    MissingOpenCrayRuntimeServiceBridge(),
+  projectionStore: RuntimeServiceProjectionStore? = null,
   private val bindingAdapter: OpenCrayRuntimeServiceBindingAdapter =
     AndroidOpenCrayRuntimeServiceBindingAdapter,
   private val startRequester: (Context) -> Unit = { context ->
@@ -324,6 +360,9 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
 ) : OpenCrayRuntimeServiceClient {
   private val lock: java.lang.Object = java.lang.Object()
   private val listeners = linkedSetOf<(RuntimeServiceConnectionState) -> Unit>()
+  private val projectionSnapshotStore: RuntimeServiceProjectionStore by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+    projectionStore ?: FileBackedRuntimeServiceProjectionStoreFactory.fromContext(appContext).create()
+  }
   private var connectionObserverCount: Int = 0
   private var bindingEstablished: Boolean = false
   private var pendingBindingReleaseTask: RuntimeServiceDelayedTask? = null
@@ -451,6 +490,11 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
     )
   }
 
+  override fun peekProjectionSnapshot(): RuntimeServiceProjectionSnapshot? =
+    binderAccess
+      ?.let { access -> runCatching { access.loadSnapshot().toProjectionSnapshot() }.getOrNull() }
+      ?: projectionSnapshotStore.loadSnapshot()
+
   override fun loadConnectionState(): RuntimeServiceConnectionState = currentConnectionState()
 
   override fun peekConnectionState(): RuntimeServiceConnectionState = currentConnectionState()
@@ -469,6 +513,13 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
   override fun awaitChatRuntimeGateway(timeoutMs: Long): OpenCrayChatRuntimeGateway? =
     withAwaitedBindingAccess(timeoutMs) { binderAccess?.loadChatRuntimeGateway() }
 
+  override fun dispatchChatWriteCommand(
+    command: OpenCrayChatWriteCommand,
+  ): OpenCrayChatWriteDispatchResult? =
+    withAwaitedBindingAccess(SERVICE_GATEWAY_BIND_AWAIT_TIMEOUT_MS) {
+      binderAccess?.dispatchChatWriteCommand(command)
+    }
+
   override fun loadSkillsGateway(): OpenCraySkillsGateway? =
     withTransientBindingAccess { binderAccess?.loadSkillsGateway() }
 
@@ -477,6 +528,13 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
   override fun awaitSkillsGateway(timeoutMs: Long): OpenCraySkillsGateway? =
     withAwaitedBindingAccess(timeoutMs) { binderAccess?.loadSkillsGateway() }
 
+  override fun dispatchSkillsWriteCommand(
+    command: OpenCraySkillsWriteCommand,
+  ): OpenCraySkillsWriteDispatchResult? =
+    withAwaitedBindingAccess(SERVICE_GATEWAY_BIND_AWAIT_TIMEOUT_MS) {
+      binderAccess?.dispatchSkillsWriteCommand(command)
+    }
+
   override fun loadSettingsGateway(): OpenCraySettingsGateway? =
     withTransientBindingAccess { binderAccess?.loadSettingsGateway() }
 
@@ -484,6 +542,13 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
 
   override fun awaitSettingsGateway(timeoutMs: Long): OpenCraySettingsGateway? =
     withAwaitedBindingAccess(timeoutMs) { binderAccess?.loadSettingsGateway() }
+
+  override fun dispatchSettingsWriteCommand(
+    command: OpenCraySettingsWriteCommand,
+  ): OpenCraySettingsWriteDispatchResult? =
+    withAwaitedBindingAccess(SERVICE_GATEWAY_BIND_AWAIT_TIMEOUT_MS) {
+      binderAccess?.dispatchSettingsWriteCommand(command)
+    }
 
   override fun observeConnectionState(listener: (RuntimeServiceConnectionState) -> Unit): () -> Unit =
     registerConnectionObserver(

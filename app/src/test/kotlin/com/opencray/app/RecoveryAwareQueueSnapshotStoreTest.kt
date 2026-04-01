@@ -6,6 +6,7 @@ import com.opencray.core.contracts.AgentTaskType
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
+import com.opencray.core.orchestrator.ERROR_RESTART_REQUIRES_EXPLICIT_RETRY
 import com.opencray.core.orchestrator.METADATA_PREVIOUS_LIFECYCLE_STATE
 import com.opencray.core.orchestrator.METADATA_QUEUE_RESTORE_EPOCH_MS
 import com.opencray.core.orchestrator.METADATA_RECOVERY_REASON
@@ -16,13 +17,18 @@ import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
 import com.opencray.runtime.OpenCrayApprovalEvent
 import com.opencray.runtime.OpenCrayApprovalPhase
 import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayExecutionMetadataKeys
 import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
+import com.opencray.runtime.OpenCrayPromptCheckpointEmission
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCrayPromptResumeState
+import com.opencray.runtime.OpenCraySerializableModelAction
+import com.opencray.runtime.OpenCraySupplementEvent
+import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStatus
@@ -181,6 +187,7 @@ class RecoveryAwareQueueSnapshotStoreTest {
           metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(
             state = resumeState,
             json = json,
+            checkpointBoundary = OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
           ),
         ),
         emittedAtEpochMs = 1_150L,
@@ -203,11 +210,15 @@ class RecoveryAwareQueueSnapshotStoreTest {
 
     assertEquals(QueueTaskLifecycleState.QUEUED, restoredTask.lifecycleState)
     assertEquals(AgentTaskState.QUEUED, restoredTask.task.state)
-    assertEquals("durable_general_resume_checkpoint", restoredTask.task.metadata[METADATA_RECOVERY_REASON])
+    assertEquals("durable_tool_result_checkpoint", restoredTask.task.metadata[METADATA_RECOVERY_REASON])
     assertNotNull(syntheticCheckpoint)
-    assertEquals(PromptCheckpointKind.GENERAL_RESUME, syntheticCheckpoint?.checkpointKind)
+    assertEquals(PromptCheckpointKind.TOOL_RESULT_COMMITTED, syntheticCheckpoint?.checkpointKind)
     assertEquals("Read", syntheticCheckpoint?.toolName)
     assertEquals(pendingMessageId, syntheticCheckpoint?.pendingMessageId)
+    assertEquals(
+      OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
+      syntheticCheckpoint?.promptCheckpointBoundary,
+    )
     assertEquals(resumeState, syntheticCheckpoint?.promptResumeState)
   }
 
@@ -289,6 +300,244 @@ class RecoveryAwareQueueSnapshotStoreTest {
     assertEquals(QueueTaskLifecycleState.QUEUED, restoredTask.lifecycleState)
     assertEquals("durable_commentary_emitted_checkpoint", restoredTask.task.metadata[METADATA_RECOVERY_REASON])
     assertEquals(PromptCheckpointKind.COMMENTARY_EMITTED, syntheticCheckpoint?.checkpointKind)
+    assertEquals(resumeState, syntheticCheckpoint?.promptResumeState)
+  }
+
+  @Test
+  fun loadSynthesizesPreModelRequestCheckpointFromJournalTailWhenStoreMissing() {
+    val runtimeRoot = temporaryFolder.newFolder("recovery-aware-queue-synthetic-pre-model-request")
+    val sessionId = "session-synthetic-pre-model-request"
+    val taskId = "task-synthetic-pre-model-request"
+    val runId = "run-synthetic-pre-model-request"
+    val delegate = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val runRecordStore = FileBackedAgentRunRecordStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val runEventJournalStore = FileBackedRunEventJournalStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val promptCheckpointStore = inMemoryPromptCheckpointStoreFactoryForTest().forChatSession(sessionId)
+    val resumeState = OpenCrayPromptResumeState(
+      turnIndex = 1,
+      toolCallCount = 0,
+    )
+
+    delegate.save(
+      SessionQueueSnapshot(
+        sessionId = sessionId,
+        agentId = "test-agent",
+        lifecycleState = SessionLifecycleState.RUNNING,
+        updatedAtEpochMs = 1_200L,
+        tasks = listOf(
+          SessionQueueTaskSnapshot(
+            enqueueOrder = 1L,
+            task = AgentTask(
+              id = taskId,
+              type = AgentTaskType.PROMPT,
+              input = "Resume before the next model request.",
+              state = AgentTaskState.RUNNING,
+              policyDecision = PolicyDecision(
+                outcome = com.opencray.core.contracts.PolicyDecisionOutcome.ALLOW,
+                reasonCode = "test",
+              ),
+              createdAtEpochMs = 1_000L,
+              updatedAtEpochMs = 1_200L,
+              metadata = mapOf(
+                AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+              ),
+            ),
+            lifecycleState = QueueTaskLifecycleState.RUNNING,
+            attempt = 1,
+          ),
+        ),
+      ),
+    )
+    runEventJournalStore.appendCheckpoint(
+      runId = runId,
+      taskId = taskId,
+      emission = OpenCrayPromptCheckpointEmission(
+        boundary = OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST,
+        state = resumeState,
+        emittedAtEpochMs = 1_150L,
+      ),
+    )
+
+    val store = RecoveryAwareQueueSnapshotStore(
+      sessionId = sessionId,
+      delegate = delegate,
+      runRecordStore = runRecordStore,
+      runEventJournalStore = runEventJournalStore,
+      promptCheckpointStore = promptCheckpointStore,
+      managedProcessesProvider = { emptyList() },
+      clock = { 5_000L },
+    )
+
+    val restored = requireNotNull(store.load())
+    val restoredTask = restored.tasks.single()
+    val syntheticCheckpoint = promptCheckpointStore.get(taskId)
+
+    assertEquals(QueueTaskLifecycleState.QUEUED, restoredTask.lifecycleState)
+    assertEquals("durable_pre_model_request_checkpoint", restoredTask.task.metadata[METADATA_RECOVERY_REASON])
+    assertEquals(PromptCheckpointKind.PRE_MODEL_REQUEST, syntheticCheckpoint?.checkpointKind)
+    assertEquals(resumeState, syntheticCheckpoint?.promptResumeState)
+  }
+
+  @Test
+  fun loadSynthesizesActionBatchParsedCheckpointFromJournalTailWhenStoreMissing() {
+    val runtimeRoot = temporaryFolder.newFolder("recovery-aware-queue-synthetic-action-batch-parsed")
+    val sessionId = "session-synthetic-action-batch-parsed"
+    val taskId = "task-synthetic-action-batch-parsed"
+    val runId = "run-synthetic-action-batch-parsed"
+    val delegate = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val runRecordStore = FileBackedAgentRunRecordStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val runEventJournalStore = FileBackedRunEventJournalStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val promptCheckpointStore = inMemoryPromptCheckpointStoreFactoryForTest().forChatSession(sessionId)
+    val resumeState = OpenCrayPromptResumeState(
+      turnIndex = 0,
+      toolCallCount = 0,
+      pendingActions = listOf(OpenCraySerializableModelAction.Final(answer = "Done", responseFormat = "text")),
+    )
+
+    delegate.save(
+      SessionQueueSnapshot(
+        sessionId = sessionId,
+        agentId = "test-agent",
+        lifecycleState = SessionLifecycleState.RUNNING,
+        updatedAtEpochMs = 1_200L,
+        tasks = listOf(
+          SessionQueueTaskSnapshot(
+            enqueueOrder = 1L,
+            task = AgentTask(
+              id = taskId,
+              type = AgentTaskType.PROMPT,
+              input = "Resume from the parsed action batch.",
+              state = AgentTaskState.RUNNING,
+              policyDecision = PolicyDecision(
+                outcome = com.opencray.core.contracts.PolicyDecisionOutcome.ALLOW,
+                reasonCode = "test",
+              ),
+              createdAtEpochMs = 1_000L,
+              updatedAtEpochMs = 1_200L,
+              metadata = mapOf(
+                AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+              ),
+            ),
+            lifecycleState = QueueTaskLifecycleState.RUNNING,
+            attempt = 1,
+          ),
+        ),
+      ),
+    )
+    runEventJournalStore.appendCheckpoint(
+      runId = runId,
+      taskId = taskId,
+      emission = OpenCrayPromptCheckpointEmission(
+        boundary = OpenCrayPromptCheckpointBoundary.ACTION_BATCH_PARSED,
+        state = resumeState,
+        emittedAtEpochMs = 1_150L,
+      ),
+    )
+
+    val store = RecoveryAwareQueueSnapshotStore(
+      sessionId = sessionId,
+      delegate = delegate,
+      runRecordStore = runRecordStore,
+      runEventJournalStore = runEventJournalStore,
+      promptCheckpointStore = promptCheckpointStore,
+      managedProcessesProvider = { emptyList() },
+      clock = { 5_000L },
+    )
+
+    val restored = requireNotNull(store.load())
+    val restoredTask = restored.tasks.single()
+    val syntheticCheckpoint = promptCheckpointStore.get(taskId)
+
+    assertEquals(QueueTaskLifecycleState.QUEUED, restoredTask.lifecycleState)
+    assertEquals("durable_action_batch_parsed_checkpoint", restoredTask.task.metadata[METADATA_RECOVERY_REASON])
+    assertEquals(PromptCheckpointKind.ACTION_BATCH_PARSED, syntheticCheckpoint?.checkpointKind)
+    assertEquals(resumeState, syntheticCheckpoint?.promptResumeState)
+  }
+
+  @Test
+  fun loadPreservesEarlierActionBatchCheckpointWhenLaterJournalTailIsUnsafe() {
+    val runtimeRoot = temporaryFolder.newFolder("recovery-aware-queue-action-batch-unsafe-tail")
+    val sessionId = "session-action-batch-unsafe-tail"
+    val taskId = "task-action-batch-unsafe-tail"
+    val runId = "run-action-batch-unsafe-tail"
+    val delegate = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val runRecordStore = FileBackedAgentRunRecordStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val runEventJournalStore = FileBackedRunEventJournalStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val promptCheckpointStore = inMemoryPromptCheckpointStoreFactoryForTest().forChatSession(sessionId)
+    val resumeState = OpenCrayPromptResumeState(
+      turnIndex = 0,
+      toolCallCount = 0,
+      pendingActions = listOf(OpenCraySerializableModelAction.Final(answer = "Done", responseFormat = "text")),
+    )
+
+    delegate.save(
+      SessionQueueSnapshot(
+        sessionId = sessionId,
+        agentId = "test-agent",
+        lifecycleState = SessionLifecycleState.RUNNING,
+        updatedAtEpochMs = 1_200L,
+        tasks = listOf(
+          SessionQueueTaskSnapshot(
+            enqueueOrder = 1L,
+            task = AgentTask(
+              id = taskId,
+              type = AgentTaskType.PROMPT,
+              input = "Resume from the parsed action batch, but stop if replay is unsafe.",
+              state = AgentTaskState.RUNNING,
+              policyDecision = PolicyDecision(
+                outcome = com.opencray.core.contracts.PolicyDecisionOutcome.ALLOW,
+                reasonCode = "test",
+              ),
+              createdAtEpochMs = 1_000L,
+              updatedAtEpochMs = 1_200L,
+              metadata = mapOf(
+                AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+              ),
+            ),
+            lifecycleState = QueueTaskLifecycleState.RUNNING,
+            attempt = 1,
+          ),
+        ),
+      ),
+    )
+    runEventJournalStore.appendCheckpoint(
+      runId = runId,
+      taskId = taskId,
+      emission = OpenCrayPromptCheckpointEmission(
+        boundary = OpenCrayPromptCheckpointBoundary.ACTION_BATCH_PARSED,
+        state = resumeState,
+        emittedAtEpochMs = 1_120L,
+      ),
+    )
+    runEventJournalStore.append(
+      OpenCrayToolCallEvent(
+        runId = runId,
+        taskId = taskId,
+        turn = 1,
+        call = AgentToolCall(toolName = "Write"),
+        emittedAtEpochMs = 1_150L,
+      ),
+    )
+
+    val store = RecoveryAwareQueueSnapshotStore(
+      sessionId = sessionId,
+      delegate = delegate,
+      runRecordStore = runRecordStore,
+      runEventJournalStore = runEventJournalStore,
+      promptCheckpointStore = promptCheckpointStore,
+      managedProcessesProvider = { emptyList() },
+      clock = { 5_000L },
+    )
+
+    val restored = requireNotNull(store.load())
+    val restoredTask = restored.tasks.single()
+    val syntheticCheckpoint = promptCheckpointStore.get(taskId)
+
+    assertEquals(QueueTaskLifecycleState.FAILED, restoredTask.lifecycleState)
+    assertEquals(AgentTaskState.FAILED, restoredTask.task.state)
+    assertEquals("uncertain_inflight_mutation", restoredTask.task.metadata[METADATA_RECOVERY_REASON])
+    assertEquals(ERROR_RESTART_REQUIRES_EXPLICIT_RETRY, restoredTask.lastErrorCode)
+    assertEquals(PromptCheckpointKind.ACTION_BATCH_PARSED, syntheticCheckpoint?.checkpointKind)
     assertEquals(resumeState, syntheticCheckpoint?.promptResumeState)
   }
 
@@ -433,6 +682,7 @@ class RecoveryAwareQueueSnapshotStoreTest {
           taskId = taskId,
           toolName = "Read",
           resumeState = resumeState,
+          checkpointBoundary = OpenCrayPromptCheckpointBoundary.ACTION_BATCH_PARSED,
         ),
         lastEvent = OpenCrayApprovalEvent(
           runId = runId,
@@ -465,6 +715,10 @@ class RecoveryAwareQueueSnapshotStoreTest {
     assertEquals(PromptCheckpointKind.APPROVED_PENDING_RESUME, syntheticCheckpoint?.checkpointKind)
     assertEquals("Read", syntheticCheckpoint?.toolName)
     assertEquals(pendingMessageId, syntheticCheckpoint?.pendingMessageId)
+    assertEquals(
+      OpenCrayPromptCheckpointBoundary.ACTION_BATCH_PARSED,
+      syntheticCheckpoint?.promptCheckpointBoundary,
+    )
     assertEquals(resumeState, syntheticCheckpoint?.promptResumeState)
   }
 
@@ -521,6 +775,7 @@ class RecoveryAwareQueueSnapshotStoreTest {
           taskId = taskId,
           toolName = "Read",
           resumeState = resumeState,
+          checkpointBoundary = OpenCrayPromptCheckpointBoundary.ACTION_BATCH_PARSED,
         ),
         lastEvent = OpenCrayApprovalEvent(
           runId = runId,
@@ -556,6 +811,10 @@ class RecoveryAwareQueueSnapshotStoreTest {
     assertEquals(PromptCheckpointKind.REJECTED_PENDING_RESUME, syntheticCheckpoint?.checkpointKind)
     assertEquals("Read", syntheticCheckpoint?.toolName)
     assertEquals(pendingMessageId, syntheticCheckpoint?.pendingMessageId)
+    assertEquals(
+      OpenCrayPromptCheckpointBoundary.ACTION_BATCH_PARSED,
+      syntheticCheckpoint?.promptCheckpointBoundary,
+    )
     assertEquals(resumeState, syntheticCheckpoint?.promptResumeState)
   }
 
@@ -623,6 +882,7 @@ class RecoveryAwareQueueSnapshotStoreTest {
             metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(
               state = resumeState,
               json = json,
+              checkpointBoundary = OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
             ),
           ),
           emittedAtEpochMs = 1_160L,
@@ -646,10 +906,110 @@ class RecoveryAwareQueueSnapshotStoreTest {
 
     assertEquals(QueueTaskLifecycleState.QUEUED, restoredTask.lifecycleState)
     assertEquals(AgentTaskState.QUEUED, restoredTask.task.state)
-    assertEquals("durable_general_resume_checkpoint", restoredTask.task.metadata[METADATA_RECOVERY_REASON])
-    assertEquals(PromptCheckpointKind.GENERAL_RESUME, syntheticCheckpoint?.checkpointKind)
+    assertEquals("durable_tool_result_checkpoint", restoredTask.task.metadata[METADATA_RECOVERY_REASON])
+    assertEquals(PromptCheckpointKind.TOOL_RESULT_COMMITTED, syntheticCheckpoint?.checkpointKind)
     assertEquals("Read", syntheticCheckpoint?.toolName)
     assertEquals(pendingMessageId, syntheticCheckpoint?.pendingMessageId)
+    assertEquals(
+      OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
+      syntheticCheckpoint?.promptCheckpointBoundary,
+    )
+    assertEquals(resumeState, syntheticCheckpoint?.promptResumeState)
+  }
+
+  @Test
+  fun loadSynthesizesGeneralResumeCheckpointFromRunResultWhenStoreAndJournalMissing() {
+    val runtimeRoot = temporaryFolder.newFolder("recovery-aware-queue-synthetic-from-run-result")
+    val sessionId = "session-synthetic-from-run-result"
+    val taskId = "task-synthetic-from-run-result"
+    val runId = "run-synthetic-from-run-result"
+    val pendingMessageId = "pending-synthetic-from-run-result"
+    val delegate = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val runRecordStore = FileBackedAgentRunRecordStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val runEventJournalStore = FileBackedRunEventJournalStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val promptCheckpointStore = inMemoryPromptCheckpointStoreFactoryForTest().forChatSession(sessionId)
+    val resumeState = OpenCrayPromptResumeState(
+      turnIndex = 3,
+      toolCallCount = 2,
+    )
+
+    delegate.save(
+      SessionQueueSnapshot(
+        sessionId = sessionId,
+        agentId = "test-agent",
+        lifecycleState = SessionLifecycleState.RUNNING,
+        updatedAtEpochMs = 1_200L,
+        tasks = listOf(
+          SessionQueueTaskSnapshot(
+            enqueueOrder = 1L,
+            task = AgentTask(
+              id = taskId,
+              type = AgentTaskType.PROMPT,
+              input = "Resume after paused LLM retries.",
+              state = AgentTaskState.SUSPENDED,
+              policyDecision = PolicyDecision(
+                outcome = com.opencray.core.contracts.PolicyDecisionOutcome.ALLOW,
+                reasonCode = "test",
+              ),
+              createdAtEpochMs = 1_000L,
+              updatedAtEpochMs = 1_200L,
+              metadata = mapOf(
+                AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+              ),
+            ),
+            lifecycleState = QueueTaskLifecycleState.SUSPENDED,
+            attempt = 1,
+            lastErrorCode = ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME,
+            lastErrorMessage = "LLM retries were exhausted.",
+          ),
+        ),
+      ),
+    )
+    runRecordStore.upsert(
+      PersistedAgentRunRecord(
+        runId = runId,
+        taskId = taskId,
+        acceptedAtEpochMs = 1_000L,
+        pendingMessageId = pendingMessageId,
+        lastResult = ExecutionResult(
+          taskId = taskId,
+          status = ExecutionStatus.FAILED,
+          errorCode = ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME,
+          errorMessage = "LLM retries were exhausted.",
+          startedAtEpochMs = 1_100L,
+          finishedAtEpochMs = 1_160L,
+          metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(
+            state = resumeState,
+            json = json,
+            checkpointBoundary = OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST,
+          ),
+        ),
+      ),
+    )
+
+    val store = RecoveryAwareQueueSnapshotStore(
+      sessionId = sessionId,
+      delegate = delegate,
+      runRecordStore = runRecordStore,
+      runEventJournalStore = runEventJournalStore,
+      promptCheckpointStore = promptCheckpointStore,
+      managedProcessesProvider = { emptyList() },
+      clock = { 5_000L },
+    )
+
+    val restored = requireNotNull(store.load())
+    val restoredTask = restored.tasks.single()
+    val syntheticCheckpoint = promptCheckpointStore.get(taskId)
+
+    assertEquals(QueueTaskLifecycleState.SUSPENDED, restoredTask.lifecycleState)
+    assertEquals(AgentTaskState.SUSPENDED, restoredTask.task.state)
+    assertEquals("llm_retry_exhausted_waiting_for_resume", restoredTask.task.metadata[METADATA_RECOVERY_REASON])
+    assertEquals(PromptCheckpointKind.PRE_MODEL_REQUEST, syntheticCheckpoint?.checkpointKind)
+    assertEquals(pendingMessageId, syntheticCheckpoint?.pendingMessageId)
+    assertEquals(
+      OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST,
+      syntheticCheckpoint?.promptCheckpointBoundary,
+    )
     assertEquals(resumeState, syntheticCheckpoint?.promptResumeState)
   }
 
@@ -835,10 +1195,86 @@ class RecoveryAwareQueueSnapshotStoreTest {
     assertNull(restoredTask.lastErrorMessage)
   }
 
+  @Test
+  fun loadRewritesQueuedProgressWithoutCheckpointToExplicitRetryFailure() {
+    val runtimeRoot = temporaryFolder.newFolder("recovery-aware-queue-unsafe-queued-progress")
+    val sessionId = "session-unsafe-queued-progress"
+    val taskId = "task-unsafe-queued-progress"
+    val runId = "run-unsafe-queued-progress"
+    val delegate = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val runRecordStore = FileBackedAgentRunRecordStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val runEventJournalStore = FileBackedRunEventJournalStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val promptCheckpointStore = inMemoryPromptCheckpointStoreFactoryForTest().forChatSession(sessionId)
+
+    delegate.save(
+      SessionQueueSnapshot(
+        sessionId = sessionId,
+        agentId = "test-agent",
+        lifecycleState = SessionLifecycleState.RUNNING,
+        updatedAtEpochMs = 1_200L,
+        tasks = listOf(
+          SessionQueueTaskSnapshot(
+            enqueueOrder = 1L,
+            task = AgentTask(
+              id = taskId,
+              type = AgentTaskType.PROMPT,
+              input = "Resume the queued run.",
+              state = AgentTaskState.QUEUED,
+              policyDecision = PolicyDecision(
+                outcome = com.opencray.core.contracts.PolicyDecisionOutcome.ALLOW,
+                reasonCode = "test",
+              ),
+              createdAtEpochMs = 1_000L,
+              updatedAtEpochMs = 1_200L,
+              metadata = mapOf(
+                AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+                com.opencray.core.orchestrator.METADATA_EXECUTION_ORDINAL to "1",
+                com.opencray.core.orchestrator.METADATA_PENDING_EXECUTION_KIND to "approval_resume",
+              ),
+            ),
+            lifecycleState = QueueTaskLifecycleState.QUEUED,
+            attempt = 1,
+            executionOrdinal = 1,
+          ),
+        ),
+      ),
+    )
+    runEventJournalStore.append(
+      OpenCrayToolCallEvent(
+        runId = runId,
+        taskId = taskId,
+        turn = 1,
+        call = AgentToolCall(toolName = "Write"),
+        emittedAtEpochMs = 1_150L,
+      ),
+    )
+
+    val store = RecoveryAwareQueueSnapshotStore(
+      sessionId = sessionId,
+      delegate = delegate,
+      runRecordStore = runRecordStore,
+      runEventJournalStore = runEventJournalStore,
+      promptCheckpointStore = promptCheckpointStore,
+      managedProcessesProvider = { emptyList() },
+      clock = { 5_000L },
+    )
+
+    val restored = requireNotNull(store.load())
+    val restoredTask = restored.tasks.single()
+
+    assertEquals(QueueTaskLifecycleState.FAILED, restoredTask.lifecycleState)
+    assertEquals(AgentTaskState.FAILED, restoredTask.task.state)
+    assertEquals("5000", restoredTask.task.metadata[METADATA_QUEUE_RESTORE_EPOCH_MS])
+    assertEquals("queued", restoredTask.task.metadata[METADATA_PREVIOUS_LIFECYCLE_STATE])
+    assertEquals("queued_progress_without_checkpoint", restoredTask.task.metadata[METADATA_RECOVERY_REASON])
+    assertEquals(ERROR_RESTART_REQUIRES_EXPLICIT_RETRY, restoredTask.lastErrorCode)
+  }
+
   private fun approvalRequiredResult(
     taskId: String,
     toolName: String,
     resumeState: OpenCrayPromptResumeState,
+    checkpointBoundary: OpenCrayPromptCheckpointBoundary? = null,
     errorCode: String = "APPROVAL_REQUIRED",
     errorMessage: String = "Approval is required before $toolName can run.",
   ): ExecutionResult = ExecutionResult(
@@ -848,15 +1284,21 @@ class RecoveryAwareQueueSnapshotStoreTest {
     errorMessage = errorMessage,
     startedAtEpochMs = 1_150L,
     finishedAtEpochMs = 1_150L,
-    metadata = approvalMetadata(toolName = toolName, resumeState = resumeState),
+    metadata = approvalMetadata(
+      toolName = toolName,
+      resumeState = resumeState,
+      checkpointBoundary = checkpointBoundary,
+    ),
   )
 
   private fun approvalMetadata(
     toolName: String,
     resumeState: OpenCrayPromptResumeState,
+    checkpointBoundary: OpenCrayPromptCheckpointBoundary? = null,
   ): Map<String, String> = OpenCrayPromptResumeMetadata.encodeToMetadata(
     state = resumeState,
     json = json,
+    checkpointBoundary = checkpointBoundary,
   ) + mapOf(
     "normalizedToolName" to toolName,
     OpenCrayExecutionMetadataKeys.APPROVAL_RESUME_TOOL_NAME to toolName,

@@ -69,8 +69,8 @@ internal class OpenCrayLocalRuntimeServer(
   private val shutdownExecutorOnClose: Boolean = false,
 ) {
   // Test-only convenience constructor. Production wiring should go through
-  // OpenCrayLocalRuntimeServerRegistry, which stays service-backed and detached
-  // from UI host ownership.
+  // OpenCrayLocalRuntimeServerRegistry, which is service-owned in production and
+  // detached from UI host ownership.
   constructor(
     hostRuntimeProvider: () -> OpenCrayHostRuntime,
     shellGatewayResolver: (OpenCrayHostRuntime) -> OpenCrayShellGateway = { it },
@@ -232,6 +232,14 @@ internal class OpenCrayLocalRuntimeServer(
     val payload: Any? = when (request.method to request.path) {
       "GET" to "/v1/shell_snapshot" -> shellGateway.loadShellSnapshot()
       "GET" to "/v1/files_snapshot" -> localGateway.loadFilesSnapshot()
+      "POST" to "/v1/resolve_sandbox_preview_embed_config" -> localGateway.resolveSandboxPreviewEmbedConfig(
+        previewUrl = body.optString("previewUrl"),
+      )
+      "GET" to "/v1/settings_image_assets" -> localGateway.listSettingsImageAssets()
+      "GET" to "/v1/soul_visual_identity" -> localGateway.loadSoulVisualIdentity()
+      "GET" to "/v1/memory_image_references" -> localGateway.listMemoryImageReferences(
+        memoryId = request.queryParameter("memoryId"),
+      )
       "GET" to "/v1/workspace_image_preview" -> localGateway.loadWorkspaceImagePreview(
         relativePath = request.queryParameter("relativePath"),
       )
@@ -358,6 +366,21 @@ internal class OpenCrayLocalRuntimeServer(
       )
       "POST" to "/v1/probe_twin_import_source" -> localGateway.probeTwinImportSource(
         filePath = body.optString("filePath"),
+      )
+      "POST" to "/v1/import_settings_image_assets" -> localGateway.importSettingsImageAssets(
+        uriStrings = body.optJSONArray("uriStrings")?.let(::jsonArrayToStrings) ?: emptyList(),
+      )
+      "POST" to "/v1/save_soul_primary_portrait" -> localGateway.saveSoulPrimaryPortrait(
+        source = body.optJSONObject("source")?.let(::jsonObjectToMap) ?: emptyMap(),
+      )
+      "POST" to "/v1/save_soul_reference_image" -> localGateway.saveSoulReferenceImage(
+        refId = body.optString("refId"),
+        source = body.optJSONObject("source")?.let(::jsonObjectToMap) ?: emptyMap(),
+      )
+      "POST" to "/v1/attach_memory_image_reference" -> localGateway.attachMemoryImageReference(
+        memoryId = body.optString("memoryId"),
+        source = body.optJSONObject("source")?.let(::jsonObjectToMap) ?: emptyMap(),
+        preferredMode = body.optString("preferredMode").takeIf(String::isNotBlank),
       )
       "GET" to "/v1/mcp_settings" -> settingsGateway.loadMcpSettings()
       "POST" to "/v1/set_mcp_master_enabled" -> settingsGateway.setMcpMasterEnabled(
@@ -503,6 +526,10 @@ internal class OpenCrayLocalRuntimeServer(
         runId = body.optString("runId"),
         timeoutMs = body.optLong("timeoutMs", 15_000L),
       )
+      "POST" to "/v1/refresh_sandbox_session_info" -> {
+        chatRuntimeGateway.refreshSandboxSessionInfo()
+        null
+      }
       "POST" to "/v1/approve_chat_approval" -> {
         chatRuntimeGateway.approveChatApproval(
           body.optString("runId").takeIf(String::isNotBlank) ?: body.optString("taskId"),
@@ -668,6 +695,14 @@ internal class OpenCrayLocalRuntimeServer(
   }
 }
 
+internal data class OpenCrayLocalRuntimeServerProviders(
+  val localGatewayProvider: () -> OpenCrayLocalHostGateway,
+  val shellGatewayProvider: () -> OpenCrayShellGateway,
+  val chatRuntimeGatewayProvider: () -> OpenCrayChatRuntimeGateway,
+  val skillsGatewayProvider: () -> OpenCraySkillsGateway,
+  val settingsGatewayProvider: () -> OpenCraySettingsGateway,
+)
+
 internal object OpenCrayLocalRuntimeServerRegistry {
   @Volatile
   private var instance: OpenCrayLocalRuntimeServer? = null
@@ -679,22 +714,33 @@ internal object OpenCrayLocalRuntimeServerRegistry {
     )
   }
 
-  fun fromContext(context: Context): OpenCrayLocalRuntimeServer =
+  fun fromContext(
+    context: Context,
+    providers: OpenCrayLocalRuntimeServerProviders? = null,
+  ): OpenCrayLocalRuntimeServer =
     instance ?: synchronized(this) {
       instance ?: OpenCrayLocalRuntimeServer(
-        localGatewayProvider = { openCrayLocalHostGateway(context.applicationContext) },
-        shellGatewayProvider = { serviceBackedOpenCrayShellGateway(context.applicationContext) },
-        chatRuntimeGatewayProvider = { serviceBackedOpenCrayChatRuntimeGateway(context.applicationContext) },
-        skillsGatewayProvider = { serviceBackedOpenCraySkillsGateway(context.applicationContext) },
-        settingsGatewayProvider = { serviceBackedOpenCraySettingsGateway(context.applicationContext) },
+        localGatewayProvider = providers?.localGatewayProvider
+          ?: { openCrayLocalHostGateway(context.applicationContext) },
+        shellGatewayProvider = providers?.shellGatewayProvider
+          ?: { serviceBackedOpenCrayShellGateway(context.applicationContext) },
+        chatRuntimeGatewayProvider = providers?.chatRuntimeGatewayProvider
+          ?: { serviceBackedOpenCrayChatRuntimeGateway(context.applicationContext) },
+        skillsGatewayProvider = providers?.skillsGatewayProvider
+          ?: { serviceBackedOpenCraySkillsGateway(context.applicationContext) },
+        settingsGatewayProvider = providers?.settingsGatewayProvider
+          ?: { serviceBackedOpenCraySettingsGateway(context.applicationContext) },
         bindAddress = DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS,
       ).also { created ->
         instance = created
       }
     }
 
-  fun ensureStarted(context: Context): OpenCrayLocalRuntimeServer =
-    fromContext(context).also { server -> server.ensureStarted() }
+  fun ensureStarted(
+    context: Context,
+    providers: OpenCrayLocalRuntimeServerProviders? = null,
+  ): OpenCrayLocalRuntimeServer =
+    fromContext(context, providers = providers).also { server -> server.ensureStarted() }
 }
 
 private fun jsonArrayToStrings(array: JSONArray): List<String> =

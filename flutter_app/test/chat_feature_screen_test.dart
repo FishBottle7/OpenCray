@@ -8,10 +8,13 @@ import 'package:flutter_math_fork/flutter_math.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:opencray/core/bridge/opencray_host_bridge.dart';
 import 'package:opencray/core/copy/opencray_ui_copy.dart';
+import 'package:opencray/core/models/opencray_agent_snapshot.dart';
 import 'package:opencray/core/models/opencray_chat_draft_attachment.dart';
 import 'package:opencray/core/models/opencray_chat_snapshot.dart';
 import 'package:opencray/core/models/opencray_debug_snapshot.dart';
 import 'package:opencray/core/models/opencray_file_image_preview.dart';
+import 'package:opencray/core/models/opencray_image_reference.dart';
+import 'package:opencray/core/models/opencray_sandbox_preview_embed_config.dart';
 import 'package:opencray/core/models/opencray_sandbox_settings.dart';
 import 'package:opencray/core/models/opencray_file_text_preview.dart';
 import 'package:opencray/core/models/opencray_file_voice_playback_source.dart';
@@ -95,6 +98,38 @@ void main() {
       expect(resolved, same(streamed));
     },
   );
+
+  test('runtimeSnapshotVersion tracks projected subagent updates', () {
+    const snapshot = OpenCrayChatRuntimeSnapshot(
+      sessionId: 'session-1',
+      activeRuns: <OpenCrayChatRunSnapshot>[],
+      subAgents: <OpenCrayChatSubAgentSnapshot>[
+        OpenCrayChatSubAgentSnapshot(
+          parentRunId: 'run-parent',
+          parentTaskId: 'task-parent',
+          childRunId: 'child-run-detached-1',
+          childTaskId: 'child-task-detached-1',
+          label: 'Inspect README',
+          subagentType: 'researcher',
+          contextMode: 'minimal',
+          depth: 1,
+          phase: 'resumed',
+          status: 'background_running',
+          executionState: 'background_running',
+          continuationKind: 'background_resume',
+          resumable: true,
+          summary:
+              'Delegated child runtime is still running in the background.',
+          startedAtEpochMs: 1800,
+          updatedAtEpochMs: 4200,
+          eventCount: 0,
+        ),
+      ],
+      events: <OpenCrayChatRuntimeEventSnapshot>[],
+    );
+
+    expect(runtimeSnapshotVersion(snapshot), 4200);
+  });
 
   testWidgets('host rebuild stays silent in chat ui', (tester) async {
     final runtimeSnapshots =
@@ -285,6 +320,15 @@ void main() {
       ),
       findsOneWidget,
     );
+    expect(bridge.resolveSandboxPreviewEmbedConfigCallCount, 1);
+    expect(
+      find.byKey(
+        const ValueKey<String>(
+          'chat-run-trace-preview-embedded-unavailable-run-preview-cloud',
+        ),
+      ),
+      findsOneWidget,
+    );
     expect(find.text('Sandbox Preview'), findsOneWidget);
     expect(find.text('Ready'), findsOneWidget);
     expect(find.textContaining(previewUrl), findsOneWidget);
@@ -388,6 +432,7 @@ void main() {
       ),
       findsNothing,
     );
+    expect(bridge.resolveSandboxPreviewEmbedConfigCallCount, 0);
     expect(find.text('Sandbox Preview'), findsNothing);
   });
 
@@ -468,12 +513,7 @@ void main() {
     final bubbleFinder = find.byKey(
       const ValueKey<String>('chat-run-trace-run-preview-cloud-fullscreen'),
     );
-    final Offset openSpot =
-        tester.getTopLeft(bubbleFinder) + const Offset(48, 32);
-    await tester.tapAt(openSpot);
-    await tester.pump(const Duration(milliseconds: 40));
-    await tester.tapAt(openSpot);
-    await tester.pumpAndSettle();
+    await _openRunTraceFullscreen(tester, bubbleFinder);
 
     final fullscreenFinder = find.byKey(
       const ValueKey<String>(
@@ -481,6 +521,18 @@ void main() {
       ),
     );
     expect(fullscreenFinder, findsOneWidget);
+    expect(
+      find.descendant(
+        of: fullscreenFinder,
+        matching: find.byKey(
+          const ValueKey<String>(
+            'chat-run-trace-fullscreen-preview-embedded-unavailable-run-preview-cloud-fullscreen',
+          ),
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(bridge.resolveSandboxPreviewEmbedConfigCallCount >= 2, isTrue);
     expect(
       find.descendant(
         of: fullscreenFinder,
@@ -504,16 +556,17 @@ void main() {
       findsOneWidget,
     );
 
-    await tester.tap(
-      find.descendant(
-        of: fullscreenFinder,
-        matching: find.byKey(
-          const ValueKey<String>(
-            'chat-run-trace-fullscreen-preview-open-run-preview-cloud-fullscreen',
-          ),
+    final openButtonFinder = find.descendant(
+      of: fullscreenFinder,
+      matching: find.byKey(
+        const ValueKey<String>(
+          'chat-run-trace-fullscreen-preview-open-run-preview-cloud-fullscreen',
         ),
       ),
     );
+    await tester.ensureVisible(openButtonFinder);
+    await tester.pumpAndSettle();
+    await tester.tap(openButtonFinder);
     await tester.pumpAndSettle();
 
     expect(bridge.openedExternalUris, <String>[previewUrl]);
@@ -592,12 +645,7 @@ void main() {
     final bubbleFinder = find.byKey(
       const ValueKey<String>('chat-run-trace-run-preview-local-fullscreen'),
     );
-    final Offset openSpot =
-        tester.getTopLeft(bubbleFinder) + const Offset(48, 32);
-    await tester.tapAt(openSpot);
-    await tester.pump(const Duration(milliseconds: 40));
-    await tester.tapAt(openSpot);
-    await tester.pumpAndSettle();
+    await _openRunTraceFullscreen(tester, bubbleFinder);
 
     final fullscreenFinder = find.byKey(
       const ValueKey<String>(
@@ -616,10 +664,417 @@ void main() {
       ),
       findsNothing,
     );
+    expect(bridge.resolveSandboxPreviewEmbedConfigCallCount, 0);
     expect(
       find.descendant(
         of: fullscreenFinder,
         matching: find.text('Sandbox Preview'),
+      ),
+      findsNothing,
+    );
+  });
+
+  testWidgets('cloud mode shows sandbox session card on the run trace', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    const sessionEvent = OpenCrayChatRuntimeEventSnapshot(
+      kind: 'tool_result',
+      runId: 'run-session-cloud',
+      taskId: 'task-session-cloud',
+      emittedAtEpochMs: 2000,
+      toolName: 'sandbox_session_info',
+      contentPreview: 'Reusable cloud sandbox session is available.',
+      resultMetadata: <String, String>{
+        'sandboxProvider': 'e2b',
+        'sandboxSessionPresent': 'true',
+        'sandboxSessionSource': 'active_memory_and_persisted',
+        'sandboxSessionLifecycleStatus': 'active',
+        'sandboxId': 'sb-session',
+        'sandboxDomain': 'e2b.app',
+        'sandboxTemplateId': 'base',
+        'sandboxSessionUpdatedAtEpochMs': '2000',
+        'sandboxPreviewCandidatePorts': '3000,4173',
+        'sandboxRunningRequestCount': '2',
+        'sandboxRunningRequestIds': 'req-1,req-2',
+      },
+    );
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-session-cloud',
+            taskId: 'task-session-cloud',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 2000,
+            attempt: 1,
+            isTerminal: true,
+            lastEvent: sessionEvent,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          OpenCrayChatRuntimeEventSnapshot(
+            kind: 'lifecycle',
+            runId: 'run-session-cloud',
+            taskId: 'task-session-cloud',
+            emittedAtEpochMs: 1000,
+            phase: 'start',
+          ),
+          sessionEvent,
+        ],
+      ),
+      sandboxSettings: const OpenCraySandboxSettingsSnapshot(
+        localeTag: 'en',
+        enabled: true,
+        providerId: 'e2b',
+        defaultBackend: 'sandbox',
+        sessionMode: 'sticky',
+        autoResume: true,
+        idleTimeoutMinutes: 15,
+        startupTimeoutMs: 30000,
+        requestTimeoutMs: 300000,
+        timeoutAction: 'kill',
+        templateId: '',
+        e2bApiKey: '',
+        apiKeyConfigured: false,
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(
+        const ValueKey<String>('chat-run-trace-session-card-run-session-cloud'),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Cloud Session'), findsOneWidget);
+    expect(find.text('Healthy'), findsOneWidget);
+    expect(find.text('sb-session'), findsOneWidget);
+    expect(find.textContaining('Active + Saved'), findsOneWidget);
+    expect(find.textContaining('Ports 3000, 4173'), findsOneWidget);
+    expect(find.textContaining('Running 2'), findsOneWidget);
+  });
+
+  testWidgets('local mode hides sandbox session card on the run trace', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    const sessionEvent = OpenCrayChatRuntimeEventSnapshot(
+      kind: 'tool_result',
+      runId: 'run-session-local',
+      taskId: 'task-session-local',
+      emittedAtEpochMs: 2000,
+      toolName: 'sandbox_session_info',
+      contentPreview: 'Reusable cloud sandbox session is available.',
+      resultMetadata: <String, String>{
+        'sandboxProvider': 'e2b',
+        'sandboxSessionPresent': 'true',
+        'sandboxSessionSource': 'active_memory',
+        'sandboxId': 'sb-session-local',
+      },
+    );
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-session-local',
+            taskId: 'task-session-local',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 2000,
+            attempt: 1,
+            isTerminal: true,
+            lastEvent: sessionEvent,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          OpenCrayChatRuntimeEventSnapshot(
+            kind: 'lifecycle',
+            runId: 'run-session-local',
+            taskId: 'task-session-local',
+            emittedAtEpochMs: 1000,
+            phase: 'start',
+          ),
+          sessionEvent,
+        ],
+      ),
+      sandboxSettings: const OpenCraySandboxSettingsSnapshot(
+        localeTag: 'en',
+        enabled: true,
+        providerId: 'e2b',
+        defaultBackend: 'local',
+        sessionMode: 'sticky',
+        autoResume: true,
+        idleTimeoutMinutes: 15,
+        startupTimeoutMs: 30000,
+        requestTimeoutMs: 300000,
+        timeoutAction: 'kill',
+        templateId: '',
+        e2bApiKey: '',
+        apiKeyConfigured: false,
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(
+        const ValueKey<String>('chat-run-trace-session-card-run-session-local'),
+      ),
+      findsNothing,
+    );
+    expect(find.text('Cloud Session'), findsNothing);
+  });
+
+  testWidgets('cloud mode shows sandbox session inside the run inspector', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    const sessionEvent = OpenCrayChatRuntimeEventSnapshot(
+      kind: 'tool_result',
+      runId: 'run-session-cloud-fullscreen',
+      taskId: 'task-session-cloud-fullscreen',
+      emittedAtEpochMs: 2000,
+      toolName: 'sandbox_session_info',
+      contentPreview: 'Reusable cloud sandbox session is available.',
+      resultMetadata: <String, String>{
+        'sandboxProvider': 'e2b',
+        'sandboxSessionPresent': 'true',
+        'sandboxSessionSource': 'active_memory_and_persisted',
+        'sandboxSessionLifecycleStatus': 'stale',
+        'sandboxId': 'sb-session-fullscreen',
+        'sandboxDomain': 'e2b.app',
+        'sandboxTemplateId': 'base',
+        'sandboxSessionUpdatedAtEpochMs': '2000',
+        'sandboxSessionLastActivityAtEpochMs': '1500',
+        'sandboxSessionStaleAfterEpochMs': '3000',
+        'sandboxPreviewCandidatePorts': '3000,4173',
+        'sandboxRunningRequestCount': '2',
+        'sandboxRunningRequestIds': 'req-1,req-2',
+        'sandboxLastPreviewProbeStatus': 'ready',
+        'sandboxLastPreviewProbeObservedAtEpochMs': '1800',
+      },
+    );
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-session-cloud-fullscreen',
+            taskId: 'task-session-cloud-fullscreen',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 2000,
+            attempt: 1,
+            isTerminal: true,
+            lastEvent: sessionEvent,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          OpenCrayChatRuntimeEventSnapshot(
+            kind: 'lifecycle',
+            runId: 'run-session-cloud-fullscreen',
+            taskId: 'task-session-cloud-fullscreen',
+            emittedAtEpochMs: 1000,
+            phase: 'start',
+          ),
+          sessionEvent,
+        ],
+      ),
+      sandboxSettings: const OpenCraySandboxSettingsSnapshot(
+        localeTag: 'en',
+        enabled: true,
+        providerId: 'e2b',
+        defaultBackend: 'sandbox',
+        sessionMode: 'sticky',
+        autoResume: true,
+        idleTimeoutMinutes: 15,
+        startupTimeoutMs: 30000,
+        requestTimeoutMs: 300000,
+        timeoutAction: 'kill',
+        templateId: '',
+        e2bApiKey: '',
+        apiKeyConfigured: false,
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final bubbleFinder = find.byKey(
+      const ValueKey<String>('chat-run-trace-run-session-cloud-fullscreen'),
+    );
+    final Offset openSpot = tester.getCenter(bubbleFinder);
+    await tester.tapAt(openSpot);
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.tapAt(openSpot);
+    await tester.pumpAndSettle();
+
+    final fullscreenFinder = find.byKey(
+      const ValueKey<String>(
+        'chat-run-trace-fullscreen-run-session-cloud-fullscreen',
+      ),
+    );
+    expect(fullscreenFinder, findsOneWidget);
+    expect(
+      find.descendant(
+        of: fullscreenFinder,
+        matching: find.byKey(
+          const ValueKey<String>(
+            'chat-run-trace-fullscreen-session-card-run-session-cloud-fullscreen',
+          ),
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: fullscreenFinder,
+        matching: find.text('Running requests'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: fullscreenFinder, matching: find.text('Stale')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: fullscreenFinder,
+        matching: find.textContaining('Last active'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: fullscreenFinder,
+        matching: find.text('req-1, req-2'),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('local mode hides sandbox session inside the run inspector', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    const sessionEvent = OpenCrayChatRuntimeEventSnapshot(
+      kind: 'tool_result',
+      runId: 'run-session-local-fullscreen',
+      taskId: 'task-session-local-fullscreen',
+      emittedAtEpochMs: 2000,
+      toolName: 'sandbox_session_info',
+      contentPreview: 'Reusable cloud sandbox session is available.',
+      resultMetadata: <String, String>{
+        'sandboxProvider': 'e2b',
+        'sandboxSessionPresent': 'true',
+        'sandboxSessionSource': 'persisted',
+        'sandboxId': 'sb-session-local-fullscreen',
+      },
+    );
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-session-local-fullscreen',
+            taskId: 'task-session-local-fullscreen',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 2000,
+            attempt: 1,
+            isTerminal: true,
+            lastEvent: sessionEvent,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          OpenCrayChatRuntimeEventSnapshot(
+            kind: 'lifecycle',
+            runId: 'run-session-local-fullscreen',
+            taskId: 'task-session-local-fullscreen',
+            emittedAtEpochMs: 1000,
+            phase: 'start',
+          ),
+          sessionEvent,
+        ],
+      ),
+      sandboxSettings: const OpenCraySandboxSettingsSnapshot(
+        localeTag: 'en',
+        enabled: true,
+        providerId: 'e2b',
+        defaultBackend: 'local',
+        sessionMode: 'sticky',
+        autoResume: true,
+        idleTimeoutMinutes: 15,
+        startupTimeoutMs: 30000,
+        requestTimeoutMs: 300000,
+        timeoutAction: 'kill',
+        templateId: '',
+        e2bApiKey: '',
+        apiKeyConfigured: false,
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final bubbleFinder = find.byKey(
+      const ValueKey<String>('chat-run-trace-run-session-local-fullscreen'),
+    );
+    final Offset openSpot = tester.getCenter(bubbleFinder);
+    await tester.tapAt(openSpot);
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.tapAt(openSpot);
+    await tester.pumpAndSettle();
+
+    final fullscreenFinder = find.byKey(
+      const ValueKey<String>(
+        'chat-run-trace-fullscreen-run-session-local-fullscreen',
+      ),
+    );
+    expect(fullscreenFinder, findsOneWidget);
+    expect(
+      find.descendant(
+        of: fullscreenFinder,
+        matching: find.byKey(
+          const ValueKey<String>(
+            'chat-run-trace-fullscreen-session-card-run-session-local-fullscreen',
+          ),
+        ),
       ),
       findsNothing,
     );
@@ -1016,6 +1471,210 @@ void main() {
         const Color(0xFF111111),
         const Color(0xFF16A34A),
       ]);
+    },
+  );
+
+  testWidgets(
+    'chat ui renders detached projected subagent traces without a visible parent run',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          retainedRuns: <OpenCrayChatRunSnapshot>[],
+          subAgents: <OpenCrayChatSubAgentSnapshot>[
+            OpenCrayChatSubAgentSnapshot(
+              parentRunId: 'run-parent-detached-1',
+              parentTaskId: 'task-parent-detached-1',
+              childRunId: 'child-run-detached-1',
+              childTaskId: 'child-task-detached-1',
+              label: 'Inspect README',
+              subagentType: 'researcher',
+              contextMode: 'minimal',
+              depth: 1,
+              phase: 'resumed',
+              status: 'background_running',
+              executionState: 'background_running',
+              continuationKind: 'background_resume',
+              resumable: true,
+              summary:
+                  'Delegated child runtime is still running in the background.',
+              startedAtEpochMs: 1800,
+              updatedAtEpochMs: 2600,
+              eventCount: 0,
+              mailboxMessageCount: 2,
+              mailboxPendingMessageCount: 1,
+              mailboxLastDeliveredMessageId: 'mailbox-detached-1',
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final bubbleFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-child-run-detached-1'),
+      );
+
+      expect(bubbleFinder, findsOneWidget);
+      expect(
+        find.descendant(
+          of: bubbleFinder,
+          matching: find.textContaining(
+            'Researcher running in background: Inspect README',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: bubbleFinder,
+          matching: find.textContaining(
+            'Delegated child runtime is still running in the background.',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: bubbleFinder,
+          matching: find.textContaining('Mailbox: 1 pending / 2 total'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: bubbleFinder,
+          matching: find.textContaining('Last delivered: mailbox-detached-1'),
+        ),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'chat ui prefers projected subagent state when the event stream is stale',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      const taskCall = OpenCrayChatRuntimeEventSnapshot(
+        kind: 'tool_call',
+        runId: 'run-subagent-durable-1',
+        taskId: 'task-subagent-durable-1',
+        emittedAtEpochMs: 2000,
+        toolName: 'Task',
+        argumentsJson:
+            '{"description":"Inspect README","prompt":"Read README.md and summarize it.","subagent_type":"researcher"}',
+      );
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-subagent-durable-1',
+              taskId: 'task-subagent-durable-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 2000,
+              attempt: 1,
+              isTerminal: false,
+              lastEvent: taskCall,
+            ),
+          ],
+          subAgents: <OpenCrayChatSubAgentSnapshot>[
+            OpenCrayChatSubAgentSnapshot(
+              parentRunId: 'run-subagent-durable-1',
+              parentTaskId: 'task-subagent-durable-1',
+              childRunId: 'child-run-durable-1',
+              childTaskId: 'child-task-durable-1',
+              label: 'Inspect README',
+              subagentType: 'researcher',
+              contextMode: 'minimal',
+              depth: 1,
+              phase: 'resumed',
+              status: 'background_running',
+              executionState: 'background_running',
+              continuationKind: 'background_resume',
+              resumable: true,
+              summary:
+                  'Delegated child runtime is still running in the background.',
+              startedAtEpochMs: 1800,
+              updatedAtEpochMs: 2600,
+              eventCount: 0,
+              mailboxMessageCount: 3,
+              mailboxPendingMessageCount: 2,
+              mailboxLastDeliveredMessageId: 'mailbox-durable-1',
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-subagent-durable-1',
+              taskId: 'task-subagent-durable-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+            taskCall,
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final bubbleFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-run-subagent-durable-1'),
+      );
+
+      expect(bubbleFinder, findsOneWidget);
+      expect(
+        find.descendant(
+          of: bubbleFinder,
+          matching: find.textContaining(
+            'Researcher running in background: Inspect README',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: bubbleFinder,
+          matching: find.textContaining(
+            'Delegated child runtime is still running in the background.',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: bubbleFinder,
+          matching: find.textContaining('Mailbox: 2 pending / 3 total'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: bubbleFinder,
+          matching: find.textContaining('Last delivered: mailbox-durable-1'),
+        ),
+        findsOneWidget,
+      );
     },
   );
 
@@ -4108,6 +4767,435 @@ void main() {
   );
 
   testWidgets(
+    'cloud mode auto refreshes sandbox session info after cloud runtime activity',
+    (tester) async {
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(),
+        runtimeSnapshot: OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: const <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_result',
+              runId: 'run-cloud-1',
+              taskId: 'task-cloud-1',
+              emittedAtEpochMs: 4200,
+              toolName: 'python_exec',
+              resultMetadata: const <String, String>{'sandboxProvider': 'e2b'},
+            ),
+          ],
+        ),
+        sandboxSettings: const OpenCraySandboxSettingsSnapshot(
+          localeTag: 'en',
+          enabled: true,
+          providerId: 'e2b',
+          defaultBackend: 'sandbox',
+          sessionMode: 'ephemeral',
+          autoResume: false,
+          idleTimeoutMinutes: 15,
+          startupTimeoutMs: 30000,
+          requestTimeoutMs: 300000,
+          timeoutAction: 'kill',
+          templateId: '',
+          e2bApiKey: 'e2b_demo',
+          apiKeyConfigured: true,
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(
+              copy: OpenCrayUiCopy.fromLocaleTag('en'),
+              bridge: bridge,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(bridge.refreshSandboxSessionInfoCallCount, 0);
+
+      await tester.pump(chatSandboxSessionAutoRefreshDebounce);
+      await tester.pump();
+
+      expect(bridge.refreshSandboxSessionInfoCallCount, 1);
+    },
+  );
+
+  testWidgets('local mode does not auto refresh sandbox session info', (
+    tester,
+  ) async {
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(),
+      runtimeSnapshot: OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: const <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          OpenCrayChatRuntimeEventSnapshot(
+            kind: 'tool_result',
+            runId: 'run-cloud-1',
+            taskId: 'task-cloud-1',
+            emittedAtEpochMs: 4200,
+            toolName: 'python_exec',
+            resultMetadata: const <String, String>{'sandboxProvider': 'e2b'},
+          ),
+        ],
+      ),
+      sandboxSettings: const OpenCraySandboxSettingsSnapshot(
+        localeTag: 'en',
+        enabled: true,
+        providerId: 'e2b',
+        defaultBackend: 'local',
+        sessionMode: 'ephemeral',
+        autoResume: false,
+        idleTimeoutMinutes: 15,
+        startupTimeoutMs: 30000,
+        requestTimeoutMs: 300000,
+        timeoutAction: 'kill',
+        templateId: '',
+        e2bApiKey: 'e2b_demo',
+        apiKeyConfigured: true,
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(
+            copy: OpenCrayUiCopy.fromLocaleTag('en'),
+            bridge: bridge,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.pump(chatSandboxSessionAutoRefreshDebounce * 2);
+    await tester.pump();
+
+    expect(bridge.refreshSandboxSessionInfoCallCount, 0);
+  });
+
+  testWidgets(
+    'cloud mode auto refreshes sandbox session info from lifecycle metadata',
+    (tester) async {
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(),
+        runtimeSnapshot: OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: const <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_result',
+              runId: 'run-session-info-1',
+              taskId: 'task-session-info-1',
+              emittedAtEpochMs: 4200,
+              toolName: 'sandbox_session_info',
+              resultMetadata: const <String, String>{
+                'sandboxProvider': 'e2b',
+                'sandboxSessionPresent': 'true',
+                'sandboxSessionSource': 'active_memory',
+                'sandboxSessionLifecycleStatus': 'active',
+                'sandboxSessionAutoRefreshAfterMs': '1200',
+              },
+            ),
+          ],
+        ),
+        sandboxSettings: const OpenCraySandboxSettingsSnapshot(
+          localeTag: 'en',
+          enabled: true,
+          providerId: 'e2b',
+          defaultBackend: 'sandbox',
+          sessionMode: 'sticky',
+          autoResume: true,
+          idleTimeoutMinutes: 15,
+          startupTimeoutMs: 30000,
+          requestTimeoutMs: 300000,
+          timeoutAction: 'kill',
+          templateId: '',
+          e2bApiKey: 'e2b_demo',
+          apiKeyConfigured: true,
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(
+              copy: OpenCrayUiCopy.fromLocaleTag('en'),
+              bridge: bridge,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(bridge.refreshSandboxSessionInfoCallCount, 0);
+
+      await tester.pump(const Duration(milliseconds: 1200));
+      await tester.pump();
+
+      expect(bridge.refreshSandboxSessionInfoCallCount, 1);
+    },
+  );
+
+  testWidgets(
+    'local mode does not auto refresh sandbox session info from lifecycle metadata',
+    (tester) async {
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(),
+        runtimeSnapshot: OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: const <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_result',
+              runId: 'run-session-info-local',
+              taskId: 'task-session-info-local',
+              emittedAtEpochMs: 4200,
+              toolName: 'sandbox_session_info',
+              resultMetadata: const <String, String>{
+                'sandboxProvider': 'e2b',
+                'sandboxSessionPresent': 'true',
+                'sandboxSessionSource': 'active_memory',
+                'sandboxSessionLifecycleStatus': 'active',
+                'sandboxSessionAutoRefreshAfterMs': '1200',
+              },
+            ),
+          ],
+        ),
+        sandboxSettings: const OpenCraySandboxSettingsSnapshot(
+          localeTag: 'en',
+          enabled: true,
+          providerId: 'e2b',
+          defaultBackend: 'local',
+          sessionMode: 'sticky',
+          autoResume: true,
+          idleTimeoutMinutes: 15,
+          startupTimeoutMs: 30000,
+          requestTimeoutMs: 300000,
+          timeoutAction: 'kill',
+          templateId: '',
+          e2bApiKey: 'e2b_demo',
+          apiKeyConfigured: true,
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(
+              copy: OpenCrayUiCopy.fromLocaleTag('en'),
+              bridge: bridge,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 2400));
+      await tester.pump();
+
+      expect(bridge.refreshSandboxSessionInfoCallCount, 0);
+    },
+  );
+
+  testWidgets(
+    'switching from local to cloud triggers sandbox session auto refresh',
+    (tester) async {
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(),
+        runtimeSnapshot: OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: const <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_result',
+              runId: 'run-cloud-1',
+              taskId: 'task-cloud-1',
+              emittedAtEpochMs: 4200,
+              toolName: 'python_exec',
+              resultMetadata: const <String, String>{'sandboxProvider': 'e2b'},
+            ),
+          ],
+        ),
+        sandboxSettings: const OpenCraySandboxSettingsSnapshot(
+          localeTag: 'en',
+          enabled: true,
+          providerId: 'e2b',
+          defaultBackend: 'local',
+          sessionMode: 'ephemeral',
+          autoResume: false,
+          idleTimeoutMinutes: 15,
+          startupTimeoutMs: 30000,
+          requestTimeoutMs: 300000,
+          timeoutAction: 'kill',
+          templateId: '',
+          e2bApiKey: 'e2b_demo',
+          apiKeyConfigured: true,
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(
+              copy: OpenCrayUiCopy.fromLocaleTag('en'),
+              bridge: bridge,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(bridge.refreshSandboxSessionInfoCallCount, 0);
+
+      await tester.tap(
+        find.byKey(const ValueKey<String>('chat-runtime-environment-selector')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Run in cloud'));
+      await tester.pumpAndSettle();
+      await tester.pump(chatSandboxSessionAutoRefreshDebounce);
+      await tester.pump();
+
+      expect(bridge.refreshSandboxSessionInfoCallCount, 1);
+    },
+  );
+
+  testWidgets(
+    'switching to cloud skips auto refresh when newer sandbox session info already exists',
+    (tester) async {
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(),
+        runtimeSnapshot: OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: const <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_result',
+              runId: 'run-cloud-1',
+              taskId: 'task-cloud-1',
+              emittedAtEpochMs: 4300,
+              toolName: 'sandbox_session_info',
+            ),
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_result',
+              runId: 'run-cloud-1',
+              taskId: 'task-cloud-1',
+              emittedAtEpochMs: 4200,
+              toolName: 'python_exec',
+              resultMetadata: const <String, String>{'sandboxProvider': 'e2b'},
+            ),
+          ],
+        ),
+        sandboxSettings: const OpenCraySandboxSettingsSnapshot(
+          localeTag: 'en',
+          enabled: true,
+          providerId: 'e2b',
+          defaultBackend: 'local',
+          sessionMode: 'ephemeral',
+          autoResume: false,
+          idleTimeoutMinutes: 15,
+          startupTimeoutMs: 30000,
+          requestTimeoutMs: 300000,
+          timeoutAction: 'kill',
+          templateId: '',
+          e2bApiKey: 'e2b_demo',
+          apiKeyConfigured: true,
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(
+              copy: OpenCrayUiCopy.fromLocaleTag('en'),
+              bridge: bridge,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(bridge.refreshSandboxSessionInfoCallCount, 0);
+
+      await tester.tap(
+        find.byKey(const ValueKey<String>('chat-runtime-environment-selector')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Run in cloud'));
+      await tester.pumpAndSettle();
+      await tester.pump(chatSandboxSessionAutoRefreshDebounce * 2);
+      await tester.pump();
+
+      expect(bridge.refreshSandboxSessionInfoCallCount, 0);
+    },
+  );
+
+  testWidgets(
+    'sandbox session auto refresh does not loop on the same anchor after failure',
+    (tester) async {
+      final runtimeSnapshots =
+          StreamController<OpenCrayChatRuntimeSnapshot>.broadcast();
+      addTearDown(runtimeSnapshots.close);
+      final runtimeSnapshot = OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: const <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          OpenCrayChatRuntimeEventSnapshot(
+            kind: 'tool_result',
+            runId: 'run-cloud-1',
+            taskId: 'task-cloud-1',
+            emittedAtEpochMs: 4200,
+            toolName: 'python_exec',
+            resultMetadata: const <String, String>{'sandboxProvider': 'e2b'},
+          ),
+        ],
+      );
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(),
+        runtimeSnapshot: runtimeSnapshot,
+        runtimeSnapshotStream: runtimeSnapshots.stream,
+        sandboxSettings: const OpenCraySandboxSettingsSnapshot(
+          localeTag: 'en',
+          enabled: true,
+          providerId: 'e2b',
+          defaultBackend: 'sandbox',
+          sessionMode: 'ephemeral',
+          autoResume: false,
+          idleTimeoutMinutes: 15,
+          startupTimeoutMs: 30000,
+          requestTimeoutMs: 300000,
+          timeoutAction: 'kill',
+          templateId: '',
+          e2bApiKey: 'e2b_demo',
+          apiKeyConfigured: true,
+        ),
+      );
+      bridge.refreshSandboxSessionInfoError = StateError('refresh failed');
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(
+              copy: OpenCrayUiCopy.fromLocaleTag('en'),
+              bridge: bridge,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.pump(chatSandboxSessionAutoRefreshDebounce);
+      await tester.pump();
+
+      expect(bridge.refreshSandboxSessionInfoCallCount, 1);
+
+      runtimeSnapshots.add(runtimeSnapshot);
+      await tester.pumpAndSettle();
+      await tester.pump(chatSandboxSessionAutoRefreshDebounce * 2);
+      await tester.pump();
+
+      expect(bridge.refreshSandboxSessionInfoCallCount, 1);
+    },
+  );
+
+  testWidgets(
     'host message renders image, voice, and file attachments in one bubble',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');
@@ -5678,6 +6766,23 @@ Widget _buildChatHarness({
   );
 }
 
+Future<void> _openRunTraceFullscreen(
+  WidgetTester tester,
+  Finder bubbleFinder,
+) async {
+  final Iterable<GestureDetector> gestures = tester
+      .widgetList<GestureDetector>(
+        find.descendant(
+          of: bubbleFinder,
+          matching: find.byType(GestureDetector),
+        ),
+      )
+      .where((gesture) => gesture.onDoubleTap != null);
+  final GestureDetector detector = gestures.first;
+  detector.onDoubleTap!.call();
+  await tester.pumpAndSettle();
+}
+
 OpenCrayChatSnapshot _hostChatSnapshot({
   List<OpenCrayChatPendingApprovalSnapshot> pendingApprovals =
       const <OpenCrayChatPendingApprovalSnapshot>[],
@@ -5784,6 +6889,11 @@ class _FakeChatBridge implements OpenCrayHostBridge {
       <List<OpenCrayChatDraftAttachment>>[];
   final List<OpenCraySandboxSettingsSnapshot> savedSandboxSettings =
       <OpenCraySandboxSettingsSnapshot>[];
+  int refreshSandboxSessionInfoCallCount = 0;
+  int resolveSandboxPreviewEmbedConfigCallCount = 0;
+  Object? refreshSandboxSessionInfoError;
+  Object? resolveSandboxPreviewEmbedConfigError;
+  OpenCraySandboxPreviewEmbedConfig? sandboxPreviewEmbedConfig;
 
   @override
   Future<OpenCrayFileImagePreview> loadWorkspaceImagePreview(
@@ -5794,6 +6904,25 @@ class _FakeChatBridge implements OpenCrayHostBridge {
       return preview;
     }
     throw StateError('Missing image preview for $relativePath');
+  }
+
+  @override
+  Future<OpenCraySandboxPreviewEmbedConfig> resolveSandboxPreviewEmbedConfig(
+    String previewUrl,
+  ) async {
+    resolveSandboxPreviewEmbedConfigCallCount += 1;
+    final error = resolveSandboxPreviewEmbedConfigError;
+    if (error != null) {
+      throw error;
+    }
+    return sandboxPreviewEmbedConfig ??
+        OpenCraySandboxPreviewEmbedConfig(
+          previewUrl: previewUrl,
+          providerId: 'e2b',
+          headers: const <String, String>{},
+          sessionMatched: true,
+          accessTokenConfigured: false,
+        );
   }
 
   @override
@@ -5869,6 +6998,34 @@ class _FakeChatBridge implements OpenCrayHostBridge {
     available: false,
     launched: false,
   );
+
+  @override
+  Future<List<OpenCraySettingsImageAsset>> listSettingsImageAssets() async =>
+      const <OpenCraySettingsImageAsset>[];
+
+  @override
+  Future<List<OpenCraySettingsImageAsset>> pickSettingsImageAssets() async =>
+      const <OpenCraySettingsImageAsset>[];
+
+  @override
+  Future<List<OpenCraySettingsImageAsset>> importSettingsImageAssets(
+    List<String> uriStrings,
+  ) async => const <OpenCraySettingsImageAsset>[];
+
+  @override
+  Future<List<OpenCrayAgentSnapshot>> listAgents() async =>
+      const <OpenCrayAgentSnapshot>[];
+
+  @override
+  Future<OpenCrayAgentSnapshot?> loadActiveAgent() async => null;
+
+  @override
+  Future<OpenCrayAgentSnapshot> createAgent(
+    OpenCrayAgentCreateRequest request,
+  ) async => throw UnimplementedError();
+
+  @override
+  Future<OpenCrayAgentSnapshot?> selectAgent(String agentId) async => null;
 
   @override
   Stream<OpenCrayChatRuntimeSnapshot> watchChatRuntimeSnapshot() =>
@@ -5995,6 +7152,15 @@ class _FakeChatBridge implements OpenCrayHostBridge {
       taskId: 'task-1',
       acceptedAtEpochMs: 0,
     );
+  }
+
+  @override
+  Future<void> refreshSandboxSessionInfo() async {
+    refreshSandboxSessionInfoCallCount += 1;
+    final error = refreshSandboxSessionInfoError;
+    if (error != null) {
+      throw error;
+    }
   }
 
   @override

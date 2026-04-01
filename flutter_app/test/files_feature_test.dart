@@ -1021,175 +1021,173 @@ void main() {
     },
   );
 
-  testWidgets(
-    'markdown previews render document-relative workspace images',
-    (tester) async {
-      final bridge = OpenCraySeedBridge(
-        initialFilesSnapshot: const OpenCrayFilesSnapshot(
-          rootName: 'agent-workspace',
-          rootPath: '/tmp/agent-workspace',
-          availableBytes: 2048,
-          directoryCount: 2,
-          fileCount: 2,
-          entryCount: 4,
-          isTruncated: false,
-          children: <OpenCrayFileTreeNodeSnapshot>[
-            OpenCrayFileTreeNodeSnapshot(
-              name: 'docs',
-              relativePath: 'docs',
-              isDirectory: true,
-              childCount: 2,
-              sizeBytes: null,
-              isTruncated: false,
-              children: <OpenCrayFileTreeNodeSnapshot>[
-                OpenCrayFileTreeNodeSnapshot(
-                  name: 'README.md',
-                  relativePath: 'docs/README.md',
-                  isDirectory: false,
-                  childCount: 0,
-                  sizeBytes: 96,
-                  isTruncated: false,
-                  children: <OpenCrayFileTreeNodeSnapshot>[],
-                ),
-                OpenCrayFileTreeNodeSnapshot(
-                  name: 'images',
-                  relativePath: 'docs/images',
-                  isDirectory: true,
-                  childCount: 1,
-                  sizeBytes: null,
-                  isTruncated: false,
-                  children: <OpenCrayFileTreeNodeSnapshot>[
-                    OpenCrayFileTreeNodeSnapshot(
-                      name: 'diagram.png',
-                      relativePath: 'docs/images/diagram.png',
-                      isDirectory: false,
-                      childCount: 0,
-                      sizeBytes: 64,
-                      isTruncated: false,
-                      children: <OpenCrayFileTreeNodeSnapshot>[],
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ],
-        ),
-      );
-      await bridge.saveWorkspaceTextDocument(
-        targetRelativePath: 'docs/README.md',
-        content: '# Diagram\n\n![Architecture](./images/diagram.png)',
-      );
-
-      await _pumpFilesScreen(tester, bridge: bridge);
-
-      await tester.tap(find.byKey(const ValueKey<String>('files-row-docs')));
-      await tester.pumpAndSettle();
-      await tester.tap(
-        find.byKey(const ValueKey<String>('files-row-docs/README.md')),
-      );
-      await tester.pumpAndSettle();
-
-      final Finder markdownFinder = find.byKey(
-        const ValueKey<String>('files-text-preview-markdown'),
-      );
-      expect(markdownFinder, findsOneWidget);
-      expect(
-        find.descendant(of: markdownFinder, matching: find.byType(Image)),
-        findsOneWidget,
-      );
-    },
-  );
-
-  testWidgets(
-    'markdown preview images open the shared preview dialog',
-    (tester) async {
-      final bridge = OpenCraySeedBridge(
-        initialFilesSnapshot: const OpenCrayFilesSnapshot(
-          rootName: 'agent-workspace',
-          rootPath: '/tmp/agent-workspace',
-          availableBytes: 2048,
-          directoryCount: 2,
-          fileCount: 2,
-          entryCount: 4,
-          isTruncated: false,
-          children: <OpenCrayFileTreeNodeSnapshot>[
-            OpenCrayFileTreeNodeSnapshot(
-              name: 'docs',
-              relativePath: 'docs',
-              isDirectory: true,
-              childCount: 2,
-              sizeBytes: null,
-              isTruncated: false,
-              children: <OpenCrayFileTreeNodeSnapshot>[
-                OpenCrayFileTreeNodeSnapshot(
-                  name: 'README.md',
-                  relativePath: 'docs/README.md',
-                  isDirectory: false,
-                  childCount: 0,
-                  sizeBytes: 96,
-                  isTruncated: false,
-                  children: <OpenCrayFileTreeNodeSnapshot>[],
-                ),
-                OpenCrayFileTreeNodeSnapshot(
-                  name: 'images',
-                  relativePath: 'docs/images',
-                  isDirectory: true,
-                  childCount: 1,
-                  sizeBytes: null,
-                  isTruncated: false,
-                  children: <OpenCrayFileTreeNodeSnapshot>[
-                    OpenCrayFileTreeNodeSnapshot(
-                      name: 'diagram.png',
-                      relativePath: 'docs/images/diagram.png',
-                      isDirectory: false,
-                      childCount: 0,
-                      sizeBytes: 64,
-                      isTruncated: false,
-                      children: <OpenCrayFileTreeNodeSnapshot>[],
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ],
-        ),
-      );
-      await bridge.saveWorkspaceTextDocument(
-        targetRelativePath: 'docs/README.md',
-        content: '# Diagram\n\n![Architecture](./images/diagram.png)',
-      );
-
-      await _pumpFilesScreen(tester, bridge: bridge);
-
-      await tester.tap(find.byKey(const ValueKey<String>('files-row-docs')));
-      await tester.pumpAndSettle();
-      await tester.tap(
-        find.byKey(const ValueKey<String>('files-row-docs/README.md')),
-      );
-      await tester.pumpAndSettle();
-
-      final Finder markdownFinder = find.byKey(
-        const ValueKey<String>('files-text-preview-markdown'),
-      );
-      await tester.tap(
-        find.descendant(
-          of: markdownFinder,
-          matching: find.byKey(
-            const ValueKey<String>('opencray-markdown-image-tappable'),
+  testWidgets('markdown previews render document-relative workspace images', (
+    tester,
+  ) async {
+    final bridge = OpenCraySeedBridge(
+      initialFilesSnapshot: const OpenCrayFilesSnapshot(
+        rootName: 'agent-workspace',
+        rootPath: '/tmp/agent-workspace',
+        availableBytes: 2048,
+        directoryCount: 2,
+        fileCount: 2,
+        entryCount: 4,
+        isTruncated: false,
+        children: <OpenCrayFileTreeNodeSnapshot>[
+          OpenCrayFileTreeNodeSnapshot(
+            name: 'docs',
+            relativePath: 'docs',
+            isDirectory: true,
+            childCount: 2,
+            sizeBytes: null,
+            isTruncated: false,
+            children: <OpenCrayFileTreeNodeSnapshot>[
+              OpenCrayFileTreeNodeSnapshot(
+                name: 'README.md',
+                relativePath: 'docs/README.md',
+                isDirectory: false,
+                childCount: 0,
+                sizeBytes: 96,
+                isTruncated: false,
+                children: <OpenCrayFileTreeNodeSnapshot>[],
+              ),
+              OpenCrayFileTreeNodeSnapshot(
+                name: 'images',
+                relativePath: 'docs/images',
+                isDirectory: true,
+                childCount: 1,
+                sizeBytes: null,
+                isTruncated: false,
+                children: <OpenCrayFileTreeNodeSnapshot>[
+                  OpenCrayFileTreeNodeSnapshot(
+                    name: 'diagram.png',
+                    relativePath: 'docs/images/diagram.png',
+                    isDirectory: false,
+                    childCount: 0,
+                    sizeBytes: 64,
+                    isTruncated: false,
+                    children: <OpenCrayFileTreeNodeSnapshot>[],
+                  ),
+                ],
+              ),
+            ],
           ),
-        ),
-      );
-      await tester.pump(kDoubleTapTimeout);
-      await tester.pumpAndSettle();
+        ],
+      ),
+    );
+    await bridge.saveWorkspaceTextDocument(
+      targetRelativePath: 'docs/README.md',
+      content: '# Diagram\n\n![Architecture](./images/diagram.png)',
+    );
 
-      expect(
-        find.byKey(
-          const ValueKey<String>('opencray-markdown-image-preview-dialog'),
+    await _pumpFilesScreen(tester, bridge: bridge);
+
+    await tester.tap(find.byKey(const ValueKey<String>('files-row-docs')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey<String>('files-row-docs/README.md')),
+    );
+    await tester.pumpAndSettle();
+
+    final Finder markdownFinder = find.byKey(
+      const ValueKey<String>('files-text-preview-markdown'),
+    );
+    expect(markdownFinder, findsOneWidget);
+    expect(
+      find.descendant(of: markdownFinder, matching: find.byType(Image)),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('markdown preview images open the shared preview dialog', (
+    tester,
+  ) async {
+    final bridge = OpenCraySeedBridge(
+      initialFilesSnapshot: const OpenCrayFilesSnapshot(
+        rootName: 'agent-workspace',
+        rootPath: '/tmp/agent-workspace',
+        availableBytes: 2048,
+        directoryCount: 2,
+        fileCount: 2,
+        entryCount: 4,
+        isTruncated: false,
+        children: <OpenCrayFileTreeNodeSnapshot>[
+          OpenCrayFileTreeNodeSnapshot(
+            name: 'docs',
+            relativePath: 'docs',
+            isDirectory: true,
+            childCount: 2,
+            sizeBytes: null,
+            isTruncated: false,
+            children: <OpenCrayFileTreeNodeSnapshot>[
+              OpenCrayFileTreeNodeSnapshot(
+                name: 'README.md',
+                relativePath: 'docs/README.md',
+                isDirectory: false,
+                childCount: 0,
+                sizeBytes: 96,
+                isTruncated: false,
+                children: <OpenCrayFileTreeNodeSnapshot>[],
+              ),
+              OpenCrayFileTreeNodeSnapshot(
+                name: 'images',
+                relativePath: 'docs/images',
+                isDirectory: true,
+                childCount: 1,
+                sizeBytes: null,
+                isTruncated: false,
+                children: <OpenCrayFileTreeNodeSnapshot>[
+                  OpenCrayFileTreeNodeSnapshot(
+                    name: 'diagram.png',
+                    relativePath: 'docs/images/diagram.png',
+                    isDirectory: false,
+                    childCount: 0,
+                    sizeBytes: 64,
+                    isTruncated: false,
+                    children: <OpenCrayFileTreeNodeSnapshot>[],
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+    await bridge.saveWorkspaceTextDocument(
+      targetRelativePath: 'docs/README.md',
+      content: '# Diagram\n\n![Architecture](./images/diagram.png)',
+    );
+
+    await _pumpFilesScreen(tester, bridge: bridge);
+
+    await tester.tap(find.byKey(const ValueKey<String>('files-row-docs')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey<String>('files-row-docs/README.md')),
+    );
+    await tester.pumpAndSettle();
+
+    final Finder markdownFinder = find.byKey(
+      const ValueKey<String>('files-text-preview-markdown'),
+    );
+    await tester.tap(
+      find.descendant(
+        of: markdownFinder,
+        matching: find.byKey(
+          const ValueKey<String>('opencray-markdown-image-tappable'),
         ),
-        findsOneWidget,
-      );
-    },
-  );
+      ),
+    );
+    await tester.pump(kDoubleTapTimeout);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(
+        const ValueKey<String>('opencray-markdown-image-preview-dialog'),
+      ),
+      findsOneWidget,
+    );
+  });
 
   testWidgets(
     'double tapping a markdown preview image does not open the text editor',
@@ -1626,6 +1624,59 @@ void main() {
     expect(
       find.byKey(const ValueKey<String>('files-image-preview-dialog')),
       findsNothing,
+    );
+  });
+
+  testWidgets('tapping an svg file opens the preview dialog', (tester) async {
+    final bridge = OpenCraySeedBridge(
+      initialFilesSnapshot: const OpenCrayFilesSnapshot(
+        rootName: 'agent-workspace',
+        rootPath: '/tmp/agent-workspace',
+        availableBytes: 2048,
+        directoryCount: 1,
+        fileCount: 1,
+        entryCount: 2,
+        isTruncated: false,
+        children: <OpenCrayFileTreeNodeSnapshot>[
+          OpenCrayFileTreeNodeSnapshot(
+            name: 'images',
+            relativePath: 'images',
+            isDirectory: true,
+            childCount: 1,
+            sizeBytes: null,
+            isTruncated: false,
+            children: <OpenCrayFileTreeNodeSnapshot>[
+              OpenCrayFileTreeNodeSnapshot(
+                name: 'cover.svg',
+                relativePath: 'images/cover.svg',
+                isDirectory: false,
+                childCount: 0,
+                sizeBytes: 256,
+                isTruncated: false,
+                children: <OpenCrayFileTreeNodeSnapshot>[],
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+
+    await _pumpFilesScreen(tester, bridge: bridge);
+
+    await tester.tap(find.byKey(const ValueKey<String>('files-row-images')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey<String>('files-row-images/cover.svg')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('files-image-preview-dialog')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('files-image-preview-image')),
+      findsOneWidget,
     );
   });
 

@@ -4,7 +4,7 @@ import java.nio.file.Path
 
 data class SandboxPreviewRequest(
   val workspaceRoot: Path,
-  val port: Int,
+  val port: Int? = null,
   val path: String? = null,
 )
 

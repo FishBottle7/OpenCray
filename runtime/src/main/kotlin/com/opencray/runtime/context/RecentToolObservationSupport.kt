@@ -1,7 +1,9 @@
 package com.opencray.runtime.context
 
 import com.opencray.runtime.AgentToolCall
+import com.opencray.runtime.TodoWriteMetadataKeys
 import com.opencray.runtime.subagent.SubAgentResultMetadataKeys
+import com.opencray.runtime.workingstate.WorkingStateEntry
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -63,6 +65,55 @@ class RecentToolObservationSupport(
   private val config: RecentToolObservationConfig = RecentToolObservationConfig(),
   private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
+  fun workingStateEntries(
+    messages: List<RuntimeConversationMessage>,
+    maxEntries: Int = DEFAULT_WORKING_STATE_ENTRIES,
+  ): List<WorkingStateEntry> {
+    require(maxEntries >= 1) { "RecentToolObservationSupport maxEntries must be >= 1." }
+    val actions = collectWorkingStateActions(activeTaskMessages(messages))
+    return selectLatestUniqueWorkingStateEntries(actions, maxEntries)
+  }
+
+  fun decisionEntries(
+    messages: List<RuntimeConversationMessage>,
+    maxEntries: Int = DEFAULT_DECISION_ENTRIES,
+  ): List<WorkingStateEntry> {
+    require(maxEntries >= 1) { "RecentToolObservationSupport maxEntries must be >= 1." }
+    val decisions = collectDecisionEntries(activeTaskMessages(messages))
+    return selectLatestUniqueWorkingStateEntries(decisions, maxEntries)
+  }
+
+  fun blockerEntries(
+    messages: List<RuntimeConversationMessage>,
+    maxEntries: Int = DEFAULT_BLOCKER_ENTRIES,
+  ): List<WorkingStateEntry> {
+    require(maxEntries >= 1) { "RecentToolObservationSupport maxEntries must be >= 1." }
+    val blockers = collectBlockerEntries(activeTaskMessages(messages))
+    return selectLatestUniqueWorkingStateEntries(blockers, maxEntries)
+  }
+
+  private fun selectLatestUniqueWorkingStateEntries(
+    entries: List<RenderedWorkingStateAction>,
+    maxEntries: Int,
+  ): List<WorkingStateEntry> {
+    if (entries.isEmpty()) {
+      return emptyList()
+    }
+    val selected = mutableListOf<RenderedWorkingStateAction>()
+    val seenSignatures = linkedSetOf<String>()
+    entries.asReversed().forEach { entry ->
+      if (!seenSignatures.add(entry.signature)) {
+        return@forEach
+      }
+      if (selected.size >= maxEntries) {
+        return@forEach
+      }
+      selected += entry
+    }
+    selected.reverse()
+    return selected.map { entry -> entry.entry }
+  }
+
   fun summaryLines(messages: List<RuntimeConversationMessage>): List<String> =
     selectObservations(messages).map { observation ->
       observation.summaryLine.removePrefix("- ").trim()
@@ -177,6 +228,35 @@ class RecentToolObservationSupport(
       }
       .mapNotNull(::renderObservation)
 
+  private fun collectWorkingStateActions(
+    messages: List<RuntimeConversationMessage>,
+  ): List<RenderedWorkingStateAction> = messages.mapNotNull(::parseToolResult)
+    .filter { parsed ->
+      parsed.status.equals("success", ignoreCase = true) &&
+        parsed.metadata["duplicateGuard"] != "true"
+    }
+    .mapNotNull(::renderWorkingStateAction)
+
+  private fun collectDecisionEntries(
+    messages: List<RuntimeConversationMessage>,
+  ): List<RenderedWorkingStateAction> = messages.mapNotNull(::parseReplayControlEvent)
+    .mapNotNull(::renderDecisionEntry)
+
+  private fun collectBlockerEntries(
+    messages: List<RuntimeConversationMessage>,
+  ): List<RenderedWorkingStateAction> {
+    val rendered = mutableListOf<RenderedWorkingStateAction>()
+    messages.forEach { message ->
+      parseToolResult(message)
+        ?.let(::renderToolResultBlocker)
+        ?.let(rendered::add)
+      parseReplayControlEvent(message)
+        ?.let(::renderReplayBlocker)
+        ?.let(rendered::add)
+    }
+    return rendered
+  }
+
   private fun activeTaskMessages(messages: List<RuntimeConversationMessage>): List<RuntimeConversationMessage> {
     val lastUserIndex = messages.indexOfLast { message -> message.role == RuntimeConversationRole.USER }
     return if (lastUserIndex >= 0) {
@@ -192,12 +272,382 @@ class RecentToolObservationSupport(
     "Grep" -> renderGrepObservation(parsed)
     "Glob" -> renderGlobObservation(parsed)
     "search_workspace_document" -> renderWorkspaceDocumentSearchObservation(parsed)
+    "inspect_workspace_package" -> renderWorkspacePackageInspectObservation(parsed)
     "Task" -> renderTaskObservation(parsed)
     "SkillsFind" -> renderSkillsFindObservation(parsed)
     "SkillsList" -> renderSkillsListObservation(parsed)
     "SkillsInspect" -> renderSkillsInspectObservation(parsed)
     "SkillsCheck" -> renderSkillsCheckObservation(parsed)
     else -> null
+  }
+
+  private fun renderWorkingStateAction(parsed: ParsedToolResult): RenderedWorkingStateAction? {
+    val canonicalToolName = canonicalToolName(parsed.toolName)
+    renderObservation(parsed)?.let { observation ->
+      return RenderedWorkingStateAction(
+        signature = "observation|${observation.signature}",
+        entry = WorkingStateEntry(
+          text = observation.summaryLine.removePrefix("- ").trim(),
+          sourceType = workingStateSourceTypeFor(canonicalToolName),
+        ),
+      )
+    }
+    return when (canonicalToolName) {
+      "Write",
+      "workspace_write_file",
+      "workspace_move_file",
+      "workspace_delete_file",
+      "Edit",
+      "MultiEdit",
+      -> renderWorkspaceMutationAction(parsed, canonicalToolName)
+
+      "Bash",
+      "command_exec",
+      -> renderCommandAction(parsed, canonicalToolName)
+
+      "python_exec" -> renderPythonAction(parsed)
+
+      "ProcessStart",
+      "ProcessRead",
+      "ProcessWait",
+      "ProcessTerminate",
+      -> renderManagedProcessAction(parsed, canonicalToolName)
+
+      "TodoWrite" -> renderTodoWriteAction(parsed)
+
+      "ImportFile",
+      "import_chat_attachment",
+      -> renderTargetSummaryAction(
+        parsed = parsed,
+        canonicalToolName = canonicalToolName,
+        sourceType = "workspace_import",
+      )
+
+      "extract_workspace_package" -> renderTargetSummaryAction(
+        parsed = parsed,
+        canonicalToolName = canonicalToolName,
+        sourceType = "workspace_extract",
+      )
+
+      "view_workspace_document",
+      "view_workspace_image",
+      "view_workspace_pdf",
+      -> renderTargetSummaryAction(
+        parsed = parsed,
+        canonicalToolName = canonicalToolName,
+        sourceType = "workspace_view",
+      )
+
+      "GenerateImage" -> renderTargetSummaryAction(
+        parsed = parsed,
+        canonicalToolName = canonicalToolName,
+        sourceType = "media_generation",
+      )
+
+      "SynthesizeSpeech" -> renderTargetSummaryAction(
+        parsed = parsed,
+        canonicalToolName = canonicalToolName,
+        sourceType = "speech_generation",
+      )
+
+      "SkillsAdd",
+      "SkillsAddBatch",
+      "SkillsUpdate",
+      "SkillsRemove",
+      -> renderTargetSummaryAction(
+        parsed = parsed,
+        canonicalToolName = canonicalToolName,
+        sourceType = "skills_mutation",
+      )
+
+      else -> null
+    }
+  }
+
+  private fun renderWorkspaceMutationAction(
+    parsed: ParsedToolResult,
+    canonicalToolName: String,
+  ): RenderedWorkingStateAction? {
+    val filePath = parsed.metadata["filePath"]?.trim().takeUnless { it.isNullOrBlank() }
+    val targetSummary = parsed.metadata["targetSummary"]?.trim().takeUnless { it.isNullOrBlank() }
+    val text = when {
+      filePath != null -> "$canonicalToolName file_path=$filePath"
+      targetSummary != null -> "$canonicalToolName target=$targetSummary"
+      else -> null
+    } ?: return null
+    return renderedWorkingStateAction(
+      canonicalToolName = canonicalToolName,
+      signatureKey = filePath ?: targetSummary,
+      text = text,
+      sourceType = "workspace_mutation",
+    )
+  }
+
+  private fun renderCommandAction(
+    parsed: ParsedToolResult,
+    canonicalToolName: String,
+  ): RenderedWorkingStateAction? {
+    val command = parsed.metadata["shellCommand"]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+      ?: parsed.metadata["command"]?.trim().takeUnless { it.isNullOrBlank() }
+      ?: parsed.metadata["targetSummary"]?.trim().takeUnless { it.isNullOrBlank() }
+    val workingDirectory = parsed.metadata["workingDirectory"]?.trim().takeUnless { it.isNullOrBlank() }
+    val parts = mutableListOf<String>()
+    command?.let { value -> parts += "command=$value" }
+    workingDirectory?.let { value -> parts += "working_directory=$value" }
+    if (parts.isEmpty()) {
+      return null
+    }
+    return renderedWorkingStateAction(
+      canonicalToolName = canonicalToolName,
+      signatureKey = command ?: workingDirectory,
+      text = "$canonicalToolName ${parts.joinToString(separator = " ")}",
+      sourceType = "command_execution",
+    )
+  }
+
+  private fun renderPythonAction(
+    parsed: ParsedToolResult,
+  ): RenderedWorkingStateAction? {
+    val scriptPath = parsed.metadata["scriptPath"]?.trim().takeUnless { it.isNullOrBlank() }
+      ?: parsed.metadata["targetSummary"]?.trim().takeUnless { it.isNullOrBlank() }
+    val pythonExecutable = parsed.metadata["pythonExecutable"]?.trim().takeUnless { it.isNullOrBlank() }
+    val parts = mutableListOf<String>()
+    scriptPath?.let { value -> parts += "script_path=$value" }
+    pythonExecutable?.let { value -> parts += "python_executable=$value" }
+    if (parts.isEmpty()) {
+      return null
+    }
+    return renderedWorkingStateAction(
+      canonicalToolName = "python_exec",
+      signatureKey = scriptPath ?: pythonExecutable,
+      text = "python_exec ${parts.joinToString(separator = " ")}",
+      sourceType = "python_execution",
+    )
+  }
+
+  private fun renderManagedProcessAction(
+    parsed: ParsedToolResult,
+    canonicalToolName: String,
+  ): RenderedWorkingStateAction? {
+    val processId = parsed.metadata["processId"]?.trim().takeUnless { it.isNullOrBlank() }
+      ?: parsed.metadata["targetSummary"]?.trim().takeUnless { it.isNullOrBlank() }
+    val processStatus = parsed.metadata["processStatus"]?.trim()?.lowercase().takeUnless { it.isNullOrBlank() }
+    val scriptPath = parsed.metadata["scriptPath"]?.trim().takeUnless { it.isNullOrBlank() }
+    val command = parsed.metadata["shellCommand"]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+      ?: parsed.metadata["command"]?.trim().takeUnless { it.isNullOrBlank() }
+    val exitCode = parsed.metadata["exitCode"]?.trim().takeUnless { it.isNullOrBlank() }
+    val runtimeBackend = parsed.metadata["runtimeBackend"]?.trim().takeUnless { it.isNullOrBlank() }
+    val sandboxBackendResolvedKind = parsed.metadata["sandboxCommandBackendResolvedKind"]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+    val observationMode = parsed.metadata["sandboxCommandObservationMode"]?.trim().takeUnless { it.isNullOrBlank() }
+    val parts = mutableListOf<String>()
+    processId?.let { value -> parts += "process_id=$value" }
+    processStatus?.let { value -> parts += "status=$value" }
+    scriptPath?.let { value -> parts += "script_path=$value" } ?: command?.let { value ->
+      parts += "command=$value"
+    }
+    exitCode?.let { value -> parts += "exit_code=$value" }
+    runtimeBackend?.let { value -> parts += "backend=$value" }
+      ?: sandboxBackendResolvedKind?.let { value -> parts += "backend=$value" }
+    observationMode?.let { value -> parts += "observation=$value" }
+    if (parts.isEmpty()) {
+      return null
+    }
+    return renderedWorkingStateAction(
+      canonicalToolName = canonicalToolName,
+      signatureKey = processId ?: scriptPath ?: command ?: exitCode,
+      text = "$canonicalToolName ${parts.joinToString(separator = " ")}",
+      sourceType = "process_execution",
+    )
+  }
+
+  private fun renderTodoWriteAction(
+    parsed: ParsedToolResult,
+  ): RenderedWorkingStateAction? {
+    if (parsed.metadata[TodoWriteMetadataKeys.MUTATED]?.toBooleanStrictOrNull() == false) {
+      return null
+    }
+    val todoCount = parsed.metadata[TodoWriteMetadataKeys.TODO_COUNT]?.trim().takeUnless { it.isNullOrBlank() }
+    val activeTodo = parsed.metadata[TodoWriteMetadataKeys.ACTIVE_TODO_CONTENT]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+    val planChanged = parsed.metadata[TodoWriteMetadataKeys.PLAN_CHANGED] == "true"
+    val parts = mutableListOf<String>()
+    todoCount?.let { value -> parts += "todos=$value" }
+    if (planChanged) {
+      parts += "changed=true"
+    }
+    activeTodo?.let { value -> parts += "active=$value" }
+    if (parts.isEmpty()) {
+      return null
+    }
+    return renderedWorkingStateAction(
+      canonicalToolName = "TodoWrite",
+      signatureKey = activeTodo ?: todoCount ?: parts.joinToString(separator = "|"),
+      text = "TodoWrite ${parts.joinToString(separator = " ")}",
+      sourceType = "todo_management",
+    )
+  }
+
+  private fun renderTargetSummaryAction(
+    parsed: ParsedToolResult,
+    canonicalToolName: String,
+    sourceType: String,
+  ): RenderedWorkingStateAction? {
+    val targetSummary = parsed.metadata["targetSummary"]?.trim().takeUnless { it.isNullOrBlank() }
+      ?: return null
+    return renderedWorkingStateAction(
+      canonicalToolName = canonicalToolName,
+      signatureKey = targetSummary,
+      text = "$canonicalToolName target=$targetSummary",
+      sourceType = sourceType,
+    )
+  }
+
+  private fun renderedWorkingStateAction(
+    canonicalToolName: String,
+    signatureKey: String?,
+    text: String,
+    sourceType: String,
+  ): RenderedWorkingStateAction = RenderedWorkingStateAction(
+    signature = listOf(
+      canonicalToolName,
+      signatureKey?.trim().orEmpty(),
+    ).joinToString(separator = "|"),
+    entry = WorkingStateEntry(
+      text = text.trim(),
+      sourceType = sourceType,
+    ),
+  )
+
+  private fun renderToolResultBlocker(
+    parsed: ParsedToolResult,
+  ): RenderedWorkingStateAction? {
+    val errorCode = parsed.errorCode?.trim()?.uppercase() ?: return null
+    val text = when (errorCode) {
+      ERROR_APPROVAL_REQUIRED -> "Approval required for ${toolSubject(parsed.toolName)} before continuing."
+      ERROR_HIGH_RISK_APPROVAL_REQUIRED ->
+        "High-risk approval required for ${toolSubject(parsed.toolName)} before continuing."
+
+      else -> return null
+    }
+    return RenderedWorkingStateAction(
+      signature = listOf(
+        "tool_blocker",
+        errorCode,
+        parsed.toolName.trim(),
+        parsed.metadata["targetSummary"].orEmpty(),
+      ).joinToString(separator = "|"),
+      entry = WorkingStateEntry(
+        text = text,
+        sourceType = "approval_boundary",
+        rationale = parsed.errorMessage?.trim()?.takeIf(String::isNotBlank),
+      ),
+    )
+  }
+
+  private fun renderDecisionEntry(
+    event: ParsedReplayControlEvent,
+  ): RenderedWorkingStateAction? = when (event.type) {
+    "approval_rejected" -> RenderedWorkingStateAction(
+      signature = replayEventSignature(event),
+      entry = WorkingStateEntry(
+        text = "Do not retry ${replayToolSubject(event)} automatically; wait for new instruction.",
+        sourceType = "approval_decision",
+      ),
+    )
+
+    "approval_approved" -> RenderedWorkingStateAction(
+      signature = replayEventSignature(event),
+      entry = WorkingStateEntry(
+        text = if (event.toolName == null) {
+          "Approval granted; resume from saved checkpoint."
+        } else {
+          "Approval granted for ${event.toolName}; resume from saved checkpoint."
+        },
+        sourceType = "approval_decision",
+      ),
+    )
+
+    "retry_abandoned" -> RenderedWorkingStateAction(
+      signature = replayEventSignature(event),
+      entry = WorkingStateEntry(
+        text = "Do not auto-rerun from task input; wait for explicit resume or new instruction.",
+        sourceType = "retry_decision",
+      ),
+    )
+
+    else -> null
+  }
+
+  private fun renderReplayBlocker(
+    event: ParsedReplayControlEvent,
+  ): RenderedWorkingStateAction? = when (event.type) {
+    "approval_rejected" -> RenderedWorkingStateAction(
+      signature = replayEventSignature(event),
+      entry = WorkingStateEntry(
+        text = "User rejected approval for ${replayToolSubject(event)}; await new instruction.",
+        sourceType = "approval_boundary",
+      ),
+    )
+
+    "run_interrupted" -> RenderedWorkingStateAction(
+      signature = replayEventSignature(event),
+      entry = WorkingStateEntry(
+        text = event.toolName?.let { toolName ->
+          "Run interrupted during $toolName; await user instruction."
+        } ?: "Run interrupted before completion; await user instruction.",
+        sourceType = "execution_blocker",
+      ),
+    )
+
+    "retry_abandoned" -> RenderedWorkingStateAction(
+      signature = replayEventSignature(event),
+      entry = WorkingStateEntry(
+        text = "Retry path exhausted after repeated failure; await explicit resume or new instruction.",
+        sourceType = "execution_blocker",
+        rationale = event.fields["error_code"]?.trim()?.takeIf(String::isNotBlank),
+      ),
+    )
+
+    else -> null
+  }
+
+  private fun toolSubject(toolName: String): String = toolName.trim().ifBlank { "the requested action" }
+
+  private fun replayToolSubject(event: ParsedReplayControlEvent): String =
+    event.toolName ?: "the requested action"
+
+  private fun replayEventSignature(event: ParsedReplayControlEvent): String = listOf(
+    "replay",
+    event.type,
+    event.runId.orEmpty(),
+    event.toolName.orEmpty(),
+    event.fields["next_step"].orEmpty(),
+  ).joinToString(separator = "|")
+
+  private fun workingStateSourceTypeFor(canonicalToolName: String): String = when (canonicalToolName) {
+    "Read" -> "workspace_read"
+    "LS" -> "workspace_list"
+    "Grep",
+    "Glob",
+    -> "workspace_search"
+
+    "search_workspace_document" -> "workspace_document_search"
+    "inspect_workspace_package" -> "workspace_package_inspect"
+    "Task" -> "delegation"
+    "SkillsFind",
+    "SkillsList",
+    "SkillsInspect",
+    "SkillsCheck",
+    -> "skills_discovery"
+
+    else -> "recent_observation"
   }
 
   private fun renderReadObservation(parsed: ParsedToolResult): RenderedObservation? {
@@ -339,6 +789,49 @@ class RecentToolObservationSupport(
         pageTo = pageTo,
       ),
       summaryLine = "- search_workspace_document ${detailParts.joinToString(separator = " ")}",
+      body = boundMultiline(
+        text = parsed.content,
+        maxChars = config.maxListChars,
+        maxLines = config.maxListLines,
+      ),
+    )
+  }
+
+  private fun renderWorkspacePackageInspectObservation(parsed: ParsedToolResult): RenderedObservation? {
+    val path = parsed.metadata["path"]?.trim().takeUnless { it.isNullOrBlank() } ?: return null
+    val packageKind = parsed.metadata["packageKind"]?.trim().takeUnless { it.isNullOrBlank() }
+    val matchedEntryCount = parsed.metadata["matchedEntryCount"]?.toIntOrNull()
+    val returnedEntryCount = parsed.metadata["returnedEntryCount"]?.toIntOrNull()
+    val previewCount = parsed.metadata["previewCount"]?.toIntOrNull()
+    val requestedGlob = parsed.metadata["requestedGlob"]?.trim().takeUnless { it.isNullOrBlank() }
+    val requestedPreviewEntries = parsed.metadata["requestedPreviewEntries"]?.trim().takeUnless { it.isNullOrBlank() }
+    val requestedMaxEntries = parsed.metadata["requestedMaxEntries"]?.trim().takeUnless { it.isNullOrBlank() }
+    val previewChars = parsed.metadata["previewChars"]?.trim().takeUnless { it.isNullOrBlank() }
+    val includeRelationshipHints = parsed.metadata["includeRelationshipHints"]?.trim().takeUnless { it.isNullOrBlank() }
+    val detailParts = mutableListOf("path=$path")
+    packageKind?.let { detailParts += "kind=$it" }
+    matchedEntryCount?.let { detailParts += "matched=$it" }
+    returnedEntryCount?.let { detailParts += "returned=$it" }
+    previewCount?.let { detailParts += "previews=$it" }
+    requestedGlob?.let { detailParts += "glob=$it" }
+    requestedPreviewEntries?.let { detailParts += "preview_entries=$it" }
+    requestedMaxEntries?.let { detailParts += "max_entries=$it" }
+    previewChars?.let { detailParts += "preview_chars=$it" }
+    includeRelationshipHints?.let { detailParts += "relationship_hints=$it" }
+    if (parsed.resultTruncated()) {
+      detailParts += "truncated=true"
+    }
+    parsed.resultLimitKind()?.let { detailParts += "limit_kind=$it" }
+    return RenderedObservation(
+      signature = buildWorkspacePackageInspectSignature(
+        path = path,
+        glob = requestedGlob,
+        previewEntries = requestedPreviewEntries,
+        maxEntries = requestedMaxEntries,
+        previewChars = previewChars,
+        includeRelationshipHints = includeRelationshipHints,
+      ),
+      summaryLine = "- inspect_workspace_package ${detailParts.joinToString(separator = " ")}",
       body = boundMultiline(
         text = parsed.content,
         maxChars = config.maxListChars,
@@ -543,6 +1036,42 @@ class RecentToolObservationSupport(
       status = status,
       content = content,
       metadata = metadata,
+      errorCode = decoded.stringValue("error_code")
+        ?.trim()
+        ?.takeIf(String::isNotBlank),
+      errorMessage = decoded.stringValue("error_message")
+        ?.trim()
+        ?.takeIf(String::isNotBlank),
+    )
+  }
+
+  private fun parseReplayControlEvent(
+    message: RuntimeConversationMessage,
+  ): ParsedReplayControlEvent? {
+    if (message.role != RuntimeConversationRole.TOOL || message.kind != RuntimeConversationMessageKind.PLAIN) {
+      return null
+    }
+    val normalized = message.content.trim()
+    if (normalized.isBlank()) {
+      return null
+    }
+    val type = normalized.substringBefore(' ').trim()
+    if (
+      type != "approval_rejected" &&
+      type != "approval_approved" &&
+      type != "run_interrupted" &&
+      type != "retry_abandoned"
+    ) {
+      return null
+    }
+    val fields = REPLAY_FIELD_REGEX
+      .findAll(normalized)
+      .associate { match ->
+        match.groupValues[1] to match.groupValues[2]
+      }
+    return ParsedReplayControlEvent(
+      type = type,
+      fields = fields,
     )
   }
 
@@ -576,6 +1105,15 @@ class RecentToolObservationSupport(
         requestedPages = arguments.intArrayCsvValue("pages"),
         pageFrom = arguments.stringValue("page_from"),
         pageTo = arguments.stringValue("page_to"),
+      )
+
+      "inspect_workspace_package" -> buildWorkspacePackageInspectSignature(
+        path = arguments.stringValue("path") ?: return null,
+        glob = arguments.stringValue("glob"),
+        previewEntries = arguments.stringArrayCsvValue("preview_entries"),
+        maxEntries = arguments.stringValue("max_entries"),
+        previewChars = arguments.stringValue("preview_chars"),
+        includeRelationshipHints = arguments.stringValue("include_relationship_hints"),
       )
 
       "SkillsFind" -> buildSkillsFindSignature(
@@ -664,6 +1202,23 @@ class RecentToolObservationSupport(
     pageTo?.trim().orEmpty(),
   ).joinToString(separator = "|")
 
+  private fun buildWorkspacePackageInspectSignature(
+    path: String,
+    glob: String?,
+    previewEntries: String?,
+    maxEntries: String?,
+    previewChars: String?,
+    includeRelationshipHints: String?,
+  ): String = listOf(
+    "inspect_workspace_package",
+    normalizePathValue(path),
+    glob?.trim().orEmpty(),
+    previewEntries?.trim().orEmpty(),
+    maxEntries?.trim().orEmpty(),
+    previewChars?.trim().orEmpty(),
+    includeRelationshipHints?.trim().orEmpty(),
+  ).joinToString(separator = "|")
+
   private fun buildSkillsFindSignature(query: String): String = listOf(
     "SkillsFind",
     query.trim(),
@@ -732,6 +1287,8 @@ class RecentToolObservationSupport(
     "grep" -> "Grep"
     "glob" -> "Glob"
     "searchworkspacedocument" -> "search_workspace_document"
+    "inspectworkspacepackage" -> "inspect_workspace_package"
+    "extractworkspacepackage" -> "extract_workspace_package"
     "viewworkspacedocument" -> "view_workspace_document"
     "task" -> "Task"
     "skillsfind", "skills_find" -> "SkillsFind"
@@ -753,6 +1310,7 @@ class RecentToolObservationSupport(
     "Grep",
     "Glob",
     "search_workspace_document",
+    "inspect_workspace_package",
     "Task",
     "SkillsFind",
     "SkillsList",
@@ -769,6 +1327,7 @@ class RecentToolObservationSupport(
     "MultiEdit",
     "ImportFile",
     "import_chat_attachment",
+    "extract_workspace_package",
     "view_workspace_document",
     "view_workspace_image",
     "view_workspace_pdf",
@@ -812,11 +1371,25 @@ class RecentToolObservationSupport(
     return values.takeIf(List<String>::isNotEmpty)?.joinToString(separator = ",")
   }
 
+  private fun JsonObject.stringArrayCsvValue(key: String): String? {
+    val array = this[key] as? JsonArray ?: return null
+    val values = array.mapNotNull { entry ->
+      (entry as? JsonPrimitive)?.content?.trim()?.takeIf(String::isNotBlank)
+    }
+    return values
+      .distinct()
+      .sorted()
+      .takeIf(List<String>::isNotEmpty)
+      ?.joinToString(separator = ",")
+  }
+
   private data class ParsedToolResult(
     val toolName: String,
     val status: String,
     val content: String,
     val metadata: Map<String, String>,
+    val errorCode: String? = null,
+    val errorMessage: String? = null,
   ) {
     fun resultTruncated(): Boolean =
       metadata["resultTruncated"]?.toBooleanStrictOrNull()
@@ -827,15 +1400,40 @@ class RecentToolObservationSupport(
       metadata["resultLimitKind"]?.trim()?.takeIf(String::isNotBlank)
   }
 
+  private data class ParsedReplayControlEvent(
+    val type: String,
+    val fields: Map<String, String>,
+  ) {
+    val runId: String?
+      get() = fields["run_id"]?.trim()?.takeIf(String::isNotBlank)
+
+    val toolName: String?
+      get() = fields["tool_name"]?.trim()?.takeIf(String::isNotBlank)
+  }
+
   private data class RenderedObservation(
     val signature: String,
     val summaryLine: String,
     val body: String,
   )
 
+  private data class RenderedWorkingStateAction(
+    val signature: String,
+    val entry: WorkingStateEntry,
+  )
+
   private enum class ObservationCategory {
     DISCOVERY,
     DELEGATION,
     BARRIER,
+  }
+
+  private companion object {
+    const val DEFAULT_WORKING_STATE_ENTRIES: Int = 8
+    const val DEFAULT_DECISION_ENTRIES: Int = 4
+    const val DEFAULT_BLOCKER_ENTRIES: Int = 3
+    const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
+    const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
+    val REPLAY_FIELD_REGEX: Regex = Regex("""([A-Za-z0-9_]+)=([^\s]+)""")
   }
 }

@@ -476,6 +476,10 @@ class LiveCrossSessionMemoryFlowSmokeTest {
   }
 
   private fun requireConfigOrSkip(): LocalLiveLlmTestConfig {
+    assumeTrue(
+      "Live LLM smoke tests are disabled. Set ${LocalLiveLlmTestConfig.ENABLED_PROPERTY}=true or ${LocalLiveLlmTestConfig.ENABLED_ENV}=true to run them.",
+      LocalLiveLlmTestConfig.isLiveTestExecutionEnabled(),
+    )
     val config = LocalLiveLlmTestConfig.load()
     assumeTrue(
       "Missing local live LLM test config. Create ${LocalLiveLlmTestConfig.defaultConfigPath()} first.",

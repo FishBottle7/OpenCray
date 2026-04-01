@@ -182,6 +182,7 @@ object MemoryRecordExtensionKeys {
   const val SCOPE: String = "scope"
   const val STATUS: String = "status"
   const val SOURCE: String = "source"
+  const val IMAGE_REFS_JSON: String = "image_refs_json"
   const val SOURCE_SESSION_ID: String = "source_session_id"
   const val SOURCE_TASK_ID: String = "source_task_id"
   const val WORKSPACE_ID: String = "workspace_id"

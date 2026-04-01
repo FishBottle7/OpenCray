@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import android.content.Context
+import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
 import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
@@ -128,6 +129,20 @@ internal fun PromptCheckpointKind.isGeneralPromptResumeKind(): Boolean = when (t
   -> false
 }
 
+internal fun PromptCheckpointKind.toRuntimeCheckpointBoundaryOrNull():
+  OpenCrayPromptCheckpointBoundary? = when (this) {
+  PromptCheckpointKind.PRE_MODEL_REQUEST -> OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST
+  PromptCheckpointKind.ACTION_BATCH_PARSED -> OpenCrayPromptCheckpointBoundary.ACTION_BATCH_PARSED
+  PromptCheckpointKind.COMMENTARY_EMITTED -> OpenCrayPromptCheckpointBoundary.COMMENTARY_EMITTED
+  PromptCheckpointKind.TOOL_RESULT_COMMITTED -> OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED
+  PromptCheckpointKind.SUPPLEMENT_INGESTED -> OpenCrayPromptCheckpointBoundary.SUPPLEMENT_INGESTED
+  PromptCheckpointKind.GENERAL_RESUME,
+  PromptCheckpointKind.WAITING_APPROVAL,
+  PromptCheckpointKind.APPROVED_PENDING_RESUME,
+  PromptCheckpointKind.REJECTED_PENDING_RESUME,
+  -> null
+}
+
 @Serializable
 internal data class PersistedPromptCheckpoint(
   val schemaVersion: Int = PersistenceSchemaVersion.CURRENT,
@@ -141,6 +156,7 @@ internal data class PersistedPromptCheckpoint(
   val toolName: String? = null,
   val pendingMessageId: String? = null,
   val isHighRisk: Boolean = false,
+  val promptCheckpointBoundary: OpenCrayPromptCheckpointBoundary? = null,
   val promptResumeState: com.opencray.runtime.OpenCrayPromptResumeState? = null,
   val subAgentApprovedToolName: String? = null,
   val subAgentPromptResumeState: com.opencray.runtime.OpenCrayPromptResumeState? = null,
@@ -168,6 +184,9 @@ internal data class PersistedPromptCheckpoint(
   }
 }
 
+internal fun PersistedPromptCheckpoint.runtimeCheckpointBoundaryOrNull(): OpenCrayPromptCheckpointBoundary? =
+  promptCheckpointBoundary ?: checkpointKind.toRuntimeCheckpointBoundaryOrNull()
+
 internal fun PersistedPromptCheckpoint.toApprovalGrantOrNull(): AgentTaskApprovalGrant? {
   if (checkpointKind != PromptCheckpointKind.APPROVED_PENDING_RESUME) {
     return null
@@ -175,6 +194,7 @@ internal fun PersistedPromptCheckpoint.toApprovalGrantOrNull(): AgentTaskApprova
   return AgentTaskApprovalGrant(
     taskId = taskId,
     toolName = toolName,
+    promptCheckpointBoundary = runtimeCheckpointBoundaryOrNull(),
     promptResumeState = promptResumeState,
     subAgentApprovalResume = restoredSubAgentApprovalResume(),
   )
@@ -187,6 +207,7 @@ internal fun PersistedPromptCheckpoint.toApprovalRejectionOrNull(): AgentTaskApp
   return AgentTaskApprovalRejection(
     taskId = taskId,
     toolName = toolName,
+    promptCheckpointBoundary = runtimeCheckpointBoundaryOrNull(),
     promptResumeState = promptResumeState,
     subAgentApprovalResume = restoredSubAgentApprovalResume(),
   )

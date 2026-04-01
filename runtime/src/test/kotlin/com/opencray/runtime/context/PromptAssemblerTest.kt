@@ -29,6 +29,9 @@ import com.opencray.runtime.skills.VisibleSkill
 import com.opencray.runtime.skills.VisibleSkillTrace
 import com.opencray.runtime.soul.SoulTurnSemanticSignal
 import com.opencray.runtime.soul.SoulTurnUserAffect
+import com.opencray.runtime.workingstate.WorkingState
+import com.opencray.runtime.workingstate.WorkingStateEntry
+import com.opencray.runtime.workingstate.WorkingStateObjective
 import com.opencray.skills.SkillExecutionContext
 import com.opencray.skills.SkillInvocationControl
 import org.junit.Assert.assertEquals
@@ -104,6 +107,14 @@ class PromptAssemblerTest {
               description = "Search a workspace PDF directly.",
             ),
             AgentToolDefinition(
+              name = "inspect_workspace_package",
+              description = "Inspect a ZIP-based workspace package directly.",
+            ),
+            AgentToolDefinition(
+              name = "extract_workspace_package",
+              description = "Extract selected files from a ZIP-based workspace package.",
+            ),
+            AgentToolDefinition(
               name = "view_workspace_document",
               description = "Inspect a workspace image or PDF directly.",
             ),
@@ -114,6 +125,10 @@ class PromptAssemblerTest {
             AgentToolDefinition(
               name = "view_workspace_pdf",
               description = "Inspect a workspace PDF directly.",
+            ),
+            AgentToolDefinition(
+              name = "list_subagents",
+              description = "Inspect delegated child handles currently known to this runtime.",
             ),
           ),
           liveConversation = listOf(
@@ -175,6 +190,12 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("call search_workspace_document instead of guessing from the filename"))
     assertTrue(prompt.taskPrompt.contains("search_workspace_document searches workspace PDFs locally and returns matching page numbers and excerpts."))
     assertTrue(prompt.taskPrompt.contains("Use query, pages, page_from, and page_to to narrow the scan whenever you can."))
+    assertTrue(prompt.taskPrompt.contains("call inspect_workspace_package before guessing from the filename"))
+    assertTrue(prompt.taskPrompt.contains("inspect_workspace_package lists internal entries"))
+    assertTrue(prompt.taskPrompt.contains("Use glob and preview_entries to narrow inspection"))
+    assertTrue(prompt.taskPrompt.contains("call extract_workspace_package with explicit entries or glob"))
+    assertTrue(prompt.taskPrompt.contains("extract_workspace_package requires entries or glob"))
+    assertTrue(prompt.taskPrompt.contains("never defaults to full-package extraction"))
     assertTrue(prompt.taskPrompt.contains("call view_workspace_document instead of guessing from the path, filename, or nearby text."))
     assertTrue(prompt.taskPrompt.contains("prefer it over the format-specific workspace view tools"))
     assertTrue(prompt.taskPrompt.contains("view_workspace_document attaches that workspace image or PDF into the next model turn for direct inspection."))
@@ -191,6 +212,7 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("attachment:<token>"))
     assertTrue(prompt.taskPrompt.contains("relative_path, artifact_id, or chat_attachment_id"))
     assertTrue(prompt.taskPrompt.contains("Do not use a generic placeholder such as attachment:artifact"))
+    assertTrue(prompt.taskPrompt.contains("Use list_subagents to inspect the delegated child registry"))
     assertTrue(prompt.taskPrompt.contains("Generated speech should usually be attached with kind=voice"))
     assertTrue(prompt.taskPrompt.contains("Available tools:"))
     assertTrue(prompt.taskPrompt.contains("[Task Metadata]"))
@@ -561,6 +583,56 @@ class PromptAssemblerTest {
     assertEquals(listOf("memory-user", "memory-project"), prompt.report.memoryRecallTrace.selected.map { trace -> trace.id })
     assertEquals(listOf("memory-omitted"), prompt.report.memoryRecallTrace.omitted.map { trace -> trace.id })
     assertEquals(1, prompt.report.memoryRecallTrace.filteredCounts[MemoryRecallFilterReason.SCOPE_MISMATCH])
+  }
+
+  @Test
+  fun assembleInjectsWorkingStateAsDedicatedContextLayer() {
+    val contextManager = ContextManager()
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          runId = "run-prompt-1",
+          baseSystemPrompt = "Base identity.",
+          sessionContext = AgentRuntimeSessionContext(
+            workingState = WorkingState(
+              objective = WorkingStateObjective(
+                taskId = "task-prompt-1",
+                runId = "run-prompt-1",
+                primaryGoal = "Complete the working-state rollout.",
+                currentSubgoal = "Wire the prompt layer and tests.",
+                status = "in_progress",
+              ),
+              findings = listOf(
+                WorkingStateEntry(
+                  text = "PromptAssembler has no dedicated working-state layer yet.",
+                  sourceType = "code_inspection",
+                ),
+              ),
+              nextActions = listOf(
+                WorkingStateEntry(text = "Add focused unit tests."),
+              ),
+            ),
+          ),
+          toolDefinitions = emptyList(),
+          liveConversation = emptyList(),
+        ),
+      ),
+    )
+
+    assertTrue(prompt.taskPrompt.contains("[Working State]"))
+    assertTrue(prompt.taskPrompt.contains("task_id=task-prompt-1"))
+    assertTrue(prompt.taskPrompt.contains("run_id=run-prompt-1"))
+    assertTrue(prompt.taskPrompt.contains("primary_goal=Complete the working-state rollout."))
+    assertTrue(prompt.taskPrompt.contains("[Recent Findings]"))
+    assertTrue(prompt.taskPrompt.contains("[Next Actions]"))
+    assertTrue(prompt.taskPrompt.indexOf("[Working State]") < prompt.taskPrompt.indexOf("[Tool Protocol]"))
+    assertTrue(prompt.report.workingStateTrace.included)
+    assertTrue(prompt.report.workingStateTrace.objectivePresent)
+    assertEquals(1, prompt.report.workingStateTrace.findingCount)
+    assertEquals(1, prompt.report.workingStateTrace.nextActionCount)
   }
 
   @Test

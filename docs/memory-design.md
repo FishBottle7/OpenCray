@@ -5,6 +5,7 @@ Last updated: 2026-03-16
 ## Related designs
 
 - `docs/digital-twin-corpus-import-design.md` describes how imported chats and authored corpus should initialize durable `memory` and `soul` without collapsing those two layers into one prompt blob.
+- `docs/memory-soul-image-reference-design.md` defines how durable `memory` should retain image references while staying text-first at runtime.
 
 ## Status
 

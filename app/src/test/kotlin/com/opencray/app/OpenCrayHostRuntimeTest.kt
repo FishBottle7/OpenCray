@@ -125,6 +125,8 @@ import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionSnapshot
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
+import com.opencray.runtime.subagent.SubAgentMailbox
+import com.opencray.runtime.subagent.SubAgentMailboxMessage
 import com.opencray.runtime.soul.InteractionPreferenceState
 import com.opencray.runtime.soul.PreferenceAxisState
 import com.opencray.runtime.soul.PreferredAddressState
@@ -4848,6 +4850,201 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun chatRuntimeSnapshotBuildsSubAgentRegistryFromDurableHandleSource() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-subagent-runtime-durable"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(sessionId = activeSessionId).apply {
+      subAgentHandles += SubAgentHandleState(
+        agentId = "child-durable",
+        childRunId = "child-run-durable",
+        childTaskId = "child-task-durable",
+        description = "Inspect runtime snapshot",
+        prompt = "Inspect the runtime snapshot pipeline and summarize it.",
+        subagentType = "researcher",
+        contextMode = "minimal",
+        parentRunId = "run-parent-durable",
+        parentTaskId = "task-parent-durable",
+        parentTurn = 1,
+        depth = 1,
+        mailbox = SubAgentMailbox(
+          messages = listOf(
+            SubAgentMailboxMessage(
+              messageId = "mailbox-durable-1",
+              text = "Initial parent follow-up",
+              createdAtEpochMs = 1_000L,
+            ),
+            SubAgentMailboxMessage(
+              messageId = "mailbox-durable-2",
+              text = "Second parent follow-up",
+              createdAtEpochMs = 1_200L,
+            ),
+          ),
+          lastDeliveredMessageId = "mailbox-durable-1",
+        ),
+        snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+          headline = "Delegated child runtime is still running in the background.",
+        ),
+        createdAtEpochMs = 900L,
+        updatedAtEpochMs = 1_300L,
+      )
+    }
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+    )
+
+    val runtimeActivity = hostRuntime.loadChatRuntimeSnapshot()
+    val subAgents = (runtimeActivity["subAgents"] as List<*>).map { entry ->
+      entry as Map<*, *>
+    }
+    val child = subAgents.single()
+
+    assertEquals("run-parent-durable", child["parentRunId"])
+    assertEquals("task-parent-durable", child["parentTaskId"])
+    assertEquals("child-run-durable", child["childRunId"])
+    assertEquals("child-task-durable", child["childTaskId"])
+    assertEquals("Inspect runtime snapshot", child["label"])
+    assertEquals("researcher", child["subagentType"])
+    assertEquals("minimal", child["contextMode"])
+    assertEquals("resumed", child["phase"])
+    assertEquals("background_running", child["status"])
+    assertEquals("background_running", child["executionState"])
+    assertEquals("background_resume", child["continuationKind"])
+    assertEquals(true, child["resumable"])
+    assertEquals(false, child["requiresUserAction"])
+    assertEquals(false, child["isHighRisk"])
+    assertEquals("Delegated child runtime is still running in the background.", child["summary"])
+    assertEquals(0, child["eventCount"])
+    assertEquals(900L, child["startedAtEpochMs"])
+    assertEquals(1_300L, child["updatedAtEpochMs"])
+    assertEquals(2, child["mailboxMessageCount"])
+    assertEquals(1, child["mailboxPendingMessageCount"])
+    assertEquals("mailbox-durable-1", child["mailboxLastDeliveredMessageId"])
+  }
+
+  @Test
+  fun chatSnapshotsHideInternalDetachedSubAgentRecoveryRunsWhileKeepingDurableSubAgentState() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-subagent-runtime-hidden-recovery"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val pendingMessageId = chatStore.appendMessage(
+      sessionId = activeSessionId,
+      role = ChatTranscriptRole.ASSISTANT,
+      text = "Thinking",
+    ).messageId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(sessionId = activeSessionId).apply {
+      putRunSnapshot(
+        AgentRunSnapshot(
+          sessionId = activeSessionId,
+          runId = "run-parent-visible",
+          taskId = "task-parent-visible",
+          acceptedAtEpochMs = 1_000L,
+          updatedAtEpochMs = 1_100L,
+          lifecycleState = QueueTaskLifecycleState.COMPLETED,
+          taskState = AgentTaskState.COMPLETED,
+          attempt = 1,
+        ),
+      )
+      putRunSnapshot(
+        AgentRunSnapshot(
+          sessionId = activeSessionId,
+          runId = "run-hidden-recovery",
+          taskId = "task-hidden-recovery",
+          acceptedAtEpochMs = 1_200L,
+          updatedAtEpochMs = 1_250L,
+          lifecycleState = QueueTaskLifecycleState.RUNNING,
+          taskState = AgentTaskState.RUNNING,
+          attempt = 1,
+          pendingMessageId = pendingMessageId,
+          lifecycleDiagnostics = RunLifecycleDiagnostics(
+            submissionSource = RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
+          ),
+        ),
+      )
+      subAgentHandles += SubAgentHandleState(
+        agentId = "child-visible",
+        childRunId = "child-run-visible",
+        childTaskId = "child-task-visible",
+        description = "Resume detached child",
+        prompt = "Wait for the detached child to finish and return the result.",
+        subagentType = "worker",
+        contextMode = "delegated",
+        parentRunId = "run-parent-visible",
+        parentTaskId = "task-parent-visible",
+        parentTurn = 1,
+        depth = 1,
+        snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+          headline = "Detached child resumed after cold restart.",
+        ),
+        createdAtEpochMs = 1_050L,
+        updatedAtEpochMs = 1_260L,
+      )
+    }
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+    )
+    val hiddenTask = AgentTask(
+      id = "task-hidden-recovery",
+      type = AgentTaskType.TOOL_CALL,
+      input = """{"type":"tool_call","tool_name":"wait_agent","arguments":{"targets":["child-run-visible"]}}""",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      metadata = mapOf(
+        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to "run-hidden-recovery",
+      ),
+      createdAtEpochMs = 1_200L,
+    )
+    manager.emitRunEvent(
+      sessionId = activeSessionId,
+      task = hiddenTask,
+      event = OpenCrayAssistantEvent(
+        runId = "run-hidden-recovery",
+        taskId = "task-hidden-recovery",
+        turn = 0,
+        text = "Recovering detached child in background",
+        stage = "commentary",
+        emittedAtEpochMs = 1_300L,
+      ),
+    )
+
+    val runtimeActivity = hostRuntime.loadChatRuntimeSnapshot()
+    val activeRuns = runtimeActivity["activeRuns"] as List<*>
+    val events = (runtimeActivity["events"] as List<*>).map { event -> event as Map<*, *> }
+    val subAgents = (runtimeActivity["subAgents"] as List<*>).map { event -> event as Map<*, *> }
+    val chatSnapshot = hostRuntime.loadChatSnapshot()
+    val messages = (chatSnapshot["messages"] as List<*>).map { entry -> entry as Map<*, *> }
+    val summary = chatSnapshot["summary"] as Map<*, *>
+    val child = subAgents.single()
+
+    assertTrue(activeRuns.isEmpty())
+    assertTrue(events.isEmpty())
+    assertEquals(1, subAgents.size)
+    assertEquals("run-parent-visible", child["parentRunId"])
+    assertEquals("child-run-visible", child["childRunId"])
+    assertEquals("resumed", child["phase"])
+    assertEquals("background_running", child["status"])
+    assertEquals("Detached child resumed after cold restart.", child["summary"])
+    assertTrue(messages.none { entry ->
+      (entry["text"] as? String)?.contains("Recovering detached child in background") == true
+    })
+    assertEquals(
+      "Local transcript is restored into the runtime window for each task.",
+      summary["body"],
+    )
+    assertNull(hostRuntime.loadChatRunSnapshot("run-hidden-recovery"))
+    assertEquals(
+      "run-parent-visible",
+      hostRuntime.loadChatRunSnapshot("run-parent-visible")?.get("runId"),
+    )
+  }
+
+  @Test
   fun chatRuntimeSnapshotPrefersPromptCheckpointHandleStateOverOlderReplayEventState() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-subagent-runtime-merge"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -5186,6 +5383,46 @@ class OpenCrayHostRuntimeTest {
     assertTrue((hostLifecycle["processStartId"] as String).isNotBlank())
     assertTrue((hostLifecycle["hostInstanceId"] as String).isNotBlank())
     assertTrue((hostLifecycle["runtimeOwnerId"] as String).isNotBlank())
+  }
+
+  @Test
+  fun refreshSandboxSessionInfoSubmitsPreapprovedHostToolCallWithoutTranscriptMessage() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-sandbox-session-refresh"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    hostRuntime.refreshSandboxSessionInfo()
+
+    val submittedTask = handle.submittedTasks.single()
+    val taskPayload = jsonObject(submittedTask.input)
+    val chatMessages = hostRuntime.loadChatSnapshot()["messages"] as List<*>
+    val runtimeSnapshot = hostRuntime.loadChatRuntimeSnapshot()
+    val activeRun = ((runtimeSnapshot["activeRuns"] as List<*>).single()) as Map<*, *>
+
+    assertEquals(AgentTaskType.TOOL_CALL, submittedTask.type)
+    assertEquals("tool_call", taskPayload["type"].toString().trim('"'))
+    assertEquals("sandbox_session_info", taskPayload["tool_name"].toString().trim('"'))
+    assertEquals(
+      RunSubmissionSources.HOST_UI_TOOL_ACTION,
+      submittedTask.metadata[RunLifecycleMetadataKeys.SUBMISSION_SOURCE],
+    )
+    assertEquals(
+      "sandbox_session_info",
+      submittedTask.metadata[RunLifecycleMetadataKeys.PREAPPROVED_TOOL_NAME],
+    )
+    assertEquals(
+      activeSessionId,
+      submittedTask.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_HOST_SESSION_ID],
+    )
+    assertEquals(listOf(submittedTask.id), handle.ensureProcessingTaskIds)
+    assertTrue(chatMessages.isEmpty())
+    assertEquals(handle.submissions.single().runId, activeRun["runId"])
   }
 
   @Test
@@ -6408,7 +6645,11 @@ class OpenCrayHostRuntimeTest {
           toolName = "LS",
           status = AgentToolResultStatus.SUCCESS,
           content = "Listed 1 entry.",
-          metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(resumeState, json),
+          metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(
+            state = resumeState,
+            json = json,
+            checkpointBoundary = OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
+          ),
         ),
         emittedAtEpochMs = 2_000L,
       ),
@@ -6417,11 +6658,12 @@ class OpenCrayHostRuntimeTest {
     val checkpoint = promptCheckpointStore.get(task.id)
     assertEquals(PromptCheckpointKind.GENERAL_RESUME, checkpoint?.checkpointKind)
     assertEquals("LS", checkpoint?.toolName)
+    assertEquals(OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED, checkpoint?.promptCheckpointBoundary)
     assertEquals(resumeState, checkpoint?.promptResumeState)
   }
 
   @Test
-  fun failedToolResultEventAlsoPersistsGeneralResumeCheckpoint() {
+  fun failedToolResultEventAlsoPersistsToolResultCheckpoint() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-general-resume-failed"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
     val manager = RecordingRuntimeManager()
@@ -6459,20 +6701,25 @@ class OpenCrayHostRuntimeTest {
           content = "Missing file.",
           errorCode = "FILE_NOT_FOUND",
           errorMessage = "missing.txt was not found.",
-          metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(resumeState, json),
+          metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(
+            state = resumeState,
+            json = json,
+            checkpointBoundary = OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
+          ),
         ),
         emittedAtEpochMs = 2_000L,
       ),
     )
 
     val checkpoint = promptCheckpointStore.get(task.id)
-    assertEquals(PromptCheckpointKind.GENERAL_RESUME, checkpoint?.checkpointKind)
+    assertEquals(PromptCheckpointKind.TOOL_RESULT_COMMITTED, checkpoint?.checkpointKind)
     assertEquals("Read", checkpoint?.toolName)
+    assertEquals(OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED, checkpoint?.promptCheckpointBoundary)
     assertEquals(resumeState, checkpoint?.promptResumeState)
   }
 
   @Test
-  fun supplementEventAlsoPersistsGeneralResumeCheckpoint() {
+  fun supplementEventAlsoPersistsSupplementCheckpoint() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-general-resume-supplement"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
     val manager = RecordingRuntimeManager()
@@ -6512,14 +6759,19 @@ class OpenCrayHostRuntimeTest {
         entryId = "supplement-1",
         text = "Supplement checkpoint",
         checkpoint = "post_tool_pre_model",
-        metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(resumeState, json),
+        metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(
+          state = resumeState,
+          json = json,
+          checkpointBoundary = OpenCrayPromptCheckpointBoundary.SUPPLEMENT_INGESTED,
+        ),
         emittedAtEpochMs = 2_000L,
       ),
     )
 
     val checkpoint = promptCheckpointStore.get(task.id)
-    assertEquals(PromptCheckpointKind.GENERAL_RESUME, checkpoint?.checkpointKind)
+    assertEquals(PromptCheckpointKind.SUPPLEMENT_INGESTED, checkpoint?.checkpointKind)
     assertEquals(null, checkpoint?.toolName)
+    assertEquals(OpenCrayPromptCheckpointBoundary.SUPPLEMENT_INGESTED, checkpoint?.promptCheckpointBoundary)
     assertEquals(resumeState, checkpoint?.promptResumeState)
 
     val runtimeActivity = hostRuntime.loadChatRuntimeSnapshot()
@@ -6582,6 +6834,7 @@ class OpenCrayHostRuntimeTest {
     val checkpoint = promptCheckpointStore.get(task.id)
     assertEquals(PromptCheckpointKind.COMMENTARY_EMITTED, checkpoint?.checkpointKind)
     assertEquals(null, checkpoint?.toolName)
+    assertEquals(OpenCrayPromptCheckpointBoundary.COMMENTARY_EMITTED, checkpoint?.promptCheckpointBoundary)
     assertEquals(resumeState, checkpoint?.promptResumeState)
 
     val runtimeActivity = hostRuntime.loadChatRuntimeSnapshot()
@@ -7239,7 +7492,7 @@ class OpenCrayHostRuntimeTest {
       "Approval rejected. The decision is recorded and will apply when you manually resume the run.",
       lastEvent["text"],
     )
-    assertEquals("resume_waiting_for_user", recoveryPlan["action"])
+    assertEquals("stop_rejected_awaiting_direction", recoveryPlan["action"])
     assertEquals("rejected_pending_resume", recoveryPlan["checkpointKind"])
     assertEquals("Message OpenCray", chatSnapshot["composerPlaceholder"])
   }
@@ -10051,6 +10304,8 @@ class OpenCrayHostRuntimeTest {
     val resumedTaskMetadataUpdates = mutableListOf<Map<String, String>>()
     val retriedTaskIds = mutableListOf<String>()
     val terminatedProcessIds = mutableListOf<String>()
+    val subAgentHandles = mutableListOf<SubAgentHandleState>()
+    val retainedSubAgentParentRunIds = mutableListOf<Set<String>>()
     private var lastSubmittedTaskId: String? = null
     private val runSnapshotsById = linkedMapOf<String, AgentRunSnapshot>()
     private val managedProcessesById =
@@ -10315,6 +10570,13 @@ class OpenCrayHostRuntimeTest {
 
     override fun listManagedProcesses(): List<com.opencray.runtime.process.ManagedProcessSnapshot> =
       managedProcessesById.values.toList()
+
+    override fun listSubAgentHandles(): List<SubAgentHandleState> = subAgentHandles.toList()
+
+    override fun retainKnownSubAgentParentRuns(parentRunIds: Set<String>) {
+      retainedSubAgentParentRunIds += parentRunIds
+      subAgentHandles.removeAll { handle -> handle.parentRunId !in parentRunIds }
+    }
 
     override fun terminateRunningManagedProcesses(): List<com.opencray.runtime.process.ManagedProcessSnapshot> =
       managedProcessesById.values

@@ -3,7 +3,9 @@ package com.opencray.app
 import java.nio.file.Files
 import kotlin.io.path.writeText
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LocalLiveLlmTestConfigTest {
@@ -61,6 +63,20 @@ class LocalLiveLlmTestConfigTest {
     }
   }
 
+  @Test
+  fun liveTestExecutionFlagDefaultsToDisabled() {
+    withLiveTestsEnabledProperty(null) {
+      assertFalse(LocalLiveLlmTestConfig.isLiveTestExecutionEnabled())
+    }
+  }
+
+  @Test
+  fun liveTestExecutionFlagAcceptsTrueLikePropertyValues() {
+    withLiveTestsEnabledProperty("true") {
+      assertTrue(LocalLiveLlmTestConfig.isLiveTestExecutionEnabled())
+    }
+  }
+
   private fun withConfigPath(
     path: String,
     block: () -> Unit,
@@ -74,6 +90,27 @@ class LocalLiveLlmTestConfigTest {
         System.clearProperty(LocalLiveLlmTestConfig.CONFIG_PATH_PROPERTY)
       } else {
         System.setProperty(LocalLiveLlmTestConfig.CONFIG_PATH_PROPERTY, previous)
+      }
+    }
+  }
+
+  private fun withLiveTestsEnabledProperty(
+    value: String?,
+    block: () -> Unit,
+  ) {
+    val previous = System.getProperty(LocalLiveLlmTestConfig.ENABLED_PROPERTY)
+    if (value == null) {
+      System.clearProperty(LocalLiveLlmTestConfig.ENABLED_PROPERTY)
+    } else {
+      System.setProperty(LocalLiveLlmTestConfig.ENABLED_PROPERTY, value)
+    }
+    try {
+      block()
+    } finally {
+      if (previous == null) {
+        System.clearProperty(LocalLiveLlmTestConfig.ENABLED_PROPERTY)
+      } else {
+        System.setProperty(LocalLiveLlmTestConfig.ENABLED_PROPERTY, previous)
       }
     }
   }

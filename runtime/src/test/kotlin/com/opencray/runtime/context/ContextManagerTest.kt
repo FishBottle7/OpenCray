@@ -5,6 +5,8 @@ import com.opencray.core.contracts.AgentTaskType
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.runtime.AgentToolDefinition
+import com.opencray.runtime.AgentTodoEntry
+import com.opencray.runtime.AgentTodoStatus
 import com.opencray.runtime.memory.MemoryKind
 import com.opencray.runtime.memory.MemoryRecallResult
 import com.opencray.runtime.memory.MemoryRecallTrace
@@ -14,6 +16,10 @@ import com.opencray.runtime.memory.MemoryStatus
 import com.opencray.runtime.memory.RetrievedMemory
 import com.opencray.runtime.soul.SoulTurnSemanticSignal
 import com.opencray.runtime.soul.SoulTurnUserAffect
+import com.opencray.runtime.workingstate.WorkingState
+import com.opencray.runtime.workingstate.WorkingStateEntry
+import com.opencray.runtime.workingstate.WorkingStateObjective
+import com.opencray.runtime.workingstate.WorkingStateResumeContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -338,6 +344,282 @@ class ContextManagerTest {
     assertTrue(managed.turnResponsePolicyText.contains("directives:"))
   }
 
+  @Test
+  fun prepareSynthesizesWorkingStateFromTaskAndRecentObservations() {
+    val manager = ContextManager()
+
+    val managed = manager.prepare(
+      PromptAssemblyInput(
+        task = promptTask(input = "Inspect the recent runtime context pipeline."),
+        runId = "run-context-1",
+        baseSystemPrompt = "You are OpenCray for testing.",
+        sessionContext = AgentRuntimeSessionContext(),
+        toolDefinitions = emptyList(),
+        liveConversation = listOf(
+          RuntimeConversationMessage(RuntimeConversationRole.USER, "Inspect the recent runtime context pipeline."),
+          RuntimeConversationMessage(
+            role = RuntimeConversationRole.TOOL,
+            content = """{"run_id":"run-1","task_id":"task-1","turn":1,"tool_call_id":"call-1","tool_name":"Read","status":"success","content":"intro","metadata":{"filePath":"runtime/context/PromptAssembler.kt","offset":"1","limit":"80","returnedLineCount":"40","totalLineCount":"420","truncated":"false"}}""",
+            kind = RuntimeConversationMessageKind.TOOL_RESULT,
+            toolResult = RuntimeConversationToolResult(
+              toolCallId = "call-1",
+              toolName = "Read",
+              status = "success",
+              isError = false,
+            ),
+          ),
+        ),
+      ),
+    )
+
+    assertTrue(managed.workingStateText.contains("task_id=task-context"))
+    assertTrue(managed.workingStateText.contains("run_id=run-context-1"))
+    assertTrue(managed.workingStateText.contains("primary_goal=Inspect the recent runtime context pipeline."))
+    assertTrue(managed.workingStateText.contains("[Recent Actions]"))
+    assertTrue(managed.workingStateText.contains("Read file_path=runtime/context/PromptAssembler.kt"))
+    assertTrue(managed.report.workingStateTrace.included)
+    assertTrue(managed.report.workingStateTrace.objectivePresent)
+    assertEquals(1, managed.report.workingStateTrace.recentActionCount)
+    assertTrue(managed.report.workingStateTrace.synthesizedFromTaskInput)
+    assertTrue(managed.report.workingStateTrace.synthesizedFromRecentObservations)
+    assertFalse(managed.report.workingStateTrace.synthesizedFromTodoSnapshot)
+  }
+
+  @Test
+  fun prepareProjectsResumeContextIntoWorkingStateWhenPresent() {
+    val manager = ContextManager()
+
+    val managed = manager.prepare(
+      PromptAssemblyInput(
+        task = promptTask(input = "Continue after approval resume."),
+        runId = "run-context-resume-1",
+        baseSystemPrompt = "You are OpenCray for testing.",
+        sessionContext = AgentRuntimeSessionContext(),
+        toolDefinitions = emptyList(),
+        liveConversation = emptyList(),
+        resumeContext = WorkingStateResumeContext(
+          turnIndex = 1,
+          toolCallCount = 1,
+          pendingActionCount = 1,
+          nextActionType = "tool_call",
+          pendingToolName = "Write",
+          checkpointBoundary = "tool_result_committed",
+        ),
+      ),
+    )
+
+    assertTrue(managed.workingStateText.contains("[Recent Actions]"))
+    assertTrue(
+      managed.workingStateText.contains(
+        "Resume checkpoint turn=1 tool_calls=1 pending_actions=1 next_action=tool_call pending_tool=Write [source=resume_checkpoint; why=tool_result_committed]",
+      ),
+    )
+    assertTrue(managed.workingStateText.contains("[Decisions]"))
+    assertTrue(
+      managed.workingStateText.contains(
+        "Continue from the saved checkpoint state instead of restarting from the original task input.",
+      ),
+    )
+    assertTrue(managed.report.workingStateTrace.synthesizedFromResumeContext)
+    assertEquals(1, managed.report.workingStateTrace.recentActionCount)
+    assertEquals(1, managed.report.workingStateTrace.decisionCount)
+  }
+
+  @Test
+  fun preparePreservesSeededWorkingStateEntries() {
+    val manager = ContextManager()
+
+    val managed = manager.prepare(
+      PromptAssemblyInput(
+        task = promptTask(input = "Continue the current task."),
+        baseSystemPrompt = "You are OpenCray for testing.",
+        sessionContext = AgentRuntimeSessionContext(
+          workingState = WorkingState(
+            objective = WorkingStateObjective(
+              primaryGoal = "Ship the working-state layer.",
+              currentSubgoal = "Finish runtime prompt injection.",
+              status = "in_progress",
+            ),
+            findings = listOf(
+              WorkingStateEntry(
+                text = "PromptAssembler still has no dedicated working-state layer.",
+                sourceType = "code_inspection",
+              ),
+            ),
+            nextActions = listOf(
+              WorkingStateEntry(text = "Add prompt-layer tests."),
+            ),
+          ),
+        ),
+        toolDefinitions = emptyList(),
+        liveConversation = emptyList(),
+      ),
+    )
+
+    assertTrue(managed.workingStateText.contains("primary_goal=Ship the working-state layer."))
+    assertTrue(managed.workingStateText.contains("current_subgoal=Finish runtime prompt injection."))
+    assertTrue(managed.workingStateText.contains("[Recent Findings]"))
+    assertTrue(managed.workingStateText.contains("source=code_inspection"))
+    assertTrue(managed.workingStateText.contains("[Next Actions]"))
+    assertFalse(managed.report.workingStateTrace.synthesizedFromTaskInput)
+    assertFalse(managed.report.workingStateTrace.synthesizedFromRecentObservations)
+    assertFalse(managed.report.workingStateTrace.synthesizedFromTodoSnapshot)
+    assertEquals(1, managed.report.workingStateTrace.findingCount)
+    assertEquals(1, managed.report.workingStateTrace.nextActionCount)
+  }
+
+  @Test
+  fun prepareBuildsWorkingStateFromTodoSnapshotWhenStructuredStateIsMissing() {
+    val manager = ContextManager()
+
+    val managed = manager.prepare(
+      PromptAssemblyInput(
+        task = promptTask(input = "Continue the runtime rollout."),
+        baseSystemPrompt = "You are OpenCray for testing.",
+        sessionContext = AgentRuntimeSessionContext(),
+        toolDefinitions = emptyList(),
+        liveConversation = emptyList(),
+        todoSnapshot = listOf(
+          AgentTodoEntry(
+            content = "Wire working state todo projection",
+            status = AgentTodoStatus.IN_PROGRESS,
+            activeForm = "Wiring working state todo projection",
+          ),
+          AgentTodoEntry(
+            content = "Add context-manager assertions",
+            status = AgentTodoStatus.PENDING,
+          ),
+          AgentTodoEntry(
+            content = "Run runtime unit tests",
+            status = AgentTodoStatus.PENDING,
+          ),
+          AgentTodoEntry(
+            content = "Review the earlier sketch",
+            status = AgentTodoStatus.COMPLETED,
+          ),
+        ),
+      ),
+    )
+
+    assertTrue(managed.workingStateText.contains("primary_goal=Continue the runtime rollout."))
+    assertTrue(managed.workingStateText.contains("current_subgoal=Wiring working state todo projection"))
+    assertTrue(managed.workingStateText.contains("status=in_progress"))
+    assertTrue(managed.workingStateText.contains("[Next Actions]"))
+    assertTrue(managed.workingStateText.contains("Add context-manager assertions [source=todo_snapshot]"))
+    assertTrue(managed.workingStateText.contains("Run runtime unit tests [source=todo_snapshot]"))
+    assertFalse(managed.workingStateText.contains("Review the earlier sketch"))
+    assertTrue(managed.report.workingStateTrace.included)
+    assertTrue(managed.report.workingStateTrace.synthesizedFromTaskInput)
+    assertFalse(managed.report.workingStateTrace.synthesizedFromRecentObservations)
+    assertTrue(managed.report.workingStateTrace.synthesizedFromTodoSnapshot)
+    assertEquals(2, managed.report.workingStateTrace.nextActionCount)
+  }
+
+  @Test
+  fun prepareUsesStructuredRecentToolActionsForWorkingState() {
+    val manager = ContextManager()
+
+    val managed = manager.prepare(
+      PromptAssemblyInput(
+        task = promptTask(input = "Continue the runtime rollout."),
+        baseSystemPrompt = "You are OpenCray for testing.",
+        sessionContext = AgentRuntimeSessionContext(),
+        toolDefinitions = emptyList(),
+        liveConversation = listOf(
+          RuntimeConversationMessage(RuntimeConversationRole.USER, "Continue the runtime rollout."),
+          RuntimeConversationMessage(
+            role = RuntimeConversationRole.TOOL,
+            content = """{"tool_name":"Write","status":"success","content":"Wrote README.md successfully.","metadata":{"filePath":"README.md","targetSummary":"README.md"}}""",
+            kind = RuntimeConversationMessageKind.TOOL_RESULT,
+            toolResult = RuntimeConversationToolResult(
+              toolName = "Write",
+              status = "success",
+              isError = false,
+            ),
+          ),
+        ),
+      ),
+    )
+
+    assertTrue(managed.workingStateText.contains("[Recent Actions]"))
+    assertTrue(managed.workingStateText.contains("Write file_path=README.md [source=workspace_mutation]"))
+    assertTrue(managed.report.workingStateTrace.included)
+    assertEquals(1, managed.report.workingStateTrace.recentActionCount)
+    assertTrue(managed.report.workingStateTrace.synthesizedFromRecentObservations)
+  }
+
+  @Test
+  fun prepareProjectsApprovalBoundarySignalsIntoWorkingState() {
+    val manager = ContextManager()
+
+    val managed = manager.prepare(
+      PromptAssemblyInput(
+        task = promptTask(input = "Continue the runtime rollout."),
+        baseSystemPrompt = "You are OpenCray for testing.",
+        sessionContext = AgentRuntimeSessionContext(),
+        toolDefinitions = emptyList(),
+        liveConversation = listOf(
+          RuntimeConversationMessage(RuntimeConversationRole.USER, "Continue the runtime rollout."),
+          RuntimeConversationMessage(
+            role = RuntimeConversationRole.TOOL,
+            content =
+              """{"tool_name":"Write","status":"denied","content":"Approval required.","error_code":"APPROVAL_REQUIRED","error_message":"Approval required for Write before continuing.","metadata":{"filePath":"README.md"}}""",
+            kind = RuntimeConversationMessageKind.TOOL_RESULT,
+            toolResult = RuntimeConversationToolResult(
+              toolName = "Write",
+              status = "denied",
+              isError = true,
+            ),
+          ),
+          RuntimeConversationMessage(
+            role = RuntimeConversationRole.TOOL,
+            content =
+              "approval_rejected task_id=task-1 run_id=run-1 tool_name=Write outcome=user_rejected executed=false next_step=await_user_instruction",
+          ),
+        ),
+      ),
+    )
+
+    assertTrue(managed.workingStateText.contains("[Decisions]"))
+    assertTrue(managed.workingStateText.contains("Do not retry Write automatically; wait for new instruction."))
+    assertTrue(managed.workingStateText.contains("[Blockers]"))
+    assertTrue(managed.workingStateText.contains("Approval required for Write before continuing."))
+    assertTrue(managed.workingStateText.contains("User rejected approval for Write; await new instruction."))
+    assertEquals(1, managed.report.workingStateTrace.decisionCount)
+    assertEquals(2, managed.report.workingStateTrace.blockerCount)
+    assertTrue(managed.report.workingStateTrace.synthesizedFromRecentObservations)
+  }
+
+  @Test
+  fun prepareProjectsRetryAbandonedReplayIntoWorkingState() {
+    val manager = ContextManager()
+
+    val managed = manager.prepare(
+      PromptAssemblyInput(
+        task = promptTask(input = "Continue after restore."),
+        baseSystemPrompt = "You are OpenCray for testing.",
+        sessionContext = AgentRuntimeSessionContext(),
+        toolDefinitions = emptyList(),
+        liveConversation = listOf(
+          RuntimeConversationMessage(RuntimeConversationRole.USER, "Continue after restore."),
+          RuntimeConversationMessage(
+            role = RuntimeConversationRole.TOOL,
+            content =
+              "retry_abandoned task_id=task-restore run_id=run-restore outcome=retry_budget_exhausted attempt=2 error_code=TOOL_EXECUTION_FAILED next_step=await_user_instruction",
+          ),
+        ),
+      ),
+    )
+
+    assertTrue(managed.workingStateText.contains("[Decisions]"))
+    assertTrue(managed.workingStateText.contains("Do not auto-rerun from task input; wait for explicit resume or new instruction."))
+    assertTrue(managed.workingStateText.contains("[Blockers]"))
+    assertTrue(managed.workingStateText.contains("Retry path exhausted after repeated failure; await explicit resume or new instruction."))
+    assertTrue(managed.workingStateText.contains("why=TOOL_EXECUTION_FAILED"))
+    assertEquals(1, managed.report.workingStateTrace.decisionCount)
+    assertEquals(1, managed.report.workingStateTrace.blockerCount)
+  }
+
   private fun promptTask(): AgentTask = AgentTask(
     id = "task-context",
     type = AgentTaskType.PROMPT,
@@ -348,4 +630,6 @@ class ContextManagerTest {
     ),
     createdAtEpochMs = 100L,
   )
+
+  private fun promptTask(input: String): AgentTask = promptTask().copy(input = input)
 }

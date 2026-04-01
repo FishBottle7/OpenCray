@@ -24,31 +24,46 @@ internal class ServiceBackedOpenCraySettingsGateway(
     currentReadGateway().loadNotificationSettings()
 
   override fun saveNotificationSettings(payload: Map<String, Any?>): Map<String, Any?> =
-    currentWriteGateway("saveNotificationSettings").saveNotificationSettings(payload)
+    dispatchPayloadWriteCommand(
+      operation = "saveNotificationSettings",
+      command = OpenCraySettingsWriteCommand.SaveNotificationSettings(payload),
+    )
 
   override fun loadStrongBackgroundSnapshot(): Map<String, Any?> =
     currentReadGateway().loadStrongBackgroundSnapshot()
 
   override fun performStrongBackgroundAction(actionId: String): Map<String, Any?> =
-    currentReadGateway().performStrongBackgroundAction(actionId)
+    dispatchPayloadWriteCommand(
+      operation = "performStrongBackgroundAction",
+      command = OpenCraySettingsWriteCommand.PerformStrongBackgroundAction(actionId),
+    )
 
   override fun loadNetworkSearchConfig(): Map<String, Any?> =
     currentReadGateway().loadNetworkSearchConfig()
 
   override fun saveNetworkSearchConfig(slots: List<Map<String, Any?>>): Map<String, Any?> =
-    currentWriteGateway("saveNetworkSearchConfig").saveNetworkSearchConfig(slots)
+    dispatchPayloadWriteCommand(
+      operation = "saveNetworkSearchConfig",
+      command = OpenCraySettingsWriteCommand.SaveNetworkSearchConfig(slots),
+    )
 
   override fun loadMediaSpeechConfig(): Map<String, Any?> =
     currentReadGateway().loadMediaSpeechConfig()
 
   override fun saveMediaSpeechConfig(payload: Map<String, Any?>): Map<String, Any?> =
-    currentWriteGateway("saveMediaSpeechConfig").saveMediaSpeechConfig(payload)
+    dispatchPayloadWriteCommand(
+      operation = "saveMediaSpeechConfig",
+      command = OpenCraySettingsWriteCommand.SaveMediaSpeechConfig(payload),
+    )
 
   override fun loadSandboxSettings(): Map<String, Any?> =
     currentReadGateway().loadSandboxSettings()
 
   override fun saveSandboxSettings(payload: Map<String, Any?>): Map<String, Any?> =
-    currentWriteGateway("saveSandboxSettings").saveSandboxSettings(payload)
+    dispatchPayloadWriteCommand(
+      operation = "saveSandboxSettings",
+      command = OpenCraySettingsWriteCommand.SaveSandboxSettings(payload),
+    )
 
   override fun loadLlmConfig(): Map<String, Any?> =
     currentReadGateway().loadLlmConfig()
@@ -65,18 +80,21 @@ internal class ServiceBackedOpenCraySettingsGateway(
     model: String,
     reasoningEffort: String,
     systemPrompt: String,
-  ): Map<String, Any?> = currentWriteGateway("saveLlmConfig").saveLlmConfig(
-    enabled = enabled,
-    providerId = providerId,
-    selectedProviderOptionId = selectedProviderOptionId,
-    protocol = protocol,
-    providerName = providerName,
-    providerNotes = providerNotes,
-    baseUrl = baseUrl,
-    apiKey = apiKey,
-    model = model,
-    reasoningEffort = reasoningEffort,
-    systemPrompt = systemPrompt,
+  ): Map<String, Any?> = dispatchPayloadWriteCommand(
+    operation = "saveLlmConfig",
+    command = OpenCraySettingsWriteCommand.SaveLlmConfig(
+      enabled = enabled,
+      providerId = providerId,
+      selectedProviderOptionId = selectedProviderOptionId,
+      protocol = protocol,
+      providerName = providerName,
+      providerNotes = providerNotes,
+      baseUrl = baseUrl,
+      apiKey = apiKey,
+      model = model,
+      reasoningEffort = reasoningEffort,
+      systemPrompt = systemPrompt,
+    ),
   )
 
   override fun saveCustomLlmProvider(
@@ -89,16 +107,19 @@ internal class ServiceBackedOpenCraySettingsGateway(
     model: String,
     reasoningEffort: String,
     systemPrompt: String,
-  ): Map<String, Any?> = currentWriteGateway("saveCustomLlmProvider").saveCustomLlmProvider(
-    selectedProviderOptionId = selectedProviderOptionId,
-    protocol = protocol,
-    providerName = providerName,
-    providerNotes = providerNotes,
-    baseUrl = baseUrl,
-    apiKey = apiKey,
-    model = model,
-    reasoningEffort = reasoningEffort,
-    systemPrompt = systemPrompt,
+  ): Map<String, Any?> = dispatchPayloadWriteCommand(
+    operation = "saveCustomLlmProvider",
+    command = OpenCraySettingsWriteCommand.SaveCustomLlmProvider(
+      selectedProviderOptionId = selectedProviderOptionId,
+      protocol = protocol,
+      providerName = providerName,
+      providerNotes = providerNotes,
+      baseUrl = baseUrl,
+      apiKey = apiKey,
+      model = model,
+      reasoningEffort = reasoningEffort,
+      systemPrompt = systemPrompt,
+    ),
   )
 
   override fun validateLlmConfig(
@@ -108,13 +129,16 @@ internal class ServiceBackedOpenCraySettingsGateway(
     apiKey: String,
     model: String,
     reasoningEffort: String,
-  ): Map<String, Any?> = currentWriteGateway("validateLlmConfig").validateLlmConfig(
-    providerId = providerId,
-    protocol = protocol,
-    baseUrl = baseUrl,
-    apiKey = apiKey,
-    model = model,
-    reasoningEffort = reasoningEffort,
+  ): Map<String, Any?> = dispatchPayloadWriteCommand(
+    operation = "validateLlmConfig",
+    command = OpenCraySettingsWriteCommand.ValidateLlmConfig(
+      providerId = providerId,
+      protocol = protocol,
+      baseUrl = baseUrl,
+      apiKey = apiKey,
+      model = model,
+      reasoningEffort = reasoningEffort,
+    ),
   )
 
   override fun loadPersonalizationConfig(): Map<String, Any?> =
@@ -124,28 +148,46 @@ internal class ServiceBackedOpenCraySettingsGateway(
     presetId: String,
     customLabel: String,
     customGuidance: String,
-  ): Map<String, Any?> = currentWriteGateway("savePersonalizationConfig").savePersonalizationConfig(
-    presetId = presetId,
-    customLabel = customLabel,
-    customGuidance = customGuidance,
+  ): Map<String, Any?> = dispatchPayloadWriteCommand(
+    operation = "savePersonalizationConfig",
+    command = OpenCraySettingsWriteCommand.SavePersonalizationConfig(
+      presetId = presetId,
+      customLabel = customLabel,
+      customGuidance = customGuidance,
+    ),
   )
 
   override fun setAppLanguage(languageId: String): Map<String, Any?> =
-    currentWriteGateway("setAppLanguage").setAppLanguage(languageId)
+    dispatchPayloadWriteCommand(
+      operation = "setAppLanguage",
+      command = OpenCraySettingsWriteCommand.SetAppLanguage(languageId),
+    )
 
   override fun runPersonalizationReset(scopeId: String): Map<String, Any?> =
-    currentWriteGateway("runPersonalizationReset").runPersonalizationReset(scopeId)
+    dispatchPayloadWriteCommand(
+      operation = "runPersonalizationReset",
+      command = OpenCraySettingsWriteCommand.RunPersonalizationReset(scopeId),
+    )
 
   override fun loadMcpSettings(): Map<String, Any?> =
     currentReadGateway().loadMcpSettings()
 
   override fun setMcpMasterEnabled(enabled: Boolean): Map<String, Any?> =
-    currentWriteGateway("setMcpMasterEnabled").setMcpMasterEnabled(enabled)
+    dispatchPayloadWriteCommand(
+      operation = "setMcpMasterEnabled",
+      command = OpenCraySettingsWriteCommand.SetMcpMasterEnabled(enabled),
+    )
 
   override fun setMcpServerEnabled(
     serverId: String,
     enabled: Boolean,
-  ): Map<String, Any?> = currentWriteGateway("setMcpServerEnabled").setMcpServerEnabled(serverId, enabled)
+  ): Map<String, Any?> = dispatchPayloadWriteCommand(
+    operation = "setMcpServerEnabled",
+    command = OpenCraySettingsWriteCommand.SetMcpServerEnabled(
+      serverId = serverId,
+      enabled = enabled,
+    ),
+  )
 
   override fun loadSafetySettings(): Map<String, Any?> =
     currentReadGateway().loadSafetySettings()
@@ -169,37 +211,55 @@ internal class ServiceBackedOpenCraySettingsGateway(
     readOnlyOutsideWorkspace: Boolean,
     liveContextModeId: String,
     memoryToolsEnabled: Boolean,
-  ): Map<String, Any?> = currentWriteGateway("saveSafetySettings").saveSafetySettings(
-    automationModeId = automationModeId,
-    rollbackJournalEnabled = rollbackJournalEnabled,
-    maxFilesPerBatch = maxFilesPerBatch,
-    maxAgentTurns = maxAgentTurns,
-    maxToolCalls = maxToolCalls,
-    undoWindowHours = undoWindowHours,
-    fileChangesPolicyId = fileChangesPolicyId,
-    fileDeletesPolicyId = fileDeletesPolicyId,
-    shellCommandsPolicyId = shellCommandsPolicyId,
-    externalAccessModeId = externalAccessModeId,
-    photoLibraryEnabled = photoLibraryEnabled,
-    downloadsEnabled = downloadsEnabled,
-    documentsEnabled = documentsEnabled,
-    recordingsEnabled = recordingsEnabled,
-    workspaceAccessProfileId = workspaceAccessProfileId,
-    readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
-    liveContextModeId = liveContextModeId,
-    memoryToolsEnabled = memoryToolsEnabled,
+  ): Map<String, Any?> = dispatchPayloadWriteCommand(
+    operation = "saveSafetySettings",
+    command = OpenCraySettingsWriteCommand.SaveSafetySettings(
+      automationModeId = automationModeId,
+      rollbackJournalEnabled = rollbackJournalEnabled,
+      maxFilesPerBatch = maxFilesPerBatch,
+      maxAgentTurns = maxAgentTurns,
+      maxToolCalls = maxToolCalls,
+      undoWindowHours = undoWindowHours,
+      fileChangesPolicyId = fileChangesPolicyId,
+      fileDeletesPolicyId = fileDeletesPolicyId,
+      shellCommandsPolicyId = shellCommandsPolicyId,
+      externalAccessModeId = externalAccessModeId,
+      photoLibraryEnabled = photoLibraryEnabled,
+      downloadsEnabled = downloadsEnabled,
+      documentsEnabled = documentsEnabled,
+      recordingsEnabled = recordingsEnabled,
+      workspaceAccessProfileId = workspaceAccessProfileId,
+      readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
+      liveContextModeId = liveContextModeId,
+      memoryToolsEnabled = memoryToolsEnabled,
+    ),
   )
 
   private fun currentReadGateway(): OpenCraySettingsGateway =
     serviceClient.peekSettingsGateway() ?: fallbackGateway
 
-  private fun currentWriteGateway(operation: String): OpenCraySettingsGateway =
+  private fun dispatchWriteCommand(
+    operation: String,
+    command: OpenCraySettingsWriteCommand,
+  ): OpenCraySettingsWriteDispatchResult =
     requireBinderBackedGateway(
       surface = "Settings",
       operation = operation,
-      gateway = serviceClient.awaitSettingsGateway(SERVICE_GATEWAY_BIND_AWAIT_TIMEOUT_MS),
+      gateway = serviceClient.dispatchSettingsWriteCommand(command),
       connectionState = serviceClient.loadConnectionState(),
     )
+
+  private fun dispatchPayloadWriteCommand(
+    operation: String,
+    command: OpenCraySettingsWriteCommand,
+  ): Map<String, Any?> = dispatchWriteCommand(
+    operation = operation,
+    command = command,
+  ).payloadOrNull()
+}
+
+private fun OpenCraySettingsWriteDispatchResult.payloadOrNull(): Map<String, Any?> = when (this) {
+  is OpenCraySettingsWriteDispatchResult.Payload -> value
 }
 
 internal fun serviceBackedOpenCraySettingsGateway(

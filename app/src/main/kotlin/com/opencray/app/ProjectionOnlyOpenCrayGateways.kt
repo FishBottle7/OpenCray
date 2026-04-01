@@ -4,23 +4,13 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import com.opencray.app.facade.llm.LlmConfigFacade
-import com.opencray.app.facade.llm.LlmConfigSnapshot
-import com.opencray.app.facade.llm.LlmProviderOptionSnapshot
-import com.opencray.app.facade.llm.LlmValidationResult
 import com.opencray.app.facade.llm.LocalLlmConfigFacade
 import com.opencray.app.facade.mcp.LocalMcpSettingsFacade
-import com.opencray.app.facade.mcp.McpServerSettingsSnapshot
 import com.opencray.app.facade.mcp.McpSettingsFacade
-import com.opencray.app.facade.mcp.McpSettingsSnapshot
 import com.opencray.app.facade.media.LocalMediaSpeechSettingsFacade
-import com.opencray.app.facade.media.MediaProviderSnapshot
-import com.opencray.app.facade.media.MediaSpeechConfigSnapshot
 import com.opencray.app.facade.media.MediaSpeechSettingsFacade
-import com.opencray.app.facade.media.OnDeviceSttSnapshot
-import com.opencray.app.facade.media.VoiceProviderSnapshot
 import com.opencray.app.facade.notifications.LocalNotificationSettingsFacade
 import com.opencray.app.facade.notifications.NotificationSettingsFacade
-import com.opencray.app.facade.notifications.NotificationSettingsSnapshot
 import com.opencray.app.facade.personalization.LocalPersonalizationFacade
 import com.opencray.app.facade.personalization.PersonalizationConfigSnapshot
 import com.opencray.app.facade.personalization.PersonalizationFacade
@@ -33,8 +23,6 @@ import com.opencray.app.facade.safety.SafetySettingsLocationSnapshot
 import com.opencray.app.facade.safety.SafetySettingsSnapshot
 import com.opencray.app.facade.search.LocalNetworkSearchConfigFacade
 import com.opencray.app.facade.search.NetworkSearchConfigFacade
-import com.opencray.app.facade.search.NetworkSearchConfigSnapshot
-import com.opencray.app.facade.search.NetworkSearchSlotSnapshot
 import com.opencray.app.facade.settings.LocalSettingsFacade
 import com.opencray.app.facade.settings.SettingsDetailSnapshot
 import com.opencray.app.facade.settings.SettingsFacade
@@ -42,13 +30,8 @@ import com.opencray.app.facade.settings.SettingsOverviewSnapshot
 import com.opencray.app.facade.settings.SettingsRouteId
 import com.opencray.app.facade.settings.SettingsRowSnapshot
 import com.opencray.app.facade.settings.SettingsSectionSnapshot
-import com.opencray.app.facade.skills.InstallSourceSnapshot
-import com.opencray.app.facade.skills.InstalledSkillSnapshot
 import com.opencray.app.facade.skills.LocalSkillsFacade
-import com.opencray.app.facade.skills.SkillInstructionsSnapshot
 import com.opencray.app.facade.skills.SkillsFacade
-import com.opencray.app.facade.skills.SkillsSnapshot
-import com.opencray.app.facade.skills.SuggestedSkillSnapshot
 import com.opencray.app.shell.AppShellStateStore
 import java.util.Timer
 import java.util.TimerTask
@@ -60,7 +43,7 @@ internal class ProjectionOnlyOpenCrayShellGateway(
   private val hostLabel: String,
   private val hostSummary: String,
   private val connectionStateProvider: () -> RuntimeServiceConnectionState?,
-  private val bridgeSnapshotProvider: () -> OpenCrayRuntimeServiceBridgeSnapshot? = { null },
+  private val projectionSnapshotProvider: () -> RuntimeServiceProjectionSnapshot? = { null },
   private val mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
   private val hostLifecycleDescriptor: HostRuntimeLifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
   private val pollIntervalMs: Long = DEFAULT_PROJECTION_SHELL_POLL_INTERVAL_MS,
@@ -73,19 +56,19 @@ internal class ProjectionOnlyOpenCrayShellGateway(
     put("isHostConnected", true)
     put("localRuntimeServerState", OpenCrayLocalRuntimeServerRegistry.peekState().snapshotMap())
     put("hostLifecycle", hostLifecycleDescriptor.snapshotMap())
-    bridgeSnapshotProvider()?.runtimeAccess?.lifecycleDescriptor?.snapshotMap()?.let { lifecycle ->
+    projectionSnapshotProvider()?.runtimeOwnerLifecycle?.snapshotMap()?.let { lifecycle ->
       put("runtimeOwnerLifecycle", lifecycle)
     }
-    bridgeSnapshotProvider()?.runtimeAccess?.hostAccess?.activeWorkSummary()?.snapshotMap()?.let { summary ->
+    projectionSnapshotProvider()?.runtimeOwnerWorkSummary?.snapshotMap()?.let { summary ->
       put("runtimeOwnerWorkSummary", summary)
     }
-    bridgeSnapshotProvider()?.serviceLifecycle?.snapshotMap()?.let { lifecycle ->
+    projectionSnapshotProvider()?.serviceLifecycle?.snapshotMap()?.let { lifecycle ->
       put("runtimeServiceLifecycle", lifecycle)
     }
-    bridgeSnapshotProvider()?.serviceWorkState?.snapshotMap()?.let { workState ->
+    projectionSnapshotProvider()?.serviceWorkState?.snapshotMap()?.let { workState ->
       put("runtimeServiceWorkState", workState)
     }
-    bridgeSnapshotProvider()?.serviceKeepAliveState?.snapshotMap()?.let { keepAliveState ->
+    projectionSnapshotProvider()?.serviceKeepAliveState?.snapshotMap()?.let { keepAliveState ->
       put("runtimeServiceKeepAliveState", keepAliveState)
     }
     connectionStateProvider()?.snapshotMap()?.let { state ->
@@ -359,9 +342,7 @@ internal fun projectionOnlyOpenCrayShellGateway(
     hostLabel = localizedContext.getString(R.string.flutter_host_label_android),
     hostSummary = localizedContext.getString(R.string.flutter_host_summary_android),
     connectionStateProvider = serviceClient::loadConnectionState,
-    bridgeSnapshotProvider = {
-      serviceClient.peekSnapshot()?.bridgeSnapshot
-    },
+    projectionSnapshotProvider = serviceClient::peekProjectionSnapshot,
     mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
   )
 }
@@ -480,69 +461,6 @@ private fun SettingsDetailSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "sections" to sections.map { section -> section.toGatewayMap() },
 )
 
-private fun NotificationSettingsSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
-  "masterEnabled" to masterEnabled,
-  "defaultDeliveryModeId" to defaultDeliveryMode.wireValue,
-  "quietHoursEnabled" to quietHoursEnabled,
-  "quietHoursStartMinutes" to quietHoursStartMinutes,
-  "quietHoursEndMinutes" to quietHoursEndMinutes,
-  "approvalRequestsEnabled" to approvalRequestsEnabled,
-  "approvalReminderEnabled" to approvalReminderEnabled,
-  "taskFinishedEnabled" to taskFinishedEnabled,
-  "taskFailedEnabled" to taskFailedEnabled,
-  "newUserMessageEnabled" to newUserMessageEnabled,
-  "scheduledWakeEnabled" to scheduledWakeEnabled,
-  "backgroundTaskPausedEnabled" to backgroundTaskPausedEnabled,
-  "serviceRecoveredEnabled" to serviceRecoveredEnabled,
-)
-
-private fun NetworkSearchConfigSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
-  "localeTag" to localeTag,
-  "title" to title,
-  "subtitle" to subtitle,
-  "slots" to slots.map { slot -> slot.toGatewayMap() },
-)
-
-private fun NetworkSearchSlotSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
-  "id" to id,
-  "providerId" to providerId,
-  "label" to label,
-  "baseUrl" to baseUrl,
-  "model" to model,
-  "apiKey" to apiKey,
-  "enabled" to enabled,
-)
-
-private fun MediaSpeechConfigSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
-  "localeTag" to localeTag,
-  "title" to title,
-  "subtitle" to subtitle,
-  "imageGeneration" to imageGeneration.toGatewayMap(),
-  "voiceGeneration" to voiceGeneration.toGatewayMap(),
-  "sttRouteId" to sttRouteId,
-  "externalStt" to externalStt.toGatewayMap(),
-  "onDeviceModel" to onDeviceModel.toGatewayMap(),
-)
-
-private fun MediaProviderSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
-  "provider" to provider,
-  "baseUrl" to baseUrl,
-  "endpoint" to endpoint,
-  "model" to model,
-)
-
-private fun VoiceProviderSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
-  "provider" to provider,
-  "baseUrl" to baseUrl,
-  "endpoint" to endpoint,
-  "voicePreset" to voicePreset,
-)
-
-private fun OnDeviceSttSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
-  "modelPackage" to modelPackage,
-  "downloadStatus" to downloadStatus,
-)
-
 private fun SettingsSectionSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "title" to title,
   "helperText" to helperText,
@@ -559,40 +477,6 @@ private fun SettingsRowSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "trailingKind" to trailingKind.wireValue,
   "toggleValue" to toggleValue,
   "valueLabel" to valueLabel,
-)
-
-private fun LlmConfigSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
-  "localeTag" to localeTag,
-  "enabled" to enabled,
-  "providerId" to providerId,
-  "selectedProviderOptionId" to selectedProviderOptionId,
-  "protocol" to protocol,
-  "providerOptions" to providerOptions.map { option -> option.toGatewayMap() },
-  "providerName" to providerName,
-  "providerNotes" to providerNotes,
-  "baseUrl" to baseUrl,
-  "apiKey" to apiKey,
-  "model" to model,
-  "reasoningEffort" to reasoningEffort,
-  "systemPrompt" to systemPrompt,
-  "helperText" to helperText,
-)
-
-private fun LlmProviderOptionSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
-  "id" to id,
-  "providerId" to providerId,
-  "title" to title,
-  "subtitle" to subtitle,
-  "defaultBaseUrl" to defaultBaseUrl,
-  "defaultModel" to defaultModel,
-  "protocol" to protocol,
-  "apiKey" to apiKey,
-  "isCustom" to isCustom,
-)
-
-private fun LlmValidationResult.toGatewayMap(): Map<String, Any?> = mapOf(
-  "isSuccess" to isSuccess,
-  "message" to message,
 )
 
 private fun PersonalizationConfigSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
@@ -656,36 +540,6 @@ private fun PersonalizationResetActionSnapshot.toGatewayMap(): Map<String, Any?>
   "isInputEnabled" to isInputEnabled,
 )
 
-private fun McpSettingsSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
-  "title" to title,
-  "subtitle" to subtitle,
-  "masterTitle" to masterTitle,
-  "masterSummary" to masterSummary,
-  "masterEnabled" to masterEnabled,
-  "summaryLine" to summaryLine,
-  "serversTitle" to serversTitle,
-  "serversHelper" to serversHelper,
-  "masterDisabledTitle" to masterDisabledTitle,
-  "masterDisabledBody" to masterDisabledBody,
-  "servers" to servers.map { server -> server.toGatewayMap() },
-)
-
-private fun McpServerSettingsSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
-  "id" to id,
-  "title" to title,
-  "statusLabel" to statusLabel,
-  "statusTone" to statusTone,
-  "trustLine" to trustLine,
-  "authLine" to authLine,
-  "readinessLine" to readinessLine,
-  "transportLine" to transportLine,
-  "exposureLine" to exposureLine,
-  "guidance" to guidance,
-  "actionLabel" to actionLabel,
-  "actionTurnsOn" to actionTurnsOn,
-  "isActionEnabled" to isActionEnabled,
-)
-
 private fun SafetySettingsSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "automationModeId" to automationMode.wireValue,
   "rollbackJournalEnabled" to rollbackJournalEnabled,
@@ -707,48 +561,4 @@ private fun SafetySettingsSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
 private fun SafetySettingsLocationSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "id" to id,
   "enabled" to enabled,
-)
-
-private fun SkillsSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
-  "installedSkills" to installedSkills.map { skill -> skill.toGatewayMap() },
-  "installSources" to installSources.map { source -> source.toGatewayMap() },
-  "suggestedSkills" to suggestedSkills.map { suggestion -> suggestion.toGatewayMap() },
-  "suggestedSkillsMayHaveMore" to suggestedSkillsMayHaveMore,
-)
-
-private fun InstalledSkillSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
-  "id" to id,
-  "name" to name,
-  "description" to description,
-  "isEnabled" to isEnabled,
-  "sourceDirectoryPath" to sourceDirectoryPath,
-  "canDelete" to canDelete,
-)
-
-private fun InstallSourceSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
-  "id" to id,
-  "title" to title,
-  "subtitle" to subtitle,
-  "actionLabel" to actionLabel,
-  "isAvailable" to isAvailable,
-)
-
-private fun SuggestedSkillSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
-  "id" to id,
-  "name" to name,
-  "description" to description,
-  "sourceRef" to sourceRef,
-  "sourceLabel" to sourceLabel,
-  "installs" to installs,
-  "detailUrl" to detailUrl,
-)
-
-private fun SkillInstructionsSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
-  "id" to id,
-  "name" to name,
-  "description" to description,
-  "body" to body,
-  "sourceDirectoryPath" to sourceDirectoryPath,
-  "isEnabled" to isEnabled,
-  "canDelete" to canDelete,
 )

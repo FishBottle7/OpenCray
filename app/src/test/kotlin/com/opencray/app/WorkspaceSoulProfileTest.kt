@@ -1,8 +1,12 @@
 package com.opencray.app
 
+import com.opencray.runtime.OpenCraySoulVisualIdentity
+import com.opencray.runtime.soul.SoulProfileExtensionKeys
+import com.opencray.runtime.soul.SoulVisualIdentitySupport
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotNull
 import org.junit.Test
 
 class WorkspaceSoulProfileTest {
@@ -32,5 +36,28 @@ class WorkspaceSoulProfileTest {
     assertFalse(runtimeProfile.extensions.containsKey("customGuidance"))
     assertFalse(runtimeProfile.extensions.containsKey("preset"))
     assertFalse(runtimeProfile.extensions.containsKey("blank-value"))
+  }
+
+  @Test
+  fun toRuntimeSoulProfileEncodesVisualIdentityIntoExtensions() {
+    val runtimeProfile = runtimeSoulProfileForTest(
+      WorkspaceSoulProfile(
+        presetName = "WARM",
+        customLabel = "Lantern",
+        customGuidance = "",
+        visualIdentity = OpenCraySoulVisualIdentity(
+          portraitSummary = "Calm expression and practical coat.",
+        ),
+      ),
+    )
+
+    val visualIdentity = SoulVisualIdentitySupport.decodeFromExtensions(runtimeProfile.extensions)
+
+    assertNotNull(visualIdentity)
+    assertEquals(
+      "Calm expression and practical coat.",
+      visualIdentity?.portraitSummary,
+    )
+    assertFalse(runtimeProfile.extensions[SoulProfileExtensionKeys.VISUAL_IDENTITY_JSON].isNullOrBlank())
   }
 }

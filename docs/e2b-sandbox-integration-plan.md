@@ -1,10 +1,10 @@
 # OpenCray 沙盒能力接入计划
 
-Last updated: 2026-03-27
+Last updated: 2026-03-31
 
 ## 当前实现状态
 
-截至 2026-03-27，`python_exec` 这条链路已经从“仅有设置和路由骨架”推进到了“本地 / E2B 双后端可切换的可运行状态”，且当前实现边界已经固定：
+截至 2026-03-30，`python_exec` 这条链路已经从“仅有设置和路由骨架”推进到了“本地 / E2B 双后端可切换的可运行状态”，且当前实现边界已经固定：
 
 - 已补齐沙盒配置模型与安全凭据链路
   - 新增独立 `SandboxSettingsStore`
@@ -29,6 +29,55 @@ Last updated: 2026-03-27
     - 收集 stdout / stderr / execution error
     - 根据远端执行后生成的 workspace diff manifest，把变更文件下载回本地 workspace
     - 处理超时 / 取消 / 会话清理
+- 已补齐 Phase 3 的第一批深化能力
+  - sticky session 现在会使用稳定的远端 workspace 根目录，而不是每次执行都换一个目录
+  - 已新增 workspace sync 状态落盘
+    - 本地状态文件位置：`.opencray/sandbox-sync/e2b-workspace-sync-state.json`
+    - 当前会记录 `sandboxId`、`remoteWorkspaceRoot` 和上次成功同步的文件元数据
+  - 已接入 sticky session 下的执行前增量上传
+    - 第二次及后续执行会基于 `relativePath + size + modifiedAt` 只上传变化文件
+    - 当前 metadata 会回传 `workspaceUploadMode`、`workspaceUnchangedFiles`、`workspacePendingRemoteDeleteFiles`
+    - 当前远端删除仍不会自动回放，只会把“待删除数量”暴露给 metadata
+  - 已补齐下载结果的受控归档目录
+    - 当前所有成功回传的远端 changed files，都会额外归档到 `.opencray/sandbox-downloads/<requestId>/...`
+    - 现有 attachment artifact metadata 现在会优先指向归档后的相对路径，而不是原始工作区覆盖路径
+    - 当前 metadata 会回传 `archivedArtifactFiles`、`archivedArtifactBytes`、`sandboxDownloadArchiveRoot`
+  - 已补齐归档保留 / 清理策略第一版
+    - 当前默认只保留最近 `12` 个 request 归档目录
+    - 当前默认归档总大小上限为 `64 MiB`
+    - 超限时会优先清理更旧的 request 目录，不会优先删掉本次请求刚产生的归档
+    - 当前 metadata 会额外回传：
+      - `sandboxDownloadArchivePrunedDirectories`
+      - `sandboxDownloadArchivePrunedBytes`
+      - `sandboxDownloadArchiveRetainedDirectories`
+      - `sandboxDownloadArchiveRetainedBytes`
+  - 已补齐 preview / session lifecycle 的第一批持久化能力
+    - `sandbox_preview_open` 现在会把最近一次 preview 打开记录和 probe 结果写回 session snapshot
+    - `sandbox_session_info` 现在会额外回传：
+      - `remoteWorkspaceRoot`
+      - `lastPreviewUrl`
+      - `lastPreviewPort`
+      - `lastPreviewPath`
+      - `lastPreviewProbeStatus`
+      - `lastPreviewProbeHttpStatusCode`
+      - `lastPreviewProbeMessage`
+      - `lastPreviewOpenedAtEpochMs`
+  - 已补齐 preview / session lifecycle 的第二批自动管理能力
+    - `sandbox_preview_open` 现在会额外持久化：
+      - `lastPreviewProbeObservedAtEpochMs`
+      - `lastPreviewProbeSource`
+    - `sandbox_session_info` 现在会计算并回传：
+      - `sessionLifecycleStatus`
+      - `sessionLastActivityAtEpochMs`
+      - `sessionStaleAfterEpochMs`
+      - `sessionIsStale`
+      - `recommendedRefreshAfterMs`
+      - `previewAutoProbeAttempted`
+    - 当最近一次 preview 仍处于活跃窗口内、且上次 probe 已过期时，`sandbox_session_info` 会自动重探 preview URL，并把新 probe 结果写回活动 session / 持久化 snapshot
+    - 当 sticky session 使用 `timeoutAction=kill` 且生命周期已过期、同时没有运行中的 request 时，`sandbox_session_info` 会自动回收 stale session
+    - Chat 主流和 `Run inspector` 里的 session 卡片现在会显示 lifecycle pill、last active / stale after / preview checked 等二级信息
+    - Chat 云端模式现在除了原有“云端执行后补打一枪 session_info”以外，还会根据 backend 返回的 `recommendedRefreshAfterMs` 自动续刷
+    - 本地模式仍不会显示 session / preview 卡片，也不会触发这条云端 lifecycle refresh 链
 - `python_exec` 的 tool name 和参数目前保持不变
 - 已把 E2B runtime 注入现有 owner/runtime 装配路径
   - 本地 `P4aPythonRuntime` 保持不变
@@ -36,12 +85,34 @@ Last updated: 2026-03-27
 - 已把 `command_exec` 接入本地 / E2B 双后端路由
   - 显式 `local` 只走本地 `CommandExecutor`
   - 显式 `sandbox` 只走 E2B
-  - 当前 E2B 命令执行实现为 `python-backed wrapper`
-  - wrapper 会把本地 `workingDirectory` 映射到远端 workspace 路径，避免把宿主机绝对路径错误带进云端 subprocess
+  - 当前 E2B 前台命令优先走 provider-native envd 最小协议；前提不满足或 native 尝试失败时，才回退到 E2B `python_wrapper`
+  - wrapper fallback 仍会把本地 `workingDirectory` 映射到远端 workspace 路径，避免把宿主机绝对路径错误带进云端 subprocess
 - 已把命令型 `ProcessStart` 接入本地 / E2B 双后端路由
   - `ProcessStart(script_path=...)` 继续复用已经接好的 `python_exec` runtime 路由
-  - `ProcessStart(command=...)` 在 E2B 下走 `python-backed managed command controller`
-  - `ProcessRead/Wait/Terminate` 继续走现有 registry/tool surface，不改工具名与参数
+  - `ProcessStart(command=...)` 在 E2B 下优先走 provider-native `process.Process/Start`，并在不满足条件时回退到 E2B wrapper
+  - `ProcessTerminate` 在云端 native 路径下已接到 provider-native `process.Process/SendSignal`
+  - durable restore 场景下，`FileBackedAgentProcessRegistry` 现在会先尝试通过 provider-native `process.Process/Connect` 重挂运行中的后台命令，再决定是否标记为 interrupted
+  - `ProcessRead/Wait/Terminate` 继续复用现有 registry/tool surface，不改工具名与参数；当前云端 native 路径仍是 `host_managed_snapshot` 观察模式，还没有 cursor/backfill 语义
+  - reconnect 路径现在会额外把恢复边界写进 metadata：
+    - `sandboxCommandReconnectResumeMode=seed_snapshot_then_live_attach`
+    - `sandboxCommandReconnectBackfillSupported=false`
+    - `sandboxCommandReconnectOutputGapRisk=true`
+    - `sandboxCommandReconnectRecoveryState`
+      - 当前聚合值固定为：
+        - `connecting`
+        - `attached_live`
+        - `retry_scheduled`
+        - `completed`
+        - `failed_terminal`
+    - `sandboxCommandReconnectRetryable`
+    - `sandboxCommandReconnectRetryAfterEpochMs`
+    - `sandboxCommandReconnectAttemptCount`
+    - `sandboxCommandReconnectLastAttachedAtEpochMs`
+    - `sandboxCommandReconnectLastEventAtEpochMs`
+    - `sandboxCommandReconnectLastEventKind`
+    - `sandboxCommandReconnectLastFailureAtEpochMs`
+    - `sandboxCommandReconnectSeededStdoutBytes`
+    - `sandboxCommandReconnectSeededStderrBytes`
 - 已补齐未来 sandbox-native tools 的模型可见性规则
   - 约定所有沙盒原生能力工具统一使用 `sandbox_` 前缀
   - 本地模式下不向模型暴露 `sandbox_*` tool definitions
@@ -49,8 +120,10 @@ Last updated: 2026-03-27
   - 过滤发生在 dispatcher/tool definition 层，不靠 prompt 文案硬编码隐藏
 - 已补齐最小可用的 preview tool
   - 新增 `sandbox_preview_open`
-  - 当前会基于活动中的 E2B sandbox session 和指定端口拼出 preview URL，并对该 URL 做一次短超时 reachability probe
+  - 当前会基于活动中的 E2B sandbox session 生成 preview URL，并对该 URL 做一次短超时 reachability probe
   - probe 结果会区分 `ready`、`reachable`、`unreachable`
+  - 如果当前 sticky session 只发现了一个候选端口，`sandbox_preview_open` 现在允许省略 `port`
+  - 如果当前 sticky session 有多个候选端口，tool 会明确报错并返回候选值，要求模型显式指定端口
   - 仅在显式云端模式下向模型暴露
 - 已补齐最小可用的 preview UI 宿主
   - Chat 主流里的 run trace 气泡现在可以把最新一次 `sandbox_preview_open` 结果映射成 preview 卡片
@@ -60,6 +133,25 @@ Last updated: 2026-03-27
   - 当前只在显式 `Run in cloud` 时显示；切回 `Run locally` 后不会渲染
   - preview service 现在会优先读取运行时内存里的活动 sticky sandbox session，再回落到持久化 session store
   - 这修复了 `sessionMode=sticky` 且 `autoResume=false` 时 preview 能力拿不到当前活动会话的问题
+- 已补齐最小可用的 preview 自动端口发现
+  - E2B runtime 现在会从 stdout/stderr 中提取候选端口，并写回 sticky session snapshot
+  - 当前只识别保守模式：`localhost:3000`、`127.0.0.1:3000`、`0.0.0.0:3000`、`listening on port 3000`、`started server on 3000`
+  - 候选端口会同时写入执行 metadata 的 `sandboxPreviewCandidatePorts`
+- 已补齐最小可用的 session close 生命周期控制
+  - 新增 `sandbox_session_close`
+  - 当前可显式终止当前 workspace 对应的可复用 E2B sandbox session，并清掉本地 resume snapshot
+  - 如果当前没有可复用 session，tool 会返回 no-op 风格的成功结果
+  - 如果当前还有请求在同一 sandbox 内运行，tool 会明确失败并返回阻塞中的 request id，避免误杀正在执行的任务
+- 已补齐最小可用的 session info 生命周期可视化
+  - 新增 `sandbox_session_info`
+  - 当前会返回当前 workspace 是否存在可复用 E2B sandbox session，以及它来自活动内存、持久化快照，还是两者同时存在
+  - 当前会回传 sandbox id / domain / template / updatedAt / preview candidate ports / running request ids
+  - 当前会进一步回传 lifecycle status、stale deadline、last active、preview last probe 等辅助状态
+  - 读取时会优先以运行时内存里的活动 sticky session 作为主视图，再结合同一 sandbox 的持久化 snapshot 合并 preview 端口
+  - 如果内存或持久化里存在其他 workspace 的 session，当前会按 not found 处理，而不是报 workspace mismatch
+  - Chat 主流里的 run trace 气泡和 `Run inspector` 现在也可以把最新一次 `sandbox_session_info` 结果映射成 session 状态卡片
+  - 该卡片当前只在显式 `Run in cloud` 时显示；切回 `Run locally` 后同样隐藏
+  - 卡片状态主 badge 现在不再只显示 source，还会优先外显 `Healthy / Stale / Reclaimed / No session`
 
 当前这一步的真实语义是：
 
@@ -84,18 +176,36 @@ Last updated: 2026-03-27
 - `python_exec` 在 E2B 执行后，会基于远端打印的 workspace diff manifest 回传 changed files 到本地 workspace
 - 回传到本地的 changed files 现在会进一步暴露为现有 attachment artifact 元数据
   - agent 可以直接在后续 final response 中使用 `artifact_id`
-- 远端删除当前不会直接应用到本地文件系统
-  - 只会通过 metadata 暴露 `remoteDeletedFiles` / `skippedRemoteDeletes`
+- 本地删除当前不会直接删除本地事实来源之外的任何内容
+  - 但 sticky session 现在会在用户脚本执行前，把“本地上一次存在、本次已经删掉”的远端 workspace 文件回放删除到 sandbox 内
+  - 本地文件系统仍不会因为远端状态而被反向删除
 - `.opencray`、`.git`、`node_modules`、`venv`、`__pycache__` 等内部或缓存目录不会参与回传下载
-- `command_exec` 当前不直接调用独立的 E2B command API，而是复用已接好的 E2B code-interpreter，在远端通过 Python wrapper 运行 shell command
-- E2B 下的命令型 `ProcessStart` 当前也是 wrapper-based
-  - 好处是复用了现有 `python_exec` 的取消与路由能力
-  - 当前限制是运行中的增量 stdout/stderr 不是流式可读，通常会在 wrapper 完成后一次性落到快照里
+- `command_exec` 在 E2B 下当前已优先走 envd provider-native command API
+  - 当前最小协议已覆盖 `process.Process/Start`
+  - native 前台路径失败时，仍会安全回退到 E2B `python_wrapper`
+- E2B 下的命令型 `ProcessStart` 当前也已优先走 provider-native managed command controller
+  - 当前最小协议已覆盖 `process.Process/Start`、`process.Process/SendSignal`、durable restore 后的 `process.Process/Connect`
+  - 宿主机仍持有本地 managed controller 线程，负责把 provider stream 聚合成现有 `ManagedProcessSnapshot`
+  - 当前限制是 `ProcessRead/Wait` 看到的仍是宿主快照，而不是 provider cursor；还没有日志 backfill / cursor resume 语义
 
 当前仍未完成的部分：
 
-- 还没有做完整 preview 生命周期管理 / artifact download / snapshot / MCP gateway
-- 还没有做执行前增量上传、远端删除回放、artifact 归档、preview 端口发现与完整 preview 暴露
+- 执行前增量上传目前只覆盖 sticky session + 本地元数据比对
+  - 还没有做内容 hash 回退
+  - 还没有做 provider 级通用 sync planner
+- artifact 归档目前只完成“受控目录 + metadata 接线”
+  - 当前已补齐默认保留 / 清理策略
+  - 还没有做 artifact 类型分类、下载选择策略和可配置保留策略
+- provider-native command backend 目前只做到 E2B envd 最小协议
+  - 已支持 foreground/background start、background terminate、durable reconnect live reattach
+  - 还没有做通用 Connect RPC 客户端栈
+  - 还没有做 provider-native 日志 cursor、backfill、增量续读
+- preview/session lifecycle 的后续深化项仍未完成，但“最近一次 preview 生命周期写回 + tool/UI 暴露 + 宿主内嵌渲染”第一版已经落地
+  - Chat 主流和 `Run inspector` 现在都会在显式云端模式下渲染内嵌 preview surface
+  - embed config 由 host bridge 按当前 workspace 的活动/持久化 E2B session 即时解析
+  - traffic token 不经 run trace metadata 暴露，只在宿主向 Flutter 返回 embed headers 时按需下发
+  - 当前实现基于 Flutter WebView request headers；如果后续确认认证子资源请求不继承 header，需要升级为宿主 proxy
+- 还没有做 snapshot / MCP gateway
 - 还没有把 provider 级能力从 E2B 泛化到 Daytona / Modal
 
 这意味着第一步当前达到的是：
@@ -617,6 +727,223 @@ V2：
 - `sandboxSecureAccess`
 - `sandboxNetworkPolicy`
 
+### “provider 原生命令 API” 到底指什么
+
+这里说的不是 tool call 协议。
+
+当前模型侧看到的仍然是：
+
+- `command_exec`
+- `ProcessStart`
+- `ProcessRead`
+- `ProcessWait`
+- `ProcessTerminate`
+
+这些 tool 的名字、参数和 transcript 形态可以继续保持稳定。真正要替换的是云端 backend 的最后一跳执行方式。
+
+当前 E2B 命令执行链路的真实形态是：
+
+- OpenCray tool dispatch 命中 `command_exec` 或 `ProcessStart`
+- runtime 路由把请求分流到云端 backend
+- 云端 backend 当前会优先尝试 provider-native envd command API
+- 如果 reusable session、`envdAccessToken`、`remoteWorkspaceRoot` 等前提不满足，或 native 调用失败，则回退到 Python wrapper
+- wrapper fallback 时，仍然会把最终 shell command 交给远端 Python 里的 `subprocess.run(...)` 或同类控制器代为执行
+
+这条链路当前同时保留了两组优点：
+
+- native path 已能拿到 provider 原生命令 pid、termination、durable reconnect 语义
+- wrapper fallback 继续复用了已经接好的：
+  - `python_exec` 路由
+  - E2B session lifecycle
+  - 取消/超时基础设施
+  - workspace 同步与结果回传
+
+但它也带来几个明确限制：
+
+- 并不是所有云端命令都必然进入 native path；native 仍受 session / token / remote workspace 前提约束
+- `ProcessRead/Wait` 当前读到的仍是宿主聚合后的 `ManagedProcessSnapshot`，不是 provider cursor
+- stdout/stderr 还没有 provider 级 cursor / backfill / resume 能力
+- 当前 native backend 的 `sandboxCommandSupportsStreamingLogs` 仍是 `false`
+- 因此后续做更细粒度日志续读时，语义仍然不如完整 provider-native process handle 稳定
+
+因此，文档里说的 “provider 原生命令 API” 指的是：
+
+- 保持 OpenCray 现有 tool surface 不变
+- 但把云端 backend 从 “Python wrapper 间接执行” 升级成 “直接调用 provider 的 foreground command / background command API”
+
+### provider 原生命令后端拆解
+
+在 2026-03-31 这轮依赖审计里，OpenCray 当前仓库仍然没有现成可复用的：
+
+- `connectrpc`
+- `grpc`
+- `protobuf`
+
+而 E2B 官方 JS SDK 的 commands/background 能力底层走的是 sandbox 内 `envd` 的 Connect RPC 协议，而不是一组可以直接拿 `HttpURLConnection` 平替的普通 REST 端点。
+
+这意味着：
+
+- 这一步现在不能假装“只要补几个 HTTP endpoint 就能 native 化”
+- 当前已经落地的最小方案是：
+  - 在 backend 层把 provider-native 作为首选目标显式建模
+  - 对 E2B envd 手写最小 Connect envelope + protobuf 编解码，而不是先引入完整 `connectrpc/grpc/protobuf` 依赖栈
+  - 先把 `provider_native` 接到现有选择器里，保留 `python_wrapper` fallback
+  - 把 fallback 原因、native attempt、reconnect telemetry 都写进 metadata，避免后面排查时误以为已经走了完整原生命令通道
+
+截至当前，这个最小协议已经覆盖：
+
+- foreground `command_exec` 的 envd `process.Process/Start`
+- background `ProcessStart` 的 envd `process.Process/Start`
+- `ProcessTerminate` 的 envd `process.Process/SendSignal`
+- durable restore 后运行中 native background command 的 envd `process.Process/Connect` live reattach
+
+但它仍然没有覆盖：
+
+- provider-native 日志 cursor
+- 断线后的 backfill / 增量续读
+- 通用化、可复用的 Connect RPC 客户端栈
+
+#### 1. 保持 tool surface 不变，只替换 backend
+
+第一原则是不要重做模型协议。
+
+保留：
+
+- `command_exec`
+- `ProcessStart`
+- `ProcessRead`
+- `ProcessWait`
+- `ProcessTerminate`
+
+只替换：
+
+- 云端 `CommandProcessRunner`
+- 云端 `ManagedProcessControllerFactory`
+- registry 中远端 process handle 的落盘与恢复方式
+
+这样做的好处是：
+
+- prompt、tool policy、UI、run trace 不需要整体返工
+- 本地 / 云端双后端仍共用同一套 tool 心智
+- 升级可以渐进发生在 runtime backend 层
+
+#### 2. 先补 foreground command backend
+
+新增 provider-native 前台命令抽象，例如：
+
+- `SandboxCommandExecutionBackend`
+  - `executeForeground(...)`
+  - `startBackground(...)`
+  - `readBackground(...)`
+  - `waitBackground(...)`
+  - `terminateBackground(...)`
+  - `supportsStreamingLogs`
+  - `supportsReconnect`
+
+E2B 的第一步已落地：
+
+- `E2BNativeCommandExecutionBackend.executeForeground(...)`
+
+它负责直接把这些语义映射到 provider：
+
+- `command`
+- `args`
+- `workingDirectory`
+- `timeout`
+- `stdout`
+- `stderr`
+- `exitCode`
+- provider 侧 command/session id
+
+这一层已经让 `command_exec` 在满足 native 前提时不必再借道 `python_exec`；当前只在 session / envd token / remote workspace 缺失或 native 调用失败时回退 wrapper。
+
+#### 3. 再补 background command / process backend
+
+`ProcessStart` 不能只换前台命令；它需要真正的远端 process handle。
+
+建议新增：
+
+- `E2BNativeManagedProcessControllerFactory`
+- `ProviderManagedProcessHandle`
+  - `providerId`
+  - `sandboxId`
+  - `sessionId`
+  - `commandId`
+  - `stdoutCursor`
+  - `stderrCursor`
+  - `startedAtEpochMs`
+  - `lastObservedAtEpochMs`
+
+当前第一步已经做到：
+
+- `ProcessStart` 走 provider-native `Start`
+- `ProcessTerminate` 走 provider-native `SendSignal`
+- `AgentProcessRegistry` 在恢复 `RUNNING` snapshot 时，会优先通过 reconnectable backend 尝试 live reconnect
+- 路由层和 selection decorator 会在 reconnect 时继续保持 backend 选择与 metadata
+
+但 `AgentProcessRegistry` 现在持久化的仍然是现有 `ManagedProcessSnapshot`，而不是带 cursor 的 provider handle。
+
+这样 `ProcessRead/Wait/Terminate` 才能真正变成：
+
+- `ProcessRead` 读取 provider 原生日志
+- `ProcessWait` 等待 provider 原生命令结束
+- `ProcessTerminate` 调 provider 原生命令终止/关闭接口
+
+#### 4. 明确 wrapper 与 native 的边界
+
+不建议“一刀切删除 wrapper”。
+
+更稳妥的做法是：
+
+- `python_exec` 继续走当前已落地的 code-interpreter 路线
+- `command_exec` 与命令型 `ProcessStart` 优先走 provider-native command backend
+- 如果 provider 某些能力暂时缺失，再由 capability 决定是否允许 fallback 到 wrapper
+
+建议 fallback 规则写死在 backend capability，而不是散落在 tool handler：
+
+- foreground command 可选 fallback
+- background process 只有在 native 启动前前提不满足时才允许显式 fallback 到 E2B wrapper；一旦已经进入 native reconnect / live session 语义，就不再偷偷切回本地
+- 如果 native background command 不可用，应返回明确能力错误，而不是悄悄退回到“伪后台 wrapper”
+
+原因是后台进程语义一旦 silently fallback，很容易让 `ProcessRead/Terminate` 的行为和用户预期不一致。
+
+#### 5. 分阶段验收
+
+建议把这项工作拆成 3 个可独立验收的交付：
+
+1. `command_exec` 云端前台命令改成 provider-native
+   - 验收点：
+     - 不再生成 Python wrapper
+     - metadata 带上 `sandboxCommandId`
+     - timeout / exitCode / stdout / stderr 结果和现有 envelope 对齐
+2. `ProcessStart/Read/Wait/Terminate` 改成 provider-native background command
+   - 验收点：
+     - `ProcessStart` 返回可恢复的 provider handle 映射
+     - `ProcessRead` 能续读增量日志
+     - `ProcessTerminate` 走 provider 原生终止语义
+3. 恢复与流式能力
+   - 验收点：
+     - App 重启后仍能恢复云端 process handle
+     - 支持日志 cursor / 续读
+     - UI 能展示更接近真实远端状态的 running / success / failed / cancelled
+
+#### 6. 这一步不需要改的部分
+
+这次升级不应该顺手改掉下面这些层：
+
+- 模型看到的 tool names
+- tool call 参数协议
+- transcript 事件模型
+- 本地 backend 行为
+- `python_exec` 现有语义
+
+真正要动的是：
+
+- 云端 command backend
+- 云端 managed process backend
+- provider handle 持久化模型
+- 与之对应的 metadata / lifecycle 恢复逻辑
+
 ## 3. `ProcessStart` / `ProcessRead` / `ProcessWait` / `ProcessTerminate`
 
 ### 结论
@@ -858,6 +1185,8 @@ V2 可新增 sandbox-native tool：
 - `sandbox_snapshot_create`
 - `sandbox_snapshot_restore`
 - `sandbox_preview_open`
+- `sandbox_session_close`
+- `sandbox_session_info`
 - `sandbox_run_code`
 - `sandbox_desktop_screenshot`
 
@@ -891,6 +1220,7 @@ V2 可新增 sandbox-native tool：
 - `sandboxNetworkPolicy`
 - `sandboxSecureAccess`
 - `sandboxPreviewEnabled`
+- `sandboxPreviewCandidatePorts`
 - `mcpGatewayBound`
 
 建议增加一个用户/运行时可理解的选择字段：
@@ -1043,6 +1373,14 @@ E2B 场景下建议支持两种模式：
   - 验证 `python_exec` / `command_exec` 在 execution metadata 带有 attachment artifacts 时，会把 `artifact_id` 摘要显式追加到 tool result content
 - `SandboxPreviewToolTest`
   - 验证 `sandbox_preview_open` 的 definition 可见性、隐藏规则和 preview URL 返回结果
+- `SandboxSessionControlToolTest`
+  - 验证 `sandbox_session_close` 的 definition 可见性、隐藏规则，以及 terminated / busy 的 tool result 外显
+- `E2BSandboxSessionControlServiceTest`
+  - 验证 close service 对活动内存 session、持久化 session、无 session 与 workspace mismatch 的解析行为
+- `SandboxSessionInfoToolTest`
+  - 验证 `sandbox_session_info` 的 definition 可见性、隐藏规则，以及 session present / not found 的 tool result 外显
+- `E2BSandboxSessionInfoServiceTest`
+  - 验证 info service 对活动内存 session、持久化 session、active+persisted 合并视图与 workspace 不匹配时的 not-found 解析行为
 - `RoutingCommandExecutorTest`
   - 验证显式 `local` 时不 resolve sandbox executor
   - 验证 `auto` 且 sandbox executor 可用时直接走 sandbox
@@ -1060,7 +1398,9 @@ E2B 场景下建议支持两种模式：
 - `./gradlew.bat "-Dkotlin.compiler.execution.strategy=in-process" :app:compileDebugKotlin`
 - `./gradlew.bat "-Dkotlin.compiler.execution.strategy=in-process" :app:testDebugUnitTest --tests "com.opencray.app.RoutingPythonScriptRuntimeTest" --tests "com.opencray.app.E2BCodeInterpreterPythonRuntimeTest" --tests "com.opencray.app.PythonExecToolRoutingIntegrationTest"`
 - `./gradlew.bat :app:testDebugUnitTest --tests=com.opencray.app.PythonBackedCommandExecutionTest --tests=com.opencray.app.E2BCodeInterpreterPythonRuntimeTest`
-- `./gradlew.bat :runtime:testDebugUnitTest --tests=com.opencray.runtime.SandboxPreviewToolTest --tests=com.opencray.runtime.ExecutionAttachmentArtifactSummaryTest --tests=com.opencray.runtime.policy.ToolCapabilityClassifierTest`
+- `./gradlew.bat :app:testDebugUnitTest --tests=com.opencray.app.E2BSandboxPreviewServiceTest --tests=com.opencray.app.E2BSandboxSessionControlServiceTest --tests=com.opencray.app.E2BCodeInterpreterPythonRuntimeTest`
+- `./gradlew.bat :app:testDebugUnitTest --tests=com.opencray.app.E2BSandboxPreviewServiceTest --tests=com.opencray.app.E2BSandboxSessionControlServiceTest --tests=com.opencray.app.E2BSandboxSessionInfoServiceTest --tests=com.opencray.app.E2BCodeInterpreterPythonRuntimeTest`
+- `./gradlew.bat :runtime:testDebugUnitTest --tests=com.opencray.runtime.SandboxPreviewToolTest --tests=com.opencray.runtime.SandboxSessionControlToolTest --tests=com.opencray.runtime.SandboxSessionInfoToolTest --tests=com.opencray.runtime.ExecutionAttachmentArtifactSummaryTest --tests=com.opencray.runtime.policy.ToolCapabilityClassifierTest`
 - `./gradlew.bat :app:testDebugUnitTest --tests=com.opencray.app.E2BSandboxPreviewServiceTest --tests=com.opencray.app.E2BCodeInterpreterPythonRuntimeTest --tests=com.opencray.app.PythonBackedCommandExecutionTest`
 
 本轮新增实现的验证说明：
@@ -1118,18 +1458,128 @@ E2B 场景下建议支持两种模式：
 
 ### 当前状态
 
-截至 2026-03-27，本阶段也已经进入“可运行但仍偏保守”的状态：
+截至 2026-03-31，本阶段也已经进入“可运行但仍偏保守”的状态：
 
 - 已完成：
   - `command_exec` 已支持 `local / auto / sandbox` 路由
-  - E2B 下的 `command_exec` 当前通过 `python-backed wrapper` 执行
+  - E2B 下的 `command_exec` 当前已支持 provider-native / wrapper fallback 混合模式
   - wrapper 会把本地 `workingDirectory` 映射到远端 workspace
   - 命令型 `ProcessStart` 已支持本地 / 云端双后端分流
-  - `ProcessTerminate` 在云端模式下会通过 `CancellablePythonScriptRuntime` 触发终止
+  - `ProcessTerminate` 在云端模式下当前已支持 provider-native `SendSignal` 最小路径
+  - 已落地 provider-native foreground command 的最小协议试点
+    - 当前新增 `E2BMinimalProtocolSandboxCommandExecutionBackend`
+    - 当前只把云端 `command_exec` 的前台命令升级到 envd Connect 最小客户端
+    - 当前直接命中的是 E2B envd `process.Process/Start`
+    - 当前协议实现不依赖完整 `connectrpc/grpc/protobuf` 依赖栈，而是手写了最小：
+      - Connect envelope framing
+      - `StartRequest` protobuf 编码
+      - `StartResponse` / `ProcessEvent` protobuf 解码
+    - 当前 native path 的结果 metadata 会额外回传：
+      - `runtimeBackend=e2b_envd_native_command`
+      - `runtimeTransport=connect_proto_minimal`
+      - `sandboxCommandApi=envd_process_start`
+      - `sandboxCommandNativeProtocol=envd_connect_process_v1`
+      - `sandboxCommandNativeHttpStatusCode`
+      - `sandboxCommandPid`
+      - `sandboxCommandSessionSource`
+      - `sandboxCommandNativeProcessStatus`
+      - `sandboxCommandNativeProcessExited`
+      - `sandboxCommandNativeEndStreamErrorCode`
+      - `sandboxCommandNativeEndStreamErrorMessage`
+    - 当前 native path 只在“已有可复用 E2B session，且 session 内存在 `envdAccessToken + remoteWorkspaceRoot`”时启用
+    - 当这些前提不满足时，当前不会回落到本地，而是继续回退到 E2B `python_wrapper`
+    - 如果已经实际发起过 native 尝试但随后在 provider 侧失败，wrapper fallback 结果现在也会保留最小诊断信息：
+      - `sandboxCommandNativeAttempted`
+      - `sandboxCommandNativeAttemptApi`
+      - `sandboxCommandNativeAttemptTransport`
+      - `sandboxCommandNativeAttemptProtocol`
+      - `sandboxCommandNativeAttemptSessionSource`
+      - `sandboxCommandNativeAttemptRemoteWorkingDirectory`
+      - `sandboxCommandNativeAttemptFailureStage`
+      - `sandboxCommandNativeAttemptHttpStatusCode`
+      - `sandboxCommandNativeAttemptTransportFailureClass`
+      - `sandboxCommandNativeAttemptTransportFailureMessage`
+    - 这里的语义要特别明确：
+      - foreground `command_exec` 已经有 provider-native 最小实现
+      - background `ProcessStart` 已经接到 provider-native `process.Process/Start`
+      - `ProcessTerminate` 已经接到 provider-native `process.Process/SendSignal`
+      - durable restore 后，native background command 现在会优先尝试通过 envd `process.Process/Connect` 重新挂回 live stream
+      - `ProcessRead/Wait` 当前仍读取宿主本地 managed controller 的累积快照，不具备 provider-native cursor / backfill 语义
+      - 为了避免这层边界在 agent 侧变成“黑箱”，`ProcessRead/Wait` 当前正文与 working-state 摘要也会显式外显：
+        - `runtime_backend`
+        - `runtime_transport`
+        - `sandbox_backend_resolved_kind`
+        - `sandbox_observation_mode=host_managed_snapshot`
+        - `sandbox_supports_reconnect`
+        - `sandbox_command_reconnect_api`
+        - `sandbox_command_reconnect_status`
+        - `sandbox_command_reconnect_recovery_state`
+        - `sandbox_command_reconnect_source`
+        - `sandbox_command_reconnect_http_status_code`
+        - `sandbox_command_reconnect_resume_mode`
+        - `sandbox_command_reconnect_backfill_supported`
+        - `sandbox_command_reconnect_output_gap_risk`
+        - `sandbox_command_reconnect_retryable`
+        - `sandbox_command_reconnect_retry_after_epoch_ms`
+        - `sandbox_command_reconnect_attempt_count`
+        - `sandbox_command_reconnect_last_attached_at_epoch_ms`
+        - `sandbox_command_reconnect_last_event_at_epoch_ms`
+        - `sandbox_command_reconnect_last_event_kind`
+        - `sandbox_command_reconnect_last_failure_at_epoch_ms`
+        - `sandbox_command_reconnect_failure_stage`
+      - 当 `sandbox_command_reconnect_output_gap_risk=true` 时，正文还会追加一条 observation warning，明确说明当前是“从持久化快照补种输出后再挂 live stream”，attach 前可能存在日志缺口
+      - 当 reconnect 因 transport 类问题失败且 provider 仍未给出终态时，当前不会立刻把进程判死；而是保留 `status=running` 并写出 `sandbox_command_reconnect_retryable=true`
+      - 当 reconnect 成功重新挂回 live stream 时，当前会额外记录 `sandbox_command_reconnect_last_attached_at_epoch_ms` 与最近一次 provider 事件的时间/类型，便于后续 UI 和恢复判断
+      - 为了避免上层每次都自己拼 `status/retryable/lastAttached`，当前还会额外聚合 `sandbox_command_reconnect_recovery_state`
+        - `connecting`
+          - durable restore 刚发起 envd `Connect`，还没拿到可证明 live attach 的 provider 事件
+        - `attached_live`
+          - 已经重新挂回 live stream，当前仍处于运行态
+        - `retry_scheduled`
+          - 这次 reconnect 没拿到终态，但被判定为可重试；达到 backoff 后下一次 `ProcessRead/Wait` 会再试一次
+        - `completed`
+          - reconnect 已经成功接到 live stream，并拿到了终态；这描述的是“恢复流程已完成”，不代表进程业务一定成功
+        - `failed_terminal`
+          - reconnect 在拿到 live attach 前就终止失败，不会再继续重试
+      - 这类 snapshot 在达到 `sandbox_command_reconnect_retry_after_epoch_ms` 后，下一次 `ProcessRead/Wait` 会再次尝试 envd `Connect`
+      - 因此当前“云端原生命令 API”已经覆盖前台命令和后台命令的 start/kill，但还没有覆盖完整的后台日志重连协议
+    - 当前后台进程这一步的真实边界是：
+      - `ProcessStart` 会给 envd `StartRequest` 写入稳定 tag，当前直接复用 OpenCray 的 `processId`
+      - 宿主本地仍持有一个 managed controller 线程，负责消费 envd stream 并把 stdout/stderr 聚合成现有 `ManagedProcessSnapshot`
+      - `ProcessTerminate` 通过 envd `SendSignal(SIGKILL)` 按 tag 发送 kill signal
+      - durable restore 时，`FileBackedAgentProcessRegistry` 会先按持久化 snapshot 上的 `executionBackend` 把 reconnect 路由回 sandbox/local/python 对应工厂；在 E2B native 路径下再继续使用 envd `Connect`
+      - 如果 native 背景路径在启动前发现 session / `remoteWorkspaceRoot` / `envdAccessToken` 不满足条件，当前仍只回退到 E2B wrapper，不会回到本地
+  - 已补齐云端命令 backend 抽象第一版
+    - 当前新增 `SandboxCommandExecutionBackend`
+    - 当前 E2B 已同时接入：
+      - `PythonBackedSandboxCommandExecutionBackend`
+      - `E2BMinimalProtocolSandboxCommandExecutionBackend`
+    - 现有 `python-backed wrapper` 已不再直接散落在 owner 装配里，而是挂在统一 backend 抽象之后
+    - 当前 `command_exec` / `Process*` 的结果 metadata 会额外暴露：
+      - `sandboxCommandBackendKind`
+      - `sandboxCommandProviderNative`
+      - `sandboxCommandSupportsStreamingLogs`
+      - `sandboxCommandSupportsReconnect`
+    - 已补齐 provider-native 优先 / wrapper fallback 的选择层
+      - 当前会额外暴露：
+        - `sandboxCommandBackendRequestedKind`
+        - `sandboxCommandBackendResolvedKind`
+        - `sandboxCommandProviderNativeRequested`
+        - `sandboxCommandProviderNativeAvailable`
+        - `sandboxCommandBackendFallbackReasonCode`
+      - 当前 E2B 的默认选择是：
+        - requested=`provider_native_preferred`
+        - 当前满足 envd session 前提时 resolved=`provider_native`
+        - 当前不满足前提或 native 调用失败时 resolved=`python_wrapper`
+        - fallback reason 会按真实失败场景写回，例如 session 不可用、remote workspace 缺失、envd token 缺失、transport/http 失败
+    - 这一步的目的不是改 tool surface，而是把后续切换到 provider-native commands 的替换面收缩到 backend 层
 - 仍未完成：
-  - 直接接入 provider 原生命令 API / background session API
-  - 运行中 stdout/stderr 的增量流式读取
-  - 远端后台进程更细粒度的状态恢复与重连
+  - 这已经不是 tool call 协议缺口；当前剩余缺口主要在 provider-native backend 的 cursor/resume 深化
+  - 当前仓库里仍没有通用、可复用的 `connectrpc` / `grpc` / `protobuf` 客户端栈；现阶段用的是 E2B envd 的手写最小协议
+  - 当前虽然已经能在 durable restore 后 live reattach，但还没有 provider-native 日志 cursor / backfill / resume 语义
+  - `ProcessRead/Wait` 仍是 host-managed snapshot，而不是直接读取 provider 原生 cursor
+  - `sandboxCommandSupportsStreamingLogs` 对当前 native backend 仍是 `false`
+  - 远端后台进程更细粒度的状态恢复与断点续读仍未完成
 
 ### 目标
 
@@ -1149,6 +1599,26 @@ E2B 场景下建议支持两种模式：
 - 引入统一 backend 选择逻辑，避免 Python 和 command 的 backend 判定分叉
 - 远端后台任务与本地 `ManagedProcessSnapshot` 建立映射
 - provider 输出统一成现有 `ExecutionResult` / process snapshot 模型
+- 保持 `command_exec` / `Process*` 的 tool surface 不变，只替换云端 backend 的最后一跳
+- foreground command 已从 `python-backed wrapper` 升级为 provider-native command execution 优先模式
+- background command 已接入 provider-native start / terminate / durable reconnect 最小路径，下一步再升级为 provider-native process handle + cursor-based log reading
+
+### 推荐实施拆解
+
+1. 落地 `E2BNativeCommandExecutionBackend.executeForeground(...)`
+   - 当前状态：已完成
+   - 目标：让云端 `command_exec` 在满足前提时不再借道 `python_exec`
+2. 落地 `E2BNativeManagedProcessControllerFactory`
+   - 当前状态：已完成最小版
+   - 目标：让 `ProcessStart/Terminate` 和 durable restore reconnect 基于 provider 原生命令句柄工作
+3. 扩展 `AgentProcessRegistry`
+   - 当前状态：部分完成
+   - 目标：从“恢复时可 reconnect”继续推进到持久化 `sandboxId/sessionId/commandId/log cursor`
+4. 加入 capability gating
+   - 当前状态：已完成第一版
+   - 目标：继续细化 foreground/background 是否允许 wrapper fallback
+5. 最后补流式日志与重连恢复
+   - 目标：把当前“一次性收口”升级为可续读、可恢复的远端进程视图
 
 ### 验收
 
@@ -1157,6 +1627,35 @@ E2B 场景下建议支持两种模式：
 - `ProcessStart` 可启动 sandbox 后台命令
 - `ProcessRead/Wait/Terminate` 可操作该命令
 - UI/transcript 不需要理解 provider 细节，也能展示状态
+- provider-native 路径落地后，云端 `command_exec` 不再生成 Python wrapper
+- provider-native 路径落地后，云端 `ProcessStart` 返回的状态基于真实 provider handle，而不是 Python 包装任务
+
+### 当前验证
+
+- `:app:testDebugUnitTest --tests "com.opencray.app.PythonBackedCommandExecutionTest"` 通过
+- `:app:testDebugUnitTest --tests "com.opencray.app.E2BSandboxCommandExecutionBackendFactoryTest"` 已补充为本轮新增覆盖目标
+- `:app:testDebugUnitTest --tests "com.opencray.app.RoutingCommandExecutorTest" --tests "com.opencray.app.RoutingManagedProcessControllerFactoryTest"` 通过
+- `:app:testDebugUnitTest --tests "com.opencray.app.E2BEnvdNativeCommandExecutionTest"` 通过
+- `:runtime:testDebugUnitTest --tests "com.opencray.runtime.process.FileBackedAgentProcessRegistryTest" --tests "com.opencray.runtime.AgentManagedProcessToolTest" --tests "com.opencray.runtime.context.RecentToolObservationSupportTest"` 通过
+- 当前新增覆盖：
+  - Python-backed sandbox command backend capability metadata
+  - provider-native 优先 / wrapper fallback 的选择 metadata
+  - envd Connect 最小协议的 protobuf 编解码与前台命令 happy path
+  - envd Connect 后台命令 `Start` + `SendSignal` happy path
+  - envd Connect 后台命令 durable restore 后的 `Connect` live reattach happy path
+  - reconnect transport failure 后保留 `running` + retryable metadata
+  - registry 在 retry backoff 到期后会于下一次 `read/wait` 再次尝试 reconnect
+  - reconnect 恢复模式 / recovery state / output gap risk / seeded bytes metadata
+  - 缺少 `remoteWorkspaceRoot` 时只回退到 E2B wrapper，不会触碰本地
+  - native foreground 成功路径的 provider-native completion metadata
+  - native foreground 尝试后因 transport / HTTP 失败而回退 wrapper 时的 attempt telemetry
+  - native background 成功路径的 provider-native pid / termination metadata
+  - native background 缺少 `remoteWorkspaceRoot` 时回退到 E2B wrapper
+  - `FileBackedAgentProcessRegistry` 恢复运行中 snapshot 时优先走 reconnect，而不是直接标记 interrupted
+  - `ProcessRead/Wait` 对 reconnect metadata、retryable reconnect 状态和 observation warning 的正文外显
+  - `command_exec` 结果里的 backend capability 外显
+  - 命令型 `ProcessStart` 结果里的 backend capability 外显
+  - 路由层在抽象接入后仍保持本地 / 云端分流边界
 
 ## 建议实施顺序
 
@@ -1183,28 +1682,164 @@ E2B 场景下建议支持两种模式：
 
 ### 当前状态
 
-截至 2026-03-27，本阶段已经开始落地，但仍只完成了最小可用子集：
+截至 2026-03-31，本阶段已经从“最小可用”推进到“第一批深化能力已落地”，但仍未完成全量目标：
 
 - 已完成：
   - `python_exec` 在 E2B 执行后把远端 changed files 下载回本地 workspace
   - 当前下载范围被限制在 workspace 内，且会跳过 `.opencray`、`.git`、缓存目录和虚拟环境目录
   - 成功回传的文件已接到现有 attachment artifact 元数据链路
   - 已新增 `sandbox_preview_open`
-    - 当前会为现有 E2B sandbox session 的指定端口生成 preview URL
+    - 当前会为现有 E2B sandbox session 生成 preview URL
     - 当前会对该 URL 执行短超时 HEAD 探测，并把状态写入 tool result metadata
     - 当前可区分 `ready`、`reachable`、`unreachable`
-    - 不负责启动服务，也不负责自动端口发现
+    - 如果当前 sticky session 只有一个已发现的候选端口，当前允许省略 `port`
+    - 如果当前 sticky session 有多个候选端口，当前会直接失败并返回候选值，避免误开错服务
+    - 当前不负责启动服务
+  - 已补齐最小可用的 preview 自动端口发现
+    - 当前会在 E2B `python_exec` 的 stdout/stderr 收口阶段抽取候选端口
+    - 当前识别模式只覆盖保守子集：
+      - `localhost:3000`
+      - `127.0.0.1:3000`
+      - `0.0.0.0:3000`
+      - `listening on port 3000`
+      - `started server on 3000`
+    - 候选端口会写入 sticky session snapshot，并在执行 metadata 里回传 `sandboxPreviewCandidatePorts`
+  - 已新增 `sandbox_session_close`
+    - 当前会显式终止当前 workspace 对应的可复用 E2B sandbox session
+    - 当前会在成功关闭后同步清掉本地 resume snapshot，保证下一次云端执行可以从 fresh sandbox 启动
+    - 当前如果没有可复用 session，会返回 no-op 风格的成功结果
+    - 当前如果同一 sandbox 里还有 request 在运行，会直接失败并返回 `blockingRequestId`
+  - 已新增 `sandbox_session_info`
+    - 当前会回传当前 workspace 的 reusable sandbox session 是否存在
+    - 当前会区分 `active_memory`、`persisted`、`active_memory_and_persisted`
+    - 当前会回传 preview candidate ports 和 running request ids，便于后续 UI 做 session 生命周期可视化
+  - 已补齐最小可用的 session 状态卡片 UI
+    - 当前会把最新一次 `sandbox_session_info` 的 tool result 映射到 Chat 主流的 run trace 卡片
+    - 当前也会把同一份 session 状态映射到 `Run inspector` 顶部的详细区块
+    - 卡片只在显式云端模式显示，本地模式隐藏
+    - 当前新增了自动刷新链路
+      - 触发方式不是伪造一条用户消息，而是由 host bridge 直接提交一个预批准的 `TOOL_CALL`
+      - tool payload 固定为 `sandbox_session_info`
+      - run metadata 会带上 `submissionSource=host_ui_tool_action` 和 `preapprovedToolName=sandbox_session_info`
+      - 这样可以复用现有 run trace / runtime event 管线，同时不污染正式聊天 transcript
+    - 当前自动刷新策略是事件驱动，不是轮询
+      - 只在显式云端模式下启用
+      - 只会在检测到最近一次云端执行工具结果之后，自动补一次 `sandbox_session_info`
+      - 如果最近已经存在更新后的 `sandbox_session_info` 结果，则不会重复补发
+      - 已补齐 Flutter 回归测试，覆盖“已有更新后的 `sandbox_session_info` 时不重复刷新”和“刷新失败后不对同一 anchor 死循环重试”
+      - 本地模式不会触发这条 host action，也不会显示 session 卡片
   - 已补齐最小可用的 preview 卡片 UI
     - 当前会把最新一次 `sandbox_preview_open` 的 tool result 映射到 Chat 主流的 run trace 卡片
     - 当前也会把同一份 preview 数据映射到 `Run inspector` 顶部的详细区块
     - 卡片只在显式云端模式显示，本地模式隐藏
     - 已支持 `Open` / `Copy URL`
-  - 远端删除不会直接删除本地文件，而是只写入 metadata，避免误删本地事实来源
+  - 已补齐 preview 宿主内嵌渲染第一版
+    - Chat 主流里的 preview 卡片现在会在动作按钮上方渲染内嵌 preview surface
+    - `Run inspector` 顶部的 preview 详细区块同样会渲染内嵌 preview surface
+    - 当前只在显式云端模式显示；本地模式不会显示，也不会解析 embed config
+    - Flutter 侧当前使用 `webview_flutter`
+    - embed config 不从 tool result metadata 直接取 token，而是通过 host bridge / loopback runtime 按需解析
+    - 宿主会按当前 workspace 匹配活动或持久化 E2B session，并返回：
+      - `previewUrl`
+      - `providerId`
+      - `headers`
+      - `sessionMatched`
+      - `accessTokenConfigured`
+      - `unavailableReason`
+    - 当前 E2B traffic token 只通过 embed config headers 下发，不会进 run trace metadata
+    - 如果当前设备或测试环境不支持 WebView，UI 会回退到 unavailable placeholder，不会阻塞 `Open` / `Copy URL`
+  - 已补齐 sticky session 下的执行前增量上传第一版
+    - 当前 sticky session 会绑定稳定的远端 workspace 根目录
+    - 当前会把上一次成功同步后的文件元数据落到 `.opencray/sandbox-sync/e2b-workspace-sync-state.json`
+    - 当 sandbox 可复用且远端 workspace 根目录不变时，后续执行只会上传变更文件
+    - 当前也会在用户脚本执行前，把“本地已删除、但上次同步里存在”的远端文件回放删除到 sandbox
+    - 当前 metadata 会回传：
+      - `workspaceUploadMode=full|incremental`
+      - `workspaceUnchangedFiles`
+      - `workspacePendingRemoteDeleteFiles`
+  - 已补齐通用 artifact 归档与受控下载目录的第一版
+    - 当前成功下载回本地的 changed files，会额外归档到 `.opencray/sandbox-downloads/<requestId>/...`
+    - 当前 attachment artifact metadata 会优先指向归档路径
+    - 当前 metadata 会回传：
+      - `archivedArtifactFiles`
+      - `archivedArtifactBytes`
+      - `sandboxDownloadArchiveRoot`
+  - 已补齐通用 artifact 归档保留 / 清理策略第一版
+    - 当前默认只保留最近 `12` 个 request 归档目录
+    - 当前默认归档总大小上限为 `64 MiB`
+    - 超限时会优先删除更旧的 request 归档目录
+    - 当前不会优先删除本次请求刚生成的归档目录
+    - 当前 metadata 会回传：
+      - `sandboxDownloadArchivePrunedDirectories`
+      - `sandboxDownloadArchivePrunedBytes`
+      - `sandboxDownloadArchiveRetainedDirectories`
+      - `sandboxDownloadArchiveRetainedBytes`
+  - 已补齐 preview / session lifecycle 管理的第一版
+    - `sandbox_preview_open` 现在会把最近一次 preview URL、端口、path、probe 状态、HTTP 状态和打开时间写回 session snapshot
+    - `sandbox_session_info` 现在会把上述字段连同 `remoteWorkspaceRoot` 一起回传给 tool result metadata
+    - 这让 UI 后续可以基于同一条 session 状态源继续扩展“最近一次 preview 是否可用、何时打开、当前远端 workspace 在哪”这些视图
+  - 已补齐远端删除回放第一版
+    - 当前只作用于 sticky session 的 sandbox 侧 workspace
+    - 执行方式不是额外调用不稳定的 provider 文件删除接口，而是在用户脚本执行前由 Python 前导脚本做受控删除
+    - 当前不会反向删除本地文件，避免破坏本地事实来源
 - 仍未完成：
-  - 执行前增量上传
-  - 通用 artifact 归档与受控下载目录
-  - preview 自动端口发现、preview 生命周期管理、preview 宿主内嵌渲染与完整 session 可视化
-  - 远端删除回放策略
+  - 执行前增量上传的后续项
+    - 内容 hash 回退
+    - provider 级通用 sync planner
+  - 通用 artifact 归档与受控下载目录的后续项
+    - artifact 类型识别
+    - 可配置归档保留/清理策略
+    - 选择性下载与更细粒度落盘策略
+  - 更完整的 preview / session 生命周期自动管理
+    - 更完整 session 可视化
+    - preview / session auto refresh 的可配置节流策略
+    - provider 级 lifecycle policy 抽象
+    - 如果后续发现 E2B 认证子资源在 WebView 中不继承 header，需要把当前 embed 实现升级为宿主 proxy
+  - 远端删除回放的后续项
+    - 更细粒度的目录删除策略
+    - provider 级抽象
+    - 更可解释的 telemetry / metadata
+
+### 当前验证状态与阻塞
+
+截至 2026-03-31，本阶段代码验证的真实状态是：
+
+- 已完成：
+  - `:app:compileDebugKotlin` 通过
+  - `:app:testDebugUnitTest --tests "com.opencray.app.E2BSandboxSessionInfoServiceTest"` 通过
+  - `:app:testDebugUnitTest --tests "com.opencray.app.E2BSandboxPreviewServiceTest"` 通过
+  - `:app:testDebugUnitTest --tests "com.opencray.app.E2BSandboxPreviewEmbedConfigServiceTest" --tests "com.opencray.app.OpenCrayFlutterHostBridgeTest" --tests "com.opencray.app.OpenCrayLocalRuntimeServerTest"` 通过
+  - `:runtime:testDebugUnitTest --tests "com.opencray.runtime.SandboxSessionInfoToolTest"` 通过
+  - `dart analyze flutter_app` 通过
+  - Flutter 定向 widget tests 通过：
+    - `cloud mode shows sandbox preview card on the run trace`
+    - `local mode hides sandbox preview card on the run trace`
+    - `cloud mode shows sandbox preview inside the run inspector`
+    - `local mode hides sandbox preview inside the run inspector`
+    - `cloud mode shows sandbox session card on the run trace`
+    - `cloud mode shows sandbox session inside the run inspector`
+    - `cloud mode auto refreshes sandbox session info from lifecycle metadata`
+    - `local mode does not auto refresh sandbox session info from lifecycle metadata`
+  - Flutter bridge tests 通过：
+    - `test/opencray_platform_bridge_test.dart`
+    - `test/opencray_local_runtime_bridge_test.dart`
+- `app` 侧本次新增/更新的单测已经补齐：
+  - `E2BSandboxPreviewServiceTest`
+  - `E2BSandboxSessionInfoServiceTest`
+  - `E2BSandboxPreviewEmbedConfigServiceTest`
+  - `OpenCrayFlutterHostBridgeTest`
+  - `OpenCrayLocalRuntimeServerTest`
+  - 其中已覆盖：
+    - preview probe 观测时间 / source 持久化
+    - session info 自动探活
+    - stale / reclaimed lifecycle 判定
+    - preview embed config 的 workspace/session 匹配与 token header 解析
+    - host bridge / loopback runtime 的 preview embed config 暴露链路
+- 仍需注意：
+  - 当前 Windows 环境下，直接使用默认 `app/build` 路径跑 Android/Gradle 任务时，仍可能撞上中间产物文件锁
+  - 本轮验收通过的方式，是把 Gradle build 输出切到独立目录后串行执行
+  - Android/Gradle 在当前环境里仍会打印 `C:\\Users\\CodexSandboxOffline\\.android\\analytics.settings` 的 metrics 初始化警告，但本轮测试表明这条警告不阻塞用例通过
+  - `flutter test test/chat_feature_screen_test.dart` 整包在当前环境下仍然偏慢，因此本轮只对直接受影响的 widget cases 做了定向回归
 
 ### 目标
 

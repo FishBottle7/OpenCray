@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show SelectedContentRange;
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../core/bridge/opencray_host_bridge.dart';
 import '../../core/copy/opencray_ui_copy.dart';
@@ -16,7 +17,9 @@ import '../../core/models/opencray_chat_snapshot.dart';
 import '../../core/models/opencray_file_image_preview.dart';
 import '../../core/models/opencray_file_text_preview.dart';
 import '../../core/models/opencray_file_voice_playback_source.dart';
+import '../../core/models/opencray_sandbox_preview_embed_config.dart';
 import '../../core/models/opencray_sandbox_settings.dart';
+import '../../core/widgets/opencray_image_bytes_view.dart';
 import '../../core/widgets/opencray_markdown.dart';
 import 'chat_models.dart';
 import 'chat_seed_data.dart';
@@ -46,6 +49,11 @@ OpenCrayChatRuntimeSnapshot? resolveChatRuntimeSnapshot(
         ? embedded
         : streamed;
   }
+  if (_visibleSubAgentCount(embedded) != _visibleSubAgentCount(streamed)) {
+    return _visibleSubAgentCount(embedded) > _visibleSubAgentCount(streamed)
+        ? embedded
+        : streamed;
+  }
   final String embeddedHostInstanceId = _hostInstanceId(embedded);
   final String streamedHostInstanceId = _hostInstanceId(streamed);
   if (embeddedHostInstanceId != streamedHostInstanceId &&
@@ -67,13 +75,21 @@ int runtimeSnapshotVersion(OpenCrayChatRuntimeSnapshot snapshot) {
     (latest, run) =>
         latest > run.updatedAtEpochMs ? latest : run.updatedAtEpochMs,
   );
+  final int latestSubAgentEpochMs = snapshot.subAgents.fold<int>(
+    0,
+    (latest, subAgent) =>
+        latest > subAgent.updatedAtEpochMs ? latest : subAgent.updatedAtEpochMs,
+  );
   final int latestHostEpochMs =
       snapshot.hostLifecycle?.hostCreatedAtEpochMs ?? 0;
   return math.max(
     latestHostEpochMs,
-    latestEventEpochMs > latestRunEpochMs
-        ? latestEventEpochMs
-        : latestRunEpochMs,
+    math.max(
+      latestSubAgentEpochMs,
+      latestEventEpochMs > latestRunEpochMs
+          ? latestEventEpochMs
+          : latestRunEpochMs,
+    ),
   );
 }
 
@@ -86,6 +102,9 @@ List<OpenCrayChatRunSnapshot> _visibleRuns(
 
 int _visibleRunCount(OpenCrayChatRuntimeSnapshot snapshot) =>
     snapshot.activeRuns.length + snapshot.retainedRuns.length;
+
+int _visibleSubAgentCount(OpenCrayChatRuntimeSnapshot snapshot) =>
+    snapshot.subAgents.length;
 
 String _hostInstanceId(OpenCrayChatRuntimeSnapshot snapshot) =>
     snapshot.hostLifecycle?.hostInstanceId?.trim() ?? '';
@@ -138,6 +157,11 @@ const OpenCraySandboxSettingsSnapshot _defaultSandboxSettingsSnapshot =
       apiKeyConfigured: false,
     );
 
+@visibleForTesting
+const Duration chatSandboxSessionAutoRefreshDebounce = Duration(
+  milliseconds: 900,
+);
+
 @immutable
 class _ActiveChatMessageMenu {
   const _ActiveChatMessageMenu({
@@ -183,6 +207,17 @@ class _TodoTraceSummary {
   final int inProgressCount;
   final int completedCount;
   final String? activeTodoContent;
+}
+
+@immutable
+class _SandboxSessionLifecycleRefreshSchedule {
+  const _SandboxSessionLifecycleRefreshSchedule({
+    required this.key,
+    required this.delayMs,
+  });
+
+  final String key;
+  final int delayMs;
 }
 
 class ChatFeatureController {
@@ -245,12 +280,20 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   _ActiveChatMessageMenu? _activeMessageMenu;
   bool _suppressNextTransientUiDismiss = false;
   Timer? _todoArchiveHideTimer;
+  Timer? _sandboxSessionAutoRefreshTimer;
+  Timer? _sandboxSessionLifecycleRefreshTimer;
   String? _hiddenArchivedTodoFingerprint;
   String? _scheduledTodoArchiveFingerprint;
+  String? _scheduledSandboxSessionRefreshAnchor;
+  String? _queuedSandboxSessionRefreshAnchor;
+  String? _lastSandboxSessionRefreshAnchor;
+  String? _scheduledSandboxSessionLifecycleRefreshKey;
+  bool _queuedSandboxSessionLifecycleRefresh = false;
   String? _interruptConfirmRunId;
   double _composerHeight = 0;
   OpenCraySandboxSettingsSnapshot _sandboxSettings =
       _defaultSandboxSettingsSnapshot;
+  bool _sandboxSessionRefreshInFlight = false;
 
   bool get _usesHostBridge => widget.bridge != null;
 
@@ -333,6 +376,15 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         _isMessageSelectionMode) {
       _clearMessageSelection(emitHaptic: false);
     }
+    if (oldWidget.isTabActive != widget.isTabActive) {
+      if (widget.isTabActive) {
+        _syncSandboxSessionAutoRefresh();
+        _syncSandboxSessionLifecycleAutoRefresh();
+      } else {
+        _cancelScheduledSandboxSessionAutoRefresh();
+        _cancelScheduledSandboxSessionLifecycleRefresh();
+      }
+    }
   }
 
   @override
@@ -342,6 +394,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     _chatSubscription?.cancel();
     _chatRuntimeSubscription?.cancel();
     _todoArchiveHideTimer?.cancel();
+    _sandboxSessionAutoRefreshTimer?.cancel();
+    _sandboxSessionLifecycleRefreshTimer?.cancel();
     _composerController.dispose();
     _composerFocusNode.dispose();
     _chatScrollController.dispose();
@@ -437,6 +491,13 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       setState(() {
         _sandboxSettings = savedSnapshot;
       });
+      if (_selectedRuntimeEnvironment == _ChatRuntimeEnvironment.cloud) {
+        _syncSandboxSessionAutoRefresh();
+        _syncSandboxSessionLifecycleAutoRefresh();
+      } else {
+        _resetSandboxSessionAutoRefreshTracking();
+        _cancelScheduledSandboxSessionLifecycleRefresh();
+      }
     } catch (_) {
       if (!mounted) {
         return;
@@ -444,6 +505,13 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       setState(() {
         _sandboxSettings = previousSnapshot;
       });
+      if (_selectedRuntimeEnvironment == _ChatRuntimeEnvironment.cloud) {
+        _syncSandboxSessionAutoRefresh();
+        _syncSandboxSessionLifecycleAutoRefresh();
+      } else {
+        _resetSandboxSessionAutoRefreshTracking();
+        _cancelScheduledSandboxSessionLifecycleRefresh();
+      }
       _showMessageFeedback('Unable to update runtime environment.');
     }
   }
@@ -1685,6 +1753,270 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (shouldScrollToBottom) {
       _scheduleScrollToBottom();
     }
+    _syncSandboxSessionAutoRefresh();
+    _syncSandboxSessionLifecycleAutoRefresh();
+  }
+
+  void _cancelScheduledSandboxSessionAutoRefresh() {
+    _sandboxSessionAutoRefreshTimer?.cancel();
+    _sandboxSessionAutoRefreshTimer = null;
+    _scheduledSandboxSessionRefreshAnchor = null;
+    _queuedSandboxSessionRefreshAnchor = null;
+  }
+
+  void _cancelScheduledSandboxSessionLifecycleRefresh() {
+    _sandboxSessionLifecycleRefreshTimer?.cancel();
+    _sandboxSessionLifecycleRefreshTimer = null;
+    _scheduledSandboxSessionLifecycleRefreshKey = null;
+    _queuedSandboxSessionLifecycleRefresh = false;
+  }
+
+  void _resetSandboxSessionAutoRefreshTracking() {
+    _cancelScheduledSandboxSessionAutoRefresh();
+    _lastSandboxSessionRefreshAnchor = null;
+  }
+
+  void _syncSandboxSessionAutoRefresh() {
+    if (!mounted ||
+        !widget.isTabActive ||
+        _selectedRuntimeEnvironment != _ChatRuntimeEnvironment.cloud) {
+      _cancelScheduledSandboxSessionAutoRefresh();
+      return;
+    }
+    final OpenCrayHostBridge? bridge = widget.bridge;
+    final OpenCrayChatRuntimeSnapshot? runtimeSnapshot =
+        _latestChatRuntimeSnapshot ?? _latestChatSnapshot?.runtimeActivity;
+    if (bridge == null || runtimeSnapshot == null) {
+      _cancelScheduledSandboxSessionAutoRefresh();
+      return;
+    }
+    final String? anchor = _sandboxSessionAutoRefreshAnchor(runtimeSnapshot);
+    if (anchor == null) {
+      _cancelScheduledSandboxSessionAutoRefresh();
+      return;
+    }
+    if (_lastSandboxSessionRefreshAnchor == anchor ||
+        _scheduledSandboxSessionRefreshAnchor == anchor) {
+      return;
+    }
+    if (_sandboxSessionRefreshInFlight) {
+      _queuedSandboxSessionRefreshAnchor = anchor;
+      return;
+    }
+    _scheduleSandboxSessionAutoRefresh(anchor);
+  }
+
+  void _syncSandboxSessionLifecycleAutoRefresh() {
+    if (!mounted ||
+        !widget.isTabActive ||
+        _selectedRuntimeEnvironment != _ChatRuntimeEnvironment.cloud) {
+      _cancelScheduledSandboxSessionLifecycleRefresh();
+      return;
+    }
+    final OpenCrayChatRuntimeSnapshot? runtimeSnapshot =
+        _latestChatRuntimeSnapshot ?? _latestChatSnapshot?.runtimeActivity;
+    if (widget.bridge == null || runtimeSnapshot == null) {
+      _cancelScheduledSandboxSessionLifecycleRefresh();
+      return;
+    }
+    final _SandboxSessionLifecycleRefreshSchedule? schedule =
+        _sandboxSessionLifecycleRefreshSchedule(runtimeSnapshot);
+    if (schedule == null) {
+      _cancelScheduledSandboxSessionLifecycleRefresh();
+      return;
+    }
+    if (_scheduledSandboxSessionLifecycleRefreshKey == schedule.key) {
+      return;
+    }
+    _scheduleSandboxSessionLifecycleRefresh(schedule);
+  }
+
+  void _scheduleSandboxSessionAutoRefresh(String anchor) {
+    _sandboxSessionAutoRefreshTimer?.cancel();
+    _scheduledSandboxSessionRefreshAnchor = anchor;
+    _sandboxSessionAutoRefreshTimer = Timer(
+      chatSandboxSessionAutoRefreshDebounce,
+      () {
+        _sandboxSessionAutoRefreshTimer = null;
+        _scheduledSandboxSessionRefreshAnchor = null;
+        unawaited(_runSandboxSessionAutoRefresh(anchor));
+      },
+    );
+  }
+
+  void _scheduleSandboxSessionLifecycleRefresh(
+    _SandboxSessionLifecycleRefreshSchedule schedule,
+  ) {
+    _sandboxSessionLifecycleRefreshTimer?.cancel();
+    _scheduledSandboxSessionLifecycleRefreshKey = schedule.key;
+    _sandboxSessionLifecycleRefreshTimer = Timer(
+      Duration(milliseconds: schedule.delayMs),
+      () {
+        _sandboxSessionLifecycleRefreshTimer = null;
+        _scheduledSandboxSessionLifecycleRefreshKey = null;
+        unawaited(_runSandboxSessionLifecycleRefresh());
+      },
+    );
+  }
+
+  Future<void> _runSandboxSessionAutoRefresh(String anchor) async {
+    if (!mounted ||
+        !widget.isTabActive ||
+        _selectedRuntimeEnvironment != _ChatRuntimeEnvironment.cloud) {
+      return;
+    }
+    final OpenCrayHostBridge? bridge = widget.bridge;
+    if (bridge == null || _sandboxSessionRefreshInFlight) {
+      return;
+    }
+    _sandboxSessionRefreshInFlight = true;
+    try {
+      await bridge.refreshSandboxSessionInfo();
+      _lastSandboxSessionRefreshAnchor = anchor;
+    } catch (_) {
+      _lastSandboxSessionRefreshAnchor = anchor;
+      if (_queuedSandboxSessionRefreshAnchor == anchor) {
+        _queuedSandboxSessionRefreshAnchor = null;
+      }
+    } finally {
+      _sandboxSessionRefreshInFlight = false;
+      final String? queuedAnchor = _queuedSandboxSessionRefreshAnchor;
+      _queuedSandboxSessionRefreshAnchor = null;
+      final bool canContinue = mounted;
+      final bool shouldScheduleQueuedAnchor =
+          canContinue &&
+          queuedAnchor != null &&
+          queuedAnchor != _lastSandboxSessionRefreshAnchor &&
+          widget.isTabActive &&
+          _selectedRuntimeEnvironment == _ChatRuntimeEnvironment.cloud;
+      if (shouldScheduleQueuedAnchor) {
+        _scheduleSandboxSessionAutoRefresh(queuedAnchor);
+      } else if (canContinue) {
+        _syncSandboxSessionAutoRefresh();
+      }
+      if (canContinue) {
+        _syncSandboxSessionLifecycleAutoRefresh();
+      }
+    }
+  }
+
+  Future<void> _runSandboxSessionLifecycleRefresh() async {
+    if (!mounted ||
+        !widget.isTabActive ||
+        _selectedRuntimeEnvironment != _ChatRuntimeEnvironment.cloud) {
+      return;
+    }
+    final OpenCrayHostBridge? bridge = widget.bridge;
+    if (bridge == null) {
+      return;
+    }
+    if (_sandboxSessionRefreshInFlight) {
+      _queuedSandboxSessionLifecycleRefresh = true;
+      return;
+    }
+    _sandboxSessionRefreshInFlight = true;
+    try {
+      await bridge.refreshSandboxSessionInfo();
+    } catch (_) {
+      // Ignore lifecycle refresh failures and wait for the next schedule.
+    } finally {
+      _sandboxSessionRefreshInFlight = false;
+      final bool queuedLifecycleRefresh = _queuedSandboxSessionLifecycleRefresh;
+      _queuedSandboxSessionLifecycleRefresh = false;
+      final bool canContinue = mounted;
+      if (canContinue) {
+        _syncSandboxSessionAutoRefresh();
+        _syncSandboxSessionLifecycleAutoRefresh();
+        if (queuedLifecycleRefresh &&
+            _sandboxSessionLifecycleRefreshTimer == null &&
+            _selectedRuntimeEnvironment == _ChatRuntimeEnvironment.cloud) {
+          _scheduleSandboxSessionLifecycleRefresh(
+            const _SandboxSessionLifecycleRefreshSchedule(
+              key: 'queued',
+              delayMs: 1000,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  String? _sandboxSessionAutoRefreshAnchor(
+    OpenCrayChatRuntimeSnapshot runtimeSnapshot,
+  ) {
+    final List<OpenCrayChatRuntimeEventSnapshot> sortedEvents =
+        runtimeSnapshot.events.toList(growable: false)..sort(
+          (left, right) =>
+              right.emittedAtEpochMs.compareTo(left.emittedAtEpochMs),
+        );
+    final Set<String> activeRunIds = runtimeSnapshot.activeRuns
+        .map((run) => run.runId.trim())
+        .where((runId) => runId.isNotEmpty && !runId.startsWith('runtime-'))
+        .toSet();
+    int? latestSessionInfoEventEpochMs;
+    for (final OpenCrayChatRuntimeEventSnapshot event in sortedEvents) {
+      if (_isSandboxSessionInfoToolResult(event)) {
+        latestSessionInfoEventEpochMs ??= event.emittedAtEpochMs;
+        continue;
+      }
+      if (!_isSandboxExecutionToolResult(event)) {
+        continue;
+      }
+      final String runId = event.runId.trim();
+      if (runId.isEmpty || activeRunIds.contains(runId)) {
+        return null;
+      }
+      if (latestSessionInfoEventEpochMs != null &&
+          latestSessionInfoEventEpochMs > event.emittedAtEpochMs) {
+        return null;
+      }
+      return '$runId:${event.emittedAtEpochMs}';
+    }
+    return null;
+  }
+
+  bool _isSandboxExecutionToolResult(OpenCrayChatRuntimeEventSnapshot event) {
+    if (event.kind != 'tool_result') {
+      return false;
+    }
+    final String toolName = event.toolName?.trim().toLowerCase() ?? '';
+    if (toolName.startsWith('sandbox_')) {
+      return false;
+    }
+    return _resultMetadataValue(event, 'sandboxProvider') != null;
+  }
+
+  bool _isSandboxSessionInfoToolResult(OpenCrayChatRuntimeEventSnapshot event) {
+    final String toolName = event.toolName?.trim().toLowerCase() ?? '';
+    return event.kind == 'tool_result' && toolName == 'sandbox_session_info';
+  }
+
+  _SandboxSessionLifecycleRefreshSchedule?
+  _sandboxSessionLifecycleRefreshSchedule(
+    OpenCrayChatRuntimeSnapshot runtimeSnapshot,
+  ) {
+    final List<OpenCrayChatRuntimeEventSnapshot> sortedEvents =
+        runtimeSnapshot.events.toList(growable: false)..sort(
+          (left, right) =>
+              right.emittedAtEpochMs.compareTo(left.emittedAtEpochMs),
+        );
+    for (final OpenCrayChatRuntimeEventSnapshot event in sortedEvents) {
+      if (!_isSandboxSessionInfoToolResult(event)) {
+        continue;
+      }
+      final int? delayMs = _resultMetadataInt(
+        event,
+        'sandboxSessionAutoRefreshAfterMs',
+      );
+      if (delayMs == null || delayMs <= 0) {
+        return null;
+      }
+      return _SandboxSessionLifecycleRefreshSchedule(
+        key: '${event.runId}:${event.emittedAtEpochMs}:$delayMs',
+        delayMs: delayMs,
+      );
+    }
+    return null;
   }
 
   Future<void> _approvePendingApproval(ChatPendingApprovalData approval) async {
@@ -2209,9 +2541,11 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         ..clear()
         ..addAll(retainedSelection);
     });
-    if (snapshot.messages.isNotEmpty || _visibleRunCount(runtimeSnapshot) > 0) {
+    if (snapshot.messages.isNotEmpty || nextState.runTraces.isNotEmpty) {
       _scheduleScrollToBottom(animated: false);
     }
+    _syncSandboxSessionAutoRefresh();
+    _syncSandboxSessionLifecycleAutoRefresh();
   }
 
   ChatFeatureState _mapSnapshot(
@@ -2374,7 +2708,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
     List<OpenCrayChatPendingApprovalSnapshot> pendingApprovals,
   ) {
-    if (runtimeSnapshot == null || _visibleRunCount(runtimeSnapshot) == 0) {
+    if (runtimeSnapshot == null) {
       return const <ChatRunTraceData>[];
     }
     final activeRuns = _visibleRuns(runtimeSnapshot).toList(growable: false)
@@ -2382,7 +2716,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         (left, right) =>
             left.acceptedAtEpochMs.compareTo(right.acceptedAtEpochMs),
       );
-    return activeRuns
+    final List<ChatRunTraceData> runTraces = activeRuns
         .map(
           (run) => _mapRunTrace(
             run: run,
@@ -2391,6 +2725,224 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           ),
         )
         .toList(growable: false);
+    final Set<String> visibleParentRunIds = activeRuns
+        .map((run) => run.runId.trim())
+        .where((runId) => runId.isNotEmpty)
+        .toSet();
+    final Set<String> visibleParentTaskIds = activeRuns
+        .map((run) => run.taskId.trim())
+        .where((taskId) => taskId.isNotEmpty)
+        .toSet();
+    final List<ChatRunTraceData> detachedSubAgentTraces =
+        _detachedSubAgentSnapshots(
+          runtimeSnapshot: runtimeSnapshot,
+          visibleParentRunIds: visibleParentRunIds,
+          visibleParentTaskIds: visibleParentTaskIds,
+        ).map(_mapDetachedSubAgentTrace).toList(growable: false);
+    if (runTraces.isEmpty && detachedSubAgentTraces.isEmpty) {
+      return const <ChatRunTraceData>[];
+    }
+    return <ChatRunTraceData>[...runTraces, ...detachedSubAgentTraces];
+  }
+
+  List<OpenCrayChatSubAgentSnapshot> _subAgentSnapshotsForRun({
+    required OpenCrayChatRunSnapshot run,
+    required OpenCrayChatRuntimeSnapshot runtimeSnapshot,
+  }) =>
+      runtimeSnapshot.subAgents
+          .where((subAgent) {
+            final String parentRunId = subAgent.parentRunId.trim();
+            if (parentRunId.isNotEmpty && parentRunId == run.runId.trim()) {
+              return true;
+            }
+            final String parentTaskId = subAgent.parentTaskId.trim();
+            return parentTaskId.isNotEmpty && parentTaskId == run.taskId.trim();
+          })
+          .toList(growable: false)
+        ..sort(
+          (left, right) =>
+              left.updatedAtEpochMs.compareTo(right.updatedAtEpochMs),
+        );
+
+  List<OpenCrayChatRuntimeEventSnapshot> _durableSubAgentEventsForRun({
+    required OpenCrayChatRunSnapshot run,
+    required OpenCrayChatRuntimeSnapshot runtimeSnapshot,
+    required List<OpenCrayChatRuntimeEventSnapshot> runEvents,
+  }) {
+    final Map<String, OpenCrayChatRuntimeEventSnapshot> latestEventByKey =
+        <String, OpenCrayChatRuntimeEventSnapshot>{};
+    for (final event in runEvents) {
+      if (event.kind != 'subagent') {
+        continue;
+      }
+      final String key = _subAgentRegistryKeyForEvent(event);
+      final OpenCrayChatRuntimeEventSnapshot? existing = latestEventByKey[key];
+      if (existing == null ||
+          event.emittedAtEpochMs >= existing.emittedAtEpochMs) {
+        latestEventByKey[key] = event;
+      }
+    }
+    return _subAgentSnapshotsForRun(run: run, runtimeSnapshot: runtimeSnapshot)
+        .map(_syntheticSubAgentEvent)
+        .where((event) {
+          final OpenCrayChatRuntimeEventSnapshot? existing =
+              latestEventByKey[_subAgentRegistryKeyForEvent(event)];
+          if (existing == null) {
+            return true;
+          }
+          return _subAgentStateSignature(event) !=
+                  _subAgentStateSignature(existing) ||
+              event.emittedAtEpochMs > existing.emittedAtEpochMs;
+        })
+        .toList(growable: false)
+      ..sort(
+        (left, right) =>
+            left.emittedAtEpochMs.compareTo(right.emittedAtEpochMs),
+      );
+  }
+
+  List<OpenCrayChatSubAgentSnapshot> _detachedSubAgentSnapshots({
+    required OpenCrayChatRuntimeSnapshot runtimeSnapshot,
+    required Set<String> visibleParentRunIds,
+    required Set<String> visibleParentTaskIds,
+  }) =>
+      runtimeSnapshot.subAgents
+          .where((subAgent) {
+            final String parentRunId = subAgent.parentRunId.trim();
+            if (parentRunId.isNotEmpty &&
+                visibleParentRunIds.contains(parentRunId)) {
+              return false;
+            }
+            final String parentTaskId = subAgent.parentTaskId.trim();
+            return parentTaskId.isEmpty ||
+                !visibleParentTaskIds.contains(parentTaskId);
+          })
+          .toList(growable: false)
+        ..sort((left, right) {
+          final int startedComparison = left.startedAtEpochMs.compareTo(
+            right.startedAtEpochMs,
+          );
+          if (startedComparison != 0) {
+            return startedComparison;
+          }
+          return left.updatedAtEpochMs.compareTo(right.updatedAtEpochMs);
+        });
+
+  ChatRunTraceData _mapDetachedSubAgentTrace(
+    OpenCrayChatSubAgentSnapshot snapshot,
+  ) {
+    final OpenCrayChatRuntimeEventSnapshot event = _syntheticSubAgentEvent(
+      snapshot,
+    );
+    final String historyBody = _buildSubagentHistoryBody(event);
+    final ChatRunTraceHistoryEntry historyEntry = _subagentHistoryEntry(
+      event: event,
+      label: _subagentTraceLabel(event),
+      body: historyBody,
+      isHighRisk: event.isHighRisk,
+    );
+    final String previewBody = _buildSubagentPreviewBody(event);
+    return ChatRunTraceData(
+      runId: _detachedSubAgentTraceId(snapshot),
+      taskId: snapshot.childTaskId.trim().isNotEmpty
+          ? snapshot.childTaskId
+          : snapshot.parentTaskId,
+      label: _subagentTraceLabel(event),
+      body: _buildCompactTraceBody(
+        history: <ChatRunTraceHistoryEntry>[historyEntry],
+        fallbackBody: previewBody,
+        preferredBody: historyBody,
+      ),
+      history: <ChatRunTraceHistoryEntry>[historyEntry],
+      isHighRisk: snapshot.isHighRisk,
+      canInterrupt: false,
+    );
+  }
+
+  OpenCrayChatRuntimeEventSnapshot _syntheticSubAgentEvent(
+    OpenCrayChatSubAgentSnapshot snapshot,
+  ) => OpenCrayChatRuntimeEventSnapshot(
+    kind: 'subagent',
+    runId: snapshot.parentRunId,
+    taskId: snapshot.parentTaskId,
+    emittedAtEpochMs: snapshot.updatedAtEpochMs,
+    phase: snapshot.phase,
+    status: snapshot.status,
+    text: snapshot.summary,
+    isHighRisk: snapshot.isHighRisk,
+    label: snapshot.label,
+    childRunId: snapshot.childRunId,
+    childTaskId: snapshot.childTaskId,
+    subagentType: snapshot.subagentType,
+    contextMode: snapshot.contextMode,
+    depth: snapshot.depth,
+    executionState: snapshot.executionState,
+    continuationKind: snapshot.continuationKind,
+    resultMetadata: <String, String>{
+      'mailboxMessageCount': '${snapshot.mailboxMessageCount}',
+      'mailboxPendingMessageCount': '${snapshot.mailboxPendingMessageCount}',
+      if (snapshot.mailboxLastDeliveredMessageId?.trim().isNotEmpty == true)
+        'mailboxLastDeliveredMessageId': snapshot.mailboxLastDeliveredMessageId!
+            .trim(),
+    },
+  );
+
+  OpenCrayChatRuntimeEventSnapshot? _effectiveRunTraceEvent({
+    required OpenCrayChatRuntimeEventSnapshot? lastEvent,
+    required List<OpenCrayChatRuntimeEventSnapshot> durableSubAgentEvents,
+  }) {
+    final OpenCrayChatRuntimeEventSnapshot? durableEvent =
+        durableSubAgentEvents.isEmpty ? null : durableSubAgentEvents.last;
+    if (durableEvent == null) {
+      return lastEvent;
+    }
+    if (lastEvent == null) {
+      return durableEvent;
+    }
+    if (durableEvent.emittedAtEpochMs >= lastEvent.emittedAtEpochMs) {
+      return durableEvent;
+    }
+    return lastEvent;
+  }
+
+  String _subAgentRegistryKeyForEvent(OpenCrayChatRuntimeEventSnapshot event) {
+    final String childRunId = event.childRunId?.trim() ?? '';
+    final String childTaskId = event.childTaskId?.trim() ?? '';
+    final String label = event.label?.trim() ?? '';
+    final String childKey = childRunId.isNotEmpty
+        ? childRunId
+        : (childTaskId.isNotEmpty ? childTaskId : label);
+    return '${event.runId.trim()}|$childKey';
+  }
+
+  String _subAgentStateSignature(OpenCrayChatRuntimeEventSnapshot event) =>
+      <String>[
+        _subAgentRegistryKeyForEvent(event),
+        event.phase?.trim().toLowerCase() ?? '',
+        event.status?.trim().toLowerCase() ?? '',
+        event.executionState?.trim().toLowerCase() ?? '',
+        event.continuationKind?.trim().toLowerCase() ?? '',
+        event.text?.trim() ?? '',
+        event.resultMetadata['mailboxMessageCount']?.trim() ?? '',
+        event.resultMetadata['mailboxPendingMessageCount']?.trim() ?? '',
+        event.resultMetadata['mailboxLastDeliveredMessageId']?.trim() ?? '',
+        event.isHighRisk.toString(),
+      ].join('|');
+
+  String _detachedSubAgentTraceId(OpenCrayChatSubAgentSnapshot snapshot) {
+    final String childRunId = snapshot.childRunId.trim();
+    if (childRunId.isNotEmpty) {
+      return childRunId;
+    }
+    final String childTaskId = snapshot.childTaskId.trim();
+    if (childTaskId.isNotEmpty) {
+      return childTaskId;
+    }
+    final String parentKey = snapshot.parentRunId.trim().isNotEmpty
+        ? snapshot.parentRunId.trim()
+        : snapshot.parentTaskId.trim();
+    final String label = snapshot.label.trim().replaceAll(RegExp(r'\s+'), '-');
+    return 'subagent-$parentKey-$label';
   }
 
   List<ChatMessageData> _mapProjectedAssistantPhaseMessages(
@@ -2461,7 +3013,16 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       run: run,
       runtimeSnapshot: runtimeSnapshot,
     );
-    final event = run.lastEvent;
+    final List<OpenCrayChatRuntimeEventSnapshot> durableSubAgentEvents =
+        _durableSubAgentEventsForRun(
+          run: run,
+          runtimeSnapshot: runtimeSnapshot,
+          runEvents: runEvents,
+        );
+    final OpenCrayChatRuntimeEventSnapshot? event = _effectiveRunTraceEvent(
+      lastEvent: run.lastEvent,
+      durableSubAgentEvents: durableSubAgentEvents,
+    );
     final OpenCrayChatPendingApprovalSnapshot? pendingApproval =
         _pendingApprovalForRun(run: run, pendingApprovals: pendingApprovals);
     final OpenCrayChatRuntimeEventSnapshot? latestApprovalEvent =
@@ -2469,6 +3030,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     final ChatRunTracePreviewCardData? previewCard = _latestRunTracePreviewCard(
       runEvents,
     );
+    final ChatRunTraceSandboxSessionCardData? sessionCard =
+        _latestRunTraceSandboxSessionCard(runEvents);
     final toolName = event?.toolName?.trim();
     final bool waitingApproval = _isWaitingApproval(
       run: run,
@@ -2482,6 +3045,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       run: run,
       runEvents: runEvents,
       pendingApproval: pendingApproval,
+      durableSubAgentEvents: durableSubAgentEvents,
     );
     ChatRunTraceData buildTrace({
       required String label,
@@ -2500,6 +3064,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       canInterrupt: canInterruptOverride ?? canInterrupt,
       retryLabel: retryLabel,
       previewCard: previewCard,
+      sessionCard: sessionCard,
     );
     if (_isInterruptedOnRestoreRun(run)) {
       final interruptedEntry = _mainHistoryEntry(
@@ -2598,11 +3163,12 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         historyOverride: resolvedHistory,
       );
     }
-    String compactBody(String fallbackBody) => _buildCompactTraceBody(
-      history: history,
-      fallbackBody: fallbackBody,
-      preferredBody: fallbackBody,
-    );
+    String compactBody(String fallbackBody, {String? preferredBody}) =>
+        _buildCompactTraceBody(
+          history: history,
+          fallbackBody: fallbackBody,
+          preferredBody: preferredBody ?? fallbackBody,
+        );
     final OpenCrayChatRuntimeEventSnapshot? pairedToolCall =
         event?.kind == 'tool_result'
         ? _findPreviousToolCall(
@@ -2633,9 +3199,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           body: compactBody(_buildCancellationPreviewBody(event)),
         );
       case 'subagent':
+        final OpenCrayChatRuntimeEventSnapshot subagentEvent = event!;
+        final String previewBody = _buildSubagentPreviewBody(subagentEvent);
         return buildTrace(
-          label: _subagentTraceLabel(event!),
-          body: compactBody(_buildSubagentPreviewBody(event)),
+          label: _subagentTraceLabel(subagentEvent),
+          body: compactBody(
+            previewBody,
+            preferredBody: _buildSubagentHistoryBody(subagentEvent),
+          ),
           isHighRisk:
               waitingApproval && run.errorCode == 'HIGH_RISK_APPROVAL_REQUIRED',
         );
@@ -2733,6 +3304,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     required OpenCrayChatRunSnapshot run,
     required List<OpenCrayChatRuntimeEventSnapshot> runEvents,
     required OpenCrayChatPendingApprovalSnapshot? pendingApproval,
+    List<OpenCrayChatRuntimeEventSnapshot> durableSubAgentEvents =
+        const <OpenCrayChatRuntimeEventSnapshot>[],
   }) {
     final history = <ChatRunTraceHistoryEntry>[];
     final consumedIndexes = <int>{};
@@ -2761,11 +3334,21 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           : 0;
       history.insertAll(insertionIndex, contextHistory);
     }
-    if (history.isEmpty) {
+    final Set<String> appendedSubAgentStates = runEvents
+        .where((event) => event.kind == 'subagent')
+        .map(_subAgentStateSignature)
+        .toSet();
+    for (final event in durableSubAgentEvents) {
+      final String signature = _subAgentStateSignature(event);
+      if (!appendedSubAgentStates.add(signature)) {
+        continue;
+      }
       history.add(
-        _mainHistoryEntry(
-          label: widget.copy.chatRunWorkingLabel,
-          body: widget.copy.chatRunThinkingActive,
+        _subagentHistoryEntry(
+          event: event,
+          label: _subagentTraceLabel(event),
+          body: _buildSubagentHistoryBody(event),
+          isHighRisk: event.isHighRisk,
         ),
       );
     }
@@ -2787,6 +3370,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           history.last.body != waitingEntry.body) {
         history.add(waitingEntry);
       }
+    }
+    if (history.isEmpty) {
+      history.add(
+        _mainHistoryEntry(
+          label: widget.copy.chatRunWorkingLabel,
+          body: widget.copy.chatRunThinkingActive,
+        ),
+      );
     }
     return history;
   }
@@ -3677,6 +4268,74 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     return null;
   }
 
+  ChatRunTraceSandboxSessionCardData? _latestRunTraceSandboxSessionCard(
+    List<OpenCrayChatRuntimeEventSnapshot> runEvents,
+  ) {
+    for (int index = runEvents.length - 1; index >= 0; index -= 1) {
+      final OpenCrayChatRuntimeEventSnapshot event = runEvents[index];
+      final String toolName = event.toolName?.trim().toLowerCase() ?? '';
+      if (event.kind != 'tool_result' || toolName != 'sandbox_session_info') {
+        continue;
+      }
+      final bool sessionPresent =
+          _resultMetadataBool(event, 'sandboxSessionPresent') == true;
+      return ChatRunTraceSandboxSessionCardData(
+        sessionPresent: sessionPresent,
+        source: _sandboxSessionSourceFromWire(
+          _resultMetadataValue(event, 'sandboxSessionSource'),
+        ),
+        lifecycleStatus: _sandboxSessionLifecycleStatusFromWire(
+          _resultMetadataValue(event, 'sandboxSessionLifecycleStatus'),
+          sessionPresent: sessionPresent,
+        ),
+        provider: _resultMetadataValue(event, 'sandboxProvider'),
+        sandboxId: _resultMetadataValue(event, 'sandboxId'),
+        sandboxDomain: _resultMetadataValue(event, 'sandboxDomain'),
+        templateId: _resultMetadataValue(event, 'sandboxTemplateId'),
+        updatedAtEpochMs: _resultMetadataInt(
+          event,
+          'sandboxSessionUpdatedAtEpochMs',
+        ),
+        sessionLastActivityAtEpochMs: _resultMetadataInt(
+          event,
+          'sandboxSessionLastActivityAtEpochMs',
+        ),
+        sessionStaleAfterEpochMs: _resultMetadataInt(
+          event,
+          'sandboxSessionStaleAfterEpochMs',
+        ),
+        lastPreviewUrl: _resultMetadataValue(event, 'sandboxLastPreviewUrl'),
+        lastPreviewProbeStatus:
+            _resultMetadataValue(event, 'sandboxLastPreviewProbeStatus') == null
+            ? null
+            : _previewStatusFromWire(
+                _resultMetadataValue(event, 'sandboxLastPreviewProbeStatus'),
+              ),
+        lastPreviewProbeObservedAtEpochMs: _resultMetadataInt(
+          event,
+          'sandboxLastPreviewProbeObservedAtEpochMs',
+        ),
+        lastPreviewProbeSource: _resultMetadataValue(
+          event,
+          'sandboxLastPreviewProbeSource',
+        ),
+        autoRefreshAfterMs: _resultMetadataInt(
+          event,
+          'sandboxSessionAutoRefreshAfterMs',
+        ),
+        previewCandidatePorts: _resultMetadataCsvInts(
+          event,
+          'sandboxPreviewCandidatePorts',
+        ),
+        runningRequestIds: _resultMetadataCsvStrings(
+          event,
+          'sandboxRunningRequestIds',
+        ),
+      );
+    }
+    return null;
+  }
+
   ChatRunTracePreviewStatus _previewStatusFromWire(String? rawValue) {
     switch (rawValue?.trim().toLowerCase()) {
       case 'ready':
@@ -3688,6 +4347,43 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       case 'skipped':
       default:
         return ChatRunTracePreviewStatus.skipped;
+    }
+  }
+
+  ChatRunTraceSandboxSessionSource _sandboxSessionSourceFromWire(
+    String? rawValue,
+  ) {
+    switch (rawValue?.trim().toLowerCase()) {
+      case 'active_memory':
+        return ChatRunTraceSandboxSessionSource.activeMemory;
+      case 'persisted':
+        return ChatRunTraceSandboxSessionSource.persisted;
+      case 'active_memory_and_persisted':
+        return ChatRunTraceSandboxSessionSource.activeAndPersisted;
+      case 'none':
+      default:
+        return ChatRunTraceSandboxSessionSource.none;
+    }
+  }
+
+  ChatRunTraceSandboxSessionLifecycleStatus
+  _sandboxSessionLifecycleStatusFromWire(
+    String? rawValue, {
+    required bool sessionPresent,
+  }) {
+    switch (rawValue?.trim().toLowerCase()) {
+      case 'active':
+        return ChatRunTraceSandboxSessionLifecycleStatus.active;
+      case 'stale':
+        return ChatRunTraceSandboxSessionLifecycleStatus.stale;
+      case 'reclaimed':
+        return ChatRunTraceSandboxSessionLifecycleStatus.reclaimed;
+      case 'none':
+        return ChatRunTraceSandboxSessionLifecycleStatus.none;
+      default:
+        return sessionPresent
+            ? ChatRunTraceSandboxSessionLifecycleStatus.active
+            : ChatRunTraceSandboxSessionLifecycleStatus.none;
     }
   }
 
@@ -4189,8 +4885,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   String _buildSubagentPreviewBody(OpenCrayChatRuntimeEventSnapshot event) {
     return _joinTraceSections(<String?>[
       _subagentPhaseSummary(event),
-      _subagentContextSection(event),
       _subagentSummarySection(event),
+      _subagentMailboxSection(event),
+      _subagentContextSection(event),
     ]);
   }
 
@@ -4198,6 +4895,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     return _joinTraceSections(<String?>[
       _subagentPhaseSummary(event),
       _subagentContextSection(event),
+      _subagentMailboxSection(event),
       _subagentSummarySection(event),
     ]);
   }
@@ -4290,6 +4988,33 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     final String label = _traceSectionLabel(english: 'Summary', chinese: '摘要');
     return summary.contains('\n') ? '$label:\n$summary' : '$label: $summary';
+  }
+
+  String? _subagentMailboxSection(OpenCrayChatRuntimeEventSnapshot event) {
+    final int? total = _resultMetadataInt(event, 'mailboxMessageCount');
+    final int? pending = _resultMetadataInt(
+      event,
+      'mailboxPendingMessageCount',
+    );
+    final String? lastDelivered = _resultMetadataValue(
+      event,
+      'mailboxLastDeliveredMessageId',
+    );
+    if ((total ?? 0) <= 0 && (pending ?? 0) <= 0 && lastDelivered == null) {
+      return null;
+    }
+    final String label = _traceSectionLabel(english: 'Mailbox', chinese: '邮箱');
+    final List<String> lines = <String>[
+      if (total != null || pending != null)
+        widget.copy.isChinese
+            ? '$label: ${pending ?? 0} 待投递 / ${total ?? 0} 总计'
+            : '$label: ${pending ?? 0} pending / ${total ?? 0} total',
+      if (lastDelivered != null)
+        widget.copy.isChinese
+            ? '最近已投递: $lastDelivered'
+            : 'Last delivered: $lastDelivered',
+    ];
+    return lines.join('\n');
   }
 
   String _buildGroupedToolResultBody({
@@ -6211,6 +6936,23 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     String key,
   ) => _nonEmpty(event.resultMetadata[key]);
 
+  List<String> _resultMetadataCsvStrings(
+    OpenCrayChatRuntimeEventSnapshot event,
+    String key,
+  ) => (event.resultMetadata[key] ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .where((value) => value.isNotEmpty)
+      .toList(growable: false);
+
+  List<int> _resultMetadataCsvInts(
+    OpenCrayChatRuntimeEventSnapshot event,
+    String key,
+  ) => _resultMetadataCsvStrings(
+    event,
+    key,
+  ).map(int.tryParse).whereType<int>().toList(growable: false);
+
   int? _resultMetadataInt(OpenCrayChatRuntimeEventSnapshot event, String key) =>
       int.tryParse(event.resultMetadata[key]?.trim() ?? '');
 
@@ -7755,6 +8497,8 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
   }
 
   Future<void> _openFullscreen() {
+    final ChatRunTraceSandboxSessionCardData? sessionCard =
+        widget.showSandboxPreviewCard ? widget.trace.sessionCard : null;
     final ChatRunTracePreviewCardData? previewCard =
         widget.showSandboxPreviewCard ? widget.trace.previewCard : null;
     return showDialog<void>(
@@ -7763,6 +8507,8 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
       builder: (dialogContext) => _RunTraceFullscreenSheet(
         copy: widget.copy,
         trace: widget.trace,
+        bridge: widget.bridge,
+        session: sessionCard,
         preview: previewCard,
         onOpenPreview: previewCard == null || widget.bridge == null
             ? null
@@ -7799,6 +8545,8 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
   @override
   Widget build(BuildContext context) {
     final ChatRunTraceData trace = widget.trace;
+    final ChatRunTraceSandboxSessionCardData? sessionCard =
+        widget.showSandboxPreviewCard ? trace.sessionCard : null;
     final ChatRunTracePreviewCardData? previewCard =
         widget.showSandboxPreviewCard ? trace.previewCard : null;
     final _RunTraceCompactPresentation presentation =
@@ -8047,6 +8795,17 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
                       ),
                     ),
                   ),
+                  if (sessionCard != null) ...<Widget>[
+                    const SizedBox(height: 12),
+                    _RunTraceSandboxSessionCard(
+                      key: ValueKey<String>(
+                        'chat-run-trace-session-card-${trace.runId}',
+                      ),
+                      copy: widget.copy,
+                      runId: trace.runId,
+                      session: sessionCard,
+                    ),
+                  ],
                   if (previewCard != null) ...<Widget>[
                     const SizedBox(height: 12),
                     _RunTracePreviewCard(
@@ -8056,6 +8815,7 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
                       copy: widget.copy,
                       runId: trace.runId,
                       preview: previewCard,
+                      bridge: widget.bridge,
                       onOpen: widget.bridge == null
                           ? null
                           : () => _openPreviewCard(previewCard),
@@ -8078,6 +8838,7 @@ class _RunTracePreviewCard extends StatelessWidget {
     required this.copy,
     required this.runId,
     required this.preview,
+    this.bridge,
     this.expanded = false,
     this.keyNamespace = 'chat-run-trace-preview',
     this.onOpen,
@@ -8087,6 +8848,7 @@ class _RunTracePreviewCard extends StatelessWidget {
   final OpenCrayUiCopy copy;
   final String runId;
   final ChatRunTracePreviewCardData preview;
+  final OpenCrayHostBridge? bridge;
   final bool expanded;
   final String keyNamespace;
   final VoidCallback? onOpen;
@@ -8137,6 +8899,18 @@ class _RunTracePreviewCard extends StatelessWidget {
                 ),
               ],
             ),
+            if (bridge != null) ...<Widget>[
+              const SizedBox(height: 10),
+              _EmbeddedSandboxPreviewSurface(
+                key: ValueKey<String>('$keyNamespace-embedded-$runId'),
+                copy: copy,
+                runId: runId,
+                preview: preview,
+                bridge: bridge!,
+                expanded: expanded,
+                keyNamespace: keyNamespace,
+              ),
+            ],
             const SizedBox(height: 10),
             Text(
               preview.url,
@@ -8197,6 +8971,396 @@ class _RunTracePreviewCard extends StatelessWidget {
                 ),
               ],
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EmbeddedSandboxPreviewSurface extends StatefulWidget {
+  const _EmbeddedSandboxPreviewSurface({
+    super.key,
+    required this.copy,
+    required this.runId,
+    required this.preview,
+    required this.bridge,
+    required this.expanded,
+    required this.keyNamespace,
+  });
+
+  final OpenCrayUiCopy copy;
+  final String runId;
+  final ChatRunTracePreviewCardData preview;
+  final OpenCrayHostBridge bridge;
+  final bool expanded;
+  final String keyNamespace;
+
+  @override
+  State<_EmbeddedSandboxPreviewSurface> createState() =>
+      _EmbeddedSandboxPreviewSurfaceState();
+}
+
+class _EmbeddedSandboxPreviewSurfaceState
+    extends State<_EmbeddedSandboxPreviewSurface> {
+  WebViewController? _controller;
+  String? _statusMessage;
+  String? _activePreviewUrl;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolvePreview();
+  }
+
+  @override
+  void didUpdateWidget(covariant _EmbeddedSandboxPreviewSurface oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.preview.url != widget.preview.url ||
+        oldWidget.bridge != widget.bridge) {
+      _resolvePreview();
+    }
+  }
+
+  Future<void> _resolvePreview() async {
+    final String previewUrl = widget.preview.url.trim();
+    if (previewUrl.isEmpty) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _controller = null;
+        _statusMessage = widget.copy.chatRunPreviewEmbedUnavailable;
+        _isLoading = false;
+      });
+      return;
+    }
+    setState(() {
+      _activePreviewUrl = previewUrl;
+      _controller = null;
+      _statusMessage = null;
+      _isLoading = true;
+    });
+    try {
+      final OpenCraySandboxPreviewEmbedConfig config = await widget.bridge
+          .resolveSandboxPreviewEmbedConfig(previewUrl);
+      if (!mounted || _activePreviewUrl != previewUrl) {
+        return;
+      }
+      if (!config.sessionMatched) {
+        setState(() {
+          _controller = null;
+          _statusMessage =
+              config.unavailableReason ??
+              widget.copy.chatRunPreviewEmbedUnavailable;
+          _isLoading = false;
+        });
+        return;
+      }
+      final WebViewController controller = WebViewController()
+        ..setJavaScriptMode(JavaScriptMode.unrestricted)
+        ..setBackgroundColor(_ChatPalette.runTracePreviewSurface)
+        ..setNavigationDelegate(
+          NavigationDelegate(
+            onWebResourceError: (WebResourceError error) {
+              if (!mounted || _activePreviewUrl != previewUrl) {
+                return;
+              }
+              final String message = error.description.trim().isNotEmpty
+                  ? error.description.trim()
+                  : widget.copy.chatRunPreviewEmbedUnavailable;
+              setState(() {
+                _statusMessage = message;
+              });
+            },
+          ),
+        );
+      await controller.loadRequest(
+        Uri.parse(config.previewUrl),
+        headers: config.headers,
+      );
+      if (!mounted || _activePreviewUrl != previewUrl) {
+        return;
+      }
+      setState(() {
+        _controller = controller;
+        _statusMessage = null;
+        _isLoading = false;
+      });
+    } catch (_) {
+      if (!mounted || _activePreviewUrl != previewUrl) {
+        return;
+      }
+      setState(() {
+        _controller = null;
+        _statusMessage = widget.copy.chatRunPreviewEmbedUnsupported;
+        _isLoading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final double aspectRatio = widget.expanded ? 1.45 : 1.65;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: AspectRatio(
+        aspectRatio: aspectRatio,
+        child: DecoratedBox(
+          decoration: const BoxDecoration(
+            color: _ChatPalette.runTraceDetailSurface,
+          ),
+          child: _buildBody(),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_controller != null && _statusMessage == null) {
+      return KeyedSubtree(
+        key: ValueKey<String>(
+          '${widget.keyNamespace}-embedded-webview-${widget.runId}',
+        ),
+        child: WebViewWidget(controller: _controller!),
+      );
+    }
+    final bool isLoading = _isLoading;
+    final IconData icon = isLoading
+        ? Icons.hourglass_bottom_rounded
+        : Icons.public_off_outlined;
+    final String message = isLoading
+        ? widget.copy.chatRunPreviewEmbedLoading
+        : (_statusMessage ?? widget.copy.chatRunPreviewEmbedUnavailable);
+    return Container(
+      key: ValueKey<String>(
+        '${widget.keyNamespace}-embedded-unavailable-${widget.runId}',
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      alignment: Alignment.center,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: <Widget>[
+          if (isLoading)
+            const SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2.2),
+            )
+          else
+            Icon(icon, size: 22, color: _ChatPalette.textSecondary),
+          const SizedBox(height: 10),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            maxLines: widget.expanded ? 3 : 2,
+            overflow: TextOverflow.ellipsis,
+            style: _ChatTextStyles.bodyMuted.copyWith(
+              color: _ChatPalette.textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RunTraceSandboxSessionCard extends StatelessWidget {
+  const _RunTraceSandboxSessionCard({
+    super.key,
+    required this.copy,
+    required this.runId,
+    required this.session,
+    this.expanded = false,
+    this.keyNamespace = 'chat-run-trace-session',
+  });
+
+  final OpenCrayUiCopy copy;
+  final String runId;
+  final ChatRunTraceSandboxSessionCardData session;
+  final bool expanded;
+  final String keyNamespace;
+
+  @override
+  Widget build(BuildContext context) {
+    final _RunTraceSandboxSessionStatusStyle statusStyle =
+        _runTraceSandboxSessionStatusStyle(session.lifecycleStatus);
+    final List<String> detailParts = <String>[
+      _runTraceSandboxSessionSourceLabel(session.source, copy),
+      if (session.provider?.trim().isNotEmpty == true)
+        session.provider!.trim().toUpperCase(),
+      if (session.templateId?.trim().isNotEmpty == true)
+        copy.chatRunSandboxSessionTemplate(session.templateId!.trim()),
+      if (session.previewCandidatePorts.isNotEmpty)
+        copy.chatRunSandboxSessionPorts(
+          session.previewCandidatePorts.join(', '),
+        ),
+      if (session.runningRequestIds.isNotEmpty)
+        copy.chatRunSandboxSessionRunningCount(
+          session.runningRequestIds.length,
+        ),
+      if (session.lastPreviewProbeStatus != null)
+        copy.chatRunSandboxSessionPreviewStatus(
+          _runTracePreviewStatusLabel(session.lastPreviewProbeStatus!, copy),
+        ),
+    ];
+    final String summary = session.sessionPresent
+        ? (session.sandboxId?.trim().isNotEmpty == true
+              ? session.sandboxId!.trim()
+              : copy.chatRunSandboxSessionTitle)
+        : copy.chatRunSandboxSessionMissing;
+    final String? subtitle = session.sandboxDomain?.trim().isNotEmpty == true
+        ? session.sandboxDomain!.trim()
+        : null;
+    final String? updatedLabel = _formatRunTraceSandboxSessionUpdated(
+      copy,
+      session.updatedAtEpochMs,
+    );
+    final String? lastActiveLabel = _formatRunTraceSandboxSessionLastActive(
+      copy,
+      session.sessionLastActivityAtEpochMs,
+    );
+    final String? staleAfterLabel = _formatRunTraceSandboxSessionStaleAfter(
+      copy,
+      session.sessionStaleAfterEpochMs,
+    );
+    final String? previewCheckedLabel =
+        _formatRunTraceSandboxSessionPreviewChecked(
+          copy,
+          session.lastPreviewProbeObservedAtEpochMs,
+        );
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: _ChatPalette.runTracePreviewSurface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: _ChatPalette.runTracePreviewBorder),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                const Icon(
+                  Icons.cloud_sync_outlined,
+                  size: 16,
+                  color: _ChatPalette.runTraceActivityText,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    copy.chatRunSandboxSessionTitle,
+                    style: _ChatTextStyles.cardTitle.copyWith(fontSize: 14),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                _RunTracePill(
+                  label: _runTraceSandboxSessionLifecycleLabel(
+                    session.lifecycleStatus,
+                    copy,
+                  ),
+                  foregroundColor: statusStyle.foregroundColor,
+                  backgroundColor: statusStyle.backgroundColor,
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              summary,
+              key: ValueKey<String>('$keyNamespace-summary-$runId'),
+              maxLines: expanded ? null : 3,
+              overflow: expanded ? null : TextOverflow.ellipsis,
+              style: _ChatTextStyles.runTraceDetailValue.copyWith(
+                color: session.sessionPresent
+                    ? _ChatPalette.textPrimary
+                    : _ChatPalette.textSecondary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            if (subtitle != null) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(
+                subtitle,
+                maxLines: expanded ? null : 2,
+                overflow: expanded ? null : TextOverflow.ellipsis,
+                style: _ChatTextStyles.runTraceFooter.copyWith(
+                  color: _ChatPalette.textSecondary,
+                ),
+              ),
+            ],
+            if (detailParts.isNotEmpty) ...<Widget>[
+              const SizedBox(height: 8),
+              if (expanded)
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: detailParts
+                      .map((detail) => _RunTracePreviewFactChip(label: detail))
+                      .toList(growable: false),
+                )
+              else
+                Text(
+                  detailParts.join(' • '),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: _ChatTextStyles.runTraceFooter.copyWith(
+                    color: _ChatPalette.textSecondary,
+                  ),
+                ),
+            ],
+            if (updatedLabel != null) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(
+                updatedLabel,
+                maxLines: expanded ? null : 2,
+                overflow: expanded ? null : TextOverflow.ellipsis,
+                style: _ChatTextStyles.bodyMuted,
+              ),
+            ],
+            if (lastActiveLabel != null) ...<Widget>[
+              const SizedBox(height: 6),
+              Text(
+                lastActiveLabel,
+                maxLines: expanded ? null : 2,
+                overflow: expanded ? null : TextOverflow.ellipsis,
+                style: _ChatTextStyles.bodyMuted,
+              ),
+            ],
+            if (staleAfterLabel != null) ...<Widget>[
+              const SizedBox(height: 6),
+              Text(
+                staleAfterLabel,
+                maxLines: expanded ? null : 2,
+                overflow: expanded ? null : TextOverflow.ellipsis,
+                style: _ChatTextStyles.bodyMuted,
+              ),
+            ],
+            if (previewCheckedLabel != null) ...<Widget>[
+              const SizedBox(height: 6),
+              Text(
+                previewCheckedLabel,
+                maxLines: expanded ? null : 2,
+                overflow: expanded ? null : TextOverflow.ellipsis,
+                style: _ChatTextStyles.bodyMuted,
+              ),
+            ],
+            if (expanded && session.runningRequestIds.isNotEmpty) ...<Widget>[
+              const SizedBox(height: 10),
+              Text(
+                copy.chatRunSandboxSessionRunningRequestsTitle,
+                style: _ChatTextStyles.runTraceDetailLabel,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                session.runningRequestIds.join(', '),
+                style: _ChatTextStyles.runTraceFooter.copyWith(
+                  color: _ChatPalette.textPrimary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -8314,6 +9478,97 @@ String _runTracePreviewStatusLabel(
   }
 }
 
+String _runTraceSandboxSessionSourceLabel(
+  ChatRunTraceSandboxSessionSource source,
+  OpenCrayUiCopy copy,
+) {
+  switch (source) {
+    case ChatRunTraceSandboxSessionSource.activeMemory:
+      return copy.chatRunSandboxSessionSourceActive;
+    case ChatRunTraceSandboxSessionSource.persisted:
+      return copy.chatRunSandboxSessionSourcePersisted;
+    case ChatRunTraceSandboxSessionSource.activeAndPersisted:
+      return copy.chatRunSandboxSessionSourceActiveAndPersisted;
+    case ChatRunTraceSandboxSessionSource.none:
+      return copy.chatRunSandboxSessionSourceNone;
+  }
+}
+
+String? _formatRunTraceSandboxSessionUpdated(
+  OpenCrayUiCopy copy,
+  int? epochMs,
+) {
+  if (epochMs == null || epochMs <= 0) {
+    return null;
+  }
+  final DateTime dateTime = DateTime.fromMillisecondsSinceEpoch(
+    epochMs,
+  ).toLocal();
+  final DateTime now = DateTime.now().toLocal();
+  final String clock = _formatChatClockLabel(copy, dateTime);
+  final String label = _isSameChatDay(dateTime, now)
+      ? clock
+      : '${_formatChatDateLabel(copy, dateTime, includeYear: now.year != dateTime.year)} $clock';
+  return copy.chatRunSandboxSessionUpdated(label);
+}
+
+String? _formatRunTraceSandboxSessionLastActive(
+  OpenCrayUiCopy copy,
+  int? epochMs,
+) {
+  final String? label = _formatRunTraceSandboxSessionTimestamp(copy, epochMs);
+  return label == null ? null : copy.chatRunSandboxSessionLastActive(label);
+}
+
+String? _formatRunTraceSandboxSessionStaleAfter(
+  OpenCrayUiCopy copy,
+  int? epochMs,
+) {
+  final String? label = _formatRunTraceSandboxSessionTimestamp(copy, epochMs);
+  return label == null ? null : copy.chatRunSandboxSessionStaleAfter(label);
+}
+
+String? _formatRunTraceSandboxSessionPreviewChecked(
+  OpenCrayUiCopy copy,
+  int? epochMs,
+) {
+  final String? label = _formatRunTraceSandboxSessionTimestamp(copy, epochMs);
+  return label == null ? null : copy.chatRunSandboxSessionPreviewChecked(label);
+}
+
+String? _formatRunTraceSandboxSessionTimestamp(
+  OpenCrayUiCopy copy,
+  int? epochMs,
+) {
+  if (epochMs == null || epochMs <= 0) {
+    return null;
+  }
+  final DateTime dateTime = DateTime.fromMillisecondsSinceEpoch(
+    epochMs,
+  ).toLocal();
+  final DateTime now = DateTime.now().toLocal();
+  final String clock = _formatChatClockLabel(copy, dateTime);
+  return _isSameChatDay(dateTime, now)
+      ? clock
+      : '${_formatChatDateLabel(copy, dateTime, includeYear: now.year != dateTime.year)} $clock';
+}
+
+String _runTraceSandboxSessionLifecycleLabel(
+  ChatRunTraceSandboxSessionLifecycleStatus lifecycleStatus,
+  OpenCrayUiCopy copy,
+) {
+  switch (lifecycleStatus) {
+    case ChatRunTraceSandboxSessionLifecycleStatus.active:
+      return copy.chatRunSandboxSessionLifecycleActive;
+    case ChatRunTraceSandboxSessionLifecycleStatus.stale:
+      return copy.chatRunSandboxSessionLifecycleStale;
+    case ChatRunTraceSandboxSessionLifecycleStatus.reclaimed:
+      return copy.chatRunSandboxSessionLifecycleReclaimed;
+    case ChatRunTraceSandboxSessionLifecycleStatus.none:
+      return copy.chatRunSandboxSessionLifecycleNone;
+  }
+}
+
 _RunTracePreviewStatusStyle _runTracePreviewStatusStyle(
   ChatRunTracePreviewStatus status,
 ) {
@@ -8341,8 +9596,45 @@ _RunTracePreviewStatusStyle _runTracePreviewStatusStyle(
   }
 }
 
+_RunTraceSandboxSessionStatusStyle _runTraceSandboxSessionStatusStyle(
+  ChatRunTraceSandboxSessionLifecycleStatus lifecycleStatus,
+) {
+  switch (lifecycleStatus) {
+    case ChatRunTraceSandboxSessionLifecycleStatus.active:
+      return const _RunTraceSandboxSessionStatusStyle(
+        foregroundColor: Color(0xFF166534),
+        backgroundColor: Color(0xFFE9F9EE),
+      );
+    case ChatRunTraceSandboxSessionLifecycleStatus.stale:
+      return const _RunTraceSandboxSessionStatusStyle(
+        foregroundColor: Color(0xFF9A3412),
+        backgroundColor: Color(0xFFFFF1E8),
+      );
+    case ChatRunTraceSandboxSessionLifecycleStatus.reclaimed:
+      return const _RunTraceSandboxSessionStatusStyle(
+        foregroundColor: Color(0xFF475569),
+        backgroundColor: Color(0xFFF1F5F9),
+      );
+    case ChatRunTraceSandboxSessionLifecycleStatus.none:
+      return const _RunTraceSandboxSessionStatusStyle(
+        foregroundColor: Color(0xFF475569),
+        backgroundColor: Color(0xFFF1F5F9),
+      );
+  }
+}
+
 class _RunTracePreviewStatusStyle {
   const _RunTracePreviewStatusStyle({
+    required this.foregroundColor,
+    required this.backgroundColor,
+  });
+
+  final Color foregroundColor;
+  final Color backgroundColor;
+}
+
+class _RunTraceSandboxSessionStatusStyle {
+  const _RunTraceSandboxSessionStatusStyle({
     required this.foregroundColor,
     required this.backgroundColor,
   });
@@ -8369,6 +9661,8 @@ class _RunTraceFullscreenSheet extends StatefulWidget {
   const _RunTraceFullscreenSheet({
     required this.copy,
     required this.trace,
+    this.bridge,
+    this.session,
     this.preview,
     this.onOpenPreview,
     this.onCopyPreview,
@@ -8378,6 +9672,8 @@ class _RunTraceFullscreenSheet extends StatefulWidget {
 
   final OpenCrayUiCopy copy;
   final ChatRunTraceData trace;
+  final OpenCrayHostBridge? bridge;
+  final ChatRunTraceSandboxSessionCardData? session;
   final ChatRunTracePreviewCardData? preview;
   final VoidCallback? onOpenPreview;
   final VoidCallback? onCopyPreview;
@@ -8714,6 +10010,20 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: <Widget>[
+                                if (widget.session != null) ...<Widget>[
+                                  _RunTraceSandboxSessionCard(
+                                    key: ValueKey<String>(
+                                      'chat-run-trace-fullscreen-session-card-${trace.runId}',
+                                    ),
+                                    copy: copy,
+                                    runId: trace.runId,
+                                    session: widget.session!,
+                                    expanded: true,
+                                    keyNamespace:
+                                        'chat-run-trace-fullscreen-session',
+                                  ),
+                                  const SizedBox(height: 14),
+                                ],
                                 if (widget.preview != null) ...<Widget>[
                                   _RunTracePreviewCard(
                                     key: ValueKey<String>(
@@ -8722,6 +10032,7 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                                     copy: copy,
                                     runId: trace.runId,
                                     preview: widget.preview!,
+                                    bridge: widget.bridge,
                                     expanded: true,
                                     keyNamespace:
                                         'chat-run-trace-fullscreen-preview',
@@ -9270,6 +10581,11 @@ String? _recentRunTraceProcessSummary({
   ) {
     final ChatRunTraceHistoryEntry candidate = history[index];
     if (identical(candidate, currentEntry)) {
+      continue;
+    }
+    if (currentEntry != null &&
+        currentEntry.inspectorActorId != _runTraceMainActorId &&
+        candidate.inspectorActorId != currentEntry.inspectorActorId) {
       continue;
     }
     final String compactBody = _compactBodyForHistoryEntry(candidate);
@@ -10693,7 +12009,11 @@ class _ChatImageAttachmentPreviewState
             child: InteractiveViewer(
               child: ColoredBox(
                 color: Colors.black,
-                child: Image.memory(preview.bytes, fit: BoxFit.contain),
+                child: OpenCrayImageBytesView(
+                  bytes: preview.bytes,
+                  mimeType: preview.mimeType,
+                  fit: BoxFit.contain,
+                ),
               ),
             ),
           ),
@@ -10741,7 +12061,11 @@ class _ChatImageAttachmentPreviewState
                   border: Border.all(color: borderColor),
                 ),
                 child: ready
-                    ? Image.memory(preview.bytes, fit: BoxFit.cover)
+                    ? OpenCrayImageBytesView(
+                        bytes: preview.bytes,
+                        mimeType: preview.mimeType,
+                        fit: BoxFit.cover,
+                      )
                     : _ChatImageAttachmentPlaceholderBody(
                         attachment: widget.attachment,
                         isOutgoing: widget.isOutgoing,
@@ -12717,7 +14041,11 @@ class _ComposerAttachmentLeadingVisualState
               color: Colors.white.withValues(alpha: 0.75),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Image.memory(preview.bytes, fit: BoxFit.cover),
+            child: OpenCrayImageBytesView(
+              bytes: preview.bytes,
+              mimeType: preview.mimeType,
+              fit: BoxFit.cover,
+            ),
           ),
         );
       },

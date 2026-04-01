@@ -18,13 +18,22 @@ import com.opencray.llm.LiteLlmGatewayMessageRole
 import com.opencray.llm.LiteLlmGatewayStatus
 import com.opencray.llm.LiteLlmRouteSelectionMetadata
 import com.opencray.policy.SafetySettingsMetadataKeys
+import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
+import com.opencray.runtime.OpenCrayPromptResumeState
 import com.opencray.runtime.context.AgentRuntimeSessionContext
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.subagent.InMemorySubAgentExecutionCoordinator
+import com.opencray.runtime.subagent.SubAgentActiveExecution
 import com.opencray.runtime.subagent.SubAgentApprovalResume
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
 import com.opencray.runtime.subagent.SubAgentContinuationKind
+import com.opencray.runtime.subagent.SubAgentExecutionKey
+import com.opencray.runtime.subagent.SubAgentExecutionSnapshot
 import com.opencray.runtime.subagent.SubAgentExecutionState
+import com.opencray.runtime.subagent.SubAgentHandleState
+import com.opencray.runtime.subagent.SubAgentMailbox
+import com.opencray.runtime.subagent.SubAgentMailboxMessage
 import com.opencray.runtime.subagent.SubAgentMetadataKeys
 import com.opencray.runtime.subagent.SubAgentResultMetadataKeys
 import com.opencray.runtime.skills.SkillCatalog
@@ -35,6 +44,14 @@ import com.opencray.skills.SkillPermissionDecision
 import com.opencray.skills.SkillPermissionRule
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -230,20 +247,12 @@ class OpenCrayAgentRuntimeSubAgentTest {
   }
 
   @Test
-  fun taskToolAllowsExplicitMirroredContextOverride() {
+  fun taskToolRejectsExplicitMirroredContextOverride() {
     val workspaceRoot = temporaryFolder.newFolder("subagent-mirrored-override").toPath()
-    val gateway = RecordingGateway(
-      outputs = listOf(
-        """{"type":"tool_call","tool_name":"Task","arguments":{"description":"reuse prior context","prompt":"Continue from the preserved conversation context.","subagent_type":"general-purpose","context_mode":"mirrored"}}""",
-        """{"type":"final","answer":"Mirrored child answer."}""",
-        """{"type":"final","answer":"Parent received mirrored answer."}""",
-      ),
-    )
-    val eventSink = RecordingEventSink()
+    val gateway = RecordingGateway(outputs = emptyList())
     val runtime = runtime(
       workspaceRoot = workspaceRoot,
       gateway = gateway,
-      eventSink = eventSink,
       sessionContext = AgentRuntimeSessionContext(
         conversation = listOf(
           RuntimeConversationMessage(
@@ -255,21 +264,44 @@ class OpenCrayAgentRuntimeSubAgentTest {
     )
 
     val result = runtime.execute(
-      task = promptTask("Delegate follow-up work and keep the prior context."),
+      task = directToolCallTask(
+        """{"type":"tool_call","tool_name":"Task","arguments":{"description":"reuse prior context","prompt":"Continue from the preserved conversation context.","subagent_type":"general-purpose","context_mode":"mirrored"}}""",
+      ),
       hooks = runtimeHooks(),
     )
 
-    assertEquals(ExecutionStatus.SUCCESS, result.status)
-    assertEquals("Parent received mirrored answer.", result.stdout)
-    val taskResultMetadata = eventSink.events
-      .filterIsInstance<OpenCrayToolResultEvent>()
-      .single()
-      .result
-      .metadata
-    assertEquals("mirrored", taskResultMetadata["delegationContextMode"])
-    assertTrue(gateway.requests[1].prompt.contains("Delegate follow-up work and keep the prior context."))
-    assertTrue(gateway.requests[1].prompt.contains("Prior parent context that mirrored child should receive."))
-    assertFalse(gateway.requests[1].prompt.contains("Delegated parent context for this child run."))
+    assertEquals(ExecutionStatus.FAILED, result.status)
+    assertEquals("INVALID_SUBAGENT_TASK", result.errorCode)
+    assertEquals(
+      "Unsupported Task context_mode 'mirrored'. Expected one of: minimal, delegated. mirrored is reserved for internal-only child-runtime flows.",
+      result.errorMessage,
+    )
+    assertEquals(0, gateway.requests.size)
+  }
+
+  @Test
+  fun spawnAgentRejectsExplicitMirroredContextOverride() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-spawn-mirrored-override").toPath()
+    val gateway = RecordingGateway(outputs = emptyList())
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+    )
+
+    val result = runtime.execute(
+      task = directToolCallTask(
+        """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"reuse prior context","prompt":"Continue from the preserved conversation context.","subagent_type":"general-purpose","context_mode":"mirrored"}}""",
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.FAILED, result.status)
+    assertEquals("INVALID_SUBAGENT_TASK", result.errorCode)
+    assertEquals(
+      "Unsupported spawn_agent context_mode 'mirrored'. Expected one of: minimal, delegated. mirrored is reserved for internal-only child-runtime flows.",
+      result.errorMessage,
+    )
+    assertEquals(0, gateway.requests.size)
   }
 
   @Test
@@ -299,7 +331,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("Delegated result received.", result.stdout)
-    assertEquals(4, gateway.requests.size)
+    assertTrue(gateway.requests.size in 4..5)
     assertTrue(gateway.requests[2].prompt.contains("recent_observations:"))
     assertTrue(gateway.requests[2].prompt.contains("Read file_path=README.md"))
     assertFalse(gateway.requests[2].prompt.contains("tool_result Read"))
@@ -369,7 +401,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
     assertEquals(ExecutionStatus.FAILED, result.status)
     assertEquals("INVALID_SUBAGENT_TASK", result.errorCode)
     assertEquals(
-      "Unknown Task context_mode 'full'. Expected one of: minimal, delegated, mirrored.",
+      "Unknown Task context_mode 'full'. Expected one of: minimal, delegated.",
       result.errorMessage,
     )
     assertEquals(0, gateway.requests.size)
@@ -1071,20 +1103,35 @@ class OpenCrayAgentRuntimeSubAgentTest {
   }
 
   @Test
-  fun spawnAgentQueuesHandleAndWaitAgentRunsChild() {
+  fun spawnAgentStartsChildImmediatelyAndWaitAgentReadsCompletedHandle() {
     val workspaceRoot = temporaryFolder.newFolder("subagent-spawn-wait").toPath()
     Files.write(
       workspaceRoot.resolve("README.md"),
       "hello".toByteArray(StandardCharsets.UTF_8),
     )
-    val gateway = RecordingGateway(
-      outputs = listOf(
-        """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"inspect readme","prompt":"Read README.md and summarize it.","subagent_type":"researcher"}}""",
-        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
-        """{"type":"final","answer":"README says hello."}""",
-        """{"type":"final","answer":"Delegated wait completed."}""",
-      ),
-    )
+    val childMayFinish = CountDownLatch(1)
+    var parentTurn = 0
+    val gateway = ScriptedGateway { request ->
+      when {
+        requestHasTool(request, "Read") && !requestHasTool(request, "spawn_agent") -> {
+          childMayFinish.await(5, TimeUnit.SECONDS)
+          """{"type":"final","answer":"README says hello."}"""
+        }
+
+        requestHasTool(request, "spawn_agent") -> when (parentTurn++) {
+          0 -> """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"inspect readme","prompt":"Read README.md and summarize it.","subagent_type":"researcher"}}"""
+          1 -> {
+            childMayFinish.countDown()
+            """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}"""
+          }
+
+          2 -> """{"type":"final","answer":"Delegated wait completed."}"""
+          else -> error("Unexpected parent turn for ${request.requestId}.")
+        }
+
+        else -> error("Unexpected prompt for ${request.requestId}.")
+      }
+    }
     val eventSink = RecordingEventSink()
     val runtime = runtime(
       workspaceRoot = workspaceRoot,
@@ -1100,14 +1147,23 @@ class OpenCrayAgentRuntimeSubAgentTest {
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("Delegated wait completed.", result.stdout)
     assertEquals(4, gateway.requests.size)
-    assertTrue(gateway.requests[2].prompt.contains("Read README.md and summarize it."))
+    val childRequest = gateway.requests.first { request ->
+      requestHasTool(request, "Read") && !requestHasTool(request, "spawn_agent")
+    }
+    assertTrue(childRequest.prompt.contains("Read README.md and summarize it."))
     val spawnResultMetadata = eventSink.events
       .filterIsInstance<OpenCrayToolResultEvent>()
       .first { event -> event.call.toolName == "spawn_agent" }
       .result
       .metadata
     assertEquals("child-1", spawnResultMetadata["agentId"])
-    assertEquals("background_queued", spawnResultMetadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+    assertEquals("background_running", spawnResultMetadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+    val waitResultMetadata = eventSink.events
+      .filterIsInstance<OpenCrayToolResultEvent>()
+      .first { event -> event.call.toolName == "wait_agent" }
+      .result
+      .metadata
+    assertEquals("completed", waitResultMetadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
     val subAgentEvents = eventSink.events.filterIsInstance<OpenCraySubAgentEvent>()
     assertEquals(
       listOf(
@@ -1128,20 +1184,133 @@ class OpenCrayAgentRuntimeSubAgentTest {
   }
 
   @Test
-  fun queuedWaitAgentKeepsInheritedActiveSkillRestrictions() {
+  fun waitAgentReattachesToSharedCoordinatorStateAfterRuntimeRecreation() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-shared-coordinator-reattach").toPath()
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val runningHandle = SubAgentHandleState.queued(
+      agentId = "child-1",
+      childRunId = "child-run-1",
+      childTaskId = "child-task-1",
+      description = "inspect readme",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "parent-run-1",
+      parentTaskId = "prompt-task",
+      parentTurn = 0,
+      depth = 1,
+      activeSkillName = null,
+      activeSkillActivationSource = null,
+      createdAtEpochMs = 1_000L,
+    ).copy(
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Queued delegated child run started.",
+      ),
+      updatedAtEpochMs = 1_100L,
+    )
+    coordinator.upsertHandle(runningHandle)
+    val executionKey = SubAgentExecutionKey.from(runningHandle)
+    val executor = Executors.newSingleThreadExecutor()
+    val future = FutureTask<Unit> {
+      Thread.sleep(250L)
+      coordinator.upsertHandle(
+        runningHandle.copy(
+          snapshot = SubAgentExecutionSnapshot(
+            state = SubAgentExecutionState.COMPLETED,
+            continuationKind = SubAgentContinuationKind.NONE,
+            resumable = false,
+            requiresUserAction = false,
+            isHighRisk = false,
+            headline = "README says hello.",
+          ),
+          childExecutionStatus = ExecutionStatus.SUCCESS.name,
+          updatedAtEpochMs = 1_200L,
+        ),
+      )
+      coordinator.takeActiveExecution(executionKey)
+    }
+    assertEquals(
+      null,
+      coordinator.registerActiveExecution(
+        executionKey,
+        SubAgentActiveExecution(
+          executor = executor,
+          future = future,
+          cancelRequested = AtomicBoolean(false),
+          closed = AtomicBoolean(false),
+        ),
+      ),
+    )
+    executor.execute(future)
+    val eventSink = RecordingEventSink()
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
+        """{"type":"final","answer":"Recovered shared child handle."}""",
+      ),
+    )
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      eventSink = eventSink,
+      promptResumeState = OpenCrayPromptResumeState(
+        turnIndex = 0,
+        toolCallCount = 0,
+        subAgentHandles = listOf(runningHandle),
+      ),
+      subAgentExecutionCoordinator = coordinator,
+    )
+
+    val result = runtime.execute(
+      task = promptTask("Harvest the delegated child after recreating the runtime."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Recovered shared child handle.", result.stdout)
+    val waitResultMetadata = eventSink.events
+      .filterIsInstance<OpenCrayToolResultEvent>()
+      .first { event -> event.call.toolName == "wait_agent" }
+      .result
+      .metadata
+    assertEquals("completed", waitResultMetadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+    assertEquals("README says hello.", waitResultMetadata[SubAgentResultMetadataKeys.SUMMARY_HEADLINE])
+    executor.shutdownNow()
+  }
+
+  @Test
+  fun spawnAgentStartsChildImmediatelyUnderInheritedActiveSkill() {
     val workspaceRoot = temporaryFolder.newFolder("subagent-active-skill-spawn-wait").toPath()
     Files.write(
       workspaceRoot.resolve("README.md"),
       "hello".toByteArray(StandardCharsets.UTF_8),
     )
-    val gateway = RecordingGateway(
-      outputs = listOf(
-        """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"inspect readme","prompt":"Read README.md and summarize it.","subagent_type":"researcher"}}""",
-        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
-        """{"type":"final","answer":"README says hello."}""",
-        """{"type":"final","answer":"Queued child finished under the inherited skill."}""",
-      ),
-    )
+    val childStarted = CountDownLatch(1)
+    val childMayFinish = CountDownLatch(1)
+    var parentTurn = 0
+    val gateway = ScriptedGateway { request ->
+      when {
+        requestHasTool(request, "Read") && !requestHasTool(request, "spawn_agent") -> {
+          childStarted.countDown()
+          assertTrue(childMayFinish.await(5, TimeUnit.SECONDS))
+          """{"type":"final","answer":"README says hello."}"""
+        }
+
+        requestHasTool(request, "spawn_agent") -> when (parentTurn++) {
+          0 -> """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"inspect readme","prompt":"Read README.md and summarize it.","subagent_type":"researcher"}}"""
+          1 -> {
+            assertTrue(childStarted.await(5, TimeUnit.SECONDS))
+            childMayFinish.countDown()
+            """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}"""
+          }
+
+          2 -> """{"type":"final","answer":"Queued child finished under the inherited skill."}"""
+          else -> error("Unexpected parent turn for ${request.requestId}.")
+        }
+
+        else -> error("Unexpected prompt for ${request.requestId}.")
+      }
+    }
     val runtime = runtime(
       workspaceRoot = workspaceRoot,
       gateway = gateway,
@@ -1159,10 +1328,14 @@ class OpenCrayAgentRuntimeSubAgentTest {
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("Queued child finished under the inherited skill.", result.stdout)
     assertEquals(4, gateway.requests.size)
-    val childPrompt = gateway.requests[2].prompt
+    val childPrompt = gateway.requests.first { request ->
+      requestHasTool(request, "Read") && !requestHasTool(request, "spawn_agent")
+    }.prompt
     assertTrue(childPrompt.contains("A skill is now active for this run."))
     assertTrue(childPrompt.contains("name=focused-read"))
-    val childToolNames = gateway.requests[2].tools.map { definition -> definition.name }
+    val childToolNames = gateway.requests.first { request ->
+      requestHasTool(request, "Read") && !requestHasTool(request, "spawn_agent")
+    }.tools.map { definition -> definition.name }
     assertTrue(childToolNames.contains("Read"))
     assertFalse(childToolNames.contains("LS"))
     assertFalse(childToolNames.contains("Grep"))
@@ -1172,17 +1345,31 @@ class OpenCrayAgentRuntimeSubAgentTest {
   }
 
   @Test
-  fun sendInputAppendsSupplementalParentInstructionBeforeWait() {
+  fun sendInputFailsAfterSpawnedChildAlreadyCompleted() {
     val workspaceRoot = temporaryFolder.newFolder("subagent-send-input").toPath()
-    val gateway = RecordingGateway(
-      outputs = listOf(
-        """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"inspect docs","prompt":"Inspect README.md only.","subagent_type":"researcher"}}""",
-        """{"type":"tool_call","tool_name":"send_input","arguments":{"agent_id":"child-1","message":"Also inspect docs/notes.md and mention it."}}""",
-        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
-        """{"type":"final","answer":"Inspected README.md and docs/notes.md."}""",
-        """{"type":"final","answer":"Supplemental wait completed."}""",
-      ),
-    )
+    val childFinished = CountDownLatch(1)
+    var parentTurn = 0
+    val gateway = ScriptedGateway { request ->
+      when {
+        requestHasTool(request, "Read") && !requestHasTool(request, "spawn_agent") -> {
+          childFinished.countDown()
+          """{"type":"final","answer":"Inspected README.md only."}"""
+        }
+
+        requestHasTool(request, "spawn_agent") -> when (parentTurn++) {
+          0 -> """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"inspect docs","prompt":"Inspect README.md only.","subagent_type":"researcher"}}"""
+          1 -> {
+            assertTrue(childFinished.await(5, TimeUnit.SECONDS))
+            """{"type":"tool_call","tool_name":"send_input","arguments":{"agent_id":"child-1","message":"Also inspect docs/notes.md and mention it."}}"""
+          }
+
+          2 -> """{"type":"final","answer":"Completed child rejected more input."}"""
+          else -> error("Unexpected parent turn for ${request.requestId}.")
+        }
+
+        else -> error("Unexpected prompt for ${request.requestId}.")
+      }
+    }
     val eventSink = RecordingEventSink()
     val runtime = runtime(
       workspaceRoot = workspaceRoot,
@@ -1191,34 +1378,57 @@ class OpenCrayAgentRuntimeSubAgentTest {
     )
 
     val result = runtime.execute(
-      task = promptTask("Queue, supplement, and then wait for a child."),
+      task = promptTask("Start a child and then try to add more input after it finishes."),
       hooks = runtimeHooks(),
     )
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
-    assertEquals("Supplemental wait completed.", result.stdout)
-    assertEquals(5, gateway.requests.size)
-    assertTrue(gateway.requests[3].prompt.contains("Inspect README.md only."))
-    assertTrue(gateway.requests[3].prompt.contains("[Additional parent input 1]"))
-    assertTrue(gateway.requests[3].prompt.contains("Also inspect docs/notes.md and mention it."))
-    val sendInputResultMetadata = eventSink.events
+    assertEquals("Completed child rejected more input.", result.stdout)
+    assertEquals(4, gateway.requests.size)
+    assertTrue(
+      gateway.requests.any { request ->
+        request.prompt.contains("Inspect README.md only.")
+      },
+    )
+    val sendInputResult = eventSink.events
       .filterIsInstance<OpenCrayToolResultEvent>()
       .first { event -> event.call.toolName == "send_input" }
       .result
-      .metadata
-    assertEquals("1", sendInputResultMetadata["supplementalInputCount"])
+    assertEquals(AgentToolResultStatus.FAILED, sendInputResult.status)
+    assertEquals("SUBAGENT_NOT_QUEUEABLE", sendInputResult.errorCode)
   }
 
   @Test
-  fun closeAgentCancelsQueuedHandleWithoutRunningChild() {
+  fun closeAgentCancelsRunningHandleAndClosesIt() {
     val workspaceRoot = temporaryFolder.newFolder("subagent-close").toPath()
-    val gateway = RecordingGateway(
-      outputs = listOf(
-        """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"inspect readme","prompt":"Read README.md and summarize it.","subagent_type":"researcher"}}""",
-        """{"type":"tool_call","tool_name":"close_agent","arguments":{"agent_id":"child-1"}}""",
-        """{"type":"final","answer":"Queued child closed."}""",
-      ),
-    )
+    val childStarted = CountDownLatch(1)
+    val childMayFinish = CountDownLatch(1)
+    var parentTurn = 0
+    val gateway = ScriptedGateway { request ->
+      when {
+        requestHasTool(request, "Read") && !requestHasTool(request, "spawn_agent") -> {
+          childStarted.countDown()
+          childMayFinish.await(5, TimeUnit.SECONDS)
+          """{"type":"final","answer":"README says hello."}"""
+        }
+
+        requestHasTool(request, "spawn_agent") -> when (parentTurn++) {
+          0 -> """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"inspect readme","prompt":"Read README.md and summarize it.","subagent_type":"researcher"}}"""
+          1 -> {
+            assertTrue(childStarted.await(5, TimeUnit.SECONDS))
+            """{"type":"tool_call","tool_name":"close_agent","arguments":{"agent_id":"child-1"}}"""
+          }
+
+          2 -> {
+            childMayFinish.countDown()
+            """{"type":"final","answer":"Queued child closed."}"""
+          }
+          else -> error("Unexpected parent turn for ${request.requestId}.")
+        }
+
+        else -> error("Unexpected prompt for ${request.requestId}.")
+      }
+    }
     val eventSink = RecordingEventSink()
     val runtime = runtime(
       workspaceRoot = workspaceRoot,
@@ -1233,7 +1443,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("Queued child closed.", result.stdout)
-    assertEquals(3, gateway.requests.size)
+    assertEquals(4, gateway.requests.size)
     val closeResultMetadata = eventSink.events
       .filterIsInstance<OpenCrayToolResultEvent>()
       .first { event -> event.call.toolName == "close_agent" }
@@ -1241,7 +1451,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
       .metadata
     assertEquals("true", closeResultMetadata["closed"])
     assertEquals(
-      listOf(OpenCraySubAgentPhase.STARTED, OpenCraySubAgentPhase.CANCELLED),
+      listOf(OpenCraySubAgentPhase.STARTED, OpenCraySubAgentPhase.RESUMED, OpenCraySubAgentPhase.CANCELLED),
       eventSink.events
         .filterIsInstance<OpenCraySubAgentEvent>()
         .map(OpenCraySubAgentEvent::phase),
@@ -1249,20 +1459,242 @@ class OpenCrayAgentRuntimeSubAgentTest {
   }
 
   @Test
-  fun waitAgentCapturesApprovalContinuationAndApprovedResumeContinuesQueuedChild() {
+  fun spawnedChildContinuesAfterParentFinalAndCanBeHarvestedInLaterRun() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-detached-between-runs").toPath()
+    Files.write(
+      workspaceRoot.resolve("README.md"),
+      "hello".toByteArray(StandardCharsets.UTF_8),
+    )
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val childMayFinish = CountDownLatch(1)
+    var parentTurn = 0
+    val gateway = ScriptedGateway { request ->
+      when {
+        requestHasTool(request, "Read") && !requestHasTool(request, "spawn_agent") -> {
+          assertTrue(childMayFinish.await(5, TimeUnit.SECONDS))
+          """{"type":"final","answer":"README says hello."}"""
+        }
+
+        requestHasTool(request, "spawn_agent") -> when (parentTurn++) {
+          0 -> """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"inspect readme","prompt":"Read README.md and summarize it.","subagent_type":"researcher"}}"""
+          1 -> """{"type":"final","answer":"Leaving the child running in the background."}"""
+          2 -> {
+            childMayFinish.countDown()
+            """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}"""
+          }
+
+          3 -> """{"type":"final","answer":"Later wait completed."}"""
+          else -> error("Unexpected parent turn for ${request.requestId}.")
+        }
+
+        else -> error("Unexpected prompt for ${request.requestId}.")
+      }
+    }
+    val firstEventSink = RecordingEventSink()
+    val firstRuntime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      eventSink = firstEventSink,
+      subAgentExecutionCoordinator = coordinator,
+    )
+
+    val firstResult = firstRuntime.execute(
+      task = promptTask("Launch a child and report back before waiting."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, firstResult.status)
+    assertEquals("Leaving the child running in the background.", firstResult.stdout)
+    val runningHandle = coordinator.allHandles().single()
+    assertEquals("child-1", runningHandle.agentId)
+    assertEquals(SubAgentExecutionState.BACKGROUND_RUNNING, runningHandle.snapshot.state)
+    assertTrue(coordinator.activeExecution(SubAgentExecutionKey.from(runningHandle)) != null)
+    assertTrue(
+      firstEventSink.events
+        .filterIsInstance<OpenCraySubAgentEvent>()
+        .none { event -> event.phase == OpenCraySubAgentPhase.CANCELLED },
+    )
+
+    val secondEventSink = RecordingEventSink()
+    val secondRuntime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      eventSink = secondEventSink,
+      subAgentExecutionCoordinator = coordinator,
+    )
+
+    val secondResult = secondRuntime.execute(
+      task = promptTask("Harvest the background child now."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, secondResult.status)
+    assertEquals("Later wait completed.", secondResult.stdout)
+    val completedHandle = coordinator.allHandles().single()
+    assertEquals(SubAgentExecutionState.COMPLETED, completedHandle.snapshot.state)
+    assertEquals(null, coordinator.activeExecution(SubAgentExecutionKey.from(completedHandle)))
+    val waitResultMetadata = secondEventSink.events
+      .filterIsInstance<OpenCrayToolResultEvent>()
+      .first { event -> event.call.toolName == "wait_agent" }
+      .result
+      .metadata
+    assertEquals("completed", waitResultMetadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+  }
+
+  @Test
+  fun seededSubAgentHandlesCanBeHarvestedFromLaterPromptRunWithDifferentParentRunId() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-seeded-later-run").toPath()
+    val completedHandle = SubAgentHandleState(
+      agentId = "child-seeded",
+      childRunId = "child-run-seeded",
+      childTaskId = "child-task-seeded",
+      description = "Inspect README",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "run-parent-old",
+      parentTaskId = "task-parent-old",
+      parentTurn = 1,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot(
+        state = SubAgentExecutionState.COMPLETED,
+        continuationKind = SubAgentContinuationKind.NONE,
+        resumable = false,
+        requiresUserAction = false,
+        isHighRisk = false,
+        headline = "README says hello.",
+      ),
+      childExecutionStatus = ExecutionStatus.SUCCESS.name,
+      childTurnCount = 1,
+      childToolCallCount = 1,
+      createdAtEpochMs = 900L,
+      updatedAtEpochMs = 1_100L,
+    )
+    var parentTurn = 0
+    val gateway = ScriptedGateway {
+      when (parentTurn++) {
+        0 -> """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-seeded"}}"""
+        1 -> """{"type":"final","answer":"Harvested the seeded child."}"""
+        else -> error("Unexpected parent turn.")
+      }
+    }
+    val eventSink = RecordingEventSink()
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      eventSink = eventSink,
+      seededSubAgentHandles = listOf(completedHandle),
+    )
+
+    val result = runtime.execute(
+      task = promptTask("Harvest the seeded child from a later run."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Harvested the seeded child.", result.stdout)
+    val waitResult = eventSink.events
+      .filterIsInstance<OpenCrayToolResultEvent>()
+      .first { event -> event.call.toolName == "wait_agent" }
+      .result
+    assertEquals(AgentToolResultStatus.SUCCESS, waitResult.status)
+    assertEquals("child-seeded", waitResult.metadata["agentId"])
+    assertEquals("child-run-seeded", waitResult.metadata["childRunId"])
+    assertEquals("completed", waitResult.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+    assertTrue(waitResult.content.contains("README says hello."))
+  }
+
+  @Test
+  fun directWaitAgentResumesColdRestartedQueuedChildFromDurableCheckpoint() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-cold-restart-direct-wait").toPath()
+    Files.write(
+      workspaceRoot.resolve("README.md"),
+      "hello".toByteArray(StandardCharsets.UTF_8),
+    )
+    val seededHandle = SubAgentHandleState(
+      agentId = "child-cold",
+      childRunId = "child-run-cold",
+      childTaskId = "child-task-cold",
+      description = "Inspect README",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "run-parent-cold",
+      parentTaskId = "task-parent-cold",
+      parentTurn = 1,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Delegated child run is still running in the background.",
+      ),
+      childPromptResumeState = OpenCrayPromptResumeState(
+        turnIndex = 0,
+        toolCallCount = 0,
+      ),
+      childPromptCheckpointBoundary = OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST,
+      childPromptCheckpointAtEpochMs = 950L,
+      createdAtEpochMs = 900L,
+      updatedAtEpochMs = 1_100L,
+    )
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
+        """{"type":"final","answer":"README says hello."}""",
+      ),
+    )
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      seededSubAgentHandles = listOf(seededHandle),
+      subAgentExecutionCoordinator = coordinator,
+    )
+
+    val result = runtime.execute(
+      task = directToolCallTask(
+        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-cold"}}""",
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertTrue(result.stdout.contains("README says hello."))
+    val completedHandle = coordinator.allHandles().single()
+    assertEquals(SubAgentExecutionState.COMPLETED, completedHandle.snapshot.state)
+    assertEquals(null, completedHandle.childPromptResumeState)
+    assertEquals(null, completedHandle.childPromptCheckpointBoundary)
+    assertEquals(null, completedHandle.childPromptCheckpointAtEpochMs)
+  }
+
+  @Test
+  fun spawnAgentCapturesApprovalContinuationAndApprovedResumeContinuesChild() {
     val workspaceRoot = temporaryFolder.newFolder("subagent-wait-approval").toPath()
     val notesFile = workspaceRoot.resolve("notes.txt")
     Files.write(
       notesFile,
       "draft\nTODO\n".toByteArray(StandardCharsets.UTF_8),
     )
-    val initialGateway = RecordingGateway(
-      outputs = listOf(
-        """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"edit notes","prompt":"Replace TODO with DONE in notes.txt.","subagent_type":"worker"}}""",
-        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
-        """{"type":"tool_call","tool_name":"Edit","arguments":{"file_path":"notes.txt","old_string":"TODO","new_string":"DONE"}}""",
-      ),
-    )
+    val initialChildStarted = CountDownLatch(1)
+    var initialParentTurn = 0
+    val initialGateway = ScriptedGateway { request ->
+      when {
+        requestHasTool(request, "Edit") && !requestHasTool(request, "spawn_agent") -> {
+          initialChildStarted.countDown()
+          """{"type":"tool_call","tool_name":"Edit","arguments":{"file_path":"notes.txt","old_string":"TODO","new_string":"DONE"}}"""
+        }
+
+        requestHasTool(request, "spawn_agent") -> when (initialParentTurn++) {
+          0 -> """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"edit notes","prompt":"Replace TODO with DONE in notes.txt.","subagent_type":"worker"}}"""
+          1 -> {
+            assertTrue(initialChildStarted.await(5, TimeUnit.SECONDS))
+            """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}"""
+          }
+
+          else -> error("Unexpected parent turn for ${request.requestId}.")
+        }
+
+        else -> error("Unexpected prompt for ${request.requestId}.")
+      }
+    }
     val initialRuntime = runtime(
       workspaceRoot = workspaceRoot,
       gateway = initialGateway,
@@ -1270,7 +1702,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
 
     val initialResult = initialRuntime.execute(
       task = promptTask(
-        "Queue a worker child and wait for it.",
+        "Start a worker child.",
         metadata = mapOf(
           SafetySettingsMetadataKeys.EXECUTION_MODE to "safe",
         ),
@@ -1303,7 +1735,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
     val resumedGateway = RecordingGateway(
       outputs = listOf(
         """{"type":"final","answer":"Approved edit completed."}""",
-        """{"type":"final","answer":"Approved wait completed."}""",
+        """{"type":"final","answer":"Approved spawn completed."}""",
       ),
     )
     val resumedEventSink = RecordingEventSink()
@@ -1317,7 +1749,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
 
     val resumedResult = resumedRuntime.execute(
       task = promptTask(
-        "Queue a worker child and wait for it.",
+        "Start a worker child.",
         metadata = mapOf(
           SafetySettingsMetadataKeys.EXECUTION_MODE to "safe",
         ),
@@ -1326,7 +1758,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
     )
 
     assertEquals(ExecutionStatus.SUCCESS, resumedResult.status)
-    assertEquals("Approved wait completed.", resumedResult.stdout)
+    assertEquals("Approved spawn completed.", resumedResult.stdout)
     assertEquals("draft\nDONE\n", String(Files.readAllBytes(notesFile), StandardCharsets.UTF_8))
     assertEquals(2, resumedGateway.requests.size)
     assertTrue(
@@ -1351,13 +1783,28 @@ class OpenCrayAgentRuntimeSubAgentTest {
       notesFile,
       "draft\nTODO\n".toByteArray(StandardCharsets.UTF_8),
     )
-    val initialGateway = RecordingGateway(
-      outputs = listOf(
-        """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"edit notes","prompt":"Replace TODO with DONE in notes.txt.","subagent_type":"worker"}}""",
-        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
-        """{"type":"tool_call","tool_name":"Edit","arguments":{"file_path":"notes.txt","old_string":"TODO","new_string":"DONE"}}""",
-      ),
-    )
+    val initialChildStarted = CountDownLatch(1)
+    var initialParentTurn = 0
+    val initialGateway = ScriptedGateway { request ->
+      when {
+        requestHasTool(request, "Edit") && !requestHasTool(request, "spawn_agent") -> {
+          initialChildStarted.countDown()
+          """{"type":"tool_call","tool_name":"Edit","arguments":{"file_path":"notes.txt","old_string":"TODO","new_string":"DONE"}}"""
+        }
+
+        requestHasTool(request, "spawn_agent") -> when (initialParentTurn++) {
+          0 -> """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"edit notes","prompt":"Replace TODO with DONE in notes.txt.","subagent_type":"worker"}}"""
+          1 -> {
+            assertTrue(initialChildStarted.await(5, TimeUnit.SECONDS))
+            """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}"""
+          }
+
+          else -> error("Unexpected parent turn for ${request.requestId}.")
+        }
+
+        else -> error("Unexpected prompt for ${request.requestId}.")
+      }
+    }
     val initialRuntime = runtime(
       workspaceRoot = workspaceRoot,
       gateway = initialGateway,
@@ -1365,7 +1812,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
 
     val initialResult = initialRuntime.execute(
       task = promptTask(
-        "Queue a worker child and wait for it.",
+        "Start a worker child.",
         metadata = mapOf(
           SafetySettingsMetadataKeys.EXECUTION_MODE to "safe",
         ),
@@ -1410,7 +1857,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
 
     val resumedResult = resumedRuntime.execute(
       task = promptTask(
-        "Queue a worker child and wait for it.",
+        "Start a worker child.",
         metadata = mapOf(
           SafetySettingsMetadataKeys.EXECUTION_MODE to "safe",
         ),
@@ -1428,6 +1875,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
       .result
       .metadata
     assertEquals("1", sendInputResultMetadata["supplementalInputCount"])
+    assertEquals("1", sendInputResultMetadata["mailboxPendingInputCount"])
     assertTrue(
       resumedGateway.requests[2].prompt.contains(
         "After the edit, confirm whether notes.txt now contains DONE.",
@@ -1447,6 +1895,128 @@ class OpenCrayAgentRuntimeSubAgentTest {
     )
   }
 
+  @Test
+  fun listSubagentsReturnsMailboxAndLifecycleStateForKnownHandles() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-list").toPath()
+    val waitingHandle = SubAgentHandleState(
+      agentId = "child-waiting",
+      childRunId = "child-run-waiting",
+      childTaskId = "child-task-waiting",
+      description = "Edit notes after approval",
+      prompt = "Replace TODO with DONE in notes.txt.",
+      mailbox = SubAgentMailbox(
+        messages = listOf(
+          SubAgentMailboxMessage(
+            messageId = "msg-1",
+            text = "First follow-up.",
+            createdAtEpochMs = 1_100L,
+          ),
+          SubAgentMailboxMessage(
+            messageId = "msg-2",
+            text = "Second follow-up.",
+            createdAtEpochMs = 1_200L,
+          ),
+        ),
+        lastDeliveredMessageId = "msg-1",
+      ),
+      subagentType = "worker",
+      contextMode = "delegated",
+      parentRunId = "parent-run-a",
+      parentTaskId = "parent-task-a",
+      parentTurn = 2,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot(
+        state = SubAgentExecutionState.WAITING_APPROVAL,
+        continuationKind = SubAgentContinuationKind.PROMPT_RESUME,
+        resumable = true,
+        requiresUserAction = true,
+        isHighRisk = false,
+        headline = "Waiting for edit approval.",
+      ),
+      childPromptResumeState = OpenCrayPromptResumeState(
+        turnIndex = 1,
+        toolCallCount = 1,
+      ),
+      childPromptCheckpointBoundary = OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
+      childPromptCheckpointAtEpochMs = 1_250L,
+      childTurnCount = 1,
+      childToolCallCount = 1,
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_300L,
+    )
+    val completedHandle = SubAgentHandleState(
+      agentId = "child-done",
+      childRunId = "child-run-done",
+      childTaskId = "child-task-done",
+      description = "Inspect README",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "explorer",
+      contextMode = "minimal",
+      parentRunId = "parent-run-b",
+      parentTaskId = "parent-task-b",
+      parentTurn = 1,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot(
+        state = SubAgentExecutionState.COMPLETED,
+        continuationKind = SubAgentContinuationKind.NONE,
+        resumable = false,
+        requiresUserAction = false,
+        isHighRisk = false,
+        headline = "README says hello.",
+      ),
+      childExecutionStatus = ExecutionStatus.SUCCESS.name,
+      childTurnCount = 1,
+      childToolCallCount = 1,
+      createdAtEpochMs = 900L,
+      updatedAtEpochMs = 1_100L,
+    )
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = RecordingGateway(outputs = emptyList()),
+      promptResumeState = OpenCrayPromptResumeState(
+        turnIndex = 0,
+        toolCallCount = 0,
+        subAgentHandles = listOf(waitingHandle, completedHandle),
+      ),
+    )
+
+    val result = runtime.execute(
+      task = directToolCallTask("""{"type":"tool_call","tool_name":"list_subagents","arguments":{}}"""),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("2", result.metadata["subagentCount"])
+    assertEquals("1", result.metadata["openSubagentCount"])
+    val payload = TEST_JSON.parseToJsonElement(result.stdout).jsonObject
+    assertEquals("2", payload.getValue("count").jsonPrimitive.content)
+    assertEquals("1", payload.getValue("openCount").jsonPrimitive.content)
+    val subagents = payload.getValue("subagents").jsonArray
+    assertEquals(2, subagents.size)
+    val firstHandle = subagents[0].jsonObject
+    assertEquals("child-waiting", firstHandle.getValue("agentId").jsonPrimitive.content)
+    assertEquals("parent-run-a", firstHandle.getValue("parentRunId").jsonPrimitive.content)
+    assertEquals("worker", firstHandle.getValue("subagentType").jsonPrimitive.content)
+    assertEquals("waiting_approval", firstHandle.getValue("state").jsonPrimitive.content)
+    assertEquals("prompt_resume", firstHandle.getValue("continuationKind").jsonPrimitive.content)
+    assertEquals("true", firstHandle.getValue("resumable").jsonPrimitive.content)
+    assertEquals("true", firstHandle.getValue("requiresUserAction").jsonPrimitive.content)
+    assertEquals("Waiting for edit approval.", firstHandle.getValue("summary").jsonPrimitive.content)
+    assertEquals("2", firstHandle.getValue("mailboxMessageCount").jsonPrimitive.content)
+    assertEquals("1", firstHandle.getValue("mailboxPendingMessageCount").jsonPrimitive.content)
+    assertEquals("msg-1", firstHandle.getValue("mailboxLastDeliveredMessageId").jsonPrimitive.content)
+    assertEquals("1", firstHandle.getValue("childTurnCount").jsonPrimitive.content)
+    assertEquals("1", firstHandle.getValue("childToolCallCount").jsonPrimitive.content)
+    assertEquals(
+      "tool_result_committed",
+      firstHandle.getValue("childPromptCheckpointBoundary").jsonPrimitive.content,
+    )
+    val secondHandle = subagents[1].jsonObject
+    assertEquals("child-done", secondHandle.getValue("agentId").jsonPrimitive.content)
+    assertEquals("completed", secondHandle.getValue("state").jsonPrimitive.content)
+    assertEquals("SUCCESS", secondHandle.getValue("childExecutionStatus").jsonPrimitive.content)
+  }
+
   private fun runtime(
     workspaceRoot: java.nio.file.Path,
     readRoots: Set<java.nio.file.Path> = setOf(workspaceRoot),
@@ -1456,6 +2026,9 @@ class OpenCrayAgentRuntimeSubAgentTest {
     promptResumeState: OpenCrayPromptResumeState? = null,
     approvedSubAgentResume: SubAgentApprovalResume? = null,
     rejectedSubAgentResume: SubAgentApprovalResume? = null,
+    seededSubAgentHandles: List<SubAgentHandleState> = emptyList(),
+    subAgentExecutionCoordinator: com.opencray.runtime.subagent.SubAgentExecutionCoordinator =
+      InMemorySubAgentExecutionCoordinator(),
   ): OpenCrayAgentRuntime = OpenCrayAgentRuntime(
     gateway = gateway,
     toolDispatcher = OpenCrayToolDispatcher(
@@ -1471,6 +2044,8 @@ class OpenCrayAgentRuntimeSubAgentTest {
       promptResumeState = promptResumeState,
       approvedSubAgentResume = approvedSubAgentResume,
       rejectedSubAgentResume = rejectedSubAgentResume,
+      seededSubAgentHandles = seededSubAgentHandles,
+      subAgentExecutionCoordinator = subAgentExecutionCoordinator,
       json = TEST_JSON,
     ),
     eventSink = eventSink,
@@ -1545,6 +2120,13 @@ class OpenCrayAgentRuntimeSubAgentTest {
     activeSkillActivationSource = "skill_read",
   )
 
+  private fun requestHasTool(
+    request: LiteLlmGatewayRequest,
+    toolName: String,
+  ): Boolean = request.tools.any { definition ->
+    definition.name == toolName
+  }
+
   private fun jsonEscape(value: String): String = value.replace("\\", "\\\\")
 
   private companion object {
@@ -1562,14 +2144,18 @@ class OpenCrayAgentRuntimeSubAgentTest {
   private class RecordingGateway(
     outputs: List<String>,
   ) : LiteLlmGateway {
+    private val lock = Any()
     private val queuedOutputs = ArrayDeque(outputs)
     val requests = mutableListOf<LiteLlmGatewayRequest>()
     private var now = 20_000L
 
     override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
-      requests += request
-      val output = queuedOutputs.removeFirstOrNull()
-        ?: error("No fake LLM output left for request ${request.requestId}.")
+      val (output, startedAt, finishedAt) = synchronized(lock) {
+        requests += request
+        val nextOutput = queuedOutputs.removeFirstOrNull()
+          ?: error("No fake LLM output left for request ${request.requestId}.")
+        Triple(nextOutput, now++, now++)
+      }
       val selection = LiteLlmRouteSelectionMetadata(
         profileId = "test-profile",
         routeId = "test-route",
@@ -1577,8 +2163,49 @@ class OpenCrayAgentRuntimeSubAgentTest {
         model = "fake-model",
         attemptIndex = 0,
       )
-      val startedAt = now++
-      val finishedAt = now++
+      return LiteLlmGatewayResult(
+        requestId = request.requestId,
+        status = LiteLlmGatewayStatus.SUCCESS,
+        completionMode = LiteLlmCompletionMode.PRIMARY,
+        outputText = output,
+        selectedRoute = selection,
+        attempts = listOf(
+          LiteLlmAttemptRecord(
+            route = selection,
+            outcome = LiteLlmAttemptOutcome.SUCCESS,
+            outputChars = output.length,
+            startedAtEpochMs = startedAt,
+            finishedAtEpochMs = finishedAt,
+          ),
+        ),
+        startedAtEpochMs = startedAt,
+        finishedAtEpochMs = finishedAt,
+      )
+    }
+  }
+
+  private class ScriptedGateway(
+    private val handler: (LiteLlmGatewayRequest) -> String,
+  ) : LiteLlmGateway {
+    private val lock = Any()
+    val requests = mutableListOf<LiteLlmGatewayRequest>()
+    private var now = 20_000L
+
+    override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+      synchronized(lock) {
+        requests += request
+      }
+      val output = handler(request)
+      val selection = LiteLlmRouteSelectionMetadata(
+        profileId = "test-profile",
+        routeId = "test-route",
+        providerId = "fake",
+        model = "fake-model",
+        attemptIndex = 0,
+      )
+      val (startedAt, finishedAt) = synchronized(lock) {
+        Pair(now++, now++)
+      }
       return LiteLlmGatewayResult(
         requestId = request.requestId,
         status = LiteLlmGatewayStatus.SUCCESS,

@@ -3,11 +3,13 @@ import 'package:flutter/services.dart';
 import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_draft_attachment.dart';
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_agent_snapshot.dart';
 import '../models/opencray_debug_snapshot.dart';
 import '../models/opencray_file_image_preview.dart';
 import '../models/opencray_file_text_preview.dart';
 import '../models/opencray_file_voice_playback_source.dart';
 import '../models/opencray_files_snapshot.dart';
+import '../models/opencray_image_reference.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
 import '../models/opencray_media_speech_config.dart';
@@ -15,6 +17,7 @@ import '../models/opencray_mcp_settings.dart';
 import '../models/opencray_network_search_config.dart';
 import '../models/opencray_notification_settings.dart';
 import '../models/opencray_personalization_config.dart';
+import '../models/opencray_sandbox_preview_embed_config.dart';
 import '../models/opencray_sandbox_settings.dart';
 import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
@@ -49,6 +52,11 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async =>
       throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCraySandboxPreviewEmbedConfig> resolveSandboxPreviewEmbedConfig(
+    String previewUrl,
+  ) async => throw StateError(_failureMessage);
 
   @override
   Future<OpenCrayFileImagePreview> loadWorkspaceImagePreview(
@@ -126,6 +134,61 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
 
   @override
   Future<void> showNativeToast(String message) async {}
+
+  @override
+  Future<List<OpenCraySettingsImageAsset>> listSettingsImageAssets() async =>
+      const <OpenCraySettingsImageAsset>[];
+
+  @override
+  Future<List<OpenCraySettingsImageAsset>> pickSettingsImageAssets() async =>
+      const <OpenCraySettingsImageAsset>[];
+
+  @override
+  Future<List<OpenCraySettingsImageAsset>> importSettingsImageAssets(
+    List<String> uriStrings,
+  ) async => throw StateError(_failureMessage);
+
+  @override
+  Future<List<OpenCrayAgentSnapshot>> listAgents() async =>
+      const <OpenCrayAgentSnapshot>[];
+
+  @override
+  Future<OpenCrayAgentSnapshot?> loadActiveAgent() async => null;
+
+  @override
+  Future<OpenCrayAgentSnapshot> createAgent(
+    OpenCrayAgentCreateRequest request,
+  ) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayAgentSnapshot?> selectAgent(String agentId) async =>
+      throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCraySoulVisualIdentity?> loadSoulVisualIdentity() async => null;
+
+  @override
+  Future<OpenCraySoulVisualIdentity?> saveSoulPrimaryPortrait(
+    OpenCrayImageReferenceSource source,
+  ) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCraySoulVisualIdentity?> saveSoulReferenceImage({
+    required String refId,
+    required OpenCrayImageReferenceSource source,
+  }) async => throw StateError(_failureMessage);
+
+  @override
+  Future<List<OpenCrayImageReference>> listMemoryImageReferences(
+    String memoryId,
+  ) async => const <OpenCrayImageReference>[];
+
+  @override
+  Future<OpenCrayMemoryImageReferenceResult?> attachMemoryImageReference({
+    required String memoryId,
+    required OpenCrayImageReferenceSource source,
+    String? preferredMode,
+  }) async => throw StateError(_failureMessage);
 
   @override
   Future<OpenCraySettingsOverviewSnapshot> loadSettingsOverview() async =>
@@ -772,6 +835,9 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     String runId, {
     Duration timeout = const Duration(seconds: 15),
   }) async => null;
+
+  @override
+  Future<void> refreshSandboxSessionInfo() async {}
 
   @override
   Future<void> createChatSession() async {}

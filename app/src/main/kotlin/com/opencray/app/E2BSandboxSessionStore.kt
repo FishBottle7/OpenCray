@@ -18,6 +18,17 @@ internal data class E2BSandboxSessionSnapshot(
   val workspaceRoot: String,
   val templateId: String,
   val updatedAtEpochMs: Long,
+  val previewCandidatePorts: List<Int> = emptyList(),
+  val remoteWorkspaceRoot: String? = null,
+  val lastPreviewUrl: String? = null,
+  val lastPreviewPort: Int? = null,
+  val lastPreviewPath: String? = null,
+  val lastPreviewProbeStatus: String? = null,
+  val lastPreviewProbeHttpStatusCode: Int? = null,
+  val lastPreviewProbeMessage: String? = null,
+  val lastPreviewOpenedAtEpochMs: Long? = null,
+  val lastPreviewProbeObservedAtEpochMs: Long? = null,
+  val lastPreviewProbeSource: String? = null,
 )
 
 internal interface E2BSandboxSessionKeyValueStore {

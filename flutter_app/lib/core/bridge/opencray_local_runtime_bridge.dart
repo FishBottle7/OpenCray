@@ -6,11 +6,13 @@ import 'package:flutter/services.dart';
 
 import '../models/opencray_chat_draft_attachment.dart';
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_agent_snapshot.dart';
 import '../models/opencray_debug_snapshot.dart';
 import '../models/opencray_file_image_preview.dart';
 import '../models/opencray_file_text_preview.dart';
 import '../models/opencray_file_voice_playback_source.dart';
 import '../models/opencray_files_snapshot.dart';
+import '../models/opencray_image_reference.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
 import '../models/opencray_media_speech_config.dart';
@@ -18,6 +20,7 @@ import '../models/opencray_mcp_settings.dart';
 import '../models/opencray_network_search_config.dart';
 import '../models/opencray_notification_settings.dart';
 import '../models/opencray_personalization_config.dart';
+import '../models/opencray_sandbox_preview_embed_config.dart';
 import '../models/opencray_sandbox_settings.dart';
 import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
@@ -50,6 +53,15 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async =>
       OpenCrayFilesSnapshot.fromMap(await _getMap('v1/files_snapshot'));
+
+  @override
+  Future<OpenCraySandboxPreviewEmbedConfig> resolveSandboxPreviewEmbedConfig(
+    String previewUrl,
+  ) async => OpenCraySandboxPreviewEmbedConfig.fromMap(
+    await _postMap('v1/resolve_sandbox_preview_embed_config', <String, Object?>{
+      'previewUrl': previewUrl,
+    }),
+  );
 
   @override
   Future<OpenCrayFileImagePreview> loadWorkspaceImagePreview(
@@ -181,6 +193,146 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
 
   @override
   Future<void> showNativeToast(String message) async {}
+
+  @override
+  Future<List<OpenCraySettingsImageAsset>> listSettingsImageAssets() async =>
+      (await _getJson('v1/settings_image_assets') as List<Object?>? ??
+              const <Object?>[])
+          .map(_requireMap)
+          .map(OpenCraySettingsImageAsset.fromMap)
+          .toList(growable: false);
+
+  @override
+  Future<List<OpenCraySettingsImageAsset>> pickSettingsImageAssets() async =>
+      const <OpenCraySettingsImageAsset>[];
+
+  @override
+  Future<List<OpenCraySettingsImageAsset>> importSettingsImageAssets(
+    List<String> uriStrings,
+  ) async =>
+      (await _requestJson(
+                    'POST',
+                    'v1/import_settings_image_assets',
+                    body: <String, Object?>{'uriStrings': uriStrings},
+                  )
+                  as List<Object?>? ??
+              const <Object?>[])
+          .map(_requireMap)
+          .map(OpenCraySettingsImageAsset.fromMap)
+          .toList(growable: false);
+
+  @override
+  Future<List<OpenCrayAgentSnapshot>> listAgents() async =>
+      (await _getJson('v1/agents') as List<Object?>? ?? const <Object?>[])
+          .map(_requireMap)
+          .map(OpenCrayAgentSnapshot.fromMap)
+          .toList(growable: false);
+
+  @override
+  Future<OpenCrayAgentSnapshot?> loadActiveAgent() async {
+    final payload = await _getJson('v1/active_agent');
+    if (payload == null) {
+      return null;
+    }
+    return OpenCrayAgentSnapshot.fromMap(_requireMap(payload));
+  }
+
+  @override
+  Future<OpenCrayAgentSnapshot> createAgent(
+    OpenCrayAgentCreateRequest request,
+  ) async => OpenCrayAgentSnapshot.fromMap(
+    _requireMap(
+      await _requestJson('POST', 'v1/create_agent', body: request.toMap()),
+    ),
+  );
+
+  @override
+  Future<OpenCrayAgentSnapshot?> selectAgent(String agentId) async {
+    final payload = await _requestJson(
+      'POST',
+      'v1/select_agent',
+      body: <String, Object?>{'agentId': agentId},
+    );
+    if (payload == null) {
+      return null;
+    }
+    return OpenCrayAgentSnapshot.fromMap(_requireMap(payload));
+  }
+
+  @override
+  Future<OpenCraySoulVisualIdentity?> loadSoulVisualIdentity() async {
+    final payload = await _getJson('v1/soul_visual_identity');
+    if (payload == null) {
+      return null;
+    }
+    return OpenCraySoulVisualIdentity.fromMap(_requireMap(payload));
+  }
+
+  @override
+  Future<OpenCraySoulVisualIdentity?> saveSoulPrimaryPortrait(
+    OpenCrayImageReferenceSource source,
+  ) async {
+    final payload = await _requestJson(
+      'POST',
+      'v1/save_soul_primary_portrait',
+      body: <String, Object?>{'source': source.toMap()},
+    );
+    if (payload == null) {
+      return null;
+    }
+    return OpenCraySoulVisualIdentity.fromMap(_requireMap(payload));
+  }
+
+  @override
+  Future<OpenCraySoulVisualIdentity?> saveSoulReferenceImage({
+    required String refId,
+    required OpenCrayImageReferenceSource source,
+  }) async {
+    final payload = await _requestJson(
+      'POST',
+      'v1/save_soul_reference_image',
+      body: <String, Object?>{'refId': refId, 'source': source.toMap()},
+    );
+    if (payload == null) {
+      return null;
+    }
+    return OpenCraySoulVisualIdentity.fromMap(_requireMap(payload));
+  }
+
+  @override
+  Future<List<OpenCrayImageReference>> listMemoryImageReferences(
+    String memoryId,
+  ) async =>
+      (await _getJson(
+                    'v1/memory_image_references',
+                    queryParameters: <String, String>{'memoryId': memoryId},
+                  )
+                  as List<Object?>? ??
+              const <Object?>[])
+          .map(_requireMap)
+          .map(OpenCrayImageReference.fromMap)
+          .toList(growable: false);
+
+  @override
+  Future<OpenCrayMemoryImageReferenceResult?> attachMemoryImageReference({
+    required String memoryId,
+    required OpenCrayImageReferenceSource source,
+    String? preferredMode,
+  }) async {
+    final payload = await _requestJson(
+      'POST',
+      'v1/attach_memory_image_reference',
+      body: <String, Object?>{
+        'memoryId': memoryId,
+        'source': source.toMap(),
+        'preferredMode': preferredMode,
+      },
+    );
+    if (payload == null) {
+      return null;
+    }
+    return OpenCrayMemoryImageReferenceResult.fromMap(_requireMap(payload));
+  }
 
   @override
   Future<OpenCraySettingsOverviewSnapshot> loadSettingsOverview() async =>
@@ -707,6 +859,10 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     }
     return OpenCrayChatRunSnapshot.fromMap(_requireMap(payload));
   }
+
+  @override
+  Future<void> refreshSandboxSessionInfo() =>
+      _postVoid('v1/refresh_sandbox_session_info');
 
   @override
   Future<void> createChatSession() => _postVoid('v1/create_chat_session');

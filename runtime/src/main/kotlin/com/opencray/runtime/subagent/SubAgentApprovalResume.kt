@@ -19,12 +19,16 @@ data class SubAgentApprovalResume(
     require(childRunId == null || childRunId.isNotBlank()) { "SubAgentApprovalResume childRunId must not be blank." }
     require(childTaskId == null || childTaskId.isNotBlank()) { "SubAgentApprovalResume childTaskId must not be blank." }
   }
+
+  val handleId: String?
+    get() = agentId
 }
 
 object SubAgentApprovalResumeMetadata {
   const val KEY_PROMPT_RESUME_JSON: String = "subAgentPromptResumeJson"
   const val KEY_APPROVED_TOOL_NAME: String = "subAgentApprovedToolName"
   const val KEY_IS_HIGH_RISK: String = "subAgentApprovalIsHighRisk"
+  const val KEY_HANDLE_ID: String = "subAgentApprovalHandleId"
   const val KEY_AGENT_ID: String = "subAgentApprovalAgentId"
   const val KEY_CHILD_RUN_ID: String = "subAgentApprovalChildRunId"
   const val KEY_CHILD_TASK_ID: String = "subAgentApprovalChildTaskId"
@@ -42,7 +46,10 @@ object SubAgentApprovalResumeMetadata {
     )
     put(KEY_APPROVED_TOOL_NAME, resume.approvedToolName)
     put(KEY_IS_HIGH_RISK, resume.isHighRisk.toString())
-    resume.agentId?.let { put(KEY_AGENT_ID, it) }
+    resume.handleId?.let {
+      put(KEY_HANDLE_ID, it)
+      put(KEY_AGENT_ID, it)
+    }
     resume.childRunId?.let { put(KEY_CHILD_RUN_ID, it) }
     resume.childTaskId?.let { put(KEY_CHILD_TASK_ID, it) }
   }
@@ -71,7 +78,10 @@ object SubAgentApprovalResumeMetadata {
       isHighRisk = metadata[KEY_IS_HIGH_RISK]
         ?.trim()
         ?.equals("true", ignoreCase = true) == true,
-      agentId = metadata[KEY_AGENT_ID]
+      agentId = metadata[KEY_HANDLE_ID]
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: metadata[KEY_AGENT_ID]
         ?.trim()
         ?.takeIf(String::isNotBlank),
       childRunId = metadata[KEY_CHILD_RUN_ID]

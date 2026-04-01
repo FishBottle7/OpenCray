@@ -5,6 +5,7 @@ import com.opencray.runtime.process.ManagedProcessControllerFactory
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.process.ReconnectableManagedProcessControllerFactory
 
 internal class RoutingManagedProcessControllerFactory(
   private val settingsProvider: () -> ResolvedSandboxSettings,
@@ -12,7 +13,7 @@ internal class RoutingManagedProcessControllerFactory(
   private val localFactory: ManagedProcessControllerFactory,
   private val sandboxFactoryProvider: (ResolvedSandboxSettings) -> ManagedProcessControllerFactory? = { null },
   private val clock: () -> Long = { System.currentTimeMillis() },
-) : ManagedProcessControllerFactory {
+) : ReconnectableManagedProcessControllerFactory {
   override fun start(request: ManagedProcessStartRequest): ManagedProcessController {
     if (request.metadata["managedByPythonRuntime"]?.equals("true", ignoreCase = true) == true) {
       return pythonRuntimeFactory.start(request)
@@ -52,6 +53,25 @@ internal class RoutingManagedProcessControllerFactory(
           metadata = routedRequest.metadata,
         ),
       )
+    }
+  }
+
+  override fun reconnect(snapshot: ManagedProcessSnapshot): ManagedProcessController? {
+    if (snapshot.metadata["managedByPythonRuntime"]?.equals("true", ignoreCase = true) == true) {
+      return (pythonRuntimeFactory as? ReconnectableManagedProcessControllerFactory)?.reconnect(snapshot)
+    }
+    return when (snapshot.metadata["executionBackend"]?.trim()) {
+      ResolvedExecutionBackend.SANDBOX_REMOTE.wireValue -> {
+        val sandboxFactory = sandboxFactoryProvider(settingsProvider())
+          as? ReconnectableManagedProcessControllerFactory
+          ?: return null
+        sandboxFactory.reconnect(snapshot)
+      }
+
+      ResolvedExecutionBackend.LOCAL_HOST.wireValue ->
+        (localFactory as? ReconnectableManagedProcessControllerFactory)?.reconnect(snapshot)
+
+      else -> null
     }
   }
 }

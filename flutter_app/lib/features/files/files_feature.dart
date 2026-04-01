@@ -12,6 +12,7 @@ import '../../core/models/opencray_file_image_preview.dart';
 import '../../core/models/opencray_file_text_preview.dart';
 import '../../core/models/opencray_files_snapshot.dart';
 import '../../core/models/opencray_workspace_text_document.dart';
+import '../../core/widgets/opencray_image_bytes_view.dart';
 import '../../core/widgets/opencray_markdown.dart';
 
 class FilesFeatureController {
@@ -2764,9 +2765,10 @@ class _ImagePreviewDialog extends StatelessWidget {
                 borderRadius: BorderRadius.circular(28),
                 child: DecoratedBox(
                   decoration: const BoxDecoration(color: Color(0xFFF2F2F5)),
-                  child: Image.memory(
-                    preview.bytes,
+                  child: OpenCrayImageBytesView(
                     key: const ValueKey<String>('files-image-preview-image'),
+                    bytes: preview.bytes,
+                    mimeType: preview.mimeType,
                     fit: BoxFit.cover,
                     filterQuality: FilterQuality.medium,
                     gaplessPlayback: true,
@@ -2995,6 +2997,7 @@ const Set<String> _imagePreviewExtensions = <String>{
   'bmp',
   'heic',
   'heif',
+  'svg',
 };
 
 const Set<String> _textPreviewFileNames = <String>{

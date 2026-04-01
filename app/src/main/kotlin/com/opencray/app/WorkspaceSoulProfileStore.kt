@@ -1,5 +1,8 @@
 package com.opencray.app
 
+import com.opencray.runtime.OpenCraySoulVisualIdentity
+import com.opencray.runtime.soul.SoulProfileExtensionKeys
+import com.opencray.runtime.soul.SoulVisualIdentitySupport
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
@@ -17,22 +20,46 @@ internal class WorkspaceSoulProfileStore(
   private val soulExtensionFactory: PersonalizationSoulExtensionFactory = PersonalizationSoulExtensionFactory(),
 ) {
   fun loadSoulDocument(workspaceRoot: Path?): WorkspaceSoulDocument? {
-    val normalizedRoot = workspaceRoot?.toAbsolutePath()?.normalize() ?: return null
-    val file = normalizedRoot.resolve(SOUL_FILE_NAME).normalize()
-    if (!file.startsWith(normalizedRoot) || !file.isRegularFile()) {
-      return null
-    }
-    val content = String(Files.readAllBytes(file), StandardCharsets.UTF_8)
-    return WorkspaceSoulDocument(
-      file = file,
+    val file = workspaceRoot
+      ?.toAbsolutePath()
+      ?.normalize()
+      ?.resolve(SOUL_FILE_NAME)
+      ?.normalize()
+      ?: return null
+    return loadSoulDocumentFile(
+      soulFile = file,
       relativePath = SOUL_FILE_NAME,
-      content = content,
-      profile = parseSoulProfile(content),
     )
   }
 
   fun loadSoulProfile(workspaceRoot: Path?): WorkspaceSoulProfile? =
     loadSoulDocument(workspaceRoot)?.profile
+
+  fun loadSoulVisualIdentity(workspaceRoot: Path?): OpenCraySoulVisualIdentity? =
+    loadSoulProfile(workspaceRoot)?.visualIdentity
+
+  fun loadSoulDocumentFile(
+    soulFile: Path?,
+    relativePath: String = SOUL_FILE_NAME,
+  ): WorkspaceSoulDocument? {
+    val normalizedFile = soulFile?.toAbsolutePath()?.normalize() ?: return null
+    if (!normalizedFile.isRegularFile()) {
+      return null
+    }
+    val content = String(Files.readAllBytes(normalizedFile), StandardCharsets.UTF_8)
+    return WorkspaceSoulDocument(
+      file = normalizedFile,
+      relativePath = relativePath,
+      content = content,
+      profile = parseSoulProfile(content),
+    )
+  }
+
+  fun loadSoulProfileFile(soulFile: Path?): WorkspaceSoulProfile? =
+    loadSoulDocumentFile(soulFile)?.profile
+
+  fun loadSoulVisualIdentityFile(soulFile: Path?): OpenCraySoulVisualIdentity? =
+    loadSoulProfileFile(soulFile)?.visualIdentity
 
   fun saveSoulProfile(
     workspaceRoot: Path,
@@ -43,14 +70,28 @@ internal class WorkspaceSoulProfileStore(
     require(target.startsWith(normalizedRoot)) {
       "SOUL.md must stay inside the workspace root."
     }
-    Files.createDirectories(normalizedRoot)
-    val existingProfile = loadSoulProfile(normalizedRoot)
+    saveSoulProfileFile(
+      soulFile = target,
+      profile = profile,
+    )
+  }
+
+  fun saveSoulProfileFile(
+    soulFile: Path,
+    profile: WorkspaceSoulProfile,
+  ) {
+    val normalizedFile = soulFile.toAbsolutePath().normalize()
+    val parent = requireNotNull(normalizedFile.parent) {
+      "SOUL.md must have a parent directory."
+    }
+    Files.createDirectories(parent)
+    val existingProfile = loadSoulProfileFile(normalizedFile)
     val updatedProfile = mergedProfile(
       existingProfile = existingProfile,
       incomingProfile = profile,
     )
     Files.write(
-      target,
+      normalizedFile,
       renderDocument(updatedProfile).toByteArray(StandardCharsets.UTF_8),
       StandardOpenOption.CREATE,
       StandardOpenOption.TRUNCATE_EXISTING,
@@ -58,13 +99,56 @@ internal class WorkspaceSoulProfileStore(
     )
   }
 
+  fun saveSoulVisualIdentity(
+    workspaceRoot: Path,
+    visualIdentity: OpenCraySoulVisualIdentity?,
+  ) {
+    val existingProfile = loadSoulProfile(workspaceRoot)
+    saveSoulProfile(
+      workspaceRoot = workspaceRoot,
+      profile = WorkspaceSoulProfile(
+        presetName = existingProfile?.presetName.orEmpty(),
+        customLabel = existingProfile?.customLabel.orEmpty(),
+        customGuidance = existingProfile?.customGuidance.orEmpty(),
+        visualIdentity = visualIdentity,
+        extensions = existingProfile?.extensions.orEmpty(),
+      ),
+    )
+  }
+
+  fun saveSoulVisualIdentityFile(
+    soulFile: Path,
+    visualIdentity: OpenCraySoulVisualIdentity?,
+  ) {
+    val existingProfile = loadSoulProfileFile(soulFile)
+    saveSoulProfileFile(
+      soulFile = soulFile,
+      profile = WorkspaceSoulProfile(
+        presetName = existingProfile?.presetName.orEmpty(),
+        customLabel = existingProfile?.customLabel.orEmpty(),
+        customGuidance = existingProfile?.customGuidance.orEmpty(),
+        visualIdentity = visualIdentity,
+        extensions = existingProfile?.extensions.orEmpty(),
+      ),
+    )
+  }
+
   fun clearSoulProfile(workspaceRoot: Path?): Boolean {
-    val normalizedRoot = workspaceRoot?.toAbsolutePath()?.normalize() ?: return false
-    val target = normalizedRoot.resolve(SOUL_FILE_NAME).normalize()
-    if (!target.startsWith(normalizedRoot) || !Files.exists(target)) {
+    val target = workspaceRoot
+      ?.toAbsolutePath()
+      ?.normalize()
+      ?.resolve(SOUL_FILE_NAME)
+      ?.normalize()
+      ?: return false
+    return clearSoulProfileFile(target)
+  }
+
+  fun clearSoulProfileFile(soulFile: Path?): Boolean {
+    val normalizedFile = soulFile?.toAbsolutePath()?.normalize() ?: return false
+    if (!Files.exists(normalizedFile)) {
       return false
     }
-    return Files.deleteIfExists(target)
+    return Files.deleteIfExists(normalizedFile)
   }
 
   private fun mergedProfile(
@@ -107,7 +191,8 @@ internal class WorkspaceSoulProfileStore(
       presetName = normalizedPresetName,
       customLabel = incomingProfile.customLabel.trim(),
       customGuidance = incomingProfile.customGuidance.trim(),
-      extensions = preservedExtensions + explicitExtensions + managedExtensions,
+      visualIdentity = incomingProfile.visualIdentity ?: existingProfile?.visualIdentity,
+      extensions = preservedExtensions + managedExtensions + explicitExtensions,
     )
   }
 
@@ -138,17 +223,24 @@ internal class WorkspaceSoulProfileStore(
       .toMap(linkedMapOf())
     val managedExtensions = soulExtensionFactory.createManagedExtensions(presetName)
     val mergedExtensions = managedExtensions + explicitExtensions
+    val visualIdentity = SoulVisualIdentitySupport.decodeFromExtensions(mergedExtensions)
+    val normalizedExtensions = mergedExtensions
+      .filterKeys { key ->
+        PersonalizationSoulExtensionFactory.normalizeKey(key) != SoulProfileExtensionKeys.VISUAL_IDENTITY_JSON
+      }
     val profile = WorkspaceSoulProfile(
       presetName = presetName,
       customLabel = customLabel.trim(),
       customGuidance = customGuidance.trim(),
-      extensions = mergedExtensions,
+      visualIdentity = visualIdentity,
+      extensions = normalizedExtensions,
     )
     return if (
       profile.presetName.isBlank() &&
       profile.customLabel.isBlank() &&
       profile.customGuidance.isBlank() &&
-      profile.extensions.isEmpty()
+      profile.extensions.isEmpty() &&
+      profile.visualIdentity?.isMeaningful() != true
     ) {
       null
     } else {
@@ -157,6 +249,10 @@ internal class WorkspaceSoulProfileStore(
   }
 
   private fun renderDocument(profile: WorkspaceSoulProfile): String = buildString {
+    val renderedExtensions = SoulVisualIdentitySupport.encodeIntoExtensions(
+      extensions = profile.extensions,
+      visualIdentity = profile.visualIdentity,
+    )
     appendLine("---")
     appendLine("kind: opencray_soul")
     profile.presetName
@@ -173,7 +269,7 @@ internal class WorkspaceSoulProfileStore(
         append("display_name: ")
         appendLine(displayName)
       }
-    profile.extensions
+    renderedExtensions
       .mapNotNull { (rawKey, rawValue) ->
         val normalizedKey = PersonalizationSoulExtensionFactory.normalizeKey(rawKey) ?: return@mapNotNull null
         val normalizedValue = rawValue.trim().takeIf(String::isNotEmpty) ?: return@mapNotNull null
@@ -184,9 +280,18 @@ internal class WorkspaceSoulProfileStore(
       }
       .sortedBy(Pair<String, String>::first)
       .forEach { (key, value) ->
-        append(key)
-        append(": ")
-        appendLine(value)
+        if (key == SoulProfileExtensionKeys.VISUAL_IDENTITY_JSON) {
+          append(key)
+          appendLine(": |-")
+          value.lines().ifEmpty { listOf("") }.forEach { line ->
+            append("  ")
+            appendLine(line)
+          }
+        } else {
+          append(key)
+          append(": ")
+          appendLine(value)
+        }
       }
     appendLine("---")
     profile.customGuidance

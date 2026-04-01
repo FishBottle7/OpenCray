@@ -16,6 +16,7 @@ import com.opencray.llm.ProviderRouting
 import com.opencray.mcp.McpClientExposureReport
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.runtime.AgentTodoStore
+import com.opencray.runtime.AgentTodoStatus
 import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.CommandExecutor
 import com.opencray.runtime.HostProcessPythonRuntime
@@ -45,6 +46,8 @@ import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.ProviderNativeWebSearchSupport
 import com.opencray.runtime.PythonRuntimeManifestSnapshot
 import com.opencray.runtime.SandboxPreviewService
+import com.opencray.runtime.SandboxSessionControlService
+import com.opencray.runtime.SandboxSessionInfoService
 import com.opencray.runtime.bootstrap.BootstrapContextResolver
 import com.opencray.runtime.bootstrap.BootstrapMode
 import com.opencray.runtime.PythonScriptRuntime
@@ -73,6 +76,9 @@ import com.opencray.runtime.skills.SkillCatalogResolver
 import com.opencray.runtime.skills.SkillInstallManifestStore
 import com.opencray.runtime.skills.SkillInventoryResolver
 import com.opencray.runtime.skills.SkillPackageManager
+import com.opencray.runtime.subagent.SubAgentExecutionCoordinator
+import com.opencray.runtime.subagent.SubAgentExecutionState
+import com.opencray.runtime.subagent.SubAgentHandleState
 import com.opencray.runtime.soul.MemoryBackedSoulProfileResolver
 import com.opencray.runtime.soul.NoOpSoulTurnSemanticSignalInterpreter
 import com.opencray.runtime.soul.SoulTurnSemanticSignalInterpretation
@@ -80,6 +86,9 @@ import com.opencray.runtime.soul.SoulTurnSemanticSignalInterpreter
 import com.opencray.runtime.soul.SoulTurnSemanticSignalRequest
 import com.opencray.runtime.web.UnconfiguredWebSearchProvider
 import com.opencray.runtime.web.WebSearchProvider
+import com.opencray.runtime.workingstate.InMemoryWorkingStateStore
+import com.opencray.runtime.workingstate.WorkingState
+import com.opencray.runtime.workingstate.WorkingStateStore
 import java.io.File
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
@@ -107,11 +116,16 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val promptCheckpointStoreProvider: (String) -> PromptCheckpointStore = { sessionId ->
     InMemoryPromptCheckpointStoreFactory().forChatSession(sessionId)
   },
+  private val runEventJournalStoreFactory: RunEventJournalStoreFactory = InMemoryRunEventJournalStoreFactory(),
   private val todoStoreProvider: (String) -> AgentTodoStore = { InMemoryAgentTodoStore() },
+  private val workingStateStoreProvider: (String) -> WorkingStateStore = { InMemoryWorkingStateStore() },
   private val processRegistryProvider: (String) -> AgentProcessRegistry = { InMemoryAgentProcessRegistry() },
   private val transcriptStoreProvider: (String) -> SessionTranscriptStore = { InMemorySessionTranscriptStore() },
   private val supplementStoreProvider: (String) -> SessionSupplementStore = { InMemorySessionSupplementStore() },
   private val compactionStoreProvider: (String) -> SessionCompactionStore = { InMemorySessionCompactionStore() },
+  private val subAgentHandleStoreProvider: (String) -> SubAgentHandleStore = { sessionId ->
+    InMemorySubAgentHandleStoreFactory().forChatSession(sessionId)
+  },
   private val memoryIngestionCoordinator: ChatMemoryIngestionCoordinator? = null,
   private val soulTurnSemanticSignalInterpreter: SoulTurnSemanticSignalInterpreter =
     NoOpSoulTurnSemanticSignalInterpreter,
@@ -120,20 +134,27 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val pythonRuntimeManifestProvider: (() -> PythonRuntimeManifestSnapshot?)? = null,
   private val webSearchProviderFactory: () -> WebSearchProvider = { UnconfiguredWebSearchProvider },
   private val sandboxPreviewServiceProvider: () -> SandboxPreviewService? = { null },
+  private val sandboxSessionControlServiceProvider: () -> SandboxSessionControlService? = { null },
+  private val sandboxSessionInfoServiceProvider: () -> SandboxSessionInfoService? = { null },
   private val skillPackageManagerProvider: () -> SkillPackageManager? = { null },
   private val mediaToolSettingsProvider: () -> OpenCrayMediaToolSettings? = { null },
   private val imageGenerationClientProvider: () -> OpenCrayImageGenerationClient? = { null },
   private val speechSynthesisClientProvider: () -> OpenCraySpeechSynthesisClient? = { null },
   private val nativeWebSearchSessionApprovalProvider: (String) -> Boolean = { false },
   private val hiddenToolNamePrefixesProvider: () -> Set<String> = { emptySet() },
+  private val subAgentExecutionCoordinatorProvider: ((String) -> SubAgentExecutionCoordinator)? = null,
 ) : AgentSessionTaskRuntimeFactory {
   private val todoStoresBySession: ConcurrentMap<String, AgentTodoStore> = ConcurrentHashMap()
   private val promptCheckpointStoresBySession: ConcurrentMap<String, PromptCheckpointStore> =
     ConcurrentHashMap()
   private val processRegistriesBySession: ConcurrentMap<String, AgentProcessRegistry> = ConcurrentHashMap()
+  private val workingStateStoresBySession: ConcurrentMap<String, WorkingStateStore> = ConcurrentHashMap()
   private val transcriptStoresBySession: ConcurrentMap<String, SessionTranscriptStore> = ConcurrentHashMap()
   private val supplementStoresBySession: ConcurrentMap<String, SessionSupplementStore> = ConcurrentHashMap()
   private val compactionStoresBySession: ConcurrentMap<String, SessionCompactionStore> = ConcurrentHashMap()
+  private val subAgentHandleStoresBySession: ConcurrentMap<String, SubAgentHandleStore> = ConcurrentHashMap()
+  private val subAgentExecutionCoordinatorsBySession: ConcurrentMap<String, SubAgentExecutionCoordinator> =
+    ConcurrentHashMap()
   private val memoryRetriever: MemoryRetriever = MemoryRetriever()
   private val memoryBackedSoulResolver: MemoryBackedSoulProfileResolver = MemoryBackedSoulProfileResolver()
   private val bootstrapContextResolver: BootstrapContextResolver = BootstrapContextResolver()
@@ -162,6 +183,19 @@ internal class AppAgentSessionTaskRuntimeFactory(
     processId: String,
   ): ManagedProcessSnapshot? = processRegistryForSession(sessionId).terminate(processId)
 
+  override fun listSubAgentHandles(sessionId: String): List<SubAgentHandleState> =
+    subAgentExecutionCoordinatorsBySession[sessionId]?.allHandles()
+      ?: subAgentHandleStoreForSession(sessionId).list()
+
+  override fun retainKnownSubAgentParentRuns(
+    sessionId: String,
+    parentRunIds: Set<String>,
+  ) {
+    subAgentExecutionCoordinatorsBySession[sessionId]
+      ?.retainKnownParentRuns(parentRunIds)
+      ?: subAgentHandleStoreForSession(sessionId).retainKnownParentRuns(parentRunIds)
+  }
+
   private fun executeTask(
     sessionId: String,
     task: AgentTask,
@@ -170,7 +204,18 @@ internal class AppAgentSessionTaskRuntimeFactory(
   ): ExecutionResult {
     val llmSettings = llmSettingsProvider().sanitized()
     val safetySettings = safetySettingsProvider().sanitized()
-    val requiresLlmConfig = task.type == com.opencray.core.contracts.AgentTaskType.PROMPT
+    val approvalContinuation = approvalContinuationForExecution(sessionId, task.id)
+    val approvalGrant = approvalContinuation.grant
+    val approvalRejection = approvalContinuation.rejection
+    val approvedSubAgentResume = approvalGrant?.subAgentApprovalResume
+    val rejectedSubAgentResume = approvalRejection?.subAgentApprovalResume
+    val requiresLlmConfig = task.type == com.opencray.core.contracts.AgentTaskType.PROMPT ||
+      directToolCallRequiresLlm(
+        sessionId = sessionId,
+        task = task,
+        approvedSubAgentResume = approvedSubAgentResume,
+        rejectedSubAgentResume = rejectedSubAgentResume,
+      )
     if (requiresLlmConfig && !llmSettings.isConfigured()) {
       return ExecutionResult(
         taskId = task.id,
@@ -227,9 +272,6 @@ internal class AppAgentSessionTaskRuntimeFactory(
     }
     val pendingMessageId = task.metadata[METADATA_PENDING_MESSAGE_ID].orEmpty()
     val visibleThroughMessageId = task.metadata[METADATA_VISIBLE_THROUGH_MESSAGE_ID].orEmpty()
-    val approvalContinuation = approvalContinuationForExecution(sessionId, task.id)
-    val approvalGrant = approvalContinuation.grant
-    val approvalRejection = approvalContinuation.rejection
     val hostUiTaskPreapproved = hostUiApprovedToolName(task) != null
     val nativeWebSearchRunApproved =
       approvalGrant?.toolName == ProviderNativeWebSearchSupport.RESUME_TOOL_NAME
@@ -241,8 +283,14 @@ internal class AppAgentSessionTaskRuntimeFactory(
         ?: generalPromptResumeStateForExecution(sessionId, task.id)
       )
       ?.takeIf { task.type == com.opencray.core.contracts.AgentTaskType.PROMPT }
-    val approvedSubAgentResume = approvalGrant?.subAgentApprovalResume
-    val rejectedSubAgentResume = approvalRejection?.subAgentApprovalResume
+    val promptResumeCheckpointBoundary = (
+      approvalGrant?.promptCheckpointBoundary
+        ?: approvalRejection?.promptCheckpointBoundary
+        ?: promptResumeCheckpointBoundaryForExecution(sessionId, task.id)
+      )
+      ?.takeIf {
+        promptResumeState != null && task.type == com.opencray.core.contracts.AgentTaskType.PROMPT
+      }
     val transcriptStore = transcriptStoreForSession(sessionId)
     val supplementStore = supplementStoreForSession(sessionId)
     val memoryRecords = memoryRecordsProvider()
@@ -307,6 +355,8 @@ internal class AppAgentSessionTaskRuntimeFactory(
           processRegistry = processRegistryForSession(sessionId),
           webSearchProvider = webSearchProviderFactory(),
           sandboxPreviewService = sandboxPreviewServiceProvider(),
+          sandboxSessionControlService = sandboxSessionControlServiceProvider(),
+          sandboxSessionInfoService = sandboxSessionInfoServiceProvider(),
           mediaToolSettingsProvider = mediaToolSettingsProvider,
           imageGenerationClient = imageGenerationClientProvider(),
           speechSynthesisClient = speechSynthesisClientProvider(),
@@ -342,8 +392,12 @@ internal class AppAgentSessionTaskRuntimeFactory(
         },
         sessionContext = sessionContext,
         promptResumeState = promptResumeState,
+        promptResumeCheckpointBoundary = promptResumeCheckpointBoundary,
         approvedSubAgentResume = approvedSubAgentResume,
         rejectedSubAgentResume = rejectedSubAgentResume,
+        workingStateStore = workingStateStoreForSession(sessionId),
+        subAgentExecutionCoordinator = subAgentExecutionCoordinatorForSession(sessionId),
+        seededSubAgentHandles = subAgentExecutionCoordinatorForSession(sessionId).allHandles(),
         supplementInputProvider = { runId, taskId ->
           supplementStore.consumeForRun(runId = runId, taskId = taskId)
             .map { entry ->
@@ -401,11 +455,19 @@ internal class AppAgentSessionTaskRuntimeFactory(
       task = task,
       result = result,
     )
+    finalizeWorkingStateAfterTask(
+      sessionId = sessionId,
+      task = task,
+      result = result,
+    )
     return result
   }
 
   internal fun todoStoreForSession(sessionId: String): AgentTodoStore =
     todoStoresBySession.computeIfAbsent(sessionId, todoStoreProvider)
+
+  internal fun workingStateStoreForSession(sessionId: String): WorkingStateStore =
+    workingStateStoresBySession.computeIfAbsent(sessionId, workingStateStoreProvider)
 
   internal fun promptCheckpointStoreForSession(sessionId: String): PromptCheckpointStore =
     promptCheckpointStoresBySession.computeIfAbsent(sessionId, promptCheckpointStoreProvider)
@@ -465,12 +527,63 @@ internal class AppAgentSessionTaskRuntimeFactory(
     return metadataToolName.takeIf { it == payloadToolName }
   }
 
+  private fun directToolCallRequiresLlm(
+    sessionId: String,
+    task: AgentTask,
+    approvedSubAgentResume: com.opencray.runtime.subagent.SubAgentApprovalResume?,
+    rejectedSubAgentResume: com.opencray.runtime.subagent.SubAgentApprovalResume?,
+  ): Boolean {
+    if (task.type != com.opencray.core.contracts.AgentTaskType.TOOL_CALL) {
+      return false
+    }
+    val normalizedToolName = directToolNameFrom(task.input)
+      ?.lowercase()
+      ?: return false
+    if (normalizedToolName != "spawn_agent" && normalizedToolName != "wait_agent") {
+      return false
+    }
+    val agentId = directToolAgentIdFrom(task.input)
+    val existingHandle = agentId?.let { resolvedAgentId ->
+      subAgentExecutionCoordinatorForSession(sessionId)
+        .allHandles()
+        .firstOrNull { handle -> handle.agentId == resolvedAgentId }
+    }
+    val hasApprovalContinuation = approvedSubAgentResume != null || rejectedSubAgentResume != null
+    return when {
+      existingHandle == null -> normalizedToolName == "spawn_agent"
+      existingHandle.snapshot.state in setOf(
+        SubAgentExecutionState.COMPLETED,
+        SubAgentExecutionState.CANCELLED,
+        SubAgentExecutionState.FAILED,
+      ) && existingHandle.pendingApprovalResume == null -> false
+      existingHandle.pendingApprovalResume != null && !hasApprovalContinuation -> false
+      else -> true
+    }
+  }
+
   private fun directToolNameFrom(taskInput: String): String? = runCatching {
     val payload = replayJson.parseToJsonElement(taskInput) as? JsonObject ?: return null
     (payload["tool_name"] as? JsonPrimitive)
       ?.content
       ?.trim()
       ?.takeIf(String::isNotBlank)
+  }.getOrNull()
+
+  private fun directToolAgentIdFrom(taskInput: String): String? = runCatching {
+    val payload = replayJson.parseToJsonElement(taskInput) as? JsonObject ?: return null
+    val arguments = payload["arguments"] as? JsonObject ?: return null
+    sequenceOf(
+      (arguments["agent_id"] as? JsonPrimitive)?.content,
+      (arguments["id"] as? JsonPrimitive)?.content,
+      ((arguments["agent_ids"] as? kotlinx.serialization.json.JsonArray)
+        ?.firstOrNull() as? JsonPrimitive)
+        ?.content,
+      ((arguments["ids"] as? kotlinx.serialization.json.JsonArray)
+        ?.firstOrNull() as? JsonPrimitive)
+        ?.content,
+    ).mapNotNull { value ->
+      value?.trim()?.takeIf(String::isNotBlank)
+    }.firstOrNull()
   }.getOrNull()
 
   internal fun generalPromptResumeStateForExecution(
@@ -481,6 +594,15 @@ internal class AppAgentSessionTaskRuntimeFactory(
       .get(taskId)
       ?.takeIf { checkpoint -> checkpoint.checkpointKind.isGeneralPromptResumeKind() }
       ?.promptResumeState
+
+  internal fun promptResumeCheckpointBoundaryForExecution(
+    sessionId: String,
+    taskId: String,
+  ): OpenCrayPromptCheckpointBoundary? =
+    promptCheckpointStoreForSession(sessionId)
+      .get(taskId)
+      ?.takeIf { checkpoint -> checkpoint.checkpointKind.isCheckpointResumeKind() }
+      ?.runtimeCheckpointBoundaryOrNull()
 
   private fun persistRuntimePromptCheckpoint(
     sessionId: String,
@@ -504,8 +626,14 @@ internal class AppAgentSessionTaskRuntimeFactory(
         pendingMessageId = task.metadata[METADATA_PENDING_MESSAGE_ID]
           ?.trim()
           ?.takeIf(String::isNotBlank),
+        promptCheckpointBoundary = emission.boundary,
         promptResumeState = emission.state,
       ),
+    )
+    runEventJournalStoreFactory.forChatSession(sessionId).appendCheckpoint(
+      runId = task.metadata[METADATA_RUN_ID]?.trim()?.takeIf(String::isNotBlank) ?: task.id,
+      taskId = task.id,
+      emission = emission,
     )
   }
 
@@ -537,6 +665,21 @@ internal class AppAgentSessionTaskRuntimeFactory(
 
   internal fun compactionStoreForSession(sessionId: String): SessionCompactionStore =
     compactionStoresBySession.computeIfAbsent(sessionId, compactionStoreProvider)
+
+  internal fun subAgentHandleStoreForSession(sessionId: String): SubAgentHandleStore =
+    subAgentHandleStoresBySession.computeIfAbsent(sessionId, subAgentHandleStoreProvider)
+
+  internal fun subAgentExecutionCoordinatorForSession(
+    sessionId: String,
+  ): SubAgentExecutionCoordinator =
+    subAgentExecutionCoordinatorsBySession.computeIfAbsent(
+      sessionId,
+    ) { resolvedSessionId ->
+      subAgentExecutionCoordinatorProvider?.invoke(resolvedSessionId)
+        ?: PersistentSessionSubAgentExecutionCoordinator(
+          store = subAgentHandleStoreForSession(resolvedSessionId),
+        )
+    }
 
   internal fun recordSuccessfulToolInteraction(
     sessionId: String,
@@ -749,6 +892,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
       visibleThroughMessageId = visibleThroughMessageId,
       excludedMessageIds = excludedMessageIds,
       soulProfile = soulProfile.takeIf { liveContextPolicy.soulEnabled },
+      workingState = workingStateStoreForSession(sessionId).snapshot(),
     )
     transcriptStore.seedIfEmpty(baseContext.conversation)
     if (appendTaskInputToTranscript) {
@@ -910,6 +1054,26 @@ internal class AppAgentSessionTaskRuntimeFactory(
           ),
         )
       }
+  }
+
+  internal fun finalizeWorkingStateAfterTask(
+    sessionId: String,
+    task: AgentTask,
+    result: ExecutionResult,
+  ) {
+    if (task.type != com.opencray.core.contracts.AgentTaskType.PROMPT) {
+      return
+    }
+    if (result.status != ExecutionStatus.SUCCESS) {
+      return
+    }
+    val hasOpenTodo = todoStoreForSession(sessionId).snapshot().any { entry ->
+      entry.status != AgentTodoStatus.COMPLETED
+    }
+    if (hasOpenTodo) {
+      return
+    }
+    workingStateStoreForSession(sessionId).replace(WorkingState())
   }
 
   private fun recordSupplementReplayEvent(

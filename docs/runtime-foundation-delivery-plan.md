@@ -1,10 +1,10 @@
 # Runtime Foundation Delivery Plan
 
-Last updated: 2026-03-28
+Last updated: 2026-04-01
 
 ## Status
 
-Phase 1 complete; Phase 2 approval-boundary and first general checkpoint restore slice partially implemented; in-process detached-owner foundation, same-process service host, foreground keepalive, scheduled wake bridges, and a first interrupted-run repair wake path landed. True detached ownership and controller-level managed-process reconnect remain pending.
+Phase 1 complete; Phase 2 approval-boundary and generalized checkpoint restore slice substantially implemented; in-process detached-owner foundation, same-process service host, foreground keepalive, scheduled wake bridges, a first interrupted-run repair wake path, and service-owned approval notification handling landed. True detached ownership and controller-level managed-process reconnect remain pending.
 
 ## Goal
 
@@ -190,12 +190,14 @@ Implemented so far in Phase 2:
 - provider-native builtin web-search observations now emit the same general resume checkpoint metadata as normal tool results, so host rebuild after provider-managed search can still resume from a durable post-tool boundary
 - app-layer restore now prefers durable journal tail over `lastEvent` summary when feeding recovery decisions
 - when an explicit `general_resume` checkpoint is missing, app-layer restore can now synthesize one from the durable journal tail or persisted `lastEvent` if that boundary already carries `OpenCrayPromptResumeMetadata`, so safe post-tool-result continuation no longer depends solely on the checkpoint store still being present
+- app-layer restore can now also synthesize generalized prompt checkpoints from durable `lastResult.metadata` when the checkpoint row and journal tail are both missing but the run result still carries `OpenCrayPromptResumeMetadata`, which closes the paused-run restore gap for retry-exhausted and similar result-backed resumes
 - when explicit approval checkpoints are missing, app-layer restore can now also synthesize `waiting_approval`, `approved_pending_resume`, or `rejected_pending_resume` from durable approval-denial result metadata plus the durable tail approval event, so host rebuild no longer loses the user's approval state solely because the checkpoint row is missing
 - interrupted runs without a recoverable checkpoint now surface as explicit interruption in planner output instead of implying automatic legacy rerun
+- `PRE_MODEL_REQUEST` and `ACTION_BATCH_PARSED` now also emit durable journal markers, so those safe boundaries no longer depend solely on the checkpoint store row remaining present after host rebuild
 
 Still pending in Phase 2:
 
-- additional generalized checkpoint boundaries beyond the current post-tool-result `general_resume` slice
+- any additional future checkpoint boundaries beyond the current safe-boundary set if product semantics later require them
 - true cross-process managed-process controller reconnect restore
 - generalized planner integration inside `core` queue restore and detached runtime ownership
 
@@ -223,19 +225,39 @@ First service-host slice landed:
 - the shell snapshot surface is now normalized behind `OpenCrayShellGateway`, and both the Flutter bridge and loopback HTTP server prefer a binder-backed service shell gateway for `loadShellSnapshot()` and shell observation when the binder is available
 - the execution-facing chat/runtime surface is now normalized behind `OpenCrayChatRuntimeGateway`, and both the Flutter bridge and loopback HTTP server dispatch that path through the gateway instead of calling chat/runtime host methods directly
 - the runtime service binder now exposes a service-owned chat/runtime gateway, and the Flutter bridge plus loopback HTTP server prefer that binder-backed gateway for chat/runtime loads and commands when the binder is available
+- chat/runtime mutating commands no longer depend on handing the UI a live binder `OpenCrayChatRuntimeGateway` instance first; those writes now flow through an explicit binder dispatch path, while read/observe fallback remains projection-only
+- chat approval/reject/session-approval decisions now also terminate inside `OpenCrayRuntimeServiceHost` instead of bouncing back through the UI-side host runtime, so the service-owned path owns approval checkpoints, session-scoped grants, snapshot refresh, and sub-agent replay parity
 - chat/runtime observers now switch dynamically between the fallback host gateway and the binder-backed service gateway based on service connection state, so the same event channels can follow the service-owned execution path without recreating the Flutter bridge
 - the skills-management surface is now normalized behind `OpenCraySkillsGateway`, and both the Flutter bridge and loopback HTTP server dispatch skills snapshot, observation, install, update, delete, inspect, and instructions flows through the same service-preferred boundary
 - the runtime service binder now exposes a service-owned skills gateway, and the Flutter bridge plus loopback HTTP server prefer that binder-backed gateway for skills loads and commands whenever binding succeeds
+- skills mutating commands no longer depend on handing the UI a live binder `OpenCraySkillsGateway` instance first; those writes now flow through an explicit binder dispatch path, while read/observe fallback remains projection-only
 - skills observers now switch dynamically between the fallback host gateway and the binder-backed service gateway based on service connection state, so the skills page can follow the service-owned runtime path without recreating the host bridge
 - the settings and runtime-configuration surface is now normalized behind `OpenCraySettingsGateway`, and both the Flutter bridge and loopback HTTP server dispatch settings overview, config loads, and config writes through that same service-preferred boundary
 - the runtime service binder now exposes a service-owned settings gateway, and the Flutter bridge plus loopback HTTP server prefer that binder-backed gateway for settings and runtime-config loads or writes whenever binding succeeds
+- settings mutating commands now also use an explicit service-owned write-dispatch path instead of requiring the UI to fetch a live binder settings gateway first, so binder-pending reads may still project through fallback but settings writes stay attached to the runtime-service owner
 - settings overview observers now switch dynamically between the fallback host gateway and the binder-backed service gateway based on service connection state, so the settings UI can follow the service-owned runtime path without recreating the host bridge
+- inside the binder-backed service path, settings overview/detail loads and settings overview observation now also terminate at a service-owned `SettingsFacade` plus local observer fanout, so those settings-home reads no longer depend on the host facade except for the remaining high-coupling actions like app-language switching
 - service-backed shell/chat/skills/settings observers now re-check the active gateway immediately after connection observation registration, which closes the binder-connect race that could otherwise leave a UI stream stuck on projection fallback until a later connection transition
 - the Android runtime-service client now treats binder attachment as an idle-released transport lease instead of a permanent process-wide bind: active connection observers keep the binder attached, transient reads or commands schedule an automatic unbind after a short quiet window, and detached execution still belongs to the started service plus keepalive path rather than the UI transport
 - service-backed shell/chat/skills/settings read observers now subscribe passively to connection-state changes, so startup-time UI snapshot streams no longer trigger runtime-service start/bind just to watch projection fallback state
 - workspace tree/document operations, local file open/share, native toast, twin import probing, and draft attachment import are now isolated behind `OpenCrayLocalHostGateway`, so the Flutter bridge and loopback HTTP server no longer need to hold a full `OpenCrayHostRuntime` just to reach pure local device/workspace capabilities
 - `OpenCrayHostRuntime` now implements that same local-only gateway by delegation, which keeps the remaining projection fallback compatible while separating service-owned runtime surfaces from local-only host helpers
 - shell, settings, and skills read fallback are now served by dedicated projection-only gateways instead of a full `OpenCrayHostRuntime`, so those surfaces no longer pull the UI-side host facade into existence just to satisfy binder-pending reads
+- chat projection fallback now also reads service lifecycle/work metadata only from the client-visible bridge snapshot path instead of performing its own direct service-host registry peek, which keeps binder-pending runtime projection aligned with the same transport-neutral snapshot boundary used by shell projection
+- shell and chat projection fallback now source runtime-owner/service lifecycle, work-summary, and keepalive metadata from a durable runtime-service projection store when binder access is unavailable, so binder-pending or host-rebuilt reads no longer need to fall back through a live service-host registry bridge
+- the Android runtime-service client no longer defaults legacy `loadSnapshot()/peekSnapshot()` fallback to `OpenCrayRuntimeServiceHostRegistry.peek()` in production; only explicitly injected test/compat bridges can still use that live-host snapshot path
+- the service-owned loopback HTTP server now receives direct service-owned gateways when started from `OpenCrayAgentRuntimeService`, so same-process runtime HTTP traffic no longer bounces through the client/binder abstraction just to get back into the same service owner
+- local-only sandbox preview embed resolution no longer depends on `ensureInProcessRuntimeOwner(...)`; that helper is now constructed directly from sandbox settings and persisted E2B session state, which removes another non-service path back into the old owner singleton
+- the runtime-service gateway bundle itself is now gateway-shaped instead of host-runtime-shaped: chat/skills/settings writes dispatch through the normalized gateway command surfaces, and chat snapshot invalidation is carried by a service-owned chat gateway capability instead of separate `OpenCrayHostRuntime` function references
+- notification-settings load/save inside the service-owned settings gateway now read and write the same notification settings store used by runtime delivery, instead of routing that slice back through `OpenCrayHostRuntime`
+- sandbox load/save inside the service-owned settings gateway now resolve through a narrowed sandbox-settings access boundary plus the existing sandbox payload mappers, so that repository-backed settings slice no longer needs to bounce back through `OpenCrayHostRuntime`
+- network-search load/save and media-speech load/save inside the service-owned settings gateway now terminate at `LocalNetworkSearchConfigFacade` and `LocalMediaSpeechSettingsFacade`, so those facade-backed settings slices also no longer bounce back through `OpenCrayHostRuntime`
+- strong-background capability snapshot/actions inside the service-owned settings gateway now terminate at `AndroidStrongBackgroundSettingsAccess`, while preserving the projected `runtimeServiceConnectionState` field on the binder-owned snapshot shape, so that Android-local settings slice no longer bounces back through `OpenCrayHostRuntime`
+- personalization load/save/reset inside the service-owned settings gateway now terminate at `LocalPersonalizationFacade`, while `setAppLanguage(...)` still remains the main host-coupled settings tail behind an explicit app-language access seam because it refreshes localized resources and fans out shell/settings/skills/chat snapshot updates; after that host-owned language switch, the service-owned settings/skills gateways now also refresh their own localized facades and local observer fanout so binder-connected reads do not stay stale
+- safety load/save inside the service-owned settings gateway now terminate at `LocalSafetySettingsFacade`, and service-owned safety saves emit a narrowed chat-snapshot notifier instead of routing that slice back through the monolithic host save path
+- LLM config load/save/custom-provider/validate and MCP settings load/master-toggle/per-server-toggle inside the service-owned settings gateway now terminate at `LocalLlmConfigFacade` and `LocalMcpSettingsFacade`, so those facade-backed settings slices no longer bounce back through `OpenCrayHostRuntime`
+- service-owned network-search and media-speech saves now also emit a narrowed settings-overview notifier through the runtime-service gateway bundle, so settings overview observers keep updating without routing those writes back through the monolithic host save path
+- the service-owned skills gateway now serves skills snapshot/observation, install and batch-install flows, update check/update flows, source inspection, instructions loading, install-source activation, and local skills mutations directly from `LocalSkillsFacade`, while using a narrowed skills snapshot notifier instead of routing those flows back through `OpenCrayHostRuntime`
 - projection-only skills fallback is now strictly local-only: it filters the local snapshot and local instructions without issuing `SkillsList` or `SkillsFind`, which keeps tool-executing skills discovery on the binder-owned pipeline
 - the existing repair worker can now preflight interrupted interactive repair candidates from non-terminal queue snapshots or prompt checkpoints and wake the runtime service with `ACTION_RESUME_INTERRUPTED_RUNS`, and the service host can rescan known sessions to resume runs that still project as active
 - this is still a same-process service host; stronger detached ownership, dedicated-runtime-process isolation, and true controller-level managed-process reconnect remain later slices
@@ -294,13 +316,14 @@ Planner outputs:
 - `stop_rejected_awaiting_direction`
 - `resume_reconnect_process`
 - `interrupt_recovery_required`
-- `legacy_requeue` for work that was already safely queued before restore, not for interrupted in-flight recovery
 
 Current implementation note:
 
 - queue restore now prefers `resume_from_checkpoint` whenever a durable safe checkpoint exists, even if a managed process is still live
 - `stop_rejected_awaiting_direction` is now used for durable rejected-approval restores so the run stays stopped instead of re-entering a queued resume path
 - `resume_reconnect_process` remains a projected recovery intent for live managed-process state, but true reconnect without checkpoint replay is still not implemented end-to-end
+- plain queued work with no prior execution evidence now stays plain queued with no recovery action
+- queued work that shows prior execution progress but has no durable checkpoint is now converted into explicit interrupted retry state instead of silently replaying from task input
 
 ### Safety rule
 
@@ -388,6 +411,7 @@ Already landed in app process:
 - scheduled task registry, durable spec storage, and run records
 - `AlarmManager` wake path plus `WorkManager` wake and repair path
 - runtime-service wake entrypoints for scheduled dispatch, schedule repair, and interrupted-run resume repair
+- approval notification approve/reject actions now execute through `OpenCrayRuntimeServiceHost` directly instead of routing the service wake path through `OpenCrayHostRuntime`
 - schedule, approval, completion/interruption, and active-runtime notification surfaces
 
 Still pending in this phase:

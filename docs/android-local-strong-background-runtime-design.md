@@ -35,6 +35,7 @@ But the background product surface is still incomplete:
 
 - execution is still driven by same-process executors
 - the runtime service now promotes itself to foreground while keepalive-required work exists, but execution ownership is still same-process and not yet a separate stronger runtime process
+- binder-unavailable shell/chat projection now reads service/runtime status from a file-backed runtime-service projection snapshot rather than consulting a live host-registry bridge, which makes host rebuild UI reads closer to the detached-owner target
 - `AlarmManager` and `WorkManager` trigger bridges now exist for scheduled wake-up and repair
 - active-runtime, approval-needed, completion/interruption, and scheduled-dispatch notifications now exist, including notification-side approve/reject entry for approval waits
 - file-backed managed-process registries can now reattach live controllers across registry or host rebuild while the same app process remains alive, but true cross-process reconnect after process death is still not implemented
@@ -584,6 +585,20 @@ Exit criteria:
 Status:
 
 - partially implemented; capability checks, settings actions, and the in-app notifications/background page are already present, but the overall detached/background runtime is still same-process and not yet a stronger isolated runtime
+- approval notification approve/reject actions now wake the service into a service-owned command path instead of going back through a service-local `OpenCrayHostRuntime` facade
+- chat, skills, and settings mutating commands now also terminate through service-owned binder dispatch paths, and chat approval/session-approval/reject decisions resolve inside `OpenCrayRuntimeServiceHost` rather than through a UI-side host facade
+- binder-pending projection reads are still same-process and snapshot-backed, but they now avoid the older pattern of routing mutating commands or approval decisions back through a caller-owned host facade
+- the runtime-service gateway bundle now routes chat/skills/settings writes through normalized gateway command surfaces and carries chat snapshot invalidation on the service-owned chat gateway itself, which narrows the remaining service coupling to `OpenCrayHostRuntime`
+- that same service-owned settings path now also serves settings overview/detail loads plus overview observation through a local `SettingsFacade` and service-owned observer fanout, so the settings-home read surface no longer depends on the monolithic host facade except for app-language switching
+- notification settings on that service-owned settings path now read and write the same store already used for runtime notification delivery, which removes one more settings slice from the monolithic host facade
+- that same service-owned settings path now also handles strong-background capability snapshot/actions through `AndroidStrongBackgroundSettingsAccess`, while preserving the projected `runtimeServiceConnectionState` field expected by the UI, so Android-local background setup no longer needs to bounce through the monolithic host facade
+- that same service-owned settings path now also handles sandbox load/save through a narrowed sandbox-settings access boundary plus the existing sandbox payload mappers, so the repository-backed sandbox settings flow no longer depends on the monolithic host facade either
+- that same service-owned settings path now also handles network-search and media-speech load/save through `LocalNetworkSearchConfigFacade` and `LocalMediaSpeechSettingsFacade`, so those facade-backed settings actions no longer depend on the monolithic host facade either
+- that same service-owned settings path now also handles personalization load/save/reset through `LocalPersonalizationFacade`, while app-language switching still remains on the host-owned path behind an explicit app-language access seam because it refreshes localized resources and pushes multiple snapshot surfaces at once; after that host-owned switch, the service-owned settings/skills gateways now also refresh their localized facades and local observer fanout so binder-connected reads do not keep stale language state
+- that same service-owned settings path now also handles safety load/save through `LocalSafetySettingsFacade`, and safety saves emit a narrowed chat-only snapshot notifier rather than bouncing back through the monolithic host save path
+- the same service-owned settings path now also handles LLM config load/save/custom-provider/validate plus MCP load/toggle flows through `LocalLlmConfigFacade` and `LocalMcpSettingsFacade`, so those facade-backed settings actions no longer depend on the monolithic host facade either
+- network-search and media-speech saves on that service-owned settings path now also emit a narrowed settings-overview notifier, so the settings home observer still refreshes without re-entering the older host-owned save path
+- the service-owned skills path now also handles skills snapshot/observation, install and batch-install, update check/update, source inspection, instructions loading, install-source activation, and local skill toggles/delete/refresh directly through `LocalSkillsFacade`, reducing the remaining same-process host-facade dependency for skills management
 
 - add exact alarm capability checks
 - add battery optimization checks and guidance

@@ -62,6 +62,9 @@ import com.opencray.runtime.web.WebSearchHit
 import com.opencray.runtime.web.WebSearchProvider
 import com.opencray.runtime.web.WebSearchRequest
 import com.opencray.runtime.web.WebSearchResult
+import com.opencray.runtime.workingstate.InMemoryWorkingStateStore
+import com.opencray.runtime.workingstate.WorkingState
+import com.opencray.runtime.workingstate.WorkingStateStore
 import com.opencray.skills.SkillExecutionContext
 import com.opencray.skills.SkillInvocationControl
 import java.io.File
@@ -176,6 +179,201 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
+  fun runPromptTaskInjectsTodoDerivedWorkingStateIntoGatewayPrompt() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-working-state-todos")
+    val todoStore = InMemoryAgentTodoStore(
+      initialEntries = listOf(
+        AgentTodoEntry(
+          content = "Wire working state todo projection",
+          status = AgentTodoStatus.IN_PROGRESS,
+          activeForm = "Wiring working state todo projection",
+        ),
+        AgentTodoEntry(
+          content = "Add context-manager assertions",
+          status = AgentTodoStatus.PENDING,
+        ),
+        AgentTodoEntry(
+          content = "Run runtime unit tests",
+          status = AgentTodoStatus.PENDING,
+        ),
+      ),
+    )
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"Observed the injected working state."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+          todoStore = todoStore,
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 2, maxToolCalls = 0),
+      clock = IncrementingClock(start = 1_000L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Continue the runtime rollout."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Observed the injected working state.", result.stdout)
+    assertEquals(1, gateway.requests.size)
+    assertTrue(gateway.requests[0].prompt.contains("[Working State]"))
+    assertTrue(gateway.requests[0].prompt.contains("primary_goal=Continue the runtime rollout."))
+    assertTrue(gateway.requests[0].prompt.contains("current_subgoal=Wiring working state todo projection"))
+    assertTrue(gateway.requests[0].prompt.contains("Add context-manager assertions"))
+    assertTrue(gateway.requests[0].prompt.contains("Run runtime unit tests"))
+    assertEquals("true", gateway.requests[0].metadata["contextWorkingStateSynthesizedFromTodos"])
+    assertEquals("2", gateway.requests[0].metadata["contextWorkingStateNextActionCount"])
+  }
+
+  @Test
+  fun runPromptTaskInjectsStructuredMutationActionIntoNextGatewayPrompt() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-working-state-write")
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Write","arguments":{"file_path":"notes.txt","content":"hello from working state"}}""",
+        """{"type":"final","answer":"Wrote the note."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 4, maxToolCalls = 2),
+      clock = IncrementingClock(start = 1_400L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Write a short note and then answer."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Wrote the note.", result.stdout)
+    assertEquals(2, gateway.requests.size)
+    assertTrue(gateway.requests[1].prompt.contains("[Working State]"))
+    assertTrue(gateway.requests[1].prompt.contains("Write file_path=notes.txt"))
+    assertTrue(gateway.requests[1].prompt.contains("source=workspace_mutation"))
+    assertEquals("1", gateway.requests[1].metadata["contextWorkingStateRecentActionCount"])
+  }
+
+  @Test
+  fun runPromptTaskPersistsResolvedWorkingStateIntoConfiguredStore() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-working-state-store")
+    val todoStore = InMemoryAgentTodoStore(
+      initialEntries = listOf(
+        AgentTodoEntry(
+          content = "Wire working state persistence",
+          status = AgentTodoStatus.IN_PROGRESS,
+          activeForm = "Wiring working state persistence",
+        ),
+        AgentTodoEntry(
+          content = "Add persistence tests",
+          status = AgentTodoStatus.PENDING,
+        ),
+      ),
+    )
+    val workingStateStore = InMemoryWorkingStateStore()
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"Stored the working state."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+          todoStore = todoStore,
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 2,
+        maxToolCalls = 0,
+        workingStateStore = workingStateStore,
+      ),
+      clock = IncrementingClock(start = 1_800L)::next,
+    )
+
+    val task = promptTask(input = "Continue the runtime rollout.")
+    val result = runtime.execute(
+      task = task,
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals(task.id, workingStateStore.snapshot().objective?.taskId)
+    assertEquals(task.id, workingStateStore.snapshot().objective?.runId)
+    assertEquals("Continue the runtime rollout.", workingStateStore.snapshot().objective?.primaryGoal)
+    assertEquals("Wiring working state persistence", workingStateStore.snapshot().objective?.currentSubgoal)
+    assertEquals(
+      listOf("Add persistence tests"),
+      workingStateStore.snapshot().nextActions.map { entry -> entry.text },
+    )
+  }
+
+  @Test
+  fun runPromptTaskInjectsResumeCheckpointWorkingStateIntoPrompt() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-working-state-resume-prompt")
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"Resumed from the saved checkpoint."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 2,
+        maxToolCalls = 0,
+        promptResumeCheckpointBoundary = OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
+        promptResumeState = OpenCrayPromptResumeState(
+          turnIndex = 1,
+          toolCallCount = 1,
+        ),
+      ),
+      clock = IncrementingClock(start = 1_820L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Continue after checkpoint restore."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Resumed from the saved checkpoint.", result.stdout)
+    assertEquals(1, gateway.requests.size)
+    assertTrue(gateway.requests.single().prompt.contains("[Working State]"))
+    assertTrue(
+      gateway.requests.single().prompt.contains(
+        "Resume checkpoint turn=1 tool_calls=1 pending_actions=0 [source=resume_checkpoint; why=tool_result_committed]",
+      ),
+    )
+    assertTrue(
+      gateway.requests.single().prompt.contains(
+        "Continue from the saved checkpoint state instead of restarting from the original task input.",
+      ),
+    )
+    assertEquals(
+      "true",
+      gateway.requests.single().metadata["contextWorkingStateSynthesizedFromResumeContext"],
+    )
+  }
+
+  @Test
   fun runPromptTaskInjectsSupplementsAtTurnStartBeforeNextLlmRequest() {
     val workspaceRoot = temporaryFolder.newFolder("agent-supplement-workspace")
     Files.write(
@@ -230,7 +428,7 @@ class OpenCrayAgentRuntimeTest {
     assertEquals(2, gateway.requests.size)
     assertFalse(gateway.requests[0].prompt.contains("Also verify the tests before you answer."))
     assertTrue(gateway.requests[1].prompt.contains("Also verify the tests before you answer."))
-    val supplementEvent = eventSink.events.filterIsInstance<OpenCraySupplementEvent>().single()
+    val supplementEvent = visibleSupplementEvents(eventSink.events).single()
     assertEquals("supplement-1", supplementEvent.entryId)
     assertEquals(1, supplementEvent.turn)
     assertEquals("Also verify the tests before you answer.", supplementEvent.text)
@@ -288,7 +486,7 @@ class OpenCrayAgentRuntimeTest {
     assertEquals("I saw the initial supplement.", result.stdout)
     assertEquals(1, gateway.requests.size)
     assertTrue(gateway.requests.single().prompt.contains("Start from the workspace root."))
-    val supplementEvent = eventSink.events.filterIsInstance<OpenCraySupplementEvent>().single()
+    val supplementEvent = visibleSupplementEvents(eventSink.events).single()
     assertEquals("supplement-initial-1", supplementEvent.entryId)
     assertEquals("turn_start", supplementEvent.checkpoint)
     val resumeState = requireNotNull(
@@ -301,6 +499,56 @@ class OpenCrayAgentRuntimeTest {
     assertEquals(0, resumeState.toolCallCount)
     assertEquals(RuntimeConversationRole.USER, resumeState.transcript.lastOrNull()?.role)
     assertEquals("Start from the workspace root.", resumeState.transcript.lastOrNull()?.content)
+  }
+
+  @Test
+  fun runPromptTaskEmitsJournalCheckpointMarkersForNonJournalBoundaries() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-hidden-checkpoint-markers")
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"No tools needed."}""",
+      ),
+    )
+    val eventSink = RecordingEventSink()
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 2),
+      eventSink = eventSink,
+      clock = IncrementingClock(start = 1_300L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Answer directly without tools."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    val checkpointMarkers = eventSink.events
+      .filterIsInstance<OpenCraySupplementEvent>()
+      .filter { event -> event.text.isBlank() && event.checkpoint == "internal_prompt_checkpoint" }
+    assertEquals(2, checkpointMarkers.size)
+    assertEquals(
+      listOf(
+        OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST,
+        OpenCrayPromptCheckpointBoundary.ACTION_BATCH_PARSED,
+      ),
+      checkpointMarkers.map { event ->
+        OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(event.metadata)
+      },
+    )
+    val actionBatchResumeState = requireNotNull(
+      OpenCrayPromptResumeMetadata.decodeFromMetadata(
+        metadata = checkpointMarkers.last().metadata,
+        json = Json { ignoreUnknownKeys = true },
+      ),
+    )
+    assertEquals(0, actionBatchResumeState.turnIndex)
+    assertEquals(1, actionBatchResumeState.pendingActions.size)
   }
 
   @Test
@@ -490,7 +738,7 @@ class OpenCrayAgentRuntimeTest {
       "Use the repository root as the workspace.",
       tailMessages[2].content,
     )
-    val supplementEvent = eventSink.events.filterIsInstance<OpenCraySupplementEvent>().single()
+    val supplementEvent = visibleSupplementEvents(eventSink.events).single()
     assertEquals("supplement-anthropic-1", supplementEvent.entryId)
     assertEquals("post_tool_pre_model", supplementEvent.checkpoint)
   }
@@ -1488,7 +1736,7 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
-  fun restoredGeneralResumeCheckpointKeepsLocalDeltaContinuationForNonResponsesRoute() {
+  fun restoredGeneralResumeCheckpointFallsBackToFullRebuildWhenResumeWorkingStateChangesPrompt() {
     val workspaceRoot = temporaryFolder.newFolder("agent-restored-local-continuation")
     Files.write(
       workspaceRoot.toPath().resolve("README.md"),
@@ -1658,13 +1906,19 @@ class OpenCrayAgentRuntimeTest {
     assertEquals(ExecutionStatus.SUCCESS, resumedResult.status)
     assertEquals("Resumed with durable local continuation.", resumedResult.stdout)
     assertEquals(1, resumedRequests.size)
-    assertEquals("local_delta", resumedRequests.single().metadata["localContinuationMode"])
-    assertEquals("transcript_delta", resumedRequests.single().metadata["localContinuationReason"])
-    assertEquals("1", resumedResult.metadata["localContinuationUsedCount"])
+    assertEquals("full_rebuild", resumedRequests.single().metadata["localContinuationMode"])
+    assertEquals("anchor_changed", resumedRequests.single().metadata["localContinuationReason"])
+    assertEquals("0", resumedResult.metadata["localContinuationUsedCount"])
+    assertEquals("1", resumedResult.metadata["localContinuationFallbackCount"])
     val resumedUserMessages = resumedRequests.single().messages
       .filter { message -> message.role == LiteLlmGatewayMessageRole.USER }
       .mapNotNull { message -> message.content }
     assertTrue(resumedUserMessages.contains("Also check the durable resume path."))
+    assertTrue(
+      resumedRequests.single().prompt.contains(
+        "Continue from the saved checkpoint state instead of restarting from the original task input.",
+      ),
+    )
   }
 
   @Test
@@ -2940,7 +3194,7 @@ class OpenCrayAgentRuntimeTest {
         java.nio.file.Paths.get(requireNotNull(attachedUserMessage.attachments.single().filePath)),
       ),
     )
-    val supplementEvent = eventSink.events.filterIsInstance<OpenCraySupplementEvent>().single()
+    val supplementEvent = visibleSupplementEvents(eventSink.events).single()
     assertEquals("post_tool_pre_model", supplementEvent.checkpoint)
     val resumeState = requireNotNull(
       OpenCrayPromptResumeMetadata.decodeFromMetadata(
@@ -3006,7 +3260,7 @@ class OpenCrayAgentRuntimeTest {
         java.nio.file.Paths.get(requireNotNull(attachedUserMessage.attachments.single().filePath)),
       ),
     )
-    val supplementEvent = eventSink.events.filterIsInstance<OpenCraySupplementEvent>().single()
+    val supplementEvent = visibleSupplementEvents(eventSink.events).single()
     assertEquals("post_tool_pre_model", supplementEvent.checkpoint)
     val resumeState = requireNotNull(
       OpenCrayPromptResumeMetadata.decodeFromMetadata(
@@ -3789,6 +4043,92 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
+  fun runPromptTaskPersistsApprovalBlockerIntoWorkingStateStoreBeforeSuspending() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-approval-working-state")
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Write","arguments":{"file_path":"note.txt","content":"hello"}}""",
+      ),
+    )
+    val workingStateStore = InMemoryWorkingStateStore()
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        workingStateStore = workingStateStore,
+      ),
+      clock = IncrementingClock(start = 3_550L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(
+        input = "Write a note in safe mode.",
+        metadata = mapOf("chatMode" to "SAFE"),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.DENIED, result.status)
+    assertEquals(
+      listOf("Approval required for Write before continuing."),
+      workingStateStore.snapshot().blockers.map { entry -> entry.text },
+    )
+    assertEquals(
+      "Write a note in safe mode.",
+      workingStateStore.snapshot().objective?.primaryGoal,
+    )
+  }
+
+  @Test
+  fun runPromptTaskPersistsLatestToolResultIntoWorkingStateStoreImmediatelyAfterToolCommit() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-tool-commit-working-state")
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Write","arguments":{"file_path":"note.txt","content":"working state after tool result"}}""",
+        """{"type":"final","answer":"Done."}""",
+      ),
+    )
+    val workingStateStore = RecordingWorkingStateStore()
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        workingStateStore = workingStateStore,
+      ),
+      clock = IncrementingClock(start = 3_575L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Write a note and then answer."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertTrue(Files.exists(workspaceRoot.toPath().resolve("note.txt")))
+    assertTrue(workingStateStore.history.size >= 3)
+    assertEquals(
+      listOf("Write file_path=note.txt"),
+      workingStateStore.history[1].recentActions.map { entry -> entry.text },
+    )
+    assertEquals(
+      listOf("workspace_mutation"),
+      workingStateStore.history[1].recentActions.map { entry -> entry.sourceType },
+    )
+  }
+
+  @Test
   fun runPromptTaskApprovalResumeContinuesFromSavedTurnWithoutReissuingPromptToolCall() {
     val workspaceRoot = temporaryFolder.newFolder("agent-approval-resume")
     val initialGateway = RecordingGateway(
@@ -3883,15 +4223,20 @@ class OpenCrayAgentRuntimeTest {
     )
     assertTrue(Files.exists(workspaceRoot.toPath().resolve("note.txt")))
     assertEquals(
-      listOf("tool_result", "assistant", "lifecycle"),
+      listOf("tool_result", "supplement", "supplement", "assistant", "lifecycle"),
       resumedEventSink.events.drop(1).map { event ->
         when (event) {
           is OpenCrayToolResultEvent -> "tool_result"
+          is OpenCraySupplementEvent -> "supplement"
           is OpenCrayAssistantEvent -> "assistant"
           is OpenCrayLifecycleEvent -> "lifecycle"
           else -> "other"
         }
       },
+    )
+    assertEquals(
+      listOf("internal_prompt_checkpoint", "internal_prompt_checkpoint"),
+      resumedEventSink.events.filterIsInstance<OpenCraySupplementEvent>().map(OpenCraySupplementEvent::checkpoint),
     )
     assertTrue(resumedEventSink.events.none { event -> event is OpenCrayToolCallEvent })
   }
@@ -3965,20 +4310,19 @@ class OpenCrayAgentRuntimeTest {
     assertEquals("1", resumedGateway.requests.single().metadata["turnIndex"])
     assertEquals(
       listOf("tool_result", "assistant", "lifecycle"),
-      resumedEventSink.events.drop(1).map { event ->
-        when (event) {
-          is OpenCrayToolResultEvent -> "tool_result"
-          is OpenCrayAssistantEvent -> "assistant"
-          is OpenCrayLifecycleEvent -> "lifecycle"
-          else -> "other"
-        }
-      },
+      externalEventKinds(resumedEventSink.events.drop(1)),
     )
     assertEquals(
       listOf("Write:DENIED"),
       resumedEventSink.events
         .filterIsInstance<OpenCrayToolResultEvent>()
         .map { event -> "${event.call.toolName}:${event.result.status.name}" },
+    )
+    assertEquals(
+      listOf("internal_prompt_checkpoint", "internal_prompt_checkpoint"),
+      resumedEventSink.events
+        .filterIsInstance<OpenCraySupplementEvent>()
+        .map(OpenCraySupplementEvent::checkpoint),
     )
     assertTrue(resumedEventSink.events.none { event -> event is OpenCrayToolCallEvent })
     assertTrue(!Files.exists(workspaceRoot.toPath().resolve("note.txt")))
@@ -4139,27 +4483,16 @@ class OpenCrayAgentRuntimeTest {
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals(
       listOf("lifecycle", "tool_call", "tool_result", "assistant", "lifecycle"),
-      eventSink.events.map { event ->
-        when (event) {
-          is OpenCrayLifecycleEvent -> "lifecycle"
-          is OpenCrayAssistantPhaseEvent -> "assistant"
-          is OpenCraySupplementEvent -> "supplement"
-          is OpenCrayApprovalEvent -> "approval"
-          is OpenCraySubAgentEvent -> "subagent"
-          is OpenCrayToolCallEvent -> "tool_call"
-          is OpenCrayToolResultEvent -> "tool_result"
-          is OpenCrayMemoryRetrievalEvent -> "memory_retrieval"
-          is OpenCrayMemoryWriteEvent -> "memory_write"
-          is OpenCrayCancellationEvent -> "cancelled"
-        }
-      },
+      externalEventKinds(eventSink.events),
     )
     assertEquals(OpenCrayRunLifecyclePhase.START, (eventSink.events[0] as OpenCrayLifecycleEvent).phase)
-    assertEquals("Read", (eventSink.events[1] as OpenCrayToolCallEvent).call.toolName)
-    assertEquals(AgentToolResultStatus.SUCCESS, (eventSink.events[2] as OpenCrayToolResultEvent).result.status)
-    assertEquals("done", (eventSink.events[3] as OpenCrayAssistantEvent).text)
-    assertTrue((eventSink.events[3] as OpenCrayAssistantEvent).isFinal)
-    assertEquals(OpenCrayRunLifecyclePhase.END, (eventSink.events[4] as OpenCrayLifecycleEvent).phase)
+    val visibleEvents = eventSink.events.filterNot(::isInternalCheckpointMarker)
+    assertEquals("Read", (visibleEvents[1] as OpenCrayToolCallEvent).call.toolName)
+    assertEquals(AgentToolResultStatus.SUCCESS, (visibleEvents[2] as OpenCrayToolResultEvent).result.status)
+    assertEquals("done", (visibleEvents[3] as OpenCrayAssistantEvent).text)
+    assertTrue((visibleEvents[3] as OpenCrayAssistantEvent).isFinal)
+    assertEquals(OpenCrayRunLifecyclePhase.END, (visibleEvents[4] as OpenCrayLifecycleEvent).phase)
+    assertEquals(4, internalCheckpointMarkers(eventSink.events).size)
     assertFalse(eventSink.events.any { event -> event.taskId.isBlank() || event.runId.isBlank() })
   }
 
@@ -4206,20 +4539,7 @@ class OpenCrayAgentRuntimeTest {
         "assistant",
         "lifecycle",
       ),
-      eventSink.events.map { event ->
-        when (event) {
-          is OpenCrayLifecycleEvent -> "lifecycle"
-          is OpenCrayAssistantPhaseEvent -> "assistant"
-          is OpenCraySupplementEvent -> "supplement"
-          is OpenCrayApprovalEvent -> "approval"
-          is OpenCraySubAgentEvent -> "subagent"
-          is OpenCrayToolCallEvent -> "tool_call"
-          is OpenCrayToolResultEvent -> "tool_result"
-          is OpenCrayMemoryRetrievalEvent -> "memory_retrieval"
-          is OpenCrayMemoryWriteEvent -> "memory_write"
-          is OpenCrayCancellationEvent -> "cancelled"
-        }
-      },
+      externalEventKinds(eventSink.events),
     )
     assertEquals(
       listOf(
@@ -4238,6 +4558,7 @@ class OpenCrayAgentRuntimeTest {
         .filterNot(OpenCrayAssistantEvent::isFinal)
         .map(OpenCrayAssistantEvent::stage),
     )
+    assertEquals(4, internalCheckpointMarkers(eventSink.events).size)
     assertTrue(gateway.requests[0].prompt.contains("short public status update"))
     assertTrue(gateway.requests[1].prompt.contains("Scanning README before reading it."))
   }
@@ -5415,6 +5736,19 @@ class OpenCrayAgentRuntimeTest {
     }
   }
 
+  private class RecordingWorkingStateStore : WorkingStateStore {
+    private val snapshots = mutableListOf<WorkingState>()
+
+    val history: List<WorkingState>
+      get() = snapshots.toList()
+
+    override fun snapshot(): WorkingState = snapshots.lastOrNull() ?: WorkingState()
+
+    override fun replace(state: WorkingState) {
+      snapshots += state
+    }
+  }
+
   private class DynamicGateway(
     private val outputProvider: (Int) -> String,
   ) : LiteLlmGateway {
@@ -5516,6 +5850,43 @@ class OpenCrayAgentRuntimeTest {
       events += event
     }
   }
+
+  private fun visibleSupplementEvents(
+    events: List<OpenCrayAgentRunEvent>,
+  ): List<OpenCraySupplementEvent> = events
+    .filterIsInstance<OpenCraySupplementEvent>()
+    .filterNot(::isInternalCheckpointMarker)
+
+  private fun internalCheckpointMarkers(
+    events: List<OpenCrayAgentRunEvent>,
+  ): List<OpenCraySupplementEvent> = events
+    .filterIsInstance<OpenCraySupplementEvent>()
+    .filter(::isInternalCheckpointMarker)
+
+  private fun isInternalCheckpointMarker(
+    event: OpenCrayAgentRunEvent,
+  ): Boolean = event is OpenCraySupplementEvent &&
+    event.text.isBlank() &&
+    event.checkpoint == "internal_prompt_checkpoint"
+
+  private fun externalEventKinds(
+    events: List<OpenCrayAgentRunEvent>,
+  ): List<String> = events
+    .filterNot(::isInternalCheckpointMarker)
+    .map { event ->
+      when (event) {
+        is OpenCrayLifecycleEvent -> "lifecycle"
+        is OpenCrayAssistantPhaseEvent -> "assistant"
+        is OpenCraySupplementEvent -> "supplement"
+        is OpenCrayApprovalEvent -> "approval"
+        is OpenCraySubAgentEvent -> "subagent"
+        is OpenCrayToolCallEvent -> "tool_call"
+        is OpenCrayToolResultEvent -> "tool_result"
+        is OpenCrayMemoryRetrievalEvent -> "memory_retrieval"
+        is OpenCrayMemoryWriteEvent -> "memory_write"
+        is OpenCrayCancellationEvent -> "cancelled"
+      }
+    }
 
   private class ScriptedProcessRegistry : AgentProcessRegistry {
     private val snapshotsById = linkedMapOf<String, ManagedProcessSnapshot>()

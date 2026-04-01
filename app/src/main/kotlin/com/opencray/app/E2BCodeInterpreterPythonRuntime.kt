@@ -5,6 +5,9 @@ import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.runtime.CancellablePythonScriptRuntime
 import com.opencray.runtime.OpenCrayAttachmentArtifacts
 import com.opencray.runtime.PythonExecRequest
+import com.opencray.runtime.SandboxPreviewProbeStatus
+import com.opencray.runtime.SandboxSessionCloseOutcome
+import com.opencray.runtime.SandboxSessionCloseResult
 import com.opencray.runtime.PythonScriptRuntime
 import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
@@ -22,6 +25,7 @@ import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.BasicFileAttributes
 import java.util.Base64
+import java.util.Comparator
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -41,10 +45,19 @@ private const val DEFAULT_E2B_READ_TIMEOUT_MS: Int = 300_000
 private const val DEFAULT_E2B_CONTROL_API_URL: String = "https://api.e2b.app"
 private const val DEFAULT_E2B_USER_AGENT: String = "OpenCray-E2B/1.0"
 internal const val WORKSPACE_SYNC_MANIFEST_PREFIX: String = "__OPENCRAY_SYNC_MANIFEST__="
+private const val MAX_PREVIEW_CANDIDATE_PORTS: Int = 8
+private val PREVIEW_HOST_PORT_REGEX: Regex =
+  Regex("""\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(\d{1,5})\b""", RegexOption.IGNORE_CASE)
+private val PREVIEW_LISTENING_PORT_REGEX: Regex =
+  Regex("""(?i)\blistening(?:\s+\w+){0,4}\s+on(?:\s+port)?\s+(\d{1,5})\b""")
+private val PREVIEW_STARTED_SERVER_PORT_REGEX: Regex =
+  Regex("""(?i)\bstarted\s+server\s+on(?:\s+port)?\s+(\d{1,5})\b""")
 
 internal class E2BCodeInterpreterPythonRuntime(
   private val settingsProvider: () -> ResolvedSandboxSettings,
   private val sessionStore: E2BSandboxSessionStore,
+  private val syncStateStore: E2BWorkspaceSyncStateStore = E2BWorkspaceSyncStateStore(),
+  private val downloadArchiveRetentionPolicy: E2BDownloadArchiveRetentionPolicy = E2BDownloadArchiveRetentionPolicy(),
   private val transport: E2BTransport = UrlConnectionE2BTransport(),
   private val clock: () -> Long = { System.currentTimeMillis() },
   private val json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true },
@@ -57,6 +70,59 @@ internal class E2BCodeInterpreterPythonRuntime(
 
   internal fun activeStickySessionSnapshot(): E2BSandboxSessionSnapshot? = synchronized(lock) {
     currentStickySession
+  }
+
+  internal fun recordStickySessionSnapshot(snapshot: E2BSandboxSessionSnapshot) {
+    synchronized(lock) {
+      val current = currentStickySession ?: return
+      if (current.sandboxId == snapshot.sandboxId) {
+        currentStickySession = snapshot
+      }
+    }
+  }
+
+  internal fun runningRequestIdsForSandbox(sandboxId: String): List<String> =
+    activeRequests.values
+      .asSequence()
+      .filter { execution ->
+        !execution.completed.get() && execution.session.sandboxId == sandboxId
+      }
+      .map { execution -> execution.requestId.trim() }
+      .filter(String::isNotBlank)
+      .distinct()
+      .sorted()
+      .toList()
+
+  internal fun closeReusableSession(
+    session: E2BSandboxSessionSnapshot,
+  ): SandboxSessionCloseResult {
+    val blockingRequest = activeRequests.values.firstOrNull { execution ->
+      !execution.completed.get() && execution.session.sandboxId == session.sandboxId
+    }
+    if (blockingRequest != null) {
+      return SandboxSessionCloseResult(
+        providerId = SandboxProviderId.E2B.wireValue,
+        outcome = SandboxSessionCloseOutcome.BUSY,
+        sandboxId = session.sandboxId,
+        sandboxDomain = session.sandboxDomain,
+        previewCandidatePorts = session.previewCandidatePorts,
+        blockingRequestId = blockingRequest.requestId,
+      )
+    }
+    val apiKey = settingsProvider().e2bApiKey?.trim()?.takeIf(String::isNotBlank)
+      ?: error("E2B API key is not configured.")
+    killSandbox(
+      sandboxId = session.sandboxId,
+      apiKey = apiKey,
+    )
+    clearIfCurrentSession(session.sandboxId)
+    return SandboxSessionCloseResult(
+      providerId = SandboxProviderId.E2B.wireValue,
+      outcome = SandboxSessionCloseOutcome.TERMINATED,
+      sandboxId = session.sandboxId,
+      sandboxDomain = session.sandboxDomain,
+      previewCandidatePorts = session.previewCandidatePorts,
+    )
   }
 
   override fun exec(request: PythonExecRequest): ExecutionResult {
@@ -103,10 +169,9 @@ internal class E2BCodeInterpreterPythonRuntime(
 
     val templateId = state.templateId.trim().ifBlank { DEFAULT_TEMPLATE_ID }
     val requestId = request.requestId?.trim()?.takeIf(String::isNotBlank) ?: UUID.randomUUID().toString()
-    val remoteWorkspaceRoot = remoteWorkspaceRootForRequest(requestId)
     val effectiveRequestTimeoutMs = resolveEffectiveRequestTimeoutMs(request, state)
     val startupTimeoutMs = resolveStartupTimeoutMs(request, state)
-    val session = runCatching {
+    val acquiredSession = runCatching {
       acquireSandboxSession(
         settings = settings,
         workspaceRoot = workspaceRoot,
@@ -124,12 +189,17 @@ internal class E2BCodeInterpreterPythonRuntime(
           "scriptPath" to resolvedScript.toString(),
           "templateId" to templateId,
           "requestId" to requestId,
-          "remoteWorkspaceRoot" to remoteWorkspaceRoot,
           "effectiveRequestTimeoutMs" to effectiveRequestTimeoutMs.toString(),
           "startupTimeoutMs" to startupTimeoutMs.toString(),
         ),
       )
     }
+    val remoteWorkspaceRoot = resolveRemoteWorkspaceRoot(
+      state = state,
+      session = acquiredSession,
+      requestId = requestId,
+    )
+    val session = acquiredSession.withResolvedRemoteWorkspaceRoot(remoteWorkspaceRoot)
 
     val activeExecution = ActiveExecution(
       requestId = requestId,
@@ -146,6 +216,7 @@ internal class E2BCodeInterpreterPythonRuntime(
         workspaceRoot = workspaceRoot,
         remoteWorkspaceRoot = remoteWorkspaceRoot,
         requestTimeoutMs = effectiveRequestTimeoutMs,
+        requestId = requestId,
       )
       if (activeExecution.cancelled.get()) {
         return cancelled(
@@ -280,7 +351,7 @@ internal class E2BCodeInterpreterPythonRuntime(
       timeoutWatchdog?.interrupt()
       activeRequests.remove(requestId)
       cleanupSessionAfterExecution(
-        session = session,
+        session = activeExecution.session,
         settings = settings,
         cancelled = activeExecution.cancelled.get(),
         timedOut = activeExecution.timedOut.get(),
@@ -330,6 +401,7 @@ internal class E2BCodeInterpreterPythonRuntime(
       remoteWorkspaceRoot = remoteWorkspaceRoot,
       remoteScriptPath = remoteScriptPath,
       args = request.args,
+      pendingRemoteDeleteRelativePaths = syncSummary.pendingRemoteDeleteRelativePaths,
     )
     val response = executeCode(
       session = session,
@@ -350,21 +422,32 @@ internal class E2BCodeInterpreterPythonRuntime(
         ExecutionEvent.Result -> Unit
       }
     }
+    val executionSession = activeExecution.session.withMergedPreviewCandidatePorts(
+      detectPreviewCandidatePorts(lines = stdoutLines.asSequence() + stderrLines.asSequence()),
+    )
+    activeExecution.session = executionSession
     val downloadSummary = if (activeExecution.cancelled.get() || activeExecution.timedOut.get()) {
       WorkspaceDownloadSummary()
     } else {
       downloadRemoteWorkspaceChanges(
-        session = session,
+        session = executionSession,
         workspaceRoot = workspaceRoot,
         remoteWorkspaceRoot = remoteWorkspaceRoot,
         manifest = workspaceDiffManifest,
         requestTimeoutMs = effectiveRequestTimeoutMs,
+        requestId = requestId,
       )
     }
+    persistWorkspaceSyncStateIfReusable(
+      state = state,
+      session = executionSession,
+      workspaceRoot = workspaceRoot,
+      remoteWorkspaceRoot = remoteWorkspaceRoot,
+    )
     val metadata = commonExecutionMetadata(
       request = request,
       state = state,
-      session = session,
+      session = executionSession,
       syncSummary = syncSummary,
       downloadSummary = downloadSummary,
       remoteWorkspaceRoot = remoteWorkspaceRoot,
@@ -438,6 +521,7 @@ internal class E2BCodeInterpreterPythonRuntime(
     remoteWorkspaceRoot: String,
     manifest: RemoteWorkspaceDiffManifest?,
     requestTimeoutMs: Long,
+    requestId: String,
   ): WorkspaceDownloadSummary {
     val resolvedManifest = manifest ?: return WorkspaceDownloadSummary()
     var downloadedFiles = 0
@@ -446,6 +530,9 @@ internal class E2BCodeInterpreterPythonRuntime(
     var skippedRemoteDeletes = 0
     var downloadFailures = 0
     val downloadedRelativePaths = mutableListOf<String>()
+    var archivedArtifactFiles = 0
+    var archivedArtifactBytes = 0L
+    val archivedArtifactRelativePaths = mutableListOf<String>()
 
     resolvedManifest.changedFiles
       .map(String::trim)
@@ -479,6 +566,17 @@ internal class E2BCodeInterpreterPythonRuntime(
         }
         val persisted = runCatching {
           writeBytesAtomically(localPath, response.bodyBytes)
+          val archivedRelativePath = archiveDownloadedWorkspaceFile(
+            workspaceRoot = workspaceRoot,
+            requestId = requestId,
+            relativePath = relativePath,
+            bytes = response.bodyBytes,
+          )
+          if (archivedRelativePath != null) {
+            archivedArtifactFiles += 1
+            archivedArtifactBytes += response.bodyBytes.size.toLong()
+            archivedArtifactRelativePaths += archivedRelativePath
+          }
           true
         }.getOrDefault(false)
         if (!persisted) {
@@ -497,6 +595,10 @@ internal class E2BCodeInterpreterPythonRuntime(
         !shouldSkipRemoteWorkspaceDownload(relativePath) &&
           resolveRemoteRelativePathInWorkspace(workspaceRoot = workspaceRoot, relativePath = relativePath) != null
       }
+    val archiveCleanupSummary = cleanupDownloadArchiveRoot(
+      workspaceRoot = workspaceRoot,
+      protectedRequestId = requestId,
+    )
 
     return WorkspaceDownloadSummary(
       downloadedFiles = downloadedFiles,
@@ -507,6 +609,14 @@ internal class E2BCodeInterpreterPythonRuntime(
       skippedRemoteDeletes = skippedRemoteDeletes,
       downloadFailures = downloadFailures,
       downloadedRelativePaths = downloadedRelativePaths,
+      archivedArtifactFiles = archivedArtifactFiles,
+      archivedArtifactBytes = archivedArtifactBytes,
+      archivedArtifactRelativePaths = archivedArtifactRelativePaths,
+      archiveRootRelativePath = "$DOWNLOAD_ARCHIVE_ROOT_RELATIVE/$requestId",
+      prunedArchiveDirectories = archiveCleanupSummary.prunedRequestDirectories,
+      prunedArchiveBytes = archiveCleanupSummary.prunedBytes,
+      retainedArchiveDirectories = archiveCleanupSummary.retainedRequestDirectories,
+      retainedArchiveBytes = archiveCleanupSummary.retainedBytes,
     )
   }
 
@@ -533,8 +643,7 @@ internal class E2BCodeInterpreterPythonRuntime(
         )
       }.getOrNull()
       if (resumed != null) {
-        rememberStickySession(resumed, persist = state.autoResume)
-        return resumed
+        return rememberStickySession(resumed, persist = state.autoResume)
       }
       clearIfCurrentSession(current.sandboxId)
     }
@@ -552,16 +661,14 @@ internal class E2BCodeInterpreterPythonRuntime(
           )
         }.getOrNull()
         if (resumed != null) {
-          rememberStickySession(resumed, persist = true)
-          return resumed
+          return rememberStickySession(resumed, persist = true)
         }
         sessionStore.clear()
       }
     }
 
     val created = createSandbox(settings, workspaceRoot, templateId, startupTimeoutMs)
-    rememberStickySession(created, persist = state.autoResume)
-    return created
+    return rememberStickySession(created, persist = state.autoResume)
   }
 
   private fun createSandbox(
@@ -648,26 +755,57 @@ internal class E2BCodeInterpreterPythonRuntime(
     workspaceRoot: Path,
     remoteWorkspaceRoot: String,
     requestTimeoutMs: Long,
+    requestId: String,
   ): WorkspaceSyncSummary {
     val plan = planWorkspaceFiles(workspaceRoot)
+    val previousState = loadReusableWorkspaceSyncState(
+      session = session,
+      workspaceRoot = workspaceRoot,
+      remoteWorkspaceRoot = remoteWorkspaceRoot,
+    )
+    val previousFilesByPath = previousState
+      ?.files
+      ?.associateBy(E2BWorkspaceSyncFileState::relativePath)
+      .orEmpty()
+    val currentRelativePaths = plan.files
+      .asSequence()
+      .map(WorkspaceLocalFileEntry::relativePath)
+      .toSet()
+    val filesToUpload = if (previousState == null) {
+      plan.files
+    } else {
+      plan.files.filter { entry ->
+        val previous = previousFilesByPath[entry.relativePath]
+        previous == null ||
+          previous.sizeBytes != entry.sizeBytes ||
+          previous.modifiedAtEpochMs != entry.modifiedAtEpochMs
+      }
+    }
+    val pendingRemoteDeleteRelativePaths = if (previousState == null) {
+      emptyList()
+    } else {
+      (previousFilesByPath.keys - currentRelativePaths)
+        .sorted()
+    }
+    val pendingRemoteDeleteCount = pendingRemoteDeleteRelativePaths.size
     var uploadedFiles = 0
     var uploadedBytes = 0L
-    plan.files.forEach { file ->
-      val remotePath = remotePathFor(remoteWorkspaceRoot, workspaceRoot, file)
-      val content = Files.readAllBytes(file)
+    filesToUpload.forEach { file ->
+      val remotePath = "$remoteWorkspaceRoot/${file.relativePath}"
+      val content = Files.readAllBytes(file.path)
       val response = transport.upload(
         E2BUploadRequest(
           url = sandboxFilesUrl(session, remotePath),
           headers = sandboxHeaders(session),
           fieldName = "file",
-          fileName = file.fileName?.toString() ?: "file",
+          fileName = file.path.fileName?.toString() ?: "file",
           fileBytes = content,
           connectTimeoutMs = timeoutInt(requestTimeoutMs),
           readTimeoutMs = timeoutInt(requestTimeoutMs),
         ),
       )
       if (response.statusCode !in 200..299) {
-        error("E2B workspace upload failed for ${file.fileName}: ${response.message()}")
+        error("E2B workspace upload failed for ${file.path.fileName}: ${response.message()}")
       }
       uploadedFiles += 1
       uploadedBytes += content.size.toLong()
@@ -677,6 +815,11 @@ internal class E2BCodeInterpreterPythonRuntime(
       uploadedBytes = uploadedBytes,
       skippedDirectories = plan.skippedDirectories,
       skippedFiles = plan.skippedFiles,
+      unchangedFiles = (plan.files.size - filesToUpload.size).coerceAtLeast(0),
+      pendingRemoteDeleteFiles = pendingRemoteDeleteCount,
+      pendingRemoteDeleteRelativePaths = pendingRemoteDeleteRelativePaths,
+      uploadMode = if (previousState == null) "full" else "incremental",
+      requestId = requestId,
     )
   }
 
@@ -764,6 +907,7 @@ internal class E2BCodeInterpreterPythonRuntime(
           killSandbox(session.sandboxId, apiKey)
         }
       }
+      clearWorkspaceSyncState(session)
       clearIfCurrentSession(session.sandboxId)
       return
     }
@@ -773,8 +917,24 @@ internal class E2BCodeInterpreterPythonRuntime(
   private fun rememberStickySession(
     session: E2BSandboxSessionSnapshot,
     persist: Boolean,
-  ) {
-    val updated = session.copy(updatedAtEpochMs = clock())
+  ): E2BSandboxSessionSnapshot {
+    val activeSession = synchronized(lock) {
+      currentStickySession?.takeIf { current -> current.sandboxId == session.sandboxId }
+    }
+    val storedSession = sessionStore.load()
+      ?.takeIf { stored -> stored.sandboxId == session.sandboxId }
+    val lifecycleMerged = mergeSessionLifecycle(
+      primary = mergeSessionLifecycle(session, activeSession),
+      secondary = storedSession,
+    )
+    val updated = lifecycleMerged.copy(
+      updatedAtEpochMs = clock(),
+      previewCandidatePorts = mergePreviewCandidatePorts(
+        lifecycleMerged.previewCandidatePorts,
+        activeSession?.previewCandidatePorts.orEmpty(),
+        storedSession?.previewCandidatePorts.orEmpty(),
+      ),
+    )
     synchronized(lock) {
       currentStickySession = updated
     }
@@ -783,17 +943,59 @@ internal class E2BCodeInterpreterPythonRuntime(
     } else {
       sessionStore.clear()
     }
+    return updated
   }
 
   private fun clearIfCurrentSession(sandboxId: String) {
+    val sessionsToClear = mutableListOf<E2BSandboxSessionSnapshot>()
     synchronized(lock) {
-      if (currentStickySession?.sandboxId == sandboxId) {
+      currentStickySession?.takeIf { current -> current.sandboxId == sandboxId }?.let { current ->
+        sessionsToClear += current
         currentStickySession = null
       }
     }
-    if (sessionStore.load()?.sandboxId == sandboxId) {
+    sessionStore.load()?.takeIf { stored -> stored.sandboxId == sandboxId }?.let { stored ->
+      sessionsToClear += stored
       sessionStore.clear()
     }
+    sessionsToClear.forEach(::clearWorkspaceSyncState)
+  }
+
+  private fun remoteWorkspaceRootForStickySession(sandboxId: String): String =
+    "$REMOTE_WORKSPACE_STICKY_ROOT_BASE/${encodePathComponentForRemotePath(sandboxId)}"
+
+  private fun E2BSandboxSessionSnapshot.withResolvedRemoteWorkspaceRoot(
+    remoteWorkspaceRoot: String,
+  ): E2BSandboxSessionSnapshot = if (this.remoteWorkspaceRoot == remoteWorkspaceRoot) {
+    this
+  } else {
+    copy(remoteWorkspaceRoot = remoteWorkspaceRoot)
+  }
+
+  private fun mergeSessionLifecycle(
+    primary: E2BSandboxSessionSnapshot,
+    secondary: E2BSandboxSessionSnapshot?,
+  ): E2BSandboxSessionSnapshot {
+    if (secondary == null || secondary.sandboxId != primary.sandboxId) {
+      return primary
+    }
+    val primaryOpenedAt = primary.lastPreviewOpenedAtEpochMs ?: Long.MIN_VALUE
+    val secondaryOpenedAt = secondary.lastPreviewOpenedAtEpochMs ?: Long.MIN_VALUE
+    val previewSource = if (secondaryOpenedAt > primaryOpenedAt) secondary else primary
+    return primary.copy(
+      remoteWorkspaceRoot = primary.remoteWorkspaceRoot
+        ?.takeIf(String::isNotBlank)
+        ?: secondary.remoteWorkspaceRoot,
+      lastPreviewUrl = previewSource.lastPreviewUrl,
+      lastPreviewPort = previewSource.lastPreviewPort,
+      lastPreviewPath = previewSource.lastPreviewPath,
+      lastPreviewProbeStatus = previewSource.lastPreviewProbeStatus,
+      lastPreviewProbeHttpStatusCode = previewSource.lastPreviewProbeHttpStatusCode,
+      lastPreviewProbeMessage = previewSource.lastPreviewProbeMessage,
+      lastPreviewOpenedAtEpochMs = previewSource.lastPreviewOpenedAtEpochMs,
+      lastPreviewProbeObservedAtEpochMs = previewSource.lastPreviewProbeObservedAtEpochMs,
+      lastPreviewProbeSource = previewSource.lastPreviewProbeSource,
+    )
   }
 
   private fun killSandbox(
@@ -967,12 +1169,18 @@ internal class E2BCodeInterpreterPythonRuntime(
     put("sandboxId", session.sandboxId)
     put("sandboxDomain", session.sandboxDomain)
     put("sandboxTemplateId", session.templateId)
+    if (session.previewCandidatePorts.isNotEmpty()) {
+      put("sandboxPreviewCandidatePorts", session.previewCandidatePorts.joinToString(separator = ","))
+    }
     put("remoteWorkspaceRoot", remoteWorkspaceRoot)
     put("remoteScriptPath", remoteScriptPath)
     put("uploadedFiles", syncSummary.uploadedFiles.toString())
     put("uploadedBytes", syncSummary.uploadedBytes.toString())
     put("skippedDirectories", syncSummary.skippedDirectories.toString())
     put("skippedFiles", syncSummary.skippedFiles.toString())
+    put("workspaceUploadMode", syncSummary.uploadMode)
+    put("workspaceUnchangedFiles", syncSummary.unchangedFiles.toString())
+    put("workspacePendingRemoteDeleteFiles", syncSummary.pendingRemoteDeleteFiles.toString())
     put("workspaceSyncManifestObserved", syncManifestObserved.toString())
     put("workspaceSyncManifestParseFailed", syncManifestParseFailed.toString())
     put("remoteChangedFiles", downloadSummary.remoteChangedFiles.toString())
@@ -982,10 +1190,25 @@ internal class E2BCodeInterpreterPythonRuntime(
     put("skippedDownloadFiles", downloadSummary.skippedDownloadFiles.toString())
     put("skippedRemoteDeletes", downloadSummary.skippedRemoteDeletes.toString())
     put("downloadFailures", downloadSummary.downloadFailures.toString())
+    put("archivedArtifactFiles", downloadSummary.archivedArtifactFiles.toString())
+    put("archivedArtifactBytes", downloadSummary.archivedArtifactBytes.toString())
+    if (downloadSummary.archiveRootRelativePath.isNotBlank()) {
+      put("sandboxDownloadArchiveRoot", downloadSummary.archiveRootRelativePath)
+    }
+    put("sandboxDownloadArchivePrunedDirectories", downloadSummary.prunedArchiveDirectories.toString())
+    put("sandboxDownloadArchivePrunedBytes", downloadSummary.prunedArchiveBytes.toString())
+    put("sandboxDownloadArchiveRetainedDirectories", downloadSummary.retainedArchiveDirectories.toString())
+    put("sandboxDownloadArchiveRetainedBytes", downloadSummary.retainedArchiveBytes.toString())
     putAll(
       OpenCrayAttachmentArtifacts.encodeMetadata(
         json = json,
-        artifacts = OpenCrayAttachmentArtifacts.fromWorkspaceRelativePaths(downloadSummary.downloadedRelativePaths),
+        artifacts = OpenCrayAttachmentArtifacts.fromWorkspaceRelativePaths(
+          if (downloadSummary.archivedArtifactRelativePaths.isNotEmpty()) {
+            downloadSummary.archivedArtifactRelativePaths
+          } else {
+            downloadSummary.downloadedRelativePaths
+          },
+        ),
       ),
     )
     put("effectiveRequestTimeoutMs", effectiveRequestTimeoutMs.toString())
@@ -1011,16 +1234,26 @@ internal class E2BCodeInterpreterPythonRuntime(
     remoteWorkspaceRoot: String,
     remoteScriptPath: String,
     args: List<String>,
+    pendingRemoteDeleteRelativePaths: List<String>,
   ): String = buildString {
     appendLine("import base64")
     appendLine("import json")
     appendLine("import os")
     appendLine("import runpy")
+    appendLine("import shutil")
     appendLine("import sys")
     appendLine()
     appendLine("workspace_root = ${json.encodeToString(String.serializer(), remoteWorkspaceRoot)}")
     appendLine("script_path = ${json.encodeToString(String.serializer(), remoteScriptPath)}")
     appendLine("argv = ${json.encodeToString(ListSerializer(String.serializer()), args)}")
+    appendLine(
+      "pending_remote_delete_paths = ${
+        json.encodeToString(
+          ListSerializer(String.serializer()),
+          pendingRemoteDeleteRelativePaths,
+        )
+      }",
+    )
     appendLine("sync_manifest_prefix = ${json.encodeToString(String.serializer(), WORKSPACE_SYNC_MANIFEST_PREFIX)}")
     appendLine(
       "sync_ignored_segments = set(${
@@ -1066,6 +1299,28 @@ internal class E2BCodeInterpreterPythonRuntime(
     appendLine("    encoded = base64.b64encode(payload.encode('utf-8')).decode('ascii')")
     appendLine("    print(sync_manifest_prefix + encoded, flush=True)")
     appendLine()
+    appendLine("def replay_pending_remote_deletes(root_path, relative_paths):")
+    appendLine("    root_with_sep = root_path if root_path.endswith(os.sep) else root_path + os.sep")
+    appendLine("    for relative_path in relative_paths:")
+    appendLine("        normalized = str(relative_path).replace('\\\\', '/').strip('/')")
+    appendLine("        if not normalized:")
+    appendLine("            continue")
+    appendLine("        parts = [part for part in normalized.split('/') if part not in ('', '.', '..')]")
+    appendLine("        if not parts or any(part in sync_ignored_segments for part in parts):")
+    appendLine("            continue")
+    appendLine("        candidate = os.path.normpath(os.path.join(root_path, *parts))")
+    appendLine("        if candidate != root_path and not candidate.startswith(root_with_sep):")
+    appendLine("            continue")
+    appendLine("        if os.path.isdir(candidate) and not os.path.islink(candidate):")
+    appendLine("            shutil.rmtree(candidate, ignore_errors=True)")
+    appendLine("            continue")
+    appendLine("        try:")
+    appendLine("            os.remove(candidate)")
+    appendLine("        except FileNotFoundError:")
+    appendLine("            pass")
+    appendLine("        except IsADirectoryError:")
+    appendLine("            shutil.rmtree(candidate, ignore_errors=True)")
+    appendLine()
     appendLine("os.chdir(workspace_root)")
     appendLine("script_dir = os.path.dirname(script_path)")
     appendLine("sys.argv = [script_path, *argv]")
@@ -1073,6 +1328,8 @@ internal class E2BCodeInterpreterPythonRuntime(
     appendLine("    sys.path.insert(0, script_dir)")
     appendLine("if workspace_root not in sys.path:")
     appendLine("    sys.path.insert(0, workspace_root)")
+    appendLine()
+    appendLine("replay_pending_remote_deletes(workspace_root, pending_remote_delete_paths)")
     appendLine()
     appendLine("before_workspace_snapshot = snapshot_workspace(workspace_root)")
     appendLine("captured_error = None")
@@ -1109,7 +1366,7 @@ internal class E2BCodeInterpreterPythonRuntime(
   }
 
   private fun planWorkspaceFiles(workspaceRoot: Path): WorkspaceFilesPlan {
-    val files = mutableListOf<Path>()
+    val files = mutableListOf<WorkspaceLocalFileEntry>()
     var skippedDirectories = 0
     var skippedFiles = 0
     Files.walkFileTree(
@@ -1131,7 +1388,21 @@ internal class E2BCodeInterpreterPythonRuntime(
           attrs: BasicFileAttributes,
         ): FileVisitResult {
           if (attrs.isRegularFile) {
-            files.add(file)
+            val relativePath = workspaceRoot
+              .toAbsolutePath()
+              .normalize()
+              .relativize(file.toAbsolutePath().normalize())
+              .joinToString(separator = "/") { component -> component.toString() }
+            if (!shouldSkipLocalWorkspaceUpload(relativePath)) {
+              files.add(
+                WorkspaceLocalFileEntry(
+                  path = file,
+                  relativePath = relativePath,
+                  sizeBytes = attrs.size(),
+                  modifiedAtEpochMs = attrs.lastModifiedTime().toMillis(),
+                ),
+              )
+            }
           } else {
             skippedFiles += 1
           }
@@ -1148,7 +1419,7 @@ internal class E2BCodeInterpreterPythonRuntime(
       },
     )
     return WorkspaceFilesPlan(
-      files = files.sortedBy(Path::toString),
+      files = files.sortedBy(WorkspaceLocalFileEntry::relativePath),
       skippedDirectories = skippedDirectories,
       skippedFiles = skippedFiles,
     )
@@ -1212,6 +1483,23 @@ internal class E2BCodeInterpreterPythonRuntime(
     return segments.any { segment -> segment in DOWNLOAD_SYNC_SKIPPED_DIRECTORY_NAMES }
   }
 
+  private fun shouldSkipLocalWorkspaceUpload(relativePath: String): Boolean {
+    val normalized = relativePath.trim().replace('\\', '/').trim('/')
+    if (normalized.isBlank()) {
+      return true
+    }
+    val segments = normalized.split('/').filter(String::isNotBlank)
+    if (segments.isEmpty()) {
+      return true
+    }
+    if (segments.any { segment -> segment in SKIPPED_DIRECTORY_NAMES }) {
+      return true
+    }
+    return LOCAL_UPLOAD_SKIPPED_PATH_PREFIXES.any { prefix ->
+      normalized == prefix || normalized.startsWith("$prefix/")
+    }
+  }
+
   private fun resolveRemoteRelativePathInWorkspace(
     workspaceRoot: Path,
     relativePath: String,
@@ -1249,6 +1537,236 @@ internal class E2BCodeInterpreterPythonRuntime(
         StandardCopyOption.REPLACE_EXISTING,
       )
     }
+  }
+
+  private fun archiveDownloadedWorkspaceFile(
+    workspaceRoot: Path,
+    requestId: String,
+    relativePath: String,
+    bytes: ByteArray,
+  ): String? {
+    val normalizedRelativePath = relativePath.trim().replace('\\', '/').trim('/')
+    if (normalizedRelativePath.isBlank()) {
+      return null
+    }
+    val archiveRelativePath = buildArchiveRelativePath(
+      requestId = requestId,
+      relativePath = normalizedRelativePath,
+    )
+    val archivePath = resolveRemoteRelativePathInWorkspace(
+      workspaceRoot = workspaceRoot,
+      relativePath = archiveRelativePath,
+    ) ?: return null
+    writeBytesAtomically(archivePath, bytes)
+    return archiveRelativePath
+  }
+
+  private fun buildArchiveRelativePath(
+    requestId: String,
+    relativePath: String,
+  ): String = "$DOWNLOAD_ARCHIVE_ROOT_RELATIVE/$requestId/$relativePath"
+
+  private fun cleanupDownloadArchiveRoot(
+    workspaceRoot: Path,
+    protectedRequestId: String?,
+  ): DownloadArchiveCleanupSummary {
+    val archiveRoot = resolveRemoteRelativePathInWorkspace(
+      workspaceRoot = workspaceRoot,
+      relativePath = DOWNLOAD_ARCHIVE_ROOT_RELATIVE,
+    ) ?: return DownloadArchiveCleanupSummary()
+    if (!Files.isDirectory(archiveRoot)) {
+      return DownloadArchiveCleanupSummary()
+    }
+    val entries = Files.list(archiveRoot).use { stream ->
+      stream.toList()
+    }
+    if (entries.isEmpty()) {
+      return DownloadArchiveCleanupSummary()
+    }
+    val requestDirectories = mutableListOf<DownloadArchiveDirectory>()
+    entries.forEach { entry ->
+      val requestId = entry.fileName?.toString()?.trim()?.takeIf(String::isNotBlank)
+      if (requestId == null) {
+        runCatching { deleteRecursively(entry) }
+        return@forEach
+      }
+      if (!Files.isDirectory(entry)) {
+        runCatching { Files.deleteIfExists(entry) }
+        return@forEach
+      }
+      val stats = measureArchiveDirectory(entry)
+      requestDirectories += DownloadArchiveDirectory(
+        path = entry,
+        requestId = requestId,
+        totalBytes = stats.totalBytes,
+        lastModifiedAtEpochMs = stats.lastModifiedAtEpochMs,
+      )
+    }
+    if (requestDirectories.isEmpty()) {
+      return DownloadArchiveCleanupSummary()
+    }
+    val retained = requestDirectories
+      .sortedWith(
+        compareByDescending<DownloadArchiveDirectory> { entry -> entry.lastModifiedAtEpochMs }
+          .thenByDescending { entry -> entry.totalBytes }
+          .thenBy { entry -> entry.requestId },
+      )
+      .toMutableList()
+    val pruned = mutableListOf<DownloadArchiveDirectory>()
+    while (retained.size > downloadArchiveRetentionPolicy.maxRequestDirectories) {
+      val candidate = selectArchiveEvictionCandidate(retained, protectedRequestId)
+        ?: break
+      retained.remove(candidate)
+      pruned += candidate
+    }
+    var retainedBytes = retained.sumOf(DownloadArchiveDirectory::totalBytes)
+    while (
+      retainedBytes > downloadArchiveRetentionPolicy.maxTotalBytes &&
+      retained.isNotEmpty()
+    ) {
+      val candidate = selectArchiveEvictionCandidate(retained, protectedRequestId)
+        ?: break
+      retained.remove(candidate)
+      pruned += candidate
+      retainedBytes -= candidate.totalBytes
+    }
+    pruned.distinctBy(DownloadArchiveDirectory::requestId).forEach { entry ->
+      runCatching { deleteRecursively(entry.path) }
+    }
+    return DownloadArchiveCleanupSummary(
+      prunedRequestDirectories = pruned.distinctBy(DownloadArchiveDirectory::requestId).size,
+      prunedBytes = pruned.sumOf(DownloadArchiveDirectory::totalBytes),
+      retainedRequestDirectories = retained.size,
+      retainedBytes = retained.sumOf(DownloadArchiveDirectory::totalBytes),
+    )
+  }
+
+  private fun selectArchiveEvictionCandidate(
+    retained: List<DownloadArchiveDirectory>,
+    protectedRequestId: String?,
+  ): DownloadArchiveDirectory? {
+    val evictable = retained.filterNot { entry -> entry.requestId == protectedRequestId }
+    if (evictable.isEmpty() && protectedRequestId != null && retained.any { entry -> entry.requestId == protectedRequestId }) {
+      return null
+    }
+    val candidates = if (evictable.isNotEmpty()) evictable else retained
+    return candidates.minWithOrNull(
+      compareBy<DownloadArchiveDirectory> { entry -> entry.lastModifiedAtEpochMs }
+        .thenBy { entry -> entry.totalBytes }
+        .thenBy { entry -> entry.requestId },
+    )
+  }
+
+  private fun measureArchiveDirectory(path: Path): DownloadArchiveDirectoryStats {
+    var totalBytes = 0L
+    var lastModifiedAtEpochMs = runCatching {
+      Files.getLastModifiedTime(path).toMillis()
+    }.getOrDefault(0L)
+    Files.walkFileTree(
+      path,
+      object : SimpleFileVisitor<Path>() {
+        override fun preVisitDirectory(
+          dir: Path,
+          attrs: BasicFileAttributes,
+        ): FileVisitResult {
+          lastModifiedAtEpochMs = maxOf(lastModifiedAtEpochMs, attrs.lastModifiedTime().toMillis())
+          return FileVisitResult.CONTINUE
+        }
+
+        override fun visitFile(
+          file: Path,
+          attrs: BasicFileAttributes,
+        ): FileVisitResult {
+          if (attrs.isRegularFile) {
+            totalBytes += attrs.size()
+          }
+          lastModifiedAtEpochMs = maxOf(lastModifiedAtEpochMs, attrs.lastModifiedTime().toMillis())
+          return FileVisitResult.CONTINUE
+        }
+      },
+    )
+    return DownloadArchiveDirectoryStats(
+      totalBytes = totalBytes,
+      lastModifiedAtEpochMs = lastModifiedAtEpochMs,
+    )
+  }
+
+  private fun deleteRecursively(path: Path) {
+    if (!Files.exists(path)) {
+      return
+    }
+    Files.walk(path).use { stream ->
+      stream
+        .sorted(Comparator.reverseOrder())
+        .forEach { candidate -> Files.deleteIfExists(candidate) }
+    }
+  }
+
+  private fun loadReusableWorkspaceSyncState(
+    session: E2BSandboxSessionSnapshot,
+    workspaceRoot: Path,
+    remoteWorkspaceRoot: String,
+  ): E2BWorkspaceSyncStateSnapshot? {
+    val stickyRemoteWorkspaceRoot = session.remoteWorkspaceRoot
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return null
+    if (stickyRemoteWorkspaceRoot != remoteWorkspaceRoot) {
+      return null
+    }
+    val stored = syncStateStore.load(workspaceRoot) ?: return null
+    return stored.takeIf { snapshot ->
+      snapshot.sandboxId == session.sandboxId &&
+        snapshot.remoteWorkspaceRoot == remoteWorkspaceRoot
+    }
+  }
+
+  private fun persistWorkspaceSyncStateIfReusable(
+    state: SandboxSettingsState,
+    session: E2BSandboxSessionSnapshot,
+    workspaceRoot: Path,
+    remoteWorkspaceRoot: String,
+  ) {
+    if (SandboxSessionMode.fromWireValue(state.sessionMode) != SandboxSessionMode.STICKY) {
+      syncStateStore.clear(workspaceRoot)
+      return
+    }
+    val plan = planWorkspaceFiles(workspaceRoot)
+    syncStateStore.save(
+      workspaceRoot,
+      E2BWorkspaceSyncStateSnapshot(
+        sandboxId = session.sandboxId,
+        remoteWorkspaceRoot = remoteWorkspaceRoot,
+        updatedAtEpochMs = clock(),
+        files = plan.files.map { entry ->
+          E2BWorkspaceSyncFileState(
+            relativePath = entry.relativePath,
+            sizeBytes = entry.sizeBytes,
+            modifiedAtEpochMs = entry.modifiedAtEpochMs,
+          )
+        },
+      ),
+    )
+  }
+
+  private fun clearWorkspaceSyncState(session: E2BSandboxSessionSnapshot) {
+    val workspaceRoot = runCatching {
+      Paths.get(session.workspaceRoot).toAbsolutePath().normalize()
+    }.getOrNull() ?: return
+    syncStateStore.clear(workspaceRoot)
+  }
+
+  private fun resolveRemoteWorkspaceRoot(
+    state: SandboxSettingsState,
+    session: E2BSandboxSessionSnapshot,
+    requestId: String,
+  ): String = when (SandboxSessionMode.fromWireValue(state.sessionMode)) {
+    SandboxSessionMode.STICKY -> session.remoteWorkspaceRoot
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: remoteWorkspaceRootForStickySession(session.sandboxId)
+
+    else -> remoteWorkspaceRootForRequest(requestId)
   }
 
   private fun apiHeaders(
@@ -1315,6 +1833,7 @@ internal class E2BCodeInterpreterPythonRuntime(
     const val DEFAULT_TEMPLATE_ID: String = "code-interpreter-v1"
     const val DEFAULT_SANDBOX_DOMAIN: String = "e2b.app"
     const val REMOTE_WORKSPACE_ROOT_BASE: String = "/home/user/opencray/workspace"
+    const val REMOTE_WORKSPACE_STICKY_ROOT_BASE: String = "/home/user/opencray/workspace-sticky"
     const val ERROR_INVALID_WORKSPACE: String = "INVALID_WORKSPACE"
     const val ERROR_SCRIPT_PATH_NOT_ALLOWED: String = "DENY_PATH_ESCAPE"
     const val ERROR_SCRIPT_NOT_FOUND: String = "SCRIPT_NOT_FOUND"
@@ -1339,6 +1858,11 @@ internal class E2BCodeInterpreterPythonRuntime(
       "venv",
       "wheelhouse",
     )
+    private val LOCAL_UPLOAD_SKIPPED_PATH_PREFIXES: Set<String> = setOf(
+      ".opencray/sandbox-downloads",
+      ".opencray/sandbox-sync",
+    )
+    private const val DOWNLOAD_ARCHIVE_ROOT_RELATIVE: String = ".opencray/sandbox-downloads"
     private val DOWNLOAD_SYNC_SKIPPED_DIRECTORY_NAMES: Set<String> = setOf(
       ".git",
       ".gradle",
@@ -1395,9 +1919,16 @@ internal data class RemoteExecutionError(
 )
 
 internal data class WorkspaceFilesPlan(
-  val files: List<Path> = emptyList(),
+  val files: List<WorkspaceLocalFileEntry> = emptyList(),
   val skippedDirectories: Int = 0,
   val skippedFiles: Int = 0,
+)
+
+internal data class WorkspaceLocalFileEntry(
+  val path: Path,
+  val relativePath: String,
+  val sizeBytes: Long,
+  val modifiedAtEpochMs: Long,
 )
 
 internal data class WorkspaceSyncSummary(
@@ -1405,6 +1936,11 @@ internal data class WorkspaceSyncSummary(
   val uploadedBytes: Long = 0L,
   val skippedDirectories: Int = 0,
   val skippedFiles: Int = 0,
+  val unchangedFiles: Int = 0,
+  val pendingRemoteDeleteFiles: Int = 0,
+  val pendingRemoteDeleteRelativePaths: List<String> = emptyList(),
+  val uploadMode: String = "full",
+  val requestId: String? = null,
 )
 
 internal data class WorkspaceDownloadSummary(
@@ -1416,12 +1952,49 @@ internal data class WorkspaceDownloadSummary(
   val skippedRemoteDeletes: Int = 0,
   val downloadFailures: Int = 0,
   val downloadedRelativePaths: List<String> = emptyList(),
+  val archivedArtifactFiles: Int = 0,
+  val archivedArtifactBytes: Long = 0L,
+  val archivedArtifactRelativePaths: List<String> = emptyList(),
+  val archiveRootRelativePath: String = "",
+  val prunedArchiveDirectories: Int = 0,
+  val prunedArchiveBytes: Long = 0L,
+  val retainedArchiveDirectories: Int = 0,
+  val retainedArchiveBytes: Long = 0L,
+)
+
+internal data class E2BDownloadArchiveRetentionPolicy(
+  val maxRequestDirectories: Int = 12,
+  val maxTotalBytes: Long = 64L * 1024L * 1024L,
+) {
+  init {
+    require(maxRequestDirectories >= 1) { "maxRequestDirectories must be at least 1." }
+    require(maxTotalBytes >= 1L) { "maxTotalBytes must be at least 1." }
+  }
+}
+
+internal data class DownloadArchiveCleanupSummary(
+  val prunedRequestDirectories: Int = 0,
+  val prunedBytes: Long = 0L,
+  val retainedRequestDirectories: Int = 0,
+  val retainedBytes: Long = 0L,
+)
+
+private data class DownloadArchiveDirectory(
+  val path: Path,
+  val requestId: String,
+  val totalBytes: Long,
+  val lastModifiedAtEpochMs: Long,
+)
+
+private data class DownloadArchiveDirectoryStats(
+  val totalBytes: Long,
+  val lastModifiedAtEpochMs: Long,
 )
 
 internal data class ActiveExecution(
   val requestId: String,
   val apiKey: String,
-  val session: E2BSandboxSessionSnapshot,
+  @Volatile var session: E2BSandboxSessionSnapshot,
   val effectiveRequestTimeoutMs: Long,
   val cancelled: AtomicBoolean = AtomicBoolean(false),
   val timedOut: AtomicBoolean = AtomicBoolean(false),
@@ -1698,6 +2271,45 @@ private fun E2BSandboxSessionSnapshot.matches(
     ?: return false
   return storedWorkspace == normalizedWorkspace && this.templateId == templateId
 }
+
+private fun E2BSandboxSessionSnapshot.withMergedPreviewCandidatePorts(
+  discoveredPorts: List<Int>,
+): E2BSandboxSessionSnapshot {
+  val mergedPorts = mergePreviewCandidatePorts(previewCandidatePorts, discoveredPorts)
+  return if (mergedPorts == previewCandidatePorts) {
+    this
+  } else {
+    copy(previewCandidatePorts = mergedPorts)
+  }
+}
+
+private fun detectPreviewCandidatePorts(lines: Sequence<String>): List<Int> {
+  val candidates = linkedSetOf<Int>()
+  lines.forEach { line ->
+    PREVIEW_HOST_PORT_REGEX.findAll(line).forEach { match ->
+      match.groupValues.getOrNull(1)?.toIntOrNull()?.takeIf { it in 1..65_535 }?.let(candidates::add)
+    }
+    PREVIEW_LISTENING_PORT_REGEX.findAll(line).forEach { match ->
+      match.groupValues.getOrNull(1)?.toIntOrNull()?.takeIf { it in 1..65_535 }?.let(candidates::add)
+    }
+    PREVIEW_STARTED_SERVER_PORT_REGEX.findAll(line).forEach { match ->
+      match.groupValues.getOrNull(1)?.toIntOrNull()?.takeIf { it in 1..65_535 }?.let(candidates::add)
+    }
+  }
+  return candidates
+    .sorted()
+    .take(MAX_PREVIEW_CANDIDATE_PORTS)
+    .toList()
+}
+
+internal fun mergePreviewCandidatePorts(vararg groups: List<Int>): List<Int> =
+  groups.asSequence()
+    .flatMap { ports -> ports.asSequence() }
+    .filter { port -> port in 1..65_535 }
+    .distinct()
+    .sorted()
+    .take(MAX_PREVIEW_CANDIDATE_PORTS)
+    .toList()
 
 private fun JsonObject.stringValue(key: String): String? =
   this[key]

@@ -26,9 +26,15 @@ internal data class LocalLiveLlmTestConfig(
   companion object {
     const val CONFIG_PATH_PROPERTY: String = "opencray.liveLlmConfig"
     const val CONFIG_PATH_ENV: String = "OPENCRAY_LIVE_LLM_CONFIG"
+    const val ENABLED_PROPERTY: String = "opencray.liveLlmTestsEnabled"
+    const val ENABLED_ENV: String = "OPENCRAY_LIVE_LLM_TESTS_ENABLED"
     const val DEFAULT_CONFIG_RELATIVE_PATH: String = ".opencray/live-llm-test-config.json"
 
     fun load(): LocalLiveLlmTestConfig? = load(resolveConfiguredPath())
+
+    fun isLiveTestExecutionEnabled(): Boolean =
+      parseBooleanFlag(System.getProperty(ENABLED_PROPERTY)) ||
+        parseBooleanFlag(System.getenv(ENABLED_ENV))
 
     fun defaultConfigPath(): Path = workspaceRoot().resolve(DEFAULT_CONFIG_RELATIVE_PATH).normalize()
 
@@ -99,6 +105,16 @@ internal data class LocalLiveLlmTestConfig(
         current = current.parent
       }
       return Paths.get("").toAbsolutePath().normalize()
+    }
+
+    private fun parseBooleanFlag(value: String?): Boolean = when (value?.trim()?.lowercase()) {
+      "1",
+      "true",
+      "yes",
+      "on",
+      -> true
+
+      else -> false
     }
   }
 }

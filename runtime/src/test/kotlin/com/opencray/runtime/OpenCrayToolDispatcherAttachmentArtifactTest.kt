@@ -9,6 +9,8 @@ import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
@@ -375,6 +377,98 @@ class OpenCrayToolDispatcherAttachmentArtifactTest {
     assertEquals("revenue", result.metadata["query"])
   }
 
+  @Test
+  fun inspectWorkspacePackagePublishesInspectionMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("inspect-workspace-package").toPath()
+    val packagePath = workspaceRoot.resolve("docs").resolve("report.docx")
+    Files.createDirectories(packagePath.parent)
+    createZipArchive(
+      path = packagePath,
+      entries = mapOf(
+        "[Content_Types].xml" to "<Types/>".toByteArray(StandardCharsets.UTF_8),
+        "_rels/.rels" to "<Relationships/>".toByteArray(StandardCharsets.UTF_8),
+        "word/document.xml" to "<document><p>Hello package</p></document>".toByteArray(StandardCharsets.UTF_8),
+        "word/media/image1.png" to byteArrayOf(1, 2, 3, 4),
+      ),
+    )
+    val dispatcher = dispatcher(workspaceRoot = workspaceRoot)
+
+    val result = dispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "inspect_workspace_package",
+        arguments = buildJsonObject {
+          put("path", "docs/report.docx")
+          put("glob", "word/**/*.xml")
+          put(
+            "preview_entries",
+            kotlinx.serialization.json.buildJsonArray {
+              add(kotlinx.serialization.json.JsonPrimitive("word/document.xml"))
+            },
+          )
+          put("preview_chars", 80)
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertTrue(result.content.contains("Workspace package inspection: docs/report.docx"))
+    assertTrue(result.content.contains("preview: word/document.xml"))
+    assertEquals("docs/report.docx", result.metadata["path"])
+    assertEquals("docx", result.metadata["packageKind"])
+    assertEquals("1", result.metadata["matchedEntryCount"])
+    assertEquals("1", result.metadata["previewCount"])
+    assertEquals("word/**/*.xml", result.metadata["requestedGlob"])
+    assertEquals("word/document.xml", result.metadata["requestedPreviewEntries"])
+  }
+
+  @Test
+  fun extractWorkspacePackagePublishesAttachmentArtifactMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("extract-workspace-package").toPath()
+    val packagePath = workspaceRoot.resolve("docs").resolve("report.docx")
+    Files.createDirectories(packagePath.parent)
+    createZipArchive(
+      path = packagePath,
+      entries = mapOf(
+        "[Content_Types].xml" to "<Types/>".toByteArray(StandardCharsets.UTF_8),
+        "word/document.xml" to "<document/>".toByteArray(StandardCharsets.UTF_8),
+        "word/media/image1.png" to byteArrayOf(7, 8, 9, 10),
+      ),
+    )
+    val dispatcher = dispatcher(workspaceRoot = workspaceRoot)
+
+    val result = dispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "extract_workspace_package",
+        arguments = buildJsonObject {
+          put("path", "docs/report.docx")
+          put("destination_dir", "extracted/report")
+          put(
+            "entries",
+            kotlinx.serialization.json.buildJsonArray {
+              add(kotlinx.serialization.json.JsonPrimitive("word/media/image1.png"))
+            },
+          )
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertTrue(Files.exists(workspaceRoot.resolve("extracted").resolve("report").resolve("word").resolve("media").resolve("image1.png")))
+    assertEquals("docs/report.docx", result.metadata["path"])
+    assertEquals("extracted/report", result.metadata["destinationDir"])
+    assertEquals("docx", result.metadata["packageKind"])
+    assertEquals("1", result.metadata["extractedCount"])
+    assertTrue(result.metadata[OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_ID].orEmpty().startsWith("artifact-image1-"))
+    assertEquals("extracted/report/word/media/image1.png", result.metadata[OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_RELATIVE_PATH])
+    assertEquals("image1.png", result.metadata[OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_DISPLAY_NAME])
+    assertEquals("image", result.metadata[OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_KIND_HINT])
+    assertEquals("image/png", result.metadata[OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_MIME_TYPE])
+  }
+
   private fun dispatcher(
     workspaceRoot: Path,
     readRoots: Set<Path> = setOf(workspaceRoot),
@@ -409,6 +503,20 @@ class OpenCrayToolDispatcherAttachmentArtifactTest {
       error("Retry not expected in OpenCrayToolDispatcherAttachmentArtifactTest.")
     },
   )
+
+  private fun createZipArchive(
+    path: Path,
+    entries: Map<String, ByteArray>,
+  ) {
+    Files.createDirectories(path.parent)
+    ZipOutputStream(Files.newOutputStream(path)).use { zip ->
+      entries.forEach { (entryPath, bytes) ->
+        zip.putNextEntry(ZipEntry(entryPath))
+        zip.write(bytes)
+        zip.closeEntry()
+      }
+    }
+  }
 
   companion object {
     private val dispatcherJson = kotlinx.serialization.json.Json {

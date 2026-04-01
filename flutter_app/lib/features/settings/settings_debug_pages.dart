@@ -1167,6 +1167,10 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
                 )
               else ...[
                 _buildRunSelectorCard(),
+                if (_runtimeSnapshot != null) ...[
+                  const SizedBox(height: 16),
+                  _buildSubAgentCard(_runtimeSnapshot!),
+                ],
                 if (_selectedRunSnapshot != null) ...[
                   const SizedBox(height: 16),
                   _buildRunOverviewCard(_selectedRunSnapshot!),
@@ -1295,6 +1299,89 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
               'Error',
               '${run.errorCode} ${run.errorMessage ?? ''}'.trim(),
             ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSubAgentCard(OpenCrayChatRuntimeSnapshot snapshot) {
+    final List<OpenCrayChatSubAgentSnapshot> subAgents =
+        snapshot.subAgents.toList(growable: false)..sort((left, right) {
+          final int updatedComparison = right.updatedAtEpochMs.compareTo(
+            left.updatedAtEpochMs,
+          );
+          if (updatedComparison != 0) {
+            return updatedComparison;
+          }
+          return left.label.compareTo(right.label);
+        });
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Projected subagents',
+            style: _SettingsTextStyles.cardTitle,
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Reads runtimeActivity.subAgents directly so detached child state stays visible after the parent run leaves the recent run list.',
+            style: _SettingsTextStyles.body,
+          ),
+          const SizedBox(height: 10),
+          if (subAgents.isEmpty)
+            const Text(
+              'No projected subagents are visible in the current runtime activity snapshot.',
+              style: _SettingsTextStyles.body,
+            )
+          else
+            for (int index = 0; index < subAgents.length; index++) ...[
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _DebugValueChip(
+                    label: 'Subagent',
+                    value: subAgents[index].label,
+                  ),
+                  _DebugValueChip(
+                    label: 'Status',
+                    value: _formatSubAgentStatus(subAgents[index]),
+                  ),
+                  _DebugValueChip(
+                    label: 'Parent',
+                    value: subAgents[index].parentRunId,
+                  ),
+                  if (subAgents[index].mailboxMessageCount > 0 ||
+                      subAgents[index].mailboxPendingMessageCount > 0)
+                    _DebugValueChip(
+                      label: 'Mailbox',
+                      value:
+                          '${subAgents[index].mailboxPendingMessageCount} pending / ${subAgents[index].mailboxMessageCount} total',
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _formatSubAgentSummary(subAgents[index]),
+                style: _SettingsTextStyles.body,
+              ),
+              if (subAgents[index].mailboxLastDeliveredMessageId
+                      ?.trim()
+                      .isNotEmpty ==
+                  true) ...[
+                const SizedBox(height: 8),
+                _DebugKeyValueLine(
+                  'Last delivered',
+                  subAgents[index].mailboxLastDeliveredMessageId!.trim(),
+                ),
+              ],
+              if (index < subAgents.length - 1) ...[
+                const SizedBox(height: 12),
+                const Divider(height: 1, color: OpenCrayColors.divider),
+                const SizedBox(height: 12),
+              ],
+            ],
         ],
       ),
     );
@@ -1510,6 +1597,25 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
         _isRefreshing = false;
       });
     }
+  }
+
+  String _formatSubAgentStatus(OpenCrayChatSubAgentSnapshot subAgent) {
+    final String rawStatus =
+        subAgent.executionState ??
+        subAgent.status ??
+        subAgent.phase ??
+        'unknown';
+    return rawStatus.trim().replaceAll(RegExp(r'[_-]+'), ' ').toLowerCase();
+  }
+
+  String _formatSubAgentSummary(OpenCrayChatSubAgentSnapshot subAgent) {
+    final List<String> parts = <String>[
+      if (subAgent.subagentType.trim().isNotEmpty) subAgent.subagentType.trim(),
+      if (subAgent.contextMode.trim().isNotEmpty) subAgent.contextMode.trim(),
+      if (subAgent.depth > 0) 'depth ${subAgent.depth}',
+      if (subAgent.summary?.trim().isNotEmpty == true) subAgent.summary!.trim(),
+    ];
+    return parts.join(' · ');
   }
 }
 

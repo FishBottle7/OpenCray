@@ -60,8 +60,10 @@
 /tmp_manual_check/
 /.codex-home/
 /.codex-temp/
+/.codex-build/
 /.opencray/
 /.pytest_local/
+/.pytest-temp/
 **/__pycache__/
 *.py[cod]
 *.pid

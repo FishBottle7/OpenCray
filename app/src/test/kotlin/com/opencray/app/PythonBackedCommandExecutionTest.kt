@@ -2,6 +2,8 @@ package com.opencray.app
 
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
+import com.opencray.core.contracts.PolicyDecision
+import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.RetryRequest
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.runtime.CancellablePythonScriptRuntime
@@ -10,10 +12,12 @@ import com.opencray.runtime.PythonExecRequest
 import com.opencray.runtime.PythonScriptRuntime
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.nio.file.Path
 import java.util.Base64
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -78,6 +82,10 @@ class PythonBackedCommandExecutionTest {
     assertEquals("sandbox stdout", result.stdout)
     assertEquals("sandbox stderr", result.stderr)
     assertEquals("e2b_code_interpreter", result.metadata["runtimeBackend"])
+    assertEquals("python_wrapper", result.metadata["sandboxCommandBackendKind"])
+    assertEquals("false", result.metadata["sandboxCommandProviderNative"])
+    assertEquals("false", result.metadata["sandboxCommandSupportsStreamingLogs"])
+    assertEquals("false", result.metadata["sandboxCommandSupportsReconnect"])
   }
 
   @Test
@@ -105,11 +113,69 @@ class PythonBackedCommandExecutionTest {
     val terminateSnapshot = controller.terminate()
     assertEquals("true", terminateSnapshot.metadata["terminationRequested"])
     assertEquals("true", terminateSnapshot.metadata["terminationRequestAccepted"])
+    assertEquals("python_wrapper", terminateSnapshot.metadata["sandboxCommandBackendKind"])
+    assertEquals("false", terminateSnapshot.metadata["sandboxCommandProviderNative"])
 
     runtime.finish.countDown()
     val waited = controller.await(2_000L)
     assertEquals(com.opencray.runtime.process.ManagedProcessStatus.CANCELLED, waited.status)
     assertEquals("CANCELLED", waited.errorCode)
+    assertEquals("false", waited.metadata["sandboxCommandSupportsStreamingLogs"])
+    assertEquals("false", waited.metadata["sandboxCommandSupportsReconnect"])
+  }
+
+  @Test
+  fun pythonBackedSandboxCommandBackendDeclaresNonNativeCapabilities() {
+    val workspaceRoot = temporaryFolder.newFolder("python-backed-command-backend").toPath()
+    val runtime = RecordingPythonRuntime(
+      result = ExecutionResult(
+        taskId = "task-capabilities",
+        status = ExecutionStatus.SUCCESS,
+        exitCode = 0,
+        stdout = encodedPayload(
+          CommandWrapperResultPayload(
+            exitCode = 0,
+            stdout = "ok",
+            stderr = "",
+            processStarted = true,
+          ),
+        ),
+        stderr = "",
+        startedAtEpochMs = 100L,
+        finishedAtEpochMs = 200L,
+        metadata = mapOf("runtimeBackend" to "e2b_code_interpreter"),
+      ),
+    )
+    val workspaceRootReference = AtomicReference<Path>(workspaceRoot)
+    val backend = PythonBackedSandboxCommandExecutionBackend(
+      workspaceRootProvider = workspaceRootReference::get,
+      pythonRuntime = runtime,
+      json = json,
+    )
+
+    assertEquals("python_wrapper", backend.capabilities.backendKind)
+    assertEquals(false, backend.capabilities.providerNative)
+    assertEquals(false, backend.capabilities.supportsStreamingLogs)
+    assertEquals(false, backend.capabilities.supportsReconnect)
+
+    val result = backend.createCommandExecutor().execute(
+      request = com.opencray.runtime.CommandExecutionRequest(
+        taskId = "task-capabilities",
+        command = "git",
+        args = listOf("status"),
+        workingDirectory = workspaceRoot.toString(),
+        requestedAtEpochMs = 100L,
+      ),
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      approvalToken = null,
+      hooks = hooks(),
+    )
+
+    assertEquals("python_wrapper", result.metadata["sandboxCommandBackendKind"])
+    assertEquals("false", result.metadata["sandboxCommandProviderNative"])
   }
 
   private fun hooks(): RuntimeExecutionHooks = RuntimeExecutionHooks(

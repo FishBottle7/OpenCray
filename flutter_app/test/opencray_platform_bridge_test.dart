@@ -6,6 +6,7 @@ import 'package:opencray/core/bridge/opencray_failure_bridge.dart';
 import 'package:opencray/core/bridge/opencray_host_bridge_bootstrap.dart';
 import 'package:opencray/core/bridge/opencray_platform_bridge.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
+import 'package:opencray/core/models/opencray_image_reference.dart';
 import 'package:opencray/core/models/opencray_notification_settings.dart';
 
 void main() {
@@ -235,6 +236,298 @@ void main() {
       'docs/report.md',
     );
   });
+
+  test(
+    'platform bridge loads sandbox preview embed config over the host channel',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return <String, Object?>{
+              'previewUrl': 'https://3000-sb-preview.e2b.app/',
+              'providerId': 'e2b',
+              'headers': <String, Object?>{
+                'E2B-Traffic-Access-Token': 'traffic-preview',
+              },
+              'sessionMatched': true,
+              'accessTokenConfigured': true,
+            };
+          });
+
+      final config = await bridge.resolveSandboxPreviewEmbedConfig(
+        'https://3000-sb-preview.e2b.app/',
+      );
+
+      expect(capturedCall.method, 'resolveSandboxPreviewEmbedConfig');
+      expect(capturedCall.arguments, isA<Map<Object?, Object?>>());
+      final arguments = capturedCall.arguments as Map<Object?, Object?>;
+      expect(arguments['previewUrl'], 'https://3000-sb-preview.e2b.app/');
+      expect(config.providerId, 'e2b');
+      expect(config.sessionMatched, isTrue);
+      expect(config.headers['E2B-Traffic-Access-Token'], 'traffic-preview');
+    },
+  );
+
+  test(
+    'platform bridge loads settings image assets over the host channel',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return <Object?>[
+              <String, Object?>{
+                'assetId': 'settings-asset-1',
+                'displayName': 'portrait.png',
+                'relativePath': 'settings-image-assets/portrait.png',
+                'mimeType': 'image/png',
+                'sha256':
+                    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                'sizeBytes': 2048,
+                'createdAtEpochMs': 1200,
+              },
+            ];
+          });
+
+      final assets = await bridge.listSettingsImageAssets();
+
+      expect(capturedCall.method, 'listSettingsImageAssets');
+      expect(assets.single.assetId, 'settings-asset-1');
+      expect(assets.single.sizeBytes, 2048);
+    },
+  );
+
+  test(
+    'platform bridge picks and imports settings image assets over the host channel',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return <Object?>[
+              <String, Object?>{
+                'assetId': 'settings-asset-picked',
+                'displayName': 'avatar.png',
+                'relativePath': 'settings-image-assets/avatar.png',
+                'mimeType': 'image/png',
+                'sha256':
+                    'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+                'sizeBytes': 1024,
+                'createdAtEpochMs': 1500,
+              },
+            ];
+          });
+
+      final assets = await bridge.pickSettingsImageAssets();
+
+      expect(capturedCall.method, 'pickSettingsImageAssets');
+      expect(assets.single.assetId, 'settings-asset-picked');
+      expect(assets.single.displayName, 'avatar.png');
+    },
+  );
+
+  test(
+    'platform bridge imports settings image assets over the host channel',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return <Object?>[
+              <String, Object?>{
+                'assetId': 'settings-asset-2',
+                'displayName': 'reference.png',
+                'relativePath': 'settings-image-assets/reference.png',
+                'mimeType': 'image/png',
+                'sha256':
+                    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                'sizeBytes': 4096,
+                'createdAtEpochMs': 1400,
+              },
+            ];
+          });
+
+      final assets = await bridge.importSettingsImageAssets(<String>[
+        'content://images/reference.png',
+      ]);
+
+      expect(capturedCall.method, 'importSettingsImageAssets');
+      final arguments = capturedCall.arguments as Map<Object?, Object?>;
+      expect(arguments['uriStrings'], <String>[
+        'content://images/reference.png',
+      ]);
+      expect(assets.single.assetId, 'settings-asset-2');
+      expect(assets.single.relativePath, 'settings-image-assets/reference.png');
+    },
+  );
+
+  test(
+    'platform bridge loads soul visual identity over the host channel',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return <String, Object?>{
+              'portraitSummary': 'Calm expression with short dark hair.',
+              'primaryPortrait': <String, Object?>{
+                'refId': 'portrait-1',
+                'role': 'portrait',
+                'storageScope': 'agent_private',
+                'relativePath': 'soul-assets/portrait/portrait-1.png',
+                'summary': 'Front-facing portrait with a calm expression.',
+                'caption': 'Primary portrait',
+                'createdAtEpochMs': 1200,
+              },
+              'referenceImages': <Object?>[
+                <String, Object?>{
+                  'refId': 'reference-1',
+                  'role': 'reference',
+                  'storageScope': 'agent_private',
+                  'relativePath': 'soul-assets/reference/reference-1.png',
+                  'summary': 'Three-quarter portrait under warm light.',
+                  'caption': 'Warm light',
+                  'createdAtEpochMs': 1300,
+                },
+              ],
+            };
+          });
+
+      final identity = await bridge.loadSoulVisualIdentity();
+
+      expect(capturedCall.method, 'loadSoulVisualIdentity');
+      expect(identity?.primaryPortrait?.refId, 'portrait-1');
+      expect(identity?.referenceImages.single.refId, 'reference-1');
+    },
+  );
+
+  test('platform bridge posts save soul primary portrait requests', () async {
+    late MethodCall capturedCall;
+    const bridge = OpenCrayPlatformBridge();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(methodChannel, (call) async {
+          capturedCall = call;
+          return <String, Object?>{
+            'portraitSummary': 'Calm expression with short dark hair.',
+            'primaryPortrait': <String, Object?>{
+              'refId': 'portrait-2',
+              'role': 'portrait',
+              'storageScope': 'agent_private',
+              'relativePath': 'soul-assets/portrait/portrait-2.png',
+              'summary': 'Updated front-facing portrait with steady gaze.',
+              'caption': 'Front portrait',
+              'createdAtEpochMs': 1500,
+            },
+            'referenceImages': const <Object?>[],
+          };
+        });
+
+    final identity = await bridge.saveSoulPrimaryPortrait(
+      const OpenCrayImageReferenceSource(
+        sourceKind: OpenCrayImageReferenceSourceKind.settingsAsset,
+        settingsAssetId: 'settings-asset-1',
+        displayName: 'portrait.png',
+        mimeType: 'image/png',
+      ),
+    );
+
+    expect(capturedCall.method, 'saveSoulPrimaryPortrait');
+    final arguments = capturedCall.arguments as Map<Object?, Object?>;
+    expect(
+      (arguments['source'] as Map<Object?, Object?>)['settingsAssetId'],
+      'settings-asset-1',
+    );
+    expect(identity?.primaryPortrait?.refId, 'portrait-2');
+    expect(identity?.portraitSummary, 'Calm expression with short dark hair.');
+  });
+
+  test(
+    'platform bridge loads memory image references over the host channel',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return <Object?>[
+              <String, Object?>{
+                'refId': 'memory-image-2',
+                'role': 'evidence',
+                'storageScope': 'workspace',
+                'relativePath': 'memory-assets/sketch.png',
+                'summary':
+                    'Sketch captured during the earlier planning session.',
+                'caption': 'Sketch',
+                'createdAtEpochMs': 1600,
+              },
+            ];
+          });
+
+      final references = await bridge.listMemoryImageReferences('memory-2');
+
+      expect(capturedCall.method, 'listMemoryImageReferences');
+      final arguments = capturedCall.arguments as Map<Object?, Object?>;
+      expect(arguments['memoryId'], 'memory-2');
+      expect(references.single.refId, 'memory-image-2');
+      expect(references.single.caption, 'Sketch');
+    },
+  );
+
+  test(
+    'platform bridge posts memory image reference attachment requests',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return <String, Object?>{
+              'memoryId': 'memory-1',
+              'recordVersion': 4,
+              'updatedAtEpochMs': 9000,
+              'imageReferences': <Object?>[
+                <String, Object?>{
+                  'refId': 'memory-image-1',
+                  'role': 'evidence',
+                  'storageScope': 'workspace',
+                  'relativePath': 'memory-assets/whiteboard.png',
+                  'summary': 'Whiteboard photo from the planning session.',
+                  'caption': 'Whiteboard',
+                  'createdAtEpochMs': 4200,
+                },
+              ],
+            };
+          });
+
+      final result = await bridge.attachMemoryImageReference(
+        memoryId: 'memory-1',
+        preferredMode: 'copy_promote',
+        source: const OpenCrayImageReferenceSource(
+          sourceKind: OpenCrayImageReferenceSourceKind.settingsAsset,
+          settingsAssetId: 'settings-asset-1',
+          displayName: 'whiteboard.png',
+          mimeType: 'image/png',
+        ),
+      );
+
+      expect(capturedCall.method, 'attachMemoryImageReference');
+      final arguments = capturedCall.arguments as Map<Object?, Object?>;
+      expect(arguments['memoryId'], 'memory-1');
+      expect(arguments['preferredMode'], 'copy_promote');
+      expect(
+        (arguments['source'] as Map<Object?, Object?>)['settingsAssetId'],
+        'settings-asset-1',
+      );
+      expect(result?.recordVersion, 4);
+      expect(result?.imageReferences.single.refId, 'memory-image-1');
+    },
+  );
 
   test(
     'platform bridge loads notification settings over the host channel',

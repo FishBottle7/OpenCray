@@ -87,6 +87,7 @@ class ChatRunTraceData {
     this.canInterrupt = false,
     this.retryLabel,
     this.previewCard,
+    this.sessionCard,
   });
 
   final String runId;
@@ -98,6 +99,7 @@ class ChatRunTraceData {
   final bool canInterrupt;
   final String? retryLabel;
   final ChatRunTracePreviewCardData? previewCard;
+  final ChatRunTraceSandboxSessionCardData? sessionCard;
 
   bool get isRetryable => retryLabel?.trim().isNotEmpty == true;
 
@@ -128,6 +130,61 @@ class ChatRunTracePreviewCardData {
 }
 
 enum ChatRunTracePreviewStatus { ready, reachable, unreachable, skipped }
+
+@immutable
+class ChatRunTraceSandboxSessionCardData {
+  const ChatRunTraceSandboxSessionCardData({
+    required this.sessionPresent,
+    required this.source,
+    required this.lifecycleStatus,
+    this.provider,
+    this.sandboxId,
+    this.sandboxDomain,
+    this.templateId,
+    this.updatedAtEpochMs,
+    this.sessionLastActivityAtEpochMs,
+    this.sessionStaleAfterEpochMs,
+    this.lastPreviewUrl,
+    this.lastPreviewProbeStatus,
+    this.lastPreviewProbeObservedAtEpochMs,
+    this.lastPreviewProbeSource,
+    this.autoRefreshAfterMs,
+    this.previewCandidatePorts = const <int>[],
+    this.runningRequestIds = const <String>[],
+  });
+
+  final bool sessionPresent;
+  final ChatRunTraceSandboxSessionSource source;
+  final ChatRunTraceSandboxSessionLifecycleStatus lifecycleStatus;
+  final String? provider;
+  final String? sandboxId;
+  final String? sandboxDomain;
+  final String? templateId;
+  final int? updatedAtEpochMs;
+  final int? sessionLastActivityAtEpochMs;
+  final int? sessionStaleAfterEpochMs;
+  final String? lastPreviewUrl;
+  final ChatRunTracePreviewStatus? lastPreviewProbeStatus;
+  final int? lastPreviewProbeObservedAtEpochMs;
+  final String? lastPreviewProbeSource;
+  final int? autoRefreshAfterMs;
+  final List<int> previewCandidatePorts;
+  final List<String> runningRequestIds;
+}
+
+enum ChatRunTraceSandboxSessionSource {
+  none,
+  activeMemory,
+  persisted,
+  activeAndPersisted,
+}
+
+enum ChatRunTraceSandboxSessionLifecycleStatus {
+  none,
+  active,
+  stale,
+  reclaimed,
+}
 
 @immutable
 class ChatRunTraceHistoryEntry {

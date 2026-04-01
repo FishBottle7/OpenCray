@@ -226,6 +226,8 @@ data class OpenCrayToolDispatcherConfig(
   val webContentFetcher: WebContentFetcher = HttpUrlWebContentFetcher(),
   val webSearchProvider: WebSearchProvider = UnconfiguredWebSearchProvider,
   val sandboxPreviewService: SandboxPreviewService? = null,
+  val sandboxSessionControlService: SandboxSessionControlService? = null,
+  val sandboxSessionInfoService: SandboxSessionInfoService? = null,
   val mediaToolSettingsProvider: () -> OpenCrayMediaToolSettings? = { null },
   val imageGenerationClient: OpenCrayImageGenerationClient? = null,
   val speechSynthesisClient: OpenCraySpeechSynthesisClient? = null,
@@ -444,46 +446,50 @@ class OpenCrayToolDispatcher(
           AgentToolParameter("description", "string", required = true, description = "Short task label for the delegated child run."),
           AgentToolParameter("prompt", "string", required = true, description = "Exact instructions for the child run."),
           AgentToolParameter("subagent_type", "string", required = true, description = "Child profile id such as explorer, default, or worker. Legacy aliases researcher, reviewer, and general-purpose also work."),
-          AgentToolParameter("context_mode", "string", required = false, description = "Optional child context override. Supported values: minimal, delegated, mirrored."),
+          AgentToolParameter("context_mode", "string", required = false, description = "Optional child context override. Supported public values: minimal, delegated. mirrored is reserved for internal-only recovery/testing paths."),
         ),
       ),
       AgentToolDefinition(
         name = "spawn_agent",
-        description = "Queue one bounded subagent handle and return its agent id. Use wait_agent to execute it later.",
+        description = "Start one bounded subagent handle immediately. During prompt runs the child begins running in the background right away; use wait_agent later to block for completion, inspect the latest state, or resume a paused child.",
         parameters = listOf(
-          AgentToolParameter("agent_id", "string", required = false, description = "Optional explicit handle id for the delegated child run."),
+          AgentToolParameter("agent_id", "string", required = false, description = "Optional explicit child handle id for the delegated child run."),
           AgentToolParameter("description", "string", required = true, description = "Short task label for the delegated child run."),
           AgentToolParameter("prompt", "string", required = true, description = "Exact instructions for the child run."),
           AgentToolParameter("subagent_type", "string", required = true, description = "Child profile id such as explorer, default, or worker. Legacy aliases researcher, reviewer, and general-purpose also work."),
-          AgentToolParameter("context_mode", "string", required = false, description = "Optional child context override. Supported values: minimal, delegated, mirrored."),
+          AgentToolParameter("context_mode", "string", required = false, description = "Optional child context override. Supported public values: minimal, delegated. mirrored is reserved for internal-only recovery/testing paths."),
         ),
       ),
       AgentToolDefinition(
         name = "wait_agent",
-        description = "Execute or resume one queued delegated child handle and return its latest summarized state.",
+        description = "Wait for one delegated child handle to reach its latest stable state and return a summarized result. If that child is already running, wait_agent blocks until it finishes or pauses for approval. If user approval has unlocked a paused child, wait_agent resumes it from that point.",
         parameters = listOf(
-          AgentToolParameter("agent_id", "string", required = false, description = "One delegated child agent id returned by spawn_agent."),
+          AgentToolParameter("agent_id", "string", required = false, description = "One delegated child handle id returned by spawn_agent."),
           AgentToolParameter("agent_ids", "string[]", required = false, description = "Optional batch form. The first listed id is used in this runtime."),
           AgentToolParameter("ids", "string[]", required = false, description = "Compatibility alias for agent_ids."),
         ),
       ),
       AgentToolDefinition(
         name = "send_input",
-        description = "Append one supplemental parent instruction to a queued delegated child handle before wait_agent executes it.",
+        description = "Queue one parent follow-up message in the delegated child mailbox. Use it only for queued or approval-waiting children; it is not a mid-run interrupt.",
         parameters = listOf(
-          AgentToolParameter("agent_id", "string", required = false, description = "Delegated child agent id returned by spawn_agent."),
+          AgentToolParameter("agent_id", "string", required = false, description = "Delegated child handle id returned by spawn_agent."),
           AgentToolParameter("id", "string", required = false, description = "Compatibility alias for agent_id."),
-          AgentToolParameter("message", "string", required = false, description = "Supplemental instruction to append to the queued child prompt."),
+          AgentToolParameter("message", "string", required = false, description = "Parent follow-up message to queue in the child mailbox before the next resume."),
           AgentToolParameter("input", "string", required = false, description = "Compatibility alias for message."),
         ),
       ),
       AgentToolDefinition(
         name = "close_agent",
-        description = "Close one delegated child handle. Queued or approval-waiting children are cancelled and removed.",
+        description = "Close one delegated child handle. Running or paused children are cancelled and removed; completed children are simply forgotten.",
         parameters = listOf(
-          AgentToolParameter("agent_id", "string", required = false, description = "Delegated child agent id returned by spawn_agent."),
+          AgentToolParameter("agent_id", "string", required = false, description = "Delegated child handle id returned by spawn_agent."),
           AgentToolParameter("id", "string", required = false, description = "Compatibility alias for agent_id."),
         ),
+      ),
+      AgentToolDefinition(
+        name = "list_subagents",
+        description = "List delegated child handles currently known to this runtime, including parent linkage, lifecycle state, mailbox backlog, and the latest summarized child result.",
       ),
       AgentToolDefinition(
         name = "Bash",
@@ -587,6 +593,30 @@ class OpenCrayToolDispatcher(
         ),
       ),
       AgentToolDefinition(
+        name = "inspect_workspace_package",
+        description = "Inspect one readable ZIP-based package such as zip, docx, xlsx, pptx, odt, ods, or odp. Use this to list internal entries, preview specific XML or text parts, and identify the main document parts before extracting anything.",
+        parameters = listOf(
+          AgentToolParameter("path", "string", required = true, description = "Workspace-relative path, or an absolute path inside an approved external read-only root."),
+          AgentToolParameter("glob", "string", required = false, description = "Optional glob filter applied to package entry paths."),
+          AgentToolParameter("max_entries", "number", required = false, description = "Maximum number of matched entries to return."),
+          AgentToolParameter("preview_entries", "string[]", required = false, description = "Optional exact package entry paths to preview when they are safe text or XML entries."),
+          AgentToolParameter("preview_chars", "number", required = false, description = "Maximum characters to preview for each requested entry."),
+          AgentToolParameter("include_relationship_hints", "boolean", required = false, description = "Whether to include package kind hints such as main parts and relationship parts."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "extract_workspace_package",
+        description = "Extract selected entries from one readable ZIP-based package into a writable workspace directory. Requires entries or glob and never defaults to full-package extraction.",
+        parameters = listOf(
+          AgentToolParameter("path", "string", required = true, description = "Workspace-relative path, or an absolute path inside an approved external read-only root."),
+          AgentToolParameter("destination_dir", "string", required = true, description = "Writable workspace directory where the selected entries will be extracted."),
+          AgentToolParameter("entries", "string[]", required = false, description = "Optional exact package entry paths, or package subdirectories, to extract."),
+          AgentToolParameter("glob", "string", required = false, description = "Optional glob filter applied to package entry paths."),
+          AgentToolParameter("strip_top_level", "boolean", required = false, description = "Whether to remove one shared top-level directory segment from extracted paths when present."),
+          AgentToolParameter("overwrite", "boolean", required = false, description = "Whether existing destination files may be overwritten."),
+        ),
+      ),
+      AgentToolDefinition(
         name = "view_workspace_image",
         description = "Attach one readable workspace image into the next model turn for direct visual inspection. Use this when you need to see what an existing image actually contains instead of guessing from its path or filename.",
         parameters = listOf(
@@ -656,11 +686,23 @@ class OpenCrayToolDispatcher(
       config.sandboxPreviewService?.let {
         AgentToolDefinition(
           name = "sandbox_preview_open",
-          description = "Return a preview URL for one port exposed by the active cloud sandbox session and run a short reachability probe against it. Use this only when cloud execution is enabled and the target service is expected to be running inside the sandbox.",
+          description = "Return a preview URL for one port exposed by the active cloud sandbox session and run a short reachability probe against it. Use this only when cloud execution is enabled and the target service is expected to be running inside the sandbox. If exactly one candidate preview port has already been discovered from sandbox output, port can be omitted.",
           parameters = listOf(
-            AgentToolParameter("port", "number", required = true, description = "TCP port exposed by the sandbox service."),
+            AgentToolParameter("port", "number", required = false, description = "TCP port exposed by the sandbox service. Optional when the active sandbox session has exactly one discovered preview candidate port."),
             AgentToolParameter("path", "string", required = false, description = "Optional path suffix such as / or /health."),
           ),
+        )
+      },
+      config.sandboxSessionControlService?.let {
+        AgentToolDefinition(
+          name = "sandbox_session_close",
+          description = "Terminate the active reusable cloud sandbox session for the current workspace and clear its local resume snapshot. Use this when cloud work is finished or when the next cloud run should start from a fresh sandbox.",
+        )
+      },
+      config.sandboxSessionInfoService?.let {
+        AgentToolDefinition(
+          name = "sandbox_session_info",
+          description = "Inspect the active reusable cloud sandbox session for the current workspace, including whether it is in memory, persisted for resume, which preview candidate ports are known, and whether any sandbox requests are still running.",
         )
       },
       AgentToolDefinition(
@@ -872,6 +914,8 @@ class OpenCrayToolDispatcher(
         "workspace_import_file" -> importFileIntoWorkspace(task = task, arguments = invocation.arguments)
         "import_chat_attachment" -> importChatAttachmentIntoWorkspace(task = task, arguments = invocation.arguments)
         "search_workspace_document" -> searchWorkspaceDocument(task = task, arguments = invocation.arguments)
+        "inspect_workspace_package" -> inspectWorkspacePackage(task = task, arguments = invocation.arguments)
+        "extract_workspace_package" -> extractWorkspacePackage(task = task, arguments = invocation.arguments)
         "view_workspace_image" -> viewWorkspaceImage(task = task, arguments = invocation.arguments)
         "view_workspace_document" -> viewWorkspaceDocument(task = task, arguments = invocation.arguments)
         "view_workspace_pdf" -> viewWorkspacePdf(task = task, arguments = invocation.arguments)
@@ -900,6 +944,8 @@ class OpenCrayToolDispatcher(
         "python_exec" -> executePython(task = task, arguments = invocation.arguments)
         "python_runtime_manifest" -> inspectPythonRuntimeManifest(task = task)
         "sandbox_preview_open" -> openSandboxPreview(task = task, arguments = invocation.arguments)
+        "sandbox_session_close" -> closeSandboxSession(task = task)
+        "sandbox_session_info" -> inspectSandboxSession(task = task)
         "skills_list" -> listSkills()
         "skill_read" -> readSkill(invocation.arguments)
         "SkillsFind" -> findSkillPackages(task = task, arguments = invocation.arguments)
@@ -951,6 +997,7 @@ class OpenCrayToolDispatcher(
         "workspace_list_files" -> preflightWorkspaceListFiles(task = task, arguments = invocation.arguments)
         "workspace_read_file" -> preflightWorkspaceReadFile(task = task, arguments = invocation.arguments)
         "search_workspace_document" -> preflightSearchWorkspaceDocument(task = task, arguments = invocation.arguments)
+        "inspect_workspace_package" -> preflightInspectWorkspacePackage(task = task, arguments = invocation.arguments)
         "LS" -> preflightListFilesForClaude(task = task, arguments = invocation.arguments)
         "Read" -> preflightReadFileForClaude(task = task, arguments = invocation.arguments)
         "Grep" -> preflightGrepWorkspace(task = task, arguments = invocation.arguments)
@@ -960,6 +1007,7 @@ class OpenCrayToolDispatcher(
         "ProcessList",
         "ProcessRead",
         "python_runtime_manifest",
+        "sandbox_session_info",
         "skills_list",
         "skill_read",
         "SkillsList",
@@ -1241,6 +1289,39 @@ class OpenCrayToolDispatcher(
       affectedPaths = buildMap {
         put("path", displayPath)
         arguments.optionalString("query")?.trim()?.takeIf(String::isNotBlank)?.let { put("query", it) }
+      },
+    ) == null
+  }
+
+  private fun preflightInspectWorkspacePackage(task: AgentTask, arguments: JsonObject): Boolean {
+    val packagePath = toolTargetResolver.ensureReadableFile(
+      arguments.requiredString("path"),
+      label = "workspace package",
+    )
+    val displayPath = toolTargetResolver.displayModelPath(packagePath)
+    require(workspacePackageKindFor(packagePath) != null) {
+      "inspect_workspace_package currently supports ZIP-based packages only: $displayPath"
+    }
+    require((arguments.optionalInt("max_entries") ?: 1) >= 1) {
+      "max_entries must be >= 1 when provided."
+    }
+    require((arguments.optionalInt("preview_chars") ?: 1) >= 1) {
+      "preview_chars must be >= 1 when provided."
+    }
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "inspect_workspace_package",
+      targetPath = packagePath,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.FILE,
+        primaryPath = packagePath,
+      ),
+    )
+    return gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = buildMap {
+        put("path", displayPath)
+        arguments.optionalString("glob")?.trim()?.takeIf(String::isNotBlank)?.let { put("glob", it) }
       },
     ) == null
   }
@@ -1739,6 +1820,225 @@ class OpenCrayToolDispatcher(
           truncated = false,
           limitKind = ToolResultLimitKind.SEARCH_MATCH_LIMIT,
         ),
+      ),
+    )
+  }
+
+  private fun inspectWorkspacePackage(
+    task: AgentTask,
+    arguments: JsonObject,
+  ): AgentToolResult {
+    val packagePath = toolTargetResolver.ensureReadableFile(
+      arguments.requiredString("path"),
+      label = "workspace package",
+    )
+    val displayPath = toolTargetResolver.displayModelPath(packagePath)
+    require(workspacePackageKindFor(packagePath) != null) {
+      "inspect_workspace_package currently supports ZIP-based packages only: $displayPath"
+    }
+    val glob = arguments.optionalString("glob")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val previewEntries = arguments.optionalStringArray("preview_entries")
+      .map(String::trim)
+      .filter(String::isNotBlank)
+      .distinct()
+      .also { entries ->
+        require(entries.size <= MAX_WORKSPACE_PACKAGE_PREVIEW_ENTRY_REQUESTS) {
+          "preview_entries may contain at most $MAX_WORKSPACE_PACKAGE_PREVIEW_ENTRY_REQUESTS entries."
+        }
+      }
+    val request = WorkspacePackageInspectionRequest(
+      glob = glob,
+      maxEntries = arguments.optionalInt("max_entries")?.coerceIn(1, config.maxDirectoryEntries)
+        ?: DEFAULT_WORKSPACE_PACKAGE_INSPECTION_RESULTS,
+      previewEntries = previewEntries,
+      previewChars = arguments.optionalInt("preview_chars")?.coerceIn(1, MAX_WORKSPACE_PACKAGE_PREVIEW_CHARS)
+        ?: DEFAULT_WORKSPACE_PACKAGE_PREVIEW_CHARS,
+      includeRelationshipHints = arguments.optionalBoolean("include_relationship_hints") ?: true,
+    )
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "inspect_workspace_package",
+      targetPath = packagePath,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.FILE,
+        primaryPath = packagePath,
+        targetSummary = buildString {
+          append(displayPath)
+          glob?.let { append(" glob=").append(it) }
+        },
+      ),
+    )
+    gateReadOnlyTool(
+      plan = plan,
+      affectedPaths = buildMap {
+        put("path", displayPath)
+        glob?.let { put("glob", it) }
+      },
+    )?.let { return it }
+
+    val result = DefaultWorkspacePackageProvider().inspect(
+      path = packagePath,
+      request = request,
+    )
+    val previewTruncated = result.previews.any(WorkspacePackageEntryPreview::truncated)
+    val limitKind = if (previewTruncated) {
+      ToolResultLimitKind.READ_BYTE_BUDGET
+    } else {
+      ToolResultLimitKind.DIRECTORY_ENTRY_LIMIT
+    }
+    return AgentToolResult(
+      toolName = "inspect_workspace_package",
+      status = AgentToolResultStatus.SUCCESS,
+      content = renderWorkspacePackageInspectionResult(
+        displayPath = displayPath,
+        request = request,
+        result = result,
+      ),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = buildMap {
+          put("path", displayPath)
+          put("packageKind", result.packageKind.name.lowercase(Locale.US))
+          put("entryCount", result.entryCount.toString())
+          put("matchedEntryCount", result.matchedEntryCount.toString())
+          put("returnedEntryCount", result.entries.size.toString())
+          put("previewCount", result.previews.size.toString())
+          put("mediaEntryCount", result.mediaEntryCount.toString())
+          put("requestedMaxEntries", request.maxEntries.toString())
+          put("previewChars", request.previewChars.toString())
+          put("includeRelationshipHints", request.includeRelationshipHints.toString())
+          glob?.let { put("requestedGlob", it) }
+          if (previewEntries.isNotEmpty()) {
+            put("requestedPreviewEntries", previewEntries.joinToString(separator = ","))
+          }
+        },
+        resultEnvelope = ToolResultEnvelope(
+          limitApplied = true,
+          truncated = result.truncated,
+          limitKind = limitKind,
+        ),
+      ),
+    )
+  }
+
+  private fun extractWorkspacePackage(
+    task: AgentTask,
+    arguments: JsonObject,
+  ): AgentToolResult {
+    val packagePath = toolTargetResolver.ensureReadableFile(
+      arguments.requiredString("path"),
+      label = "workspace package",
+    )
+    val displayPath = toolTargetResolver.displayModelPath(packagePath)
+    require(workspacePackageKindFor(packagePath) != null) {
+      "extract_workspace_package currently supports ZIP-based packages only: $displayPath"
+    }
+    val destinationDir = toolTargetResolver.resolveWritablePath(
+      arguments.requiredString("destination_dir"),
+      label = "workspace package extraction directory",
+      defaultToRoot = false,
+    )
+    val displayDestinationDir = toolTargetResolver.displayWritablePath(destinationDir)
+    if (Files.exists(destinationDir)) {
+      require(Files.isDirectory(destinationDir)) {
+        "Package extraction destination must be a directory: $displayDestinationDir"
+      }
+    }
+    val requestedEntries = arguments.optionalStringArray("entries")
+      .map(String::trim)
+      .filter(String::isNotBlank)
+      .distinct()
+      .also { entries ->
+        require(entries.size <= MAX_WORKSPACE_PACKAGE_EXPLICIT_ENTRY_REQUESTS) {
+          "entries may contain at most $MAX_WORKSPACE_PACKAGE_EXPLICIT_ENTRY_REQUESTS selections."
+        }
+      }
+    val glob = arguments.optionalString("glob")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val request = WorkspacePackageExtractionRequest(
+      destinationRoot = destinationDir,
+      entries = requestedEntries,
+      glob = glob,
+      stripTopLevel = arguments.optionalBoolean("strip_top_level") ?: false,
+      overwrite = arguments.optionalBoolean("overwrite") ?: false,
+    )
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "extract_workspace_package",
+      targetPath = packagePath,
+      destinationPath = destinationDir,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.DIRECTORY,
+        primaryPath = packagePath,
+        secondaryPath = destinationDir,
+        targetSummary = "$displayPath -> $displayDestinationDir",
+      ),
+    )
+    toolPolicyPipeline.gateFileMutation(
+      plan = plan,
+      affectedPaths = buildMap {
+        put("path", displayPath)
+        put("destinationDir", displayDestinationDir)
+        put("overwrite", request.overwrite.toString())
+        put("stripTopLevel", request.stripTopLevel.toString())
+        if (requestedEntries.isNotEmpty()) {
+          put("entrySelectionCount", requestedEntries.size.toString())
+        }
+        glob?.let { put("glob", it) }
+      },
+    )?.let { return it }
+
+    val result = DefaultWorkspacePackageProvider().extract(
+      path = packagePath,
+      request = request,
+    )
+    val extractedArtifacts = result.extractedPaths
+      .take(MAX_WORKSPACE_PACKAGE_EXTRACTION_ARTIFACTS)
+      .mapNotNull(::attachmentArtifactFor)
+    val renderedPathCount = minOf(
+      result.extractedPaths.size,
+      MAX_RENDERED_WORKSPACE_PACKAGE_EXTRACTED_PATHS,
+    )
+    val renderedPathsTruncated = result.extractedPaths.size > renderedPathCount
+    return AgentToolResult(
+      toolName = "extract_workspace_package",
+      status = AgentToolResultStatus.SUCCESS,
+      content = renderWorkspacePackageExtractionResult(
+        displayPath = displayPath,
+        displayDestinationDir = displayDestinationDir,
+        request = request,
+        result = result,
+      ),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = buildMap {
+          put("path", displayPath)
+          put("destinationDir", displayDestinationDir)
+          put("packageKind", result.packageKind.name.lowercase(Locale.US))
+          put("entryCount", result.entryCount.toString())
+          put("matchedEntryCount", result.matchedEntryCount.toString())
+          put("extractedCount", result.extractedPaths.size.toString())
+          put("renderedPathCount", renderedPathCount.toString())
+          put("overwrite", request.overwrite.toString())
+          put("stripTopLevel", request.stripTopLevel.toString())
+          put("attachmentArtifactCount", extractedArtifacts.size.toString())
+          glob?.let { put("requestedGlob", it) }
+          if (requestedEntries.isNotEmpty()) {
+            put("requestedEntries", requestedEntries.joinToString(separator = ","))
+          }
+          result.strippedTopLevel?.let { put("strippedTopLevel", it) }
+          putAll(attachmentArtifactsMetadata(extractedArtifacts))
+        },
+        resultEnvelope = renderedPathsTruncated.takeIf { it }?.let {
+          ToolResultEnvelope(
+            limitApplied = true,
+            truncated = true,
+            limitKind = ToolResultLimitKind.DIRECTORY_ENTRY_LIMIT,
+          )
+        },
       ),
     )
   }
@@ -3069,10 +3369,18 @@ class OpenCrayToolDispatcher(
         snapshot.status == ManagedProcessStatus.RUNNING &&
         terminationRequestAccepted == "true" ->
         "Managed process cancellation requested."
+      terminationSupport == "provider_native_signal" &&
+        snapshot.status == ManagedProcessStatus.RUNNING &&
+        terminationRequestAccepted == "true" ->
+        "Managed process kill signal requested."
       terminationSupport == "cooperative" &&
         snapshot.status == ManagedProcessStatus.RUNNING &&
         terminationRequestAccepted == "false" ->
         "Managed process cancellation could not be delivered to the runtime and is still running."
+      terminationSupport == "provider_native_signal" &&
+        snapshot.status == ManagedProcessStatus.RUNNING &&
+        terminationRequestAccepted == "false" ->
+        "Managed process kill signal could not be delivered to the sandbox and is still running."
       terminationSupport == "unsupported" &&
         snapshot.status == ManagedProcessStatus.RUNNING ->
         "Managed process does not support termination on this runtime and is still running."
@@ -3823,11 +4131,10 @@ class OpenCrayToolDispatcher(
       errorCode = "SANDBOX_PREVIEW_UNAVAILABLE",
       errorMessage = "Sandbox preview support is unavailable on this runtime.",
     )
-    val port = arguments.optionalInt("port")
+    val requestedPort = arguments.optionalInt("port")
       ?.also { value ->
         require(value in 1..65_535) { "sandbox_preview_open port must be between 1 and 65535." }
       }
-      ?: throw IllegalArgumentException("Required argument 'port' must be a JSON number.")
     val rawPath = arguments.optionalString("path")
       ?.trim()
       ?.takeIf(String::isNotBlank)
@@ -3843,14 +4150,16 @@ class OpenCrayToolDispatcher(
         primaryPath = writeBoundary.defaultRoot,
         primaryTargetPath = toolTargetResolver.displayWritablePath(writeBoundary.defaultRoot),
         workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
-        targetSummary = "sandbox port $port${normalizedPath.orEmpty()}",
+        targetSummary = requestedPort
+          ?.let { port -> "sandbox port $port${normalizedPath.orEmpty()}" }
+          ?: "sandbox preview${normalizedPath.orEmpty()}",
       ),
     )
     toolPolicyPipeline.gate(
       plan = plan,
       affectedPaths = buildMap {
         put("workspaceRoot", toolTargetResolver.displayWritablePath(writeBoundary.defaultRoot))
-        put("port", port.toString())
+        requestedPort?.let { put("port", it.toString()) }
         normalizedPath?.let { put("path", it) }
       },
       askDetail = "Approval is required before sandbox_preview_open can expose a sandbox preview URL.",
@@ -3859,7 +4168,7 @@ class OpenCrayToolDispatcher(
     val preview = previewService.open(
       SandboxPreviewRequest(
         workspaceRoot = writeBoundary.defaultRoot,
-        port = port,
+        port = requestedPort,
         path = normalizedPath,
       ),
     )
@@ -3872,7 +4181,7 @@ class OpenCrayToolDispatcher(
       }
       appendLine("preview_url=${preview.url}")
       appendLine("port=${preview.port}")
-      normalizedPath?.let { appendLine("path=$it") }
+      preview.path?.let { appendLine("path=$it") }
       appendLine("probe_status=${preview.probeStatus.wireValue}")
       preview.probeHttpStatusCode?.let { appendLine("probe_http_status=$it") }
       preview.probeMessage?.let { appendLine("probe_message=$it") }
@@ -3896,15 +4205,222 @@ class OpenCrayToolDispatcher(
           put("workspaceRoot", toolTargetResolver.displayWritablePath(writeBoundary.defaultRoot))
           put("previewUrl", preview.url)
           put("previewPort", preview.port.toString())
+          put("previewPortSelection", if (requestedPort == null) "auto" else "explicit")
           put("sandboxProvider", preview.providerId)
           put("previewProbeStatus", preview.probeStatus.wireValue)
           preview.sandboxId?.let { put("sandboxId", it) }
           preview.sandboxDomain?.let { put("sandboxDomain", it) }
-          normalizedPath?.let { put("previewPath", it) }
+          preview.path?.let { put("previewPath", it) }
           preview.accessHeaderName?.let { put("previewAccessHeader", it) }
           put("previewAccessTokenConfigured", preview.accessTokenConfigured.toString())
           preview.probeHttpStatusCode?.let { put("previewProbeHttpStatus", it.toString()) }
           preview.probeMessage?.let { put("previewProbeMessage", it) }
+        },
+      ),
+    )
+  }
+
+  private fun closeSandboxSession(task: AgentTask): AgentToolResult {
+    val sessionControlService = config.sandboxSessionControlService ?: return AgentToolResult(
+      toolName = "sandbox_session_close",
+      status = AgentToolResultStatus.FAILED,
+      content = "Sandbox session control is unavailable on this runtime.",
+      errorCode = "SANDBOX_SESSION_CONTROL_UNAVAILABLE",
+      errorMessage = "Sandbox session control is unavailable on this runtime.",
+    )
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "sandbox_session_close",
+      targetPath = writeBoundary.defaultRoot,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        primaryPath = writeBoundary.defaultRoot,
+        primaryTargetPath = toolTargetResolver.displayWritablePath(writeBoundary.defaultRoot),
+        workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+        targetSummary = "close sandbox session",
+      ),
+    )
+    toolPolicyPipeline.gate(
+      plan = plan,
+      affectedPaths = mapOf(
+        "workspaceRoot" to toolTargetResolver.displayWritablePath(writeBoundary.defaultRoot),
+      ),
+      askDetail = "Approval is required before sandbox_session_close can terminate a cloud sandbox session.",
+      denyDetail = "Policy denied sandbox_session_close.",
+    )?.let { return it }
+    val closeResult = sessionControlService.close(
+      SandboxSessionCloseRequest(
+        workspaceRoot = writeBoundary.defaultRoot,
+      ),
+    )
+    val status = when (closeResult.outcome) {
+      SandboxSessionCloseOutcome.BUSY -> AgentToolResultStatus.FAILED
+      SandboxSessionCloseOutcome.TERMINATED,
+      SandboxSessionCloseOutcome.NOT_FOUND,
+      -> AgentToolResultStatus.SUCCESS
+    }
+    val content = buildString {
+      when (closeResult.outcome) {
+        SandboxSessionCloseOutcome.TERMINATED ->
+          appendLine("Closed the reusable cloud sandbox session for this workspace.")
+
+        SandboxSessionCloseOutcome.NOT_FOUND ->
+          appendLine("No reusable cloud sandbox session was recorded for this workspace.")
+
+        SandboxSessionCloseOutcome.BUSY ->
+          appendLine("Cannot close the reusable cloud sandbox session because a sandbox request is still running.")
+      }
+      closeResult.sandboxId?.let { appendLine("sandbox_id=$it") }
+      closeResult.sandboxDomain?.let { appendLine("sandbox_domain=$it") }
+      if (closeResult.previewCandidatePorts.isNotEmpty()) {
+        appendLine("preview_candidate_ports=${closeResult.previewCandidatePorts.joinToString(separator = ",")}")
+      }
+      closeResult.blockingRequestId?.let { appendLine("blocking_request_id=$it") }
+      appendLine("provider=${closeResult.providerId}")
+      append("close_outcome=${closeResult.outcome.wireValue}")
+    }.trim()
+    val errorCode = when (closeResult.outcome) {
+      SandboxSessionCloseOutcome.BUSY -> "SANDBOX_SESSION_BUSY"
+      else -> null
+    }
+    val errorMessage = when (closeResult.outcome) {
+      SandboxSessionCloseOutcome.BUSY ->
+        closeResult.blockingRequestId?.let { requestId ->
+          "Sandbox session cannot be closed while request '$requestId' is still running."
+        } ?: "Sandbox session cannot be closed while a request is still running."
+
+      else -> null
+    }
+    return AgentToolResult(
+      toolName = "sandbox_session_close",
+      status = status,
+      content = content,
+      errorCode = errorCode,
+      errorMessage = errorMessage,
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = buildMap {
+          put("workspaceRoot", toolTargetResolver.displayWritablePath(writeBoundary.defaultRoot))
+          put("sandboxProvider", closeResult.providerId)
+          put("sandboxSessionCloseOutcome", closeResult.outcome.wireValue)
+          closeResult.sandboxId?.let { put("sandboxId", it) }
+          closeResult.sandboxDomain?.let { put("sandboxDomain", it) }
+          if (closeResult.previewCandidatePorts.isNotEmpty()) {
+            put(
+              "sandboxPreviewCandidatePorts",
+              closeResult.previewCandidatePorts.joinToString(separator = ","),
+            )
+          }
+          closeResult.blockingRequestId?.let { put("blockingRequestId", it) }
+        },
+      ),
+    )
+  }
+
+  private fun inspectSandboxSession(task: AgentTask): AgentToolResult {
+    val sessionInfoService = config.sandboxSessionInfoService ?: return AgentToolResult(
+      toolName = "sandbox_session_info",
+      status = AgentToolResultStatus.FAILED,
+      content = "Sandbox session info is unavailable on this runtime.",
+      errorCode = "SANDBOX_SESSION_INFO_UNAVAILABLE",
+      errorMessage = "Sandbox session info is unavailable on this runtime.",
+    )
+    val metadataRequest = ToolMetadataContextRequest(
+      targetKind = ToolTargetKind.NONE,
+      workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+      targetSummary = "sandbox session info",
+    )
+    val info = sessionInfoService.inspect(
+      SandboxSessionInfoRequest(
+        workspaceRoot = writeBoundary.defaultRoot,
+      ),
+    )
+    val content = buildString {
+      when {
+        info.lifecycleStatus == SandboxSessionLifecycleStatus.RECLAIMED ->
+          appendLine("Reclaimed a stale reusable cloud sandbox session for this workspace.")
+
+        info.sessionPresent && info.lifecycleStatus == SandboxSessionLifecycleStatus.STALE ->
+          appendLine("Reusable cloud sandbox session is recorded for this workspace, but its lifecycle appears stale.")
+
+        info.sessionPresent ->
+          appendLine("Reusable cloud sandbox session is available for this workspace.")
+
+        else ->
+          appendLine("No reusable cloud sandbox session is recorded for this workspace.")
+      }
+      info.sandboxId?.let { appendLine("sandbox_id=$it") }
+      info.sandboxDomain?.let { appendLine("sandbox_domain=$it") }
+      info.templateId?.let { appendLine("template_id=$it") }
+      info.workspaceRoot?.let { appendLine("workspace_root=$it") }
+      info.remoteWorkspaceRoot?.let { appendLine("remote_workspace_root=$it") }
+      info.updatedAtEpochMs?.let { appendLine("updated_at_epoch_ms=$it") }
+      info.sessionLastActivityAtEpochMs?.let { appendLine("session_last_activity_at_epoch_ms=$it") }
+      info.sessionStaleAfterEpochMs?.let { appendLine("session_stale_after_epoch_ms=$it") }
+      if (info.previewCandidatePorts.isNotEmpty()) {
+        appendLine("preview_candidate_ports=${info.previewCandidatePorts.joinToString(separator = ",")}")
+      }
+      info.lastPreviewUrl?.let { appendLine("last_preview_url=$it") }
+      info.lastPreviewPort?.let { appendLine("last_preview_port=$it") }
+      info.lastPreviewPath?.let { appendLine("last_preview_path=$it") }
+      info.lastPreviewProbeStatus?.let { appendLine("last_preview_probe_status=$it") }
+      info.lastPreviewProbeHttpStatusCode?.let { appendLine("last_preview_probe_http_status=$it") }
+      info.lastPreviewProbeMessage?.let { appendLine("last_preview_probe_message=$it") }
+      info.lastPreviewOpenedAtEpochMs?.let { appendLine("last_preview_opened_at_epoch_ms=$it") }
+      info.lastPreviewProbeObservedAtEpochMs?.let { appendLine("last_preview_probe_observed_at_epoch_ms=$it") }
+      info.lastPreviewProbeSource?.let { appendLine("last_preview_probe_source=$it") }
+      info.recommendedRefreshAfterMs?.let { appendLine("auto_refresh_after_ms=$it") }
+      appendLine("running_request_count=${info.runningRequestIds.size}")
+      if (info.runningRequestIds.isNotEmpty()) {
+        appendLine("running_request_ids=${info.runningRequestIds.joinToString(separator = ",")}")
+      }
+      appendLine("provider=${info.providerId}")
+      appendLine("session_present=${info.sessionPresent}")
+      appendLine("session_lifecycle_status=${info.lifecycleStatus.wireValue}")
+      appendLine("session_is_stale=${info.sessionIsStale}")
+      appendLine("preview_auto_probe_attempted=${info.previewAutoProbeAttempted}")
+      append("session_source=${info.source.wireValue}")
+    }.trim()
+    return AgentToolResult(
+      toolName = "sandbox_session_info",
+      status = AgentToolResultStatus.SUCCESS,
+      content = content,
+      metadata = toolPolicyPipeline.resultMetadata(
+        toolName = "sandbox_session_info",
+        request = metadataRequest,
+        metadata = buildMap {
+          put("workspaceRoot", toolTargetResolver.displayWritablePath(writeBoundary.defaultRoot))
+          put("sandboxProvider", info.providerId)
+          put("sandboxSessionPresent", info.sessionPresent.toString())
+          put("sandboxSessionSource", info.source.wireValue)
+          put("sandboxSessionLifecycleStatus", info.lifecycleStatus.wireValue)
+          put("sandboxSessionIsStale", info.sessionIsStale.toString())
+          put("sandboxPreviewAutoProbeAttempted", info.previewAutoProbeAttempted.toString())
+          info.sandboxId?.let { put("sandboxId", it) }
+          info.sandboxDomain?.let { put("sandboxDomain", it) }
+          info.templateId?.let { put("sandboxTemplateId", it) }
+          info.workspaceRoot?.let { put("sandboxWorkspaceRoot", it) }
+          info.remoteWorkspaceRoot?.let { put("sandboxRemoteWorkspaceRoot", it) }
+          info.updatedAtEpochMs?.let { put("sandboxSessionUpdatedAtEpochMs", it.toString()) }
+          info.sessionLastActivityAtEpochMs?.let { put("sandboxSessionLastActivityAtEpochMs", it.toString()) }
+          info.sessionStaleAfterEpochMs?.let { put("sandboxSessionStaleAfterEpochMs", it.toString()) }
+          info.recommendedRefreshAfterMs?.let { put("sandboxSessionAutoRefreshAfterMs", it.toString()) }
+          if (info.previewCandidatePorts.isNotEmpty()) {
+            put("sandboxPreviewCandidatePorts", info.previewCandidatePorts.joinToString(separator = ","))
+          }
+          info.lastPreviewUrl?.let { put("sandboxLastPreviewUrl", it) }
+          info.lastPreviewPort?.let { put("sandboxLastPreviewPort", it.toString()) }
+          info.lastPreviewPath?.let { put("sandboxLastPreviewPath", it) }
+          info.lastPreviewProbeStatus?.let { put("sandboxLastPreviewProbeStatus", it) }
+          info.lastPreviewProbeHttpStatusCode?.let { put("sandboxLastPreviewProbeHttpStatus", it.toString()) }
+          info.lastPreviewProbeMessage?.let { put("sandboxLastPreviewProbeMessage", it) }
+          info.lastPreviewOpenedAtEpochMs?.let { put("sandboxLastPreviewOpenedAtEpochMs", it.toString()) }
+          info.lastPreviewProbeObservedAtEpochMs?.let { put("sandboxLastPreviewProbeObservedAtEpochMs", it.toString()) }
+          info.lastPreviewProbeSource?.let { put("sandboxLastPreviewProbeSource", it) }
+          put("sandboxRunningRequestCount", info.runningRequestIds.size.toString())
+          if (info.runningRequestIds.isNotEmpty()) {
+            put("sandboxRunningRequestIds", info.runningRequestIds.joinToString(separator = ","))
+          }
         },
       ),
     )
@@ -4030,11 +4546,145 @@ class OpenCrayToolDispatcher(
     snapshot.metadata["runtimeKind"]?.let { runtimeKind ->
       appendLine("runtime_kind=$runtimeKind")
     }
+    appendManagedProcessMetadataLine(snapshot, "runtimeBackend", "runtime_backend")
+    appendManagedProcessMetadataLine(snapshot, "runtimeTransport", "runtime_transport")
     snapshot.metadata["scriptPath"]?.let { scriptPath ->
       appendLine("script_path=$scriptPath")
     }
     snapshot.metadata["pythonExecutable"]?.let { pythonExecutable ->
       appendLine("python_executable=$pythonExecutable")
+    }
+    appendManagedProcessMetadataLine(snapshot, "sandboxCommandBackendKind", "sandbox_backend_kind")
+    appendManagedProcessMetadataLine(snapshot, "sandboxCommandBackendResolvedKind", "sandbox_backend_resolved_kind")
+    appendManagedProcessMetadataLine(snapshot, "sandboxCommandProviderNative", "sandbox_provider_native")
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandSupportsStreamingLogs",
+      "sandbox_supports_streaming_logs",
+    )
+    appendManagedProcessMetadataLine(snapshot, "sandboxCommandSupportsReconnect", "sandbox_supports_reconnect")
+    appendManagedProcessMetadataLine(snapshot, "sandboxCommandObservationMode", "sandbox_observation_mode")
+    appendManagedProcessMetadataLine(snapshot, "sandboxCommandApi", "sandbox_command_api")
+    appendManagedProcessMetadataLine(snapshot, "sandboxCommandReconnectApi", "sandbox_command_reconnect_api")
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectStatus",
+      "sandbox_command_reconnect_status",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectRecoveryState",
+      "sandbox_command_reconnect_recovery_state",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectSource",
+      "sandbox_command_reconnect_source",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectHttpStatusCode",
+      "sandbox_command_reconnect_http_status_code",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectResumeMode",
+      "sandbox_command_reconnect_resume_mode",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectBackfillSupported",
+      "sandbox_command_reconnect_backfill_supported",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectOutputGapRisk",
+      "sandbox_command_reconnect_output_gap_risk",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectRetryable",
+      "sandbox_command_reconnect_retryable",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectRetryAfterEpochMs",
+      "sandbox_command_reconnect_retry_after_epoch_ms",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectLastAttachedAtEpochMs",
+      "sandbox_command_reconnect_last_attached_at_epoch_ms",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectLastEventAtEpochMs",
+      "sandbox_command_reconnect_last_event_at_epoch_ms",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectLastEventKind",
+      "sandbox_command_reconnect_last_event_kind",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectLastFailureAtEpochMs",
+      "sandbox_command_reconnect_last_failure_at_epoch_ms",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectAttemptCount",
+      "sandbox_command_reconnect_attempt_count",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectSeededStdoutBytes",
+      "sandbox_command_reconnect_seeded_stdout_bytes",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectSeededStderrBytes",
+      "sandbox_command_reconnect_seeded_stderr_bytes",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandNativeProtocol",
+      "sandbox_command_native_protocol",
+    )
+    appendManagedProcessMetadataLine(snapshot, "sandboxCommandSessionSource", "sandbox_command_session_source")
+    appendManagedProcessMetadataLine(snapshot, "sandboxCommandPid", "sandbox_command_pid")
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandNativeProcessStatus",
+      "sandbox_command_native_process_status",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandNativeFailureStage",
+      "sandbox_command_native_failure_stage",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectFailureStage",
+      "sandbox_command_reconnect_failure_stage",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandBackendFallbackReasonCode",
+      "sandbox_backend_fallback_reason",
+    )
+    if (snapshot.metadata["sandboxCommandReconnectOutputGapRisk"] == "true") {
+      appendLine(
+        "observation_warning=provider reconnect resumed from persisted snapshot without log backfill; output emitted before attach may be missing",
+      )
+    }
+    if (
+      snapshot.metadata["sandboxCommandReconnectRecoveryState"] == "retry_scheduled" ||
+      snapshot.metadata["sandboxCommandReconnectRetryable"] == "true"
+    ) {
+      appendLine(
+        "observation_warning=provider reconnect failed without terminal process state; a later ProcessRead or ProcessWait may retry attach after backoff",
+      )
     }
     snapshot.metadata["terminationSupport"]?.let { terminationSupport ->
       appendLine("termination_support=$terminationSupport")
@@ -4045,6 +4695,12 @@ class OpenCrayToolDispatcher(
     snapshot.metadata["terminationRequestAccepted"]?.let { terminationRequestAccepted ->
       appendLine("termination_request_accepted=$terminationRequestAccepted")
     }
+    appendManagedProcessMetadataLine(snapshot, "sandboxCommandTerminateApi", "sandbox_command_terminate_api")
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandTerminateRequestedSignal",
+      "sandbox_command_terminate_requested_signal",
+    )
     if (snapshot.args.isNotEmpty()) {
       appendLine("args=${snapshot.args.joinToString(separator = " ")}")
     }
@@ -4080,6 +4736,17 @@ class OpenCrayToolDispatcher(
       }
     }
   }.trim()
+
+  private fun StringBuilder.appendManagedProcessMetadataLine(
+    snapshot: ManagedProcessSnapshot,
+    metadataKey: String,
+    renderedKey: String,
+  ) {
+    snapshot.metadata[metadataKey]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { value -> appendLine("$renderedKey=$value") }
+  }
 
   private fun listSkills(): AgentToolResult {
     val report = loadSkillsReport()
@@ -5771,6 +6438,13 @@ class OpenCrayToolDispatcher(
     private const val DEFAULT_MANAGED_PROCESS_TIMEOUT_MS: Long = 300_000L
     private const val DEFAULT_MANAGED_PROCESS_WAIT_TIMEOUT_MS: Long = 1_000L
     private const val DEFAULT_WORKSPACE_DOCUMENT_SEARCH_RESULTS: Int = 5
+    private const val DEFAULT_WORKSPACE_PACKAGE_INSPECTION_RESULTS: Int = 50
+    private const val DEFAULT_WORKSPACE_PACKAGE_PREVIEW_CHARS: Int = 2_000
+    private const val MAX_WORKSPACE_PACKAGE_PREVIEW_CHARS: Int = 4_000
+    private const val MAX_WORKSPACE_PACKAGE_PREVIEW_ENTRY_REQUESTS: Int = 8
+    private const val MAX_WORKSPACE_PACKAGE_EXPLICIT_ENTRY_REQUESTS: Int = 128
+    private const val MAX_WORKSPACE_PACKAGE_EXTRACTION_ARTIFACTS: Int = 24
+    private const val MAX_RENDERED_WORKSPACE_PACKAGE_EXTRACTED_PATHS: Int = 50
     private const val MAX_VIEW_WORKSPACE_IMAGE_BYTES: Long = 20L * 1024L * 1024L
     private const val MAX_VIEW_WORKSPACE_PDF_BYTES: Long = 32L * 1024L * 1024L
     private const val DEFAULT_GENERATED_IMAGE_FORMAT: String = "png"
@@ -5915,6 +6589,112 @@ class OpenCrayToolDispatcher(
     request.pageFrom != null || request.pageTo != null -> "requested_range=${request.pageFrom ?: 1}-${request.pageTo ?: "end"}"
     else -> null
   }
+
+  private fun renderWorkspacePackageInspectionResult(
+    displayPath: String,
+    request: WorkspacePackageInspectionRequest,
+    result: WorkspacePackageInspectionResult,
+  ): String = buildString {
+    appendLine("Workspace package inspection: $displayPath")
+    appendLine(
+      buildString {
+        append("kind=")
+        append(result.packageKind.name.lowercase(Locale.US))
+        append(" entry_count=")
+        append(result.entryCount)
+        append(" matched_entries=")
+        append(result.matchedEntryCount)
+        append(" returned_entries=")
+        append(result.entries.size)
+        append(" previews=")
+        append(result.previews.size)
+        append(" media_entries=")
+        append(result.mediaEntryCount)
+      },
+    )
+    request.glob?.let { appendLine("requested_glob=$it") }
+    if (request.previewEntries.isNotEmpty()) {
+      appendLine("requested_preview_entries=${request.previewEntries.joinToString(separator = ",")}")
+    }
+    if (result.mainPartHints.isNotEmpty()) {
+      appendLine("main_part_hints=${result.mainPartHints.joinToString(separator = ",")}")
+    }
+    if (result.relationshipPartHints.isNotEmpty()) {
+      appendLine("relationship_part_hints=${result.relationshipPartHints.joinToString(separator = ",")}")
+    }
+    appendLine()
+    appendLine("entries:")
+    if (result.entries.isEmpty()) {
+      appendLine("<no matched entries>")
+    } else {
+      result.entries.forEachIndexed { index, entry ->
+        append("${index + 1}. ")
+        append(entry.path)
+        append(" type=")
+        append(if (entry.isDirectory) "directory" else "file")
+        append(" previewable=")
+        append(entry.previewable)
+        entry.mimeType?.let { append(" mime=").append(it) }
+        entry.uncompressedSize?.let { append(" size=").append(it) }
+        entry.compressedSize?.let { append(" compressed=").append(it) }
+        appendLine()
+      }
+    }
+    if (result.previews.isNotEmpty()) {
+      result.previews.forEach { preview ->
+        appendLine()
+        appendLine("preview: ${preview.path}")
+        appendLine(preview.content)
+      }
+    }
+    if (result.truncated) {
+      appendLine()
+      append("Result was truncated by package inspection limits.")
+    }
+  }.trim()
+
+  private fun renderWorkspacePackageExtractionResult(
+    displayPath: String,
+    displayDestinationDir: String,
+    request: WorkspacePackageExtractionRequest,
+    result: WorkspacePackageExtractionResult,
+  ): String = buildString {
+    appendLine("Workspace package extraction: $displayPath")
+    appendLine(
+      buildString {
+        append("kind=")
+        append(result.packageKind.name.lowercase(Locale.US))
+        append(" entry_count=")
+        append(result.entryCount)
+        append(" matched_entries=")
+        append(result.matchedEntryCount)
+        append(" extracted_entries=")
+        append(result.extractedPaths.size)
+      },
+    )
+    appendLine("destination_dir=$displayDestinationDir")
+    if (request.entries.isNotEmpty()) {
+      appendLine("requested_entries=${request.entries.joinToString(separator = ",")}")
+    }
+    request.glob?.let { appendLine("requested_glob=$it") }
+    appendLine("overwrite=${request.overwrite}")
+    appendLine("strip_top_level=${request.stripTopLevel}")
+    result.strippedTopLevel?.let { appendLine("stripped_top_level=$it") }
+    appendLine()
+    appendLine("extracted_paths:")
+    if (result.extractedPaths.isEmpty()) {
+      appendLine("<no extracted entries>")
+    } else {
+      val renderedPaths = result.extractedPaths.take(MAX_RENDERED_WORKSPACE_PACKAGE_EXTRACTED_PATHS)
+      renderedPaths.forEachIndexed { index, path ->
+        appendLine("${index + 1}. ${toolTargetResolver.displayWritablePath(path)}")
+      }
+      val omittedCount = result.extractedPaths.size - renderedPaths.size
+      if (omittedCount > 0) {
+        append("...and $omittedCount more extracted path(s).")
+      }
+    }
+  }.trim()
 
   private fun renderMemorySearchHeader(match: MemorySearchMatch): String = buildString {
     append(match.path)

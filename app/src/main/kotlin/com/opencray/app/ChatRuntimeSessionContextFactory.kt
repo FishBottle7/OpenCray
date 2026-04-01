@@ -7,6 +7,7 @@ import com.opencray.runtime.context.RuntimeConversationAttachment
 import com.opencray.runtime.context.RuntimeConversationAttachmentKind
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.workingstate.WorkingState
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -19,6 +20,7 @@ internal class ChatRuntimeSessionContextFactory(
     visibleThroughMessageId: String? = null,
     excludedMessageIds: Set<String> = emptySet(),
     soulProfile: WorkspaceSoulProfile? = null,
+    workingState: WorkingState = WorkingState(),
   ): AgentRuntimeSessionContext {
     val session = chatSessionStore.loadSession(sessionId)
     val sessionPolicyText = resolveSessionPolicyText(session)
@@ -35,6 +37,7 @@ internal class ChatRuntimeSessionContextFactory(
     return AgentRuntimeSessionContext(
       sessionPolicyText = sessionPolicyText,
       soulProfile = soulProfile?.toRuntimeSoulProfile(),
+      workingState = workingState,
       conversation = conversation,
     )
   }

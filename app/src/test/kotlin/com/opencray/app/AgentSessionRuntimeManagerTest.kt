@@ -1,11 +1,15 @@
 package com.opencray.app
 
 import com.opencray.core.contracts.AgentTask
+import com.opencray.core.contracts.AgentTaskType
 import com.opencray.core.contracts.AgentTaskState
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
+import com.opencray.core.orchestrator.EXECUTION_KIND_APPROVAL_RESUME
+import com.opencray.core.orchestrator.ERROR_RESTART_REQUIRES_EXPLICIT_RETRY
+import com.opencray.core.orchestrator.METADATA_EXECUTION_KIND
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.core.orchestrator.SessionQueueSnapshot
@@ -18,14 +22,19 @@ import com.opencray.runtime.OpenCrayApprovalPhase
 import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayExecutionMetadataKeys
+import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
 import com.opencray.runtime.OpenCrayLifecycleEvent
+import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCrayPromptResumeState
 import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
+import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.subagent.SubAgentExecutionSnapshot
+import com.opencray.runtime.subagent.SubAgentHandleState
 import java.util.concurrent.AbstractExecutorService
 import java.util.concurrent.TimeUnit
 import kotlinx.serialization.json.Json
@@ -177,6 +186,81 @@ class AgentSessionRuntimeManagerTest {
     assertEquals(listOf(QueueTaskLifecycleState.COMPLETED), snapshot.tasks.map { it.lifecycleState })
     assertEquals(listOf("restored prompt"), restoredFactory.executedInputs)
     assertEquals(QueueTaskLifecycleState.COMPLETED, restoredHandle.findRun(submission.runId)?.lifecycleState)
+  }
+
+  @Test
+  fun detachedControlTaskCanResumeByTaskIdWithoutQueueSnapshot() {
+    val executor = RecordingExecutorService()
+    val sessionId = "session-detached-control"
+    val resumeState = OpenCrayPromptResumeState(
+      turnIndex = 1,
+      toolCallCount = 1,
+    )
+    val runtimeFactory = RecordingRuntimeFactory(
+      executionResultFactory = { task ->
+        when (task.metadata[METADATA_EXECUTION_KIND]) {
+          EXECUTION_KIND_APPROVAL_RESUME -> ExecutionResult(
+            taskId = task.id,
+            status = ExecutionStatus.SUCCESS,
+            stdout = "resumed:${task.input}",
+            startedAtEpochMs = 1_200L,
+            finishedAtEpochMs = 1_201L,
+          )
+
+          else -> approvalRequiredResult(
+            taskId = task.id,
+            toolName = "Read",
+            resumeState = resumeState,
+          )
+        }
+      },
+    )
+    val manager = manager(
+      runtimeFactory = runtimeFactory,
+      executor = executor,
+    )
+    val handle = manager.forSession(sessionId)
+
+    val submission = handle.submitDetachedControlTask(
+      AgentTask(
+        id = "detached-control-task-1",
+        type = AgentTaskType.TOOL_CALL,
+        input = """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
+        policyDecision = allowDecision(),
+        createdAtEpochMs = 1_000L,
+      ),
+    )
+
+    assertTrue(handle.snapshot().tasks.isEmpty())
+    assertEquals(1, executor.pendingCount())
+
+    executor.runNext()
+
+    val pausedRun = requireNotNull(handle.findRun(submission.runId))
+    assertEquals(null, pausedRun.lifecycleState)
+    assertEquals(ExecutionStatus.DENIED, pausedRun.executionStatus)
+    assertEquals("APPROVAL_REQUIRED", pausedRun.errorCode)
+    assertTrue(!pausedRun.isTerminal)
+    assertEquals(1, handle.listDetachedControlTasks().size)
+
+    val resumed = handle.requestResumeTask(submission.taskId)
+
+    assertTrue(resumed)
+    assertEquals(1, executor.pendingCount())
+
+    executor.runNext()
+
+    val completedRun = requireNotNull(handle.findRun(submission.runId))
+    assertEquals(ExecutionStatus.SUCCESS, completedRun.executionStatus)
+    assertTrue(completedRun.isTerminal)
+    assertTrue(handle.listDetachedControlTasks().isEmpty())
+    assertEquals(
+      listOf(
+        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
+        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
+      ),
+      runtimeFactory.executedInputs,
+    )
   }
 
   @Test
@@ -564,6 +648,163 @@ class AgentSessionRuntimeManagerTest {
   }
 
   @Test
+  fun restoredQueuedRunWithPriorProgressButNoCheckpointDoesNotAutoReplay() {
+    val sessionId = "session-queued-progress-no-checkpoint"
+    val runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory(temporaryFolder.root)
+    val firstManager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+      runEventJournalStoreFactory = runEventJournalStoreFactory,
+    )
+    val firstHandle = firstManager.forSession(sessionId)
+    val submission = firstHandle.submitPrompt(
+      userText = "resume after unsafe queued progress",
+      pendingMessageId = "pending-queued-progress-no-checkpoint",
+      visibleThroughMessageId = "pending-queued-progress-no-checkpoint",
+      policyDecision = allowDecision(),
+    )
+    val queueStore = FileBackedAgentQueueSnapshotStoreFactory(temporaryFolder.root).forChatSession(sessionId)
+    val queuedSnapshot = firstHandle.snapshot()
+    queueStore.save(
+      queuedSnapshot.copy(
+        tasks = queuedSnapshot.tasks.map { taskSnapshot ->
+          if (taskSnapshot.task.id != submission.taskId) {
+            taskSnapshot
+          } else {
+            taskSnapshot.copy(
+              lifecycleState = QueueTaskLifecycleState.QUEUED,
+              attempt = 1,
+              executionOrdinal = 1,
+              task = taskSnapshot.task.copy(
+                state = AgentTaskState.QUEUED,
+                updatedAtEpochMs = maxOf(taskSnapshot.task.updatedAtEpochMs, 2_000L),
+                metadata = taskSnapshot.task.metadata + mapOf(
+                  com.opencray.core.orchestrator.METADATA_EXECUTION_ORDINAL to "1",
+                  com.opencray.core.orchestrator.METADATA_PENDING_EXECUTION_KIND to
+                    com.opencray.core.orchestrator.EXECUTION_KIND_APPROVAL_RESUME,
+                ),
+              ),
+            )
+          }
+        },
+        updatedAtEpochMs = maxOf(queuedSnapshot.updatedAtEpochMs, 2_000L),
+      ),
+    )
+    runEventJournalStoreFactory.forChatSession(sessionId).append(
+      OpenCrayToolCallEvent(
+        runId = submission.runId,
+        taskId = submission.taskId,
+        turn = 1,
+        call = AgentToolCall(toolName = "Write"),
+        emittedAtEpochMs = 100L,
+      ),
+    )
+    firstManager.release(sessionId)
+
+    val restoredExecutor = RecordingExecutorService()
+    val restoredFactory = RecordingRuntimeFactory()
+    val restoredManager = manager(
+      runtimeFactory = restoredFactory,
+      executor = restoredExecutor,
+      runEventJournalStoreFactory = runEventJournalStoreFactory,
+    )
+    val restoredHandle = restoredManager.forSession(sessionId)
+
+    val restoredTaskSnapshot = restoredHandle.snapshot().tasks.single()
+    val restoredRun = requireNotNull(restoredHandle.findRun(submission.runId))
+
+    assertEquals(QueueTaskLifecycleState.FAILED, restoredTaskSnapshot.lifecycleState)
+    assertEquals(QueueTaskLifecycleState.FAILED, restoredRun.lifecycleState)
+    assertEquals(AgentTaskState.FAILED, restoredRun.taskState)
+    assertEquals(ERROR_RESTART_REQUIRES_EXPLICIT_RETRY, restoredRun.errorCode)
+    assertEquals("queued_progress_without_checkpoint", restoredRun.lifecycleDiagnostics.recoveryReason)
+    assertTrue(restoredRun.isTerminal)
+    assertTrue(!restoredRun.isActive)
+
+    restoredHandle.resume()
+
+    assertEquals(0, restoredExecutor.pendingCount())
+    assertTrue(restoredFactory.executedInputs.isEmpty())
+  }
+
+  @Test
+  fun restoredJournalOnlyPreModelCheckpointAutoResumesFromSameRun() {
+    val sessionId = "session-pre-model-journal-restore"
+    val runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory(temporaryFolder.root)
+    val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(temporaryFolder.root)
+    val firstManager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+      runEventJournalStoreFactory = runEventJournalStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    )
+    val firstHandle = firstManager.forSession(sessionId)
+
+    val submission = firstHandle.submitPrompt(
+      userText = "resume from pre-model checkpoint",
+      pendingMessageId = "pending-pre-model-journal-restore",
+      visibleThroughMessageId = "pending-pre-model-journal-restore",
+      policyDecision = allowDecision(),
+    )
+    overwriteQueueSnapshot(
+      sessionId = sessionId,
+      snapshot = firstHandle.snapshot(),
+      taskId = submission.taskId,
+      lifecycleState = QueueTaskLifecycleState.RUNNING,
+    )
+    runEventJournalStoreFactory.forChatSession(sessionId).append(
+      OpenCraySupplementEvent(
+        runId = submission.runId,
+        taskId = submission.taskId,
+        turn = 0,
+        entryId = "checkpoint-pre-model-request",
+        text = "",
+        checkpoint = "internal_prompt_checkpoint",
+        metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(
+          state = OpenCrayPromptResumeState(
+            turnIndex = 0,
+            toolCallCount = 0,
+          ),
+          json = json,
+          checkpointBoundary = OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST,
+        ),
+        emittedAtEpochMs = 100L,
+      ),
+    )
+    firstManager.release(sessionId)
+
+    val restoredExecutor = RecordingExecutorService()
+    val restoredFactory = RecordingRuntimeFactory()
+    val restoredManager = manager(
+      runtimeFactory = restoredFactory,
+      executor = restoredExecutor,
+      runEventJournalStoreFactory = runEventJournalStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    )
+    val restoredHandle = restoredManager.forSession(sessionId)
+
+    val restoredTaskSnapshot = restoredHandle.snapshot().tasks.single()
+    val restoredRun = requireNotNull(restoredHandle.findRun(submission.runId))
+    val synthesizedCheckpoint = promptCheckpointStoreFactory.forChatSession(sessionId).get(submission.taskId)
+
+    assertEquals(QueueTaskLifecycleState.QUEUED, restoredTaskSnapshot.lifecycleState)
+    assertEquals(QueueTaskLifecycleState.QUEUED, restoredRun.lifecycleState)
+    assertEquals(PromptCheckpointKind.PRE_MODEL_REQUEST, synthesizedCheckpoint?.checkpointKind)
+
+    restoredHandle.resume()
+
+    assertEquals(1, restoredExecutor.pendingCount())
+
+    restoredExecutor.runNext()
+
+    assertEquals(listOf("resume from pre-model checkpoint"), restoredFactory.executedInputs)
+    assertEquals(
+      QueueTaskLifecycleState.COMPLETED,
+      restoredHandle.findRun(submission.runId)?.lifecycleState,
+    )
+  }
+
+  @Test
   fun restoredWaitingApprovalKeepsSameRunSuspendedWithoutRerun() {
     val sessionId = "session-waiting-approval-restore"
     val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(temporaryFolder.root)
@@ -875,6 +1116,33 @@ class AgentSessionRuntimeManagerTest {
     val second = manager.forSession("session-terminal-process")
 
     assertTrue(first !== second)
+  }
+
+  @Test
+  fun releaseIdleSessionsKeepsSessionWithLiveSubAgents() {
+    val executor = RecordingExecutorService()
+    val runtimeFactory = RecordingRuntimeFactory(
+      subAgentHandlesProvider = { sessionId ->
+        if (sessionId == "session-live-subagent") {
+          listOf(backgroundSubAgentHandle(agentId = "child-live"))
+        } else {
+          emptyList()
+        }
+      },
+    )
+    val manager = manager(
+      runtimeFactory = runtimeFactory,
+      executor = executor,
+    )
+
+    val first = manager.forSession("session-live-subagent")
+
+    manager.releaseIdleSessions()
+
+    val second = manager.forSession("session-live-subagent")
+
+    assertSame(first, second)
+    assertEquals(listOf("session-live-subagent"), manager.activeWorkSummary().activeSessionIds)
   }
 
   @Test
@@ -1490,6 +1758,28 @@ class AgentSessionRuntimeManagerTest {
     finishedAtEpochMs = if (status.isTerminal) 1_001L else null,
   )
 
+  private fun backgroundSubAgentHandle(
+    agentId: String,
+  ): SubAgentHandleState = SubAgentHandleState.queued(
+    agentId = agentId,
+    childRunId = "$agentId-run",
+    childTaskId = "$agentId-task",
+    description = "inspect readme",
+    prompt = "Read README.md and summarize it.",
+    subagentType = "researcher",
+    contextMode = "minimal",
+    parentRunId = "parent-run",
+    parentTaskId = "parent-task",
+    parentTurn = 0,
+    depth = 1,
+    activeSkillName = null,
+    activeSkillActivationSource = null,
+    createdAtEpochMs = 1_000L,
+  ).copy(
+    snapshot = SubAgentExecutionSnapshot.backgroundRunning(),
+    updatedAtEpochMs = 1_100L,
+  )
+
   private fun approvalRequiredResult(
     taskId: String,
     toolName: String,
@@ -1529,6 +1819,7 @@ class AgentSessionRuntimeManagerTest {
       )
     },
     private val managedProcessesProvider: (String) -> List<ManagedProcessSnapshot> = { emptyList() },
+    private val subAgentHandlesProvider: (String) -> List<SubAgentHandleState> = { emptyList() },
     private val terminateManagedProcessHandler: (String, String) -> ManagedProcessSnapshot? = { _, _ -> null },
   ) : AgentSessionTaskRuntimeFactory {
     val executedInputs = mutableListOf<String>()
@@ -1544,6 +1835,9 @@ class AgentSessionRuntimeManagerTest {
 
     override fun listManagedProcesses(sessionId: String): List<ManagedProcessSnapshot> =
       managedProcessesProvider(sessionId)
+
+    override fun listSubAgentHandles(sessionId: String): List<SubAgentHandleState> =
+      subAgentHandlesProvider(sessionId)
 
     override fun terminateManagedProcess(
       sessionId: String,

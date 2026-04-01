@@ -4,10 +4,11 @@ import java.util.Locale
 
 enum class SubAgentContextMode(
   val wireValue: String,
+  val publicControlPlaneEnabled: Boolean = true,
 ) {
   MINIMAL("minimal"),
   DELEGATED("delegated"),
-  MIRRORED("mirrored");
+  MIRRORED("mirrored", publicControlPlaneEnabled = false);
 
   companion object {
     fun fromWireValue(value: String?): SubAgentContextMode? {
@@ -18,5 +19,12 @@ enum class SubAgentContextMode(
         ?: return null
       return values().firstOrNull { mode -> mode.wireValue == normalized }
     }
+
+    fun publicModes(): List<SubAgentContextMode> = values().filter { mode ->
+      mode.publicControlPlaneEnabled
+    }
+
+    fun publicWireValuesDescription(): String = publicModes()
+      .joinToString(", ") { mode -> mode.wireValue }
   }
 }

@@ -161,7 +161,7 @@ class RunRecoveryPlannerTest {
   }
 
   @Test
-  fun suspendedRejectedResumeCheckpointStaysWaitingForManualResume() {
+  fun suspendedRejectedResumeCheckpointStopsRunUntilNewInstruction() {
     val plan = requireNotNull(
       planner.plan(
         RunRecoveryPlannerInput(
@@ -184,11 +184,11 @@ class RunRecoveryPlannerTest {
       ),
     )
 
-    assertEquals(RunRecoveryAction.RESUME_WAITING_FOR_USER, plan.action)
-    assertEquals("approval_rejected_waiting_for_manual_resume", plan.reasonCode)
+    assertEquals(RunRecoveryAction.STOP_REJECTED_AWAITING_DIRECTION, plan.action)
+    assertEquals("approval_already_rejected_waiting_for_instruction", plan.reasonCode)
     assertEquals(PromptCheckpointKind.REJECTED_PENDING_RESUME, plan.checkpointKind)
     assertFalse(plan.safeToAutoResume)
-    assertTrue(plan.requiresUserAction)
+    assertFalse(plan.requiresUserAction)
   }
 
   @Test
@@ -525,19 +525,44 @@ class RunRecoveryPlannerTest {
   }
 
   @Test
-  fun queuedRunWithoutCheckpointStillReportsLegacyQueueExecution() {
+  fun untouchedQueuedRunWithoutCheckpointDoesNotNeedRecoveryPlan() {
+    val plan = planner.plan(
+      RunRecoveryPlannerInput(
+        run = runSnapshot(
+          lifecycleState = QueueTaskLifecycleState.QUEUED,
+        ),
+      ),
+    )
+
+    assertEquals(null, plan)
+  }
+
+  @Test
+  fun queuedRunWithPriorProgressWithoutCheckpointRequiresExplicitRecovery() {
     val plan = requireNotNull(
       planner.plan(
         RunRecoveryPlannerInput(
           run = runSnapshot(
             lifecycleState = QueueTaskLifecycleState.QUEUED,
+            executionOrdinal = 1,
+            pendingExecutionKind = "approval_resume",
+          ),
+          lastJournalEvent = OpenCrayToolCallEvent(
+            runId = "run-1",
+            taskId = "task-1",
+            turn = 1,
+            call = AgentToolCall(toolName = "Write"),
+            emittedAtEpochMs = 100L,
           ),
         ),
       ),
     )
 
-    assertEquals(RunRecoveryAction.LEGACY_REQUEUE, plan.action)
-    assertEquals("queued_without_checkpoint", plan.reasonCode)
+    assertEquals(RunRecoveryAction.INTERRUPT_RECOVERY_REQUIRED, plan.action)
+    assertEquals("queued_progress_without_checkpoint", plan.reasonCode)
+    assertEquals("tool_call", plan.journalTailKind)
+    assertTrue(plan.requiresUserAction)
+    assertFalse(plan.safeToAutoResume)
   }
 
   private fun interruptedRestoreRun(): AgentRunSnapshot = runSnapshot(
@@ -554,6 +579,9 @@ class RunRecoveryPlannerTest {
     errorCode: String? = null,
     hasLiveManagedProcesses: Boolean = false,
     diagnostics: RunLifecycleDiagnostics = RunLifecycleDiagnostics(),
+    executionOrdinal: Int = 0,
+    pendingExecutionKind: String? = null,
+    executionKind: String? = null,
   ): AgentRunSnapshot = AgentRunSnapshot(
     sessionId = "session-1",
     runId = "run-1",
@@ -562,6 +590,9 @@ class RunRecoveryPlannerTest {
     updatedAtEpochMs = 0L,
     lifecycleState = lifecycleState,
     taskState = null,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
+    pendingExecutionKind = pendingExecutionKind,
     executionStatus = executionStatus,
     errorCode = errorCode,
     hasLiveManagedProcesses = hasLiveManagedProcesses,

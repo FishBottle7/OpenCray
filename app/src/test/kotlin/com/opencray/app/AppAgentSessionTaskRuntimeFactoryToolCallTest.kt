@@ -10,9 +10,15 @@ import com.opencray.policy.SafetyAutomationMode
 import com.opencray.policy.SafetySettingsMetadataKeys
 import com.opencray.policy.ToolPolicyOverride
 import com.opencray.runtime.NoOpOpenCrayAgentRuntimeEventSink
+import com.opencray.runtime.subagent.SubAgentContinuationKind
+import com.opencray.runtime.subagent.SubAgentExecutionSnapshot
+import com.opencray.runtime.subagent.SubAgentExecutionState
+import com.opencray.runtime.subagent.SubAgentHandleState
+import com.opencray.runtime.subagent.SubAgentResultMetadataKeys
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.skills.SkillInstallManifestStore
 import com.opencray.runtime.skills.SkillPackageManager
+import com.opencray.skills.SkillLoader
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -64,9 +70,84 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
       ),
     )
 
-    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals(
+      "status=${result.status} errorCode=${result.errorCode} errorMessage=${result.errorMessage} stdout=${result.stdout} stderr=${result.stderr}",
+      ExecutionStatus.SUCCESS,
+      result.status,
+    )
     assertTrue(result.stdout.contains("Ship update entry"))
     assertEquals(1, runtimeFactory.todoStoreForSession(chatStore.loadState().activeSession.sessionId).snapshot().size)
+  }
+
+  @Test
+  fun directWaitAgentCanUseDurableSessionHandlesWithoutCheckpointResumeState() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-tool-call-wait-agent").toPath()
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-tool-call-wait-agent"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    runtimeFactory.subAgentHandleStoreForSession(sessionId).upsert(
+      SubAgentHandleState(
+        agentId = "child-durable",
+        childRunId = "child-run-durable",
+        childTaskId = "child-task-durable",
+        description = "Inspect README",
+        prompt = "Read README.md and summarize it.",
+        subagentType = "researcher",
+        contextMode = "minimal",
+        parentRunId = "run-parent-old",
+        parentTaskId = "task-parent-old",
+        parentTurn = 1,
+        depth = 1,
+        snapshot = SubAgentExecutionSnapshot(
+          state = SubAgentExecutionState.COMPLETED,
+          continuationKind = SubAgentContinuationKind.NONE,
+          resumable = false,
+          requiresUserAction = false,
+          isHighRisk = false,
+          headline = "README says hello.",
+        ),
+        childExecutionStatus = ExecutionStatus.SUCCESS.name,
+        childTurnCount = 1,
+        childToolCallCount = 1,
+        createdAtEpochMs = 900L,
+        updatedAtEpochMs = 1_100L,
+      ),
+    )
+    val runtime = runtimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val task = AgentTask(
+      id = "tool-call-wait-agent-durable",
+      type = AgentTaskType.TOOL_CALL,
+      input = """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-durable"}}""",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+    )
+
+    val result = runtime.execute(
+      task,
+      RuntimeExecutionHooks(
+        isCancellationRequested = { false },
+        requestRetry = { _ -> error("Retry was not expected for durable wait_agent test.") },
+      ),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertTrue(result.stdout.contains("README says hello."))
+    assertEquals("child-durable", result.metadata["agentId"])
+    assertEquals("child-run-durable", result.metadata["childRunId"])
+    assertEquals("completed", result.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
   }
 
   @Test
@@ -194,7 +275,11 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
       ),
     )
 
-    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals(
+      "status=${result.status} errorCode=${result.errorCode} errorMessage=${result.errorMessage} stdout=${result.stdout} stderr=${result.stderr}",
+      ExecutionStatus.SUCCESS,
+      result.status,
+    )
     assertFalse(Files.exists(targetFile))
     assertEquals("USER_APPROVED_RETRY", result.metadata["policyReasonCode"])
   }
@@ -295,9 +380,9 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
         reasonCode = "TEST_ALLOW",
       ),
       createdAtEpochMs = 1_000L,
-      metadata = mapOf(
-        RunLifecycleMetadataKeys.SUBMISSION_SOURCE to RunSubmissionSources.HOST_UI_TOOL_ACTION,
-        RunLifecycleMetadataKeys.PREAPPROVED_TOOL_NAME to "SkillsAdd",
+      metadata = hostUiPreapprovedTaskMetadata(
+        toolName = "SkillsAdd",
+        automationMode = SafetyAutomationMode.SAFE,
       ),
     )
 
@@ -309,7 +394,10 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
       ),
     )
 
-    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertTrue(
+      "status=${result.status} errorCode=${result.errorCode} errorMessage=${result.errorMessage} stdout=${result.stdout} stderr=${result.stderr}",
+      result.status == ExecutionStatus.SUCCESS,
+    )
     assertEquals("USER_APPROVED_RETRY", result.metadata["policyReasonCode"])
     assertTrue(Files.exists(packageManager.managedRootPath().toPath().resolve("find-skills").resolve("SKILL.md")))
   }
@@ -359,9 +447,9 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
         reasonCode = "TEST_ALLOW",
       ),
       createdAtEpochMs = 1_000L,
-      metadata = mapOf(
-        RunLifecycleMetadataKeys.SUBMISSION_SOURCE to RunSubmissionSources.HOST_UI_TOOL_ACTION,
-        RunLifecycleMetadataKeys.PREAPPROVED_TOOL_NAME to "SkillsFind",
+      metadata = hostUiPreapprovedTaskMetadata(
+        toolName = "SkillsFind",
+        automationMode = SafetyAutomationMode.SAFE,
       ),
     )
 
@@ -373,7 +461,10 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
       ),
     )
 
-    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertTrue(
+      "status=${result.status} errorCode=${result.errorCode} errorMessage=${result.errorMessage} stdout=${result.stdout} stderr=${result.stderr}",
+      result.status == ExecutionStatus.SUCCESS,
+    )
     assertTrue(result.stdout.contains("find-skills"))
   }
 
@@ -425,9 +516,9 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
         reasonCode = "TEST_ALLOW",
       ),
       createdAtEpochMs = 1_000L,
-      metadata = mapOf(
-        RunLifecycleMetadataKeys.SUBMISSION_SOURCE to RunSubmissionSources.HOST_UI_TOOL_ACTION,
-        RunLifecycleMetadataKeys.PREAPPROVED_TOOL_NAME to "SkillsInspect",
+      metadata = hostUiPreapprovedTaskMetadata(
+        toolName = "SkillsInspect",
+        automationMode = SafetyAutomationMode.SAFE,
       ),
     )
 
@@ -465,12 +556,18 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
       """.trimIndent(),
     )
     val packageManager = createSkillPackageManager("skills-update")
+    val sourceReport = SkillLoader.load(sourceRoot)
+    assertEquals(
+      "invalid=${sourceReport.invalidSkills.map { diagnostic -> diagnostic.detail }}",
+      listOf("find-skills"),
+      sourceReport.loadedSkills.map { skill -> skill.name },
+    )
     val installAttempt = packageManager.installFromLocalSource(
       sourcePath = sourceRoot,
       sourceRef = sourceRoot.invariantSeparatorsPath,
       selectedSkillName = "find-skills",
     )
-    assertNotNull(installAttempt.result)
+    assertNotNull("errorCode=${installAttempt.errorCode} errorMessage=${installAttempt.errorMessage}", installAttempt.result)
 
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-skills-update"))
     val sessionId = chatStore.loadState().activeSession.sessionId
@@ -498,9 +595,9 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
         reasonCode = "TEST_ALLOW",
       ),
       createdAtEpochMs = 1_000L,
-      metadata = mapOf(
-        RunLifecycleMetadataKeys.SUBMISSION_SOURCE to RunSubmissionSources.HOST_UI_TOOL_ACTION,
-        RunLifecycleMetadataKeys.PREAPPROVED_TOOL_NAME to "SkillsUpdate",
+      metadata = hostUiPreapprovedTaskMetadata(
+        toolName = "SkillsUpdate",
+        automationMode = SafetyAutomationMode.SAFE,
       ),
     )
 
@@ -533,15 +630,27 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
     val skillDirectory = root.resolve(relativeDirectory)
     Files.createDirectories(skillDirectory.toPath())
     val skillFile = skillDirectory.resolve("SKILL.md")
-    val content = """
-      ---
-      $frontMatter
-      ---
-      $body
-    """.trimIndent()
+    val content = buildString {
+      appendLine("---")
+      appendLine(frontMatter)
+      appendLine("---")
+      appendLine(body)
+    }
     Files.write(skillFile.toPath(), content.toByteArray(StandardCharsets.UTF_8))
     return skillFile
   }
 
   private fun jsonPath(file: File): String = file.invariantSeparatorsPath.replace("/", "\\/")
+
+  private fun hostUiPreapprovedTaskMetadata(
+    toolName: String,
+    automationMode: SafetyAutomationMode? = null,
+  ): Map<String, String> = buildMap {
+    put(RunLifecycleMetadataKeys.SUBMISSION_SOURCE, RunSubmissionSources.HOST_UI_TOOL_ACTION)
+    put(RunLifecycleMetadataKeys.PREAPPROVED_TOOL_NAME, toolName)
+    automationMode?.let { mode ->
+      put(SafetySettingsMetadataKeys.CHAT_MODE, mode.chatMetadataLabel)
+      put(SafetySettingsMetadataKeys.EXECUTION_MODE, mode.executionMode.name)
+    }
+  }
 }

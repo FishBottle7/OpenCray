@@ -7,11 +7,13 @@ import 'package:flutter/services.dart';
 import '../../app/opencray_tabs.dart';
 import '../models/opencray_chat_draft_attachment.dart';
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_agent_snapshot.dart';
 import '../models/opencray_debug_snapshot.dart';
 import '../models/opencray_file_image_preview.dart';
 import '../models/opencray_file_text_preview.dart';
 import '../models/opencray_file_voice_playback_source.dart';
 import '../models/opencray_files_snapshot.dart';
+import '../models/opencray_image_reference.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
 import '../models/opencray_media_speech_config.dart';
@@ -19,6 +21,7 @@ import '../models/opencray_mcp_settings.dart';
 import '../models/opencray_network_search_config.dart';
 import '../models/opencray_notification_settings.dart';
 import '../models/opencray_personalization_config.dart';
+import '../models/opencray_sandbox_preview_embed_config.dart';
 import '../models/opencray_sandbox_settings.dart';
 import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
@@ -43,6 +46,8 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     OpenCraySkillsSnapshot? initialSkillsSnapshot,
     OpenCrayChatSnapshot? initialChatSnapshot,
     OpenCraySandboxSettingsSnapshot? initialSandboxSettings,
+    List<OpenCrayAgentSnapshot> initialAgents = const <OpenCrayAgentSnapshot>[],
+    String? initialActiveAgentId,
   }) : _snapshot =
            initialSnapshot ??
            const OpenCrayShellSnapshot(
@@ -283,6 +288,13 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
              ],
              suggestedSkills: <OpenCraySuggestedSkillSnapshot>[],
            ),
+       _agents = initialAgents
+           .map((OpenCrayAgentSnapshot agent) => agent.copyWith())
+           .toList(growable: true),
+       _activeAgentId = _seedInitialActiveAgentId(
+         initialAgents,
+         initialActiveAgentId,
+       ),
        _chatSnapshot =
            initialChatSnapshot ??
            const OpenCrayChatSnapshot(
@@ -422,7 +434,10 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   OpenCraySkillsSnapshot _skillsSnapshot;
   OpenCrayChatSnapshot _chatSnapshot;
   OpenCraySandboxSettingsSnapshot _sandboxSettings;
+  final List<OpenCrayAgentSnapshot> _agents;
+  String? _activeAgentId;
   int _seedMessageCounter = 1;
+  int _seedAgentCounter = 1;
 
   List<String> get shownNativeToasts =>
       List<String>.unmodifiable(_shownNativeToasts);
@@ -438,6 +453,19 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
 
   @override
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async => _filesSnapshot;
+
+  @override
+  Future<OpenCraySandboxPreviewEmbedConfig> resolveSandboxPreviewEmbedConfig(
+    String previewUrl,
+  ) async => OpenCraySandboxPreviewEmbedConfig(
+    previewUrl: previewUrl,
+    providerId: '',
+    headers: const <String, String>{},
+    sessionMatched: false,
+    accessTokenConfigured: false,
+    unavailableReason:
+        'Sandbox preview embedding is unavailable in the seed bridge.',
+  );
 
   @override
   Future<OpenCrayFileImagePreview> loadWorkspaceImagePreview(
@@ -684,6 +712,122 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     }
     _shownNativeToasts.add(normalized);
   }
+
+  @override
+  Future<List<OpenCraySettingsImageAsset>> listSettingsImageAssets() async =>
+      const <OpenCraySettingsImageAsset>[];
+
+  @override
+  Future<List<OpenCraySettingsImageAsset>> pickSettingsImageAssets() async =>
+      const <OpenCraySettingsImageAsset>[];
+
+  @override
+  Future<List<OpenCraySettingsImageAsset>> importSettingsImageAssets(
+    List<String> uriStrings,
+  ) async => const <OpenCraySettingsImageAsset>[];
+
+  @override
+  Future<List<OpenCrayAgentSnapshot>> listAgents() async =>
+      _materializeAgents();
+
+  @override
+  Future<OpenCrayAgentSnapshot?> loadActiveAgent() async {
+    final activeAgentId = _activeAgentId;
+    if (activeAgentId == null) {
+      return null;
+    }
+    for (final agent in _materializeAgents()) {
+      if (agent.agentId == activeAgentId) {
+        return agent;
+      }
+    }
+    return null;
+  }
+
+  @override
+  Future<OpenCrayAgentSnapshot> createAgent(
+    OpenCrayAgentCreateRequest request,
+  ) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final agentId = _allocateSeedAgentId();
+    final snapshot = OpenCrayAgentSnapshot(
+      agentId: agentId,
+      displayName: request.displayName.trim().isEmpty
+          ? 'Untitled agent'
+          : request.displayName.trim(),
+      presetName: request.presetName.trim().isEmpty
+          ? 'steady'
+          : request.presetName.trim(),
+      plasticity: request.plasticity.trim().isEmpty
+          ? 'medium'
+          : request.plasticity.trim(),
+      mode: request.mode.trim().isEmpty ? 'full' : request.mode.trim(),
+      callsYou: request.callsYou.trim(),
+      addressStyle: request.addressStyle.trim(),
+      voiceSummary: request.voiceSummary.trim(),
+      verbosity: request.verbosity.trim(),
+      relationshipStyle: request.relationshipStyle.trim(),
+      riskTolerance: request.riskTolerance.trim(),
+      toolUseBias: request.toolUseBias.trim(),
+      baseDescription: request.baseDescription.trim(),
+      collaborationGuidance: request.collaborationGuidance.trim(),
+      escalationRules: request.escalationRules.trim(),
+      forbiddenBehaviors: request.forbiddenBehaviors.trim(),
+      llm: request.llm,
+      avatar: request.avatar,
+      imageReferences: List<OpenCrayAgentImageReferenceConfig>.from(
+        request.imageReferences,
+        growable: false,
+      ),
+      activeSessionId: 'seed-session-$agentId',
+      avatarSeed: request.avatar?.settingsAssetId ?? request.displayName.trim(),
+      createdAtEpochMs: now,
+      updatedAtEpochMs: now,
+    );
+    _agents.insert(0, snapshot);
+    if (request.activateOnCreate || _activeAgentId == null) {
+      _activeAgentId = agentId;
+    }
+    return _materializeAgent(snapshot);
+  }
+
+  @override
+  Future<OpenCrayAgentSnapshot?> selectAgent(String agentId) async {
+    final normalizedAgentId = agentId.trim();
+    for (final agent in _agents) {
+      if (agent.agentId == normalizedAgentId) {
+        _activeAgentId = normalizedAgentId;
+        return _materializeAgent(agent);
+      }
+    }
+    throw StateError('Unknown seed agent: $normalizedAgentId');
+  }
+
+  @override
+  Future<OpenCraySoulVisualIdentity?> loadSoulVisualIdentity() async => null;
+
+  @override
+  Future<OpenCraySoulVisualIdentity?> saveSoulPrimaryPortrait(
+    OpenCrayImageReferenceSource source,
+  ) async => null;
+
+  @override
+  Future<OpenCraySoulVisualIdentity?> saveSoulReferenceImage({
+    required String refId,
+    required OpenCrayImageReferenceSource source,
+  }) async => null;
+
+  @override
+  Future<List<OpenCrayImageReference>> listMemoryImageReferences(
+    String memoryId,
+  ) async => const <OpenCrayImageReference>[];
+
+  @override
+  Future<OpenCrayMemoryImageReferenceResult?> attachMemoryImageReference({
+    required String memoryId,
+    required OpenCrayImageReferenceSource source,
+    String? preferredMode,
+  }) async => null;
 
   @override
   Future<OpenCraySettingsOverviewSnapshot> loadSettingsOverview() async =>
@@ -1304,6 +1448,9 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   }) async => null;
 
   @override
+  Future<void> refreshSandboxSessionInfo() async {}
+
+  @override
   Future<void> createChatSession() async {
     _chatSnapshot = const OpenCrayChatSnapshot(
       screenTitle: 'Chat',
@@ -1696,6 +1843,23 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     updateSettingsOverview(updatedOverview);
   }
 
+  List<OpenCrayAgentSnapshot> _materializeAgents() {
+    return _agents.map(_materializeAgent).toList(growable: false);
+  }
+
+  OpenCrayAgentSnapshot _materializeAgent(OpenCrayAgentSnapshot snapshot) {
+    return snapshot.copyWith(isActive: snapshot.agentId == _activeAgentId);
+  }
+
+  String _allocateSeedAgentId() {
+    while (true) {
+      final candidate = 'seed-agent-${_seedAgentCounter++}';
+      if (_agents.every((agent) => agent.agentId != candidate)) {
+        return candidate;
+      }
+    }
+  }
+
   Future<void> dispose() async {
     await _controller.close();
     await _settingsController.close();
@@ -1764,6 +1928,22 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     );
     _emitChatSnapshot();
   }
+}
+
+String? _seedInitialActiveAgentId(
+  List<OpenCrayAgentSnapshot> initialAgents,
+  String? initialActiveAgentId,
+) {
+  final normalizedActiveAgentId = initialActiveAgentId?.trim();
+  if (normalizedActiveAgentId != null && normalizedActiveAgentId.isNotEmpty) {
+    return normalizedActiveAgentId;
+  }
+  for (final agent in initialAgents) {
+    if (agent.isActive) {
+      return agent.agentId;
+    }
+  }
+  return null;
 }
 
 String _seedCopySessionTitle(String title) {
@@ -3040,6 +3220,7 @@ const Set<String> _seedImagePreviewExtensions = <String>{
   'bmp',
   'heic',
   'heif',
+  'svg',
 };
 
 const String _seedImagePreviewBase64 =

@@ -171,6 +171,7 @@ internal enum class PersistedAgentRunEventKind {
   SUBAGENT,
   TOOL_CALL,
   TOOL_RESULT,
+  CHECKPOINT,
   MEMORY_RETRIEVAL,
   MEMORY_WRITE,
   CANCELLATION,
@@ -454,6 +455,13 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
   )
 }
 
+internal fun PersistedAgentRunEvent.toRuntimeEventOrNull(): OpenCrayAgentRunEvent? =
+  if (kind == PersistedAgentRunEventKind.CHECKPOINT) {
+    null
+  } else {
+    toRuntimeEvent()
+  }
+
 internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = when (kind) {
   PersistedAgentRunEventKind.LIFECYCLE -> OpenCrayLifecycleEvent(
     runId = runId,
@@ -618,6 +626,9 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
       metadata = resultMetadata,
     ),
     emittedAtEpochMs = emittedAtEpochMs,
+  )
+  PersistedAgentRunEventKind.CHECKPOINT -> error(
+    "Checkpoint journal entries are recovery markers and do not map to runtime events.",
   )
   PersistedAgentRunEventKind.MEMORY_RETRIEVAL -> OpenCrayMemoryRetrievalEvent(
     runId = runId,

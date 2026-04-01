@@ -131,6 +131,108 @@ class FileBackedAgentProcessRegistryTest {
     assertEquals("server ready", reopened.stdout)
   }
 
+  @Test
+  fun restoredRunningSnapshotReconnectsThroughReconnectableFactory() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-reconnectable")
+    val factory = ReconnectableFakeManagedProcessControllerFactory()
+    val registry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = factory,
+    )
+
+    registry.start(
+      ManagedProcessStartRequest(
+        processId = "proc-remote",
+        taskId = "task-remote",
+        command = "npm",
+        args = listOf("run", "dev"),
+        workingDirectory = ".",
+        timeoutMs = 120_000L,
+        requestedAtEpochMs = 1_000L,
+      ),
+    )
+
+    ManagedProcessControllerRegistry.clearForTest()
+
+    val restoredRegistry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = factory,
+    )
+    val restored = restoredRegistry.read("proc-remote")
+
+    assertNotNull(restored)
+    assertEquals(ManagedProcessStatus.RUNNING, restored!!.status)
+    assertEquals("true", restored.metadata["reconnected"])
+    assertEquals("attached_live", restored.metadata["sandboxCommandReconnectRecoveryState"])
+    assertEquals(1, factory.reconnectCount)
+
+    val waited = restoredRegistry.wait("proc-remote", 250L)
+
+    assertNotNull(waited)
+    assertEquals(ManagedProcessStatus.SUCCESS, waited!!.status)
+    assertEquals("server ready", waited.stdout)
+    assertEquals("true", waited.metadata["reconnected"])
+    assertEquals("completed", waited.metadata["sandboxCommandReconnectRecoveryState"])
+  }
+
+  @Test
+  fun retryableReconnectControllerIsReplacedAfterBackoffOnNextRead() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-retryable-reconnect")
+    var nowEpochMs = 1_000L
+    val factory = RetryableReconnectFakeManagedProcessControllerFactory(clock = { nowEpochMs })
+    val registry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = factory,
+      clock = { nowEpochMs },
+    )
+
+    registry.start(
+      ManagedProcessStartRequest(
+        processId = "proc-retryable",
+        taskId = "task-retryable",
+        command = "npm",
+        args = listOf("run", "dev"),
+        workingDirectory = ".",
+        timeoutMs = 120_000L,
+        requestedAtEpochMs = 1_000L,
+      ),
+    )
+
+    ManagedProcessControllerRegistry.clearForTest()
+
+    val restoredRegistry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = factory,
+      clock = { nowEpochMs },
+    )
+    val firstRead = restoredRegistry.read("proc-retryable")
+
+    assertNotNull(firstRead)
+    assertEquals(ManagedProcessStatus.RUNNING, firstRead!!.status)
+    assertEquals("true", firstRead.metadata["sandboxCommandReconnectRetryable"])
+    assertEquals("retry_scheduled", firstRead.metadata["sandboxCommandReconnectRecoveryState"])
+    assertEquals("1", firstRead.metadata["sandboxCommandReconnectAttemptCount"])
+    assertEquals(1, factory.reconnectCount)
+
+    nowEpochMs = 1_500L
+    val secondReadBeforeBackoff = restoredRegistry.read("proc-retryable")
+
+    assertNotNull(secondReadBeforeBackoff)
+    assertEquals("1", secondReadBeforeBackoff!!.metadata["sandboxCommandReconnectAttemptCount"])
+    assertEquals(1, factory.reconnectCount)
+
+    nowEpochMs = 2_500L
+    val thirdReadAfterBackoff = restoredRegistry.read("proc-retryable")
+
+    assertNotNull(thirdReadAfterBackoff)
+    assertEquals(ManagedProcessStatus.RUNNING, thirdReadAfterBackoff!!.status)
+    assertEquals("false", thirdReadAfterBackoff.metadata["sandboxCommandReconnectRetryable"])
+    assertEquals("attached_live", thirdReadAfterBackoff.metadata["sandboxCommandReconnectRecoveryState"])
+    assertEquals("2", thirdReadAfterBackoff.metadata["sandboxCommandReconnectAttemptCount"])
+    assertEquals("true", thirdReadAfterBackoff.metadata["reconnectedAfterRetry"])
+    assertEquals(2, factory.reconnectCount)
+  }
+
   private fun runningSnapshot(
     processId: String,
     taskId: String,
@@ -180,5 +282,72 @@ class FileBackedAgentProcessRegistryTest {
     }
 
     override fun terminate(): ManagedProcessSnapshot = currentSnapshot
+  }
+
+  private inner class ReconnectableFakeManagedProcessControllerFactory : ReconnectableManagedProcessControllerFactory {
+    var reconnectCount: Int = 0
+      private set
+
+    override fun start(request: ManagedProcessStartRequest): ManagedProcessController =
+      FakeManagedProcessController(
+        snapshot = runningSnapshot(processId = request.processId, taskId = request.taskId),
+      )
+
+    override fun reconnect(snapshot: ManagedProcessSnapshot): ManagedProcessController {
+      reconnectCount += 1
+      val running = snapshot.copy(
+        metadata = snapshot.metadata + mapOf(
+          "reconnected" to "true",
+          "sandboxCommandReconnectRecoveryState" to "attached_live",
+        ),
+      )
+      return FakeManagedProcessController(
+        snapshot = running,
+        awaitSnapshot = successSnapshot(
+          processId = snapshot.processId,
+          taskId = snapshot.taskId,
+        ).copy(
+          metadata = running.metadata + mapOf(
+            "sandboxCommandReconnectRecoveryState" to "completed",
+          ),
+        ),
+      )
+    }
+  }
+
+  private inner class RetryableReconnectFakeManagedProcessControllerFactory(
+    private val clock: () -> Long,
+  ) : ReconnectableManagedProcessControllerFactory {
+    var reconnectCount: Int = 0
+      private set
+
+    override fun start(request: ManagedProcessStartRequest): ManagedProcessController =
+      FakeManagedProcessController(
+        snapshot = runningSnapshot(processId = request.processId, taskId = request.taskId),
+      )
+
+    override fun reconnect(snapshot: ManagedProcessSnapshot): ManagedProcessController {
+      reconnectCount += 1
+      val updatedSnapshot = if (reconnectCount == 1) {
+        snapshot.copy(
+          metadata = snapshot.metadata + mapOf(
+            "sandboxCommandReconnectRetryable" to "true",
+            "sandboxCommandReconnectRecoveryState" to "retry_scheduled",
+            "sandboxCommandReconnectRetryAfterEpochMs" to (clock() + 1_000L).toString(),
+            "sandboxCommandReconnectAttemptCount" to "1",
+          ),
+        )
+      } else {
+        snapshot.copy(
+          metadata = snapshot.metadata + mapOf(
+            "sandboxCommandReconnectRetryable" to "false",
+            "sandboxCommandReconnectRecoveryState" to "attached_live",
+            "sandboxCommandReconnectAttemptCount" to reconnectCount.toString(),
+            "reconnectedAfterRetry" to "true",
+          ),
+        )
+      }
+      return FakeManagedProcessController(snapshot = updatedSnapshot)
+    }
   }
 }

@@ -6,11 +6,13 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_markdown_plus_latex/flutter_markdown_plus_latex.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:markdown/markdown.dart' as md;
 
 import '../bridge/opencray_host_bridge.dart';
 import '../copy/opencray_ui_copy.dart';
 import '../models/opencray_file_image_preview.dart';
+import 'opencray_image_bytes_view.dart';
 
 const Set<String> _openCrayMarkdownInternalRoutes = <String>{
   '/settings',
@@ -479,17 +481,21 @@ class OpenCrayMarkdownImage extends StatelessWidget {
           child: _OpenCrayMarkdownImagePlaceholder(label: _fallbackLabel),
         );
       }
+      final String mimeType =
+          resolved.originalUri.data?.mimeType ?? 'image/png';
       return _buildInteractiveImage(
         context,
         aspectRatio: null,
-        previewBuilder: (_) => Image.memory(
-          bytes,
+        previewBuilder: (_) => OpenCrayImageBytesView(
+          bytes: bytes,
+          mimeType: mimeType,
           fit: BoxFit.contain,
           filterQuality: FilterQuality.high,
           gaplessPlayback: true,
         ),
-        child: Image.memory(
-          bytes,
+        child: OpenCrayImageBytesView(
+          bytes: bytes,
+          mimeType: mimeType,
           fit: BoxFit.contain,
           filterQuality: FilterQuality.medium,
           gaplessPlayback: true,
@@ -498,6 +504,24 @@ class OpenCrayMarkdownImage extends StatelessWidget {
     }
     final Uri? externalUri = resolved.externalUri;
     if (externalUri != null) {
+      if (_isSvgUri(externalUri)) {
+        return _buildInteractiveImage(
+          context,
+          aspectRatio: null,
+          previewBuilder: (_) => SvgPicture.network(
+            externalUri.toString(),
+            fit: BoxFit.contain,
+            placeholderBuilder: (_) =>
+                _OpenCrayMarkdownImagePlaceholder(label: _fallbackLabel),
+          ),
+          child: SvgPicture.network(
+            externalUri.toString(),
+            fit: BoxFit.contain,
+            placeholderBuilder: (_) =>
+                _OpenCrayMarkdownImagePlaceholder(label: _fallbackLabel),
+          ),
+        );
+      }
       return _buildInteractiveImage(
         context,
         aspectRatio: null,
@@ -553,14 +577,16 @@ class OpenCrayMarkdownImage extends StatelessWidget {
         return _buildInteractiveImage(
           context,
           aspectRatio: preview.aspectRatio,
-          previewBuilder: (_) => Image.memory(
-            preview.bytes,
+          previewBuilder: (_) => OpenCrayImageBytesView(
+            bytes: preview.bytes,
+            mimeType: preview.mimeType,
             fit: BoxFit.contain,
             filterQuality: FilterQuality.high,
             gaplessPlayback: true,
           ),
-          child: Image.memory(
-            preview.bytes,
+          child: OpenCrayImageBytesView(
+            bytes: preview.bytes,
+            mimeType: preview.mimeType,
             fit: BoxFit.contain,
             filterQuality: FilterQuality.medium,
             gaplessPlayback: true,
@@ -624,6 +650,14 @@ class OpenCrayMarkdownImage extends StatelessWidget {
     final List<String> segments = path.replaceAll('\\', '/').split('/');
     return segments.isEmpty ? 'image' : segments.last;
   }
+}
+
+bool _isSvgUri(Uri uri) {
+  final UriData? data = uri.data;
+  if (data != null) {
+    return openCrayIsSvgMimeType(data.mimeType);
+  }
+  return uri.path.trim().toLowerCase().endsWith('.svg');
 }
 
 class _OpenCrayMarkdownImageFrame extends StatelessWidget {

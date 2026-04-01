@@ -30,6 +30,7 @@ This document is intentionally deeper than the earlier audit and roadmap documen
 - `docs/agent-runtime-reference-guide.md`
 - `docs/multi-agent-runtime-design.md`
 - `docs/memory-design.md`
+- `docs/memory-soul-image-reference-design.md`
 - `docs/done/design-p0-live-queue-persistence.md`
 - `docs/done/design-p0-session-runtime-manager.md`
 - `docs/done/design-p0-prompt-layer-architecture.md`

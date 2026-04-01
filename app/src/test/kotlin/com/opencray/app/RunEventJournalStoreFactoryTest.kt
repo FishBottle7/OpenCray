@@ -1,18 +1,25 @@
 package com.opencray.app
 
 import com.opencray.runtime.AgentToolCall
+import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
+import com.opencray.runtime.OpenCrayPromptCheckpointEmission
+import com.opencray.runtime.OpenCrayPromptResumeMetadata
+import com.opencray.runtime.OpenCrayPromptResumeState
 import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import kotlinx.serialization.json.Json
 
 class RunEventJournalStoreFactoryTest {
   @get:Rule
   val temporaryFolder: TemporaryFolder = TemporaryFolder()
+  private val json: Json = Json { prettyPrint = false }
 
   @Test
   fun fileBackedStoreAppendsAndReloadsEventsInOrder() {
@@ -102,5 +109,42 @@ class RunEventJournalStoreFactoryTest {
       ),
       runtimeEvent.metadata,
     )
+  }
+
+  @Test
+  fun fileBackedStorePersistsCheckpointEntriesWithoutProjectingRuntimeEvents() {
+    val runtimeRoot = temporaryFolder.newFolder("runtime-journal-store-checkpoint")
+    val firstStore = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+      .forChatSession("session-1")
+    val resumeState = OpenCrayPromptResumeState(turnIndex = 3, toolCallCount = 1)
+
+    firstStore.appendCheckpoint(
+      runId = "run-1",
+      taskId = "task-1",
+      emission = OpenCrayPromptCheckpointEmission(
+        boundary = OpenCrayPromptCheckpointBoundary.ACTION_BATCH_PARSED,
+        state = resumeState,
+        emittedAtEpochMs = 150L,
+      ),
+    )
+
+    val restoredStore = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+      .forChatSession("session-1")
+    val entries = restoredStore.listForRun("run-1")
+    val checkpointEntry = entries.single()
+    val restoredResumeState = OpenCrayPromptResumeMetadata.decodeFromMetadata(
+      metadata = checkpointEntry.payload.resultMetadata,
+      json = json,
+    )
+
+    assertEquals(1, entries.size)
+    assertEquals(PersistedAgentRunEventKind.CHECKPOINT, checkpointEntry.kind)
+    assertEquals(
+      OpenCrayPromptCheckpointBoundary.ACTION_BATCH_PARSED,
+      OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(checkpointEntry.payload.resultMetadata),
+    )
+    assertEquals(resumeState, restoredResumeState)
+    assertNotNull(restoredResumeState)
+    assertTrue(restoredStore.listRuntimeEvents().isEmpty())
   }
 }

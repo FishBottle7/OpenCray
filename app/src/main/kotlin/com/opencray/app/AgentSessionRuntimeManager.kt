@@ -16,20 +16,27 @@ import com.opencray.core.orchestrator.METADATA_EXECUTION_KIND
 import com.opencray.core.orchestrator.METADATA_EXECUTION_ORDINAL
 import com.opencray.core.orchestrator.METADATA_PENDING_EXECUTION_KIND
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
+import com.opencray.core.orchestrator.RetryRequest
+import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.core.orchestrator.SessionLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
 import com.opencray.core.orchestrator.SessionQueueSnapshotStore
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.core.orchestrator.SessionTaskRuntime
 import com.opencray.runtime.OpenCrayAgentRunEvent
+import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.OpenCrayAgentEngine
 import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.subagent.SubAgentExecutionState
+import com.opencray.runtime.subagent.SubAgentHandleState
 import java.util.UUID
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.FutureTask
+import java.util.concurrent.atomic.AtomicBoolean
 
 internal data class AgentRunSubmission(
   val sessionId: String,
@@ -103,6 +110,14 @@ internal data class AgentRunSnapshot(
     get() = !isTerminal || hasLiveManagedProcesses
 }
 
+private fun SubAgentHandleState.hasLiveBackgroundExecution(): Boolean = when (snapshot.state) {
+  SubAgentExecutionState.BACKGROUND_QUEUED,
+  SubAgentExecutionState.BACKGROUND_RUNNING,
+  -> true
+
+  else -> false
+}
+
 private const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
 private const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
 const val ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE: String = "PROCESS_INTERRUPTED_ON_RESTORE"
@@ -138,6 +153,8 @@ internal interface AgentSessionHandle {
   fun submitTask(task: AgentTask): AgentRunSubmission =
     throw UnsupportedOperationException("submitTask is not supported by this runtime handle.")
 
+  fun submitDetachedControlTask(task: AgentTask): AgentRunSubmission = submitTask(task)
+
   fun ensureProcessing()
 
   fun requestCancel(taskId: String): Boolean
@@ -172,6 +189,15 @@ internal interface AgentSessionHandle {
     listManagedProcesses().any { snapshot -> snapshot.status == ManagedProcessStatus.RUNNING }
 
   fun terminateRunningManagedProcesses(): List<ManagedProcessSnapshot> = emptyList()
+
+  fun listSubAgentHandles(): List<SubAgentHandleState> = emptyList()
+
+  fun hasLiveSubAgentWork(): Boolean =
+    listSubAgentHandles().any { handle -> handle.hasLiveBackgroundExecution() }
+
+  fun retainKnownSubAgentParentRuns(parentRunIds: Set<String>) = Unit
+
+  fun listDetachedControlTasks(): List<AgentTask> = emptyList()
 }
 
 internal interface AgentSessionRuntimeListener {
@@ -198,6 +224,10 @@ internal interface AgentSessionTaskRuntimeFactory {
     sessionId: String,
     processId: String,
   ): ManagedProcessSnapshot? = null
+
+  fun listSubAgentHandles(sessionId: String): List<SubAgentHandleState> = emptyList()
+
+  fun retainKnownSubAgentParentRuns(sessionId: String, parentRunIds: Set<String>) = Unit
 }
 
 internal class DefaultAgentSessionRuntimeManager(
@@ -248,6 +278,7 @@ internal class DefaultAgentSessionRuntimeManager(
     val activeSessionIds = linkedSetOf<String>()
     val pendingWorkSessionIds = mutableListOf<String>()
     val liveManagedProcessSessionIds = mutableListOf<String>()
+    val liveSubAgentSessionIds = mutableListOf<String>()
     var activeRunCount = 0
 
     handles.forEach { handle ->
@@ -255,12 +286,17 @@ internal class DefaultAgentSessionRuntimeManager(
       val hasPendingWork = runs.any { snapshot -> !snapshot.isTerminal }
       val hasLiveManagedProcesses = runs.any(AgentRunSnapshot::hasLiveManagedProcesses) ||
         handle.hasLiveManagedProcesses()
+      val hasLiveSubAgents = handle.hasLiveSubAgentWork()
       if (hasPendingWork) {
         pendingWorkSessionIds += handle.sessionId
         activeSessionIds += handle.sessionId
       }
       if (hasLiveManagedProcesses) {
         liveManagedProcessSessionIds += handle.sessionId
+        activeSessionIds += handle.sessionId
+      }
+      if (hasLiveSubAgents) {
+        liveSubAgentSessionIds += handle.sessionId
         activeSessionIds += handle.sessionId
       }
       activeRunCount += runs.count(AgentRunSnapshot::isActive)
@@ -272,6 +308,7 @@ internal class DefaultAgentSessionRuntimeManager(
       activeSessionIds = activeSessionIds.toList(),
       pendingWorkSessionIds = pendingWorkSessionIds.distinct(),
       liveManagedProcessSessionIds = liveManagedProcessSessionIds.distinct(),
+      liveSubAgentSessionIds = liveSubAgentSessionIds.distinct(),
     )
   }
 
@@ -286,7 +323,11 @@ internal class DefaultAgentSessionRuntimeManager(
       val iterator = sessions.iterator()
       while (iterator.hasNext()) {
         val entry = iterator.next()
-        if (!entry.value.hasPendingWork() && !entry.value.hasLiveManagedProcesses()) {
+        if (
+          !entry.value.hasPendingWork() &&
+          !entry.value.hasLiveManagedProcesses() &&
+          !entry.value.hasLiveSubAgentWork()
+        ) {
           iterator.remove()
         }
       }
@@ -308,6 +349,8 @@ private class ManagedAgentSessionHandle(
 ) : AgentSessionHandle {
   private val runLock = Any()
   private val runRecordsById = linkedMapOf<String, ManagedRunRecord>()
+  private val detachedControlLock = Any()
+  private val detachedControlTasksByTaskId = linkedMapOf<String, DetachedControlTaskState>()
   private val processingLock = Any()
   private var processing: Boolean = false
   private var lastAccessEpochMs: Long = System.currentTimeMillis()
@@ -441,6 +484,44 @@ private class ManagedAgentSessionHandle(
     return submission
   }
 
+  override fun submitDetachedControlTask(task: AgentTask): AgentRunSubmission {
+    touch()
+    val acceptedAtEpochMs = maxOf(System.currentTimeMillis(), task.createdAtEpochMs)
+    val runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
+      ?.takeIf(String::isNotBlank)
+      ?: "run-$sessionId-${UUID.randomUUID().toString().take(8)}"
+    val normalizedMetadata = runtimeLifecycle.taskMetadata() + task.metadata + mapOf(
+      AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+      AppAgentSessionTaskRuntimeFactory.METADATA_HOST_SESSION_ID to sessionId,
+    )
+    val normalizedTask = task.copy(metadata = normalizedMetadata)
+    val submission = AgentRunSubmission(
+      sessionId = sessionId,
+      runId = runId,
+      taskId = normalizedTask.id,
+      acceptedAtEpochMs = acceptedAtEpochMs,
+      lifecycleDiagnostics = runLifecycleDiagnosticsFrom(normalizedTask.metadata),
+    )
+    synchronized(runLock) {
+      val record = ManagedRunRecord(
+        submission = submission,
+        pendingMessageId = normalizedTask.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID],
+      )
+      runRecordsById[runId] = record
+      persistRunRecordLocked(record)
+    }
+    launchDetachedControlExecution(
+      submission = submission,
+      task = normalizedTask,
+      executionKind = normalizedTask.metadata[METADATA_EXECUTION_KIND]
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: EXECUTION_KIND_INITIAL,
+      clearPreviousResult = false,
+    )
+    return submission
+  }
+
   override fun ensureProcessing() {
     touch()
     if (!hasRunnableWork()) {
@@ -481,9 +562,221 @@ private class ManagedAgentSessionHandle(
     }
   }
 
+  private fun requestDetachedControlCancel(taskId: String): Boolean {
+    val state = synchronized(detachedControlLock) {
+      detachedControlTasksByTaskId[taskId]
+    } ?: return false
+    state.cancelRequested.set(true)
+    val future = synchronized(detachedControlLock) {
+      detachedControlTasksByTaskId[taskId]?.future
+    }
+    if (future != null) {
+      future.cancel(true)
+      return true
+    }
+    val record = synchronized(runLock) {
+      runRecordsById.values.firstOrNull { persisted -> persisted.submission.taskId == taskId }
+    } ?: return false
+    val lastResult = record.lastResult ?: return false
+    if (!isDetachedControlAwaitingManualResume(lastResult)) {
+      return false
+    }
+    val cancelledResult = ExecutionResult(
+      taskId = taskId,
+      status = ExecutionStatus.CANCELLED,
+      errorCode = "DETACHED_CONTROL_CANCELLED",
+      errorMessage = "Detached control execution was cancelled before it resumed.",
+      startedAtEpochMs = lastResult.startedAtEpochMs,
+      finishedAtEpochMs = System.currentTimeMillis(),
+      metadata = lastResult.metadata,
+    )
+    synchronized(runLock) {
+      val updated = record.copy(lastResult = cancelledResult)
+      runRecordsById[record.submission.runId] = updated
+      persistRunRecordLocked(updated)
+    }
+    synchronized(detachedControlLock) {
+      detachedControlTasksByTaskId.remove(taskId)
+    }
+    return true
+  }
+
+  private fun requestDetachedControlResume(
+    taskId: String,
+    executionKind: String,
+    taskMetadataUpdates: Map<String, String>,
+  ): Boolean {
+    require(
+      executionKind == EXECUTION_KIND_APPROVAL_RESUME ||
+        executionKind == EXECUTION_KIND_CHECKPOINT_RESUME,
+    ) {
+      "Unsupported detached resume execution kind: $executionKind"
+    }
+    val state = synchronized(detachedControlLock) {
+      detachedControlTasksByTaskId[taskId]
+    } ?: return false
+    if (state.future != null) {
+      return false
+    }
+    val record = synchronized(runLock) {
+      runRecordsById[state.submission.runId]
+    } ?: return false
+    val lastResult = record.lastResult ?: return false
+    if (!isDetachedControlAwaitingManualResume(lastResult)) {
+      return false
+    }
+    val resumedTask = state.task.copy(
+      metadata = state.task.metadata + taskMetadataUpdates,
+    )
+    launchDetachedControlExecution(
+      submission = state.submission,
+      task = resumedTask,
+      executionKind = executionKind,
+      clearPreviousResult = true,
+    )
+    return true
+  }
+
+  private fun launchDetachedControlExecution(
+    submission: AgentRunSubmission,
+    task: AgentTask,
+    executionKind: String,
+    clearPreviousResult: Boolean,
+  ) {
+    val executionTask = taskWithDetachedExecutionMetadata(
+      task = task,
+      executionKind = executionKind,
+    )
+    val cancelRequested = AtomicBoolean(false)
+    val future = FutureTask<Unit> {
+      listenerProvider().forEach { listener ->
+        listener.onTaskStarted(sessionId = sessionId, task = executionTask)
+      }
+      val result = try {
+        enrichResultExecutionContext(
+          task = executionTask,
+          result = baseRuntime.execute(
+            executionTask,
+            RuntimeExecutionHooks(
+              isCancellationRequested = cancelRequested::get,
+              requestRetry = { _: RetryRequest -> Unit },
+            ),
+          ),
+        )
+      } catch (_: InterruptedException) {
+        ExecutionResult(
+          taskId = executionTask.id,
+          status = ExecutionStatus.CANCELLED,
+          errorCode = "DETACHED_CONTROL_INTERRUPTED",
+          errorMessage = "Detached control execution was interrupted.",
+          startedAtEpochMs = executionTask.createdAtEpochMs,
+          finishedAtEpochMs = System.currentTimeMillis(),
+          metadata = executionMetadataFrom(executionTask.metadata),
+        )
+      }
+      completeDetachedControlExecution(
+        submission = submission,
+        task = executionTask,
+        result = result,
+      )
+    }
+    synchronized(detachedControlLock) {
+      detachedControlTasksByTaskId[submission.taskId] = DetachedControlTaskState(
+        submission = submission,
+        task = executionTask,
+        cancelRequested = cancelRequested,
+        future = future,
+      )
+    }
+    if (clearPreviousResult) {
+      synchronized(runLock) {
+        val existing = runRecordsById[submission.runId]
+        if (existing != null) {
+          val updated = existing.copy(lastResult = null)
+          runRecordsById[submission.runId] = updated
+          persistRunRecordLocked(updated)
+        }
+      }
+    }
+    executor.execute(future)
+  }
+
+  private fun completeDetachedControlExecution(
+    submission: AgentRunSubmission,
+    task: AgentTask,
+    result: ExecutionResult,
+  ) {
+    val enrichedResult = enrichResultExecutionContext(task = task, result = result)
+    recordRunResult(task = task, result = enrichedResult)
+    listenerProvider().forEach { listener ->
+      listener.onTaskFinished(sessionId = sessionId, task = task, result = enrichedResult)
+    }
+    synchronized(detachedControlLock) {
+      val latest = detachedControlTasksByTaskId[submission.taskId] ?: return
+      detachedControlTasksByTaskId[submission.taskId] = latest.copy(future = null)
+      if (!isDetachedControlAwaitingManualResume(enrichedResult)) {
+        detachedControlTasksByTaskId.remove(submission.taskId)
+      }
+    }
+  }
+
+  private fun taskWithDetachedExecutionMetadata(
+    task: AgentTask,
+    executionKind: String,
+  ): AgentTask {
+    val previousOrdinal = task.metadata[METADATA_EXECUTION_ORDINAL]?.toIntOrNull() ?: 0
+    val nextOrdinal = previousOrdinal + 1
+    val now = System.currentTimeMillis()
+    val executionId = buildString {
+      append("detached-")
+      append(task.id.take(24))
+      append('-')
+      append(nextOrdinal)
+      append('-')
+      append(now)
+      append('-')
+      append(UUID.randomUUID().toString().take(8))
+    }
+    val metadata = buildMap<String, String> {
+      task.metadata.forEach { (key, value) ->
+        if (
+          key != METADATA_EXECUTION_ID &&
+          key != METADATA_EXECUTION_KIND &&
+          key != METADATA_EXECUTION_ORDINAL &&
+          key != METADATA_PENDING_EXECUTION_KIND
+        ) {
+          put(key, value)
+        }
+      }
+      put(METADATA_EXECUTION_ID, executionId)
+      put(METADATA_EXECUTION_KIND, executionKind)
+      put(METADATA_EXECUTION_ORDINAL, nextOrdinal.toString())
+    }
+    return task.copy(
+      updatedAtEpochMs = maxOf(now, task.createdAtEpochMs),
+      metadata = metadata,
+    )
+  }
+
+  private fun isDetachedControlAwaitingManualResume(
+    result: ExecutionResult,
+  ): Boolean = when {
+    result.status == ExecutionStatus.DENIED &&
+      (
+        result.errorCode == ERROR_APPROVAL_REQUIRED ||
+          result.errorCode == ERROR_HIGH_RISK_APPROVAL_REQUIRED
+        ) -> true
+
+    result.errorCode == ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME -> true
+    else -> false
+  }
+
   override fun requestCancel(taskId: String): Boolean {
     touch()
-    return loop.requestCancel(taskId)
+    if (loop.requestCancel(taskId)) {
+      return true
+    }
+    return requestDetachedControlCancel(taskId)
   }
 
   override fun requestRetry(taskId: String): Boolean {
@@ -516,8 +809,13 @@ private class ManagedAgentSessionHandle(
     )
     if (resumed) {
       ensureProcessing()
+      return true
     }
-    return resumed
+    return requestDetachedControlResume(
+      taskId = taskId,
+      executionKind = executionKind,
+      taskMetadataUpdates = taskMetadataUpdates,
+    )
   }
 
   override fun listRuns(): List<AgentRunSnapshot> {
@@ -557,14 +855,21 @@ private class ManagedAgentSessionHandle(
     if (pendingMessageIds.isEmpty()) {
       return 0
     }
-    val candidateTaskIds = snapshot().tasks
+    val candidateTaskIds = (
+      snapshot().tasks
       .filter { taskSnapshot ->
         taskSnapshot.lifecycleState != com.opencray.core.orchestrator.QueueTaskLifecycleState.COMPLETED &&
           taskSnapshot.lifecycleState != com.opencray.core.orchestrator.QueueTaskLifecycleState.CANCELLED &&
           taskSnapshot.lifecycleState != com.opencray.core.orchestrator.QueueTaskLifecycleState.FAILED &&
           taskSnapshot.task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] in pendingMessageIds
       }
-      .map { taskSnapshot -> taskSnapshot.task.id }
+      .map { taskSnapshot -> taskSnapshot.task.id } +
+      listDetachedControlTasks()
+        .filter { task ->
+          task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] in pendingMessageIds
+        }
+        .map(AgentTask::id)
+      ).distinct()
 
     var cancelled = 0
     candidateTaskIds.forEach { taskId ->
@@ -611,6 +916,20 @@ private class ManagedAgentSessionHandle(
 
   override fun listManagedProcesses(): List<ManagedProcessSnapshot> =
     runtimeFactory.listManagedProcesses(sessionId)
+
+  override fun listSubAgentHandles(): List<SubAgentHandleState> =
+    runtimeFactory.listSubAgentHandles(sessionId)
+
+  override fun retainKnownSubAgentParentRuns(parentRunIds: Set<String>) {
+    runtimeFactory.retainKnownSubAgentParentRuns(
+      sessionId = sessionId,
+      parentRunIds = parentRunIds,
+    )
+  }
+
+  override fun listDetachedControlTasks(): List<AgentTask> = synchronized(detachedControlLock) {
+    detachedControlTasksByTaskId.values.map(DetachedControlTaskState::task)
+  }
 
   override fun terminateRunningManagedProcesses(): List<ManagedProcessSnapshot> =
     listManagedProcesses()
@@ -1183,6 +1502,13 @@ private class ManagedAgentSessionHandle(
     val managedProcessIds: List<String> = emptyList(),
     val lastEvent: OpenCrayAgentRunEvent? = null,
     val lastResult: ExecutionResult? = null,
+  )
+
+  private data class DetachedControlTaskState(
+    val submission: AgentRunSubmission,
+    val task: AgentTask,
+    val cancelRequested: AtomicBoolean,
+    val future: FutureTask<Unit>?,
   )
 
   private data class RunExecutionContext(

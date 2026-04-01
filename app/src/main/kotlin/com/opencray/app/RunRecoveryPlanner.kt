@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import com.opencray.core.contracts.ExecutionStatus
+import com.opencray.core.orchestrator.EXECUTION_KIND_INITIAL
 import com.opencray.core.orchestrator.ERROR_RESTART_REQUIRES_EXPLICIT_RETRY
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.runtime.OpenCrayAgentRunEvent
@@ -18,7 +19,6 @@ internal enum class RunRecoveryAction {
   RESUME_RECONNECT_PROCESS,
   STOP_REJECTED_AWAITING_DIRECTION,
   INTERRUPT_RECOVERY_REQUIRED,
-  LEGACY_REQUEUE,
 }
 
 internal data class RunRecoveryPlannerInput(
@@ -95,28 +95,13 @@ internal class RunRecoveryPlanner {
 
     if (
       run.lifecycleState == QueueTaskLifecycleState.SUSPENDED &&
-      (
-        checkpoint?.checkpointKind == PromptCheckpointKind.APPROVED_PENDING_RESUME ||
-          checkpoint?.checkpointKind == PromptCheckpointKind.REJECTED_PENDING_RESUME
-        )
+      checkpoint?.checkpointKind == PromptCheckpointKind.APPROVED_PENDING_RESUME
     ) {
       return RunRecoveryPlan(
         action = RunRecoveryAction.RESUME_WAITING_FOR_USER,
-        reasonCode = when (checkpoint.checkpointKind) {
-          PromptCheckpointKind.APPROVED_PENDING_RESUME ->
-            "approval_granted_waiting_for_manual_resume"
-          PromptCheckpointKind.REJECTED_PENDING_RESUME ->
-            "approval_rejected_waiting_for_manual_resume"
-          else -> "approval_decision_waiting_for_manual_resume"
-        },
-        summary = when (checkpoint.checkpointKind) {
-          PromptCheckpointKind.APPROVED_PENDING_RESUME ->
-            "Approval was already granted, but this run was explicitly interrupted before it resumed. Keep it paused until the user explicitly resumes it."
-          PromptCheckpointKind.REJECTED_PENDING_RESUME ->
-            "Approval was already rejected, but this run was explicitly interrupted before the rejection path was applied. Keep it paused until the user explicitly resumes it."
-          else ->
-            "An approval decision was recorded before recovery, but the run still requires explicit user action before it continues."
-        },
+        reasonCode = "approval_granted_waiting_for_manual_resume",
+        summary =
+          "Approval was already granted, but this run was explicitly interrupted before it resumed. Keep it paused until the user explicitly resumes it.",
         safeToAutoResume = false,
         requiresUserAction = true,
         checkpointKind = checkpoint.checkpointKind,
@@ -230,13 +215,13 @@ internal class RunRecoveryPlanner {
       )
     }
 
-    if (run.lifecycleState == QueueTaskLifecycleState.QUEUED && !run.isTerminal) {
+    if (queuedRunHasUnsafePriorProgress(run = run, event = input.lastJournalEvent)) {
       return RunRecoveryPlan(
-        action = RunRecoveryAction.LEGACY_REQUEUE,
-        reasonCode = "queued_without_checkpoint",
-        summary = "The run is queued without a durable prompt checkpoint, so current behavior remains task-level execution from input.",
+        action = RunRecoveryAction.INTERRUPT_RECOVERY_REQUIRED,
+        reasonCode = "queued_progress_without_checkpoint",
+        summary = "The run was queued to continue, but recovery found prior execution progress without a durable checkpoint. Keep it interrupted until the user explicitly retries or sends a new instruction.",
         safeToAutoResume = false,
-        requiresUserAction = false,
+        requiresUserAction = true,
         checkpointKind = checkpoint?.checkpointKind,
         approvalState = input.approvalState,
         journalTailKind = journalTailKind,
@@ -258,6 +243,28 @@ internal class RunRecoveryPlanner {
       run.lifecycleDiagnostics.recoveryReason ==
       com.opencray.core.orchestrator.RECOVERY_REASON_HOST_RESTART_INFLIGHT_TASK_INTERRUPTED ||
       run.errorCode == ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE
+
+  private fun queuedRunHasUnsafePriorProgress(
+    run: AgentRunSnapshot,
+    event: OpenCrayAgentRunEvent?,
+  ): Boolean {
+    if (run.lifecycleState != QueueTaskLifecycleState.QUEUED || run.isTerminal) {
+      return false
+    }
+    val pendingExecutionKind = run.pendingExecutionKind
+      ?.trim()
+      ?.lowercase()
+      ?.takeIf(String::isNotBlank)
+    return run.executionOrdinal > 0 ||
+      !run.executionKind.isNullOrBlank() ||
+      (
+        pendingExecutionKind != null &&
+          pendingExecutionKind != EXECUTION_KIND_INITIAL
+        ) ||
+      run.executionStatus != null ||
+      !run.errorCode.isNullOrBlank() ||
+      event != null
+  }
 
   private fun isUncertainInFlightAction(event: OpenCrayAgentRunEvent?): Boolean = when (event) {
     is OpenCrayToolCallEvent -> true

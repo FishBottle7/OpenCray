@@ -2,11 +2,13 @@ import 'package:flutter/services.dart';
 
 import '../models/opencray_chat_draft_attachment.dart';
 import '../models/opencray_chat_snapshot.dart';
+import '../models/opencray_agent_snapshot.dart';
 import '../models/opencray_debug_snapshot.dart';
 import '../models/opencray_file_image_preview.dart';
 import '../models/opencray_file_text_preview.dart';
 import '../models/opencray_file_voice_playback_source.dart';
 import '../models/opencray_files_snapshot.dart';
+import '../models/opencray_image_reference.dart';
 import '../models/opencray_llm_config.dart';
 import '../models/opencray_llm_validation.dart';
 import '../models/opencray_media_speech_config.dart';
@@ -14,6 +16,7 @@ import '../models/opencray_mcp_settings.dart';
 import '../models/opencray_network_search_config.dart';
 import '../models/opencray_notification_settings.dart';
 import '../models/opencray_personalization_config.dart';
+import '../models/opencray_sandbox_preview_embed_config.dart';
 import '../models/opencray_sandbox_settings.dart';
 import '../models/opencray_safety_settings.dart';
 import '../models/opencray_settings_snapshot.dart';
@@ -59,6 +62,16 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async =>
       OpenCrayFilesSnapshot.fromMap(await _invokeMap('loadFilesSnapshot'));
+
+  @override
+  Future<OpenCraySandboxPreviewEmbedConfig> resolveSandboxPreviewEmbedConfig(
+    String previewUrl,
+  ) async => OpenCraySandboxPreviewEmbedConfig.fromMap(
+    await _invokeMap(
+      'resolveSandboxPreviewEmbedConfig',
+      arguments: <String, Object?>{'previewUrl': previewUrl},
+    ),
+  );
 
   @override
   Future<OpenCrayFileImagePreview> loadWorkspaceImagePreview(
@@ -215,6 +228,137 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       _methodChannel.invokeMethod<void>('showNativeToast', <String, Object?>{
         'message': message,
       });
+
+  @override
+  Future<List<OpenCraySettingsImageAsset>> listSettingsImageAssets() async =>
+      (await _invokeList('listSettingsImageAssets'))
+          .map(_requireMap)
+          .map(OpenCraySettingsImageAsset.fromMap)
+          .toList(growable: false);
+
+  @override
+  Future<List<OpenCraySettingsImageAsset>> pickSettingsImageAssets() async =>
+      (await _invokeList('pickSettingsImageAssets'))
+          .map(_requireMap)
+          .map(OpenCraySettingsImageAsset.fromMap)
+          .toList(growable: false);
+
+  @override
+  Future<List<OpenCraySettingsImageAsset>> importSettingsImageAssets(
+    List<String> uriStrings,
+  ) async =>
+      (await _invokeList(
+            'importSettingsImageAssets',
+            arguments: <String, Object?>{'uriStrings': uriStrings},
+          ))
+          .map(_requireMap)
+          .map(OpenCraySettingsImageAsset.fromMap)
+          .toList(growable: false);
+
+  @override
+  Future<List<OpenCrayAgentSnapshot>> listAgents() async =>
+      (await _invokeList('listAgents'))
+          .map(_requireMap)
+          .map(OpenCrayAgentSnapshot.fromMap)
+          .toList(growable: false);
+
+  @override
+  Future<OpenCrayAgentSnapshot?> loadActiveAgent() async {
+    final payload = await _invokeNullableMap('loadActiveAgent');
+    if (payload == null) {
+      return null;
+    }
+    return OpenCrayAgentSnapshot.fromMap(payload);
+  }
+
+  @override
+  Future<OpenCrayAgentSnapshot> createAgent(
+    OpenCrayAgentCreateRequest request,
+  ) async => OpenCrayAgentSnapshot.fromMap(
+    await _invokeMap('createAgent', arguments: request.toMap()),
+  );
+
+  @override
+  Future<OpenCrayAgentSnapshot?> selectAgent(String agentId) async {
+    final payload = await _invokeNullableMap(
+      'selectAgent',
+      arguments: <String, Object?>{'agentId': agentId},
+    );
+    if (payload == null) {
+      return null;
+    }
+    return OpenCrayAgentSnapshot.fromMap(payload);
+  }
+
+  @override
+  Future<OpenCraySoulVisualIdentity?> loadSoulVisualIdentity() async {
+    final payload = await _invokeNullableMap('loadSoulVisualIdentity');
+    if (payload == null) {
+      return null;
+    }
+    return OpenCraySoulVisualIdentity.fromMap(payload);
+  }
+
+  @override
+  Future<OpenCraySoulVisualIdentity?> saveSoulPrimaryPortrait(
+    OpenCrayImageReferenceSource source,
+  ) async {
+    final payload = await _invokeNullableMap(
+      'saveSoulPrimaryPortrait',
+      arguments: <String, Object?>{'source': source.toMap()},
+    );
+    if (payload == null) {
+      return null;
+    }
+    return OpenCraySoulVisualIdentity.fromMap(payload);
+  }
+
+  @override
+  Future<OpenCraySoulVisualIdentity?> saveSoulReferenceImage({
+    required String refId,
+    required OpenCrayImageReferenceSource source,
+  }) async {
+    final payload = await _invokeNullableMap(
+      'saveSoulReferenceImage',
+      arguments: <String, Object?>{'refId': refId, 'source': source.toMap()},
+    );
+    if (payload == null) {
+      return null;
+    }
+    return OpenCraySoulVisualIdentity.fromMap(payload);
+  }
+
+  @override
+  Future<List<OpenCrayImageReference>> listMemoryImageReferences(
+    String memoryId,
+  ) async =>
+      (await _invokeList(
+            'listMemoryImageReferences',
+            arguments: <String, Object?>{'memoryId': memoryId},
+          ))
+          .map(_requireMap)
+          .map(OpenCrayImageReference.fromMap)
+          .toList(growable: false);
+
+  @override
+  Future<OpenCrayMemoryImageReferenceResult?> attachMemoryImageReference({
+    required String memoryId,
+    required OpenCrayImageReferenceSource source,
+    String? preferredMode,
+  }) async {
+    final payload = await _invokeNullableMap(
+      'attachMemoryImageReference',
+      arguments: <String, Object?>{
+        'memoryId': memoryId,
+        'source': source.toMap(),
+        'preferredMode': preferredMode,
+      },
+    );
+    if (payload == null) {
+      return null;
+    }
+    return OpenCrayMemoryImageReferenceResult.fromMap(payload);
+  }
 
   @override
   Future<OpenCraySettingsOverviewSnapshot> loadSettingsOverview() async =>
@@ -790,6 +934,10 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<void> refreshSandboxSessionInfo() =>
+      _methodChannel.invokeMethod<void>('refreshSandboxSessionInfo');
+
+  @override
   Future<void> createChatSession() =>
       _methodChannel.invokeMethod<void>('createChatSession');
 
@@ -917,6 +1065,31 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       arguments,
     );
     return _requireMap(payload);
+  }
+
+  static Future<Map<Object?, Object?>?> _invokeNullableMap(
+    String method, {
+    Map<String, Object?>? arguments,
+  }) async {
+    final payload = await _methodChannel.invokeMethod<Object?>(
+      method,
+      arguments,
+    );
+    if (payload == null) {
+      return null;
+    }
+    return _requireMap(payload);
+  }
+
+  static Future<List<Object?>> _invokeList(
+    String method, {
+    Map<String, Object?>? arguments,
+  }) async {
+    final payload = await _methodChannel.invokeMethod<Object?>(
+      method,
+      arguments,
+    );
+    return _requireList(payload);
   }
 
   static Map<Object?, Object?> _requireMap(Object? payload) {
