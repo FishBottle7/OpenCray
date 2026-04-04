@@ -64,6 +64,8 @@ import com.opencray.runtime.web.WebSearchRequest
 import com.opencray.runtime.web.WebSearchResult
 import com.opencray.runtime.workingstate.InMemoryWorkingStateStore
 import com.opencray.runtime.workingstate.WorkingState
+import com.opencray.runtime.workingstate.WorkingStateEntry
+import com.opencray.runtime.workingstate.WorkingStateObjective
 import com.opencray.runtime.workingstate.WorkingStateStore
 import com.opencray.skills.SkillExecutionContext
 import com.opencray.skills.SkillInvocationControl
@@ -3807,11 +3809,11 @@ class OpenCrayAgentRuntimeTest {
     )
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
-    assertEquals("1", result.metadata["contextPrunedMessageCount"])
+    assertEquals("0", result.metadata["contextPrunedMessageCount"])
     assertEquals("1", result.metadata["contextRewrittenMessageCount"])
     assertEquals("true", result.metadata["contextPruningSummaryIncluded"])
     assertTrue(gateway.requests.single().prompt.contains("[Pruning Summary]"))
-    assertTrue(gateway.requests.single().prompt.contains("Attachment-like payload pruned from prompt."))
+    assertTrue(gateway.requests.single().prompt.contains("Attachment-like payload pruned by prompt guardrail."))
   }
 
   @Test
@@ -5609,6 +5611,198 @@ class OpenCrayAgentRuntimeTest {
     assertEquals("true", result.metadata[LiteLlmMetadataKeys.PROVIDER_REASONING_OBSERVED])
     assertEquals("1", result.metadata[LiteLlmMetadataKeys.PROVIDER_REASONING_TURN_COUNT])
     assertEquals("19", result.metadata[LiteLlmMetadataKeys.PROVIDER_REASONING_CHARS])
+  }
+
+  @Test
+  fun runPromptTaskExposesContextBudgetDiagnosticsInGatewayAndResultMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-budget-metadata")
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"budget metadata captured"}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+          allowedToolNames = emptySet(),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        systemPrompt = "Budget diagnostics must stay visible to the runtime host. ".repeat(80).trim(),
+        llmMetadata = mapOf(
+          "context_window_tokens" to "900",
+          "reserved_output_tokens" to "256",
+          "prompt_safety_margin_tokens" to "96",
+          "effective_input_percent" to "0.15",
+        ),
+        sessionContext = AgentRuntimeSessionContext(
+          conversation = listOf(
+            RuntimeConversationMessage(RuntimeConversationRole.USER, "Earlier question."),
+            RuntimeConversationMessage(RuntimeConversationRole.ASSISTANT, "Earlier answer."),
+          ),
+          recalledMemory = MemoryRecallResult(
+            memories = listOf(
+              RetrievedMemory(
+                id = "memory-budget-runtime",
+                kind = MemoryKind.USER_PREFERENCE,
+                scope = MemoryScope.USER,
+                status = MemoryStatus.ACTIVE,
+                content = "Keep budget diagnostics visible to the runtime host.",
+                lastConfirmedAtEpochMs = 10L,
+                score = 420,
+              ),
+            ),
+            matchedRecordCount = 1,
+          ),
+          durableCompaction = DurableCompactionContext(
+            text = "Older compacted history for budget diagnostics.",
+          ),
+        ),
+      ),
+      clock = IncrementingClock(start = 6_500L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Need budget diagnostics."),
+      hooks = runtimeHooks(),
+    )
+
+    val requestMetadata = gateway.requests.single().metadata
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("budget metadata captured", result.stdout)
+    assertEquals("true", requestMetadata["contextBudgetApplied"])
+    assertEquals("EMERGENCY", requestMetadata["contextBudgetPressureMode"])
+    assertEquals("900", requestMetadata["contextBudgetContextWindowTokens"])
+    assertEquals("256", requestMetadata["contextBudgetReservedOutputTokens"])
+    assertEquals("96", requestMetadata["contextBudgetSafetyMarginTokens"])
+    assertEquals("548", requestMetadata["contextBudgetHardInputTokens"])
+    assertEquals("512", requestMetadata["contextBudgetTargetInputTokens"])
+    assertEquals("548", requestMetadata["contextBudgetEmergencyInputTokens"])
+    assertEquals("true", requestMetadata["contextBudgetUnresolvedOverflow"])
+    assertEquals("minimal", requestMetadata["contextToolProtocolDetailMode"])
+    assertEquals("true", requestMetadata["contextToolProtocolReducedForBudget"])
+    assertEquals("0", requestMetadata["contextToolProtocolAttachmentExampleCount"])
+    assertTrue(requestMetadata["contextBudgetLayerSummary"].orEmpty().contains("RETRIEVED_MEMORY:"))
+    assertTrue(requestMetadata["contextBudgetLayerSummary"].orEmpty().contains("CONVERSATION:"))
+    assertEquals(requestMetadata["contextBudgetPressureMode"], result.metadata["contextBudgetPressureMode"])
+    assertEquals(requestMetadata["contextBudgetHardInputTokens"], result.metadata["contextBudgetHardInputTokens"])
+    assertEquals(requestMetadata["contextBudgetTargetInputTokens"], result.metadata["contextBudgetTargetInputTokens"])
+    assertEquals(requestMetadata["contextBudgetUnresolvedOverflow"], result.metadata["contextBudgetUnresolvedOverflow"])
+    assertEquals(requestMetadata["contextBudgetLayerSummary"], result.metadata["contextBudgetLayerSummary"])
+    assertEquals(requestMetadata["contextToolProtocolDetailMode"], result.metadata["contextToolProtocolDetailMode"])
+    assertEquals(requestMetadata["contextToolProtocolReducedForBudget"], result.metadata["contextToolProtocolReducedForBudget"])
+    assertEquals(requestMetadata["contextToolProtocolAttachmentExampleCount"], result.metadata["contextToolProtocolAttachmentExampleCount"])
+    assertTrue(
+      result.metadata["contextBudgetOmittedLayerNames"].orEmpty().contains("Retrieved Memory") ||
+        result.metadata["contextBudgetReducedLayerNames"].orEmpty().contains("Conversation"),
+    )
+  }
+
+  @Test
+  fun runPromptTaskReportsWorkingStateBudgetReductionInGatewayAndResultMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-working-state-budget-metadata")
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"working state budget metadata captured"}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+          allowedToolNames = emptySet(),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        systemPrompt = "Working state budget diagnostics must remain observable. ".repeat(80).trim(),
+        llmMetadata = mapOf(
+          "context_window_tokens" to "900",
+          "reserved_output_tokens" to "256",
+          "prompt_safety_margin_tokens" to "96",
+          "effective_input_percent" to "0.15",
+        ),
+        sessionContext = AgentRuntimeSessionContext(
+          workingState = WorkingState(
+            objective = WorkingStateObjective(
+              taskId = "task-working-state-budget-runtime",
+              runId = "run-working-state-budget-runtime",
+              primaryGoal = "Keep the latest operational state visible when prompt pressure spikes.",
+              currentSubgoal = "Prove runtime metadata exposes the working-state reducer decision.",
+              status = "in_progress",
+            ),
+            findings = (1..6).map { index ->
+              WorkingStateEntry(
+                text = "Finding $index " + "evidence ".repeat(12).trim(),
+                sourceType = "code_inspection",
+              )
+            },
+            recentActions = (1..8).map { index ->
+              WorkingStateEntry(
+                text = "Recent action $index " + "workspace mutation ".repeat(10).trim(),
+                sourceType = "workspace_mutation",
+              )
+            },
+            decisions = (1..4).map { index ->
+              WorkingStateEntry(
+                text = "Decision $index " + "branch rationale ".repeat(10).trim(),
+                sourceType = "branch_control",
+              )
+            },
+            blockers = (1..3).map { index ->
+              WorkingStateEntry(
+                text = "Blocker $index " + "approval wait ".repeat(10).trim(),
+                sourceType = "approval_boundary",
+              )
+            },
+            nextActions = (1..4).map { index ->
+              WorkingStateEntry(
+                text = "Next action $index " + "verify focused tests ".repeat(10).trim(),
+                sourceType = "todo_snapshot",
+              )
+            },
+            updatedAtEpochMs = 456_789L,
+          ),
+        ),
+      ),
+      clock = IncrementingClock(start = 6_800L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Need working state budget diagnostics."),
+      hooks = runtimeHooks(),
+    )
+
+    val request = gateway.requests.single()
+    val requestMetadata = request.metadata
+    val layerSummary = requestMetadata["contextBudgetLayerSummary"].orEmpty()
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("working state budget metadata captured", result.stdout)
+    assertTrue(request.prompt.contains("[Working State]"))
+    assertTrue(request.prompt.contains("Recent action 8"))
+    assertTrue(request.prompt.contains("Decision 4"))
+    assertTrue(request.prompt.contains("Blocker 3"))
+    assertTrue(request.prompt.contains("Next action 4"))
+    assertFalse(request.prompt.contains("[Recent Findings]"))
+    assertFalse(request.prompt.contains("Finding 1"))
+    assertFalse(request.prompt.contains("Recent action 1"))
+    assertFalse(request.prompt.contains("Decision 1"))
+    assertFalse(request.prompt.contains("Blocker 1"))
+    assertFalse(request.prompt.contains("Next action 1"))
+    assertFalse(request.prompt.contains("updated_at_epoch_ms=456789"))
+    assertTrue(layerSummary.contains("WORKING_STATE:"))
+    assertTrue(layerSummary.contains("reduced"))
+    assertTrue(layerSummary.contains("reduce_working_state_minimal"))
+    assertTrue(requestMetadata["contextBudgetReducedLayerNames"].orEmpty().contains("Working State"))
+    assertEquals(layerSummary, result.metadata["contextBudgetLayerSummary"])
+    assertEquals(
+      requestMetadata["contextBudgetReducedLayerNames"],
+      result.metadata["contextBudgetReducedLayerNames"],
+    )
   }
 
   @Test

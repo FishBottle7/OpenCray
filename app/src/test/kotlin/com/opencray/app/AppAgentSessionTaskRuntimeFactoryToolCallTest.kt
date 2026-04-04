@@ -10,6 +10,10 @@ import com.opencray.policy.SafetyAutomationMode
 import com.opencray.policy.SafetySettingsMetadataKeys
 import com.opencray.policy.ToolPolicyOverride
 import com.opencray.runtime.NoOpOpenCrayAgentRuntimeEventSink
+import com.opencray.runtime.process.AgentProcessRegistry
+import com.opencray.runtime.process.ManagedProcessSnapshot
+import com.opencray.runtime.process.ManagedProcessStartRequest
+import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionSnapshot
 import com.opencray.runtime.subagent.SubAgentExecutionState
@@ -80,6 +84,144 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
   }
 
   @Test
+  fun releaseSessionEvictsSessionScopedCaches() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-release-session-caches").toPath()
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-release-session-caches"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+
+    val initialTodoStore = runtimeFactory.todoStoreForSession(sessionId)
+    val initialObservationTracker = runtimeFactory.managedProcessObservationTrackerForSession(sessionId)
+
+    runtimeFactory.releaseSession(sessionId)
+
+    val recreatedTodoStore = runtimeFactory.todoStoreForSession(sessionId)
+    val recreatedObservationTracker = runtimeFactory.managedProcessObservationTrackerForSession(sessionId)
+
+    assertTrue(initialTodoStore !== recreatedTodoStore)
+    assertTrue(initialObservationTracker !== recreatedObservationTracker)
+  }
+
+  @Test
+  fun processObservationCursorPersistsAcrossTaskRuntimesWithinSameSession() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-process-observation-session").toPath()
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-process-observation-session"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val processRegistry = SequencedObservationProcessRegistry(
+      startedPlan = observationPlan(
+        stdout = "booting",
+        cursor = "host_seq_1",
+      ),
+      readPlans = mutableListOf(
+        observationPlan(
+          stdout = "booting\nready",
+          cursor = "host_seq_2",
+        ),
+      ),
+      waitPlans = mutableListOf(
+        observationPlan(
+          status = ManagedProcessStatus.SUCCESS,
+          stdout = "booting\nready\ndone",
+          cursor = "host_seq_3",
+          exitCode = 0,
+          finishedAtEpochMs = 1_250L,
+        ),
+      ),
+    )
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      processRegistryProvider = { processRegistry },
+    )
+    val startRuntime = runtimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val readRuntime = runtimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val waitRuntime = runtimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+
+    val startResult = startRuntime.execute(
+      developerToolCallTask(
+        id = "process-observation-start",
+        toolName = "ProcessStart",
+        argumentsJson =
+          """{"command":"npm","args":["run","dev"],"working_directory":".","timeout_ms":120000}""",
+      ),
+      runtimeHooks("Retry was not expected for process observation start."),
+    )
+    val processId = requireNotNull(startResult.metadata["processId"])
+
+    val firstRead = readRuntime.execute(
+      developerToolCallTask(
+        id = "process-observation-read-1",
+        toolName = "ProcessRead",
+        argumentsJson = """{"process_id":"$processId"}""",
+      ),
+      runtimeHooks("Retry was not expected for first process observation read."),
+    )
+    val secondRead = readRuntime.execute(
+      developerToolCallTask(
+        id = "process-observation-read-2",
+        toolName = "ProcessRead",
+        argumentsJson = """{"process_id":"$processId"}""",
+      ),
+      runtimeHooks("Retry was not expected for second process observation read."),
+    )
+    val waitResult = waitRuntime.execute(
+      developerToolCallTask(
+        id = "process-observation-wait",
+        toolName = "ProcessWait",
+        argumentsJson = """{"process_id":"$processId","timeout_ms":250}""",
+      ),
+      runtimeHooks("Retry was not expected for process observation wait."),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, firstRead.status)
+    assertTrue(firstRead.stdout.contains("sandbox_command_observation_delivery_mode=full_snapshot"))
+    assertEquals("full_snapshot", firstRead.metadata["sandboxCommandObservationDeliveryMode"])
+    assertEquals("host_seq_1", firstRead.metadata["sandboxCommandObservationCursorAfter"])
+
+    assertEquals(ExecutionStatus.SUCCESS, secondRead.status)
+    assertTrue(secondRead.stdout.contains("sandbox_command_observation_delivery_mode=delta"))
+    assertTrue(secondRead.stdout.contains("sandbox_command_observation_cursor_before=host_seq_1"))
+    assertTrue(secondRead.stdout.contains("sandbox_command_observation_cursor_after=host_seq_2"))
+    assertTrue(secondRead.stdout.contains("[stdout]"))
+    assertTrue(secondRead.stdout.contains("ready"))
+    assertFalse(secondRead.stdout.contains("[stdout]\nbooting"))
+    assertEquals("delta", secondRead.metadata["sandboxCommandObservationDeliveryMode"])
+    assertEquals("host_seq_1", secondRead.metadata["sandboxCommandObservationCursorBefore"])
+    assertEquals("host_seq_2", secondRead.metadata["sandboxCommandObservationCursorAfter"])
+
+    assertEquals(ExecutionStatus.SUCCESS, waitResult.status)
+    assertTrue(waitResult.stdout.contains("sandbox_command_observation_delivery_mode=delta"))
+    assertTrue(waitResult.stdout.contains("sandbox_command_observation_cursor_before=host_seq_2"))
+    assertTrue(waitResult.stdout.contains("sandbox_command_observation_cursor_after=host_seq_3"))
+    assertTrue(waitResult.stdout.contains("[stdout]"))
+    assertTrue(waitResult.stdout.contains("done"))
+    assertFalse(waitResult.stdout.contains("[stdout]\nbooting"))
+    assertEquals("delta", waitResult.metadata["sandboxCommandObservationDeliveryMode"])
+    assertEquals("host_seq_2", waitResult.metadata["sandboxCommandObservationCursorBefore"])
+    assertEquals("host_seq_3", waitResult.metadata["sandboxCommandObservationCursorAfter"])
+  }
+
+  @Test
   fun directWaitAgentCanUseDurableSessionHandlesWithoutCheckpointResumeState() {
     val workspaceRoot = temporaryFolder.newFolder("workspace-tool-call-wait-agent").toPath()
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-tool-call-wait-agent"))
@@ -147,6 +289,106 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
     assertTrue(result.stdout.contains("README says hello."))
     assertEquals("child-durable", result.metadata["agentId"])
     assertEquals("child-run-durable", result.metadata["childRunId"])
+    assertEquals("completed", result.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+  }
+
+  @Test
+  fun detachedControlRecoveryWaitTargetsExactHandleKeyWithoutJsonToolPayload() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-detached-control-wait").toPath()
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-detached-control-wait"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    runtimeFactory.subAgentHandleStoreForSession(sessionId).upsert(
+      SubAgentHandleState(
+        agentId = "child-shared",
+        childRunId = "child-run-old",
+        childTaskId = "child-task-old",
+        description = "Old child",
+        prompt = "Inspect old task.",
+        subagentType = "researcher",
+        contextMode = "minimal",
+        parentRunId = "run-parent-old",
+        parentTaskId = "task-parent-old",
+        parentTurn = 1,
+        depth = 1,
+        snapshot = SubAgentExecutionSnapshot(
+          state = SubAgentExecutionState.FAILED,
+          continuationKind = SubAgentContinuationKind.NONE,
+          resumable = false,
+          requiresUserAction = false,
+          isHighRisk = false,
+          headline = "Old child failed.",
+        ),
+        childExecutionStatus = ExecutionStatus.FAILED.name,
+        createdAtEpochMs = 800L,
+        updatedAtEpochMs = 900L,
+      ),
+    )
+    runtimeFactory.subAgentHandleStoreForSession(sessionId).upsert(
+      SubAgentHandleState(
+        agentId = "child-shared",
+        childRunId = "child-run-target",
+        childTaskId = "child-task-target",
+        description = "Target child",
+        prompt = "Inspect target task.",
+        subagentType = "researcher",
+        contextMode = "minimal",
+        parentRunId = "run-parent-target",
+        parentTaskId = "task-parent-target",
+        parentTurn = 1,
+        depth = 1,
+        snapshot = SubAgentExecutionSnapshot(
+          state = SubAgentExecutionState.COMPLETED,
+          continuationKind = SubAgentContinuationKind.NONE,
+          resumable = false,
+          requiresUserAction = false,
+          isHighRisk = false,
+          headline = "Target child completed.",
+        ),
+        childExecutionStatus = ExecutionStatus.SUCCESS.name,
+        createdAtEpochMs = 1_000L,
+        updatedAtEpochMs = 1_100L,
+      ),
+    )
+    val task = AgentTask(
+      id = "detached-control-exact-handle",
+      type = AgentTaskType.SYSTEM,
+      input = "internal:subagent_recovery_wait:child-shared",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_200L,
+      metadata = mapOf(
+        METADATA_DETACHED_CONTROL_KIND to DETACHED_CONTROL_KIND_SUBAGENT_RECOVERY_WAIT,
+        METADATA_SUBAGENT_RECOVERY_AGENT_ID to "child-shared",
+        METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID to "run-parent-target",
+      ),
+    )
+
+    val result = requireNotNull(
+      runtimeFactory.executeDetachedControlTask(
+        sessionId = sessionId,
+        task = task,
+        hooks = RuntimeExecutionHooks(
+          isCancellationRequested = { false },
+          requestRetry = { _ -> error("Retry was not expected for detached control wait test.") },
+        ),
+        eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+      ),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertTrue(result.stdout.contains("Target child completed."))
+    assertEquals("child-shared", result.metadata["agentId"])
+    assertEquals("child-run-target", result.metadata["childRunId"])
     assertEquals("completed", result.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
   }
 
@@ -642,6 +884,27 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
 
   private fun jsonPath(file: File): String = file.invariantSeparatorsPath.replace("/", "\\/")
 
+  private fun developerToolCallTask(
+    id: String,
+    toolName: String,
+    argumentsJson: String,
+  ): AgentTask = AgentTask(
+    id = id,
+    type = AgentTaskType.TOOL_CALL,
+    input = """{"type":"tool_call","tool_name":"$toolName","arguments":$argumentsJson}""",
+    policyDecision = PolicyDecision(
+      outcome = PolicyDecisionOutcome.ALLOW,
+      reasonCode = "TEST_ALLOW",
+    ),
+    metadata = mapOf("chatMode" to "DEVELOPER"),
+    createdAtEpochMs = 1_000L,
+  )
+
+  private fun runtimeHooks(retryError: String): RuntimeExecutionHooks = RuntimeExecutionHooks(
+    isCancellationRequested = { false },
+    requestRetry = { _ -> error(retryError) },
+  )
+
   private fun hostUiPreapprovedTaskMetadata(
     toolName: String,
     automationMode: SafetyAutomationMode? = null,
@@ -653,4 +916,129 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
       put(SafetySettingsMetadataKeys.EXECUTION_MODE, mode.executionMode.name)
     }
   }
+
+  private data class ObservationSnapshotPlan(
+    val status: ManagedProcessStatus,
+    val stdout: String,
+    val stderr: String,
+    val exitCode: Int?,
+    val finishedAtEpochMs: Long?,
+    val metadata: Map<String, String>,
+  ) {
+    fun toSnapshot(
+      request: ManagedProcessStartRequest,
+      updatedAtEpochMs: Long,
+    ): ManagedProcessSnapshot = ManagedProcessSnapshot(
+      processId = request.processId,
+      taskId = request.taskId,
+      command = request.command,
+      args = request.args,
+      workingDirectory = request.workingDirectory,
+      status = status,
+      processStarted = true,
+      timeoutMs = request.timeoutMs,
+      stdout = stdout,
+      stderr = stderr,
+      exitCode = exitCode,
+      startedAtEpochMs = 1_000L,
+      updatedAtEpochMs = updatedAtEpochMs,
+      finishedAtEpochMs = finishedAtEpochMs,
+      metadata = request.metadata + metadata,
+    )
+
+    fun advance(
+      existing: ManagedProcessSnapshot,
+      updatedAtEpochMs: Long,
+    ): ManagedProcessSnapshot = existing.copy(
+      status = status,
+      stdout = stdout,
+      stderr = stderr,
+      exitCode = exitCode,
+      updatedAtEpochMs = updatedAtEpochMs,
+      finishedAtEpochMs = finishedAtEpochMs,
+      metadata = existing.metadata + metadata,
+    )
+  }
+
+  private class SequencedObservationProcessRegistry(
+    private val startedPlan: ObservationSnapshotPlan,
+    private val readPlans: MutableList<ObservationSnapshotPlan> = mutableListOf(),
+    private val waitPlans: MutableList<ObservationSnapshotPlan> = mutableListOf(),
+  ) : AgentProcessRegistry {
+    private val snapshotsById = linkedMapOf<String, ManagedProcessSnapshot>()
+    private var updatedAtEpochMs: Long = 1_000L
+
+    override fun start(request: ManagedProcessStartRequest): ManagedProcessSnapshot {
+      val snapshot = startedPlan.toSnapshot(
+        request = request,
+        updatedAtEpochMs = updatedAtEpochMs,
+      )
+      snapshotsById[request.processId] = snapshot
+      return snapshot
+    }
+
+    override fun list(): List<ManagedProcessSnapshot> = snapshotsById.values.toList()
+
+    override fun read(processId: String): ManagedProcessSnapshot? {
+      val current = snapshotsById[processId] ?: return null
+      readPlans.removeFirstOrNull()?.let { nextPlan ->
+        updatedAtEpochMs += 100L
+        snapshotsById[processId] = nextPlan.advance(
+          existing = current,
+          updatedAtEpochMs = updatedAtEpochMs,
+        )
+      }
+      return current
+    }
+
+    override fun wait(processId: String, timeoutMs: Long): ManagedProcessSnapshot? {
+      val current = snapshotsById[processId] ?: return null
+      val nextPlan = waitPlans.removeFirstOrNull() ?: return current
+      updatedAtEpochMs += timeoutMs.coerceAtLeast(1L)
+      val waited = nextPlan.advance(
+        existing = current,
+        updatedAtEpochMs = updatedAtEpochMs,
+      )
+      snapshotsById[processId] = waited
+      return waited
+    }
+
+    override fun terminate(processId: String): ManagedProcessSnapshot? {
+      val existing = snapshotsById[processId] ?: return null
+      val terminated = existing.copy(
+        status = ManagedProcessStatus.CANCELLED,
+        exitCode = 137,
+        errorCode = "CANCELLED",
+        errorMessage = "Managed process terminated.",
+        updatedAtEpochMs = existing.updatedAtEpochMs + 1L,
+        finishedAtEpochMs = existing.updatedAtEpochMs + 1L,
+        cancelled = true,
+      )
+      snapshotsById[processId] = terminated
+      return terminated
+    }
+  }
+
+  private fun observationPlan(
+    status: ManagedProcessStatus = ManagedProcessStatus.RUNNING,
+    stdout: String = "",
+    stderr: String = "",
+    cursor: String,
+    exitCode: Int? = null,
+    finishedAtEpochMs: Long? = null,
+  ): ObservationSnapshotPlan = ObservationSnapshotPlan(
+    status = status,
+    stdout = stdout,
+    stderr = stderr,
+    exitCode = exitCode,
+    finishedAtEpochMs = finishedAtEpochMs,
+    metadata = mapOf(
+      "sandboxCommandObservationMode" to "host_managed_snapshot",
+      "sandboxCommandObservationCursor" to cursor,
+      "sandboxCommandObservationStdoutBytes" to
+        stdout.toByteArray(StandardCharsets.UTF_8).size.toString(),
+      "sandboxCommandObservationStderrBytes" to
+        stderr.toByteArray(StandardCharsets.UTF_8).size.toString(),
+    ),
+  )
 }

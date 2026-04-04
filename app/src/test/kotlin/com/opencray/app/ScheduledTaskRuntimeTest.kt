@@ -516,6 +516,25 @@ class ScheduledTaskRuntimeTest {
 
     override fun hasLiveManagedProcesses(): Boolean = false
 
+    override fun submitDetachedSubAgentRecoveryTask(
+      agentId: String,
+      parentRunId: String,
+      taskId: String,
+      createdAtEpochMs: Long,
+      submissionSource: String,
+    ): AgentRunSubmission = submitTask(
+      detachedSubAgentRecoveryWaitTask(
+        sessionId = sessionId,
+        agentId = agentId,
+        parentRunId = parentRunId,
+        taskId = taskId,
+        createdAtEpochMs = createdAtEpochMs,
+        metadata = HostRuntimeLifecycleDescriptor().taskMetadata(
+          submissionSource = submissionSource,
+        ),
+      ),
+    )
+
     override fun terminateRunningManagedProcesses(): List<ManagedProcessSnapshot> = emptyList()
   }
 }

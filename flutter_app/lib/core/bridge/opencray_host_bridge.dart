@@ -179,6 +179,10 @@ abstract interface class OpenCrayHostBridge {
     required String model,
     required String reasoningEffort,
     required String systemPrompt,
+    String? openAiPromptCacheKeyStrategy,
+    String? openAiPromptCacheRetention,
+    bool? anthropicPromptCachingEnabled,
+    String? anthropicPromptCacheTtl,
   });
 
   Future<OpenCrayLlmConfigSnapshot> saveCustomLlmProvider({
@@ -191,6 +195,10 @@ abstract interface class OpenCrayHostBridge {
     required String model,
     required String reasoningEffort,
     required String systemPrompt,
+    String? openAiPromptCacheKeyStrategy,
+    String? openAiPromptCacheRetention,
+    bool? anthropicPromptCachingEnabled,
+    String? anthropicPromptCacheTtl,
   });
 
   Future<OpenCrayLlmValidationResult> validateLlmConfig({

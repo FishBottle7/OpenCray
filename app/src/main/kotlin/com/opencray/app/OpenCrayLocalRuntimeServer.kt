@@ -332,6 +332,26 @@ internal class OpenCrayLocalRuntimeServer(
         model = body.optString("model"),
         reasoningEffort = body.optString("reasoningEffort"),
         systemPrompt = body.optString("systemPrompt"),
+        openAiPromptCacheKeyStrategy = if (body.has("openAiPromptCacheKeyStrategy")) {
+          body.optString("openAiPromptCacheKeyStrategy")
+        } else {
+          null
+        },
+        openAiPromptCacheRetention = if (body.has("openAiPromptCacheRetention")) {
+          body.optString("openAiPromptCacheRetention")
+        } else {
+          null
+        },
+        anthropicPromptCachingEnabled = if (body.has("anthropicPromptCachingEnabled")) {
+          body.optBoolean("anthropicPromptCachingEnabled")
+        } else {
+          null
+        },
+        anthropicPromptCacheTtl = if (body.has("anthropicPromptCacheTtl")) {
+          body.optString("anthropicPromptCacheTtl")
+        } else {
+          null
+        },
       )
       "POST" to "/v1/save_custom_llm_provider" -> settingsGateway.saveCustomLlmProvider(
         selectedProviderOptionId = body.optString("selectedProviderOptionId"),
@@ -343,6 +363,26 @@ internal class OpenCrayLocalRuntimeServer(
         model = body.optString("model"),
         reasoningEffort = body.optString("reasoningEffort"),
         systemPrompt = body.optString("systemPrompt"),
+        openAiPromptCacheKeyStrategy = if (body.has("openAiPromptCacheKeyStrategy")) {
+          body.optString("openAiPromptCacheKeyStrategy")
+        } else {
+          null
+        },
+        openAiPromptCacheRetention = if (body.has("openAiPromptCacheRetention")) {
+          body.optString("openAiPromptCacheRetention")
+        } else {
+          null
+        },
+        anthropicPromptCachingEnabled = if (body.has("anthropicPromptCachingEnabled")) {
+          body.optBoolean("anthropicPromptCachingEnabled")
+        } else {
+          null
+        },
+        anthropicPromptCacheTtl = if (body.has("anthropicPromptCacheTtl")) {
+          body.optString("anthropicPromptCacheTtl")
+        } else {
+          null
+        },
       )
       "POST" to "/v1/validate_llm_config" -> settingsGateway.validateLlmConfig(
         providerId = body.optString("providerId"),

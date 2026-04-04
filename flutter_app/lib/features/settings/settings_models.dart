@@ -481,6 +481,10 @@ class LlmConfigSnapshot {
     required this.reasoningEffort,
     required this.systemPrompt,
     required this.helperText,
+    this.openAiPromptCacheKeyStrategy = 'none',
+    this.openAiPromptCacheRetention = '',
+    this.anthropicPromptCachingEnabled = false,
+    this.anthropicPromptCacheTtl = '5m',
   });
 
   final String localeTag;
@@ -497,6 +501,10 @@ class LlmConfigSnapshot {
   final String reasoningEffort;
   final String systemPrompt;
   final String helperText;
+  final String openAiPromptCacheKeyStrategy;
+  final String openAiPromptCacheRetention;
+  final bool anthropicPromptCachingEnabled;
+  final String anthropicPromptCacheTtl;
 }
 
 class LlmValidationResult {

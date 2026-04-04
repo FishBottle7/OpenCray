@@ -405,6 +405,10 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     required String model,
     required String reasoningEffort,
     required String systemPrompt,
+    String? openAiPromptCacheKeyStrategy,
+    String? openAiPromptCacheRetention,
+    bool? anthropicPromptCachingEnabled,
+    String? anthropicPromptCacheTtl,
   }) async => throw StateError(_failureMessage);
 
   @override
@@ -418,6 +422,10 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     required String model,
     required String reasoningEffort,
     required String systemPrompt,
+    String? openAiPromptCacheKeyStrategy,
+    String? openAiPromptCacheRetention,
+    bool? anthropicPromptCachingEnabled,
+    String? anthropicPromptCacheTtl,
   }) async => throw StateError(_failureMessage);
 
   @override

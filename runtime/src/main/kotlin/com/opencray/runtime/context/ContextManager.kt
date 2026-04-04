@@ -6,6 +6,7 @@ import com.opencray.runtime.memory.MemoryRecallOmittedTrace
 import com.opencray.runtime.memory.MemoryRecallResult
 import com.opencray.runtime.memory.MemoryRecallSelectedTrace
 import com.opencray.runtime.memory.RetrievedMemory
+import com.opencray.runtime.compaction.DurableCompactionPromptLayer
 import com.opencray.runtime.skills.ActiveSkillPromptLayer
 import com.opencray.runtime.skills.SkillInventoryPromptLayer
 import com.opencray.runtime.soul.RuntimeSoulPromptComposer
@@ -30,6 +31,7 @@ class ContextManager(
   private val soulPromptComposer: RuntimeSoulPromptComposer = RuntimeSoulPromptComposer(),
   private val soulTurnPolicyComposer: RuntimeSoulTurnPolicyComposer = RuntimeSoulTurnPolicyComposer(),
   private val memoryPromptLayer: MemoryPromptLayer = MemoryPromptLayer(),
+  private val durableCompactionPromptLayer: DurableCompactionPromptLayer = DurableCompactionPromptLayer(),
   private val workingStateSupport: WorkingStateSupport = WorkingStateSupport(),
   private val workingStatePromptLayer: WorkingStatePromptLayer = WorkingStatePromptLayer(),
   private val skillInventoryPromptLayer: SkillInventoryPromptLayer = SkillInventoryPromptLayer(),
@@ -91,9 +93,14 @@ class ContextManager(
       },
       bootstrapFiles = input.sessionContext.bootstrapContext.files,
       workingState = workingStateResolution.state,
+      selectedMemory = selectedMemory,
+      durableCompaction = input.sessionContext.durableCompaction,
+      skillInventory = input.sessionContext.skillInventory,
+      activeSkillCapsule = input.activeSkillCapsule,
+      recentToolObservationLayer = recentToolObservationLayer,
       workingStateText = workingStatePromptLayer.render(workingStateResolution.state),
       memoryText = memoryPromptLayer.render(selectedMemory),
-      durableCompactionText = input.sessionContext.durableCompaction.text,
+      durableCompactionText = durableCompactionPromptLayer.render(input.sessionContext.durableCompaction),
       skillInventoryText = renderedSkillInventory.text,
       activeSkillText = renderedActiveSkill.text,
       recentToolObservationsText = recentToolObservationLayer?.text.orEmpty(),
@@ -104,6 +111,7 @@ class ContextManager(
       legacyJsonFallbackEnabled = input.legacyJsonFallbackEnabled,
       toolDefinitions = input.toolDefinitions,
       transcriptWindow = transcriptSelection.window,
+      llmMetadata = input.llmMetadata,
       report = ContextSelectionReport(
         sourceTranscriptMessageCount = input.liveConversation.count { message -> message.content.isNotBlank() },
         windowedTranscriptMessageCount = transcriptSelection.window.messages.size,

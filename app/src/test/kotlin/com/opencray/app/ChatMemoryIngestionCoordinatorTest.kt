@@ -100,11 +100,13 @@ class ChatMemoryIngestionCoordinatorTest {
       sessionId = "session-flush",
       taskId = "task-flush-1",
       conversation = conversation,
+      llmMetadata = constrainedFlushLlmMetadata(),
     )
     val second = coordinator.flushBeforeCompaction(
       sessionId = "session-flush",
       taskId = "task-flush-2",
       conversation = conversation,
+      llmMetadata = constrainedFlushLlmMetadata(),
     )
 
     assertEquals(MemoryFlushOutcome.WRITTEN, first.trace.outcome)
@@ -153,6 +155,7 @@ class ChatMemoryIngestionCoordinatorTest {
       sessionId = "session-expanded-flush",
       taskId = "task-expanded-1",
       conversation = baseConversation,
+      llmMetadata = constrainedFlushLlmMetadata(),
     )
     val second = coordinator.flushBeforeCompaction(
       sessionId = "session-expanded-flush",
@@ -161,6 +164,7 @@ class ChatMemoryIngestionCoordinatorTest {
         role = RuntimeConversationRole.USER,
         content = "Padding user message 13 to keep the active transcript window bounded.",
       ),
+      llmMetadata = constrainedFlushLlmMetadata(),
     )
 
     assertEquals(MemoryFlushOutcome.WRITTEN, first.trace.outcome)
@@ -209,6 +213,7 @@ class ChatMemoryIngestionCoordinatorTest {
       sessionId = "session-expanded-delta",
       taskId = "task-delta-1",
       conversation = baseConversation,
+      llmMetadata = constrainedFlushLlmMetadata(),
     )
     val second = coordinator.flushBeforeCompaction(
       sessionId = "session-expanded-delta",
@@ -217,6 +222,7 @@ class ChatMemoryIngestionCoordinatorTest {
         role = RuntimeConversationRole.USER,
         content = "Padding user message 12 to keep the active transcript window bounded.",
       ),
+      llmMetadata = constrainedFlushLlmMetadata(),
     )
 
     assertEquals(MemoryFlushOutcome.WRITTEN, first.trace.outcome)
@@ -262,12 +268,14 @@ class ChatMemoryIngestionCoordinatorTest {
       sessionId = "session-store-reset",
       taskId = "task-store-reset-1",
       conversation = conversation,
+      llmMetadata = constrainedFlushLlmMetadata(),
     )
     memoryStore.clear()
     val second = coordinator.flushBeforeCompaction(
       sessionId = "session-store-reset",
       taskId = "task-store-reset-2",
       conversation = conversation,
+      llmMetadata = constrainedFlushLlmMetadata(),
     )
 
     assertEquals(MemoryFlushOutcome.WRITTEN, first.trace.outcome)
@@ -2022,6 +2030,10 @@ class ChatMemoryIngestionCoordinatorTest {
         }
       },
     )
+
+  private fun constrainedFlushLlmMetadata(): Map<String, String> = mapOf(
+    "context_window_tokens" to "64",
+  )
 
   private class InMemoryMemoryStore : MemoryStore {
     private val records = linkedMapOf<String, MemoryRecord>()

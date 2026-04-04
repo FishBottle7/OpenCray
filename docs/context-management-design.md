@@ -1,6 +1,6 @@
 # OpenCray Context Management Design
 
-Last updated: 2026-03-16
+Last updated: 2026-04-03
 
 ## Status
 
@@ -1182,6 +1182,30 @@ Related design:
 
 - `docs/global-context-budget-coordination-design.md`
 
+### Current code-backed checkpoint
+
+The first global budget-coordination slice is now implemented.
+
+- `ContextManager` still selects typed context sources first.
+- `PromptAssembler` still renders named prompt layers from those sources.
+- `GlobalContextBudgetCoordinator` then fits those layers into the model-aware envelope resolved by `ModelContextBudgetPolicy`.
+- The coordinator does not reparse one flat prompt blob and does not generic-compress arbitrary layers. It asks layer-owned renderers to produce `FULL`, `COMPACT`, or `MINIMAL` forms and only omits a layer when that layer's budget class allows it.
+- Code-backed structural reduction now exists for:
+  - working state
+  - retrieved memory
+  - recent tool observations
+  - active skill capsule
+  - bootstrap snippets
+  - skill inventory
+  - durable compaction
+  - pruning summary
+  - compaction summary
+
+This is Codex-like in spirit, not in exact mechanism:
+
+- like Codex, OpenCray now has one model-aware allocator above local reducers and compaction surfaces
+- unlike a generic "compress the whole context blob" design, OpenCray keeps reducer logic in the owning layer/module and keeps prompt assembly and debug trace host-owned and explicit
+
 ## Pattern 4: Transcript Window Builder
 
 This component rebuilds the in-run message window from persisted history.
@@ -1191,14 +1215,216 @@ Responsibilities:
 - load session transcript
 - preserve recent turns
 - inject compaction summaries if present
-- drop or collapse oversized tool results
+- apply conservative prompt-local guardrails to pathological replay payloads
 - output a bounded working set
 
 Suggested module:
 
-- `runtime/src/main/kotlin/com/opencray/runtime/history/TranscriptWindowBuilder.kt`
+- `runtime/src/main/kotlin/com/opencray/runtime/context/TranscriptWindowBuilder.kt`
 
 This is the minimal feature OpenCray must add first.
+
+### Current near/far behavior
+
+OpenCray's current bounded replay is message-window based, not run-count based.
+
+- `near` context is the bounded transcript window rebuilt from persisted messages after pruning and before prompt assembly
+- `far` context is everything outside that window, represented only through pruning summaries, durable compaction summaries, or separately recalled memory
+- the current default transcript window is `maxMessages = 12`
+- background or tool-heavy messages are capped more aggressively than user turns and normal assistant replies
+
+This is similar to Codex's "recent active window plus compaction behind it" strategy in spirit, but OpenCray's implementation is explicit and locally controlled rather than provider-managed or opaque.
+
+### Pruning should not be more aggressive than Codex
+
+OpenCray should keep prompt-local deterministic pruning, but only in the same narrow role Codex uses it for: as a guardrail that prevents obviously pathological payloads from destabilizing the prompt or the compaction request.
+
+Codex does have deterministic trimming, but it is intentionally narrow:
+
+- trim Codex-generated trailing function/tool history when the remote compaction request itself would overflow the model window
+- truncate side-channel payloads and tool-facing textual surfaces with explicit bounded markers
+- filter stale wrapper or developer-like items after compaction replacement history is returned
+
+What Codex does not appear to do as its normal local pruning path:
+
+- proactively rewrite ordinary tool results just because they are somewhat long
+- drop duplicate background transcript items merely because they repeat locally
+- perform generic content-loss pruning on replay before compaction pressure actually requires it
+
+OpenCray previously let `ContextPruner` rewrite ordinary oversized tool payloads and drop consecutive duplicate background messages before transcript windowing, which was more aggressive than the Codex reference shape.
+
+The checked-in runtime has now been narrowed part of the way toward the intended boundary:
+
+- ordinary long tool results are no longer proactively rewritten by prompt-local pruning
+- duplicate background transcript items are no longer dropped by default prompt-local pruning
+- attachment-like/blob payloads are still rewritten as a narrow guardrail
+
+That is closer to the right design, but it is still only a partial convergence. The intended end state is:
+
+- keep deterministic prompt-local pruning as a conservative safety rail
+- reserve ordinary replay reduction for transcript windowing, budget coordination, and later semantic compaction
+- do not let local pruning silently become a second content-selection policy
+
+Concretely, prompt-local pruning should eventually be limited to cases such as:
+
+- obviously non-conversational attachment/blob payloads such as raw base64 or data URIs
+- hard request-sendability protection when a compaction request or prompt fragment would otherwise fail to fit
+- explicit bounded truncation of side-channel/tool payloads that already have a natural truncation contract
+
+And it should avoid:
+
+- duplicate-background deletion as a default replay policy
+- normal tool-result rewriting before real pressure exists
+- any heuristic that removes information earlier than Codex would
+
+### Budget envelope versus source caps
+
+Current implementation now distinguishes two separate controls:
+
+1. budget envelope
+2. source acquisition caps
+
+Budget envelope is the total prompt space the coordinator may spend for the current model and route.
+
+Source acquisition caps decide how much raw material is available before rebalancing, for example:
+
+- transcript `maxMessages`
+- injected memory count
+- bootstrap snippet caps
+- skill inventory and active-skill caps
+- recent observation caps
+
+Important current behavior:
+
+- increasing the model-context budget currently reduces compression or omission pressure and may preserve richer tool-protocol detail
+- it does not yet automatically enlarge transcript, memory, bootstrap, skill, or observation acquisition caps
+- coupling larger presets to larger source caps is separate future work, not an automatic side effect of a bigger budget envelope
+
+### User-facing settings direction
+
+For product settings, OpenCray should expose two layers of control:
+
+- preset tiers for normal users
+- deeper raw numeric overrides for advanced or dev users
+
+Recommended behavior:
+
+- presets map to `ModelContextBudgetPolicy` inputs such as context-window assumptions, reserved output, safety margin, and effective input percentage
+- if raw values no longer match a known preset, the preset label should flip to `dev`
+- later, higher presets should also scale source acquisition caps, so "larger context" means both a larger budget envelope and a larger working source window
+
+This is a product choice, not a claim that Codex exposes the same surface. Based on local Codex source inspection, Codex clearly has mature compaction and memory flows, but there is no strong current evidence that it exposes raw prompt-budget numbers as a normal user-facing setting.
+
+### Codex compaction comparison
+
+Local Codex source inspection also confirms two important comparison points.
+
+First, yes: Codex really does compact "older history into a summary-like replacement history", and that compaction can happen during an active run.
+
+Observed Codex behavior:
+
+- pre-turn compaction can run before sampling when accumulated token usage is already over the auto-compact threshold
+- mid-turn compaction can run after a sampling step when token usage has crossed the threshold and the run still needs follow-up
+- the compacted history is then replaced with a reduced history that keeps selected user boundaries plus a compaction summary item
+- deterministic pruning around that flow is narrow guardrail behavior, not the main replay-selection policy
+  - Codex trims Codex-generated trailing function-call history only when the compaction request itself would overflow
+  - Codex also uses bounded truncation for some side payloads, but it does not generally pre-rewrite normal replay content just because it is somewhat long
+
+Second, OpenCray is not currently using the same "95% then compact" rule.
+
+OpenCray's current trigger model is different:
+
+- transcript replay is always bounded by `TranscriptWindowBuilder`, currently `maxMessages = 12`, regardless of token percentage
+- prompt-local omitted-history summary can appear whenever that bounded replay omits older messages
+- durable compaction now has a shared pre-turn replay-pressure gate
+  - it derives `auto_compact_token_limit` from model context metadata or the default model-window budget
+  - the current implementation clamps explicit overrides to `<= 90% of context_window`
+  - compaction still also requires omitted-history pressure, so it remains a pre-turn omitted-slice rewrite rather than a full Codex-style token-window rewrite
+- memory flush before compaction now uses the same shared pre-turn replay-pressure gate
+  - the current implementation still requires omitted-message or omitted-char pressure in addition to the token threshold
+  - current default omission thresholds remain `minOmittedMessages = 4` or `minOmittedChars = 480`
+- global budget reduction currently starts when assembled prompt layers exceed `targetInputBudgetTokens`
+  - this target is derived from:
+    - raw input budget = `contextWindowTokens - reservedOutputTokens - safetyMarginTokens`
+    - target input budget = `rawInputBudget * effectiveInputPercent`
+  - current defaults are:
+    - `reservedOutputTokens = 2048`
+    - `safetyMarginTokens = 1024`
+    - `effectiveInputPercent = 0.85`
+
+So the current OpenCray behavior is:
+
+- bounded replay and prompt-local omitted-history summary can still happen much earlier than a Codex-style 95% context-usage threshold
+- budget-driven layer reduction is already model-aware, but it is still separate from the replay compaction threshold
+- durable compaction and memory flush now have one shared pre-turn token threshold, but they still depend on omitted-history pressure and do not yet cover mid-turn or model-switch cases
+
+### What OpenCray should absorb from Codex compression strategy
+
+The strongest Codex ideas that OpenCray should absorb are not "summarize everything into one blob". They are the control rules around when and how replay compaction is allowed to happen.
+
+Recommended absorptions:
+
+- derive an explicit `auto_compact_token_limit` from model context window
+  - default to a Codex-like `90% of context_window`
+  - keep it separate from the softer effective input envelope used for prompt budgeting
+- add a pre-turn compaction path
+  - if accumulated replay is already beyond the compaction threshold before sampling starts, compact first
+- add a mid-turn compaction path
+  - compact only when usage has crossed the threshold and the current run still needs follow-up
+  - do not compact after every assistant step
+- add smaller-window model-switch protection
+  - when a session moves from a larger-window model to a smaller-window model, compact before continuing if the old replay no longer fits the new threshold
+- keep deterministic pruning narrow and subordinate
+  - use it only as a guardrail for request-sendability or clearly pathological payloads
+  - do not let it become the main replay-selection policy
+- compact replayable history, not typed identity layers
+  - soul, memory recall, working state, bootstrap, and similar typed layers should remain separately assembled and separately budgeted
+- sanitize compaction output before reinjection
+  - if a future compaction path returns stale wrappers, duplicated instruction content, or other non-canonical artifacts, runtime should filter them before replacement history becomes authoritative
+- preserve compact trace as a first-class runtime event
+  - trigger reason, threshold, pre-turn vs mid-turn vs model-switch, and pre/post token estimates should all be inspectable
+
+### What OpenCray should adapt from Codex, not copy directly
+
+Several Codex mechanisms are valuable in principle, but should be adapted to OpenCray's architecture instead of copied literally.
+
+- provider-native compact endpoint
+  - Codex can call a dedicated compact API path
+  - OpenCray should treat provider-native compaction as an optional acceleration path, not as a required baseline capability
+- replacement-history shape
+  - Codex replacement history keeps a bounded set of user anchors plus a compaction summary item encoded inside history
+  - OpenCray should keep the same principle of bounded replay anchors plus compacted history, but it should map the result into OpenCray-owned prompt layers and transcript structures rather than pretending the summary is an ordinary user turn
+- initial-context reinjection
+  - Codex re-injects canonical initial context after compaction so the compacted thread still has a valid runtime baseline
+  - OpenCray should copy that principle, but the reinjected baseline should remain its explicit named runtime layers rather than a hidden imitation of Codex's conversation item format
+- context-diff baseline management
+  - Codex uses `reference_context_item` and steady-state context diffs
+  - OpenCray can borrow the idea of canonical runtime baseline restoration, but should not copy the exact diff protocol while its prompt assembly remains host-owned and explicitly layered
+
+### What OpenCray should not copy from Codex
+
+Some Codex details are correct for Codex specifically but would be the wrong fit for OpenCray if copied literally.
+
+- do not collapse OpenCray's typed context architecture into one generic compacted thread blob
+- do not encode durable compaction summaries as fake user messages just because Codex's history format does that
+- do not let compaction rewrite soul, memory, or other typed state authorities
+- do not make provider-native compaction a hard dependency for normal runtime continuity
+
+### Current unabsorbed Codex-grade gaps
+
+Compared with the Codex strategy inspected from source, OpenCray still has these meaningful gaps:
+
+- pre-turn pressure now uses one shared `auto_compact_token_limit`, but it still only gates omitted-history rewrites
+- no mid-turn compaction path for long multi-step runs
+- no smaller-window model-switch compaction safeguard
+- prompt-local pruning is narrower now, but it still lacks Codex-style overflow/sendability trimming tied to the real request boundary
+- no explicit post-compaction sanitation stage for future semantic compaction output
+- no provider-native compaction path plus constrained fallback path split
+
+The important design conclusion is:
+
+- OpenCray should become more Codex-like in compaction control flow
+- OpenCray should not become more Codex-like by flattening its typed layer model away
 
 ## Pattern 5: Structured Soul Resolver
 
@@ -2146,6 +2372,8 @@ Why:
 - pruning is cheaper
 - easier to test
 - lower product risk
+
+But `pruning` here should mean Codex-style guardrails, not eager replay loss. Cheap local protection is good; silently making transcript-selection decisions earlier than necessary is not.
 
 ## Pattern 9: subagent context modes
 

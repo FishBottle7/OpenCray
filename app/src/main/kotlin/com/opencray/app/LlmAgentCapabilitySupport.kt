@@ -5,6 +5,7 @@ import org.json.JSONObject
 data class LlmAgentCapabilitySnapshot(
   val routeFingerprint: String = "",
   val verifiedAtEpochMs: Long? = null,
+  val contextWindowTokens: Int? = null,
   val visionInputSupported: Boolean = false,
   val pdfInputSupported: Boolean = false,
   val nativeToolCallingAvailable: Boolean = false,
@@ -53,6 +54,7 @@ data class LlmAgentCapabilitySnapshot(
   fun toJson(): JSONObject = JSONObject()
     .put("routeFingerprint", routeFingerprint)
     .put("verifiedAtEpochMs", verifiedAtEpochMs)
+    .put("contextWindowTokens", contextWindowTokens)
     .put("visionInputSupported", visionInputSupported)
     .put("pdfInputSupported", pdfInputSupported)
     .put("nativeToolCallingAvailable", nativeToolCallingAvailable)
@@ -86,6 +88,8 @@ data class LlmAgentCapabilitySnapshot(
         routeFingerprint = routeFingerprint,
         verifiedAtEpochMs = payload.optLong("verifiedAtEpochMs")
           .takeIf { value -> value > 0L },
+        contextWindowTokens = payload.optInt("contextWindowTokens")
+          .takeIf { value -> value > 0 },
         visionInputSupported = payload.optBoolean("visionInputSupported", false),
         pdfInputSupported = payload.optBoolean("pdfInputSupported", false),
         nativeToolCallingAvailable = payload.optBoolean("nativeToolCallingAvailable", false),
@@ -113,6 +117,9 @@ internal fun llmRouteFingerprint(
 }
 
 internal fun LlmAgentCapabilitySnapshot.runtimeMetadataOverrides(): Map<String, String> = buildMap {
+  contextWindowTokens?.let { resolvedContextWindowTokens ->
+    put("context_window_tokens", resolvedContextWindowTokens.toString())
+  }
   if (wasVerified) {
     put("visionInputSupported", visionInputSupported.toString())
     put("pdfInputSupported", pdfInputSupported.toString())

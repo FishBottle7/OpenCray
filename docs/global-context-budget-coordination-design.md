@@ -1,6 +1,6 @@
 # Global Context Budget Coordination Design
 
-Last updated: 2026-03-27
+Last updated: 2026-04-03
 
 ## Status
 
@@ -279,6 +279,25 @@ Inputs:
 - reserved output tokens
 - tool-protocol overhead
 - safety margin
+
+### Model window metadata source
+
+OpenCray should currently resolve `context_window_tokens` from a host-owned static model table, not by programmatically querying provider APIs at runtime.
+
+The intended precedence is:
+
+1. explicit/manual override
+2. static exact-model table
+3. static family fallback rules
+4. conservative global default
+
+Current implementation direction:
+
+- keep the static table in app-owned capability resolution code so it can be updated intentionally
+- treat the model name or model-family prefix as the primary vendor signal for capability lookup; `baseUrl` or selected provider id are only secondary hints because third-party routes may proxy OpenAI, Anthropic, Gemini, or DeepSeek models
+- persist verified or manually overridden `contextWindowTokens` in the capability cache so later runs do not need to rediscover it
+- use `128K` as the conservative global fallback when no explicit or static match exists
+- do not inject static `max_output_tokens` through this same path yet, because route metadata is also consumed by provider request assembly and a premature output-limit default would change request behavior
 - route-specific continuation capabilities
 
 The result should be:
@@ -482,6 +501,42 @@ This hybrid gives OpenCray the best chance of getting:
 
 - OpenClaw-like preference sensitivity
 - plus stronger Codex-like long-task continuity
+
+### Codex reference checkpoint from source
+
+Local Codex source inspection now makes the following behavior clear.
+
+Codex does not primarily switch between several unrelated "compression modes" when the model context window changes.
+
+Instead, it keeps one compact-and-replace history mechanism and changes when that mechanism triggers, plus how much auxiliary payload can fit, based on model-window-derived thresholds.
+
+Observed code-backed rules:
+
+- model-visible effective context window is derived as:
+  - `context_window * effective_context_window_percent / 100`
+  - current default effective percent is `95`
+- automatic compaction uses a separate threshold:
+  - default `auto_compact_token_limit = 90% of context_window`
+  - if configured manually, Codex still clamps it to at most `90% of context_window`
+- compaction can happen in multiple places:
+  - before a new turn when accumulated token usage is already over the auto-compact threshold
+  - mid-turn when token usage crosses the threshold and the run still needs follow-up
+  - when switching from a larger-window model to a smaller-window model and the existing thread now exceeds the new compact threshold
+- remote compaction trims Codex-generated trailing function-call history first when the compaction request itself would exceed the effective window
+- some side-channel truncation budgets also scale from the effective window rather than using one fixed constant
+
+Important pruning boundary:
+
+- Codex does have deterministic trimming, but it behaves like a narrow guardrail around compaction and side payloads
+- it does not use local pruning as a broad "rewrite long replay, collapse duplicate background, and summarize tool output early" policy
+- OpenCray should follow that boundary and avoid making prompt-local pruning more aggressive than Codex while it keeps its typed-layer budget architecture
+
+The practical implication is:
+
+- larger context windows in Codex mostly delay compaction pressure and enlarge some bounded inputs
+- smaller context windows trigger the same compaction path earlier and force more aggressive trimming around that path
+
+This is similar to the direction OpenCray should take for context-budget presets and source-cap coupling, but it is not the same as replacing OpenCray's typed layer model with one global history summary.
 
 ## Required runtime outputs
 

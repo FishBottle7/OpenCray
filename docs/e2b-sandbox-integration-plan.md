@@ -1,6 +1,6 @@
 # OpenCray 沙盒能力接入计划
 
-Last updated: 2026-03-31
+Last updated: 2026-04-04
 
 ## 当前实现状态
 
@@ -86,6 +86,15 @@ Last updated: 2026-03-31
   - 显式 `local` 只走本地 `CommandExecutor`
   - 显式 `sandbox` 只走 E2B
   - 当前 E2B 前台命令优先走 provider-native envd 最小协议；前提不满足或 native 尝试失败时，才回退到 E2B `python_wrapper`
+  - 当前 native foreground command 已补齐 provider handle telemetry，对齐后台命令的最小 provider-native 句柄语义
+    - `Start` 请求现在会带稳定 `tag`
+    - metadata 会写出：
+      - `sandboxCommandProviderHandleKind=envd_process`
+      - `sandboxCommandProviderStableSelectorKind=tag`
+      - `sandboxCommandProviderStableSelectorValue`
+      - `sandboxCommandProviderLiveSelectorKind`
+      - `sandboxCommandProviderLiveSelectorValue`
+    - 当前 foreground 仍只返回一次性执行结果，不具备 managed process 的 reconnect / host observation cursor 语义
   - wrapper fallback 仍会把本地 `workingDirectory` 映射到远端 workspace 路径，避免把宿主机绝对路径错误带进云端 subprocess
 - 已把命令型 `ProcessStart` 接入本地 / E2B 双后端路由
   - `ProcessStart(script_path=...)` 继续复用已经接好的 `python_exec` runtime 路由
@@ -93,6 +102,64 @@ Last updated: 2026-03-31
   - `ProcessTerminate` 在云端 native 路径下已接到 provider-native `process.Process/SendSignal`
   - durable restore 场景下，`FileBackedAgentProcessRegistry` 现在会先尝试通过 provider-native `process.Process/Connect` 重挂运行中的后台命令，再决定是否标记为 interrupted
   - `ProcessRead/Wait/Terminate` 继续复用现有 registry/tool surface，不改工具名与参数；当前云端 native 路径仍是 `host_managed_snapshot` 观察模式，还没有 cursor/backfill 语义
+  - 当前 `ProcessRead/Wait` 已补齐一层 host-managed incremental delivery
+    - 同一个 chat session 内，重复调用 `ProcessRead/Wait` 时会消费 `sandboxCommandObservationCursor`
+    - `AppAgentSessionTaskRuntimeFactory` 现在会按 session 共享 observation tracker，所以跨新的 task / turn / runtime facade 仍能延续上一次已交付边界
+    - session 被 runtime manager release / idle release 时，这层 session-scoped tracker 也会一起回收，不会无限滞留在宿主内存里
+    - 如果 cursor 正常前进，tool 结果只返回自上次已交付边界之后新增的 stdout/stderr
+    - 如果当前 session 里还没有上一次已交付边界，但 durable reconnect snapshot 带回了：
+      - `sandboxCommandReconnectSeedObservationCursor`
+      - `sandboxCommandReconnectSeededStdoutBytes`
+      - `sandboxCommandReconnectSeededStderrBytes`
+      - 那么首个 `ProcessRead/Wait` 现在会直接把这组 reconnect seed 当成宿主侧 observation baseline
+      - 这能让 durable restore 后的第一次续读尽量返回 `delta` / `no_change`，而不是默认把 seed 之前已经见过的输出整段重放一遍
+    - 当前 metadata / 正文会额外写出：
+      - `sandboxCommandObservationDeliveryMode`
+      - `sandboxCommandObservationCursorBefore`
+      - `sandboxCommandObservationCursorAfter`
+      - `sandboxCommandObservationStdoutDeltaBytes`
+      - `sandboxCommandObservationStderrDeltaBytes`
+    - 如果宿主 observation cursor 回退或无法和当前输出字节边界对齐，当前会回退成 full snapshot delivery，并显式写 warning
+    - 这层仍然不是 provider-native log cursor
+    - 当前已经不只依赖 reconnect seed：
+      - reconnect seed 仍会以 `reconnectState.seed` 的 typed durable state 持久化下来
+      - `ProcessRead/Wait` 成功交付后，还会把最近一次已交付的 host observation boundary 持久化到 `deliveredObservationState`
+      - 当 session observation tracker 缺失时，会先用 `deliveredObservationState`，再回退到 reconnect seed
+    - 但这仍然不是 provider-native cursor resume / backfill；当前 durable state 虽然已经顺带保留 provider delivered boundary，但实际恢复逻辑仍以宿主侧已交付边界为主，没有把 session observation tracker 完整升级成 provider-native cursor
+  - 当前 native managed controller 已补齐一层 provider handle scaffold，用来稳定表达 OpenCray `processId` 与 envd selector 的映射
+    - `sandboxCommandProviderHandleKind=envd_process`
+    - `sandboxCommandProviderStableSelectorKind=tag`
+    - `sandboxCommandProviderStableSelectorValue`
+    - `sandboxCommandProviderLiveSelectorKind`
+    - `sandboxCommandProviderLiveSelectorValue`
+    - `sandboxCommandIdKind=tag`
+    - `sandboxCommandId`
+      - 当前在 envd native backend 下，等同于 stable tag selector
+    - reconnect 时还会额外写出：
+      - `sandboxCommandReconnectSelectorKind`
+      - `sandboxCommandReconnectSelectorValue`
+      - `sandboxCommandReconnectSelectorSource`
+        - 当前最小值为 `snapshot_pid` 或 `stable_tag`
+    - terminate 时还会额外写出：
+      - `sandboxCommandTerminateSelectorKind`
+      - `sandboxCommandTerminateSelectorValue`
+  - 当前 native managed controller 已补齐一层 host observation cursor scaffold，用来稳定标识宿主侧观察边界
+    - `sandboxCommandHandleIdKind=tag`
+    - `sandboxCommandHandleId`
+    - `sandboxCommandHandleTag`
+    - `sandboxCommandObservationEventCount`
+    - `sandboxCommandObservationCursor`
+      - 当前值形如 `host_seq_<n>`
+    - `sandboxCommandObservationStdoutBytes`
+    - `sandboxCommandObservationStderrBytes`
+    - 这层游标只表达“宿主累计观察到了哪里”，不是 provider-native log cursor
+  - 当前 native managed controller 也已补齐一层 provider observation scaffold，用来显式表达“provider event stream 看到哪里了”
+    - `sandboxCommandProviderObservationMode=provider_event_stream_host_buffered`
+    - `sandboxCommandProviderObservationEventCount`
+    - `sandboxCommandProviderObservationCursor`
+      - 当前值形如 `envd_seq_<n>`
+    - `sandboxCommandProviderObservationBackfillSupported=false`
+    - 当前这层仍然只是 provider event boundary 的宿主镜像，不是 provider 官方日志 cursor，也不具备 backfill
   - reconnect 路径现在会额外把恢复边界写进 metadata：
     - `sandboxCommandReconnectResumeMode=seed_snapshot_then_live_attach`
     - `sandboxCommandReconnectBackfillSupported=false`
@@ -111,8 +178,30 @@ Last updated: 2026-03-31
     - `sandboxCommandReconnectLastEventAtEpochMs`
     - `sandboxCommandReconnectLastEventKind`
     - `sandboxCommandReconnectLastFailureAtEpochMs`
+    - `sandboxCommandReconnectSeedObservationCursor`
+    - `sandboxCommandReconnectSeedProviderObservationCursor`
+    - `sandboxCommandReconnectSeedEventCount`
+    - `sandboxCommandReconnectSeedProviderObservationEventCount`
     - `sandboxCommandReconnectSeededStdoutBytes`
     - `sandboxCommandReconnectSeededStderrBytes`
+  - 已把 native managed process 的 durable snapshot 模型补到 typed remote state 第一版
+    - `ManagedProcessSnapshot` 仍是统一持久化载体，不额外拆出 provider 专用 record
+    - 当前已新增结构化字段：
+      - `remoteHandle`
+      - `observationState`
+      - `reconnectState`
+      - `deliveredObservationState`
+    - `FileBackedAgentProcessRegistry` 在加载旧的 metadata-only snapshot 时，会先做 normalize，把上述 typed fields 从历史 metadata 自动补齐
+    - E2B native managed controller 在运行中写回 snapshot 时，已经会同时持久化 typed fields 与兼容 metadata 投影
+    - durable reconnect、`ProcessRead`、`ProcessWait` 当前会优先读取 typed state；metadata 继续保留，作为兼容老快照和现有 tool result surface 的投影层
+    - `ProcessRead/Wait` 现在会把“本次已经成功交付到哪里的 host observation 边界”写回 `deliveredObservationState`
+    - 当 session-scoped observation tracker 丢失时，首个 `ProcessRead/Wait` 现在会先尝试使用这组 durable delivered observation state，再回退到 reconnect seed
+    - 这组 `deliveredObservationState` 现在还会顺带持久化最近一次已交付时对应的 provider observation boundary
+      - `providerMode`
+      - `providerCursor`
+      - `providerEventCount`
+    - 当前这组 provider delivered boundary 还没有直接驱动 provider-native cursor resume；它的作用是先把 durable model 建稳，给下一步 provider-native log cursor / backfill 留出兼容位
+    - `remoteHandle.sessionId` 已预留，但 E2B provider 当前仍没有稳定返回独立 `providerSessionId`，因此现阶段保持 nullable，不伪造值
 - 已补齐未来 sandbox-native tools 的模型可见性规则
   - 约定所有沙盒原生能力工具统一使用 `sandbox_` 前缀
   - 本地模式下不向模型暴露 `sandbox_*` tool definitions
@@ -182,11 +271,17 @@ Last updated: 2026-03-31
 - `.opencray`、`.git`、`node_modules`、`venv`、`__pycache__` 等内部或缓存目录不会参与回传下载
 - `command_exec` 在 E2B 下当前已优先走 envd provider-native command API
   - 当前最小协议已覆盖 `process.Process/Start`
+  - 前台 `Start` 当前也会显式带 `tag`，并在 metadata 里稳定表达 `tag -> pid` 的 live selector 演进
   - native 前台路径失败时，仍会安全回退到 E2B `python_wrapper`
 - E2B 下的命令型 `ProcessStart` 当前也已优先走 provider-native managed command controller
   - 当前最小协议已覆盖 `process.Process/Start`、`process.Process/SendSignal`、durable restore 后的 `process.Process/Connect`
   - 宿主机仍持有本地 managed controller 线程，负责把 provider stream 聚合成现有 `ManagedProcessSnapshot`
-  - 当前限制是 `ProcessRead/Wait` 看到的仍是宿主快照，而不是 provider cursor；还没有日志 backfill / cursor resume 语义
+  - `ManagedProcessSnapshot` 当前仍是统一 durable surface，但已经开始结构化承载远端状态第一版：
+    - `remoteHandle`
+    - `observationState`
+    - `reconnectState`
+  - 旧的 metadata-only durable snapshot 会在 registry normalize 时自动补齐 typed fields
+  - 当前限制是 `ProcessRead/Wait` 看到的仍是宿主快照，而不是 provider cursor；虽然已经补齐 host-managed 增量交付，且 reconnect seed 已能通过 typed durable state 持久化，但还没有 provider-native 日志 backfill / cursor resume 语义
 
 当前仍未完成的部分：
 
@@ -200,6 +295,10 @@ Last updated: 2026-03-31
   - 已支持 foreground/background start、background terminate、durable reconnect live reattach
   - 还没有做通用 Connect RPC 客户端栈
   - 还没有做 provider-native 日志 cursor、backfill、增量续读
+  - 当前仅有基于 `host_managed_snapshot` 的增量交付层，不是 provider-native log cursor
+  - 当前虽然已经补了 `sandboxCommandId`，`ManagedProcessSnapshot.remoteHandle` 里也已经预留 `sessionId`
+    - 但 E2B provider 协议当前仍没有稳定给出独立 `providerSessionId`
+    - 现阶段主要还是靠 `sandboxId + sandboxCommandId(tag)` 锚定远端命令
 - preview/session lifecycle 的后续深化项仍未完成，但“最近一次 preview 生命周期写回 + tool/UI 暴露 + 宿主内嵌渲染”第一版已经落地
   - Chat 主流和 `Run inspector` 现在都会在显式云端模式下渲染内嵌 preview surface
   - embed config 由 host bridge 按当前 workspace 的活动/持久化 E2B session 即时解析
@@ -764,6 +863,10 @@ V2：
 - `ProcessRead/Wait` 当前读到的仍是宿主聚合后的 `ManagedProcessSnapshot`，不是 provider cursor
 - stdout/stderr 还没有 provider 级 cursor / backfill / resume 能力
 - 当前 native backend 的 `sandboxCommandSupportsStreamingLogs` 仍是 `false`
+- 为了避免把这项 `false` 误读成“完全没有 live 观察能力”，当前还额外暴露：
+  - `sandboxCommandSupportsManagedProcessLiveObservation=true`
+  - `sandboxCommandSupportsManagedProcessObservationCursorResume=false`
+  - `sandboxCommandSupportsManagedProcessObservationBackfill=false`
 - 因此后续做更细粒度日志续读时，语义仍然不如完整 provider-native process handle 稳定
 
 因此，文档里说的 “provider 原生命令 API” 指的是：
@@ -839,6 +942,9 @@ V2：
   - `terminateBackground(...)`
   - `supportsStreamingLogs`
   - `supportsReconnect`
+  - `supportsManagedProcessLiveObservation`
+  - `supportsManagedProcessObservationCursorResume`
+  - `supportsManagedProcessObservationBackfill`
 
 E2B 的第一步已落地：
 
@@ -881,7 +987,21 @@ E2B 的第一步已落地：
 - `AgentProcessRegistry` 在恢复 `RUNNING` snapshot 时，会优先通过 reconnectable backend 尝试 live reconnect
 - 路由层和 selection decorator 会在 reconnect 时继续保持 backend 选择与 metadata
 
-但 `AgentProcessRegistry` 现在持久化的仍然是现有 `ManagedProcessSnapshot`，而不是带 cursor 的 provider handle。
+但 `AgentProcessRegistry` 当前仍以现有 `ManagedProcessSnapshot` 作为统一 durable surface，而不是额外拆出 provider handle record。
+
+这层 snapshot 已经开始结构化承载远端状态第一版：
+
+- `remoteHandle`
+- `observationState`
+- `reconnectState`
+
+旧的 metadata-only durable snapshot 会在 registry normalize 时自动补齐这些 typed fields。
+
+当前剩余缺口已经不再是“有没有 provider handle 落盘”，而是：
+
+- provider-native log cursor / backfill / resume
+- provider 实际返回的独立 `sessionId`
+- 更细粒度的 durable observation tracker
 
 这样 `ProcessRead/Wait/Terminate` 才能真正变成：
 
@@ -1505,11 +1625,21 @@ E2B 场景下建议支持两种模式：
       - `ProcessTerminate` 已经接到 provider-native `process.Process/SendSignal`
       - durable restore 后，native background command 现在会优先尝试通过 envd `process.Process/Connect` 重新挂回 live stream
       - `ProcessRead/Wait` 当前仍读取宿主本地 managed controller 的累积快照，不具备 provider-native cursor / backfill 语义
+      - 但在同一个 chat session 内，`ProcessRead/Wait` 现在会基于 `sandbox_command_observation_cursor` 做 host-managed 增量交付，避免同一段 stdout/stderr 在跨 task / turn 的连续读取里反复整段回放
       - 为了避免这层边界在 agent 侧变成“黑箱”，`ProcessRead/Wait` 当前正文与 working-state 摘要也会显式外显：
         - `runtime_backend`
         - `runtime_transport`
         - `sandbox_backend_resolved_kind`
         - `sandbox_observation_mode=host_managed_snapshot`
+        - `sandbox_command_provider_observation_mode`
+        - `sandbox_command_provider_observation_event_count`
+        - `sandbox_command_provider_observation_cursor`
+        - `sandbox_command_provider_observation_backfill_supported`
+        - `sandbox_command_observation_delivery_mode`
+        - `sandbox_command_observation_cursor_before`
+        - `sandbox_command_observation_cursor_after`
+        - `sandbox_command_observation_stdout_delta_bytes`
+        - `sandbox_command_observation_stderr_delta_bytes`
         - `sandbox_supports_reconnect`
         - `sandbox_command_reconnect_api`
         - `sandbox_command_reconnect_status`
@@ -1527,14 +1657,40 @@ E2B 场景下建议支持两种模式：
         - `sandbox_command_reconnect_last_event_kind`
         - `sandbox_command_reconnect_last_failure_at_epoch_ms`
         - `sandbox_command_reconnect_failure_stage`
+        - `sandbox_command_reconnect_seed_source`
+        - `sandbox_command_reconnect_provider_observation_seed_consumed`
+        - `sandbox_command_reconnect_provider_observation_seed_state`
+        - `sandbox_command_reconnect_provider_observation_seed_consumed_at_epoch_ms`
       - 当 `sandbox_command_reconnect_output_gap_risk=true` 时，正文还会追加一条 observation warning，明确说明当前是“从持久化快照补种输出后再挂 live stream”，attach 前可能存在日志缺口
+        - 如果 `sandbox_command_reconnect_provider_observation_seed_state=pending_live_attach`，warning 会改成“已经恢复持久化 seed，但还在等待 live attach”，避免误读成已经重新挂上 live stream
+        - 如果 `sandbox_command_reconnect_provider_observation_seed_state=consumed_live_attach`，warning 才表示“已经从 seed 进入 live attach，但 attach 前日志可能缺失”
       - 当 reconnect 因 transport 类问题失败且 provider 仍未给出终态时，当前不会立刻把进程判死；而是保留 `status=running` 并写出 `sandbox_command_reconnect_retryable=true`
+        - 如果这次失败发生在 live attach 之前，warning 会明确说明“当前输出仍只反映持久化 host snapshot seed，后续 read/wait 还会重试 attach”
       - 当 reconnect 成功重新挂回 live stream 时，当前会额外记录 `sandbox_command_reconnect_last_attached_at_epoch_ms` 与最近一次 provider 事件的时间/类型，便于后续 UI 和恢复判断
+      - reconnect 现在会把 durable snapshot 上的 host/provider observation 边界当成正式 restore seed，并显式写出：
+        - `sandbox_command_reconnect_seed_source=durable_snapshot_metadata`
+        - `sandbox_command_reconnect_provider_observation_seed_consumed`
+        - `sandbox_command_reconnect_provider_observation_seed_state`
+        - `sandbox_command_reconnect_provider_observation_seed_consumed_at_epoch_ms`
+      - 如果新的 session-scoped observation tracker 还没有 previous boundary，而 snapshot 已经带了上述 durable reconnect seed：
+        - 首个 `ProcessRead/Wait` 现在会直接拿 `sandbox_command_reconnect_seed_observation_cursor`、`sandbox_command_reconnect_seeded_stdout_bytes`、`sandbox_command_reconnect_seeded_stderr_bytes` 当 baseline
+        - 因此恢复后的第一次 read/wait 会优先返回 `delta` / `no_change`
+        - 只有当当前 host snapshot 相对 seed 发生回退，或 seed byte offset 无法和 UTF-8 输出边界对齐时，才会回退成 `reset_full`
+      - 其中 `sandbox_command_reconnect_provider_observation_seed_state` 当前约定为：
+        - `pending_live_attach`
+          - 已经从 durable snapshot 补种了 seed，但本次 envd `Connect` 还没收到能证明 live attach 的 provider 事件
+        - `consumed_live_attach`
+          - 本次 envd `Connect` 已收到第一个非 end-stream 的 provider 事件，seed 已被 live attach 正式消费
+        - `retry_scheduled_before_live_attach`
+          - 本次 reconnect 还没 attach 成功就发生可重试失败；达到 backoff 后下一次 `ProcessRead/Wait` 会再试
+        - `failed_terminal_before_live_attach`
+          - 本次 reconnect 在 attach 前就失败为终态，不再继续重试
+      - 当 `sandbox_command_reconnect_recovery_state=failed_terminal` 时，正文还会追加一条 warning，明确当前 live attach 没有成功建立，输出可能只反映持久化 host snapshot
       - 为了避免上层每次都自己拼 `status/retryable/lastAttached`，当前还会额外聚合 `sandbox_command_reconnect_recovery_state`
         - `connecting`
           - durable restore 刚发起 envd `Connect`，还没拿到可证明 live attach 的 provider 事件
         - `attached_live`
-          - 已经重新挂回 live stream，当前仍处于运行态
+          - 已经收到第一个可证明 live attach 的 provider 事件并重新挂回 live stream，当前仍处于运行态
         - `retry_scheduled`
           - 这次 reconnect 没拿到终态，但被判定为可重试；达到 backoff 后下一次 `ProcessRead/Wait` 会再试一次
         - `completed`
@@ -1542,12 +1698,17 @@ E2B 场景下建议支持两种模式：
         - `failed_terminal`
           - reconnect 在拿到 live attach 前就终止失败，不会再继续重试
       - 这类 snapshot 在达到 `sandbox_command_reconnect_retry_after_epoch_ms` 后，下一次 `ProcessRead/Wait` 会再次尝试 envd `Connect`
-      - 因此当前“云端原生命令 API”已经覆盖前台命令和后台命令的 start/kill，但还没有覆盖完整的后台日志重连协议
+      - 因此当前“云端原生命令 API”已经覆盖前台命令和后台命令的 start/kill，并补上了宿主侧增量读取；但还没有覆盖完整的 provider-native 后台日志重连协议
     - 当前后台进程这一步的真实边界是：
       - `ProcessStart` 会给 envd `StartRequest` 写入稳定 tag，当前直接复用 OpenCray 的 `processId`
       - 宿主本地仍持有一个 managed controller 线程，负责消费 envd stream 并把 stdout/stderr 聚合成现有 `ManagedProcessSnapshot`
       - `ProcessTerminate` 通过 envd `SendSignal(SIGKILL)` 按 tag 发送 kill signal
       - durable restore 时，`FileBackedAgentProcessRegistry` 会先按持久化 snapshot 上的 `executionBackend` 把 reconnect 路由回 sandbox/local/python 对应工厂；在 E2B native 路径下再继续使用 envd `Connect`
+      - `ManagedProcessSnapshot` 的 durable 载体仍沿用统一 snapshot，但现在已经会写入 typed remote state：
+        - `remoteHandle`
+        - `observationState`
+        - `reconnectState`
+      - 旧的 metadata-only snapshot 在 restore 时会被 normalize 到同一结构，减少 reconnect 对 metadata key 的硬依赖
       - 如果 native 背景路径在启动前发现 session / `remoteWorkspaceRoot` / `envdAccessToken` 不满足条件，当前仍只回退到 E2B wrapper，不会回到本地
   - 已补齐云端命令 backend 抽象第一版
     - 当前新增 `SandboxCommandExecutionBackend`
@@ -1560,6 +1721,9 @@ E2B 场景下建议支持两种模式：
       - `sandboxCommandProviderNative`
       - `sandboxCommandSupportsStreamingLogs`
       - `sandboxCommandSupportsReconnect`
+      - `sandboxCommandSupportsManagedProcessLiveObservation`
+      - `sandboxCommandSupportsManagedProcessObservationCursorResume`
+      - `sandboxCommandSupportsManagedProcessObservationBackfill`
     - 已补齐 provider-native 优先 / wrapper fallback 的选择层
       - 当前会额外暴露：
         - `sandboxCommandBackendRequestedKind`
@@ -1578,7 +1742,18 @@ E2B 场景下建议支持两种模式：
   - 当前仓库里仍没有通用、可复用的 `connectrpc` / `grpc` / `protobuf` 客户端栈；现阶段用的是 E2B envd 的手写最小协议
   - 当前虽然已经能在 durable restore 后 live reattach，但还没有 provider-native 日志 cursor / backfill / resume 语义
   - `ProcessRead/Wait` 仍是 host-managed snapshot，而不是直接读取 provider 原生 cursor
+  - durable restore 后的首个 `ProcessRead/Wait` 现在虽然能借助持久化 reconnect seed 做宿主侧 baseline，但这仍然不是 provider cursor resume，只是减少整段重放
+  - `ManagedProcessSnapshot.remoteHandle.sessionId` 虽已建模，但 provider 协议目前仍未稳定返回独立 `providerSessionId`
   - `sandboxCommandSupportsStreamingLogs` 对当前 native backend 仍是 `false`
+  - 当前这几个 capability 的语义已拆开：
+    - `sandboxCommandSupportsStreamingLogs=false`
+      - 表示还没有稳定的 provider-native 日志 cursor/backfill/resume 能力
+    - `sandboxCommandSupportsManagedProcessLiveObservation=true`
+      - 表示 native backend 已支持 provider event stream 到 host-managed snapshot 的 live attach / live consume
+    - `sandboxCommandSupportsManagedProcessObservationCursorResume=false`
+      - 表示还没有 provider-native cursor resume
+    - `sandboxCommandSupportsManagedProcessObservationBackfill=false`
+      - 表示还没有 provider-native backfill
   - 远端后台进程更细粒度的状态恢复与断点续读仍未完成
 
 ### 目标
@@ -1601,7 +1776,7 @@ E2B 场景下建议支持两种模式：
 - provider 输出统一成现有 `ExecutionResult` / process snapshot 模型
 - 保持 `command_exec` / `Process*` 的 tool surface 不变，只替换云端 backend 的最后一跳
 - foreground command 已从 `python-backed wrapper` 升级为 provider-native command execution 优先模式
-- background command 已接入 provider-native start / terminate / durable reconnect 最小路径，下一步再升级为 provider-native process handle + cursor-based log reading
+- background command 已接入 provider-native start / terminate / durable reconnect 最小路径，并已补齐 provider handle / selector telemetry、host-managed observation cursor scaffold、provider observation scaffold，以及 durable seed consumed / before-live-attach recovery contract；下一步再升级为 provider-native cursor-based log reading / backfill
 
 ### 推荐实施拆解
 
@@ -1612,8 +1787,24 @@ E2B 场景下建议支持两种模式：
    - 当前状态：已完成最小版
    - 目标：让 `ProcessStart/Terminate` 和 durable restore reconnect 基于 provider 原生命令句柄工作
 3. 扩展 `AgentProcessRegistry`
-   - 当前状态：部分完成
-   - 目标：从“恢复时可 reconnect”继续推进到持久化 `sandboxId/sessionId/commandId/log cursor`
+   - 当前状态：已完成 typed durable model 第一版，剩余 provider-native cursor / backfill 深化
+   - 已完成：
+     - durable restore 后按 provider-native `Connect` 重挂运行中命令
+     - `ProcessRead/Wait` 外显 reconnect recovery state
+     - provider handle / reconnect selector scaffold
+     - host-managed observation cursor scaffold
+     - provider observation scaffold
+     - `ManagedProcessSnapshot` 已新增：
+        - `remoteHandle`
+        - `observationState`
+        - `reconnectState`
+        - `deliveredObservationState`
+     - 旧 metadata-only snapshot load 时会自动 normalize 成 typed state
+     - E2B native managed controller 已把 typed state 真正写回 durable snapshot
+     - `ProcessRead/Wait` 与 reconnect 路径当前优先读 typed state，metadata 继续保留兼容投影
+     - `ProcessRead/Wait` 成功交付后会把最近一次已交付的 host observation boundary durable 写回，session tracker 丢失时会先用这组状态恢复增量边界
+     - `deliveredObservationState` 现在也会顺带保留 provider observation boundary，为后续 provider-native cursor resume / backfill 建模预留 durable 字段
+   - 目标：从“typed durable state 已接上”继续推进到 provider-native `sessionId`、provider log cursor / backfill / resume，以及更细粒度的 durable observation tracker
 4. 加入 capability gating
    - 当前状态：已完成第一版
    - 目标：继续细化 foreground/background 是否允许 wrapper fallback
@@ -1802,7 +1993,7 @@ E2B 场景下建议支持两种模式：
 
 ### 当前验证状态与阻塞
 
-截至 2026-03-31，本阶段代码验证的真实状态是：
+截至 2026-04-04，本阶段代码验证的真实状态是：
 
 - 已完成：
   - `:app:compileDebugKotlin` 通过
@@ -1810,6 +2001,8 @@ E2B 场景下建议支持两种模式：
   - `:app:testDebugUnitTest --tests "com.opencray.app.E2BSandboxPreviewServiceTest"` 通过
   - `:app:testDebugUnitTest --tests "com.opencray.app.E2BSandboxPreviewEmbedConfigServiceTest" --tests "com.opencray.app.OpenCrayFlutterHostBridgeTest" --tests "com.opencray.app.OpenCrayLocalRuntimeServerTest"` 通过
   - `:runtime:testDebugUnitTest --tests "com.opencray.runtime.SandboxSessionInfoToolTest"` 通过
+  - `:runtime:testDebugUnitTest --tests "com.opencray.runtime.process.FileBackedAgentProcessRegistryTest" --tests "com.opencray.runtime.AgentManagedProcessToolTest"` 通过
+  - `:app:testDebugUnitTest --tests "com.opencray.app.E2BEnvdNativeCommandExecutionTest"` 通过
   - `dart analyze flutter_app` 通过
   - Flutter 定向 widget tests 通过：
     - `cloud mode shows sandbox preview card on the run trace`
@@ -1829,15 +2022,30 @@ E2B 场景下建议支持两种模式：
   - `E2BSandboxPreviewEmbedConfigServiceTest`
   - `OpenCrayFlutterHostBridgeTest`
   - `OpenCrayLocalRuntimeServerTest`
+  - `E2BEnvdNativeCommandExecutionTest`
   - 其中已覆盖：
     - preview probe 观测时间 / source 持久化
     - session info 自动探活
     - stale / reclaimed lifecycle 判定
     - preview embed config 的 workspace/session 匹配与 token header 解析
     - host bridge / loopback runtime 的 preview embed config 暴露链路
+- `runtime` / process 侧本次新增或更新的单测已经补齐：
+  - `FileBackedAgentProcessRegistryTest`
+  - `AgentManagedProcessToolTest`
+  - 其中已覆盖：
+    - metadata-only remote snapshot 在 load 时自动 normalize 成 typed remote state
+    - metadata 稀疏时，durable reconnect 仍可通过 typed reconnect seed 建立首个 `ProcessRead` baseline
+    - metadata 稀疏且 session tracker 为空时，durable delivered observation state 可以直接恢复首个 `ProcessRead` 的增量边界
+    - `ProcessRead` 成功交付后，会把最新 host observation boundary 写回 registry，供后续 durable restore 使用
+    - file-backed registry 在 live snapshot refresh 之后仍会保留并回放这组 delivered observation state
+    - 这组 delivered observation state 现在还会一起持久化 provider observation boundary，并覆盖对应的 file-backed restore / projection 断言
+    - retryable reconnect 在 durable normalize / persistence 收敛路径下，验证重点改为最终状态和 attempt metadata 自洽，而不是固定内部重连次数
+- `app` 侧 native managed command 本轮还额外覆盖了：
+  - start happy path 会把 typed remote state 写回 `ManagedProcessSnapshot`
+  - reconnect 在 metadata 稀疏时，会优先读取 typed state，而不是强依赖旧 metadata key
 - 仍需注意：
   - 当前 Windows 环境下，直接使用默认 `app/build` 路径跑 Android/Gradle 任务时，仍可能撞上中间产物文件锁
-  - 本轮验收通过的方式，是把 Gradle build 输出切到独立目录后串行执行
+  - 本轮验收通过的方式，是显式设置 `GRADLE_USER_HOME=.gradle-user` 与 `ANDROID_USER_HOME=.android-user`，并把 Gradle build 输出切到独立目录后串行执行
   - Android/Gradle 在当前环境里仍会打印 `C:\\Users\\CodexSandboxOffline\\.android\\analytics.settings` 的 metrics 初始化警告，但本轮测试表明这条警告不阻塞用例通过
   - `flutter test test/chat_feature_screen_test.dart` 整包在当前环境下仍然偏慢，因此本轮只对直接受影响的 widget cases 做了定向回归
 

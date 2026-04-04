@@ -1555,6 +1555,20 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     'high',
     'xhigh',
   ];
+  static const List<String> _openAiPromptCacheKeyStrategyOptions = <String>[
+    'none',
+    'route',
+    'session',
+  ];
+  static const List<String> _openAiPromptCacheRetentionOptions = <String>[
+    '',
+    'in_memory',
+    '24h',
+  ];
+  static const List<String> _anthropicPromptCacheTtlOptions = <String>[
+    '5m',
+    '1h',
+  ];
 
   final TextEditingController _providerNameController = TextEditingController();
   final TextEditingController _providerNotesController =
@@ -1575,6 +1589,10 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
   String _providerId = 'custom';
   String _protocol = 'openai';
   String _reasoningEffort = 'medium';
+  String _openAiPromptCacheKeyStrategy = 'none';
+  String _openAiPromptCacheRetention = '';
+  bool _anthropicPromptCachingEnabled = false;
+  String _anthropicPromptCacheTtl = '5m';
   bool _isApplyingSnapshot = false;
   bool _isSavingDraft = false;
   bool _isSavingCustomProvider = false;
@@ -1748,6 +1766,66 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                Text(
+                  copy.llmPromptCacheTitle,
+                  style: _SettingsTextStyles.cardTitle,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _showsAnthropicPromptCacheControls(selectedProtocol)
+                      ? copy.llmPromptCacheAnthropicHelper
+                      : copy.llmPromptCacheOpenAiHelper,
+                  style: _SettingsTextStyles.body,
+                ),
+                if (_showsOpenAiPromptCacheControls(selectedProtocol)) ...[
+                  const SizedBox(height: 12),
+                  _PrototypeSelectionField(
+                    label: copy.llmOpenAiPromptCacheKeyLabel,
+                    title: _openAiPromptCacheKeyStrategyTitle(
+                      _openAiPromptCacheKeyStrategy,
+                    ),
+                    onTap: _openOpenAiPromptCacheKeyStrategySheet,
+                  ),
+                  const SizedBox(height: 12),
+                  _PrototypeSelectionField(
+                    label: copy.llmOpenAiPromptCacheRetentionLabel,
+                    title: _openAiPromptCacheRetentionTitle(
+                      _openAiPromptCacheRetention,
+                    ),
+                    onTap: _openOpenAiPromptCacheRetentionSheet,
+                  ),
+                ] else if (_showsAnthropicPromptCacheControls(
+                  selectedProtocol,
+                )) ...[
+                  const SizedBox(height: 12),
+                  _PrototypeToggleRow(
+                    rowKey: const ValueKey<String>(
+                      'settings-llm-anthropic-prompt-cache-toggle',
+                    ),
+                    title: copy.llmAnthropicPromptCachingTitle,
+                    subtitle: copy.llmAnthropicPromptCachingSubtitle,
+                    value: _anthropicPromptCachingEnabled,
+                    onChanged: _handleAnthropicPromptCachingChanged,
+                  ),
+                  if (_anthropicPromptCachingEnabled) ...[
+                    const SizedBox(height: 12),
+                    _PrototypeSelectionField(
+                      label: copy.llmAnthropicPromptCacheTtlLabel,
+                      title: _anthropicPromptCacheTtlTitle(
+                        _anthropicPromptCacheTtl,
+                      ),
+                      onTap: _openAnthropicPromptCacheTtlSheet,
+                    ),
+                  ],
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          _SettingsCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
                 Row(
                   children: [
                     Expanded(
@@ -1907,6 +1985,10 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         model: _modelController.text,
         reasoningEffort: _reasoningEffort,
         systemPrompt: _systemPromptController.text,
+        openAiPromptCacheKeyStrategy: _openAiPromptCacheKeyStrategy,
+        openAiPromptCacheRetention: _openAiPromptCacheRetention,
+        anthropicPromptCachingEnabled: _anthropicPromptCachingEnabled,
+        anthropicPromptCacheTtl: _anthropicPromptCacheTtl,
       );
       if (!mounted) {
         return;
@@ -2242,6 +2324,128 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     }
   }
 
+  Future<void> _openOpenAiPromptCacheKeyStrategySheet() async {
+    final copy = _copyForSnapshot();
+    final selected = await _openStringSelectionSheet(
+      title: copy.llmOpenAiPromptCacheKeyLabel,
+      options: _openAiPromptCacheKeyStrategyOptions,
+      selectedValue: _openAiPromptCacheKeyStrategy,
+      labelBuilder: _openAiPromptCacheKeyStrategyTitle,
+    );
+    if (selected != null && mounted) {
+      setState(() => _openAiPromptCacheKeyStrategy = selected);
+      unawaited(_saveDraft());
+    }
+  }
+
+  Future<void> _openOpenAiPromptCacheRetentionSheet() async {
+    final copy = _copyForSnapshot();
+    final selected = await _openStringSelectionSheet(
+      title: copy.llmOpenAiPromptCacheRetentionLabel,
+      options: _openAiPromptCacheRetentionOptions,
+      selectedValue: _openAiPromptCacheRetention,
+      labelBuilder: _openAiPromptCacheRetentionTitle,
+    );
+    if (selected != null && mounted) {
+      setState(() => _openAiPromptCacheRetention = selected);
+      unawaited(_saveDraft());
+    }
+  }
+
+  Future<void> _openAnthropicPromptCacheTtlSheet() async {
+    final copy = _copyForSnapshot();
+    final selected = await _openStringSelectionSheet(
+      title: copy.llmAnthropicPromptCacheTtlLabel,
+      options: _anthropicPromptCacheTtlOptions,
+      selectedValue: _anthropicPromptCacheTtl,
+      labelBuilder: _anthropicPromptCacheTtlTitle,
+    );
+    if (selected != null && mounted) {
+      setState(() => _anthropicPromptCacheTtl = selected);
+      unawaited(_saveDraft());
+    }
+  }
+
+  void _handleAnthropicPromptCachingChanged(bool value) {
+    if (!mounted) {
+      return;
+    }
+    setState(() => _anthropicPromptCachingEnabled = value);
+    unawaited(_saveDraft());
+  }
+
+  Future<String?> _openStringSelectionSheet({
+    required String title,
+    required List<String> options,
+    required String selectedValue,
+    required String Function(String value) labelBuilder,
+  }) async {
+    return showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: DecoratedBox(
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.all(Radius.circular(22)),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 18, 16, 14),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: OpenCrayColors.divider,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                    ),
+                    Text(title, style: _SettingsTextStyles.cardTitle),
+                    const SizedBox(height: 12),
+                    for (final option in options)
+                      InkWell(
+                        borderRadius: BorderRadius.circular(14),
+                        onTap: () => Navigator.of(context).pop(option),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  labelBuilder(option),
+                                  style: _SettingsTextStyles.rowTitle,
+                                ),
+                              ),
+                              if (option == selectedValue)
+                                const Icon(
+                                  Icons.check_rounded,
+                                  color: OpenCrayColors.primary,
+                                  size: 18,
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   void _registerAutosaveFocusNode(FocusNode focusNode) {
     focusNode.addListener(() {
       if (!focusNode.hasFocus && !_isSavingCustomProvider) {
@@ -2320,6 +2524,10 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     _modelController.text = snapshot.model;
     _reasoningEffort = snapshot.reasoningEffort;
     _systemPromptController.text = snapshot.systemPrompt;
+    _openAiPromptCacheKeyStrategy = snapshot.openAiPromptCacheKeyStrategy;
+    _openAiPromptCacheRetention = snapshot.openAiPromptCacheRetention;
+    _anthropicPromptCachingEnabled = snapshot.anthropicPromptCachingEnabled;
+    _anthropicPromptCacheTtl = snapshot.anthropicPromptCacheTtl;
     _isApplyingSnapshot = false;
   }
 
@@ -2337,7 +2545,12 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         _apiKeyController.text != snapshot.apiKey ||
         _modelController.text != snapshot.model ||
         _reasoningEffort != snapshot.reasoningEffort ||
-        _systemPromptController.text != snapshot.systemPrompt;
+        _systemPromptController.text != snapshot.systemPrompt ||
+        _openAiPromptCacheKeyStrategy != snapshot.openAiPromptCacheKeyStrategy ||
+        _openAiPromptCacheRetention != snapshot.openAiPromptCacheRetention ||
+        _anthropicPromptCachingEnabled !=
+            snapshot.anthropicPromptCachingEnabled ||
+        _anthropicPromptCacheTtl != snapshot.anthropicPromptCacheTtl;
   }
 
   bool _draftIsConfigured() =>
@@ -2378,6 +2591,10 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         model: _modelController.text,
         reasoningEffort: _reasoningEffort,
         systemPrompt: _systemPromptController.text,
+        openAiPromptCacheKeyStrategy: _openAiPromptCacheKeyStrategy,
+        openAiPromptCacheRetention: _openAiPromptCacheRetention,
+        anthropicPromptCachingEnabled: _anthropicPromptCachingEnabled,
+        anthropicPromptCacheTtl: _anthropicPromptCacheTtl,
       );
       if (!mounted) {
         return;
@@ -2427,6 +2644,12 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
 
   String _draftProtocolFor(LlmProviderOption provider) => _protocol;
 
+  bool _showsOpenAiPromptCacheControls(String protocol) =>
+      protocol == 'openai' || protocol == 'openai_responses';
+
+  bool _showsAnthropicPromptCacheControls(String protocol) =>
+      protocol == 'anthropic';
+
   String _protocolTitle(String protocol) {
     final copy = _copyForSnapshot();
     switch (protocol) {
@@ -2444,6 +2667,15 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
 
   String _reasoningEffortTitle(String reasoningEffort) =>
       _copyForSnapshot().llmReasoningTitle(reasoningEffort);
+
+  String _openAiPromptCacheKeyStrategyTitle(String strategy) =>
+      _copyForSnapshot().llmOpenAiPromptCacheKeyStrategyTitle(strategy);
+
+  String _openAiPromptCacheRetentionTitle(String retention) =>
+      _copyForSnapshot().llmOpenAiPromptCacheRetentionTitle(retention);
+
+  String _anthropicPromptCacheTtlTitle(String ttl) =>
+      _copyForSnapshot().llmAnthropicPromptCacheTtlTitle(ttl);
 }
 
 class _PersonalizationSettingsPage extends StatefulWidget {
@@ -3972,6 +4204,58 @@ class _PrototypeSelectionField extends StatelessWidget {
           onTap: onTap,
         ),
       ],
+    );
+  }
+}
+
+class _PrototypeToggleRow extends StatelessWidget {
+  const _PrototypeToggleRow({
+    this.rowKey,
+    required this.title,
+    this.subtitle,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final Key? rowKey;
+  final String title;
+  final String? subtitle;
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      key: rowKey,
+      borderRadius: BorderRadius.circular(12),
+      onTap: onChanged == null ? null : () => onChanged!(!value),
+      child: _PrototypeFieldSurface(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: _SettingsTextStyles.fieldValue),
+                    if (subtitle != null && subtitle!.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        subtitle!,
+                        style: _SettingsTextStyles.rowSubtitle,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              _PrototypeSwitch(value: value, onChanged: onChanged),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

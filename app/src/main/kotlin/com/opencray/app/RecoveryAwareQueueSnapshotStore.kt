@@ -358,7 +358,7 @@ internal class RecoveryAwareQueueSnapshotStore(
       }
 
     RunRecoveryAction.INTERRUPT_RECOVERY_REQUIRED ->
-      if (canInterruptQueuedRecovery(entry)) {
+      if (canInterruptRecovery(entry, recoveryPlan)) {
         entry.copy(
           lifecycleState = QueueTaskLifecycleState.FAILED,
           task = entry.task.copy(
@@ -422,8 +422,14 @@ internal class RecoveryAwareQueueSnapshotStore(
     else -> false
   }
 
-  private fun canInterruptQueuedRecovery(entry: SessionQueueTaskSnapshot): Boolean =
-    entry.lifecycleState == QueueTaskLifecycleState.QUEUED
+  private fun canInterruptRecovery(
+    entry: SessionQueueTaskSnapshot,
+    recoveryPlan: RunRecoveryPlan?,
+  ): Boolean = entry.lifecycleState == QueueTaskLifecycleState.QUEUED ||
+    (
+      recoveryPlan?.reasonCode == "uncertain_inflight_mutation" &&
+        isRestoreInterruptedLifecycle(entry.lifecycleState)
+      )
 
   private fun plannerProjection(
     entry: SessionQueueTaskSnapshot,

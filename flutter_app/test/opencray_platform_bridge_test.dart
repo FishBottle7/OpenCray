@@ -164,6 +164,10 @@ void main() {
             'model': 'claude-3-7-sonnet',
             'reasoningEffort': 'high',
             'systemPrompt': '',
+            'openAiPromptCacheKeyStrategy': 'session',
+            'openAiPromptCacheRetention': '24h',
+            'anthropicPromptCachingEnabled': true,
+            'anthropicPromptCacheTtl': '1h',
             'helperText': 'Helper text',
           };
         });
@@ -178,14 +182,26 @@ void main() {
       model: 'claude-3-7-sonnet',
       reasoningEffort: 'high',
       systemPrompt: '',
+      openAiPromptCacheKeyStrategy: 'session',
+      openAiPromptCacheRetention: '24h',
+      anthropicPromptCachingEnabled: true,
+      anthropicPromptCacheTtl: '1h',
     );
 
     expect(capturedCall.method, 'saveCustomLlmProvider');
     final arguments = capturedCall.arguments as Map<Object?, Object?>;
     expect(arguments['selectedProviderOptionId'], 'custom');
     expect(arguments['providerName'], 'Acme');
+    expect(arguments['openAiPromptCacheKeyStrategy'], 'session');
+    expect(arguments['openAiPromptCacheRetention'], '24h');
+    expect(arguments['anthropicPromptCachingEnabled'], true);
+    expect(arguments['anthropicPromptCacheTtl'], '1h');
     expect(snapshot.selectedProviderOptionId, 'saved-custom');
     expect(snapshot.providerOptions.single.providerId, 'custom');
+    expect(snapshot.openAiPromptCacheKeyStrategy, 'session');
+    expect(snapshot.openAiPromptCacheRetention, '24h');
+    expect(snapshot.anthropicPromptCachingEnabled, isTrue);
+    expect(snapshot.anthropicPromptCacheTtl, '1h');
   });
 
   test('platform bridge loads files snapshot payloads', () async {

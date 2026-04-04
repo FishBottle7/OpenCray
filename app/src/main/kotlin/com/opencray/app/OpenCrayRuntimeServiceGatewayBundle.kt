@@ -21,6 +21,7 @@ import com.opencray.app.facade.settings.SettingsFacade
 import com.opencray.app.facade.settings.SettingsRouteId
 import com.opencray.app.facade.skills.LocalSkillsFacade
 import com.opencray.app.facade.skills.SkillsFacade
+import com.opencray.app.shell.AppShellStateStore
 
 internal class OpenCrayRuntimeServiceGatewayBundle(
   val shellGateway: OpenCrayShellGateway,
@@ -53,15 +54,34 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
       runtimeServiceConnectionState: RuntimeServiceConnectionState =
         RuntimeServiceConnectionState.binderConnected(),
     ): OpenCrayRuntimeServiceGatewayBundle {
+      val chatUnreadMessageState = ChatUnreadMessageState()
+      val pendingApprovalState = ChatPendingApprovalState()
+      val runtimeEventState = ChatRuntimeEventState()
       val hostRuntime = OpenCrayHostRuntime.createForRuntimeService(
         appContext = appContext,
         serviceHost = serviceHost,
         runtimeServiceKeepAliveStateProvider = runtimeServiceKeepAliveStateProvider,
         runtimeServiceKeepAliveChangeRegistrar = runtimeServiceKeepAliveChangeRegistrar,
         runtimeServiceConnectionState = runtimeServiceConnectionState,
+        chatUnreadMessageState = chatUnreadMessageState,
+        chatPendingApprovalState = pendingApprovalState,
+        chatRuntimeEventState = runtimeEventState,
       )
       val strings = OpenCrayHostRuntime.localizedHostRuntimeStrings(
         OpenCrayLocaleManager.wrap(appContext),
+      )
+      val shellGateway = ServiceOwnedShellGateway(
+        stateStore = AppShellStateStore.fromContext(appContext),
+        localeTag = strings.localeTag,
+        hostLabel = strings.shellHostLabel,
+        hostSummary = strings.shellHostSummary,
+        runtimeHostAccess = serviceHost.runtimeAccess.hostAccess,
+        runtimeServiceLifecycle = serviceHost.serviceLifecycle,
+        runtimeServiceWorkStateProvider = serviceHost.serviceWorkStateTracker::currentState,
+        runtimeServiceKeepAliveStateProvider = runtimeServiceKeepAliveStateProvider,
+        runtimeServiceKeepAliveChangeRegistrar = runtimeServiceKeepAliveChangeRegistrar,
+        runtimeServiceConnectionStateProvider = { runtimeServiceConnectionState },
+        mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
       )
       val skillsGateway = ServiceOwnedSkillsGateway(
         delegate = hostRuntime,
@@ -73,10 +93,86 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
         snapshotNotifier = hostRuntime::notifySkillsSnapshotChanged,
         mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
       )
+      val chatGateway = ServiceOwnedChatRuntimeGateway(
+        delegate = hostRuntime,
+        readGateway = ProjectionOnlyOpenCrayChatRuntimeGateway(
+          chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
+          queueSnapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory
+            .fromContext(appContext),
+          runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(appContext),
+          runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory
+            .fromContext(appContext),
+          promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory
+            .fromContext(appContext),
+          processRegistryFactory = FileBackedAgentProcessRegistryFactory.fromContext(appContext),
+          supplementStoreFactory = FileBackedAgentSessionSupplementStoreFactory
+            .fromContext(appContext),
+          subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(
+            appContext,
+          ),
+          strings = projectionOnlyChatStrings(appContext),
+          connectionStateProvider = { runtimeServiceConnectionState },
+          personalizationLocalStore = PersonalizationLocalStore.fromContext(appContext),
+          workspaceRootProvider = {
+            AppAgentWorkspace.directoryForContext(appContext)
+              .takeIf { directory -> directory.isDirectory }
+              ?.toPath()
+          },
+          mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
+          runtimeOwnerLifecycleProvider = { serviceHost.runtimeAccess.lifecycleDescriptor },
+          runtimeOwnerWorkSummaryProvider = serviceHost.runtimeAccess.hostAccess::activeWorkSummary,
+          serviceLifecycleProvider = { serviceHost.serviceLifecycle },
+          serviceWorkStateProvider = serviceHost.serviceWorkStateTracker::currentState,
+          serviceKeepAliveStateProvider = runtimeServiceKeepAliveStateProvider,
+        ),
+        snapshotNotifier = hostRuntime::notifyChatSnapshotsChanged,
+        chatSessionMutationAccess = ServiceOwnedChatSessionMutationAccess(
+          chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
+          runtimeHostAccess = serviceHost.runtimeAccess.hostAccess,
+          chatUnreadMessageState = chatUnreadMessageState,
+          pendingApprovalState = pendingApprovalState,
+          runtimeEventState = runtimeEventState,
+          terminalReplayRepairer = serviceHost.runtimeAccess.replayAccess.terminalReplayRepairer,
+        ),
+        chatRunControlAccess = ServiceOwnedChatRunControlAccess(
+          chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
+          runtimeHostAccess = serviceHost.runtimeAccess.hostAccess,
+          pendingApprovalState = pendingApprovalState,
+          runtimeEventState = runtimeEventState,
+          runCancellationReplayRecorder = serviceHost.runtimeAccess.replayAccess.runCancellationRecorder,
+          subAgentReplayRecorder = serviceHost.runtimeAccess.replayAccess.subAgentReplayRecorder,
+          isChineseLocale = {
+            OpenCrayHostRuntime.localizedHostRuntimeStrings(
+              OpenCrayLocaleManager.wrap(appContext),
+            ).localeTag.trim().lowercase(java.util.Locale.US).startsWith("zh")
+          },
+        ),
+        chatApprovalAccess = ServiceOwnedChatApprovalAccess(
+          approveChatApprovalHandler = serviceHost::approvePendingApproval,
+          approveChatApprovalForSessionHandler = serviceHost::approvePendingApprovalForSession,
+          rejectChatApprovalHandler = serviceHost::rejectPendingApproval,
+        ),
+        chatSubmissionAccess = ServiceOwnedChatSubmissionAccess(
+          chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
+          runtimeHostAccess = serviceHost.runtimeAccess.hostAccess,
+          safetySettingsFacade = serviceHost.dependencies.safetySettingsFacade,
+          workspaceRootProvider = serviceHost.dependencies.workspaceRootProvider,
+          approvedReadRootsProvider = serviceHost.dependencies.approvedReadRootsProvider,
+          voiceMetadataAnalyzer = DefaultAppAgentWorkspaceVoiceMetadataAnalyzer,
+          agentThinkingText = strings.agentThinking,
+        ),
+        mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
+      )
       lateinit var settingsGateway: ServiceOwnedSettingsGateway
       val refreshLocalizedGateways = {
+        hostRuntime.refreshLocalizedResourcesForService()
         val refreshedStrings = OpenCrayHostRuntime.localizedHostRuntimeStrings(
           OpenCrayLocaleManager.wrap(appContext),
+        )
+        shellGateway.updateLocalizedResources(
+          localeTag = refreshedStrings.localeTag,
+          hostLabel = refreshedStrings.shellHostLabel,
+          hostSummary = refreshedStrings.shellHostSummary,
         )
         skillsGateway.updateLocalizedResources(
           skillsFacade = LocalSkillsFacade.fromContext(appContext),
@@ -105,7 +201,9 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
         strongBackgroundSettingsAccess = AndroidStrongBackgroundSettingsAccess.fromContext(
           appContext,
         ),
-        appLanguageSettingsAccess = GatewayBackedAppLanguageSettingsGatewayAccess(hostRuntime),
+        appLanguageSettingsAccess = FacadeBackedAppLanguageSettingsGatewayAccess.fromContext(
+          appContext,
+        ),
         sandboxSettingsAccess = RepositoryBackedSandboxSettingsGatewayAccess(
           SandboxSettingsRepository.fromContext(appContext),
         ),
@@ -115,19 +213,18 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
         safetySettingsFacade = LocalSafetySettingsFacade.fromContext(appContext),
         llmConfigFacade = LocalLlmConfigFacade.fromContext(appContext),
         mcpSettingsFacade = LocalMcpSettingsFacade.fromContext(appContext),
+        shellSnapshotNotifier = shellGateway::emitLocalizedSnapshotChanged,
         chatSnapshotNotifier = hostRuntime::notifyChatSnapshotChanged,
         settingsOverviewNotifier = hostRuntime::notifySettingsOverviewChanged,
         skillsSnapshotNotifier = skillsGateway::emitLocalizedSnapshotChanged,
+        skillsProjectionNotifier = hostRuntime::notifySkillsSnapshotChanged,
         localizedResourcesRefresh = refreshLocalizedGateways,
         runtimeServiceConnectionStateProvider = { runtimeServiceConnectionState },
         mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
       )
       return OpenCrayRuntimeServiceGatewayBundle(
-        shellGateway = ServiceOwnedShellGateway(hostRuntime),
-        chatRuntimeGateway = ServiceOwnedChatRuntimeGateway(
-          delegate = hostRuntime,
-          snapshotNotifier = hostRuntime::notifyChatSnapshotsChanged,
-        ),
+        shellGateway = shellGateway,
+        chatRuntimeGateway = chatGateway,
         skillsGateway = skillsGateway,
         settingsGateway = settingsGateway,
       )
@@ -135,17 +232,415 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
   }
 }
 
-private class ServiceOwnedShellGateway(
-  private val delegate: OpenCrayShellGateway,
-) : OpenCrayShellGateway by delegate
+internal class ServiceOwnedShellGateway(
+  private val stateStore: AppShellStateStore,
+  private var localeTag: String,
+  private var hostLabel: String,
+  private var hostSummary: String,
+  private val runtimeHostAccess: OpenCrayRuntimeHostAccess,
+  private val runtimeServiceLifecycle: RuntimeServiceLifecycleDescriptor,
+  private val runtimeServiceWorkStateProvider: () -> RuntimeServiceWorkState?,
+  private val runtimeServiceKeepAliveStateProvider: () -> RuntimeServiceKeepAliveState? = { null },
+  private val runtimeServiceKeepAliveChangeRegistrar: RuntimeServiceKeepAliveChangeRegistrar? = null,
+  private val runtimeServiceConnectionStateProvider: () -> RuntimeServiceConnectionState? = { null },
+  private val mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
+  private val hostLifecycleDescriptor: HostRuntimeLifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+) : OpenCrayShellGateway {
+  private val lock = Any()
+  private val listeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
 
-private class ServiceOwnedChatRuntimeGateway(
+  init {
+    runtimeHostAccess.observe(
+      object : AgentSessionRuntimeListener {
+        override fun onTaskStarted(
+          sessionId: String,
+          task: com.opencray.core.contracts.AgentTask,
+        ) {
+          emitShellSnapshot()
+        }
+
+        override fun onTaskFinished(
+          sessionId: String,
+          task: com.opencray.core.contracts.AgentTask,
+          result: com.opencray.core.contracts.ExecutionResult,
+        ) {
+          emitShellSnapshot()
+        }
+      },
+    )
+    runtimeServiceKeepAliveChangeRegistrar?.register {
+      emitShellSnapshot()
+    }
+  }
+
+  override fun loadShellSnapshot(): Map<String, Any?> = buildMap {
+    val currentLocaleTag: String
+    val currentHostLabel: String
+    val currentHostSummary: String
+    synchronized(lock) {
+      currentLocaleTag = localeTag
+      currentHostLabel = hostLabel
+      currentHostSummary = hostSummary
+    }
+    put("initialTab", stateStore.load().selectedTab.routeKey)
+    put("localeTag", currentLocaleTag)
+    put("hostLabel", currentHostLabel)
+    put("hostSummary", currentHostSummary)
+    put("isHostConnected", true)
+    put("localRuntimeServerState", OpenCrayLocalRuntimeServerRegistry.peekState().snapshotMap())
+    put("hostLifecycle", hostLifecycleDescriptor.snapshotMap())
+    put("runtimeOwnerLifecycle", runtimeHostAccess.lifecycleDescriptor.snapshotMap())
+    put("runtimeOwnerWorkSummary", runtimeHostAccess.activeWorkSummary().snapshotMap())
+    put("runtimeServiceLifecycle", runtimeServiceLifecycle.snapshotMap())
+    runtimeServiceWorkStateProvider()?.snapshotMap()?.let { workState ->
+      put("runtimeServiceWorkState", workState)
+    }
+    runtimeServiceKeepAliveStateProvider()?.snapshotMap()?.let { keepAliveState ->
+      put("runtimeServiceKeepAliveState", keepAliveState)
+    }
+    runtimeServiceConnectionStateProvider()?.snapshotMap()?.let { state ->
+      put("runtimeServiceConnectionState", state)
+    }
+  }
+
+  override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit {
+    synchronized(lock) {
+      listeners += listener
+    }
+    mainThreadPoster.post {
+      listener(loadShellSnapshot())
+    }
+    return {
+      synchronized(lock) {
+        listeners -= listener
+      }
+    }
+  }
+
+  internal fun updateLocalizedResources(
+    localeTag: String,
+    hostLabel: String,
+    hostSummary: String,
+  ) {
+    synchronized(lock) {
+      this.localeTag = localeTag
+      this.hostLabel = hostLabel
+      this.hostSummary = hostSummary
+    }
+  }
+
+  internal fun emitLocalizedSnapshotChanged() {
+    emitShellSnapshot()
+  }
+
+  private fun emitShellSnapshot() {
+    val currentListeners = synchronized(lock) { listeners.toList() }
+    if (currentListeners.isEmpty()) {
+      return
+    }
+    val payload = loadShellSnapshot()
+    mainThreadPoster.post {
+      currentListeners.forEach { listener -> listener(payload) }
+    }
+  }
+}
+
+internal class ServiceOwnedChatRuntimeGateway(
   private val delegate: OpenCrayChatRuntimeGateway,
+  private val readGateway: OpenCrayChatRuntimeGateway,
   private val snapshotNotifier: () -> Unit,
-) : OpenCrayRuntimeServiceChatGateway,
-  OpenCrayChatRuntimeGateway by delegate {
+  private val chatSessionMutationAccess: ServiceOwnedChatSessionMutationAccess? = null,
+  private val chatRunControlAccess: ServiceOwnedChatRunControlAccess? = null,
+  private val chatApprovalAccess: ServiceOwnedChatApprovalAccess? = null,
+  private val chatSubmissionAccess: ServiceOwnedChatSubmissionAccess? = null,
+  private val mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
+) : OpenCrayRuntimeServiceChatGateway {
+  private val lock = Any()
+  private val chatListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  private val chatRuntimeListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  private var latestChatPayload: Map<String, Any?> = delegate.loadChatSnapshot()
+  private var latestChatRuntimePayload: Map<String, Any?> = readGateway.loadChatRuntimeSnapshot()
+
+  @Suppress("unused")
+  private val chatObservationDisposer = delegate.observeChat { payload ->
+    emitChatPayload(payload)
+  }
+
+  @Suppress("unused")
+  private val chatRuntimeObservationDisposer = readGateway.observeChatRuntime { payload ->
+    emitChatRuntimePayload(payload)
+  }
+
+  override fun loadChatSnapshot(): Map<String, Any?> =
+    delegate.loadChatSnapshot().also { payload ->
+      synchronized(lock) {
+        latestChatPayload = payload
+      }
+    }
+
+  override fun observeChat(listener: (Map<String, Any?>) -> Unit): () -> Unit {
+    val initialPayload = synchronized(lock) {
+      chatListeners += listener
+      latestChatPayload
+    }
+    mainThreadPoster.post {
+      listener(initialPayload)
+    }
+    return {
+      synchronized(lock) {
+        chatListeners -= listener
+      }
+    }
+  }
+
+  override fun loadChatRuntimeSnapshot(): Map<String, Any?> =
+    readGateway.loadChatRuntimeSnapshot().also { payload ->
+      synchronized(lock) {
+        latestChatRuntimePayload = payload
+      }
+    }
+
+  override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? =
+    delegate.loadChatRunSnapshot(runId)
+
+  override fun waitForChatRun(
+    runId: String,
+    timeoutMs: Long,
+  ): Map<String, Any?>? = delegate.waitForChatRun(runId, timeoutMs)
+
+  override fun observeChatRuntime(listener: (Map<String, Any?>) -> Unit): () -> Unit {
+    val initialPayload = synchronized(lock) {
+      chatRuntimeListeners += listener
+      latestChatRuntimePayload
+    }
+    mainThreadPoster.post {
+      listener(initialPayload)
+    }
+    return {
+      synchronized(lock) {
+        chatRuntimeListeners -= listener
+      }
+    }
+  }
+
+  override fun refreshSandboxSessionInfo() = delegate.refreshSandboxSessionInfo()
+
+  override fun loadMemoryDebugSnapshot(): Map<String, Any?> =
+    readGateway.loadMemoryDebugSnapshot()
+
+  override fun loadMemoryDebugLinksSnapshot(): Map<String, Any?> =
+    readGateway.loadMemoryDebugLinksSnapshot()
+
+  override fun loadSoulDebugSnapshot(): Map<String, Any?> =
+    readGateway.loadSoulDebugSnapshot()
+
+  override fun searchMemoryDebug(
+    query: String,
+    maxResults: Int,
+    minScore: Int,
+  ): Map<String, Any?> = readGateway.searchMemoryDebug(query, maxResults, minScore)
+
+  override fun getMemoryDebugSlice(
+    path: String,
+    fromLine: Int?,
+    lines: Int,
+  ): Map<String, Any?> = readGateway.getMemoryDebugSlice(path, fromLine, lines)
+
+  override fun applyMemoryDebugAction(
+    recordId: String,
+    actionId: String,
+  ): Map<String, Any?> = readGateway.applyMemoryDebugAction(recordId, actionId)
+
+  override fun createChatSession() {
+    val access = chatSessionMutationAccess
+    if (access == null) {
+      delegate.createChatSession()
+      return
+    }
+    access.createChatSession()
+    notifyChatSnapshotsChanged()
+  }
+
+  override fun copyChatSession(sessionId: String) {
+    val access = chatSessionMutationAccess
+    if (access == null) {
+      delegate.copyChatSession(sessionId)
+      return
+    }
+    access.copyChatSession(sessionId)
+    notifyChatSnapshotsChanged()
+  }
+
+  override fun deleteChatSession(sessionId: String) {
+    val access = chatSessionMutationAccess
+    if (access == null) {
+      delegate.deleteChatSession(sessionId)
+      return
+    }
+    if (access.deleteChatSession(sessionId)) {
+      notifyChatSnapshotsChanged()
+    }
+  }
+
+  override fun selectChatSession(sessionId: String) {
+    val access = chatSessionMutationAccess
+    if (access == null) {
+      delegate.selectChatSession(sessionId)
+      return
+    }
+    access.selectChatSession(sessionId)
+    notifyChatSnapshotsChanged()
+  }
+
+  override fun branchChatSessionFromMessage(
+    sessionId: String,
+    messageId: String,
+  ) {
+    val access = chatSessionMutationAccess
+    if (access == null) {
+      delegate.branchChatSessionFromMessage(sessionId, messageId)
+      return
+    }
+    if (access.branchChatSessionFromMessage(sessionId, messageId)) {
+      notifyChatSnapshotsChanged()
+    }
+  }
+
+  override fun deleteChatMessage(
+    sessionId: String,
+    messageId: String,
+  ) {
+    val access = chatSessionMutationAccess
+    if (access == null) {
+      delegate.deleteChatMessage(sessionId, messageId)
+      return
+    }
+    if (access.deleteChatMessage(sessionId, messageId)) {
+      notifyChatSnapshotsChanged()
+    }
+  }
+
+  override fun recallChatMessage(
+    sessionId: String,
+    messageId: String,
+  ) {
+    val access = chatSessionMutationAccess
+    if (access == null) {
+      delegate.recallChatMessage(sessionId, messageId)
+      return
+    }
+    if (access.recallChatMessage(sessionId, messageId)) {
+      notifyChatSnapshotsChanged()
+    }
+  }
+
+  override fun submitChatMessage(
+    text: String,
+    attachments: List<com.opencray.runtime.OpenCrayFinalAttachment>,
+  ): Map<String, Any?>? {
+    val access = chatSubmissionAccess
+    if (access == null) {
+      return delegate.submitChatMessage(text, attachments)
+    }
+    val result = access.submitChatMessage(text, attachments)
+    if (result.didMutate) {
+      notifyChatSnapshotsChanged()
+    }
+    return result.payload
+  }
+
+  override fun approveChatApproval(taskIdOrRunId: String) {
+    val access = chatApprovalAccess
+    if (access == null) {
+      delegate.approveChatApproval(taskIdOrRunId)
+      return
+    }
+    access.approveChatApproval(taskIdOrRunId)
+    notifyChatSnapshotsChanged()
+  }
+
+  override fun approveChatApprovalForSession(taskIdOrRunId: String) {
+    val access = chatApprovalAccess
+    if (access == null) {
+      delegate.approveChatApprovalForSession(taskIdOrRunId)
+      return
+    }
+    access.approveChatApprovalForSession(taskIdOrRunId)
+    notifyChatSnapshotsChanged()
+  }
+
+  override fun rejectChatApproval(taskIdOrRunId: String) {
+    val access = chatApprovalAccess
+    if (access == null) {
+      delegate.rejectChatApproval(taskIdOrRunId)
+      return
+    }
+    access.rejectChatApproval(taskIdOrRunId)
+    notifyChatSnapshotsChanged()
+  }
+
+  override fun interruptChatRun(taskIdOrRunId: String) {
+    val access = chatRunControlAccess
+    if (access == null) {
+      delegate.interruptChatRun(taskIdOrRunId)
+      return
+    }
+    access.interruptChatRun(taskIdOrRunId)
+    notifyChatSnapshotsChanged()
+  }
+
+  override fun retryChatRun(taskIdOrRunId: String) {
+    val access = chatRunControlAccess
+    if (access == null) {
+      delegate.retryChatRun(taskIdOrRunId)
+      return
+    }
+    access.retryChatRun(taskIdOrRunId)
+    notifyChatSnapshotsChanged()
+  }
+
   override fun notifyChatSnapshotsChanged() {
+    emitChatSnapshot()
+    emitChatRuntimeSnapshot()
     snapshotNotifier()
+  }
+
+  internal fun emitLocalizedSnapshotChanged() {
+    emitChatSnapshot()
+  }
+
+  private fun emitChatSnapshot() {
+    emitChatPayload(loadChatSnapshot())
+  }
+
+  private fun emitChatRuntimeSnapshot() {
+    emitChatRuntimePayload(loadChatRuntimeSnapshot())
+  }
+
+  private fun emitChatPayload(payload: Map<String, Any?>) {
+    val listeners = synchronized(lock) {
+      latestChatPayload = payload
+      chatListeners.toList()
+    }
+    if (listeners.isEmpty()) {
+      return
+    }
+    mainThreadPoster.post {
+      listeners.forEach { listener -> listener(payload) }
+    }
+  }
+
+  private fun emitChatRuntimePayload(payload: Map<String, Any?>) {
+    val listeners = synchronized(lock) {
+      latestChatRuntimePayload = payload
+      chatRuntimeListeners.toList()
+    }
+    if (listeners.isEmpty()) {
+      return
+    }
+    mainThreadPoster.post {
+      listeners.forEach { listener -> listener(payload) }
+    }
   }
 }
 
@@ -410,9 +905,11 @@ internal class ServiceOwnedSettingsGateway(
   private var safetySettingsFacade: SafetySettingsFacade,
   private var llmConfigFacade: LlmConfigFacade,
   private var mcpSettingsFacade: McpSettingsFacade,
+  private val shellSnapshotNotifier: () -> Unit = {},
   private val chatSnapshotNotifier: () -> Unit = {},
   private val settingsOverviewNotifier: () -> Unit = {},
   private val skillsSnapshotNotifier: () -> Unit = {},
+  private val skillsProjectionNotifier: () -> Unit = {},
   private val localizedResourcesRefresh: () -> Unit = {},
   private val runtimeServiceConnectionStateProvider: () -> RuntimeServiceConnectionState? = { null },
   private val mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
@@ -525,8 +1022,12 @@ internal class ServiceOwnedSettingsGateway(
   override fun setAppLanguage(languageId: String): Map<String, Any?> {
     val snapshot = appLanguageSettingsAccess.setAppLanguage(languageId)
     localizedResourcesRefresh()
+    shellSnapshotNotifier()
+    chatSnapshotNotifier()
     emitSettingsOverview()
+    settingsOverviewNotifier()
     skillsSnapshotNotifier()
+    skillsProjectionNotifier()
     return snapshot
   }
 
@@ -634,6 +1135,10 @@ internal class ServiceOwnedSettingsGateway(
     model: String,
     reasoningEffort: String,
     systemPrompt: String,
+    openAiPromptCacheKeyStrategy: String?,
+    openAiPromptCacheRetention: String?,
+    anthropicPromptCachingEnabled: Boolean?,
+    anthropicPromptCacheTtl: String?,
   ): Map<String, Any?> = llmConfigFacade.save(
     com.opencray.app.facade.llm.SaveLlmConfigRequest(
       enabled = enabled,
@@ -647,6 +1152,10 @@ internal class ServiceOwnedSettingsGateway(
       model = model,
       reasoningEffort = reasoningEffort,
       systemPrompt = systemPrompt,
+      openAiPromptCacheKeyStrategy = openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention = openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled = anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl = anthropicPromptCacheTtl,
     ),
   ).toGatewayMap()
 
@@ -660,6 +1169,10 @@ internal class ServiceOwnedSettingsGateway(
     model: String,
     reasoningEffort: String,
     systemPrompt: String,
+    openAiPromptCacheKeyStrategy: String?,
+    openAiPromptCacheRetention: String?,
+    anthropicPromptCachingEnabled: Boolean?,
+    anthropicPromptCacheTtl: String?,
   ): Map<String, Any?> = llmConfigFacade.saveCustomProvider(
     com.opencray.app.facade.llm.SaveCustomLlmProviderRequest(
       selectedProviderOptionId = selectedProviderOptionId,
@@ -671,6 +1184,14 @@ internal class ServiceOwnedSettingsGateway(
       model = model,
       reasoningEffort = reasoningEffort,
       systemPrompt = systemPrompt,
+      openAiPromptCacheKeyStrategy = openAiPromptCacheKeyStrategy
+        ?: LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_KEY_STRATEGY,
+      openAiPromptCacheRetention = openAiPromptCacheRetention
+        ?: LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_RETENTION,
+      anthropicPromptCachingEnabled = anthropicPromptCachingEnabled
+        ?: LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED,
+      anthropicPromptCacheTtl = anthropicPromptCacheTtl
+        ?: LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL,
     ),
   ).toGatewayMap()
 

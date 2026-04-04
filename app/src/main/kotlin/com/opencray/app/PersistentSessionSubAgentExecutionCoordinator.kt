@@ -3,6 +3,7 @@ package com.opencray.app
 import com.opencray.runtime.subagent.SubAgentActiveExecution
 import com.opencray.runtime.subagent.SubAgentExecutionCoordinator
 import com.opencray.runtime.subagent.SubAgentExecutionKey
+import com.opencray.runtime.subagent.SubAgentExecutionStartResult
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
 import com.opencray.runtime.subagent.restoredInterruptedBackgroundSubAgentHandle
@@ -57,6 +58,44 @@ internal class PersistentSessionSubAgentExecutionCoordinator(
 
   override fun takeActiveExecution(key: SubAgentExecutionKey): SubAgentActiveExecution? = synchronized(lock) {
     activeExecutionsByKey.remove(key)
+  }
+
+  override fun beginExecution(
+    handle: SubAgentHandleState,
+    execution: SubAgentActiveExecution,
+  ): SubAgentExecutionStartResult = synchronized(lock) {
+    val key = SubAgentExecutionKey.from(handle)
+    val existingExecution = activeExecutionsByKey[key]
+    if (existingExecution != null) {
+      SubAgentExecutionStartResult(
+        started = false,
+        handle = store.get(parentRunId = key.parentRunId, agentId = key.agentId) ?: handle,
+        activeExecution = existingExecution,
+      )
+    } else {
+      store.upsert(handle)
+      activeExecutionsByKey[key] = execution
+      SubAgentExecutionStartResult(
+        started = true,
+        handle = handle,
+        activeExecution = execution,
+      )
+    }
+  }
+
+  override fun finishExecution(
+    handle: SubAgentHandleState,
+    removeHandle: Boolean,
+  ): SubAgentHandleState? = synchronized(lock) {
+    val key = SubAgentExecutionKey.from(handle)
+    activeExecutionsByKey.remove(key)
+    return if (removeHandle) {
+      store.remove(parentRunId = key.parentRunId, agentId = key.agentId)
+      null
+    } else {
+      store.upsert(handle)
+      handle
+    }
   }
 
   private fun repairInterruptedBackgroundHandles() {

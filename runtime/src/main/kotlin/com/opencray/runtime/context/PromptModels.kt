@@ -208,6 +208,7 @@ data class PromptAssemblyInput(
   val liveConversation: List<RuntimeConversationMessage>,
   val todoSnapshot: List<AgentTodoEntry> = emptyList(),
   val resumeContext: WorkingStateResumeContext? = null,
+  val llmMetadata: Map<String, String> = emptyMap(),
 )
 
 data class ManagedPromptContext(
@@ -218,6 +219,11 @@ data class ManagedPromptContext(
   val turnResponsePolicyText: String = "",
   val bootstrapFiles: List<BootstrapSnippet> = emptyList(),
   val workingState: WorkingState = WorkingState(),
+  val selectedMemory: MemoryRecallResult = MemoryRecallResult(),
+  val durableCompaction: DurableCompactionContext = DurableCompactionContext(),
+  val skillInventory: SkillInventory = SkillInventory(),
+  val activeSkillCapsule: ActiveSkillCapsule? = null,
+  val recentToolObservationLayer: RecentToolObservationLayer? = null,
   val workingStateText: String = "",
   val memoryText: String = "",
   val durableCompactionText: String = "",
@@ -235,6 +241,7 @@ data class ManagedPromptContext(
     omittedMessageCount = 0,
     truncatedMessageCount = 0,
   ),
+  val llmMetadata: Map<String, String> = emptyMap(),
   val report: ContextSelectionReport = ContextSelectionReport(),
 )
 
@@ -272,6 +279,7 @@ data class ContextSelectionReport(
 )
 
 data class PromptLayer(
+  val id: PromptLayerId,
   val name: String,
   val kind: PromptLayerKind,
   val content: String,
@@ -280,6 +288,26 @@ data class PromptLayer(
     require(name.isNotBlank()) { "PromptLayer name must not be blank." }
     require(content.isNotBlank()) { "PromptLayer content must not be blank." }
   }
+}
+
+enum class PromptLayerId {
+  IDENTITY,
+  RUNTIME_RULES,
+  SESSION_POLICY,
+  PERSONALIZATION,
+  TURN_RESPONSE_POLICY,
+  BOOTSTRAP,
+  WORKING_STATE,
+  RETRIEVED_MEMORY,
+  DURABLE_COMPACTION,
+  SKILL_INVENTORY,
+  ACTIVE_SKILL,
+  RECENT_TOOL_OBSERVATIONS,
+  PRUNING_SUMMARY,
+  COMPACTION_SUMMARY,
+  TOOL_PROTOCOL,
+  TASK_METADATA,
+  CONVERSATION,
 }
 
 enum class PromptLayerKind {
@@ -294,6 +322,15 @@ data class AssembledPrompt(
   val taskPrompt: String,
   val layers: List<PromptLayer>,
   val report: ContextAssemblyReport,
+)
+
+data class ToolProtocolTrace(
+  val detailMode: String = "full",
+  val reducedForBudget: Boolean = false,
+  val exampleCount: Int = 0,
+  val attachmentExampleCount: Int = 0,
+  val toolSpecificGuidanceCount: Int = 0,
+  val availableToolCount: Int = 0,
 )
 
 data class ContextAssemblyReport(
@@ -328,12 +365,15 @@ data class ContextAssemblyReport(
   val recentToolObservationCount: Int = 0,
   val omittedRecentToolObservationCount: Int = 0,
   val recentToolObservationLayerIncluded: Boolean = false,
+  val toolProtocolTrace: ToolProtocolTrace = ToolProtocolTrace(),
+  val budgetReport: ContextBudgetReport = ContextBudgetReport(),
 ) {
   val transcriptMessageCount: Int
     get() = windowedTranscriptMessageCount
 }
 
 data class ContextLayerReport(
+  val id: PromptLayerId,
   val name: String,
   val kind: PromptLayerKind,
   val characterCount: Int,

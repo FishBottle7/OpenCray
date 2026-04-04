@@ -40,6 +40,7 @@ class DurableCompactionCoordinatorTest {
     val context = coordinator.compactIfNeeded(
       transcriptStore = transcriptStore,
       compactionStore = compactionStore,
+      llmMetadata = mapOf("context_window_tokens" to "64"),
     )
 
     assertEquals(4, transcriptStore.snapshot().size)
@@ -102,6 +103,47 @@ class DurableCompactionCoordinatorTest {
     assertEquals(6, context.trace.totalCompactedMessageCount)
     assertEquals(1_234L, context.trace.latestCompactedAtEpochMs)
     assertTrue(context.text.contains("Older session history has been durably compacted into summaries."))
+  }
+
+  @Test
+  fun compactIfNeededWaitsForReplayTokenPressure() {
+    val transcriptStore = InMemorySessionTranscriptStore()
+    transcriptStore.seedIfEmpty(
+      listOf(
+        user("User request 1"),
+        assistant("Assistant reply 1"),
+        user("User request 2"),
+        assistant("Assistant reply 2"),
+        user("User request 3"),
+        assistant("Assistant reply 3"),
+        user("User request 4"),
+        assistant("Assistant reply 4"),
+      ),
+    )
+    val compactionStore = InMemorySessionCompactionStore()
+    val coordinator = DurableCompactionCoordinator(
+      transcriptWindowBuilder = TranscriptWindowBuilder(
+        TranscriptWindowConfig(
+          maxMessages = 4,
+          maxCharsPerMessage = 200,
+        ),
+      ),
+      clock = { 5_000L },
+    )
+
+    val context = coordinator.compactIfNeeded(
+      transcriptStore = transcriptStore,
+      compactionStore = compactionStore,
+      llmMetadata = mapOf("context_window_tokens" to "4096"),
+    )
+
+    assertEquals(8, transcriptStore.snapshot().size)
+    assertTrue(compactionStore.load().entries.isEmpty())
+    assertFalse(context.trace.compactedThisRun)
+    assertEquals(8, context.trace.sourceTranscriptMessageCount)
+    assertEquals(8, context.trace.retainedTranscriptMessageCount)
+    assertEquals(0, context.trace.latestCompactedMessageCount)
+    assertFalse(context.included)
   }
 
   private fun user(content: String): RuntimeConversationMessage =

@@ -20,6 +20,10 @@ internal object LlmSettingsStoreKeys {
   const val MODEL = "model"
   const val REASONING_EFFORT = "reasoning_effort"
   const val SYSTEM_PROMPT = "system_prompt"
+  const val OPENAI_PROMPT_CACHE_KEY_STRATEGY = "openai_prompt_cache_key_strategy"
+  const val OPENAI_PROMPT_CACHE_RETENTION = "openai_prompt_cache_retention"
+  const val ANTHROPIC_PROMPT_CACHING_ENABLED = "anthropic_prompt_caching_enabled"
+  const val ANTHROPIC_PROMPT_CACHE_TTL = "anthropic_prompt_cache_ttl"
   const val SAVED_CUSTOM_PROVIDERS = "saved_custom_providers"
   const val AGENT_CAPABILITY_CACHE = "agent_capability_cache"
 }
@@ -35,6 +39,10 @@ internal data class LlmSettingsState(
   val model: String = DEFAULT_MODEL,
   val reasoningEffort: String = DEFAULT_REASONING_EFFORT,
   val systemPrompt: String = "",
+  val openAiPromptCacheKeyStrategy: String = DEFAULT_OPENAI_PROMPT_CACHE_KEY_STRATEGY,
+  val openAiPromptCacheRetention: String = DEFAULT_OPENAI_PROMPT_CACHE_RETENTION,
+  val anthropicPromptCachingEnabled: Boolean = DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED,
+  val anthropicPromptCacheTtl: String = DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL,
   val agentCapability: LlmAgentCapabilitySnapshot = LlmAgentCapabilitySnapshot(),
 ) {
   fun isConfigured(): Boolean =
@@ -55,6 +63,16 @@ internal data class LlmSettingsState(
       model = normalizedModel,
       reasoningEffort = reasoningEffort.trim().ifBlank { DEFAULT_REASONING_EFFORT },
       systemPrompt = systemPrompt.trim(),
+      openAiPromptCacheKeyStrategy = normalizedOpenAiPromptCacheKeyStrategy(
+        openAiPromptCacheKeyStrategy,
+      ),
+      openAiPromptCacheRetention = normalizedOpenAiPromptCacheRetention(
+        openAiPromptCacheRetention,
+      ),
+      anthropicPromptCachingEnabled = anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl = normalizedAnthropicPromptCacheTtl(
+        anthropicPromptCacheTtl,
+      ),
       agentCapability = agentCapability.normalizedForRoute(
         protocol = normalizedProtocol,
         baseUrl = normalizedBaseUrl,
@@ -70,9 +88,38 @@ internal data class LlmSettingsState(
     const val DEFAULT_PROTOCOL: String = LlmProviderProtocols.OPENAI
     const val DEFAULT_PROVIDER_NAME: String = "OpenAI"
     const val DEFAULT_REASONING_EFFORT: String = "medium"
+    const val DEFAULT_OPENAI_PROMPT_CACHE_KEY_STRATEGY: String =
+      LlmPromptCacheKeyStrategies.NONE
+    const val DEFAULT_OPENAI_PROMPT_CACHE_RETENTION: String = ""
+    const val DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED: Boolean = false
+    const val DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL: String =
+      AnthropicPromptCacheTtlPolicies.MINUTES_5
 
     fun inferProviderId(baseUrl: String): String =
       LlmProviderCatalog.inferPresetId(baseUrl)
+
+    fun normalizedOpenAiPromptCacheKeyStrategy(rawValue: String): String = when (
+      rawValue.trim().lowercase()
+    ) {
+      LlmPromptCacheKeyStrategies.ROUTE -> LlmPromptCacheKeyStrategies.ROUTE
+      LlmPromptCacheKeyStrategies.SESSION -> LlmPromptCacheKeyStrategies.SESSION
+      else -> DEFAULT_OPENAI_PROMPT_CACHE_KEY_STRATEGY
+    }
+
+    fun normalizedOpenAiPromptCacheRetention(rawValue: String): String = when (
+      rawValue.trim().lowercase()
+    ) {
+      LlmPromptCacheRetentionPolicies.IN_MEMORY -> LlmPromptCacheRetentionPolicies.IN_MEMORY
+      LlmPromptCacheRetentionPolicies.HOURS_24 -> LlmPromptCacheRetentionPolicies.HOURS_24
+      else -> DEFAULT_OPENAI_PROMPT_CACHE_RETENTION
+    }
+
+    fun normalizedAnthropicPromptCacheTtl(rawValue: String): String = when (
+      rawValue.trim().lowercase()
+    ) {
+      AnthropicPromptCacheTtlPolicies.HOUR_1 -> AnthropicPromptCacheTtlPolicies.HOUR_1
+      else -> DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL
+    }
   }
 }
 
@@ -210,6 +257,18 @@ internal class LlmSettingsStore(
       model = keyValueStore.getString(LlmSettingsStoreKeys.MODEL) ?: defaults.model,
       reasoningEffort = keyValueStore.getString(LlmSettingsStoreKeys.REASONING_EFFORT) ?: defaults.reasoningEffort,
       systemPrompt = keyValueStore.getString(LlmSettingsStoreKeys.SYSTEM_PROMPT) ?: defaults.systemPrompt,
+      openAiPromptCacheKeyStrategy =
+        keyValueStore.getString(LlmSettingsStoreKeys.OPENAI_PROMPT_CACHE_KEY_STRATEGY)
+          ?: defaults.openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention =
+        keyValueStore.getString(LlmSettingsStoreKeys.OPENAI_PROMPT_CACHE_RETENTION)
+          ?: defaults.openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled =
+        keyValueStore.getBoolean(LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHING_ENABLED)
+          ?: defaults.anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl =
+        keyValueStore.getString(LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHE_TTL)
+          ?: defaults.anthropicPromptCacheTtl,
     ).sanitized()
     return resolved.copy(
       enabled = resolved.isConfigured(),
@@ -245,6 +304,22 @@ internal class LlmSettingsStore(
     keyValueStore.putString(LlmSettingsStoreKeys.MODEL, sanitized.model)
     keyValueStore.putString(LlmSettingsStoreKeys.REASONING_EFFORT, sanitized.reasoningEffort)
     keyValueStore.putString(LlmSettingsStoreKeys.SYSTEM_PROMPT, sanitized.systemPrompt)
+    keyValueStore.putString(
+      LlmSettingsStoreKeys.OPENAI_PROMPT_CACHE_KEY_STRATEGY,
+      sanitized.openAiPromptCacheKeyStrategy,
+    )
+    keyValueStore.putString(
+      LlmSettingsStoreKeys.OPENAI_PROMPT_CACHE_RETENTION,
+      sanitized.openAiPromptCacheRetention,
+    )
+    keyValueStore.putBoolean(
+      LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHING_ENABLED,
+      sanitized.anthropicPromptCachingEnabled,
+    )
+    keyValueStore.putString(
+      LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHE_TTL,
+      sanitized.anthropicPromptCacheTtl,
+    )
     if (sanitized.agentCapability.wasVerified) {
       saveAgentCapability(sanitized.agentCapability)
     }

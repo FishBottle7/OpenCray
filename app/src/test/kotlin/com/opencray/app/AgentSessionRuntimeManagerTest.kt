@@ -197,7 +197,7 @@ class AgentSessionRuntimeManagerTest {
       toolCallCount = 1,
     )
     val runtimeFactory = RecordingRuntimeFactory(
-      executionResultFactory = { task ->
+      detachedControlResultFactory = { task ->
         when (task.metadata[METADATA_EXECUTION_KIND]) {
           EXECUTION_KIND_APPROVAL_RESUME -> ExecutionResult(
             taskId = task.id,
@@ -224,10 +224,15 @@ class AgentSessionRuntimeManagerTest {
     val submission = handle.submitDetachedControlTask(
       AgentTask(
         id = "detached-control-task-1",
-        type = AgentTaskType.TOOL_CALL,
-        input = """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
+        type = AgentTaskType.SYSTEM,
+        input = "internal:subagent_recovery_wait:child-1",
         policyDecision = allowDecision(),
         createdAtEpochMs = 1_000L,
+        metadata = mapOf(
+          METADATA_DETACHED_CONTROL_KIND to DETACHED_CONTROL_KIND_SUBAGENT_RECOVERY_WAIT,
+          METADATA_SUBAGENT_RECOVERY_AGENT_ID to "child-1",
+          METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID to "parent-run-1",
+        ),
       ),
     )
 
@@ -256,10 +261,213 @@ class AgentSessionRuntimeManagerTest {
     assertTrue(handle.listDetachedControlTasks().isEmpty())
     assertEquals(
       listOf(
-        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
-        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}""",
+        "internal:subagent_recovery_wait:child-1",
+        "internal:subagent_recovery_wait:child-1",
       ),
-      runtimeFactory.executedInputs,
+      runtimeFactory.detachedControlInputs,
+    )
+    assertTrue(runtimeFactory.executedInputs.isEmpty())
+  }
+
+  @Test
+  fun detachedSubAgentRecoveryTaskCanResumeByTaskIdWithoutQueueSnapshot() {
+    val executor = RecordingExecutorService()
+    val sessionId = "session-detached-subagent-recovery"
+    val resumeState = OpenCrayPromptResumeState(
+      turnIndex = 1,
+      toolCallCount = 1,
+    )
+    val runtimeFactory = RecordingRuntimeFactory(
+      subAgentRecoveryResultFactory = { task ->
+        when (task.metadata[METADATA_EXECUTION_KIND]) {
+          EXECUTION_KIND_APPROVAL_RESUME -> ExecutionResult(
+            taskId = task.id,
+            status = ExecutionStatus.SUCCESS,
+            stdout = "resumed:${task.input}",
+            startedAtEpochMs = 1_200L,
+            finishedAtEpochMs = 1_201L,
+          )
+
+          else -> approvalRequiredResult(
+            taskId = task.id,
+            toolName = "Read",
+            resumeState = resumeState,
+          )
+        }
+      },
+    )
+    val manager = manager(
+      runtimeFactory = runtimeFactory,
+      executor = executor,
+    )
+    val handle = manager.forSession(sessionId)
+
+    val submission = handle.submitDetachedSubAgentRecoveryTask(
+      agentId = "child-1",
+      parentRunId = "parent-run-1",
+      taskId = "subagent-recovery-task-1",
+      createdAtEpochMs = 1_000L,
+      submissionSource = RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
+    )
+
+    assertTrue(handle.snapshot().tasks.isEmpty())
+    assertEquals(1, executor.pendingCount())
+
+    executor.runNext()
+
+    val pausedRun = requireNotNull(handle.findRun(submission.runId))
+    assertEquals(null, pausedRun.lifecycleState)
+    assertEquals(ExecutionStatus.DENIED, pausedRun.executionStatus)
+    assertEquals("APPROVAL_REQUIRED", pausedRun.errorCode)
+    assertTrue(!pausedRun.isTerminal)
+    assertEquals(1, handle.listDetachedControlTasks().size)
+
+    val resumed = handle.requestResumeTask(submission.taskId)
+
+    assertTrue(resumed)
+    assertEquals(1, executor.pendingCount())
+
+    executor.runNext()
+
+    val completedRun = requireNotNull(handle.findRun(submission.runId))
+    assertEquals(ExecutionStatus.SUCCESS, completedRun.executionStatus)
+    assertTrue(completedRun.isTerminal)
+    assertTrue(handle.listDetachedControlTasks().isEmpty())
+    assertEquals(
+      listOf(
+        "internal:subagent_recovery_wait:child-1",
+        "internal:subagent_recovery_wait:child-1",
+      ),
+      runtimeFactory.subAgentRecoveryInputs,
+    )
+    assertTrue(runtimeFactory.detachedControlInputs.isEmpty())
+    assertTrue(runtimeFactory.executedInputs.isEmpty())
+  }
+
+  @Test
+  fun detachedSubAgentRecoveryTaskUsesDedicatedRecoveryExecutorWhenProvided() {
+    val mainExecutor = RecordingExecutorService()
+    val recoveryExecutor = RecordingExecutorService()
+    val runtimeFactory = RecordingRuntimeFactory(
+      subAgentRecoveryResultFactory = { task ->
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.SUCCESS,
+          stdout = "recovered:${task.input}",
+          startedAtEpochMs = 1_200L,
+          finishedAtEpochMs = 1_201L,
+        )
+      },
+    )
+    val manager = manager(
+      runtimeFactory = runtimeFactory,
+      executor = mainExecutor,
+      subAgentRecoveryExecutor = recoveryExecutor,
+    )
+    val handle = manager.forSession("session-dedicated-subagent-recovery-executor")
+
+    handle.submitDetachedSubAgentRecoveryTask(
+      agentId = "child-dedicated",
+      parentRunId = "parent-run-dedicated",
+      taskId = "subagent-recovery-task-dedicated",
+      createdAtEpochMs = 1_000L,
+      submissionSource = RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
+    )
+
+    assertEquals(0, mainExecutor.pendingCount())
+    assertEquals(1, recoveryExecutor.pendingCount())
+  }
+
+  @Test
+  fun detachedSubAgentRecoveryTaskDeduplicatesByHandleKey() {
+    val executor = RecordingExecutorService()
+    val runtimeFactory = RecordingRuntimeFactory(
+      subAgentRecoveryResultFactory = { task ->
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.SUCCESS,
+          stdout = "recovered:${task.input}",
+          startedAtEpochMs = 1_200L,
+          finishedAtEpochMs = 1_201L,
+        )
+      },
+    )
+    val manager = manager(runtimeFactory = runtimeFactory, executor = executor)
+    val handle = manager.forSession("session-deduplicated-subagent-recovery")
+
+    val first = handle.submitDetachedSubAgentRecoveryTask(
+      agentId = "child-deduplicated",
+      parentRunId = "parent-run-deduplicated",
+      taskId = "subagent-recovery-task-first",
+      createdAtEpochMs = 1_000L,
+      submissionSource = RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
+    )
+    val second = handle.submitDetachedSubAgentRecoveryTask(
+      agentId = "child-deduplicated",
+      parentRunId = "parent-run-deduplicated",
+      taskId = "subagent-recovery-task-second",
+      createdAtEpochMs = 1_001L,
+      submissionSource = RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
+    )
+
+    assertEquals(first.taskId, second.taskId)
+    assertEquals(first.runId, second.runId)
+    assertEquals(1, executor.pendingCount())
+    assertEquals(1, handle.listDetachedControlTasks().size)
+    assertEquals("subagent-recovery-task-first", handle.listDetachedControlTasks().single().id)
+  }
+
+  @Test
+  fun ensureRecoverableDetachedSubAgentTasksSchedulesQueuedChildOnce() {
+    val executor = RecordingExecutorService()
+    val queuedHandle = backgroundSubAgentHandle("child-recovery").copy(
+      snapshot = SubAgentExecutionSnapshot.backgroundQueued(),
+      updatedAtEpochMs = 1_200L,
+    )
+    val runtimeFactory = RecordingRuntimeFactory(
+      detachedControlResultFactory = { task ->
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.SUCCESS,
+          stdout = "recovered:${task.input}",
+          startedAtEpochMs = 1_300L,
+          finishedAtEpochMs = 1_301L,
+        )
+      },
+      subAgentHandlesProvider = { _ -> listOf(queuedHandle) },
+    )
+    val manager = manager(runtimeFactory = runtimeFactory, executor = executor)
+    val handle = manager.forSession("session-subagent-recovery")
+
+    val firstScheduled = handle.ensureRecoverableDetachedSubAgentTasks()
+    val secondScheduled = handle.ensureRecoverableDetachedSubAgentTasks()
+
+    assertEquals(1, firstScheduled)
+    assertEquals(0, secondScheduled)
+    assertEquals(1, executor.pendingCount())
+    assertEquals(1, handle.listDetachedControlTasks().size)
+    val detachedTask = handle.listDetachedControlTasks().single()
+    assertEquals(
+      detachedSubAgentRecoveryTaskId(
+        sessionId = "session-subagent-recovery",
+        agentId = "child-recovery",
+        parentRunId = "parent-run",
+      ),
+      detachedTask.id,
+    )
+    assertEquals(
+      RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
+      detachedTask.metadata[RunLifecycleMetadataKeys.SUBMISSION_SOURCE],
+    )
+    assertEquals("child-recovery", detachedTask.metadata[METADATA_SUBAGENT_RECOVERY_AGENT_ID])
+    assertEquals("parent-run", detachedTask.metadata[METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID])
+
+    executor.runNext()
+
+    assertTrue(handle.listDetachedControlTasks().isEmpty())
+    assertEquals(
+      listOf("internal:subagent_recovery_wait:child-recovery"),
+      runtimeFactory.detachedControlInputs,
     )
   }
 
@@ -1116,6 +1324,7 @@ class AgentSessionRuntimeManagerTest {
     val second = manager.forSession("session-terminal-process")
 
     assertTrue(first !== second)
+    assertEquals(listOf("session-terminal-process"), runtimeFactory.releasedSessions)
   }
 
   @Test
@@ -1143,6 +1352,22 @@ class AgentSessionRuntimeManagerTest {
 
     assertSame(first, second)
     assertEquals(listOf("session-live-subagent"), manager.activeWorkSummary().activeSessionIds)
+  }
+
+  @Test
+  fun releaseInvokesRuntimeFactorySessionCleanup() {
+    val executor = RecordingExecutorService()
+    val runtimeFactory = RecordingRuntimeFactory()
+    val manager = manager(
+      runtimeFactory = runtimeFactory,
+      executor = executor,
+    )
+
+    manager.forSession("session-release-hook")
+
+    manager.release("session-release-hook")
+
+    assertEquals(listOf("session-release-hook"), runtimeFactory.releasedSessions)
   }
 
   @Test
@@ -1681,6 +1906,7 @@ class AgentSessionRuntimeManagerTest {
   private fun manager(
     runtimeFactory: AgentSessionTaskRuntimeFactory,
     executor: RecordingExecutorService,
+    subAgentRecoveryExecutor: RecordingExecutorService = executor,
     runEventJournalStoreFactory: RunEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory(temporaryFolder.root),
     promptCheckpointStoreFactory: PromptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(temporaryFolder.root),
   ): DefaultAgentSessionRuntimeManager = DefaultAgentSessionRuntimeManager(
@@ -1691,6 +1917,7 @@ class AgentSessionRuntimeManagerTest {
     runEventJournalStoreFactory = runEventJournalStoreFactory,
     promptCheckpointStoreFactory = promptCheckpointStoreFactory,
     executor = executor,
+    subAgentRecoveryExecutor = subAgentRecoveryExecutor,
   )
 
   private fun overwriteQueueSnapshot(
@@ -1818,11 +2045,16 @@ class AgentSessionRuntimeManagerTest {
         finishedAtEpochMs = 1_001L,
       )
     },
+    private val detachedControlResultFactory: ((AgentTask) -> ExecutionResult)? = null,
+    private val subAgentRecoveryResultFactory: ((AgentTask) -> ExecutionResult)? = null,
     private val managedProcessesProvider: (String) -> List<ManagedProcessSnapshot> = { emptyList() },
     private val subAgentHandlesProvider: (String) -> List<SubAgentHandleState> = { emptyList() },
     private val terminateManagedProcessHandler: (String, String) -> ManagedProcessSnapshot? = { _, _ -> null },
   ) : AgentSessionTaskRuntimeFactory {
     val executedInputs = mutableListOf<String>()
+    val detachedControlInputs = mutableListOf<String>()
+    val subAgentRecoveryInputs = mutableListOf<String>()
+    val releasedSessions = mutableListOf<String>()
 
     override fun create(
       sessionId: String,
@@ -1835,6 +2067,44 @@ class AgentSessionRuntimeManagerTest {
 
     override fun listManagedProcesses(sessionId: String): List<ManagedProcessSnapshot> =
       managedProcessesProvider(sessionId)
+
+    override fun releaseSession(sessionId: String) {
+      releasedSessions += sessionId
+    }
+
+    override fun executeDetachedControlTask(
+      sessionId: String,
+      task: AgentTask,
+      hooks: RuntimeExecutionHooks,
+      eventSink: OpenCrayAgentRuntimeEventSink,
+    ): ExecutionResult? {
+      val handler = detachedControlResultFactory ?: return null
+      onExecute?.invoke(task, eventSink)
+      detachedControlInputs += task.input
+      return handler(task)
+    }
+
+    override fun executeDetachedSubAgentRecoveryTask(
+      sessionId: String,
+      task: AgentTask,
+      hooks: RuntimeExecutionHooks,
+      eventSink: OpenCrayAgentRuntimeEventSink,
+      agentId: String,
+      parentRunId: String,
+    ): ExecutionResult? {
+      val handler = subAgentRecoveryResultFactory
+      if (handler != null) {
+        onExecute?.invoke(task, eventSink)
+        subAgentRecoveryInputs += task.input
+        return handler(task)
+      }
+      return executeDetachedControlTask(
+        sessionId = sessionId,
+        task = task,
+        hooks = hooks,
+        eventSink = eventSink,
+      )
+    }
 
     override fun listSubAgentHandles(sessionId: String): List<SubAgentHandleState> =
       subAgentHandlesProvider(sessionId)

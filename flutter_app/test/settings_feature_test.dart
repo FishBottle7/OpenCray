@@ -64,7 +64,9 @@ void main() {
     expect(find.byType(Switch), findsNothing);
 
     await tester.enterText(find.byType(TextField).at(1), 'secret');
-    await tester.tap(find.byType(TextField).at(2));
+    final modelField = find.byType(TextField).at(2);
+    await tester.ensureVisible(modelField);
+    await tester.tap(modelField, warnIfMissed: false);
     await tester.pumpAndSettle();
 
     expect(facade.saveCallCount, 1);
@@ -121,7 +123,9 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Validate Model'));
+      final validateAction = find.text('Validate Model');
+      await tester.ensureVisible(validateAction);
+      await tester.tap(validateAction, warnIfMissed: false);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -179,9 +183,12 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Validate Model'));
+      final validateAction = find.text('Validate Model');
+      await tester.ensureVisible(validateAction);
+      await tester.tap(validateAction, warnIfMissed: false);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Validate Model'));
+      await tester.ensureVisible(validateAction);
+      await tester.tap(validateAction, warnIfMissed: false);
       await tester.pumpAndSettle();
 
       expect(facade.validationCallCount, 2);
@@ -250,8 +257,11 @@ void main() {
       await tester.enterText(find.byType(TextField).at(1), 'secret');
       await tester.pump();
 
-      await tester.tap(find.text('Validate Model'));
-      await tester.tap(find.text('Validate Model'));
+      final validateAction = find.text('Validate Model');
+      await tester.ensureVisible(validateAction);
+      await tester.tap(validateAction, warnIfMissed: false);
+      await tester.ensureVisible(validateAction);
+      await tester.tap(validateAction, warnIfMissed: false);
       await tester.pump();
 
       expect(saveStarted.isCompleted, isTrue);
@@ -404,6 +414,144 @@ void main() {
     expect(facade.saveCallCount, 1);
     expect(facade.llmConfig.protocol, 'openai_responses');
     expect(find.text('OpenAI Responses'), findsOneWidget);
+  });
+
+  testWidgets('openai prompt cache controls save key scope and retention', (
+    tester,
+  ) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: true,
+        providerId: 'openai',
+        selectedProviderOptionId: 'openai',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'openai',
+            providerId: 'openai',
+            title: 'OpenAI',
+            subtitle: 'Official OpenAI-compatible endpoint.',
+            defaultBaseUrl: 'https://api.openai.com/v1',
+            defaultModel: 'gpt-5-mini',
+            protocol: 'openai',
+            apiKey: '',
+            isCustom: false,
+          ),
+        ],
+        providerName: 'OpenAI',
+        providerNotes: '',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'secret',
+        model: 'gpt-5-mini',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.llm,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Disabled'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Per session').last);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Default'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('24 hours').last);
+    await tester.pumpAndSettle();
+
+    expect(facade.saveCallCount, 2);
+    expect(facade.llmConfig.openAiPromptCacheKeyStrategy, 'session');
+    expect(facade.llmConfig.openAiPromptCacheRetention, '24h');
+    expect(find.text('24 hours'), findsOneWidget);
+  });
+
+  testWidgets('anthropic prompt cache controls save toggle and ttl', (
+    tester,
+  ) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: true,
+        providerId: 'custom',
+        selectedProviderOptionId: 'custom',
+        protocol: 'anthropic',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'custom',
+            providerId: 'custom',
+            title: 'Custom provider',
+            subtitle:
+                'Any OpenAI-compatible, OpenAI Responses, or Anthropic endpoint.',
+            defaultBaseUrl: '',
+            defaultModel: '',
+            protocol: 'anthropic',
+            apiKey: '',
+            isCustom: true,
+          ),
+        ],
+        providerName: 'Custom provider',
+        providerNotes: '',
+        baseUrl: 'https://api.anthropic.com',
+        apiKey: 'secret',
+        model: 'claude-3-7-sonnet',
+        reasoningEffort: 'high',
+        systemPrompt: '',
+        helperText: 'Helper text',
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.llm,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final promptCacheToggle = find.byKey(
+      const ValueKey<String>('settings-llm-anthropic-prompt-cache-toggle'),
+    );
+    await tester.ensureVisible(promptCacheToggle);
+    await tester.tap(promptCacheToggle, warnIfMissed: false);
+    await tester.pumpAndSettle();
+
+    expect(facade.saveCallCount, 1);
+    expect(facade.llmConfig.anthropicPromptCachingEnabled, isTrue);
+    expect(find.text('5 minutes'), findsOneWidget);
+
+    final ttlField = find.text('5 minutes');
+    await tester.ensureVisible(ttlField);
+    await tester.tap(ttlField, warnIfMissed: false);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('1 hour').last);
+    await tester.pumpAndSettle();
+
+    expect(facade.saveCallCount, 2);
+    expect(facade.llmConfig.anthropicPromptCacheTtl, '1h');
+    expect(find.text('1 hour'), findsOneWidget);
   });
 
   testWidgets(
@@ -3933,6 +4081,10 @@ class _FakeSettingsFacade implements SettingsFacade {
     required String model,
     required String reasoningEffort,
     required String systemPrompt,
+    String? openAiPromptCacheKeyStrategy,
+    String? openAiPromptCacheRetention,
+    bool? anthropicPromptCachingEnabled,
+    String? anthropicPromptCacheTtl,
   }) async {
     saveCallCount += 1;
     await onSaveLlmConfig?.call();
@@ -3951,6 +4103,15 @@ class _FakeSettingsFacade implements SettingsFacade {
       reasoningEffort: reasoningEffort,
       systemPrompt: systemPrompt,
       helperText: llmConfig.helperText,
+      openAiPromptCacheKeyStrategy:
+          openAiPromptCacheKeyStrategy ?? llmConfig.openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention:
+          openAiPromptCacheRetention ?? llmConfig.openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled:
+          anthropicPromptCachingEnabled ??
+          llmConfig.anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl:
+          anthropicPromptCacheTtl ?? llmConfig.anthropicPromptCacheTtl,
     );
     return llmConfig;
   }
@@ -3966,6 +4127,10 @@ class _FakeSettingsFacade implements SettingsFacade {
     required String model,
     required String reasoningEffort,
     required String systemPrompt,
+    String? openAiPromptCacheKeyStrategy,
+    String? openAiPromptCacheRetention,
+    bool? anthropicPromptCachingEnabled,
+    String? anthropicPromptCacheTtl,
   }) async {
     saveCallCount += 1;
     final savedOptionId = selectedProviderOptionId == 'custom'
@@ -4001,6 +4166,15 @@ class _FakeSettingsFacade implements SettingsFacade {
       reasoningEffort: reasoningEffort,
       systemPrompt: systemPrompt,
       helperText: llmConfig.helperText,
+      openAiPromptCacheKeyStrategy:
+          openAiPromptCacheKeyStrategy ?? llmConfig.openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention:
+          openAiPromptCacheRetention ?? llmConfig.openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled:
+          anthropicPromptCachingEnabled ??
+          llmConfig.anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl:
+          anthropicPromptCacheTtl ?? llmConfig.anthropicPromptCacheTtl,
     );
     return llmConfig;
   }

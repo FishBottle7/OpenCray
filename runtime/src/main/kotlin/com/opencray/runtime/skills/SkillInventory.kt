@@ -96,6 +96,12 @@ data class RenderedSkillInventory(
   val omittedSkillCount: Int = 0,
 )
 
+enum class SkillInventoryPromptDetailMode {
+  FULL,
+  COMPACT,
+  MINIMAL,
+}
+
 data class RenderedActiveSkillCapsule(
   val text: String = "",
   val trace: ActiveSkillTrace = ActiveSkillTrace(),
@@ -104,11 +110,35 @@ data class RenderedActiveSkillCapsule(
 data class SkillInventoryPromptLayerConfig(
   val maxSkills: Int = 8,
   val maxDescriptionChars: Int = 120,
+  val maxCompactSkills: Int = 4,
+  val maxCompactDescriptionChars: Int = 72,
+  val maxMinimalSkills: Int = 2,
+  val maxMinimalDescriptionChars: Int = 48,
 ) {
   init {
     require(maxSkills >= 1) { "SkillInventoryPromptLayerConfig maxSkills must be >= 1." }
     require(maxDescriptionChars >= 24) {
       "SkillInventoryPromptLayerConfig maxDescriptionChars must be >= 24."
+    }
+    require(maxCompactSkills >= 1) { "SkillInventoryPromptLayerConfig maxCompactSkills must be >= 1." }
+    require(maxCompactDescriptionChars >= 24) {
+      "SkillInventoryPromptLayerConfig maxCompactDescriptionChars must be >= 24."
+    }
+    require(maxMinimalSkills >= 1) { "SkillInventoryPromptLayerConfig maxMinimalSkills must be >= 1." }
+    require(maxMinimalDescriptionChars >= 24) {
+      "SkillInventoryPromptLayerConfig maxMinimalDescriptionChars must be >= 24."
+    }
+    require(maxCompactSkills <= maxSkills) {
+      "SkillInventoryPromptLayerConfig maxCompactSkills must be <= maxSkills."
+    }
+    require(maxMinimalSkills <= maxCompactSkills) {
+      "SkillInventoryPromptLayerConfig maxMinimalSkills must be <= maxCompactSkills."
+    }
+    require(maxCompactDescriptionChars <= maxDescriptionChars) {
+      "SkillInventoryPromptLayerConfig maxCompactDescriptionChars must be <= maxDescriptionChars."
+    }
+    require(maxMinimalDescriptionChars <= maxCompactDescriptionChars) {
+      "SkillInventoryPromptLayerConfig maxMinimalDescriptionChars must be <= maxCompactDescriptionChars."
     }
   }
 }
@@ -116,44 +146,93 @@ data class SkillInventoryPromptLayerConfig(
 data class ActiveSkillPromptLayerConfig(
   val maxBodyChars: Int = 3_200,
   val maxPermissionEntries: Int = 8,
+  val maxCompactBodyChars: Int = 1_200,
+  val maxCompactPermissionEntries: Int = 4,
+  val maxMinimalBodyChars: Int = 320,
+  val maxMinimalPermissionEntries: Int = 2,
 ) {
   init {
     require(maxBodyChars >= 240) { "ActiveSkillPromptLayerConfig maxBodyChars must be >= 240." }
     require(maxPermissionEntries >= 1) {
       "ActiveSkillPromptLayerConfig maxPermissionEntries must be >= 1."
     }
+    require(maxCompactBodyChars >= 240) {
+      "ActiveSkillPromptLayerConfig maxCompactBodyChars must be >= 240."
+    }
+    require(maxCompactPermissionEntries >= 1) {
+      "ActiveSkillPromptLayerConfig maxCompactPermissionEntries must be >= 1."
+    }
+    require(maxMinimalBodyChars >= 160) {
+      "ActiveSkillPromptLayerConfig maxMinimalBodyChars must be >= 160."
+    }
+    require(maxMinimalPermissionEntries >= 1) {
+      "ActiveSkillPromptLayerConfig maxMinimalPermissionEntries must be >= 1."
+    }
+    require(maxCompactBodyChars <= maxBodyChars) {
+      "ActiveSkillPromptLayerConfig maxCompactBodyChars must be <= maxBodyChars."
+    }
+    require(maxMinimalBodyChars <= maxCompactBodyChars) {
+      "ActiveSkillPromptLayerConfig maxMinimalBodyChars must be <= maxCompactBodyChars."
+    }
+    require(maxCompactPermissionEntries <= maxPermissionEntries) {
+      "ActiveSkillPromptLayerConfig maxCompactPermissionEntries must be <= maxPermissionEntries."
+    }
+    require(maxMinimalPermissionEntries <= maxCompactPermissionEntries) {
+      "ActiveSkillPromptLayerConfig maxMinimalPermissionEntries must be <= maxCompactPermissionEntries."
+    }
   }
+}
+
+enum class ActiveSkillPromptDetailMode {
+  FULL,
+  COMPACT,
+  MINIMAL,
 }
 
 class SkillInventoryPromptLayer(
   private val config: SkillInventoryPromptLayerConfig = SkillInventoryPromptLayerConfig(),
 ) {
-  fun render(inventory: SkillInventory): RenderedSkillInventory {
+  fun render(
+    inventory: SkillInventory,
+    detailMode: SkillInventoryPromptDetailMode = SkillInventoryPromptDetailMode.FULL,
+  ): RenderedSkillInventory {
     if (inventory.skills.isEmpty()) {
       return RenderedSkillInventory()
     }
-    val injectedSkills = inventory.skills.take(config.maxSkills)
+    val renderConfig = renderConfig(detailMode)
+    val injectedSkills = inventory.skills.take(renderConfig.maxSkills)
     val omittedSkillCount = (inventory.skills.size - injectedSkills.size).coerceAtLeast(0)
     return RenderedSkillInventory(
       text = buildString {
-        appendLine("Visible skills are available from configured skills roots.")
-        appendLine("Use skill_read to load the full SKILL.md before relying on a skill's workflow.")
+        if (renderConfig.includeGuidance) {
+          appendLine("Visible skills are available from configured skills roots.")
+          appendLine("Use skill_read to load the full SKILL.md before relying on a skill's workflow.")
+        } else {
+          appendLine("Visible skills:")
+        }
         appendLine()
         injectedSkills.forEach { skill ->
           append("- name=")
           append(skill.name)
           append(" invocation=")
           append(skill.invocationControl.serializedValue())
-          append(" user_invocable=")
-          append(skill.userInvocable)
-          append(" execution_context=")
-          append(skill.executionContext.serializedValue())
+          if (renderConfig.includeUserInvocable) {
+            append(" user_invocable=")
+            append(skill.userInvocable)
+          }
+          if (renderConfig.includeExecutionContext) {
+            append(" execution_context=")
+            append(skill.executionContext.serializedValue())
+          }
           append(" path=")
           append(skill.relativePath)
-          append(" description=")
-          append(skill.description.trim().take(config.maxDescriptionChars))
-          if (skill.description.trim().length > config.maxDescriptionChars) {
-            append("…")
+          if (renderConfig.includeDescription) {
+            val description = skill.description.trim()
+            append(" description=")
+            append(description.take(renderConfig.maxDescriptionChars))
+            if (description.length > renderConfig.maxDescriptionChars) {
+              append("…")
+            }
           }
           appendLine()
         }
@@ -161,16 +240,55 @@ class SkillInventoryPromptLayer(
           appendLine()
         }
         if (omittedSkillCount > 0) {
-          appendLine(
-            "Omitted $omittedSkillCount additional visible skill(s) from this prompt layer due to skill inventory budget.",
-          )
+          if (detailMode == SkillInventoryPromptDetailMode.MINIMAL) {
+            appendLine("+ $omittedSkillCount more visible skill(s).")
+          } else {
+            appendLine(
+              "Omitted $omittedSkillCount additional visible skill(s) from this prompt layer due to skill inventory budget.",
+            )
+          }
         }
         if (inventory.invalidSkillCount > 0) {
-          append("Ignored ${inventory.invalidSkillCount} invalid skill file(s) during inventory assembly.")
+          if (detailMode == SkillInventoryPromptDetailMode.MINIMAL) {
+            append("Ignored ${inventory.invalidSkillCount} invalid skill file(s).")
+          } else {
+            append("Ignored ${inventory.invalidSkillCount} invalid skill file(s) during inventory assembly.")
+          }
         }
       }.trim(),
       injectedSkillCount = injectedSkills.size,
       omittedSkillCount = omittedSkillCount,
+    )
+  }
+
+  private fun renderConfig(
+    detailMode: SkillInventoryPromptDetailMode,
+  ): SkillInventoryPromptRenderConfig = when (detailMode) {
+    SkillInventoryPromptDetailMode.FULL -> SkillInventoryPromptRenderConfig(
+      maxSkills = config.maxSkills,
+      maxDescriptionChars = config.maxDescriptionChars,
+      includeUserInvocable = true,
+      includeExecutionContext = true,
+      includeDescription = true,
+      includeGuidance = true,
+    )
+
+    SkillInventoryPromptDetailMode.COMPACT -> SkillInventoryPromptRenderConfig(
+      maxSkills = config.maxCompactSkills,
+      maxDescriptionChars = config.maxCompactDescriptionChars,
+      includeUserInvocable = false,
+      includeExecutionContext = true,
+      includeDescription = true,
+      includeGuidance = false,
+    )
+
+    SkillInventoryPromptDetailMode.MINIMAL -> SkillInventoryPromptRenderConfig(
+      maxSkills = config.maxMinimalSkills,
+      maxDescriptionChars = config.maxMinimalDescriptionChars,
+      includeUserInvocable = false,
+      includeExecutionContext = false,
+      includeDescription = false,
+      includeGuidance = false,
     )
   }
 }
@@ -178,11 +296,15 @@ class SkillInventoryPromptLayer(
 class ActiveSkillPromptLayer(
   private val config: ActiveSkillPromptLayerConfig = ActiveSkillPromptLayerConfig(),
 ) {
-  fun render(capsule: ActiveSkillCapsule?): RenderedActiveSkillCapsule {
+  fun render(
+    capsule: ActiveSkillCapsule?,
+    detailMode: ActiveSkillPromptDetailMode = ActiveSkillPromptDetailMode.FULL,
+  ): RenderedActiveSkillCapsule {
     capsule ?: return RenderedActiveSkillCapsule()
     val trimmedBody = capsule.markdownBody.trim()
-    val truncated = trimmedBody.length > config.maxBodyChars
-    val permissionSummary = capsule.toolPermissionSummary.take(config.maxPermissionEntries)
+    val renderConfig = renderConfig(detailMode)
+    val truncated = trimmedBody.length > renderConfig.maxBodyChars
+    val permissionSummary = capsule.toolPermissionSummary.take(renderConfig.maxPermissionEntries)
     return RenderedActiveSkillCapsule(
       text = buildString {
         appendLine("A skill is now active for this run.")
@@ -196,8 +318,10 @@ class ActiveSkillPromptLayer(
         appendLine(capsule.activationSource)
         append("- path=")
         appendLine(capsule.relativePath)
-        append("- description=")
-        appendLine(capsule.description.trim())
+        if (detailMode != ActiveSkillPromptDetailMode.MINIMAL) {
+          append("- description=")
+          appendLine(capsule.description.trim())
+        }
         if (permissionSummary.isNotEmpty()) {
           append("- tool_permissions=")
           appendLine(permissionSummary.joinToString(separator = ","))
@@ -209,7 +333,7 @@ class ActiveSkillPromptLayer(
         appendLine()
         appendLine("[Instructions]")
         if (truncated) {
-          append(trimmedBody.take(config.maxBodyChars).trimEnd())
+          append(trimmedBody.take(renderConfig.maxBodyChars).trimEnd())
           appendLine()
           append("... [truncated]")
         } else {
@@ -224,11 +348,44 @@ class ActiveSkillPromptLayer(
         activationSource = capsule.activationSource,
         toolRestrictionEnabled = capsule.toolRestrictionEnabled,
         allowedToolKeys = capsule.allowedToolKeys.sorted(),
-        truncated = truncated,
+        truncated = truncated || detailMode != ActiveSkillPromptDetailMode.FULL,
       ),
     )
   }
+
+  private fun renderConfig(
+    detailMode: ActiveSkillPromptDetailMode,
+  ): ActiveSkillPromptRenderConfig = when (detailMode) {
+    ActiveSkillPromptDetailMode.FULL -> ActiveSkillPromptRenderConfig(
+      maxBodyChars = config.maxBodyChars,
+      maxPermissionEntries = config.maxPermissionEntries,
+    )
+
+    ActiveSkillPromptDetailMode.COMPACT -> ActiveSkillPromptRenderConfig(
+      maxBodyChars = config.maxCompactBodyChars,
+      maxPermissionEntries = config.maxCompactPermissionEntries,
+    )
+
+    ActiveSkillPromptDetailMode.MINIMAL -> ActiveSkillPromptRenderConfig(
+      maxBodyChars = config.maxMinimalBodyChars,
+      maxPermissionEntries = config.maxMinimalPermissionEntries,
+    )
+  }
 }
+
+private data class ActiveSkillPromptRenderConfig(
+  val maxBodyChars: Int,
+  val maxPermissionEntries: Int,
+)
+
+private data class SkillInventoryPromptRenderConfig(
+  val maxSkills: Int,
+  val maxDescriptionChars: Int,
+  val includeUserInvocable: Boolean,
+  val includeExecutionContext: Boolean,
+  val includeDescription: Boolean,
+  val includeGuidance: Boolean,
+)
 
 class SkillCatalogResolver(
   private val loader: (Iterable<File>) -> SkillLoadReport = SkillLoader::load,

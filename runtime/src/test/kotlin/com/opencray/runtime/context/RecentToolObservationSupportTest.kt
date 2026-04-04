@@ -75,6 +75,123 @@ class RecentToolObservationSupportTest {
   }
 
   @Test
+  fun buildLayerCompactKeepsLatestSubsetWithShorterGuidance() {
+    val support = RecentToolObservationSupport(
+      config = RecentToolObservationConfig(
+        maxEntries = 3,
+        maxCompactEntries = 2,
+        maxReadChars = 512,
+        maxReadLines = 24,
+        maxListChars = 512,
+        maxListLines = 16,
+        maxCompactBodyChars = 128,
+        maxCompactBodyLines = 6,
+      ),
+    )
+
+    val fullLayer = requireNotNull(
+      support.buildLayer(
+        listOf(
+          toolResultMessage(
+            toolName = "Read",
+            content = "README intro",
+            metadata = mapOf(
+              "filePath" to "README.md",
+              "offset" to "1",
+              "returnedLineCount" to "4",
+              "totalLineCount" to "20",
+              "truncated" to "false",
+            ),
+          ),
+          toolResultMessage(
+            toolName = "Grep",
+            content = "src/App.kt:12:needle\nsrc/App.kt:40:needle",
+            metadata = mapOf(
+              "pattern" to "needle",
+              "path" to "src",
+              "matchCount" to "2",
+            ),
+          ),
+          toolResultMessage(
+            toolName = "SkillsFind",
+            content = "ui-ux-pro-max\tremote\tinstall_ref=ui-ux-pro-max\tsource=skills.sh",
+            metadata = mapOf(
+              "query" to "ui",
+              "providerName" to "skills.sh",
+              "remoteResultCount" to "1",
+              "localResultCount" to "0",
+              "resultCount" to "1",
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val compactLayer = support.renderLayer(
+      layer = fullLayer,
+      detailMode = RecentToolObservationDetailMode.COMPACT,
+    )
+
+    assertEquals(2, compactLayer.observationCount)
+    assertEquals(1, compactLayer.omittedObservationCount)
+    assertTrue(compactLayer.text.contains("Recent workspace and delegation observations from the current task are available below."))
+    assertFalse(compactLayer.text.contains("If you still need more detail"))
+    assertFalse(compactLayer.text.contains("Read file_path=README.md"))
+    assertTrue(compactLayer.text.contains("Grep pattern=needle path=src matches=2"))
+    assertTrue(compactLayer.text.contains("SkillsFind query=ui results=1"))
+  }
+
+  @Test
+  fun buildLayerMinimalKeepsLatestSummaryOnly() {
+    val support = RecentToolObservationSupport(
+      config = RecentToolObservationConfig(
+        maxEntries = 3,
+        maxMinimalEntries = 1,
+        maxReadChars = 512,
+        maxReadLines = 24,
+        maxListChars = 512,
+        maxListLines = 16,
+      ),
+    )
+
+    val layer = requireNotNull(
+      support.buildLayer(
+        messages = listOf(
+          toolResultMessage(
+            toolName = "Read",
+            content = "README intro",
+            metadata = mapOf(
+              "filePath" to "README.md",
+              "offset" to "1",
+              "returnedLineCount" to "4",
+              "totalLineCount" to "20",
+              "truncated" to "false",
+            ),
+          ),
+          toolResultMessage(
+            toolName = "Grep",
+            content = "src/App.kt:12:needle",
+            metadata = mapOf(
+              "pattern" to "needle",
+              "path" to "src",
+              "matchCount" to "1",
+            ),
+          ),
+        ),
+        detailMode = RecentToolObservationDetailMode.MINIMAL,
+      ),
+    )
+
+    assertEquals(1, layer.observationCount)
+    assertEquals(1, layer.omittedObservationCount)
+    assertTrue(layer.text.contains("Latest workspace or delegation observations from the current task:"))
+    assertTrue(layer.text.contains("Grep pattern=needle path=src matches=1"))
+    assertFalse(layer.text.contains("Read file_path=README.md"))
+    assertFalse(layer.text.contains("src/App.kt:12:needle"))
+    assertFalse(layer.text.contains("If you still need more detail"))
+  }
+
+  @Test
   fun findDuplicateDiscoveryCallStopsAtMutationBarrier() {
     val support = RecentToolObservationSupport()
     val duplicateCall = AgentToolCall(

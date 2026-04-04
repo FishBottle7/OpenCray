@@ -39,10 +39,15 @@ import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.ProviderNativeWebSearchSupport
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.subagent.SubAgentApprovalResume
+import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
+import com.opencray.runtime.subagent.SubAgentContinuationKind
+import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentExecutionSnapshot
 import com.opencray.runtime.subagent.SubAgentHandleState
 import com.opencray.runtime.subagent.SubAgentMailbox
 import com.opencray.runtime.subagent.SubAgentMailboxMessage
+import com.opencray.runtime.subagent.SubAgentMetadataKeys
 import com.opencray.runtime.memory.MemoryPreferenceKeys
 import com.opencray.runtime.memory.MemoryRecordExtensionKeys
 import java.util.ArrayDeque
@@ -327,6 +332,141 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals(1, fixture.subAgentReplayEvents.size)
     assertEquals(OpenCraySubAgentPhase.RESUMED, fixture.subAgentReplayEvents.single().phase)
     assertEquals("child-run-1", fixture.subAgentReplayEvents.single().childRunId)
+  }
+
+  @Test
+  fun runtimeServiceHostApprovePendingApprovalForExplicitHandleSubmitsDetachedRecoveryTask() {
+    val childResume = SubAgentApprovalResume(
+      approvedToolName = "Edit",
+      promptResumeState = OpenCrayPromptResumeState(turnIndex = 0, toolCallCount = 1),
+      agentId = "child-explicit",
+      childRunId = "child-run-child-explicit",
+      childTaskId = "child-task-child-explicit",
+    )
+    val fixture = pendingApprovalServiceHostFixture(
+      root = temporaryFolder.newFolder("service-host-approve-explicit-subagent"),
+      resultMetadata = SubAgentApprovalResumeMetadata.encodeToMetadata(
+        resume = childResume,
+        json = Json { prettyPrint = false },
+      ) + mapOf(
+        "toolName" to "Edit",
+        "canonicalToolName" to "edit",
+        "childRunId" to childResume.childRunId.orEmpty(),
+        "childTaskId" to childResume.childTaskId.orEmpty(),
+        "subagentType" to "worker",
+        "delegationDescription" to "Edit notes",
+        "subagentContextMode" to "delegated",
+        "subagentDepth" to "2",
+        SubAgentMetadataKeys.CONTROL_TOOL to "wait_agent",
+      ),
+      subAgentHandles = listOf(waitingApprovalSubAgentHandle(agentId = "child-explicit")),
+    )
+
+    fixture.serviceHost.approvePendingApproval(fixture.runId, nowEpochMs = 1_500L)
+
+    assertEquals(emptyList<String>(), fixture.handle.resumedTaskIds)
+    assertFalse(fixture.approvalRegistry.isApproved(fixture.sessionId, fixture.taskId))
+    assertEquals(1, fixture.handle.detachedControlTasks.size)
+    val detachedTask = fixture.handle.detachedControlTasks.single()
+    assertEquals(AgentTaskType.SYSTEM, detachedTask.type)
+    assertEquals(
+      DETACHED_CONTROL_KIND_SUBAGENT_RECOVERY_WAIT,
+      detachedTask.metadata[METADATA_DETACHED_CONTROL_KIND],
+    )
+    assertEquals(
+      detachedSubAgentRecoveryTaskId(
+        sessionId = fixture.sessionId,
+        agentId = "child-explicit",
+        parentRunId = "parent-run-child-explicit",
+      ),
+      detachedTask.id,
+    )
+    assertEquals("child-explicit", detachedTask.metadata[METADATA_SUBAGENT_RECOVERY_AGENT_ID])
+    assertEquals(
+      "parent-run-child-explicit",
+      detachedTask.metadata[METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID],
+    )
+    assertTrue(fixture.approvalRegistry.isApproved(fixture.sessionId, detachedTask.id))
+    assertEquals(
+      PromptCheckpointKind.APPROVED_PENDING_RESUME,
+      fixture.checkpointStore.get(detachedTask.id)?.checkpointKind,
+    )
+    assertTrue(
+      fixture.chatStore.loadSession(fixture.sessionId)?.messages?.lastOrNull()?.text in setOf(
+        "审批已通过，子任务正在后台继续执行。",
+        "Approval granted. The delegated child is resuming in the background.",
+      ),
+    )
+  }
+
+  @Test
+  fun runtimeServiceHostApprovePendingApprovalForSessionWithExplicitHandleSubmitsDetachedRecoveryTask() {
+    val childResume = SubAgentApprovalResume(
+      approvedToolName = ProviderNativeWebSearchSupport.RESUME_TOOL_NAME,
+      promptResumeState = OpenCrayPromptResumeState(turnIndex = 0, toolCallCount = 1),
+      agentId = "child-explicit-session",
+      childRunId = "child-run-child-explicit-session",
+      childTaskId = "child-task-child-explicit-session",
+    )
+    val fixture = pendingApprovalServiceHostFixture(
+      root = temporaryFolder.newFolder("service-host-approve-session-explicit-subagent"),
+      resultMetadata = SubAgentApprovalResumeMetadata.encodeToMetadata(
+        resume = childResume,
+        json = Json { prettyPrint = false },
+      ) + mapOf(
+        "toolName" to "WebSearch",
+        com.opencray.runtime.OpenCrayExecutionMetadataKeys.APPROVAL_RESUME_TOOL_NAME to
+          ProviderNativeWebSearchSupport.RESUME_TOOL_NAME,
+        ProviderNativeWebSearchSupport.METADATA_APPROVAL_KIND to
+          ProviderNativeWebSearchSupport.APPROVAL_KIND,
+        ProviderNativeWebSearchSupport.METADATA_SUPPORTS_SESSION_APPROVAL to "true",
+        "childRunId" to childResume.childRunId.orEmpty(),
+        "childTaskId" to childResume.childTaskId.orEmpty(),
+        "subagentType" to "researcher",
+        "delegationDescription" to "Search docs",
+        "subagentContextMode" to "delegated",
+        "subagentDepth" to "2",
+        SubAgentMetadataKeys.CONTROL_TOOL to "wait_agent",
+      ),
+      checkpointToolName = ProviderNativeWebSearchSupport.RESUME_TOOL_NAME,
+      subAgentHandles = listOf(waitingApprovalSubAgentHandle(agentId = "child-explicit-session")),
+    )
+
+    fixture.serviceHost.approvePendingApprovalForSession(fixture.runId, nowEpochMs = 1_500L)
+
+    assertEquals(emptyList<String>(), fixture.handle.resumedTaskIds)
+    assertTrue(fixture.chatStore.isNativeWebSearchSessionApproved(fixture.sessionId))
+    assertFalse(fixture.approvalRegistry.isApproved(fixture.sessionId, fixture.taskId))
+    assertEquals(1, fixture.handle.detachedControlTasks.size)
+    val detachedTask = fixture.handle.detachedControlTasks.single()
+    assertEquals(AgentTaskType.SYSTEM, detachedTask.type)
+    assertEquals(
+      DETACHED_CONTROL_KIND_SUBAGENT_RECOVERY_WAIT,
+      detachedTask.metadata[METADATA_DETACHED_CONTROL_KIND],
+    )
+    assertEquals(
+      detachedSubAgentRecoveryTaskId(
+        sessionId = fixture.sessionId,
+        agentId = "child-explicit-session",
+        parentRunId = "parent-run-child-explicit-session",
+      ),
+      detachedTask.id,
+    )
+    assertEquals(
+      "child-explicit-session",
+      detachedTask.metadata[METADATA_SUBAGENT_RECOVERY_AGENT_ID],
+    )
+    assertTrue(fixture.approvalRegistry.isApproved(fixture.sessionId, detachedTask.id))
+    assertEquals(
+      PromptCheckpointKind.APPROVED_PENDING_RESUME,
+      fixture.checkpointStore.get(detachedTask.id)?.checkpointKind,
+    )
+    assertTrue(
+      fixture.chatStore.loadSession(fixture.sessionId)?.messages?.lastOrNull()?.text in setOf(
+        "审批已通过，子任务正在后台继续执行。",
+        "Approval granted. The delegated child is resuming in the background.",
+      ),
+    )
   }
 
   @Test
@@ -885,15 +1025,20 @@ class OpenCrayRuntimeServiceHostTest {
 
     assertEquals(1, recoverySession.detachedControlTasks.size)
     val recoveryTask = recoverySession.detachedControlTasks.single()
-    assertEquals(AgentTaskType.TOOL_CALL, recoveryTask.type)
-    assertTrue(recoveryTask.input.contains("wait_agent"))
-    assertTrue(recoveryTask.input.contains("child-resume"))
+    assertEquals(AgentTaskType.SYSTEM, recoveryTask.type)
+    assertEquals(
+      DETACHED_CONTROL_KIND_SUBAGENT_RECOVERY_WAIT,
+      recoveryTask.metadata[METADATA_DETACHED_CONTROL_KIND],
+    )
     assertEquals(
       RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
       recoveryTask.metadata[RunLifecycleMetadataKeys.SUBMISSION_SOURCE],
     )
-    assertEquals("child-resume", recoveryTask.metadata["_host.subagentRecoveryAgentId"])
-    assertEquals(recoveryHandle.parentRunId, recoveryTask.metadata["_host.subagentRecoveryParentRunId"])
+    assertEquals("child-resume", recoveryTask.metadata[METADATA_SUBAGENT_RECOVERY_AGENT_ID])
+    assertEquals(
+      recoveryHandle.parentRunId,
+      recoveryTask.metadata[METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID],
+    )
     assertTrue(recoverySession.submittedTasks.isEmpty())
     assertEquals(0, recoverySession.ensureProcessingCallCount)
   }
@@ -1319,8 +1464,11 @@ class OpenCrayRuntimeServiceHostTest {
     val personalizationFacade = RecordingPersonalizationFacade()
     val appLanguageAccess = RecordingAppLanguageSettingsGatewayAccess()
     var settingsOverviewNotificationCount = 0
+    var shellSnapshotNotificationCount = 0
+    var chatSnapshotNotificationCount = 0
     var localizedRefreshCount = 0
     var skillsSnapshotNotificationCount = 0
+    var skillsProjectionNotificationCount = 0
     var localSettingsOverviewEmissionCount = 0
     val gateway = ServiceOwnedSettingsGateway(
       delegate = delegate,
@@ -1338,8 +1486,11 @@ class OpenCrayRuntimeServiceHostTest {
       safetySettingsFacade = RecordingSafetySettingsFacade(),
       llmConfigFacade = RecordingLlmConfigFacade(),
       mcpSettingsFacade = RecordingMcpSettingsFacade(),
+      shellSnapshotNotifier = { shellSnapshotNotificationCount += 1 },
+      chatSnapshotNotifier = { chatSnapshotNotificationCount += 1 },
       settingsOverviewNotifier = { settingsOverviewNotificationCount += 1 },
       skillsSnapshotNotifier = { skillsSnapshotNotificationCount += 1 },
+      skillsProjectionNotifier = { skillsProjectionNotificationCount += 1 },
       localizedResourcesRefresh = { localizedRefreshCount += 1 },
       mainThreadPoster = ImmediateMainThreadPoster,
     )
@@ -1361,9 +1512,12 @@ class OpenCrayRuntimeServiceHostTest {
       assertEquals("Custom Coach", savedPersonalization["customLabel"])
       assertEquals("memory", personalizationFacade.lastResetScope?.wireValue)
       assertEquals("Memory reset staged.", resetPersonalization["lastResetMessage"])
-      assertEquals(2, settingsOverviewNotificationCount)
+      assertEquals(3, settingsOverviewNotificationCount)
+      assertEquals(1, shellSnapshotNotificationCount)
+      assertEquals(1, chatSnapshotNotificationCount)
       assertEquals(1, localizedRefreshCount)
       assertEquals(1, skillsSnapshotNotificationCount)
+      assertEquals(1, skillsProjectionNotificationCount)
       assertEquals(4, localSettingsOverviewEmissionCount)
       assertEquals("zh-CN", appLanguageAccess.lastLanguageId)
       assertNull(delegate.lastPersonalizationPresetId)
@@ -2168,6 +2322,246 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals(2, bindingAdapter.bindCount)
 
     dispose()
+  }
+
+  @Test
+  fun serviceOwnedShellGatewayLoadsAndObservesWithoutHostRuntimeDelegate() {
+    val expected = bridgeSnapshot(temporaryFolder.newFolder("service-owned-shell"))
+    var keepAliveState = RuntimeServiceKeepAliveState(
+      phase = RuntimeServiceKeepAliveState.PHASE_CREATED,
+      changedAtEpochMs = 1_000L,
+    )
+    var keepAliveListener: (() -> Unit)? = null
+    val gateway = ServiceOwnedShellGateway(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      localeTag = "en",
+      hostLabel = "HOST",
+      hostSummary = "summary",
+      runtimeHostAccess = expected.runtimeAccess.hostAccess,
+      runtimeServiceLifecycle = expected.serviceLifecycle,
+      runtimeServiceWorkStateProvider = { expected.serviceWorkState },
+      runtimeServiceKeepAliveStateProvider = { keepAliveState },
+      runtimeServiceKeepAliveChangeRegistrar = RuntimeServiceKeepAliveChangeRegistrar { listener ->
+        keepAliveListener = listener
+        { if (keepAliveListener === listener) keepAliveListener = null }
+      },
+      runtimeServiceConnectionStateProvider = { RuntimeServiceConnectionState.binderConnected() },
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    val observedStates = mutableListOf<Pair<String?, String?>>()
+
+    val disposer = gateway.observeShell { snapshot ->
+      val keepAlive = snapshot["runtimeServiceKeepAliveState"] as? Map<*, *>
+      observedStates += (snapshot["localeTag"] as String?) to (keepAlive?.get("phase") as String?)
+    }
+
+    try {
+      val initial = gateway.loadShellSnapshot()
+
+      assertEquals("chat", initial["initialTab"])
+      assertEquals("en", initial["localeTag"])
+      assertNotNull(initial["runtimeOwnerLifecycle"])
+      assertNotNull(initial["runtimeOwnerWorkSummary"])
+      assertNotNull(initial["runtimeServiceLifecycle"])
+      assertEquals(listOf("en" to RuntimeServiceKeepAliveState.PHASE_CREATED), observedStates)
+
+      gateway.updateLocalizedResources(
+        localeTag = "zh-CN",
+        hostLabel = "HOST-ZH",
+        hostSummary = "summary-zh",
+      )
+      gateway.emitLocalizedSnapshotChanged()
+
+      keepAliveState = keepAliveState.copy(
+        phase = RuntimeServiceKeepAliveState.PHASE_IDLE_GRACE,
+        changedAtEpochMs = 1_500L,
+      )
+      keepAliveListener?.invoke()
+
+      assertEquals(
+        listOf(
+          "en" to RuntimeServiceKeepAliveState.PHASE_CREATED,
+          "zh-CN" to RuntimeServiceKeepAliveState.PHASE_CREATED,
+          "zh-CN" to RuntimeServiceKeepAliveState.PHASE_IDLE_GRACE,
+        ),
+        observedStates,
+      )
+    } finally {
+      disposer()
+    }
+  }
+
+  @Test
+  fun serviceOwnedChatRuntimeGatewayKeepsHostChatAndRunSnapshotsButProjectsRuntimeReads() {
+    val delegate = RecordingChatRuntimeGateway("delegate")
+    val readGateway = RecordingChatRuntimeGateway("projection")
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      delegate = delegate,
+      readGateway = readGateway,
+      snapshotNotifier = delegate::notifyChatSnapshotsChanged,
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    val observedChatSources = mutableListOf<String?>()
+    val observedRuntimeSources = mutableListOf<String?>()
+
+    val chatDisposer = gateway.observeChat { snapshot ->
+      observedChatSources += snapshot["source"] as String?
+    }
+    val runtimeDisposer = gateway.observeChatRuntime { snapshot ->
+      observedRuntimeSources += snapshot["source"] as String?
+    }
+
+    try {
+      assertEquals("delegate-chat", gateway.loadChatSnapshot()["source"])
+      assertEquals("projection-runtime", gateway.loadChatRuntimeSnapshot()["source"])
+      assertEquals("delegate-run", gateway.loadChatRunSnapshot("run-alpha")?.get("source"))
+      assertEquals(
+        "projection-memory-action",
+        gateway.applyMemoryDebugAction("memory-1", "suppress")["source"],
+      )
+
+      gateway.submitChatMessage("hello", emptyList())
+      gateway.notifyChatSnapshotsChanged()
+
+      assertEquals(listOf("delegate-chat", "delegate-chat"), observedChatSources)
+      assertEquals(listOf("projection-runtime", "projection-runtime"), observedRuntimeSources)
+      assertEquals("hello", delegate.submittedText)
+      assertNull(delegate.memoryDebugActionRecordId)
+      assertEquals("memory-1", readGateway.memoryDebugActionRecordId)
+      assertEquals("suppress", readGateway.memoryDebugActionId)
+      assertNull(readGateway.submittedText)
+      assertEquals(1, delegate.notifiedChatSnapshotCount)
+    } finally {
+      chatDisposer()
+      runtimeDisposer()
+    }
+  }
+
+  @Test
+  fun serviceOwnedChatRuntimeGatewayRoutesSessionMutationsThroughServiceAccess() {
+    val chatRoot = temporaryFolder.newFolder("service-owned-chat-mutation-store")
+    val chatSessionStore = ChatSessionLocalStore(chatRoot.resolve("chat-session"))
+    val originalSessionId = chatSessionStore.loadState().activeSession.sessionId
+    chatSessionStore.appendUserMessage(originalSessionId, "Keep this transcript")
+    val sourceMessageId = requireNotNull(
+      chatSessionStore.loadSession(originalSessionId),
+    ).messages.last().messageId
+    val runtimeManager = RecordingAgentSessionRuntimeManager()
+    val repairCalls = mutableListOf<Pair<String, List<AgentRunSnapshot>>>()
+    val lifecycleDescriptor = HostRuntimeLifecycleDescriptor()
+    val delegate = RecordingChatRuntimeGateway("delegate")
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      delegate = delegate,
+      readGateway = RecordingChatRuntimeGateway("projection"),
+      snapshotNotifier = delegate::notifyChatSnapshotsChanged,
+      chatSessionMutationAccess = ServiceOwnedChatSessionMutationAccess(
+        chatSessionStore = chatSessionStore,
+        runtimeHostAccess = DefaultOpenCrayRuntimeHostAccess(
+          lifecycleDescriptor = lifecycleDescriptor,
+          sessionRuntimeManager = runtimeManager,
+          runEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory(),
+          promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory(),
+          supplementStoreFactory = object : AgentSessionSupplementStoreFactory {
+            private val stores = linkedMapOf<String, SessionSupplementStore>()
+
+            override fun forChatSession(sessionId: String): SessionSupplementStore =
+              stores.getOrPut(sessionId) { InMemorySessionSupplementStore() }
+          },
+          approvalRegistry = AgentTaskApprovalRegistry(),
+        ),
+        chatUnreadMessageState = ChatUnreadMessageState(),
+        terminalReplayRepairer = { sessionId, runs ->
+          repairCalls += sessionId to runs
+        },
+      ),
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+
+    gateway.createChatSession()
+    val createdSessionId = chatSessionStore.loadState().activeSession.sessionId
+
+    gateway.copyChatSession(originalSessionId)
+    val copiedSessionId = chatSessionStore.loadState().activeSession.sessionId
+
+    gateway.branchChatSessionFromMessage(originalSessionId, sourceMessageId)
+    val branchedSessionId = chatSessionStore.loadState().activeSession.sessionId
+
+    gateway.branchChatSessionFromMessage(originalSessionId, "")
+
+    assertTrue(createdSessionId != originalSessionId)
+    assertTrue(copiedSessionId != originalSessionId)
+    assertTrue(copiedSessionId != createdSessionId)
+    assertTrue(branchedSessionId != originalSessionId)
+    assertTrue(branchedSessionId != copiedSessionId)
+    assertEquals(
+      sourceMessageId,
+      requireNotNull(chatSessionStore.loadSession(branchedSessionId)).messages.last().messageId,
+    )
+    assertEquals(0, delegate.createChatSessionCallCount)
+    assertTrue(delegate.copiedSessionIds.isEmpty())
+    assertTrue(delegate.branchedSessionRequests.isEmpty())
+    assertEquals(3, delegate.notifiedChatSnapshotCount)
+    assertEquals(
+      listOf(createdSessionId, copiedSessionId, branchedSessionId),
+      runtimeManager.resumedSessionIds,
+    )
+    assertEquals(
+      listOf(
+        createdSessionId to emptyList<AgentRunSnapshot>(),
+        copiedSessionId to emptyList(),
+        branchedSessionId to emptyList(),
+      ),
+      repairCalls,
+    )
+  }
+
+  @Test
+  fun serviceOwnedChatSessionMutationAccessClearsSharedUnreadStateWhenReusingEmptySession() {
+    val chatRoot = temporaryFolder.newFolder("service-owned-chat-unread-store")
+    val chatSessionStore = ChatSessionLocalStore(chatRoot.resolve("chat-session"))
+    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
+    val chatUnreadMessageState = ChatUnreadMessageState().apply {
+      incrementIfBackgroundUpdate(
+        sessionId = activeSessionId,
+        activeSessionId = "other-session",
+        text = "background update",
+      )
+    }
+    val runtimeManager = RecordingAgentSessionRuntimeManager()
+    val repairCalls = mutableListOf<Pair<String, List<AgentRunSnapshot>>>()
+    val lifecycleDescriptor = HostRuntimeLifecycleDescriptor()
+    val access = ServiceOwnedChatSessionMutationAccess(
+      chatSessionStore = chatSessionStore,
+      runtimeHostAccess = DefaultOpenCrayRuntimeHostAccess(
+        lifecycleDescriptor = lifecycleDescriptor,
+        sessionRuntimeManager = runtimeManager,
+        runEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory(),
+        promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory(),
+        supplementStoreFactory = object : AgentSessionSupplementStoreFactory {
+          private val stores = linkedMapOf<String, SessionSupplementStore>()
+
+          override fun forChatSession(sessionId: String): SessionSupplementStore =
+            stores.getOrPut(sessionId) { InMemorySessionSupplementStore() }
+        },
+        approvalRegistry = AgentTaskApprovalRegistry(),
+      ),
+      chatUnreadMessageState = chatUnreadMessageState,
+      terminalReplayRepairer = { sessionId, runs ->
+        repairCalls += sessionId to runs
+      },
+    )
+
+    assertEquals(1, chatUnreadMessageState.rawCount(activeSessionId))
+
+    access.createChatSession()
+
+    assertEquals(activeSessionId, chatSessionStore.loadState().activeSession.sessionId)
+    assertEquals(0, chatUnreadMessageState.rawCount(activeSessionId))
+    assertEquals(listOf(activeSessionId), runtimeManager.resumedSessionIds)
+    assertEquals(
+      listOf(activeSessionId to emptyList<AgentRunSnapshot>()),
+      repairCalls,
+    )
   }
 
   @Test
@@ -3941,6 +4335,22 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals(1, toolRetrievals.size)
     assertEquals("memory.search", toolRetrievals.single()["toolName"])
     assertEquals("search", toolRetrievals.single()["operation"])
+
+    val actionResult = gateway.applyMemoryDebugAction(
+      recordId = "memory-1",
+      actionId = "suppress",
+    )
+    val updatedRecord = personalizationStore.listMemoryRecords().single()
+    val audits = personalizationStore.listMemoryDebugActionAudits()
+
+    assertEquals("memory-1", actionResult["recordId"])
+    assertEquals("suppress", actionResult["action"])
+    assertEquals(true, actionResult["applied"])
+    assertEquals("resolved", updatedRecord.extensions[MemoryRecordExtensionKeys.STATUS])
+    assertEquals(1, audits.size)
+    assertEquals("memory-1", audits.single().recordId)
+    assertEquals("suppress", audits.single().action)
+    assertEquals(sessionId, audits.single().sessionId)
   }
 
   @Test
@@ -4510,6 +4920,66 @@ class OpenCrayRuntimeServiceHostTest {
     override fun listSubAgentHandles(): List<SubAgentHandleState> = subAgentHandles
 
     override fun listDetachedControlTasks(): List<AgentTask> = detachedControlTasks.toList()
+
+    override fun submitDetachedSubAgentRecoveryTask(
+      agentId: String,
+      parentRunId: String,
+      taskId: String,
+      createdAtEpochMs: Long,
+      submissionSource: String,
+    ): AgentRunSubmission = submitDetachedControlTask(
+      detachedSubAgentRecoveryWaitTask(
+        sessionId = sessionId,
+        agentId = agentId,
+        parentRunId = parentRunId,
+        taskId = taskId,
+        createdAtEpochMs = createdAtEpochMs,
+        metadata = HostRuntimeLifecycleDescriptor().taskMetadata(
+          submissionSource = submissionSource,
+        ),
+      ),
+    )
+
+    override fun ensureRecoverableDetachedSubAgentTasks(): Int {
+      val activeParentRunIds = runs
+        .filter(AgentRunSnapshot::isActive)
+        .map(AgentRunSnapshot::runId)
+        .toSet()
+      val pendingRecoveryKeys = detachedControlTasks.mapNotNull { task ->
+        val agentId = task.metadata[METADATA_SUBAGENT_RECOVERY_AGENT_ID]
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+        val parentRunId = task.metadata[METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID]
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+        if (agentId == null || parentRunId == null) {
+          null
+        } else {
+          parentRunId to agentId
+        }
+      }.toSet()
+      val resumableHandles = subAgentHandles.filter { handle ->
+        handle.snapshot.state == SubAgentExecutionState.BACKGROUND_QUEUED &&
+          handle.pendingApprovalResume == null &&
+          handle.parentRunId !in activeParentRunIds &&
+          (handle.parentRunId to handle.agentId) !in pendingRecoveryKeys
+      }
+      resumableHandles.forEach { handle ->
+        val taskId = detachedSubAgentRecoveryTaskId(
+          sessionId = sessionId,
+          agentId = handle.agentId,
+          parentRunId = handle.parentRunId,
+        )
+        submitDetachedSubAgentRecoveryTask(
+          agentId = handle.agentId,
+          parentRunId = handle.parentRunId,
+          taskId = taskId,
+          createdAtEpochMs = 1_500L,
+          submissionSource = RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
+        )
+      }
+      return resumableHandles.size
+    }
   }
 
   private fun backgroundSubAgentHandle(agentId: String): SubAgentHandleState = SubAgentHandleState(
@@ -4544,6 +5014,26 @@ class OpenCrayRuntimeServiceHostTest {
     snapshot = SubAgentExecutionSnapshot.backgroundQueued(),
     createdAtEpochMs = 1_000L,
     updatedAtEpochMs = 1_100L,
+  )
+
+  private fun waitingApprovalSubAgentHandle(agentId: String): SubAgentHandleState = queuedSubAgentHandle(
+    agentId = agentId,
+  ).copy(
+    snapshot = SubAgentExecutionSnapshot(
+      state = SubAgentExecutionState.WAITING_APPROVAL,
+      continuationKind = SubAgentContinuationKind.PROMPT_RESUME,
+      resumable = true,
+      requiresUserAction = true,
+      isHighRisk = false,
+      headline = "Delegated child run requires approval.",
+    ),
+    pendingApprovalResume = SubAgentApprovalResume(
+      approvedToolName = "Edit",
+      promptResumeState = OpenCrayPromptResumeState(turnIndex = 0, toolCallCount = 1),
+      agentId = agentId,
+      childRunId = "child-run-$agentId",
+      childTaskId = "child-task-$agentId",
+    ),
   )
 
   private class InMemoryMemoryStore : MemoryStore {
@@ -4765,6 +5255,14 @@ class OpenCrayRuntimeServiceHostTest {
   ) : OpenCrayRuntimeServiceChatGateway {
     var submittedText: String? = null
       private set
+    var createChatSessionCallCount: Int = 0
+      private set
+    val copiedSessionIds = mutableListOf<String>()
+    val branchedSessionRequests = mutableListOf<Pair<String, String>>()
+    var memoryDebugActionRecordId: String? = null
+      private set
+    var memoryDebugActionId: String? = null
+      private set
     var approvedTaskIdOrRunId: String? = null
       private set
     var approvedForSessionTaskIdOrRunId: String? = null
@@ -4811,18 +5309,31 @@ class OpenCrayRuntimeServiceHostTest {
     override fun getMemoryDebugSlice(path: String, fromLine: Int?, lines: Int): Map<String, Any?> =
       emptyMap()
 
-    override fun applyMemoryDebugAction(recordId: String, actionId: String): Map<String, Any?> =
-      emptyMap()
+    override fun applyMemoryDebugAction(recordId: String, actionId: String): Map<String, Any?> {
+      memoryDebugActionRecordId = recordId
+      memoryDebugActionId = actionId
+      return mapOf(
+        "source" to "$label-memory-action",
+        "recordId" to recordId,
+        "action" to actionId,
+      )
+    }
 
-    override fun createChatSession() = Unit
+    override fun createChatSession() {
+      createChatSessionCallCount += 1
+    }
 
-    override fun copyChatSession(sessionId: String) = Unit
+    override fun copyChatSession(sessionId: String) {
+      copiedSessionIds += sessionId
+    }
 
     override fun deleteChatSession(sessionId: String) = Unit
 
     override fun selectChatSession(sessionId: String) = Unit
 
-    override fun branchChatSessionFromMessage(sessionId: String, messageId: String) = Unit
+    override fun branchChatSessionFromMessage(sessionId: String, messageId: String) {
+      branchedSessionRequests += sessionId to messageId
+    }
 
     override fun deleteChatMessage(sessionId: String, messageId: String) = Unit
 
@@ -5345,6 +5856,10 @@ class OpenCrayRuntimeServiceHostTest {
       model: String,
       reasoningEffort: String,
       systemPrompt: String,
+      openAiPromptCacheKeyStrategy: String?,
+      openAiPromptCacheRetention: String?,
+      anthropicPromptCachingEnabled: Boolean?,
+      anthropicPromptCacheTtl: String?,
     ): Map<String, Any?> = mapOf("source" to "$label-llm-save", "enabled" to enabled)
 
     override fun saveCustomLlmProvider(
@@ -5357,6 +5872,10 @@ class OpenCrayRuntimeServiceHostTest {
       model: String,
       reasoningEffort: String,
       systemPrompt: String,
+      openAiPromptCacheKeyStrategy: String?,
+      openAiPromptCacheRetention: String?,
+      anthropicPromptCachingEnabled: Boolean?,
+      anthropicPromptCacheTtl: String?,
     ): Map<String, Any?> = mapOf("source" to "$label-custom-llm")
 
     override fun validateLlmConfig(
@@ -6232,6 +6751,7 @@ class OpenCrayRuntimeServiceHostTest {
     cancelRequestResult: Boolean = false,
     appendInterruptEvent: Boolean = false,
     includeQueueApprovalTask: Boolean = true,
+    subAgentHandles: List<SubAgentHandleState> = emptyList(),
     resultMetadata: Map<String, String> = mapOf(
       "toolName" to "Bash",
       "canonicalToolName" to "bash",
@@ -6305,6 +6825,7 @@ class OpenCrayRuntimeServiceHostTest {
       queueSnapshot = queueSnapshot,
       cancelRequestResult = cancelRequestResult,
       resumeRequestResult = resumeRequestResult,
+      subAgentHandles = subAgentHandles,
     )
     runtimeManager.putHandle(handle)
     val runEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory()

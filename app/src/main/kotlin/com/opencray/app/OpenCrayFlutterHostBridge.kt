@@ -270,6 +270,11 @@ internal class OpenCrayFlutterHostBridge(
               model = call.argument<String>("model").orEmpty(),
               reasoningEffort = call.argument<String>("reasoningEffort").orEmpty(),
               systemPrompt = call.argument<String>("systemPrompt").orEmpty(),
+              openAiPromptCacheKeyStrategy = call.argument<String>("openAiPromptCacheKeyStrategy"),
+              openAiPromptCacheRetention = call.argument<String>("openAiPromptCacheRetention"),
+              anthropicPromptCachingEnabled =
+                call.argument<Boolean>("anthropicPromptCachingEnabled"),
+              anthropicPromptCacheTtl = call.argument<String>("anthropicPromptCacheTtl"),
             )
           }
           return
@@ -286,6 +291,11 @@ internal class OpenCrayFlutterHostBridge(
               model = call.argument<String>("model").orEmpty(),
               reasoningEffort = call.argument<String>("reasoningEffort").orEmpty(),
               systemPrompt = call.argument<String>("systemPrompt").orEmpty(),
+              openAiPromptCacheKeyStrategy = call.argument<String>("openAiPromptCacheKeyStrategy"),
+              openAiPromptCacheRetention = call.argument<String>("openAiPromptCacheRetention"),
+              anthropicPromptCachingEnabled =
+                call.argument<Boolean>("anthropicPromptCachingEnabled"),
+              anthropicPromptCacheTtl = call.argument<String>("anthropicPromptCacheTtl"),
             )
           }
           return

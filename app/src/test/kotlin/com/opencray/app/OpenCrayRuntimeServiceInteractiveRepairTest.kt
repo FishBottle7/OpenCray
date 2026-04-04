@@ -194,14 +194,25 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
 
     assertEquals(1, recoverySession.submittedTasks.size)
     val recoveryTask = recoverySession.submittedTasks.single()
-    assertEquals(AgentTaskType.TOOL_CALL, recoveryTask.type)
-    assertTrue(recoveryTask.input.contains("wait_agent"))
-    assertTrue(recoveryTask.input.contains("child-resume"))
+    assertEquals(AgentTaskType.SYSTEM, recoveryTask.type)
+    assertEquals(
+      DETACHED_CONTROL_KIND_SUBAGENT_RECOVERY_WAIT,
+      recoveryTask.metadata[METADATA_DETACHED_CONTROL_KIND],
+    )
+    assertEquals(
+      detachedSubAgentRecoveryTaskId(
+        sessionId = recoverySessionId,
+        agentId = "child-resume",
+        parentRunId = "parent-run-child-resume",
+      ),
+      recoveryTask.id,
+    )
+    assertEquals("child-resume", recoveryTask.metadata[METADATA_SUBAGENT_RECOVERY_AGENT_ID])
     assertEquals(
       RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
       recoveryTask.metadata[RunLifecycleMetadataKeys.SUBMISSION_SOURCE],
     )
-    assertEquals(1, recoverySession.ensureProcessingCallCount)
+    assertEquals(0, recoverySession.ensureProcessingCallCount)
   }
 
   private class RecordingRuntimeHostAccess(
@@ -370,6 +381,66 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
       List<com.opencray.runtime.process.ManagedProcessSnapshot> = emptyList()
 
     override fun listSubAgentHandles(): List<SubAgentHandleState> = subAgentHandles
+
+    override fun submitDetachedSubAgentRecoveryTask(
+      agentId: String,
+      parentRunId: String,
+      taskId: String,
+      createdAtEpochMs: Long,
+      submissionSource: String,
+    ): AgentRunSubmission = submitTask(
+      detachedSubAgentRecoveryWaitTask(
+        sessionId = sessionId,
+        agentId = agentId,
+        parentRunId = parentRunId,
+        taskId = taskId,
+        createdAtEpochMs = createdAtEpochMs,
+        metadata = HostRuntimeLifecycleDescriptor().taskMetadata(
+          submissionSource = submissionSource,
+        ),
+      ),
+    )
+
+    override fun ensureRecoverableDetachedSubAgentTasks(): Int {
+      val activeParentRunIds = runs
+        .filter(AgentRunSnapshot::isActive)
+        .map(AgentRunSnapshot::runId)
+        .toSet()
+      val pendingRecoveryKeys = submittedTasks.mapNotNull { task ->
+        val agentId = task.metadata[METADATA_SUBAGENT_RECOVERY_AGENT_ID]
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+        val parentRunId = task.metadata[METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID]
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+        if (agentId == null || parentRunId == null) {
+          null
+        } else {
+          parentRunId to agentId
+        }
+      }.toSet()
+      val resumableHandles = subAgentHandles.filter { handle ->
+        handle.snapshot.state == com.opencray.runtime.subagent.SubAgentExecutionState.BACKGROUND_QUEUED &&
+          handle.pendingApprovalResume == null &&
+          handle.parentRunId !in activeParentRunIds &&
+          (handle.parentRunId to handle.agentId) !in pendingRecoveryKeys
+      }
+      resumableHandles.forEach { handle ->
+        val taskId = detachedSubAgentRecoveryTaskId(
+          sessionId = sessionId,
+          agentId = handle.agentId,
+          parentRunId = handle.parentRunId,
+        )
+        submitDetachedSubAgentRecoveryTask(
+          agentId = handle.agentId,
+          parentRunId = handle.parentRunId,
+          taskId = taskId,
+          createdAtEpochMs = 1_500L,
+          submissionSource = RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
+        )
+      }
+      return resumableHandles.size
+    }
   }
 
   private fun backgroundSubAgentHandle(agentId: String): SubAgentHandleState = SubAgentHandleState(

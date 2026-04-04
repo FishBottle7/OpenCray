@@ -2,6 +2,7 @@ package com.opencray.runtime.memory
 
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.runtime.context.ContextPruner
+import com.opencray.runtime.context.ReplayPressureEvaluator
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.TranscriptWindowBuilder
@@ -50,6 +51,7 @@ class MemoryFlushCoordinator(
   private val contextPruner: ContextPruner = ContextPruner(),
   private val transcriptWindowBuilder: TranscriptWindowBuilder = TranscriptWindowBuilder(),
   private val policy: MemoryFlushPolicy = MemoryFlushPolicy(),
+  private val replayPressureEvaluator: ReplayPressureEvaluator = ReplayPressureEvaluator(),
   private val candidateExtractor: MemoryCandidateExtractor = MemoryCandidateExtractor(),
   private val writer: MemoryWriter,
   private val existingRecordIdsProvider: (() -> Set<String>)? = null,
@@ -60,13 +62,19 @@ class MemoryFlushCoordinator(
     sessionId: String,
     workspaceId: String?,
     conversation: List<RuntimeConversationMessage>,
+    llmMetadata: Map<String, String> = emptyMap(),
     taskId: String? = null,
   ): MemoryFlushSummary {
+    val prunedConversation = contextPruner.prune(conversation).messages
+    val replayPressure = replayPressureEvaluator.evaluate(
+      conversation = prunedConversation,
+      llmMetadata = llmMetadata,
+    )
     val omittedMessages = transcriptWindowBuilder
-      .buildSelection(contextPruner.prune(conversation).messages)
+      .buildSelection(prunedConversation)
       .omittedMessages
     val omittedCharCount = omittedMessages.sumOf { message -> message.content.length }
-    if (!policy.shouldFlush(omittedMessages)) {
+    if (!policy.shouldFlush(omittedMessages, replayPressure)) {
       return MemoryFlushSummary(
         trace = MemoryFlushTrace(
           outcome = MemoryFlushOutcome.NO_PRESSURE,

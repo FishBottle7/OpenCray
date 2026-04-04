@@ -37,10 +37,14 @@ import com.opencray.runtime.policy.ToolResultEnvelope
 import com.opencray.runtime.policy.ToolResultLimitKind
 import com.opencray.runtime.policy.ToolWorkspaceRelation
 import com.opencray.runtime.process.AgentProcessRegistry
+import com.opencray.runtime.process.ManagedProcessDeliveredObservationState
 import com.opencray.runtime.process.InMemoryAgentProcessRegistry
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.process.normalizedDeliveredObservationState
+import com.opencray.runtime.process.normalizedObservationState
+import com.opencray.runtime.process.normalizedReconnectState
 import com.opencray.runtime.context.RuntimeConversationAttachment
 import com.opencray.runtime.context.RuntimeConversationAttachmentKind
 import com.opencray.runtime.skills.SkillPackageBatchInstallEntry
@@ -57,7 +61,10 @@ import com.opencray.runtime.web.WebSearchRequest
 import com.opencray.skills.SkillLoadReport
 import com.opencray.skills.SkillLoader
 import java.io.File
+import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -254,8 +261,118 @@ data class OpenCrayToolDispatcherConfig(
   }
 }
 
+private const val MANAGED_PROCESS_OBSERVATION_DELIVERY_MODE_FULL_SNAPSHOT: String = "full_snapshot"
+private const val MANAGED_PROCESS_OBSERVATION_DELIVERY_MODE_DELTA: String = "delta"
+private const val MANAGED_PROCESS_OBSERVATION_DELIVERY_MODE_NO_CHANGE: String = "no_change"
+private const val MANAGED_PROCESS_OBSERVATION_DELIVERY_MODE_RESET_FULL: String = "reset_full"
+
+data class ManagedProcessObservationCursorState(
+  val mode: String,
+  val cursor: String,
+  val stdoutBytes: Long,
+  val stderrBytes: Long,
+)
+
+private data class ManagedProcessObservationDelivery(
+  val stdout: String,
+  val stderr: String,
+  val metadata: Map<String, String>,
+  val renderLines: List<String>,
+) {
+  companion object {
+    fun fullSnapshot(snapshot: ManagedProcessSnapshot): ManagedProcessObservationDelivery =
+      ManagedProcessObservationDelivery(
+        stdout = snapshot.stdout,
+        stderr = snapshot.stderr,
+        metadata = emptyMap(),
+        renderLines = emptyList(),
+      )
+
+    fun snapshotMode(
+      snapshot: ManagedProcessSnapshot,
+      mode: String,
+      cursorBefore: String,
+      cursorAfter: String,
+      stdoutDeltaBytes: Long,
+      stderrDeltaBytes: Long,
+      warning: String? = null,
+    ): ManagedProcessObservationDelivery = deltaMode(
+      mode = mode,
+      cursorBefore = cursorBefore,
+      cursorAfter = cursorAfter,
+      stdout = snapshot.stdout,
+      stderr = snapshot.stderr,
+      stdoutDeltaBytes = stdoutDeltaBytes,
+      stderrDeltaBytes = stderrDeltaBytes,
+      warning = warning,
+    )
+
+    fun deltaMode(
+      mode: String,
+      cursorBefore: String,
+      cursorAfter: String,
+      stdout: String,
+      stderr: String,
+      stdoutDeltaBytes: Long,
+      stderrDeltaBytes: Long,
+      warning: String? = null,
+    ): ManagedProcessObservationDelivery {
+      val metadata = buildMap {
+        put("sandboxCommandObservationDeliveryMode", mode)
+        put("sandboxCommandObservationCursorBefore", cursorBefore)
+        put("sandboxCommandObservationCursorAfter", cursorAfter)
+        put("sandboxCommandObservationStdoutDeltaBytes", stdoutDeltaBytes.toString())
+        put("sandboxCommandObservationStderrDeltaBytes", stderrDeltaBytes.toString())
+        warning?.trim()?.takeIf(String::isNotBlank)?.let { message ->
+          put("sandboxCommandObservationDeliveryWarning", message)
+        }
+      }
+      val renderLines = buildList {
+        add("sandbox_command_observation_delivery_mode=$mode")
+        add("sandbox_command_observation_cursor_before=$cursorBefore")
+        add("sandbox_command_observation_cursor_after=$cursorAfter")
+        add("sandbox_command_observation_stdout_delta_bytes=$stdoutDeltaBytes")
+        add("sandbox_command_observation_stderr_delta_bytes=$stderrDeltaBytes")
+        warning?.trim()?.takeIf(String::isNotBlank)?.let { message ->
+          add("observation_warning=$message")
+        }
+      }
+      return ManagedProcessObservationDelivery(
+        stdout = stdout,
+        stderr = stderr,
+        metadata = metadata,
+        renderLines = renderLines,
+      )
+    }
+  }
+}
+
+class ManagedProcessObservationTracker(
+  private val maxTrackedProcesses: Int = 64,
+) {
+  private val lock = Any()
+  private val statesByProcessId = linkedMapOf<String, ManagedProcessObservationCursorState>()
+
+  fun recordAndReturnPrevious(
+    processId: String,
+    current: ManagedProcessObservationCursorState,
+  ): ManagedProcessObservationCursorState? = synchronized(lock) {
+    val previous = statesByProcessId.put(processId, current)
+    while (statesByProcessId.size > maxTrackedProcesses) {
+      val iterator = statesByProcessId.entries.iterator()
+      if (!iterator.hasNext()) {
+        break
+      }
+      iterator.next()
+      iterator.remove()
+    }
+    previous
+  }
+}
+
 class OpenCrayToolDispatcher(
   private val config: OpenCrayToolDispatcherConfig,
+  private val managedProcessObservationTracker: ManagedProcessObservationTracker = ManagedProcessObservationTracker(),
 ) {
   private val toolCapabilityClassifier = ToolCapabilityClassifier()
   private val toolCallNormalizer = ToolCallNormalizer()
@@ -451,7 +568,7 @@ class OpenCrayToolDispatcher(
       ),
       AgentToolDefinition(
         name = "spawn_agent",
-        description = "Start one bounded subagent handle immediately. During prompt runs the child begins running in the background right away; use wait_agent later to block for completion, inspect the latest state, or resume a paused child.",
+        description = "Start one bounded subagent handle immediately. During prompt runs the child begins running in the background right away; use wait_agent later to inspect its latest stable state or block for completion.",
         parameters = listOf(
           AgentToolParameter("agent_id", "string", required = false, description = "Optional explicit child handle id for the delegated child run."),
           AgentToolParameter("description", "string", required = true, description = "Short task label for the delegated child run."),
@@ -462,7 +579,7 @@ class OpenCrayToolDispatcher(
       ),
       AgentToolDefinition(
         name = "wait_agent",
-        description = "Wait for one delegated child handle to reach its latest stable state and return a summarized result. If that child is already running, wait_agent blocks until it finishes or pauses for approval. If user approval has unlocked a paused child, wait_agent resumes it from that point.",
+        description = "Wait for one delegated child handle to reach its latest stable state and return a summarized result. If that child is already running, wait_agent blocks until it finishes or pauses for approval. Approval-unlocked children resume through the runtime or host recovery path; use wait_agent later to observe that resumed state.",
         parameters = listOf(
           AgentToolParameter("agent_id", "string", required = false, description = "One delegated child handle id returned by spawn_agent."),
           AgentToolParameter("agent_ids", "string[]", required = false, description = "Optional batch form. The first listed id is used in this runtime."),
@@ -800,6 +917,7 @@ class OpenCrayToolDispatcher(
           .filter(String::isNotBlank)
           .toSet(),
       ),
+      managedProcessObservationTracker = managedProcessObservationTracker,
     )
 
   fun withApprovalGrant(
@@ -811,6 +929,7 @@ class OpenCrayToolDispatcher(
         approvedTaskId = approvedTaskId?.trim()?.takeIf(String::isNotBlank),
         approvedToolName = approvedToolName?.trim()?.takeIf(String::isNotBlank),
       ),
+      managedProcessObservationTracker = managedProcessObservationTracker,
     )
 
   fun withApprovalRejection(
@@ -822,6 +941,7 @@ class OpenCrayToolDispatcher(
         rejectedTaskId = rejectedTaskId?.trim()?.takeIf(String::isNotBlank),
         rejectedToolName = rejectedToolName?.trim()?.takeIf(String::isNotBlank),
       ),
+      managedProcessObservationTracker = managedProcessObservationTracker,
     )
 
   internal fun planTaskDelegation(
@@ -3278,11 +3398,19 @@ class OpenCrayToolDispatcher(
     val processId = arguments.requiredString("process_id")
     val snapshot = processRegistry.read(processId)
       ?: return missingManagedProcess(processId = processId, toolName = "ProcessRead")
+    val observationDelivery = observeManagedProcessOutput(snapshot)
+    recordManagedProcessObservationDelivery(snapshot)
     return managedProcessToolResult(
       toolName = "ProcessRead",
       status = AgentToolResultStatus.SUCCESS,
-      content = renderManagedProcessSnapshot(snapshot, includeOutput = true),
+      content = renderManagedProcessSnapshot(
+        snapshot = snapshot,
+        includeOutput = true,
+        observationDelivery = observationDelivery,
+      ),
       snapshot = snapshot,
+      stdout = observationDelivery.stdout,
+      stderr = observationDelivery.stderr,
       metadata = toolPolicyPipeline.resultMetadata(
         toolName = "ProcessRead",
         request = ToolMetadataContextRequest(
@@ -3291,7 +3419,7 @@ class OpenCrayToolDispatcher(
           primaryTargetPath = toolTargetResolver.displayWorkingDirectory(snapshot.workingDirectory),
           targetSummary = processId,
         ),
-        metadata = managedProcessMetadata(snapshot),
+        metadata = managedProcessMetadata(snapshot) + observationDelivery.metadata,
         resultEnvelope = managedProcessResultEnvelope(snapshot),
       ),
     )
@@ -3302,14 +3430,24 @@ class OpenCrayToolDispatcher(
     val timeoutMs = arguments.optionalLong("timeout_ms") ?: DEFAULT_MANAGED_PROCESS_WAIT_TIMEOUT_MS
     val snapshot = processRegistry.wait(processId, timeoutMs)
       ?: return missingManagedProcess(processId = processId, toolName = "ProcessWait")
+    val observationDelivery = observeManagedProcessOutput(snapshot)
+    recordManagedProcessObservationDelivery(snapshot)
     return managedProcessToolResult(
       toolName = "ProcessWait",
       status = AgentToolResultStatus.SUCCESS,
       content = buildString {
         appendLine("Waited ${timeoutMs}ms for managed process.")
-        append(renderManagedProcessSnapshot(snapshot, includeOutput = true))
+        append(
+          renderManagedProcessSnapshot(
+            snapshot = snapshot,
+            includeOutput = true,
+            observationDelivery = observationDelivery,
+          ),
+        )
       }.trim(),
       snapshot = snapshot,
+      stdout = observationDelivery.stdout,
+      stderr = observationDelivery.stderr,
       metadata = toolPolicyPipeline.resultMetadata(
         toolName = "ProcessWait",
         request = ToolMetadataContextRequest(
@@ -3318,7 +3456,9 @@ class OpenCrayToolDispatcher(
           primaryTargetPath = toolTargetResolver.displayWorkingDirectory(snapshot.workingDirectory),
           targetSummary = processId,
         ),
-        metadata = managedProcessMetadata(snapshot) + mapOf("waitTimeoutMs" to timeoutMs.toString()),
+        metadata = managedProcessMetadata(snapshot) +
+          observationDelivery.metadata +
+          mapOf("waitTimeoutMs" to timeoutMs.toString()),
         resultEnvelope = managedProcessResultEnvelope(snapshot),
       ),
     )
@@ -4445,14 +4585,16 @@ class OpenCrayToolDispatcher(
     status: AgentToolResultStatus,
     content: String,
     snapshot: ManagedProcessSnapshot,
+    stdout: String = snapshot.stdout,
+    stderr: String = snapshot.stderr,
     metadata: Map<String, String>,
   ): AgentToolResult = AgentToolResult(
     toolName = toolName,
     status = status,
     content = content,
     exitCode = snapshot.exitCode,
-    stdout = snapshot.stdout,
-    stderr = snapshot.stderr,
+    stdout = stdout,
+    stderr = stderr,
     errorCode = snapshot.errorCode,
     errorMessage = snapshot.errorMessage,
     metadata = metadata,
@@ -4533,6 +4675,7 @@ class OpenCrayToolDispatcher(
   private fun renderManagedProcessSnapshot(
     snapshot: ManagedProcessSnapshot,
     includeOutput: Boolean,
+    observationDelivery: ManagedProcessObservationDelivery = ManagedProcessObservationDelivery.fullSnapshot(snapshot),
   ): String = buildString {
     appendLine("process_id=${snapshot.processId}")
     appendLine("status=${snapshot.status.name.lowercase()}")
@@ -4563,7 +4706,101 @@ class OpenCrayToolDispatcher(
       "sandbox_supports_streaming_logs",
     )
     appendManagedProcessMetadataLine(snapshot, "sandboxCommandSupportsReconnect", "sandbox_supports_reconnect")
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandSupportsManagedProcessLiveObservation",
+      "sandbox_supports_managed_process_live_observation",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandSupportsManagedProcessObservationCursorResume",
+      "sandbox_supports_managed_process_observation_cursor_resume",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandSupportsManagedProcessObservationBackfill",
+      "sandbox_supports_managed_process_observation_backfill",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandProviderHandleKind",
+      "sandbox_command_provider_handle_kind",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandProviderStableSelectorKind",
+      "sandbox_command_provider_stable_selector_kind",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandProviderStableSelectorValue",
+      "sandbox_command_provider_stable_selector_value",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandProviderLiveSelectorKind",
+      "sandbox_command_provider_live_selector_kind",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandProviderLiveSelectorValue",
+      "sandbox_command_provider_live_selector_value",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandIdKind",
+      "sandbox_command_id_kind",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandId",
+      "sandbox_command_id",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandProviderObservationMode",
+      "sandbox_command_provider_observation_mode",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandProviderObservationEventCount",
+      "sandbox_command_provider_observation_event_count",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandProviderObservationCursor",
+      "sandbox_command_provider_observation_cursor",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandProviderObservationBackfillSupported",
+      "sandbox_command_provider_observation_backfill_supported",
+    )
+    appendManagedProcessMetadataLine(snapshot, "sandboxCommandHandleIdKind", "sandbox_command_handle_id_kind")
+    appendManagedProcessMetadataLine(snapshot, "sandboxCommandHandleId", "sandbox_command_handle_id")
+    appendManagedProcessMetadataLine(snapshot, "sandboxCommandHandleTag", "sandbox_command_handle_tag")
     appendManagedProcessMetadataLine(snapshot, "sandboxCommandObservationMode", "sandbox_observation_mode")
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandObservationEventCount",
+      "sandbox_command_observation_event_count",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandObservationCursor",
+      "sandbox_command_observation_cursor",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandObservationStdoutBytes",
+      "sandbox_command_observation_stdout_bytes",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandObservationStderrBytes",
+      "sandbox_command_observation_stderr_bytes",
+    )
+    observationDelivery.renderLines.forEach(::appendLine)
     appendManagedProcessMetadataLine(snapshot, "sandboxCommandApi", "sandbox_command_api")
     appendManagedProcessMetadataLine(snapshot, "sandboxCommandReconnectApi", "sandbox_command_reconnect_api")
     appendManagedProcessMetadataLine(
@@ -4638,6 +4875,61 @@ class OpenCrayToolDispatcher(
     )
     appendManagedProcessMetadataLine(
       snapshot,
+      "sandboxCommandReconnectSelectorKind",
+      "sandbox_command_reconnect_selector_kind",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectSelectorValue",
+      "sandbox_command_reconnect_selector_value",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectSelectorSource",
+      "sandbox_command_reconnect_selector_source",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectSeedObservationCursor",
+      "sandbox_command_reconnect_seed_observation_cursor",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectSeedProviderObservationCursor",
+      "sandbox_command_reconnect_seed_provider_observation_cursor",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectSeedEventCount",
+      "sandbox_command_reconnect_seed_event_count",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectSeedProviderObservationEventCount",
+      "sandbox_command_reconnect_seed_provider_observation_event_count",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectSeedSource",
+      "sandbox_command_reconnect_seed_source",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectProviderObservationSeedConsumed",
+      "sandbox_command_reconnect_provider_observation_seed_consumed",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectProviderObservationSeedState",
+      "sandbox_command_reconnect_provider_observation_seed_state",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandReconnectProviderObservationSeedConsumedAtEpochMs",
+      "sandbox_command_reconnect_provider_observation_seed_consumed_at_epoch_ms",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
       "sandboxCommandReconnectSeededStdoutBytes",
       "sandbox_command_reconnect_seeded_stdout_bytes",
     )
@@ -4673,17 +4965,40 @@ class OpenCrayToolDispatcher(
       "sandboxCommandBackendFallbackReasonCode",
       "sandbox_backend_fallback_reason",
     )
+    val reconnectProviderObservationSeedState =
+      snapshot.metadata["sandboxCommandReconnectProviderObservationSeedState"]
     if (snapshot.metadata["sandboxCommandReconnectOutputGapRisk"] == "true") {
-      appendLine(
-        "observation_warning=provider reconnect resumed from persisted snapshot without log backfill; output emitted before attach may be missing",
-      )
+      when (reconnectProviderObservationSeedState) {
+        "pending_live_attach" -> appendLine(
+          "observation_warning=provider reconnect restored a persisted output seed and is still waiting for live attach; current output may only reflect the persisted host snapshot",
+        )
+
+        "retry_scheduled_before_live_attach",
+        "failed_terminal_before_live_attach",
+        -> Unit
+
+        else -> appendLine(
+          "observation_warning=provider reconnect resumed from persisted snapshot without log backfill; output emitted before attach may be missing",
+        )
+      }
     }
     if (
       snapshot.metadata["sandboxCommandReconnectRecoveryState"] == "retry_scheduled" ||
       snapshot.metadata["sandboxCommandReconnectRetryable"] == "true"
     ) {
       appendLine(
-        "observation_warning=provider reconnect failed without terminal process state; a later ProcessRead or ProcessWait may retry attach after backoff",
+        when (reconnectProviderObservationSeedState) {
+          "retry_scheduled_before_live_attach" ->
+            "observation_warning=provider reconnect has not yet reattached live output; current output still reflects the persisted host snapshot seed and a later ProcessRead or ProcessWait may retry attach after backoff"
+
+          else ->
+            "observation_warning=provider reconnect failed without terminal process state; a later ProcessRead or ProcessWait may retry attach after backoff"
+        },
+      )
+    }
+    if (snapshot.metadata["sandboxCommandReconnectRecoveryState"] == "failed_terminal") {
+      appendLine(
+        "observation_warning=provider reconnect terminated before live attach; current output may only reflect the persisted host snapshot",
       )
     }
     snapshot.metadata["terminationSupport"]?.let { terminationSupport ->
@@ -4700,6 +5015,16 @@ class OpenCrayToolDispatcher(
       snapshot,
       "sandboxCommandTerminateRequestedSignal",
       "sandbox_command_terminate_requested_signal",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandTerminateSelectorKind",
+      "sandbox_command_terminate_selector_kind",
+    )
+    appendManagedProcessMetadataLine(
+      snapshot,
+      "sandboxCommandTerminateSelectorValue",
+      "sandbox_command_terminate_selector_value",
     )
     if (snapshot.args.isNotEmpty()) {
       appendLine("args=${snapshot.args.joinToString(separator = " ")}")
@@ -4724,18 +5049,283 @@ class OpenCrayToolDispatcher(
       appendLine("finished_at_epoch_ms=$finishedAt")
     }
     if (includeOutput) {
-      if (snapshot.stdout.isNotBlank()) {
+      if (observationDelivery.stdout.isNotBlank()) {
         appendLine()
         appendLine("[stdout]")
-        appendLine(snapshot.stdout.trimEnd())
+        appendLine(observationDelivery.stdout.trimEnd())
       }
-      if (snapshot.stderr.isNotBlank()) {
+      if (observationDelivery.stderr.isNotBlank()) {
         appendLine()
         appendLine("[stderr]")
-        append(snapshot.stderr.trimEnd())
+        append(observationDelivery.stderr.trimEnd())
       }
     }
   }.trim()
+
+  private fun observeManagedProcessOutput(
+    snapshot: ManagedProcessSnapshot,
+  ): ManagedProcessObservationDelivery {
+    val current = managedProcessObservationCursorState(snapshot)
+      ?: return ManagedProcessObservationDelivery.fullSnapshot(snapshot)
+    val previous = managedProcessObservationTracker.recordAndReturnPrevious(
+      processId = snapshot.processId,
+      current = current,
+    )
+    if (previous != null) {
+      return deliverManagedProcessObservationDelta(
+        snapshot = snapshot,
+        current = current,
+        previous = previous,
+        resetWarning = "host observation cursor regressed or output window changed; returning full snapshot output",
+        stdoutAlignmentWarning = "host observation cursor could not be aligned with stdout bytes; returning full snapshot output",
+        stderrAlignmentWarning = "host observation cursor could not be aligned with stderr bytes; returning full snapshot output",
+      )
+    }
+    val persistedDelivery = managedProcessDeliveredObservationCursorState(snapshot)
+    if (persistedDelivery != null) {
+      return deliverManagedProcessObservationDelta(
+        snapshot = snapshot,
+        current = current,
+        previous = persistedDelivery,
+        resetWarning = "persisted delivered observation cursor regressed or output window changed; returning full snapshot output",
+        stdoutAlignmentWarning = "persisted delivered observation cursor could not be aligned with stdout bytes; returning full snapshot output",
+        stderrAlignmentWarning = "persisted delivered observation cursor could not be aligned with stderr bytes; returning full snapshot output",
+      )
+    }
+    val reconnectSeed = managedProcessReconnectSeedObservationCursorState(snapshot)
+    if (reconnectSeed != null) {
+      return deliverManagedProcessObservationDelta(
+        snapshot = snapshot,
+        current = current,
+        previous = reconnectSeed,
+        resetWarning = "persisted reconnect seed cursor regressed or output window changed; returning full snapshot output",
+        stdoutAlignmentWarning = "persisted reconnect seed could not be aligned with stdout bytes; returning full snapshot output",
+        stderrAlignmentWarning = "persisted reconnect seed could not be aligned with stderr bytes; returning full snapshot output",
+      )
+    }
+    return ManagedProcessObservationDelivery.snapshotMode(
+      snapshot = snapshot,
+      mode = MANAGED_PROCESS_OBSERVATION_DELIVERY_MODE_FULL_SNAPSHOT,
+      cursorBefore = "none",
+      cursorAfter = current.cursor,
+      stdoutDeltaBytes = current.stdoutBytes,
+      stderrDeltaBytes = current.stderrBytes,
+    )
+  }
+
+  private fun deliverManagedProcessObservationDelta(
+    snapshot: ManagedProcessSnapshot,
+    current: ManagedProcessObservationCursorState,
+    previous: ManagedProcessObservationCursorState,
+    resetWarning: String,
+    stdoutAlignmentWarning: String,
+    stderrAlignmentWarning: String,
+  ): ManagedProcessObservationDelivery {
+    if (
+      current.cursor == previous.cursor &&
+      current.stdoutBytes == previous.stdoutBytes &&
+      current.stderrBytes == previous.stderrBytes
+    ) {
+      return ManagedProcessObservationDelivery.deltaMode(
+        mode = MANAGED_PROCESS_OBSERVATION_DELIVERY_MODE_NO_CHANGE,
+        cursorBefore = previous.cursor,
+        cursorAfter = current.cursor,
+        stdout = "",
+        stderr = "",
+        stdoutDeltaBytes = 0L,
+        stderrDeltaBytes = 0L,
+      )
+    }
+    if (current.stdoutBytes < previous.stdoutBytes || current.stderrBytes < previous.stderrBytes) {
+      return ManagedProcessObservationDelivery.snapshotMode(
+        snapshot = snapshot,
+        mode = MANAGED_PROCESS_OBSERVATION_DELIVERY_MODE_RESET_FULL,
+        cursorBefore = previous.cursor,
+        cursorAfter = current.cursor,
+        stdoutDeltaBytes = current.stdoutBytes,
+        stderrDeltaBytes = current.stderrBytes,
+        warning = resetWarning,
+      )
+    }
+    val stdoutDelta = utf8DeltaFromByteOffset(snapshot.stdout, previous.stdoutBytes)
+      ?: return ManagedProcessObservationDelivery.snapshotMode(
+        snapshot = snapshot,
+        mode = MANAGED_PROCESS_OBSERVATION_DELIVERY_MODE_RESET_FULL,
+        cursorBefore = previous.cursor,
+        cursorAfter = current.cursor,
+        stdoutDeltaBytes = current.stdoutBytes,
+        stderrDeltaBytes = current.stderrBytes,
+        warning = stdoutAlignmentWarning,
+      )
+    val stderrDelta = utf8DeltaFromByteOffset(snapshot.stderr, previous.stderrBytes)
+      ?: return ManagedProcessObservationDelivery.snapshotMode(
+        snapshot = snapshot,
+        mode = MANAGED_PROCESS_OBSERVATION_DELIVERY_MODE_RESET_FULL,
+        cursorBefore = previous.cursor,
+        cursorAfter = current.cursor,
+        stdoutDeltaBytes = current.stdoutBytes,
+        stderrDeltaBytes = current.stderrBytes,
+        warning = stderrAlignmentWarning,
+      )
+    return ManagedProcessObservationDelivery.deltaMode(
+      mode = if (stdoutDelta.isBlank() && stderrDelta.isBlank()) {
+        MANAGED_PROCESS_OBSERVATION_DELIVERY_MODE_NO_CHANGE
+      } else {
+        MANAGED_PROCESS_OBSERVATION_DELIVERY_MODE_DELTA
+      },
+      cursorBefore = previous.cursor,
+      cursorAfter = current.cursor,
+      stdout = stdoutDelta,
+      stderr = stderrDelta,
+      stdoutDeltaBytes = (current.stdoutBytes - previous.stdoutBytes).coerceAtLeast(0L),
+      stderrDeltaBytes = (current.stderrBytes - previous.stderrBytes).coerceAtLeast(0L),
+    )
+  }
+
+  private fun recordManagedProcessObservationDelivery(
+    snapshot: ManagedProcessSnapshot,
+  ) {
+    val current = managedProcessObservationCursorState(snapshot)
+    processRegistry.recordObservationDelivery(
+      processId = snapshot.processId,
+      deliveredObservationState = current?.toDeliveredObservationState(snapshot),
+    )
+  }
+
+  private fun managedProcessObservationCursorState(
+    snapshot: ManagedProcessSnapshot,
+  ): ManagedProcessObservationCursorState? {
+    val observationState = snapshot.normalizedObservationState()
+    val mode = observationState?.mode ?: snapshot.metadata["sandboxCommandObservationMode"]
+    if (mode != "host_managed_snapshot") {
+      return null
+    }
+    val cursor = observationState?.hostCursor
+      ?: snapshot.metadata["sandboxCommandObservationCursor"]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return null
+    val stdoutBytes = observationState?.stdoutBytes
+      ?: snapshot.metadata["sandboxCommandObservationStdoutBytes"]?.toLongOrNull()
+      ?: snapshot.stdout.toUtf8Length()
+    val stderrBytes = observationState?.stderrBytes
+      ?: snapshot.metadata["sandboxCommandObservationStderrBytes"]?.toLongOrNull()
+      ?: snapshot.stderr.toUtf8Length()
+    if (stdoutBytes < 0L || stderrBytes < 0L) {
+      return null
+    }
+    return ManagedProcessObservationCursorState(
+      mode = mode,
+      cursor = cursor,
+      stdoutBytes = stdoutBytes,
+      stderrBytes = stderrBytes,
+    )
+  }
+
+  private fun managedProcessDeliveredObservationCursorState(
+    snapshot: ManagedProcessSnapshot,
+  ): ManagedProcessObservationCursorState? {
+    val deliveredObservationState = snapshot.normalizedDeliveredObservationState()
+    val mode =
+      deliveredObservationState?.mode
+        ?: snapshot.metadata["sandboxCommandLastDeliveredObservationMode"]
+        ?: return null
+    if (mode != "host_managed_snapshot") {
+      return null
+    }
+    val cursor =
+      deliveredObservationState?.cursor
+        ?: snapshot.metadata["sandboxCommandLastDeliveredObservationCursor"]
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+        ?: return null
+    val stdoutBytes =
+      deliveredObservationState?.stdoutBytes
+        ?: snapshot.metadata["sandboxCommandLastDeliveredStdoutBytes"]?.toLongOrNull()
+        ?: return null
+    val stderrBytes =
+      deliveredObservationState?.stderrBytes
+        ?: snapshot.metadata["sandboxCommandLastDeliveredStderrBytes"]?.toLongOrNull()
+        ?: return null
+    if (stdoutBytes < 0L || stderrBytes < 0L) {
+      return null
+    }
+    return ManagedProcessObservationCursorState(
+      mode = mode,
+      cursor = cursor,
+      stdoutBytes = stdoutBytes,
+      stderrBytes = stderrBytes,
+    )
+  }
+
+  private fun managedProcessReconnectSeedObservationCursorState(
+    snapshot: ManagedProcessSnapshot,
+  ): ManagedProcessObservationCursorState? {
+    val reconnectSeed = snapshot.normalizedReconnectState()?.seed
+    val seedSource = reconnectSeed?.source ?: snapshot.metadata["sandboxCommandReconnectSeedSource"]
+    if (seedSource?.trim().isNullOrBlank()) {
+      return null
+    }
+    val cursor = reconnectSeed?.hostObservationCursor
+      ?: snapshot.metadata["sandboxCommandReconnectSeedObservationCursor"]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return null
+    val stdoutBytes = reconnectSeed?.stdoutBytes
+      ?: snapshot.metadata["sandboxCommandReconnectSeededStdoutBytes"]?.toLongOrNull()
+      ?: return null
+    val stderrBytes = reconnectSeed?.stderrBytes
+      ?: snapshot.metadata["sandboxCommandReconnectSeededStderrBytes"]?.toLongOrNull()
+      ?: return null
+    if (stdoutBytes < 0L || stderrBytes < 0L) {
+      return null
+    }
+    return ManagedProcessObservationCursorState(
+      mode = "host_managed_snapshot",
+      cursor = cursor,
+      stdoutBytes = stdoutBytes,
+      stderrBytes = stderrBytes,
+    )
+  }
+
+  private fun ManagedProcessObservationCursorState.toDeliveredObservationState(
+    snapshot: ManagedProcessSnapshot,
+  ):
+    ManagedProcessDeliveredObservationState = ManagedProcessDeliveredObservationState(
+      mode = mode,
+      cursor = cursor,
+      stdoutBytes = stdoutBytes,
+      stderrBytes = stderrBytes,
+      providerMode = snapshot.normalizedObservationState()?.providerMode,
+      providerCursor = snapshot.normalizedObservationState()?.providerCursor,
+      providerEventCount = snapshot.normalizedObservationState()?.providerEventCount,
+      deliveredAtEpochMs = System.currentTimeMillis(),
+    )
+
+  private fun utf8DeltaFromByteOffset(
+    text: String,
+    byteOffset: Long,
+  ): String? {
+    val bytes = text.toByteArray(StandardCharsets.UTF_8)
+    if (byteOffset < 0L) {
+      return null
+    }
+    if (byteOffset > bytes.size.toLong()) {
+      return null
+    }
+    return try {
+      StandardCharsets.UTF_8
+        .newDecoder()
+        .onMalformedInput(CodingErrorAction.REPORT)
+        .onUnmappableCharacter(CodingErrorAction.REPORT)
+        .decode(ByteBuffer.wrap(bytes, byteOffset.toInt(), bytes.size - byteOffset.toInt()))
+        .toString()
+    } catch (_: CharacterCodingException) {
+      null
+    }
+  }
+
+  private fun String.toUtf8Length(): Long = toByteArray(StandardCharsets.UTF_8).size.toLong()
 
   private fun StringBuilder.appendManagedProcessMetadataLine(
     snapshot: ManagedProcessSnapshot,

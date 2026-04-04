@@ -80,6 +80,10 @@ internal class ServiceBackedOpenCraySettingsGateway(
     model: String,
     reasoningEffort: String,
     systemPrompt: String,
+    openAiPromptCacheKeyStrategy: String?,
+    openAiPromptCacheRetention: String?,
+    anthropicPromptCachingEnabled: Boolean?,
+    anthropicPromptCacheTtl: String?,
   ): Map<String, Any?> = dispatchPayloadWriteCommand(
     operation = "saveLlmConfig",
     command = OpenCraySettingsWriteCommand.SaveLlmConfig(
@@ -94,6 +98,10 @@ internal class ServiceBackedOpenCraySettingsGateway(
       model = model,
       reasoningEffort = reasoningEffort,
       systemPrompt = systemPrompt,
+      openAiPromptCacheKeyStrategy = openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention = openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled = anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl = anthropicPromptCacheTtl,
     ),
   )
 
@@ -107,6 +115,10 @@ internal class ServiceBackedOpenCraySettingsGateway(
     model: String,
     reasoningEffort: String,
     systemPrompt: String,
+    openAiPromptCacheKeyStrategy: String?,
+    openAiPromptCacheRetention: String?,
+    anthropicPromptCachingEnabled: Boolean?,
+    anthropicPromptCacheTtl: String?,
   ): Map<String, Any?> = dispatchPayloadWriteCommand(
     operation = "saveCustomLlmProvider",
     command = OpenCraySettingsWriteCommand.SaveCustomLlmProvider(
@@ -119,6 +131,10 @@ internal class ServiceBackedOpenCraySettingsGateway(
       model = model,
       reasoningEffort = reasoningEffort,
       systemPrompt = systemPrompt,
+      openAiPromptCacheKeyStrategy = openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention = openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled = anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl = anthropicPromptCacheTtl,
     ),
   )
 

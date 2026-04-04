@@ -21,6 +21,20 @@ class LlmModelCapabilityRegistryTest {
   }
 
   @Test
+  fun resolveVisionInputSupportUsesModelVendorOnThirdPartyRoutes() {
+    val resolution = LlmModelCapabilityRegistry.resolveVisionInputSupport(
+      providerId = "custom",
+      protocol = LlmProviderProtocols.OPENAI,
+      model = "anthropic/claude-sonnet-4",
+    )
+
+    assertNotNull(resolution)
+    assertTrue(resolution?.visionInputSupported == true)
+    assertEquals(LlmModelCapabilitySource.STATIC_EXACT, resolution?.source)
+    assertEquals("anthropic_vision_exact", resolution?.matchedRuleId)
+  }
+
+  @Test
   fun resolveVisionInputSupportMatchesFamilyStaticRule() {
     val resolution = LlmModelCapabilityRegistry.resolveVisionInputSupport(
       providerId = "custom",
@@ -118,5 +132,58 @@ class LlmModelCapabilityRegistryTest {
     assertTrue(resolution?.pdfInputSupported == false)
     assertEquals(LlmModelCapabilitySource.PROVIDER_DECLARED, resolution?.source)
     assertEquals(null, resolution?.matchedRuleId)
+  }
+
+  @Test
+  fun resolveContextWindowMatchesExactStaticRule() {
+    val resolution = LlmModelCapabilityRegistry.resolveContextWindow(
+      providerId = "openai",
+      protocol = LlmProviderProtocols.OPENAI,
+      model = "gpt-4.1-mini",
+    )
+
+    assertEquals(1_047_576, resolution.contextWindowTokens)
+    assertEquals(LlmModelCapabilitySource.STATIC_EXACT, resolution.source)
+    assertEquals("openai_gpt_4_1_context_window_exact", resolution.matchedRuleId)
+  }
+
+  @Test
+  fun resolveContextWindowUsesModelVendorOnThirdPartyRoutes() {
+    val resolution = LlmModelCapabilityRegistry.resolveContextWindow(
+      providerId = "custom",
+      protocol = LlmProviderProtocols.OPENAI,
+      model = "openai/gpt-5.4-mini",
+    )
+
+    assertEquals(400_000, resolution.contextWindowTokens)
+    assertEquals(LlmModelCapabilitySource.STATIC_EXACT, resolution.source)
+    assertEquals("openai_gpt_5_4_mini_context_window_exact", resolution.matchedRuleId)
+  }
+
+  @Test
+  fun resolveContextWindowPrefersExplicitOverride() {
+    val resolution = LlmModelCapabilityRegistry.resolveContextWindow(
+      providerId = "openai",
+      protocol = LlmProviderProtocols.OPENAI,
+      model = "gpt-4o-mini",
+      metadata = mapOf("context_window_tokens" to "262144"),
+    )
+
+    assertEquals(262_144, resolution.contextWindowTokens)
+    assertEquals(LlmModelCapabilitySource.EXPLICIT_OVERRIDE, resolution.source)
+    assertEquals(null, resolution.matchedRuleId)
+  }
+
+  @Test
+  fun resolveContextWindowFallsBackToDefaultForUnknownModel() {
+    val resolution = LlmModelCapabilityRegistry.resolveContextWindow(
+      providerId = "custom",
+      protocol = LlmProviderProtocols.OPENAI,
+      model = "mystery-model",
+    )
+
+    assertEquals(128_000, resolution.contextWindowTokens)
+    assertEquals(LlmModelCapabilitySource.DEFAULT_FALLBACK, resolution.source)
+    assertEquals(null, resolution.matchedRuleId)
   }
 }

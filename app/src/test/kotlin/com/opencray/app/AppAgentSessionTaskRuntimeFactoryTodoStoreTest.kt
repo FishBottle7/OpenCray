@@ -1256,6 +1256,7 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
       taskInput = "Please keep using Chinese while continuing.",
       transcriptStore = factory.transcriptStoreForSession(sessionId),
       memoryRecords = memoryStore.list(),
+      llmMetadata = mapOf("context_window_tokens" to "64"),
     )
 
     assertEquals(MemoryFlushOutcome.WRITTEN, prepared.sessionContext.memoryFlushTrace.outcome)
@@ -1623,6 +1624,7 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
       taskInput = "Continue after durable compaction.",
       transcriptStore = factory.transcriptStoreForSession(sessionId),
       memoryRecords = emptyList(),
+      llmMetadata = mapOf("context_window_tokens" to "256"),
     )
 
     assertTrue(prepared.sessionContext.durableCompaction.included)

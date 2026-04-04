@@ -13,20 +13,38 @@ import kotlinx.serialization.json.jsonPrimitive
 
 data class RecentToolObservationConfig(
   val maxEntries: Int = 4,
+  val maxCompactEntries: Int = 2,
+  val maxMinimalEntries: Int = 1,
   val maxReadChars: Int = 2_400,
   val maxReadLines: Int = 96,
   val maxListChars: Int = 1_600,
   val maxListLines: Int = 32,
+  val maxCompactBodyChars: Int = 640,
+  val maxCompactBodyLines: Int = 16,
   val maxRenderedChars: Int = 7_200,
   val duplicateLookbackMessages: Int = 24,
   val duplicateExcerptChars: Int = 1_200,
 ) {
   init {
     require(maxEntries >= 1) { "RecentToolObservationConfig maxEntries must be >= 1." }
+    require(maxCompactEntries >= 1) { "RecentToolObservationConfig maxCompactEntries must be >= 1." }
+    require(maxMinimalEntries >= 1) { "RecentToolObservationConfig maxMinimalEntries must be >= 1." }
+    require(maxCompactEntries <= maxEntries) {
+      "RecentToolObservationConfig maxCompactEntries must be <= maxEntries."
+    }
+    require(maxMinimalEntries <= maxCompactEntries) {
+      "RecentToolObservationConfig maxMinimalEntries must be <= maxCompactEntries."
+    }
     require(maxReadChars >= 256) { "RecentToolObservationConfig maxReadChars must be >= 256." }
     require(maxReadLines >= 8) { "RecentToolObservationConfig maxReadLines must be >= 8." }
     require(maxListChars >= 128) { "RecentToolObservationConfig maxListChars must be >= 128." }
     require(maxListLines >= 4) { "RecentToolObservationConfig maxListLines must be >= 4." }
+    require(maxCompactBodyChars >= 128) {
+      "RecentToolObservationConfig maxCompactBodyChars must be >= 128."
+    }
+    require(maxCompactBodyLines >= 4) {
+      "RecentToolObservationConfig maxCompactBodyLines must be >= 4."
+    }
     require(maxRenderedChars >= 512) { "RecentToolObservationConfig maxRenderedChars must be >= 512." }
     require(duplicateLookbackMessages >= 1) {
       "RecentToolObservationConfig duplicateLookbackMessages must be >= 1."
@@ -37,20 +55,41 @@ data class RecentToolObservationConfig(
   }
 }
 
+enum class RecentToolObservationDetailMode {
+  FULL,
+  COMPACT,
+  MINIMAL,
+}
+
+data class RecentToolObservationItem(
+  val signature: String,
+  val summaryLine: String,
+  val body: String,
+) {
+  init {
+    require(signature.isNotBlank()) { "RecentToolObservationItem signature must not be blank." }
+    require(summaryLine.isNotBlank()) { "RecentToolObservationItem summaryLine must not be blank." }
+    require(body.isNotBlank()) { "RecentToolObservationItem body must not be blank." }
+  }
+}
+
 data class RecentToolObservationLayer(
   val text: String,
-  val observationCount: Int,
+  val items: List<RecentToolObservationItem>,
   val omittedObservationCount: Int = 0,
 ) {
   init {
     require(text.isNotBlank()) { "RecentToolObservationLayer text must not be blank." }
-    require(observationCount >= 1) {
-      "RecentToolObservationLayer observationCount must be >= 1."
+    require(items.isNotEmpty()) {
+      "RecentToolObservationLayer items must not be empty."
     }
     require(omittedObservationCount >= 0) {
       "RecentToolObservationLayer omittedObservationCount must be >= 0."
     }
   }
+
+  val observationCount: Int
+    get() = items.size
 }
 
 data class DuplicateDiscoveryToolHit(
@@ -119,35 +158,37 @@ class RecentToolObservationSupport(
       observation.summaryLine.removePrefix("- ").trim()
     }
 
-  fun buildLayer(messages: List<RuntimeConversationMessage>): RecentToolObservationLayer? {
+  fun buildLayer(
+    messages: List<RuntimeConversationMessage>,
+    detailMode: RecentToolObservationDetailMode = RecentToolObservationDetailMode.FULL,
+  ): RecentToolObservationLayer? {
     val observations = collectObservations(activeTaskMessages(messages))
     val selected = selectObservations(messages)
     if (selected.isEmpty()) {
       return null
     }
-
-    val lines = mutableListOf<String>()
-    lines += "Recent successful workspace and delegation observations from the current task are available below."
-    lines += "Reuse them before repeating identical workspace discovery, skills lookup, or delegated investigation calls."
-    lines += "If you still need more detail, narrow the next discovery call with offset, limit, path, pattern, glob, query, or source."
-    selected.forEach { observation ->
-      lines += ""
-      lines += observation.summaryLine
-      lines += observation.body
-    }
-    val totalUniqueCount = observations.map(RenderedObservation::signature).distinct().size
-    val omittedObservationCount = (totalUniqueCount - selected.size).coerceAtLeast(0)
-    if (omittedObservationCount > 0) {
-      lines += ""
-      lines += "Omitted $omittedObservationCount older unique workspace observation(s) from this working set."
-    }
-
-    return RecentToolObservationLayer(
-      text = boundRenderedText(lines.joinToString(separator = "\n").trim()),
-      observationCount = selected.size,
-      omittedObservationCount = omittedObservationCount,
+    return renderLayer(
+      items = selected.map { observation ->
+        RecentToolObservationItem(
+          signature = observation.signature,
+          summaryLine = observation.summaryLine,
+          body = observation.body,
+        )
+      },
+      omittedObservationCount = (observations.map(RenderedObservation::signature).distinct().size - selected.size)
+        .coerceAtLeast(0),
+      detailMode = detailMode,
     )
   }
+
+  fun renderLayer(
+    layer: RecentToolObservationLayer,
+    detailMode: RecentToolObservationDetailMode = RecentToolObservationDetailMode.FULL,
+  ): RecentToolObservationLayer = renderLayer(
+    items = layer.items,
+    omittedObservationCount = layer.omittedObservationCount,
+    detailMode = detailMode,
+  )
 
   private fun selectObservations(messages: List<RuntimeConversationMessage>): List<RenderedObservation> {
     val observations = collectObservations(activeTaskMessages(messages))
@@ -1248,6 +1289,73 @@ class RecentToolObservationSupport(
   ).joinToString(separator = "|")
 
   private fun normalizePathValue(path: String): String = path.trim().ifBlank { "." }.replace('\\', '/')
+
+  private fun renderLayer(
+    items: List<RecentToolObservationItem>,
+    omittedObservationCount: Int,
+    detailMode: RecentToolObservationDetailMode,
+  ): RecentToolObservationLayer {
+    val selectedItems = selectItemsForDetailMode(items, detailMode)
+    val effectiveOmittedCount = (omittedObservationCount + (items.size - selectedItems.size)).coerceAtLeast(0)
+    val lines = mutableListOf<String>()
+    when (detailMode) {
+      RecentToolObservationDetailMode.FULL -> {
+        lines += "Recent successful workspace and delegation observations from the current task are available below."
+        lines += "Reuse them before repeating identical workspace discovery, skills lookup, or delegated investigation calls."
+        lines += "If you still need more detail, narrow the next discovery call with offset, limit, path, pattern, glob, query, or source."
+      }
+
+      RecentToolObservationDetailMode.COMPACT -> {
+        lines += "Recent workspace and delegation observations from the current task are available below."
+        lines += "Reuse them before repeating the same discovery or delegation call."
+      }
+
+      RecentToolObservationDetailMode.MINIMAL -> {
+        lines += "Latest workspace or delegation observations from the current task:"
+      }
+    }
+    selectedItems.forEach { item ->
+      lines += ""
+      lines += item.summaryLine
+      when (detailMode) {
+        RecentToolObservationDetailMode.FULL -> lines += item.body
+        RecentToolObservationDetailMode.COMPACT -> lines += compactBody(item.body)
+        RecentToolObservationDetailMode.MINIMAL -> Unit
+      }
+    }
+    if (detailMode == RecentToolObservationDetailMode.FULL && effectiveOmittedCount > 0) {
+      lines += ""
+      lines += "Omitted $effectiveOmittedCount older unique workspace observation(s) from this working set."
+    }
+    return RecentToolObservationLayer(
+      text = boundRenderedText(lines.joinToString(separator = "\n").trim()),
+      items = selectedItems,
+      omittedObservationCount = effectiveOmittedCount,
+    )
+  }
+
+  private fun selectItemsForDetailMode(
+    items: List<RecentToolObservationItem>,
+    detailMode: RecentToolObservationDetailMode,
+  ): List<RecentToolObservationItem> {
+    if (items.isEmpty()) {
+      return emptyList()
+    }
+    val maxItems = when (detailMode) {
+      RecentToolObservationDetailMode.FULL -> items.size
+      RecentToolObservationDetailMode.COMPACT -> minOf(items.size, config.maxCompactEntries)
+      RecentToolObservationDetailMode.MINIMAL -> minOf(items.size, config.maxMinimalEntries)
+    }
+    return items.takeLast(maxItems)
+  }
+
+  private fun compactBody(
+    text: String,
+  ): String = boundMultiline(
+    text = text,
+    maxChars = config.maxCompactBodyChars,
+    maxLines = config.maxCompactBodyLines,
+  )
 
   private fun boundMultiline(
     text: String,

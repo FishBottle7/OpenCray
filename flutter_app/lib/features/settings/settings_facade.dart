@@ -54,6 +54,10 @@ abstract interface class SettingsFacade {
     required String model,
     required String reasoningEffort,
     required String systemPrompt,
+    String? openAiPromptCacheKeyStrategy,
+    String? openAiPromptCacheRetention,
+    bool? anthropicPromptCachingEnabled,
+    String? anthropicPromptCacheTtl,
   });
 
   Future<LlmConfigSnapshot> saveCustomLlmProvider({
@@ -66,6 +70,10 @@ abstract interface class SettingsFacade {
     required String model,
     required String reasoningEffort,
     required String systemPrompt,
+    String? openAiPromptCacheKeyStrategy,
+    String? openAiPromptCacheRetention,
+    bool? anthropicPromptCachingEnabled,
+    String? anthropicPromptCacheTtl,
   });
 
   Future<LlmValidationResult> validateLlmConfig({

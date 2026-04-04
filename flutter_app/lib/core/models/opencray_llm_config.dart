@@ -14,6 +14,10 @@ class OpenCrayLlmConfigSnapshot {
     required this.reasoningEffort,
     required this.systemPrompt,
     required this.helperText,
+    this.openAiPromptCacheKeyStrategy = 'none',
+    this.openAiPromptCacheRetention = '',
+    this.anthropicPromptCachingEnabled = false,
+    this.anthropicPromptCacheTtl = '5m',
   });
 
   final String localeTag;
@@ -30,6 +34,10 @@ class OpenCrayLlmConfigSnapshot {
   final String reasoningEffort;
   final String systemPrompt;
   final String helperText;
+  final String openAiPromptCacheKeyStrategy;
+  final String openAiPromptCacheRetention;
+  final bool anthropicPromptCachingEnabled;
+  final String anthropicPromptCacheTtl;
 
   factory OpenCrayLlmConfigSnapshot.fromMap(Map<Object?, Object?> payload) {
     return OpenCrayLlmConfigSnapshot(
@@ -52,6 +60,14 @@ class OpenCrayLlmConfigSnapshot {
       reasoningEffort: payload['reasoningEffort'] as String? ?? 'medium',
       systemPrompt: payload['systemPrompt'] as String? ?? '',
       helperText: payload['helperText'] as String? ?? '',
+      openAiPromptCacheKeyStrategy:
+          payload['openAiPromptCacheKeyStrategy'] as String? ?? 'none',
+      openAiPromptCacheRetention:
+          payload['openAiPromptCacheRetention'] as String? ?? '',
+      anthropicPromptCachingEnabled:
+          payload['anthropicPromptCachingEnabled'] as bool? ?? false,
+      anthropicPromptCacheTtl:
+          payload['anthropicPromptCacheTtl'] as String? ?? '5m',
     );
   }
 }

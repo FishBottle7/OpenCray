@@ -19,9 +19,28 @@ class LlmRouteCapabilityMetadataTest {
     )
 
     assertEquals("openai", metadata["protocol"])
+    assertEquals("128000", metadata["context_window_tokens"])
     assertEquals("true", metadata["visionInputSupported"])
     assertEquals(null, metadata["pdfInputSupported"])
     assertEquals("true", metadata["nativeToolCallingAvailable"])
+  }
+
+  @Test
+  fun effectiveLlmRouteMetadataUsesModelVendorForThirdPartyRoutes() {
+    val metadata = effectiveLlmRouteMetadata(
+      providerId = "custom",
+      protocol = LlmProviderProtocols.OPENAI,
+      model = "openai/gpt-4.1-mini",
+      reasoningEffort = "medium",
+      agentCapability = LlmAgentCapabilitySnapshot.unknown(
+        protocol = LlmProviderProtocols.OPENAI,
+        baseUrl = "https://third-party.example/v1",
+        model = "openai/gpt-4.1-mini",
+      ),
+    )
+
+    assertEquals("1047576", metadata["context_window_tokens"])
+    assertEquals("true", metadata["visionInputSupported"])
   }
 
   @Test
@@ -38,6 +57,7 @@ class LlmRouteCapabilityMetadataTest {
           model = "gpt-4o-mini",
         ),
         verifiedAtEpochMs = 123L,
+        contextWindowTokens = 262_144,
         visionInputSupported = false,
         pdfInputSupported = true,
         nativeToolCallingAvailable = true,
@@ -46,6 +66,7 @@ class LlmRouteCapabilityMetadataTest {
 
     assertEquals("false", metadata["visionInputSupported"])
     assertEquals("true", metadata["pdfInputSupported"])
+    assertEquals("262144", metadata["context_window_tokens"])
     assertEquals("true", metadata["nativeToolCallingAvailable"])
   }
 
@@ -83,5 +104,46 @@ class LlmRouteCapabilityMetadataTest {
 
     assertEquals("true", metadata["pdfInputSupported"])
     assertEquals("true", metadata["nativeToolCallingAvailable"])
+  }
+
+  @Test
+  fun effectiveLlmRouteMetadataFallsBackToDefaultContextWindowForUnknownModels() {
+    val metadata = effectiveLlmRouteMetadata(
+      providerId = "custom",
+      protocol = LlmProviderProtocols.OPENAI,
+      model = "demo-model",
+      reasoningEffort = "medium",
+      agentCapability = LlmAgentCapabilitySnapshot.unknown(
+        protocol = LlmProviderProtocols.OPENAI,
+        baseUrl = "https://example.com/v1",
+        model = "demo-model",
+      ),
+    )
+
+    assertEquals("128000", metadata["context_window_tokens"])
+  }
+
+  @Test
+  fun effectiveLlmRouteMetadataFromSettingsIncludesPromptCacheConfiguration() {
+    val metadata = effectiveLlmRouteMetadata(
+      settings = LlmSettingsState(
+        providerId = "openai",
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+        openAiPromptCacheKeyStrategy = LlmPromptCacheKeyStrategies.ROUTE,
+        openAiPromptCacheRetention = LlmPromptCacheRetentionPolicies.IN_MEMORY,
+      ),
+    )
+
+    assertEquals(
+      LlmPromptCacheKeyStrategies.ROUTE,
+      metadata[LlmPromptCachingMetadataKeys.PROMPT_CACHE_KEY_STRATEGY],
+    )
+    assertEquals(
+      LlmPromptCacheRetentionPolicies.IN_MEMORY,
+      metadata[LlmPromptCachingMetadataKeys.PROMPT_CACHE_RETENTION],
+    )
   }
 }

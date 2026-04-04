@@ -41,6 +41,10 @@ internal interface OpenCraySettingsGateway {
     model: String,
     reasoningEffort: String,
     systemPrompt: String,
+    openAiPromptCacheKeyStrategy: String? = null,
+    openAiPromptCacheRetention: String? = null,
+    anthropicPromptCachingEnabled: Boolean? = null,
+    anthropicPromptCacheTtl: String? = null,
   ): Map<String, Any?>
 
   fun saveCustomLlmProvider(
@@ -53,6 +57,10 @@ internal interface OpenCraySettingsGateway {
     model: String,
     reasoningEffort: String,
     systemPrompt: String,
+    openAiPromptCacheKeyStrategy: String? = null,
+    openAiPromptCacheRetention: String? = null,
+    anthropicPromptCachingEnabled: Boolean? = null,
+    anthropicPromptCacheTtl: String? = null,
   ): Map<String, Any?>
 
   fun validateLlmConfig(
@@ -142,6 +150,10 @@ internal sealed interface OpenCraySettingsWriteCommand {
     val model: String,
     val reasoningEffort: String,
     val systemPrompt: String,
+    val openAiPromptCacheKeyStrategy: String? = null,
+    val openAiPromptCacheRetention: String? = null,
+    val anthropicPromptCachingEnabled: Boolean? = null,
+    val anthropicPromptCacheTtl: String? = null,
   ) : OpenCraySettingsWriteCommand
 
   data class SaveCustomLlmProvider(
@@ -154,6 +166,10 @@ internal sealed interface OpenCraySettingsWriteCommand {
     val model: String,
     val reasoningEffort: String,
     val systemPrompt: String,
+    val openAiPromptCacheKeyStrategy: String? = null,
+    val openAiPromptCacheRetention: String? = null,
+    val anthropicPromptCachingEnabled: Boolean? = null,
+    val anthropicPromptCacheTtl: String? = null,
   ) : OpenCraySettingsWriteCommand
 
   data class ValidateLlmConfig(
@@ -252,6 +268,10 @@ internal fun OpenCraySettingsGateway.dispatchSettingsWriteCommand(
       model = command.model,
       reasoningEffort = command.reasoningEffort,
       systemPrompt = command.systemPrompt,
+      openAiPromptCacheKeyStrategy = command.openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention = command.openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled = command.anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl = command.anthropicPromptCacheTtl,
     ),
   )
 
@@ -266,6 +286,10 @@ internal fun OpenCraySettingsGateway.dispatchSettingsWriteCommand(
       model = command.model,
       reasoningEffort = command.reasoningEffort,
       systemPrompt = command.systemPrompt,
+      openAiPromptCacheKeyStrategy = command.openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention = command.openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled = command.anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl = command.anthropicPromptCacheTtl,
     ),
   )
 

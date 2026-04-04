@@ -3,10 +3,14 @@ package com.opencray.runtime.workingstate
 data class WorkingStatePromptLayer(
   private val config: WorkingStatePromptLayerConfig = WorkingStatePromptLayerConfig(),
 ) {
-  fun render(state: WorkingState): String {
+  fun render(
+    state: WorkingState,
+    detailMode: WorkingStatePromptDetailMode = WorkingStatePromptDetailMode.FULL,
+  ): String {
     if (state.isEmpty) {
       return ""
     }
+    val renderConfig = renderConfig(detailMode)
     val lines = mutableListOf<String>()
     lines += "Compact operational state for the current task."
     state.objective?.takeIf { objective -> !objective.isEmpty }?.let { objective ->
@@ -21,33 +25,102 @@ data class WorkingStatePromptLayer(
     appendSection(
       lines = lines,
       title = "Recent Findings",
-      entries = state.findings.take(config.maxFindings),
+      entries = selectEntries(
+        entries = state.findings,
+        maxEntries = renderConfig.maxFindings,
+        keepLatest = renderConfig.keepLatestEntries,
+      ),
     )
     appendSection(
       lines = lines,
       title = "Recent Actions",
-      entries = state.recentActions.take(config.maxRecentActions),
+      entries = selectEntries(
+        entries = state.recentActions,
+        maxEntries = renderConfig.maxRecentActions,
+        keepLatest = renderConfig.keepLatestEntries,
+      ),
     )
     appendSection(
       lines = lines,
       title = "Decisions",
-      entries = state.decisions.take(config.maxDecisions),
+      entries = selectEntries(
+        entries = state.decisions,
+        maxEntries = renderConfig.maxDecisions,
+        keepLatest = renderConfig.keepLatestEntries,
+      ),
     )
     appendSection(
       lines = lines,
       title = "Blockers",
-      entries = state.blockers.take(config.maxBlockers),
+      entries = selectEntries(
+        entries = state.blockers,
+        maxEntries = renderConfig.maxBlockers,
+        keepLatest = renderConfig.keepLatestEntries,
+      ),
     )
     appendSection(
       lines = lines,
       title = "Next Actions",
-      entries = state.nextActions.take(config.maxNextActions),
+      entries = selectEntries(
+        entries = state.nextActions,
+        maxEntries = renderConfig.maxNextActions,
+        keepLatest = renderConfig.keepLatestEntries,
+      ),
     )
-    state.updatedAtEpochMs?.let { updatedAtEpochMs ->
+    state.updatedAtEpochMs?.takeIf { renderConfig.includeUpdatedAt }?.let { updatedAtEpochMs ->
       lines += ""
       lines += "updated_at_epoch_ms=$updatedAtEpochMs"
     }
     return lines.joinToString(separator = "\n").trim()
+  }
+
+  private fun renderConfig(
+    detailMode: WorkingStatePromptDetailMode,
+  ): WorkingStatePromptRenderConfig = when (detailMode) {
+    WorkingStatePromptDetailMode.FULL -> WorkingStatePromptRenderConfig(
+      maxFindings = config.maxFindings,
+      maxRecentActions = config.maxRecentActions,
+      maxDecisions = config.maxDecisions,
+      maxBlockers = config.maxBlockers,
+      maxNextActions = config.maxNextActions,
+      keepLatestEntries = false,
+      includeUpdatedAt = true,
+    )
+
+    WorkingStatePromptDetailMode.COMPACT -> WorkingStatePromptRenderConfig(
+      maxFindings = minOf(config.maxFindings, 1),
+      maxRecentActions = minOf(config.maxRecentActions, 2),
+      maxDecisions = minOf(config.maxDecisions, 1),
+      maxBlockers = minOf(config.maxBlockers, 2),
+      maxNextActions = minOf(config.maxNextActions, 2),
+      keepLatestEntries = true,
+      includeUpdatedAt = false,
+    )
+
+    WorkingStatePromptDetailMode.MINIMAL -> WorkingStatePromptRenderConfig(
+      maxFindings = 0,
+      maxRecentActions = minOf(config.maxRecentActions, 1),
+      maxDecisions = minOf(config.maxDecisions, 1),
+      maxBlockers = minOf(config.maxBlockers, 1),
+      maxNextActions = minOf(config.maxNextActions, 1),
+      keepLatestEntries = true,
+      includeUpdatedAt = false,
+    )
+  }
+
+  private fun selectEntries(
+    entries: List<WorkingStateEntry>,
+    maxEntries: Int,
+    keepLatest: Boolean,
+  ): List<WorkingStateEntry> {
+    if (maxEntries <= 0 || entries.isEmpty()) {
+      return emptyList()
+    }
+    return if (keepLatest) {
+      entries.takeLast(maxEntries)
+    } else {
+      entries.take(maxEntries)
+    }
   }
 
   private fun appendSection(
@@ -83,10 +156,26 @@ data class WorkingStatePromptLayerConfig(
   val maxNextActions: Int = 4,
 ) {
   init {
-    require(maxFindings >= 1) { "WorkingStatePromptLayerConfig maxFindings must be >= 1." }
-    require(maxRecentActions >= 1) { "WorkingStatePromptLayerConfig maxRecentActions must be >= 1." }
-    require(maxDecisions >= 1) { "WorkingStatePromptLayerConfig maxDecisions must be >= 1." }
-    require(maxBlockers >= 1) { "WorkingStatePromptLayerConfig maxBlockers must be >= 1." }
-    require(maxNextActions >= 1) { "WorkingStatePromptLayerConfig maxNextActions must be >= 1." }
+    require(maxFindings >= 0) { "WorkingStatePromptLayerConfig maxFindings must be >= 0." }
+    require(maxRecentActions >= 0) { "WorkingStatePromptLayerConfig maxRecentActions must be >= 0." }
+    require(maxDecisions >= 0) { "WorkingStatePromptLayerConfig maxDecisions must be >= 0." }
+    require(maxBlockers >= 0) { "WorkingStatePromptLayerConfig maxBlockers must be >= 0." }
+    require(maxNextActions >= 0) { "WorkingStatePromptLayerConfig maxNextActions must be >= 0." }
   }
 }
+
+enum class WorkingStatePromptDetailMode {
+  FULL,
+  COMPACT,
+  MINIMAL,
+}
+
+private data class WorkingStatePromptRenderConfig(
+  val maxFindings: Int,
+  val maxRecentActions: Int,
+  val maxDecisions: Int,
+  val maxBlockers: Int,
+  val maxNextActions: Int,
+  val keepLatestEntries: Boolean,
+  val includeUpdatedAt: Boolean,
+)

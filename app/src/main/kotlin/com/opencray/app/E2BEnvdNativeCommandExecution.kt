@@ -6,10 +6,18 @@ import com.opencray.runtime.CommandSpawnResult
 import com.opencray.runtime.PythonScriptRuntime
 import com.opencray.runtime.process.ManagedProcessController
 import com.opencray.runtime.process.ManagedProcessControllerFactory
+import com.opencray.runtime.process.ManagedProcessObservationState
+import com.opencray.runtime.process.ManagedProcessReconnectSeed
+import com.opencray.runtime.process.ManagedProcessReconnectState
+import com.opencray.runtime.process.ManagedProcessRemoteHandle
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
 import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.process.ReconnectableManagedProcessControllerFactory
+import com.opencray.runtime.process.normalizedObservationState
+import com.opencray.runtime.process.normalizedReconnectState
+import com.opencray.runtime.process.normalizedRemoteHandle
+import com.opencray.runtime.process.withNormalizedRemoteState
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import java.io.InputStream
@@ -19,6 +27,7 @@ import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.nio.file.Path
 import java.util.Base64
+import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.serialization.json.Json
@@ -39,7 +48,37 @@ private const val E2B_NATIVE_COMMAND_SIGNAL_API: String = "envd_process_send_sig
 private const val E2B_NATIVE_COMMAND_PROTOCOL: String = "envd_connect_process_v1"
 private const val E2B_NATIVE_COMMAND_TERMINATION_SUPPORT: String = "provider_native_signal"
 private const val E2B_NATIVE_COMMAND_OBSERVATION_MODE: String = "host_managed_snapshot"
+private const val E2B_NATIVE_COMMAND_PROVIDER_OBSERVATION_MODE: String =
+  "provider_event_stream_host_buffered"
+private const val E2B_NATIVE_COMMAND_PROVIDER_HANDLE_KIND: String = "envd_process"
+private const val E2B_NATIVE_COMMAND_HANDLE_ID_KIND: String = "tag"
+private const val E2B_NATIVE_COMMAND_SELECTOR_KIND_TAG: String = "tag"
+private const val E2B_NATIVE_COMMAND_SELECTOR_KIND_PID: String = "pid"
+private const val E2B_NATIVE_COMMAND_RECONNECT_SELECTOR_SOURCE_SNAPSHOT_PID: String = "snapshot_pid"
+private const val E2B_NATIVE_COMMAND_RECONNECT_SELECTOR_SOURCE_STABLE_TAG: String = "stable_tag"
+private const val E2B_NATIVE_COMMAND_OBSERVATION_CURSOR_PREFIX: String = "host_seq_"
+private const val E2B_NATIVE_COMMAND_PROVIDER_OBSERVATION_CURSOR_PREFIX: String = "envd_seq_"
 private const val E2B_NATIVE_COMMAND_RECONNECT_SOURCE_DURABLE: String = "durable_registry_restore"
+private const val E2B_NATIVE_COMMAND_RECONNECT_SEED_SOURCE_DURABLE_SNAPSHOT_METADATA: String =
+  "durable_snapshot_metadata"
+private const val E2B_NATIVE_COMMAND_RECONNECT_PROVIDER_SEED_STATE_PENDING_LIVE_ATTACH: String =
+  "pending_live_attach"
+private const val E2B_NATIVE_COMMAND_RECONNECT_PROVIDER_SEED_STATE_CONSUMED_LIVE_ATTACH: String =
+  "consumed_live_attach"
+private const val E2B_NATIVE_COMMAND_RECONNECT_PROVIDER_SEED_STATE_RETRY_SCHEDULED_BEFORE_LIVE_ATTACH:
+  String = "retry_scheduled_before_live_attach"
+private const val E2B_NATIVE_COMMAND_RECONNECT_PROVIDER_SEED_STATE_FAILED_TERMINAL_BEFORE_LIVE_ATTACH:
+  String = "failed_terminal_before_live_attach"
+private const val E2B_NATIVE_COMMAND_RECONNECT_FAILURE_STAGE_CONNECT_END_STREAM_BEFORE_LIVE_ATTACH:
+  String = "connect_end_stream_before_live_attach"
+private const val E2B_NATIVE_COMMAND_RECONNECT_FAILURE_STAGE_MISSING_PROCESS_END_BEFORE_LIVE_ATTACH:
+  String = "missing_process_end_event_before_live_attach"
+private const val E2B_NATIVE_COMMAND_RECONNECT_FAILURE_STAGE_MISSING_PROCESS_END_AFTER_LIVE_ATTACH:
+  String = "missing_process_end_event_after_live_attach"
+private const val E2B_NATIVE_COMMAND_RECONNECT_FAILURE_STAGE_TRANSPORT_EXCEPTION_BEFORE_LIVE_ATTACH:
+  String = "transport_exception_before_live_attach"
+private const val E2B_NATIVE_COMMAND_RECONNECT_FAILURE_STAGE_TRANSPORT_EXCEPTION_AFTER_LIVE_ATTACH:
+  String = "transport_exception_after_live_attach"
 private const val E2B_NATIVE_COMMAND_RECONNECT_RETRY_BACKOFF_MS: Long = 1_000L
 private const val E2B_NATIVE_COMMAND_OUTPUT_BYTE_LIMIT: Int = 64_000
 private const val CONNECT_ENVELOPE_FLAG_COMPRESSED: Int = 0x01
@@ -59,6 +98,9 @@ internal class E2BMinimalProtocolSandboxCommandExecutionBackend(
     providerNative = true,
     supportsStreamingLogs = false,
     supportsReconnect = true,
+    supportsManagedProcessLiveObservation = true,
+    supportsManagedProcessObservationCursorResume = false,
+    supportsManagedProcessObservationBackfill = false,
   )
 
   override fun createCommandExecutor() = com.opencray.runtime.CommandExecutor(
@@ -657,6 +699,7 @@ private class E2BMinimalNativeForegroundCommandProcessRunner(
       sessionSource = resolvedSession.source,
       remoteWorkingDirectory = remoteWorkingDirectory,
     )
+    val providerStableSelectorValue = "cmd-${UUID.randomUUID()}"
     val selectionMetadata = preferredNativeSelection().metadata()
     val collector = NativeCommandStreamCollector(
       json = json,
@@ -668,8 +711,10 @@ private class E2BMinimalNativeForegroundCommandProcessRunner(
         remoteWorkingDirectory = remoteWorkingDirectory,
         sessionSource = resolvedSession.source,
         pid = null,
+        providerStableSelectorValue = providerStableSelectorValue,
         selectionMetadata = selectionMetadata,
       ),
+      providerStableSelectorValue = providerStableSelectorValue,
     )
 
     val response = try {
@@ -687,6 +732,7 @@ private class E2BMinimalNativeForegroundCommandProcessRunner(
                   args = commandLine.drop(1),
                   cwd = remoteWorkingDirectory,
                 ),
+                tag = providerStableSelectorValue,
               ),
             ),
           ),
@@ -781,6 +827,7 @@ private class E2BMinimalNativeForegroundCommandProcessRunner(
     remoteWorkingDirectory: String,
     sessionSource: String,
     pid: Int?,
+    providerStableSelectorValue: String?,
     selectionMetadata: Map<String, String>,
   ): Map<String, String> = buildMap {
     put("runtimeBackend", E2B_NATIVE_COMMAND_RUNTIME_BACKEND)
@@ -801,6 +848,23 @@ private class E2BMinimalNativeForegroundCommandProcessRunner(
     put("remoteWorkspaceRoot", remoteWorkspaceRoot)
     put("remoteWorkingDirectory", remoteWorkingDirectory)
     pid?.let { processId -> put("sandboxCommandPid", processId.toString()) }
+    providerStableSelectorValue?.takeIf(String::isNotBlank)?.let { stableSelectorValue ->
+      putAll(
+        normalizedProviderHandleMetadata(
+          stableSelectorValue = stableSelectorValue,
+          metadata = if (pid != null) {
+            mapOf("sandboxCommandPid" to pid.toString())
+          } else {
+            emptyMap()
+          },
+        ),
+      )
+      putAll(
+        normalizedCommandIdentityMetadata(
+          stableSelectorValue = stableSelectorValue,
+        ),
+      )
+    }
     putAll(capabilities.metadata())
     putAll(selectionMetadata)
   }
@@ -905,6 +969,10 @@ private class E2BMinimalProtocolManagedProcessControllerFactory(
         put("sandboxCommandObservationMode", E2B_NATIVE_COMMAND_OBSERVATION_MODE)
         put("remoteWorkspaceRoot", remoteWorkspaceRoot)
         put("remoteWorkingDirectory", remoteWorkingDirectory)
+        putAll(normalizedProviderHandleMetadata(stableSelectorValue = request.processId))
+        putAll(normalizedCommandIdentityMetadata(stableSelectorValue = request.processId))
+        putAll(normalizedObservationMetadata(processId = request.processId))
+        putAll(normalizedProviderObservationMetadata())
         putAll(capabilities.metadata())
         putAll(selectionMetadata)
       },
@@ -913,14 +981,18 @@ private class E2BMinimalProtocolManagedProcessControllerFactory(
   }
 
   override fun reconnect(snapshot: ManagedProcessSnapshot): ManagedProcessController? {
-    if (snapshot.status != ManagedProcessStatus.RUNNING) {
+    val normalizedSnapshot = snapshot.withNormalizedRemoteState()
+    if (normalizedSnapshot.status != ManagedProcessStatus.RUNNING) {
       return null
     }
-    val runtimeBackend = snapshot.metadata["runtimeBackend"]?.trim()
-    val resolvedBackend = snapshot.metadata["sandboxCommandBackendResolvedKind"]?.trim()
+    val runtimeBackend = normalizedSnapshot.metadata["runtimeBackend"]?.trim()
+    val resolvedBackend = normalizedSnapshot.metadata["sandboxCommandBackendResolvedKind"]?.trim()
+    val remoteHandle = normalizedSnapshot.remoteHandle
     if (
       runtimeBackend != E2B_NATIVE_COMMAND_RUNTIME_BACKEND &&
-      resolvedBackend != capabilities.backendKind
+      resolvedBackend != capabilities.backendKind &&
+      remoteHandle?.provider?.trim() != SandboxProviderId.E2B.wireValue &&
+      remoteHandle?.nativeProtocol?.trim() != E2B_NATIVE_COMMAND_PROTOCOL
     ) {
       return null
     }
@@ -931,7 +1003,10 @@ private class E2BMinimalProtocolManagedProcessControllerFactory(
       activeSessionProvider = activeSessionProvider,
     ) ?: return null
     val session = resolvedSession.snapshot
-    val remoteWorkspaceRoot = snapshot.metadata["remoteWorkspaceRoot"]
+    val remoteWorkspaceRoot = remoteHandle?.remoteWorkspaceRoot
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: normalizedSnapshot.metadata["remoteWorkspaceRoot"]
       ?.trim()
       ?.takeIf(String::isNotBlank)
       ?: session.remoteWorkspaceRoot?.trim()?.takeIf(String::isNotBlank)
@@ -939,23 +1014,32 @@ private class E2BMinimalProtocolManagedProcessControllerFactory(
     val envdAccessToken = session.envdAccessToken?.trim()?.takeIf(String::isNotBlank)
       ?: return null
     val state = settingsProvider().state.sanitized()
-    val remoteWorkingDirectory = snapshot.metadata["remoteWorkingDirectory"]
+    val selectionMetadata = SandboxCommandBackendSelection(
+      requestedKind = E2BSandboxCommandExecutionBackendFactory.REQUESTED_KIND_PROVIDER_NATIVE_PREFERRED,
+      resolvedKind = capabilities.backendKind,
+      providerNativeRequested = true,
+      providerNativeAvailable = true,
+    ).metadata()
+    val remoteWorkingDirectory = remoteHandle?.remoteWorkingDirectory
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: normalizedSnapshot.metadata["remoteWorkingDirectory"]
       ?.trim()
       ?.takeIf(String::isNotBlank)
       ?: resolveRemoteWorkingDirectory(
         localWorkspaceRoot = workspaceRoot,
         remoteWorkspaceRoot = remoteWorkspaceRoot,
-        workingDirectory = snapshot.workingDirectory,
+        workingDirectory = normalizedSnapshot.workingDirectory,
       )
     val request = ManagedProcessStartRequest(
-      processId = snapshot.processId,
-      taskId = snapshot.taskId,
-      command = snapshot.command,
-      args = snapshot.args,
-      workingDirectory = snapshot.workingDirectory,
-      timeoutMs = snapshot.timeoutMs,
-      requestedAtEpochMs = snapshot.startedAtEpochMs,
-      metadata = snapshot.metadata,
+      processId = normalizedSnapshot.processId,
+      taskId = normalizedSnapshot.taskId,
+      command = normalizedSnapshot.command,
+      args = normalizedSnapshot.args,
+      workingDirectory = normalizedSnapshot.workingDirectory,
+      timeoutMs = normalizedSnapshot.timeoutMs,
+      requestedAtEpochMs = normalizedSnapshot.startedAtEpochMs,
+      metadata = normalizedSnapshot.metadata,
     )
     return E2BMinimalNativeManagedCommandController(
       request = request,
@@ -970,7 +1054,7 @@ private class E2BMinimalProtocolManagedProcessControllerFactory(
       ),
       fallbackControllerProvider = null,
       initialMetadata = buildMap {
-        putAll(sanitizedReconnectSeedMetadata(snapshot.metadata))
+        putAll(sanitizedReconnectSeedMetadata(normalizedSnapshot.metadata))
         put("runtimeKind", "command_exec")
         put("runtimeBackend", E2B_NATIVE_COMMAND_RUNTIME_BACKEND)
         put("runtimeTransport", E2B_NATIVE_COMMAND_TRANSPORT)
@@ -990,6 +1074,34 @@ private class E2BMinimalProtocolManagedProcessControllerFactory(
         put("sandboxCommandObservationMode", E2B_NATIVE_COMMAND_OBSERVATION_MODE)
         put("remoteWorkspaceRoot", remoteWorkspaceRoot)
         put("remoteWorkingDirectory", remoteWorkingDirectory)
+        putAll(
+          normalizedProviderHandleMetadata(
+            stableSelectorValue = request.processId,
+            snapshot = normalizedSnapshot,
+            metadata = normalizedSnapshot.metadata,
+          ),
+        )
+        putAll(
+          normalizedCommandIdentityMetadata(
+            stableSelectorValue = request.processId,
+            snapshot = normalizedSnapshot,
+            metadata = normalizedSnapshot.metadata,
+          ),
+        )
+        putAll(
+          normalizedObservationMetadata(
+            processId = request.processId,
+            snapshot = normalizedSnapshot,
+            metadata = normalizedSnapshot.metadata,
+          ),
+        )
+        putAll(
+          normalizedProviderObservationMetadata(
+            snapshot = normalizedSnapshot,
+            metadata = normalizedSnapshot.metadata,
+          ),
+        )
+        putAll(reconnectSelectorMetadata(normalizedSnapshot))
         put("sandboxCommandReconnectAttempted", "true")
         put("sandboxCommandReconnectApi", E2B_NATIVE_COMMAND_CONNECT_API)
         put("sandboxCommandReconnectSource", E2B_NATIVE_COMMAND_RECONNECT_SOURCE_DURABLE)
@@ -999,13 +1111,14 @@ private class E2BMinimalProtocolManagedProcessControllerFactory(
           SANDBOX_COMMAND_RECONNECT_RECOVERY_STATE_CONNECTING,
         )
         put("sandboxCommandReconnectRetryable", "false")
-        put("sandboxCommandReconnectAttemptCount", nextReconnectAttemptCount(snapshot.metadata).toString())
-        putAll(reconnectObservationMetadata(snapshot))
+        put("sandboxCommandReconnectAttemptCount", nextReconnectAttemptCount(normalizedSnapshot).toString())
+        putAll(reconnectObservationMetadata(normalizedSnapshot))
         putAll(capabilities.metadata())
+        putAll(selectionMetadata)
       },
       clock = clock,
       streamMode = NativeManagedCommandStreamMode.CONNECT,
-      initialSnapshot = snapshot,
+      initialSnapshot = normalizedSnapshot,
     )
   }
 
@@ -1032,24 +1145,319 @@ private fun sanitizedReconnectSeedMetadata(
   metadata: Map<String, String>,
 ): Map<String, String> = metadata.filterKeys { key -> key !in RECONNECT_TRANSIENT_METADATA_KEYS }
 
-private fun nextReconnectAttemptCount(metadata: Map<String, String>): Int =
-  (metadata["sandboxCommandReconnectAttemptCount"]?.toIntOrNull() ?: 0) + 1
+private fun nextReconnectAttemptCount(snapshot: ManagedProcessSnapshot): Int =
+  (snapshot.normalizedReconnectState()?.attemptCount
+    ?: snapshot.metadata["sandboxCommandReconnectAttemptCount"]?.toIntOrNull()
+    ?: 0) + 1
 
 private fun reconnectObservationMetadata(
   snapshot: ManagedProcessSnapshot,
 ): Map<String, String> = buildMap {
+  val normalizedSnapshot = snapshot.withNormalizedRemoteState()
+  val reconnectSeed = normalizedSnapshot.reconnectState?.seed
+  val observationMetadata = normalizedObservationMetadata(
+    processId = normalizedSnapshot.processId,
+    snapshot = normalizedSnapshot,
+    metadata = normalizedSnapshot.metadata,
+  )
+  val providerObservationMetadata = normalizedProviderObservationMetadata(
+    snapshot = normalizedSnapshot,
+    metadata = normalizedSnapshot.metadata,
+  )
   put("sandboxCommandReconnectResumeMode", "seed_snapshot_then_live_attach")
   put("sandboxCommandReconnectBackfillSupported", "false")
   put("sandboxCommandReconnectOutputGapRisk", "true")
   put(
+    "sandboxCommandReconnectSeedSource",
+    reconnectSeed?.source
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: E2B_NATIVE_COMMAND_RECONNECT_SEED_SOURCE_DURABLE_SNAPSHOT_METADATA,
+  )
+  put("sandboxCommandReconnectProviderObservationSeedConsumed", "false")
+  put(
+    "sandboxCommandReconnectProviderObservationSeedState",
+    E2B_NATIVE_COMMAND_RECONNECT_PROVIDER_SEED_STATE_PENDING_LIVE_ATTACH,
+  )
+  put(
+    "sandboxCommandReconnectSeedObservationCursor",
+    reconnectSeed?.hostObservationCursor
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: requireNotNull(observationMetadata["sandboxCommandObservationCursor"]),
+  )
+  put(
+    "sandboxCommandReconnectSeedEventCount",
+    reconnectSeed?.hostObservationEventCount?.toString()
+      ?: requireNotNull(observationMetadata["sandboxCommandObservationEventCount"]),
+  )
+  put(
     "sandboxCommandReconnectSeededStdoutBytes",
-    snapshot.stdout.toByteArray(StandardCharsets.UTF_8).size.toString(),
+    reconnectSeed?.stdoutBytes?.toString()
+      ?: requireNotNull(observationMetadata["sandboxCommandObservationStdoutBytes"]),
   )
   put(
     "sandboxCommandReconnectSeededStderrBytes",
-    snapshot.stderr.toByteArray(StandardCharsets.UTF_8).size.toString(),
+    reconnectSeed?.stderrBytes?.toString()
+      ?: requireNotNull(observationMetadata["sandboxCommandObservationStderrBytes"]),
+  )
+  put(
+    "sandboxCommandReconnectSeedProviderObservationCursor",
+    reconnectSeed?.providerObservationCursor
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: requireNotNull(providerObservationMetadata["sandboxCommandProviderObservationCursor"]),
+  )
+  put(
+    "sandboxCommandReconnectSeedProviderObservationEventCount",
+    reconnectSeed?.providerObservationEventCount?.toString()
+      ?: requireNotNull(providerObservationMetadata["sandboxCommandProviderObservationEventCount"]),
   )
 }
+
+private fun normalizedObservationMetadata(
+  processId: String,
+  snapshot: ManagedProcessSnapshot? = null,
+  metadata: Map<String, String> = snapshot?.metadata.orEmpty(),
+): Map<String, String> {
+  val observationState = snapshot?.normalizedObservationState()
+  val cursor = observationState?.hostCursor
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: metadata.trimmedValue("sandboxCommandObservationCursor")
+  val eventCount = observationState?.hostEventCount
+    ?: metadata["sandboxCommandObservationEventCount"]?.toLongOrNull()
+    ?: parseHostObservationCursor(cursor)
+    ?: parseHostObservationCursor(metadata["sandboxCommandObservationCursor"])
+    ?: when {
+      snapshot == null -> 0L
+      snapshot.processStarted || snapshot.stdout.isNotEmpty() || snapshot.stderr.isNotEmpty() -> 1L
+      else -> 0L
+    }
+  val stdoutBytes = observationState?.stdoutBytes
+    ?: metadata["sandboxCommandObservationStdoutBytes"]?.toLongOrNull()
+    ?: snapshot?.stdout?.utf8Length()
+    ?: 0L
+  val stderrBytes = observationState?.stderrBytes
+    ?: metadata["sandboxCommandObservationStderrBytes"]?.toLongOrNull()
+    ?: snapshot?.stderr?.utf8Length()
+    ?: 0L
+  return buildMap {
+    put("sandboxCommandHandleIdKind", E2B_NATIVE_COMMAND_HANDLE_ID_KIND)
+    put("sandboxCommandHandleId", processId)
+    put("sandboxCommandHandleTag", processId)
+    put("sandboxCommandObservationEventCount", eventCount.toString())
+    put(
+      "sandboxCommandObservationCursor",
+      cursor?.takeIf { existingCursor -> parseHostObservationCursor(existingCursor) == eventCount }
+        ?: hostObservationCursor(eventCount),
+    )
+    put("sandboxCommandObservationStdoutBytes", stdoutBytes.toString())
+    put("sandboxCommandObservationStderrBytes", stderrBytes.toString())
+  }
+}
+
+private fun normalizedProviderObservationMetadata(
+  snapshot: ManagedProcessSnapshot? = null,
+  metadata: Map<String, String> = snapshot?.metadata.orEmpty(),
+): Map<String, String> {
+  val observationState = snapshot?.normalizedObservationState()
+  val hostCursor = observationState?.hostCursor
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: metadata.trimmedValue("sandboxCommandObservationCursor")
+  val providerCursor = observationState?.providerCursor
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: metadata.trimmedValue("sandboxCommandProviderObservationCursor")
+  val hostEventCount = observationState?.hostEventCount
+    ?: metadata["sandboxCommandObservationEventCount"]?.toLongOrNull()
+    ?: parseHostObservationCursor(hostCursor)
+    ?: parseHostObservationCursor(metadata["sandboxCommandObservationCursor"])
+    ?: when {
+      snapshot == null -> 0L
+      snapshot.processStarted || snapshot.stdout.isNotEmpty() || snapshot.stderr.isNotEmpty() -> 1L
+      else -> 0L
+    }
+  val providerEventCount = observationState?.providerEventCount
+    ?: metadata["sandboxCommandProviderObservationEventCount"]?.toLongOrNull()
+    ?: parseProviderObservationCursor(providerCursor)
+    ?: parseProviderObservationCursor(metadata["sandboxCommandProviderObservationCursor"])
+    ?: hostEventCount
+  val providerMode = observationState?.providerMode
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: metadata.trimmedValue("sandboxCommandProviderObservationMode")
+    ?: E2B_NATIVE_COMMAND_PROVIDER_OBSERVATION_MODE
+  val providerBackfillSupported = observationState?.providerBackfillSupported
+    ?: metadata["sandboxCommandProviderObservationBackfillSupported"]?.toBooleanStrictOrNull()
+    ?: false
+  return buildMap {
+    put("sandboxCommandProviderObservationMode", providerMode)
+    put("sandboxCommandProviderObservationEventCount", providerEventCount.toString())
+    put(
+      "sandboxCommandProviderObservationCursor",
+      providerCursor
+        ?.takeIf { existingCursor -> parseProviderObservationCursor(existingCursor) == providerEventCount }
+        ?: providerObservationCursor(providerEventCount),
+    )
+    put("sandboxCommandProviderObservationBackfillSupported", providerBackfillSupported.toString())
+  }
+}
+
+private fun normalizedProviderHandleMetadata(
+  stableSelectorValue: String,
+  snapshot: ManagedProcessSnapshot? = null,
+  metadata: Map<String, String> = emptyMap(),
+): Map<String, String> {
+  val remoteHandle = snapshot?.normalizedRemoteHandle()
+  val stableSelector = remoteHandle?.stableSelectorValue
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: metadata.trimmedValue("sandboxCommandProviderStableSelectorValue")
+    ?: stableSelectorValue
+  val stableSelectorKind = remoteHandle?.stableSelectorKind
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: metadata.trimmedValue("sandboxCommandProviderStableSelectorKind")
+    ?: E2B_NATIVE_COMMAND_SELECTOR_KIND_TAG
+  val explicitLiveSelectorKind = remoteHandle?.liveSelectorKind
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: metadata.trimmedValue("sandboxCommandProviderLiveSelectorKind")
+  val explicitLiveSelectorValue = remoteHandle?.liveSelectorValue
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: metadata.trimmedValue("sandboxCommandProviderLiveSelectorValue")
+  val livePid = metadata["sandboxCommandPid"]?.toIntOrNull()
+    ?: explicitLiveSelectorValue
+      ?.takeIf { explicitLiveSelectorKind == E2B_NATIVE_COMMAND_SELECTOR_KIND_PID }
+      ?.toIntOrNull()
+  val liveSelectorKind = when {
+    livePid != null -> E2B_NATIVE_COMMAND_SELECTOR_KIND_PID
+    explicitLiveSelectorKind != null -> explicitLiveSelectorKind
+    else -> stableSelectorKind
+  }
+  val liveSelectorValue = when {
+    livePid != null -> livePid.toString()
+    explicitLiveSelectorValue != null -> explicitLiveSelectorValue
+    else -> stableSelector
+  }
+  val providerHandleKind = remoteHandle?.providerHandleKind
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: metadata.trimmedValue("sandboxCommandProviderHandleKind")
+    ?: E2B_NATIVE_COMMAND_PROVIDER_HANDLE_KIND
+  return buildMap {
+    put("sandboxCommandProviderHandleKind", providerHandleKind)
+    put("sandboxCommandProviderStableSelectorKind", stableSelectorKind)
+    put("sandboxCommandProviderStableSelectorValue", stableSelector)
+    put("sandboxCommandProviderLiveSelectorKind", liveSelectorKind)
+    put("sandboxCommandProviderLiveSelectorValue", liveSelectorValue)
+  }
+}
+
+private fun normalizedCommandIdentityMetadata(
+  stableSelectorValue: String,
+  snapshot: ManagedProcessSnapshot? = null,
+  metadata: Map<String, String> = emptyMap(),
+): Map<String, String> {
+  val remoteHandle = snapshot?.normalizedRemoteHandle()
+  val commandId = remoteHandle?.commandId
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: metadata.trimmedValue("sandboxCommandId")
+    ?: remoteHandle?.stableSelectorValue
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    ?: metadata.trimmedValue("sandboxCommandProviderStableSelectorValue")
+    ?: stableSelectorValue
+  val commandIdKind = remoteHandle?.commandIdKind
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: metadata.trimmedValue("sandboxCommandIdKind")
+    ?: remoteHandle?.stableSelectorKind
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    ?: metadata.trimmedValue("sandboxCommandProviderStableSelectorKind")
+    ?: E2B_NATIVE_COMMAND_SELECTOR_KIND_TAG
+  return mapOf(
+    "sandboxCommandIdKind" to commandIdKind,
+    "sandboxCommandId" to commandId,
+  )
+}
+
+private fun reconnectSelectorMetadata(
+  snapshot: ManagedProcessSnapshot,
+): Map<String, String> {
+  val normalizedSnapshot = snapshot.withNormalizedRemoteState()
+  val remoteHandle = normalizedSnapshot.remoteHandle
+  val reconnectState = normalizedSnapshot.reconnectState
+  val selectorKind = reconnectState?.selectorKind
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+  val selectorValue = reconnectState?.selectorValue
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+  val pid = normalizedSnapshot.metadata["sandboxCommandPid"]?.toIntOrNull()
+    ?: remoteHandle?.liveSelectorValue
+      ?.takeIf {
+        remoteHandle.liveSelectorKind == E2B_NATIVE_COMMAND_SELECTOR_KIND_PID
+      }
+      ?.toIntOrNull()
+    ?: selectorValue
+      ?.takeIf { selectorKind == E2B_NATIVE_COMMAND_SELECTOR_KIND_PID }
+      ?.toIntOrNull()
+  return if (pid != null) {
+    val selectorSource = reconnectState?.selectorSource
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: E2B_NATIVE_COMMAND_RECONNECT_SELECTOR_SOURCE_SNAPSHOT_PID
+    mapOf(
+      "sandboxCommandReconnectSelectorKind" to E2B_NATIVE_COMMAND_SELECTOR_KIND_PID,
+      "sandboxCommandReconnectSelectorValue" to pid.toString(),
+      "sandboxCommandReconnectSelectorSource" to selectorSource,
+    )
+  } else {
+    val stableSelectorValue = remoteHandle?.stableSelectorValue
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: normalizedSnapshot.metadata.trimmedValue("sandboxCommandProviderStableSelectorValue")
+      ?: normalizedSnapshot.processId
+    mapOf(
+      "sandboxCommandReconnectSelectorKind" to E2B_NATIVE_COMMAND_SELECTOR_KIND_TAG,
+      "sandboxCommandReconnectSelectorValue" to stableSelectorValue,
+      "sandboxCommandReconnectSelectorSource" to E2B_NATIVE_COMMAND_RECONNECT_SELECTOR_SOURCE_STABLE_TAG,
+    )
+  }
+}
+
+private fun Map<String, String>.trimmedValue(key: String): String? =
+  get(key)?.trim()?.takeIf(String::isNotBlank)
+
+private fun hostObservationCursor(eventCount: Long): String =
+  "$E2B_NATIVE_COMMAND_OBSERVATION_CURSOR_PREFIX${eventCount.coerceAtLeast(0L)}"
+
+private fun parseHostObservationCursor(cursor: String?): Long? {
+  val trimmed = cursor?.trim().orEmpty()
+  if (!trimmed.startsWith(E2B_NATIVE_COMMAND_OBSERVATION_CURSOR_PREFIX)) {
+    return null
+  }
+  return trimmed.removePrefix(E2B_NATIVE_COMMAND_OBSERVATION_CURSOR_PREFIX).toLongOrNull()
+}
+
+private fun providerObservationCursor(eventCount: Long): String =
+  "$E2B_NATIVE_COMMAND_PROVIDER_OBSERVATION_CURSOR_PREFIX${eventCount.coerceAtLeast(0L)}"
+
+private fun parseProviderObservationCursor(cursor: String?): Long? {
+  val trimmed = cursor?.trim().orEmpty()
+  if (!trimmed.startsWith(E2B_NATIVE_COMMAND_PROVIDER_OBSERVATION_CURSOR_PREFIX)) {
+    return null
+  }
+  return trimmed.removePrefix(E2B_NATIVE_COMMAND_PROVIDER_OBSERVATION_CURSOR_PREFIX).toLongOrNull()
+}
+
+private fun String.utf8Length(): Long = toByteArray(StandardCharsets.UTF_8).size.toLong()
 
 private val RECONNECT_TRANSIENT_METADATA_KEYS: Set<String> = setOf(
   "sandboxCommandReconnectStatus",
@@ -1064,6 +1472,10 @@ private val RECONNECT_TRANSIENT_METADATA_KEYS: Set<String> = setOf(
   "sandboxCommandReconnectLastAttachedAtEpochMs",
   "sandboxCommandReconnectLastEventAtEpochMs",
   "sandboxCommandReconnectLastEventKind",
+  "sandboxCommandReconnectSeedSource",
+  "sandboxCommandReconnectProviderObservationSeedConsumed",
+  "sandboxCommandReconnectProviderObservationSeedState",
+  "sandboxCommandReconnectProviderObservationSeedConsumedAtEpochMs",
 )
 
 private const val SANDBOX_COMMAND_RECONNECT_RECOVERY_STATE_CONNECTING = "connecting"
@@ -1103,6 +1515,19 @@ private class E2BMinimalNativeManagedCommandController(
   private val stderrCollector = BoundedUtf8Collector()
   private val totalBytes = TotalByteBudget(outputByteLimit)
   private val runtimeMetadata = LinkedHashMap<String, String>(initialMetadata)
+  private var observationEventCount: Long =
+    runtimeMetadata["sandboxCommandObservationEventCount"]?.toLongOrNull()
+      ?: parseHostObservationCursor(runtimeMetadata["sandboxCommandObservationCursor"])
+      ?: 0L
+  private var observationStdoutBytes: Long =
+    runtimeMetadata["sandboxCommandObservationStdoutBytes"]?.toLongOrNull() ?: 0L
+  private var observationStderrBytes: Long =
+    runtimeMetadata["sandboxCommandObservationStderrBytes"]?.toLongOrNull() ?: 0L
+  private var providerObservationEventCount: Long =
+    runtimeMetadata["sandboxCommandProviderObservationEventCount"]?.toLongOrNull()
+      ?: parseProviderObservationCursor(runtimeMetadata["sandboxCommandProviderObservationCursor"])
+      ?: observationEventCount
+  private var reconnectLiveAttachObserved: Boolean = false
 
   private var status: ManagedProcessStatus = initialSnapshot?.status ?: ManagedProcessStatus.RUNNING
   private var processStarted: Boolean = initialSnapshot?.processStarted ?: false
@@ -1124,6 +1549,7 @@ private class E2BMinimalNativeManagedCommandController(
   private var delegateController: ManagedProcessController? = null
 
   init {
+    ensureObservationMetadataLocked()
     initialSnapshot?.stdout
       ?.takeIf(String::isNotEmpty)
       ?.let { text -> stdoutCollector.appendString(text, totalBytes) }
@@ -1276,6 +1702,9 @@ private class E2BMinimalNativeManagedCommandController(
               runtimeMetadata["sandboxCommandReconnectStatus"] = "failed"
               runtimeMetadata["sandboxCommandReconnectRetryable"] = "false"
               runtimeMetadata["sandboxCommandReconnectFailureStage"] = "http_response_non_success"
+              markReconnectProviderObservationSeedUnconsumedLocked(
+                E2B_NATIVE_COMMAND_RECONNECT_PROVIDER_SEED_STATE_FAILED_TERMINAL_BEFORE_LIVE_ATTACH,
+              )
               updateReconnectRecoveryStateLocked()
             }
           }
@@ -1321,10 +1750,10 @@ private class E2BMinimalNativeManagedCommandController(
           if (streamMode == NativeManagedCommandStreamMode.CONNECT) {
             markRetryableReconnectFailureLocked(
               failedAt = failedAt,
-              failureStage = if (processStarted) {
-                "transport_exception_after_connect"
+              failureStage = if (reconnectLiveAttachObserved) {
+                E2B_NATIVE_COMMAND_RECONNECT_FAILURE_STAGE_TRANSPORT_EXCEPTION_AFTER_LIVE_ATTACH
               } else {
-                "transport_exception"
+                E2B_NATIVE_COMMAND_RECONNECT_FAILURE_STAGE_TRANSPORT_EXCEPTION_BEFORE_LIVE_ATTACH
               },
               failureClass = error::class.java.simpleName,
               failureMessage = error.message ?: error::class.java.simpleName,
@@ -1375,25 +1804,30 @@ private class E2BMinimalNativeManagedCommandController(
         is E2BEnvdProcessEvent.Start -> {
           processStarted = true
           runtimeMetadata["sandboxCommandPid"] = event.pid.toString()
+          noteObservationEventLocked()
           noteReconnectEventLocked(eventKind = "start", observedAtEpochMs = observedAt)
-        if (streamMode == NativeManagedCommandStreamMode.CONNECT) {
-          runtimeMetadata["sandboxCommandReconnectStatus"] = "attached"
-          runtimeMetadata["sandboxCommandReconnectRetryable"] = "false"
-          runtimeMetadata.remove("sandboxCommandReconnectRetryAfterEpochMs")
-          runtimeMetadata.remove("sandboxCommandReconnectFailureStage")
-          runtimeMetadata.remove("sandboxCommandReconnectFailureClass")
-          runtimeMetadata.remove("sandboxCommandReconnectFailureMessage")
-          runtimeMetadata.remove("sandboxCommandReconnectLastFailureAtEpochMs")
-          updateReconnectRecoveryStateLocked()
-        }
-        updatedAtEpochMs = maxOf(updatedAtEpochMs, observedAt)
-        if (shouldDispatchTerminationLocked()) {
-          terminationSignalAttempted = true
-          shouldDispatchTermination = true
+          if (streamMode == NativeManagedCommandStreamMode.CONNECT) {
+            runtimeMetadata["sandboxCommandReconnectStatus"] = "attached"
+            runtimeMetadata["sandboxCommandReconnectRetryable"] = "false"
+            runtimeMetadata.remove("sandboxCommandReconnectRetryAfterEpochMs")
+            runtimeMetadata.remove("sandboxCommandReconnectFailureStage")
+            runtimeMetadata.remove("sandboxCommandReconnectFailureClass")
+            runtimeMetadata.remove("sandboxCommandReconnectFailureMessage")
+            runtimeMetadata.remove("sandboxCommandReconnectLastFailureAtEpochMs")
+            updateReconnectRecoveryStateLocked()
+          }
+          updatedAtEpochMs = maxOf(updatedAtEpochMs, observedAt)
+          if (shouldDispatchTerminationLocked()) {
+            terminationSignalAttempted = true
+            shouldDispatchTermination = true
           }
         }
         is E2BEnvdProcessEvent.Data -> {
           processStarted = true
+          noteObservationEventLocked(
+            stdoutBytes = (event.stdout?.size ?: 0) + (event.pty?.size ?: 0),
+            stderrBytes = event.stderr?.size ?: 0,
+          )
           noteReconnectEventLocked(eventKind = "data", observedAtEpochMs = observedAt)
           event.stdout?.let { stdout -> stdoutCollector.append(stdout, totalBytes) }
           event.stderr?.let { stderr -> stderrCollector.append(stderr, totalBytes) }
@@ -1404,12 +1838,16 @@ private class E2BMinimalNativeManagedCommandController(
         is E2BEnvdProcessEvent.End -> {
           processStarted = true
           endEvent = event
+          noteObservationEventLocked(
+            stderrBytes = event.error?.utf8Length()?.toInt() ?: 0,
+          )
           noteReconnectEventLocked(eventKind = "end", observedAtEpochMs = observedAt)
           runtimeMetadata["sandboxCommandNativeProcessStatus"] = event.status
           runtimeMetadata["sandboxCommandNativeProcessExited"] = event.exited.toString()
           updatedAtEpochMs = maxOf(updatedAtEpochMs, observedAt)
         }
         E2BEnvdProcessEvent.KeepAlive -> {
+          noteObservationEventLocked()
           noteReconnectEventLocked(eventKind = "keepalive", observedAtEpochMs = observedAt)
           updatedAtEpochMs = maxOf(updatedAtEpochMs, observedAt)
         }
@@ -1434,7 +1872,7 @@ private class E2BMinimalNativeManagedCommandController(
           errorMessage = "Managed sandbox command terminated."
           exitCode = completed?.exitCode
         }
-        completed == null && endStreamError != null && !processStarted -> {
+        completed == null && endStreamError != null && !reconnectLiveAttachObserved -> {
           val detail = endStreamMessage.ifBlank { "E2B envd Connect stream returned an end-stream error." }
           if (streamMode == NativeManagedCommandStreamMode.START) {
             synchronized(lock) {
@@ -1452,7 +1890,11 @@ private class E2BMinimalNativeManagedCommandController(
             errorCode = "PROCESS_RECONNECT_FAILED"
             errorMessage = detail
             runtimeMetadata["sandboxCommandReconnectStatus"] = "failed"
-            runtimeMetadata["sandboxCommandReconnectFailureStage"] = "connect_end_stream_before_connect"
+            runtimeMetadata["sandboxCommandReconnectFailureStage"] =
+              E2B_NATIVE_COMMAND_RECONNECT_FAILURE_STAGE_CONNECT_END_STREAM_BEFORE_LIVE_ATTACH
+            markReconnectProviderObservationSeedUnconsumedLocked(
+              E2B_NATIVE_COMMAND_RECONNECT_PROVIDER_SEED_STATE_FAILED_TERMINAL_BEFORE_LIVE_ATTACH,
+            )
             updateReconnectRecoveryStateLocked()
           }
           return
@@ -1472,17 +1914,21 @@ private class E2BMinimalNativeManagedCommandController(
             "E2B native command stream ended without a process end event."
           }
           if (streamMode == NativeManagedCommandStreamMode.CONNECT) {
-            if (processStarted) {
+            if (reconnectLiveAttachObserved) {
               markRetryableReconnectFailureLocked(
                 failedAt = finishedAt,
-                failureStage = "missing_process_end_event_after_connect",
+                failureStage = E2B_NATIVE_COMMAND_RECONNECT_FAILURE_STAGE_MISSING_PROCESS_END_AFTER_LIVE_ATTACH,
                 failureMessage = errorMessage,
               )
               return
             } else {
               runtimeMetadata["sandboxCommandReconnectStatus"] = "failed"
               runtimeMetadata["sandboxCommandReconnectRetryable"] = "false"
-              runtimeMetadata["sandboxCommandReconnectFailureStage"] = "connect_end_stream_before_connect"
+              runtimeMetadata["sandboxCommandReconnectFailureStage"] =
+                E2B_NATIVE_COMMAND_RECONNECT_FAILURE_STAGE_MISSING_PROCESS_END_BEFORE_LIVE_ATTACH
+              markReconnectProviderObservationSeedUnconsumedLocked(
+                E2B_NATIVE_COMMAND_RECONNECT_PROVIDER_SEED_STATE_FAILED_TERMINAL_BEFORE_LIVE_ATTACH,
+              )
               updateReconnectRecoveryStateLocked()
             }
           } else {
@@ -1545,6 +1991,9 @@ private class E2BMinimalNativeManagedCommandController(
     runtimeMetadata["sandboxCommandReconnectFailureStage"] = failureStage
     failureClass?.let { runtimeMetadata["sandboxCommandReconnectFailureClass"] = it }
     failureMessage?.let { runtimeMetadata["sandboxCommandReconnectFailureMessage"] = it }
+    markReconnectProviderObservationSeedUnconsumedLocked(
+      E2B_NATIVE_COMMAND_RECONNECT_PROVIDER_SEED_STATE_RETRY_SCHEDULED_BEFORE_LIVE_ATTACH,
+    )
     updateReconnectRecoveryStateLocked()
   }
 
@@ -1555,6 +2004,21 @@ private class E2BMinimalNativeManagedCommandController(
     if (streamMode != NativeManagedCommandStreamMode.CONNECT) {
       return
     }
+    if (eventKind != "end_stream") {
+      markReconnectProviderObservationSeedConsumedLocked(observedAtEpochMs)
+    }
+    if (
+      eventKind != "end_stream" &&
+      runtimeMetadata["sandboxCommandReconnectStatus"] == "connecting"
+    ) {
+      runtimeMetadata["sandboxCommandReconnectStatus"] = "attached"
+      runtimeMetadata["sandboxCommandReconnectRetryable"] = "false"
+      runtimeMetadata.remove("sandboxCommandReconnectRetryAfterEpochMs")
+      runtimeMetadata.remove("sandboxCommandReconnectFailureStage")
+      runtimeMetadata.remove("sandboxCommandReconnectFailureClass")
+      runtimeMetadata.remove("sandboxCommandReconnectFailureMessage")
+      runtimeMetadata.remove("sandboxCommandReconnectLastFailureAtEpochMs")
+    }
     runtimeMetadata["sandboxCommandReconnectLastEventAtEpochMs"] = observedAtEpochMs.toString()
     runtimeMetadata["sandboxCommandReconnectLastEventKind"] = eventKind
     if (
@@ -1564,6 +2028,67 @@ private class E2BMinimalNativeManagedCommandController(
       runtimeMetadata["sandboxCommandReconnectLastAttachedAtEpochMs"] = observedAtEpochMs.toString()
     }
     updateReconnectRecoveryStateLocked()
+  }
+
+  private fun markReconnectProviderObservationSeedConsumedLocked(observedAtEpochMs: Long) {
+    if (reconnectLiveAttachObserved) {
+      return
+    }
+    reconnectLiveAttachObserved = true
+    runtimeMetadata["sandboxCommandReconnectProviderObservationSeedConsumed"] = "true"
+    runtimeMetadata["sandboxCommandReconnectProviderObservationSeedState"] =
+      E2B_NATIVE_COMMAND_RECONNECT_PROVIDER_SEED_STATE_CONSUMED_LIVE_ATTACH
+    runtimeMetadata["sandboxCommandReconnectProviderObservationSeedConsumedAtEpochMs"] =
+      observedAtEpochMs.toString()
+  }
+
+  private fun markReconnectProviderObservationSeedUnconsumedLocked(state: String) {
+    if (streamMode != NativeManagedCommandStreamMode.CONNECT || reconnectLiveAttachObserved) {
+      return
+    }
+    runtimeMetadata["sandboxCommandReconnectProviderObservationSeedConsumed"] = "false"
+    runtimeMetadata["sandboxCommandReconnectProviderObservationSeedState"] = state
+    runtimeMetadata.remove("sandboxCommandReconnectProviderObservationSeedConsumedAtEpochMs")
+  }
+
+  private fun noteObservationEventLocked(
+    stdoutBytes: Int = 0,
+    stderrBytes: Int = 0,
+  ) {
+    observationEventCount += 1L
+    observationStdoutBytes += stdoutBytes.coerceAtLeast(0).toLong()
+    observationStderrBytes += stderrBytes.coerceAtLeast(0).toLong()
+    providerObservationEventCount += 1L
+    ensureObservationMetadataLocked()
+  }
+
+  private fun ensureObservationMetadataLocked() {
+    runtimeMetadata.putAll(
+      normalizedCommandIdentityMetadata(
+        stableSelectorValue = request.processId,
+        metadata = runtimeMetadata,
+      ),
+    )
+    runtimeMetadata.putAll(
+      normalizedProviderHandleMetadata(
+        stableSelectorValue = request.processId,
+        metadata = runtimeMetadata,
+      ),
+    )
+    runtimeMetadata.putAll(
+      normalizedProviderObservationMetadata(
+        metadata = runtimeMetadata + mapOf(
+          "sandboxCommandProviderObservationEventCount" to providerObservationEventCount.toString(),
+        ),
+      ),
+    )
+    runtimeMetadata["sandboxCommandHandleIdKind"] = E2B_NATIVE_COMMAND_HANDLE_ID_KIND
+    runtimeMetadata["sandboxCommandHandleId"] = request.processId
+    runtimeMetadata["sandboxCommandHandleTag"] = request.processId
+    runtimeMetadata["sandboxCommandObservationEventCount"] = observationEventCount.toString()
+    runtimeMetadata["sandboxCommandObservationCursor"] = hostObservationCursor(observationEventCount)
+    runtimeMetadata["sandboxCommandObservationStdoutBytes"] = observationStdoutBytes.toString()
+    runtimeMetadata["sandboxCommandObservationStderrBytes"] = observationStderrBytes.toString()
   }
 
   private fun updateReconnectRecoveryStateLocked() {
@@ -1592,15 +2117,42 @@ private class E2BMinimalNativeManagedCommandController(
   }
 
   private fun nativeReconnectSelector(): E2BEnvdProcessSelector {
-    val pid = runtimeMetadata["sandboxCommandPid"]?.trim()?.toIntOrNull()
+    val pid = runtimeMetadata["sandboxCommandReconnectSelectorValue"]
+      ?.trim()
+      ?.takeIf {
+        runtimeMetadata["sandboxCommandReconnectSelectorKind"] == E2B_NATIVE_COMMAND_SELECTOR_KIND_PID
+      }
+      ?.toIntOrNull()
+      ?: runtimeMetadata["sandboxCommandPid"]?.trim()?.toIntOrNull()
+      ?: runtimeMetadata["sandboxCommandProviderLiveSelectorValue"]
+        ?.trim()
+        ?.takeIf {
+          runtimeMetadata["sandboxCommandProviderLiveSelectorKind"] == E2B_NATIVE_COMMAND_SELECTOR_KIND_PID
+        }
+        ?.toIntOrNull()
     return if (pid != null) {
       E2BEnvdProcessSelector(pid = pid)
     } else {
-      E2BEnvdProcessSelector(tag = request.processId)
+      E2BEnvdProcessSelector(
+        tag = runtimeMetadata["sandboxCommandProviderStableSelectorValue"]
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: runtimeMetadata["sandboxCommandReconnectSelectorValue"]
+            ?.trim()
+            ?.takeIf {
+              runtimeMetadata["sandboxCommandReconnectSelectorKind"] == E2B_NATIVE_COMMAND_SELECTOR_KIND_TAG &&
+                it.isNotBlank()
+            }
+          ?: request.processId,
+      )
     }
   }
 
   private fun dispatchTerminationSignal() {
+    val targetTag = runtimeMetadata["sandboxCommandProviderStableSelectorValue"]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: request.processId
     val result = runCatching {
       val timeoutMs = minOf(request.timeoutMs, 10_000L)
       val response = transport.unary(
@@ -1610,7 +2162,7 @@ private class E2BMinimalNativeManagedCommandController(
           headers = nativeHeaders(envdAccessToken = envdAccessToken, timeoutMs = timeoutMs),
           bodyBytes = E2BEnvdProcessProtoCodec.encodeSendSignalRequest(
             E2BEnvdSendSignalRequest(
-              process = E2BEnvdProcessSelector(tag = request.processId),
+              process = E2BEnvdProcessSelector(tag = targetTag),
               signal = 9,
             ),
           ),
@@ -1625,7 +2177,9 @@ private class E2BMinimalNativeManagedCommandController(
             "sandboxCommandTerminateApi" to E2B_NATIVE_COMMAND_SIGNAL_API,
             "sandboxCommandTerminateHttpStatusCode" to response.statusCode.toString(),
             "sandboxCommandTerminateRequestedSignal" to "9",
-            "sandboxCommandTerminateTargetTag" to request.processId,
+            "sandboxCommandTerminateSelectorKind" to E2B_NATIVE_COMMAND_SELECTOR_KIND_TAG,
+            "sandboxCommandTerminateSelectorValue" to targetTag,
+            "sandboxCommandTerminateTargetTag" to targetTag,
           ),
         )
       } else {
@@ -1635,7 +2189,9 @@ private class E2BMinimalNativeManagedCommandController(
             "sandboxCommandTerminateApi" to E2B_NATIVE_COMMAND_SIGNAL_API,
             "sandboxCommandTerminateHttpStatusCode" to response.statusCode.toString(),
             "sandboxCommandTerminateRequestedSignal" to "9",
-            "sandboxCommandTerminateTargetTag" to request.processId,
+            "sandboxCommandTerminateSelectorKind" to E2B_NATIVE_COMMAND_SELECTOR_KIND_TAG,
+            "sandboxCommandTerminateSelectorValue" to targetTag,
+            "sandboxCommandTerminateTargetTag" to targetTag,
             "sandboxCommandTerminateFailureStage" to "http_response_non_success",
           ) + response.body.trim().takeIf(String::isNotBlank)?.let { body ->
             mapOf("sandboxCommandTerminateFailureMessage" to body)
@@ -1648,7 +2204,9 @@ private class E2BMinimalNativeManagedCommandController(
         metadata = mapOf(
           "sandboxCommandTerminateApi" to E2B_NATIVE_COMMAND_SIGNAL_API,
           "sandboxCommandTerminateRequestedSignal" to "9",
-          "sandboxCommandTerminateTargetTag" to request.processId,
+          "sandboxCommandTerminateSelectorKind" to E2B_NATIVE_COMMAND_SELECTOR_KIND_TAG,
+          "sandboxCommandTerminateSelectorValue" to targetTag,
+          "sandboxCommandTerminateTargetTag" to targetTag,
           "sandboxCommandTerminateFailureStage" to "transport_exception",
           "sandboxCommandTerminateFailureClass" to error::class.java.simpleName,
           "sandboxCommandTerminateFailureMessage" to (error.message ?: error::class.java.simpleName),
@@ -1732,6 +2290,9 @@ private class E2BMinimalNativeManagedCommandController(
     timedOut = timedOut,
     cancelled = cancelled,
     outputLimitExceeded = outputLimitExceeded,
+    remoteHandle = remoteHandleLocked(),
+    observationState = observationStateLocked(),
+    reconnectState = reconnectStateLocked(),
     metadata = buildMap {
       putAll(runtimeMetadata)
       if (terminationRequested) {
@@ -1741,7 +2302,155 @@ private class E2BMinimalNativeManagedCommandController(
         put("terminationRequestAccepted", accepted.toString())
       }
     },
+  ).withNormalizedRemoteState()
+
+  private fun remoteHandleLocked(): ManagedProcessRemoteHandle = ManagedProcessRemoteHandle(
+    provider = runtimeMetadata["sandboxProvider"]?.trim()?.takeIf(String::isNotBlank)
+      ?: SandboxProviderId.E2B.wireValue,
+    sandboxId = runtimeMetadata["sandboxId"]?.trim()?.takeIf(String::isNotBlank)
+      ?: session.sandboxId,
+    sandboxDomain = runtimeMetadata["sandboxDomain"]?.trim()?.takeIf(String::isNotBlank)
+      ?: session.sandboxDomain,
+    sessionId = runtimeMetadata["sandboxSessionId"]?.trim()?.takeIf(String::isNotBlank),
+    commandIdKind = runtimeMetadata["sandboxCommandIdKind"]?.trim()?.takeIf(String::isNotBlank),
+    commandId = runtimeMetadata["sandboxCommandId"]?.trim()?.takeIf(String::isNotBlank),
+    providerHandleKind = runtimeMetadata["sandboxCommandProviderHandleKind"]?.trim()
+      ?.takeIf(String::isNotBlank),
+    stableSelectorKind = runtimeMetadata["sandboxCommandProviderStableSelectorKind"]?.trim()
+      ?.takeIf(String::isNotBlank),
+    stableSelectorValue = runtimeMetadata["sandboxCommandProviderStableSelectorValue"]?.trim()
+      ?.takeIf(String::isNotBlank),
+    liveSelectorKind = runtimeMetadata["sandboxCommandProviderLiveSelectorKind"]?.trim()
+      ?.takeIf(String::isNotBlank),
+    liveSelectorValue = runtimeMetadata["sandboxCommandProviderLiveSelectorValue"]?.trim()
+      ?.takeIf(String::isNotBlank),
+    remoteWorkspaceRoot = runtimeMetadata["remoteWorkspaceRoot"]?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: session.remoteWorkspaceRoot?.trim()?.takeIf(String::isNotBlank),
+    remoteWorkingDirectory = runtimeMetadata["remoteWorkingDirectory"]?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: remoteWorkingDirectory,
+    nativeProtocol = runtimeMetadata["sandboxCommandNativeProtocol"]?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: E2B_NATIVE_COMMAND_PROTOCOL,
   )
+
+  private fun observationStateLocked(): ManagedProcessObservationState = ManagedProcessObservationState(
+    mode = runtimeMetadata["sandboxCommandObservationMode"]?.trim()?.takeIf(String::isNotBlank)
+      ?: E2B_NATIVE_COMMAND_OBSERVATION_MODE,
+    hostEventCount = observationEventCount,
+    hostCursor = hostObservationCursor(observationEventCount),
+    stdoutBytes = observationStdoutBytes,
+    stderrBytes = observationStderrBytes,
+    providerMode = runtimeMetadata["sandboxCommandProviderObservationMode"]?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: E2B_NATIVE_COMMAND_PROVIDER_OBSERVATION_MODE,
+    providerEventCount = providerObservationEventCount,
+    providerCursor = providerObservationCursor(providerObservationEventCount),
+    providerBackfillSupported =
+      runtimeMetadata["sandboxCommandProviderObservationBackfillSupported"]?.toBooleanStrictOrNull()
+        ?: false,
+    liveObservationSupported =
+      runtimeMetadata["sandboxCommandSupportsManagedProcessLiveObservation"]?.toBooleanStrictOrNull(),
+    cursorResumeSupported =
+      runtimeMetadata["sandboxCommandSupportsManagedProcessObservationCursorResume"]?.toBooleanStrictOrNull(),
+    backfillSupported =
+      runtimeMetadata["sandboxCommandSupportsManagedProcessObservationBackfill"]?.toBooleanStrictOrNull(),
+  )
+
+  private fun reconnectStateLocked(): ManagedProcessReconnectState? {
+    val seed = reconnectSeedLocked()
+    val hasReconnectMetadata =
+      streamMode == NativeManagedCommandStreamMode.CONNECT ||
+        runtimeMetadata.keys.any { key -> key.startsWith("sandboxCommandReconnect") }
+    if (!hasReconnectMetadata && seed == null) {
+      return null
+    }
+    return ManagedProcessReconnectState(
+      api = runtimeMetadata["sandboxCommandReconnectApi"]?.trim()?.takeIf(String::isNotBlank),
+      source = runtimeMetadata["sandboxCommandReconnectSource"]?.trim()?.takeIf(String::isNotBlank),
+      status = runtimeMetadata["sandboxCommandReconnectStatus"]?.trim()?.takeIf(String::isNotBlank),
+      recoveryState = runtimeMetadata["sandboxCommandReconnectRecoveryState"]?.trim()
+        ?.takeIf(String::isNotBlank),
+      resumeMode = runtimeMetadata["sandboxCommandReconnectResumeMode"]?.trim()
+        ?.takeIf(String::isNotBlank),
+      backfillSupported =
+        runtimeMetadata["sandboxCommandReconnectBackfillSupported"]?.toBooleanStrictOrNull(),
+      outputGapRisk = runtimeMetadata["sandboxCommandReconnectOutputGapRisk"]?.toBooleanStrictOrNull(),
+      retryable = runtimeMetadata["sandboxCommandReconnectRetryable"]?.toBooleanStrictOrNull(),
+      retryAfterEpochMs = runtimeMetadata["sandboxCommandReconnectRetryAfterEpochMs"]?.toLongOrNull(),
+      attemptCount = runtimeMetadata["sandboxCommandReconnectAttemptCount"]?.toIntOrNull(),
+      httpStatusCode = runtimeMetadata["sandboxCommandReconnectHttpStatusCode"]?.toIntOrNull(),
+      selectorKind = runtimeMetadata["sandboxCommandReconnectSelectorKind"]?.trim()
+        ?.takeIf(String::isNotBlank),
+      selectorValue = runtimeMetadata["sandboxCommandReconnectSelectorValue"]?.trim()
+        ?.takeIf(String::isNotBlank),
+      selectorSource = runtimeMetadata["sandboxCommandReconnectSelectorSource"]?.trim()
+        ?.takeIf(String::isNotBlank),
+      lastAttachedAtEpochMs =
+        runtimeMetadata["sandboxCommandReconnectLastAttachedAtEpochMs"]?.toLongOrNull(),
+      lastEventAtEpochMs = runtimeMetadata["sandboxCommandReconnectLastEventAtEpochMs"]?.toLongOrNull(),
+      lastEventKind = runtimeMetadata["sandboxCommandReconnectLastEventKind"]?.trim()
+        ?.takeIf(String::isNotBlank),
+      lastFailureAtEpochMs =
+        runtimeMetadata["sandboxCommandReconnectLastFailureAtEpochMs"]?.toLongOrNull(),
+      failureStage = runtimeMetadata["sandboxCommandReconnectFailureStage"]?.trim()
+        ?.takeIf(String::isNotBlank),
+      failureClass = runtimeMetadata["sandboxCommandReconnectFailureClass"]?.trim()
+        ?.takeIf(String::isNotBlank),
+      failureMessage = runtimeMetadata["sandboxCommandReconnectFailureMessage"]?.trim()
+        ?.takeIf(String::isNotBlank),
+      seed = seed,
+    )
+  }
+
+  private fun reconnectSeedLocked(): ManagedProcessReconnectSeed? {
+    val source = runtimeMetadata["sandboxCommandReconnectSeedSource"]?.trim()?.takeIf(String::isNotBlank)
+    val providerObservationSeedConsumed =
+      runtimeMetadata["sandboxCommandReconnectProviderObservationSeedConsumed"]?.toBooleanStrictOrNull()
+    val providerObservationSeedState =
+      runtimeMetadata["sandboxCommandReconnectProviderObservationSeedState"]?.trim()
+        ?.takeIf(String::isNotBlank)
+    val providerObservationSeedConsumedAtEpochMs =
+      runtimeMetadata["sandboxCommandReconnectProviderObservationSeedConsumedAtEpochMs"]?.toLongOrNull()
+    val hostObservationCursor = runtimeMetadata["sandboxCommandReconnectSeedObservationCursor"]?.trim()
+      ?.takeIf(String::isNotBlank)
+    val hostObservationEventCount =
+      runtimeMetadata["sandboxCommandReconnectSeedEventCount"]?.toLongOrNull()
+    val stdoutBytes = runtimeMetadata["sandboxCommandReconnectSeededStdoutBytes"]?.toLongOrNull()
+    val stderrBytes = runtimeMetadata["sandboxCommandReconnectSeededStderrBytes"]?.toLongOrNull()
+    val providerObservationCursor =
+      runtimeMetadata["sandboxCommandReconnectSeedProviderObservationCursor"]?.trim()
+        ?.takeIf(String::isNotBlank)
+    val providerObservationEventCount =
+      runtimeMetadata["sandboxCommandReconnectSeedProviderObservationEventCount"]?.toLongOrNull()
+    if (
+      source == null &&
+      providerObservationSeedConsumed == null &&
+      providerObservationSeedState == null &&
+      providerObservationSeedConsumedAtEpochMs == null &&
+      hostObservationCursor == null &&
+      hostObservationEventCount == null &&
+      stdoutBytes == null &&
+      stderrBytes == null &&
+      providerObservationCursor == null &&
+      providerObservationEventCount == null
+    ) {
+      return null
+    }
+    return ManagedProcessReconnectSeed(
+      source = source,
+      providerObservationSeedConsumed = providerObservationSeedConsumed,
+      providerObservationSeedState = providerObservationSeedState,
+      providerObservationSeedConsumedAtEpochMs = providerObservationSeedConsumedAtEpochMs,
+      hostObservationCursor = hostObservationCursor,
+      hostObservationEventCount = hostObservationEventCount,
+      stdoutBytes = stdoutBytes,
+      stderrBytes = stderrBytes,
+      providerObservationCursor = providerObservationCursor,
+      providerObservationEventCount = providerObservationEventCount,
+    )
+  }
 }
 
 private fun resolveNativeCommandSession(
@@ -1892,6 +2601,9 @@ private class NativeCommandStreamCollector(
   private val json: Json,
   outputByteLimit: Int,
   baseMetadata: Map<String, String>,
+  private val providerStableSelectorValue: String? = baseMetadata["sandboxCommandProviderStableSelectorValue"]
+    ?.trim()
+    ?.takeIf(String::isNotBlank),
 ) {
   private val stdoutCollector = BoundedUtf8Collector()
   private val stderrCollector = BoundedUtf8Collector()
@@ -1925,6 +2637,7 @@ private class NativeCommandStreamCollector(
       is E2BEnvdProcessEvent.Start -> {
         processStarted = true
         metadata["sandboxCommandPid"] = event.pid.toString()
+        refreshProviderHandleMetadata()
       }
       is E2BEnvdProcessEvent.Data -> {
         processStarted = true
@@ -1939,6 +2652,17 @@ private class NativeCommandStreamCollector(
         metadata["sandboxCommandNativeProcessExited"] = event.exited.toString()
       }
       E2BEnvdProcessEvent.KeepAlive -> Unit
+    }
+  }
+
+  private fun refreshProviderHandleMetadata() {
+    providerStableSelectorValue?.let { stableSelectorValue ->
+      metadata.putAll(
+        normalizedProviderHandleMetadata(
+          stableSelectorValue = stableSelectorValue,
+          metadata = metadata,
+        ),
+      )
     }
   }
 

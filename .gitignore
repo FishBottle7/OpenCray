@@ -58,6 +58,8 @@
 /tmp_refs/
 /tmp_pytest*/
 /tmp_manual_check/
+/.benchmarks/
+/.home/
 /.codex-home/
 /.codex-temp/
 /.codex-build/

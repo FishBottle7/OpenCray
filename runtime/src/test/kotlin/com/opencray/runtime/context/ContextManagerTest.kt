@@ -16,6 +16,7 @@ import com.opencray.runtime.memory.MemoryStatus
 import com.opencray.runtime.memory.RetrievedMemory
 import com.opencray.runtime.soul.SoulTurnSemanticSignal
 import com.opencray.runtime.soul.SoulTurnUserAffect
+import com.opencray.runtime.skills.ActiveSkillCapsule
 import com.opencray.runtime.workingstate.WorkingState
 import com.opencray.runtime.workingstate.WorkingStateEntry
 import com.opencray.runtime.workingstate.WorkingStateObjective
@@ -192,6 +193,91 @@ class ContextManagerTest {
   }
 
   @Test
+  fun prepareCarriesStructuredRecentToolObservationLayer() {
+    val manager = ContextManager()
+
+    val managed = manager.prepare(
+      PromptAssemblyInput(
+        task = promptTask(),
+        baseSystemPrompt = "You are OpenCray for testing.",
+        sessionContext = AgentRuntimeSessionContext(),
+        toolDefinitions = emptyList(),
+        liveConversation = listOf(
+          RuntimeConversationMessage(RuntimeConversationRole.USER, "Inspect the repo."),
+          RuntimeConversationMessage(
+            role = RuntimeConversationRole.TOOL,
+            content = """{"run_id":"run-1","task_id":"task-1","turn":1,"tool_call_id":"call-1","tool_name":"Read","status":"success","content":"README intro","metadata":{"filePath":"README.md","offset":"1","returnedLineCount":"4","totalLineCount":"20","truncated":"false"}}""",
+            kind = RuntimeConversationMessageKind.TOOL_RESULT,
+            toolResult = RuntimeConversationToolResult(
+              toolCallId = "call-1",
+              toolName = "Read",
+              status = "success",
+              isError = false,
+            ),
+          ),
+          RuntimeConversationMessage(
+            role = RuntimeConversationRole.TOOL,
+            content = """{"run_id":"run-1","task_id":"task-1","turn":1,"tool_call_id":"call-2","tool_name":"Grep","status":"success","content":"src/App.kt:12:needle","metadata":{"pattern":"needle","path":"src","matchCount":"1"}}""",
+            kind = RuntimeConversationMessageKind.TOOL_RESULT,
+            toolResult = RuntimeConversationToolResult(
+              toolCallId = "call-2",
+              toolName = "Grep",
+              status = "success",
+              isError = false,
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val observationLayer = requireNotNull(managed.recentToolObservationLayer)
+
+    assertEquals(managed.recentToolObservationsText, observationLayer.text)
+    assertEquals(2, observationLayer.observationCount)
+    assertEquals(0, observationLayer.omittedObservationCount)
+    assertTrue(observationLayer.text.contains("Read file_path=README.md"))
+    assertTrue(observationLayer.text.contains("Grep pattern=needle path=src matches=1"))
+    assertTrue(managed.report.recentToolObservationLayerIncluded)
+    assertEquals(2, managed.report.recentToolObservationCount)
+  }
+
+  @Test
+  fun prepareCarriesActiveSkillCapsuleForBudgetReduction() {
+    val manager = ContextManager()
+    val activeSkillCapsule = ActiveSkillCapsule(
+      name = "ui-ux-pro-max",
+      description = "High-end UI review workflow.",
+      relativePath = ".codex/skills/ui-ux-pro-max/SKILL.md",
+      invocationControl = "explicit-only",
+      executionContext = "fork",
+      activationSource = "skill_read",
+      markdownBody = """
+        # UI UX Pro Max
+
+        Audit the current interface first.
+      """.trimIndent(),
+      toolPermissionSummary = listOf("read:allow", "write:allow"),
+      allowedToolKeys = setOf("read", "write"),
+    )
+
+    val managed = manager.prepare(
+      PromptAssemblyInput(
+        task = promptTask(),
+        baseSystemPrompt = "You are OpenCray for testing.",
+        sessionContext = AgentRuntimeSessionContext(),
+        activeSkillCapsule = activeSkillCapsule,
+        toolDefinitions = emptyList(),
+        liveConversation = emptyList(),
+      ),
+    )
+
+    assertEquals("ui-ux-pro-max", managed.activeSkillCapsule?.name)
+    assertEquals("skill_read", managed.activeSkillCapsule?.activationSource)
+    assertTrue(managed.activeSkillText.contains("[Instructions]"))
+    assertTrue(managed.activeSkillText.contains("Audit the current interface first"))
+  }
+
+  @Test
   fun prepareBuildsPruningSummaryBeforeWindowing() {
     val manager = ContextManager(
       contextPruner = ContextPruner(
@@ -231,17 +317,17 @@ class ContextManagerTest {
 
     val summary = requireNotNull(managed.pruningSummary)
 
-    assertEquals(1, summary.removedMessageCount)
+    assertEquals(0, summary.removedMessageCount)
     assertEquals(1, summary.rewrittenMessageCount)
-    assertEquals(1, summary.duplicateBackgroundMessageCount)
+    assertEquals(0, summary.duplicateBackgroundMessageCount)
     assertEquals(1, summary.attachmentLikeMessageCount)
-    assertTrue(summary.text.contains("removed=1, rewritten=1"))
+    assertTrue(summary.text.contains("removed=0, rewritten=1"))
     assertTrue(managed.transcriptWindow.messages.any { message ->
-      message.content.startsWith("Attachment-like payload pruned from prompt.")
+      message.content.startsWith("Attachment-like payload pruned by prompt guardrail.")
     })
-    assertEquals(1, managed.report.prunedTranscriptMessageCount)
+    assertEquals(0, managed.report.prunedTranscriptMessageCount)
     assertEquals(1, managed.report.rewrittenTranscriptMessageCount)
-    assertEquals(1, managed.report.duplicateBackgroundTranscriptMessageCount)
+    assertEquals(0, managed.report.duplicateBackgroundTranscriptMessageCount)
     assertEquals(1, managed.report.attachmentLikeTranscriptRewriteCount)
     assertTrue(managed.report.pruningSummaryIncluded)
   }

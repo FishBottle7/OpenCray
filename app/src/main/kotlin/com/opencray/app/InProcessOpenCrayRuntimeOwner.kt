@@ -69,6 +69,7 @@ internal fun createInProcessOpenCrayRuntimeOwner(
 ): InProcessOpenCrayRuntimeOwner {
   val lifecycleDescriptor = HostRuntimeLifecycleDescriptor()
   val chatExecutor = Executors.newSingleThreadExecutor()
+  val subAgentRecoveryExecutor = Executors.newCachedThreadPool()
   val chatContextFactory = ChatRuntimeSessionContextFactory(
     chatSessionStore = chatSessionStore,
     workspaceRootProvider = workspaceRootProvider,
@@ -323,6 +324,7 @@ internal fun createInProcessOpenCrayRuntimeOwner(
       runEventJournalStoreFactory = runEventJournalStoreFactory,
       promptCheckpointStoreFactory = promptCheckpointStoreFactory,
       executor = chatExecutor,
+      subAgentRecoveryExecutor = subAgentRecoveryExecutor,
       runtimeLifecycle = lifecycleDescriptor,
     ),
     runEventJournalStoreFactory = runEventJournalStoreFactory,

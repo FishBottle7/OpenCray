@@ -287,6 +287,55 @@ class PromptAssemblerTest {
   }
 
   @Test
+  fun assembleSubagentToolGuidanceTreatsWaitAgentAsObserver() {
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      ContextManager().prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "You are OpenCray for testing.",
+          sessionContext = AgentRuntimeSessionContext(),
+          toolDefinitions = listOf(
+            AgentToolDefinition(
+              name = "Task",
+              description = "Delegate one bounded subtask to a child runtime.",
+            ),
+            AgentToolDefinition(
+              name = "spawn_agent",
+              description = "Start one bounded subagent handle immediately.",
+            ),
+            AgentToolDefinition(
+              name = "wait_agent",
+              description = "Wait for one delegated child handle.",
+            ),
+            AgentToolDefinition(
+              name = "send_input",
+              description = "Queue a follow-up message for a delegated child.",
+            ),
+            AgentToolDefinition(
+              name = "close_agent",
+              description = "Close one delegated child handle.",
+            ),
+            AgentToolDefinition(
+              name = "list_subagents",
+              description = "Inspect delegated child handles currently known to this runtime.",
+            ),
+          ),
+          liveConversation = listOf(
+            RuntimeConversationMessage(RuntimeConversationRole.USER, "Delegate this work."),
+          ),
+        ),
+      ),
+    )
+
+    assertTrue(prompt.taskPrompt.contains("Use spawn_agent when you need an explicit child handle and want that child to start immediately."))
+    assertTrue(prompt.taskPrompt.contains("Use wait_agent to block until a running child reaches its latest stable state and harvest its result."))
+    assertTrue(prompt.taskPrompt.contains("After user approval unlocks a paused child, the runtime resumes it through the detached recovery path; use wait_agent later to observe the new stable state."))
+    assertFalse(prompt.taskPrompt.contains("Use wait_agent to block until a running child reaches its latest stable state, or to resume a paused child after user approval."))
+  }
+
+  @Test
   fun assembleIncludesPruningSummaryLayerWhenTranscriptWasPruned() {
     val contextManager = ContextManager(
       contextPruner = ContextPruner(
@@ -321,9 +370,9 @@ class PromptAssemblerTest {
     )
 
     assertTrue(prompt.taskPrompt.contains("[Pruning Summary]"))
-    assertTrue(prompt.taskPrompt.contains("removed=1, rewritten=1"))
+    assertTrue(prompt.taskPrompt.contains("removed=0, rewritten=1"))
     assertTrue(prompt.report.pruningSummaryIncluded)
-    assertEquals(1, prompt.report.prunedTranscriptMessageCount)
+    assertEquals(0, prompt.report.prunedTranscriptMessageCount)
     assertEquals(1, prompt.report.rewrittenTranscriptMessageCount)
     assertEquals(1, prompt.report.attachmentLikeTranscriptRewriteCount)
   }
@@ -408,7 +457,7 @@ class PromptAssemblerTest {
       contextManager.prepare(
         PromptAssemblyInput(
           task = promptTask(),
-          baseSystemPrompt = "Base identity.",
+          baseSystemPrompt = "Base identity that still needs to fit even under a very small model budget. ".repeat(60).trim(),
           sessionContext = AgentRuntimeSessionContext(),
           toolDefinitions = emptyList(),
           liveConversation = emptyList(),
@@ -877,6 +926,411 @@ class PromptAssemblerTest {
     assertEquals(listOf("read", "write"), prompt.report.activeSkillTrace.allowedToolKeys)
   }
 
+  @Test
+  fun assembleBudgetCoordinatorDropsArchiveAndSupportLayersBeforeWorkingState() {
+    val contextManager = ContextManager(
+      transcriptWindowBuilder = TranscriptWindowBuilder(
+        TranscriptWindowConfig(
+          maxMessages = 6,
+          maxCharsPerMessage = 320,
+        ),
+      ),
+    )
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "Base identity.",
+          sessionContext = AgentRuntimeSessionContext(
+            workingState = WorkingState(
+              objective = WorkingStateObjective(
+                taskId = "task-budget-1",
+                runId = "run-budget-1",
+                primaryGoal = "Finish the context-budget slice.",
+                currentSubgoal = "Protect working state under prompt pressure.",
+                status = "in_progress",
+              ),
+              nextActions = listOf(
+                WorkingStateEntry(text = "Verify the budget coordinator with focused tests."),
+              ),
+            ),
+            recalledMemory = MemoryRecallResult(
+              memories = listOf(
+                RetrievedMemory(
+                  id = "memory-budget-1",
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.USER,
+                  status = MemoryStatus.ACTIVE,
+                  content = "The user prefers context systems that keep procedural continuity explicit.",
+                  lastConfirmedAtEpochMs = 10L,
+                  score = 420,
+                ),
+              ),
+              matchedRecordCount = 1,
+            ),
+            durableCompaction = DurableCompactionContext(
+              text = ("Older archived summary. ".repeat(80)).trim(),
+            ),
+            bootstrapContext = BootstrapContext(
+              mode = BootstrapMode.FULL,
+              files = listOf(
+                BootstrapSnippet(
+                  name = "AGENTS.md",
+                  relativePath = "AGENTS.md",
+                  content = ("Workspace instruction block. ".repeat(40)).trim(),
+                  sourceCharCount = ("Workspace instruction block. ".repeat(40)).trim().length,
+                  truncated = false,
+                ),
+              ),
+            ),
+            skillInventory = SkillInventory(
+              skills = listOf(
+                VisibleSkill(
+                  name = "fun-brainstorming",
+                  description = ("Use this skill before architecture work. ".repeat(20)).trim(),
+                  relativePath = ".codex/skills/fun-brainstorming/SKILL.md",
+                  invocationControl = SkillInvocationControl.EXPLICIT_AND_IMPLICIT,
+                  userInvocable = true,
+                  executionContext = SkillExecutionContext.FORK,
+                ),
+              ),
+            ),
+          ),
+          toolDefinitions = emptyList(),
+          liveConversation = listOf(
+            RuntimeConversationMessage(RuntimeConversationRole.USER, "Review the current runtime architecture."),
+            RuntimeConversationMessage(
+              RuntimeConversationRole.ASSISTANT,
+              "I will inspect the context layers and then verify the budget behavior with focused tests.",
+            ),
+          ),
+          llmMetadata = budgetMetadata(
+            contextWindowTokens = 3_600,
+            reservedOutputTokens = 128,
+            safetyMarginTokens = 96,
+            effectiveInputPercent = "0.346",
+          ),
+        ),
+      ),
+    )
+
+    assertTrue(prompt.taskPrompt.contains("[Working State]"))
+    assertTrue(prompt.taskPrompt.contains("[Retrieved Memory]"))
+    assertFalse(prompt.taskPrompt.contains("[Durable Compaction]"))
+    assertFalse(prompt.taskPrompt.contains("[Skill Inventory]"))
+    assertFalse(prompt.taskPrompt.contains("[Bootstrap AGENTS.md]"))
+    assertEquals(ContextBudgetPressureMode.TIGHT, prompt.report.budgetReport.pressureMode)
+    assertTrue(prompt.report.budgetReport.omittedLayerNames.contains("Durable Compaction"))
+    assertTrue(prompt.report.budgetReport.omittedLayerNames.contains("Skill Inventory"))
+    assertTrue(prompt.report.budgetReport.omittedLayerNames.contains("Bootstrap AGENTS.md"))
+    assertFalse(prompt.report.budgetReport.omittedLayerNames.contains("Working State"))
+  }
+
+  @Test
+  fun assembleBudgetCoordinatorTrimsConversationReplayBeforeDroppingMemory() {
+    val contextManager = ContextManager(
+      transcriptWindowBuilder = TranscriptWindowBuilder(
+        TranscriptWindowConfig(
+          maxMessages = 6,
+          maxCharsPerMessage = 320,
+        ),
+      ),
+    )
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "Base identity.",
+          sessionContext = AgentRuntimeSessionContext(
+            recalledMemory = MemoryRecallResult(
+              memories = listOf(
+                RetrievedMemory(
+                  id = "memory-budget-2",
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.USER,
+                  status = MemoryStatus.ACTIVE,
+                  content = "Keep working state explicit instead of hiding progress inside generic summaries.",
+                  lastConfirmedAtEpochMs = 10L,
+                  score = 420,
+                ),
+              ),
+              matchedRecordCount = 1,
+            ),
+          ),
+          toolDefinitions = emptyList(),
+          liveConversation = listOf(
+            RuntimeConversationMessage(
+              RuntimeConversationRole.USER,
+              "First replay note about the runtime rollout and how older context used to crowd out working state.",
+            ),
+            RuntimeConversationMessage(
+              RuntimeConversationRole.ASSISTANT,
+              "Second replay note describing the previous prompt composition and why a global budget coordinator is still needed.",
+            ),
+            RuntimeConversationMessage(
+              RuntimeConversationRole.USER,
+              "Third replay note asking whether bounded transcript replay can shrink before memory injection disappears.",
+            ),
+            RuntimeConversationMessage(
+              RuntimeConversationRole.ASSISTANT,
+              "Latest reply note confirming that recent replay should shrink first while explicit memory stays available for the model.",
+            ),
+          ),
+          llmMetadata = budgetMetadata(
+            contextWindowTokens = 3_600,
+            reservedOutputTokens = 128,
+            safetyMarginTokens = 96,
+            effectiveInputPercent = "0.346",
+          ),
+        ),
+      ),
+    )
+
+    assertTrue(prompt.taskPrompt.contains("[Retrieved Memory]"))
+    assertTrue(prompt.taskPrompt.contains("Keep working state explicit instead of hiding progress inside generic summaries."))
+    assertFalse(prompt.taskPrompt.contains("First replay note about the runtime rollout"))
+    assertFalse(prompt.taskPrompt.contains("Second replay note describing the previous prompt composition"))
+    assertTrue(prompt.taskPrompt.contains("Third replay note asking whether bounded transcript replay can shrink before memory injection disappears."))
+    assertTrue(prompt.taskPrompt.contains("Latest reply note confirming that recent replay should shrink first"))
+    val conversationBudgetReport = prompt.report.budgetReport.layers.first { layer ->
+      layer.id == PromptLayerId.CONVERSATION
+    }
+    val memoryBudgetReport = prompt.report.budgetReport.layers.first { layer ->
+      layer.id == PromptLayerId.RETRIEVED_MEMORY
+    }
+    assertTrue(conversationBudgetReport.reduced)
+    assertTrue(conversationBudgetReport.appliedOperators.contains("trim_oldest_conversation_messages"))
+    assertFalse(memoryBudgetReport.omitted)
+    assertFalse(prompt.report.budgetReport.omittedLayerNames.contains("Retrieved Memory"))
+  }
+
+  fun assembleToolProtocolReducerAdjustsDetailModeAcrossBudgetBands() {
+    val contextManager = ContextManager()
+    val assembler = PromptAssembler()
+    val toolDefinitions = listOf(
+      AgentToolDefinition(
+        name = "Read",
+        description = "Read a file from the workspace.",
+      ),
+      AgentToolDefinition(
+        name = "Bash",
+        description = "Run a shell command.",
+      ),
+      AgentToolDefinition(
+        name = "python_exec",
+        description = "Run a workspace Python script.",
+      ),
+      AgentToolDefinition(
+        name = "Write",
+        description = "Write a file into the workspace.",
+      ),
+      AgentToolDefinition(
+        name = "GenerateImage",
+        description = "Generate an image.",
+      ),
+      AgentToolDefinition(
+        name = "SynthesizeSpeech",
+        description = "Generate a voice clip.",
+      ),
+      AgentToolDefinition(
+        name = "import_chat_attachment",
+        description = "Import a chat attachment into the workspace.",
+      ),
+      AgentToolDefinition(
+        name = "view_workspace_document",
+        description = "Inspect a workspace image or PDF directly.",
+      ),
+      AgentToolDefinition(
+        name = "view_workspace_image",
+        description = "Inspect a workspace image directly.",
+      ),
+      AgentToolDefinition(
+        name = "view_workspace_pdf",
+        description = "Inspect a workspace PDF directly.",
+      ),
+    )
+
+    fun assembleForBudget(metadata: Map<String, String> = emptyMap()): AssembledPrompt = assembler.assemble(
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "You are OpenCray for testing.",
+          sessionContext = AgentRuntimeSessionContext(),
+          toolDefinitions = toolDefinitions,
+          liveConversation = listOf(
+            RuntimeConversationMessage(RuntimeConversationRole.USER, "Inspect the protocol budget behavior."),
+          ),
+          llmMetadata = metadata,
+        ),
+      ),
+    )
+
+    val fullPrompt = assembleForBudget()
+    val compactPrompt = assembleForBudget(
+      budgetMetadata(
+        contextWindowTokens = 3_600,
+        reservedOutputTokens = 128,
+        safetyMarginTokens = 96,
+        effectiveInputPercent = "0.32",
+      ),
+    )
+    val minimalPrompt = assembleForBudget(
+      budgetMetadata(
+        contextWindowTokens = 900,
+        reservedOutputTokens = 256,
+        safetyMarginTokens = 96,
+        effectiveInputPercent = "0.15",
+      ),
+    )
+
+    val fullToolProtocolLayer = fullPrompt.report.layers.first { layer -> layer.id == PromptLayerId.TOOL_PROTOCOL }
+    val compactToolProtocolLayer = compactPrompt.report.layers.first { layer -> layer.id == PromptLayerId.TOOL_PROTOCOL }
+    val minimalToolProtocolLayer = minimalPrompt.report.layers.first { layer -> layer.id == PromptLayerId.TOOL_PROTOCOL }
+
+    assertEquals("full", fullPrompt.report.toolProtocolTrace.detailMode)
+    assertEquals("compact", compactPrompt.report.toolProtocolTrace.detailMode)
+    assertEquals("minimal", minimalPrompt.report.toolProtocolTrace.detailMode)
+    assertFalse(fullPrompt.report.toolProtocolTrace.reducedForBudget)
+    assertTrue(compactPrompt.report.toolProtocolTrace.reducedForBudget)
+    assertTrue(minimalPrompt.report.toolProtocolTrace.reducedForBudget)
+    assertTrue(fullToolProtocolLayer.estimatedTokenCount > compactToolProtocolLayer.estimatedTokenCount)
+    assertTrue(compactToolProtocolLayer.estimatedTokenCount > minimalToolProtocolLayer.estimatedTokenCount)
+    assertTrue(fullPrompt.report.toolProtocolTrace.exampleCount > compactPrompt.report.toolProtocolTrace.exampleCount)
+    assertTrue(compactPrompt.report.toolProtocolTrace.exampleCount > minimalPrompt.report.toolProtocolTrace.exampleCount)
+    assertTrue(fullPrompt.report.toolProtocolTrace.attachmentExampleCount > 0)
+    assertEquals(0, compactPrompt.report.toolProtocolTrace.attachmentExampleCount)
+    assertEquals(0, minimalPrompt.report.toolProtocolTrace.attachmentExampleCount)
+    assertTrue(minimalPrompt.taskPrompt.contains("On each turn, return exactly one JSON object and nothing else."))
+    assertTrue(minimalPrompt.taskPrompt.contains("Only return type=final when you are ready to answer the user."))
+    assertFalse(minimalPrompt.taskPrompt.contains("\"attachments\":[{\"chat_attachment_id\":\"user-image-1\",\"kind\":\"image\"}]"))
+    assertFalse(minimalPrompt.taskPrompt.contains("If you need to inspect what a readable workspace image or PDF actually contains"))
+    assertTrue(compactPrompt.taskPrompt.contains("Use relative_path for existing workspace files, artifact_id for generated artifacts, and chat_attachment_id to resend an existing chat upload."))
+  }
+
+  @Test
+  fun assembleBudgetCoordinatorStructurallyReducesWorkingStateBeforeDroppingIt() {
+    val contextManager = ContextManager()
+    val assembler = PromptAssembler()
+    val workingState = WorkingState(
+      objective = WorkingStateObjective(
+        taskId = "task-working-budget",
+        runId = "run-working-budget",
+        primaryGoal = "Investigate the context budget reducer behavior for large procedural state payloads.",
+        currentSubgoal = "Keep the latest blocker and next step visible while shedding lower-value findings.",
+        status = "in_progress",
+      ),
+      findings = (1..6).map { index ->
+        WorkingStateEntry(
+          text = "Finding $index " + "evidence ".repeat(12).trim(),
+          sourceType = "code_inspection",
+        )
+      },
+      recentActions = (1..8).map { index ->
+        WorkingStateEntry(
+          text = "Recent action $index " + "workspace mutation ".repeat(10).trim(),
+          sourceType = "workspace_mutation",
+        )
+      },
+      decisions = (1..4).map { index ->
+        WorkingStateEntry(
+          text = "Decision $index " + "branch rationale ".repeat(10).trim(),
+          sourceType = "branch_control",
+        )
+      },
+      blockers = (1..3).map { index ->
+        WorkingStateEntry(
+          text = "Blocker $index " + "approval wait ".repeat(10).trim(),
+          sourceType = "approval_boundary",
+        )
+      },
+      nextActions = (1..4).map { index ->
+        WorkingStateEntry(
+          text = "Next action $index " + "verify focused tests ".repeat(10).trim(),
+          sourceType = "todo_snapshot",
+        )
+      },
+      updatedAtEpochMs = 123_456L,
+    )
+
+    val prompt = assembler.assemble(
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "Base identity.",
+          sessionContext = AgentRuntimeSessionContext(
+            workingState = workingState,
+          ),
+          toolDefinitions = emptyList(),
+          liveConversation = listOf(
+            RuntimeConversationMessage(RuntimeConversationRole.USER, "Keep the reducer honest."),
+          ),
+          llmMetadata = budgetMetadata(
+            contextWindowTokens = 900,
+            reservedOutputTokens = 256,
+            safetyMarginTokens = 96,
+            effectiveInputPercent = "0.15",
+          ),
+        ),
+      ),
+    )
+
+    val workingStateBudgetReport = prompt.report.budgetReport.layers.first { layer ->
+      layer.id == PromptLayerId.WORKING_STATE
+    }
+
+    assertTrue(prompt.taskPrompt.contains("[Working State]"))
+    assertTrue(prompt.taskPrompt.contains("primary_goal=Investigate the context budget reducer behavior for large procedural state payloads."))
+    assertTrue(prompt.taskPrompt.contains("Recent action 8"))
+    assertTrue(prompt.taskPrompt.contains("Decision 4"))
+    assertTrue(prompt.taskPrompt.contains("Blocker 3"))
+    assertTrue(prompt.taskPrompt.contains("Next action 4"))
+    assertFalse(prompt.taskPrompt.contains("[Recent Findings]"))
+    assertFalse(prompt.taskPrompt.contains("Finding 1"))
+    assertFalse(prompt.taskPrompt.contains("Recent action 1"))
+    assertFalse(prompt.taskPrompt.contains("Decision 1"))
+    assertFalse(prompt.taskPrompt.contains("Blocker 1"))
+    assertFalse(prompt.taskPrompt.contains("Next action 1"))
+    assertFalse(prompt.taskPrompt.contains("updated_at_epoch_ms=123456"))
+    assertTrue(workingStateBudgetReport.reduced)
+    assertFalse(workingStateBudgetReport.omitted)
+    assertTrue(workingStateBudgetReport.appliedOperators.contains("reduce_working_state_minimal"))
+  }
+
+  @Test
+  fun assembleBudgetCoordinatorReportsOverflowWhenMandatoryLayersStillDoNotFit() {
+    val contextManager = ContextManager()
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "Base identity.",
+          sessionContext = AgentRuntimeSessionContext(),
+          toolDefinitions = emptyList(),
+          liveConversation = listOf(
+            RuntimeConversationMessage(RuntimeConversationRole.USER, "Keep the latest task prompt intact."),
+          ),
+          llmMetadata = budgetMetadata(
+            contextWindowTokens = 900,
+            reservedOutputTokens = 256,
+            safetyMarginTokens = 96,
+            effectiveInputPercent = "0.15",
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(ContextBudgetPressureMode.EMERGENCY, prompt.report.budgetReport.pressureMode)
+    assertTrue(prompt.report.budgetReport.unresolvedOverflow)
+    assertTrue(prompt.taskPrompt.contains("[Tool Protocol]"))
+    assertTrue(prompt.taskPrompt.contains("[Conversation]"))
+  }
+
   private fun promptTask(): AgentTask = AgentTask(
     id = "task-context",
     type = AgentTaskType.PROMPT,
@@ -886,5 +1340,17 @@ class PromptAssemblerTest {
       reasonCode = "TEST_ALLOW",
     ),
     createdAtEpochMs = 100L,
+  )
+
+  private fun budgetMetadata(
+    contextWindowTokens: Int,
+    reservedOutputTokens: Int,
+    safetyMarginTokens: Int,
+    effectiveInputPercent: String,
+  ): Map<String, String> = mapOf(
+    "context_window_tokens" to contextWindowTokens.toString(),
+    "reserved_output_tokens" to reservedOutputTokens.toString(),
+    "prompt_safety_margin_tokens" to safetyMarginTokens.toString(),
+    "effective_input_percent" to effectiveInputPercent,
   )
 }

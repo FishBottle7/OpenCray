@@ -35,6 +35,9 @@ import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
 import com.opencray.runtime.ProviderNativeWebSearchSupport
+import com.opencray.runtime.memory.MemoryOperator
+import com.opencray.runtime.memory.MemoryOperatorAction
+import com.opencray.runtime.memory.MemoryOperatorRequest
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
@@ -44,6 +47,7 @@ import java.nio.file.Path
 import java.util.Locale
 import java.util.Timer
 import java.util.TimerTask
+import java.util.UUID
 import org.opencray.app.R
 
 internal data class ProjectionOnlyChatStrings(
@@ -81,6 +85,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private val supplementStoreFactory: AgentSessionSupplementStoreFactory,
   private val subAgentHandleStoreFactory: SubAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory(),
   private val strings: ProjectionOnlyChatStrings,
+  private val stringsProvider: (() -> ProjectionOnlyChatStrings)? = null,
   private val connectionStateProvider: () -> RuntimeServiceConnectionState,
   private val personalizationLocalStore: PersonalizationLocalStore? = null,
   private val workspaceRootProvider: (() -> Path?)? = null,
@@ -95,6 +100,9 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private val clock: () -> Long = System::currentTimeMillis,
   private val pollIntervalMs: Long = DEFAULT_PROJECTION_POLL_INTERVAL_MS,
 ) : OpenCrayChatRuntimeGateway {
+  private val resolvedStrings: ProjectionOnlyChatStrings
+    get() = stringsProvider?.invoke() ?: strings
+
   private val debugProjector = ProjectionOnlyChatDebugProjector(
     personalizationLocalStore = personalizationLocalStore,
     workspaceRootProvider = workspaceRootProvider,
@@ -178,7 +186,41 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   override fun applyMemoryDebugAction(
     recordId: String,
     actionId: String,
-  ): Map<String, Any?> = throw unavailable("applyMemoryDebugAction")
+  ): Map<String, Any?> {
+    val store = personalizationLocalStore
+      ?: error("Memory debug actions require a personalization memory store.")
+    val sessionId = activeSessionId()
+    val action = MemoryOperatorAction.fromWireValue(actionId)
+      ?: throw IllegalArgumentException("Unsupported memory debug action '$actionId'.")
+    val result = MemoryOperator(
+      store = store.asMemoryStore(),
+    ).apply(
+      MemoryOperatorRequest(
+        recordId = recordId,
+        action = action,
+        actorSessionId = sessionId,
+      ),
+    )
+    if (result.applied) {
+      val occurredAtEpochMs = System.currentTimeMillis()
+      store.appendMemoryDebugActionAudit(
+        MemoryDebugActionAuditEntry(
+          entryId = "memory-debug-action-$occurredAtEpochMs-${UUID.randomUUID().toString().take(8)}",
+          recordId = recordId,
+          action = action.wireValue,
+          sessionId = sessionId,
+          runId = "$MEMORY_DEBUG_RUN_ID_PREFIX-${UUID.randomUUID().toString().take(8)}",
+          taskId = "$MEMORY_DEBUG_TASK_ID_PREFIX-${action.wireValue}-${UUID.randomUUID().toString().take(8)}",
+          occurredAtEpochMs = occurredAtEpochMs,
+        ),
+      )
+    }
+    return mapOf(
+      "recordId" to recordId,
+      "action" to action.wireValue,
+      "applied" to result.applied,
+    )
+  }
 
   override fun createChatSession() = throw unavailable("createChatSession")
 
@@ -238,16 +280,16 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     }
     val messageCount = visibleMessages.size
     return mapOf(
-      "screenTitle" to strings.screenTitle,
-      "modeLabel" to strings.modeLabel,
-      "sessionButtonLabel" to strings.sessionButtonLabel,
+      "screenTitle" to resolvedStrings.screenTitle,
+      "modeLabel" to resolvedStrings.modeLabel,
+      "sessionButtonLabel" to resolvedStrings.sessionButtonLabel,
       "composerPlaceholder" to composerPlaceholderFor(
         runs = runtimeProjection.runs,
         hasPendingApprovals = pendingApprovals.isNotEmpty(),
       ),
       "summary" to mapOf(
         "title" to displaySessionTitle(activeSession.title),
-        "badge" to strings.messagesBadge(messageCount),
+        "badge" to resolvedStrings.messagesBadge(messageCount),
         "body" to summaryBody(
           messageCount = messageCount,
           runs = runtimeProjection.runs,
@@ -260,15 +302,15 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
           supplementStoreFactory.forChatSession(activeSession.sessionId).snapshot().map(::pendingSupplementToMap)
         ),
       "drawer" to mapOf(
-        "eyebrow" to strings.recentSessionsEyebrow,
-        "title" to strings.recentSessionsTitle,
-        "ctaLabel" to strings.newSessionLabel,
+        "eyebrow" to resolvedStrings.recentSessionsEyebrow,
+        "title" to resolvedStrings.recentSessionsTitle,
+        "ctaLabel" to resolvedStrings.newSessionLabel,
         "sessions" to state.sessions.map { session ->
           mapOf(
             "sessionId" to session.sessionId,
             "title" to displaySessionTitle(session.title),
             "preview" to session.lastMessagePreview,
-            "meta" to strings.messagesBadge(session.messageCount),
+            "meta" to resolvedStrings.messagesBadge(session.messageCount),
             "isSelected" to (session.sessionId == activeSession.sessionId),
             "lastMessageAtEpochMs" to session.lastMessageAtEpochMs,
             "unreadCount" to 0,
@@ -876,13 +918,13 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     runs: List<AgentRunSnapshot>,
     hasPendingApprovals: Boolean,
   ): String = when {
-    hasPendingApprovals -> strings.summaryApprovalRequired
+    hasPendingApprovals -> resolvedStrings.summaryApprovalRequired
     latestRunFor(runs)?.let { run ->
       isAwaitingDirectionRun(run) || isDeferredApprovalDecisionAwaitingResumeRun(run)
-    } == true -> strings.summaryAwaitingDirection
-    runs.any(AgentRunSnapshot::isActive) -> strings.summaryReplyInProgress
-    messageCount == 0 -> strings.summaryStartNewSession
-    else -> strings.summaryRestored
+    } == true -> resolvedStrings.summaryAwaitingDirection
+    runs.any(AgentRunSnapshot::isActive) -> resolvedStrings.summaryReplyInProgress
+    messageCount == 0 -> resolvedStrings.summaryStartNewSession
+    else -> resolvedStrings.summaryRestored
   }
 
   private fun composerPlaceholderFor(
@@ -890,16 +932,16 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     hasPendingApprovals: Boolean,
   ): String {
     if (hasPendingApprovals) {
-      return strings.composerPlaceholder
+      return resolvedStrings.composerPlaceholder
     }
-    val latestRun = latestRunFor(runs) ?: return strings.composerPlaceholder
+    val latestRun = latestRunFor(runs) ?: return resolvedStrings.composerPlaceholder
     if (isDeferredApprovalDecisionAwaitingResumeRun(latestRun)) {
-      return strings.composerPlaceholder
+      return resolvedStrings.composerPlaceholder
     }
     return if (isAwaitingDirectionRun(latestRun)) {
-      strings.composerRejectedPlaceholder
+      resolvedStrings.composerRejectedPlaceholder
     } else {
-      strings.composerPlaceholder
+      resolvedStrings.composerPlaceholder
     }
   }
 
@@ -926,7 +968,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
 
   private fun displaySessionTitle(rawTitle: String): String =
     if (rawTitle == ChatSessionLocalStore.DEFAULT_SESSION_TITLE) {
-      strings.defaultSessionTitle
+      resolvedStrings.defaultSessionTitle
     } else {
       rawTitle
     }
@@ -975,9 +1017,9 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
         val toolReason = metadata["toolReason"] ?: runSnapshot?.lastEvent?.let(::projectionToolReasonFromEvent)
         val supportsSessionApproval = projectionApprovalSupportsSessionScope(metadata)
         val title = if (isHighRisk) {
-          strings.highRiskApprovalRequiredTitle
+          resolvedStrings.highRiskApprovalRequiredTitle
         } else {
-          strings.approvalRequiredTitle
+          resolvedStrings.approvalRequiredTitle
         }
         val message = projectionSanitizeApprovalBody(
           body = runSnapshot?.errorMessage ?: taskSnapshot.lastErrorMessage,
@@ -1007,14 +1049,14 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
           "isHighRisk" to isHighRisk,
           "title" to title,
           "body" to body,
-          "approveLabel" to strings.approvalApproveLabel,
+          "approveLabel" to resolvedStrings.approvalApproveLabel,
           "supportsSessionApproval" to supportsSessionApproval,
           "approveForSessionLabel" to if (supportsSessionApproval) {
-            strings.approvalApproveForSessionLabel
+            resolvedStrings.approvalApproveForSessionLabel
           } else {
             ""
           },
-          "rejectLabel" to strings.approvalRejectLabel,
+          "rejectLabel" to resolvedStrings.approvalRejectLabel,
         )
       }
       .toList()
@@ -1242,7 +1284,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   }
 
   private fun projectionApprovalLabel(kind: String): String {
-    val isChinese = strings.localeTag.startsWith("zh", ignoreCase = true)
+    val isChinese = resolvedStrings.localeTag.startsWith("zh", ignoreCase = true)
     return when (kind) {
       "command" -> if (isChinese) "命令" else "Command"
       "script" -> if (isChinese) "脚本" else "Script"
@@ -1263,9 +1305,9 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
 
   private fun projectionSanitizeApprovalBody(body: String?, isHighRisk: Boolean): String {
     val fallback = if (isHighRisk) {
-      strings.highRiskApprovalRequiredBody
+      resolvedStrings.highRiskApprovalRequiredBody
     } else {
-      strings.summaryApprovalRequired
+      resolvedStrings.summaryApprovalRequired
     }
     val resolved = body?.takeIf(String::isNotBlank) ?: return fallback
     return projectionSanitizePotentialInternalAgentText(
@@ -1898,7 +1940,7 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
   projectionSnapshotProvider: () -> RuntimeServiceProjectionSnapshot? = { null },
 ): OpenCrayChatRuntimeGateway {
   val appContext = context.applicationContext
-  val localizedContext = OpenCrayLocaleManager.wrap(appContext)
+  val strings = projectionOnlyChatStrings(appContext)
   return ProjectionOnlyOpenCrayChatRuntimeGateway(
     chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
     queueSnapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
@@ -1908,48 +1950,7 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
     processRegistryFactory = FileBackedAgentProcessRegistryFactory.fromContext(appContext),
     supplementStoreFactory = FileBackedAgentSessionSupplementStoreFactory.fromContext(appContext),
     subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext),
-    strings = ProjectionOnlyChatStrings(
-      localeTag = LocaleSettingsStore.fromContext(appContext).loadLanguage().tag,
-      screenTitle = localizedContext.getString(R.string.shell_tab_chat),
-      modeLabel = localizedContext.getString(R.string.chat_mode_auto),
-      sessionButtonLabel = localizedContext.getString(R.string.chat_sessions_button),
-      recentSessionsEyebrow = localizedContext.getString(R.string.chat_recent_sessions_eyebrow),
-      recentSessionsTitle = localizedContext.getString(R.string.chat_recent_sessions_title),
-      newSessionLabel = localizedContext.getString(R.string.chat_new_session),
-      defaultSessionTitle = localizedContext.getString(R.string.chat_default_session_title),
-      messagesBadge = { count -> localizedContext.getString(R.string.chat_messages_badge, count) },
-      summaryReplyInProgress = localizedContext.getString(R.string.chat_summary_reply_in_progress),
-      summaryStartNewSession = localizedContext.getString(R.string.chat_summary_start_new_session),
-      summaryRestored = localizedContext.getString(R.string.chat_summary_restored),
-      summaryApprovalRequired = localizedContext.getString(
-        R.string.chat_summary_approval_required,
-      ),
-      approvalRequiredTitle = localizedContext.getString(
-        R.string.chat_approval_required_title,
-      ),
-      highRiskApprovalRequiredTitle = localizedContext.getString(
-        R.string.chat_high_risk_approval_required_title,
-      ),
-      highRiskApprovalRequiredBody = localizedContext.getString(
-        R.string.chat_high_risk_approval_required_body,
-      ),
-      approvalApproveLabel = localizedContext.getString(
-        R.string.chat_approval_approve_label,
-      ),
-      approvalApproveForSessionLabel = localizedContext.getString(
-        R.string.chat_approval_approve_for_session_label,
-      ),
-      approvalRejectLabel = localizedContext.getString(
-        R.string.chat_approval_reject_label,
-      ),
-      summaryAwaitingDirection = localizedContext.getString(
-        R.string.chat_summary_awaiting_direction,
-      ),
-      composerPlaceholder = localizedContext.getString(R.string.chat_message_opencray),
-      composerRejectedPlaceholder = localizedContext.getString(
-        R.string.chat_message_opencray_do_differently,
-      ),
-    ),
+    strings = strings,
     connectionStateProvider = connectionStateProvider,
     personalizationLocalStore = PersonalizationLocalStore.fromContext(appContext),
     workspaceRootProvider = {
@@ -1967,5 +1968,52 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
     serviceKeepAliveStateProvider = {
       projectionSnapshotProvider()?.serviceKeepAliveState
     },
+  )
+}
+
+internal fun projectionOnlyChatStrings(context: Context): ProjectionOnlyChatStrings {
+  val appContext = context.applicationContext
+  val localizedContext = OpenCrayLocaleManager.wrap(appContext)
+  return ProjectionOnlyChatStrings(
+    localeTag = LocaleSettingsStore.fromContext(appContext).loadLanguage().tag,
+    screenTitle = localizedContext.getString(R.string.shell_tab_chat),
+    modeLabel = localizedContext.getString(R.string.chat_mode_auto),
+    sessionButtonLabel = localizedContext.getString(R.string.chat_sessions_button),
+    recentSessionsEyebrow = localizedContext.getString(R.string.chat_recent_sessions_eyebrow),
+    recentSessionsTitle = localizedContext.getString(R.string.chat_recent_sessions_title),
+    newSessionLabel = localizedContext.getString(R.string.chat_new_session),
+    defaultSessionTitle = localizedContext.getString(R.string.chat_default_session_title),
+    messagesBadge = { count -> localizedContext.getString(R.string.chat_messages_badge, count) },
+    summaryReplyInProgress = localizedContext.getString(R.string.chat_summary_reply_in_progress),
+    summaryStartNewSession = localizedContext.getString(R.string.chat_summary_start_new_session),
+    summaryRestored = localizedContext.getString(R.string.chat_summary_restored),
+    summaryApprovalRequired = localizedContext.getString(
+      R.string.chat_summary_approval_required,
+    ),
+    approvalRequiredTitle = localizedContext.getString(
+      R.string.chat_approval_required_title,
+    ),
+    highRiskApprovalRequiredTitle = localizedContext.getString(
+      R.string.chat_high_risk_approval_required_title,
+    ),
+    highRiskApprovalRequiredBody = localizedContext.getString(
+      R.string.chat_high_risk_approval_required_body,
+    ),
+    approvalApproveLabel = localizedContext.getString(
+      R.string.chat_approval_approve_label,
+    ),
+    approvalApproveForSessionLabel = localizedContext.getString(
+      R.string.chat_approval_approve_for_session_label,
+    ),
+    approvalRejectLabel = localizedContext.getString(
+      R.string.chat_approval_reject_label,
+    ),
+    summaryAwaitingDirection = localizedContext.getString(
+      R.string.chat_summary_awaiting_direction,
+    ),
+    composerPlaceholder = localizedContext.getString(R.string.chat_message_opencray),
+    composerRejectedPlaceholder = localizedContext.getString(
+      R.string.chat_message_opencray_do_differently,
+    ),
   )
 }

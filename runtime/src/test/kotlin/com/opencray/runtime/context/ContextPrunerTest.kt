@@ -7,7 +7,7 @@ import org.junit.Test
 
 class ContextPrunerTest {
   @Test
-  fun pruneDropsConsecutiveDuplicateBackgroundMessages() {
+  fun pruneKeepsDuplicateBackgroundMessages() {
     val pruner = ContextPruner()
 
     val pruned = pruner.prune(
@@ -36,18 +36,12 @@ class ContextPrunerTest {
       ),
     )
 
-    val summary = requireNotNull(pruned.summary)
-
-    assertEquals(3, pruned.messages.size)
-    assertEquals(2, summary.removedMessageCount)
-    assertEquals(0, summary.rewrittenMessageCount)
-    assertEquals(2, summary.duplicateBackgroundMessageCount)
-    assertTrue(summary.text.contains("removed=2"))
-    assertTrue(summary.text.contains("Dropped consecutive duplicate background messages: 2."))
+    assertEquals(5, pruned.messages.size)
+    assertEquals(null, pruned.summary)
   }
 
   @Test
-  fun pruneRewritesBulkyToolOutputsAndAttachmentLikePayloads() {
+  fun pruneOnlyRewritesAttachmentLikePayloads() {
     val pruner = ContextPruner(
       ContextPrunerConfig(
         maxToolChars = 128,
@@ -57,7 +51,7 @@ class ContextPrunerTest {
       ),
     )
 
-    val longToolOutput = """
+    val ordinaryLongToolOutput = """
       alpha
       beta
       gamma
@@ -68,7 +62,7 @@ class ContextPrunerTest {
 
     val pruned = pruner.prune(
       listOf(
-        RuntimeConversationMessage(RuntimeConversationRole.TOOL, longToolOutput),
+        RuntimeConversationMessage(RuntimeConversationRole.TOOL, ordinaryLongToolOutput),
         RuntimeConversationMessage(RuntimeConversationRole.TOOL, attachmentPayload),
       ),
     )
@@ -76,19 +70,20 @@ class ContextPrunerTest {
     val summary = requireNotNull(pruned.summary)
 
     assertEquals(2, pruned.messages.size)
+    assertEquals(1, summary.rewrittenMessageCount)
     assertEquals(0, summary.removedMessageCount)
-    assertEquals(2, summary.rewrittenMessageCount)
-    assertEquals(1, summary.bulkyToolMessageCount)
+    assertEquals(0, summary.bulkyToolMessageCount)
     assertEquals(1, summary.attachmentLikeMessageCount)
-    assertTrue(pruned.messages[0].content.startsWith("Tool output pruned for prompt budget."))
-    assertTrue(pruned.messages[1].content.startsWith("Attachment-like payload pruned from prompt."))
+    assertEquals(ordinaryLongToolOutput, pruned.messages[0].content)
+    assertTrue(pruned.messages[1].content.startsWith("Attachment-like payload pruned by prompt guardrail."))
     assertFalse(pruned.messages[1].content.contains("A".repeat(80)))
-    assertTrue(summary.text.contains("tool_output=1"))
+    assertTrue(summary.text.contains("removed=0, rewritten=1"))
+    assertTrue(summary.text.contains("tool_output=0"))
     assertTrue(summary.text.contains("attachment_like=1"))
   }
 
   @Test
-  fun pruneDropsConsecutiveDuplicateStructuredAssistantToolCalls() {
+  fun pruneKeepsDuplicateStructuredAssistantToolCalls() {
     val pruner = ContextPruner()
 
     val pruned = pruner.prune(
@@ -115,11 +110,8 @@ class ContextPrunerTest {
       ),
     )
 
-    val summary = requireNotNull(pruned.summary)
-
-    assertEquals(2, pruned.messages.size)
-    assertEquals(1, summary.removedMessageCount)
-    assertEquals(1, summary.duplicateBackgroundMessageCount)
-    assertTrue(pruned.messages.any { it.kind == RuntimeConversationMessageKind.TOOL_CALL })
+    assertEquals(3, pruned.messages.size)
+    assertEquals(null, pruned.summary)
+    assertEquals(2, pruned.messages.count { it.kind == RuntimeConversationMessageKind.TOOL_CALL })
   }
 }

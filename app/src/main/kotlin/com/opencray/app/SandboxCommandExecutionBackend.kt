@@ -11,12 +11,21 @@ internal data class SandboxCommandBackendCapabilities(
   val providerNative: Boolean,
   val supportsStreamingLogs: Boolean,
   val supportsReconnect: Boolean,
+  val supportsManagedProcessLiveObservation: Boolean = false,
+  val supportsManagedProcessObservationCursorResume: Boolean = false,
+  val supportsManagedProcessObservationBackfill: Boolean = false,
 ) {
   fun metadata(): Map<String, String> = mapOf(
     "sandboxCommandBackendKind" to backendKind,
     "sandboxCommandProviderNative" to providerNative.toString(),
     "sandboxCommandSupportsStreamingLogs" to supportsStreamingLogs.toString(),
     "sandboxCommandSupportsReconnect" to supportsReconnect.toString(),
+    "sandboxCommandSupportsManagedProcessLiveObservation" to
+      supportsManagedProcessLiveObservation.toString(),
+    "sandboxCommandSupportsManagedProcessObservationCursorResume" to
+      supportsManagedProcessObservationCursorResume.toString(),
+    "sandboxCommandSupportsManagedProcessObservationBackfill" to
+      supportsManagedProcessObservationBackfill.toString(),
   )
 }
 

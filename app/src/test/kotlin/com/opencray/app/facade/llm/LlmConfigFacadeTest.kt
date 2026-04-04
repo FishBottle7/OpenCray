@@ -22,6 +22,14 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 class LlmConfigFacadeTest {
+  private companion object {
+    const val OPENAI_PROMPT_CACHE_KEY_STRATEGY_SESSION: String = "session"
+    const val OPENAI_PROMPT_CACHE_KEY_STRATEGY_ROUTE: String = "route"
+    const val OPENAI_PROMPT_CACHE_RETENTION_24H: String = "24h"
+    const val OPENAI_PROMPT_CACHE_RETENTION_IN_MEMORY: String = "in_memory"
+    const val ANTHROPIC_PROMPT_CACHE_TTL_1H: String = "1h"
+  }
+
   @Test
   fun saveCustomProviderPersistsReusableProviderOption() {
     val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
@@ -640,6 +648,100 @@ class LlmConfigFacadeTest {
         ),
       ).agentCapability.responsesContinuationSupported,
     )
+  }
+
+  @Test
+  fun savePersistsPromptCachingSettings() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val facade = LocalLlmConfigFacade.createForTest(
+      llmSettingsStore = store,
+      providerClient = RecordingProviderClient(
+        LiteLlmProviderResult.Success(outputText = "OK"),
+      ),
+    )
+
+    val snapshot = facade.save(
+      SaveLlmConfigRequest(
+        enabled = true,
+        providerId = "openai",
+        selectedProviderOptionId = "openai",
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        providerName = "OpenAI",
+        providerNotes = "",
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+        reasoningEffort = "medium",
+        systemPrompt = "Be concise.",
+        openAiPromptCacheKeyStrategy = OPENAI_PROMPT_CACHE_KEY_STRATEGY_SESSION,
+        openAiPromptCacheRetention = OPENAI_PROMPT_CACHE_RETENTION_24H,
+        anthropicPromptCachingEnabled = true,
+        anthropicPromptCacheTtl = ANTHROPIC_PROMPT_CACHE_TTL_1H,
+      ),
+    )
+
+    assertEquals(OPENAI_PROMPT_CACHE_KEY_STRATEGY_SESSION, snapshot.openAiPromptCacheKeyStrategy)
+    assertEquals(OPENAI_PROMPT_CACHE_RETENTION_24H, snapshot.openAiPromptCacheRetention)
+    assertTrue(snapshot.anthropicPromptCachingEnabled == true)
+    assertEquals(ANTHROPIC_PROMPT_CACHE_TTL_1H, snapshot.anthropicPromptCacheTtl)
+
+    val stored = store.load(
+      defaults = LlmSettingsState(
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+      ),
+    )
+    assertEquals(OPENAI_PROMPT_CACHE_KEY_STRATEGY_SESSION, stored.openAiPromptCacheKeyStrategy)
+    assertEquals(OPENAI_PROMPT_CACHE_RETENTION_24H, stored.openAiPromptCacheRetention)
+    assertTrue(stored.anthropicPromptCachingEnabled)
+    assertEquals(ANTHROPIC_PROMPT_CACHE_TTL_1H, stored.anthropicPromptCacheTtl)
+  }
+
+  @Test
+  fun savePreservesPromptCachingSettingsWhenRequestOmitsThem() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    store.save(
+      LlmSettingsState(
+        enabled = true,
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+        openAiPromptCacheKeyStrategy = OPENAI_PROMPT_CACHE_KEY_STRATEGY_ROUTE,
+        openAiPromptCacheRetention = OPENAI_PROMPT_CACHE_RETENTION_IN_MEMORY,
+        anthropicPromptCachingEnabled = true,
+        anthropicPromptCacheTtl = ANTHROPIC_PROMPT_CACHE_TTL_1H,
+      ),
+    )
+    val facade = LocalLlmConfigFacade.createForTest(
+      llmSettingsStore = store,
+      providerClient = RecordingProviderClient(
+        LiteLlmProviderResult.Success(outputText = "OK"),
+      ),
+    )
+
+    val snapshot = facade.save(
+      SaveLlmConfigRequest(
+        enabled = true,
+        providerId = "openai",
+        selectedProviderOptionId = "openai",
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        providerName = "OpenAI",
+        providerNotes = "",
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+        reasoningEffort = "medium",
+        systemPrompt = "Stay concise.",
+      ),
+    )
+
+    assertEquals(OPENAI_PROMPT_CACHE_KEY_STRATEGY_ROUTE, snapshot.openAiPromptCacheKeyStrategy)
+    assertEquals(OPENAI_PROMPT_CACHE_RETENTION_IN_MEMORY, snapshot.openAiPromptCacheRetention)
+    assertTrue(snapshot.anthropicPromptCachingEnabled == true)
+    assertEquals(ANTHROPIC_PROMPT_CACHE_TTL_1H, snapshot.anthropicPromptCacheTtl)
   }
 
   private class RecordingProviderClient(

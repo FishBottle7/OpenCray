@@ -1,103 +1,150 @@
 package com.opencray.runtime.context
 
 import com.opencray.runtime.AgentToolDefinition
+import com.opencray.runtime.bootstrap.BootstrapPromptLayer
 
-class PromptAssembler {
+private data class ToolProtocolLayerRenderResult(
+  val text: String,
+  val trace: ToolProtocolTrace,
+)
+
+private enum class ToolProtocolDetailMode(
+  val wireValue: String,
+) {
+  FULL("full"),
+  COMPACT("compact"),
+  MINIMAL("minimal"),
+}
+
+class PromptAssembler(
+  private val budgetCoordinator: GlobalContextBudgetCoordinator = GlobalContextBudgetCoordinator(),
+  private val bootstrapPromptLayer: BootstrapPromptLayer = BootstrapPromptLayer(),
+  private val compactionSummaryPromptLayer: CompactionSummaryPromptLayer = CompactionSummaryPromptLayer(),
+  private val pruningSummaryPromptLayer: TranscriptPruningSummaryPromptLayer = TranscriptPruningSummaryPromptLayer(),
+  private val toolProtocolBudgetPolicy: ModelContextBudgetPolicy = ModelContextBudgetPolicy(),
+) {
   fun assemble(input: ManagedPromptContext): AssembledPrompt {
-    val layers = buildList {
+    val toolProtocolLayer = renderToolProtocolLayer(
+      toolDefinitions = input.toolDefinitions,
+      nativeToolCallingEnabled = input.nativeToolCallingEnabled,
+      parallelToolCallsEnabled = input.parallelToolCallsEnabled,
+      legacyJsonFallbackEnabled = input.legacyJsonFallbackEnabled,
+      llmMetadata = input.llmMetadata,
+    )
+    val initialLayers = buildList {
       addLayer(
+        id = PromptLayerId.IDENTITY,
         name = "Identity",
         kind = PromptLayerKind.SYSTEM,
         content = input.baseSystemPrompt.trim(),
       )
       addLayer(
+        id = PromptLayerId.RUNTIME_RULES,
         name = "Runtime Rules",
         kind = PromptLayerKind.SYSTEM,
         content = RUNTIME_RULES,
       )
       addLayer(
+        id = PromptLayerId.SESSION_POLICY,
         name = "Session Policy",
         kind = PromptLayerKind.SYSTEM,
         content = input.sessionPolicyText,
       )
       addLayer(
+        id = PromptLayerId.PERSONALIZATION,
         name = "Personalization",
         kind = PromptLayerKind.SYSTEM,
         content = input.personalizationText,
       )
       addLayer(
+        id = PromptLayerId.TURN_RESPONSE_POLICY,
         name = "Turn Response Policy",
         kind = PromptLayerKind.SYSTEM,
         content = input.turnResponsePolicyText,
       )
       input.bootstrapFiles.forEach { file ->
+        val renderedBootstrap = bootstrapPromptLayer.render(file)
         addLayer(
-          name = "Bootstrap ${file.name}",
+          id = PromptLayerId.BOOTSTRAP,
+          name = renderedBootstrap.layerName,
           kind = PromptLayerKind.SYSTEM,
-          content = renderBootstrapLayer(file),
+          content = renderedBootstrap.text,
         )
       }
       addLayer(
+        id = PromptLayerId.WORKING_STATE,
         name = "Working State",
         kind = PromptLayerKind.CONTEXT,
         content = input.workingStateText,
       )
       addLayer(
+        id = PromptLayerId.RETRIEVED_MEMORY,
         name = "Retrieved Memory",
         kind = PromptLayerKind.CONTEXT,
         content = input.memoryText,
       )
       addLayer(
+        id = PromptLayerId.DURABLE_COMPACTION,
         name = "Durable Compaction",
         kind = PromptLayerKind.CONTEXT,
         content = input.durableCompactionText,
       )
       addLayer(
+        id = PromptLayerId.SKILL_INVENTORY,
         name = "Skill Inventory",
         kind = PromptLayerKind.CONTEXT,
         content = input.skillInventoryText,
       )
       addLayer(
+        id = PromptLayerId.ACTIVE_SKILL,
         name = "Active Skill",
         kind = PromptLayerKind.CONTEXT,
         content = input.activeSkillText,
       )
       addLayer(
+        id = PromptLayerId.RECENT_TOOL_OBSERVATIONS,
         name = "Recent Working Observations",
         kind = PromptLayerKind.CONTEXT,
         content = input.recentToolObservationsText,
       )
       addLayer(
+        id = PromptLayerId.PRUNING_SUMMARY,
         name = "Pruning Summary",
         kind = PromptLayerKind.CONTEXT,
-        content = input.pruningSummary?.text.orEmpty(),
+        content = pruningSummaryPromptLayer.render(input.pruningSummary),
       )
       addLayer(
+        id = PromptLayerId.COMPACTION_SUMMARY,
         name = "Compaction Summary",
         kind = PromptLayerKind.CONTEXT,
-        content = input.compactionSummary?.text.orEmpty(),
+        content = compactionSummaryPromptLayer.render(input.compactionSummary),
       )
       addLayer(
+        id = PromptLayerId.TOOL_PROTOCOL,
         name = "Tool Protocol",
         kind = PromptLayerKind.PROTOCOL,
-        content = renderToolProtocolLayer(
-          toolDefinitions = input.toolDefinitions,
-          nativeToolCallingEnabled = input.nativeToolCallingEnabled,
-          parallelToolCallsEnabled = input.parallelToolCallsEnabled,
-          legacyJsonFallbackEnabled = input.legacyJsonFallbackEnabled,
-        ),
+        content = toolProtocolLayer.text,
       )
       addLayer(
+        id = PromptLayerId.TASK_METADATA,
         name = TASK_METADATA_LAYER_NAME,
         kind = PromptLayerKind.CONTEXT,
         content = renderTaskMetadataLayer(task = input.task),
       )
       addLayer(
+        id = PromptLayerId.CONVERSATION,
         name = CONVERSATION_LAYER_NAME,
         kind = PromptLayerKind.CONTEXT,
         content = renderConversationLayer(transcriptWindow = input.transcriptWindow),
       )
     }
+    val coordinated = budgetCoordinator.rebalance(
+      input = input,
+      layers = initialLayers,
+      estimateTokens = ::estimateTokenCount,
+      renderConversationLayer = ::renderConversationLayer,
+    )
+    val layers = coordinated.layers
     val systemLayers = layers.filter { layer -> layer.kind == PromptLayerKind.SYSTEM }
     val taskLayers = layers.filter { layer -> layer.kind != PromptLayerKind.SYSTEM }
     val contextLayers = taskLayers.filterNot { layer -> layer.name == CONVERSATION_LAYER_NAME }
@@ -139,11 +186,14 @@ class PromptAssembler {
         recentToolObservationCount = input.report.recentToolObservationCount,
         omittedRecentToolObservationCount = input.report.omittedRecentToolObservationCount,
         recentToolObservationLayerIncluded = input.report.recentToolObservationLayerIncluded,
+        toolProtocolTrace = toolProtocolLayer.trace,
+        budgetReport = coordinated.report,
       ),
     )
   }
 
   private fun MutableList<PromptLayer>.addLayer(
+    id: PromptLayerId,
     name: String,
     kind: PromptLayerKind,
     content: String,
@@ -154,6 +204,7 @@ class PromptAssembler {
     }
     add(
       PromptLayer(
+        id = id,
         name = name,
         kind = kind,
         content = normalizedContent,
@@ -167,7 +218,44 @@ class PromptAssembler {
     nativeToolCallingEnabled: Boolean,
     parallelToolCallsEnabled: Boolean,
     legacyJsonFallbackEnabled: Boolean,
-  ): String = buildString {
+    llmMetadata: Map<String, String>,
+  ): ToolProtocolLayerRenderResult = buildToolProtocolLayer(
+    toolDefinitions = toolDefinitions,
+    nativeToolCallingEnabled = nativeToolCallingEnabled,
+    parallelToolCallsEnabled = parallelToolCallsEnabled,
+    legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
+    llmMetadata = llmMetadata,
+  )
+
+  @Suppress("LongMethod", "UNUSED_PARAMETER")
+  private fun buildToolProtocolLayer(
+    toolDefinitions: List<AgentToolDefinition>,
+    nativeToolCallingEnabled: Boolean,
+    parallelToolCallsEnabled: Boolean,
+    legacyJsonFallbackEnabled: Boolean,
+    llmMetadata: Map<String, String>,
+  ): ToolProtocolLayerRenderResult {
+    val detailMode = resolveToolProtocolDetailMode(llmMetadata)
+    var exampleCount = 0
+    var attachmentExampleCount = 0
+    var toolSpecificGuidanceCount = 0
+    val text = buildString {
+      fun appendExample(
+        value: String,
+        attachmentExample: Boolean = false,
+      ) {
+        appendLine(value)
+        exampleCount += 1
+        if (attachmentExample) {
+          attachmentExampleCount += 1
+        }
+      }
+
+      fun appendToolGuidance(value: String) {
+        appendLine(value)
+        toolSpecificGuidanceCount += 1
+      }
+
     val jsonProtocolEnabled = !nativeToolCallingEnabled
     val normalizedToolNames = toolDefinitions
       .map { definition -> definition.name.trim().lowercase() }
@@ -220,6 +308,8 @@ class PromptAssembler {
     val hasWorkspacePdfViewTool = toolDefinitions.any { definition ->
       definition.name == "view_workspace_pdf"
     }
+    val attachmentCapableToolAvailable =
+      hasImageGenerationTool || hasSpeechSynthesisTool || hasWriteTool || hasImportTool || hasChatAttachmentImportTool
     val primaryToolCallExample = when {
       hasReadTool -> """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}"""
       hasListTool -> """{"type":"tool_call","tool_name":"LS","arguments":{"path":"."}}"""
@@ -282,21 +372,43 @@ class PromptAssembler {
       }
     }
     if (jsonProtocolEnabled) {
-      appendLine("""{"type":"commentary","text":"Scanning README and Gradle files before editing."}""")
-      toolCallExamples.forEach { example ->
-        appendLine(example)
+      appendExample("""{"type":"commentary","text":"Scanning README and Gradle files before editing."}""")
+      primaryToolCallExample?.let(::appendExample)
+      if (detailMode == ToolProtocolDetailMode.FULL) {
+        toolCallExamples
+          .drop(if (primaryToolCallExample != null) 1 else 0)
+          .forEach(::appendExample)
       }
-      primaryToolCallExample?.let { toolCallExample ->
-        appendLine("""{"actions":[{"type":"commentary","text":"Scanning README and Gradle files before editing."},$toolCallExample]}""")
+      if (detailMode != ToolProtocolDetailMode.MINIMAL) {
+        primaryToolCallExample?.let { toolCallExample ->
+          appendExample("""{"actions":[{"type":"commentary","text":"Scanning README and Gradle files before editing."},$toolCallExample]}""")
+        }
+        appendExample("""{"actions":[{"type":"commentary","text":"Summarizing the confirmed workspace facts."},{"type":"final","answer":"Concise answer for the user."}]}""")
       }
-      appendLine("""{"actions":[{"type":"commentary","text":"Summarizing the confirmed workspace facts."},{"type":"final","answer":"Concise answer for the user."}]}""")
-      appendLine("""{"type":"final","answer":"Concise answer for the user."}""")
-      appendLine("""{"type":"final","answer":"Here is the workspace image.\n\n![diagram.png](attachment:docs/diagram.png)","attachments":[{"relative_path":"docs/diagram.png","kind":"image"}]}""")
-      appendLine("""{"type":"final","answer":"Attached the workspace file.","attachments":[{"relative_path":"docs/report.pdf","kind":"file"}]}""")
-      if (hasImageGenerationTool || hasSpeechSynthesisTool || hasWriteTool || hasImportTool || hasChatAttachmentImportTool) {
-        appendLine("""{"type":"final","answer":"Attached the generated media.","attachments":[{"artifact_id":"artifact-example-1234abcd","kind":"image"}]}""")
-        appendLine("""{"type":"final","answer":"Here is the generated image inline.\n\n![diagram.png](attachment:artifact-example-1234abcd)","attachments":[{"artifact_id":"artifact-example-1234abcd","kind":"image"}]}""")
-        appendLine("""{"type":"final","answer":"Here is the uploaded image.\n\n![camera_first.jpg](attachment:user-image-1)","attachments":[{"chat_attachment_id":"user-image-1","kind":"image"}]}""")
+      appendExample("""{"type":"final","answer":"Concise answer for the user."}""")
+      if (detailMode == ToolProtocolDetailMode.FULL) {
+        appendExample(
+          """{"type":"final","answer":"Here is the workspace image.\n\n![diagram.png](attachment:docs/diagram.png)","attachments":[{"relative_path":"docs/diagram.png","kind":"image"}]}""",
+          attachmentExample = true,
+        )
+        appendExample(
+          """{"type":"final","answer":"Attached the workspace file.","attachments":[{"relative_path":"docs/report.pdf","kind":"file"}]}""",
+          attachmentExample = true,
+        )
+        if (attachmentCapableToolAvailable) {
+          appendExample(
+            """{"type":"final","answer":"Attached the generated media.","attachments":[{"artifact_id":"artifact-example-1234abcd","kind":"image"}]}""",
+            attachmentExample = true,
+          )
+          appendExample(
+            """{"type":"final","answer":"Here is the generated image inline.\n\n![diagram.png](attachment:artifact-example-1234abcd)","attachments":[{"artifact_id":"artifact-example-1234abcd","kind":"image"}]}""",
+            attachmentExample = true,
+          )
+          appendExample(
+            """{"type":"final","answer":"Here is the uploaded image.\n\n![camera_first.jpg](attachment:user-image-1)","attachments":[{"chat_attachment_id":"user-image-1","kind":"image"}]}""",
+            attachmentExample = true,
+          )
+        }
       }
     }
     if (nativeToolCallingEnabled) {
@@ -325,114 +437,263 @@ class PromptAssembler {
       appendLine("If you need multiple tools, call only the next tool now. After each tool result the runtime will ask for the next action.")
     }
     if (hasTodoWriteTool) {
-      appendLine("For non-trivial work with multiple concrete steps, use TodoWrite to keep a short live plan.")
-      appendLine("Omit todos to read the current plan without mutating it, and send todos=[] only when you intentionally want to clear the current plan.")
-      appendLine("TodoWrite entries must keep unique content, allow at most one in_progress item, and only that in_progress item may set activeForm.")
-      appendLine("Keep the plan aligned with reality after meaningful progress, and before returning the final answer make sure the plan state is accurate.")
+      appendToolGuidance("For non-trivial work with multiple concrete steps, use TodoWrite to keep a short live plan.")
+      when (detailMode) {
+        ToolProtocolDetailMode.FULL -> {
+          appendToolGuidance("Omit todos to read the current plan without mutating it, and send todos=[] only when you intentionally want to clear the current plan.")
+          appendToolGuidance("TodoWrite entries must keep unique content, allow at most one in_progress item, and only that in_progress item may set activeForm.")
+          appendToolGuidance("Keep the plan aligned with reality after meaningful progress, and before returning the final answer make sure the plan state is accurate.")
+        }
+
+        ToolProtocolDetailMode.COMPACT,
+        ToolProtocolDetailMode.MINIMAL,
+        -> {
+          appendToolGuidance("Keep TodoWrite aligned with reality. Allow at most one in_progress item, and only that item may set activeForm.")
+        }
+      }
     }
     if (hasBashTool) {
-      appendLine("Use Bash for one-off shell commands that do not require Python. Bash runs through the host shell, so use PowerShell syntax on Windows hosts.")
+      appendToolGuidance("Use Bash for one-off shell commands that do not require Python. Bash runs through the host shell, so use PowerShell syntax on Windows hosts.")
     }
     if (hasWebSearchTool || hasWebFetchTool) {
-      appendLine("For current information from the internet, prefer WebSearch when a search provider is configured, and use WebFetch when you already have a URL to read.")
+      appendToolGuidance("For current information from the internet, prefer WebSearch when a search provider is configured, and use WebFetch when you already have a URL to read.")
     }
     if (hasProcessStartTool || hasProcessReadTool || hasProcessWaitTool) {
-      appendLine("For commands you want to manage across multiple turns, prefer ProcessStart and then use ProcessRead or ProcessWait.")
+      appendToolGuidance("For commands you want to manage across multiple turns, prefer ProcessStart and then use ProcessRead or ProcessWait.")
     }
     if (hasPythonExecTool) {
-      appendLine("For workspace-local Python scripts, prefer python_exec instead of Bash.")
-      appendLine("For Python runtime inspection or diagnostics such as version checks, sys.path, imports, or environment behavior, do not use Bash. Create or reuse a small workspace-local probe script and run it with python_exec.")
+      when (detailMode) {
+        ToolProtocolDetailMode.FULL -> {
+          appendToolGuidance("For workspace-local Python scripts, prefer python_exec instead of Bash.")
+          appendToolGuidance("For Python runtime inspection or diagnostics such as version checks, sys.path, imports, or environment behavior, do not use Bash. Create or reuse a small workspace-local probe script and run it with python_exec.")
+        }
+
+        ToolProtocolDetailMode.COMPACT,
+        ToolProtocolDetailMode.MINIMAL,
+        -> {
+          appendToolGuidance("For workspace-local Python scripts or Python diagnostics, prefer python_exec and do not use Bash to invoke python, python3, or py.")
+        }
+      }
     }
     if (hasTaskTool) {
-      appendLine("Use Task for simple synchronous delegation when you want to wait immediately for one child result.")
+      appendToolGuidance("Use Task for simple synchronous delegation when you want to wait immediately for one child result.")
     }
     if (hasSpawnAgentTool && hasWaitAgentTool) {
-      appendLine("Use spawn_agent when you need an explicit child handle and want that child to start immediately.")
-      appendLine("Use wait_agent to block until a running child reaches its latest stable state, or to resume a paused child after user approval.")
+      when (detailMode) {
+        ToolProtocolDetailMode.FULL -> {
+          appendToolGuidance("Use spawn_agent when you need an explicit child handle and want that child to start immediately.")
+          appendToolGuidance("Use wait_agent to block until a running child reaches its latest stable state and harvest its result.")
+          appendToolGuidance("After user approval unlocks a paused child, the runtime resumes it through the detached recovery path; use wait_agent later to observe the new stable state.")
+        }
+
+        ToolProtocolDetailMode.COMPACT,
+        ToolProtocolDetailMode.MINIMAL,
+        -> {
+          appendToolGuidance("Use spawn_agent for explicit child handles that start immediately, and wait_agent later to observe or block on those delegated children.")
+        }
+      }
     }
     if (hasSendInputTool) {
-      appendLine("Use send_input only while a child is queued or paused and waiting to resume. It queues mailbox input for the next child resume; it is not a mid-run interrupt.")
+      appendToolGuidance("Use send_input only while a child is queued or paused and waiting to resume. It queues mailbox input for the next child resume; it is not a mid-run interrupt.")
     }
     if (hasCloseAgentTool) {
-      appendLine("Use close_agent to cancel a running or paused delegated child handle when that child should not continue, or to forget a completed one.")
-      appendLine("Do not return a final answer while any delegated child handle is still open. Use wait_agent or close_agent first.")
+      when (detailMode) {
+        ToolProtocolDetailMode.FULL -> {
+          appendToolGuidance("Use close_agent to cancel a running or paused delegated child handle when that child should not continue, or to forget a completed one.")
+          appendToolGuidance("Do not return a final answer while any delegated child handle is still open. Use wait_agent or close_agent first.")
+        }
+
+        ToolProtocolDetailMode.COMPACT,
+        ToolProtocolDetailMode.MINIMAL,
+        -> {
+          appendToolGuidance("Use close_agent to stop or forget delegated child handles, and do not finalize while any delegated child handle is still open.")
+        }
+      }
     }
     if (hasListSubAgentsTool) {
-      appendLine("Use list_subagents to inspect the delegated child registry when you need to see handle ids, parent linkage, lifecycle state, approval wait state, or mailbox backlog before choosing wait_agent, send_input, or close_agent.")
+      when (detailMode) {
+        ToolProtocolDetailMode.FULL -> {
+          appendToolGuidance("Use list_subagents to inspect the delegated child registry when you need to see handle ids, parent linkage, lifecycle state, approval wait state, or mailbox backlog before choosing wait_agent, send_input, or close_agent.")
+        }
+
+        ToolProtocolDetailMode.COMPACT,
+        ToolProtocolDetailMode.MINIMAL,
+        -> {
+          appendToolGuidance("Use list_subagents to inspect delegated child handle state before choosing wait_agent, send_input, or close_agent.")
+        }
+      }
     }
     if (hasTaskTool && hasSpawnAgentTool && hasWaitAgentTool) {
-      appendLine("Prefer Task for one-off delegation. Prefer spawn_agent plus wait_agent when you need explicit control over the child handle.")
+      appendToolGuidance("Prefer Task for one-off delegation. Prefer spawn_agent plus wait_agent when you need explicit control over the child handle.")
     }
     if (hasProcessStartTool && hasPythonExecTool) {
-      appendLine("If you need to manage a long-running Python task across multiple turns, use ProcessStart with script_path only when the runtime supports managed Python process launches.")
+      appendToolGuidance("If you need to manage a long-running Python task across multiple turns, use ProcessStart with script_path only when the runtime supports managed Python process launches.")
     }
-    if (hasBashTool && hasPythonExecTool) {
-      appendLine("Do not use Bash to invoke python, python3, or py for workspace scripts or Python-related diagnostics.")
+    if (hasBashTool && hasPythonExecTool && detailMode == ToolProtocolDetailMode.FULL) {
+      appendToolGuidance("Do not use Bash to invoke python, python3, or py for workspace scripts or Python-related diagnostics.")
     }
     if (hasImportTool) {
-      appendLine("When task metadata includes approvedReadRoots, you may inspect those roots with absolute paths.")
-      appendLine("Approved external roots are read-only. Use ImportFile to copy files or folders into the writable workspace before editing, deleting, or other mutating operations.")
+      when (detailMode) {
+        ToolProtocolDetailMode.FULL -> {
+          appendToolGuidance("When task metadata includes approvedReadRoots, you may inspect those roots with absolute paths.")
+          appendToolGuidance("Approved external roots are read-only. Use ImportFile to copy files or folders into the writable workspace before editing, deleting, or other mutating operations.")
+        }
+
+        ToolProtocolDetailMode.COMPACT,
+        ToolProtocolDetailMode.MINIMAL,
+        -> {
+          appendToolGuidance("Approved external roots are read-only. Use ImportFile before editing or deleting imported files.")
+        }
+      }
     }
     if (hasChatAttachmentImportTool) {
-      appendLine("Uploaded chat attachments are chat resources, not workspace files.")
-      appendLine("If the model can already inspect an uploaded image directly, do not import it unless you need a workspace copy.")
-      appendLine("Use import_chat_attachment only when you intentionally want to save one existing chat attachment into the workspace.")
-      appendLine("When you need to inspect a non-image chat attachment with normal file tools, first decide whether to call import_chat_attachment.")
+      when (detailMode) {
+        ToolProtocolDetailMode.FULL -> {
+          appendToolGuidance("Uploaded chat attachments are chat resources, not workspace files.")
+          appendToolGuidance("If the model can already inspect an uploaded image directly, do not import it unless you need a workspace copy.")
+          appendToolGuidance("Use import_chat_attachment only when you intentionally want to save one existing chat attachment into the workspace.")
+          appendToolGuidance("When you need to inspect a non-image chat attachment with normal file tools, first decide whether to call import_chat_attachment.")
+        }
+
+        ToolProtocolDetailMode.COMPACT,
+        ToolProtocolDetailMode.MINIMAL,
+        -> {
+          appendToolGuidance("Uploaded chat attachments are not workspace files. Use import_chat_attachment only when you intentionally need a workspace copy.")
+        }
+      }
     }
     if (hasWorkspaceDocumentSearchTool) {
-      appendLine("If you need to locate relevant content inside a readable workspace PDF before attaching it, call search_workspace_document instead of guessing from the filename.")
-      appendLine("search_workspace_document searches workspace PDFs locally and returns matching page numbers and excerpts.")
-      appendLine("Use query, pages, page_from, and page_to to narrow the scan whenever you can.")
+      when (detailMode) {
+        ToolProtocolDetailMode.FULL -> {
+          appendToolGuidance("If you need to locate relevant content inside a readable workspace PDF before attaching it, call search_workspace_document instead of guessing from the filename.")
+          appendToolGuidance("search_workspace_document searches workspace PDFs locally and returns matching page numbers and excerpts.")
+          appendToolGuidance("Use query, pages, page_from, and page_to to narrow the scan whenever you can.")
+        }
+
+        ToolProtocolDetailMode.COMPACT,
+        ToolProtocolDetailMode.MINIMAL,
+        -> {
+          appendToolGuidance("Use search_workspace_document to search readable workspace PDFs locally before guessing from filenames.")
+        }
+      }
     }
     if (hasWorkspacePackageInspectTool) {
-      appendLine("If you need to inspect the internal structure of a readable ZIP-based package such as zip, docx, xlsx, pptx, odt, ods, or odp, call inspect_workspace_package before guessing from the filename.")
-      appendLine("inspect_workspace_package lists internal entries, previews specific safe text or XML parts, and returns package kind hints such as main document parts and relationship parts.")
-      appendLine("Use glob and preview_entries to narrow inspection to the exact entries you need.")
+      when (detailMode) {
+        ToolProtocolDetailMode.FULL -> {
+          appendToolGuidance("If you need to inspect the internal structure of a readable ZIP-based package such as zip, docx, xlsx, pptx, odt, ods, or odp, call inspect_workspace_package before guessing from the filename.")
+          appendToolGuidance("inspect_workspace_package lists internal entries, previews specific safe text or XML parts, and returns package kind hints such as main document parts and relationship parts.")
+          appendToolGuidance("Use glob and preview_entries to narrow inspection to the exact entries you need.")
+        }
+
+        ToolProtocolDetailMode.COMPACT,
+        ToolProtocolDetailMode.MINIMAL,
+        -> {
+          appendToolGuidance("Use inspect_workspace_package to inspect ZIP-based workspace packages before guessing from the filename.")
+        }
+      }
     }
     if (hasWorkspacePackageExtractTool) {
-      appendLine("If you need files from inside a readable ZIP-based package in the workspace, call extract_workspace_package with explicit entries or glob.")
-      appendLine("extract_workspace_package requires entries or glob, writes only the selected package contents into destination_dir, and never defaults to full-package extraction.")
-      appendLine("After extracting package files, use Read, Grep, Glob, or the workspace document view tools on the extracted workspace paths.")
+      when (detailMode) {
+        ToolProtocolDetailMode.FULL -> {
+          appendToolGuidance("If you need files from inside a readable ZIP-based package in the workspace, call extract_workspace_package with explicit entries or glob.")
+          appendToolGuidance("extract_workspace_package requires entries or glob, writes only the selected package contents into destination_dir, and never defaults to full-package extraction.")
+          appendToolGuidance("After extracting package files, use Read, Grep, Glob, or the workspace document view tools on the extracted workspace paths.")
+        }
+
+        ToolProtocolDetailMode.COMPACT,
+        ToolProtocolDetailMode.MINIMAL,
+        -> {
+          appendToolGuidance("Use extract_workspace_package with explicit entries or glob. It never defaults to full-package extraction.")
+        }
+      }
     }
     if (hasWorkspaceDocumentViewTool) {
-      appendLine("If you need to inspect what a readable workspace image or PDF actually contains, call view_workspace_document instead of guessing from the path, filename, or nearby text.")
-      appendLine("When view_workspace_document is available, prefer it over the format-specific workspace view tools.")
-      appendLine("view_workspace_document attaches that workspace image or PDF into the next model turn for direct inspection.")
-      appendLine("After calling view_workspace_document, wait for the next turn and inspect the attached document directly before taking further action.")
+      when (detailMode) {
+        ToolProtocolDetailMode.FULL -> {
+          appendToolGuidance("If you need to inspect what a readable workspace image or PDF actually contains, call view_workspace_document instead of guessing from the path, filename, or nearby text.")
+          appendToolGuidance("When view_workspace_document is available, prefer it over the format-specific workspace view tools.")
+          appendToolGuidance("view_workspace_document attaches that workspace image or PDF into the next model turn for direct inspection.")
+          appendToolGuidance("After calling view_workspace_document, wait for the next turn and inspect the attached document directly before taking further action.")
+        }
+
+        ToolProtocolDetailMode.COMPACT,
+        ToolProtocolDetailMode.MINIMAL,
+        -> {
+          appendToolGuidance("Use view_workspace_document to inspect readable workspace images or PDFs directly, then wait for the next turn before acting.")
+        }
+      }
     }
     if (hasWorkspaceImageViewTool) {
-      appendLine("If you need to inspect what a readable workspace image actually contains, call view_workspace_image instead of guessing from the path, filename, or nearby text.")
-      appendLine("view_workspace_image attaches that workspace image into the next model turn for direct visual inspection.")
-      appendLine("After calling view_workspace_image, wait for the next turn and inspect the attached image directly before taking further action.")
+      when (detailMode) {
+        ToolProtocolDetailMode.FULL -> {
+          appendToolGuidance("If you need to inspect what a readable workspace image actually contains, call view_workspace_image instead of guessing from the path, filename, or nearby text.")
+          appendToolGuidance("view_workspace_image attaches that workspace image into the next model turn for direct visual inspection.")
+          appendToolGuidance("After calling view_workspace_image, wait for the next turn and inspect the attached image directly before taking further action.")
+        }
+
+        ToolProtocolDetailMode.COMPACT,
+        ToolProtocolDetailMode.MINIMAL,
+        -> {
+          appendToolGuidance("Use view_workspace_image to inspect readable workspace images directly, then wait for the next turn before acting.")
+        }
+      }
     }
     if (hasWorkspacePdfViewTool) {
-      appendLine("If you need to inspect what a readable workspace PDF actually contains, call view_workspace_pdf instead of guessing from the path, filename, or nearby text.")
-      appendLine("view_workspace_pdf attaches that workspace PDF into the next model turn for direct inspection when the current model accepts PDF inputs.")
-      appendLine("After calling view_workspace_pdf, wait for the next turn and inspect the attached PDF directly before taking further action.")
+      when (detailMode) {
+        ToolProtocolDetailMode.FULL -> {
+          appendToolGuidance("If you need to inspect what a readable workspace PDF actually contains, call view_workspace_pdf instead of guessing from the path, filename, or nearby text.")
+          appendToolGuidance("view_workspace_pdf attaches that workspace PDF into the next model turn for direct inspection when the current model accepts PDF inputs.")
+          appendToolGuidance("After calling view_workspace_pdf, wait for the next turn and inspect the attached PDF directly before taking further action.")
+        }
+
+        ToolProtocolDetailMode.COMPACT,
+        ToolProtocolDetailMode.MINIMAL,
+        -> {
+          appendToolGuidance("Use view_workspace_pdf to inspect readable workspace PDFs directly, then wait for the next turn before acting.")
+        }
+      }
     }
     if (jsonProtocolEnabled) {
-      appendLine("When a tool result produces attachment artifacts, you may send them in the final action by adding attachments with artifact_id.")
-      appendLine("When you need to resend a file or image that already exists in the chat history, attach it with chat_attachment_id.")
-      appendLine("Use chat_attachment_id to resend an existing chat upload back to the user. Use import_chat_attachment to copy that upload into the workspace.")
-      appendLine("Do not claim that you attached or sent a file unless the final action attachments array actually includes it.")
-      appendLine("Do not rely on markdown alone to send an attachment. Markdown attachment references only control inline placement in the rendered answer.")
-      appendLine("If you want an attachment to appear inline inside the written answer, you must do both: include it in the attachments array and reference the same token with markdown using attachment:<token>.")
-      appendLine("For ordinary file cards, you may omit markdown and just attach the file in the attachments array.")
-      appendLine("For inline attachment markdown, use the attachment display name as the markdown label.")
-      appendLine("Use the concrete relative_path, artifact_id, or chat_attachment_id as the attachment:<token> value. Do not use a generic placeholder such as attachment:artifact unless that literal token is the real identifier.")
-      appendLine("When resending an existing chat upload, prefer chat_attachment_id over guessing by filename.")
-      appendLine("Use relative_path only for files that already exist inside the workspace.")
-      appendLine("Generated speech should usually be attached with kind=voice so the chat uses the built-in voice player.")
-      appendLine("If you intentionally want an audio file card instead of a voice message, attach the same artifact_id with kind=file.")
+      when (detailMode) {
+        ToolProtocolDetailMode.FULL -> {
+          appendToolGuidance("When a tool result produces attachment artifacts, you may send them in the final action by adding attachments with artifact_id.")
+          appendToolGuidance("When you need to resend a file or image that already exists in the chat history, attach it with chat_attachment_id.")
+          appendToolGuidance("Use chat_attachment_id to resend an existing chat upload back to the user. Use import_chat_attachment to copy that upload into the workspace.")
+          appendToolGuidance("Do not claim that you attached or sent a file unless the final action attachments array actually includes it.")
+          appendToolGuidance("Do not rely on markdown alone to send an attachment. Markdown attachment references only control inline placement in the rendered answer.")
+          appendToolGuidance("If you want an attachment to appear inline inside the written answer, you must do both: include it in the attachments array and reference the same token with markdown using attachment:<token>.")
+          appendToolGuidance("For ordinary file cards, you may omit markdown and just attach the file in the attachments array.")
+          appendToolGuidance("For inline attachment markdown, use the attachment display name as the markdown label.")
+          appendToolGuidance("Use the concrete relative_path, artifact_id, or chat_attachment_id as the attachment:<token> value. Do not use a generic placeholder such as attachment:artifact unless that literal token is the real identifier.")
+          appendToolGuidance("When resending an existing chat upload, prefer chat_attachment_id over guessing by filename.")
+          appendToolGuidance("Use relative_path only for files that already exist inside the workspace.")
+          appendToolGuidance("Generated speech should usually be attached with kind=voice so the chat uses the built-in voice player.")
+          appendToolGuidance("If you intentionally want an audio file card instead of a voice message, attach the same artifact_id with kind=file.")
+        }
+
+        ToolProtocolDetailMode.COMPACT -> {
+          appendToolGuidance("Do not claim that you attached or sent a file unless the final action attachments array actually includes it.")
+          appendToolGuidance("Use relative_path for existing workspace files, artifact_id for generated artifacts, and chat_attachment_id to resend an existing chat upload.")
+          appendToolGuidance("Do not rely on markdown alone to send an attachment. Use the attachments array, and reference attachment:<token> only when you want inline placement.")
+          appendToolGuidance("For ordinary file cards, you may omit markdown and just attach the file in the attachments array.")
+          appendToolGuidance("Generated speech should usually be attached with kind=voice.")
+        }
+
+        ToolProtocolDetailMode.MINIMAL -> {
+          appendToolGuidance("If you send a file, image, or voice item, the final action attachments array must include it.")
+          appendToolGuidance("Use relative_path for existing workspace files, artifact_id for generated artifacts, and chat_attachment_id for existing chat uploads.")
+          appendToolGuidance("Do not rely on markdown alone to send an attachment.")
+        }
+      }
     }
     appendLine("A tool_call may include reason or justification, but it must not include a final answer.")
     if (!parallelToolCallsEnabled) {
       appendLine("Do not return multiple tool calls in one response.")
     }
     if (hasMemorySearchTool) {
-      appendLine("When the user asks about prior work, earlier decisions, remembered preferences, dates, people, paths, or todos, search projected memory first instead of guessing from partial context.")
+      appendToolGuidance("When the user asks about prior work, earlier decisions, remembered preferences, dates, people, paths, or todos, search projected memory first instead of guessing from partial context.")
       if (hasMemoryGetTool) {
-        appendLine("Use memory_search to locate the relevant memory path, then memory_get to read only the narrow line range you need.")
+        appendToolGuidance("Use memory_search to locate the relevant memory path, then memory_get to read only the narrow line range you need.")
       }
     }
     appendLine()
@@ -444,15 +705,32 @@ class PromptAssembler {
     append("Only return type=final when you are ready to answer the user.")
   }.trim()
 
+    return ToolProtocolLayerRenderResult(
+      text = text,
+      trace = ToolProtocolTrace(
+        detailMode = detailMode.wireValue,
+        reducedForBudget = detailMode != ToolProtocolDetailMode.FULL,
+        exampleCount = exampleCount,
+        attachmentExampleCount = attachmentExampleCount,
+        toolSpecificGuidanceCount = toolSpecificGuidanceCount,
+        availableToolCount = toolDefinitions.size,
+      ),
+    )
+  }
+
+  private fun resolveToolProtocolDetailMode(
+    llmMetadata: Map<String, String>,
+  ): ToolProtocolDetailMode {
+    val envelope = toolProtocolBudgetPolicy.resolve(llmMetadata)
+    return when {
+      envelope.targetInputBudgetTokens <= TOOL_PROTOCOL_MINIMAL_TARGET_TOKENS -> ToolProtocolDetailMode.MINIMAL
+      envelope.targetInputBudgetTokens <= TOOL_PROTOCOL_COMPACT_TARGET_TOKENS -> ToolProtocolDetailMode.COMPACT
+      else -> ToolProtocolDetailMode.FULL
+    }
+  }
+
   private fun hasAnyTool(toolNames: Set<String>, vararg candidates: String): Boolean =
     candidates.any { candidate -> candidate in toolNames }
-
-  private fun renderBootstrapLayer(file: com.opencray.runtime.bootstrap.BootstrapSnippet): String = buildString {
-    appendLine("source_file=${file.relativePath}")
-    appendLine("truncated=${file.truncated}")
-    appendLine()
-    append(file.content)
-  }.trim()
 
   private fun renderTaskMetadataLayer(
     task: com.opencray.core.contracts.AgentTask,
@@ -497,14 +775,19 @@ class PromptAssembler {
   private fun toLayerReport(layer: PromptLayer): ContextLayerReport {
     val characterCount = layer.content.length
     return ContextLayerReport(
+      id = layer.id,
       name = layer.name,
       kind = layer.kind,
       characterCount = characterCount,
-      estimatedTokenCount = (characterCount + 3) / 4,
+      estimatedTokenCount = estimateTokenCount(layer.content),
     )
   }
 
+  private fun estimateTokenCount(content: String): Int = (content.length + 3) / 4
+
   private companion object {
+    const val TOOL_PROTOCOL_COMPACT_TARGET_TOKENS: Int = 1_100
+    const val TOOL_PROTOCOL_MINIMAL_TARGET_TOKENS: Int = 700
     const val TASK_METADATA_LAYER_NAME: String = "Task Metadata"
     const val CONVERSATION_LAYER_NAME: String = "Conversation"
     const val HIDDEN_METADATA_PREFIX: String = "_host."

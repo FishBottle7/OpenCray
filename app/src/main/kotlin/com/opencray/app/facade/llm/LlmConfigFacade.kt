@@ -64,6 +64,10 @@ data class LlmConfigSnapshot(
   val model: String,
   val reasoningEffort: String,
   val systemPrompt: String,
+  val openAiPromptCacheKeyStrategy: String? = null,
+  val openAiPromptCacheRetention: String? = null,
+  val anthropicPromptCachingEnabled: Boolean? = null,
+  val anthropicPromptCacheTtl: String? = null,
   val helperText: String,
   val agentCapability: LlmAgentCapabilitySnapshot = LlmAgentCapabilitySnapshot(),
 )
@@ -80,6 +84,10 @@ data class SaveLlmConfigRequest(
   val model: String,
   val reasoningEffort: String,
   val systemPrompt: String,
+  val openAiPromptCacheKeyStrategy: String? = null,
+  val openAiPromptCacheRetention: String? = null,
+  val anthropicPromptCachingEnabled: Boolean? = null,
+  val anthropicPromptCacheTtl: String? = null,
 )
 
 data class SaveCustomLlmProviderRequest(
@@ -92,6 +100,13 @@ data class SaveCustomLlmProviderRequest(
   val model: String,
   val reasoningEffort: String,
   val systemPrompt: String,
+  val openAiPromptCacheKeyStrategy: String =
+    LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_KEY_STRATEGY,
+  val openAiPromptCacheRetention: String =
+    LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_RETENTION,
+  val anthropicPromptCachingEnabled: Boolean =
+    LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED,
+  val anthropicPromptCacheTtl: String = LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL,
 )
 
 data class ValidateLlmConfigRequest(
@@ -191,6 +206,10 @@ internal class LocalLlmConfigFacade private constructor(
         model = providerRecord.model,
         reasoningEffort = request.reasoningEffort,
         systemPrompt = request.systemPrompt,
+        openAiPromptCacheKeyStrategy = request.openAiPromptCacheKeyStrategy,
+        openAiPromptCacheRetention = request.openAiPromptCacheRetention,
+        anthropicPromptCachingEnabled = request.anthropicPromptCachingEnabled,
+        anthropicPromptCacheTtl = request.anthropicPromptCacheTtl,
       ),
     )
     llmSettingsStore.save(
@@ -284,6 +303,7 @@ internal class LocalLlmConfigFacade private constructor(
     )
     val capability = if (!nativeProbe.supported) {
       verifiedCapabilitySnapshot(
+        providerId = providerPreset.id,
         protocol = protocol,
         baseUrl = baseUrl,
         model = model,
@@ -370,6 +390,7 @@ internal class LocalLlmConfigFacade private constructor(
         ?.let { count -> count > 0 }
         ?: false
       verifiedCapabilitySnapshot(
+        providerId = providerPreset.id,
         protocol = protocol,
         baseUrl = baseUrl,
         model = model,
@@ -434,6 +455,10 @@ internal class LocalLlmConfigFacade private constructor(
       model = sanitized.model,
       reasoningEffort = sanitized.reasoningEffort,
       systemPrompt = sanitized.systemPrompt,
+      openAiPromptCacheKeyStrategy = sanitized.openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention = sanitized.openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled = sanitized.anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl = sanitized.anthropicPromptCacheTtl,
       helperText = strings.helperText,
       agentCapability = sanitized.agentCapability,
     )
@@ -561,6 +586,12 @@ internal class LocalLlmConfigFacade private constructor(
     } else {
       localizedProviderTitle(providerPreset)
     }
+    val promptCachingSettings = resolvedPromptCachingSettings(
+      openAiPromptCacheKeyStrategy = request.openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention = request.openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled = request.anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl = request.anthropicPromptCacheTtl,
+    )
     return LlmSettingsState(
       enabled = request.enabled,
       providerId = providerPreset.id,
@@ -576,6 +607,10 @@ internal class LocalLlmConfigFacade private constructor(
         LlmSettingsState.DEFAULT_REASONING_EFFORT
       },
       systemPrompt = request.systemPrompt.trim(),
+      openAiPromptCacheKeyStrategy = promptCachingSettings.openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention = promptCachingSettings.openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled = promptCachingSettings.anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl = promptCachingSettings.anthropicPromptCacheTtl,
       agentCapability = llmSettingsStore.loadAgentCapability(
         protocol = protocol,
         baseUrl = baseUrl,
@@ -943,6 +978,7 @@ internal class LocalLlmConfigFacade private constructor(
   }
 
   private fun verifiedCapabilitySnapshot(
+    providerId: String,
     protocol: String,
     baseUrl: String,
     model: String,
@@ -963,6 +999,11 @@ internal class LocalLlmConfigFacade private constructor(
       model = model,
     ),
     verifiedAtEpochMs = System.currentTimeMillis(),
+    contextWindowTokens = LlmModelCapabilityRegistry.resolveContextWindow(
+      providerId = providerId,
+      protocol = protocol,
+      model = model,
+    ).contextWindowTokens,
     visionInputSupported = visionInputSupported,
     pdfInputSupported = pdfInputSupported,
     nativeToolCallingAvailable = nativeToolCallingAvailable,
@@ -1005,6 +1046,28 @@ internal class LocalLlmConfigFacade private constructor(
     }
     val host = runCatching { URI(baseUrl.trim()).host.orEmpty() }.getOrDefault("")
     return host.ifBlank { strings.customProviderTitle }
+  }
+
+  private fun resolvedPromptCachingSettings(
+    openAiPromptCacheKeyStrategy: String?,
+    openAiPromptCacheRetention: String?,
+    anthropicPromptCachingEnabled: Boolean?,
+    anthropicPromptCacheTtl: String?,
+  ): ResolvedPromptCachingSettings {
+    val persisted = llmSettingsStore.load()
+    return ResolvedPromptCachingSettings(
+      openAiPromptCacheKeyStrategy = openAiPromptCacheKeyStrategy
+        ?.let(LlmSettingsState::normalizedOpenAiPromptCacheKeyStrategy)
+        ?: persisted.openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention = openAiPromptCacheRetention
+        ?.let(LlmSettingsState::normalizedOpenAiPromptCacheRetention)
+        ?: persisted.openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled = anthropicPromptCachingEnabled
+        ?: persisted.anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl = anthropicPromptCacheTtl
+        ?.let(LlmSettingsState::normalizedAnthropicPromptCacheTtl)
+        ?: persisted.anthropicPromptCacheTtl,
+    )
   }
 
   companion object {
@@ -1115,6 +1178,10 @@ internal object EmptyLlmConfigFacade : LlmConfigFacade {
     model = "",
     reasoningEffort = LlmSettingsState.DEFAULT_REASONING_EFFORT,
     systemPrompt = "",
+    openAiPromptCacheKeyStrategy = LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_KEY_STRATEGY,
+    openAiPromptCacheRetention = LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_RETENTION,
+    anthropicPromptCachingEnabled = LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED,
+    anthropicPromptCacheTtl = LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL,
     helperText = "LLM settings host support is unavailable.",
     agentCapability = LlmAgentCapabilitySnapshot(),
   )
@@ -1143,3 +1210,10 @@ private data class CapabilityProbeOutcome(
     )
   }
 }
+
+private data class ResolvedPromptCachingSettings(
+  val openAiPromptCacheKeyStrategy: String,
+  val openAiPromptCacheRetention: String,
+  val anthropicPromptCachingEnabled: Boolean,
+  val anthropicPromptCacheTtl: String,
+)

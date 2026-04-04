@@ -1666,6 +1666,264 @@ class OpenCrayAgentRuntimeSubAgentTest {
   }
 
   @Test
+  fun directWaitAgentRegistersActiveExecutionWhileDetachedRecoveryRuns() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-cold-restart-active-execution").toPath()
+    Files.write(
+      workspaceRoot.resolve("README.md"),
+      "hello".toByteArray(StandardCharsets.UTF_8),
+    )
+    val seededHandle = SubAgentHandleState(
+      agentId = "child-cold-active",
+      childRunId = "child-run-cold-active",
+      childTaskId = "child-task-cold-active",
+      description = "Inspect README",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "run-parent-cold-active",
+      parentTaskId = "task-parent-cold-active",
+      parentTurn = 1,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Delegated child run is still running in the background.",
+      ),
+      childPromptResumeState = OpenCrayPromptResumeState(
+        turnIndex = 0,
+        toolCallCount = 0,
+      ),
+      childPromptCheckpointBoundary = OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST,
+      childPromptCheckpointAtEpochMs = 950L,
+      createdAtEpochMs = 900L,
+      updatedAtEpochMs = 1_100L,
+    )
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val childStarted = CountDownLatch(1)
+    val childMayFinish = CountDownLatch(1)
+    var childTurn = 0
+    val gateway = ScriptedGateway { request ->
+      childStarted.countDown()
+      assertTrue(childMayFinish.await(5, TimeUnit.SECONDS))
+      when (childTurn++) {
+        0 -> """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}"""
+        1 -> """{"type":"final","answer":"README says hello."}"""
+        else -> error("Unexpected detached recovery child turn for ${request.requestId}.")
+      }
+    }
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      seededSubAgentHandles = listOf(seededHandle),
+      subAgentExecutionCoordinator = coordinator,
+    )
+    val task = directToolCallTask(
+      """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-cold-active"}}""",
+    )
+    val execution = Executors.newSingleThreadExecutor()
+    val resultFuture = execution.submit<ExecutionResult> {
+      runtime.execute(
+        task = task,
+        hooks = runtimeHooks(),
+      )
+    }
+
+    assertTrue(childStarted.await(5, TimeUnit.SECONDS))
+    val runningHandle = coordinator.allHandles().single()
+    assertEquals(SubAgentExecutionState.BACKGROUND_RUNNING, runningHandle.snapshot.state)
+    assertTrue(
+      coordinator.activeExecution(SubAgentExecutionKey.from(runningHandle)) != null,
+    )
+
+    childMayFinish.countDown()
+    val result = resultFuture.get(5, TimeUnit.SECONDS)
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    val completedHandle = coordinator.allHandles().single()
+    assertEquals(SubAgentExecutionState.COMPLETED, completedHandle.snapshot.state)
+    assertEquals(null, coordinator.activeExecution(SubAgentExecutionKey.from(completedHandle)))
+    execution.shutdownNow()
+  }
+
+  @Test
+  fun detachedRecoveryWaitDoesNotStartChildWithoutExplicitEnsureExecution() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-detached-recovery-no-start").toPath()
+    Files.write(
+      workspaceRoot.resolve("README.md"),
+      "hello".toByteArray(StandardCharsets.UTF_8),
+    )
+    val seededHandle = SubAgentHandleState(
+      agentId = "child-recovery-idle",
+      childRunId = "child-run-recovery-idle",
+      childTaskId = "child-task-recovery-idle",
+      description = "Inspect README",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "run-parent-recovery-idle",
+      parentTaskId = "task-parent-recovery-idle",
+      parentTurn = 1,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Delegated child run is still running in the background.",
+      ),
+      childPromptResumeState = OpenCrayPromptResumeState(
+        turnIndex = 0,
+        toolCallCount = 0,
+      ),
+      childPromptCheckpointBoundary = OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST,
+      childPromptCheckpointAtEpochMs = 950L,
+      createdAtEpochMs = 900L,
+      updatedAtEpochMs = 1_100L,
+    )
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
+        """{"type":"final","answer":"README says hello."}""",
+      ),
+    )
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      seededSubAgentHandles = listOf(seededHandle),
+      subAgentExecutionCoordinator = coordinator,
+    )
+    val recoveryTask = AgentTask(
+      id = "detached-recovery-no-start",
+      type = AgentTaskType.SYSTEM,
+      input = "internal:subagent_recovery_wait:child-recovery-idle",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "ALLOW_ALL",
+      ),
+      createdAtEpochMs = 1_000L,
+    )
+
+    val result = runtime.executeDetachedSubAgentRecoveryWait(
+      task = recoveryTask,
+      hooks = runtimeHooks(),
+      agentId = "child-recovery-idle",
+      parentRunId = "run-parent-recovery-idle",
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("background_queued", result.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+    assertTrue(result.stdout.contains("queued to resume"))
+    assertTrue(gateway.requests.isEmpty())
+    assertTrue(
+      coordinator.activeExecution(
+        SubAgentExecutionKey(
+          parentRunId = "run-parent-recovery-idle",
+          agentId = "child-recovery-idle",
+        ),
+      ) == null,
+    )
+  }
+
+  @Test
+  fun detachedRecoveryEnsureStartsExecutionBeforeRecoveryWaitHarvestsIt() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-detached-recovery-ensure").toPath()
+    Files.write(
+      workspaceRoot.resolve("README.md"),
+      "hello".toByteArray(StandardCharsets.UTF_8),
+    )
+    val seededHandle = SubAgentHandleState(
+      agentId = "child-recovery-started",
+      childRunId = "child-run-recovery-started",
+      childTaskId = "child-task-recovery-started",
+      description = "Inspect README",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "run-parent-recovery-started",
+      parentTaskId = "task-parent-recovery-started",
+      parentTurn = 1,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Delegated child run is still running in the background.",
+      ),
+      childPromptResumeState = OpenCrayPromptResumeState(
+        turnIndex = 0,
+        toolCallCount = 0,
+      ),
+      childPromptCheckpointBoundary = OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST,
+      childPromptCheckpointAtEpochMs = 950L,
+      createdAtEpochMs = 900L,
+      updatedAtEpochMs = 1_100L,
+    )
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val childStarted = CountDownLatch(1)
+    val childMayFinish = CountDownLatch(1)
+    var childTurn = 0
+    val gateway = ScriptedGateway { request ->
+      childStarted.countDown()
+      assertTrue(childMayFinish.await(5, TimeUnit.SECONDS))
+      when (childTurn++) {
+        0 -> """{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}"""
+        1 -> """{"type":"final","answer":"README says hello."}"""
+        else -> error("Unexpected detached recovery ensure child turn for ${request.requestId}.")
+      }
+    }
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      seededSubAgentHandles = listOf(seededHandle),
+      subAgentExecutionCoordinator = coordinator,
+    )
+    val recoveryTask = AgentTask(
+      id = "detached-recovery-with-ensure",
+      type = AgentTaskType.SYSTEM,
+      input = "internal:subagent_recovery_wait:child-recovery-started",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "ALLOW_ALL",
+      ),
+      createdAtEpochMs = 1_000L,
+    )
+
+    val startedHandle = runtime.ensureDetachedSubAgentRecoveryExecution(
+      task = recoveryTask,
+      hooks = runtimeHooks(),
+      agentId = "child-recovery-started",
+      parentRunId = "run-parent-recovery-started",
+    )
+
+    assertEquals(SubAgentExecutionState.BACKGROUND_RUNNING, startedHandle?.snapshot?.state)
+    assertTrue(childStarted.await(5, TimeUnit.SECONDS))
+    assertTrue(
+      coordinator.activeExecution(
+        SubAgentExecutionKey(
+          parentRunId = "run-parent-recovery-started",
+          agentId = "child-recovery-started",
+        ),
+      ) != null,
+    )
+
+    val execution = Executors.newSingleThreadExecutor()
+    val resultFuture = execution.submit<ExecutionResult> {
+      runtime.executeDetachedSubAgentRecoveryWait(
+        task = recoveryTask,
+        hooks = runtimeHooks(),
+        agentId = "child-recovery-started",
+        parentRunId = "run-parent-recovery-started",
+      )
+    }
+
+    Thread.sleep(100L)
+    assertFalse(resultFuture.isDone)
+
+    childMayFinish.countDown()
+    val result = resultFuture.get(5, TimeUnit.SECONDS)
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertTrue(result.stdout.contains("README says hello."))
+    assertEquals("completed", result.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+    val completedHandle = coordinator.allHandles().single()
+    assertEquals(SubAgentExecutionState.COMPLETED, completedHandle.snapshot.state)
+    assertEquals(null, coordinator.activeExecution(SubAgentExecutionKey.from(completedHandle)))
+    execution.shutdownNow()
+  }
+
+  @Test
   fun spawnAgentCapturesApprovalContinuationAndApprovedResumeContinuesChild() {
     val workspaceRoot = temporaryFolder.newFolder("subagent-wait-approval").toPath()
     val notesFile = workspaceRoot.resolve("notes.txt")

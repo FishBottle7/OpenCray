@@ -21,6 +21,7 @@ import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.CommandExecutor
 import com.opencray.runtime.HostProcessPythonRuntime
 import com.opencray.runtime.InMemoryAgentTodoStore
+import com.opencray.runtime.ManagedProcessObservationTracker
 import com.opencray.runtime.OpenCrayAgentRuntime
 import com.opencray.runtime.OpenCrayAgentRuntimeConfig
 import com.opencray.runtime.OpenCrayAgentRunEvent
@@ -77,6 +78,7 @@ import com.opencray.runtime.skills.SkillInstallManifestStore
 import com.opencray.runtime.skills.SkillInventoryResolver
 import com.opencray.runtime.skills.SkillPackageManager
 import com.opencray.runtime.subagent.SubAgentExecutionCoordinator
+import com.opencray.runtime.subagent.SubAgentExecutionKey
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
 import com.opencray.runtime.soul.MemoryBackedSoulProfileResolver
@@ -148,6 +150,8 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val promptCheckpointStoresBySession: ConcurrentMap<String, PromptCheckpointStore> =
     ConcurrentHashMap()
   private val processRegistriesBySession: ConcurrentMap<String, AgentProcessRegistry> = ConcurrentHashMap()
+  private val managedProcessObservationTrackersBySession:
+    ConcurrentMap<String, ManagedProcessObservationTracker> = ConcurrentHashMap()
   private val workingStateStoresBySession: ConcurrentMap<String, WorkingStateStore> = ConcurrentHashMap()
   private val transcriptStoresBySession: ConcurrentMap<String, SessionTranscriptStore> = ConcurrentHashMap()
   private val supplementStoresBySession: ConcurrentMap<String, SessionSupplementStore> = ConcurrentHashMap()
@@ -196,11 +200,73 @@ internal class AppAgentSessionTaskRuntimeFactory(
       ?: subAgentHandleStoreForSession(sessionId).retainKnownParentRuns(parentRunIds)
   }
 
+  override fun releaseSession(sessionId: String) {
+    todoStoresBySession.remove(sessionId)
+    promptCheckpointStoresBySession.remove(sessionId)
+    processRegistriesBySession.remove(sessionId)
+    managedProcessObservationTrackersBySession.remove(sessionId)
+    workingStateStoresBySession.remove(sessionId)
+    transcriptStoresBySession.remove(sessionId)
+    supplementStoresBySession.remove(sessionId)
+    compactionStoresBySession.remove(sessionId)
+    subAgentHandleStoresBySession.remove(sessionId)
+    subAgentExecutionCoordinatorsBySession.remove(sessionId)
+  }
+
+  override fun executeDetachedControlTask(
+    sessionId: String,
+    task: AgentTask,
+    hooks: RuntimeExecutionHooks,
+    eventSink: OpenCrayAgentRuntimeEventSink,
+  ): ExecutionResult? {
+    val detachedControlTask = detachedControlTaskSpec(task) ?: return null
+    return executeTask(
+      sessionId = sessionId,
+      task = task,
+      hooks = hooks,
+      eventSink = eventSink,
+      detachedControlTask = detachedControlTask,
+    )
+  }
+
+  override fun executeDetachedSubAgentRecoveryTask(
+    sessionId: String,
+    task: AgentTask,
+    hooks: RuntimeExecutionHooks,
+    eventSink: OpenCrayAgentRuntimeEventSink,
+    agentId: String,
+    parentRunId: String,
+  ): ExecutionResult =
+    executeTask(
+      sessionId = sessionId,
+      task = task,
+      hooks = hooks,
+      eventSink = eventSink,
+      detachedControlTask = DetachedSubAgentRecoveryWaitTaskSpec(
+        agentId = agentId,
+        parentRunId = parentRunId,
+      ),
+    )
+
+  override fun cancelActiveSubAgentExecution(
+    sessionId: String,
+    agentId: String,
+    parentRunId: String,
+  ): Boolean =
+    subAgentExecutionCoordinatorForSession(sessionId)
+      .cancelActiveExecution(
+        key = SubAgentExecutionKey(
+          parentRunId = parentRunId,
+          agentId = agentId,
+        ),
+      ) != null
+
   private fun executeTask(
     sessionId: String,
     task: AgentTask,
     hooks: RuntimeExecutionHooks,
     eventSink: OpenCrayAgentRuntimeEventSink,
+    detachedControlTask: DetachedControlTaskSpec? = null,
   ): ExecutionResult {
     val llmSettings = llmSettingsProvider().sanitized()
     val safetySettings = safetySettingsProvider().sanitized()
@@ -210,6 +276,12 @@ internal class AppAgentSessionTaskRuntimeFactory(
     val approvedSubAgentResume = approvalGrant?.subAgentApprovalResume
     val rejectedSubAgentResume = approvalRejection?.subAgentApprovalResume
     val requiresLlmConfig = task.type == com.opencray.core.contracts.AgentTaskType.PROMPT ||
+      detachedControlRequiresLlm(
+        sessionId = sessionId,
+        detachedControlTask = detachedControlTask,
+        approvedSubAgentResume = approvedSubAgentResume,
+        rejectedSubAgentResume = rejectedSubAgentResume,
+      ) ||
       directToolCallRequiresLlm(
         sessionId = sessionId,
         task = task,
@@ -230,13 +302,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
 
     val routeProviderId = llmSettings.providerId.ifBlank { "openai-compatible" }
     val routeMetadata = if (requiresLlmConfig) {
-      effectiveLlmRouteMetadata(
-        providerId = routeProviderId,
-        protocol = llmSettings.protocol,
-        model = llmSettings.model,
-        reasoningEffort = llmSettings.reasoningEffort,
-        agentCapability = llmSettings.agentCapability,
-      )
+      effectiveLlmRouteMetadata(settings = llmSettings)
     } else {
       emptyMap()
     }
@@ -308,6 +374,15 @@ internal class AppAgentSessionTaskRuntimeFactory(
       }
     }.orEmpty()
     val workspaceId = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider())
+    val llmMetadata = buildRuntimeLlmMetadata(
+      requiresLlmConfig = requiresLlmConfig,
+      taskMetadata = task.metadata,
+      sessionId = sessionId,
+      nativeWebSearchRunApproved = nativeWebSearchRunApproved,
+      nativeWebSearchSessionApproved = nativeWebSearchSessionApproved,
+      llmSettings = llmSettings,
+      routeMetadata = routeMetadata,
+    )
     val preparedContext = prepareSessionContext(
       sessionId = sessionId,
       workspaceId = workspaceId,
@@ -321,6 +396,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
       memoryRecords = memoryRecords,
       appendTaskInputToTranscript = task.type == com.opencray.core.contracts.AgentTaskType.PROMPT &&
         promptResumeState == null,
+      llmMetadata = llmMetadata,
       liveContextMode = liveContextModeProvider(),
       memoryToolsEnabled = safetySettings.memoryToolsEnabled,
     )
@@ -383,6 +459,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
             null
           },
         ),
+        managedProcessObservationTracker = managedProcessObservationTrackerForSession(sessionId),
       ),
       config = OpenCrayAgentRuntimeConfig(
         maxTurns = safetySettings.maxAgentTurns,
@@ -415,25 +492,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
             emission = emission,
           )
         },
-        llmMetadata = if (requiresLlmConfig) {
-          buildMap {
-            putAll(task.metadata.filterKeys(::isLlmVisibleMetadataKey))
-            put("sessionId", sessionId)
-            put(
-              ProviderNativeWebSearchSupport.LLM_METADATA_RUN_APPROVED,
-              nativeWebSearchRunApproved.toString(),
-            )
-            put(
-              ProviderNativeWebSearchSupport.LLM_METADATA_SESSION_APPROVED,
-              nativeWebSearchSessionApproved.toString(),
-            )
-            put(HOST_METADATA_PROVIDER_ID, llmSettings.providerId)
-            putAll(routeMetadata)
-            putAll(llmSettings.agentCapability.runtimeMetadataOverrides())
-          }
-        } else {
-          mapOf("sessionId" to sessionId)
-        },
+        llmMetadata = llmMetadata,
         llmAuthHeaders = if (requiresLlmConfig) {
           LlmProviderProtocols.authHeaders(
             protocol = llmSettings.protocol,
@@ -449,7 +508,24 @@ internal class AppAgentSessionTaskRuntimeFactory(
         delegate = eventSink,
       ),
     )
-    val result = runtime.execute(task, hooks)
+    val result = when (detachedControlTask) {
+      is DetachedSubAgentRecoveryWaitTaskSpec -> {
+        runtime.ensureDetachedSubAgentRecoveryExecution(
+          task = task,
+          hooks = hooks,
+          agentId = detachedControlTask.agentId,
+          parentRunId = detachedControlTask.parentRunId,
+        )
+        runtime.executeDetachedSubAgentRecoveryWait(
+          task = task,
+          hooks = hooks,
+          agentId = detachedControlTask.agentId,
+          parentRunId = detachedControlTask.parentRunId,
+        )
+      }
+
+      null -> runtime.execute(task, hooks)
+    }
     recordSuccessfulAssistantTurn(
       sessionId = sessionId,
       task = task,
@@ -561,6 +637,32 @@ internal class AppAgentSessionTaskRuntimeFactory(
     }
   }
 
+  private fun detachedControlRequiresLlm(
+    sessionId: String,
+    detachedControlTask: DetachedControlTaskSpec?,
+    approvedSubAgentResume: com.opencray.runtime.subagent.SubAgentApprovalResume?,
+    rejectedSubAgentResume: com.opencray.runtime.subagent.SubAgentApprovalResume?,
+  ): Boolean {
+    val recoveryTask = detachedControlTask as? DetachedSubAgentRecoveryWaitTaskSpec ?: return false
+    val existingHandle = subAgentExecutionCoordinatorForSession(sessionId).currentHandle(
+      com.opencray.runtime.subagent.SubAgentExecutionKey(
+        parentRunId = recoveryTask.parentRunId,
+        agentId = recoveryTask.agentId,
+      ),
+    ) ?: return false
+    val hasApprovalContinuation = approvedSubAgentResume != null || rejectedSubAgentResume != null
+    return when {
+      existingHandle.snapshot.state in setOf(
+        SubAgentExecutionState.COMPLETED,
+        SubAgentExecutionState.CANCELLED,
+        SubAgentExecutionState.FAILED,
+      ) && existingHandle.pendingApprovalResume == null -> false
+
+      existingHandle.pendingApprovalResume != null && !hasApprovalContinuation -> false
+      else -> true
+    }
+  }
+
   private fun directToolNameFrom(taskInput: String): String? = runCatching {
     val payload = replayJson.parseToJsonElement(taskInput) as? JsonObject ?: return null
     (payload["tool_name"] as? JsonPrimitive)
@@ -656,6 +758,13 @@ internal class AppAgentSessionTaskRuntimeFactory(
 
   internal fun processRegistryForSession(sessionId: String): AgentProcessRegistry =
     processRegistriesBySession.computeIfAbsent(sessionId, processRegistryProvider)
+
+  internal fun managedProcessObservationTrackerForSession(
+    sessionId: String,
+  ): ManagedProcessObservationTracker =
+    managedProcessObservationTrackersBySession.computeIfAbsent(sessionId) {
+      ManagedProcessObservationTracker()
+    }
 
   internal fun transcriptStoreForSession(sessionId: String): SessionTranscriptStore =
     transcriptStoresBySession.computeIfAbsent(sessionId, transcriptStoreProvider)
@@ -871,6 +980,34 @@ internal class AppAgentSessionTaskRuntimeFactory(
   internal fun skillCatalogFor() =
     skillCatalogResolver.resolve(skillsRootsProvider())
 
+  private fun buildRuntimeLlmMetadata(
+    requiresLlmConfig: Boolean,
+    taskMetadata: Map<String, String>,
+    sessionId: String,
+    nativeWebSearchRunApproved: Boolean,
+    nativeWebSearchSessionApproved: Boolean,
+    llmSettings: LlmSettingsState,
+    routeMetadata: Map<String, String>,
+  ): Map<String, String> = if (requiresLlmConfig) {
+    buildMap {
+      putAll(taskMetadata.filterKeys(::isLlmVisibleMetadataKey))
+      put("sessionId", sessionId)
+      put(
+        ProviderNativeWebSearchSupport.LLM_METADATA_RUN_APPROVED,
+        nativeWebSearchRunApproved.toString(),
+      )
+      put(
+        ProviderNativeWebSearchSupport.LLM_METADATA_SESSION_APPROVED,
+        nativeWebSearchSessionApproved.toString(),
+      )
+      put(HOST_METADATA_PROVIDER_ID, llmSettings.providerId)
+      putAll(routeMetadata)
+      putAll(llmSettings.agentCapability.runtimeMetadataOverrides())
+    }
+  } else {
+    mapOf("sessionId" to sessionId)
+  }
+
   internal fun prepareSessionContext(
     sessionId: String,
     workspaceId: String?,
@@ -883,6 +1020,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     transcriptStore: SessionTranscriptStore,
     memoryRecords: List<MemoryRecord>,
     appendTaskInputToTranscript: Boolean = taskType == com.opencray.core.contracts.AgentTaskType.PROMPT,
+    llmMetadata: Map<String, String> = emptyMap(),
     liveContextMode: LiveContextMode = LiveContextMode.FULL,
     memoryToolsEnabled: Boolean = safetySettingsProvider().sanitized().memoryToolsEnabled,
   ): PreparedSessionContext {
@@ -911,6 +1049,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
       memoryIngestionCoordinator?.flushBeforeCompaction(
         sessionId = sessionId,
         conversation = transcriptStore.snapshot(),
+        llmMetadata = llmMetadata,
         taskId = taskId,
       )
     } else {
@@ -925,6 +1064,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
       durableCompactionCoordinator.compactIfNeeded(
         transcriptStore = transcriptStore,
         compactionStore = compactionStoreForSession(sessionId),
+        llmMetadata = llmMetadata,
       )
     } else {
       durableCompactionCoordinator.currentContext(compactionStoreForSession(sessionId))

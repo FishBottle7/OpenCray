@@ -40,6 +40,92 @@ enum class ManagedProcessStatus {
 }
 
 @Serializable
+data class ManagedProcessRemoteHandle(
+  val provider: String? = null,
+  val sandboxId: String? = null,
+  val sandboxDomain: String? = null,
+  val sessionId: String? = null,
+  val commandIdKind: String? = null,
+  val commandId: String? = null,
+  val providerHandleKind: String? = null,
+  val stableSelectorKind: String? = null,
+  val stableSelectorValue: String? = null,
+  val liveSelectorKind: String? = null,
+  val liveSelectorValue: String? = null,
+  val remoteWorkspaceRoot: String? = null,
+  val remoteWorkingDirectory: String? = null,
+  val nativeProtocol: String? = null,
+)
+
+@Serializable
+data class ManagedProcessObservationState(
+  val mode: String? = null,
+  val hostEventCount: Long? = null,
+  val hostCursor: String? = null,
+  val stdoutBytes: Long? = null,
+  val stderrBytes: Long? = null,
+  val providerMode: String? = null,
+  val providerEventCount: Long? = null,
+  val providerCursor: String? = null,
+  val providerBackfillSupported: Boolean? = null,
+  val liveObservationSupported: Boolean? = null,
+  val cursorResumeSupported: Boolean? = null,
+  val backfillSupported: Boolean? = null,
+)
+
+@Serializable
+data class ManagedProcessReconnectSeed(
+  val source: String? = null,
+  val providerObservationSeedConsumed: Boolean? = null,
+  val providerObservationSeedState: String? = null,
+  val providerObservationSeedConsumedAtEpochMs: Long? = null,
+  val hostObservationCursor: String? = null,
+  val hostObservationEventCount: Long? = null,
+  val stdoutBytes: Long? = null,
+  val stderrBytes: Long? = null,
+  val providerObservationCursor: String? = null,
+  val providerObservationEventCount: Long? = null,
+)
+
+@Serializable
+data class ManagedProcessReconnectState(
+  val api: String? = null,
+  val source: String? = null,
+  val status: String? = null,
+  val recoveryState: String? = null,
+  val resumeMode: String? = null,
+  val backfillSupported: Boolean? = null,
+  val outputGapRisk: Boolean? = null,
+  val retryable: Boolean? = null,
+  val retryAfterEpochMs: Long? = null,
+  val attemptCount: Int? = null,
+  val httpStatusCode: Int? = null,
+  val selectorKind: String? = null,
+  val selectorValue: String? = null,
+  val selectorSource: String? = null,
+  val lastAttachedAtEpochMs: Long? = null,
+  val lastEventAtEpochMs: Long? = null,
+  val lastEventKind: String? = null,
+  val lastFailureAtEpochMs: Long? = null,
+  val failureStage: String? = null,
+  val failureClass: String? = null,
+  val failureMessage: String? = null,
+  val seed: ManagedProcessReconnectSeed? = null,
+)
+
+@Serializable
+data class ManagedProcessDeliveredObservationState(
+  val mode: String? = null,
+  val cursor: String? = null,
+  val stdoutBytes: Long? = null,
+  val stderrBytes: Long? = null,
+  val providerMode: String? = null,
+  val providerCursor: String? = null,
+  val providerEventCount: Long? = null,
+  val deliveredAtEpochMs: Long? = null,
+)
+
+@Serializable
 data class ManagedProcessSnapshot(
   val processId: String,
   val taskId: String,
@@ -60,6 +146,10 @@ data class ManagedProcessSnapshot(
   val timedOut: Boolean = false,
   val cancelled: Boolean = false,
   val outputLimitExceeded: Boolean = false,
+  val remoteHandle: ManagedProcessRemoteHandle? = null,
+  val observationState: ManagedProcessObservationState? = null,
+  val reconnectState: ManagedProcessReconnectState? = null,
+  val deliveredObservationState: ManagedProcessDeliveredObservationState? = null,
   val metadata: Map<String, String> = emptyMap(),
 ) {
   init {
@@ -92,6 +182,42 @@ interface ReconnectableManagedProcessControllerFactory : ManagedProcessControlle
   fun reconnect(snapshot: ManagedProcessSnapshot): ManagedProcessController?
 }
 
+fun ManagedProcessSnapshot.withNormalizedRemoteState(): ManagedProcessSnapshot {
+  val normalizedRemoteHandle = normalizedRemoteHandle()
+  val normalizedObservationState = normalizedObservationState()
+  val normalizedReconnectState = normalizedReconnectState()
+  val normalizedDeliveredObservationState = normalizedDeliveredObservationState()
+  val normalizedMetadata = metadata.withProjectedDeliveredObservationState(normalizedDeliveredObservationState)
+  if (
+    normalizedRemoteHandle == remoteHandle &&
+    normalizedObservationState == observationState &&
+    normalizedReconnectState == reconnectState &&
+    normalizedDeliveredObservationState == deliveredObservationState &&
+    normalizedMetadata == metadata
+  ) {
+    return this
+  }
+  return copy(
+    remoteHandle = normalizedRemoteHandle,
+    observationState = normalizedObservationState,
+    reconnectState = normalizedReconnectState,
+    deliveredObservationState = normalizedDeliveredObservationState,
+    metadata = normalizedMetadata,
+  )
+}
+
+fun ManagedProcessSnapshot.normalizedRemoteHandle(): ManagedProcessRemoteHandle? =
+  remoteHandle.mergeMissing(inferredRemoteHandleFromMetadata(metadata))
+
+fun ManagedProcessSnapshot.normalizedObservationState(): ManagedProcessObservationState? =
+  observationState.mergeMissing(inferredObservationStateFromMetadata(metadata))
+
+fun ManagedProcessSnapshot.normalizedReconnectState(): ManagedProcessReconnectState? =
+  reconnectState.mergeMissing(inferredReconnectStateFromMetadata(metadata))
+
+fun ManagedProcessSnapshot.normalizedDeliveredObservationState(): ManagedProcessDeliveredObservationState? =
+  deliveredObservationState.mergeMissing(inferredDeliveredObservationStateFromMetadata(metadata))
+
 data class AgentProcessRegistryConfig(
   val maxTrackedProcesses: Int = 16,
 ) {
@@ -110,6 +236,11 @@ interface AgentProcessRegistry {
   fun wait(processId: String, timeoutMs: Long): ManagedProcessSnapshot?
 
   fun terminate(processId: String): ManagedProcessSnapshot?
+
+  fun recordObservationDelivery(
+    processId: String,
+    deliveredObservationState: ManagedProcessDeliveredObservationState?,
+  ) = Unit
 }
 
 internal object ManagedProcessControllerRegistry {
@@ -160,6 +291,8 @@ class InMemoryAgentProcessRegistry(
 ) : AgentProcessRegistry {
   private val lock = Any()
   private val controllersByProcessId = linkedMapOf<String, ManagedProcessController>()
+  private val deliveredObservationStatesByProcessId =
+    linkedMapOf<String, ManagedProcessDeliveredObservationState>()
 
   override fun start(request: ManagedProcessStartRequest): ManagedProcessSnapshot {
     val controller = controllerFactory.start(request)
@@ -170,26 +303,43 @@ class InMemoryAgentProcessRegistry(
       controllersByProcessId[request.processId] = controller
       trimTrackedProcessesLocked()
     }
-    return controller.snapshot()
+    return snapshotWithPersistedDeliveredObservationState(controller.snapshot())
   }
 
   override fun list(): List<ManagedProcessSnapshot> = synchronized(lock) {
     controllersByProcessId.values.toList()
   }.map(ManagedProcessController::snapshot)
+    .map(::snapshotWithPersistedDeliveredObservationState)
     .sortedByDescending(ManagedProcessSnapshot::startedAtEpochMs)
 
   override fun read(processId: String): ManagedProcessSnapshot? = synchronized(lock) {
     controllersByProcessId[processId]
-  }?.snapshot()
+  }?.snapshot()?.let(::snapshotWithPersistedDeliveredObservationState)
 
   override fun wait(processId: String, timeoutMs: Long): ManagedProcessSnapshot? {
     val controller = synchronized(lock) { controllersByProcessId[processId] } ?: return null
-    return controller.await(timeoutMs.coerceAtLeast(0L))
+    return snapshotWithPersistedDeliveredObservationState(controller.await(timeoutMs.coerceAtLeast(0L)))
   }
 
   override fun terminate(processId: String): ManagedProcessSnapshot? {
     val controller = synchronized(lock) { controllersByProcessId[processId] } ?: return null
-    return controller.terminate()
+    return snapshotWithPersistedDeliveredObservationState(controller.terminate())
+  }
+
+  override fun recordObservationDelivery(
+    processId: String,
+    deliveredObservationState: ManagedProcessDeliveredObservationState?,
+  ) {
+    synchronized(lock) {
+      if (processId !in controllersByProcessId) {
+        return
+      }
+      if (deliveredObservationState == null) {
+        deliveredObservationStatesByProcessId.remove(processId)
+      } else {
+        deliveredObservationStatesByProcessId[processId] = deliveredObservationState
+      }
+    }
   }
 
   private fun trimTrackedProcessesLocked() {
@@ -200,7 +350,16 @@ class InMemoryAgentProcessRegistry(
         ?: controllersByProcessId.keys.firstOrNull()
         ?: return
       controllersByProcessId.remove(removableProcessId)
+      deliveredObservationStatesByProcessId.remove(removableProcessId)
     }
+  }
+
+  private fun snapshotWithPersistedDeliveredObservationState(
+    snapshot: ManagedProcessSnapshot,
+  ): ManagedProcessSnapshot = synchronized(lock) {
+    snapshot.withPreservedDeliveredObservationState(
+      deliveredObservationStatesByProcessId[snapshot.processId],
+    )
   }
 }
 
@@ -269,8 +428,12 @@ class FileBackedAgentProcessRegistry(
     val snapshot = controller.await(timeoutMs.coerceAtLeast(0L))
     return synchronized(lock) {
       val existing = loadNormalizedRecordLocked()
+      val persistedSnapshot = existing.snapshots.firstOrNull { persisted ->
+        persisted.processId == processId
+      }
       persistSnapshotsLocked(
-        existing.snapshots.filterNot { persisted -> persisted.processId == processId } + snapshot,
+        existing.snapshots.filterNot { persisted -> persisted.processId == processId } +
+          preserveDeliveredObservationState(snapshot, persistedSnapshot),
       ).firstOrNull { persisted -> persisted.processId == processId }
     }
   }
@@ -291,9 +454,36 @@ class FileBackedAgentProcessRegistry(
     val snapshot = controller.terminate()
     return synchronized(lock) {
       val existing = loadNormalizedRecordLocked()
+      val persistedSnapshot = existing.snapshots.firstOrNull { persisted ->
+        persisted.processId == processId
+      }
       persistSnapshotsLocked(
-        existing.snapshots.filterNot { persisted -> persisted.processId == processId } + snapshot,
+        existing.snapshots.filterNot { persisted -> persisted.processId == processId } +
+          preserveDeliveredObservationState(snapshot, persistedSnapshot),
       ).firstOrNull { persisted -> persisted.processId == processId }
+    }
+  }
+
+  override fun recordObservationDelivery(
+    processId: String,
+    deliveredObservationState: ManagedProcessDeliveredObservationState?,
+  ) {
+    synchronized(lock) {
+      val existing = loadNormalizedRecordLocked()
+      var changed = false
+      val updatedSnapshots = existing.snapshots.map { snapshot ->
+        if (snapshot.processId != processId) {
+          return@map snapshot
+        }
+        val updatedSnapshot = snapshot.copy(
+          deliveredObservationState = deliveredObservationState,
+        ).withNormalizedRemoteState()
+        changed = changed || updatedSnapshot != snapshot
+        updatedSnapshot
+      }
+      if (changed) {
+        persistSnapshotsLocked(updatedSnapshots)
+      }
     }
   }
 
@@ -302,7 +492,10 @@ class FileBackedAgentProcessRegistry(
     var changed = false
     val syncedSnapshots = existing.snapshots.map { snapshot ->
       val controller = controllerForSnapshot(snapshot) ?: return@map snapshot
-      val liveSnapshot = controller.snapshot()
+      val liveSnapshot = preserveDeliveredObservationState(
+        controller.snapshot(),
+        snapshot,
+      )
       if (liveSnapshot != snapshot) {
         changed = true
       }
@@ -373,7 +566,9 @@ class FileBackedAgentProcessRegistry(
       )
       .forEach { snapshot ->
         if (snapshot.processId !in orderedByProcessId) {
-          orderedByProcessId[snapshot.processId] = repairRestoredRunningSnapshot(snapshot)
+          orderedByProcessId[snapshot.processId] = repairRestoredRunningSnapshot(
+            snapshot.withNormalizedRemoteState(),
+          )
         }
       }
     val retained = orderedByProcessId.values.toMutableList()
@@ -393,7 +588,10 @@ class FileBackedAgentProcessRegistry(
       return snapshot
     }
     controllerForSnapshot(snapshot)?.let { controller ->
-      return controller.snapshot()
+      return preserveDeliveredObservationState(
+        controller.snapshot(),
+        snapshot,
+      )
     }
     val repairedAt = maxOf(clock(), snapshot.updatedAtEpochMs)
     return snapshot.copy(
@@ -442,12 +640,27 @@ class FileBackedAgentProcessRegistry(
   ): ManagedProcessController? =
     controllerForProcessId(snapshot.processId)
       ?.takeUnless { controller ->
-        shouldReplaceRetryableReconnectController(
-          persistedSnapshot = snapshot,
-          liveSnapshot = controller.snapshot(),
-        )
+        snapshotRequestsRetryableReconnectReplacement(snapshot) &&
+          shouldReplaceRetryableReconnectController(
+            persistedSnapshot = snapshot,
+            liveSnapshot = controller.snapshot(),
+          )
       }
       ?: reconnectControllerForSnapshot(snapshot)
+
+  private fun snapshotRequestsRetryableReconnectReplacement(
+    snapshot: ManagedProcessSnapshot,
+  ): Boolean {
+    val normalizedSnapshot = snapshot.withNormalizedRemoteState()
+    val reconnectState = normalizedSnapshot.reconnectState
+    val recoveryState =
+      reconnectState?.recoveryState
+        ?: normalizedSnapshot.metadata["sandboxCommandReconnectRecoveryState"]
+    val retryable =
+      reconnectState?.retryable
+        ?: normalizedSnapshot.metadata["sandboxCommandReconnectRetryable"] == "true"
+    return recoveryState == "retry_scheduled" || (recoveryState == null && retryable == true)
+  }
 
   private fun shouldReplaceRetryableReconnectController(
     persistedSnapshot: ManagedProcessSnapshot,
@@ -459,19 +672,42 @@ class FileBackedAgentProcessRegistry(
     if (liveSnapshot.status != ManagedProcessStatus.RUNNING) {
       return false
     }
-    val reconnectRecoveryState = liveSnapshot.metadata["sandboxCommandReconnectRecoveryState"]
+    val normalizedPersistedSnapshot = persistedSnapshot.withNormalizedRemoteState()
+    val normalizedLiveSnapshot = liveSnapshot.withNormalizedRemoteState()
+    val persistedReconnectState = normalizedPersistedSnapshot.reconnectState
+    val reconnectState = normalizedLiveSnapshot.reconnectState
+    val persistedAttemptCount =
+      persistedReconnectState?.attemptCount
+        ?: normalizedPersistedSnapshot.metadata["sandboxCommandReconnectAttemptCount"]?.toIntOrNull()
+    val liveAttemptCount =
+      reconnectState?.attemptCount
+        ?: normalizedLiveSnapshot.metadata["sandboxCommandReconnectAttemptCount"]?.toIntOrNull()
+    if (
+      persistedAttemptCount != null &&
+      liveAttemptCount != null &&
+      liveAttemptCount > persistedAttemptCount
+    ) {
+      return false
+    }
+    val reconnectRecoveryState =
+      reconnectState?.recoveryState
+        ?: normalizedLiveSnapshot.metadata["sandboxCommandReconnectRecoveryState"]
     val retryScheduled =
       reconnectRecoveryState == "retry_scheduled" ||
         (
           reconnectRecoveryState == null &&
-            liveSnapshot.metadata["sandboxCommandReconnectRetryable"] == "true"
+            (
+              reconnectState?.retryable == true ||
+                normalizedLiveSnapshot.metadata["sandboxCommandReconnectRetryable"] == "true"
+              )
           )
     if (!retryScheduled) {
       return false
     }
-    val retryAfterEpochMs = liveSnapshot.metadata["sandboxCommandReconnectRetryAfterEpochMs"]
-      ?.toLongOrNull()
-      ?: return true
+    val retryAfterEpochMs =
+      reconnectState?.retryAfterEpochMs
+        ?: normalizedLiveSnapshot.metadata["sandboxCommandReconnectRetryAfterEpochMs"]?.toLongOrNull()
+        ?: return true
     return clock() >= retryAfterEpochMs
   }
 
@@ -491,6 +727,13 @@ class FileBackedAgentProcessRegistry(
     return controller
   }
 
+  private fun preserveDeliveredObservationState(
+    liveSnapshot: ManagedProcessSnapshot,
+    persistedSnapshot: ManagedProcessSnapshot?,
+  ): ManagedProcessSnapshot = liveSnapshot.withPreservedDeliveredObservationState(
+    persistedSnapshot?.deliveredObservationState,
+  )
+
   @Serializable
   private data class ManagedProcessRegistryRecord(
     val schemaVersion: Int = PersistenceSchemaVersion.CURRENT,
@@ -504,3 +747,462 @@ class FileBackedAgentProcessRegistry(
     const val ERROR_INTERRUPTED_ON_RESTORE: String = "PROCESS_INTERRUPTED_ON_RESTORE"
   }
 }
+
+private fun inferredRemoteHandleFromMetadata(
+  metadata: Map<String, String>,
+): ManagedProcessRemoteHandle? {
+  val provider = metadata.optionalString("sandboxProvider")
+  val sandboxId = metadata.optionalString("sandboxId")
+  val sandboxDomain = metadata.optionalString("sandboxDomain")
+  val sessionId = metadata.optionalString("sandboxSessionId")
+  val commandIdKind = metadata.optionalString("sandboxCommandIdKind")
+    ?: metadata.optionalString("sandboxCommandProviderStableSelectorKind")
+  val commandId = metadata.optionalString("sandboxCommandId")
+    ?: metadata.optionalString("sandboxCommandProviderStableSelectorValue")
+  val providerHandleKind = metadata.optionalString("sandboxCommandProviderHandleKind")
+  val stableSelectorKind = metadata.optionalString("sandboxCommandProviderStableSelectorKind")
+  val stableSelectorValue = metadata.optionalString("sandboxCommandProviderStableSelectorValue")
+  val liveSelectorKind = metadata.optionalString("sandboxCommandProviderLiveSelectorKind")
+  val liveSelectorValue = metadata.optionalString("sandboxCommandProviderLiveSelectorValue")
+  val remoteWorkspaceRoot = metadata.optionalString("remoteWorkspaceRoot")
+  val remoteWorkingDirectory = metadata.optionalString("remoteWorkingDirectory")
+  val nativeProtocol = metadata.optionalString("sandboxCommandNativeProtocol")
+  if (
+    provider == null &&
+    sandboxId == null &&
+    sandboxDomain == null &&
+    sessionId == null &&
+    commandIdKind == null &&
+    commandId == null &&
+    providerHandleKind == null &&
+    stableSelectorKind == null &&
+    stableSelectorValue == null &&
+    liveSelectorKind == null &&
+    liveSelectorValue == null &&
+    remoteWorkspaceRoot == null &&
+    remoteWorkingDirectory == null &&
+    nativeProtocol == null
+  ) {
+    return null
+  }
+  return ManagedProcessRemoteHandle(
+    provider = provider,
+    sandboxId = sandboxId,
+    sandboxDomain = sandboxDomain,
+    sessionId = sessionId,
+    commandIdKind = commandIdKind,
+    commandId = commandId,
+    providerHandleKind = providerHandleKind,
+    stableSelectorKind = stableSelectorKind,
+    stableSelectorValue = stableSelectorValue,
+    liveSelectorKind = liveSelectorKind,
+    liveSelectorValue = liveSelectorValue,
+    remoteWorkspaceRoot = remoteWorkspaceRoot,
+    remoteWorkingDirectory = remoteWorkingDirectory,
+    nativeProtocol = nativeProtocol,
+  )
+}
+
+private fun inferredObservationStateFromMetadata(
+  metadata: Map<String, String>,
+): ManagedProcessObservationState? {
+  val mode = metadata.optionalString("sandboxCommandObservationMode")
+  val hostEventCount = metadata.optionalLong("sandboxCommandObservationEventCount")
+  val hostCursor = metadata.optionalString("sandboxCommandObservationCursor")
+  val stdoutBytes = metadata.optionalLong("sandboxCommandObservationStdoutBytes")
+  val stderrBytes = metadata.optionalLong("sandboxCommandObservationStderrBytes")
+  val providerMode = metadata.optionalString("sandboxCommandProviderObservationMode")
+  val providerEventCount = metadata.optionalLong("sandboxCommandProviderObservationEventCount")
+  val providerCursor = metadata.optionalString("sandboxCommandProviderObservationCursor")
+  val providerBackfillSupported = metadata.optionalBoolean("sandboxCommandProviderObservationBackfillSupported")
+  val liveObservationSupported = metadata.optionalBoolean("sandboxCommandSupportsManagedProcessLiveObservation")
+  val cursorResumeSupported = metadata.optionalBoolean("sandboxCommandSupportsManagedProcessObservationCursorResume")
+  val backfillSupported = metadata.optionalBoolean("sandboxCommandSupportsManagedProcessObservationBackfill")
+  if (
+    mode == null &&
+    hostEventCount == null &&
+    hostCursor == null &&
+    stdoutBytes == null &&
+    stderrBytes == null &&
+    providerMode == null &&
+    providerEventCount == null &&
+    providerCursor == null &&
+    providerBackfillSupported == null &&
+    liveObservationSupported == null &&
+    cursorResumeSupported == null &&
+    backfillSupported == null
+  ) {
+    return null
+  }
+  return ManagedProcessObservationState(
+    mode = mode,
+    hostEventCount = hostEventCount,
+    hostCursor = hostCursor,
+    stdoutBytes = stdoutBytes,
+    stderrBytes = stderrBytes,
+    providerMode = providerMode,
+    providerEventCount = providerEventCount,
+    providerCursor = providerCursor,
+    providerBackfillSupported = providerBackfillSupported,
+    liveObservationSupported = liveObservationSupported,
+    cursorResumeSupported = cursorResumeSupported,
+    backfillSupported = backfillSupported,
+  )
+}
+
+private fun inferredReconnectSeedFromMetadata(
+  metadata: Map<String, String>,
+): ManagedProcessReconnectSeed? {
+  val source = metadata.optionalString("sandboxCommandReconnectSeedSource")
+  val providerObservationSeedConsumed =
+    metadata.optionalBoolean("sandboxCommandReconnectProviderObservationSeedConsumed")
+  val providerObservationSeedState =
+    metadata.optionalString("sandboxCommandReconnectProviderObservationSeedState")
+  val providerObservationSeedConsumedAtEpochMs =
+    metadata.optionalLong("sandboxCommandReconnectProviderObservationSeedConsumedAtEpochMs")
+  val hostObservationCursor = metadata.optionalString("sandboxCommandReconnectSeedObservationCursor")
+  val hostObservationEventCount = metadata.optionalLong("sandboxCommandReconnectSeedEventCount")
+  val stdoutBytes = metadata.optionalLong("sandboxCommandReconnectSeededStdoutBytes")
+  val stderrBytes = metadata.optionalLong("sandboxCommandReconnectSeededStderrBytes")
+  val providerObservationCursor =
+    metadata.optionalString("sandboxCommandReconnectSeedProviderObservationCursor")
+  val providerObservationEventCount =
+    metadata.optionalLong("sandboxCommandReconnectSeedProviderObservationEventCount")
+  if (
+    source == null &&
+    providerObservationSeedConsumed == null &&
+    providerObservationSeedState == null &&
+    providerObservationSeedConsumedAtEpochMs == null &&
+    hostObservationCursor == null &&
+    hostObservationEventCount == null &&
+    stdoutBytes == null &&
+    stderrBytes == null &&
+    providerObservationCursor == null &&
+    providerObservationEventCount == null
+  ) {
+    return null
+  }
+  return ManagedProcessReconnectSeed(
+    source = source,
+    providerObservationSeedConsumed = providerObservationSeedConsumed,
+    providerObservationSeedState = providerObservationSeedState,
+    providerObservationSeedConsumedAtEpochMs = providerObservationSeedConsumedAtEpochMs,
+    hostObservationCursor = hostObservationCursor,
+    hostObservationEventCount = hostObservationEventCount,
+    stdoutBytes = stdoutBytes,
+    stderrBytes = stderrBytes,
+    providerObservationCursor = providerObservationCursor,
+    providerObservationEventCount = providerObservationEventCount,
+  )
+}
+
+private fun inferredReconnectStateFromMetadata(
+  metadata: Map<String, String>,
+): ManagedProcessReconnectState? {
+  val seed = inferredReconnectSeedFromMetadata(metadata)
+  val api = metadata.optionalString("sandboxCommandReconnectApi")
+  val source = metadata.optionalString("sandboxCommandReconnectSource")
+  val status = metadata.optionalString("sandboxCommandReconnectStatus")
+  val recoveryState = metadata.optionalString("sandboxCommandReconnectRecoveryState")
+  val resumeMode = metadata.optionalString("sandboxCommandReconnectResumeMode")
+  val backfillSupported = metadata.optionalBoolean("sandboxCommandReconnectBackfillSupported")
+  val outputGapRisk = metadata.optionalBoolean("sandboxCommandReconnectOutputGapRisk")
+  val retryable = metadata.optionalBoolean("sandboxCommandReconnectRetryable")
+  val retryAfterEpochMs = metadata.optionalLong("sandboxCommandReconnectRetryAfterEpochMs")
+  val attemptCount = metadata.optionalInt("sandboxCommandReconnectAttemptCount")
+  val httpStatusCode = metadata.optionalInt("sandboxCommandReconnectHttpStatusCode")
+  val selectorKind = metadata.optionalString("sandboxCommandReconnectSelectorKind")
+  val selectorValue = metadata.optionalString("sandboxCommandReconnectSelectorValue")
+  val selectorSource = metadata.optionalString("sandboxCommandReconnectSelectorSource")
+  val lastAttachedAtEpochMs = metadata.optionalLong("sandboxCommandReconnectLastAttachedAtEpochMs")
+  val lastEventAtEpochMs = metadata.optionalLong("sandboxCommandReconnectLastEventAtEpochMs")
+  val lastEventKind = metadata.optionalString("sandboxCommandReconnectLastEventKind")
+  val lastFailureAtEpochMs = metadata.optionalLong("sandboxCommandReconnectLastFailureAtEpochMs")
+  val failureStage = metadata.optionalString("sandboxCommandReconnectFailureStage")
+  val failureClass = metadata.optionalString("sandboxCommandReconnectFailureClass")
+  val failureMessage = metadata.optionalString("sandboxCommandReconnectFailureMessage")
+  if (
+    api == null &&
+    source == null &&
+    status == null &&
+    recoveryState == null &&
+    resumeMode == null &&
+    backfillSupported == null &&
+    outputGapRisk == null &&
+    retryable == null &&
+    retryAfterEpochMs == null &&
+    attemptCount == null &&
+    httpStatusCode == null &&
+    selectorKind == null &&
+    selectorValue == null &&
+    selectorSource == null &&
+    lastAttachedAtEpochMs == null &&
+    lastEventAtEpochMs == null &&
+    lastEventKind == null &&
+    lastFailureAtEpochMs == null &&
+    failureStage == null &&
+    failureClass == null &&
+    failureMessage == null &&
+    seed == null
+  ) {
+    return null
+  }
+  return ManagedProcessReconnectState(
+    api = api,
+    source = source,
+    status = status,
+    recoveryState = recoveryState,
+    resumeMode = resumeMode,
+    backfillSupported = backfillSupported,
+    outputGapRisk = outputGapRisk,
+    retryable = retryable,
+    retryAfterEpochMs = retryAfterEpochMs,
+    attemptCount = attemptCount,
+    httpStatusCode = httpStatusCode,
+    selectorKind = selectorKind,
+    selectorValue = selectorValue,
+    selectorSource = selectorSource,
+    lastAttachedAtEpochMs = lastAttachedAtEpochMs,
+    lastEventAtEpochMs = lastEventAtEpochMs,
+    lastEventKind = lastEventKind,
+    lastFailureAtEpochMs = lastFailureAtEpochMs,
+    failureStage = failureStage,
+    failureClass = failureClass,
+    failureMessage = failureMessage,
+    seed = seed,
+  )
+}
+
+private fun inferredDeliveredObservationStateFromMetadata(
+  metadata: Map<String, String>,
+): ManagedProcessDeliveredObservationState? {
+  val mode = metadata.optionalString("sandboxCommandLastDeliveredObservationMode")
+  val cursor = metadata.optionalString("sandboxCommandLastDeliveredObservationCursor")
+  val stdoutBytes = metadata.optionalLong("sandboxCommandLastDeliveredStdoutBytes")
+  val stderrBytes = metadata.optionalLong("sandboxCommandLastDeliveredStderrBytes")
+  val providerMode = metadata.optionalString("sandboxCommandLastDeliveredProviderObservationMode")
+  val providerCursor = metadata.optionalString("sandboxCommandLastDeliveredProviderObservationCursor")
+  val providerEventCount = metadata.optionalLong("sandboxCommandLastDeliveredProviderObservationEventCount")
+  val deliveredAtEpochMs = metadata.optionalLong("sandboxCommandLastDeliveredAtEpochMs")
+  if (
+    mode == null &&
+    cursor == null &&
+    stdoutBytes == null &&
+    stderrBytes == null &&
+    providerMode == null &&
+    providerCursor == null &&
+    providerEventCount == null &&
+    deliveredAtEpochMs == null
+  ) {
+    return null
+  }
+  return ManagedProcessDeliveredObservationState(
+    mode = mode,
+    cursor = cursor,
+    stdoutBytes = stdoutBytes,
+    stderrBytes = stderrBytes,
+    providerMode = providerMode,
+    providerCursor = providerCursor,
+    providerEventCount = providerEventCount,
+    deliveredAtEpochMs = deliveredAtEpochMs,
+  )
+}
+
+private fun ManagedProcessRemoteHandle?.mergeMissing(
+  inferred: ManagedProcessRemoteHandle?,
+): ManagedProcessRemoteHandle? {
+  if (this == null) {
+    return inferred
+  }
+  if (inferred == null) {
+    return this
+  }
+  return copy(
+    provider = provider ?: inferred.provider,
+    sandboxId = sandboxId ?: inferred.sandboxId,
+    sandboxDomain = sandboxDomain ?: inferred.sandboxDomain,
+    sessionId = sessionId ?: inferred.sessionId,
+    commandIdKind = commandIdKind ?: inferred.commandIdKind,
+    commandId = commandId ?: inferred.commandId,
+    providerHandleKind = providerHandleKind ?: inferred.providerHandleKind,
+    stableSelectorKind = stableSelectorKind ?: inferred.stableSelectorKind,
+    stableSelectorValue = stableSelectorValue ?: inferred.stableSelectorValue,
+    liveSelectorKind = liveSelectorKind ?: inferred.liveSelectorKind,
+    liveSelectorValue = liveSelectorValue ?: inferred.liveSelectorValue,
+    remoteWorkspaceRoot = remoteWorkspaceRoot ?: inferred.remoteWorkspaceRoot,
+    remoteWorkingDirectory = remoteWorkingDirectory ?: inferred.remoteWorkingDirectory,
+    nativeProtocol = nativeProtocol ?: inferred.nativeProtocol,
+  )
+}
+
+private fun ManagedProcessObservationState?.mergeMissing(
+  inferred: ManagedProcessObservationState?,
+): ManagedProcessObservationState? {
+  if (this == null) {
+    return inferred
+  }
+  if (inferred == null) {
+    return this
+  }
+  return copy(
+    mode = mode ?: inferred.mode,
+    hostEventCount = hostEventCount ?: inferred.hostEventCount,
+    hostCursor = hostCursor ?: inferred.hostCursor,
+    stdoutBytes = stdoutBytes ?: inferred.stdoutBytes,
+    stderrBytes = stderrBytes ?: inferred.stderrBytes,
+    providerMode = providerMode ?: inferred.providerMode,
+    providerEventCount = providerEventCount ?: inferred.providerEventCount,
+    providerCursor = providerCursor ?: inferred.providerCursor,
+    providerBackfillSupported = providerBackfillSupported ?: inferred.providerBackfillSupported,
+    liveObservationSupported = liveObservationSupported ?: inferred.liveObservationSupported,
+    cursorResumeSupported = cursorResumeSupported ?: inferred.cursorResumeSupported,
+    backfillSupported = backfillSupported ?: inferred.backfillSupported,
+  )
+}
+
+private fun ManagedProcessReconnectSeed?.mergeMissing(
+  inferred: ManagedProcessReconnectSeed?,
+): ManagedProcessReconnectSeed? {
+  if (this == null) {
+    return inferred
+  }
+  if (inferred == null) {
+    return this
+  }
+  return copy(
+    source = source ?: inferred.source,
+    providerObservationSeedConsumed =
+      providerObservationSeedConsumed ?: inferred.providerObservationSeedConsumed,
+    providerObservationSeedState = providerObservationSeedState ?: inferred.providerObservationSeedState,
+    providerObservationSeedConsumedAtEpochMs =
+      providerObservationSeedConsumedAtEpochMs ?: inferred.providerObservationSeedConsumedAtEpochMs,
+    hostObservationCursor = hostObservationCursor ?: inferred.hostObservationCursor,
+    hostObservationEventCount = hostObservationEventCount ?: inferred.hostObservationEventCount,
+    stdoutBytes = stdoutBytes ?: inferred.stdoutBytes,
+    stderrBytes = stderrBytes ?: inferred.stderrBytes,
+    providerObservationCursor = providerObservationCursor ?: inferred.providerObservationCursor,
+    providerObservationEventCount = providerObservationEventCount ?: inferred.providerObservationEventCount,
+  )
+}
+
+private fun ManagedProcessReconnectState?.mergeMissing(
+  inferred: ManagedProcessReconnectState?,
+): ManagedProcessReconnectState? {
+  if (this == null) {
+    return inferred
+  }
+  if (inferred == null) {
+    return this
+  }
+  return copy(
+    api = api ?: inferred.api,
+    source = source ?: inferred.source,
+    status = status ?: inferred.status,
+    recoveryState = recoveryState ?: inferred.recoveryState,
+    resumeMode = resumeMode ?: inferred.resumeMode,
+    backfillSupported = backfillSupported ?: inferred.backfillSupported,
+    outputGapRisk = outputGapRisk ?: inferred.outputGapRisk,
+    retryable = retryable ?: inferred.retryable,
+    retryAfterEpochMs = retryAfterEpochMs ?: inferred.retryAfterEpochMs,
+    attemptCount = attemptCount ?: inferred.attemptCount,
+    httpStatusCode = httpStatusCode ?: inferred.httpStatusCode,
+    selectorKind = selectorKind ?: inferred.selectorKind,
+    selectorValue = selectorValue ?: inferred.selectorValue,
+    selectorSource = selectorSource ?: inferred.selectorSource,
+    lastAttachedAtEpochMs = lastAttachedAtEpochMs ?: inferred.lastAttachedAtEpochMs,
+    lastEventAtEpochMs = lastEventAtEpochMs ?: inferred.lastEventAtEpochMs,
+    lastEventKind = lastEventKind ?: inferred.lastEventKind,
+    lastFailureAtEpochMs = lastFailureAtEpochMs ?: inferred.lastFailureAtEpochMs,
+    failureStage = failureStage ?: inferred.failureStage,
+    failureClass = failureClass ?: inferred.failureClass,
+    failureMessage = failureMessage ?: inferred.failureMessage,
+    seed = seed.mergeMissing(inferred.seed),
+  )
+}
+
+private fun ManagedProcessDeliveredObservationState?.mergeMissing(
+  inferred: ManagedProcessDeliveredObservationState?,
+): ManagedProcessDeliveredObservationState? {
+  if (this == null) {
+    return inferred
+  }
+  if (inferred == null) {
+    return this
+  }
+  return copy(
+    mode = mode ?: inferred.mode,
+    cursor = cursor ?: inferred.cursor,
+    stdoutBytes = stdoutBytes ?: inferred.stdoutBytes,
+    stderrBytes = stderrBytes ?: inferred.stderrBytes,
+    providerMode = providerMode ?: inferred.providerMode,
+    providerCursor = providerCursor ?: inferred.providerCursor,
+    providerEventCount = providerEventCount ?: inferred.providerEventCount,
+    deliveredAtEpochMs = deliveredAtEpochMs ?: inferred.deliveredAtEpochMs,
+  )
+}
+
+private fun ManagedProcessSnapshot.withPreservedDeliveredObservationState(
+  persisted: ManagedProcessDeliveredObservationState?,
+): ManagedProcessSnapshot {
+  val mergedState = deliveredObservationState.mergeMissing(persisted)
+  if (mergedState == deliveredObservationState) {
+    return this
+  }
+  return copy(deliveredObservationState = mergedState).withNormalizedRemoteState()
+}
+
+private fun Map<String, String>.withProjectedDeliveredObservationState(
+  deliveredObservationState: ManagedProcessDeliveredObservationState?,
+): Map<String, String> {
+  val projected = LinkedHashMap(this)
+  MANAGED_PROCESS_DELIVERED_OBSERVATION_METADATA_KEYS.forEach(projected::remove)
+  deliveredObservationState?.mode?.let { mode ->
+    projected["sandboxCommandLastDeliveredObservationMode"] = mode
+  }
+  deliveredObservationState?.cursor?.let { cursor ->
+    projected["sandboxCommandLastDeliveredObservationCursor"] = cursor
+  }
+  deliveredObservationState?.stdoutBytes?.let { stdoutBytes ->
+    projected["sandboxCommandLastDeliveredStdoutBytes"] = stdoutBytes.toString()
+  }
+  deliveredObservationState?.stderrBytes?.let { stderrBytes ->
+    projected["sandboxCommandLastDeliveredStderrBytes"] = stderrBytes.toString()
+  }
+  deliveredObservationState?.providerMode?.let { providerMode ->
+    projected["sandboxCommandLastDeliveredProviderObservationMode"] = providerMode
+  }
+  deliveredObservationState?.providerCursor?.let { providerCursor ->
+    projected["sandboxCommandLastDeliveredProviderObservationCursor"] = providerCursor
+  }
+  deliveredObservationState?.providerEventCount?.let { providerEventCount ->
+    projected["sandboxCommandLastDeliveredProviderObservationEventCount"] =
+      providerEventCount.toString()
+  }
+  deliveredObservationState?.deliveredAtEpochMs?.let { deliveredAtEpochMs ->
+    projected["sandboxCommandLastDeliveredAtEpochMs"] = deliveredAtEpochMs.toString()
+  }
+  return projected
+}
+
+private val MANAGED_PROCESS_DELIVERED_OBSERVATION_METADATA_KEYS: Set<String> = setOf(
+  "sandboxCommandLastDeliveredObservationMode",
+  "sandboxCommandLastDeliveredObservationCursor",
+  "sandboxCommandLastDeliveredStdoutBytes",
+  "sandboxCommandLastDeliveredStderrBytes",
+  "sandboxCommandLastDeliveredProviderObservationMode",
+  "sandboxCommandLastDeliveredProviderObservationCursor",
+  "sandboxCommandLastDeliveredProviderObservationEventCount",
+  "sandboxCommandLastDeliveredAtEpochMs",
+)
+
+private fun Map<String, String>.optionalString(key: String): String? =
+  get(key)?.trim()?.takeIf(String::isNotBlank)
+
+private fun Map<String, String>.optionalLong(key: String): Long? =
+  optionalString(key)?.toLongOrNull()
+
+private fun Map<String, String>.optionalInt(key: String): Int? =
+  optionalString(key)?.toIntOrNull()
+
+private fun Map<String, String>.optionalBoolean(key: String): Boolean? =
+  optionalString(key)?.toBooleanStrictOrNull()

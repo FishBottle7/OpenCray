@@ -2,6 +2,8 @@ package com.opencray.runtime.compaction
 
 import com.opencray.runtime.context.CompactionPolicy
 import com.opencray.runtime.context.CompactionSummary
+import com.opencray.runtime.context.ContextPruner
+import com.opencray.runtime.context.ReplayPressureEvaluator
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.TranscriptWindowBuilder
 import com.opencray.runtime.session.SessionTranscriptStore
@@ -113,8 +115,12 @@ data class DurableCompactionPolicy(
     require(maxRenderedChars >= 128) { "DurableCompactionPolicy maxRenderedChars must be >= 128." }
   }
 
-  fun shouldCompact(omittedMessages: List<RuntimeConversationMessage>): Boolean =
-    omittedMessages.size >= minOmittedMessages
+  fun shouldCompact(
+    omittedMessages: List<RuntimeConversationMessage>,
+    replayPressure: com.opencray.runtime.context.ReplayPressureSnapshot,
+  ): Boolean =
+    omittedMessages.size >= minOmittedMessages &&
+      replayPressure.tokenThresholdTriggered
 
   fun append(
     existing: DurableCompactionState,
@@ -206,20 +212,27 @@ class InMemorySessionCompactionStore : SessionCompactionStore {
 }
 
 class DurableCompactionCoordinator(
+  private val contextPruner: ContextPruner = ContextPruner(),
   private val transcriptWindowBuilder: TranscriptWindowBuilder = TranscriptWindowBuilder(),
   private val compactionPolicy: CompactionPolicy = CompactionPolicy(),
   private val durableCompactionPolicy: DurableCompactionPolicy = DurableCompactionPolicy(),
+  private val replayPressureEvaluator: ReplayPressureEvaluator = ReplayPressureEvaluator(),
   private val renderer: DurableCompactionRenderer = DurableCompactionRenderer(durableCompactionPolicy),
   private val clock: () -> Long = System::currentTimeMillis,
 ) {
   fun compactIfNeeded(
     transcriptStore: SessionTranscriptStore,
     compactionStore: SessionCompactionStore,
+    llmMetadata: Map<String, String> = emptyMap(),
   ): DurableCompactionContext {
     val conversation = transcriptStore.snapshot()
     val selection = transcriptWindowBuilder.buildSelection(conversation)
+    val replayPressure = replayPressureEvaluator.evaluate(
+      conversation = contextPruner.prune(conversation).messages,
+      llmMetadata = llmMetadata,
+    )
     val currentState = compactionStore.load()
-    if (!durableCompactionPolicy.shouldCompact(selection.omittedMessages)) {
+    if (!durableCompactionPolicy.shouldCompact(selection.omittedMessages, replayPressure)) {
       return toContext(
         rendered = renderer.render(currentState),
         compactedThisRun = false,

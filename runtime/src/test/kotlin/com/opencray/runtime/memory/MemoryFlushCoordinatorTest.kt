@@ -10,6 +10,7 @@ import com.opencray.runtime.context.RuntimeConversationToolCall
 import com.opencray.runtime.context.RuntimeConversationToolResult
 import com.opencray.runtime.context.TranscriptWindowBuilder
 import com.opencray.runtime.context.TranscriptWindowConfig
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -60,6 +61,7 @@ class MemoryFlushCoordinatorTest {
         ),
         RuntimeConversationMessage(RuntimeConversationRole.USER, "Latest live turn."),
       ),
+      llmMetadata = mapOf("context_window_tokens" to "64"),
       taskId = "task-1",
     )
 
@@ -67,6 +69,41 @@ class MemoryFlushCoordinatorTest {
     assertEquals(1, summary.writtenRecords.size)
     assertEquals("Project uses Gradle Kotlin DSL", summary.writtenRecords.single().content)
     assertEquals("tool_observation", summary.writtenRecords.single().extensions[MemoryRecordExtensionKeys.SOURCE])
+  }
+
+  @Test
+  fun flushBeforeCompactionWaitsForReplayTokenPressure() {
+    val store = InMemoryMemoryStore()
+    val coordinator = MemoryFlushCoordinator(
+      contextPruner = ContextPruner(),
+      transcriptWindowBuilder = TranscriptWindowBuilder(
+        TranscriptWindowConfig(
+          maxMessages = 1,
+          maxCharsPerMessage = 240,
+        ),
+      ),
+      policy = MemoryFlushPolicy(
+        minOmittedMessages = 1,
+        minOmittedChars = 120,
+      ),
+      writer = MemoryWriter(store = store),
+    )
+
+    val summary = coordinator.flushBeforeCompaction(
+      sessionId = "session-1",
+      workspaceId = "workspace-main",
+      conversation = listOf(
+        RuntimeConversationMessage(RuntimeConversationRole.USER, "Capture the project fact."),
+        RuntimeConversationMessage(RuntimeConversationRole.ASSISTANT, "Assistant reply that would have been omitted."),
+        RuntimeConversationMessage(RuntimeConversationRole.USER, "Latest live turn."),
+      ),
+      llmMetadata = mapOf("context_window_tokens" to "4096"),
+      taskId = "task-1",
+    )
+
+    assertFalse(summary.wasWritten)
+    assertEquals(MemoryFlushOutcome.NO_PRESSURE, summary.trace.outcome)
+    assertTrue(store.list().isEmpty())
   }
 
   private class InMemoryMemoryStore : MemoryStore {

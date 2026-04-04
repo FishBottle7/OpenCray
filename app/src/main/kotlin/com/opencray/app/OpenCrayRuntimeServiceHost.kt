@@ -21,10 +21,9 @@ import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
+import com.opencray.runtime.subagent.SubAgentMetadataKeys
 import java.util.Locale
 import java.util.UUID
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import org.opencray.app.R
 
 internal data class RuntimeServiceLifecycleDescriptor(
@@ -294,6 +293,27 @@ internal interface OpenCrayRuntimeSessionAccess {
   fun retainKnownSubAgentParentRuns(parentRunIds: Set<String>) = Unit
 
   fun listDetachedControlTasks(): List<AgentTask> = emptyList()
+
+  fun submitDetachedSubAgentRecoveryTask(
+    agentId: String,
+    parentRunId: String,
+    taskId: String,
+    createdAtEpochMs: Long,
+    submissionSource: String,
+  ): AgentRunSubmission = submitDetachedControlTask(
+    detachedSubAgentRecoveryWaitTask(
+      sessionId = sessionId,
+      agentId = agentId,
+      parentRunId = parentRunId,
+      taskId = taskId,
+      createdAtEpochMs = createdAtEpochMs,
+      metadata = HostRuntimeLifecycleDescriptor().taskMetadata(
+        submissionSource = submissionSource,
+      ),
+    ),
+  )
+
+  fun ensureRecoverableDetachedSubAgentTasks(): Int = 0
 }
 
 internal interface OpenCrayRuntimeHostAccess {
@@ -417,6 +437,23 @@ private class AgentSessionHandleRuntimeSessionAccess(
 
   override fun listDetachedControlTasks(): List<AgentTask> =
     delegate.listDetachedControlTasks()
+
+  override fun submitDetachedSubAgentRecoveryTask(
+    agentId: String,
+    parentRunId: String,
+    taskId: String,
+    createdAtEpochMs: Long,
+    submissionSource: String,
+  ): AgentRunSubmission = delegate.submitDetachedSubAgentRecoveryTask(
+    agentId = agentId,
+    parentRunId = parentRunId,
+    taskId = taskId,
+    createdAtEpochMs = createdAtEpochMs,
+    submissionSource = submissionSource,
+  )
+
+  override fun ensureRecoverableDetachedSubAgentTasks(): Int =
+    delegate.ensureRecoverableDetachedSubAgentTasks()
 }
 
 internal class DefaultOpenCrayRuntimeHostAccess(
@@ -549,12 +586,10 @@ internal data class RuntimeServiceInterruptedRunRepairResult(
   val repairedSessionIds: List<String>,
 )
 
-private const val SUBAGENT_RECOVERY_ALLOW_REASON_CODE: String =
-  "RUNTIME_SERVICE_SUBAGENT_RECOVERY_ALLOW"
-private const val METADATA_SUBAGENT_RECOVERY_AGENT_ID: String =
-  "_host.subagentRecoveryAgentId"
-private const val METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID: String =
-  "_host.subagentRecoveryParentRunId"
+private val EXPLICIT_SUBAGENT_HANDLE_CONTROL_TOOLS: Set<String> = setOf(
+  "spawn_agent",
+  "wait_agent",
+)
 
 internal object OpenCrayRuntimeServiceHostRegistry {
   @Volatile
@@ -653,100 +688,8 @@ private fun createOpenCrayRuntimeServiceHost(
 
 private fun submitRecoverableSubAgentTasksForSession(
   session: OpenCrayRuntimeSessionAccess,
-  lifecycleDescriptor: HostRuntimeLifecycleDescriptor,
 ) {
-  val activeParentRunIds = session.listRuns()
-    .filter(AgentRunSnapshot::isActive)
-    .map(AgentRunSnapshot::runId)
-    .toSet()
-  val pendingRecoveryKeys = session.snapshot().tasks
-    .asSequence()
-    .filter { taskSnapshot ->
-      taskSnapshot.lifecycleState != QueueTaskLifecycleState.COMPLETED &&
-        taskSnapshot.lifecycleState != QueueTaskLifecycleState.CANCELLED &&
-        taskSnapshot.lifecycleState != QueueTaskLifecycleState.FAILED &&
-        taskSnapshot.task.metadata[RunLifecycleMetadataKeys.SUBMISSION_SOURCE] ==
-        RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY
-    }
-    .mapNotNull { taskSnapshot ->
-      val agentId = taskSnapshot.task.metadata[METADATA_SUBAGENT_RECOVERY_AGENT_ID]
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-      val parentRunId = taskSnapshot.task.metadata[METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID]
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-      if (agentId == null || parentRunId == null) {
-        null
-      } else {
-        parentRunId to agentId
-      }
-    }
-    .toSet()
-  val pendingDetachedRecoveryKeys = session.listDetachedControlTasks()
-    .asSequence()
-    .filter { task ->
-      task.metadata[RunLifecycleMetadataKeys.SUBMISSION_SOURCE] ==
-        RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY
-    }
-    .mapNotNull { task ->
-      val agentId = task.metadata[METADATA_SUBAGENT_RECOVERY_AGENT_ID]
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-      val parentRunId = task.metadata[METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID]
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-      if (agentId == null || parentRunId == null) {
-        null
-      } else {
-        parentRunId to agentId
-      }
-    }
-    .toSet()
-  val resumableHandles = session.listSubAgentHandles().filter { handle ->
-    handle.snapshot.state == SubAgentExecutionState.BACKGROUND_QUEUED &&
-      handle.pendingApprovalResume == null &&
-      handle.parentRunId !in activeParentRunIds &&
-      (handle.parentRunId to handle.agentId) !in pendingRecoveryKeys &&
-      (handle.parentRunId to handle.agentId) !in pendingDetachedRecoveryKeys
-  }
-  if (resumableHandles.isEmpty()) {
-    return
-  }
-  resumableHandles.forEach { handle ->
-    val now = System.currentTimeMillis()
-    val taskId = "subagent-recovery-${session.sessionId}-${handle.agentId}-${UUID.randomUUID().toString().take(8)}"
-    val runId = "run-$taskId"
-    session.submitDetachedControlTask(
-      AgentTask(
-        id = taskId,
-        type = AgentTaskType.TOOL_CALL,
-        input = buildJsonObject {
-          put("type", "tool_call")
-          put("tool_name", "wait_agent")
-          put(
-            "arguments",
-            buildJsonObject {
-              put("agent_id", handle.agentId)
-            },
-          )
-        }.toString(),
-        state = AgentTaskState.QUEUED,
-        policyDecision = PolicyDecision(
-          outcome = PolicyDecisionOutcome.ALLOW,
-          reasonCode = SUBAGENT_RECOVERY_ALLOW_REASON_CODE,
-        ),
-        createdAtEpochMs = now,
-        metadata = lifecycleDescriptor.taskMetadata(
-          submissionSource = RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
-        ) + mapOf(
-          AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
-          AppAgentSessionTaskRuntimeFactory.METADATA_HOST_SESSION_ID to session.sessionId,
-          METADATA_SUBAGENT_RECOVERY_AGENT_ID to handle.agentId,
-          METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID to handle.parentRunId,
-        ),
-      ),
-    )
-  }
+  session.ensureRecoverableDetachedSubAgentTasks()
 }
 
 internal fun bootstrapSessionsForRuntimeServiceHost(
@@ -776,7 +719,6 @@ internal fun bootstrapSessionsForRuntimeServiceHost(
     }
     submitRecoverableSubAgentTasksForSession(
       session = session,
-      lifecycleDescriptor = runtimeAccess.lifecycleDescriptor,
     )
   }
 
@@ -811,7 +753,6 @@ internal fun resumeInterruptedRunsForRuntimeServiceHost(
     }
     submitRecoverableSubAgentTasksForSession(
       session = session,
-      lifecycleDescriptor = runtimeAccess.lifecycleDescriptor,
     )
   }
 
@@ -837,7 +778,15 @@ internal fun OpenCrayRuntimeServiceHost.approvePendingApproval(
     ?: error("Pending approval '$taskIdOrRunId' is unavailable.")
   val checkpointStore = runtimeAccess.hostAccess.promptCheckpointStore(resolution.sessionId)
   val deferUntilManualResume = shouldDeferApprovalDecisionUntilManualResume(resolution)
-  if (!deferUntilManualResume) {
+  val detachedChildResumed = if (!deferUntilManualResume) {
+    submitDetachedSubAgentRecoveryTaskForApprovedResolution(
+      resolution = resolution,
+      nowEpochMs = nowEpochMs,
+    )
+  } else {
+    false
+  }
+  if (!deferUntilManualResume && !detachedChildResumed) {
     runtimeAccess.hostAccess.markApprovalApproved(
       sessionId = resolution.sessionId,
       taskId = resolution.taskId,
@@ -852,7 +801,7 @@ internal fun OpenCrayRuntimeServiceHost.approvePendingApproval(
       nowEpochMs = nowEpochMs,
     ),
   )
-  if (!deferUntilManualResume) {
+  if (!deferUntilManualResume && !detachedChildResumed) {
     val resumed = runtimeAccess.hostAccess.session(resolution.sessionId).requestResumeTask(resolution.taskId)
     if (!resumed) {
       runtimeAccess.hostAccess.clearApproval(
@@ -889,6 +838,10 @@ internal fun OpenCrayRuntimeServiceHost.approvePendingApproval(
         approvalRecordedText(
           context = dependencies.localizedContext,
         )
+      } else if (detachedChildResumed) {
+        delegatedChildApprovalApprovedText(
+          context = dependencies.localizedContext,
+        )
       } else {
         runtimeApprovalCommandStrings(
           context = dependencies.localizedContext,
@@ -896,7 +849,7 @@ internal fun OpenCrayRuntimeServiceHost.approvePendingApproval(
       },
     ),
   )
-  if (!deferUntilManualResume) {
+  if (!deferUntilManualResume && !detachedChildResumed) {
     resolution.pendingMessageId?.let { pendingMessageId ->
       dependencies.chatSessionStore.replaceMessage(
         sessionId = resolution.sessionId,
@@ -911,15 +864,19 @@ internal fun OpenCrayRuntimeServiceHost.approvePendingApproval(
   dependencies.chatSessionStore.appendMessage(
     sessionId = resolution.sessionId,
     role = ChatTranscriptRole.TOOL,
-    text = if (deferUntilManualResume) {
-      approvalRecordedText(
-        context = dependencies.localizedContext,
-      )
-    } else {
-      runtimeApprovalCommandStrings(
-        context = dependencies.localizedContext,
-      ).approvalApproved
-    },
+      text = if (deferUntilManualResume) {
+        approvalRecordedText(
+          context = dependencies.localizedContext,
+        )
+      } else if (detachedChildResumed) {
+        delegatedChildApprovalApprovedText(
+          context = dependencies.localizedContext,
+        )
+      } else {
+        runtimeApprovalCommandStrings(
+          context = dependencies.localizedContext,
+        ).approvalApproved
+      },
   )
 }
 
@@ -938,7 +895,15 @@ internal fun OpenCrayRuntimeServiceHost.approvePendingApprovalForSession(
     sessionId = resolution.sessionId,
     approved = true,
   )
-  if (!deferUntilManualResume) {
+  val detachedChildResumed = if (!deferUntilManualResume) {
+    submitDetachedSubAgentRecoveryTaskForApprovedResolution(
+      resolution = resolution,
+      nowEpochMs = nowEpochMs,
+    )
+  } else {
+    false
+  }
+  if (!deferUntilManualResume && !detachedChildResumed) {
     runtimeAccess.hostAccess.markApprovalApproved(
       sessionId = resolution.sessionId,
       taskId = resolution.taskId,
@@ -953,7 +918,7 @@ internal fun OpenCrayRuntimeServiceHost.approvePendingApprovalForSession(
       nowEpochMs = nowEpochMs,
     ),
   )
-  if (!deferUntilManualResume) {
+  if (!deferUntilManualResume && !detachedChildResumed) {
     val resumed = runtimeAccess.hostAccess.session(resolution.sessionId).requestResumeTask(resolution.taskId)
     if (!resumed) {
       dependencies.chatSessionStore.setNativeWebSearchSessionApproved(
@@ -994,6 +959,10 @@ internal fun OpenCrayRuntimeServiceHost.approvePendingApprovalForSession(
         approvalRecordedForSessionText(
           context = dependencies.localizedContext,
         )
+      } else if (detachedChildResumed) {
+        delegatedChildApprovalApprovedText(
+          context = dependencies.localizedContext,
+        )
       } else {
         runtimeApprovalCommandStrings(
           context = dependencies.localizedContext,
@@ -1001,7 +970,7 @@ internal fun OpenCrayRuntimeServiceHost.approvePendingApprovalForSession(
       },
     ),
   )
-  if (!deferUntilManualResume) {
+  if (!deferUntilManualResume && !detachedChildResumed) {
     resolution.pendingMessageId?.let { pendingMessageId ->
       dependencies.chatSessionStore.replaceMessage(
         sessionId = resolution.sessionId,
@@ -1016,15 +985,19 @@ internal fun OpenCrayRuntimeServiceHost.approvePendingApprovalForSession(
   dependencies.chatSessionStore.appendMessage(
     sessionId = resolution.sessionId,
     role = ChatTranscriptRole.TOOL,
-    text = if (deferUntilManualResume) {
-      approvalRecordedForSessionText(
-        context = dependencies.localizedContext,
-      )
-    } else {
-      runtimeApprovalCommandStrings(
-        context = dependencies.localizedContext,
-      ).approvalApprovedForSession
-    },
+      text = if (deferUntilManualResume) {
+        approvalRecordedForSessionText(
+          context = dependencies.localizedContext,
+        )
+      } else if (detachedChildResumed) {
+        delegatedChildApprovalApprovedText(
+          context = dependencies.localizedContext,
+        )
+      } else {
+        runtimeApprovalCommandStrings(
+          context = dependencies.localizedContext,
+        ).approvalApprovedForSession
+      },
   )
 }
 
@@ -1160,6 +1133,7 @@ private data class RuntimeServicePendingApprovalResolution(
   val isHighRisk: Boolean,
   val supportsSessionApproval: Boolean,
   val subAgentLifecycle: RuntimeServicePendingApprovalSubAgentLifecycle?,
+  val subAgentControlTool: String?,
   val executionId: String?,
   val executionOrdinal: Int?,
   val executionKind: String?,
@@ -1259,6 +1233,36 @@ private data class RuntimeServicePendingApprovalResolution(
       emittedAtEpochMs = emittedAtEpochMs,
     )
   }
+
+  fun detachedRecoveryCheckpoint(
+    detachedTaskId: String,
+    detachedRunId: String,
+    checkpointKind: PromptCheckpointKind,
+    nowEpochMs: Long,
+  ): PersistedPromptCheckpoint = PersistedPromptCheckpoint(
+    sessionId = sessionId,
+    runId = detachedRunId,
+    taskId = detachedTaskId,
+    checkpointId = "checkpoint-$nowEpochMs-${UUID.randomUUID().toString().take(8)}",
+    checkpointKind = checkpointKind,
+    createdAtEpochMs = nowEpochMs,
+    updatedAtEpochMs = nowEpochMs,
+    toolName = resumeToolName ?: toolName,
+    pendingMessageId = null,
+    isHighRisk = isHighRisk,
+    promptCheckpointBoundary = promptCheckpointBoundary,
+    promptResumeState = promptResumeState,
+    subAgentApprovedToolName = subAgentApprovalResume?.approvedToolName,
+    subAgentPromptResumeState = subAgentApprovalResume?.promptResumeState,
+    subAgentIsHighRisk = subAgentApprovalResume?.isHighRisk,
+    subAgentAgentId = subAgentApprovalResume?.agentId,
+    subAgentChildRunId = subAgentApprovalResume?.childRunId,
+    subAgentChildTaskId = subAgentApprovalResume?.childTaskId,
+  )
+
+  fun usesExplicitSubAgentHandleControlPlane(): Boolean =
+    subAgentApprovalResume != null &&
+      subAgentControlTool in EXPLICIT_SUBAGENT_HANDLE_CONTROL_TOOLS
 }
 
 private fun OpenCrayRuntimeServiceHost.resolvePendingApproval(
@@ -1325,6 +1329,10 @@ private fun OpenCrayRuntimeServiceHost.resolvePendingApproval(
       ),
       supportsSessionApproval = approvalSupportsSessionScope(metadata),
       subAgentLifecycle = pendingApprovalSubAgentLifecycle(metadata),
+      subAgentControlTool = metadata[SubAgentMetadataKeys.CONTROL_TOOL]
+        ?.trim()
+        ?.lowercase(Locale.US)
+        ?.takeIf(String::isNotBlank),
       executionId = runSnapshot.executionId,
       executionOrdinal = runSnapshot.executionOrdinal.takeIf { ordinal -> ordinal > 0 },
       executionKind = runSnapshot.executionKind,
@@ -1391,6 +1399,14 @@ private fun delegatedChildApprovalApprovedSummary(
   "子任务审批已通过，将继续执行。"
 } else {
   "Delegated child approval granted. The child will continue."
+}
+
+private fun delegatedChildApprovalApprovedText(
+  context: Context,
+): String = if (isChineseHostLocale(context)) {
+  "审批已通过，子任务正在后台继续执行。"
+} else {
+  "Approval granted. The delegated child is resuming in the background."
 }
 
 private fun delegatedChildApprovalRejectedStopSummary(
@@ -1466,6 +1482,64 @@ private fun approvalResumeToolName(metadata: Map<String, String>): String? =
       ?.takeIf(String::isNotBlank)
     ?: metadata["toolName"]
       ?.takeIf(String::isNotBlank)
+
+private fun OpenCrayRuntimeServiceHost.submitDetachedSubAgentRecoveryTaskForApprovedResolution(
+  resolution: RuntimeServicePendingApprovalResolution,
+  nowEpochMs: Long,
+): Boolean {
+  if (!resolution.usesExplicitSubAgentHandleControlPlane()) {
+    return false
+  }
+  val session = runtimeAccess.hostAccess.session(resolution.sessionId)
+  val handle = session.listSubAgentHandles().firstOrNull { candidate ->
+    subAgentApprovalResumeMatchesHandle(
+      resume = resolution.subAgentApprovalResume,
+      handle = candidate,
+    )
+  } ?: return false
+  val taskId = detachedSubAgentRecoveryTaskId(
+    sessionId = session.sessionId,
+    agentId = handle.agentId,
+    parentRunId = handle.parentRunId,
+  )
+  val runId = detachedSubAgentRecoveryRunId(taskId)
+  runtimeAccess.hostAccess.markApprovalApproved(
+    sessionId = resolution.sessionId,
+    taskId = taskId,
+    toolName = resolution.resumeToolName ?: resolution.toolName,
+    promptResumeState = resolution.promptResumeState,
+    subAgentApprovalResume = resolution.subAgentApprovalResume,
+  )
+  runtimeAccess.hostAccess.promptCheckpointStore(resolution.sessionId).upsert(
+    resolution.detachedRecoveryCheckpoint(
+      detachedTaskId = taskId,
+      detachedRunId = runId,
+      checkpointKind = PromptCheckpointKind.APPROVED_PENDING_RESUME,
+      nowEpochMs = nowEpochMs,
+    ),
+  )
+  session.submitDetachedSubAgentRecoveryTask(
+    agentId = handle.agentId,
+    parentRunId = handle.parentRunId,
+    taskId = taskId,
+    createdAtEpochMs = nowEpochMs,
+    submissionSource = RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
+  )
+  return true
+}
+
+private fun subAgentApprovalResumeMatchesHandle(
+  resume: SubAgentApprovalResume?,
+  handle: SubAgentHandleState,
+): Boolean {
+  val candidate = resume ?: return false
+  return when {
+    !candidate.agentId.isNullOrBlank() -> candidate.agentId == handle.agentId
+    !candidate.childTaskId.isNullOrBlank() -> candidate.childTaskId == handle.childTaskId
+    !candidate.childRunId.isNullOrBlank() -> candidate.childRunId == handle.childRunId
+    else -> false
+  }
+}
 
 private fun PersistedPromptCheckpoint?.restoredSubAgentApprovalResume(): SubAgentApprovalResume? {
   val checkpoint = this ?: return null

@@ -440,6 +440,10 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     required String model,
     required String reasoningEffort,
     required String systemPrompt,
+    String? openAiPromptCacheKeyStrategy,
+    String? openAiPromptCacheRetention,
+    bool? anthropicPromptCachingEnabled,
+    String? anthropicPromptCacheTtl,
   }) async => OpenCrayLlmConfigSnapshot.fromMap(
     await _postMap('v1/save_llm_config', <String, Object?>{
       'enabled': enabled,
@@ -453,6 +457,14 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
       'model': model,
       'reasoningEffort': reasoningEffort,
       'systemPrompt': systemPrompt,
+      if (openAiPromptCacheKeyStrategy != null)
+        'openAiPromptCacheKeyStrategy': openAiPromptCacheKeyStrategy,
+      if (openAiPromptCacheRetention != null)
+        'openAiPromptCacheRetention': openAiPromptCacheRetention,
+      if (anthropicPromptCachingEnabled != null)
+        'anthropicPromptCachingEnabled': anthropicPromptCachingEnabled,
+      if (anthropicPromptCacheTtl != null)
+        'anthropicPromptCacheTtl': anthropicPromptCacheTtl,
     }),
   );
 
@@ -467,6 +479,10 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     required String model,
     required String reasoningEffort,
     required String systemPrompt,
+    String? openAiPromptCacheKeyStrategy,
+    String? openAiPromptCacheRetention,
+    bool? anthropicPromptCachingEnabled,
+    String? anthropicPromptCacheTtl,
   }) async => OpenCrayLlmConfigSnapshot.fromMap(
     await _postMap('v1/save_custom_llm_provider', <String, Object?>{
       'selectedProviderOptionId': selectedProviderOptionId,
@@ -478,6 +494,14 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
       'model': model,
       'reasoningEffort': reasoningEffort,
       'systemPrompt': systemPrompt,
+      if (openAiPromptCacheKeyStrategy != null)
+        'openAiPromptCacheKeyStrategy': openAiPromptCacheKeyStrategy,
+      if (openAiPromptCacheRetention != null)
+        'openAiPromptCacheRetention': openAiPromptCacheRetention,
+      if (anthropicPromptCachingEnabled != null)
+        'anthropicPromptCachingEnabled': anthropicPromptCachingEnabled,
+      if (anthropicPromptCacheTtl != null)
+        'anthropicPromptCacheTtl': anthropicPromptCacheTtl,
     }),
   );
 

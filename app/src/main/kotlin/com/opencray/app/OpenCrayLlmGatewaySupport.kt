@@ -18,6 +18,10 @@ internal fun LlmConfigSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "model" to model,
   "reasoningEffort" to reasoningEffort,
   "systemPrompt" to systemPrompt,
+  "openAiPromptCacheKeyStrategy" to openAiPromptCacheKeyStrategy,
+  "openAiPromptCacheRetention" to openAiPromptCacheRetention,
+  "anthropicPromptCachingEnabled" to anthropicPromptCachingEnabled,
+  "anthropicPromptCacheTtl" to anthropicPromptCacheTtl,
   "helperText" to helperText,
   "agentCapability" to agentCapability.toGatewayMap(),
 )
@@ -44,6 +48,7 @@ private fun LlmAgentCapabilitySnapshot.toGatewayMap(): Map<String, Any?> = mapOf
   "routeFingerprint" to routeFingerprint,
   "verifiedAtEpochMs" to verifiedAtEpochMs,
   "wasVerified" to wasVerified,
+  "contextWindowTokens" to contextWindowTokens,
   "visionInputSupported" to visionInputSupported,
   "nativeToolCallingAvailable" to nativeToolCallingAvailable,
   "toolChoiceSupported" to toolChoiceSupported,

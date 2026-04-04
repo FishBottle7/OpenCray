@@ -38,32 +38,62 @@ internal object LlmProviderProtocols {
     protocol: String,
     model: String,
     reasoningEffort: String,
+    openAiPromptCacheKeyStrategy: String = LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_KEY_STRATEGY,
+    openAiPromptCacheRetention: String = LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_RETENTION,
+    anthropicPromptCachingEnabled: Boolean =
+      LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED,
+    anthropicPromptCacheTtl: String = LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL,
   ): Map<String, String> = when (normalize(protocol)) {
-    ANTHROPIC -> anthropicRouteMetadata(model = model, reasoningEffort = reasoningEffort)
-    OPENAI_RESPONSES -> openAiResponsesRouteMetadata(model = model, reasoningEffort = reasoningEffort)
-    else -> openAiRouteMetadata(model = model, reasoningEffort = reasoningEffort)
+    ANTHROPIC -> anthropicRouteMetadata(
+      model = model,
+      reasoningEffort = reasoningEffort,
+      promptCachingEnabled = anthropicPromptCachingEnabled,
+      promptCacheTtl = anthropicPromptCacheTtl,
+    )
+
+    OPENAI_RESPONSES -> openAiResponsesRouteMetadata(
+      model = model,
+      reasoningEffort = reasoningEffort,
+      promptCacheKeyStrategy = openAiPromptCacheKeyStrategy,
+      promptCacheRetention = openAiPromptCacheRetention,
+    )
+
+    else -> openAiRouteMetadata(
+      model = model,
+      reasoningEffort = reasoningEffort,
+      promptCacheKeyStrategy = openAiPromptCacheKeyStrategy,
+      promptCacheRetention = openAiPromptCacheRetention,
+    )
   }
 
   private fun openAiRouteMetadata(
     model: String,
     reasoningEffort: String,
+    promptCacheKeyStrategy: String,
+    promptCacheRetention: String,
   ): Map<String, String> {
     val normalizedEffort = normalizedReasoningEffort(reasoningEffort)
-    return if (model.contains("gpt", ignoreCase = true) &&
-      normalizedEffort != REASONING_EFFORT_OFF
-    ) {
-      mapOf(
-        "protocol" to OPENAI,
-        "reasoning_effort" to normalizedEffort,
+    return buildMap {
+      put("protocol", OPENAI)
+      if (model.contains("gpt", ignoreCase = true) &&
+        normalizedEffort != REASONING_EFFORT_OFF
+      ) {
+        put("reasoning_effort", normalizedEffort)
+      }
+      putAll(
+        openAiPromptCacheMetadata(
+          promptCacheKeyStrategy = promptCacheKeyStrategy,
+          promptCacheRetention = promptCacheRetention,
+        ),
       )
-    } else {
-      mapOf("protocol" to OPENAI)
     }
   }
 
   private fun openAiResponsesRouteMetadata(
     model: String,
     reasoningEffort: String,
+    promptCacheKeyStrategy: String,
+    promptCacheRetention: String,
   ): Map<String, String> {
     val normalizedEffort = normalizedReasoningEffort(reasoningEffort)
     return buildMap {
@@ -74,30 +104,43 @@ internal object LlmProviderProtocols {
       ) {
         put("reasoning_effort", normalizedEffort)
       }
+      putAll(
+        openAiPromptCacheMetadata(
+          promptCacheKeyStrategy = promptCacheKeyStrategy,
+          promptCacheRetention = promptCacheRetention,
+        ),
+      )
     }
   }
 
   private fun anthropicRouteMetadata(
     model: String,
     reasoningEffort: String,
+    promptCachingEnabled: Boolean,
+    promptCacheTtl: String,
   ): Map<String, String> {
-    if (shouldDisableAnthropicThinkingForModel(model)) {
-      return mapOf("protocol" to ANTHROPIC)
+    return buildMap {
+      put("protocol", ANTHROPIC)
+      if (!shouldDisableAnthropicThinkingForModel(model)) {
+        val normalizedEffort = normalizedReasoningEffort(reasoningEffort)
+        if (normalizedEffort != REASONING_EFFORT_OFF) {
+          val thinkingBudget = when (normalizedEffort) {
+            "low" -> "1024"
+            "high" -> "8192"
+            "xhigh" -> "16000"
+            else -> "4096"
+          }
+          put("thinking_budget_tokens", thinkingBudget)
+        }
+      }
+      if (promptCachingEnabled) {
+        put(LlmPromptCachingMetadataKeys.ANTHROPIC_PROMPT_CACHING_ENABLED, "true")
+        put(
+          LlmPromptCachingMetadataKeys.ANTHROPIC_PROMPT_CACHE_TTL,
+          LlmSettingsState.normalizedAnthropicPromptCacheTtl(promptCacheTtl),
+        )
+      }
     }
-    val normalizedEffort = normalizedReasoningEffort(reasoningEffort)
-    if (normalizedEffort == REASONING_EFFORT_OFF) {
-      return mapOf("protocol" to ANTHROPIC)
-    }
-    val thinkingBudget = when (normalizedEffort) {
-      "low" -> "1024"
-      "high" -> "8192"
-      "xhigh" -> "16000"
-      else -> "4096"
-    }
-    return mapOf(
-      "protocol" to ANTHROPIC,
-      "thinking_budget_tokens" to thinkingBudget,
-    )
   }
 
   private fun shouldDisableAnthropicThinkingForModel(model: String): Boolean {
@@ -115,6 +158,47 @@ internal object LlmProviderProtocols {
     reasoningEffort.trim().ifBlank {
       LlmSettingsState.DEFAULT_REASONING_EFFORT
     }
+
+  private fun openAiPromptCacheMetadata(
+    promptCacheKeyStrategy: String,
+    promptCacheRetention: String,
+  ): Map<String, String> = buildMap {
+    val normalizedStrategy = LlmSettingsState.normalizedOpenAiPromptCacheKeyStrategy(
+      promptCacheKeyStrategy,
+    )
+    if (normalizedStrategy != LlmPromptCacheKeyStrategies.NONE) {
+      put(LlmPromptCachingMetadataKeys.PROMPT_CACHE_KEY_STRATEGY, normalizedStrategy)
+    }
+    LlmSettingsState.normalizedOpenAiPromptCacheRetention(promptCacheRetention)
+      .takeIf(String::isNotBlank)
+      ?.let { normalizedRetention ->
+        put(LlmPromptCachingMetadataKeys.PROMPT_CACHE_RETENTION, normalizedRetention)
+      }
+  }
+}
+
+internal object LlmPromptCachingMetadataKeys {
+  const val PROMPT_CACHE_KEY_STRATEGY: String = "promptCacheKeyStrategy"
+  const val PROMPT_CACHE_RETENTION: String = "promptCacheRetention"
+  const val PROMPT_CACHE_HINTS_SUPPORTED: String = "promptCacheHintsSupported"
+  const val ANTHROPIC_PROMPT_CACHING_ENABLED: String = "anthropicPromptCachingEnabled"
+  const val ANTHROPIC_PROMPT_CACHE_TTL: String = "anthropicPromptCacheTtl"
+}
+
+internal object LlmPromptCacheKeyStrategies {
+  const val NONE: String = "none"
+  const val ROUTE: String = "route"
+  const val SESSION: String = "session"
+}
+
+internal object LlmPromptCacheRetentionPolicies {
+  const val IN_MEMORY: String = "in_memory"
+  const val HOURS_24: String = "24h"
+}
+
+internal object AnthropicPromptCacheTtlPolicies {
+  const val MINUTES_5: String = "5m"
+  const val HOUR_1: String = "1h"
 }
 
 private const val DEFAULT_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS: Long = 30_000L

@@ -125,6 +125,9 @@ class E2BSandboxCommandExecutionBackendFactoryTest {
         providerNative = true,
         supportsStreamingLogs = true,
         supportsReconnect = true,
+        supportsManagedProcessLiveObservation = true,
+        supportsManagedProcessObservationCursorResume = true,
+        supportsManagedProcessObservationBackfill = true,
       ),
       commandStdout = "native-command",
       processBackendName = "native-process",
@@ -158,6 +161,12 @@ class E2BSandboxCommandExecutionBackendFactoryTest {
     assertNull(result.metadata["sandboxCommandBackendFallbackReasonCode"])
     assertEquals("true", result.metadata["sandboxCommandSupportsStreamingLogs"])
     assertEquals("true", result.metadata["sandboxCommandSupportsReconnect"])
+    assertEquals("true", result.metadata["sandboxCommandSupportsManagedProcessLiveObservation"])
+    assertEquals(
+      "true",
+      result.metadata["sandboxCommandSupportsManagedProcessObservationCursorResume"],
+    )
+    assertEquals("true", result.metadata["sandboxCommandSupportsManagedProcessObservationBackfill"])
   }
 
   @Test
@@ -169,6 +178,9 @@ class E2BSandboxCommandExecutionBackendFactoryTest {
         providerNative = true,
         supportsStreamingLogs = false,
         supportsReconnect = true,
+        supportsManagedProcessLiveObservation = true,
+        supportsManagedProcessObservationCursorResume = false,
+        supportsManagedProcessObservationBackfill = false,
       ),
       commandStdout = "native-command",
       processBackendName = "native-process",
@@ -214,6 +226,12 @@ class E2BSandboxCommandExecutionBackendFactoryTest {
     assertEquals("provider_native_preferred", snapshot.metadata["sandboxCommandBackendRequestedKind"])
     assertEquals("provider_native", snapshot.metadata["sandboxCommandBackendResolvedKind"])
     assertEquals("true", snapshot.metadata["sandboxCommandProviderNativeAvailable"])
+    assertEquals("true", snapshot.metadata["sandboxCommandSupportsManagedProcessLiveObservation"])
+    assertEquals(
+      "false",
+      snapshot.metadata["sandboxCommandSupportsManagedProcessObservationCursorResume"],
+    )
+    assertEquals("false", snapshot.metadata["sandboxCommandSupportsManagedProcessObservationBackfill"])
   }
 
   private fun allowPolicy(): PolicyDecision = PolicyDecision(

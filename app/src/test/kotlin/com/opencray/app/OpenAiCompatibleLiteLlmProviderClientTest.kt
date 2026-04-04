@@ -655,6 +655,10 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
               "responsesContinuationSupported" to "true",
               "assistantPhaseSupported" to "true",
               "citationIncludeSupported" to "true",
+              LlmPromptCachingMetadataKeys.PROMPT_CACHE_KEY_STRATEGY to
+                LlmPromptCacheKeyStrategies.ROUTE,
+              LlmPromptCachingMetadataKeys.PROMPT_CACHE_RETENTION to
+                LlmPromptCacheRetentionPolicies.IN_MEMORY,
             ),
           ),
           request = LiteLlmGatewayRequest(
@@ -715,11 +719,24 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
         "OpenCray/1.0.0-test (Android; host-runtime)",
         userAgent.get(),
       )
-      assertEquals("resp_previous", (result as LiteLlmProviderResult.Success).providerLineageId)
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("resp_previous", success.providerLineageId)
       val payload = JSONObject(requestBody.get())
       assertEquals("resp_previous", payload.getString("previous_response_id"))
       assertEquals("system prompt", payload.getString("instructions"))
       assertEquals("medium", payload.getJSONObject("reasoning").getString("effort"))
+      assertEquals(
+        llmRouteFingerprint(
+          LlmProviderProtocols.OPENAI_RESPONSES,
+          "http://127.0.0.1:${server.localPort}/v1",
+          "gpt-5-mini",
+        ),
+        payload.getString("prompt_cache_key"),
+      )
+      assertEquals(
+        LlmPromptCacheRetentionPolicies.IN_MEMORY,
+        payload.getString("prompt_cache_retention"),
+      )
       assertEquals(false, payload.getBoolean("parallel_tool_calls"))
       assertEquals(
         "web_search_call.action.sources",
@@ -747,6 +764,11 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
       assertEquals("EchoProbe", input.getJSONObject(2).getString("name"))
       assertEquals("function_call_output", input.getJSONObject(3).getString("type"))
       assertEquals("oc-call-1", input.getJSONObject(3).getString("call_id"))
+      assertEquals("true", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_KEY_PRESENT])
+      assertEquals(
+        LlmPromptCacheRetentionPolicies.IN_MEMORY,
+        success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_RETENTION],
+      )
     } finally {
       runCatching { server.close() }
       serverThread.join(5_000L)
@@ -1340,6 +1362,7 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
         ]
       }
       """.trimIndent(),
+      expectSuccess = false,
     )
 
     val failure = result as LiteLlmProviderResult.Failure
@@ -2285,6 +2308,250 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
   }
 
   @Test
+  fun executeBuildsOpenAiPromptCacheHintsWhenConfigured() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpResponse(
+            client = client,
+            body = """
+              {
+                "id": "req_prompt_cache_request",
+                "choices": [
+                  {
+                    "message": { "content": "OK" },
+                    "finish_reason": "stop"
+                  }
+                ]
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient()
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-prompt-cache",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-4o-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI,
+              LlmPromptCachingMetadataKeys.PROMPT_CACHE_KEY_STRATEGY to
+                LlmPromptCacheKeyStrategies.SESSION,
+              LlmPromptCachingMetadataKeys.PROMPT_CACHE_RETENTION to
+                LlmPromptCacheRetentionPolicies.HOURS_24,
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Reply with OK.",
+            metadata = mapOf("sessionId" to "session-123"),
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-prompt-cache",
+            providerId = "openai",
+            model = "gpt-4o-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(
+        "${llmRouteFingerprint(LlmProviderProtocols.OPENAI, "http://127.0.0.1:${server.localPort}/v1", "gpt-4o-mini")}|session=session-123",
+        payload.getString("prompt_cache_key"),
+      )
+      assertEquals(
+        LlmPromptCacheRetentionPolicies.HOURS_24,
+        payload.getString("prompt_cache_retention"),
+      )
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("true", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_KEY_PRESENT])
+      assertEquals(
+        LlmPromptCacheRetentionPolicies.HOURS_24,
+        success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_RETENTION],
+      )
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeSkipsOpenAiPromptCacheHintsForCustomRouteWithoutExplicitSupport() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpResponse(
+            client = client,
+            body = """
+              {
+                "id": "req_prompt_cache_custom",
+                "choices": [
+                  {
+                    "message": { "content": "OK" },
+                    "finish_reason": "stop"
+                  }
+                ]
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient()
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-prompt-cache-custom",
+            providerId = "custom",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-4o-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI,
+              LlmPromptCachingMetadataKeys.PROMPT_CACHE_KEY_STRATEGY to
+                LlmPromptCacheKeyStrategies.SESSION,
+              LlmPromptCachingMetadataKeys.PROMPT_CACHE_RETENTION to
+                LlmPromptCacheRetentionPolicies.HOURS_24,
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Reply with OK.",
+            metadata = mapOf("sessionId" to "session-123"),
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-prompt-cache-custom",
+            providerId = "custom",
+            model = "gpt-4o-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertFalse(payload.has("prompt_cache_key"))
+      assertFalse(payload.has("prompt_cache_retention"))
+      val success = result as LiteLlmProviderResult.Success
+      assertFalse(success.metadata.containsKey(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_KEY_PRESENT))
+      assertFalse(success.metadata.containsKey(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_RETENTION))
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeBuildsOpenAiPromptCacheHintsForCustomRouteWhenExplicitlyEnabled() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpResponse(
+            client = client,
+            body = """
+              {
+                "id": "req_prompt_cache_custom_enabled",
+                "choices": [
+                  {
+                    "message": { "content": "OK" },
+                    "finish_reason": "stop"
+                  }
+                ]
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient()
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-prompt-cache-custom-enabled",
+            providerId = "custom",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-4o-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI,
+              LlmPromptCachingMetadataKeys.PROMPT_CACHE_HINTS_SUPPORTED to "true",
+              LlmPromptCachingMetadataKeys.PROMPT_CACHE_KEY_STRATEGY to
+                LlmPromptCacheKeyStrategies.SESSION,
+              LlmPromptCachingMetadataKeys.PROMPT_CACHE_RETENTION to
+                LlmPromptCacheRetentionPolicies.HOURS_24,
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Reply with OK.",
+            metadata = mapOf("sessionId" to "session-456"),
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-prompt-cache-custom-enabled",
+            providerId = "custom",
+            model = "gpt-4o-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(
+        "${llmRouteFingerprint(LlmProviderProtocols.OPENAI, "http://127.0.0.1:${server.localPort}/v1", "gpt-4o-mini")}|session=session-456",
+        payload.getString("prompt_cache_key"),
+      )
+      assertEquals(
+        LlmPromptCacheRetentionPolicies.HOURS_24,
+        payload.getString("prompt_cache_retention"),
+      )
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("true", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_KEY_PRESENT])
+      assertEquals(
+        LlmPromptCacheRetentionPolicies.HOURS_24,
+        success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_RETENTION],
+      )
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
   fun executeBuildsOpenAiMultimodalUserMessageWhenVisionInputSupported() {
     val requestBody = AtomicReference<String>()
     val responseSent = CountDownLatch(1)
@@ -3179,7 +3446,283 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
     }
   }
 
-  private fun executeWithOpenAiResponse(body: String): LiteLlmProviderResult {
+  @Test
+  fun executeBuildsAnthropicPromptCacheControlWhenEnabledFor1hTtl() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpResponse(
+            client = client,
+            body = """
+              {
+                "id": "msg_anthropic_prompt_cache_1h",
+                "content": [
+                  { "type": "text", "text": "OK" }
+                ],
+                "stop_reason": "end_turn"
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient()
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-anthropic-prompt-cache-1h",
+            providerId = "anthropic",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "claude-3-5-sonnet",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.ANTHROPIC,
+              LlmPromptCachingMetadataKeys.ANTHROPIC_PROMPT_CACHING_ENABLED to "true",
+              LlmPromptCachingMetadataKeys.ANTHROPIC_PROMPT_CACHE_TTL to
+                AnthropicPromptCacheTtlPolicies.HOUR_1,
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Reply with OK.",
+            systemPrompt = "system prompt",
+            authHeaders = mapOf("x-api-key" to "test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-anthropic-prompt-cache-1h",
+            providerId = "anthropic",
+            model = "claude-3-5-sonnet",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      val cacheControl = payload.getJSONObject("cache_control")
+      assertEquals("ephemeral", cacheControl.getString("type"))
+      assertEquals(AnthropicPromptCacheTtlPolicies.HOUR_1, cacheControl.getString("ttl"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("true", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_CONTROL_PRESENT])
+      assertEquals(
+        AnthropicPromptCacheTtlPolicies.HOUR_1,
+        success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_RETENTION],
+      )
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeBuildsAnthropicPromptCacheControlWithDefault5mTtlWhenEnabled() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpResponse(
+            client = client,
+            body = """
+              {
+                "id": "msg_anthropic_prompt_cache_default",
+                "content": [
+                  { "type": "text", "text": "OK" }
+                ],
+                "stop_reason": "end_turn"
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient()
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-anthropic-prompt-cache-default",
+            providerId = "anthropic",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "claude-3-5-sonnet",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.ANTHROPIC,
+              LlmPromptCachingMetadataKeys.ANTHROPIC_PROMPT_CACHING_ENABLED to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Reply with OK.",
+            authHeaders = mapOf("x-api-key" to "test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-anthropic-prompt-cache-default",
+            providerId = "anthropic",
+            model = "claude-3-5-sonnet",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      val cacheControl = payload.getJSONObject("cache_control")
+      assertEquals("ephemeral", cacheControl.getString("type"))
+      assertFalse(cacheControl.has("ttl"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("true", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_CONTROL_PRESENT])
+      assertEquals(
+        AnthropicPromptCacheTtlPolicies.MINUTES_5,
+        success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_RETENTION],
+      )
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeCapturesOpenAiPromptCacheReadTokensFromChatUsage() {
+    val result = executeWithOpenAiResponse(
+      """
+        {
+          "id": "req_prompt_cache_openai",
+          "choices": [
+            {
+              "message": { "content": "OK" },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 1280,
+            "completion_tokens": 6,
+            "total_tokens": 1286,
+            "prompt_tokens_details": {
+              "cached_tokens": 1024
+            }
+          }
+        }
+      """.trimIndent(),
+    )
+
+    val success = result as LiteLlmProviderResult.Success
+    assertEquals("true", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_USED])
+    assertEquals("1024", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_READ_TOKENS])
+    assertFalse(success.metadata.containsKey(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_WRITE_TOKENS))
+  }
+
+  @Test
+  fun executeCapturesZeroOpenAiPromptCacheReadTokensFromResponsesUsage() {
+    val result = executeWithResponsesResponse(
+      """
+        {
+          "id": "resp_prompt_cache_zero",
+          "status": "completed",
+          "output": [
+            {
+              "type": "message",
+              "role": "assistant",
+              "content": [
+                { "type": "output_text", "text": "OK" }
+              ]
+            }
+          ],
+          "usage": {
+            "input_tokens": 900,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "output_tokens": 12,
+            "total_tokens": 912
+          }
+        }
+      """.trimIndent(),
+    )
+
+    val success = result as LiteLlmProviderResult.Success
+    assertEquals("false", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_USED])
+    assertEquals("0", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_READ_TOKENS])
+  }
+
+  @Test
+  fun executeCapturesAnthropicPromptCacheReadAndWriteTokensFromFlatUsage() {
+    val result = executeWithAnthropicResponse(
+      """
+        {
+          "id": "msg_prompt_cache_flat",
+          "content": [
+            {
+              "type": "text",
+              "text": "OK"
+            }
+          ],
+          "usage": {
+            "input_tokens": 512,
+            "output_tokens": 8,
+            "cache_creation_input_tokens": 4096,
+            "cache_read_input_tokens": 2048
+          },
+          "stop_reason": "end_turn"
+        }
+      """.trimIndent(),
+    )
+
+    val success = result as LiteLlmProviderResult.Success
+    assertEquals("true", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_USED])
+    assertEquals("2048", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_READ_TOKENS])
+    assertEquals("4096", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_WRITE_TOKENS])
+    assertFalse(success.metadata.containsKey(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_RETENTION))
+  }
+
+  @Test
+  fun executeCapturesAnthropicPromptCacheTieredWriteUsage() {
+    val result = executeWithAnthropicResponse(
+      """
+        {
+          "id": "msg_prompt_cache_tiered",
+          "content": [
+            {
+              "type": "text",
+              "text": "OK"
+            }
+          ],
+          "usage": {
+            "input_tokens": 256,
+            "output_tokens": 6,
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 8192
+            }
+          },
+          "stop_reason": "end_turn"
+        }
+      """.trimIndent(),
+    )
+
+    val success = result as LiteLlmProviderResult.Success
+    assertEquals("true", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_USED])
+    assertEquals("8192", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_WRITE_TOKENS])
+    assertEquals("8192", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_WRITE_1H_TOKENS])
+    assertEquals("1h", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_RETENTION])
+  }
+
+  private fun executeWithOpenAiResponse(
+    body: String,
+    expectSuccess: Boolean = true,
+  ): LiteLlmProviderResult {
     val requestLine = AtomicReference<String>()
     val userAgent = AtomicReference<String>()
     val responseSent = CountDownLatch(1)
@@ -3231,14 +3774,29 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
       assertTrue(responseSent.await(5, TimeUnit.SECONDS))
       assertEquals("POST /v1/chat/completions HTTP/1.1", requestLine.get())
       assertNotNull(userAgent.get())
-      result
+      if (!expectSuccess) {
+        result
+      } else {
+        when (result) {
+          is LiteLlmProviderResult.Success -> result
+          is LiteLlmProviderResult.Failure -> throw AssertionError(
+            "Expected OpenAI success but got failure ${result.errorCode}: ${result.errorMessage}; metadata=${result.metadata}",
+          )
+          is LiteLlmProviderResult.Timeout -> throw AssertionError(
+            "Expected OpenAI success but got timeout: ${result.errorMessage}; metadata=${result.metadata}",
+          )
+          is LiteLlmProviderResult.RateLimited -> throw AssertionError(
+            "Expected OpenAI success but got rate limited: ${result.errorMessage}; metadata=${result.metadata}",
+          )
+        }
+      }
     } finally {
       runCatching { server.close() }
       serverThread.join(5_000L)
     }
   }
 
-  private fun executeWithAnthropicResponse(body: String): LiteLlmProviderResult {
+  private fun executeWithAnthropicResponse(body: String): LiteLlmProviderResult.Success {
     val requestLine = AtomicReference<String>()
     val userAgent = AtomicReference<String>()
     val responseSent = CountDownLatch(1)
@@ -3290,14 +3848,25 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
       assertTrue(responseSent.await(5, TimeUnit.SECONDS))
       assertEquals("POST /v1/messages HTTP/1.1", requestLine.get())
       assertNotNull(userAgent.get())
-      result
+      when (result) {
+        is LiteLlmProviderResult.Success -> result
+        is LiteLlmProviderResult.Failure -> throw AssertionError(
+          "Expected Anthropic success but got failure ${result.errorCode}: ${result.errorMessage}; metadata=${result.metadata}",
+        )
+        is LiteLlmProviderResult.Timeout -> throw AssertionError(
+          "Expected Anthropic success but got timeout: ${result.errorMessage}; metadata=${result.metadata}",
+        )
+        is LiteLlmProviderResult.RateLimited -> throw AssertionError(
+          "Expected Anthropic success but got rate limited: ${result.errorMessage}; metadata=${result.metadata}",
+        )
+      }
     } finally {
       runCatching { server.close() }
       serverThread.join(5_000L)
     }
   }
 
-  private fun executeWithResponsesResponse(body: String): LiteLlmProviderResult {
+  private fun executeWithResponsesResponse(body: String): LiteLlmProviderResult.Success {
     val requestLine = AtomicReference<String>()
     val userAgent = AtomicReference<String>()
     val responseSent = CountDownLatch(1)
@@ -3349,7 +3918,18 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
       assertTrue(responseSent.await(5, TimeUnit.SECONDS))
       assertEquals("POST /v1/responses HTTP/1.1", requestLine.get())
       assertNotNull(userAgent.get())
-      result
+      when (result) {
+        is LiteLlmProviderResult.Success -> result
+        is LiteLlmProviderResult.Failure -> throw AssertionError(
+          "Expected Responses success but got failure ${result.errorCode}: ${result.errorMessage}; metadata=${result.metadata}",
+        )
+        is LiteLlmProviderResult.Timeout -> throw AssertionError(
+          "Expected Responses success but got timeout: ${result.errorMessage}; metadata=${result.metadata}",
+        )
+        is LiteLlmProviderResult.RateLimited -> throw AssertionError(
+          "Expected Responses success but got rate limited: ${result.errorMessage}; metadata=${result.metadata}",
+        )
+      }
     } finally {
       runCatching { server.close() }
       serverThread.join(5_000L)

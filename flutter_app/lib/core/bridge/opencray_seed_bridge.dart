@@ -929,6 +929,10 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     required String model,
     required String reasoningEffort,
     required String systemPrompt,
+    String? openAiPromptCacheKeyStrategy,
+    String? openAiPromptCacheRetention,
+    bool? anthropicPromptCachingEnabled,
+    String? anthropicPromptCacheTtl,
   }) async {
     final isConfigured =
         baseUrl.trim().isNotEmpty &&
@@ -949,6 +953,15 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       reasoningEffort: reasoningEffort,
       systemPrompt: systemPrompt,
       helperText: _llmConfig.helperText,
+      openAiPromptCacheKeyStrategy:
+          openAiPromptCacheKeyStrategy ?? _llmConfig.openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention:
+          openAiPromptCacheRetention ?? _llmConfig.openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled:
+          anthropicPromptCachingEnabled ??
+          _llmConfig.anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl:
+          anthropicPromptCacheTtl ?? _llmConfig.anthropicPromptCacheTtl,
     );
     return _llmConfig;
   }
@@ -964,6 +977,10 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     required String model,
     required String reasoningEffort,
     required String systemPrompt,
+    String? openAiPromptCacheKeyStrategy,
+    String? openAiPromptCacheRetention,
+    bool? anthropicPromptCachingEnabled,
+    String? anthropicPromptCacheTtl,
   }) async {
     final providerOptionId =
         selectedProviderOptionId.trim().isEmpty ||
@@ -1006,6 +1023,15 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       reasoningEffort: reasoningEffort,
       systemPrompt: systemPrompt,
       helperText: _llmConfig.helperText,
+      openAiPromptCacheKeyStrategy:
+          openAiPromptCacheKeyStrategy ?? _llmConfig.openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention:
+          openAiPromptCacheRetention ?? _llmConfig.openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled:
+          anthropicPromptCachingEnabled ??
+          _llmConfig.anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl:
+          anthropicPromptCacheTtl ?? _llmConfig.anthropicPromptCacheTtl,
     );
     return _llmConfig;
   }

@@ -34,21 +34,42 @@
 当前真实语义是：
 
 - `spawn_agent` 会立刻启动 child，并让它在同一个 runtime host / process 里后台运行；父 run 返回 `final` 后不会默认把它取消掉
-- `wait_agent` 负责在后续 turn / 后续 run 里等待 child 到达一个稳定状态，或在 approval 已解锁后恢复 paused child
+- `wait_agent` 负责在后续 turn / 后续 run 里等待 child 到达最新稳定状态并收割结果；它不是 approval 解锁后的真实恢复触发器
+- cold-restart / interrupted-repair 场景下，session handle 现在会自己扫描 durable handle 并补 detached recovery task；host 只负责触发 session 恢复，不再自己拼 recovery task
+- 显式 handle child 在 approval 通过后，会由 host 先完成 approval bookkeeping / checkpoint，然后交给 session handle 的 subagent recovery driver 提交恢复执行，让 child 在没有新 `wait_agent` 调用的情况下继续推进
+- app 侧 recovery 组件边界现在也已经单独收口：
+  - `SessionSubAgentRecoveryDriver` 负责 session 内的 subagent recovery 提交 / resume / cancel / synthetic detached task 生命周期
+  - `ManagedAgentSessionHandle` 只保留 run record 持久化、listener 通知、detached task 可见面这些回调接线，不再自己维护第二套 subagent recovery task map / lock / future 状态机
+- session 侧现在已经把显式 handle recovery 从 generic detached-control state 里拆出来；synthetic recovery task 只保留给 run / event / persistence 可见面
+- detached recovery / direct durable wait 在 runtime 里也不再把 child 同步跑在 recovery wait 那条 future 里；它们现在会先挂到 coordinator `activeExecution`，recovery driver / wait 只负责 join 和收割结果
+- synthetic detached recovery wait 现在也进一步收口成 join-only：
+  - app runtime factory 会先显式 `ensure` coordinator 上的 detached child execution
+  - 随后的 recovery wait 只负责等待 / 收割，不再隐式承担“如果没跑就顺手启动 child”这层职责
+- coordinator 现在也已经接管 child execution 的 begin/finish 注册边界：
+  - `beginExecution` 会原子登记 running handle 和 `activeExecution`
+  - `finishExecution` 会统一摘掉 `activeExecution` 并落最终 handle
+  - runtime 的 active-turn background child 和 detached recovery child 现在都走同一套 begin/finish 生命周期，不再各自手写 “先 upsert handle、再 register/take execution” 的双阶段流程
+- 生产宿主里的 detached subagent recovery wait 现在也不再和主 chat loop 共用同一个 single-thread executor：
+  - `SessionSubAgentRecoveryDriver` 已切到独立 recovery executor
+  - driver 现在也会按 child handle key 做 single-flight，重复 submit 同一个 child 时会复用已有 recovery task，而不是再起第二条 wait
+  - synthetic detached recovery task id 现在也已经改成 session + child handle key 派生的稳定值，cold restart / interrupted repair 不会再因为重新补壳而漂移成另一条 recovery run
+  - 这还不是 child-owned actor / queue，但 join-only recovery wait 至少不再卡住宿主主会话执行资源，也不会因为重复触发再堆一层并发 recovery task
+- session recovery cancel 现在也会优先转发到 coordinator `activeExecution`，不再只是打断外层 recovery driver future
 - `send_input` 现在会把 follow-up 输入排进 child mailbox；它仍然不是 mid-run interrupt，只会在 child 下一次启动 / 恢复时投递
 - `close_agent` 可以取消一个正在运行或等待中的 child handle
 - session keepalive 现在会因为 live subagent 持续保活，所以 child 已经可以跨父 run completion 继续推进
 - child runtime 现在会把自己的 durable prompt checkpoint 持久化回 handle store，而不再只靠 approval suspend/resume 特判
 - 如果 runtime / host 实例重建，`BACKGROUND_RUNNING` child 在有 durable checkpoint 时会被修复成可恢复的 `BACKGROUND_QUEUED`
-- runtime service bootstrap / interrupted-run repair 现在会为这些 detached queued handle 自动投递内部 `wait_agent` 恢复任务，所以 cold restart 后 child 可以继续推进
+- runtime service bootstrap / interrupted-run repair 现在会触发 session 侧 recovery queue 补齐这些 detached queued handle 的 detached control recovery task，所以 cold restart 后 child 可以继续推进
 - 现在已经支持“显式 handle + host-local 后台 child，可跨父 run completion，并可在 cold restart 后从 durable checkpoint 自动续跑”
-- 但 child 仍不是独立 child session / child queue actor；恢复仍复用宿主 session queue 和 `wait_agent` 路径
+- 现在恢复链路已经不再复用宿主 session queue，也不再伪装成隐藏 `wait_agent` tool-call task
+- 但 child 仍不是独立 child session / child queue actor
 - 之前的 Flutter 消费层缺口已经补齐：
   - Flutter 模型层已解析 `runtimeActivity.subAgents`
   - 主聊天 trace、settings runtime memory trace、Context & Memory Trace 页面现在都会直接消费 `runtimeActivity.subAgents`
   - detached child state 现在不会再因为父 run 离开 recent run list 就只剩 host/runtime 内部投影
 - 额外说明：
-  - 审计后保留的少量 `activeRuns`-only 路径不算问题
+  - 之前盘点里列出来的“仍有少量 `activeRuns`-only 路径”经复核不算问题
   - 它们本来就只服务“父 run 可见时的 selector / assistant phase 投影”，不应该把 detached child 伪装成 recent run
   - 当前刻意维持的 UI 策略是：
     - 父 run 可见时，把 durable `subAgents` 补进父 trace
@@ -854,7 +875,6 @@ OpenCray 当前产品目标不是 Codex 的完整执行环境矩阵。
 现在真正还没做完的重点，不再是“能不能列出来”，而是：
 
 - detached child actor / child queue
-- 把恢复链路从宿主 session queue 的隐藏 `wait_agent` 任务里彻底拔出来
 
 ## profile 命名建议
 
@@ -945,8 +965,14 @@ OpenCray 当前产品目标不是 Codex 的完整执行环境矩阵。
 二期要把它补成真正的 runtime registry：
 
 - runtime 持有真正独立于父 prompt loop 的 active child handles / child queue
-- host 可恢复 child latest state，而不需要再借宿主 session queue 注入隐藏恢复任务
-- replay 可恢复 child 生命周期边界，并能直接驱动 detached child 恢复
+- host 现在已经能恢复 child latest state；其中 cold restart repair 和显式 handle approval 通过后的 detached recovery 提交都已经下沉到 session handle；host 只保留 approval bookkeeping / checkpoint 与触发 session 恢复；整个链路都不再借宿主 session queue 注入隐藏 `wait_agent`
+- session 里也已经不再把显式 handle recovery 挂在 generic detached-control state 上，而是单独的 `SessionSubAgentRecoveryDriver`
+- `ManagedAgentSessionHandle` 现在只通过 callbacks 把 run record、listener、detached-task 列举这些宿主能力接给 driver；driver 本身才是 app-side recovery owner
+- runtime 里的 detached recovery 执行 owner 也已经进一步收口到 coordinator `activeExecution`
+- child execution 的 live registration 也已经继续下沉到 coordinator `beginExecution / finishExecution`
+- 生产宿主里的 recovery driver 也已经不再和主 chat queue 共用同一个 single-thread executor，并且会按 child handle key 做 single-flight，synthetic recovery task id 也已经稳定到同一条 child handle shell 上；但它仍然只是 session-owned recovery worker，不是 child 自己的 actor / queue
+- 真正还没做的是把 recovery driver 的执行 owner 再下沉成 child 自己的独立 actor / queue，而不是继续由 session-owned recovery driver 驱动
+- replay 可恢复 child 生命周期边界，并为 detached child 恢复提供 durable 边界
 
 ### 4. `Task` 改成 sugar
 
@@ -971,6 +997,7 @@ OpenCray 当前产品目标不是 Codex 的完整执行环境矩阵。
 - child handle 自己进入 `waiting_approval`
 - `wait_agent` 返回 `requires_user_action=true`
 - host / replay / UI 都能知道是哪个 child 卡住了
+- approval 通过后，显式 handle child 会由 session-owned recovery driver 续跑，而不是要求模型先再发一次 `wait_agent`
 
 ### cancel
 
@@ -1039,7 +1066,7 @@ child 不能只留下最后一句摘要。
 
 - 上面三件事已经基本成立
 - 额外已补 `list_subagents`，所以 child registry 现在已经有 runtime 一等读接口
-- 真正剩下的是把 registry 后面的 live execution owner 从“宿主 queue + 隐藏恢复 wait”继续推进成“独立 child actor / child queue”
+- 真正剩下的是把 registry 后面的 live execution owner 从“session-owned recovery driver”继续推进成“独立 child actor / child queue”
 
 ### P2-3 `spawn_agent`
 

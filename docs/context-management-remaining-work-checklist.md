@@ -1,6 +1,6 @@
 # Context Management Remaining Work Checklist
 
-Last updated: 2026-03-24
+Last updated: 2026-04-03
 
 ## Current checkpoint
 
@@ -47,6 +47,14 @@ Phase 1 foundation now in progress:
 - `Memory Inspector` now also supports direct projected-memory `search/get` drill-down, so operators can query the projected corpus and inspect bounded snippets in-place without leaving the debug surface
 - chat fullscreen run trace and Settings `Context & Memory Trace` now render structured run-level context traces for bootstrap, recalled memory, memory flush, durable compaction, skill inventory, and active skill directly from host snapshots
 - the next safe rollout step is finishing bounded automatic memory stewardship plus child-context policy work, now that Level 2 skill activation, pre-compaction memory flush, durable compaction, and bootstrap trace are in place without moving source-selection logic into `ContextManager`
+
+Additional context-budget checkpoint:
+
+- the global budget coordinator now performs layer-local structural reduction instead of only omit-or-fallback behavior for `WORKING_STATE`, `RETRIEVED_MEMORY`, `RECENT_TOOL_OBSERVATIONS`, `ACTIVE_SKILL`, `BOOTSTRAP`, `SKILL_INVENTORY`, `DURABLE_COMPACTION`, `PRUNING_SUMMARY`, and `COMPACTION_SUMMARY`
+- `PromptAssembler` and the coordinator now share the same prompt-layer renderers and the same `FULL` / `COMPACT` / `MINIMAL` reduction shape for those layers, so reduction logic stays aligned with final prompt text instead of drifting into coordinator-local formatting
+- current bounded replay is still a message-window strategy, not a run-count strategy: transcript `near` context is the rebuilt window, `far` context is represented only through summaries or separately recalled memory
+- current larger context budgets reduce prompt-pressure trimming and can preserve richer protocol detail, but they do not yet automatically enlarge source caps such as transcript window size or injected memory count
+- Codex comparison note: Codex uses an effective-window display headroom of about `95%` but its default automatic compaction threshold is actually `90% of context_window`, with pre-turn and mid-turn compaction paths. OpenCray now has the first shared pre-turn replay-pressure slice for this: `memory flush` and `durable compaction` both derive or clamp `auto_compact_token_limit` from model-window metadata and require that threshold before acting. The remaining gap is that OpenCray still applies that threshold only to omitted-history pre-turn maintenance, not to mid-turn continuation pressure or model-switch safeguards.
 
 ## Remaining work after P0
 
@@ -145,20 +153,25 @@ Phase 1 foundation now in progress:
    - Trigger it only under transcript/context pressure.
    - Preserve durable notes before durable compaction rewrites older history.
    - Keep flush append-only and traceable, and prevent repeated flushes in the same compaction cycle.
-   - Current status: implemented as a pre-run memory flush path before session-context assembly. The flush only triggers when prompt-local pruning plus transcript windowing would omit enough older history, writes durable candidates through the existing memory extractor/writer path, reloads fresh memory records so the same run can immediately recall them, projects structured `memoryFlush` trace through runtime metadata plus host/local run snapshots, and dedupes repeated flushes with omitted-window signatures plus stable candidate ids so simple window growth does not keep rewriting the same memory.
+   - Current status: implemented as a pre-run memory flush path before session-context assembly. The flush now shares a replay-pressure evaluator with durable compaction, deriving or clamping `auto_compact_token_limit` from model-window metadata and requiring that token threshold before acting. It still uses prompt-local pruning plus transcript windowing to decide which omitted history becomes flush evidence, writes durable candidates through the existing memory extractor/writer path, reloads fresh memory records so the same run can immediately recall them, projects structured `memoryFlush` trace through runtime metadata plus host/local run snapshots, and dedupes repeated flushes with omitted-window signatures plus stable candidate ids so simple window growth does not keep rewriting the same memory.
    - Remaining gaps: there is still no separate durable compaction worker or dedicated flush task. Flush currently stays as a pre-run preservation stage wired through session preparation.
+   - Remaining gaps: the trigger is still omission-gated even after the new shared token threshold. There is no mid-turn memory flush path, no model-switch pressure handling, and no richer replay-budget audit surface yet.
 
 8. Context pruner
    - Add prompt-local pruning rules for large tool outputs, repeated observations, and bulky attachments.
    - Keep pruning separate from durable compaction.
-   - Current status: prompt-local pruning now rewrites oversized tool payloads, collapses attachment-like blobs, and drops consecutive duplicate background noise before transcript windowing, with summary/report counters carried through prompt assembly and runtime metadata.
-   - Remaining gaps: semantic dedupe across non-consecutive failed search loops and richer structured-artifact summarization are still pending.
+   - Current status: `ContextPruner` has now been narrowed partway toward the Codex reference boundary. Ordinary long tool payloads are no longer proactively rewritten, consecutive duplicate background messages are no longer dropped, and prompt-local pruning remains fully traceable through prompt assembly/runtime metadata.
+   - Current status: attachment-like/blob payload rewriting is still active as the surviving narrow guardrail.
+   - Target direction: keep prompt-local pruning for pathological attachment/blob payloads, hard request-sendability protection, and explicit bounded side-payload truncation contracts only.
+   - Remaining gaps: actual request-sendability trimming keyed to compaction/prompt overflow is still not implemented, and the flush/compaction chain should be revalidated as later token-threshold trigger work replaces the older omission-driven pressure assumptions.
 
 9. Durable compaction summaries
    - Introduce session-level summaries for older turns.
    - Preserve decision history while shrinking the replay window.
-   - Current status: implemented as a pre-run durable compaction stage before prompt assembly. Prompt tasks now compact older omitted transcript slices into a separate per-session durable summary store, physically trim the runtime transcript tail through `SessionTranscriptStore.replace(...)`, inject the rendered durable summaries as a dedicated `Durable Compaction` prompt layer, and project structured durable-compaction trace through runtime metadata plus host/local run snapshots.
+   - Current status: implemented as a pre-run durable compaction stage before prompt assembly. Prompt tasks now compact older omitted transcript slices into a separate per-session durable summary store, physically trim the runtime transcript tail through `SessionTranscriptStore.replace(...)`, inject the rendered durable summaries as a dedicated `Durable Compaction` prompt layer, and project structured durable-compaction trace through runtime metadata plus host/local run snapshots. The trigger now shares the same replay-pressure evaluator as memory flush, deriving or clamping `auto_compact_token_limit` from model-window metadata and requiring that threshold before compacting omitted history.
    - Remaining gaps: compaction still runs inline during session preparation rather than as a background worker, and the current trace exposes counts/timestamps rather than a richer per-entry audit surface.
+   - Remaining gaps: the trigger model is still not fully Codex-grade. OpenCray now has the first model-window-derived pre-turn threshold, but it still only gates omitted-history rewrites; there is still no mid-turn compaction for long follow-up runs and no smaller-window model-switch safeguard.
+   - Remaining gaps: a future semantic compaction path still needs explicit output sanitation plus canonical runtime-baseline reinjection instead of blindly trusting returned compacted replay.
 
 10. Bootstrap context files
    - Resolve `AGENTS.md`, `SOUL.md`, `TOOLS.md`, and `PROJECT.md` as bounded context sources.
@@ -184,15 +197,31 @@ Phase 1 foundation now in progress:
     - Current status: memory write activity, bounded memory recall trace, explicit memory-tool retrieval trace, deterministic memory/soul linked activity, bootstrap-file trace, skill visibility trace, active skill capsule trace, pre-compaction memory-flush trace, and durable-compaction trace now project through runtime metadata plus host/local snapshot surfaces. Chat run-trace UI and Settings `Context & Memory Trace` consume these run-level traces without a separate debug protocol.
    - Remaining gaps: deeper cross-layer trace capture is still pending, especially per-layer budgeting/provenance summaries and richer compaction/bootstrap replay or drill-down workflows beyond the current read-only trace surfaces.
 
+### Additional context-budget follow-up
+
+13. Budget-layer final state reporting
+   - Add an explicit final state per layer such as `full`, `compact`, `minimal`, or `omitted`.
+   - Thread that state through runtime reports and snapshot surfaces instead of relying only on `appliedOperators` plus token deltas.
+   - Current status: not implemented yet. Downstream still infers state from operator names, token deltas, and omission flags.
+
+14. Context-budget settings and source-cap coupling
+   - Expose preset tiers for normal users.
+   - Expose deeper raw numeric overrides for advanced or dev users.
+   - When raw values diverge from a known preset, surface the preset as `dev`.
+   - Map these settings into `ModelContextBudgetPolicy`.
+   - Later couple higher presets to larger source-acquisition caps, especially transcript `maxMessages`, injected memory count, bootstrap caps, skill inventory or active-skill caps, and recent-observation caps.
+   - Current status: the runtime budget envelope exists, but live settings do not expose this slice yet, and larger budgets currently reduce compression pressure only instead of automatically enlarging source caps.
+
 ## Recommended execution order
 
 1. Preserve the `ContextManager` boundary as allocator/budget owner only
-2. Finish structured soul promotion/confirmation work
+2. Finish structured soul promotion or confirmation gaps that still require deeper semantic coverage or clearer runtime proof, without reopening the base `SOUL.md` authority split
 3. Finish bounded automatic memory stewardship, starting with allowed maintenance operations and then expanding `user_preference`, `task_commitment`, `project_fact`, and `durable_instruction`
-4. Wire live bootstrap mode selection beyond the current `full`/`none` app path
-   - Include the planned `no_soul` and `no_memory_or_soul` live profiles when this selection surface is implemented.
-5. Subagent context modes
-6. Broader full-context trace and debug drill-down
+4. Add explicit budget-layer final state reporting so downstream trace/debug surfaces no longer have to infer `full` / `compact` / `minimal` only from operators and token deltas
+5. Expose context-budget presets plus deep raw overrides, mapping them into `ModelContextBudgetPolicy`
+6. Couple larger context presets to larger source-acquisition caps instead of only reducing compression pressure
+7. Subagent context modes
+8. Broader full-context trace and debug drill-down
 
 ## Explicitly deferred for the current product shape
 

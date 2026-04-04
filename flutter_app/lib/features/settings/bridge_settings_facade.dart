@@ -181,6 +181,10 @@ class BridgeSettingsFacade implements SettingsFacade {
     required String model,
     required String reasoningEffort,
     required String systemPrompt,
+    String? openAiPromptCacheKeyStrategy,
+    String? openAiPromptCacheRetention,
+    bool? anthropicPromptCachingEnabled,
+    String? anthropicPromptCacheTtl,
   }) async => _mapLlmConfig(
     await _bridge.saveLlmConfig(
       enabled: enabled,
@@ -194,6 +198,10 @@ class BridgeSettingsFacade implements SettingsFacade {
       model: model,
       reasoningEffort: reasoningEffort,
       systemPrompt: systemPrompt,
+      openAiPromptCacheKeyStrategy: openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention: openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled: anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl: anthropicPromptCacheTtl,
     ),
   );
 
@@ -208,6 +216,10 @@ class BridgeSettingsFacade implements SettingsFacade {
     required String model,
     required String reasoningEffort,
     required String systemPrompt,
+    String? openAiPromptCacheKeyStrategy,
+    String? openAiPromptCacheRetention,
+    bool? anthropicPromptCachingEnabled,
+    String? anthropicPromptCacheTtl,
   }) async => _mapLlmConfig(
     await _bridge.saveCustomLlmProvider(
       selectedProviderOptionId: selectedProviderOptionId,
@@ -219,6 +231,10 @@ class BridgeSettingsFacade implements SettingsFacade {
       model: model,
       reasoningEffort: reasoningEffort,
       systemPrompt: systemPrompt,
+      openAiPromptCacheKeyStrategy: openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention: openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled: anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl: anthropicPromptCacheTtl,
     ),
   );
 
@@ -517,6 +533,10 @@ class BridgeSettingsFacade implements SettingsFacade {
       reasoningEffort: snapshot.reasoningEffort,
       systemPrompt: snapshot.systemPrompt,
       helperText: snapshot.helperText,
+      openAiPromptCacheKeyStrategy: snapshot.openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention: snapshot.openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled: snapshot.anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl: snapshot.anthropicPromptCacheTtl,
     );
   }
 

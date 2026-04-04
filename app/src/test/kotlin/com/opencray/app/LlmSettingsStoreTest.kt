@@ -208,6 +208,7 @@ class LlmSettingsStoreTest {
           model = "gpt-4o-mini",
         ),
         verifiedAtEpochMs = 1234L,
+        contextWindowTokens = 200_000,
         visionInputSupported = true,
         pdfInputSupported = true,
         nativeToolCallingAvailable = true,
@@ -225,8 +226,41 @@ class LlmSettingsStoreTest {
       ),
     )
 
+    assertEquals(200_000, loaded.agentCapability.contextWindowTokens)
     assertTrue(loaded.agentCapability.visionInputSupported)
     assertTrue(loaded.agentCapability.pdfInputSupported)
     assertTrue(loaded.agentCapability.nativeToolCallingAvailable)
+  }
+
+  @Test
+  fun saveAndLoadPersistsPromptCachingSettings() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val saved = LlmSettingsState(
+      enabled = true,
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      baseUrl = "https://api.openai.com/v1",
+      apiKey = "token",
+      model = "gpt-5-mini",
+      openAiPromptCacheKeyStrategy = LlmPromptCacheKeyStrategies.SESSION,
+      openAiPromptCacheRetention = LlmPromptCacheRetentionPolicies.HOURS_24,
+      anthropicPromptCachingEnabled = true,
+      anthropicPromptCacheTtl = AnthropicPromptCacheTtlPolicies.HOUR_1,
+    )
+
+    store.save(saved)
+
+    val loaded = store.load(
+      defaults = LlmSettingsState(
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+      ),
+    )
+
+    assertEquals(LlmPromptCacheKeyStrategies.SESSION, loaded.openAiPromptCacheKeyStrategy)
+    assertEquals(LlmPromptCacheRetentionPolicies.HOURS_24, loaded.openAiPromptCacheRetention)
+    assertTrue(loaded.anthropicPromptCachingEnabled)
+    assertEquals(AnthropicPromptCacheTtlPolicies.HOUR_1, loaded.anthropicPromptCacheTtl)
   }
 }

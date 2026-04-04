@@ -86,6 +86,12 @@ class PythonBackedCommandExecutionTest {
     assertEquals("false", result.metadata["sandboxCommandProviderNative"])
     assertEquals("false", result.metadata["sandboxCommandSupportsStreamingLogs"])
     assertEquals("false", result.metadata["sandboxCommandSupportsReconnect"])
+    assertEquals("false", result.metadata["sandboxCommandSupportsManagedProcessLiveObservation"])
+    assertEquals(
+      "false",
+      result.metadata["sandboxCommandSupportsManagedProcessObservationCursorResume"],
+    )
+    assertEquals("false", result.metadata["sandboxCommandSupportsManagedProcessObservationBackfill"])
   }
 
   @Test
@@ -122,6 +128,12 @@ class PythonBackedCommandExecutionTest {
     assertEquals("CANCELLED", waited.errorCode)
     assertEquals("false", waited.metadata["sandboxCommandSupportsStreamingLogs"])
     assertEquals("false", waited.metadata["sandboxCommandSupportsReconnect"])
+    assertEquals("false", waited.metadata["sandboxCommandSupportsManagedProcessLiveObservation"])
+    assertEquals(
+      "false",
+      waited.metadata["sandboxCommandSupportsManagedProcessObservationCursorResume"],
+    )
+    assertEquals("false", waited.metadata["sandboxCommandSupportsManagedProcessObservationBackfill"])
   }
 
   @Test
@@ -157,6 +169,9 @@ class PythonBackedCommandExecutionTest {
     assertEquals(false, backend.capabilities.providerNative)
     assertEquals(false, backend.capabilities.supportsStreamingLogs)
     assertEquals(false, backend.capabilities.supportsReconnect)
+    assertEquals(false, backend.capabilities.supportsManagedProcessLiveObservation)
+    assertEquals(false, backend.capabilities.supportsManagedProcessObservationCursorResume)
+    assertEquals(false, backend.capabilities.supportsManagedProcessObservationBackfill)
 
     val result = backend.createCommandExecutor().execute(
       request = com.opencray.runtime.CommandExecutionRequest(

@@ -334,6 +334,10 @@ class OpenCrayFlutterHostBridgeTest {
       model: String,
       reasoningEffort: String,
       systemPrompt: String,
+      openAiPromptCacheKeyStrategy: String?,
+      openAiPromptCacheRetention: String?,
+      anthropicPromptCachingEnabled: Boolean?,
+      anthropicPromptCacheTtl: String?,
     ): Map<String, Any?> = throw UnsupportedOperationException()
 
     override fun saveCustomLlmProvider(
@@ -346,6 +350,10 @@ class OpenCrayFlutterHostBridgeTest {
       model: String,
       reasoningEffort: String,
       systemPrompt: String,
+      openAiPromptCacheKeyStrategy: String?,
+      openAiPromptCacheRetention: String?,
+      anthropicPromptCachingEnabled: Boolean?,
+      anthropicPromptCacheTtl: String?,
     ): Map<String, Any?> = throw UnsupportedOperationException()
 
     override fun validateLlmConfig(

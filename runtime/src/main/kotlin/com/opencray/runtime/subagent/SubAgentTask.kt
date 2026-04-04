@@ -51,6 +51,7 @@ object SubAgentMetadataKeys {
   const val PARENT_TASK_ID: String = "parentTaskId"
   const val PARENT_TURN: String = "parentTurn"
   const val DEPTH: String = "subagentDepth"
+  const val CONTROL_TOOL: String = "subagentControlTool"
   const val ACTIVE_SKILL_NAME: String = "activeSkillName"
   const val ACTIVE_SKILL_ACTIVATION_SOURCE: String = "activeSkillActivationSource"
 }

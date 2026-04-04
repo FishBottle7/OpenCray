@@ -900,6 +900,10 @@ void main() {
         'model': 'claude-3-7-sonnet',
         'reasoningEffort': 'high',
         'systemPrompt': '',
+        'openAiPromptCacheKeyStrategy': 'session',
+        'openAiPromptCacheRetention': '24h',
+        'anthropicPromptCachingEnabled': true,
+        'anthropicPromptCacheTtl': '1h',
         'helperText': 'Helper text',
       });
     };
@@ -915,12 +919,24 @@ void main() {
       model: 'claude-3-7-sonnet',
       reasoningEffort: 'high',
       systemPrompt: '',
+      openAiPromptCacheKeyStrategy: 'session',
+      openAiPromptCacheRetention: '24h',
+      anthropicPromptCachingEnabled: true,
+      anthropicPromptCacheTtl: '1h',
     );
 
     expect(capturedBody['selectedProviderOptionId'], 'custom');
     expect(capturedBody['providerNotes'], 'Regional fallback');
+    expect(capturedBody['openAiPromptCacheKeyStrategy'], 'session');
+    expect(capturedBody['openAiPromptCacheRetention'], '24h');
+    expect(capturedBody['anthropicPromptCachingEnabled'], true);
+    expect(capturedBody['anthropicPromptCacheTtl'], '1h');
     expect(snapshot.selectedProviderOptionId, 'saved-custom');
     expect(snapshot.providerOptions.single.protocol, 'anthropic');
+    expect(snapshot.openAiPromptCacheKeyStrategy, 'session');
+    expect(snapshot.openAiPromptCacheRetention, '24h');
+    expect(snapshot.anthropicPromptCachingEnabled, isTrue);
+    expect(snapshot.anthropicPromptCacheTtl, '1h');
   });
 
   test('local runtime bridge posts share requests over http', () async {

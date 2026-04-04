@@ -268,6 +268,24 @@ class OpenCrayUiCopy {
       isChinese ? '已关闭 Anthropic thinking' : 'Anthropic thinking disabled';
   String get llmGptModelDetected =>
       isChinese ? '已检测到 GPT 模型' : 'GPT model detected';
+  String get llmPromptCacheTitle => isChinese ? '提示缓存' : 'Prompt cache';
+  String get llmPromptCacheOpenAiHelper => isChinese
+      ? '控制 OpenAI 路由的 prompt cache hints。仅在目标路由支持时发送。'
+      : 'Controls OpenAI prompt cache hints. They are only sent when the target route supports them.';
+  String get llmPromptCacheAnthropicHelper => isChinese
+      ? '控制 Anthropic 的 cache_control 提示块缓存。'
+      : 'Controls Anthropic cache_control prompt caching.';
+  String get llmOpenAiPromptCacheKeyLabel =>
+      isChinese ? '缓存键范围' : 'Cache key scope';
+  String get llmOpenAiPromptCacheRetentionLabel =>
+      isChinese ? '缓存保留期' : 'Cache retention';
+  String get llmAnthropicPromptCachingTitle =>
+      isChinese ? '启用缓存' : 'Enable cache';
+  String get llmAnthropicPromptCachingSubtitle => isChinese
+      ? '为可复用提示块发送 Anthropic cache_control。'
+      : 'Send Anthropic cache_control for reusable prompt blocks.';
+  String get llmAnthropicPromptCacheTtlLabel =>
+      isChinese ? '缓存 TTL' : 'Cache TTL';
   String get llmAdvancedPromptTitle => isChinese ? '高级提示词' : 'Advanced prompt';
   String get llmPromptOverrideLabel => isChinese ? '提示词覆盖' : 'Prompt override';
   String get llmPromptOverrideHint => isChinese
@@ -348,6 +366,71 @@ class OpenCrayUiCopy {
       case 'medium':
       default:
         return '中';
+    }
+  }
+
+  String llmOpenAiPromptCacheKeyStrategyTitle(String strategy) {
+    if (!isChinese) {
+      switch (strategy) {
+        case 'route':
+          return 'Per route';
+        case 'session':
+          return 'Per session';
+        case 'none':
+        default:
+          return 'Disabled';
+      }
+    }
+    switch (strategy) {
+      case 'route':
+        return '按路由';
+      case 'session':
+        return '按会话';
+      case 'none':
+      default:
+        return '关闭';
+    }
+  }
+
+  String llmOpenAiPromptCacheRetentionTitle(String retention) {
+    if (!isChinese) {
+      switch (retention) {
+        case 'in_memory':
+          return 'In memory';
+        case '24h':
+          return '24 hours';
+        case '':
+        default:
+          return 'Default';
+      }
+    }
+    switch (retention) {
+      case 'in_memory':
+        return '仅内存';
+      case '24h':
+        return '24 小时';
+      case '':
+      default:
+        return '默认';
+    }
+  }
+
+  String llmAnthropicPromptCacheTtlTitle(String ttl) {
+    if (!isChinese) {
+      switch (ttl) {
+        case '1h':
+          return '1 hour';
+        case '5m':
+        default:
+          return '5 minutes';
+      }
+    }
+    switch (ttl) {
+      case '1h':
+        return '1 小时';
+      case '5m':
+      default:
+        return '5 分钟';
     }
   }
 

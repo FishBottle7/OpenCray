@@ -64,6 +64,15 @@ private data class MultimodalMessageAssembly(
   val inlineImages: List<EncodedImageAttachment> = emptyList(),
 )
 
+private data class PromptCacheUsageSnapshot(
+  val cacheUsed: Boolean,
+  val readTokens: Long? = null,
+  val writeTokens: Long? = null,
+  val write5mTokens: Long? = null,
+  val write1hTokens: Long? = null,
+  val retention: String? = null,
+)
+
 private enum class OpenAiBuiltinWebSearchDialect(
   val wireValue: String,
 ) {
@@ -309,6 +318,12 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     request.route.metadata["temperature"]?.toDoubleOrNull()?.let { payload.put("temperature", it) }
     request.route.metadata["max_tokens"]?.toIntOrNull()?.let { payload.put("max_tokens", it) }
     request.route.metadata["reasoning_effort"]?.takeIf { it.isNotBlank() }?.let { payload.put("reasoning_effort", it) }
+    openAiPromptCacheKey(request)?.let { promptCacheKey ->
+      payload.put("prompt_cache_key", promptCacheKey)
+    }
+    openAiPromptCacheRetention(request)?.let { retention ->
+      payload.put("prompt_cache_retention", retention)
+    }
     return payload.toString()
   }
 
@@ -331,6 +346,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     applyAnthropicToolControl(payload, request.request)
     request.request.systemPrompt?.takeIf { it.isNotBlank() }?.let { systemPrompt ->
       payload.put("system", systemPrompt)
+    }
+    anthropicPromptCacheControl(request)?.let { cacheControl ->
+      payload.put("cache_control", cacheControl)
     }
     if (shouldDisableAnthropicThinking(request)) {
       payload.put(
@@ -390,6 +408,12 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         "reasoning",
         JSONObject().put("effort", effort),
       )
+    }
+    openAiPromptCacheKey(request)?.let { promptCacheKey ->
+      payload.put("prompt_cache_key", promptCacheKey)
+    }
+    openAiPromptCacheRetention(request)?.let { retention ->
+      payload.put("prompt_cache_retention", retention)
     }
     return payload.toString()
   }
@@ -1152,6 +1176,105 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       put(LiteLlmMetadataKeys.PROVIDER_REASONING_TURN_COUNT, "1")
       put(LiteLlmMetadataKeys.PROVIDER_REASONING_CHARS, reasoningText.length.toString())
     }
+    putAll(promptCacheRequestMetadata(request))
+    putAll(promptCacheUsageMetadata(payload = payload, protocol = protocol))
+  }
+
+  private fun promptCacheRequestMetadata(
+    request: LiteLlmProviderRequest,
+  ): Map<String, String> = buildMap {
+    openAiPromptCacheKey(request)?.let {
+      put(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_KEY_PRESENT, "true")
+    }
+    openAiPromptCacheRetention(request)?.let { retention ->
+      put(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_RETENTION, retention)
+    }
+    anthropicPromptCacheControl(request)?.let {
+      put(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_CONTROL_PRESENT, "true")
+    }
+    anthropicPromptCacheRetention(request)?.let { retention ->
+      put(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_RETENTION, retention)
+    }
+  }
+
+  private fun promptCacheUsageMetadata(
+    payload: JSONObject,
+    protocol: String,
+  ): Map<String, String> {
+    val usage = when (protocol) {
+      LlmProviderProtocols.ANTHROPIC -> anthropicPromptCacheUsage(payload)
+      LlmProviderProtocols.OPENAI,
+      LlmProviderProtocols.OPENAI_RESPONSES,
+      -> openAiPromptCacheUsage(payload)
+      else -> null
+    } ?: return emptyMap()
+    return buildMap {
+      put(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_USED, usage.cacheUsed.toString())
+      usage.readTokens?.let { tokens ->
+        put(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_READ_TOKENS, tokens.toString())
+      }
+      usage.writeTokens?.let { tokens ->
+        put(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_WRITE_TOKENS, tokens.toString())
+      }
+      usage.write5mTokens?.let { tokens ->
+        put(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_WRITE_5M_TOKENS, tokens.toString())
+      }
+      usage.write1hTokens?.let { tokens ->
+        put(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_WRITE_1H_TOKENS, tokens.toString())
+      }
+      usage.retention?.takeIf(String::isNotBlank)?.let { value ->
+        put(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_RETENTION, value)
+      }
+    }
+  }
+
+  private fun openAiPromptCacheUsage(
+    payload: JSONObject,
+  ): PromptCacheUsageSnapshot? {
+    val usage = payload.optJSONObject("usage") ?: return null
+    val cachedTokens = usage.optJSONObject("prompt_tokens_details")
+      ?.optLongValue("cached_tokens")
+      ?: usage.optJSONObject("input_tokens_details")
+        ?.optLongValue("cached_tokens")
+      ?: usage.optLongValue("cached_tokens")
+      ?: return null
+    return PromptCacheUsageSnapshot(
+      cacheUsed = cachedTokens > 0L,
+      readTokens = cachedTokens,
+    )
+  }
+
+  private fun anthropicPromptCacheUsage(
+    payload: JSONObject,
+  ): PromptCacheUsageSnapshot? {
+    val usage = payload.optJSONObject("usage") ?: return null
+    val readTokens = usage.optLongValue("cache_read_input_tokens")
+    val writeTokens = usage.optLongValue("cache_creation_input_tokens")
+    val cacheCreation = usage.optJSONObject("cache_creation")
+    val write5mTokens = cacheCreation?.optLongValue("ephemeral_5m_input_tokens")
+      ?: usage.optLongValue("cache_creation_ephemeral_5m_input_tokens")
+    val write1hTokens = cacheCreation?.optLongValue("ephemeral_1h_input_tokens")
+      ?: usage.optLongValue("cache_creation_ephemeral_1h_input_tokens")
+    if (readTokens == null && writeTokens == null && write5mTokens == null && write1hTokens == null) {
+      return null
+    }
+    val resolvedWriteTokens = writeTokens ?: listOfNotNull(write5mTokens, write1hTokens)
+      .takeIf { values -> values.isNotEmpty() }
+      ?.sum()
+    val retention = when {
+      write5mTokens != null && write1hTokens != null -> "mixed"
+      write1hTokens != null -> "1h"
+      write5mTokens != null -> "5m"
+      else -> null
+    }
+    return PromptCacheUsageSnapshot(
+      cacheUsed = (readTokens ?: 0L) > 0L || (resolvedWriteTokens ?: 0L) > 0L,
+      readTokens = readTokens,
+      writeTokens = resolvedWriteTokens,
+      write5mTokens = write5mTokens,
+      write1hTokens = write1hTokens,
+      retention = retention,
+    )
   }
 
   private fun requestDiagnosticsMetadata(
@@ -1168,6 +1291,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     if (request.request.responseApiPreferred) {
       put("responseApiPreferred", "true")
     }
+    putAll(promptCacheRequestMetadata(request))
   }
 
   private fun providerLineageId(
@@ -1225,6 +1349,161 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       return OpenAiBuiltinWebSearchDialect.OPENAI_CHAT_WEB_SEARCH
     }
     return null
+  }
+
+  private fun openAiPromptCacheKey(
+    request: LiteLlmProviderRequest,
+  ): String? {
+    if (!openAiPromptCacheHintsSupported(request)) {
+      return null
+    }
+    return when (resolvedPromptCacheKeyStrategy(request)) {
+      LlmPromptCacheKeyStrategies.ROUTE -> openAiRoutePromptCacheKey(request)
+      LlmPromptCacheKeyStrategies.SESSION -> {
+        val sessionId = request.request.metadata["sessionId"]
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: return null
+        "${openAiRoutePromptCacheKey(request)}|session=$sessionId"
+      }
+
+      else -> null
+    }
+  }
+
+  private fun openAiPromptCacheRetention(
+    request: LiteLlmProviderRequest,
+  ): String? {
+    if (!openAiPromptCacheHintsSupported(request)) {
+      return null
+    }
+    return when (
+      resolvedPromptCachingMetadataValue(
+        request = request,
+        key = LlmPromptCachingMetadataKeys.PROMPT_CACHE_RETENTION,
+      )?.lowercase()
+    ) {
+      LlmPromptCacheRetentionPolicies.IN_MEMORY -> LlmPromptCacheRetentionPolicies.IN_MEMORY
+      LlmPromptCacheRetentionPolicies.HOURS_24 -> LlmPromptCacheRetentionPolicies.HOURS_24
+      else -> null
+    }
+  }
+
+  private fun anthropicPromptCacheControl(
+    request: LiteLlmProviderRequest,
+  ): JSONObject? {
+    if (!anthropicPromptCachingEnabled(request)) {
+      return null
+    }
+    return JSONObject()
+      .put("type", "ephemeral")
+      .apply {
+        if (anthropicPromptCacheRetention(request) == AnthropicPromptCacheTtlPolicies.HOUR_1) {
+          put("ttl", AnthropicPromptCacheTtlPolicies.HOUR_1)
+        }
+      }
+  }
+
+  private fun anthropicPromptCachingEnabled(
+    request: LiteLlmProviderRequest,
+  ): Boolean {
+    if (resolvedProtocol(request) != LlmProviderProtocols.ANTHROPIC) {
+      return false
+    }
+    return resolvedPromptCachingMetadataValue(
+      request = request,
+      key = LlmPromptCachingMetadataKeys.ANTHROPIC_PROMPT_CACHING_ENABLED,
+    )?.lowercase() == "true"
+  }
+
+  private fun anthropicPromptCacheRetention(
+    request: LiteLlmProviderRequest,
+  ): String? {
+    if (!anthropicPromptCachingEnabled(request)) {
+      return null
+    }
+    return when (
+      resolvedPromptCachingMetadataValue(
+        request = request,
+        key = LlmPromptCachingMetadataKeys.ANTHROPIC_PROMPT_CACHE_TTL,
+      )?.lowercase()
+    ) {
+      null, "", AnthropicPromptCacheTtlPolicies.MINUTES_5 -> AnthropicPromptCacheTtlPolicies.MINUTES_5
+      AnthropicPromptCacheTtlPolicies.HOUR_1 -> AnthropicPromptCacheTtlPolicies.HOUR_1
+      else -> AnthropicPromptCacheTtlPolicies.MINUTES_5
+    }
+  }
+
+  private fun openAiPromptCacheHintsSupported(
+    request: LiteLlmProviderRequest,
+  ): Boolean {
+    if (resolvedProtocol(request) != LlmProviderProtocols.OPENAI &&
+      resolvedProtocol(request) != LlmProviderProtocols.OPENAI_RESPONSES
+    ) {
+      return false
+    }
+    resolvedPromptCachingMetadataValue(
+      request = request,
+      key = LlmPromptCachingMetadataKeys.PROMPT_CACHE_HINTS_SUPPORTED,
+    )?.lowercase()?.let { rawValue ->
+      return when (rawValue) {
+        "true" -> true
+        "false" -> false
+        else -> false
+      }
+    }
+    if (request.route.providerId.equals("openai", ignoreCase = true)) {
+      return true
+    }
+    val host = runCatching {
+      URI(request.route.baseUrl?.trim().orEmpty()).host.orEmpty().lowercase()
+    }.getOrDefault("")
+    return host == "api.openai.com" || host.endsWith(".openai.com")
+  }
+
+  private fun resolvedPromptCacheKeyStrategy(
+    request: LiteLlmProviderRequest,
+  ): String? = when (
+    resolvedPromptCachingMetadataValue(
+      request = request,
+      key = LlmPromptCachingMetadataKeys.PROMPT_CACHE_KEY_STRATEGY,
+    )?.lowercase()
+  ) {
+    LlmPromptCacheKeyStrategies.NONE -> null
+    LlmPromptCacheKeyStrategies.ROUTE -> LlmPromptCacheKeyStrategies.ROUTE
+    LlmPromptCacheKeyStrategies.SESSION -> LlmPromptCacheKeyStrategies.SESSION
+    else -> null
+  }
+
+  private fun openAiRoutePromptCacheKey(
+    request: LiteLlmProviderRequest,
+  ): String = llmRouteFingerprint(
+    protocol = resolvedProtocol(request),
+    baseUrl = request.route.baseUrl.orEmpty(),
+    model = request.route.model,
+  )
+
+  private fun resolvedPromptCachingMetadataValue(
+    request: LiteLlmProviderRequest,
+    key: String,
+  ): String? = request.request.metadata[key]
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: request.route.metadata[key]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+
+  private fun JSONObject.optLongValue(
+    key: String,
+  ): Long? {
+    if (!has(key) || isNull(key)) {
+      return null
+    }
+    return when (val rawValue = opt(key)) {
+      is Number -> rawValue.toLong()
+      is String -> rawValue.trim().toLongOrNull()
+      else -> null
+    }
   }
 
   private fun maybeAutoContinueBuiltinWebSearch(

@@ -6606,7 +6606,7 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
-  fun successfulToolResultEventPersistsGeneralResumeCheckpoint() {
+  fun successfulToolResultEventPersistsToolResultCheckpoint() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-general-resume-checkpoint"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
     val manager = RecordingRuntimeManager()
@@ -6656,7 +6656,7 @@ class OpenCrayHostRuntimeTest {
     )
 
     val checkpoint = promptCheckpointStore.get(task.id)
-    assertEquals(PromptCheckpointKind.GENERAL_RESUME, checkpoint?.checkpointKind)
+    assertEquals(PromptCheckpointKind.TOOL_RESULT_COMMITTED, checkpoint?.checkpointKind)
     assertEquals("LS", checkpoint?.toolName)
     assertEquals(OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED, checkpoint?.promptCheckpointBoundary)
     assertEquals(resumeState, checkpoint?.promptResumeState)

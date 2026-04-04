@@ -62,11 +62,13 @@ internal class ChatMemoryIngestionCoordinator(
   fun flushBeforeCompaction(
     sessionId: String,
     conversation: List<RuntimeConversationMessage>,
+    llmMetadata: Map<String, String> = emptyMap(),
     taskId: String? = null,
   ): MemoryFlushSummary = flushCoordinator.flushBeforeCompaction(
     sessionId = sessionId,
     workspaceId = workspaceIdProvider(),
     conversation = conversation,
+    llmMetadata = llmMetadata,
     taskId = taskId,
   )
 

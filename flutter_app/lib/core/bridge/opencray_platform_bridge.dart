@@ -473,6 +473,10 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
     required String model,
     required String reasoningEffort,
     required String systemPrompt,
+    String? openAiPromptCacheKeyStrategy,
+    String? openAiPromptCacheRetention,
+    bool? anthropicPromptCachingEnabled,
+    String? anthropicPromptCacheTtl,
   }) async => OpenCrayLlmConfigSnapshot.fromMap(
     await _invokeMap(
       'saveLlmConfig',
@@ -488,6 +492,14 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
         'model': model,
         'reasoningEffort': reasoningEffort,
         'systemPrompt': systemPrompt,
+        if (openAiPromptCacheKeyStrategy != null)
+          'openAiPromptCacheKeyStrategy': openAiPromptCacheKeyStrategy,
+        if (openAiPromptCacheRetention != null)
+          'openAiPromptCacheRetention': openAiPromptCacheRetention,
+        if (anthropicPromptCachingEnabled != null)
+          'anthropicPromptCachingEnabled': anthropicPromptCachingEnabled,
+        if (anthropicPromptCacheTtl != null)
+          'anthropicPromptCacheTtl': anthropicPromptCacheTtl,
       },
     ),
   );
@@ -503,6 +515,10 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
     required String model,
     required String reasoningEffort,
     required String systemPrompt,
+    String? openAiPromptCacheKeyStrategy,
+    String? openAiPromptCacheRetention,
+    bool? anthropicPromptCachingEnabled,
+    String? anthropicPromptCacheTtl,
   }) async => OpenCrayLlmConfigSnapshot.fromMap(
     await _invokeMap(
       'saveCustomLlmProvider',
@@ -516,6 +532,14 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
         'model': model,
         'reasoningEffort': reasoningEffort,
         'systemPrompt': systemPrompt,
+        if (openAiPromptCacheKeyStrategy != null)
+          'openAiPromptCacheKeyStrategy': openAiPromptCacheKeyStrategy,
+        if (openAiPromptCacheRetention != null)
+          'openAiPromptCacheRetention': openAiPromptCacheRetention,
+        if (anthropicPromptCachingEnabled != null)
+          'anthropicPromptCachingEnabled': anthropicPromptCachingEnabled,
+        if (anthropicPromptCacheTtl != null)
+          'anthropicPromptCacheTtl': anthropicPromptCacheTtl,
       },
     ),
   );

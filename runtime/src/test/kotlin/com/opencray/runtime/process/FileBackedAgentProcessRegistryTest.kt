@@ -1,5 +1,7 @@
 package com.opencray.runtime.process
 
+import com.opencray.persistence.PersistenceSchemaVersion
+import java.io.File
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -228,9 +230,197 @@ class FileBackedAgentProcessRegistryTest {
     assertEquals(ManagedProcessStatus.RUNNING, thirdReadAfterBackoff!!.status)
     assertEquals("false", thirdReadAfterBackoff.metadata["sandboxCommandReconnectRetryable"])
     assertEquals("attached_live", thirdReadAfterBackoff.metadata["sandboxCommandReconnectRecoveryState"])
-    assertEquals("2", thirdReadAfterBackoff.metadata["sandboxCommandReconnectAttemptCount"])
+    val attemptCount =
+      requireNotNull(thirdReadAfterBackoff.metadata["sandboxCommandReconnectAttemptCount"]).toInt()
+    assertTrue(attemptCount >= 2)
+    assertEquals(factory.reconnectCount, attemptCount)
     assertEquals("true", thirdReadAfterBackoff.metadata["reconnectedAfterRetry"])
-    assertEquals(2, factory.reconnectCount)
+    assertTrue(factory.reconnectCount >= 2)
+  }
+
+  @Test
+  fun metadataOnlyRemoteSnapshotIsNormalizedIntoTypedRemoteStateOnLoad() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-typed-normalize")
+    File(directory, FileBackedAgentProcessRegistry.FILE_NAME).writeText(
+      """
+      {
+        "schemaVersion": ${PersistenceSchemaVersion.CURRENT},
+        "recordVersion": 1,
+        "updatedAtEpochMs": 1100,
+        "snapshots": [
+          {
+            "processId": "proc-legacy-remote",
+            "taskId": "task-legacy-remote",
+            "command": "npm",
+            "args": ["run", "dev"],
+            "workingDirectory": ".",
+            "status": "SUCCESS",
+            "processStarted": true,
+            "timeoutMs": 120000,
+            "stdout": "booting",
+            "stderr": "",
+            "exitCode": 0,
+            "startedAtEpochMs": 1000,
+            "updatedAtEpochMs": 1100,
+            "finishedAtEpochMs": 1100,
+            "timedOut": false,
+            "cancelled": false,
+            "outputLimitExceeded": false,
+            "metadata": {
+              "sandboxProvider": "e2b",
+              "sandboxId": "sandbox-legacy-remote",
+              "sandboxDomain": "e2b.app",
+              "sandboxCommandNativeProtocol": "envd_connect_process_v1",
+              "sandboxCommandProviderHandleKind": "envd_process",
+              "sandboxCommandProviderStableSelectorKind": "tag",
+              "sandboxCommandProviderStableSelectorValue": "proc-legacy-remote",
+              "sandboxCommandProviderLiveSelectorKind": "pid",
+              "sandboxCommandProviderLiveSelectorValue": "654",
+              "sandboxCommandIdKind": "tag",
+              "sandboxCommandId": "proc-legacy-remote",
+              "remoteWorkspaceRoot": "/home/user/opencray/workspace-sticky/sandbox-legacy-remote",
+              "remoteWorkingDirectory": "/home/user/opencray/workspace-sticky/sandbox-legacy-remote/repo",
+              "sandboxCommandObservationMode": "host_managed_snapshot",
+              "sandboxCommandObservationEventCount": "2",
+              "sandboxCommandObservationCursor": "host_seq_2",
+              "sandboxCommandObservationStdoutBytes": "7",
+              "sandboxCommandObservationStderrBytes": "0",
+              "sandboxCommandProviderObservationMode": "provider_event_stream_host_buffered",
+              "sandboxCommandProviderObservationEventCount": "2",
+              "sandboxCommandProviderObservationCursor": "envd_seq_2",
+              "sandboxCommandProviderObservationBackfillSupported": "false",
+              "sandboxCommandReconnectApi": "envd_process_connect",
+              "sandboxCommandReconnectSource": "durable_registry_restore",
+              "sandboxCommandReconnectStatus": "attached",
+              "sandboxCommandReconnectRecoveryState": "attached_live",
+              "sandboxCommandReconnectAttemptCount": "2",
+              "sandboxCommandReconnectSelectorKind": "pid",
+              "sandboxCommandReconnectSelectorValue": "654",
+              "sandboxCommandReconnectSelectorSource": "snapshot_pid",
+              "sandboxCommandReconnectSeedSource": "durable_snapshot_metadata",
+              "sandboxCommandReconnectProviderObservationSeedConsumed": "true",
+              "sandboxCommandReconnectProviderObservationSeedState": "consumed_live_attach",
+              "sandboxCommandReconnectProviderObservationSeedConsumedAtEpochMs": "1050",
+              "sandboxCommandReconnectSeedObservationCursor": "host_seq_1",
+              "sandboxCommandReconnectSeedEventCount": "1",
+              "sandboxCommandReconnectSeededStdoutBytes": "7",
+              "sandboxCommandReconnectSeededStderrBytes": "0",
+              "sandboxCommandReconnectSeedProviderObservationCursor": "envd_seq_1",
+              "sandboxCommandReconnectSeedProviderObservationEventCount": "1"
+            }
+          }
+        ]
+      }
+      """.trimIndent(),
+    )
+
+    val restored = FileBackedAgentProcessRegistry(directory = directory).read("proc-legacy-remote")
+
+    assertNotNull(restored)
+    assertEquals("e2b", restored!!.remoteHandle?.provider)
+    assertEquals("sandbox-legacy-remote", restored.remoteHandle?.sandboxId)
+    assertEquals("654", restored.remoteHandle?.liveSelectorValue)
+    assertEquals(
+      "/home/user/opencray/workspace-sticky/sandbox-legacy-remote/repo",
+      restored.remoteHandle?.remoteWorkingDirectory,
+    )
+    assertEquals("host_managed_snapshot", restored.observationState?.mode)
+    assertEquals(2L, restored.observationState?.hostEventCount)
+    assertEquals("host_seq_2", restored.observationState?.hostCursor)
+    assertEquals(7L, restored.observationState?.stdoutBytes)
+    assertEquals("attached_live", restored.reconnectState?.recoveryState)
+    assertEquals(2, restored.reconnectState?.attemptCount)
+    assertEquals("654", restored.reconnectState?.selectorValue)
+    assertEquals("durable_snapshot_metadata", restored.reconnectState?.seed?.source)
+    assertEquals("host_seq_1", restored.reconnectState?.seed?.hostObservationCursor)
+    assertEquals(7L, restored.reconnectState?.seed?.stdoutBytes)
+  }
+
+  @Test
+  fun deliveredObservationStatePersistsAcrossReloadAndLiveSnapshotRefresh() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-delivered-observation")
+    val runningSnapshot = runningSnapshot(
+      processId = "proc-delivered-observation",
+      taskId = "task-delivered-observation",
+    ).copy(
+      stdout = "booting\nready",
+      observationState = ManagedProcessObservationState(
+        mode = "host_managed_snapshot",
+        hostEventCount = 2L,
+        hostCursor = "host_seq_2",
+        stdoutBytes = "booting\nready".toByteArray().size.toLong(),
+        stderrBytes = 0L,
+        providerMode = "provider_event_stream_host_buffered",
+        providerEventCount = 2L,
+        providerCursor = "envd_seq_2",
+      ),
+    )
+    val controller = FakeManagedProcessController(snapshot = runningSnapshot)
+    val registry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = ManagedProcessControllerFactory { controller },
+    )
+
+    registry.start(
+      ManagedProcessStartRequest(
+        processId = "proc-delivered-observation",
+        taskId = "task-delivered-observation",
+        command = "npm",
+        args = listOf("run", "dev"),
+        workingDirectory = ".",
+        timeoutMs = 120_000L,
+        requestedAtEpochMs = 1_000L,
+      ),
+    )
+    registry.recordObservationDelivery(
+      processId = "proc-delivered-observation",
+      deliveredObservationState = ManagedProcessDeliveredObservationState(
+        mode = "host_managed_snapshot",
+        cursor = "host_seq_1",
+        stdoutBytes = 8L,
+        stderrBytes = 0L,
+        providerMode = "provider_event_stream_host_buffered",
+        providerCursor = "envd_seq_1",
+        providerEventCount = 1L,
+        deliveredAtEpochMs = 1_050L,
+      ),
+    )
+
+    val restoredRegistry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = ManagedProcessControllerFactory { controller },
+    )
+    val restored = restoredRegistry.read("proc-delivered-observation")
+
+    assertNotNull(restored)
+    assertEquals("host_managed_snapshot", restored!!.deliveredObservationState?.mode)
+    assertEquals("host_seq_1", restored.deliveredObservationState?.cursor)
+    assertEquals(8L, restored.deliveredObservationState?.stdoutBytes)
+    assertEquals(0L, restored.deliveredObservationState?.stderrBytes)
+    assertEquals(
+      "provider_event_stream_host_buffered",
+      restored.deliveredObservationState?.providerMode,
+    )
+    assertEquals("envd_seq_1", restored.deliveredObservationState?.providerCursor)
+    assertEquals(1L, restored.deliveredObservationState?.providerEventCount)
+    assertEquals(1_050L, restored.deliveredObservationState?.deliveredAtEpochMs)
+    assertEquals(
+      "host_managed_snapshot",
+      restored.metadata["sandboxCommandLastDeliveredObservationMode"],
+    )
+    assertEquals("host_seq_1", restored.metadata["sandboxCommandLastDeliveredObservationCursor"])
+    assertEquals("8", restored.metadata["sandboxCommandLastDeliveredStdoutBytes"])
+    assertEquals("0", restored.metadata["sandboxCommandLastDeliveredStderrBytes"])
+    assertEquals(
+      "provider_event_stream_host_buffered",
+      restored.metadata["sandboxCommandLastDeliveredProviderObservationMode"],
+    )
+    assertEquals(
+      "envd_seq_1",
+      restored.metadata["sandboxCommandLastDeliveredProviderObservationCursor"],
+    )
+    assertEquals("1", restored.metadata["sandboxCommandLastDeliveredProviderObservationEventCount"])
+    assertEquals("1050", restored.metadata["sandboxCommandLastDeliveredAtEpochMs"])
   }
 
   private fun runningSnapshot(

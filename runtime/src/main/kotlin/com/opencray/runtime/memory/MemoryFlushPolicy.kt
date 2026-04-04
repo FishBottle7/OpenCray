@@ -18,12 +18,18 @@ data class MemoryFlushPolicy(
     require(maxToolObservations >= 1) { "MemoryFlushPolicy maxToolObservations must be >= 1." }
   }
 
-  fun shouldFlush(omittedMessages: List<RuntimeConversationMessage>): Boolean {
+  fun shouldFlush(
+    omittedMessages: List<RuntimeConversationMessage>,
+    replayPressure: com.opencray.runtime.context.ReplayPressureSnapshot,
+  ): Boolean {
     if (omittedMessages.isEmpty()) {
       return false
     }
     val omittedChars = omittedMessages.sumOf { message -> message.content.length }
-    return omittedMessages.size >= minOmittedMessages || omittedChars >= minOmittedChars
+    if (omittedMessages.size < minOmittedMessages && omittedChars < minOmittedChars) {
+      return false
+    }
+    return replayPressure.tokenThresholdTriggered
   }
 
   fun signatureFor(omittedMessages: List<RuntimeConversationMessage>): String {
