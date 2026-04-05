@@ -70,6 +70,15 @@ class RoutingManagedProcessControllerFactoryTest {
     assertEquals(1, sandboxFactory.requests.size)
     assertEquals("sandbox", snapshot.metadata["factoryBackend"])
     assertEquals("sandbox_remote", snapshot.metadata["executionBackend"])
+    assertEquals("managed_process_start", snapshot.metadata["sandboxTraceRouteKind"])
+    assertEquals("sandbox_remote", snapshot.metadata["sandboxTraceExecutionBackend"])
+    assertTrue(!snapshot.metadata["sandboxTraceId"].isNullOrBlank())
+    assertTrue(!snapshot.metadata["sandboxTraceRouteSpanId"].isNullOrBlank())
+    assertTrue(!snapshot.metadata["sandboxTraceExecutionSpanId"].isNullOrBlank())
+    assertEquals(
+      snapshot.metadata["sandboxTraceRouteSpanId"],
+      snapshot.metadata["sandboxTraceExecutionParentSpanId"],
+    )
   }
 
   @Test
@@ -146,7 +155,10 @@ class RoutingManagedProcessControllerFactoryTest {
     assertNotNull(controller)
     assertTrue(localFactory.reconnectSnapshots.isEmpty())
     assertEquals(1, sandboxFactory.reconnectSnapshots.size)
-    assertEquals("sandbox", controller!!.snapshot().metadata["factoryBackend"])
+    val reconnectedSnapshot = controller!!.snapshot()
+    assertEquals("sandbox", reconnectedSnapshot.metadata["factoryBackend"])
+    assertTrue(!reconnectedSnapshot.metadata["sandboxTraceId"].isNullOrBlank())
+    assertTrue(!reconnectedSnapshot.metadata["sandboxTraceReconnectSpanId"].isNullOrBlank())
   }
 
   private fun commandRequest(

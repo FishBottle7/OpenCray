@@ -45,6 +45,7 @@ import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.process.normalizedDeliveredObservationState
 import com.opencray.runtime.process.normalizedObservationState
 import com.opencray.runtime.process.normalizedReconnectState
+import com.opencray.runtime.process.withNormalizedRemoteState
 import com.opencray.runtime.context.RuntimeConversationAttachment
 import com.opencray.runtime.context.RuntimeConversationAttachmentKind
 import com.opencray.runtime.skills.SkillPackageBatchInstallEntry
@@ -271,6 +272,16 @@ data class ManagedProcessObservationCursorState(
   val cursor: String,
   val stdoutBytes: Long,
   val stderrBytes: Long,
+  val providerMode: String? = null,
+  val providerCursor: String? = null,
+  val providerEventCount: Long? = null,
+)
+
+private data class ManagedProcessProviderObservationBoundary(
+  val cursorBefore: String,
+  val cursorAfter: String,
+  val eventCountBefore: Long? = null,
+  val eventCountAfter: Long? = null,
 )
 
 private data class ManagedProcessObservationDelivery(
@@ -295,6 +306,7 @@ private data class ManagedProcessObservationDelivery(
       cursorAfter: String,
       stdoutDeltaBytes: Long,
       stderrDeltaBytes: Long,
+      providerBoundary: ManagedProcessProviderObservationBoundary? = null,
       warning: String? = null,
     ): ManagedProcessObservationDelivery = deltaMode(
       mode = mode,
@@ -304,6 +316,7 @@ private data class ManagedProcessObservationDelivery(
       stderr = snapshot.stderr,
       stdoutDeltaBytes = stdoutDeltaBytes,
       stderrDeltaBytes = stderrDeltaBytes,
+      providerBoundary = providerBoundary,
       warning = warning,
     )
 
@@ -315,6 +328,7 @@ private data class ManagedProcessObservationDelivery(
       stderr: String,
       stdoutDeltaBytes: Long,
       stderrDeltaBytes: Long,
+      providerBoundary: ManagedProcessProviderObservationBoundary? = null,
       warning: String? = null,
     ): ManagedProcessObservationDelivery {
       val metadata = buildMap {
@@ -323,6 +337,16 @@ private data class ManagedProcessObservationDelivery(
         put("sandboxCommandObservationCursorAfter", cursorAfter)
         put("sandboxCommandObservationStdoutDeltaBytes", stdoutDeltaBytes.toString())
         put("sandboxCommandObservationStderrDeltaBytes", stderrDeltaBytes.toString())
+        providerBoundary?.let { boundary ->
+          put("sandboxCommandProviderObservationCursorBefore", boundary.cursorBefore)
+          put("sandboxCommandProviderObservationCursorAfter", boundary.cursorAfter)
+          boundary.eventCountBefore?.let { eventCount ->
+            put("sandboxCommandProviderObservationEventCountBefore", eventCount.toString())
+          }
+          boundary.eventCountAfter?.let { eventCount ->
+            put("sandboxCommandProviderObservationEventCountAfter", eventCount.toString())
+          }
+        }
         warning?.trim()?.takeIf(String::isNotBlank)?.let { message ->
           put("sandboxCommandObservationDeliveryWarning", message)
         }
@@ -333,6 +357,16 @@ private data class ManagedProcessObservationDelivery(
         add("sandbox_command_observation_cursor_after=$cursorAfter")
         add("sandbox_command_observation_stdout_delta_bytes=$stdoutDeltaBytes")
         add("sandbox_command_observation_stderr_delta_bytes=$stderrDeltaBytes")
+        providerBoundary?.let { boundary ->
+          add("sandbox_command_provider_observation_cursor_before=${boundary.cursorBefore}")
+          add("sandbox_command_provider_observation_cursor_after=${boundary.cursorAfter}")
+          boundary.eventCountBefore?.let { eventCount ->
+            add("sandbox_command_provider_observation_event_count_before=$eventCount")
+          }
+          boundary.eventCountAfter?.let { eventCount ->
+            add("sandbox_command_provider_observation_event_count_after=$eventCount")
+          }
+        }
         warning?.trim()?.takeIf(String::isNotBlank)?.let { message ->
           add("observation_warning=$message")
         }
@@ -4627,31 +4661,32 @@ class OpenCrayToolDispatcher(
       ?.let { candidate -> runCatching { Paths.get(candidate) }.getOrNull() }
 
   private fun managedProcessMetadata(snapshot: ManagedProcessSnapshot): Map<String, String> = buildMap {
-    put("processId", snapshot.processId)
-    put("processStatus", snapshot.status.name)
-    put("processStarted", snapshot.processStarted.toString())
-    put("timeoutMs", snapshot.timeoutMs.toString())
-    put("command", snapshot.command)
-    if (snapshot.args.isNotEmpty()) {
-      put("args", snapshot.args.joinToString(separator = "\u0000"))
+    val normalizedSnapshot = snapshot.withNormalizedRemoteState()
+    put("processId", normalizedSnapshot.processId)
+    put("processStatus", normalizedSnapshot.status.name)
+    put("processStarted", normalizedSnapshot.processStarted.toString())
+    put("timeoutMs", normalizedSnapshot.timeoutMs.toString())
+    put("command", normalizedSnapshot.command)
+    if (normalizedSnapshot.args.isNotEmpty()) {
+      put("args", normalizedSnapshot.args.joinToString(separator = "\u0000"))
     }
-    toolTargetResolver.displayWorkingDirectory(snapshot.workingDirectory)?.let { workingDirectory ->
+    toolTargetResolver.displayWorkingDirectory(normalizedSnapshot.workingDirectory)?.let { workingDirectory ->
       put("workingDirectory", workingDirectory)
     }
-    snapshot.exitCode?.let { code -> put("exitCode", code.toString()) }
-    snapshot.finishedAtEpochMs?.let { finishedAt -> put("finishedAtEpochMs", finishedAt.toString()) }
-    put("startedAtEpochMs", snapshot.startedAtEpochMs.toString())
-    put("updatedAtEpochMs", snapshot.updatedAtEpochMs.toString())
-    if (snapshot.timedOut) {
+    normalizedSnapshot.exitCode?.let { code -> put("exitCode", code.toString()) }
+    normalizedSnapshot.finishedAtEpochMs?.let { finishedAt -> put("finishedAtEpochMs", finishedAt.toString()) }
+    put("startedAtEpochMs", normalizedSnapshot.startedAtEpochMs.toString())
+    put("updatedAtEpochMs", normalizedSnapshot.updatedAtEpochMs.toString())
+    if (normalizedSnapshot.timedOut) {
       put("timedOut", "true")
     }
-    if (snapshot.cancelled) {
+    if (normalizedSnapshot.cancelled) {
       put("cancelled", "true")
     }
-    if (snapshot.outputLimitExceeded) {
+    if (normalizedSnapshot.outputLimitExceeded) {
       put("outputLimitExceeded", "true")
     }
-    putAll(snapshot.metadata.filterKeys(::isManagedProcessRuntimeMetadataKey))
+    putAll(normalizedSnapshot.metadata.filterKeys(::isManagedProcessRuntimeMetadataKey))
   }
 
   private fun managedProcessResultEnvelope(
@@ -4677,297 +4712,323 @@ class OpenCrayToolDispatcher(
     includeOutput: Boolean,
     observationDelivery: ManagedProcessObservationDelivery = ManagedProcessObservationDelivery.fullSnapshot(snapshot),
   ): String = buildString {
-    appendLine("process_id=${snapshot.processId}")
-    appendLine("status=${snapshot.status.name.lowercase()}")
-    snapshot.metadata["shellKind"]?.let { shellKind ->
+    val normalizedSnapshot = snapshot.withNormalizedRemoteState()
+    appendLine("process_id=${normalizedSnapshot.processId}")
+    appendLine("status=${normalizedSnapshot.status.name.lowercase()}")
+    normalizedSnapshot.metadata["shellKind"]?.let { shellKind ->
       appendLine("shell_kind=$shellKind")
     }
-    snapshot.metadata["shellCommand"]?.let { shellCommand ->
+    normalizedSnapshot.metadata["shellCommand"]?.let { shellCommand ->
       appendLine("shell_command=$shellCommand")
     }
-    appendLine("command=${snapshot.command}")
-    snapshot.metadata["runtimeKind"]?.let { runtimeKind ->
+    appendLine("command=${normalizedSnapshot.command}")
+    normalizedSnapshot.metadata["runtimeKind"]?.let { runtimeKind ->
       appendLine("runtime_kind=$runtimeKind")
     }
-    appendManagedProcessMetadataLine(snapshot, "runtimeBackend", "runtime_backend")
-    appendManagedProcessMetadataLine(snapshot, "runtimeTransport", "runtime_transport")
-    snapshot.metadata["scriptPath"]?.let { scriptPath ->
+    appendManagedProcessMetadataLine(normalizedSnapshot, "runtimeBackend", "runtime_backend")
+    appendManagedProcessMetadataLine(normalizedSnapshot, "runtimeTransport", "runtime_transport")
+    normalizedSnapshot.metadata["scriptPath"]?.let { scriptPath ->
       appendLine("script_path=$scriptPath")
     }
-    snapshot.metadata["pythonExecutable"]?.let { pythonExecutable ->
+    normalizedSnapshot.metadata["pythonExecutable"]?.let { pythonExecutable ->
       appendLine("python_executable=$pythonExecutable")
     }
-    appendManagedProcessMetadataLine(snapshot, "sandboxCommandBackendKind", "sandbox_backend_kind")
-    appendManagedProcessMetadataLine(snapshot, "sandboxCommandBackendResolvedKind", "sandbox_backend_resolved_kind")
-    appendManagedProcessMetadataLine(snapshot, "sandboxCommandProviderNative", "sandbox_provider_native")
+    appendManagedProcessMetadataLine(normalizedSnapshot, "sandboxCommandBackendKind", "sandbox_backend_kind")
+    appendManagedProcessMetadataLine(normalizedSnapshot, "sandboxCommandBackendResolvedKind", "sandbox_backend_resolved_kind")
+    appendManagedProcessMetadataLine(normalizedSnapshot, "sandboxCommandProviderNative", "sandbox_provider_native")
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandSupportsStreamingLogs",
       "sandbox_supports_streaming_logs",
     )
-    appendManagedProcessMetadataLine(snapshot, "sandboxCommandSupportsReconnect", "sandbox_supports_reconnect")
+    appendManagedProcessMetadataLine(normalizedSnapshot, "sandboxCommandSupportsReconnect", "sandbox_supports_reconnect")
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandSupportsManagedProcessLiveObservation",
       "sandbox_supports_managed_process_live_observation",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandSupportsManagedProcessObservationCursorResume",
       "sandbox_supports_managed_process_observation_cursor_resume",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandSupportsManagedProcessObservationBackfill",
       "sandbox_supports_managed_process_observation_backfill",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandProviderHandleKind",
       "sandbox_command_provider_handle_kind",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandProviderStableSelectorKind",
       "sandbox_command_provider_stable_selector_kind",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandProviderStableSelectorValue",
       "sandbox_command_provider_stable_selector_value",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandProviderLiveSelectorKind",
       "sandbox_command_provider_live_selector_kind",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandProviderLiveSelectorValue",
       "sandbox_command_provider_live_selector_value",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandIdKind",
       "sandbox_command_id_kind",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandId",
       "sandbox_command_id",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandProviderObservationMode",
       "sandbox_command_provider_observation_mode",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandProviderObservationEventCount",
       "sandbox_command_provider_observation_event_count",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandProviderObservationCursor",
       "sandbox_command_provider_observation_cursor",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandProviderObservationBackfillSupported",
       "sandbox_command_provider_observation_backfill_supported",
     )
-    appendManagedProcessMetadataLine(snapshot, "sandboxCommandHandleIdKind", "sandbox_command_handle_id_kind")
-    appendManagedProcessMetadataLine(snapshot, "sandboxCommandHandleId", "sandbox_command_handle_id")
-    appendManagedProcessMetadataLine(snapshot, "sandboxCommandHandleTag", "sandbox_command_handle_tag")
-    appendManagedProcessMetadataLine(snapshot, "sandboxCommandObservationMode", "sandbox_observation_mode")
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
+      "sandboxCommandProviderObservationResumeContract",
+      "sandbox_command_provider_observation_resume_contract",
+    )
+    appendManagedProcessMetadataLine(
+      normalizedSnapshot,
+      "sandboxCommandProviderObservationResumeBlocker",
+      "sandbox_command_provider_observation_resume_blocker",
+    )
+    appendManagedProcessMetadataLine(normalizedSnapshot, "sandboxCommandHandleIdKind", "sandbox_command_handle_id_kind")
+    appendManagedProcessMetadataLine(normalizedSnapshot, "sandboxCommandHandleId", "sandbox_command_handle_id")
+    appendManagedProcessMetadataLine(normalizedSnapshot, "sandboxCommandHandleTag", "sandbox_command_handle_tag")
+    appendManagedProcessMetadataLine(normalizedSnapshot, "sandboxCommandObservationMode", "sandbox_observation_mode")
+    appendManagedProcessMetadataLine(
+      normalizedSnapshot,
       "sandboxCommandObservationEventCount",
       "sandbox_command_observation_event_count",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandObservationCursor",
       "sandbox_command_observation_cursor",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandObservationStdoutBytes",
       "sandbox_command_observation_stdout_bytes",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandObservationStderrBytes",
       "sandbox_command_observation_stderr_bytes",
     )
     observationDelivery.renderLines.forEach(::appendLine)
-    appendManagedProcessMetadataLine(snapshot, "sandboxCommandApi", "sandbox_command_api")
-    appendManagedProcessMetadataLine(snapshot, "sandboxCommandReconnectApi", "sandbox_command_reconnect_api")
+    appendManagedProcessMetadataLine(normalizedSnapshot, "sandboxCommandApi", "sandbox_command_api")
+    appendManagedProcessMetadataLine(normalizedSnapshot, "sandboxCommandReconnectApi", "sandbox_command_reconnect_api")
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectStatus",
       "sandbox_command_reconnect_status",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectRecoveryState",
       "sandbox_command_reconnect_recovery_state",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectSource",
       "sandbox_command_reconnect_source",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectHttpStatusCode",
       "sandbox_command_reconnect_http_status_code",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectResumeMode",
       "sandbox_command_reconnect_resume_mode",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectBackfillSupported",
       "sandbox_command_reconnect_backfill_supported",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectOutputGapRisk",
       "sandbox_command_reconnect_output_gap_risk",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectRetryable",
       "sandbox_command_reconnect_retryable",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectRetryAfterEpochMs",
       "sandbox_command_reconnect_retry_after_epoch_ms",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectLastAttachedAtEpochMs",
       "sandbox_command_reconnect_last_attached_at_epoch_ms",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectLastEventAtEpochMs",
       "sandbox_command_reconnect_last_event_at_epoch_ms",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectLastEventKind",
       "sandbox_command_reconnect_last_event_kind",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectLastFailureAtEpochMs",
       "sandbox_command_reconnect_last_failure_at_epoch_ms",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectAttemptCount",
       "sandbox_command_reconnect_attempt_count",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectSelectorKind",
       "sandbox_command_reconnect_selector_kind",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectSelectorValue",
       "sandbox_command_reconnect_selector_value",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectSelectorSource",
       "sandbox_command_reconnect_selector_source",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectSeedObservationCursor",
       "sandbox_command_reconnect_seed_observation_cursor",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectSeedProviderObservationCursor",
       "sandbox_command_reconnect_seed_provider_observation_cursor",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectSeedEventCount",
       "sandbox_command_reconnect_seed_event_count",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectSeedProviderObservationEventCount",
       "sandbox_command_reconnect_seed_provider_observation_event_count",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectSeedSource",
       "sandbox_command_reconnect_seed_source",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectProviderObservationSeedConsumed",
       "sandbox_command_reconnect_provider_observation_seed_consumed",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectProviderObservationSeedState",
       "sandbox_command_reconnect_provider_observation_seed_state",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
+      "sandboxCommandReconnectProviderObservationSeedSource",
+      "sandbox_command_reconnect_provider_observation_seed_source",
+    )
+    appendManagedProcessMetadataLine(
+      normalizedSnapshot,
+      "sandboxCommandReconnectProviderObservationResumeApplied",
+      "sandbox_command_reconnect_provider_observation_resume_applied",
+    )
+    appendManagedProcessMetadataLine(
+      normalizedSnapshot,
+      "sandboxCommandReconnectProviderObservationResumeReason",
+      "sandbox_command_reconnect_provider_observation_resume_reason",
+    )
+    appendManagedProcessMetadataLine(
+      normalizedSnapshot,
       "sandboxCommandReconnectProviderObservationSeedConsumedAtEpochMs",
       "sandbox_command_reconnect_provider_observation_seed_consumed_at_epoch_ms",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectSeededStdoutBytes",
       "sandbox_command_reconnect_seeded_stdout_bytes",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectSeededStderrBytes",
       "sandbox_command_reconnect_seeded_stderr_bytes",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandNativeProtocol",
       "sandbox_command_native_protocol",
     )
-    appendManagedProcessMetadataLine(snapshot, "sandboxCommandSessionSource", "sandbox_command_session_source")
-    appendManagedProcessMetadataLine(snapshot, "sandboxCommandPid", "sandbox_command_pid")
+    appendManagedProcessMetadataLine(normalizedSnapshot, "sandboxCommandSessionSource", "sandbox_command_session_source")
+    appendManagedProcessMetadataLine(normalizedSnapshot, "sandboxCommandPid", "sandbox_command_pid")
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandNativeProcessStatus",
       "sandbox_command_native_process_status",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandNativeFailureStage",
       "sandbox_command_native_failure_stage",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandReconnectFailureStage",
       "sandbox_command_reconnect_failure_stage",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandBackendFallbackReasonCode",
       "sandbox_backend_fallback_reason",
     )
     val reconnectProviderObservationSeedState =
-      snapshot.metadata["sandboxCommandReconnectProviderObservationSeedState"]
-    if (snapshot.metadata["sandboxCommandReconnectOutputGapRisk"] == "true") {
+      normalizedSnapshot.metadata["sandboxCommandReconnectProviderObservationSeedState"]
+    if (normalizedSnapshot.metadata["sandboxCommandReconnectOutputGapRisk"] == "true") {
       when (reconnectProviderObservationSeedState) {
         "pending_live_attach" -> appendLine(
           "observation_warning=provider reconnect restored a persisted output seed and is still waiting for live attach; current output may only reflect the persisted host snapshot",
@@ -4983,8 +5044,8 @@ class OpenCrayToolDispatcher(
       }
     }
     if (
-      snapshot.metadata["sandboxCommandReconnectRecoveryState"] == "retry_scheduled" ||
-      snapshot.metadata["sandboxCommandReconnectRetryable"] == "true"
+      normalizedSnapshot.metadata["sandboxCommandReconnectRecoveryState"] == "retry_scheduled" ||
+      normalizedSnapshot.metadata["sandboxCommandReconnectRetryable"] == "true"
     ) {
       appendLine(
         when (reconnectProviderObservationSeedState) {
@@ -4996,56 +5057,56 @@ class OpenCrayToolDispatcher(
         },
       )
     }
-    if (snapshot.metadata["sandboxCommandReconnectRecoveryState"] == "failed_terminal") {
+    if (normalizedSnapshot.metadata["sandboxCommandReconnectRecoveryState"] == "failed_terminal") {
       appendLine(
         "observation_warning=provider reconnect terminated before live attach; current output may only reflect the persisted host snapshot",
       )
     }
-    snapshot.metadata["terminationSupport"]?.let { terminationSupport ->
+    normalizedSnapshot.metadata["terminationSupport"]?.let { terminationSupport ->
       appendLine("termination_support=$terminationSupport")
     }
-    if (snapshot.metadata["terminationRequested"] == "true") {
+    if (normalizedSnapshot.metadata["terminationRequested"] == "true") {
       appendLine("termination_requested=true")
     }
-    snapshot.metadata["terminationRequestAccepted"]?.let { terminationRequestAccepted ->
+    normalizedSnapshot.metadata["terminationRequestAccepted"]?.let { terminationRequestAccepted ->
       appendLine("termination_request_accepted=$terminationRequestAccepted")
     }
-    appendManagedProcessMetadataLine(snapshot, "sandboxCommandTerminateApi", "sandbox_command_terminate_api")
+    appendManagedProcessMetadataLine(normalizedSnapshot, "sandboxCommandTerminateApi", "sandbox_command_terminate_api")
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandTerminateRequestedSignal",
       "sandbox_command_terminate_requested_signal",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandTerminateSelectorKind",
       "sandbox_command_terminate_selector_kind",
     )
     appendManagedProcessMetadataLine(
-      snapshot,
+      normalizedSnapshot,
       "sandboxCommandTerminateSelectorValue",
       "sandbox_command_terminate_selector_value",
     )
-    if (snapshot.args.isNotEmpty()) {
-      appendLine("args=${snapshot.args.joinToString(separator = " ")}")
+    if (normalizedSnapshot.args.isNotEmpty()) {
+      appendLine("args=${normalizedSnapshot.args.joinToString(separator = " ")}")
     }
-    toolTargetResolver.displayWorkingDirectory(snapshot.workingDirectory)?.let { workingDirectory ->
+    toolTargetResolver.displayWorkingDirectory(normalizedSnapshot.workingDirectory)?.let { workingDirectory ->
       appendLine("working_directory=$workingDirectory")
     }
-    appendLine("timeout_ms=${snapshot.timeoutMs}")
-    appendLine("process_started=${snapshot.processStarted}")
-    snapshot.exitCode?.let { code ->
+    appendLine("timeout_ms=${normalizedSnapshot.timeoutMs}")
+    appendLine("process_started=${normalizedSnapshot.processStarted}")
+    normalizedSnapshot.exitCode?.let { code ->
       appendLine("exit_code=$code")
     }
-    snapshot.errorCode?.let { code ->
+    normalizedSnapshot.errorCode?.let { code ->
       appendLine("error_code=$code")
     }
-    snapshot.errorMessage?.let { message ->
+    normalizedSnapshot.errorMessage?.let { message ->
       appendLine("error_message=$message")
     }
-    appendLine("started_at_epoch_ms=${snapshot.startedAtEpochMs}")
-    appendLine("updated_at_epoch_ms=${snapshot.updatedAtEpochMs}")
-    snapshot.finishedAtEpochMs?.let { finishedAt ->
+    appendLine("started_at_epoch_ms=${normalizedSnapshot.startedAtEpochMs}")
+    appendLine("updated_at_epoch_ms=${normalizedSnapshot.updatedAtEpochMs}")
+    normalizedSnapshot.finishedAtEpochMs?.let { finishedAt ->
       appendLine("finished_at_epoch_ms=$finishedAt")
     }
     if (includeOutput) {
@@ -5121,6 +5182,7 @@ class OpenCrayToolDispatcher(
     stdoutAlignmentWarning: String,
     stderrAlignmentWarning: String,
   ): ManagedProcessObservationDelivery {
+    val providerBoundary = managedProcessProviderObservationBoundary(current = current, previous = previous)
     if (
       current.cursor == previous.cursor &&
       current.stdoutBytes == previous.stdoutBytes &&
@@ -5134,6 +5196,22 @@ class OpenCrayToolDispatcher(
         stderr = "",
         stdoutDeltaBytes = 0L,
         stderrDeltaBytes = 0L,
+        providerBoundary = providerBoundary,
+      )
+    }
+    managedProcessProviderObservationResetWarning(
+      current = current,
+      previous = previous,
+    )?.let { warning ->
+      return ManagedProcessObservationDelivery.snapshotMode(
+        snapshot = snapshot,
+        mode = MANAGED_PROCESS_OBSERVATION_DELIVERY_MODE_RESET_FULL,
+        cursorBefore = previous.cursor,
+        cursorAfter = current.cursor,
+        stdoutDeltaBytes = current.stdoutBytes,
+        stderrDeltaBytes = current.stderrBytes,
+        providerBoundary = providerBoundary,
+        warning = warning,
       )
     }
     if (current.stdoutBytes < previous.stdoutBytes || current.stderrBytes < previous.stderrBytes) {
@@ -5144,6 +5222,7 @@ class OpenCrayToolDispatcher(
         cursorAfter = current.cursor,
         stdoutDeltaBytes = current.stdoutBytes,
         stderrDeltaBytes = current.stderrBytes,
+        providerBoundary = providerBoundary,
         warning = resetWarning,
       )
     }
@@ -5155,6 +5234,7 @@ class OpenCrayToolDispatcher(
         cursorAfter = current.cursor,
         stdoutDeltaBytes = current.stdoutBytes,
         stderrDeltaBytes = current.stderrBytes,
+        providerBoundary = providerBoundary,
         warning = stdoutAlignmentWarning,
       )
     val stderrDelta = utf8DeltaFromByteOffset(snapshot.stderr, previous.stderrBytes)
@@ -5165,6 +5245,7 @@ class OpenCrayToolDispatcher(
         cursorAfter = current.cursor,
         stdoutDeltaBytes = current.stdoutBytes,
         stderrDeltaBytes = current.stderrBytes,
+        providerBoundary = providerBoundary,
         warning = stderrAlignmentWarning,
       )
     return ManagedProcessObservationDelivery.deltaMode(
@@ -5179,6 +5260,7 @@ class OpenCrayToolDispatcher(
       stderr = stderrDelta,
       stdoutDeltaBytes = (current.stdoutBytes - previous.stdoutBytes).coerceAtLeast(0L),
       stderrDeltaBytes = (current.stderrBytes - previous.stderrBytes).coerceAtLeast(0L),
+      providerBoundary = providerBoundary,
     )
   }
 
@@ -5219,6 +5301,13 @@ class OpenCrayToolDispatcher(
       cursor = cursor,
       stdoutBytes = stdoutBytes,
       stderrBytes = stderrBytes,
+      providerMode = observationState?.providerMode
+        ?: snapshot.metadata["sandboxCommandProviderObservationMode"]?.trim()?.takeIf(String::isNotBlank),
+      providerCursor = observationState?.providerCursor
+        ?: snapshot.metadata["sandboxCommandProviderObservationCursor"]?.trim()?.takeIf(String::isNotBlank),
+      providerEventCount = observationState?.providerEventCount
+        ?: snapshot.metadata["sandboxCommandProviderObservationEventCount"]?.toLongOrNull()
+          ?.takeIf { eventCount -> eventCount >= 0L },
     )
   }
 
@@ -5255,6 +5344,21 @@ class OpenCrayToolDispatcher(
       cursor = cursor,
       stdoutBytes = stdoutBytes,
       stderrBytes = stderrBytes,
+      providerMode =
+        deliveredObservationState?.providerMode
+          ?: snapshot.metadata["sandboxCommandLastDeliveredProviderObservationMode"]
+            ?.trim()
+            ?.takeIf(String::isNotBlank),
+      providerCursor =
+        deliveredObservationState?.providerCursor
+          ?: snapshot.metadata["sandboxCommandLastDeliveredProviderObservationCursor"]
+            ?.trim()
+            ?.takeIf(String::isNotBlank),
+      providerEventCount =
+        deliveredObservationState?.providerEventCount
+          ?: snapshot.metadata["sandboxCommandLastDeliveredProviderObservationEventCount"]
+            ?.toLongOrNull()
+            ?.takeIf { eventCount -> eventCount >= 0L },
     )
   }
 
@@ -5285,6 +5389,16 @@ class OpenCrayToolDispatcher(
       cursor = cursor,
       stdoutBytes = stdoutBytes,
       stderrBytes = stderrBytes,
+      providerMode = snapshot.normalizedObservationState()?.providerMode
+        ?: snapshot.metadata["sandboxCommandProviderObservationMode"]?.trim()?.takeIf(String::isNotBlank),
+      providerCursor = reconnectSeed?.providerObservationCursor
+        ?: snapshot.metadata["sandboxCommandReconnectSeedProviderObservationCursor"]
+          ?.trim()
+          ?.takeIf(String::isNotBlank),
+      providerEventCount = reconnectSeed?.providerObservationEventCount
+        ?: snapshot.metadata["sandboxCommandReconnectSeedProviderObservationEventCount"]
+          ?.toLongOrNull()
+          ?.takeIf { eventCount -> eventCount >= 0L },
     )
   }
 
@@ -5292,15 +5406,50 @@ class OpenCrayToolDispatcher(
     snapshot: ManagedProcessSnapshot,
   ):
     ManagedProcessDeliveredObservationState = ManagedProcessDeliveredObservationState(
-      mode = mode,
-      cursor = cursor,
-      stdoutBytes = stdoutBytes,
-      stderrBytes = stderrBytes,
-      providerMode = snapshot.normalizedObservationState()?.providerMode,
-      providerCursor = snapshot.normalizedObservationState()?.providerCursor,
-      providerEventCount = snapshot.normalizedObservationState()?.providerEventCount,
-      deliveredAtEpochMs = System.currentTimeMillis(),
+    mode = mode,
+    cursor = cursor,
+    stdoutBytes = stdoutBytes,
+    stderrBytes = stderrBytes,
+    providerMode = providerMode ?: snapshot.normalizedObservationState()?.providerMode,
+    providerCursor = providerCursor ?: snapshot.normalizedObservationState()?.providerCursor,
+    providerEventCount = providerEventCount ?: snapshot.normalizedObservationState()?.providerEventCount,
+    deliveredAtEpochMs = System.currentTimeMillis(),
+  )
+
+  private fun managedProcessProviderObservationBoundary(
+    current: ManagedProcessObservationCursorState,
+    previous: ManagedProcessObservationCursorState,
+  ): ManagedProcessProviderObservationBoundary? {
+    val currentProviderCursor = current.providerCursor?.trim()?.takeIf(String::isNotBlank) ?: return null
+    val previousProviderCursor = previous.providerCursor?.trim()?.takeIf(String::isNotBlank) ?: return null
+    return ManagedProcessProviderObservationBoundary(
+      cursorBefore = previousProviderCursor,
+      cursorAfter = currentProviderCursor,
+      eventCountBefore = previous.providerEventCount,
+      eventCountAfter = current.providerEventCount,
     )
+  }
+
+  private fun managedProcessProviderObservationResetWarning(
+    current: ManagedProcessObservationCursorState,
+    previous: ManagedProcessObservationCursorState,
+  ): String? {
+    val currentEventCount = current.providerEventCount ?: return null
+    val previousEventCount = previous.providerEventCount ?: return null
+    if (currentEventCount < previousEventCount) {
+      return "provider observation cursor regressed; returning full snapshot output"
+    }
+    if (
+      currentEventCount == previousEventCount &&
+      (
+        current.stdoutBytes > previous.stdoutBytes ||
+          current.stderrBytes > previous.stderrBytes
+        )
+    ) {
+      return "provider observation cursor did not advance while output changed; returning full snapshot output"
+    }
+    return null
+  }
 
   private fun utf8DeltaFromByteOffset(
     text: String,

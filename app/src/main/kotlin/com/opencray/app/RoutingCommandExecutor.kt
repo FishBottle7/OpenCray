@@ -30,8 +30,13 @@ internal class RoutingCommandExecutor(
       settings = settings,
       sandboxRuntimeAvailable = sandboxExecutor != null,
     )
+    val traceMetadata = SandboxExecutionTraceMetadata.routeMetadata(
+      metadata = request.metadata,
+      routeKind = "command_exec",
+      executionBackend = selection.resolvedBackend.wireValue,
+    )
     val routedRequest = request.copy(
-      metadata = request.metadata + selection.metadata(),
+      metadata = request.metadata + traceMetadata + selection.metadata(),
     )
     return when (selection.resolvedBackend) {
       ResolvedExecutionBackend.LOCAL_HOST -> localExecutor.execute(

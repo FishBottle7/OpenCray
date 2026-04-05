@@ -17,6 +17,7 @@ import com.opencray.runtime.process.ReconnectableManagedProcessControllerFactory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -167,6 +168,15 @@ class E2BSandboxCommandExecutionBackendFactoryTest {
       result.metadata["sandboxCommandSupportsManagedProcessObservationCursorResume"],
     )
     assertEquals("true", result.metadata["sandboxCommandSupportsManagedProcessObservationBackfill"])
+    assertTrue(!result.metadata["sandboxTraceId"].isNullOrBlank())
+    assertEquals("provider_native", result.metadata["sandboxTraceBackendKind"])
+    assertTrue(!result.metadata["sandboxTraceBackendSpanId"].isNullOrBlank())
+    assertTrue(!result.metadata["sandboxTraceProviderStartSpanId"].isNullOrBlank())
+    assertEquals(
+      result.metadata["sandboxTraceBackendSpanId"],
+      result.metadata["sandboxTraceProviderStartParentSpanId"],
+    )
+    assertNull(result.metadata["sandboxTraceBackendParentSpanId"])
   }
 
   @Test
@@ -232,6 +242,18 @@ class E2BSandboxCommandExecutionBackendFactoryTest {
       snapshot.metadata["sandboxCommandSupportsManagedProcessObservationCursorResume"],
     )
     assertEquals("false", snapshot.metadata["sandboxCommandSupportsManagedProcessObservationBackfill"])
+    assertTrue(!snapshot.metadata["sandboxTraceId"].isNullOrBlank())
+    assertTrue(!snapshot.metadata["sandboxTraceReconnectSpanId"].isNullOrBlank())
+    assertTrue(!snapshot.metadata["sandboxTraceBackendSpanId"].isNullOrBlank())
+    assertEquals(
+      snapshot.metadata["sandboxTraceReconnectSpanId"],
+      snapshot.metadata["sandboxTraceBackendParentSpanId"],
+    )
+    assertTrue(!snapshot.metadata["sandboxTraceProviderConnectSpanId"].isNullOrBlank())
+    assertEquals(
+      snapshot.metadata["sandboxTraceReconnectSpanId"],
+      snapshot.metadata["sandboxTraceProviderConnectParentSpanId"],
+    )
   }
 
   private fun allowPolicy(): PolicyDecision = PolicyDecision(

@@ -28,22 +28,30 @@ internal class RoutingPythonScriptRuntime(
       settings = settings,
       sandboxRuntimeAvailable = sandboxRuntime != null,
     )
+    val traceMetadata = SandboxExecutionTraceMetadata.routeMetadata(
+      metadata = emptyMap(),
+      routeKind = "python_exec",
+      executionBackend = selection.resolvedBackend.wireValue,
+    )
     return when (selection.resolvedBackend) {
       ResolvedExecutionBackend.LOCAL_HOST -> executeWithDelegate(
         delegate = localRuntime,
         request = request,
         selection = selection,
+        traceMetadata = traceMetadata,
       )
 
       ResolvedExecutionBackend.SANDBOX_REMOTE -> executeWithDelegate(
         delegate = requireNotNull(sandboxRuntime),
         request = request,
         selection = selection,
+        traceMetadata = traceMetadata,
       )
 
       ResolvedExecutionBackend.UNAVAILABLE -> unavailableResult(
         request = request,
         selection = selection,
+        traceMetadata = traceMetadata,
       )
     }
   }
@@ -62,6 +70,7 @@ internal class RoutingPythonScriptRuntime(
     delegate: PythonScriptRuntime,
     request: PythonExecRequest,
     selection: SandboxExecutionRouteSelection,
+    traceMetadata: Map<String, String>,
   ): ExecutionResult {
     val cancellable = delegate as? CancellablePythonScriptRuntime
     val requestId = request.requestId?.trim()?.takeIf(String::isNotBlank)
@@ -70,7 +79,7 @@ internal class RoutingPythonScriptRuntime(
     }
     return try {
       val result = delegate.exec(request)
-      result.copy(metadata = result.metadata + selection.metadata())
+      result.copy(metadata = result.metadata + traceMetadata + selection.metadata())
     } finally {
       if (requestId != null) {
         activeCancellableRuntimesByRequestId.remove(requestId)
@@ -81,6 +90,7 @@ internal class RoutingPythonScriptRuntime(
   private fun unavailableResult(
     request: PythonExecRequest,
     selection: SandboxExecutionRouteSelection,
+    traceMetadata: Map<String, String>,
   ): ExecutionResult {
     val finishedAt = clock()
     return ExecutionResult(
@@ -93,7 +103,7 @@ internal class RoutingPythonScriptRuntime(
       errorMessage = selection.detail,
       startedAtEpochMs = finishedAt,
       finishedAtEpochMs = finishedAt,
-      metadata = selection.metadata(),
+      metadata = traceMetadata + selection.metadata(),
     )
   }
 

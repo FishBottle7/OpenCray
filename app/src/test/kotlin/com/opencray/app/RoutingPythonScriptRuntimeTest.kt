@@ -129,6 +129,15 @@ class RoutingPythonScriptRuntimeTest {
     assertEquals(1, sandboxRuntime.requests.size)
     assertEquals("sandbox_remote", result.metadata["executionBackend"])
     assertEquals("sandbox-preference", result.stdout)
+    assertEquals("python_exec", result.metadata["sandboxTraceRouteKind"])
+    assertEquals("sandbox_remote", result.metadata["sandboxTraceExecutionBackend"])
+    assertTrue(!result.metadata["sandboxTraceId"].isNullOrBlank())
+    assertTrue(!result.metadata["sandboxTraceRouteSpanId"].isNullOrBlank())
+    assertTrue(!result.metadata["sandboxTraceExecutionSpanId"].isNullOrBlank())
+    assertEquals(
+      result.metadata["sandboxTraceRouteSpanId"],
+      result.metadata["sandboxTraceExecutionParentSpanId"],
+    )
   }
 
   @Test

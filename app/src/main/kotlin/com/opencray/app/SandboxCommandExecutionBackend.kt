@@ -14,19 +14,39 @@ internal data class SandboxCommandBackendCapabilities(
   val supportsManagedProcessLiveObservation: Boolean = false,
   val supportsManagedProcessObservationCursorResume: Boolean = false,
   val supportsManagedProcessObservationBackfill: Boolean = false,
+  val providerObservationResumeContract: String? = null,
+  val providerObservationResumeBlocker: String? = null,
 ) {
-  fun metadata(): Map<String, String> = mapOf(
-    "sandboxCommandBackendKind" to backendKind,
-    "sandboxCommandProviderNative" to providerNative.toString(),
-    "sandboxCommandSupportsStreamingLogs" to supportsStreamingLogs.toString(),
-    "sandboxCommandSupportsReconnect" to supportsReconnect.toString(),
-    "sandboxCommandSupportsManagedProcessLiveObservation" to
+  fun metadata(): Map<String, String> = buildMap {
+    put("sandboxCommandBackendKind", backendKind)
+    put("sandboxCommandProviderNative", providerNative.toString())
+    put("sandboxCommandSupportsStreamingLogs", supportsStreamingLogs.toString())
+    put("sandboxCommandSupportsReconnect", supportsReconnect.toString())
+    put(
+      "sandboxCommandSupportsManagedProcessLiveObservation",
       supportsManagedProcessLiveObservation.toString(),
-    "sandboxCommandSupportsManagedProcessObservationCursorResume" to
+    )
+    put(
+      "sandboxCommandSupportsManagedProcessObservationCursorResume",
       supportsManagedProcessObservationCursorResume.toString(),
-    "sandboxCommandSupportsManagedProcessObservationBackfill" to
+    )
+    put(
+      "sandboxCommandSupportsManagedProcessObservationBackfill",
       supportsManagedProcessObservationBackfill.toString(),
-  )
+    )
+    providerObservationResumeContract
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { contract ->
+        put("sandboxCommandProviderObservationResumeContract", contract)
+      }
+    providerObservationResumeBlocker
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { blocker ->
+        put("sandboxCommandProviderObservationResumeBlocker", blocker)
+      }
+  }
 }
 
 internal interface SandboxCommandExecutionBackend {

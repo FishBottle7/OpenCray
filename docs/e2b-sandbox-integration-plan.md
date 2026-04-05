@@ -1,10 +1,50 @@
 # OpenCray 沙盒能力接入计划
 
-Last updated: 2026-04-04
+Last updated: 2026-04-05
 
 ## 当前实现状态
 
-截至 2026-03-30，`python_exec` 这条链路已经从“仅有设置和路由骨架”推进到了“本地 / E2B 双后端可切换的可运行状态”，且当前实现边界已经固定：
+截至 2026-04-05，当前 E2B 接入已经基本收口，结论先写在前面：
+
+- 已完成
+  - 本地 / E2B 双后端切换
+  - `python_exec` 本地 / 云端双路径
+  - `command_exec` 的 provider-native foreground 最小协议
+  - 命令型 `ProcessStart/Read/Wait/Terminate` 的 provider-native start / terminate / durable reconnect 最小路径
+  - 云端专属工具暴露 gating
+  - preview / session lifecycle、自动探活、stale 回收
+  - reconnect / delivered observation 的 typed durable state 与 host-managed 增量交付
+- 尚未完成
+  - 真正的 provider-native 日志 cursor / backfill / resume
+  - 更细粒度的 provider-native sessionId / log stream 协议深化
+- 当前判断
+  - 如果目标是“支持本地和云端二选一执行，并让 E2B 路径具备可用的原生命令最小能力”，这部分已经接近完成
+  - 如果目标是“断线后继续按 provider 原生日志 cursor 无缝续读并补回缺失日志”，这部分还没有完成，而且当前主要受上游 envd `ConnectRequest` 协议面限制
+
+在这个边界下，`python_exec` 这条链路已经从“仅有设置和路由骨架”推进到了“本地 / E2B 双后端可切换的可运行状态”，且当前实现边界已经固定：
+
+### 当前 provider-native trace / resume 边界
+
+- 当前已经补齐宿主侧 trace / correlation metadata，用来把同一条云端执行拆成 route / execution / backend / reconnect / provider start|connect|terminate 几段 span。
+  - 关键字段包括：
+    - `sandboxTraceId`
+    - `sandboxTraceRouteKind`
+    - `sandboxTraceRouteSpanId`
+    - `sandboxTraceExecutionBackend`
+    - `sandboxTraceExecutionSpanId`
+    - `sandboxTraceBackendKind`
+    - `sandboxTraceBackendSpanId`
+    - `sandboxTraceReconnectSpanId`
+    - `sandboxTraceProviderStartSpanId`
+    - `sandboxTraceProviderConnectSpanId`
+    - `sandboxTraceProviderTerminateSpanId`
+- 这些 trace 字段目前是宿主侧 correlation metadata，不等价于 provider 原生日志 cursor。
+- 当前 provider-native reconnect 对外明确声明的 resume contract 是：
+  - `sandboxCommandProviderObservationResumeContract=host_buffered_seed_then_live_attach`
+  - 含义：先用宿主持久化的 delivered/seed snapshot 续上已知输出边界，再重新 attach live stream；attach 前的缺口不能由 provider 回补。
+- 当前 provider-native reconnect 的直接 blocker 是：
+  - `sandboxCommandProviderObservationResumeBlocker=envd_connect_request_selector_only`
+  - 原因：截至 2026-04-05，envd `ConnectRequest` 仍只有 process selector，没有 provider log cursor / backfill selector 面，因此 OpenCray 现在不能实现真正的 provider-native cursor resume / backfill。
 
 - 已补齐沙盒配置模型与安全凭据链路
   - 新增独立 `SandboxSettingsStore`
@@ -161,7 +201,11 @@ Last updated: 2026-04-04
     - `sandboxCommandProviderObservationBackfillSupported=false`
     - 当前这层仍然只是 provider event boundary 的宿主镜像，不是 provider 官方日志 cursor，也不具备 backfill
   - reconnect 路径现在会额外把恢复边界写进 metadata：
-    - `sandboxCommandReconnectResumeMode=seed_snapshot_then_live_attach`
+    - `sandboxCommandReconnectResumeMode`
+      - 当前会按实际 seed 来源区分：
+        - `delivered_seed_then_live_attach`
+        - `seed_snapshot_then_live_attach`
+        - `observation_snapshot_then_live_attach`
     - `sandboxCommandReconnectBackfillSupported=false`
     - `sandboxCommandReconnectOutputGapRisk=true`
     - `sandboxCommandReconnectRecoveryState`
@@ -184,6 +228,9 @@ Last updated: 2026-04-04
     - `sandboxCommandReconnectSeedProviderObservationEventCount`
     - `sandboxCommandReconnectSeededStdoutBytes`
     - `sandboxCommandReconnectSeededStderrBytes`
+    - `sandboxCommandReconnectProviderObservationSeedSource`
+    - `sandboxCommandReconnectProviderObservationResumeApplied=false`
+    - `sandboxCommandReconnectProviderObservationResumeReason=protocol_cursor_resume_unsupported`
   - 已把 native managed process 的 durable snapshot 模型补到 typed remote state 第一版
     - `ManagedProcessSnapshot` 仍是统一持久化载体，不额外拆出 provider 专用 record
     - 当前已新增结构化字段：
@@ -200,7 +247,17 @@ Last updated: 2026-04-04
       - `providerMode`
       - `providerCursor`
       - `providerEventCount`
-    - 当前这组 provider delivered boundary 还没有直接驱动 provider-native cursor resume；它的作用是先把 durable model 建稳，给下一步 provider-native log cursor / backfill 留出兼容位
+    - durable reconnect 初始化 metadata 时，也会先用 `deliveredObservationState` 组装 reconnect seed，再回退到 `reconnectState.seed` 与普通 observation snapshot
+    - 当前这组 provider delivered boundary 仍然不会直接驱动 provider-native cursor resume
+      - 当前会显式外显：
+        - `sandboxCommandReconnectProviderObservationSeedSource`
+        - `sandboxCommandReconnectProviderObservationResumeApplied=false`
+        - `sandboxCommandReconnectProviderObservationResumeReason=protocol_cursor_resume_unsupported`
+      - 对应 typed durable state 也已补齐：
+        - `ManagedProcessReconnectSeed.providerObservationSeedSource`
+        - `ManagedProcessReconnectState.providerObservationResumeApplied`
+        - `ManagedProcessReconnectState.providerObservationResumeReason`
+      - 它的作用仍然是先把 durable model 建稳，并把“provider boundary 已保留但 envd Connect 还不能按该 cursor 恢复”的状态说清楚，给下一步 provider-native log cursor / backfill 留出兼容位
     - `remoteHandle.sessionId` 已预留，但 E2B provider 当前仍没有稳定返回独立 `providerSessionId`，因此现阶段保持 nullable，不伪造值
 - 已补齐未来 sandbox-native tools 的模型可见性规则
   - 约定所有沙盒原生能力工具统一使用 `sandbox_` 前缀
@@ -1740,6 +1797,10 @@ E2B 场景下建议支持两种模式：
 - 仍未完成：
   - 这已经不是 tool call 协议缺口；当前剩余缺口主要在 provider-native backend 的 cursor/resume 深化
   - 当前仓库里仍没有通用、可复用的 `connectrpc` / `grpc` / `protobuf` 客户端栈；现阶段用的是 E2B envd 的手写最小协议
+  - 已核对 E2B 官方 envd `process` gRPC 生成类型，当前 `ConnectRequest` 仍只有 `process selector`
+    - `Process` package: https://pkg.go.dev/github.com/e2b-dev/infra/packages/shared/pkg/grpc/envd/process
+    - `ConnectRequest`: https://pkg.go.dev/github.com/e2b-dev/infra/packages/shared/pkg/grpc/envd/process/processconnect
+    - 因此当前还没有可直接在 `process.Process/Connect` 上传 `cursor/backfill/resume` 参数的上游协议面
   - 当前虽然已经能在 durable restore 后 live reattach，但还没有 provider-native 日志 cursor / backfill / resume 语义
   - `ProcessRead/Wait` 仍是 host-managed snapshot，而不是直接读取 provider 原生 cursor
   - durable restore 后的首个 `ProcessRead/Wait` 现在虽然能借助持久化 reconnect seed 做宿主侧 baseline，但这仍然不是 provider cursor resume，只是减少整段重放
@@ -1804,6 +1865,19 @@ E2B 场景下建议支持两种模式：
      - `ProcessRead/Wait` 与 reconnect 路径当前优先读 typed state，metadata 继续保留兼容投影
      - `ProcessRead/Wait` 成功交付后会把最近一次已交付的 host observation boundary durable 写回，session tracker 丢失时会先用这组状态恢复增量边界
      - `deliveredObservationState` 现在也会顺带保留 provider observation boundary，为后续 provider-native cursor resume / backfill 建模预留 durable 字段
+     - `ProcessRead/Wait` 的增量交付现在也会显式外露 provider boundary before/after
+       - `sandbox_command_provider_observation_cursor_before`
+       - `sandbox_command_provider_observation_cursor_after`
+       - `sandbox_command_provider_observation_event_count_before`
+       - `sandbox_command_provider_observation_event_count_after`
+     - 如果 provider boundary 明显回退，或 provider event count 没推进但 stdout/stderr 继续增长，当前会主动回退成 `reset_full`
+       - 这一步不是宣称已经有 provider-native backfill
+       - 它只是先把 provider boundary 真正接进 runtime delivery / consistency check，而不是继续让 host-only tracker 在 provider boundary 异常时给出看似正常的 delta
+     - reconnect metadata 组装时，seed 优先级现在已经明确成：
+       - `deliveredObservationState`
+       - `reconnectState.seed`
+       - `observationState / metadata snapshot`
+     - reconnect 结果现在会额外外显“provider seed 是否真的被用于 resume”的 telemetry，避免把“已保存 provider boundary”误读成“已经具备 provider-native cursor resume”
    - 目标：从“typed durable state 已接上”继续推进到 provider-native `sessionId`、provider log cursor / backfill / resume，以及更细粒度的 durable observation tracker
 4. 加入 capability gating
    - 当前状态：已完成第一版
@@ -1844,6 +1918,8 @@ E2B 场景下建议支持两种模式：
   - native background 缺少 `remoteWorkspaceRoot` 时回退到 E2B wrapper
   - `FileBackedAgentProcessRegistry` 恢复运行中 snapshot 时优先走 reconnect，而不是直接标记 interrupted
   - `ProcessRead/Wait` 对 reconnect metadata、retryable reconnect 状态和 observation warning 的正文外显
+  - provider boundary 回退或停滞但输出继续增长时，`ProcessRead/Wait` 会回退为 `reset_full`
+  - `ProcessRead/Wait` 现在会把 provider observation boundary before/after 暴露到 tool result，并在 provider boundary 回退时回退到 `reset_full`
   - `command_exec` 结果里的 backend capability 外显
   - 命令型 `ProcessStart` 结果里的 backend capability 外显
   - 路由层在抽象接入后仍保持本地 / 云端分流边界

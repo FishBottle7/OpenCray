@@ -234,6 +234,8 @@ class AgentManagedProcessToolTest {
         "sandboxCommandSupportsManagedProcessLiveObservation" to "true",
         "sandboxCommandSupportsManagedProcessObservationCursorResume" to "false",
         "sandboxCommandSupportsManagedProcessObservationBackfill" to "false",
+        "sandboxCommandProviderObservationResumeContract" to "host_buffered_seed_then_live_attach",
+        "sandboxCommandProviderObservationResumeBlocker" to "envd_connect_request_selector_only",
         "sandboxCommandProviderHandleKind" to "envd_process",
         "sandboxCommandProviderStableSelectorKind" to "tag",
         "sandboxCommandProviderStableSelectorValue" to "proc-native-render",
@@ -379,6 +381,16 @@ class AgentManagedProcessToolTest {
     assertTrue(readResult.content.contains("sandbox_command_provider_observation_event_count=3"))
     assertTrue(readResult.content.contains("sandbox_command_provider_observation_cursor=envd_seq_3"))
     assertTrue(readResult.content.contains("sandbox_command_provider_observation_backfill_supported=false"))
+    assertTrue(
+      readResult.content.contains(
+        "sandbox_command_provider_observation_resume_contract=host_buffered_seed_then_live_attach",
+      ),
+    )
+    assertTrue(
+      readResult.content.contains(
+        "sandbox_command_provider_observation_resume_blocker=envd_connect_request_selector_only",
+      ),
+    )
     assertTrue(readResult.content.contains("sandbox_command_handle_id_kind=tag"))
     assertTrue(readResult.content.contains("sandbox_command_handle_id=proc-native-render"))
     assertTrue(readResult.content.contains("sandbox_command_handle_tag=proc-native-render"))
@@ -447,6 +459,14 @@ class AgentManagedProcessToolTest {
       readResult.metadata["sandboxCommandProviderObservationMode"],
     )
     assertEquals("envd_seq_3", readResult.metadata["sandboxCommandProviderObservationCursor"])
+    assertEquals(
+      "host_buffered_seed_then_live_attach",
+      readResult.metadata["sandboxCommandProviderObservationResumeContract"],
+    )
+    assertEquals(
+      "envd_connect_request_selector_only",
+      readResult.metadata["sandboxCommandProviderObservationResumeBlocker"],
+    )
     assertEquals("proc-native-render", readResult.metadata["sandboxCommandHandleId"])
     assertEquals("host_seq_3", readResult.metadata["sandboxCommandObservationCursor"])
     assertEquals("true", readResult.metadata["sandboxCommandSupportsReconnect"])
@@ -529,6 +549,11 @@ class AgentManagedProcessToolTest {
         "sandboxCommandReconnectSeedSource" to "durable_snapshot_metadata",
         "sandboxCommandReconnectProviderObservationSeedConsumed" to "false",
         "sandboxCommandReconnectProviderObservationSeedState" to "retry_scheduled_before_live_attach",
+        "sandboxCommandReconnectProviderObservationSeedSource" to
+          "durable_delivered_observation_state",
+        "sandboxCommandReconnectProviderObservationResumeApplied" to "false",
+        "sandboxCommandReconnectProviderObservationResumeReason" to
+          "protocol_cursor_resume_unsupported",
         "sandboxCommandReconnectLastFailureAtEpochMs" to "1200",
       ),
     )
@@ -583,6 +608,21 @@ class AgentManagedProcessToolTest {
     )
     assertTrue(
       readResult.content.contains(
+        "sandbox_command_reconnect_provider_observation_seed_source=durable_delivered_observation_state",
+      ),
+    )
+    assertTrue(
+      readResult.content.contains(
+        "sandbox_command_reconnect_provider_observation_resume_applied=false",
+      ),
+    )
+    assertTrue(
+      readResult.content.contains(
+        "sandbox_command_reconnect_provider_observation_resume_reason=protocol_cursor_resume_unsupported",
+      ),
+    )
+    assertTrue(
+      readResult.content.contains(
         "observation_warning=provider reconnect has not yet reattached live output; current output still reflects the persisted host snapshot seed and a later ProcessRead or ProcessWait may retry attach after backoff",
       ),
     )
@@ -599,6 +639,18 @@ class AgentManagedProcessToolTest {
     assertEquals(
       "retry_scheduled_before_live_attach",
       readResult.metadata["sandboxCommandReconnectProviderObservationSeedState"],
+    )
+    assertEquals(
+      "durable_delivered_observation_state",
+      readResult.metadata["sandboxCommandReconnectProviderObservationSeedSource"],
+    )
+    assertEquals(
+      "false",
+      readResult.metadata["sandboxCommandReconnectProviderObservationResumeApplied"],
+    )
+    assertEquals(
+      "protocol_cursor_resume_unsupported",
+      readResult.metadata["sandboxCommandReconnectProviderObservationResumeReason"],
     )
   }
 
@@ -860,13 +912,21 @@ class AgentManagedProcessToolTest {
                 hostCursor = "host_seq_2",
                 stdoutBytes = "booting\nready".toByteArray(StandardCharsets.UTF_8).size.toLong(),
                 stderrBytes = 0L,
+                providerMode = "provider_event_stream_host_buffered",
+                providerEventCount = 2L,
+                providerCursor = "envd_seq_2",
               ),
               reconnectState = ManagedProcessReconnectState(
+                providerObservationResumeApplied = false,
+                providerObservationResumeReason = "protocol_cursor_resume_unsupported",
                 seed = ManagedProcessReconnectSeed(
                   source = "durable_snapshot_metadata",
                   hostObservationCursor = "host_seq_1",
                   stdoutBytes = 8L,
                   stderrBytes = 0L,
+                  providerObservationCursor = "envd_seq_1",
+                  providerObservationEventCount = 1L,
+                  providerObservationSeedSource = "observation_snapshot_metadata",
                 ),
               ),
               metadata = request.metadata,
@@ -921,6 +981,26 @@ class AgentManagedProcessToolTest {
     assertTrue(readResult.content.contains("sandbox_command_observation_cursor_before=host_seq_1"))
     assertTrue(readResult.content.contains("sandbox_command_observation_cursor_after=host_seq_2"))
     assertTrue(readResult.content.contains("sandbox_command_observation_stdout_delta_bytes=5"))
+    assertTrue(readResult.content.contains("sandbox_command_provider_observation_cursor_before=envd_seq_1"))
+    assertTrue(readResult.content.contains("sandbox_command_provider_observation_cursor_after=envd_seq_2"))
+    assertTrue(readResult.content.contains("sandbox_command_provider_observation_event_count_before=1"))
+    assertTrue(readResult.content.contains("sandbox_command_provider_observation_event_count_after=2"))
+    assertTrue(readResult.content.contains("sandbox_command_reconnect_seed_source=durable_snapshot_metadata"))
+    assertTrue(
+      readResult.content.contains(
+        "sandbox_command_reconnect_provider_observation_seed_source=observation_snapshot_metadata",
+      ),
+    )
+    assertTrue(
+      readResult.content.contains(
+        "sandbox_command_reconnect_provider_observation_resume_applied=false",
+      ),
+    )
+    assertTrue(
+      readResult.content.contains(
+        "sandbox_command_reconnect_provider_observation_resume_reason=protocol_cursor_resume_unsupported",
+      ),
+    )
     assertTrue(readResult.content.contains("[stdout]"))
     assertTrue(readResult.content.contains("ready"))
     assertFalse(readResult.content.contains("[stdout]\nbooting"))
@@ -928,6 +1008,203 @@ class AgentManagedProcessToolTest {
     assertEquals("delta", readResult.metadata["sandboxCommandObservationDeliveryMode"])
     assertEquals("host_seq_1", readResult.metadata["sandboxCommandObservationCursorBefore"])
     assertEquals("host_seq_2", readResult.metadata["sandboxCommandObservationCursorAfter"])
+    assertEquals("envd_seq_1", readResult.metadata["sandboxCommandProviderObservationCursorBefore"])
+    assertEquals("envd_seq_2", readResult.metadata["sandboxCommandProviderObservationCursorAfter"])
+    assertEquals("1", readResult.metadata["sandboxCommandProviderObservationEventCountBefore"])
+    assertEquals("2", readResult.metadata["sandboxCommandProviderObservationEventCountAfter"])
+    assertEquals("durable_snapshot_metadata", readResult.metadata["sandboxCommandReconnectSeedSource"])
+    assertEquals(
+      "observation_snapshot_metadata",
+      readResult.metadata["sandboxCommandReconnectProviderObservationSeedSource"],
+    )
+    assertEquals(
+      "false",
+      readResult.metadata["sandboxCommandReconnectProviderObservationResumeApplied"],
+    )
+    assertEquals(
+      "protocol_cursor_resume_unsupported",
+      readResult.metadata["sandboxCommandReconnectProviderObservationResumeReason"],
+    )
+  }
+
+  @Test
+  fun processReadFallsBackToFullSnapshotWhenProviderObservationCursorRegresses() {
+    val workspaceRoot = temporaryFolder.newFolder("process-tool-native-provider-cursor-reset").toPath()
+    val registry = SequencedObservationProcessRegistry(
+      workspaceRoot = workspaceRoot,
+      startedPlan = observationPlan(
+        stdout = "booting\nready",
+        cursor = "host_seq_2",
+        providerCursor = "envd_seq_2",
+        providerEventCount = 2L,
+      ),
+      readPlans = mutableListOf(
+        observationPlan(
+          stdout = "booting\nready\nagain",
+          cursor = "host_seq_3",
+          providerCursor = "envd_seq_1",
+          providerEventCount = 1L,
+        ),
+      ),
+    )
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        processRegistry = registry,
+      ),
+    )
+
+    val startResult = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessStart",
+        arguments = JsonObject(
+          mapOf(
+            "command" to JsonPrimitive("npm"),
+            "args" to kotlinx.serialization.json.buildJsonArray {
+              add(JsonPrimitive("run"))
+              add(JsonPrimitive("dev"))
+            },
+            "working_directory" to JsonPrimitive("."),
+            "timeout_ms" to JsonPrimitive(120000),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+    val processId = requireNotNull(startResult.metadata["processId"])
+
+    dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessRead",
+        arguments = JsonObject(mapOf("process_id" to JsonPrimitive(processId))),
+      ),
+      hooks = runtimeHooks(),
+    )
+    val regressedRead = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessRead",
+        arguments = JsonObject(mapOf("process_id" to JsonPrimitive(processId))),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertTrue(regressedRead.content.contains("sandbox_command_observation_delivery_mode=reset_full"))
+    assertTrue(regressedRead.content.contains("sandbox_command_observation_cursor_before=host_seq_2"))
+    assertTrue(regressedRead.content.contains("sandbox_command_observation_cursor_after=host_seq_3"))
+    assertTrue(regressedRead.content.contains("sandbox_command_provider_observation_cursor_before=envd_seq_2"))
+    assertTrue(regressedRead.content.contains("sandbox_command_provider_observation_cursor_after=envd_seq_1"))
+    assertTrue(regressedRead.content.contains("sandbox_command_provider_observation_event_count_before=2"))
+    assertTrue(regressedRead.content.contains("sandbox_command_provider_observation_event_count_after=1"))
+    assertTrue(
+      regressedRead.content.contains(
+        "observation_warning=provider observation cursor regressed; returning full snapshot output",
+      ),
+    )
+    assertTrue(regressedRead.content.contains("[stdout]"))
+    assertTrue(regressedRead.content.contains("booting"))
+    assertTrue(regressedRead.content.contains("again"))
+    assertEquals("reset_full", regressedRead.metadata["sandboxCommandObservationDeliveryMode"])
+    assertEquals("envd_seq_2", regressedRead.metadata["sandboxCommandProviderObservationCursorBefore"])
+    assertEquals("envd_seq_1", regressedRead.metadata["sandboxCommandProviderObservationCursorAfter"])
+    assertEquals("2", regressedRead.metadata["sandboxCommandProviderObservationEventCountBefore"])
+    assertEquals("1", regressedRead.metadata["sandboxCommandProviderObservationEventCountAfter"])
+    assertEquals(
+      "provider observation cursor regressed; returning full snapshot output",
+      regressedRead.metadata["sandboxCommandObservationDeliveryWarning"],
+    )
+  }
+
+  @Test
+  fun processReadFallsBackToFullSnapshotWhenProviderObservationCursorStallsButOutputGrows() {
+    val workspaceRoot = temporaryFolder.newFolder("process-tool-native-provider-cursor-stall").toPath()
+    val registry = SequencedObservationProcessRegistry(
+      workspaceRoot = workspaceRoot,
+      startedPlan = observationPlan(
+        stdout = "booting\nready",
+        cursor = "host_seq_2",
+        providerCursor = "envd_seq_2",
+        providerEventCount = 2L,
+      ),
+      readPlans = mutableListOf(
+        observationPlan(
+          stdout = "booting\nready\nagain",
+          cursor = "host_seq_3",
+          providerCursor = "envd_seq_2",
+          providerEventCount = 2L,
+        ),
+      ),
+    )
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        processRegistry = registry,
+      ),
+    )
+
+    val startResult = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessStart",
+        arguments = JsonObject(
+          mapOf(
+            "command" to JsonPrimitive("npm"),
+            "args" to kotlinx.serialization.json.buildJsonArray {
+              add(JsonPrimitive("run"))
+              add(JsonPrimitive("dev"))
+            },
+            "working_directory" to JsonPrimitive("."),
+            "timeout_ms" to JsonPrimitive(120000),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+    val processId = requireNotNull(startResult.metadata["processId"])
+
+    dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessRead",
+        arguments = JsonObject(mapOf("process_id" to JsonPrimitive(processId))),
+      ),
+      hooks = runtimeHooks(),
+    )
+    val stalledRead = dispatcher.dispatch(
+      task = agentTask(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ProcessRead",
+        arguments = JsonObject(mapOf("process_id" to JsonPrimitive(processId))),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertTrue(stalledRead.content.contains("sandbox_command_observation_delivery_mode=reset_full"))
+    assertTrue(stalledRead.content.contains("sandbox_command_observation_cursor_before=host_seq_2"))
+    assertTrue(stalledRead.content.contains("sandbox_command_observation_cursor_after=host_seq_3"))
+    assertTrue(stalledRead.content.contains("sandbox_command_provider_observation_cursor_before=envd_seq_2"))
+    assertTrue(stalledRead.content.contains("sandbox_command_provider_observation_cursor_after=envd_seq_2"))
+    assertTrue(stalledRead.content.contains("sandbox_command_provider_observation_event_count_before=2"))
+    assertTrue(stalledRead.content.contains("sandbox_command_provider_observation_event_count_after=2"))
+    assertTrue(
+      stalledRead.content.contains(
+        "observation_warning=provider observation cursor did not advance while output changed; returning full snapshot output",
+      ),
+    )
+    assertTrue(stalledRead.content.contains("[stdout]"))
+    assertTrue(stalledRead.content.contains("booting"))
+    assertTrue(stalledRead.content.contains("again"))
+    assertEquals("reset_full", stalledRead.metadata["sandboxCommandObservationDeliveryMode"])
+    assertEquals("envd_seq_2", stalledRead.metadata["sandboxCommandProviderObservationCursorBefore"])
+    assertEquals("envd_seq_2", stalledRead.metadata["sandboxCommandProviderObservationCursorAfter"])
+    assertEquals("2", stalledRead.metadata["sandboxCommandProviderObservationEventCountBefore"])
+    assertEquals("2", stalledRead.metadata["sandboxCommandProviderObservationEventCountAfter"])
+    assertEquals(
+      "provider observation cursor did not advance while output changed; returning full snapshot output",
+      stalledRead.metadata["sandboxCommandObservationDeliveryWarning"],
+    )
   }
 
   @Test
@@ -1863,6 +2140,9 @@ class AgentManagedProcessToolTest {
     stdout: String = "",
     stderr: String = "",
     cursor: String,
+    providerCursor: String? = null,
+    providerEventCount: Long? = null,
+    providerMode: String = "provider_event_stream_host_buffered",
     exitCode: Int? = null,
     finishedAtEpochMs: Long? = null,
     metadata: Map<String, String> = emptyMap(),
@@ -1876,6 +2156,9 @@ class AgentManagedProcessToolTest {
       cursor = cursor,
       stdout = stdout,
       stderr = stderr,
+      providerCursor = providerCursor,
+      providerEventCount = providerEventCount,
+      providerMode = providerMode,
     ),
   )
 
@@ -1883,29 +2166,51 @@ class AgentManagedProcessToolTest {
     cursor: String,
     stdout: String,
     stderr: String,
-  ): Map<String, String> = mapOf(
-    "runtimeBackend" to "e2b_envd_native_command",
-    "runtimeTransport" to "connect_proto_minimal",
-    "sandboxCommandBackendKind" to "provider_native",
-    "sandboxCommandBackendResolvedKind" to "provider_native",
-    "sandboxCommandProviderNative" to "true",
-    "sandboxCommandSupportsReconnect" to "true",
-    "sandboxCommandObservationMode" to "host_managed_snapshot",
-    "sandboxCommandObservationCursor" to cursor,
-    "sandboxCommandObservationStdoutBytes" to stdout.toByteArray(StandardCharsets.UTF_8).size.toString(),
-    "sandboxCommandObservationStderrBytes" to stderr.toByteArray(StandardCharsets.UTF_8).size.toString(),
-  )
+    providerCursor: String? = null,
+    providerEventCount: Long? = null,
+    providerMode: String = "provider_event_stream_host_buffered",
+  ): Map<String, String> = buildMap {
+    put("runtimeBackend", "e2b_envd_native_command")
+    put("runtimeTransport", "connect_proto_minimal")
+    put("sandboxCommandBackendKind", "provider_native")
+    put("sandboxCommandBackendResolvedKind", "provider_native")
+    put("sandboxCommandProviderNative", "true")
+    put("sandboxCommandSupportsReconnect", "true")
+    put("sandboxCommandObservationMode", "host_managed_snapshot")
+    put("sandboxCommandObservationCursor", cursor)
+    put("sandboxCommandObservationStdoutBytes", stdout.toByteArray(StandardCharsets.UTF_8).size.toString())
+    put("sandboxCommandObservationStderrBytes", stderr.toByteArray(StandardCharsets.UTF_8).size.toString())
+    providerCursor?.takeIf(String::isNotBlank)?.let { currentProviderCursor ->
+      put("sandboxCommandProviderObservationMode", providerMode)
+      put("sandboxCommandProviderObservationCursor", currentProviderCursor)
+      put(
+        "sandboxCommandProviderObservationEventCount",
+        (providerEventCount ?: 0L).toString(),
+      )
+    }
+  }
 
   private fun reconnectSeedMetadata(
     cursor: String,
     stdoutBytes: Long,
     stderrBytes: Long = 0L,
-  ): Map<String, String> = mapOf(
-    "sandboxCommandReconnectSeedSource" to "durable_snapshot_metadata",
-    "sandboxCommandReconnectSeedObservationCursor" to cursor,
-    "sandboxCommandReconnectSeededStdoutBytes" to stdoutBytes.toString(),
-    "sandboxCommandReconnectSeededStderrBytes" to stderrBytes.toString(),
-  )
+    providerCursor: String? = null,
+    providerEventCount: Long? = null,
+    providerSeedSource: String = "durable_snapshot_metadata",
+  ): Map<String, String> = buildMap {
+    put("sandboxCommandReconnectSeedSource", "durable_snapshot_metadata")
+    put("sandboxCommandReconnectSeedObservationCursor", cursor)
+    put("sandboxCommandReconnectSeededStdoutBytes", stdoutBytes.toString())
+    put("sandboxCommandReconnectSeededStderrBytes", stderrBytes.toString())
+    providerCursor?.takeIf(String::isNotBlank)?.let { reconnectProviderCursor ->
+      put("sandboxCommandReconnectSeedProviderObservationCursor", reconnectProviderCursor)
+      put(
+        "sandboxCommandReconnectSeedProviderObservationEventCount",
+        (providerEventCount ?: 0L).toString(),
+      )
+      put("sandboxCommandReconnectProviderObservationSeedSource", providerSeedSource)
+    }
+  }
 
   private class RecordingProcessRegistry(
     private val workspaceRoot: Path,

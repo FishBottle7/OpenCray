@@ -16,7 +16,12 @@ internal class RoutingManagedProcessControllerFactory(
 ) : ReconnectableManagedProcessControllerFactory {
   override fun start(request: ManagedProcessStartRequest): ManagedProcessController {
     if (request.metadata["managedByPythonRuntime"]?.equals("true", ignoreCase = true) == true) {
-      return pythonRuntimeFactory.start(request)
+      val traceMetadata = SandboxExecutionTraceMetadata.routeMetadata(
+        metadata = request.metadata,
+        routeKind = "managed_process_start",
+        executionBackend = "python_runtime",
+      )
+      return pythonRuntimeFactory.start(request.copy(metadata = request.metadata + traceMetadata))
     }
 
     val settings = settingsProvider()
@@ -29,8 +34,13 @@ internal class RoutingManagedProcessControllerFactory(
       settings = settings,
       sandboxRuntimeAvailable = sandboxFactory != null,
     )
+    val traceMetadata = SandboxExecutionTraceMetadata.routeMetadata(
+      metadata = request.metadata,
+      routeKind = "managed_process_start",
+      executionBackend = selection.resolvedBackend.wireValue,
+    )
     val routedRequest = request.copy(
-      metadata = request.metadata + selection.metadata(),
+      metadata = request.metadata + traceMetadata + selection.metadata(),
     )
     return when (selection.resolvedBackend) {
       ResolvedExecutionBackend.LOCAL_HOST -> localFactory.start(routedRequest)
@@ -58,18 +68,30 @@ internal class RoutingManagedProcessControllerFactory(
 
   override fun reconnect(snapshot: ManagedProcessSnapshot): ManagedProcessController? {
     if (snapshot.metadata["managedByPythonRuntime"]?.equals("true", ignoreCase = true) == true) {
-      return (pythonRuntimeFactory as? ReconnectableManagedProcessControllerFactory)?.reconnect(snapshot)
+      return (pythonRuntimeFactory as? ReconnectableManagedProcessControllerFactory)?.reconnect(
+        snapshot.copy(
+          metadata = snapshot.metadata + SandboxExecutionTraceMetadata.reconnectMetadata(snapshot.metadata),
+        ),
+      )
     }
     return when (snapshot.metadata["executionBackend"]?.trim()) {
       ResolvedExecutionBackend.SANDBOX_REMOTE.wireValue -> {
         val sandboxFactory = sandboxFactoryProvider(settingsProvider())
           as? ReconnectableManagedProcessControllerFactory
           ?: return null
-        sandboxFactory.reconnect(snapshot)
+        sandboxFactory.reconnect(
+          snapshot.copy(
+            metadata = snapshot.metadata + SandboxExecutionTraceMetadata.reconnectMetadata(snapshot.metadata),
+          ),
+        )
       }
 
       ResolvedExecutionBackend.LOCAL_HOST.wireValue ->
-        (localFactory as? ReconnectableManagedProcessControllerFactory)?.reconnect(snapshot)
+        (localFactory as? ReconnectableManagedProcessControllerFactory)?.reconnect(
+          snapshot.copy(
+            metadata = snapshot.metadata + SandboxExecutionTraceMetadata.reconnectMetadata(snapshot.metadata),
+          ),
+        )
 
       else -> null
     }

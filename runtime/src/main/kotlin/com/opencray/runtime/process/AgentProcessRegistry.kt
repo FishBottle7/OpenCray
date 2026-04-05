@@ -85,6 +85,7 @@ data class ManagedProcessReconnectSeed(
   val stderrBytes: Long? = null,
   val providerObservationCursor: String? = null,
   val providerObservationEventCount: Long? = null,
+  val providerObservationSeedSource: String? = null,
 )
 
 @Serializable
@@ -110,6 +111,8 @@ data class ManagedProcessReconnectState(
   val failureStage: String? = null,
   val failureClass: String? = null,
   val failureMessage: String? = null,
+  val providerObservationResumeApplied: Boolean? = null,
+  val providerObservationResumeReason: String? = null,
   val seed: ManagedProcessReconnectSeed? = null,
 )
 
@@ -187,7 +190,9 @@ fun ManagedProcessSnapshot.withNormalizedRemoteState(): ManagedProcessSnapshot {
   val normalizedObservationState = normalizedObservationState()
   val normalizedReconnectState = normalizedReconnectState()
   val normalizedDeliveredObservationState = normalizedDeliveredObservationState()
-  val normalizedMetadata = metadata.withProjectedDeliveredObservationState(normalizedDeliveredObservationState)
+  val normalizedMetadata = metadata
+    .withProjectedReconnectState(normalizedReconnectState)
+    .withProjectedDeliveredObservationState(normalizedDeliveredObservationState)
   if (
     normalizedRemoteHandle == remoteHandle &&
     normalizedObservationState == observationState &&
@@ -868,6 +873,8 @@ private fun inferredReconnectSeedFromMetadata(
     metadata.optionalString("sandboxCommandReconnectSeedProviderObservationCursor")
   val providerObservationEventCount =
     metadata.optionalLong("sandboxCommandReconnectSeedProviderObservationEventCount")
+  val providerObservationSeedSource =
+    metadata.optionalString("sandboxCommandReconnectProviderObservationSeedSource")
   if (
     source == null &&
     providerObservationSeedConsumed == null &&
@@ -878,7 +885,8 @@ private fun inferredReconnectSeedFromMetadata(
     stdoutBytes == null &&
     stderrBytes == null &&
     providerObservationCursor == null &&
-    providerObservationEventCount == null
+    providerObservationEventCount == null &&
+    providerObservationSeedSource == null
   ) {
     return null
   }
@@ -893,6 +901,7 @@ private fun inferredReconnectSeedFromMetadata(
     stderrBytes = stderrBytes,
     providerObservationCursor = providerObservationCursor,
     providerObservationEventCount = providerObservationEventCount,
+    providerObservationSeedSource = providerObservationSeedSource,
   )
 }
 
@@ -921,6 +930,10 @@ private fun inferredReconnectStateFromMetadata(
   val failureStage = metadata.optionalString("sandboxCommandReconnectFailureStage")
   val failureClass = metadata.optionalString("sandboxCommandReconnectFailureClass")
   val failureMessage = metadata.optionalString("sandboxCommandReconnectFailureMessage")
+  val providerObservationResumeApplied =
+    metadata.optionalBoolean("sandboxCommandReconnectProviderObservationResumeApplied")
+  val providerObservationResumeReason =
+    metadata.optionalString("sandboxCommandReconnectProviderObservationResumeReason")
   if (
     api == null &&
     source == null &&
@@ -943,6 +956,8 @@ private fun inferredReconnectStateFromMetadata(
     failureStage == null &&
     failureClass == null &&
     failureMessage == null &&
+    providerObservationResumeApplied == null &&
+    providerObservationResumeReason == null &&
     seed == null
   ) {
     return null
@@ -969,6 +984,8 @@ private fun inferredReconnectStateFromMetadata(
     failureStage = failureStage,
     failureClass = failureClass,
     failureMessage = failureMessage,
+    providerObservationResumeApplied = providerObservationResumeApplied,
+    providerObservationResumeReason = providerObservationResumeReason,
     seed = seed,
   )
 }
@@ -1082,6 +1099,8 @@ private fun ManagedProcessReconnectSeed?.mergeMissing(
     stderrBytes = stderrBytes ?: inferred.stderrBytes,
     providerObservationCursor = providerObservationCursor ?: inferred.providerObservationCursor,
     providerObservationEventCount = providerObservationEventCount ?: inferred.providerObservationEventCount,
+    providerObservationSeedSource =
+      providerObservationSeedSource ?: inferred.providerObservationSeedSource,
   )
 }
 
@@ -1116,6 +1135,10 @@ private fun ManagedProcessReconnectState?.mergeMissing(
     failureStage = failureStage ?: inferred.failureStage,
     failureClass = failureClass ?: inferred.failureClass,
     failureMessage = failureMessage ?: inferred.failureMessage,
+    providerObservationResumeApplied =
+      providerObservationResumeApplied ?: inferred.providerObservationResumeApplied,
+    providerObservationResumeReason =
+      providerObservationResumeReason ?: inferred.providerObservationResumeReason,
     seed = seed.mergeMissing(inferred.seed),
   )
 }
@@ -1184,6 +1207,122 @@ private fun Map<String, String>.withProjectedDeliveredObservationState(
   return projected
 }
 
+private fun Map<String, String>.withProjectedReconnectState(
+  reconnectState: ManagedProcessReconnectState?,
+): Map<String, String> {
+  val projected = LinkedHashMap(this)
+  MANAGED_PROCESS_RECONNECT_METADATA_KEYS.forEach(projected::remove)
+  reconnectState?.api?.let { api ->
+    projected["sandboxCommandReconnectApi"] = api
+  }
+  reconnectState?.source?.let { source ->
+    projected["sandboxCommandReconnectSource"] = source
+  }
+  reconnectState?.status?.let { status ->
+    projected["sandboxCommandReconnectStatus"] = status
+  }
+  reconnectState?.recoveryState?.let { recoveryState ->
+    projected["sandboxCommandReconnectRecoveryState"] = recoveryState
+  }
+  reconnectState?.resumeMode?.let { resumeMode ->
+    projected["sandboxCommandReconnectResumeMode"] = resumeMode
+  }
+  reconnectState?.backfillSupported?.let { backfillSupported ->
+    projected["sandboxCommandReconnectBackfillSupported"] = backfillSupported.toString()
+  }
+  reconnectState?.outputGapRisk?.let { outputGapRisk ->
+    projected["sandboxCommandReconnectOutputGapRisk"] = outputGapRisk.toString()
+  }
+  reconnectState?.retryable?.let { retryable ->
+    projected["sandboxCommandReconnectRetryable"] = retryable.toString()
+  }
+  reconnectState?.retryAfterEpochMs?.let { retryAfterEpochMs ->
+    projected["sandboxCommandReconnectRetryAfterEpochMs"] = retryAfterEpochMs.toString()
+  }
+  reconnectState?.attemptCount?.let { attemptCount ->
+    projected["sandboxCommandReconnectAttemptCount"] = attemptCount.toString()
+  }
+  reconnectState?.httpStatusCode?.let { httpStatusCode ->
+    projected["sandboxCommandReconnectHttpStatusCode"] = httpStatusCode.toString()
+  }
+  reconnectState?.selectorKind?.let { selectorKind ->
+    projected["sandboxCommandReconnectSelectorKind"] = selectorKind
+  }
+  reconnectState?.selectorValue?.let { selectorValue ->
+    projected["sandboxCommandReconnectSelectorValue"] = selectorValue
+  }
+  reconnectState?.selectorSource?.let { selectorSource ->
+    projected["sandboxCommandReconnectSelectorSource"] = selectorSource
+  }
+  reconnectState?.lastAttachedAtEpochMs?.let { lastAttachedAtEpochMs ->
+    projected["sandboxCommandReconnectLastAttachedAtEpochMs"] = lastAttachedAtEpochMs.toString()
+  }
+  reconnectState?.lastEventAtEpochMs?.let { lastEventAtEpochMs ->
+    projected["sandboxCommandReconnectLastEventAtEpochMs"] = lastEventAtEpochMs.toString()
+  }
+  reconnectState?.lastEventKind?.let { lastEventKind ->
+    projected["sandboxCommandReconnectLastEventKind"] = lastEventKind
+  }
+  reconnectState?.lastFailureAtEpochMs?.let { lastFailureAtEpochMs ->
+    projected["sandboxCommandReconnectLastFailureAtEpochMs"] = lastFailureAtEpochMs.toString()
+  }
+  reconnectState?.failureStage?.let { failureStage ->
+    projected["sandboxCommandReconnectFailureStage"] = failureStage
+  }
+  reconnectState?.failureClass?.let { failureClass ->
+    projected["sandboxCommandReconnectFailureClass"] = failureClass
+  }
+  reconnectState?.failureMessage?.let { failureMessage ->
+    projected["sandboxCommandReconnectFailureMessage"] = failureMessage
+  }
+  reconnectState?.providerObservationResumeApplied?.let { providerObservationResumeApplied ->
+    projected["sandboxCommandReconnectProviderObservationResumeApplied"] =
+      providerObservationResumeApplied.toString()
+  }
+  reconnectState?.providerObservationResumeReason?.let { providerObservationResumeReason ->
+    projected["sandboxCommandReconnectProviderObservationResumeReason"] =
+      providerObservationResumeReason
+  }
+  reconnectState?.seed?.source?.let { source ->
+    projected["sandboxCommandReconnectSeedSource"] = source
+  }
+  reconnectState?.seed?.providerObservationSeedConsumed?.let { providerObservationSeedConsumed ->
+    projected["sandboxCommandReconnectProviderObservationSeedConsumed"] =
+      providerObservationSeedConsumed.toString()
+  }
+  reconnectState?.seed?.providerObservationSeedState?.let { providerObservationSeedState ->
+    projected["sandboxCommandReconnectProviderObservationSeedState"] = providerObservationSeedState
+  }
+  reconnectState?.seed?.providerObservationSeedConsumedAtEpochMs?.let { consumedAtEpochMs ->
+    projected["sandboxCommandReconnectProviderObservationSeedConsumedAtEpochMs"] =
+      consumedAtEpochMs.toString()
+  }
+  reconnectState?.seed?.hostObservationCursor?.let { hostObservationCursor ->
+    projected["sandboxCommandReconnectSeedObservationCursor"] = hostObservationCursor
+  }
+  reconnectState?.seed?.hostObservationEventCount?.let { hostObservationEventCount ->
+    projected["sandboxCommandReconnectSeedEventCount"] = hostObservationEventCount.toString()
+  }
+  reconnectState?.seed?.stdoutBytes?.let { stdoutBytes ->
+    projected["sandboxCommandReconnectSeededStdoutBytes"] = stdoutBytes.toString()
+  }
+  reconnectState?.seed?.stderrBytes?.let { stderrBytes ->
+    projected["sandboxCommandReconnectSeededStderrBytes"] = stderrBytes.toString()
+  }
+  reconnectState?.seed?.providerObservationCursor?.let { providerObservationCursor ->
+    projected["sandboxCommandReconnectSeedProviderObservationCursor"] = providerObservationCursor
+  }
+  reconnectState?.seed?.providerObservationEventCount?.let { providerObservationEventCount ->
+    projected["sandboxCommandReconnectSeedProviderObservationEventCount"] =
+      providerObservationEventCount.toString()
+  }
+  reconnectState?.seed?.providerObservationSeedSource?.let { providerObservationSeedSource ->
+    projected["sandboxCommandReconnectProviderObservationSeedSource"] =
+      providerObservationSeedSource
+  }
+  return projected
+}
+
 private val MANAGED_PROCESS_DELIVERED_OBSERVATION_METADATA_KEYS: Set<String> = setOf(
   "sandboxCommandLastDeliveredObservationMode",
   "sandboxCommandLastDeliveredObservationCursor",
@@ -1193,6 +1332,43 @@ private val MANAGED_PROCESS_DELIVERED_OBSERVATION_METADATA_KEYS: Set<String> = s
   "sandboxCommandLastDeliveredProviderObservationCursor",
   "sandboxCommandLastDeliveredProviderObservationEventCount",
   "sandboxCommandLastDeliveredAtEpochMs",
+)
+
+private val MANAGED_PROCESS_RECONNECT_METADATA_KEYS: Set<String> = setOf(
+  "sandboxCommandReconnectApi",
+  "sandboxCommandReconnectSource",
+  "sandboxCommandReconnectStatus",
+  "sandboxCommandReconnectRecoveryState",
+  "sandboxCommandReconnectResumeMode",
+  "sandboxCommandReconnectBackfillSupported",
+  "sandboxCommandReconnectOutputGapRisk",
+  "sandboxCommandReconnectRetryable",
+  "sandboxCommandReconnectRetryAfterEpochMs",
+  "sandboxCommandReconnectAttemptCount",
+  "sandboxCommandReconnectHttpStatusCode",
+  "sandboxCommandReconnectSelectorKind",
+  "sandboxCommandReconnectSelectorValue",
+  "sandboxCommandReconnectSelectorSource",
+  "sandboxCommandReconnectLastAttachedAtEpochMs",
+  "sandboxCommandReconnectLastEventAtEpochMs",
+  "sandboxCommandReconnectLastEventKind",
+  "sandboxCommandReconnectLastFailureAtEpochMs",
+  "sandboxCommandReconnectFailureStage",
+  "sandboxCommandReconnectFailureClass",
+  "sandboxCommandReconnectFailureMessage",
+  "sandboxCommandReconnectSeedSource",
+  "sandboxCommandReconnectProviderObservationSeedConsumed",
+  "sandboxCommandReconnectProviderObservationSeedState",
+  "sandboxCommandReconnectProviderObservationSeedSource",
+  "sandboxCommandReconnectProviderObservationSeedConsumedAtEpochMs",
+  "sandboxCommandReconnectSeedObservationCursor",
+  "sandboxCommandReconnectSeedEventCount",
+  "sandboxCommandReconnectSeededStdoutBytes",
+  "sandboxCommandReconnectSeededStderrBytes",
+  "sandboxCommandReconnectSeedProviderObservationCursor",
+  "sandboxCommandReconnectSeedProviderObservationEventCount",
+  "sandboxCommandReconnectProviderObservationResumeApplied",
+  "sandboxCommandReconnectProviderObservationResumeReason",
 )
 
 private fun Map<String, String>.optionalString(key: String): String? =

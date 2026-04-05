@@ -47,6 +47,15 @@ class RoutingCommandExecutorTest {
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("local_host", result.metadata["executionBackend"])
     assertEquals("local", result.metadata["executionBackendRequested"])
+    assertEquals("command_exec", result.metadata["sandboxTraceRouteKind"])
+    assertEquals("local_host", result.metadata["sandboxTraceExecutionBackend"])
+    assertTrue(!result.metadata["sandboxTraceId"].isNullOrBlank())
+    assertTrue(!result.metadata["sandboxTraceRouteSpanId"].isNullOrBlank())
+    assertTrue(!result.metadata["sandboxTraceExecutionSpanId"].isNullOrBlank())
+    assertEquals(
+      result.metadata["sandboxTraceRouteSpanId"],
+      result.metadata["sandboxTraceExecutionParentSpanId"],
+    )
   }
 
   @Test

@@ -9,6 +9,7 @@ import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.runtime.CommandExecutionRequest
 import com.opencray.runtime.PythonExecRequest
 import com.opencray.runtime.PythonScriptRuntime
+import com.opencray.runtime.process.ManagedProcessDeliveredObservationState
 import com.opencray.runtime.process.ManagedProcessObservationState
 import com.opencray.runtime.process.ManagedProcessReconnectSeed
 import com.opencray.runtime.process.ManagedProcessReconnectState
@@ -132,6 +133,22 @@ class E2BEnvdNativeCommandExecutionTest {
       result.metadata["sandboxCommandSupportsManagedProcessObservationCursorResume"],
     )
     assertEquals("false", result.metadata["sandboxCommandSupportsManagedProcessObservationBackfill"])
+    assertEquals(
+      "host_buffered_seed_then_live_attach",
+      result.metadata["sandboxCommandProviderObservationResumeContract"],
+    )
+    assertEquals(
+      "envd_connect_request_selector_only",
+      result.metadata["sandboxCommandProviderObservationResumeBlocker"],
+    )
+    assertEquals("provider_native", result.metadata["sandboxTraceBackendKind"])
+    assertTrue(!result.metadata["sandboxTraceId"].isNullOrBlank())
+    assertTrue(!result.metadata["sandboxTraceBackendSpanId"].isNullOrBlank())
+    assertTrue(!result.metadata["sandboxTraceProviderStartSpanId"].isNullOrBlank())
+    assertEquals(
+      result.metadata["sandboxTraceBackendSpanId"],
+      result.metadata["sandboxTraceProviderStartParentSpanId"],
+    )
     assertEquals("persisted", result.metadata["sandboxCommandSessionSource"])
     assertEquals("envd_process", result.metadata["sandboxCommandProviderHandleKind"])
     assertEquals("tag", result.metadata["sandboxCommandProviderStableSelectorKind"])
@@ -420,6 +437,22 @@ class E2BEnvdNativeCommandExecutionTest {
       runningSnapshot.metadata["sandboxCommandSupportsManagedProcessObservationCursorResume"],
     )
     assertEquals("false", runningSnapshot.metadata["sandboxCommandSupportsManagedProcessObservationBackfill"])
+    assertEquals(
+      "host_buffered_seed_then_live_attach",
+      runningSnapshot.metadata["sandboxCommandProviderObservationResumeContract"],
+    )
+    assertEquals(
+      "envd_connect_request_selector_only",
+      runningSnapshot.metadata["sandboxCommandProviderObservationResumeBlocker"],
+    )
+    assertEquals("provider_native", runningSnapshot.metadata["sandboxTraceBackendKind"])
+    assertTrue(!runningSnapshot.metadata["sandboxTraceId"].isNullOrBlank())
+    assertTrue(!runningSnapshot.metadata["sandboxTraceBackendSpanId"].isNullOrBlank())
+    assertTrue(!runningSnapshot.metadata["sandboxTraceProviderStartSpanId"].isNullOrBlank())
+    assertEquals(
+      runningSnapshot.metadata["sandboxTraceBackendSpanId"],
+      runningSnapshot.metadata["sandboxTraceProviderStartParentSpanId"],
+    )
     assertEquals("envd_process", runningSnapshot.metadata["sandboxCommandProviderHandleKind"])
     assertEquals("tag", runningSnapshot.metadata["sandboxCommandProviderStableSelectorKind"])
     assertEquals("proc-native-managed", runningSnapshot.metadata["sandboxCommandProviderStableSelectorValue"])
@@ -463,6 +496,11 @@ class E2BEnvdNativeCommandExecutionTest {
     val terminateSnapshot = controller.terminate()
     waitUntil { transport.unaryRequests.size == 1 }
     assertEquals("true", terminateSnapshot.metadata["terminationRequested"])
+    assertTrue(!terminateSnapshot.metadata["sandboxTraceProviderTerminateSpanId"].isNullOrBlank())
+    assertEquals(
+      terminateSnapshot.metadata["sandboxTraceBackendSpanId"],
+      terminateSnapshot.metadata["sandboxTraceProviderTerminateParentSpanId"],
+    )
     val sendSignalRequest = transport.unaryRequests.single()
     assertTrue(sendSignalRequest.url.contains("https://49983-sandbox-managed-native.e2b.app/process.Process/SendSignal"))
     val decodedSignalRequest = E2BEnvdProcessProtoCodec.decodeSendSignalRequest(sendSignalRequest.bodyBytes)
@@ -630,12 +668,15 @@ class E2BEnvdNativeCommandExecutionTest {
     assertEquals("23", runningSnapshot.metadata["sandboxCommandObservationStdoutBytes"])
     assertEquals("0", runningSnapshot.metadata["sandboxCommandObservationStderrBytes"])
     assertEquals(
-      "seed_snapshot_then_live_attach",
+      "observation_snapshot_then_live_attach",
       runningSnapshot.metadata["sandboxCommandReconnectResumeMode"],
     )
     assertEquals("false", runningSnapshot.metadata["sandboxCommandReconnectBackfillSupported"])
     assertEquals("true", runningSnapshot.metadata["sandboxCommandReconnectOutputGapRisk"])
-    assertEquals("durable_snapshot_metadata", runningSnapshot.metadata["sandboxCommandReconnectSeedSource"])
+    assertEquals(
+      "observation_snapshot_metadata",
+      runningSnapshot.metadata["sandboxCommandReconnectSeedSource"],
+    )
     assertEquals("true", runningSnapshot.metadata["sandboxCommandReconnectProviderObservationSeedConsumed"])
     assertEquals(
       "consumed_live_attach",
@@ -676,6 +717,26 @@ class E2BEnvdNativeCommandExecutionTest {
       runningSnapshot.metadata["sandboxCommandSupportsManagedProcessObservationCursorResume"],
     )
     assertEquals("false", runningSnapshot.metadata["sandboxCommandSupportsManagedProcessObservationBackfill"])
+    assertEquals(
+      "host_buffered_seed_then_live_attach",
+      runningSnapshot.metadata["sandboxCommandProviderObservationResumeContract"],
+    )
+    assertEquals(
+      "envd_connect_request_selector_only",
+      runningSnapshot.metadata["sandboxCommandProviderObservationResumeBlocker"],
+    )
+    assertTrue(!runningSnapshot.metadata["sandboxTraceId"].isNullOrBlank())
+    assertTrue(!runningSnapshot.metadata["sandboxTraceReconnectSpanId"].isNullOrBlank())
+    assertTrue(!runningSnapshot.metadata["sandboxTraceBackendSpanId"].isNullOrBlank())
+    assertEquals(
+      runningSnapshot.metadata["sandboxTraceReconnectSpanId"],
+      runningSnapshot.metadata["sandboxTraceBackendParentSpanId"],
+    )
+    assertTrue(!runningSnapshot.metadata["sandboxTraceProviderConnectSpanId"].isNullOrBlank())
+    assertEquals(
+      runningSnapshot.metadata["sandboxTraceReconnectSpanId"],
+      runningSnapshot.metadata["sandboxTraceProviderConnectParentSpanId"],
+    )
 
     allowStreamComplete.countDown()
     val completedSnapshot = controller.await(5_000L)
@@ -685,7 +746,10 @@ class E2BEnvdNativeCommandExecutionTest {
     assertEquals("completed", completedSnapshot.metadata["sandboxCommandReconnectRecoveryState"])
     assertEquals("200", completedSnapshot.metadata["sandboxCommandReconnectHttpStatusCode"])
     assertEquals("true", completedSnapshot.metadata["sandboxCommandReconnectOutputGapRisk"])
-    assertEquals("durable_snapshot_metadata", completedSnapshot.metadata["sandboxCommandReconnectSeedSource"])
+    assertEquals(
+      "observation_snapshot_metadata",
+      completedSnapshot.metadata["sandboxCommandReconnectSeedSource"],
+    )
     assertEquals("true", completedSnapshot.metadata["sandboxCommandReconnectProviderObservationSeedConsumed"])
     assertEquals(
       "consumed_live_attach",
@@ -865,6 +929,193 @@ class E2BEnvdNativeCommandExecutionTest {
   }
 
   @Test
+  fun nativeManagedProcessReconnectPrefersDeliveredObservationStateAsSeedWhenPresent() {
+    val workspaceRoot = temporaryFolder.newFolder("e2b-native-managed-reconnect-delivered-seed").toPath()
+    Files.createDirectories(workspaceRoot.resolve("repo"))
+    val sessionStore = E2BSandboxSessionStore(
+      keyValueStore = InMemoryE2BSandboxSessionKeyValueStore(),
+    ).apply {
+      save(
+        E2BSandboxSessionSnapshot(
+          sandboxId = "sandbox-managed-reconnect-delivered-seed",
+          sandboxDomain = "e2b.app",
+          envdAccessToken = "envd-token",
+          workspaceRoot = workspaceRoot.toString(),
+          templateId = E2BCodeInterpreterPythonRuntime.DEFAULT_TEMPLATE_ID,
+          updatedAtEpochMs = 100L,
+          remoteWorkspaceRoot = "/home/user/opencray/workspace-sticky/sandbox-managed-reconnect-delivered-seed",
+        ),
+      )
+    }
+    val transport = FakeEnvdCommandTransport().apply {
+      streamHandler = { request, onEnvelope ->
+        when {
+          request.url.contains("/process.Process/Connect") -> {
+            onEnvelope(
+              0,
+              E2BEnvdProcessProtoCodec.encodeConnectResponse(
+                E2BEnvdProcessEvent.Data(stdout = " after reconnect".toByteArray(StandardCharsets.UTF_8)),
+              ),
+            )
+            onEnvelope(
+              0,
+              E2BEnvdProcessProtoCodec.encodeConnectResponse(
+                E2BEnvdProcessEvent.End(
+                  exitCode = 0,
+                  exited = true,
+                  status = "done",
+                ),
+              ),
+            )
+            onEnvelope(0x02, "{}".toByteArray(StandardCharsets.UTF_8))
+            E2BResponse(statusCode = 200)
+          }
+
+          else -> error("Unexpected envd command stream ${request.method} ${request.url}")
+        }
+      }
+    }
+    val backend = E2BMinimalProtocolSandboxCommandExecutionBackend(
+      workspaceRootProvider = { workspaceRoot },
+      settingsProvider = { sandboxSettings() },
+      sessionStore = sessionStore,
+      activeSessionProvider = { null },
+      pythonRuntime = RecordingPythonRuntime(),
+      transport = transport,
+      json = json,
+    )
+
+    val factory = backend.createManagedProcessControllerFactory() as ReconnectableManagedProcessControllerFactory
+    val controller = requireNotNull(
+      factory.reconnect(
+        ManagedProcessSnapshot(
+          processId = "proc-native-reconnect-delivered-seed",
+          taskId = "task-native-reconnect-delivered-seed",
+          command = "npm",
+          args = listOf("run", "dev"),
+          workingDirectory = workspaceRoot.resolve("repo").toString(),
+          status = ManagedProcessStatus.RUNNING,
+          processStarted = true,
+          timeoutMs = 5_000L,
+          stdout = "booting",
+          startedAtEpochMs = 100L,
+          updatedAtEpochMs = 100L,
+          remoteHandle = ManagedProcessRemoteHandle(
+            provider = SandboxProviderId.E2B.wireValue,
+            sandboxId = "sandbox-managed-reconnect-delivered-seed",
+            sandboxDomain = "e2b.app",
+            commandIdKind = "tag",
+            commandId = "proc-native-reconnect-delivered-seed",
+            providerHandleKind = "envd_process",
+            stableSelectorKind = "tag",
+            stableSelectorValue = "proc-native-reconnect-delivered-seed",
+            liveSelectorKind = "pid",
+            liveSelectorValue = "654",
+            remoteWorkspaceRoot = "/home/user/opencray/workspace-sticky/sandbox-managed-reconnect-delivered-seed",
+            remoteWorkingDirectory = "/home/user/opencray/workspace-sticky/sandbox-managed-reconnect-delivered-seed/repo",
+            nativeProtocol = "envd_connect_process_v1",
+          ),
+          observationState = ManagedProcessObservationState(
+            mode = "host_managed_snapshot",
+            hostEventCount = 1L,
+            hostCursor = "host_seq_1",
+            stdoutBytes = 7L,
+            stderrBytes = 0L,
+            providerMode = "provider_event_stream_host_buffered",
+            providerEventCount = 1L,
+            providerCursor = "envd_seq_1",
+            providerBackfillSupported = false,
+            liveObservationSupported = true,
+            cursorResumeSupported = false,
+            backfillSupported = false,
+          ),
+          reconnectState = ManagedProcessReconnectState(
+            attemptCount = 2,
+            selectorKind = "pid",
+            selectorValue = "654",
+            selectorSource = "snapshot_pid",
+            seed = ManagedProcessReconnectSeed(
+              source = "durable_snapshot_metadata",
+              hostObservationCursor = "host_seq_1",
+              hostObservationEventCount = 1L,
+              stdoutBytes = 7L,
+              stderrBytes = 0L,
+              providerObservationCursor = "envd_seq_1",
+              providerObservationEventCount = 1L,
+            ),
+          ),
+          deliveredObservationState = ManagedProcessDeliveredObservationState(
+            mode = "host_managed_snapshot",
+            cursor = "host_seq_2",
+            stdoutBytes = 14L,
+            stderrBytes = 0L,
+            providerMode = "provider_event_stream_host_buffered",
+            providerCursor = "envd_seq_2",
+            providerEventCount = 2L,
+            deliveredAtEpochMs = 150L,
+          ),
+          metadata = emptyMap(),
+        ),
+      ),
+    )
+
+    val completedSnapshot = controller.await(5_000L)
+
+    assertEquals(ManagedProcessStatus.SUCCESS, completedSnapshot.status)
+    assertEquals(
+      "durable_delivered_observation_state",
+      completedSnapshot.metadata["sandboxCommandReconnectSeedSource"],
+    )
+    assertEquals(
+      "delivered_seed_then_live_attach",
+      completedSnapshot.metadata["sandboxCommandReconnectResumeMode"],
+    )
+    assertEquals("host_seq_2", completedSnapshot.metadata["sandboxCommandReconnectSeedObservationCursor"])
+    assertEquals("2", completedSnapshot.metadata["sandboxCommandReconnectSeedEventCount"])
+    assertEquals("14", completedSnapshot.metadata["sandboxCommandReconnectSeededStdoutBytes"])
+    assertEquals(
+      "envd_seq_2",
+      completedSnapshot.metadata["sandboxCommandReconnectSeedProviderObservationCursor"],
+    )
+    assertEquals(
+      "2",
+      completedSnapshot.metadata["sandboxCommandReconnectSeedProviderObservationEventCount"],
+    )
+    assertEquals(
+      "durable_delivered_observation_state",
+      completedSnapshot.metadata["sandboxCommandReconnectProviderObservationSeedSource"],
+    )
+    assertEquals(
+      "false",
+      completedSnapshot.metadata["sandboxCommandReconnectProviderObservationResumeApplied"],
+    )
+    assertEquals(
+      "protocol_cursor_resume_unsupported",
+      completedSnapshot.metadata["sandboxCommandReconnectProviderObservationResumeReason"],
+    )
+    assertEquals(
+      "durable_delivered_observation_state",
+      completedSnapshot.reconnectState?.seed?.source,
+    )
+    assertEquals("host_seq_2", completedSnapshot.reconnectState?.seed?.hostObservationCursor)
+    assertEquals("envd_seq_2", completedSnapshot.reconnectState?.seed?.providerObservationCursor)
+    assertEquals(
+      "durable_delivered_observation_state",
+      completedSnapshot.reconnectState?.seed?.providerObservationSeedSource,
+    )
+    assertEquals(false, completedSnapshot.reconnectState?.providerObservationResumeApplied)
+    assertEquals(
+      "protocol_cursor_resume_unsupported",
+      completedSnapshot.reconnectState?.providerObservationResumeReason,
+    )
+
+    val connectRequest = transport.requests.single()
+    val decodedConnectRequest = E2BEnvdProcessProtoCodec.decodeConnectRequest(connectPayload(connectRequest.bodyBytes))
+    assertEquals(654, decodedConnectRequest.process.pid)
+    assertNull(decodedConnectRequest.process.tag)
+  }
+
+  @Test
   fun nativeManagedProcessReconnectMarksAttachedOnFirstLiveDataEventWithoutStart() {
     val workspaceRoot = temporaryFolder.newFolder("e2b-native-managed-reconnect-data-first").toPath()
     Files.createDirectories(workspaceRoot.resolve("repo"))
@@ -979,7 +1230,10 @@ class E2BEnvdNativeCommandExecutionTest {
     assertEquals("2", runningSnapshot.metadata["sandboxCommandObservationEventCount"])
     assertEquals("host_seq_2", runningSnapshot.metadata["sandboxCommandObservationCursor"])
     assertEquals("19", runningSnapshot.metadata["sandboxCommandObservationStdoutBytes"])
-    assertEquals("durable_snapshot_metadata", runningSnapshot.metadata["sandboxCommandReconnectSeedSource"])
+    assertEquals(
+      "observation_snapshot_metadata",
+      runningSnapshot.metadata["sandboxCommandReconnectSeedSource"],
+    )
     assertEquals("true", runningSnapshot.metadata["sandboxCommandReconnectProviderObservationSeedConsumed"])
     assertEquals(
       "consumed_live_attach",
@@ -1121,7 +1375,10 @@ class E2BEnvdNativeCommandExecutionTest {
       runningSnapshot.metadata["sandboxCommandSupportsManagedProcessObservationCursorResume"],
     )
     assertEquals("false", runningSnapshot.metadata["sandboxCommandSupportsManagedProcessObservationBackfill"])
-    assertEquals("durable_snapshot_metadata", runningSnapshot.metadata["sandboxCommandReconnectSeedSource"])
+    assertEquals(
+      "observation_snapshot_metadata",
+      runningSnapshot.metadata["sandboxCommandReconnectSeedSource"],
+    )
     assertEquals("true", runningSnapshot.metadata["sandboxCommandReconnectProviderObservationSeedConsumed"])
     assertEquals(
       "consumed_live_attach",
@@ -1222,7 +1479,10 @@ class E2BEnvdNativeCommandExecutionTest {
     assertEquals("false", snapshot.metadata["sandboxCommandReconnectRetryable"])
     assertEquals("404", snapshot.metadata["sandboxCommandReconnectHttpStatusCode"])
     assertEquals("http_response_non_success", snapshot.metadata["sandboxCommandReconnectFailureStage"])
-    assertEquals("durable_snapshot_metadata", snapshot.metadata["sandboxCommandReconnectSeedSource"])
+    assertEquals(
+      "observation_snapshot_metadata",
+      snapshot.metadata["sandboxCommandReconnectSeedSource"],
+    )
     assertEquals("false", snapshot.metadata["sandboxCommandReconnectProviderObservationSeedConsumed"])
     assertEquals(
       "failed_terminal_before_live_attach",
@@ -1394,7 +1654,10 @@ class E2BEnvdNativeCommandExecutionTest {
       "transport_exception_before_live_attach",
       snapshot.metadata["sandboxCommandReconnectFailureStage"],
     )
-    assertEquals("durable_snapshot_metadata", snapshot.metadata["sandboxCommandReconnectSeedSource"])
+    assertEquals(
+      "observation_snapshot_metadata",
+      snapshot.metadata["sandboxCommandReconnectSeedSource"],
+    )
     assertEquals("false", snapshot.metadata["sandboxCommandReconnectProviderObservationSeedConsumed"])
     assertEquals(
       "retry_scheduled_before_live_attach",
@@ -1508,7 +1771,10 @@ class E2BEnvdNativeCommandExecutionTest {
       "transport_exception_after_live_attach",
       snapshot.metadata["sandboxCommandReconnectFailureStage"],
     )
-    assertEquals("durable_snapshot_metadata", snapshot.metadata["sandboxCommandReconnectSeedSource"])
+    assertEquals(
+      "observation_snapshot_metadata",
+      snapshot.metadata["sandboxCommandReconnectSeedSource"],
+    )
     assertEquals("true", snapshot.metadata["sandboxCommandReconnectProviderObservationSeedConsumed"])
     assertEquals(
       "consumed_live_attach",

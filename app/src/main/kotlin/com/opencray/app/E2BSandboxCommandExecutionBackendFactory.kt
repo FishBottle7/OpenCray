@@ -147,47 +147,103 @@ private class SelectionDecoratingSandboxCommandExecutionBackend(
       approvalToken: CommandApprovalToken?,
       hooks: RuntimeExecutionHooks,
     ): ExecutionResult {
+      val backendTraceMetadata = SandboxExecutionTraceMetadata.backendMetadata(
+        metadata = request.metadata,
+        backendKind = delegate.capabilities.backendKind,
+      )
+      val providerTraceMetadata = if (delegate.capabilities.providerNative) {
+        SandboxExecutionTraceMetadata.providerStartMetadata(request.metadata + backendTraceMetadata)
+      } else {
+        emptyMap()
+      }
       val result = commandExecutor.execute(
-        request = request.copy(metadata = request.metadata + selectionMetadata),
+        request = request.copy(
+          metadata = request.metadata + selectionMetadata + backendTraceMetadata + providerTraceMetadata,
+        ),
         policyDecision = policyDecision,
         approvalToken = approvalToken,
         hooks = hooks,
       )
-      return result.copy(metadata = result.metadata + selectionMetadata)
+      return result.copy(
+        metadata = result.metadata + selectionMetadata + backendTraceMetadata + providerTraceMetadata,
+      )
     }
   }
 
   override fun createManagedProcessControllerFactory(): ManagedProcessControllerFactory =
     object : ReconnectableManagedProcessControllerFactory {
       override fun start(request: ManagedProcessStartRequest): ManagedProcessController {
-        val controller = managedProcessControllerFactory.start(
-          request.copy(metadata = request.metadata + selectionMetadata),
+        val backendTraceMetadata = SandboxExecutionTraceMetadata.backendMetadata(
+          metadata = request.metadata,
+          backendKind = delegate.capabilities.backendKind,
         )
-        return decorateController(controller)
+        val providerTraceMetadata = if (delegate.capabilities.providerNative) {
+          SandboxExecutionTraceMetadata.providerStartMetadata(request.metadata + backendTraceMetadata)
+        } else {
+          emptyMap()
+        }
+        val controller = managedProcessControllerFactory.start(
+          request.copy(
+            metadata = request.metadata + selectionMetadata + backendTraceMetadata + providerTraceMetadata,
+          ),
+        )
+        return decorateController(
+          controller = controller,
+          decorationMetadata = selectionMetadata + backendTraceMetadata + providerTraceMetadata,
+        )
       }
 
       override fun reconnect(snapshot: ManagedProcessSnapshot): ManagedProcessController? {
         val reconnectableFactory =
           managedProcessControllerFactory as? ReconnectableManagedProcessControllerFactory
           ?: return null
+        val reconnectTraceMetadata = SandboxExecutionTraceMetadata.reconnectMetadata(snapshot.metadata)
+        val backendTraceMetadata = SandboxExecutionTraceMetadata.backendMetadata(
+          metadata = snapshot.metadata + reconnectTraceMetadata,
+          backendKind = delegate.capabilities.backendKind,
+        )
+        val providerTraceMetadata = if (delegate.capabilities.providerNative) {
+          SandboxExecutionTraceMetadata.providerConnectMetadata(
+            snapshot.metadata + reconnectTraceMetadata + backendTraceMetadata,
+          )
+        } else {
+          emptyMap()
+        }
         val controller = reconnectableFactory.reconnect(
-          snapshot.copy(metadata = snapshot.metadata + selectionMetadata),
+          snapshot.copy(
+            metadata =
+              snapshot.metadata +
+                selectionMetadata +
+                reconnectTraceMetadata +
+                backendTraceMetadata +
+                providerTraceMetadata,
+          ),
         ) ?: return null
-        return decorateController(controller)
+        return decorateController(
+          controller = controller,
+          decorationMetadata =
+            selectionMetadata +
+              reconnectTraceMetadata +
+              backendTraceMetadata +
+              providerTraceMetadata,
+        )
       }
 
-      private fun decorateController(controller: ManagedProcessController): ManagedProcessController {
+      private fun decorateController(
+        controller: ManagedProcessController,
+        decorationMetadata: Map<String, String>,
+      ): ManagedProcessController {
         return object : ManagedProcessController {
-          override fun snapshot(): ManagedProcessSnapshot = controller.snapshot().withSelectionMetadata()
+          override fun snapshot(): ManagedProcessSnapshot = controller.snapshot().withDecorationMetadata()
 
           override fun await(timeoutMs: Long): ManagedProcessSnapshot =
-            controller.await(timeoutMs).withSelectionMetadata()
+            controller.await(timeoutMs).withDecorationMetadata()
 
           override fun terminate(): ManagedProcessSnapshot =
-            controller.terminate().withSelectionMetadata()
+            controller.terminate().withDecorationMetadata()
 
-          private fun ManagedProcessSnapshot.withSelectionMetadata(): ManagedProcessSnapshot =
-            copy(metadata = metadata + selectionMetadata)
+          private fun ManagedProcessSnapshot.withDecorationMetadata(): ManagedProcessSnapshot =
+            copy(metadata = metadata + decorationMetadata)
         }
       }
     }

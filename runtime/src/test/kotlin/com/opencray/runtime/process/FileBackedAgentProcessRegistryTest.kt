@@ -300,13 +300,16 @@ class FileBackedAgentProcessRegistryTest {
               "sandboxCommandReconnectSeedSource": "durable_snapshot_metadata",
               "sandboxCommandReconnectProviderObservationSeedConsumed": "true",
               "sandboxCommandReconnectProviderObservationSeedState": "consumed_live_attach",
+              "sandboxCommandReconnectProviderObservationSeedSource": "observation_snapshot_metadata",
               "sandboxCommandReconnectProviderObservationSeedConsumedAtEpochMs": "1050",
               "sandboxCommandReconnectSeedObservationCursor": "host_seq_1",
               "sandboxCommandReconnectSeedEventCount": "1",
               "sandboxCommandReconnectSeededStdoutBytes": "7",
               "sandboxCommandReconnectSeededStderrBytes": "0",
               "sandboxCommandReconnectSeedProviderObservationCursor": "envd_seq_1",
-              "sandboxCommandReconnectSeedProviderObservationEventCount": "1"
+              "sandboxCommandReconnectSeedProviderObservationEventCount": "1",
+              "sandboxCommandReconnectProviderObservationResumeApplied": "false",
+              "sandboxCommandReconnectProviderObservationResumeReason": "protocol_cursor_resume_unsupported"
             }
           }
         ]
@@ -334,6 +337,15 @@ class FileBackedAgentProcessRegistryTest {
     assertEquals("durable_snapshot_metadata", restored.reconnectState?.seed?.source)
     assertEquals("host_seq_1", restored.reconnectState?.seed?.hostObservationCursor)
     assertEquals(7L, restored.reconnectState?.seed?.stdoutBytes)
+    assertEquals(
+      "observation_snapshot_metadata",
+      restored.reconnectState?.seed?.providerObservationSeedSource,
+    )
+    assertEquals(false, restored.reconnectState?.providerObservationResumeApplied)
+    assertEquals(
+      "protocol_cursor_resume_unsupported",
+      restored.reconnectState?.providerObservationResumeReason,
+    )
   }
 
   @Test
