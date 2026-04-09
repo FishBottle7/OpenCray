@@ -49,31 +49,22 @@ internal class ProjectionOnlyOpenCrayShellGateway(
   private val pollIntervalMs: Long = DEFAULT_PROJECTION_SHELL_POLL_INTERVAL_MS,
 ) : OpenCrayShellGateway {
   override fun loadShellSnapshot(): Map<String, Any?> = buildMap {
+    val projectionSnapshot = projectionSnapshotProvider()
     put("initialTab", stateStore.load().selectedTab.routeKey)
     put("localeTag", localeTagProvider())
     put("hostLabel", hostLabel)
     put("hostSummary", hostSummary)
     put("isHostConnected", true)
-    put("localRuntimeServerState", OpenCrayLocalRuntimeServerRegistry.peekState().snapshotMap())
-    put("hostLifecycle", hostLifecycleDescriptor.snapshotMap())
-    projectionSnapshotProvider()?.runtimeOwnerLifecycle?.snapshotMap()?.let { lifecycle ->
-      put("runtimeOwnerLifecycle", lifecycle)
-    }
-    projectionSnapshotProvider()?.runtimeOwnerWorkSummary?.snapshotMap()?.let { summary ->
-      put("runtimeOwnerWorkSummary", summary)
-    }
-    projectionSnapshotProvider()?.serviceLifecycle?.snapshotMap()?.let { lifecycle ->
-      put("runtimeServiceLifecycle", lifecycle)
-    }
-    projectionSnapshotProvider()?.serviceWorkState?.snapshotMap()?.let { workState ->
-      put("runtimeServiceWorkState", workState)
-    }
-    projectionSnapshotProvider()?.serviceKeepAliveState?.snapshotMap()?.let { keepAliveState ->
-      put("runtimeServiceKeepAliveState", keepAliveState)
-    }
-    connectionStateProvider()?.snapshotMap()?.let { state ->
-      put("runtimeServiceConnectionState", state)
-    }
+    putRuntimeServiceDiagnosticsSnapshot(
+      localRuntimeServerState = OpenCrayLocalRuntimeServerRegistry.peekState(),
+      hostLifecycle = hostLifecycleDescriptor,
+      runtimeOwnerLifecycle = projectionSnapshot?.runtimeOwnerLifecycle,
+      runtimeOwnerWorkSummary = projectionSnapshot?.runtimeOwnerWorkSummary,
+      runtimeServiceLifecycle = projectionSnapshot?.serviceLifecycle,
+      runtimeServiceWorkState = projectionSnapshot?.serviceWorkState,
+      runtimeServiceKeepAliveState = projectionSnapshot?.serviceKeepAliveState,
+      runtimeServiceConnectionState = connectionStateProvider(),
+    )
   }
 
   override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit =

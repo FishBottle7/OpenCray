@@ -91,12 +91,12 @@ internal fun InProcessOpenCrayRuntimeOwner.toRuntimeOwnerAccess(): OpenCrayRunti
     args = arrayOf(this),
   )
 
-internal fun bootstrapSessionsForRuntimeServiceHost(
+internal fun bootstrapRuntimeServiceSessions(
   chatSessionStore: ChatSessionLocalStore,
   runtimeAccess: OpenCrayRuntimeOwnerAccess,
 ): RuntimeServiceBootstrapResult = invokeKtStatic(
-  className = "com.opencray.app.OpenCrayRuntimeServiceHostKt",
-  methodName = "bootstrapSessionsForRuntimeServiceHost",
+  className = "com.opencray.app.RuntimeServiceBootstrapAssemblyKt",
+  methodName = "bootstrapRuntimeServiceSessions",
   args = arrayOf(chatSessionStore, runtimeAccess),
 )
 

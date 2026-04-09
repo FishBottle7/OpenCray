@@ -45,6 +45,40 @@ class OpenCrayFlutterHostBridgeTest {
   }
 
   @Test
+  fun selectChatSessionRoutesThroughChatRuntimeGateway() {
+    val chatGateway = RecordingChatRuntimeGateway()
+    val bridge = hostBridge(chatGateway = chatGateway)
+
+    val selected = bridge.selectChatSession("session-1")
+
+    assertTrue(selected)
+    assertEquals("session-1", chatGateway.lastSelectedSessionId)
+  }
+
+  @Test
+  fun openCrayFlutterHostBridgeUsesInjectedGatewayBundleFactory() {
+    val localGateway = RecordingLocalGateway()
+    val chatGateway = RecordingChatRuntimeGateway()
+    val bridge = openCrayFlutterHostBridge(
+      context = MinimalContext(),
+      gatewayBundleFactory = OpenCrayClientGatewayBundleFactory {
+        OpenCrayClientGatewayBundle(
+          localHostGateway = localGateway,
+          shellGateway = UnsupportedShellGateway(),
+          chatRuntimeGateway = chatGateway,
+          skillsGateway = UnsupportedSkillsGateway(),
+          settingsGateway = UnsupportedSettingsGateway(),
+        )
+      },
+    )
+
+    val selected = bridge.selectChatSession("session-2")
+
+    assertTrue(selected)
+    assertEquals("session-2", chatGateway.lastSelectedSessionId)
+  }
+
+  @Test
   fun listAgentsMethodCallRoutesThroughLocalHostGateway() {
     val localGateway = RecordingLocalGateway().apply {
       listAgentsResult = listOf(
@@ -566,6 +600,12 @@ class OpenCrayFlutterHostBridgeTest {
       private set
 
     var refreshSandboxSessionInfoError: Throwable? = null
+    var lastSelectedSessionId: String? = null
+      private set
+
+    override fun selectChatSession(sessionId: String) {
+      lastSelectedSessionId = sessionId
+    }
 
     override fun refreshSandboxSessionInfo() {
       refreshSandboxSessionInfoCallCount += 1

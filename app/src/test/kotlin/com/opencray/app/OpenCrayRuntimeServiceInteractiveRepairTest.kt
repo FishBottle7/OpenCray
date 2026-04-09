@@ -25,7 +25,7 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
   val temporaryFolder: TemporaryFolder = TemporaryFolder()
 
   @Test
-  fun resumeInterruptedRunsForRuntimeServiceHostResumesOnlySessionsWithActiveRuns() {
+  fun resumeInterruptedRuntimeServiceRunsResumesOnlySessionsWithActiveRuns() {
     val root = temporaryFolder.newFolder("runtime-service-interactive-repair")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
     val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
@@ -85,7 +85,7 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
       ),
     )
 
-    val result = resumeInterruptedRunsForRuntimeServiceHost(chatSessionStore, runtimeAccess)
+    val result = resumeInterruptedRuntimeServiceRuns(chatSessionStore, runtimeAccess)
 
     assertEquals(
       setOf(activeSessionId, recoverableSessionId, completedSessionId),
@@ -100,7 +100,7 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
   }
 
   @Test
-  fun resumeInterruptedRunsForRuntimeServiceHostAlsoResumesSessionsWithLiveSubAgents() {
+  fun resumeInterruptedRuntimeServiceRunsAlsoResumesSessionsWithLiveSubAgents() {
     val root = temporaryFolder.newFolder("runtime-service-interactive-repair-subagent")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
     val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
@@ -140,7 +140,7 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
       ),
     )
 
-    val result = resumeInterruptedRunsForRuntimeServiceHost(chatSessionStore, runtimeAccess)
+    val result = resumeInterruptedRuntimeServiceRuns(chatSessionStore, runtimeAccess)
 
     assertEquals(
       setOf(activeSessionId, subAgentSessionId, idleSessionId),
@@ -155,7 +155,7 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
   }
 
   @Test
-  fun resumeInterruptedRunsForRuntimeServiceHostSubmitsRecoveryTaskForQueuedDetachedSubAgent() {
+  fun resumeInterruptedRuntimeServiceRunsSubmitsRecoveryTaskForQueuedDetachedSubAgent() {
     val root = temporaryFolder.newFolder("runtime-service-interactive-repair-subagent-recovery")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
     val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
@@ -190,7 +190,7 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
       ),
     )
 
-    resumeInterruptedRunsForRuntimeServiceHost(chatSessionStore, runtimeAccess)
+    resumeInterruptedRuntimeServiceRuns(chatSessionStore, runtimeAccess)
 
     assertEquals(1, recoverySession.submittedTasks.size)
     val recoveryTask = recoverySession.submittedTasks.single()

@@ -180,13 +180,8 @@ internal class ServiceOwnedChatRunControlAccess(
   }
 
   private fun pendingApprovalForRun(run: AgentRunSnapshot): PendingApprovalSnapshot? {
-    val checkpointKind = runtimeHostAccess.promptCheckpointStore(run.sessionId)
-      .get(run.taskId)
-      ?.checkpointKind
-    if (
-      checkpointKind == PromptCheckpointKind.APPROVED_PENDING_RESUME ||
-      checkpointKind == PromptCheckpointKind.REJECTED_PENDING_RESUME
-    ) {
+    val checkpoint = runtimeHostAccess.promptCheckpointStore(run.sessionId).get(run.taskId)
+    if (checkpointApprovalDecisionState(checkpoint) != null) {
       return null
     }
     pendingApprovalState.approvalsForSession(run.sessionId).values.firstOrNull { approval ->
@@ -204,7 +199,7 @@ internal class ServiceOwnedChatRunControlAccess(
       executionId = run.executionId,
       executionOrdinal = run.executionOrdinal.takeIf { ordinal -> ordinal > 0 },
       executionKind = run.executionKind,
-      toolName = approvalToolName(run.resultMetadata),
+      toolName = approvalMetadataToolName(run.resultMetadata),
       resumeToolName = null,
       promptCheckpointBoundary = null,
       promptResumeState = null,
@@ -215,10 +210,15 @@ internal class ServiceOwnedChatRunControlAccess(
       workingDirectory = null,
       reason = run.resultMetadata["toolReason"],
       message = run.errorMessage,
-      isHighRisk = isHighRiskApproval(run.errorCode),
+      isHighRisk = approvalMetadataIsHighRisk(
+        errorCode = run.errorCode,
+        highRiskErrorCode = ERROR_HIGH_RISK_APPROVAL_REQUIRED,
+        metadata = run.resultMetadata,
+      ),
       supportsSessionApproval = false,
       approveForSessionLabel = null,
-      subAgentLifecycle = pendingApprovalSubAgentLifecycle(run.resultMetadata),
+      subAgentLifecycle = approvalMetadataSubAgentLifecycle(run.resultMetadata)
+        ?.toPendingApprovalSubAgentLifecycle(),
       title = "Approval required",
       body = run.errorMessage.orEmpty(),
     )
@@ -302,37 +302,18 @@ internal class ServiceOwnedChatRunControlAccess(
     emittedAtEpochMs = emittedAtEpochMs,
   )
 
-  private fun pendingApprovalSubAgentLifecycle(
-    metadata: Map<String, String>,
-  ): PendingApprovalSubAgentLifecycle? {
-    val childRunId = metadata["childRunId"]?.trim()?.takeIf(String::isNotBlank) ?: return null
-    val childTaskId = metadata["childTaskId"]?.trim()?.takeIf(String::isNotBlank) ?: return null
-    val subagentType = metadata["subagentType"]?.trim()?.takeIf(String::isNotBlank)
-      ?: return null
-    return PendingApprovalSubAgentLifecycle(
-      childRunId = childRunId,
-      childTaskId = childTaskId,
-      label = metadata["delegationDescription"]?.trim()?.takeIf(String::isNotBlank) ?: "Task",
-      subagentType = subagentType,
-      contextMode = metadata["subagentContextMode"]?.trim()?.takeIf(String::isNotBlank)
-        ?: "delegated",
-      depth = metadata["subagentDepth"]?.trim()?.toIntOrNull() ?: 1,
-    )
-  }
-
-  private fun approvalToolName(metadata: Map<String, String>): String? =
-    metadata["normalizedToolName"]
-      ?.takeIf(String::isNotBlank)
-      ?: metadata["canonicalToolName"]
-        ?.takeIf(String::isNotBlank)
-      ?: metadata["toolName"]
-        ?.takeIf(String::isNotBlank)
-
-  private fun isHighRiskApproval(errorCode: String?): Boolean =
-    errorCode == ERROR_HIGH_RISK_APPROVAL_REQUIRED
-
   private fun isApprovalRequiredError(errorCode: String?): Boolean =
     errorCode == "APPROVAL_REQUIRED" || errorCode == ERROR_HIGH_RISK_APPROVAL_REQUIRED
+
+  private fun ApprovalDecisionSubAgentLifecycle.toPendingApprovalSubAgentLifecycle():
+    PendingApprovalSubAgentLifecycle = PendingApprovalSubAgentLifecycle(
+    childRunId = childRunId,
+    childTaskId = childTaskId,
+    label = label,
+    subagentType = subagentType,
+    contextMode = contextMode,
+    depth = depth,
+  )
 
   private fun delegatedChildCancelledWhileWaitingSummary(): String = if (isChineseLocale()) {
     "子任务在等待审批时已停止。"

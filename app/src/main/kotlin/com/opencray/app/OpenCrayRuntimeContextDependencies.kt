@@ -91,26 +91,3 @@ internal fun loadOpenCrayRuntimeContextDependencies(
     workspaceSnapshotProvider = workspaceSnapshotProvider,
   )
 }
-
-internal fun ensureInProcessRuntimeOwner(
-  dependencies: OpenCrayRuntimeContextDependencies,
-): InProcessOpenCrayRuntimeOwner =
-  InProcessOpenCrayRuntimeOwnerRegistry.getOrCreate {
-    createInProcessOpenCrayRuntimeOwner(
-      appContext = dependencies.appContext,
-      llmSettingsStore = dependencies.llmSettingsStore,
-      sandboxSettingsRepository = dependencies.sandboxSettingsRepository,
-      personalizationStore = dependencies.personalizationStore,
-      chatSessionStore = dependencies.chatSessionStore,
-      skillsFacade = dependencies.skillsFacade,
-      mcpSettingsFacade = dependencies.mcpSettingsFacade,
-      liveContextModeStore = dependencies.liveContextModeStore,
-      mediaSpeechSettingsStore = dependencies.mediaSpeechSettingsStore,
-      webSearchSettingsStore = dependencies.webSearchSettingsStore,
-      providerUserAgent = dependencies.providerUserAgent,
-      workspaceRootProvider = dependencies.workspaceRootProvider,
-      workspaceRootsProvider = dependencies.workspaceRootsProvider,
-      approvedReadRootsProvider = dependencies.approvedReadRootsProvider,
-      soulProfileStore = dependencies.soulProfileStore,
-    )
-  }

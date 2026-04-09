@@ -526,39 +526,59 @@ internal class ScheduledTaskDispatcher(
     }
 }
 
-internal fun OpenCrayRuntimeServiceHost.scheduledTaskDispatcher(
+internal data class ScheduledTaskDispatcherDependencies(
+  val hostAccess: OpenCrayRuntimeHostAccess,
+  val chatSessionStore: ChatSessionLocalStore,
+  val safetySettingsFacade: SafetySettingsFacade,
+  val approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot,
+  val lifecycleDescriptor: HostRuntimeLifecycleDescriptor,
+  val localizedContext: Context,
+  val assistantPlaceholderTextProvider: () -> String,
+  val specStore: ScheduledTaskSpecStore,
+  val runRecordStore: ScheduledTaskRunRecordStore,
+  val triggerRegistrar: ScheduledTriggerRegistrar,
+)
+
+internal fun ScheduledTaskDispatcherDependencies.createScheduledTaskDispatcher(
   clock: () -> Long = System::currentTimeMillis,
 ): ScheduledTaskDispatcher = ScheduledTaskDispatcher(
-  hostAccess = runtimeAccess.hostAccess,
-  chatSessionStore = dependencies.chatSessionStore,
-  safetySettingsFacade = dependencies.safetySettingsFacade,
-  approvedReadRootsProvider = dependencies.approvedReadRootsProvider,
-  lifecycleDescriptor = runtimeAccess.lifecycleDescriptor,
-  localizedContext = dependencies.localizedContext,
-  assistantPlaceholderTextProvider = {
-    dependencies.localizedContext.getText(org.opencray.app.R.string.chat_agent_thinking).toString()
-  },
-  specStore = scheduledTaskSpecStore,
-  runRecordStore = scheduledTaskRunRecordStore,
-  triggerRegistrar = scheduledTriggerRegistrar,
+  hostAccess = hostAccess,
+  chatSessionStore = chatSessionStore,
+  safetySettingsFacade = safetySettingsFacade,
+  approvedReadRootsProvider = approvedReadRootsProvider,
+  lifecycleDescriptor = lifecycleDescriptor,
+  localizedContext = localizedContext,
+  assistantPlaceholderTextProvider = assistantPlaceholderTextProvider,
+  specStore = specStore,
+  runRecordStore = runRecordStore,
+  triggerRegistrar = triggerRegistrar,
   clock = clock,
 )
 
-internal fun OpenCrayRuntimeServiceHost.repairScheduledTasks(
+internal data class ScheduledTaskRepairDependencies(
+  val scheduledTaskDispatcherDependencies: ScheduledTaskDispatcherDependencies,
+  val specStore: ScheduledTaskSpecStore,
+  val triggerRegistrar: ScheduledTriggerRegistrar,
+  val triggerSyncStateStore: ScheduledTaskTriggerSyncStateStore,
+)
+
+internal fun ScheduledTaskRepairDependencies.repairScheduledTasks(
   repairReason: String,
   nowEpochMs: Long = System.currentTimeMillis(),
 ): List<ScheduledTaskDispatchOutcome> {
-  val enabledSpecs = scheduledTaskSpecStore.listEnabled()
-  val dispatcher = scheduledTaskDispatcher(clock = { nowEpochMs })
+  val enabledSpecs = specStore.listEnabled()
+  val dispatcher = scheduledTaskDispatcherDependencies.createScheduledTaskDispatcher(
+    clock = { nowEpochMs },
+  )
   val outcomes = plannedRepairWakeCommands(
     enabledSpecs = enabledSpecs,
     nowEpochMs = nowEpochMs,
     repairReason = repairReason,
   ).map(dispatcher::dispatch)
   resyncEnabledScheduledTasks(
-    specStore = scheduledTaskSpecStore,
-    triggerRegistrar = scheduledTriggerRegistrar,
-    triggerSyncStateStore = scheduledTaskTriggerSyncStateStore,
+    specStore = specStore,
+    triggerRegistrar = triggerRegistrar,
+    triggerSyncStateStore = triggerSyncStateStore,
   )
   return outcomes
 }
@@ -607,7 +627,7 @@ internal class ScheduledTaskWakeReceiver : BroadcastReceiver() {
       triggeredAtEpochMs = System.currentTimeMillis(),
       triggerReason = ScheduledTaskTriggerReasons.ALARM,
     )
-    OpenCrayAgentRuntimeService.startScheduledTask(
+    OpenCrayRuntimeServiceAccess.startScheduledTask(
       context.applicationContext,
       wakeCommand,
     )
@@ -617,27 +637,15 @@ internal class ScheduledTaskWakeReceiver : BroadcastReceiver() {
 internal fun scheduledTaskServiceIntent(
   context: Context,
   command: ScheduledTaskWakeCommand,
-): Intent = Intent(context, OpenCrayAgentRuntimeService::class.java)
-  .setAction(ACTION_RUN_SCHEDULED_TASK)
-  .putExtra(EXTRA_SCHEDULE_ID, command.scheduleId)
-  .putExtra(EXTRA_SCHEDULE_RUN_ID, command.scheduleRunId)
-  .putExtra(EXTRA_TRIGGERED_AT_EPOCH_MS, command.triggeredAtEpochMs)
-  .putExtra(EXTRA_TRIGGER_REASON, command.triggerReason)
-  .apply {
-    command.targetSessionId
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?.let { sessionId ->
-        putExtra(EXTRA_TARGET_SESSION_ID, sessionId)
-      }
-  }
+): Intent = OpenCrayRuntimeServiceAccess.scheduledTaskServiceIntent(context, command)
 
 internal fun scheduledTaskRepairServiceIntent(
   context: Context,
   repairReason: String,
-): Intent = Intent(context, OpenCrayAgentRuntimeService::class.java)
-  .setAction(ACTION_REPAIR_SCHEDULES)
-  .putExtra(EXTRA_REPAIR_REASON, repairReason)
+): Intent = OpenCrayRuntimeServiceAccess.scheduledTaskRepairServiceIntent(
+  context,
+  repairReason,
+)
 
 internal fun parseScheduledTaskWakeCommand(intent: Intent?): ScheduledTaskWakeCommand? {
   return parseScheduledTaskWakeCommand(
