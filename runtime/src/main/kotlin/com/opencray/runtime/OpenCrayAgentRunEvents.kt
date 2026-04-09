@@ -3,6 +3,7 @@ package com.opencray.runtime
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionState
+import com.opencray.runtime.subagent.SubAgentLiveContextSnapshot
 
 enum class OpenCrayRunLifecyclePhase {
   START,
@@ -139,6 +140,7 @@ data class OpenCraySubAgentEvent(
   val summary: String? = null,
   val executionState: SubAgentExecutionState? = null,
   val continuationKind: SubAgentContinuationKind? = null,
+  val liveContext: SubAgentLiveContextSnapshot? = null,
   val resumable: Boolean = false,
   val requiresUserAction: Boolean = false,
   val isHighRisk: Boolean = false,

@@ -2798,6 +2798,28 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun serviceBackedChatRuntimeGatewayObserversRecheckGatewayAfterConnectionObservationStarts() {
+    val binderGateway = RecordingChatRuntimeGateway("binder")
+    val fallbackGateway = RecordingChatRuntimeGateway("fallback")
+    val gateway = ServiceBackedOpenCrayChatRuntimeGateway(
+      serviceClient = ChatGatewayAvailableOnObserveClient(binderGateway),
+      fallbackGateway = fallbackGateway,
+    )
+    val observedChatSources = mutableListOf<String?>()
+    val observedRuntimeSources = mutableListOf<String?>()
+
+    gateway.observeChat { snapshot ->
+      observedChatSources += snapshot["source"] as String?
+    }
+    gateway.observeChatRuntime { snapshot ->
+      observedRuntimeSources += snapshot["source"] as String?
+    }
+
+    assertEquals(listOf("fallback-chat", "binder-chat"), observedChatSources)
+    assertEquals(listOf("fallback-runtime", "binder-runtime"), observedRuntimeSources)
+  }
+
+  @Test
   fun serviceBackedSkillsGatewayAllowsFallbackLoadsButRequiresBinderForCommands() {
     val binderGateway = RecordingSkillsGateway("binder")
     val fallbackGateway = RecordingSkillsGateway("fallback")
@@ -5238,6 +5260,36 @@ class OpenCrayRuntimeServiceHostTest {
       if (observing) binderGateway else null
 
     override fun peekSkillsGateway(): OpenCraySkillsGateway? =
+      if (observing) binderGateway else null
+
+    override fun observeConnectionState(listener: (RuntimeServiceConnectionState) -> Unit): () -> Unit {
+      observing = true
+      return { }
+    }
+
+    override fun observePassiveConnectionState(
+      listener: (RuntimeServiceConnectionState) -> Unit,
+    ): () -> Unit = observeConnectionState(listener)
+  }
+
+  private class ChatGatewayAvailableOnObserveClient(
+    private val binderGateway: OpenCrayChatRuntimeGateway,
+  ) : OpenCrayRuntimeServiceClient {
+    private var observing: Boolean = false
+
+    override fun loadSnapshot(): OpenCrayRuntimeServiceClientSnapshot = error("unused in test")
+
+    override fun loadConnectionState(): RuntimeServiceConnectionState =
+      if (observing) {
+        RuntimeServiceConnectionState.binderConnected()
+      } else {
+        RuntimeServiceConnectionState.bindingPending()
+      }
+
+    override fun loadChatRuntimeGateway(): OpenCrayChatRuntimeGateway? =
+      if (observing) binderGateway else null
+
+    override fun peekChatRuntimeGateway(): OpenCrayChatRuntimeGateway? =
       if (observing) binderGateway else null
 
     override fun observeConnectionState(listener: (RuntimeServiceConnectionState) -> Unit): () -> Unit {

@@ -1053,6 +1053,10 @@ internal class ServiceOwnedSettingsGateway(
     readOnlyOutsideWorkspace: Boolean,
     liveContextModeId: String,
     memoryToolsEnabled: Boolean,
+    subAgentContextDefaultModeId: String?,
+    subAgentContextProfileOverrides: Map<String, String>,
+    subAgentContextDefaultModeId: String?,
+    subAgentContextProfileOverrides: Map<String, String>,
   ): Map<String, Any?> {
     val snapshot = safetySettingsFacade.save(
       safetySaveRequest(
@@ -1070,12 +1074,16 @@ internal class ServiceOwnedSettingsGateway(
         downloadsEnabled = downloadsEnabled,
         documentsEnabled = documentsEnabled,
         recordingsEnabled = recordingsEnabled,
-        workspaceAccessProfileId = workspaceAccessProfileId,
-        readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
-        liveContextModeId = liveContextModeId,
+          workspaceAccessProfileId = workspaceAccessProfileId,
+          readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
+          liveContextModeId = liveContextModeId,
         memoryToolsEnabled = memoryToolsEnabled,
-      ),
-    )
+        subAgentContextDefaultModeId = subAgentContextDefaultModeId,
+        subAgentContextProfileOverrides = subAgentContextProfileOverrides,
+          subAgentContextDefaultModeId = subAgentContextDefaultModeId,
+          subAgentContextProfileOverrides = subAgentContextProfileOverrides,
+        ),
+      )
     chatSnapshotNotifier()
     return snapshot.toSafetyGatewayMap()
   }

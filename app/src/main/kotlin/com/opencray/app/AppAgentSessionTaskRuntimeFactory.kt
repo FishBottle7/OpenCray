@@ -501,6 +501,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
         } else {
           emptyMap()
         },
+        subAgentContextPolicy = safetySettings.toRuntimeSubAgentContextPolicy(),
       ),
       eventSink = transcriptAwareEventSink(
         sessionId = sessionId,
@@ -1456,6 +1457,34 @@ internal class AppAgentSessionTaskRuntimeFactory(
         ?.trim()
         ?.takeIf(String::isNotBlank)
         ?.let { summary -> put("summary", collapseReplayWhitespace(summary)) }
+      event.liveContext
+        ?.takeUnless { it.isEmpty }
+        ?.toMap()
+        ?.let { liveContext ->
+          put(
+            "live_context",
+            buildJsonObject {
+              (liveContext["mode"] as String?)?.let { put("mode", it) }
+              (liveContext["soulEnabled"] as Boolean?)?.let { put("soulEnabled", it) }
+              (liveContext["memoryRecallEnabled"] as Boolean?)?.let {
+                put("memoryRecallEnabled", it)
+              }
+              (liveContext["replaySource"] as String?)?.let { put("replaySource", it) }
+              (liveContext["replayMessageCount"] as Int?)?.let {
+                put("replayMessageCount", it)
+              }
+              (liveContext["canonicalSource"] as String?)?.let {
+                put("canonicalSource", it)
+              }
+              (liveContext["canonicalMessageCount"] as Int?)?.let {
+                put("canonicalMessageCount", it)
+              }
+              (liveContext["canonicalHistoryPreserved"] as Boolean?)?.let {
+                put("canonicalHistoryPreserved", it)
+              }
+            },
+          )
+        }
     }
 
   private fun encodeReplayJsonObject(builder: JsonObjectBuilder.() -> Unit): String =

@@ -434,6 +434,19 @@ internal class OpenCrayFlutterHostBridge(
               liveContextModeId =
                 call.argument<String>("liveContextModeId") ?: LiveContextMode.FULL.wireValue,
               memoryToolsEnabled = call.argument<Boolean>("memoryToolsEnabled") != false,
+              subAgentContextDefaultModeId = call.argument<String>("subAgentContextDefaultModeId"),
+              subAgentContextProfileOverrides = call.argument<Map<*, *>>(
+                "subAgentContextProfileOverrides",
+              )?.entries
+                ?.mapNotNull { (key, value) ->
+                  val profileId = (key as? String)?.trim()?.takeIf(String::isNotBlank)
+                    ?: return@mapNotNull null
+                  val modeId = (value as? String)?.trim()?.takeIf(String::isNotBlank)
+                    ?: return@mapNotNull null
+                  profileId to modeId
+                }
+                ?.toMap()
+                ?: emptyMap(),
             )
           }
           return

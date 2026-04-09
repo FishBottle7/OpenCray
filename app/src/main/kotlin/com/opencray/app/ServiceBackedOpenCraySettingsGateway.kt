@@ -227,6 +227,8 @@ internal class ServiceBackedOpenCraySettingsGateway(
     readOnlyOutsideWorkspace: Boolean,
     liveContextModeId: String,
     memoryToolsEnabled: Boolean,
+    subAgentContextDefaultModeId: String?,
+    subAgentContextProfileOverrides: Map<String, String>,
   ): Map<String, Any?> = dispatchPayloadWriteCommand(
     operation = "saveSafetySettings",
     command = OpenCraySettingsWriteCommand.SaveSafetySettings(
@@ -248,6 +250,8 @@ internal class ServiceBackedOpenCraySettingsGateway(
       readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
       liveContextModeId = liveContextModeId,
       memoryToolsEnabled = memoryToolsEnabled,
+      subAgentContextDefaultModeId = subAgentContextDefaultModeId,
+      subAgentContextProfileOverrides = subAgentContextProfileOverrides,
     ),
   )
 

@@ -138,6 +138,7 @@ import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentHandleState
 import com.opencray.runtime.subagent.SubAgentExecutionState
+import com.opencray.runtime.subagent.SubAgentLiveContextSnapshot
 import com.opencray.runtime.skills.SkillPackageCheckReport
 import com.opencray.runtime.skills.SkillPackageCheckResult
 import com.opencray.runtime.skills.SkillPackageCheckStatus
@@ -868,6 +869,8 @@ internal class OpenCrayHostRuntime private constructor(
     readOnlyOutsideWorkspace: Boolean,
     liveContextModeId: String,
     memoryToolsEnabled: Boolean,
+    subAgentContextDefaultModeId: String?,
+    subAgentContextProfileOverrides: Map<String, String>,
   ): Map<String, Any?> {
     val snapshot = synchronized(lock) {
       safetySettingsFacade.save(
@@ -890,6 +893,8 @@ internal class OpenCrayHostRuntime private constructor(
           readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
           liveContextModeId = liveContextModeId,
           memoryToolsEnabled = memoryToolsEnabled,
+          subAgentContextDefaultModeId = subAgentContextDefaultModeId,
+          subAgentContextProfileOverrides = subAgentContextProfileOverrides,
         ),
       )
     }

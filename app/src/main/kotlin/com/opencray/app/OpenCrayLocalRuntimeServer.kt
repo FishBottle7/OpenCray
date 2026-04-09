@@ -456,6 +456,10 @@ internal class OpenCrayLocalRuntimeServer(
         readOnlyOutsideWorkspace = body.optBoolean("readOnlyOutsideWorkspace", true),
         liveContextModeId = body.optString("liveContextModeId", LiveContextMode.FULL.wireValue),
         memoryToolsEnabled = body.optBoolean("memoryToolsEnabled", true),
+        subAgentContextDefaultModeId = body.optString("subAgentContextDefaultModeId").ifBlank { null },
+        subAgentContextProfileOverrides =
+          body.optJSONObject("subAgentContextProfileOverrides")?.let(::jsonObjectToStringMap)
+            ?: emptyMap(),
       )
       "GET" to "/v1/skills_snapshot" -> skillsGateway.loadSkillsSnapshot(
         query = request.queryParameter("query"),
@@ -808,6 +812,14 @@ private fun jsonObjectToMap(payload: JSONObject): Map<String, Any?> =
       else -> value
     }
   }
+
+private fun jsonObjectToStringMap(payload: JSONObject): Map<String, String> =
+  payload.keys().asSequence().mapNotNull { key ->
+    val normalizedKey = key.trim().takeIf(String::isNotBlank) ?: return@mapNotNull null
+    payload.optString(key).trim().takeIf(String::isNotBlank)?.let { value ->
+      normalizedKey to value
+    }
+  }.toMap()
 
 private fun parseSubmitChatMessageAttachments(body: JSONObject): List<OpenCrayFinalAttachment> {
   val attachments = body.optJSONArray("attachments") ?: return emptyList()

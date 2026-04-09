@@ -5027,6 +5027,7 @@ class OpenCrayAgentRuntime(
       childTaskId = handle.childTaskId,
       summary = null,
       snapshot = SubAgentExecutionSnapshot.running(),
+      liveContext = handle.childLiveContext,
     )
     val approvalContinuation = takePendingApprovalContinuation(handle, handles)
     val execution = executeSubAgentHandleLifecycle(
@@ -5153,6 +5154,7 @@ class OpenCrayAgentRuntime(
           childTaskId = createdHandle.childTaskId,
           summary = createdHandle.snapshot.summaryText(),
           snapshot = createdHandle.snapshot,
+          liveContext = createdHandle.childLiveContext,
         )
       }
     }
@@ -5529,6 +5531,7 @@ class OpenCrayAgentRuntime(
           else -> "Queued delegated child run started."
         },
         snapshot = runningSnapshot,
+        liveContext = runningHandle.childLiveContext,
       )
     }
     val childResult = executeSubAgentHandleRuntime(
@@ -5581,6 +5584,7 @@ class OpenCrayAgentRuntime(
       childTaskId = updatedHandle.childTaskId,
       summary = compressedChildResult.summaryText(),
       snapshot = compressedChildResult,
+      liveContext = updatedHandle.childLiveContext,
     )
     return SubAgentHandleLifecycleExecution(
       handle = updatedHandle,
@@ -5781,6 +5785,7 @@ class OpenCrayAgentRuntime(
       childTaskId = finalizedHandle.childTaskId,
       summary = requireNotNull(updatedSnapshot).summaryText(),
       snapshot = requireNotNull(updatedSnapshot),
+      liveContext = finalizedHandle.childLiveContext,
     )
   }
 
@@ -5924,6 +5929,7 @@ class OpenCrayAgentRuntime(
       childTaskId = finalizedHandle.childTaskId,
       summary = requireNotNull(updatedSnapshot).summaryText(),
       snapshot = requireNotNull(updatedSnapshot),
+      liveContext = finalizedHandle.childLiveContext,
     )
   }
 
@@ -6010,6 +6016,7 @@ class OpenCrayAgentRuntime(
         else -> "Queued delegated child run started."
       },
       snapshot = handle.snapshot,
+      liveContext = handle.childLiveContext,
     )
   }
 
@@ -6137,6 +6144,7 @@ class OpenCrayAgentRuntime(
         childTaskId = handle.childTaskId,
         summary = cancelledSnapshot.summaryText(),
         snapshot = cancelledSnapshot,
+        liveContext = handle.childLiveContext,
       )
       return AgentToolResult(
         toolName = call.toolName,
@@ -6251,6 +6259,7 @@ class OpenCrayAgentRuntime(
         childTaskId = handle.childTaskId,
         summary = snapshot.summaryText(),
         snapshot = snapshot,
+        liveContext = handle.childLiveContext,
       )
     }
   }
@@ -7038,6 +7047,7 @@ class OpenCrayAgentRuntime(
     childTaskId: String,
     summary: String?,
     snapshot: SubAgentExecutionSnapshot,
+    liveContext: SubAgentLiveContextSnapshot? = null,
   ) {
     eventSink.onRunEvent(
       task = task,
@@ -7054,6 +7064,7 @@ class OpenCrayAgentRuntime(
         summary = summary,
         executionState = snapshot.state,
         continuationKind = snapshot.continuationKind,
+        liveContext = liveContext?.takeUnless { it.isEmpty },
         resumable = snapshot.resumable,
         requiresUserAction = snapshot.requiresUserAction,
         isHighRisk = snapshot.isHighRisk,

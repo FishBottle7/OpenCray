@@ -241,6 +241,8 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
     readOnlyOutsideWorkspace: Boolean,
     liveContextModeId: String,
     memoryToolsEnabled: Boolean,
+    subAgentContextDefaultModeId: String?,
+    subAgentContextProfileOverrides: Map<String, String>,
   ): Map<String, Any?> = throw writeUnavailable("saveSafetySettings")
 
   private fun writeUnavailable(operation: String): IllegalStateException = IllegalStateException(

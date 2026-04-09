@@ -5,12 +5,14 @@ import com.opencray.app.ApprovedReadRootsResolver
 import com.opencray.app.InMemoryLiveContextModeKeyValueStore
 import com.opencray.app.LiveContextMode
 import com.opencray.app.LiveContextModeStore
+import com.opencray.app.PublicSubAgentContextPolicySettings
 import com.opencray.app.SafetySettingsState
 import com.opencray.app.SafetySettingsStore
 import com.opencray.policy.ExternalAccessMode
 import com.opencray.policy.SafetyAutomationMode
 import com.opencray.policy.ToolPolicyOverride
 import com.opencray.policy.WorkspaceAccessProfile
+import com.opencray.runtime.subagent.SubAgentContextMode
 
 data class SafetySettingsLocationSnapshot(
   val id: String,
@@ -33,6 +35,8 @@ data class SafetySettingsSnapshot(
   val readOnlyOutsideWorkspace: Boolean,
   val liveContextMode: LiveContextMode = LiveContextMode.FULL,
   val memoryToolsEnabled: Boolean = true,
+  val subAgentContextDefaultMode: SubAgentContextMode? = null,
+  val subAgentContextProfileOverrides: Map<String, SubAgentContextMode> = emptyMap(),
 )
 
 data class SaveSafetySettingsRequest(
@@ -54,6 +58,8 @@ data class SaveSafetySettingsRequest(
   val readOnlyOutsideWorkspace: Boolean,
   val liveContextModeId: String = LiveContextMode.FULL.wireValue,
   val memoryToolsEnabled: Boolean = true,
+  val subAgentContextDefaultModeId: String? = null,
+  val subAgentContextProfileOverrides: Map<String, String> = emptyMap(),
 )
 
 interface SafetySettingsFacade {
@@ -127,6 +133,10 @@ private fun SaveSafetySettingsRequest.toState(): SafetySettingsState = SafetySet
   workspaceAccessProfile = WorkspaceAccessProfile.fromWireValue(workspaceAccessProfileId),
   readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
   memoryToolsEnabled = memoryToolsEnabled,
+  subAgentContextDefaultMode =
+    PublicSubAgentContextPolicySettings.publicModeFromWireValue(subAgentContextDefaultModeId),
+  subAgentContextProfileOverrides =
+    PublicSubAgentContextPolicySettings.parseOverridesFromWireMap(subAgentContextProfileOverrides),
 ).sanitized()
 
 private fun SaveSafetySettingsRequest.toLiveContextMode(): LiveContextMode =
@@ -155,6 +165,8 @@ private fun SafetySettingsState.toSnapshot(
   readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
   liveContextMode = liveContextMode,
   memoryToolsEnabled = memoryToolsEnabled,
+  subAgentContextDefaultMode = subAgentContextDefaultMode,
+  subAgentContextProfileOverrides = subAgentContextProfileOverrides,
 )
 
 private fun reconcileExternalAccessAuthorization(

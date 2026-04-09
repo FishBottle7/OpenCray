@@ -6,6 +6,7 @@ import com.opencray.policy.ExternalAccessMode
 import com.opencray.policy.SafetyAutomationMode
 import com.opencray.policy.ToolPolicyOverride
 import com.opencray.policy.WorkspaceAccessProfile
+import com.opencray.runtime.subagent.SubAgentContextMode
 
 private const val DEFAULT_SAFETY_SETTINGS_PREFERENCES = "opencray.safety-settings"
 
@@ -27,6 +28,8 @@ internal object SafetySettingsStoreKeys {
   const val WORKSPACE_ACCESS_PROFILE_ID = "workspace_access_profile_id"
   const val READ_ONLY_OUTSIDE_WORKSPACE = "read_only_outside_workspace"
   const val MEMORY_TOOLS_ENABLED = "memory_tools_enabled"
+  const val SUB_AGENT_CONTEXT_DEFAULT_MODE_ID = "sub_agent_context_default_mode_id"
+  const val SUB_AGENT_CONTEXT_PROFILE_OVERRIDES = "sub_agent_context_profile_overrides"
 }
 
 internal data class SafetySettingsState(
@@ -47,12 +50,18 @@ internal data class SafetySettingsState(
   val workspaceAccessProfile: WorkspaceAccessProfile = WorkspaceAccessProfile.WORK,
   val readOnlyOutsideWorkspace: Boolean = true,
   val memoryToolsEnabled: Boolean = true,
+  val subAgentContextDefaultMode: SubAgentContextMode? = null,
+  val subAgentContextProfileOverrides: Map<String, SubAgentContextMode> = emptyMap(),
 ) {
   fun sanitized(): SafetySettingsState = copy(
     maxFilesPerBatch = maxFilesPerBatch.coerceAtLeast(1),
     maxAgentTurns = maxAgentTurns.coerceAtLeast(0),
     maxToolCalls = maxToolCalls.coerceAtLeast(0),
     undoWindowHours = undoWindowHours.coerceAtLeast(1),
+    subAgentContextDefaultMode = subAgentContextDefaultMode
+      ?.takeIf { mode -> mode.publicControlPlaneEnabled },
+    subAgentContextProfileOverrides =
+      PublicSubAgentContextPolicySettings.sanitizeOverrides(subAgentContextProfileOverrides),
   )
 
   companion object {
@@ -221,6 +230,14 @@ internal class SafetySettingsStore(
       memoryToolsEnabled =
         keyValueStore.getBoolean(SafetySettingsStoreKeys.MEMORY_TOOLS_ENABLED)
           ?: defaults.memoryToolsEnabled,
+      subAgentContextDefaultMode =
+        PublicSubAgentContextPolicySettings.publicModeFromWireValue(
+          keyValueStore.getString(SafetySettingsStoreKeys.SUB_AGENT_CONTEXT_DEFAULT_MODE_ID),
+        ) ?: defaults.subAgentContextDefaultMode,
+      subAgentContextProfileOverrides =
+        PublicSubAgentContextPolicySettings.decodeOverridesFromPreferenceValue(
+          keyValueStore.getString(SafetySettingsStoreKeys.SUB_AGENT_CONTEXT_PROFILE_OVERRIDES),
+        ).ifEmpty { defaults.subAgentContextProfileOverrides },
     ).sanitized()
 
   fun save(state: SafetySettingsState) {
@@ -292,6 +309,16 @@ internal class SafetySettingsStore(
     keyValueStore.putBoolean(
       SafetySettingsStoreKeys.MEMORY_TOOLS_ENABLED,
       sanitized.memoryToolsEnabled,
+    )
+    keyValueStore.putString(
+      SafetySettingsStoreKeys.SUB_AGENT_CONTEXT_DEFAULT_MODE_ID,
+      sanitized.subAgentContextDefaultMode?.wireValue.orEmpty(),
+    )
+    keyValueStore.putString(
+      SafetySettingsStoreKeys.SUB_AGENT_CONTEXT_PROFILE_OVERRIDES,
+      PublicSubAgentContextPolicySettings.encodeOverridesToPreferenceValue(
+        sanitized.subAgentContextProfileOverrides,
+      ),
     )
   }
 
