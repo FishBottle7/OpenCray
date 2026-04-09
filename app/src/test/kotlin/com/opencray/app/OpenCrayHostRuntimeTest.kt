@@ -71,6 +71,7 @@ import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
 import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
+import com.opencray.runtime.OpenCrayPromptCheckpointEmission
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCrayPromptResumeState
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
@@ -5045,6 +5046,55 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun chatRuntimeSnapshotExposesAndClearsLiveAssistantDrafts() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-live-assistant-draft"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(sessionId = activeSessionId)
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+    )
+
+    hostRuntime.submitChatMessage("Stream a long answer")
+    val task = handle.submittedTasks.single()
+
+    manager.emitAssistantDraftUpdated(
+      sessionId = activeSessionId,
+      task = task,
+      text = "Growing answer",
+      emittedAtEpochMs = 1_500L,
+    )
+
+    val runtimeWithDraft = hostRuntime.loadChatRuntimeSnapshot()
+    val liveDrafts = (runtimeWithDraft["liveAssistantDrafts"] as List<*>)
+      .map { entry -> entry as Map<*, *> }
+    assertEquals(1, liveDrafts.size)
+    assertEquals(
+      task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID],
+      liveDrafts.single()["pendingMessageId"],
+    )
+    assertEquals("Growing answer", liveDrafts.single()["text"])
+
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "Final streamed answer.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_600L,
+        metadata = task.metadata,
+      ),
+    )
+
+    val runtimeAfterFinish = hostRuntime.loadChatRuntimeSnapshot()
+    assertTrue((runtimeAfterFinish["liveAssistantDrafts"] as List<*>).isEmpty())
+  }
+
+  @Test
   fun chatRuntimeSnapshotPrefersPromptCheckpointHandleStateOverOlderReplayEventState() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-subagent-runtime-merge"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -6780,6 +6830,76 @@ class OpenCrayHostRuntimeTest {
       .first { event -> event["kind"] == "supplement" }
     assertEquals(true, supplement["hasResumeCheckpointMetadata"])
     assertFalse(supplement.containsKey("metadata"))
+  }
+
+  @Test
+  fun chatSnapshotIgnoresCheckpointJournalTailWhenRecoveringActiveRun() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-checkpoint-tail"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val runEventJournalStoreFactory = hostRuntimeTestRunEventJournalStoreFactory()
+    val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; prettyPrint = true }
+    val resumeState = OpenCrayPromptResumeState(
+      turnIndex = 1,
+      toolCallCount = 0,
+      transcript = listOf(
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.USER,
+          content = "Checkpoint tail",
+        ),
+      ),
+    )
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      runEventJournalStoreFactory = runEventJournalStoreFactory,
+    )
+
+    hostRuntime.submitChatMessage("Ignore the checkpoint tail")
+    val task = handle.submittedTasks.single()
+    val runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID] ?: task.id
+    val journalStore = runEventJournalStoreFactory.forChatSession(activeSessionId)
+    journalStore.append(
+      OpenCraySupplementEvent(
+        runId = runId,
+        taskId = task.id,
+        turn = 1,
+        entryId = "supplement-tail-safe",
+        text = "Checkpoint tail should not poison the host snapshot.",
+        checkpoint = "post_tool_pre_model",
+        metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(
+          state = resumeState,
+          json = json,
+          checkpointBoundary = OpenCrayPromptCheckpointBoundary.SUPPLEMENT_INGESTED,
+        ),
+        emittedAtEpochMs = 2_000L,
+      ),
+    )
+    journalStore.appendCheckpoint(
+      runId = runId,
+      taskId = task.id,
+      emission = OpenCrayPromptCheckpointEmission(
+        boundary = OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST,
+        state = resumeState,
+        emittedAtEpochMs = 2_001L,
+      ),
+    )
+
+    val chatSnapshot = hostRuntime.loadChatSnapshot()
+    val runtimeActivity = chatSnapshot["runtimeActivity"] as Map<*, *>
+    val activeRun = (runtimeActivity["activeRuns"] as List<*>).single() as Map<*, *>
+    val lastEvent = activeRun["lastEvent"] as Map<*, *>
+
+    assertEquals("supplement", lastEvent["kind"])
+    assertEquals(
+      "Checkpoint tail should not poison the host snapshot.",
+      lastEvent["text"],
+    )
   }
 
   @Test
@@ -10013,6 +10133,36 @@ class OpenCrayHostRuntimeTest {
           )
           else -> Unit
         }
+      }
+    }
+
+    fun emitAssistantDraftUpdated(
+      sessionId: String,
+      task: AgentTask,
+      text: String,
+      emittedAtEpochMs: Long,
+    ) {
+      listeners.forEach { listener ->
+        listener.onAssistantDraftUpdated(
+          sessionId = sessionId,
+          task = task,
+          text = text,
+          emittedAtEpochMs = emittedAtEpochMs,
+        )
+      }
+    }
+
+    fun emitAssistantDraftCleared(
+      sessionId: String,
+      task: AgentTask,
+      emittedAtEpochMs: Long,
+    ) {
+      listeners.forEach { listener ->
+        listener.onAssistantDraftCleared(
+          sessionId = sessionId,
+          task = task,
+          emittedAtEpochMs = emittedAtEpochMs,
+        )
       }
     }
 

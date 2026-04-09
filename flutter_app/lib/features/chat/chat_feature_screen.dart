@@ -80,12 +80,17 @@ int runtimeSnapshotVersion(OpenCrayChatRuntimeSnapshot snapshot) {
     (latest, subAgent) =>
         latest > subAgent.updatedAtEpochMs ? latest : subAgent.updatedAtEpochMs,
   );
+  final int latestDraftEpochMs = snapshot.liveAssistantDrafts.fold<int>(
+    0,
+    (latest, draft) =>
+        latest > draft.updatedAtEpochMs ? latest : draft.updatedAtEpochMs,
+  );
   final int latestHostEpochMs =
       snapshot.hostLifecycle?.hostCreatedAtEpochMs ?? 0;
   return math.max(
     latestHostEpochMs,
     math.max(
-      latestSubAgentEpochMs,
+      math.max(latestSubAgentEpochMs, latestDraftEpochMs),
       latestEventEpochMs > latestRunEpochMs
           ? latestEventEpochMs
           : latestRunEpochMs,
@@ -108,6 +113,28 @@ int _visibleSubAgentCount(OpenCrayChatRuntimeSnapshot snapshot) =>
 
 String _hostInstanceId(OpenCrayChatRuntimeSnapshot snapshot) =>
     snapshot.hostLifecycle?.hostInstanceId?.trim() ?? '';
+
+String? _visibleAssistantDraftText(String rawText) {
+  final String normalized = rawText.trim();
+  if (normalized.isEmpty || _looksLikeToolCallPayload(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
+bool _looksLikeToolCallPayload(String text) {
+  final String normalized = text.trimLeft();
+  if (!(normalized.startsWith('{') || normalized.startsWith('['))) {
+    return false;
+  }
+  final String lower = normalized.toLowerCase();
+  return lower.contains('"tool_name"') ||
+      lower.contains('"tool_calls"') ||
+      lower.contains('"function_call"') ||
+      lower.contains('"call_id"') ||
+      lower.contains('"type":"tool_call"') ||
+      lower.contains('"type": "tool_call"');
+}
 
 @visibleForTesting
 TextSelectionThemeData chatBubbleSelectionTheme(ChatMessageKind kind) {
@@ -2558,20 +2585,42 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       effectiveRuntime,
       snapshot.pendingApprovals,
     );
+    final Map<String, String> liveDraftTextByMessageId =
+        effectiveRuntime == null
+        ? const <String, String>{}
+        : <String, String>{
+            for (final draft in effectiveRuntime.liveAssistantDrafts)
+              if (draft.pendingMessageId.trim().isNotEmpty &&
+                  _visibleAssistantDraftText(draft.text) != null)
+                draft.pendingMessageId.trim(): _visibleAssistantDraftText(
+                  draft.text,
+                )!,
+          };
     final List<ChatMessageData> mappedMessages = _mapMessages(
       snapshot.messages,
       hideThinkingPlaceholder: runTraces.isNotEmpty,
+      draftTextByMessageId: liveDraftTextByMessageId,
     );
     final Set<String> existingMessageIds = mappedMessages
+        .map((message) => message.messageId.trim())
+        .where((messageId) => messageId.isNotEmpty)
+        .toSet();
+    final List<ChatMessageData> projectedLiveDraftMessages =
+        _mapUnanchoredLiveDraftMessages(
+          effectiveRuntime,
+          existingMessageIds,
+        );
+    final Set<String> projectedLiveDraftMessageIds = projectedLiveDraftMessages
         .map((message) => message.messageId.trim())
         .where((messageId) => messageId.isNotEmpty)
         .toSet();
     final List<ChatTodoItemData> visibleTodos = _mapVisibleTodos(snapshot);
     final List<ChatMessageData> messages = <ChatMessageData>[
       ...mappedMessages,
+      ...projectedLiveDraftMessages,
       ..._mapProjectedAssistantPhaseMessages(
         effectiveRuntime,
-        existingMessageIds,
+        <String>{...existingMessageIds, ...projectedLiveDraftMessageIds},
       ),
     ];
     return ChatFeatureState(
@@ -2649,6 +2698,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   List<ChatMessageData> _mapMessages(
     List<OpenCrayChatMessageSnapshot> messages, {
     required bool hideThinkingPlaceholder,
+    required Map<String, String> draftTextByMessageId,
   }) {
     final mapped = messages
         .asMap()
@@ -2663,7 +2713,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
               'outbound' => ChatMessageKind.outbound,
               _ => ChatMessageKind.inbound,
             },
-            text: entry.value.text,
+            text:
+                draftTextByMessageId[entry.value.messageId.trim()] ??
+                entry.value.text,
             meta: entry.value.meta,
             createdAtEpochMs: entry.value.createdAtEpochMs,
             isEphemeral: entry.value.isEphemeral,
@@ -2985,6 +3037,39 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       }
       final String text = _projectedAssistantPhaseMessageText(event);
       if (text.trim().isEmpty) {
+        continue;
+      }
+      projected.add(
+        ChatMessageData(
+          messageId: messageId,
+          kind: ChatMessageKind.inbound,
+          text: text,
+          isEphemeral: true,
+        ),
+      );
+    }
+    return projected;
+  }
+
+  List<ChatMessageData> _mapUnanchoredLiveDraftMessages(
+    OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
+    Set<String> existingMessageIds,
+  ) {
+    if (runtimeSnapshot == null || runtimeSnapshot.liveAssistantDrafts.isEmpty) {
+      return const <ChatMessageData>[];
+    }
+    final List<ChatMessageData> projected = <ChatMessageData>[];
+    final Set<String> seenMessageIds = <String>{...existingMessageIds};
+    final List<OpenCrayChatLiveAssistantDraftSnapshot> sortedDrafts =
+        runtimeSnapshot.liveAssistantDrafts.toList(growable: false)
+          ..sort(
+            (left, right) =>
+                left.updatedAtEpochMs.compareTo(right.updatedAtEpochMs),
+          );
+    for (final draft in sortedDrafts) {
+      final String messageId = draft.pendingMessageId.trim();
+      final String text = _visibleAssistantDraftText(draft.text) ?? '';
+      if (messageId.isEmpty || text.isEmpty || !seenMessageIds.add(messageId)) {
         continue;
       }
       projected.add(

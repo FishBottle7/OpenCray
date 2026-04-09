@@ -61,7 +61,10 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.byType(Switch), findsNothing);
+    expect(
+      find.byKey(const ValueKey<String>('settings-llm-streaming-toggle')),
+      findsOneWidget,
+    );
 
     await tester.enterText(find.byType(TextField).at(1), 'secret');
     final modelField = find.byType(TextField).at(2);
@@ -465,12 +468,14 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Disabled'));
+    await tester.ensureVisible(find.text('Disabled'));
+    await tester.tap(find.text('Disabled'), warnIfMissed: false);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Per session').last);
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Default'));
+    await tester.ensureVisible(find.text('Default'));
+    await tester.tap(find.text('Default'), warnIfMissed: false);
     await tester.pumpAndSettle();
     await tester.tap(find.text('24 hours').last);
     await tester.pumpAndSettle();
@@ -552,6 +557,64 @@ void main() {
     expect(facade.saveCallCount, 2);
     expect(facade.llmConfig.anthropicPromptCacheTtl, '1h');
     expect(find.text('1 hour'), findsOneWidget);
+  });
+
+  testWidgets('llm streaming toggle saves disabled state', (tester) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: true,
+        providerId: 'openai',
+        selectedProviderOptionId: 'openai',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'openai',
+            providerId: 'openai',
+            title: 'OpenAI',
+            subtitle: 'Official OpenAI-compatible endpoint.',
+            defaultBaseUrl: 'https://api.openai.com/v1',
+            defaultModel: 'gpt-4o-mini',
+            protocol: 'openai',
+            apiKey: '',
+            isCustom: false,
+          ),
+        ],
+        providerName: 'OpenAI',
+        providerNotes: '',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'secret',
+        model: 'gpt-4o-mini',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.llm,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final streamingToggle = find.byKey(
+      const ValueKey<String>('settings-llm-streaming-toggle'),
+    );
+    await tester.ensureVisible(streamingToggle);
+    await tester.tap(streamingToggle, warnIfMissed: false);
+    await tester.pumpAndSettle();
+
+    expect(facade.saveCallCount, 1);
+    expect(facade.llmConfig.streamingEnabled, isFalse);
   });
 
   testWidgets(
@@ -4071,6 +4134,7 @@ class _FakeSettingsFacade implements SettingsFacade {
   @override
   Future<LlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
+    bool? streamingEnabled,
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -4091,6 +4155,7 @@ class _FakeSettingsFacade implements SettingsFacade {
     llmConfig = LlmConfigSnapshot(
       localeTag: llmConfig.localeTag,
       enabled: enabled,
+      streamingEnabled: streamingEnabled ?? llmConfig.streamingEnabled,
       providerId: providerId,
       selectedProviderOptionId: selectedProviderOptionId,
       protocol: protocol,
@@ -4104,7 +4169,8 @@ class _FakeSettingsFacade implements SettingsFacade {
       systemPrompt: systemPrompt,
       helperText: llmConfig.helperText,
       openAiPromptCacheKeyStrategy:
-          openAiPromptCacheKeyStrategy ?? llmConfig.openAiPromptCacheKeyStrategy,
+          openAiPromptCacheKeyStrategy ??
+          llmConfig.openAiPromptCacheKeyStrategy,
       openAiPromptCacheRetention:
           openAiPromptCacheRetention ?? llmConfig.openAiPromptCacheRetention,
       anthropicPromptCachingEnabled:
@@ -4119,6 +4185,7 @@ class _FakeSettingsFacade implements SettingsFacade {
   @override
   Future<LlmConfigSnapshot> saveCustomLlmProvider({
     required String selectedProviderOptionId,
+    bool? streamingEnabled,
     required String protocol,
     required String providerName,
     required String providerNotes,
@@ -4150,6 +4217,7 @@ class _FakeSettingsFacade implements SettingsFacade {
     llmConfig = LlmConfigSnapshot(
       localeTag: llmConfig.localeTag,
       enabled: baseUrl.isNotEmpty && apiKey.isNotEmpty,
+      streamingEnabled: streamingEnabled ?? llmConfig.streamingEnabled,
       providerId: 'custom',
       selectedProviderOptionId: savedOptionId,
       protocol: protocol,
@@ -4167,7 +4235,8 @@ class _FakeSettingsFacade implements SettingsFacade {
       systemPrompt: systemPrompt,
       helperText: llmConfig.helperText,
       openAiPromptCacheKeyStrategy:
-          openAiPromptCacheKeyStrategy ?? llmConfig.openAiPromptCacheKeyStrategy,
+          openAiPromptCacheKeyStrategy ??
+          llmConfig.openAiPromptCacheKeyStrategy,
       openAiPromptCacheRetention:
           openAiPromptCacheRetention ?? llmConfig.openAiPromptCacheRetention,
       anthropicPromptCachingEnabled:

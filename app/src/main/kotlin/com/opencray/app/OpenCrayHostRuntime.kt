@@ -256,6 +256,8 @@ internal class OpenCrayHostRuntime private constructor(
   private val soulProfileResolver = SoulProfileResolver()
   private val runtimeSoulProfileSeedFactory = RuntimeSoulProfileSeedFactory()
   private val memoryBackedSoulProfileResolver = MemoryBackedSoulProfileResolver()
+  private val liveAssistantDraftsBySession =
+    linkedMapOf<String, LinkedHashMap<String, LiveAssistantDraftSnapshot>>()
   private val chatDebugProjector = ProjectionOnlyChatDebugProjector(
     personalizationLocalStore = personalizationLocalStore,
     workspaceRootProvider = workspaceRootProvider?.let { provider -> { provider() } },
@@ -334,6 +336,10 @@ internal class OpenCrayHostRuntime private constructor(
             if (!hasSessionLocked(sessionId)) {
               return@synchronized null
             }
+            clearAssistantDraftLocked(
+              sessionId = sessionId,
+              pendingMessageId = pendingMessageId,
+            )
             val activeSessionIdBeforeUpdate = chatSessionStore.loadState().activeSession.sessionId
             val baseFinalText = finalTextForLocked(
               sessionId = sessionId,
@@ -497,6 +503,48 @@ internal class OpenCrayHostRuntime private constructor(
             emitChatSnapshot()
           }
           emitChatRuntimeSnapshot()
+        }
+
+        override fun onAssistantDraftUpdated(
+          sessionId: String,
+          task: AgentTask,
+          text: String,
+          emittedAtEpochMs: Long,
+        ) {
+          val shouldEmit = synchronized(lock) {
+            if (!hasSessionLocked(sessionId)) {
+              return@synchronized false
+            }
+            updateAssistantDraftLocked(
+              sessionId = sessionId,
+              task = task,
+              text = text,
+              emittedAtEpochMs = emittedAtEpochMs,
+            )
+          }
+          if (shouldEmit) {
+            emitChatRuntimeSnapshot()
+          }
+        }
+
+        override fun onAssistantDraftCleared(
+          sessionId: String,
+          task: AgentTask,
+          emittedAtEpochMs: Long,
+        ) {
+          val shouldEmit = synchronized(lock) {
+            if (!hasSessionLocked(sessionId)) {
+              return@synchronized false
+            }
+            clearAssistantDraftLocked(
+              sessionId = sessionId,
+              pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
+                ?.takeIf(String::isNotBlank),
+            )
+          }
+          if (shouldEmit) {
+            emitChatRuntimeSnapshot()
+          }
         }
 
         override fun onToolResult(
@@ -686,6 +734,7 @@ internal class OpenCrayHostRuntime private constructor(
 
   override fun saveLlmConfig(
     enabled: Boolean,
+    streamingEnabled: Boolean?,
     providerId: String,
     selectedProviderOptionId: String,
     protocol: String,
@@ -705,6 +754,7 @@ internal class OpenCrayHostRuntime private constructor(
       llmConfigFacade.save(
         SaveLlmConfigRequest(
           enabled = enabled,
+          streamingEnabled = streamingEnabled,
           providerId = providerId,
           selectedProviderOptionId = selectedProviderOptionId,
           protocol = protocol,
@@ -727,6 +777,7 @@ internal class OpenCrayHostRuntime private constructor(
 
   override fun saveCustomLlmProvider(
     selectedProviderOptionId: String,
+    streamingEnabled: Boolean?,
     protocol: String,
     providerName: String,
     providerNotes: String,
@@ -744,6 +795,7 @@ internal class OpenCrayHostRuntime private constructor(
       llmConfigFacade.saveCustomProvider(
         SaveCustomLlmProviderRequest(
           selectedProviderOptionId = selectedProviderOptionId,
+          streamingEnabled = streamingEnabled,
           protocol = protocol,
           providerName = providerName,
           providerNotes = providerNotes,
@@ -2696,6 +2748,68 @@ internal class OpenCrayHostRuntime private constructor(
       ?: task.input
   }
 
+  private fun updateAssistantDraftLocked(
+    sessionId: String,
+    task: AgentTask,
+    text: String,
+    emittedAtEpochMs: Long,
+  ): Boolean {
+    val pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return false
+    val normalizedText = text.trim().takeIf(String::isNotBlank) ?: return false
+    val sessionDrafts = liveAssistantDraftsBySession.getOrPut(sessionId) { linkedMapOf() }
+    val updatedDraft = LiveAssistantDraftSnapshot(
+      runId = runIdFor(task),
+      taskId = task.id,
+      pendingMessageId = pendingMessageId,
+      text = normalizedText,
+      updatedAtEpochMs = emittedAtEpochMs,
+    )
+    val existing = sessionDrafts[pendingMessageId]
+    if (existing == updatedDraft) {
+      return false
+    }
+    sessionDrafts[pendingMessageId] = updatedDraft
+    return true
+  }
+
+  private fun clearAssistantDraftLocked(
+    sessionId: String,
+    pendingMessageId: String?,
+  ): Boolean {
+    val normalizedPendingMessageId = pendingMessageId
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return false
+    val sessionDrafts = liveAssistantDraftsBySession[sessionId] ?: return false
+    val removed = sessionDrafts.remove(normalizedPendingMessageId) != null
+    if (sessionDrafts.isEmpty()) {
+      liveAssistantDraftsBySession.remove(sessionId)
+    }
+    return removed
+  }
+
+  private fun liveAssistantDraftsForSnapshot(
+    sessionId: String,
+    displayedRuns: List<AgentRunSnapshot>,
+  ): List<LiveAssistantDraftSnapshot> {
+    val sessionDrafts = liveAssistantDraftsBySession[sessionId].orEmpty()
+    if (sessionDrafts.isEmpty()) {
+      return emptyList()
+    }
+    val visiblePendingMessageIds = displayedRuns
+      .asSequence()
+      .filter(AgentRunSnapshot::isActive)
+      .mapNotNull { run -> run.pendingMessageId?.trim()?.takeIf(String::isNotBlank) }
+      .toSet()
+    if (visiblePendingMessageIds.isEmpty()) {
+      return emptyList()
+    }
+    return visiblePendingMessageIds.mapNotNull(sessionDrafts::get)
+  }
+
   private fun runtimeActivitySnapshotLocked(sessionId: String): Map<String, Any?> {
     val runs = runtimeSession(sessionId).listRuns()
     if (runs.isNotEmpty()) {
@@ -2731,6 +2845,10 @@ internal class OpenCrayHostRuntime private constructor(
       displayedRuns = displayedRuns,
       recentEvents = recentEvents,
     )
+    val liveAssistantDrafts = liveAssistantDraftsForSnapshot(
+      sessionId = sessionId,
+      displayedRuns = displayedRuns,
+    )
     return mapOf(
       "sessionId" to sessionId,
       "hostLifecycle" to lifecycleDescriptor.snapshotMap(),
@@ -2746,6 +2864,7 @@ internal class OpenCrayHostRuntime private constructor(
       "retainedRuns" to retainedRunsForSnapshot(displayedRuns).map(::runSnapshotToMap),
       "subAgents" to subAgentSnapshots.map(::subAgentSnapshotToMap),
       "events" to recentEvents.map(::runtimeEventToMap),
+      "liveAssistantDrafts" to liveAssistantDrafts.map(::liveAssistantDraftToMap),
     )
   }
 
@@ -4917,6 +5036,16 @@ internal class OpenCrayHostRuntime private constructor(
     "recoveryPlan" to recoveryPlanForRunLocked(run)?.toMap(),
   )
 
+  private fun liveAssistantDraftToMap(
+    draft: LiveAssistantDraftSnapshot,
+  ): Map<String, Any?> = mapOf(
+    "runId" to draft.runId,
+    "taskId" to draft.taskId,
+    "pendingMessageId" to draft.pendingMessageId,
+    "text" to draft.text,
+    "updatedAtEpochMs" to draft.updatedAtEpochMs,
+  )
+
   private fun recoveryPlanForRunLocked(run: AgentRunSnapshot): RunRecoveryPlan? {
     val approvalState = approvalStateForTaskLocked(run.sessionId, run.taskId)
     return recoveryPlanner.plan(
@@ -4925,9 +5054,7 @@ internal class OpenCrayHostRuntime private constructor(
         checkpoint = promptCheckpointStoreForSession(run.sessionId).get(run.taskId),
         lastJournalEvent = run.lastEvent ?: runEventJournalStoreForSession(run.sessionId)
           .listForRun(run.runId)
-          .lastOrNull()
-          ?.payload
-          ?.toRuntimeEvent(),
+          .latestRuntimeEventOrNull(),
         approvalState = approvalState,
       ),
     )
@@ -7359,6 +7486,7 @@ internal class OpenCrayHostRuntime private constructor(
   private fun LlmConfigSnapshot.toMap(): Map<String, Any?> = mapOf(
     "localeTag" to localeTag,
     "enabled" to enabled,
+    "streamingEnabled" to streamingEnabled,
     "providerId" to providerId,
     "selectedProviderOptionId" to selectedProviderOptionId,
     "protocol" to protocol,
@@ -8195,6 +8323,14 @@ internal data class PendingApprovalSubAgentLifecycle(
 private data class ReplayedRuntimeEvent(
   val sourceIndex: Int,
   val event: OpenCrayAgentRunEvent,
+)
+
+private data class LiveAssistantDraftSnapshot(
+  val runId: String,
+  val taskId: String,
+  val pendingMessageId: String,
+  val text: String,
+  val updatedAtEpochMs: Long,
 )
 
 private data class EventEmissionDecision(

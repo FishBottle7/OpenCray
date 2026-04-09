@@ -31,6 +31,7 @@ internal interface OpenCraySettingsGateway {
 
   fun saveLlmConfig(
     enabled: Boolean,
+    streamingEnabled: Boolean? = null,
     providerId: String,
     selectedProviderOptionId: String,
     protocol: String,
@@ -49,6 +50,7 @@ internal interface OpenCraySettingsGateway {
 
   fun saveCustomLlmProvider(
     selectedProviderOptionId: String,
+    streamingEnabled: Boolean? = null,
     protocol: String,
     providerName: String,
     providerNotes: String,
@@ -140,6 +142,7 @@ internal sealed interface OpenCraySettingsWriteCommand {
 
   data class SaveLlmConfig(
     val enabled: Boolean,
+    val streamingEnabled: Boolean? = null,
     val providerId: String,
     val selectedProviderOptionId: String,
     val protocol: String,
@@ -158,6 +161,7 @@ internal sealed interface OpenCraySettingsWriteCommand {
 
   data class SaveCustomLlmProvider(
     val selectedProviderOptionId: String,
+    val streamingEnabled: Boolean? = null,
     val protocol: String,
     val providerName: String,
     val providerNotes: String,
@@ -258,6 +262,7 @@ internal fun OpenCraySettingsGateway.dispatchSettingsWriteCommand(
   is OpenCraySettingsWriteCommand.SaveLlmConfig -> OpenCraySettingsWriteDispatchResult.Payload(
     saveLlmConfig(
       enabled = command.enabled,
+      streamingEnabled = command.streamingEnabled,
       providerId = command.providerId,
       selectedProviderOptionId = command.selectedProviderOptionId,
       protocol = command.protocol,
@@ -278,6 +283,7 @@ internal fun OpenCraySettingsGateway.dispatchSettingsWriteCommand(
   is OpenCraySettingsWriteCommand.SaveCustomLlmProvider -> OpenCraySettingsWriteDispatchResult.Payload(
     saveCustomLlmProvider(
       selectedProviderOptionId = command.selectedProviderOptionId,
+      streamingEnabled = command.streamingEnabled,
       protocol = command.protocol,
       providerName = command.providerName,
       providerNotes = command.providerNotes,

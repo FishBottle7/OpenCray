@@ -171,6 +171,7 @@ class BridgeSettingsFacade implements SettingsFacade {
   @override
   Future<LlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
+    bool? streamingEnabled,
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -188,6 +189,7 @@ class BridgeSettingsFacade implements SettingsFacade {
   }) async => _mapLlmConfig(
     await _bridge.saveLlmConfig(
       enabled: enabled,
+      streamingEnabled: streamingEnabled,
       providerId: providerId,
       selectedProviderOptionId: selectedProviderOptionId,
       protocol: protocol,
@@ -208,6 +210,7 @@ class BridgeSettingsFacade implements SettingsFacade {
   @override
   Future<LlmConfigSnapshot> saveCustomLlmProvider({
     required String selectedProviderOptionId,
+    bool? streamingEnabled,
     required String protocol,
     required String providerName,
     required String providerNotes,
@@ -223,6 +226,7 @@ class BridgeSettingsFacade implements SettingsFacade {
   }) async => _mapLlmConfig(
     await _bridge.saveCustomLlmProvider(
       selectedProviderOptionId: selectedProviderOptionId,
+      streamingEnabled: streamingEnabled,
       protocol: protocol,
       providerName: providerName,
       providerNotes: providerNotes,
@@ -507,6 +511,7 @@ class BridgeSettingsFacade implements SettingsFacade {
     return LlmConfigSnapshot(
       localeTag: snapshot.localeTag,
       enabled: snapshot.enabled,
+      streamingEnabled: snapshot.streamingEnabled,
       providerId: snapshot.providerId,
       selectedProviderOptionId: snapshot.selectedProviderOptionId,
       protocol: snapshot.protocol,

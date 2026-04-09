@@ -8,6 +8,8 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 internal data class RuntimeServiceStartRequest(
   val action: String? = null,
@@ -28,7 +30,7 @@ private object AndroidRuntimeServiceStarter : RuntimeServiceStarter {
     request: RuntimeServiceStartRequest,
     foreground: Boolean,
   ): Boolean = runCatching {
-    val intent = request.toIntent(context)
+    val intent = request.toIntent(context = context, foreground = foreground)
     if (foreground) {
       ContextCompat.startForegroundService(context, intent)
     } else {
@@ -42,6 +44,9 @@ internal class OpenCrayAgentRuntimeService : Service() {
   private val binder = LocalBinder()
   private val mainHandler: Handler by lazy(LazyThreadSafetyMode.NONE) {
     Handler(Looper.getMainLooper())
+  }
+  private val commandExecutor: ExecutorService by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+    Executors.newSingleThreadExecutor()
   }
   private val serviceHost: OpenCrayRuntimeServiceHost by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
     OpenCrayRuntimeServiceHostRegistry.getOrCreate(applicationContext)
@@ -154,7 +159,12 @@ internal class OpenCrayAgentRuntimeService : Service() {
     startId: Int,
   ): Int {
     keepAliveController.onStartCommand(startId)
-    handleWakeIntent(intent)
+    if (intent?.getBooleanExtra(EXTRA_FOREGROUND_START_REQUESTED, false) == true) {
+      runtimeForegroundController.startBootstrapForeground()
+    }
+    commandExecutor.execute {
+      handleWakeIntent(intent)
+    }
     return START_NOT_STICKY
   }
 
@@ -169,6 +179,7 @@ internal class OpenCrayAgentRuntimeService : Service() {
     runtimeOwnerProjectionObservationDisposer = null
     runtimeNotificationController.dispose()
     runtimeForegroundController.onDestroy()
+    commandExecutor.shutdownNow()
     val destroyedKeepAliveState = keepAliveController.onDestroy()
     persistProjectionSnapshot(keepAliveState = destroyedKeepAliveState)
     super.onDestroy()
@@ -182,6 +193,10 @@ internal class OpenCrayAgentRuntimeService : Service() {
 
   private fun onKeepAliveStateChanged(keepAliveState: RuntimeServiceKeepAliveState) {
     persistProjectionSnapshot(keepAliveState = keepAliveState)
+  }
+
+  private fun refreshServiceWorkStateSnapshot() {
+    onServiceWorkStateChanged(serviceHost.serviceWorkStateTracker.refresh())
   }
 
   private fun persistProjectionSnapshot(
@@ -216,21 +231,18 @@ internal class OpenCrayAgentRuntimeService : Service() {
         applicationContext,
         command.taskId,
       )
-      serviceHost.serviceWorkStateTracker.refresh()
-      persistProjectionSnapshot()
+      refreshServiceWorkStateSnapshot()
       return
     }
     parseScheduledTaskWakeCommand(intent)?.let { scheduledTaskWakeCommand ->
       val outcome = serviceHost.scheduledTaskDispatcher().dispatch(scheduledTaskWakeCommand)
       runtimeNotificationController.onScheduledDispatchOutcome(outcome)
-      serviceHost.serviceWorkStateTracker.refresh()
-      persistProjectionSnapshot()
+      refreshServiceWorkStateSnapshot()
       return
     }
     if (intent?.action == ACTION_RESUME_INTERRUPTED_RUNS) {
       serviceHost.resumeInterruptedRuns()
-      serviceHost.serviceWorkStateTracker.refresh()
-      persistProjectionSnapshot()
+      refreshServiceWorkStateSnapshot()
       return
     }
     if (intent?.action == ACTION_REPAIR_SCHEDULES) {
@@ -239,8 +251,7 @@ internal class OpenCrayAgentRuntimeService : Service() {
         ?.takeIf(String::isNotBlank)
         ?: ScheduledTaskRepairReasons.WORK_MANAGER
       serviceHost.repairScheduledTasks(repairReason = repairReason)
-      serviceHost.serviceWorkStateTracker.refresh()
-      persistProjectionSnapshot()
+      refreshServiceWorkStateSnapshot()
     }
   }
 
@@ -476,7 +487,11 @@ internal fun resumeInterruptedRunsServiceIntent(
 
 private fun RuntimeServiceStartRequest.toIntent(
   context: Context,
+  foreground: Boolean = false,
 ): Intent = Intent(context, OpenCrayAgentRuntimeService::class.java).apply {
+  if (foreground) {
+    putExtra(EXTRA_FOREGROUND_START_REQUESTED, true)
+  }
   action?.let(::setAction)
   this@toIntent.extras.forEach { entry ->
     val key = entry.key
@@ -494,3 +509,4 @@ private fun RuntimeServiceStartRequest.toIntent(
 
 internal const val ACTION_RESUME_INTERRUPTED_RUNS: String =
   "com.opencray.app.action.RESUME_INTERRUPTED_RUNS"
+internal const val EXTRA_FOREGROUND_START_REQUESTED: String = "foregroundStartRequested"

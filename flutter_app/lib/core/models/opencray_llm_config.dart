@@ -2,6 +2,7 @@ class OpenCrayLlmConfigSnapshot {
   const OpenCrayLlmConfigSnapshot({
     required this.localeTag,
     required this.enabled,
+    this.streamingEnabled = true,
     required this.providerId,
     required this.selectedProviderOptionId,
     required this.protocol,
@@ -22,6 +23,7 @@ class OpenCrayLlmConfigSnapshot {
 
   final String localeTag;
   final bool enabled;
+  final bool streamingEnabled;
   final String providerId;
   final String selectedProviderOptionId;
   final String protocol;
@@ -43,6 +45,7 @@ class OpenCrayLlmConfigSnapshot {
     return OpenCrayLlmConfigSnapshot(
       localeTag: payload['localeTag'] as String? ?? 'en',
       enabled: payload['enabled'] as bool? ?? false,
+      streamingEnabled: payload['streamingEnabled'] as bool? ?? true,
       providerId: payload['providerId'] as String? ?? 'custom',
       selectedProviderOptionId:
           payload['selectedProviderOptionId'] as String? ??

@@ -169,6 +169,7 @@ abstract interface class OpenCrayHostBridge {
 
   Future<OpenCrayLlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
+    bool? streamingEnabled,
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -187,6 +188,7 @@ abstract interface class OpenCrayHostBridge {
 
   Future<OpenCrayLlmConfigSnapshot> saveCustomLlmProvider({
     required String selectedProviderOptionId,
+    bool? streamingEnabled,
     required String protocol,
     required String providerName,
     required String providerNotes,

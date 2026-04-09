@@ -114,6 +114,7 @@ internal data class RuntimeServiceWorkState(
     const val KEEP_ALIVE_REASON_ACTIVE_RUN: String = "active_run"
     const val KEEP_ALIVE_REASON_MANAGED_PROCESS: String = "managed_process"
     const val KEEP_ALIVE_REASON_ACTIVE_SUBAGENT: String = "active_subagent"
+    const val KEEP_ALIVE_REASON_SERVICE_STARTUP: String = "service_startup"
   }
 }
 

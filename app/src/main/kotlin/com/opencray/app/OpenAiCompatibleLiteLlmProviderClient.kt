@@ -16,6 +16,7 @@ import com.opencray.llm.LiteLlmStructuredCompletion
 import com.opencray.llm.LiteLlmStructuredToolCall
 import com.opencray.llm.LiteLlmToolChoice
 import com.opencray.llm.LiteLlmToolChoiceMode
+import com.opencray.llm.LiteLlmVisibleTextObserver
 import java.io.BufferedReader
 import java.io.InputStream
 import java.io.InputStreamReader
@@ -89,6 +90,7 @@ private enum class OpenAiBuiltinWebSearchDialect(
 
 internal class OpenAiCompatibleLiteLlmProviderClient(
   private val userAgent: String = OpenCrayUserAgent.providerApi("0"),
+  private val streamUpdateMinIntervalMs: Long = DEFAULT_STREAM_UPDATE_MIN_INTERVAL_MS,
 ) : LiteLlmProviderClient {
   override fun execute(request: LiteLlmProviderRequest): LiteLlmProviderResult {
     val baseUrl = request.route.baseUrl?.trim().orEmpty()
@@ -148,6 +150,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
           protocol = protocol,
           streamResponses = streamResponses,
           contentType = connection.contentType,
+          streamObserver = request.request.streamObserver,
         )
       } else {
         readStream(connection.errorStream)
@@ -274,8 +277,14 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         request,
         streamResponses = shouldStreamResponses(request, protocol),
       )
-      LlmProviderProtocols.OPENAI_RESPONSES -> buildOpenAiResponsesRequestBody(request)
-      else -> buildOpenAiRequestBody(request)
+      LlmProviderProtocols.OPENAI_RESPONSES -> buildOpenAiResponsesRequestBody(
+        request,
+        streamResponses = shouldStreamResponses(request, protocol),
+      )
+      else -> buildOpenAiRequestBody(
+        request,
+        streamResponses = shouldStreamResponses(request, protocol),
+      )
     }
   }
 
@@ -289,12 +298,21 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         request,
         streamResponses = streamResponses,
       )
-      LlmProviderProtocols.OPENAI_RESPONSES -> buildOpenAiResponsesRequestBody(request)
-      else -> buildOpenAiRequestBody(request)
+      LlmProviderProtocols.OPENAI_RESPONSES -> buildOpenAiResponsesRequestBody(
+        request,
+        streamResponses = streamResponses,
+      )
+      else -> buildOpenAiRequestBody(
+        request,
+        streamResponses = streamResponses,
+      )
     }
   }
 
-  private fun buildOpenAiRequestBody(request: LiteLlmProviderRequest): String {
+  private fun buildOpenAiRequestBody(
+    request: LiteLlmProviderRequest,
+    streamResponses: Boolean = false,
+  ): String {
     val builtinWebSearchDialect = openAiBuiltinWebSearchDialect(request)
     val payload = JSONObject()
       .put("model", request.route.model)
@@ -323,6 +341,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     }
     openAiPromptCacheRetention(request)?.let { retention ->
       payload.put("prompt_cache_retention", retention)
+    }
+    if (streamResponses) {
+      payload.put("stream", true)
     }
     return payload.toString()
   }
@@ -372,7 +393,10 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     return payload.toString()
   }
 
-  private fun buildOpenAiResponsesRequestBody(request: LiteLlmProviderRequest): String {
+  private fun buildOpenAiResponsesRequestBody(
+    request: LiteLlmProviderRequest,
+    streamResponses: Boolean = false,
+  ): String {
     val payload = JSONObject()
       .put("model", request.route.model)
       .put("input", buildResponsesInputArray(request))
@@ -414,6 +438,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     }
     openAiPromptCacheRetention(request)?.let { retention ->
       payload.put("prompt_cache_retention", retention)
+    }
+    if (streamResponses) {
+      payload.put("stream", true)
     }
     return payload.toString()
   }
@@ -3355,19 +3382,42 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     protocol: String,
     streamResponses: Boolean,
     contentType: String?,
+    streamObserver: LiteLlmVisibleTextObserver,
   ): String = when {
     input == null -> ""
     streamResponses &&
-      protocol == LlmProviderProtocols.ANTHROPIC &&
-      contentType.orEmpty().contains("text/event-stream", ignoreCase = true) ->
-      readAnthropicStream(input)
-    else -> readStream(input)
+      contentType.orEmpty().contains("text/event-stream", ignoreCase = true) -> when (protocol) {
+      LlmProviderProtocols.ANTHROPIC -> readAnthropicStream(
+        input = input,
+        streamObserver = streamObserver,
+      )
+
+      LlmProviderProtocols.OPENAI_RESPONSES -> readOpenAiResponsesStream(
+        input = input,
+        streamObserver = streamObserver,
+      )
+
+      else -> readOpenAiChatCompletionsStream(
+        input = input,
+        streamObserver = streamObserver,
+      )
+    }
+    else -> {
+      readStream(input)
+    }
   }
 
-  private fun readAnthropicStream(input: InputStream): String {
+  private fun readAnthropicStream(
+    input: InputStream,
+    streamObserver: LiteLlmVisibleTextObserver,
+  ): String {
     val payload = JSONObject()
     val contentBlocks = linkedMapOf<Int, JSONObject>()
     val toolInputBuffers = mutableMapOf<Int, StringBuilder>()
+    val visibleTextCoalescer = VisibleTextSnapshotCoalescer(
+      observer = streamObserver,
+      minIntervalMs = streamUpdateMinIntervalMs,
+    )
     BufferedReader(InputStreamReader(input, StandardCharsets.UTF_8)).use { reader ->
       var currentEvent = ""
       val dataLines = mutableListOf<String>()
@@ -3383,6 +3433,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
           payload = payload,
           contentBlocks = contentBlocks,
           toolInputBuffers = toolInputBuffers,
+          visibleTextCoalescer = visibleTextCoalescer,
         )
         currentEvent = ""
         dataLines.clear()
@@ -3400,6 +3451,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       }
       flushEvent()
     }
+    visibleTextCoalescer.flush()
     val content = JSONArray()
     contentBlocks.toSortedMap().values.forEach(content::put)
     payload.put("content", content)
@@ -3412,6 +3464,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     payload: JSONObject,
     contentBlocks: MutableMap<Int, JSONObject>,
     toolInputBuffers: MutableMap<Int, StringBuilder>,
+    visibleTextCoalescer: VisibleTextSnapshotCoalescer,
   ) {
     val trimmedData = data.trim()
     if (trimmedData.isBlank() || trimmedData == "[DONE]") {
@@ -3421,6 +3474,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       throw IllegalStateException("Failed to parse Anthropic streaming event.", error)
     }
     val eventType = eventPayload.optString("type").ifBlank { eventName }
+    var visibleTextMayHaveChanged = false
     when (eventType) {
       "message_start" -> {
         val message = eventPayload.optJSONObject("message") ?: return
@@ -3440,6 +3494,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
           normalizedBlock.put("input", JSONObject())
         }
         contentBlocks[index] = normalizedBlock
+        visibleTextMayHaveChanged = normalizedBlock.optString("type") == "text"
       }
 
       "content_block_delta" -> {
@@ -3448,7 +3503,10 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         val delta = eventPayload.optJSONObject("delta") ?: return
         val block = contentBlocks.getOrPut(index) { JSONObject() }
         when (delta.optString("type")) {
-          "text_delta" -> appendJsonStringField(block, "text", delta.optString("text"))
+          "text_delta" -> {
+            appendJsonStringField(block, "text", delta.optString("text"))
+            visibleTextMayHaveChanged = true
+          }
           "thinking_delta" -> {
             if (!block.has("type")) {
               block.put("type", "thinking")
@@ -3472,6 +3530,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
           val parsedInput = runCatching { JSONObject(bufferedInput) }.getOrDefault(JSONObject())
           block.put("input", parsedInput)
         }
+        visibleTextMayHaveChanged = block.optString("type") == "text"
       }
 
       "message_delta" -> {
@@ -3489,17 +3548,741 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         throw IllegalStateException(message)
       }
     }
+    if (visibleTextMayHaveChanged) {
+      visibleTextCoalescer.update(anthropicVisibleText(contentBlocks))
+    }
   }
+
+  private fun readOpenAiChatCompletionsStream(
+    input: InputStream,
+    streamObserver: LiteLlmVisibleTextObserver,
+  ): String {
+    val payload = JSONObject()
+    val choices = linkedMapOf<Int, JSONObject>()
+    val visibleTextCoalescer = VisibleTextSnapshotCoalescer(
+      observer = streamObserver,
+      minIntervalMs = streamUpdateMinIntervalMs,
+    )
+    BufferedReader(InputStreamReader(input, StandardCharsets.UTF_8)).use { reader ->
+      var currentEvent = ""
+      val dataLines = mutableListOf<String>()
+
+      fun flushEvent() {
+        if (dataLines.isEmpty()) {
+          currentEvent = ""
+          return
+        }
+        processOpenAiChatCompletionsStreamEvent(
+          eventName = currentEvent,
+          data = dataLines.joinToString(separator = "\n"),
+          payload = payload,
+          choices = choices,
+          visibleTextCoalescer = visibleTextCoalescer,
+        )
+        currentEvent = ""
+        dataLines.clear()
+      }
+
+      var line = reader.readLine()
+      while (line != null) {
+        when {
+          line.isBlank() -> flushEvent()
+          line.startsWith(":") -> Unit
+          line.startsWith("event:") -> currentEvent = line.substringAfter(':').trim()
+          line.startsWith("data:") -> dataLines += line.substringAfter(':').trimStart()
+        }
+        line = reader.readLine()
+      }
+      flushEvent()
+    }
+    visibleTextCoalescer.flush()
+    val choicesArray = JSONArray()
+    choices.toSortedMap().values.forEach(choicesArray::put)
+    payload.put("choices", choicesArray)
+    return payload.toString()
+  }
+
+  private fun processOpenAiChatCompletionsStreamEvent(
+    eventName: String,
+    data: String,
+    payload: JSONObject,
+    choices: MutableMap<Int, JSONObject>,
+    visibleTextCoalescer: VisibleTextSnapshotCoalescer,
+  ) {
+    val trimmedData = data.trim()
+    if (trimmedData.isBlank() || trimmedData == "[DONE]") {
+      return
+    }
+    val eventPayload = runCatching { JSONObject(trimmedData) }.getOrElse { error ->
+      throw IllegalStateException("Failed to parse OpenAI chat completions streaming event.", error)
+    }
+    val eventType = eventPayload.optString("type").ifBlank { eventName }
+    when (eventType) {
+      "error" -> {
+        val errorObject = eventPayload.optJSONObject("error")
+        val message = errorObject?.nonBlankString("message")
+          ?: eventPayload.nonBlankString("message")
+          ?: "OpenAI chat completions streaming request failed."
+        throw IllegalStateException(message)
+      }
+    }
+    copyJsonFieldIfPresent(eventPayload, payload, "id")
+    copyJsonFieldIfPresent(eventPayload, payload, "model")
+    copyJsonFieldIfPresent(eventPayload, payload, "object")
+    copyJsonFieldIfPresent(eventPayload, payload, "created")
+    copyJsonFieldIfPresent(eventPayload, payload, "service_tier")
+    copyJsonFieldIfPresent(eventPayload, payload, "system_fingerprint")
+    copyJsonFieldIfPresent(eventPayload, payload, "usage")
+    var visibleTextMayHaveChanged = false
+    val eventChoices = eventPayload.optJSONArray("choices") ?: return
+    for (choiceIndex in 0 until eventChoices.length()) {
+      val eventChoice = eventChoices.optJSONObject(choiceIndex) ?: continue
+      val index = eventChoice.optInt("index", choiceIndex)
+      val choice = choices.getOrPut(index) {
+        JSONObject().put("index", index).put("message", JSONObject().put("role", "assistant"))
+      }
+      val message = choice.optJSONObject("message")
+        ?: JSONObject().put("role", "assistant").also { choice.put("message", it) }
+      val delta = eventChoice.optJSONObject("delta")
+      delta?.nonBlankString("role")?.let { role -> message.put("role", role) }
+      if (delta != null) {
+        val priorVisibleText = extractOpenAiContentValue(message.opt("content"))
+        appendOpenAiContentField(message, "content", delta.opt("content"))
+        appendOpenAiContentField(message, "reasoning_content", delta.opt("reasoning_content"))
+        appendOpenAiContentField(message, "reasoning", delta.opt("reasoning"))
+        if (delta.has("tool_calls")) {
+          mergeOpenAiStreamToolCalls(
+            message = message,
+            toolCallsDelta = delta.optJSONArray("tool_calls"),
+          )
+        }
+        if (extractOpenAiContentValue(message.opt("content")) != priorVisibleText) {
+          visibleTextMayHaveChanged = true
+        }
+      }
+      if (eventChoice.has("finish_reason")) {
+        choice.put("finish_reason", eventChoice.opt("finish_reason"))
+      }
+      copyJsonFieldIfPresent(eventChoice, choice, "logprobs")
+    }
+    if (visibleTextMayHaveChanged) {
+      visibleTextCoalescer.update(openAiStreamVisibleText(choices))
+    }
+  }
+
+  private fun appendOpenAiContentField(
+    target: JSONObject,
+    key: String,
+    rawValue: Any?,
+  ) {
+    val delta = extractOpenAiContentValue(rawValue)
+    if (delta.isEmpty()) {
+      return
+    }
+    val existing = extractOpenAiContentValue(target.opt(key))
+    target.put(key, existing + delta)
+  }
+
+  private fun mergeOpenAiStreamToolCalls(
+    message: JSONObject,
+    toolCallsDelta: JSONArray?,
+  ) {
+    if (toolCallsDelta == null || toolCallsDelta.length() == 0) {
+      return
+    }
+    val toolCalls = when (val existing = message.opt("tool_calls")) {
+      is JSONArray -> existing
+      else -> JSONArray().also { message.put("tool_calls", it) }
+    }
+    for (deltaIndex in 0 until toolCallsDelta.length()) {
+      val deltaToolCall = toolCallsDelta.optJSONObject(deltaIndex) ?: continue
+      val toolIndex = deltaToolCall.optInt("index", deltaIndex)
+      while (toolCalls.length() <= toolIndex) {
+        toolCalls.put(JSONObject())
+      }
+      val toolCall = toolCalls.optJSONObject(toolIndex)
+        ?: JSONObject().also { toolCalls.put(toolIndex, it) }
+      deltaToolCall.nonBlankString("id")?.let { id -> toolCall.put("id", id) }
+      deltaToolCall.nonBlankString("type")?.let { type -> toolCall.put("type", type) }
+      val functionDelta = deltaToolCall.optJSONObject("function")
+      if (functionDelta != null) {
+        val function = toolCall.optJSONObject("function")
+          ?: JSONObject().also { toolCall.put("function", it) }
+        functionDelta.nonBlankString("name")?.let { name ->
+          appendJsonStringField(function, "name", name)
+        }
+        if (functionDelta.has("arguments")) {
+          appendJsonStringField(
+            function,
+            "arguments",
+            functionDelta.opt("arguments")?.toString(),
+          )
+        }
+      }
+    }
+  }
+
+  private fun openAiStreamVisibleText(
+    choices: Map<Int, JSONObject>,
+  ): String = choices.toSortedMap().values.firstOrNull()
+    ?.optJSONObject("message")
+    ?.let { message -> extractOpenAiContentValue(message.opt("content")) }
+    .orEmpty()
+    .trim()
+
+  private fun readOpenAiResponsesStream(
+    input: InputStream,
+    streamObserver: LiteLlmVisibleTextObserver,
+  ): String {
+    val payload = JSONObject()
+    val outputItems = linkedMapOf<Int, JSONObject>()
+    val outputIndexByItemId = mutableMapOf<String, Int>()
+    var activeAssistantMessageIndex: Int? = null
+    var lastVisibleTextSnapshot: String? = null
+    val visibleTextCoalescer = VisibleTextSnapshotCoalescer(
+      observer = streamObserver,
+      minIntervalMs = streamUpdateMinIntervalMs,
+    )
+    BufferedReader(InputStreamReader(input, StandardCharsets.UTF_8)).use { reader ->
+      var currentEvent = ""
+      val dataLines = mutableListOf<String>()
+
+      fun flushEvent() {
+        if (dataLines.isEmpty()) {
+          currentEvent = ""
+          return
+        }
+        activeAssistantMessageIndex = processOpenAiResponsesStreamEvent(
+          eventName = currentEvent,
+          data = dataLines.joinToString(separator = "\n"),
+          payload = payload,
+          outputItems = outputItems,
+          outputIndexByItemId = outputIndexByItemId,
+          activeAssistantMessageIndex = activeAssistantMessageIndex,
+          visibleTextCoalescer = visibleTextCoalescer,
+        )
+        responsesVisibleText(outputItems)
+          .trim()
+          .takeIf(String::isNotBlank)
+          ?.let { visibleText -> lastVisibleTextSnapshot = visibleText }
+        currentEvent = ""
+        dataLines.clear()
+      }
+
+      var line = reader.readLine()
+      while (line != null) {
+        when {
+          line.isBlank() -> flushEvent()
+          line.startsWith(":") -> Unit
+          line.startsWith("event:") -> currentEvent = line.substringAfter(':').trim()
+          line.startsWith("data:") -> dataLines += line.substringAfter(':').trimStart()
+        }
+        line = reader.readLine()
+      }
+      flushEvent()
+    }
+    backfillResponsesVisibleTextOutput(
+      outputItems = outputItems,
+      visibleText = lastVisibleTextSnapshot,
+    )
+    visibleTextCoalescer.flush()
+    val output = JSONArray()
+    outputItems.toSortedMap().values.forEach(output::put)
+    payload.put("output", output)
+    return payload.toString()
+  }
+
+  private fun processOpenAiResponsesStreamEvent(
+    eventName: String,
+    data: String,
+    payload: JSONObject,
+    outputItems: MutableMap<Int, JSONObject>,
+    outputIndexByItemId: MutableMap<String, Int>,
+    activeAssistantMessageIndex: Int?,
+    visibleTextCoalescer: VisibleTextSnapshotCoalescer,
+  ): Int? {
+    val trimmedData = data.trim()
+    if (trimmedData.isBlank() || trimmedData == "[DONE]") {
+      return activeAssistantMessageIndex
+    }
+    val eventPayload = runCatching { JSONObject(trimmedData) }.getOrElse { error ->
+      throw IllegalStateException("Failed to parse OpenAI responses streaming event.", error)
+    }
+    val eventType = eventPayload.optString("type").ifBlank { eventName }
+    var nextActiveAssistantMessageIndex = activeAssistantMessageIndex
+    var visibleTextMayHaveChanged = false
+    when (eventType) {
+      "error" -> {
+        val errorObject = eventPayload.optJSONObject("error")
+        val message = errorObject?.nonBlankString("message")
+          ?: eventPayload.nonBlankString("message")
+          ?: "OpenAI responses streaming request failed."
+        throw IllegalStateException(message)
+      }
+
+      "response.created" -> {
+        eventPayload.optJSONObject("response")?.let { response ->
+          mergeResponseObjectIntoPayload(payload, response)
+        }
+      }
+
+      "response.output_item.added" -> {
+        val item = eventPayload.optJSONObject("item") ?: return nextActiveAssistantMessageIndex
+        val itemIndex = storeResponsesOutputItem(
+          outputItems = outputItems,
+          outputIndexByItemId = outputIndexByItemId,
+          item = item,
+          explicitIndex = eventPayload.optInt("output_index", -1).takeIf { index -> index >= 0 },
+          replace = false,
+        )
+        if (isResponsesAssistantMessage(outputItems[itemIndex])) {
+          nextActiveAssistantMessageIndex = itemIndex
+          visibleTextMayHaveChanged = true
+        }
+      }
+
+      "response.output_text.delta" -> {
+        val delta = eventPayload.optString("delta")
+        val outputIndex = resolveResponsesDeltaOutputIndex(
+          eventPayload = eventPayload,
+          outputItems = outputItems,
+          outputIndexByItemId = outputIndexByItemId,
+          activeAssistantMessageIndex = nextActiveAssistantMessageIndex,
+        )
+        val item = ensureResponsesAssistantMessage(outputItems, outputIndex)
+        appendResponsesOutputTextDelta(
+          item = item,
+          delta = delta,
+          contentIndex = eventPayload.optInt("content_index", 0).coerceAtLeast(0),
+        )
+        nextActiveAssistantMessageIndex = outputIndex
+        visibleTextMayHaveChanged = true
+      }
+
+      "response.output_text.done" -> {
+        val outputIndex = resolveResponsesDeltaOutputIndex(
+          eventPayload = eventPayload,
+          outputItems = outputItems,
+          outputIndexByItemId = outputIndexByItemId,
+          activeAssistantMessageIndex = nextActiveAssistantMessageIndex,
+        )
+        val item = ensureResponsesAssistantMessage(outputItems, outputIndex)
+        setResponsesOutputTextValue(
+          item = item,
+          text = eventPayload.optString("text"),
+          contentIndex = eventPayload.optInt("content_index", 0).coerceAtLeast(0),
+        )
+        nextActiveAssistantMessageIndex = outputIndex
+        visibleTextMayHaveChanged = true
+      }
+
+      "response.content_part.added",
+      "response.content_part.done" -> {
+        val outputIndex = resolveResponsesDeltaOutputIndex(
+          eventPayload = eventPayload,
+          outputItems = outputItems,
+          outputIndexByItemId = outputIndexByItemId,
+          activeAssistantMessageIndex = nextActiveAssistantMessageIndex,
+        )
+        val item = ensureResponsesAssistantMessage(outputItems, outputIndex)
+        mergeResponsesContentPart(
+          item = item,
+          part = eventPayload.optJSONObject("part"),
+          contentIndex = eventPayload.optInt("content_index", 0).coerceAtLeast(0),
+        )
+        nextActiveAssistantMessageIndex = outputIndex
+        visibleTextMayHaveChanged = true
+      }
+
+      "response.output_item.done" -> {
+        val item = eventPayload.optJSONObject("item") ?: return nextActiveAssistantMessageIndex
+        val itemIndex = storeResponsesOutputItem(
+          outputItems = outputItems,
+          outputIndexByItemId = outputIndexByItemId,
+          item = item,
+          explicitIndex = eventPayload.optInt("output_index", -1).takeIf { index -> index >= 0 }
+            ?: if (isResponsesAssistantMessage(item)) {
+              nextActiveAssistantMessageIndex
+            } else {
+              null
+            },
+          replace = true,
+        )
+        if (isResponsesAssistantMessage(outputItems[itemIndex])) {
+          nextActiveAssistantMessageIndex = itemIndex
+          visibleTextMayHaveChanged = true
+        }
+      }
+
+      "response.completed" -> {
+        val response = eventPayload.optJSONObject("response")
+        if (response != null) {
+          mergeResponseObjectIntoPayload(payload, response)
+          response.optJSONArray("output")?.let { output ->
+            replaceResponsesOutputItems(
+              outputItems = outputItems,
+              outputIndexByItemId = outputIndexByItemId,
+              output = output,
+            )
+          }
+        }
+        if (!payload.has("status")) {
+          payload.put("status", "completed")
+        }
+        visibleTextMayHaveChanged = outputItems.isNotEmpty()
+      }
+
+      "response.incomplete" -> {
+        eventPayload.optJSONObject("response")?.let { response ->
+          mergeResponseObjectIntoPayload(payload, response)
+          response.optJSONArray("output")?.let { output ->
+            replaceResponsesOutputItems(
+              outputItems = outputItems,
+              outputIndexByItemId = outputIndexByItemId,
+              output = output,
+            )
+          }
+        }
+        if (!payload.has("status")) {
+          payload.put("status", "incomplete")
+        }
+        visibleTextMayHaveChanged = outputItems.isNotEmpty()
+      }
+
+      "response.failed" -> {
+        val errorObject = eventPayload.optJSONObject("response")
+          ?.optJSONObject("error")
+        val message = errorObject?.nonBlankString("message")
+          ?: "OpenAI responses streaming request failed."
+        throw IllegalStateException(message)
+      }
+    }
+    if (visibleTextMayHaveChanged) {
+      val visibleText = responsesVisibleText(outputItems)
+      visibleTextCoalescer.update(visibleText)
+    }
+    return nextActiveAssistantMessageIndex
+  }
+
+  private fun mergeResponseObjectIntoPayload(
+    payload: JSONObject,
+    response: JSONObject,
+  ) {
+    val keys = response.keys()
+    while (keys.hasNext()) {
+      val key = keys.next()
+      if (key == "output") {
+        continue
+      }
+      copyJsonFieldIfPresent(response, payload, key)
+    }
+  }
+
+  private fun storeResponsesOutputItem(
+    outputItems: MutableMap<Int, JSONObject>,
+    outputIndexByItemId: MutableMap<String, Int>,
+    item: JSONObject,
+    explicitIndex: Int?,
+    replace: Boolean,
+  ): Int {
+    val normalizedItem = JSONObject(item.toString())
+    val resolvedIndex = explicitIndex
+      ?: responsesOutputItemIdentity(normalizedItem)
+        ?.let(outputIndexByItemId::get)
+      ?: nextResponsesOutputIndex(outputItems)
+    val storedItem = if (!replace) {
+      outputItems[resolvedIndex]?.apply {
+        mergeResponsesStreamItemSkeleton(this, normalizedItem)
+      } ?: normalizedItem.also { inserted ->
+        outputItems[resolvedIndex] = inserted
+      }
+    } else {
+      normalizedItem.also { inserted ->
+        outputItems[resolvedIndex] = inserted
+      }
+    }
+    responsesOutputItemIdentity(storedItem)?.let { itemId ->
+      outputIndexByItemId[itemId] = resolvedIndex
+    }
+    return resolvedIndex
+  }
+
+  private fun mergeResponsesStreamItemSkeleton(
+    target: JSONObject,
+    source: JSONObject,
+  ) {
+    val keys = source.keys()
+    while (keys.hasNext()) {
+      val key = keys.next()
+      val existingValue = target.opt(key)
+      if (key == "content") {
+        if (isMissingJsonValue(existingValue)) {
+          copyJsonFieldIfPresent(source, target, key)
+        }
+        continue
+      }
+      if (isMissingJsonValue(existingValue)) {
+        copyJsonFieldIfPresent(source, target, key)
+      }
+    }
+  }
+
+  private fun replaceResponsesOutputItems(
+    outputItems: MutableMap<Int, JSONObject>,
+    outputIndexByItemId: MutableMap<String, Int>,
+    output: JSONArray,
+  ) {
+    outputItems.clear()
+    outputIndexByItemId.clear()
+    for (index in 0 until output.length()) {
+      val item = output.optJSONObject(index) ?: continue
+      val copiedItem = JSONObject(item.toString())
+      outputItems[index] = copiedItem
+      responsesOutputItemIdentity(copiedItem)?.let { itemId ->
+        outputIndexByItemId[itemId] = index
+      }
+    }
+  }
+
+  private fun resolveResponsesDeltaOutputIndex(
+    eventPayload: JSONObject,
+    outputItems: Map<Int, JSONObject>,
+    outputIndexByItemId: Map<String, Int>,
+    activeAssistantMessageIndex: Int?,
+  ): Int {
+    eventPayload.optInt("output_index", -1).takeIf { index -> index >= 0 }?.let { return it }
+    firstNonBlankString(
+      eventPayload.nonBlankString("item_id"),
+      eventPayload.nonBlankString("output_item_id"),
+    )?.let { itemId ->
+      outputIndexByItemId[itemId]?.let { return it }
+    }
+    activeAssistantMessageIndex?.let { return it }
+    outputItems.toSortedMap().entries.lastOrNull { (_, item) ->
+      isResponsesAssistantMessage(item)
+    }?.key?.let { return it }
+    return nextResponsesOutputIndex(outputItems)
+  }
+
+  private fun ensureResponsesAssistantMessage(
+    outputItems: MutableMap<Int, JSONObject>,
+    outputIndex: Int,
+  ): JSONObject = outputItems.getOrPut(outputIndex) {
+    JSONObject()
+      .put("type", "message")
+      .put("role", "assistant")
+      .put("content", JSONArray())
+  }.apply {
+    if (optString("type").isBlank()) {
+      put("type", "message")
+    }
+    if (optString("role").isBlank()) {
+      put("role", "assistant")
+    }
+  }
+
+  private fun appendResponsesOutputTextDelta(
+    item: JSONObject,
+    delta: String,
+    contentIndex: Int,
+  ) {
+    if (delta.isEmpty()) {
+      return
+    }
+    val content = when (val existing = item.opt("content")) {
+      is JSONArray -> existing
+      is JSONObject -> JSONArray().put(JSONObject(existing.toString())).also { array ->
+        item.put("content", array)
+      }
+      is String -> JSONArray()
+        .put(
+          JSONObject()
+            .put("type", "output_text")
+            .put("text", existing),
+        )
+        .also { array -> item.put("content", array) }
+      else -> JSONArray().also { array -> item.put("content", array) }
+    }
+    while (content.length() <= contentIndex) {
+      content.put(
+        JSONObject()
+          .put("type", "output_text")
+          .put("text", ""),
+      )
+    }
+    val contentItem = content.optJSONObject(contentIndex)
+      ?: JSONObject()
+        .put("type", "output_text")
+        .put("text", "")
+        .also { created -> content.put(contentIndex, created) }
+    if (contentItem.optString("type").isBlank()) {
+      contentItem.put("type", "output_text")
+    }
+    appendJsonStringField(contentItem, "text", delta)
+  }
+
+  private fun setResponsesOutputTextValue(
+    item: JSONObject,
+    text: String,
+    contentIndex: Int,
+  ) {
+    val contentItem = ensureResponsesContentItem(item, contentIndex)
+    if (contentItem.optString("type").isBlank()) {
+      contentItem.put("type", "output_text")
+    }
+    contentItem.put("text", text)
+  }
+
+  private fun mergeResponsesContentPart(
+    item: JSONObject,
+    part: JSONObject?,
+    contentIndex: Int,
+  ) {
+    val contentItem = ensureResponsesContentItem(item, contentIndex)
+    val normalizedPart = part ?: return
+    val keys = normalizedPart.keys()
+    while (keys.hasNext()) {
+      val key = keys.next()
+      if (key == "text") {
+        if (normalizedPart.has("text")) {
+          contentItem.put("text", normalizedPart.optString("text"))
+        }
+        continue
+      }
+      if (key == "type") {
+        normalizedPart.nonBlankString("type")?.let { type ->
+          contentItem.put("type", type)
+        }
+        continue
+      }
+      copyJsonFieldIfPresent(normalizedPart, contentItem, key)
+    }
+  }
+
+  private fun ensureResponsesContentItem(
+    item: JSONObject,
+    contentIndex: Int,
+  ): JSONObject {
+    val content = when (val existing = item.opt("content")) {
+      is JSONArray -> existing
+      is JSONObject -> JSONArray().put(JSONObject(existing.toString())).also { array ->
+        item.put("content", array)
+      }
+      is String -> JSONArray()
+        .put(
+          JSONObject()
+            .put("type", "output_text")
+            .put("text", existing),
+        )
+        .also { array -> item.put("content", array) }
+      else -> JSONArray().also { array -> item.put("content", array) }
+    }
+    while (content.length() <= contentIndex) {
+      content.put(JSONObject())
+    }
+    return content.optJSONObject(contentIndex)
+      ?: JSONObject().also { created ->
+        content.put(contentIndex, created)
+      }
+  }
+
+  private fun responsesVisibleText(
+    outputItems: Map<Int, JSONObject>,
+  ): String = outputItems.toSortedMap().values
+    .mapNotNull { item ->
+      if (!isResponsesAssistantMessage(item)) {
+        null
+      } else {
+        extractResponsesMessageText(item)
+          .trim()
+          .takeIf(String::isNotBlank)
+      }
+    }
+    .joinToString(separator = "\n")
+    .trim()
+
+  private fun backfillResponsesVisibleTextOutput(
+    outputItems: MutableMap<Int, JSONObject>,
+    visibleText: String?,
+  ) {
+    val normalizedText = visibleText?.trim()?.takeIf(String::isNotBlank) ?: return
+    if (responsesVisibleText(outputItems).isNotBlank()) {
+      return
+    }
+    outputItems[nextResponsesOutputIndex(outputItems)] = JSONObject()
+      .put("type", "message")
+      .put("role", "assistant")
+      .put(
+        "content",
+        JSONArray().put(
+          JSONObject()
+            .put("type", "output_text")
+            .put("text", normalizedText),
+        ),
+      )
+  }
+
+  private fun isResponsesAssistantMessage(item: JSONObject?): Boolean =
+    item?.optString("type") == "message" &&
+      item.optString("role").trim().ifEmpty { "assistant" } == "assistant"
+
+  private fun responsesOutputItemIdentity(item: JSONObject): String? = firstNonBlankString(
+    item.nonBlankString("id"),
+    item.nonBlankString("call_id"),
+  )
+
+  private fun nextResponsesOutputIndex(
+    outputItems: Map<Int, JSONObject>,
+  ): Int = (outputItems.keys.maxOrNull() ?: -1) + 1
 
   private fun appendJsonStringField(
     target: JSONObject,
     key: String,
     value: String?,
   ) {
-    val delta = value?.takeIf(String::isNotBlank) ?: return
+    val delta = value?.takeIf(String::isNotEmpty) ?: return
     val existing = target.optString(key)
     target.put(key, existing + delta)
   }
+
+  private fun copyJsonFieldIfPresent(
+    source: JSONObject,
+    target: JSONObject,
+    key: String,
+  ) {
+    if (!source.has(key)) {
+      return
+    }
+    val copiedValue = deepCopyJsonValue(source.opt(key)) ?: return
+    target.put(key, copiedValue)
+  }
+
+  private fun deepCopyJsonValue(value: Any?): Any? = when (value) {
+    null,
+    JSONObject.NULL,
+    -> null
+    is JSONObject -> JSONObject(value.toString())
+    is JSONArray -> JSONArray(value.toString())
+    else -> value
+  }
+
+  private fun isMissingJsonValue(value: Any?): Boolean = value == null ||
+    value == JSONObject.NULL ||
+    (value is String && value.isBlank())
+
+  private fun anthropicVisibleText(
+    contentBlocks: Map<Int, JSONObject>,
+  ): String = buildString {
+    contentBlocks.toSortedMap().values.forEach { block ->
+      if (block.optString("type") != "text") {
+        return@forEach
+      }
+      val text = block.optString("text")
+      if (text.isNotBlank()) {
+        append(text)
+      }
+    }
+  }.trim()
 
   private fun readStream(input: InputStream?): String {
     if (input == null) return ""
@@ -3619,8 +4402,44 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     val rawPreview: String? = null,
   )
 
+  private class VisibleTextSnapshotCoalescer(
+    private val observer: LiteLlmVisibleTextObserver,
+    private val minIntervalMs: Long,
+  ) {
+    private var lastEmittedText: String? = null
+    private var lastEmittedAtEpochMs: Long = 0L
+    private var pendingText: String? = null
+
+    fun update(text: String) {
+      val normalized = text.trim().takeIf(String::isNotBlank) ?: return
+      pendingText = normalized
+      emitIfEligible(force = lastEmittedText == null)
+    }
+
+    fun flush() {
+      emitIfEligible(force = true)
+    }
+
+    private fun emitIfEligible(force: Boolean) {
+      val text = pendingText ?: return
+      if (text == lastEmittedText) {
+        pendingText = null
+        return
+      }
+      val now = System.currentTimeMillis()
+      if (!force && minIntervalMs > 0L && now - lastEmittedAtEpochMs < minIntervalMs) {
+        return
+      }
+      observer.onVisibleTextSnapshot(text)
+      lastEmittedText = text
+      lastEmittedAtEpochMs = now
+      pendingText = null
+    }
+  }
+
   companion object {
     private const val DEFAULT_ANTHROPIC_MAX_TOKENS: Int = 4096
+    private const val DEFAULT_STREAM_UPDATE_MIN_INTERVAL_MS: Long = 0L
     private const val MAX_INLINE_IMAGE_BYTES: Long = 20L * 1024L * 1024L
     private const val MAX_INLINE_PDF_BYTES: Long = 32L * 1024L * 1024L
     private const val ANTHROPIC_WEB_SEARCH_TOOL_TYPE: String = "web_search_20250305"

@@ -145,5 +145,22 @@ class LlmRouteCapabilityMetadataTest {
       LlmPromptCacheRetentionPolicies.IN_MEMORY,
       metadata[LlmPromptCachingMetadataKeys.PROMPT_CACHE_RETENTION],
     )
+    assertEquals("true", metadata["stream"])
+  }
+
+  @Test
+  fun effectiveLlmRouteMetadataFromSettingsIncludesStreamingDisabledFlag() {
+    val metadata = effectiveLlmRouteMetadata(
+      settings = LlmSettingsState(
+        providerId = "openai",
+        protocol = LlmProviderProtocols.OPENAI,
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-4o-mini",
+        streamingEnabled = false,
+      ),
+    )
+
+    assertEquals("false", metadata["stream"])
   }
 }

@@ -38,6 +38,7 @@ internal object LlmProviderProtocols {
     protocol: String,
     model: String,
     reasoningEffort: String,
+    streamingEnabled: Boolean = LlmSettingsState.DEFAULT_STREAMING_ENABLED,
     openAiPromptCacheKeyStrategy: String = LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_KEY_STRATEGY,
     openAiPromptCacheRetention: String = LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_RETENTION,
     anthropicPromptCachingEnabled: Boolean =
@@ -47,6 +48,7 @@ internal object LlmProviderProtocols {
     ANTHROPIC -> anthropicRouteMetadata(
       model = model,
       reasoningEffort = reasoningEffort,
+      streamingEnabled = streamingEnabled,
       promptCachingEnabled = anthropicPromptCachingEnabled,
       promptCacheTtl = anthropicPromptCacheTtl,
     )
@@ -54,6 +56,7 @@ internal object LlmProviderProtocols {
     OPENAI_RESPONSES -> openAiResponsesRouteMetadata(
       model = model,
       reasoningEffort = reasoningEffort,
+      streamingEnabled = streamingEnabled,
       promptCacheKeyStrategy = openAiPromptCacheKeyStrategy,
       promptCacheRetention = openAiPromptCacheRetention,
     )
@@ -61,6 +64,7 @@ internal object LlmProviderProtocols {
     else -> openAiRouteMetadata(
       model = model,
       reasoningEffort = reasoningEffort,
+      streamingEnabled = streamingEnabled,
       promptCacheKeyStrategy = openAiPromptCacheKeyStrategy,
       promptCacheRetention = openAiPromptCacheRetention,
     )
@@ -69,12 +73,14 @@ internal object LlmProviderProtocols {
   private fun openAiRouteMetadata(
     model: String,
     reasoningEffort: String,
+    streamingEnabled: Boolean,
     promptCacheKeyStrategy: String,
     promptCacheRetention: String,
   ): Map<String, String> {
     val normalizedEffort = normalizedReasoningEffort(reasoningEffort)
     return buildMap {
       put("protocol", OPENAI)
+      put("stream", streamingEnabled.toString())
       if (model.contains("gpt", ignoreCase = true) &&
         normalizedEffort != REASONING_EFFORT_OFF
       ) {
@@ -92,12 +98,14 @@ internal object LlmProviderProtocols {
   private fun openAiResponsesRouteMetadata(
     model: String,
     reasoningEffort: String,
+    streamingEnabled: Boolean,
     promptCacheKeyStrategy: String,
     promptCacheRetention: String,
   ): Map<String, String> {
     val normalizedEffort = normalizedReasoningEffort(reasoningEffort)
     return buildMap {
       put("protocol", OPENAI_RESPONSES)
+      put("stream", streamingEnabled.toString())
       put("responseApiPreferred", "true")
       if (model.contains("gpt", ignoreCase = true) &&
         normalizedEffort != REASONING_EFFORT_OFF
@@ -116,11 +124,13 @@ internal object LlmProviderProtocols {
   private fun anthropicRouteMetadata(
     model: String,
     reasoningEffort: String,
+    streamingEnabled: Boolean,
     promptCachingEnabled: Boolean,
     promptCacheTtl: String,
   ): Map<String, String> {
     return buildMap {
       put("protocol", ANTHROPIC)
+      put("stream", streamingEnabled.toString())
       if (!shouldDisableAnthropicThinkingForModel(model)) {
         val normalizedEffort = normalizedReasoningEffort(reasoningEffort)
         if (normalizedEffort != REASONING_EFFORT_OFF) {

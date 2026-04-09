@@ -263,4 +263,30 @@ class LlmSettingsStoreTest {
     assertTrue(loaded.anthropicPromptCachingEnabled)
     assertEquals(AnthropicPromptCacheTtlPolicies.HOUR_1, loaded.anthropicPromptCacheTtl)
   }
+
+  @Test
+  fun saveAndLoadPersistsStreamingEnabled() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val saved = LlmSettingsState(
+      enabled = true,
+      streamingEnabled = false,
+      protocol = LlmProviderProtocols.OPENAI,
+      baseUrl = "https://api.openai.com/v1",
+      apiKey = "token",
+      model = "gpt-4o-mini",
+    )
+
+    store.save(saved)
+
+    val loaded = store.load(
+      defaults = LlmSettingsState(
+        protocol = LlmProviderProtocols.OPENAI,
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-4o-mini",
+      ),
+    )
+
+    assertFalse(loaded.streamingEnabled)
+  }
 }

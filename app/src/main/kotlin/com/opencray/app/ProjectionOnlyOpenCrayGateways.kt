@@ -152,6 +152,7 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
 
   override fun saveLlmConfig(
     enabled: Boolean,
+    streamingEnabled: Boolean?,
     providerId: String,
     selectedProviderOptionId: String,
     protocol: String,
@@ -170,6 +171,7 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
 
   override fun saveCustomLlmProvider(
     selectedProviderOptionId: String,
+    streamingEnabled: Boolean?,
     protocol: String,
     providerName: String,
     providerNotes: String,

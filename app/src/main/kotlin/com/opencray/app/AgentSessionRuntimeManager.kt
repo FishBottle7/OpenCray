@@ -231,6 +231,19 @@ internal interface AgentSessionRuntimeListener {
 
   fun onRunEvent(sessionId: String, task: AgentTask, event: OpenCrayAgentRunEvent) = Unit
 
+  fun onAssistantDraftUpdated(
+    sessionId: String,
+    task: AgentTask,
+    text: String,
+    emittedAtEpochMs: Long,
+  ) = Unit
+
+  fun onAssistantDraftCleared(
+    sessionId: String,
+    task: AgentTask,
+    emittedAtEpochMs: Long,
+  ) = Unit
+
   fun onToolCall(sessionId: String, task: AgentTask, turn: Int, call: AgentToolCall) = Unit
 
   fun onToolResult(sessionId: String, task: AgentTask, turn: Int, call: AgentToolCall, result: AgentToolResult) = Unit
@@ -449,6 +462,34 @@ private class ManagedAgentSessionHandle(
           )
           else -> Unit
         }
+      }
+    }
+
+    override fun onAssistantDraftUpdated(
+      task: AgentTask,
+      text: String,
+      emittedAtEpochMs: Long,
+    ) {
+      listenerProvider().forEach { listener ->
+        listener.onAssistantDraftUpdated(
+          sessionId = sessionId,
+          task = task,
+          text = text,
+          emittedAtEpochMs = emittedAtEpochMs,
+        )
+      }
+    }
+
+    override fun onAssistantDraftCleared(
+      task: AgentTask,
+      emittedAtEpochMs: Long,
+    ) {
+      listenerProvider().forEach { listener ->
+        listener.onAssistantDraftCleared(
+          sessionId = sessionId,
+          task = task,
+          emittedAtEpochMs = emittedAtEpochMs,
+        )
       }
     }
   }
@@ -1392,7 +1433,7 @@ private class ManagedAgentSessionHandle(
         ),
         pendingMessageId = persisted.pendingMessageId,
         managedProcessIds = persisted.managedProcessIds,
-        lastEvent = persisted.lastEvent?.toRuntimeEvent(),
+        lastEvent = persisted.lastEvent?.toRuntimeEventOrNull(),
         lastResult = persisted.lastResult,
       )
     }

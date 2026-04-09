@@ -764,6 +764,46 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun runtimeForegroundControllerBootstrapForegroundStopsWhenServiceReturnsIdle() {
+    var now = 6_500L
+    val adapter = RecordingRuntimeForegroundServiceAdapter()
+    val controller = RuntimeForegroundController(
+      serviceAdapter = adapter,
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { now },
+    )
+
+    val bootstrap = controller.startBootstrapForeground()
+
+    assertEquals(RuntimeForegroundState.PHASE_FOREGROUND, bootstrap.phase)
+    assertEquals(true, bootstrap.notificationVisible)
+    assertEquals(
+      RuntimeServiceWorkState.KEEP_ALIVE_REASON_SERVICE_STARTUP,
+      bootstrap.keepAliveReason,
+    )
+    assertEquals(1, adapter.startedModels.size)
+    assertEquals(
+      RuntimeServiceWorkState.KEEP_ALIVE_REASON_SERVICE_STARTUP,
+      adapter.startedModels.single().keepAliveReason,
+    )
+
+    now = 6_800L
+    val idle = controller.onWorkStateChanged(
+      RuntimeServiceWorkState(
+        phase = RuntimeServiceWorkState.PHASE_IDLE,
+        hasActiveWork = false,
+        keepAliveRequired = false,
+        changedAtEpochMs = now,
+        idleSinceEpochMs = now,
+      ),
+    )
+
+    assertEquals(RuntimeForegroundState.PHASE_IDLE, idle.phase)
+    assertEquals(false, idle.notificationVisible)
+    assertEquals(1, adapter.stopCount)
+  }
+
+  @Test
   fun bootstrapSessionsForRuntimeServiceHostResumesAndRepairsActiveSession() {
     val root = temporaryFolder.newFolder("service-host-bootstrap")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
@@ -2392,7 +2432,7 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun serviceOwnedChatRuntimeGatewayKeepsHostChatAndRunSnapshotsButProjectsRuntimeReads() {
+  fun serviceOwnedChatRuntimeGatewayKeepsHostChatAndRuntimeSnapshotsAndUsesProjectionForDebugReads() {
     val delegate = RecordingChatRuntimeGateway("delegate")
     val readGateway = RecordingChatRuntimeGateway("projection")
     val gateway = ServiceOwnedChatRuntimeGateway(
@@ -2413,7 +2453,7 @@ class OpenCrayRuntimeServiceHostTest {
 
     try {
       assertEquals("delegate-chat", gateway.loadChatSnapshot()["source"])
-      assertEquals("projection-runtime", gateway.loadChatRuntimeSnapshot()["source"])
+      assertEquals("delegate-runtime", gateway.loadChatRuntimeSnapshot()["source"])
       assertEquals("delegate-run", gateway.loadChatRunSnapshot("run-alpha")?.get("source"))
       assertEquals(
         "projection-memory-action",
@@ -2424,7 +2464,7 @@ class OpenCrayRuntimeServiceHostTest {
       gateway.notifyChatSnapshotsChanged()
 
       assertEquals(listOf("delegate-chat", "delegate-chat"), observedChatSources)
-      assertEquals(listOf("projection-runtime", "projection-runtime"), observedRuntimeSources)
+      assertEquals(listOf("delegate-runtime", "delegate-runtime"), observedRuntimeSources)
       assertEquals("hello", delegate.submittedText)
       assertNull(delegate.memoryDebugActionRecordId)
       assertEquals("memory-1", readGateway.memoryDebugActionRecordId)
@@ -2795,6 +2835,40 @@ class OpenCrayRuntimeServiceHostTest {
 
     assertEquals("run-beta", binderGateway.approvedForSessionTaskIdOrRunId)
     assertNull(fallbackGateway.approvedForSessionTaskIdOrRunId)
+  }
+
+  @Test
+  fun serviceBackedChatRuntimeGatewayChatObserverRechecksGatewayAfterConnectionObservationStarts() {
+    val binderGateway = RecordingChatRuntimeGateway("binder")
+    val fallbackGateway = RecordingChatRuntimeGateway("fallback")
+    val gateway = ServiceBackedOpenCrayChatRuntimeGateway(
+      serviceClient = ChatGatewayAvailableOnObserveClient(binderGateway),
+      fallbackGateway = fallbackGateway,
+    )
+    val observedSources = mutableListOf<String?>()
+
+    gateway.observeChat { snapshot ->
+      observedSources += snapshot["source"] as String?
+    }
+
+    assertEquals(listOf("fallback-chat", "binder-chat"), observedSources)
+  }
+
+  @Test
+  fun serviceBackedChatRuntimeGatewayRuntimeObserverRechecksGatewayAfterConnectionObservationStarts() {
+    val binderGateway = RecordingChatRuntimeGateway("binder")
+    val fallbackGateway = RecordingChatRuntimeGateway("fallback")
+    val gateway = ServiceBackedOpenCrayChatRuntimeGateway(
+      serviceClient = ChatGatewayAvailableOnObserveClient(binderGateway),
+      fallbackGateway = fallbackGateway,
+    )
+    val observedSources = mutableListOf<String?>()
+
+    gateway.observeChatRuntime { snapshot ->
+      observedSources += snapshot["source"] as String?
+    }
+
+    assertEquals(listOf("fallback-runtime", "binder-runtime"), observedSources)
   }
 
   @Test
@@ -5250,6 +5324,36 @@ class OpenCrayRuntimeServiceHostTest {
     ): () -> Unit = observeConnectionState(listener)
   }
 
+  private class ChatGatewayAvailableOnObserveClient(
+    private val binderGateway: OpenCrayChatRuntimeGateway,
+  ) : OpenCrayRuntimeServiceClient {
+    private var observing: Boolean = false
+
+    override fun loadSnapshot(): OpenCrayRuntimeServiceClientSnapshot = error("unused in test")
+
+    override fun loadConnectionState(): RuntimeServiceConnectionState =
+      if (observing) {
+        RuntimeServiceConnectionState.binderConnected()
+      } else {
+        RuntimeServiceConnectionState.bindingPending()
+      }
+
+    override fun loadChatRuntimeGateway(): OpenCrayChatRuntimeGateway? =
+      if (observing) binderGateway else null
+
+    override fun peekChatRuntimeGateway(): OpenCrayChatRuntimeGateway? =
+      if (observing) binderGateway else null
+
+    override fun observeConnectionState(listener: (RuntimeServiceConnectionState) -> Unit): () -> Unit {
+      observing = true
+      return { }
+    }
+
+    override fun observePassiveConnectionState(
+      listener: (RuntimeServiceConnectionState) -> Unit,
+    ): () -> Unit = observeConnectionState(listener)
+  }
+
   private class RecordingChatRuntimeGateway(
     private val label: String,
   ) : OpenCrayRuntimeServiceChatGateway {
@@ -5846,6 +5950,7 @@ class OpenCrayRuntimeServiceHostTest {
 
     override fun saveLlmConfig(
       enabled: Boolean,
+      streamingEnabled: Boolean?,
       providerId: String,
       selectedProviderOptionId: String,
       protocol: String,
@@ -5864,6 +5969,7 @@ class OpenCrayRuntimeServiceHostTest {
 
     override fun saveCustomLlmProvider(
       selectedProviderOptionId: String,
+      streamingEnabled: Boolean?,
       protocol: String,
       providerName: String,
       providerNotes: String,

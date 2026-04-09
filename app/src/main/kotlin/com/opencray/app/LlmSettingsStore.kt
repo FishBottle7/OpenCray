@@ -10,6 +10,7 @@ private const val DEFAULT_LLM_SETTINGS_PREFERENCES = "opencray.llm-settings"
 
 internal object LlmSettingsStoreKeys {
   const val ENABLED = "enabled"
+  const val STREAMING_ENABLED = "streaming_enabled"
   const val PROVIDER_ID = "provider_id"
   const val SELECTED_PROVIDER_OPTION_ID = "selected_provider_option_id"
   const val PROTOCOL = "protocol"
@@ -30,6 +31,7 @@ internal object LlmSettingsStoreKeys {
 
 internal data class LlmSettingsState(
   val enabled: Boolean = false,
+  val streamingEnabled: Boolean = DEFAULT_STREAMING_ENABLED,
   val providerId: String = DEFAULT_PROVIDER_ID,
   val protocol: String = DEFAULT_PROTOCOL,
   val providerName: String = DEFAULT_PROVIDER_NAME,
@@ -87,6 +89,7 @@ internal data class LlmSettingsState(
     const val DEFAULT_PROVIDER_ID: String = "openai"
     const val DEFAULT_PROTOCOL: String = LlmProviderProtocols.OPENAI
     const val DEFAULT_PROVIDER_NAME: String = "OpenAI"
+    const val DEFAULT_STREAMING_ENABLED: Boolean = true
     const val DEFAULT_REASONING_EFFORT: String = "medium"
     const val DEFAULT_OPENAI_PROMPT_CACHE_KEY_STRATEGY: String =
       LlmPromptCacheKeyStrategies.NONE
@@ -245,6 +248,9 @@ internal class LlmSettingsStore(
   fun load(defaults: LlmSettingsState = LlmSettingsState()): LlmSettingsState {
     val resolved = defaults.copy(
       enabled = keyValueStore.getBoolean(LlmSettingsStoreKeys.ENABLED) ?: defaults.enabled,
+      streamingEnabled =
+        keyValueStore.getBoolean(LlmSettingsStoreKeys.STREAMING_ENABLED)
+          ?: defaults.streamingEnabled,
       providerId = keyValueStore.getString(LlmSettingsStoreKeys.PROVIDER_ID)
         ?: LlmSettingsState.inferProviderId(
           keyValueStore.getString(LlmSettingsStoreKeys.BASE_URL) ?: defaults.baseUrl,
@@ -291,6 +297,10 @@ internal class LlmSettingsStore(
     val resolved = state.sanitized()
     val sanitized = resolved.copy(enabled = resolved.isConfigured())
     keyValueStore.putBoolean(LlmSettingsStoreKeys.ENABLED, sanitized.enabled)
+    keyValueStore.putBoolean(
+      LlmSettingsStoreKeys.STREAMING_ENABLED,
+      sanitized.streamingEnabled,
+    )
     keyValueStore.putString(LlmSettingsStoreKeys.PROVIDER_ID, sanitized.providerId)
     keyValueStore.putString(
       LlmSettingsStoreKeys.SELECTED_PROVIDER_OPTION_ID,

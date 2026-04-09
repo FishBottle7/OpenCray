@@ -919,6 +919,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayLlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
+    bool? streamingEnabled,
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -941,6 +942,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     _llmConfig = OpenCrayLlmConfigSnapshot(
       localeTag: _llmConfig.localeTag,
       enabled: isConfigured,
+      streamingEnabled: streamingEnabled ?? _llmConfig.streamingEnabled,
       providerId: providerId,
       selectedProviderOptionId: selectedProviderOptionId,
       protocol: protocol,
@@ -954,7 +956,8 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       systemPrompt: systemPrompt,
       helperText: _llmConfig.helperText,
       openAiPromptCacheKeyStrategy:
-          openAiPromptCacheKeyStrategy ?? _llmConfig.openAiPromptCacheKeyStrategy,
+          openAiPromptCacheKeyStrategy ??
+          _llmConfig.openAiPromptCacheKeyStrategy,
       openAiPromptCacheRetention:
           openAiPromptCacheRetention ?? _llmConfig.openAiPromptCacheRetention,
       anthropicPromptCachingEnabled:
@@ -969,6 +972,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayLlmConfigSnapshot> saveCustomLlmProvider({
     required String selectedProviderOptionId,
+    bool? streamingEnabled,
     required String protocol,
     required String providerName,
     required String providerNotes,
@@ -1011,6 +1015,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
           baseUrl.trim().isNotEmpty &&
           apiKey.trim().isNotEmpty &&
           model.trim().isNotEmpty,
+      streamingEnabled: streamingEnabled ?? _llmConfig.streamingEnabled,
       providerId: 'custom',
       selectedProviderOptionId: providerOptionId,
       protocol: savedOption.protocol,
@@ -1024,7 +1029,8 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       systemPrompt: systemPrompt,
       helperText: _llmConfig.helperText,
       openAiPromptCacheKeyStrategy:
-          openAiPromptCacheKeyStrategy ?? _llmConfig.openAiPromptCacheKeyStrategy,
+          openAiPromptCacheKeyStrategy ??
+          _llmConfig.openAiPromptCacheKeyStrategy,
       openAiPromptCacheRetention:
           openAiPromptCacheRetention ?? _llmConfig.openAiPromptCacheRetention,
       anthropicPromptCachingEnabled:
@@ -1081,6 +1087,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     _llmConfig = OpenCrayLlmConfigSnapshot(
       localeTag: languageId,
       enabled: _llmConfig.enabled,
+      streamingEnabled: _llmConfig.streamingEnabled,
       providerId: _llmConfig.providerId,
       selectedProviderOptionId: _llmConfig.selectedProviderOptionId,
       protocol: _llmConfig.protocol,

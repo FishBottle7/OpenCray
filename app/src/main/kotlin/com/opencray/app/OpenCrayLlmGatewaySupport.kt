@@ -7,6 +7,7 @@ import com.opencray.app.facade.llm.LlmValidationResult
 internal fun LlmConfigSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "localeTag" to localeTag,
   "enabled" to enabled,
+  "streamingEnabled" to streamingEnabled,
   "providerId" to providerId,
   "selectedProviderOptionId" to selectedProviderOptionId,
   "protocol" to protocol,

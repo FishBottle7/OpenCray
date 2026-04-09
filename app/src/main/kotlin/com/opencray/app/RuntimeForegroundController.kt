@@ -63,6 +63,43 @@ internal class RuntimeForegroundController(
 
   fun currentState(): RuntimeForegroundState = synchronized(lock) { currentState }
 
+  fun startBootstrapForeground(
+    keepAliveReason: String = RuntimeServiceWorkState.KEEP_ALIVE_REASON_SERVICE_STARTUP,
+  ): RuntimeForegroundState {
+    val model = RuntimeForegroundNotificationModel(
+      activeRunCount = 0,
+      activeSessionCount = 0,
+      liveManagedProcessSessionCount = 0,
+      keepAliveReason = keepAliveReason,
+    )
+    val nextState: RuntimeForegroundState
+    synchronized(lock) {
+      if (destroyed) {
+        return currentState
+      }
+      if (
+        currentState.phase == RuntimeForegroundState.PHASE_FOREGROUND &&
+        currentState.activeRunCount == model.activeRunCount &&
+        currentState.activeSessionCount == model.activeSessionCount &&
+        currentState.keepAliveReason == model.keepAliveReason
+      ) {
+        return currentState
+      }
+      nextState = RuntimeForegroundState(
+        phase = RuntimeForegroundState.PHASE_FOREGROUND,
+        notificationVisible = true,
+        activeRunCount = model.activeRunCount,
+        activeSessionCount = model.activeSessionCount,
+        keepAliveReason = model.keepAliveReason,
+        changedAtEpochMs = clock(),
+      )
+      currentState = nextState
+    }
+    // Android expects startForeground() synchronously after startForegroundService().
+    serviceAdapter.startOrUpdateForeground(model)
+    return nextState
+  }
+
   fun onWorkStateChanged(workState: RuntimeServiceWorkState): RuntimeForegroundState {
     val command: RuntimeForegroundCommand?
     val nextState: RuntimeForegroundState
@@ -216,21 +253,22 @@ internal class RuntimeActiveNotificationFactory(
   },
 ) {
   fun build(model: RuntimeForegroundNotificationModel): Notification {
-    val contentText = if (
+    val contentText = when {
+      model.keepAliveReason == RuntimeServiceWorkState.KEEP_ALIVE_REASON_SERVICE_STARTUP ->
+        context.getString(R.string.runtime_notification_active_bootstrap_text)
       model.keepAliveReason == RuntimeServiceWorkState.KEEP_ALIVE_REASON_MANAGED_PROCESS &&
-      model.liveManagedProcessSessionCount > 0
-    ) {
-      context.getString(
-        R.string.runtime_notification_active_text_with_processes,
-        model.activeRunCount,
-        model.activeSessionCount,
-      )
-    } else {
-      context.getString(
-        R.string.runtime_notification_active_text,
-        model.activeRunCount,
-        model.activeSessionCount,
-      )
+        model.liveManagedProcessSessionCount > 0 ->
+        context.getString(
+          R.string.runtime_notification_active_text_with_processes,
+          model.activeRunCount,
+          model.activeSessionCount,
+        )
+      else ->
+        context.getString(
+          R.string.runtime_notification_active_text,
+          model.activeRunCount,
+          model.activeSessionCount,
+        )
     }
     return NotificationCompat.Builder(
       context,

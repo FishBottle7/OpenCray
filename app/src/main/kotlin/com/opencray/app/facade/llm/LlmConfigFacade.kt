@@ -53,6 +53,7 @@ data class LlmProviderOptionSnapshot(
 data class LlmConfigSnapshot(
   val localeTag: String,
   val enabled: Boolean,
+  val streamingEnabled: Boolean = LlmSettingsState.DEFAULT_STREAMING_ENABLED,
   val providerId: String,
   val selectedProviderOptionId: String,
   val protocol: String,
@@ -74,6 +75,7 @@ data class LlmConfigSnapshot(
 
 data class SaveLlmConfigRequest(
   val enabled: Boolean,
+  val streamingEnabled: Boolean? = null,
   val providerId: String,
   val selectedProviderOptionId: String,
   val protocol: String,
@@ -92,6 +94,7 @@ data class SaveLlmConfigRequest(
 
 data class SaveCustomLlmProviderRequest(
   val selectedProviderOptionId: String,
+  val streamingEnabled: Boolean? = null,
   val protocol: String,
   val providerName: String,
   val providerNotes: String,
@@ -196,6 +199,7 @@ internal class LocalLlmConfigFacade private constructor(
     val savedState = resolvedStateFromRequest(
       SaveLlmConfigRequest(
         enabled = providerRecord.baseUrl.isNotBlank() && providerRecord.apiKey.isNotBlank(),
+        streamingEnabled = request.streamingEnabled,
         providerId = "custom",
         selectedProviderOptionId = providerRecord.id,
         protocol = providerRecord.protocol,
@@ -433,6 +437,7 @@ internal class LocalLlmConfigFacade private constructor(
     return LlmConfigSnapshot(
       localeTag = strings.localeTag,
       enabled = sanitized.enabled,
+      streamingEnabled = sanitized.streamingEnabled,
       providerId = sanitized.providerId,
       selectedProviderOptionId = selectedProviderOptionId,
       protocol = sanitized.protocol,
@@ -543,6 +548,7 @@ internal class LocalLlmConfigFacade private constructor(
     protocol = protocol,
     model = model,
     reasoningEffort = reasoningEffort,
+    streamingEnabled = llmSettingsStore.load().streamingEnabled,
     agentCapability = LlmAgentCapabilitySnapshot.unknown(
       protocol = protocol,
       baseUrl = "",
@@ -560,6 +566,7 @@ internal class LocalLlmConfigFacade private constructor(
     ?: providerPreset.defaultProtocol
 
   private fun resolvedStateFromRequest(request: SaveLlmConfigRequest): LlmSettingsState {
+    val persisted = llmSettingsStore.load()
     val providerPreset = LlmProviderCatalog.presetById(request.providerId)
       ?: throw IllegalArgumentException("Unsupported provider '${request.providerId}'.")
     val protocol = resolvedProtocol(
@@ -594,6 +601,7 @@ internal class LocalLlmConfigFacade private constructor(
     )
     return LlmSettingsState(
       enabled = request.enabled,
+      streamingEnabled = request.streamingEnabled ?: persisted.streamingEnabled,
       providerId = providerPreset.id,
       protocol = protocol,
       providerName = request.providerName.trim().ifBlank {
@@ -1155,6 +1163,7 @@ internal object EmptyLlmConfigFacade : LlmConfigFacade {
   override fun load(): LlmConfigSnapshot = LlmConfigSnapshot(
     localeTag = "en",
     enabled = false,
+    streamingEnabled = LlmSettingsState.DEFAULT_STREAMING_ENABLED,
     providerId = "custom",
     selectedProviderOptionId = "custom",
     protocol = LlmProviderProtocols.OPENAI,

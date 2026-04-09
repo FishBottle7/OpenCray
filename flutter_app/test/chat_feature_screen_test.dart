@@ -131,6 +131,215 @@ void main() {
     expect(runtimeSnapshotVersion(snapshot), 4200);
   });
 
+  test('runtimeSnapshotVersion tracks live assistant draft updates', () {
+    const snapshot = OpenCrayChatRuntimeSnapshot(
+      sessionId: 'session-1',
+      activeRuns: <OpenCrayChatRunSnapshot>[],
+      events: <OpenCrayChatRuntimeEventSnapshot>[],
+      liveAssistantDrafts: <OpenCrayChatLiveAssistantDraftSnapshot>[
+        OpenCrayChatLiveAssistantDraftSnapshot(
+          runId: 'run-1',
+          taskId: 'task-1',
+          pendingMessageId: 'pending-1',
+          text: 'Streaming answer',
+          updatedAtEpochMs: 5300,
+        ),
+      ],
+    );
+
+    expect(runtimeSnapshotVersion(snapshot), 5300);
+  });
+
+  testWidgets(
+    'live assistant drafts replace the pending thinking bubble in place',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Write a long summary.',
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-1',
+              kind: 'inbound',
+              text: 'Thinking',
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-1',
+              taskId: 'task-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1200,
+              attempt: 1,
+              pendingMessageId: 'pending-1',
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+          liveAssistantDrafts: <OpenCrayChatLiveAssistantDraftSnapshot>[
+            OpenCrayChatLiveAssistantDraftSnapshot(
+              runId: 'run-1',
+              taskId: 'task-1',
+              pendingMessageId: 'pending-1',
+              text: 'Streaming answer in progress',
+              updatedAtEpochMs: 1300,
+            ),
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final pendingBubble = find.byKey(
+        const ValueKey<String>('chat-bubble-pending-1'),
+      );
+      expect(pendingBubble, findsOneWidget);
+      expect(
+        find.descendant(
+          of: pendingBubble,
+          matching: find.text('Streaming answer in progress'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: pendingBubble, matching: find.text('Thinking')),
+        findsNothing,
+      );
+    },
+  );
+
+  testWidgets(
+    'live assistant drafts still render a chat bubble when the pending placeholder is missing',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Write a long summary.',
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-1',
+              taskId: 'task-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1200,
+              attempt: 1,
+              pendingMessageId: 'pending-1',
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+          liveAssistantDrafts: <OpenCrayChatLiveAssistantDraftSnapshot>[
+            OpenCrayChatLiveAssistantDraftSnapshot(
+              runId: 'run-1',
+              taskId: 'task-1',
+              pendingMessageId: 'pending-1',
+              text: 'Streaming answer in progress',
+              updatedAtEpochMs: 1300,
+            ),
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final pendingBubble = find.byKey(
+        const ValueKey<String>('chat-bubble-pending-1'),
+      );
+      expect(pendingBubble, findsOneWidget);
+      expect(
+        find.descendant(
+          of: pendingBubble,
+          matching: find.text('Streaming answer in progress'),
+        ),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'live assistant drafts do not surface tool call payloads as chat bubbles',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Inspect the workspace.',
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-1',
+              taskId: 'task-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1200,
+              attempt: 1,
+              pendingMessageId: 'pending-1',
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+          liveAssistantDrafts: <OpenCrayChatLiveAssistantDraftSnapshot>[
+            OpenCrayChatLiveAssistantDraftSnapshot(
+              runId: 'run-1',
+              taskId: 'task-1',
+              pendingMessageId: 'pending-1',
+              text:
+                  '{"type":"tool_call","tool_name":"Read","arguments":{"file_path":"README.md"}}',
+              updatedAtEpochMs: 1300,
+            ),
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('"tool_name"'), findsNothing);
+      expect(find.byKey(const ValueKey<String>('chat-bubble-pending-1')), findsNothing);
+    },
+  );
+
   testWidgets('host rebuild stays silent in chat ui', (tester) async {
     final runtimeSnapshots =
         StreamController<OpenCrayChatRuntimeSnapshot>.broadcast();
@@ -1214,6 +1423,148 @@ void main() {
 
     expect(bridge.cancelledRunIds, <String>['run-interrupt-2']);
   });
+
+  testWidgets(
+    'interrupting while a live draft is visible stays stable after the runtime update',
+    (tester) async {
+      final runtimeSnapshots =
+          StreamController<OpenCrayChatRuntimeSnapshot>.broadcast();
+      addTearDown(runtimeSnapshots.close);
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      const streamingEvent = OpenCrayChatRuntimeEventSnapshot(
+        kind: 'assistant_phase',
+        runId: 'run-stream-interrupt-1',
+        taskId: 'task-stream-interrupt-1',
+        emittedAtEpochMs: 3000,
+        text: 'Streaming answer in progress',
+      );
+      const cancellationEvent = OpenCrayChatRuntimeEventSnapshot(
+        kind: 'interrupted',
+        runId: 'run-stream-interrupt-1',
+        taskId: 'task-stream-interrupt-1',
+        emittedAtEpochMs: 3600,
+        text:
+            'Run interrupted. The agent is waiting for your next instruction.',
+      );
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Write a long summary.',
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-1',
+              kind: 'inbound',
+              text: 'Thinking',
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-stream-interrupt-1',
+              taskId: 'task-stream-interrupt-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 3000,
+              attempt: 1,
+              pendingMessageId: 'pending-1',
+              isTerminal: false,
+              lastEvent: streamingEvent,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-stream-interrupt-1',
+              taskId: 'task-stream-interrupt-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+            streamingEvent,
+          ],
+          liveAssistantDrafts: <OpenCrayChatLiveAssistantDraftSnapshot>[
+            OpenCrayChatLiveAssistantDraftSnapshot(
+              runId: 'run-stream-interrupt-1',
+              taskId: 'task-stream-interrupt-1',
+              pendingMessageId: 'pending-1',
+              text: 'Streaming answer in progress',
+              updatedAtEpochMs: 3100,
+            ),
+          ],
+        ),
+        runtimeSnapshotStream: runtimeSnapshots.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Streaming answer in progress'), findsWidgets);
+
+      await tester.tap(
+        find.byKey(
+          const ValueKey<String>(
+            'chat-run-trace-interrupt-run-stream-interrupt-1',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.drag(
+        find.byKey(
+          const ValueKey<String>(
+            'chat-run-trace-interrupt-slider-run-stream-interrupt-1',
+          ),
+        ),
+        const Offset(-280, 0),
+      );
+      await tester.pumpAndSettle();
+
+      expect(bridge.cancelledRunIds, <String>['run-stream-interrupt-1']);
+
+      runtimeSnapshots.add(
+        const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-stream-interrupt-1',
+              taskId: 'task-stream-interrupt-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 3600,
+              attempt: 1,
+              pendingMessageId: 'pending-1',
+              isTerminal: false,
+              lastEvent: cancellationEvent,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-stream-interrupt-1',
+              taskId: 'task-stream-interrupt-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+            cancellationEvent,
+          ],
+        ),
+      );
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Run interrupted.'), findsWidgets);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'host-mapped run trace shows tool parameters in compact and full-screen views',

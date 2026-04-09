@@ -359,7 +359,7 @@ internal class ServiceOwnedChatRuntimeGateway(
   private val chatListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val chatRuntimeListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private var latestChatPayload: Map<String, Any?> = delegate.loadChatSnapshot()
-  private var latestChatRuntimePayload: Map<String, Any?> = readGateway.loadChatRuntimeSnapshot()
+  private var latestChatRuntimePayload: Map<String, Any?> = delegate.loadChatRuntimeSnapshot()
 
   @Suppress("unused")
   private val chatObservationDisposer = delegate.observeChat { payload ->
@@ -367,7 +367,7 @@ internal class ServiceOwnedChatRuntimeGateway(
   }
 
   @Suppress("unused")
-  private val chatRuntimeObservationDisposer = readGateway.observeChatRuntime { payload ->
+  private val chatRuntimeObservationDisposer = delegate.observeChatRuntime { payload ->
     emitChatRuntimePayload(payload)
   }
 
@@ -394,7 +394,7 @@ internal class ServiceOwnedChatRuntimeGateway(
   }
 
   override fun loadChatRuntimeSnapshot(): Map<String, Any?> =
-    readGateway.loadChatRuntimeSnapshot().also { payload ->
+    delegate.loadChatRuntimeSnapshot().also { payload ->
       synchronized(lock) {
         latestChatRuntimePayload = payload
       }
@@ -1125,6 +1125,7 @@ internal class ServiceOwnedSettingsGateway(
 
   override fun saveLlmConfig(
     enabled: Boolean,
+    streamingEnabled: Boolean?,
     providerId: String,
     selectedProviderOptionId: String,
     protocol: String,
@@ -1142,6 +1143,7 @@ internal class ServiceOwnedSettingsGateway(
   ): Map<String, Any?> = llmConfigFacade.save(
     com.opencray.app.facade.llm.SaveLlmConfigRequest(
       enabled = enabled,
+      streamingEnabled = streamingEnabled,
       providerId = providerId,
       selectedProviderOptionId = selectedProviderOptionId,
       protocol = protocol,
@@ -1161,6 +1163,7 @@ internal class ServiceOwnedSettingsGateway(
 
   override fun saveCustomLlmProvider(
     selectedProviderOptionId: String,
+    streamingEnabled: Boolean?,
     protocol: String,
     providerName: String,
     providerNotes: String,
@@ -1176,6 +1179,7 @@ internal class ServiceOwnedSettingsGateway(
   ): Map<String, Any?> = llmConfigFacade.saveCustomProvider(
     com.opencray.app.facade.llm.SaveCustomLlmProviderRequest(
       selectedProviderOptionId = selectedProviderOptionId,
+      streamingEnabled = streamingEnabled,
       protocol = protocol,
       providerName = providerName,
       providerNotes = providerNotes,

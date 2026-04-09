@@ -7,6 +7,14 @@ interface LiteLlmGateway {
   fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult
 }
 
+interface LiteLlmVisibleTextObserver {
+  fun onVisibleTextSnapshot(text: String) = Unit
+
+  fun onVisibleTextReset() = Unit
+}
+
+object NoOpLiteLlmVisibleTextObserver : LiteLlmVisibleTextObserver
+
 data class LiteLlmGatewayRequest(
   val requestId: String = "llm-${UUID.randomUUID()}",
   val prompt: String,
@@ -20,6 +28,7 @@ data class LiteLlmGatewayRequest(
   val responseApiPreferred: Boolean = false,
   val metadata: Map<String, String> = emptyMap(),
   val authHeaders: Map<String, String> = emptyMap(),
+  val streamObserver: LiteLlmVisibleTextObserver = NoOpLiteLlmVisibleTextObserver,
 ) {
   init {
     require(requestId.isNotBlank()) { "LiteLlmGatewayRequest requestId must not be blank." }
@@ -495,6 +504,7 @@ class DefaultLiteLlmGateway(
       )
       val attemptStartedAtEpochMs = clock()
 
+      request.streamObserver.onVisibleTextReset()
       logger.logRequest(request.toSafeLog(selection))
       val providerResult = executeProviderRequest(
         LiteLlmProviderRequest(

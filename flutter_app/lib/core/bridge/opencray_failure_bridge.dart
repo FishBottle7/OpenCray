@@ -366,6 +366,7 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
       const OpenCrayLlmConfigSnapshot(
         localeTag: 'en',
         enabled: false,
+        streamingEnabled: true,
         providerId: 'custom',
         selectedProviderOptionId: 'custom',
         protocol: 'openai',
@@ -395,6 +396,7 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayLlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
+    bool? streamingEnabled,
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -414,6 +416,7 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayLlmConfigSnapshot> saveCustomLlmProvider({
     required String selectedProviderOptionId,
+    bool? streamingEnabled,
     required String protocol,
     required String providerName,
     required String providerNotes,

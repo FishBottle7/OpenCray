@@ -70,6 +70,7 @@ internal class ServiceBackedOpenCraySettingsGateway(
 
   override fun saveLlmConfig(
     enabled: Boolean,
+    streamingEnabled: Boolean?,
     providerId: String,
     selectedProviderOptionId: String,
     protocol: String,
@@ -88,6 +89,7 @@ internal class ServiceBackedOpenCraySettingsGateway(
     operation = "saveLlmConfig",
     command = OpenCraySettingsWriteCommand.SaveLlmConfig(
       enabled = enabled,
+      streamingEnabled = streamingEnabled,
       providerId = providerId,
       selectedProviderOptionId = selectedProviderOptionId,
       protocol = protocol,
@@ -107,6 +109,7 @@ internal class ServiceBackedOpenCraySettingsGateway(
 
   override fun saveCustomLlmProvider(
     selectedProviderOptionId: String,
+    streamingEnabled: Boolean?,
     protocol: String,
     providerName: String,
     providerNotes: String,
@@ -123,6 +126,7 @@ internal class ServiceBackedOpenCraySettingsGateway(
     operation = "saveCustomLlmProvider",
     command = OpenCraySettingsWriteCommand.SaveCustomLlmProvider(
       selectedProviderOptionId = selectedProviderOptionId,
+      streamingEnabled = streamingEnabled,
       protocol = protocol,
       providerName = providerName,
       providerNotes = providerNotes,

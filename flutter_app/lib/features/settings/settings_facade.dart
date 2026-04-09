@@ -44,6 +44,7 @@ abstract interface class SettingsFacade {
 
   Future<LlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
+    bool? streamingEnabled,
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -62,6 +63,7 @@ abstract interface class SettingsFacade {
 
   Future<LlmConfigSnapshot> saveCustomLlmProvider({
     required String selectedProviderOptionId,
+    bool? streamingEnabled,
     required String protocol,
     required String providerName,
     required String providerNotes,

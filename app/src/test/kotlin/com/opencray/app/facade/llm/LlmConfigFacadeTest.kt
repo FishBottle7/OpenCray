@@ -115,6 +115,66 @@ class LlmConfigFacadeTest {
   }
 
   @Test
+  fun savePersistsStreamingEnabled() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val facade = LocalLlmConfigFacade.createForTest(
+      llmSettingsStore = store,
+      providerClient = RecordingProviderClient(
+        LiteLlmProviderResult.Success(outputText = "OK"),
+      ),
+    )
+
+    val snapshot = facade.save(
+      SaveLlmConfigRequest(
+        enabled = true,
+        streamingEnabled = false,
+        providerId = "openai",
+        selectedProviderOptionId = "openai",
+        protocol = LlmProviderProtocols.OPENAI,
+        providerName = "OpenAI",
+        providerNotes = "",
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-4o-mini",
+        reasoningEffort = "medium",
+        systemPrompt = "",
+      ),
+    )
+
+    assertFalse(snapshot.streamingEnabled)
+    assertFalse(store.load().streamingEnabled)
+  }
+
+  @Test
+  fun saveCustomProviderPersistsStreamingEnabled() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val facade = LocalLlmConfigFacade.createForTest(
+      llmSettingsStore = store,
+      providerClient = RecordingProviderClient(
+        LiteLlmProviderResult.Success(outputText = "OK"),
+      ),
+    )
+
+    val snapshot = facade.saveCustomProvider(
+      SaveCustomLlmProviderRequest(
+        selectedProviderOptionId = "custom",
+        streamingEnabled = false,
+        protocol = LlmProviderProtocols.OPENAI,
+        providerName = "Acme",
+        providerNotes = "Regional fallback",
+        baseUrl = "https://api.acme.example/v1",
+        apiKey = "secret",
+        model = "gpt-4o-mini",
+        reasoningEffort = "medium",
+        systemPrompt = "",
+      ),
+    )
+
+    assertFalse(snapshot.streamingEnabled)
+    assertFalse(store.load().streamingEnabled)
+  }
+
+  @Test
   fun validateUsesResolvedPresetDefaultsForLiveRequest() {
     val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
     val providerClient = RecordingProviderClient(

@@ -36,6 +36,12 @@ internal interface RunEventJournalStore {
   fun clear()
 }
 
+internal fun List<PersistedRunJournalEntry>.latestRuntimeEventOrNull():
+  com.opencray.runtime.OpenCrayAgentRunEvent? = asReversed()
+  .asSequence()
+  .mapNotNull { entry -> entry.payload.toRuntimeEventOrNull() }
+  .firstOrNull()
+
 internal fun inMemoryRunEventJournalStoreFactory(): RunEventJournalStoreFactory =
   InMemoryRunEventJournalStoreFactory()
 

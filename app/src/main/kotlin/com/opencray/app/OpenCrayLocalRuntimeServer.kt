@@ -322,6 +322,11 @@ internal class OpenCrayLocalRuntimeServer(
       "GET" to "/v1/llm_config" -> settingsGateway.loadLlmConfig()
       "POST" to "/v1/save_llm_config" -> settingsGateway.saveLlmConfig(
         enabled = body.optBoolean("enabled"),
+        streamingEnabled = if (body.has("streamingEnabled")) {
+          body.optBoolean("streamingEnabled")
+        } else {
+          null
+        },
         providerId = body.optString("providerId"),
         selectedProviderOptionId = body.optString("selectedProviderOptionId"),
         protocol = body.optString("protocol"),
@@ -355,6 +360,11 @@ internal class OpenCrayLocalRuntimeServer(
       )
       "POST" to "/v1/save_custom_llm_provider" -> settingsGateway.saveCustomLlmProvider(
         selectedProviderOptionId = body.optString("selectedProviderOptionId"),
+        streamingEnabled = if (body.has("streamingEnabled")) {
+          body.optBoolean("streamingEnabled")
+        } else {
+          null
+        },
         protocol = body.optString("protocol"),
         providerName = body.optString("providerName"),
         providerNotes = body.optString("providerNotes"),

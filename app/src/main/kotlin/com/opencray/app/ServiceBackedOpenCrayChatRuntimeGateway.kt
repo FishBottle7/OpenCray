@@ -13,7 +13,7 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
   override fun observeChat(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeWithDynamicGateway(
       currentGateway = ::currentReadGateway,
-      observeConnectionState = serviceClient::observePassiveConnectionState,
+      observeConnectionState = serviceClient::observeConnectionState,
       observe = { gateway, callback -> gateway.observeChat(callback) },
       listener = listener,
     )
@@ -32,7 +32,7 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
   override fun observeChatRuntime(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeWithDynamicGateway(
       currentGateway = ::currentReadGateway,
-      observeConnectionState = serviceClient::observePassiveConnectionState,
+      observeConnectionState = serviceClient::observeConnectionState,
       observe = { gateway, callback -> gateway.observeChatRuntime(callback) },
       listener = listener,
     )

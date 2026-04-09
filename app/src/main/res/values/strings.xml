@@ -342,6 +342,7 @@
     <string name="runtime_notification_active_channel_name">Active runtime tasks</string>
     <string name="runtime_notification_active_channel_description">Shows when OpenCray keeps agent work running in the background.</string>
     <string name="runtime_notification_active_title">OpenCray is running in the background</string>
+    <string name="runtime_notification_active_bootstrap_text">Preparing background work…</string>
     <string name="runtime_notification_active_text">%1$d active run(s) across %2$d session(s).</string>
     <string name="runtime_notification_active_text_with_processes">%1$d active run(s) across %2$d session(s), including live managed processes.</string>
     <string name="runtime_notification_approval_channel_name">Approval needed</string>

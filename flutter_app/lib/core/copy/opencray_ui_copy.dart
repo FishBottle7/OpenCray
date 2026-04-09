@@ -262,6 +262,11 @@ class OpenCrayUiCopy {
   String get llmModelHint => 'gpt-4o-mini';
   String get llmReasoningEffortLabel => isChinese ? '推理强度' : 'Reasoning effort';
   String get llmThinkingLabel => isChinese ? '思考强度' : 'Thinking';
+  String get llmStreamingTitle =>
+      isChinese ? '聊天回答流式显示' : 'Stream chat replies';
+  String get llmStreamingSubtitle => isChinese
+      ? '开启后，assistant 回复会在聊天气泡里边生成边显示；关闭后恢复一次性显示最终结果。'
+      : 'When enabled, assistant replies grow inside the chat bubble. When disabled, only the final reply appears.';
   String get llmAnthropicThinkingEnabled =>
       isChinese ? '已启用 Anthropic thinking' : 'Anthropic thinking enabled';
   String get llmAnthropicThinkingDisabled =>

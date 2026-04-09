@@ -29,7 +29,20 @@ class LlmProviderRequestSupportTest {
     )
 
     assertEquals("anthropic", metadata["protocol"])
+    assertEquals("true", metadata["stream"])
     assertFalse(metadata.containsKey("thinking_budget_tokens"))
+  }
+
+  @Test
+  fun routeMetadataUsesExplicitStreamingFlag() {
+    val metadata = LlmProviderProtocols.routeMetadata(
+      protocol = LlmProviderProtocols.OPENAI,
+      model = "gpt-4o-mini",
+      reasoningEffort = "medium",
+      streamingEnabled = false,
+    )
+
+    assertEquals("false", metadata["stream"])
   }
 
   @Test
@@ -43,6 +56,7 @@ class LlmProviderRequestSupportTest {
     )
 
     assertEquals("openai_responses", metadata["protocol"])
+    assertEquals("true", metadata["stream"])
     assertEquals(
       LlmPromptCacheKeyStrategies.SESSION,
       metadata[LlmPromptCachingMetadataKeys.PROMPT_CACHE_KEY_STRATEGY],
@@ -64,6 +78,7 @@ class LlmProviderRequestSupportTest {
     )
 
     assertEquals("anthropic", metadata["protocol"])
+    assertEquals("true", metadata["stream"])
     assertEquals("8192", metadata["thinking_budget_tokens"])
     assertEquals(
       "true",

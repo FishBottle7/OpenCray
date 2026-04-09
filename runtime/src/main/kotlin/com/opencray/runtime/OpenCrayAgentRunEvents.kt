@@ -223,6 +223,17 @@ data class OpenCrayMemoryRetrievalEvent(
 
 interface OpenCrayAgentRuntimeEventSink {
   fun onRunEvent(task: com.opencray.core.contracts.AgentTask, event: OpenCrayAgentRunEvent) = Unit
+
+  fun onAssistantDraftUpdated(
+    task: com.opencray.core.contracts.AgentTask,
+    text: String,
+    emittedAtEpochMs: Long,
+  ) = Unit
+
+  fun onAssistantDraftCleared(
+    task: com.opencray.core.contracts.AgentTask,
+    emittedAtEpochMs: Long,
+  ) = Unit
 }
 
 object NoOpOpenCrayAgentRuntimeEventSink : OpenCrayAgentRuntimeEventSink

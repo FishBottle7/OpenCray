@@ -1589,6 +1589,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
   String _providerId = 'custom';
   String _protocol = 'openai';
   String _reasoningEffort = 'medium';
+  bool _streamingEnabled = true;
   String _openAiPromptCacheKeyStrategy = 'none';
   String _openAiPromptCacheRetention = '';
   bool _anthropicPromptCachingEnabled = false;
@@ -1664,6 +1665,16 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
           const Text('LLM', style: _SettingsTextStyles.pageTitleSubpage),
           const SizedBox(height: 8),
           Text(copy.llmPageSubtitle, style: _SettingsTextStyles.subtitle),
+          const SizedBox(height: 16),
+          _SettingsCard(
+            child: _PrototypeToggleRow(
+              rowKey: const ValueKey<String>('settings-llm-streaming-toggle'),
+              title: copy.llmStreamingTitle,
+              subtitle: copy.llmStreamingSubtitle,
+              value: _streamingEnabled,
+              onChanged: _handleStreamingEnabledChanged,
+            ),
+          ),
           const SizedBox(height: 16),
           _SettingsCard(
             child: Column(
@@ -1977,6 +1988,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     try {
       final savedSnapshot = await widget.facade.saveCustomLlmProvider(
         selectedProviderOptionId: _selectedProviderOptionId,
+        streamingEnabled: _streamingEnabled,
         protocol: _draftProtocol(),
         providerName: _providerNameController.text,
         providerNotes: _providerNotesController.text,
@@ -2374,6 +2386,14 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     unawaited(_saveDraft());
   }
 
+  void _handleStreamingEnabledChanged(bool value) {
+    if (!mounted) {
+      return;
+    }
+    setState(() => _streamingEnabled = value);
+    unawaited(_saveDraft());
+  }
+
   Future<String?> _openStringSelectionSheet({
     required String title,
     required List<String> options,
@@ -2523,6 +2543,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     _apiKeyController.text = snapshot.apiKey;
     _modelController.text = snapshot.model;
     _reasoningEffort = snapshot.reasoningEffort;
+    _streamingEnabled = snapshot.streamingEnabled;
     _systemPromptController.text = snapshot.systemPrompt;
     _openAiPromptCacheKeyStrategy = snapshot.openAiPromptCacheKeyStrategy;
     _openAiPromptCacheRetention = snapshot.openAiPromptCacheRetention;
@@ -2539,6 +2560,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     return _providerId != snapshot.providerId ||
         _selectedProviderOptionId != snapshot.selectedProviderOptionId ||
         _draftProtocol() != snapshot.protocol ||
+        _streamingEnabled != snapshot.streamingEnabled ||
         _providerNameController.text != snapshot.providerName ||
         _providerNotesController.text != snapshot.providerNotes ||
         _baseUrlController.text != snapshot.baseUrl ||
@@ -2546,7 +2568,8 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         _modelController.text != snapshot.model ||
         _reasoningEffort != snapshot.reasoningEffort ||
         _systemPromptController.text != snapshot.systemPrompt ||
-        _openAiPromptCacheKeyStrategy != snapshot.openAiPromptCacheKeyStrategy ||
+        _openAiPromptCacheKeyStrategy !=
+            snapshot.openAiPromptCacheKeyStrategy ||
         _openAiPromptCacheRetention != snapshot.openAiPromptCacheRetention ||
         _anthropicPromptCachingEnabled !=
             snapshot.anthropicPromptCachingEnabled ||
@@ -2581,6 +2604,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     try {
       final savedSnapshot = await widget.facade.saveLlmConfig(
         enabled: _draftIsConfigured(),
+        streamingEnabled: _streamingEnabled,
         providerId: _providerId,
         selectedProviderOptionId: _selectedProviderOptionId,
         protocol: _draftProtocol(),
@@ -4242,10 +4266,7 @@ class _PrototypeToggleRow extends StatelessWidget {
                     Text(title, style: _SettingsTextStyles.fieldValue),
                     if (subtitle != null && subtitle!.isNotEmpty) ...[
                       const SizedBox(height: 4),
-                      Text(
-                        subtitle!,
-                        style: _SettingsTextStyles.rowSubtitle,
-                      ),
+                      Text(subtitle!, style: _SettingsTextStyles.rowSubtitle),
                     ],
                   ],
                 ),

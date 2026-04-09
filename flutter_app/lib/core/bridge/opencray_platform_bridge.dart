@@ -463,6 +463,7 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayLlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
+    bool? streamingEnabled,
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -482,6 +483,7 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       'saveLlmConfig',
       arguments: <String, Object?>{
         'enabled': enabled,
+        if (streamingEnabled != null) 'streamingEnabled': streamingEnabled,
         'providerId': providerId,
         'selectedProviderOptionId': selectedProviderOptionId,
         'protocol': protocol,
@@ -507,6 +509,7 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayLlmConfigSnapshot> saveCustomLlmProvider({
     required String selectedProviderOptionId,
+    bool? streamingEnabled,
     required String protocol,
     required String providerName,
     required String providerNotes,
@@ -524,6 +527,7 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       'saveCustomLlmProvider',
       arguments: <String, Object?>{
         'selectedProviderOptionId': selectedProviderOptionId,
+        if (streamingEnabled != null) 'streamingEnabled': streamingEnabled,
         'protocol': protocol,
         'providerName': providerName,
         'providerNotes': providerNotes,

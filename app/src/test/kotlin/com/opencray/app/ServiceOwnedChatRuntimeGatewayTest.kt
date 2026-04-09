@@ -16,6 +16,7 @@ import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
 import com.opencray.runtime.OpenCrayFinalAttachment
 import com.opencray.runtime.OpenCrayCancellationEvent
 import com.opencray.runtime.OpenCraySubAgentEvent
+import org.junit.Assert.assertFalse
 import com.opencray.runtime.subagent.SubAgentHandleState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -349,6 +350,52 @@ class ServiceOwnedChatRuntimeGatewayTest {
     assertEquals("hello", submissionRequest.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PROMPT_USER_TEXT])
     assertEquals(1, runtimeHostAccess.ensureProcessingCallCount(sessionId))
     assertEquals(listOf("hello", "Thinking"), messages)
+  }
+
+  @Test
+  fun serviceOwnedChatRuntimeGatewayUsesDelegateRuntimeSnapshotsSoLiveDraftsArePreserved() {
+    val delegate = RecordingChatGateway("delegate").apply {
+      chatRuntimePayload = mapOf(
+        "source" to "delegate-runtime",
+        "liveAssistantDrafts" to listOf(
+          mapOf(
+            "runId" to "run-stream",
+            "taskId" to "task-stream",
+            "pendingMessageId" to "pending-stream",
+            "text" to "hello",
+            "updatedAtEpochMs" to 1_234L,
+          ),
+        ),
+      )
+    }
+    val readGateway = RecordingChatGateway("projection").apply {
+      chatRuntimePayload = mapOf(
+        "source" to "projection-runtime",
+        "liveAssistantDrafts" to emptyList<Map<String, Any?>>(),
+      )
+    }
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      delegate = delegate,
+      readGateway = readGateway,
+      snapshotNotifier = delegate::notifyChatSnapshotsChanged,
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    val observedDraftCounts = mutableListOf<Int>()
+
+    val disposer = gateway.observeChatRuntime { payload ->
+      val drafts = payload["liveAssistantDrafts"] as? List<*>
+      observedDraftCounts += drafts?.size ?: 0
+    }
+
+    try {
+      val runtimePayload = gateway.loadChatRuntimeSnapshot()
+      assertEquals("delegate-runtime", runtimePayload["source"])
+      assertEquals(1, (runtimePayload["liveAssistantDrafts"] as List<*>).size)
+      assertEquals(listOf(1), observedDraftCounts)
+      assertFalse(readGateway.observedChatRuntime)
+    } finally {
+      disposer()
+    }
   }
 
   @Test
@@ -759,6 +806,9 @@ class ServiceOwnedChatRuntimeGatewayTest {
   private class RecordingChatGateway(
     private val label: String,
   ) : OpenCrayRuntimeServiceChatGateway {
+    var chatRuntimePayload: Map<String, Any?> = mapOf("source" to "$label-runtime")
+    var observedChatRuntime: Boolean = false
+      private set
     var createChatSessionCallCount: Int = 0
       private set
     val copiedSessionIds = mutableListOf<String>()
@@ -784,7 +834,7 @@ class ServiceOwnedChatRuntimeGatewayTest {
       return { }
     }
 
-    override fun loadChatRuntimeSnapshot(): Map<String, Any?> = mapOf("source" to "$label-runtime")
+    override fun loadChatRuntimeSnapshot(): Map<String, Any?> = chatRuntimePayload
 
     override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? = mapOf(
       "source" to "$label-run",
@@ -798,6 +848,7 @@ class ServiceOwnedChatRuntimeGatewayTest {
     )
 
     override fun observeChatRuntime(listener: (Map<String, Any?>) -> Unit): () -> Unit {
+      observedChatRuntime = true
       listener(loadChatRuntimeSnapshot())
       return { }
     }

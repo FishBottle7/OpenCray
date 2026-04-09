@@ -260,6 +260,7 @@ internal class OpenCrayFlutterHostBridge(
           runAsync(result) {
             settingsGateway.saveLlmConfig(
               enabled = call.argument<Boolean>("enabled") == true,
+              streamingEnabled = call.argument<Boolean>("streamingEnabled"),
               providerId = call.argument<String>("providerId").orEmpty(),
               selectedProviderOptionId = call.argument<String>("selectedProviderOptionId").orEmpty(),
               protocol = call.argument<String>("protocol").orEmpty(),
@@ -283,6 +284,7 @@ internal class OpenCrayFlutterHostBridge(
           runAsync(result) {
             settingsGateway.saveCustomLlmProvider(
               selectedProviderOptionId = call.argument<String>("selectedProviderOptionId").orEmpty(),
+              streamingEnabled = call.argument<Boolean>("streamingEnabled"),
               protocol = call.argument<String>("protocol").orEmpty(),
               providerName = call.argument<String>("providerName").orEmpty(),
               providerNotes = call.argument<String>("providerNotes").orEmpty(),

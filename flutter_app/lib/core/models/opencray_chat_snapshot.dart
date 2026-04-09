@@ -1172,6 +1172,7 @@ class OpenCrayChatRuntimeSnapshot {
     this.retainedRuns = const <OpenCrayChatRunSnapshot>[],
     this.subAgents = const <OpenCrayChatSubAgentSnapshot>[],
     required this.events,
+    this.liveAssistantDrafts = const <OpenCrayChatLiveAssistantDraftSnapshot>[],
     this.hostLifecycle,
   });
 
@@ -1180,6 +1181,7 @@ class OpenCrayChatRuntimeSnapshot {
   final List<OpenCrayChatRunSnapshot> retainedRuns;
   final List<OpenCrayChatSubAgentSnapshot> subAgents;
   final List<OpenCrayChatRuntimeEventSnapshot> events;
+  final List<OpenCrayChatLiveAssistantDraftSnapshot> liveAssistantDrafts;
   final OpenCrayHostLifecycleSnapshot? hostLifecycle;
 
   factory OpenCrayChatRuntimeSnapshot.fromMap(Map<Object?, Object?> map) {
@@ -1190,6 +1192,8 @@ class OpenCrayChatRuntimeSnapshot {
     final rawSubAgents =
         map['subAgents'] as List<Object?>? ?? const <Object?>[];
     final rawEvents = map['events'] as List<Object?>? ?? const <Object?>[];
+    final rawLiveAssistantDrafts =
+        map['liveAssistantDrafts'] as List<Object?>? ?? const <Object?>[];
     final rawHostLifecycle = map['hostLifecycle'];
     return OpenCrayChatRuntimeSnapshot(
       sessionId: map['sessionId'] as String? ?? '',
@@ -1209,9 +1213,41 @@ class OpenCrayChatRuntimeSnapshot {
           .whereType<Map<Object?, Object?>>()
           .map(OpenCrayChatRuntimeEventSnapshot.fromMap)
           .toList(growable: false),
+      liveAssistantDrafts: rawLiveAssistantDrafts
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatLiveAssistantDraftSnapshot.fromMap)
+          .toList(growable: false),
       hostLifecycle: rawHostLifecycle is Map<Object?, Object?>
           ? OpenCrayHostLifecycleSnapshot.fromMap(rawHostLifecycle)
           : null,
+    );
+  }
+}
+
+class OpenCrayChatLiveAssistantDraftSnapshot {
+  const OpenCrayChatLiveAssistantDraftSnapshot({
+    required this.runId,
+    required this.taskId,
+    required this.pendingMessageId,
+    required this.text,
+    required this.updatedAtEpochMs,
+  });
+
+  final String runId;
+  final String taskId;
+  final String pendingMessageId;
+  final String text;
+  final int updatedAtEpochMs;
+
+  factory OpenCrayChatLiveAssistantDraftSnapshot.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    return OpenCrayChatLiveAssistantDraftSnapshot(
+      runId: map['runId'] as String? ?? '',
+      taskId: map['taskId'] as String? ?? '',
+      pendingMessageId: map['pendingMessageId'] as String? ?? '',
+      text: map['text'] as String? ?? '',
+      updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
     );
   }
 }

@@ -108,6 +108,15 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
+  packaging {
+    jniLibs {
+      // The app manifest opts into extracted native libraries, so package
+      // Python runtime payloads in a form the platform can unpack to disk.
+      useLegacyPackaging = true
+      keepDebugSymbols += setOf("**/libpybundle.so")
+    }
+  }
+
   compileOptions {
     isCoreLibraryDesugaringEnabled = true
     sourceCompatibility = JavaVersion.VERSION_11
@@ -139,6 +148,7 @@ dependencies {
   implementation(kotlin("stdlib"))
   implementation("androidx.activity:activity-ktx:1.9.3")
   implementation("androidx.core:core-ktx:1.10.1")
+  implementation("androidx.lifecycle:lifecycle-process:2.6.2")
   implementation("androidx.work:work-runtime-ktx:2.9.1")
   implementation(
     fileTree(
@@ -152,6 +162,11 @@ dependencies {
     implementation(project(":flutter"))
   } else {
     implementation(files(flutterJar ?: error("Flutter SDK jar was not found for host compilation.")))
+    // When wiring Flutter from the engine jar fallback, embed the AndroidX
+    // libraries that the normal Flutter AAR would otherwise pull in transitively.
+    implementation("androidx.window:window-java:1.2.0")
+    implementation("androidx.window:window:1.2.0")
+    implementation("com.getkeepsafe.relinker:relinker:1.4.5")
   }
   // Baseline wiring to existing modules
   implementation(project(":core"))

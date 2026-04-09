@@ -1169,6 +1169,28 @@ internal class AppAgentSessionTaskRuntimeFactory(
       }
       delegate.onRunEvent(task, event)
     }
+
+    override fun onAssistantDraftUpdated(
+      task: AgentTask,
+      text: String,
+      emittedAtEpochMs: Long,
+    ) {
+      delegate.onAssistantDraftUpdated(
+        task = task,
+        text = text,
+        emittedAtEpochMs = emittedAtEpochMs,
+      )
+    }
+
+    override fun onAssistantDraftCleared(
+      task: AgentTask,
+      emittedAtEpochMs: Long,
+    ) {
+      delegate.onAssistantDraftCleared(
+        task = task,
+        emittedAtEpochMs = emittedAtEpochMs,
+      )
+    }
   }
 
   private fun recordSuccessfulAssistantTurn(

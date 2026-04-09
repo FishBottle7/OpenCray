@@ -32,6 +32,7 @@ import com.opencray.llm.LiteLlmStructuredToolCall
 import com.opencray.llm.LiteLlmToolDefinition
 import com.opencray.llm.LiteLlmToolChoice
 import com.opencray.llm.LiteLlmToolChoiceMode
+import com.opencray.llm.LiteLlmVisibleTextObserver
 import com.opencray.runtime.context.AgentRuntimeSessionContext
 import com.opencray.runtime.context.ContextBudgetReport
 import com.opencray.runtime.context.ContextManager
@@ -94,6 +95,8 @@ import kotlinx.serialization.json.put
 
 const val ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME: String =
   "LLM_RETRY_EXHAUSTED_AWAITING_RESUME"
+const val ERROR_EMPTY_RESPONSE_RECOVERY_EXHAUSTED: String =
+  "EMPTY_RESPONSE_RECOVERY_EXHAUSTED"
 
 data class OpenCrayAgentRuntimeConfig(
   val maxTurns: Int = DEFAULT_MAX_TURNS,
@@ -650,6 +653,7 @@ class OpenCrayAgentRuntime(
         if (responsesContinuationRecoveryReason != null) {
           diagnostics.responsesContinuationRecoveryCount += 1
           diagnostics.responsesContinuationRecoveryLastReason = responsesContinuationRecoveryReason
+          clearAssistantDraft(task)
           emitResponsesContinuationRecoveryEvent(
             task = task,
             turn = cursor.turn,
@@ -662,6 +666,7 @@ class OpenCrayAgentRuntime(
         }
         invalidateResponsesLineage(cursor)
         invalidateLocalContinuation(cursor)
+        val providerEmptyResponseFailure = isProviderEmptyResponseFailure(gatewayResult)
         val recoveryObservation = recoverableGatewayFailureObservation(
           gatewayResult = gatewayResult,
           nativeToolCallingEnabled = nativeToolCallingEnabled,
@@ -669,12 +674,25 @@ class OpenCrayAgentRuntime(
           diagnostics = diagnostics,
         )
         if (recoveryObservation != null) {
+          clearAssistantDraft(task)
           cursor.transcript += RuntimeConversationMessage(
             role = RuntimeConversationRole.TOOL,
             content = recoveryObservation,
           )
           cursor.turn += 1
           continue
+        }
+        if (providerEmptyResponseFailure) {
+          clearAssistantDraft(task)
+          return emptyResponseRecoveryExhaustedResult(
+            task = task,
+            startedAt = startedAt,
+            gatewayResult = gatewayResult,
+            turn = cursor.turn,
+            toolCallCount = cursor.toolCallCount,
+            contextReport = lastContextReport,
+            diagnostics = diagnostics,
+          )
         }
         return llmFailureResult(
           task = task,
@@ -705,6 +723,7 @@ class OpenCrayAgentRuntime(
       if (parsedGatewayResult == null) {
         invalidateResponsesLineage(cursor)
         invalidateLocalContinuation(cursor)
+        val successfulEmptyResponse = isSuccessfulEmptyResponse(gatewayResult)
         val recoveryObservation = recoverableSuccessfulEmptyResponseObservation(
           gatewayResult = gatewayResult,
           nativeToolCallingEnabled = nativeToolCallingEnabled,
@@ -712,6 +731,7 @@ class OpenCrayAgentRuntime(
           diagnostics = diagnostics,
         )
         if (recoveryObservation != null) {
+          clearAssistantDraft(task)
           cursor.transcript += RuntimeConversationMessage(
             role = RuntimeConversationRole.TOOL,
             content = recoveryObservation,
@@ -719,15 +739,19 @@ class OpenCrayAgentRuntime(
           cursor.turn += 1
           continue
         }
-        return llmFailureResult(
-          task = task,
-          startedAt = startedAt,
-          gatewayResult = gatewayResult,
-          turn = cursor.turn,
-          toolCallCount = cursor.toolCallCount,
-          contextReport = lastContextReport,
-          diagnostics = diagnostics,
-        )
+        if (successfulEmptyResponse) {
+          clearAssistantDraft(task)
+          return emptyResponseRecoveryExhaustedResult(
+            task = task,
+            startedAt = startedAt,
+            gatewayResult = gatewayResult,
+            turn = cursor.turn,
+            toolCallCount = cursor.toolCallCount,
+            contextReport = lastContextReport,
+            diagnostics = diagnostics,
+          )
+        }
+        error("Parsed gateway result is null despite visible output.")
       }
       if (nativeToolCallingEnabled && parsedGatewayResult.usedLegacyJsonFallback) {
         cursor.legacyJsonFallbackEnabled = true
@@ -766,6 +790,7 @@ class OpenCrayAgentRuntime(
               reason = parsedBatch.reason,
             ),
           )
+          clearAssistantDraft(task)
           cursor.turn += 1
           continue
         }
@@ -824,6 +849,7 @@ class OpenCrayAgentRuntime(
             )
           ) {
             is PromptBatchExecutionOutcome.Continue -> {
+              clearAssistantDraft(task)
               refreshLocalContinuationEnvelope(
                 cursor = cursor,
                 contextPrompt = assembledPrompt.contextPrompt,
@@ -1174,12 +1200,18 @@ class OpenCrayAgentRuntime(
     hooks: RuntimeExecutionHooks,
     diagnostics: PromptRunDiagnostics,
   ): GatewayTurnExecution {
+    val observedRequest = request.copy(
+      streamObserver = combineVisibleTextObservers(
+        primary = request.streamObserver,
+        secondary = assistantDraftObserver(task),
+      ),
+    )
     var retryCount = 0
     while (true) {
       if (hooks.isCancellationRequested()) {
         return GatewayTurnExecution.Cancelled
       }
-      val gatewayResult = gateway.execute(request)
+      val gatewayResult = gateway.execute(observedRequest)
       val retryDelayMs = recoverableGatewayRetryDelayMs(gatewayResult)
       if (retryDelayMs == null) {
         return GatewayTurnExecution.Completed(result = gatewayResult)
@@ -1192,6 +1224,7 @@ class OpenCrayAgentRuntime(
       }
       retryCount += 1
       diagnostics.llmRetryCount += 1
+      clearAssistantDraft(task)
       emitCommentaryEvent(
         task = task,
         turn = turn,
@@ -1231,10 +1264,10 @@ class OpenCrayAgentRuntime(
     legacyJsonFallbackEnabled: Boolean,
     diagnostics: PromptRunDiagnostics,
   ): String? {
-    if (gatewayResult.status != LiteLlmGatewayStatus.FAILED) {
+    if (!isProviderEmptyResponseFailure(gatewayResult)) {
       return null
     }
-    if (gatewayResult.errorCode != "PROVIDER_EMPTY_RESPONSE") {
+    if (diagnostics.emptyResponseRecoveryCount >= config.maxRecoverableLlmRetries) {
       return null
     }
     diagnostics.emptyResponseRecoveryCount += 1
@@ -1298,15 +1331,10 @@ class OpenCrayAgentRuntime(
     legacyJsonFallbackEnabled: Boolean,
     diagnostics: PromptRunDiagnostics,
   ): String? {
-    if (gatewayResult.status != LiteLlmGatewayStatus.SUCCESS) {
+    if (!isSuccessfulEmptyResponse(gatewayResult)) {
       return null
     }
-    val hasAnyVisibleOutput = !gatewayResult.outputText.isNullOrBlank() ||
-      !gatewayResult.completion?.rawText.isNullOrBlank() ||
-      !gatewayResult.completion?.finalText.isNullOrBlank() ||
-      !gatewayResult.completion?.commentaryText.isNullOrBlank() ||
-      gatewayResult.completion?.toolCalls?.isNotEmpty() == true
-    if (hasAnyVisibleOutput) {
+    if (diagnostics.emptyResponseRecoveryCount >= config.maxRecoverableLlmRetries) {
       return null
     }
     diagnostics.emptyResponseRecoveryCount += 1
@@ -1318,6 +1346,24 @@ class OpenCrayAgentRuntime(
       rawOutput = null,
     )
   }
+
+  private fun isProviderEmptyResponseFailure(
+    gatewayResult: LiteLlmGatewayResult,
+  ): Boolean = gatewayResult.status == LiteLlmGatewayStatus.FAILED &&
+    gatewayResult.errorCode == "PROVIDER_EMPTY_RESPONSE"
+
+  private fun isSuccessfulEmptyResponse(
+    gatewayResult: LiteLlmGatewayResult,
+  ): Boolean = gatewayResult.status == LiteLlmGatewayStatus.SUCCESS &&
+    !hasVisibleOutput(gatewayResult)
+
+  private fun hasVisibleOutput(
+    gatewayResult: LiteLlmGatewayResult,
+  ): Boolean = !gatewayResult.outputText.isNullOrBlank() ||
+    !gatewayResult.completion?.rawText.isNullOrBlank() ||
+    !gatewayResult.completion?.finalText.isNullOrBlank() ||
+    !gatewayResult.completion?.commentaryText.isNullOrBlank() ||
+    gatewayResult.completion?.toolCalls?.isNotEmpty() == true
 
   private fun sleepForRecoverableRetry(
     delayMs: Long,
@@ -1419,6 +1465,52 @@ class OpenCrayAgentRuntime(
       }
     }
     return errors
+  }
+
+  private fun assistantDraftObserver(
+    task: AgentTask,
+  ): LiteLlmVisibleTextObserver = object : LiteLlmVisibleTextObserver {
+    private var hasVisibleDraft: Boolean = false
+
+    override fun onVisibleTextSnapshot(text: String) {
+      val normalized = text.trim().takeIf(String::isNotBlank) ?: return
+      hasVisibleDraft = true
+      eventSink.onAssistantDraftUpdated(
+        task = task,
+        text = normalized,
+        emittedAtEpochMs = clock(),
+      )
+    }
+
+    override fun onVisibleTextReset() {
+      if (!hasVisibleDraft) {
+        return
+      }
+      clearAssistantDraft(task)
+      hasVisibleDraft = false
+    }
+  }
+
+  private fun clearAssistantDraft(task: AgentTask) {
+    eventSink.onAssistantDraftCleared(
+      task = task,
+      emittedAtEpochMs = clock(),
+    )
+  }
+
+  private fun combineVisibleTextObservers(
+    primary: LiteLlmVisibleTextObserver,
+    secondary: LiteLlmVisibleTextObserver,
+  ): LiteLlmVisibleTextObserver = object : LiteLlmVisibleTextObserver {
+    override fun onVisibleTextSnapshot(text: String) {
+      primary.onVisibleTextSnapshot(text)
+      secondary.onVisibleTextSnapshot(text)
+    }
+
+    override fun onVisibleTextReset() {
+      primary.onVisibleTextReset()
+      secondary.onVisibleTextReset()
+    }
   }
 
   private fun nativeToolCallingEnabledForTurn(
@@ -2583,6 +2675,66 @@ class OpenCrayAgentRuntime(
     )
 
     LiteLlmGatewayStatus.SUCCESS -> error("llmFailureResult should not be called for success.")
+  }
+
+  private fun emptyResponseRecoveryExhaustedResult(
+    task: AgentTask,
+    startedAt: Long,
+    gatewayResult: LiteLlmGatewayResult,
+    turn: Int,
+    toolCallCount: Int,
+    contextReport: ContextAssemblyReport?,
+    diagnostics: PromptRunDiagnostics,
+  ): ExecutionResult {
+    val message = buildEmptyResponseRecoveryExhaustedMessage(
+      gatewayResult = gatewayResult,
+      recoveryCount = diagnostics.emptyResponseRecoveryCount,
+    )
+    return failedResult(
+      task = task,
+      startedAt = startedAt,
+      finishedAt = clock(),
+      errorCode = ERROR_EMPTY_RESPONSE_RECOVERY_EXHAUSTED,
+      errorMessage = message,
+      metadata = buildResultMetadata(
+        gatewayResult = gatewayResult,
+        turn = turn,
+        toolCallCount = toolCallCount,
+        responseFormat = "empty_response_recovery_exhausted",
+        contextReport = contextReport,
+        diagnostics = diagnostics,
+      ) + mapOf(
+        "emptyResponseRecoveryExhausted" to true.toString(),
+        "emptyResponseRecoveryLimit" to config.maxRecoverableLlmRetries.toString(),
+        "emptyResponseRecoveryStatus" to gatewayResult.status.name.lowercase(),
+        "emptyResponseRecoveryReasonCode" to (
+          gatewayResult.errorCode?.trim()?.takeIf(String::isNotBlank)
+            ?: "SUCCESS_EMPTY_RESPONSE"
+          ),
+      ),
+    )
+  }
+
+  private fun buildEmptyResponseRecoveryExhaustedMessage(
+    gatewayResult: LiteLlmGatewayResult,
+    recoveryCount: Int,
+  ): String {
+    val detail = when {
+      isProviderEmptyResponseFailure(gatewayResult) ->
+        gatewayResult.errorMessage ?: "Provider returned an empty completion payload."
+      else ->
+        "Provider returned no usable tool call, commentary update, or final answer."
+    }
+    return buildString {
+      append("Automatic empty-response recovery stopped after ")
+      append(recoveryCount)
+      append(" attempt")
+      if (recoveryCount != 1) {
+        append('s')
+      }
+      append(". ")
+      append(detail)
+    }
   }
 
   private fun llmRetryExhaustedPauseResult(

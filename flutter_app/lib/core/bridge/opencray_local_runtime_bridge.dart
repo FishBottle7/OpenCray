@@ -430,6 +430,7 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayLlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
+    bool? streamingEnabled,
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -447,6 +448,7 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   }) async => OpenCrayLlmConfigSnapshot.fromMap(
     await _postMap('v1/save_llm_config', <String, Object?>{
       'enabled': enabled,
+      if (streamingEnabled != null) 'streamingEnabled': streamingEnabled,
       'providerId': providerId,
       'selectedProviderOptionId': selectedProviderOptionId,
       'protocol': protocol,
@@ -471,6 +473,7 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayLlmConfigSnapshot> saveCustomLlmProvider({
     required String selectedProviderOptionId,
+    bool? streamingEnabled,
     required String protocol,
     required String providerName,
     required String providerNotes,
@@ -486,6 +489,7 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   }) async => OpenCrayLlmConfigSnapshot.fromMap(
     await _postMap('v1/save_custom_llm_provider', <String, Object?>{
       'selectedProviderOptionId': selectedProviderOptionId,
+      if (streamingEnabled != null) 'streamingEnabled': streamingEnabled,
       'protocol': protocol,
       'providerName': providerName,
       'providerNotes': providerNotes,

@@ -597,6 +597,103 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
+  fun runPromptTaskClearsLiveDraftBeforeContinuingToToolCall() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-live-draft-toolcall-workspace")
+    Files.write(
+      workspaceRoot.toPath().resolve("README.md"),
+      "draft tool call".toByteArray(StandardCharsets.UTF_8),
+    )
+
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "test-route",
+      providerId = "openai",
+      model = "gpt-test",
+      attemptIndex = 0,
+    )
+    var requestIndex = 0
+    val gateway = object : LiteLlmGateway {
+      override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+        return if (requestIndex++ == 0) {
+          request.streamObserver.onVisibleTextSnapshot("Inspecting the repository")
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              toolCalls = listOf(
+                LiteLlmStructuredToolCall(
+                  id = "call-readme-1",
+                  toolName = "Read",
+                  arguments = JsonObject(
+                    mapOf("file_path" to JsonPrimitive("README.md")),
+                  ),
+                ),
+              ),
+            ),
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 24,
+                startedAtEpochMs = 2_000L,
+                finishedAtEpochMs = 2_100L,
+              ),
+            ),
+            startedAtEpochMs = 2_000L,
+            finishedAtEpochMs = 2_100L,
+          )
+        } else {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              finalText = "Done.",
+              rawText = "Done.",
+            ),
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 5,
+                startedAtEpochMs = 2_200L,
+                finishedAtEpochMs = 2_300L,
+              ),
+            ),
+            startedAtEpochMs = 2_200L,
+            finishedAtEpochMs = 2_300L,
+          )
+        }
+      }
+    }
+    val eventSink = RecordingEventSink()
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 4, maxToolCalls = 1),
+      eventSink = eventSink,
+      clock = IncrementingClock(start = 2_000L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Read README.md and answer."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Done.", result.stdout)
+    assertEquals(listOf("Inspecting the repository"), eventSink.assistantDrafts)
+    assertEquals(1, eventSink.assistantDraftClearCount)
+  }
+
+  @Test
   fun runPromptTaskMarksAnthropicToolBoundarySupplementsWithPostToolCheckpoint() {
     val workspaceRoot = temporaryFolder.newFolder("agent-anthropic-supplement-workspace")
     Files.write(
@@ -5094,6 +5191,55 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
+  fun runPromptTaskStopsRecoveringWhenProviderEmptyResponseBudgetIsExhausted() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-empty-recovery-exhausted")
+    val gateway = ScriptedGateway(
+      results = listOf(
+        gatewayFailureResult(
+          errorCode = "PROVIDER_EMPTY_RESPONSE",
+          errorMessage = "Provider returned an empty completion payload.",
+          completion = LiteLlmStructuredCompletion(
+            reasoningText = "I should call Read next.",
+          ),
+        ),
+        gatewayFailureResult(
+          errorCode = "PROVIDER_EMPTY_RESPONSE",
+          errorMessage = "Provider returned an empty completion payload again.",
+          completion = LiteLlmStructuredCompletion(
+            reasoningText = "I should call Read next.",
+          ),
+        ),
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 6,
+        maxToolCalls = 2,
+        maxRecoverableLlmRetries = 1,
+      ),
+      clock = IncrementingClock(start = 11_500L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Recover if the model returns nothing."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.FAILED, result.status)
+    assertEquals(ERROR_EMPTY_RESPONSE_RECOVERY_EXHAUSTED, result.errorCode)
+    assertEquals("1", result.metadata["emptyResponseRecoveryCount"])
+    assertEquals("true", result.metadata["emptyResponseRecoveryExhausted"])
+    assertEquals("1", result.metadata["emptyResponseRecoveryLimit"])
+    assertEquals(2, gateway.requests.size)
+  }
+
+  @Test
   fun runPromptTaskRecoversFromMalformedStructuredToolCallWithDetailedDiagnostic() {
     val workspaceRoot = temporaryFolder.newFolder("agent-tool-parse-recovery")
     val gateway = ScriptedGateway(
@@ -6039,9 +6185,26 @@ class OpenCrayAgentRuntimeTest {
 
   private class RecordingEventSink : OpenCrayAgentRuntimeEventSink {
     val events = mutableListOf<OpenCrayAgentRunEvent>()
+    val assistantDrafts = mutableListOf<String>()
+    var assistantDraftClearCount: Int = 0
 
     override fun onRunEvent(task: AgentTask, event: OpenCrayAgentRunEvent) {
       events += event
+    }
+
+    override fun onAssistantDraftUpdated(
+      task: AgentTask,
+      text: String,
+      emittedAtEpochMs: Long,
+    ) {
+      assistantDrafts += text
+    }
+
+    override fun onAssistantDraftCleared(
+      task: AgentTask,
+      emittedAtEpochMs: Long,
+    ) {
+      assistantDraftClearCount += 1
     }
   }
 
