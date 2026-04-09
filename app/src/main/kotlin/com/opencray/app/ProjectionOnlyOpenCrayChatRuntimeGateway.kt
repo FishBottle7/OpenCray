@@ -75,6 +75,15 @@ internal data class ProjectionOnlyChatStrings(
   val composerRejectedPlaceholder: String,
 )
 
+internal data class ProjectionOnlyChatRuntimeDiagnosticsSource(
+  val connectionStateProvider: () -> RuntimeServiceConnectionState,
+  val runtimeOwnerLifecycleProvider: () -> HostRuntimeLifecycleDescriptor? = { null },
+  val runtimeOwnerWorkSummaryProvider: () -> RuntimeOwnerWorkSummary? = { null },
+  val serviceLifecycleProvider: () -> RuntimeServiceLifecycleDescriptor? = { null },
+  val serviceWorkStateProvider: () -> RuntimeServiceWorkState? = { null },
+  val serviceKeepAliveStateProvider: () -> RuntimeServiceKeepAliveState? = { null },
+)
+
 internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private val chatSessionStore: ChatSessionLocalStore,
   private val queueSnapshotStoreFactory: AgentQueueSnapshotStoreFactory,
@@ -97,6 +106,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private val serviceLifecycleProvider: () -> RuntimeServiceLifecycleDescriptor? = { null },
   private val serviceWorkStateProvider: () -> RuntimeServiceWorkState? = { null },
   private val serviceKeepAliveStateProvider: () -> RuntimeServiceKeepAliveState? = { null },
+  private val sessionUnreadCountProvider: ((String, String) -> Int)? = null,
   private val clock: () -> Long = System::currentTimeMillis,
   private val pollIntervalMs: Long = DEFAULT_PROJECTION_POLL_INTERVAL_MS,
 ) : OpenCrayChatRuntimeGateway {
@@ -306,6 +316,10 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
         "title" to resolvedStrings.recentSessionsTitle,
         "ctaLabel" to resolvedStrings.newSessionLabel,
         "sessions" to state.sessions.map { session ->
+          val unreadCount = sessionUnreadCountProvider?.invoke(
+            session.sessionId,
+            activeSession.sessionId,
+          ) ?: 0
           mapOf(
             "sessionId" to session.sessionId,
             "title" to displaySessionTitle(session.title),
@@ -313,7 +327,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
             "meta" to resolvedStrings.messagesBadge(session.messageCount),
             "isSelected" to (session.sessionId == activeSession.sessionId),
             "lastMessageAtEpochMs" to session.lastMessageAtEpochMs,
-            "unreadCount" to 0,
+            "unreadCount" to unreadCount,
           )
         },
       ),
@@ -392,23 +406,15 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       runs = visibleRuns,
       snapshot = buildMap {
         put("sessionId", sessionId)
-        put("hostLifecycle", hostLifecycleDescriptor.snapshotMap())
-        runtimeOwnerLifecycleProvider()?.snapshotMap()?.let { lifecycle ->
-          put("runtimeOwnerLifecycle", lifecycle)
-        }
-        runtimeOwnerWorkSummaryProvider()?.snapshotMap()?.let { summary ->
-          put("runtimeOwnerWorkSummary", summary)
-        }
-        serviceLifecycleProvider()?.snapshotMap()?.let { lifecycle ->
-          put("runtimeServiceLifecycle", lifecycle)
-        }
-        serviceWorkStateProvider()?.snapshotMap()?.let { workState ->
-          put("runtimeServiceWorkState", workState)
-        }
-        serviceKeepAliveStateProvider()?.snapshotMap()?.let { keepAliveState ->
-          put("runtimeServiceKeepAliveState", keepAliveState)
-        }
-        put("runtimeServiceConnectionState", connectionStateProvider().snapshotMap())
+        putRuntimeServiceDiagnosticsSnapshot(
+          hostLifecycle = hostLifecycleDescriptor,
+          runtimeOwnerLifecycle = runtimeOwnerLifecycleProvider(),
+          runtimeOwnerWorkSummary = runtimeOwnerWorkSummaryProvider(),
+          runtimeServiceLifecycle = serviceLifecycleProvider(),
+          runtimeServiceWorkState = serviceWorkStateProvider(),
+          runtimeServiceKeepAliveState = serviceKeepAliveStateProvider(),
+          runtimeServiceConnectionState = connectionStateProvider(),
+        )
         put("activeRuns", visibleRuns.filter(AgentRunSnapshot::isActive).map(::runSnapshotToMap))
         put("retainedRuns", retainedRunsFor(visibleRuns).map(::runSnapshotToMap))
         put("subAgents", subAgentSnapshots.map(::subAgentSnapshotToMap))
@@ -542,7 +548,11 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     if (persistedResult != null) {
       return persistedResult
     }
-    if (record == null || taskSnapshot == null || isTerminalLifecycle(taskSnapshot.lifecycleState)) {
+    if (
+      record == null ||
+      taskSnapshot == null ||
+      isTerminalProjectionLifecycle(taskSnapshot.lifecycleState)
+    ) {
       return null
     }
     if (associatedProcesses.isEmpty() || associatedProcesses.any { it.status == ManagedProcessStatus.RUNNING }) {
@@ -990,60 +1000,61 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       managedProcessesProvider = processRegistry::list,
       clock = clock,
     )
-    val runsByTaskId = runs.associateBy(AgentRunSnapshot::taskId)
-    return queueStore.load()
-      ?.tasks
-      .orEmpty()
+    val isChinese = resolvedStrings.localeTag.startsWith("zh", ignoreCase = true)
+    return approvalRequiredTaskProjections(
+      sessionId = sessionId,
+      queueTaskSnapshots = queueStore.load()?.tasks.orEmpty(),
+      runSnapshots = runs,
+      checkpoints = checkpointStore.list(),
+      approvalRequiredErrorCode = PROJECTION_APPROVAL_REQUIRED_ERROR_CODE,
+      highRiskApprovalRequiredErrorCode = PROJECTION_HIGH_RISK_APPROVAL_REQUIRED_ERROR_CODE,
+    )
       .asSequence()
-      .filter { taskSnapshot -> taskSnapshot.task.id in runsByTaskId }
-      .filter { taskSnapshot ->
-        (taskSnapshot.lifecycleState == QueueTaskLifecycleState.SUSPENDED ||
-          taskSnapshot.lifecycleState == QueueTaskLifecycleState.FAILED) &&
-          isProjectionApprovalRequiredError(taskSnapshot.lastErrorCode)
+      .filter { projection ->
+        projection.isVisibleApprovalLifecycle() &&
+          approvalDecisionState(
+            approved = false,
+            rejected = false,
+            checkpoint = projection.checkpoint,
+          ) == null
       }
-      .filter { taskSnapshot ->
-        checkpointStore.get(taskSnapshot.task.id)?.checkpointKind !in setOf(
-          PromptCheckpointKind.APPROVED_PENDING_RESUME,
-          PromptCheckpointKind.REJECTED_PENDING_RESUME,
-        )
-      }
-      .map { taskSnapshot ->
-        val runSnapshot = runsByTaskId[taskSnapshot.task.id]
-        val metadata = runSnapshot?.resultMetadata.orEmpty()
-        val isHighRisk = projectionApprovalIsHighRisk(
-          errorCode = taskSnapshot.lastErrorCode,
+      .map { projection ->
+        val metadata = projection.metadata
+        val isHighRisk = projection.checkpoint?.isHighRisk == true || approvalMetadataIsHighRisk(
+          errorCode = projection.errorCode,
+          highRiskErrorCode = PROJECTION_HIGH_RISK_APPROVAL_REQUIRED_ERROR_CODE,
           metadata = metadata,
         )
-        val toolReason = metadata["toolReason"] ?: runSnapshot?.lastEvent?.let(::projectionToolReasonFromEvent)
-        val supportsSessionApproval = projectionApprovalSupportsSessionScope(metadata)
+        val toolReason = projection.toolReason
+        val supportsSessionApproval = approvalMetadataSupportsSessionScope(metadata)
         val title = if (isHighRisk) {
           resolvedStrings.highRiskApprovalRequiredTitle
         } else {
           resolvedStrings.approvalRequiredTitle
         }
         val message = projectionSanitizeApprovalBody(
-          body = runSnapshot?.errorMessage ?: taskSnapshot.lastErrorMessage,
+          body = projection.errorBody,
           isHighRisk = isHighRisk,
         )
         val body = composeProjectionApprovalBody(
           body = message,
           toolReason = toolReason,
           metadata = metadata,
+          isChinese = isChinese,
         )
         mapOf(
-          "runId" to (runSnapshot?.runId ?: runIdFor(taskSnapshot.task)),
-          "taskId" to taskSnapshot.task.id,
-          "pendingMessageId" to (
-            runSnapshot?.pendingMessageId
-              ?: taskSnapshot.task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
-                ?.takeIf(String::isNotBlank)
+          "runId" to projection.runId,
+          "taskId" to projection.taskId,
+          "pendingMessageId" to projection.pendingMessageId,
+          "toolName" to (
+            projection.checkpoint?.toolName
+              ?: approvalMetadataToolName(metadata)
           ),
-          "toolName" to projectionApprovalToolName(metadata),
-          "requestSummary" to projectionApprovalRequestSummary(metadata),
-          "primaryDetail" to projectionApprovalPrimaryDetailValue(metadata),
-          "pathDetails" to projectionApprovalPathDetailLines(metadata),
-          "workingDirectory" to projectionApprovalWorkingDirectoryValue(metadata),
-          "reason" to projectionApprovalReasonValue(toolReason),
+          "requestSummary" to approvalSupportRequestSummary(metadata),
+          "primaryDetail" to approvalSupportPrimaryDetailValue(metadata),
+          "pathDetails" to approvalSupportPathDetailLines(metadata, isChinese),
+          "workingDirectory" to approvalSupportWorkingDirectoryValue(metadata),
+          "reason" to approvalSupportReasonValue(toolReason),
           "message" to message,
           "risk" to if (isHighRisk) "high_risk" else "standard",
           "isHighRisk" to isHighRisk,
@@ -1062,246 +1073,17 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       .toList()
   }
 
-  private fun isProjectionApprovalRequiredError(errorCode: String?): Boolean =
-    errorCode == "APPROVAL_REQUIRED" || errorCode == "HIGH_RISK_APPROVAL_REQUIRED"
-
-  private fun projectionApprovalIsHighRisk(
-    errorCode: String?,
-    metadata: Map<String, String>,
-  ): Boolean =
-    errorCode == "HIGH_RISK_APPROVAL_REQUIRED" ||
-      metadata[SubAgentApprovalResumeMetadata.KEY_IS_HIGH_RISK]
-        ?.trim()
-        ?.equals("true", ignoreCase = true) == true
-
-  private fun projectionApprovalSupportsSessionScope(
-    metadata: Map<String, String>,
-  ): Boolean =
-    metadata[ProviderNativeWebSearchSupport.METADATA_APPROVAL_KIND]
-      ?.trim()
-      ?.equals(ProviderNativeWebSearchSupport.APPROVAL_KIND, ignoreCase = true) == true &&
-      metadata[ProviderNativeWebSearchSupport.METADATA_SUPPORTS_SESSION_APPROVAL]
-        ?.trim()
-        ?.equals("true", ignoreCase = true) == true
-
-  private fun projectionApprovalToolName(metadata: Map<String, String>): String? =
-    metadata["normalizedToolName"]
-      ?.takeIf(String::isNotBlank)
-      ?: metadata[SubAgentApprovalResumeMetadata.KEY_APPROVED_TOOL_NAME]
-        ?.takeIf(String::isNotBlank)
-      ?: metadata["canonicalToolName"]
-        ?.takeIf(String::isNotBlank)
-      ?: metadata["toolName"]
-        ?.takeIf(String::isNotBlank)
-
-  private fun projectionToolReasonFromEvent(event: OpenCrayAgentRunEvent): String? = when (event) {
-    is OpenCrayToolCallEvent -> event.call.reason
-    else -> null
-  }
-
   private fun composeProjectionApprovalBody(
     body: String,
     toolReason: String?,
     metadata: Map<String, String>,
-  ): String {
-    val details = mutableListOf<String>()
-    projectionApprovalPrimaryDetailLine(metadata)?.let(details::add)
-    projectionApprovalPathDetailLines(metadata).forEach(details::add)
-    projectionApprovalWorkingDirectoryLine(metadata)?.let(details::add)
-    projectionApprovalReasonLine(toolReason)?.let(details::add)
-    if (details.isEmpty()) {
-      return body
-    }
-    return buildString {
-      details.forEach { line -> appendLine(line) }
-      appendLine()
-      append(body)
-    }.trim()
-  }
-
-  private fun projectionApprovalRequestSummary(metadata: Map<String, String>): String? =
-    metadata["targetSummary"]?.trim()?.takeIf(String::isNotBlank)
-      ?: projectionApprovalPrimaryDetailValue(metadata)
-
-  private fun projectionApprovalPrimaryDetailValue(metadata: Map<String, String>): String? {
-    metadata["scriptPath"]?.takeIf(String::isNotBlank)?.let { scriptPath ->
-      return scriptPath
-    }
-    projectionShellCommandSummary(metadata)?.let { command ->
-      return command
-    }
-    metadata["query"]?.takeIf(String::isNotBlank)?.let { query ->
-      return query
-    }
-    metadata["requestedUrl"]?.takeIf(String::isNotBlank)?.let { url ->
-      return url
-    }
-    metadata["finalUrl"]?.takeIf(String::isNotBlank)?.let { url ->
-      return url
-    }
-    metadata["processId"]?.takeIf(String::isNotBlank)?.let { processId ->
-      if (metadata["targetKind"] == "process") {
-        return processId
-      }
-    }
-    metadata["delegationDescription"]?.takeIf(String::isNotBlank)?.let { description ->
-      return description
-    }
-    metadata["targetSummary"]?.takeIf(String::isNotBlank)?.let { summary ->
-      val primaryTargetPath = metadata["primaryTargetPath"]?.trim().orEmpty()
-      val secondaryTargetPath = metadata["secondaryTargetPath"]?.trim().orEmpty()
-      val duplicateSummaries = buildSet {
-        if (primaryTargetPath.isNotEmpty()) {
-          add(primaryTargetPath)
-        }
-        if (secondaryTargetPath.isNotEmpty()) {
-          add(secondaryTargetPath)
-        }
-        if (primaryTargetPath.isNotEmpty() && secondaryTargetPath.isNotEmpty()) {
-          add("$primaryTargetPath -> $secondaryTargetPath")
-        }
-      }
-      if (summary !in duplicateSummaries) {
-        return summary
-      }
-    }
-    return null
-  }
-
-  private fun projectionApprovalPrimaryDetailLine(metadata: Map<String, String>): String? =
-    when {
-      metadata["scriptPath"]?.isNotBlank() == true ->
-        projectionApprovalPrimaryDetailValue(metadata)?.let { detail ->
-          "${projectionApprovalLabel("script")}: $detail"
-        }
-      projectionShellCommandSummary(metadata) != null ->
-        projectionApprovalPrimaryDetailValue(metadata)?.let { detail ->
-          "${projectionApprovalLabel("command")}: $detail"
-        }
-      metadata["query"]?.isNotBlank() == true ->
-        projectionApprovalPrimaryDetailValue(metadata)?.let { detail ->
-          "${projectionApprovalLabel("query")}: $detail"
-        }
-      metadata["requestedUrl"]?.isNotBlank() == true || metadata["finalUrl"]?.isNotBlank() == true ->
-        projectionApprovalPrimaryDetailValue(metadata)?.let { detail ->
-          "${projectionApprovalLabel("url")}: $detail"
-        }
-      metadata["processId"]?.isNotBlank() == true && metadata["targetKind"] == "process" ->
-        projectionApprovalPrimaryDetailValue(metadata)?.let { detail ->
-          "${projectionApprovalLabel("process")}: $detail"
-        }
-      else ->
-        projectionApprovalPrimaryDetailValue(metadata)?.let { detail ->
-          "${projectionApprovalLabel("request")}: $detail"
-        }
-    }
-
-  private fun projectionApprovalPathDetailLines(metadata: Map<String, String>): List<String> {
-    val sourcePath = metadata["sourcePath"]?.trim().orEmpty()
-    val destinationPath = metadata["destinationPath"]?.trim().orEmpty()
-    val delegationPromptPreview = metadata["delegationPromptPreview"]?.trim().orEmpty()
-    val delegationAllowedTools = metadata["delegationAllowedTools"]?.trim().orEmpty()
-    if (sourcePath.isNotEmpty() || destinationPath.isNotEmpty()) {
-      return buildList {
-        if (sourcePath.isNotEmpty()) {
-          add("${projectionApprovalLabel("from")}: $sourcePath")
-        }
-        if (destinationPath.isNotEmpty()) {
-          add("${projectionApprovalLabel("to")}: $destinationPath")
-        }
-        if (delegationPromptPreview.isNotEmpty()) {
-          add("${projectionApprovalLabel("prompt")}: $delegationPromptPreview")
-        }
-        if (delegationAllowedTools.isNotEmpty()) {
-          add("${projectionApprovalLabel("allowed_tools")}: $delegationAllowedTools")
-        }
-      }
-    }
-    val primaryTargetPath = metadata["primaryTargetPath"]?.trim().orEmpty()
-    val secondaryTargetPath = metadata["secondaryTargetPath"]?.trim().orEmpty()
-    val scriptPath = metadata["scriptPath"]?.trim().orEmpty()
-    val workingDirectory = metadata["workingDirectory"]?.trim().orEmpty()
-    return buildList {
-      if (
-        primaryTargetPath.isNotEmpty() &&
-        primaryTargetPath != scriptPath &&
-        primaryTargetPath != workingDirectory
-      ) {
-        add("${projectionApprovalLabel("target")}: $primaryTargetPath")
-      }
-      if (secondaryTargetPath.isNotEmpty()) {
-        add("${projectionApprovalLabel("to")}: $secondaryTargetPath")
-      }
-      if (delegationPromptPreview.isNotEmpty()) {
-        add("${projectionApprovalLabel("prompt")}: $delegationPromptPreview")
-      }
-      if (delegationAllowedTools.isNotEmpty()) {
-        add("${projectionApprovalLabel("allowed_tools")}: $delegationAllowedTools")
-      }
-    }
-  }
-
-  private fun projectionApprovalWorkingDirectoryValue(metadata: Map<String, String>): String? =
-    metadata["workingDirectory"]?.trim()?.takeIf(String::isNotBlank)
-
-  private fun projectionApprovalWorkingDirectoryLine(metadata: Map<String, String>): String? {
-    val workingDirectory = projectionApprovalWorkingDirectoryValue(metadata).orEmpty()
-    if (workingDirectory.isEmpty()) {
-      return null
-    }
-    return "${projectionApprovalLabel("working_directory")}: $workingDirectory"
-  }
-
-  private fun projectionApprovalReasonValue(toolReason: String?): String? =
-    projectionSanitizePotentialInternalAgentText(
-      text = toolReason?.trim().orEmpty(),
-      fallback = "",
-    ).trim().takeIf(String::isNotBlank)
-
-  private fun projectionApprovalReasonLine(toolReason: String?): String? {
-    val reason = projectionApprovalReasonValue(toolReason) ?: return null
-    return "${projectionApprovalLabel("reason")}: $reason"
-  }
-
-  private fun projectionShellCommandSummary(metadata: Map<String, String>): String? {
-    metadata["shellCommand"]?.takeIf(String::isNotBlank)?.let { return it }
-    val command = metadata["command"]?.trim().orEmpty()
-    if (command.isEmpty()) {
-      return null
-    }
-    val args = metadata["args"]
-      ?.split('\u0000')
-      ?.map(String::trim)
-      ?.filter(String::isNotEmpty)
-      .orEmpty()
-    return buildString {
-      append(command)
-      if (args.isNotEmpty()) {
-        append(' ')
-        append(args.joinToString(separator = " "))
-      }
-    }.trim()
-  }
-
-  private fun projectionApprovalLabel(kind: String): String {
-    val isChinese = resolvedStrings.localeTag.startsWith("zh", ignoreCase = true)
-    return when (kind) {
-      "command" -> if (isChinese) "命令" else "Command"
-      "script" -> if (isChinese) "脚本" else "Script"
-      "query" -> if (isChinese) "查询" else "Query"
-      "url" -> if (isChinese) "地址" else "URL"
-      "process" -> if (isChinese) "进程" else "Process"
-      "request" -> if (isChinese) "操作" else "Request"
-      "prompt" -> if (isChinese) "委派内容" else "Prompt"
-      "allowed_tools" -> if (isChinese) "可用工具" else "Allowed tools"
-      "from" -> if (isChinese) "来源" else "From"
-      "to" -> if (isChinese) "目标" else "To"
-      "target" -> if (isChinese) "目标" else "Target"
-      "working_directory" -> if (isChinese) "工作目录" else "Working directory"
-      "reason" -> if (isChinese) "理由" else "Agent reason"
-      else -> if (isChinese) "详情" else "Details"
-    }
-  }
+    isChinese: Boolean,
+  ): String = approvalSupportComposeBody(
+    body = body,
+    toolReason = toolReason,
+    metadata = metadata,
+    isChinese = isChinese,
+  )
 
   private fun projectionSanitizeApprovalBody(body: String?, isHighRisk: Boolean): String {
     val fallback = if (isHighRisk) {
@@ -1310,57 +1092,10 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       resolvedStrings.summaryApprovalRequired
     }
     val resolved = body?.takeIf(String::isNotBlank) ?: return fallback
-    return projectionSanitizePotentialInternalAgentText(
+    return approvalSupportSanitizePotentialInternalAgentText(
       text = resolved,
       fallback = fallback,
     )
-  }
-
-  private fun projectionSanitizePotentialInternalAgentText(text: String, fallback: String): String {
-    val trimmed = text.trim()
-    if (trimmed.isBlank()) return text
-    return if (projectionLooksLikeInternalToolPayload(trimmed)) fallback else text
-  }
-
-  private fun projectionLooksLikeInternalToolPayload(text: String): Boolean {
-    val jsonCandidate = projectionExtractEmbeddedJsonObject(text) ?: return false
-    val normalized = jsonCandidate.lowercase()
-    val explicitToolAction =
-      "\"type\"" in normalized &&
-        ("\"tool_call\"" in normalized || "\"tool\"" in normalized)
-    val toolArgumentShape = "\"tool_name\"" in normalized && "\"arguments\"" in normalized
-    return explicitToolAction || toolArgumentShape
-  }
-
-  private fun projectionExtractEmbeddedJsonObject(raw: String): String? {
-    val trimmed = raw.trim()
-    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-      return trimmed
-    }
-    var depth = 0
-    var startIndex = -1
-    var inString = false
-    var escaped = false
-    for ((index, character) in raw.withIndex()) {
-      when {
-        inString && escaped -> escaped = false
-        inString && character == '\\' -> escaped = true
-        character == '"' -> inString = !inString
-        !inString && character == '{' -> {
-          if (depth == 0) {
-            startIndex = index
-          }
-          depth += 1
-        }
-        !inString && character == '}' -> {
-          depth -= 1
-          if (depth == 0 && startIndex >= 0) {
-            return raw.substring(startIndex, index + 1)
-          }
-        }
-      }
-    }
-    return null
   }
 
   private fun observeProjectionWithPolling(
@@ -1413,105 +1148,41 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     taskId: String,
     existingIds: List<String>,
     managedProcessesById: Map<String, ManagedProcessSnapshot>,
-  ): List<ManagedProcessSnapshot> = (
-    existingIds +
-      managedProcessesById.values
-        .asSequence()
-        .filter { snapshot -> snapshot.taskId == taskId }
-        .map(ManagedProcessSnapshot::processId)
-        .toList()
-    ).distinct().mapNotNull(managedProcessesById::get)
+  ): List<ManagedProcessSnapshot> = associatedManagedProcessesForProjection(
+    taskId = taskId,
+    existingIds = existingIds,
+    managedProcessesById = managedProcessesById,
+  )
 
   private fun projectedLifecycleState(
     original: QueueTaskLifecycleState?,
     result: ExecutionResult?,
-  ): QueueTaskLifecycleState? = if (
-    isInterruptedOnRestoreResult(result) &&
-    (original == null || !isTerminalLifecycle(original))
-  ) {
-    QueueTaskLifecycleState.FAILED
-  } else {
-    original
-  }
+  ): QueueTaskLifecycleState? = projectedLifecycleStateForRestoreResult(
+    original = original,
+    result = result,
+  )
 
   private fun projectedTaskState(
     original: AgentTaskState?,
     result: ExecutionResult?,
-  ): AgentTaskState? = if (
-    isInterruptedOnRestoreResult(result) &&
-    (original == null || !isTerminalTaskState(original))
-  ) {
-    AgentTaskState.FAILED
-  } else {
-    original
-  }
+  ): AgentTaskState? = projectedTaskStateForRestoreResult(
+    original = original,
+    result = result,
+  )
 
   private fun visibleRunResult(
     taskSnapshot: SessionQueueTaskSnapshot?,
     result: ExecutionResult?,
-  ): ExecutionResult? {
-    if (taskSnapshot == null || result == null) {
-      return result
-    }
-    if (isInterruptedOnRestoreResult(result)) {
-      return result
-    }
-    return when (taskSnapshot.lifecycleState) {
-      QueueTaskLifecycleState.QUEUED,
-      QueueTaskLifecycleState.RETRY_PENDING,
-      -> null
-
-      QueueTaskLifecycleState.RUNNING,
-      QueueTaskLifecycleState.CANCEL_REQUESTED,
-      -> if (taskSnapshot.task.updatedAtEpochMs > result.finishedAtEpochMs) {
-        null
-      } else {
-        result
-      }
-
-      else -> result
-    }
-  }
+  ): ExecutionResult? = visibleProjectedRunResult(
+    taskSnapshot = taskSnapshot,
+    result = result,
+  )
 
   private fun shouldShowTaskSnapshotError(taskSnapshot: SessionQueueTaskSnapshot?): Boolean =
-    when (taskSnapshot?.lifecycleState) {
-      QueueTaskLifecycleState.SUSPENDED,
-      QueueTaskLifecycleState.FAILED,
-      QueueTaskLifecycleState.CANCELLED,
-      -> true
-
-      else -> false
-    }
+    shouldShowProjectedTaskSnapshotError(taskSnapshot)
 
   private fun isInterruptedOnRestoreResult(result: ExecutionResult?): Boolean =
-    result?.errorCode == ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE &&
-      result.metadata[METADATA_RESTORED_TERMINAL_STATE] == RESTORED_TERMINAL_STATE_INTERRUPTED
-
-  private fun isTerminalLifecycle(state: QueueTaskLifecycleState): Boolean = when (state) {
-    QueueTaskLifecycleState.COMPLETED,
-    QueueTaskLifecycleState.FAILED,
-    QueueTaskLifecycleState.CANCELLED,
-    -> true
-
-    QueueTaskLifecycleState.QUEUED,
-    QueueTaskLifecycleState.RUNNING,
-    QueueTaskLifecycleState.RETRY_PENDING,
-    QueueTaskLifecycleState.SUSPENDED,
-    QueueTaskLifecycleState.CANCEL_REQUESTED,
-    -> false
-  }
-
-  private fun isTerminalTaskState(state: AgentTaskState): Boolean = when (state) {
-    AgentTaskState.COMPLETED,
-    AgentTaskState.CANCELLED,
-    AgentTaskState.FAILED,
-    -> true
-
-    AgentTaskState.QUEUED,
-    AgentTaskState.RUNNING,
-    AgentTaskState.SUSPENDED,
-    -> false
-  }
+    isInterruptedOnRestoreProjectionResult(result)
 
   private fun repairedInterruptedRestoreResult(
     record: PersistedAgentRunRecord,
@@ -1547,11 +1218,10 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   }
 
   private fun ManagedProcessSnapshot.isProjectionInterruptedOnRestore(): Boolean =
-    errorCode == ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE ||
-      errorCode == com.opencray.core.orchestrator.ERROR_RESTART_REQUIRES_EXPLICIT_RETRY ||
-      metadata[METADATA_RESTORED_TERMINAL_STATE] == RESTORED_TERMINAL_STATE_INTERRUPTED
+    isProjectionInterruptedOnRestoreState()
 
-  private fun ManagedProcessSnapshot.isProjectionTerminalAfterRestore(): Boolean = status.isTerminal
+  private fun ManagedProcessSnapshot.isProjectionTerminalAfterRestore(): Boolean =
+    isProjectionTerminalAfterRestoreState()
 
   private fun runIdFor(task: AgentTask): String =
     task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
@@ -1589,16 +1259,11 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   }
 
   private fun recoveryPlanForRun(run: AgentRunSnapshot): RunRecoveryPlan? =
-    recoveryPlanner.plan(
-      RunRecoveryPlannerInput(
-        run = run,
-        checkpoint = promptCheckpointStoreFactory.forChatSession(run.sessionId).get(run.taskId),
-        lastJournalEvent = run.lastEvent ?: runEventJournalStoreFactory.forChatSession(run.sessionId)
-          .listForRun(run.runId)
-          .lastOrNull()
-          ?.payload
-          ?.toRuntimeEvent(),
-      ),
+    loadStoredRunRecoveryPlan(
+      run = run,
+      checkpointStore = promptCheckpointStoreFactory.forChatSession(run.sessionId),
+      journalStore = runEventJournalStoreFactory.forChatSession(run.sessionId),
+      planner = recoveryPlanner,
     )
 
   private fun runtimeEventToMap(event: OpenCrayAgentRunEvent): Map<String, Any?> = when (event) {
@@ -1918,6 +1583,9 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     private const val MEMORY_DEBUG_RUN_ID_PREFIX: String = "memory-debug-run"
     private const val MEMORY_DEBUG_TASK_ID_PREFIX: String = "memory-debug-task"
     private const val INTERNAL_PROMPT_CHECKPOINT_MARKER: String = "internal_prompt_checkpoint"
+    private const val PROJECTION_APPROVAL_REQUIRED_ERROR_CODE: String = "APPROVAL_REQUIRED"
+    private const val PROJECTION_HIGH_RISK_APPROVAL_REQUIRED_ERROR_CODE: String =
+      "HIGH_RISK_APPROVAL_REQUIRED"
     private const val MAX_PROJECTION_RUNTIME_EVENT_HISTORY: Int = 24
     private const val MAX_PROJECTION_RUNTIME_EVENT_PREVIEW_CHARS: Int = 240
     private const val MAX_PROJECTION_RUNTIME_EVENT_FAILURE_CONTENT_CHARS: Int = 16_384
@@ -1939,8 +1607,32 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
   connectionStateProvider: () -> RuntimeServiceConnectionState,
   projectionSnapshotProvider: () -> RuntimeServiceProjectionSnapshot? = { null },
 ): OpenCrayChatRuntimeGateway {
+  val diagnosticsSource = ProjectionOnlyChatRuntimeDiagnosticsSource(
+    connectionStateProvider = connectionStateProvider,
+    runtimeOwnerLifecycleProvider = { projectionSnapshotProvider()?.runtimeOwnerLifecycle },
+    runtimeOwnerWorkSummaryProvider = {
+      projectionSnapshotProvider()?.runtimeOwnerWorkSummary
+    },
+    serviceLifecycleProvider = { projectionSnapshotProvider()?.serviceLifecycle },
+    serviceWorkStateProvider = { projectionSnapshotProvider()?.serviceWorkState },
+    serviceKeepAliveStateProvider = {
+      projectionSnapshotProvider()?.serviceKeepAliveState
+    },
+  )
+  return projectionOnlyOpenCrayChatRuntimeGateway(
+    context = context,
+    diagnosticsSource = diagnosticsSource,
+  )
+}
+
+internal fun projectionOnlyOpenCrayChatRuntimeGateway(
+  context: Context,
+  diagnosticsSource: ProjectionOnlyChatRuntimeDiagnosticsSource,
+  stringsProvider: (() -> ProjectionOnlyChatStrings)? = null,
+  sessionUnreadCountProvider: ((String, String) -> Int)? = null,
+): OpenCrayChatRuntimeGateway {
   val appContext = context.applicationContext
-  val strings = projectionOnlyChatStrings(appContext)
+  val strings = stringsProvider?.invoke() ?: projectionOnlyChatStrings(appContext)
   return ProjectionOnlyOpenCrayChatRuntimeGateway(
     chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
     queueSnapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
@@ -1951,7 +1643,8 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
     supplementStoreFactory = FileBackedAgentSessionSupplementStoreFactory.fromContext(appContext),
     subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext),
     strings = strings,
-    connectionStateProvider = connectionStateProvider,
+    stringsProvider = stringsProvider,
+    connectionStateProvider = diagnosticsSource.connectionStateProvider,
     personalizationLocalStore = PersonalizationLocalStore.fromContext(appContext),
     workspaceRootProvider = {
       AppAgentWorkspace.directoryForContext(appContext)
@@ -1959,15 +1652,12 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
         ?.toPath()
     },
     mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
-    runtimeOwnerLifecycleProvider = { projectionSnapshotProvider()?.runtimeOwnerLifecycle },
-    runtimeOwnerWorkSummaryProvider = {
-      projectionSnapshotProvider()?.runtimeOwnerWorkSummary
-    },
-    serviceLifecycleProvider = { projectionSnapshotProvider()?.serviceLifecycle },
-    serviceWorkStateProvider = { projectionSnapshotProvider()?.serviceWorkState },
-    serviceKeepAliveStateProvider = {
-      projectionSnapshotProvider()?.serviceKeepAliveState
-    },
+    runtimeOwnerLifecycleProvider = diagnosticsSource.runtimeOwnerLifecycleProvider,
+    runtimeOwnerWorkSummaryProvider = diagnosticsSource.runtimeOwnerWorkSummaryProvider,
+    serviceLifecycleProvider = diagnosticsSource.serviceLifecycleProvider,
+    serviceWorkStateProvider = diagnosticsSource.serviceWorkStateProvider,
+    serviceKeepAliveStateProvider = diagnosticsSource.serviceKeepAliveStateProvider,
+    sessionUnreadCountProvider = sessionUnreadCountProvider,
   )
 }
 

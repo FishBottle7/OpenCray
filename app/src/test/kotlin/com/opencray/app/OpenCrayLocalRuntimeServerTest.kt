@@ -1,5 +1,7 @@
 package com.opencray.app
 
+import android.content.Context
+import android.content.ContextWrapper
 import com.opencray.app.facade.llm.EmptyLlmConfigFacade
 import com.opencray.app.facade.llm.LlmConfigFacade
 import com.opencray.app.facade.llm.LlmConfigSnapshot
@@ -65,7 +67,9 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -74,6 +78,11 @@ import org.junit.rules.TemporaryFolder
 class OpenCrayLocalRuntimeServerTest {
   @get:Rule
   val temporaryFolder: TemporaryFolder = TemporaryFolder()
+
+  @After
+  fun tearDown() {
+    OpenCrayLocalRuntimeServerRegistry.clearForTest()
+  }
 
   @Test
   fun exposesShellSnapshotOverLoopbackHttp() {
@@ -622,11 +631,7 @@ class OpenCrayLocalRuntimeServerTest {
       sessionRuntimeManager = NoOpRuntimeManager(),
       strings = hostRuntimeStrings(),
     )
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -677,11 +682,7 @@ class OpenCrayLocalRuntimeServerTest {
       sessionRuntimeManager = NoOpRuntimeManager(),
       strings = hostRuntimeStrings(),
     )
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -750,11 +751,7 @@ class OpenCrayLocalRuntimeServerTest {
       sessionRuntimeManager = NoOpRuntimeManager(),
       strings = hostRuntimeStrings(),
     )
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -818,11 +815,7 @@ class OpenCrayLocalRuntimeServerTest {
       sessionRuntimeManager = NoOpRuntimeManager(),
       strings = hostRuntimeStrings(),
     )
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -877,11 +870,7 @@ class OpenCrayLocalRuntimeServerTest {
         emittedAtEpochMs = 1_100L,
       ),
     )
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -938,11 +927,7 @@ class OpenCrayLocalRuntimeServerTest {
         emittedAtEpochMs = 1_100L,
       ),
     )
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -985,11 +970,7 @@ class OpenCrayLocalRuntimeServerTest {
       strings = hostRuntimeStrings(),
     )
     val submission = hostRuntime.submitChatMessage("Cancel me")!!
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -1029,11 +1010,7 @@ class OpenCrayLocalRuntimeServerTest {
       strings = hostRuntimeStrings(),
     )
     val submission = hostRuntime.submitChatMessage("Retry me")!!
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -1071,11 +1048,7 @@ class OpenCrayLocalRuntimeServerTest {
       sessionRuntimeManager = runtimeManager,
       strings = hostRuntimeStrings(),
     )
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -1138,11 +1111,7 @@ class OpenCrayLocalRuntimeServerTest {
         ),
       ),
     )
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -1214,11 +1183,7 @@ class OpenCrayLocalRuntimeServerTest {
         ),
       ),
     )
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -1294,11 +1259,7 @@ class OpenCrayLocalRuntimeServerTest {
         ),
       ),
     )
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -1372,11 +1333,7 @@ class OpenCrayLocalRuntimeServerTest {
         ),
       ),
     )
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -1446,11 +1403,7 @@ class OpenCrayLocalRuntimeServerTest {
         ),
       ),
     )
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -1514,11 +1467,7 @@ class OpenCrayLocalRuntimeServerTest {
       sessionRuntimeManager = NoOpRuntimeManager(),
       strings = hostRuntimeStrings(),
     )
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -1653,11 +1602,7 @@ class OpenCrayLocalRuntimeServerTest {
       ),
     )
 
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -1730,11 +1675,7 @@ class OpenCrayLocalRuntimeServerTest {
       sessionRuntimeManager = NoOpRuntimeManager(),
       strings = hostRuntimeStrings(),
     )
-    var server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    var server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -1777,11 +1718,7 @@ class OpenCrayLocalRuntimeServerTest {
         sessionRuntimeManager = NoOpRuntimeManager(),
         strings = hostRuntimeStrings(),
       )
-      server = OpenCrayLocalRuntimeServer(
-        hostRuntimeProvider = { reloadedHostRuntime },
-        requestedPort = 0,
-        shutdownExecutorOnClose = true,
-      )
+      server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { reloadedHostRuntime })
       server.ensureStarted()
 
       val linksResponse = request(server, "GET", "/v1/memory_debug_links_snapshot")
@@ -1900,11 +1837,7 @@ class OpenCrayLocalRuntimeServerTest {
       sessionRuntimeManager = NoOpRuntimeManager(),
       strings = hostRuntimeStrings(),
     )
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -2028,11 +1961,7 @@ class OpenCrayLocalRuntimeServerTest {
       sessionRuntimeManager = NoOpRuntimeManager(),
       strings = hostRuntimeStrings(),
     )
-    val server = OpenCrayLocalRuntimeServer(
-      hostRuntimeProvider = { hostRuntime },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
+    val server = hostBackedLocalRuntimeServer(hostRuntimeProvider = { hostRuntime })
     server.ensureStarted()
 
     try {
@@ -2622,6 +2551,45 @@ class OpenCrayLocalRuntimeServerTest {
     }
   }
 
+  @Test
+  fun registryUsesInjectedProvidersFactoryAndCachesInstance() {
+    val context = MinimalContext()
+    val hostRuntime = OpenCrayHostRuntime.createForTest(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      chatSessionStore = ChatSessionLocalStore(
+        temporaryFolder.newFolder("chat-store-registry-${System.nanoTime()}"),
+      ),
+      settingsFacade = NoOpSettingsFacade,
+      llmConfigFacade = EmptyLlmConfigFacade,
+      sessionRuntimeManager = NoOpRuntimeManager(),
+      strings = hostRuntimeStrings(),
+    )
+    val expectedProviders = OpenCrayLocalRuntimeServerProviders(
+      localGatewayProvider = { hostRuntime },
+      shellGatewayProvider = { hostRuntime },
+      chatRuntimeGatewayProvider = { hostRuntime },
+      skillsGatewayProvider = { hostRuntime },
+      settingsGatewayProvider = { hostRuntime },
+    )
+    var factoryCallCount = 0
+    var capturedContext: Context? = null
+    OpenCrayLocalRuntimeServerRegistry.setProvidersFactoryForTest(
+      OpenCrayLocalRuntimeServerProvidersFactory { resolvedContext ->
+        factoryCallCount += 1
+        capturedContext = resolvedContext
+        expectedProviders
+      },
+    )
+
+    val first = OpenCrayLocalRuntimeServerRegistry.fromContext(context)
+    val second = OpenCrayLocalRuntimeServerRegistry.fromContext(context)
+
+    assertSame(first, second)
+    assertEquals(1, factoryCallCount)
+    assertSame(context, capturedContext)
+    assertEquals(LocalRuntimeServerState.PHASE_CREATED, first.currentState().phase)
+  }
+
   private fun localRuntimeServer(
     llmConfigFacade: LlmConfigFacade = EmptyLlmConfigFacade,
     networkSearchConfigFacade: NetworkSearchConfigFacade = EmptyNetworkSearchConfigFacade,
@@ -2692,7 +2660,7 @@ class OpenCrayLocalRuntimeServerTest {
         ),
       )
     }
-    return OpenCrayLocalRuntimeServer(
+    return hostBackedLocalRuntimeServer(
       hostRuntimeProvider = hostRuntimeProvider,
       requestedPort = 0,
       shutdownExecutorOnClose = true,
@@ -2702,6 +2670,24 @@ class OpenCrayLocalRuntimeServerTest {
       settingsGatewayResolver = settingsGatewayResolver ?: { hostRuntime -> hostRuntime },
     )
   }
+
+  private fun hostBackedLocalRuntimeServer(
+    hostRuntimeProvider: () -> OpenCrayHostRuntime,
+    shellGatewayResolver: (OpenCrayHostRuntime) -> OpenCrayShellGateway = { it },
+    chatRuntimeGatewayResolver: (OpenCrayHostRuntime) -> OpenCrayChatRuntimeGateway = { it },
+    skillsGatewayResolver: (OpenCrayHostRuntime) -> OpenCraySkillsGateway = { it },
+    settingsGatewayResolver: (OpenCrayHostRuntime) -> OpenCraySettingsGateway = { it },
+    requestedPort: Int = 0,
+    shutdownExecutorOnClose: Boolean = true,
+  ): OpenCrayLocalRuntimeServer = OpenCrayLocalRuntimeServer(
+    localGatewayProvider = { hostRuntimeProvider() },
+    shellGatewayProvider = { shellGatewayResolver(hostRuntimeProvider()) },
+    chatRuntimeGatewayProvider = { chatRuntimeGatewayResolver(hostRuntimeProvider()) },
+    skillsGatewayProvider = { skillsGatewayResolver(hostRuntimeProvider()) },
+    settingsGatewayProvider = { settingsGatewayResolver(hostRuntimeProvider()) },
+    requestedPort = requestedPort,
+    shutdownExecutorOnClose = shutdownExecutorOnClose,
+  )
 
   private fun localRuntimeServerWithLocalGateway(
     localGateway: OpenCrayLocalHostGateway,
@@ -2760,6 +2746,12 @@ class OpenCrayLocalRuntimeServerTest {
     val statusCode: Int,
     val body: String,
   )
+
+  private class MinimalContext : ContextWrapper(null) {
+    override fun getApplicationContext(): Context = this
+
+    override fun getPackageName(): String = "org.opencray.app"
+  }
 
   private fun hostRuntimeStrings(): HostRuntimeStrings = HostRuntimeStrings(
     localeTag = "en",

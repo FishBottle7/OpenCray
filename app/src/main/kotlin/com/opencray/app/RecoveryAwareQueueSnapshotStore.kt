@@ -97,18 +97,16 @@ internal class RecoveryAwareQueueSnapshotStore(
         managedProcessesById = managedProcessesById,
       )
       val plannerProjection = plannerProjection(entry, restoreEpochMs)
-      val recoveryPlan = planner.plan(
-        RunRecoveryPlannerInput(
-          run = plannerRun(
-            entry = plannerProjection,
-            runId = runId,
-            runRecord = runRecord,
-            managedProcesses = associatedManagedProcesses,
-          ),
-          checkpoint = checkpoint,
-          lastJournalEvent = lastJournalEvent,
-          approvalState = checkpointApprovalState(checkpoint),
+      val recoveryPlan = planRunRecovery(
+        run = plannerRun(
+          entry = plannerProjection,
+          runId = runId,
+          runRecord = runRecord,
+          managedProcesses = associatedManagedProcesses,
         ),
+        checkpoint = checkpoint,
+        lastJournalEvent = lastJournalEvent,
+        planner = planner,
       )
       val rewrittenEntry = rewriteForRecoveryPlan(
         entry = entry,
@@ -582,22 +580,6 @@ internal class RecoveryAwareQueueSnapshotStore(
       ?.takeIf(String::isNotBlank)
       ?: entry.lifecycleState.name.lowercase()
 
-  private fun checkpointApprovalState(
-    checkpoint: PersistedPromptCheckpoint?,
-  ): AgentTaskApprovalState? = when (checkpoint?.checkpointKind) {
-    PromptCheckpointKind.APPROVED_PENDING_RESUME -> AgentTaskApprovalState.APPROVED
-    PromptCheckpointKind.REJECTED_PENDING_RESUME -> AgentTaskApprovalState.REJECTED
-    PromptCheckpointKind.GENERAL_RESUME,
-    PromptCheckpointKind.PRE_MODEL_REQUEST,
-    PromptCheckpointKind.ACTION_BATCH_PARSED,
-    PromptCheckpointKind.COMMENTARY_EMITTED,
-    PromptCheckpointKind.TOOL_RESULT_COMMITTED,
-    PromptCheckpointKind.SUPPLEMENT_INGESTED,
-    PromptCheckpointKind.WAITING_APPROVAL,
-    null,
-    -> null
-  }
-
   private fun approvalErrorCode(
     result: ExecutionResult?,
     checkpoint: PersistedPromptCheckpoint?,
@@ -628,29 +610,10 @@ internal class RecoveryAwareQueueSnapshotStore(
   private fun visibleRunResult(
     taskSnapshot: SessionQueueTaskSnapshot,
     result: ExecutionResult?,
-  ): ExecutionResult? {
-    if (result == null) {
-      return null
-    }
-    if (isInterruptedOnRestoreResult(result)) {
-      return result
-    }
-    return when (taskSnapshot.lifecycleState) {
-      QueueTaskLifecycleState.QUEUED,
-      QueueTaskLifecycleState.RETRY_PENDING,
-      -> null
-
-      QueueTaskLifecycleState.RUNNING,
-      QueueTaskLifecycleState.CANCEL_REQUESTED,
-      -> if (taskSnapshot.task.updatedAtEpochMs > result.finishedAtEpochMs) {
-        null
-      } else {
-        result
-      }
-
-      else -> result
-    }
-  }
+  ): ExecutionResult? = visibleProjectedRunResult(
+    taskSnapshot = taskSnapshot,
+    result = result,
+  )
 
   private fun isRestartRestoreFailure(entry: SessionQueueTaskSnapshot): Boolean =
     entry.lifecycleState == QueueTaskLifecycleState.FAILED &&
@@ -664,18 +627,14 @@ internal class RecoveryAwareQueueSnapshotStore(
     taskId: String,
     existingIds: List<String>,
     managedProcessesById: Map<String, ManagedProcessSnapshot>,
-  ): List<ManagedProcessSnapshot> = (
-    existingIds +
-      managedProcessesById.values
-        .asSequence()
-        .filter { snapshot -> snapshot.taskId == taskId }
-        .map(ManagedProcessSnapshot::processId)
-        .toList()
-    ).distinct().mapNotNull(managedProcessesById::get)
+  ): List<ManagedProcessSnapshot> = associatedManagedProcessesForProjection(
+    taskId = taskId,
+    existingIds = existingIds,
+    managedProcessesById = managedProcessesById,
+  )
 
   private fun isInterruptedOnRestoreResult(result: ExecutionResult): Boolean =
-    result.errorCode == ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE &&
-      result.metadata[METADATA_RESTORED_TERMINAL_STATE] == RESTORED_TERMINAL_STATE_INTERRUPTED
+    isInterruptedOnRestoreProjectionResult(result)
 
   private fun isRestoreInterruptedLifecycle(state: QueueTaskLifecycleState): Boolean = when (state) {
     QueueTaskLifecycleState.RUNNING,
@@ -864,12 +823,13 @@ private fun approvalCheckpointBoundary(
     runId = runId,
     taskId = taskId,
     checkpointKind = checkpointKind,
-    toolName = approvalResumeToolName(metadata) ?: approvalToolName(metadata),
+    toolName = approvalMetadataResumeToolName(metadata) ?: approvalMetadataToolName(metadata),
     pendingMessageId = runRecord?.pendingMessageId?.trim()?.takeIf(String::isNotBlank),
-    isHighRisk = approvalDenial.errorCode == SNAPSHOT_HIGH_RISK_APPROVAL_REQUIRED_ERROR_CODE ||
-      metadata[SubAgentApprovalResumeMetadata.KEY_IS_HIGH_RISK]
-        ?.trim()
-        ?.equals("true", ignoreCase = true) == true,
+    isHighRisk = approvalMetadataIsHighRisk(
+      errorCode = approvalDenial.errorCode,
+      highRiskErrorCode = SNAPSHOT_HIGH_RISK_APPROVAL_REQUIRED_ERROR_CODE,
+      metadata = metadata,
+    ),
     promptCheckpointBoundary = OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(metadata),
     promptResumeState = OpenCrayPromptResumeMetadata.decodeFromMetadata(
       metadata = metadata,
@@ -932,31 +892,6 @@ private fun syntheticApprovalBoundaryEpochMs(
   is OpenCrayToolResultEvent -> lastJournalEvent.emittedAtEpochMs
   else -> approvalDenial.finishedAtEpochMs
 }
-
-private fun approvalResumeToolName(metadata: Map<String, String>): String? =
-  metadata[OpenCrayExecutionMetadataKeys.APPROVAL_RESUME_TOOL_NAME]
-    ?.trim()
-    ?.takeIf(String::isNotBlank)
-    ?: metadata["canonicalToolName"]
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-    ?: metadata["toolName"]
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-
-private fun approvalToolName(metadata: Map<String, String>): String? =
-  metadata["normalizedToolName"]
-    ?.trim()
-    ?.takeIf(String::isNotBlank)
-    ?: metadata[SubAgentApprovalResumeMetadata.KEY_APPROVED_TOOL_NAME]
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-    ?: metadata["canonicalToolName"]
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-    ?: metadata["toolName"]
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
 
 private fun ExecutionResult?.isApprovalRequiredDenial(): Boolean =
   this?.status == ExecutionStatus.DENIED &&

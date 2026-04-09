@@ -286,8 +286,8 @@ internal fun serviceBackedOpenCraySettingsGateway(
   context: Context,
 ): OpenCraySettingsGateway {
   val appContext = context.applicationContext
-  val serviceClient = OpenCrayAgentRuntimeService.ensureClient(appContext)
-  return ServiceBackedOpenCraySettingsGateway(
+  val serviceClient = OpenCrayRuntimeServiceAccess.ensureClient(appContext)
+  return serviceBackedOpenCraySettingsGateway(
     serviceClient = serviceClient,
     fallbackGateway = projectionOnlyOpenCraySettingsGateway(
       context = appContext,
@@ -297,9 +297,17 @@ internal fun serviceBackedOpenCraySettingsGateway(
 }
 
 internal fun serviceBackedOpenCraySettingsGateway(
-  context: Context,
+  serviceClient: OpenCrayRuntimeServiceClient,
   fallbackGateway: OpenCraySettingsGateway,
 ): OpenCraySettingsGateway = ServiceBackedOpenCraySettingsGateway(
-  serviceClient = OpenCrayAgentRuntimeService.ensureClient(context.applicationContext),
+  serviceClient = serviceClient,
+  fallbackGateway = fallbackGateway,
+)
+
+internal fun serviceBackedOpenCraySettingsGateway(
+  context: Context,
+  fallbackGateway: OpenCraySettingsGateway,
+): OpenCraySettingsGateway = serviceBackedOpenCraySettingsGateway(
+  serviceClient = OpenCrayRuntimeServiceAccess.ensureClient(context.applicationContext),
   fallbackGateway = fallbackGateway,
 )
