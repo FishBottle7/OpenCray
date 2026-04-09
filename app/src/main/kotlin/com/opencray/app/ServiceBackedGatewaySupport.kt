@@ -40,6 +40,7 @@ internal fun <T> requireBinderBackedGateway(
 internal const val SERVICE_GATEWAY_BIND_AWAIT_TIMEOUT_MS: Long = 2_000L
 
 internal fun <TGateway, TPayload> observeWithDynamicGateway(
+  initialGateway: (() -> TGateway)? = null,
   currentGateway: () -> TGateway,
   observeConnectionState: ((RuntimeServiceConnectionState) -> Unit) -> (() -> Unit),
   observe: (TGateway, (TPayload) -> Unit) -> (() -> Unit),
@@ -49,13 +50,19 @@ internal fun <TGateway, TPayload> observeWithDynamicGateway(
   var disposed = false
   var activeGateway: TGateway? = null
   var activeDisposer: (() -> Unit)? = null
+  var initialSubscriptionConsumed = false
 
   fun resubscribeIfNeeded(force: Boolean = false) {
     synchronized(lock) {
       if (disposed) {
         return
       }
-      val nextGateway = currentGateway()
+      val nextGateway = if (!initialSubscriptionConsumed) {
+        initialSubscriptionConsumed = true
+        initialGateway?.invoke() ?: currentGateway()
+      } else {
+        currentGateway()
+      }
       if (!force && activeGateway === nextGateway) {
         return
       }

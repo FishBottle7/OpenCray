@@ -12,6 +12,7 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
 
   override fun observeChat(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeWithDynamicGateway(
+      initialGateway = { fallbackGateway },
       currentGateway = ::currentReadGateway,
       observeConnectionState = serviceClient::observeConnectionState,
       observe = { gateway, callback -> gateway.observeChat(callback) },
@@ -31,6 +32,7 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
 
   override fun observeChatRuntime(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeWithDynamicGateway(
+      initialGateway = { fallbackGateway },
       currentGateway = ::currentReadGateway,
       observeConnectionState = serviceClient::observeConnectionState,
       observe = { gateway, callback -> gateway.observeChatRuntime(callback) },
@@ -217,7 +219,7 @@ internal fun serviceBackedOpenCrayChatRuntimeGateway(
   context: Context,
 ): OpenCrayChatRuntimeGateway {
   val appContext = context.applicationContext
-  val serviceClient = OpenCrayAgentRuntimeService.ensureClient(appContext)
+  val serviceClient = OpenCrayRuntimeServiceAccess.ensureClient(appContext)
   return serviceBackedOpenCrayChatRuntimeGateway(
     context = context,
     fallbackGateway = projectionOnlyOpenCrayChatRuntimeGateway(
@@ -229,9 +231,17 @@ internal fun serviceBackedOpenCrayChatRuntimeGateway(
 }
 
 internal fun serviceBackedOpenCrayChatRuntimeGateway(
-  context: Context,
+  serviceClient: OpenCrayRuntimeServiceClient,
   fallbackGateway: OpenCrayChatRuntimeGateway,
 ): OpenCrayChatRuntimeGateway = ServiceBackedOpenCrayChatRuntimeGateway(
-  serviceClient = OpenCrayAgentRuntimeService.ensureClient(context.applicationContext),
+  serviceClient = serviceClient,
+  fallbackGateway = fallbackGateway,
+)
+
+internal fun serviceBackedOpenCrayChatRuntimeGateway(
+  context: Context,
+  fallbackGateway: OpenCrayChatRuntimeGateway,
+): OpenCrayChatRuntimeGateway = serviceBackedOpenCrayChatRuntimeGateway(
+  serviceClient = OpenCrayRuntimeServiceAccess.ensureClient(context.applicationContext),
   fallbackGateway = fallbackGateway,
 )

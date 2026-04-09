@@ -56,6 +56,7 @@ class SubAgentContextBuilder {
     liveContextTrace = childLiveContextTrace(
       request = request,
       memoryRecallEnabled = false,
+      replayMessageCount = 0,
     ),
     bootstrapContext = lightweightBootstrap(request.parentSessionContext.bootstrapContext),
     recalledMemory = MemoryRecallResult(),
@@ -69,8 +70,8 @@ class SubAgentContextBuilder {
   private fun delegatedChildContext(
     request: SubAgentContextBuildRequest,
     delegatedSummaryBlock: String,
-  ): AgentRuntimeSessionContext = minimalChildContext(request).copy(
-    conversation = delegatedSummaryBlock
+  ): AgentRuntimeSessionContext {
+    val delegatedConversation = delegatedSummaryBlock
       .takeIf(String::isNotBlank)
       ?.let { summary ->
         listOf(
@@ -80,8 +81,16 @@ class SubAgentContextBuilder {
           ),
         )
       }
-      .orEmpty(),
-  )
+      .orEmpty()
+    return minimalChildContext(request).copy(
+      liveContextTrace = childLiveContextTrace(
+        request = request,
+        memoryRecallEnabled = false,
+        replayMessageCount = delegatedConversation.size,
+      ),
+      conversation = delegatedConversation,
+    )
+  }
 
   private fun mirroredChildContext(
     request: SubAgentContextBuildRequest,
@@ -90,6 +99,7 @@ class SubAgentContextBuilder {
     liveContextTrace = childLiveContextTrace(
       request = request,
       memoryRecallEnabled = request.parentSessionContext.injectionPolicy.automaticMemoryInjectionEnabled,
+      replayMessageCount = request.parentConversation.size,
     ),
     conversation = request.parentConversation,
   )
@@ -105,11 +115,35 @@ class SubAgentContextBuilder {
   private fun childLiveContextTrace(
     request: SubAgentContextBuildRequest,
     memoryRecallEnabled: Boolean,
+    replayMessageCount: Int,
   ): LiveContextTrace = LiveContextTrace(
     mode = request.childTask.contextMode.wireValue,
     soulEnabled = request.parentSessionContext.injectionPolicy.soulContractEnabled,
     memoryRecallEnabled = memoryRecallEnabled,
+    replaySource = when (request.childTask.contextMode) {
+      SubAgentContextMode.MINIMAL -> CHILD_REPLAY_SOURCE_MINIMAL
+      SubAgentContextMode.DELEGATED -> CHILD_REPLAY_SOURCE_DELEGATED
+      SubAgentContextMode.MIRRORED -> CHILD_REPLAY_SOURCE_MIRRORED
+    },
+    replayMessageCount = replayMessageCount,
+    canonicalSource = parentCanonicalSource(request.parentSessionContext.liveContextTrace),
+    canonicalMessageCount = request.parentSessionContext.liveContextTrace.canonicalMessageCount,
+    canonicalHistoryPreserved =
+      request.parentSessionContext.liveContextTrace.canonicalHistoryPreserved ?: true,
   )
+
+  private fun parentCanonicalSource(parentTrace: LiveContextTrace): String =
+    parentTrace.canonicalSource
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { canonicalSource ->
+        if (canonicalSource.startsWith(PARENT_CANONICAL_SOURCE_PREFIX)) {
+          canonicalSource
+        } else {
+          "$PARENT_CANONICAL_SOURCE_PREFIX$canonicalSource"
+        }
+      }
+      ?: DEFAULT_PARENT_CANONICAL_SOURCE
 
   private fun delegatedSummaryBlock(request: SubAgentContextBuildRequest): String {
     if (request.childTask.contextMode != SubAgentContextMode.DELEGATED) {
@@ -166,5 +200,13 @@ class SubAgentContextBuilder {
         truncatedFileCount = files.count { snippet -> snippet.truncated },
       ),
     )
+  }
+
+  companion object {
+    private const val CHILD_REPLAY_SOURCE_MINIMAL: String = "subagent_minimal_context"
+    private const val CHILD_REPLAY_SOURCE_DELEGATED: String = "delegated_parent_summary"
+    private const val CHILD_REPLAY_SOURCE_MIRRORED: String = "parent_runtime_replay_mirror"
+    private const val PARENT_CANONICAL_SOURCE_PREFIX: String = "parent_"
+    private const val DEFAULT_PARENT_CANONICAL_SOURCE: String = "parent_canonical_chat_history"
   }
 }

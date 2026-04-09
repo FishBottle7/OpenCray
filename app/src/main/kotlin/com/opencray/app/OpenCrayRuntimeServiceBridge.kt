@@ -16,6 +16,12 @@ internal data class OpenCrayRuntimeServiceBridgeSnapshot(
   val serviceKeepAliveState: RuntimeServiceKeepAliveState,
 )
 
+internal data class RuntimeServiceBridgeSnapshotDependencies(
+  val dependencies: OpenCrayRuntimeContextDependencies,
+  val runtimeAccess: OpenCrayRuntimeOwnerAccess,
+  val serviceLifecycle: RuntimeServiceLifecycleDescriptor,
+)
+
 internal data class RuntimeServiceConnectionState(
   val phase: String,
   val transport: String,
@@ -238,19 +244,19 @@ internal interface OpenCrayRuntimeServiceBinderAccess {
 }
 
 internal class InProcessOpenCrayRuntimeServiceBridge(
-  private val hostProvider: () -> OpenCrayRuntimeServiceHost,
+  private val snapshotProvider: () -> OpenCrayRuntimeServiceBridgeSnapshot,
 ) : OpenCrayRuntimeServiceBridge {
   override fun loadSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot =
-    hostProvider().toBridgeSnapshot()
+    snapshotProvider()
 }
 
 internal class ExistingOpenCrayRuntimeServiceBridge(
-  private val hostProvider: () -> OpenCrayRuntimeServiceHost?,
+  private val snapshotProvider: () -> OpenCrayRuntimeServiceBridgeSnapshot?,
   private val missingHostMessage: String =
-    "Runtime service host is unavailable. Call OpenCrayAgentRuntimeService.ensureStarted(...) before loading fallback snapshots.",
+    "Runtime service host is unavailable. Call OpenCrayRuntimeServiceAccess.ensureStarted(...) before loading fallback snapshots.",
 ) : OpenCrayRuntimeServiceBridge {
   override fun loadSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot =
-    checkNotNull(hostProvider()) { missingHostMessage }.toBridgeSnapshot()
+    checkNotNull(snapshotProvider()) { missingHostMessage }
 }
 
 internal class MissingOpenCrayRuntimeServiceBridge(
@@ -335,6 +341,13 @@ private fun defaultBindingReleaseScheduler(
     HandlerRuntimeServiceDelayScheduler(Handler(Looper.getMainLooper()))
   }
 
+private fun defaultRuntimeServiceStartRequester(context: Context) {
+  OpenCrayRuntimeServiceAccess.ensureStarted(context)
+}
+
+private fun defaultRuntimeServiceBaseIntent(context: Context): Intent =
+  OpenCrayRuntimeServiceAccess.baseIntent(context.applicationContext)
+
 internal class AndroidBindingOpenCrayRuntimeServiceClient(
   private val appContext: Context,
   private val fallbackBridge: OpenCrayRuntimeServiceBridge =
@@ -342,17 +355,13 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
   projectionStore: RuntimeServiceProjectionStore? = null,
   private val bindingAdapter: OpenCrayRuntimeServiceBindingAdapter =
     AndroidOpenCrayRuntimeServiceBindingAdapter,
-  private val startRequester: (Context) -> Unit = { context ->
-    OpenCrayAgentRuntimeService.ensureStarted(context)
-  },
+  private val startRequester: (Context) -> Unit = ::defaultRuntimeServiceStartRequester,
   private val mainThreadPoster: MainThreadPoster =
     HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
   private val bindingReleaseDelayMs: Long = DEFAULT_BINDING_RELEASE_DELAY_MS,
   private val bindingReleaseScheduler: RuntimeServiceDelayScheduler =
     defaultBindingReleaseScheduler(mainThreadPoster),
-  private val serviceIntentFactory: (Context) -> Intent = { context ->
-    Intent(context, OpenCrayAgentRuntimeService::class.java)
-  },
+  private val serviceIntentFactory: (Context) -> Intent = ::defaultRuntimeServiceBaseIntent,
   private val bindingFlags: Int = Context.BIND_AUTO_CREATE,
   private val isMainThread: () -> Boolean = {
     Looper.myLooper() == Looper.getMainLooper()
@@ -805,13 +814,13 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
   }
 }
 
-internal fun OpenCrayRuntimeServiceHost.toBridgeSnapshot(
+internal fun RuntimeServiceBridgeSnapshotDependencies.toBridgeSnapshot(
+  serviceWorkState: RuntimeServiceWorkState,
   serviceKeepAliveState: RuntimeServiceKeepAliveState = RuntimeServiceKeepAliveState(),
-): OpenCrayRuntimeServiceBridgeSnapshot =
-  OpenCrayRuntimeServiceBridgeSnapshot(
-    dependencies = dependencies,
-    runtimeAccess = runtimeAccess,
-    serviceLifecycle = serviceLifecycle,
-    serviceWorkState = serviceWorkStateTracker.refresh(),
-    serviceKeepAliveState = serviceKeepAliveState,
-  )
+): OpenCrayRuntimeServiceBridgeSnapshot = OpenCrayRuntimeServiceBridgeSnapshot(
+  dependencies = dependencies,
+  runtimeAccess = runtimeAccess,
+  serviceLifecycle = serviceLifecycle,
+  serviceWorkState = serviceWorkState,
+  serviceKeepAliveState = serviceKeepAliveState,
+)

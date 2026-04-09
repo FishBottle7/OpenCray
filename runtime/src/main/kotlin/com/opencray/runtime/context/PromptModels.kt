@@ -173,9 +173,21 @@ data class LiveContextTrace(
   val mode: String? = null,
   val soulEnabled: Boolean? = null,
   val memoryRecallEnabled: Boolean? = null,
+  val replaySource: String? = null,
+  val replayMessageCount: Int? = null,
+  val canonicalSource: String? = null,
+  val canonicalMessageCount: Int? = null,
+  val canonicalHistoryPreserved: Boolean? = null,
 ) {
   val isEmpty: Boolean
-    get() = mode.isNullOrBlank() && soulEnabled == null && memoryRecallEnabled == null
+    get() = mode.isNullOrBlank() &&
+      soulEnabled == null &&
+      memoryRecallEnabled == null &&
+      replaySource.isNullOrBlank() &&
+      replayMessageCount == null &&
+      canonicalSource.isNullOrBlank() &&
+      canonicalMessageCount == null &&
+      canonicalHistoryPreserved == null
 }
 
 data class AgentRuntimeSessionContext(

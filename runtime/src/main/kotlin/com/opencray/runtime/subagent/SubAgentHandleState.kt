@@ -26,6 +26,7 @@ data class SubAgentHandleState(
   val childPromptResumeState: OpenCrayPromptResumeState? = null,
   val childPromptCheckpointBoundary: OpenCrayPromptCheckpointBoundary? = null,
   val childPromptCheckpointAtEpochMs: Long? = null,
+  val childLiveContext: SubAgentLiveContextSnapshot = SubAgentLiveContextSnapshot(),
   val childExecutionStatus: String? = null,
   val childTurnCount: Int? = null,
   val childToolCallCount: Int? = null,

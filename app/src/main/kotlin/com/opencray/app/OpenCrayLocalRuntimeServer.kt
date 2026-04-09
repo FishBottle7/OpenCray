@@ -68,31 +68,6 @@ internal class OpenCrayLocalRuntimeServer(
   private val executor: ExecutorService = Executors.newCachedThreadPool(),
   private val shutdownExecutorOnClose: Boolean = false,
 ) {
-  // Test-only convenience constructor. Production wiring should go through
-  // OpenCrayLocalRuntimeServerRegistry, which is service-owned in production and
-  // detached from UI host ownership.
-  constructor(
-    hostRuntimeProvider: () -> OpenCrayHostRuntime,
-    shellGatewayResolver: (OpenCrayHostRuntime) -> OpenCrayShellGateway = { it },
-    chatRuntimeGatewayResolver: (OpenCrayHostRuntime) -> OpenCrayChatRuntimeGateway = { it },
-    skillsGatewayResolver: (OpenCrayHostRuntime) -> OpenCraySkillsGateway = { it },
-    settingsGatewayResolver: (OpenCrayHostRuntime) -> OpenCraySettingsGateway = { it },
-    requestedPort: Int = DEFAULT_PORT,
-    bindAddress: InetAddress = DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS,
-    executor: ExecutorService = Executors.newCachedThreadPool(),
-    shutdownExecutorOnClose: Boolean = false,
-  ) : this(
-    localGatewayProvider = { hostRuntimeProvider() },
-    shellGatewayProvider = { shellGatewayResolver(hostRuntimeProvider()) },
-    chatRuntimeGatewayProvider = { chatRuntimeGatewayResolver(hostRuntimeProvider()) },
-    skillsGatewayProvider = { skillsGatewayResolver(hostRuntimeProvider()) },
-    settingsGatewayProvider = { settingsGatewayResolver(hostRuntimeProvider()) },
-    requestedPort = requestedPort,
-    bindAddress = bindAddress,
-    executor = executor,
-    shutdownExecutorOnClose = shutdownExecutorOnClose,
-  )
-
   @Volatile
   private var serverSocket: ServerSocket? = null
 
@@ -466,6 +441,10 @@ internal class OpenCrayLocalRuntimeServer(
         readOnlyOutsideWorkspace = body.optBoolean("readOnlyOutsideWorkspace", true),
         liveContextModeId = body.optString("liveContextModeId", LiveContextMode.FULL.wireValue),
         memoryToolsEnabled = body.optBoolean("memoryToolsEnabled", true),
+        subAgentContextDefaultModeId = body.optString("subAgentContextDefaultModeId").ifBlank { null },
+        subAgentContextProfileOverrides =
+          body.optJSONObject("subAgentContextProfileOverrides")?.let(::jsonObjectToStringMap)
+            ?: emptyMap(),
       )
       "GET" to "/v1/skills_snapshot" -> skillsGateway.loadSkillsSnapshot(
         query = request.queryParameter("query"),
@@ -756,6 +735,9 @@ internal data class OpenCrayLocalRuntimeServerProviders(
 internal object OpenCrayLocalRuntimeServerRegistry {
   @Volatile
   private var instance: OpenCrayLocalRuntimeServer? = null
+  @Volatile
+  private var providersFactory: OpenCrayLocalRuntimeServerProvidersFactory =
+    DefaultOpenCrayLocalRuntimeServerProvidersFactory
 
   fun peekState(): LocalRuntimeServerState = synchronized(this) {
     instance?.currentState() ?: LocalRuntimeServerState(
@@ -767,30 +749,46 @@ internal object OpenCrayLocalRuntimeServerRegistry {
   fun fromContext(
     context: Context,
     providers: OpenCrayLocalRuntimeServerProviders? = null,
-  ): OpenCrayLocalRuntimeServer =
-    instance ?: synchronized(this) {
-      instance ?: OpenCrayLocalRuntimeServer(
-        localGatewayProvider = providers?.localGatewayProvider
-          ?: { openCrayLocalHostGateway(context.applicationContext) },
-        shellGatewayProvider = providers?.shellGatewayProvider
-          ?: { serviceBackedOpenCrayShellGateway(context.applicationContext) },
-        chatRuntimeGatewayProvider = providers?.chatRuntimeGatewayProvider
-          ?: { serviceBackedOpenCrayChatRuntimeGateway(context.applicationContext) },
-        skillsGatewayProvider = providers?.skillsGatewayProvider
-          ?: { serviceBackedOpenCraySkillsGateway(context.applicationContext) },
-        settingsGatewayProvider = providers?.settingsGatewayProvider
-          ?: { serviceBackedOpenCraySettingsGateway(context.applicationContext) },
-        bindAddress = DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS,
-      ).also { created ->
-        instance = created
+  ): OpenCrayLocalRuntimeServer {
+    val appContext = context.applicationContext
+    return instance ?: synchronized(this) {
+      instance ?: run {
+        val resolvedProviders = providers ?: providersFactory.create(appContext)
+        OpenCrayLocalRuntimeServer(
+          localGatewayProvider = resolvedProviders.localGatewayProvider,
+          shellGatewayProvider = resolvedProviders.shellGatewayProvider,
+          chatRuntimeGatewayProvider = resolvedProviders.chatRuntimeGatewayProvider,
+          skillsGatewayProvider = resolvedProviders.skillsGatewayProvider,
+          settingsGatewayProvider = resolvedProviders.settingsGatewayProvider,
+          bindAddress = DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS,
+        ).also { created ->
+          instance = created
+        }
       }
     }
+  }
 
   fun ensureStarted(
     context: Context,
     providers: OpenCrayLocalRuntimeServerProviders? = null,
   ): OpenCrayLocalRuntimeServer =
     fromContext(context, providers = providers).also { server -> server.ensureStarted() }
+
+  internal fun setProvidersFactoryForTest(
+    factory: OpenCrayLocalRuntimeServerProvidersFactory?,
+  ) {
+    providersFactory = factory ?: DefaultOpenCrayLocalRuntimeServerProvidersFactory
+  }
+
+  internal fun clearForTest() {
+    val existing = synchronized(this) {
+      instance.also {
+        instance = null
+        providersFactory = DefaultOpenCrayLocalRuntimeServerProvidersFactory
+      }
+    }
+    existing?.close()
+  }
 }
 
 private fun jsonArrayToStrings(array: JSONArray): List<String> =
@@ -818,6 +816,14 @@ private fun jsonObjectToMap(payload: JSONObject): Map<String, Any?> =
       else -> value
     }
   }
+
+private fun jsonObjectToStringMap(payload: JSONObject): Map<String, String> =
+  payload.keys().asSequence().mapNotNull { key ->
+    val normalizedKey = key.trim().takeIf(String::isNotBlank) ?: return@mapNotNull null
+    payload.optString(key).trim().takeIf(String::isNotBlank)?.let { value ->
+      normalizedKey to value
+    }
+  }.toMap()
 
 private fun parseSubmitChatMessageAttachments(body: JSONObject): List<OpenCrayFinalAttachment> {
   val attachments = body.optJSONArray("attachments") ?: return emptyList()

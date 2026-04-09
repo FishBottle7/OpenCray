@@ -116,6 +116,8 @@ internal interface OpenCraySettingsGateway {
     readOnlyOutsideWorkspace: Boolean,
     liveContextModeId: String = LiveContextMode.FULL.wireValue,
     memoryToolsEnabled: Boolean = true,
+    subAgentContextDefaultModeId: String? = null,
+    subAgentContextProfileOverrides: Map<String, String> = emptyMap(),
   ): Map<String, Any?>
 }
 
@@ -227,6 +229,8 @@ internal sealed interface OpenCraySettingsWriteCommand {
     val readOnlyOutsideWorkspace: Boolean,
     val liveContextModeId: String,
     val memoryToolsEnabled: Boolean,
+    val subAgentContextDefaultModeId: String?,
+    val subAgentContextProfileOverrides: Map<String, String>,
   ) : OpenCraySettingsWriteCommand
 }
 
@@ -357,6 +361,8 @@ internal fun OpenCraySettingsGateway.dispatchSettingsWriteCommand(
       readOnlyOutsideWorkspace = command.readOnlyOutsideWorkspace,
       liveContextModeId = command.liveContextModeId,
       memoryToolsEnabled = command.memoryToolsEnabled,
+      subAgentContextDefaultModeId = command.subAgentContextDefaultModeId,
+      subAgentContextProfileOverrides = command.subAgentContextProfileOverrides,
     ),
   )
 }

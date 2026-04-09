@@ -804,7 +804,7 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun bootstrapSessionsForRuntimeServiceHostResumesAndRepairsActiveSession() {
+  fun bootstrapRuntimeServiceSessionsResumesAndRepairsActiveSession() {
     val root = temporaryFolder.newFolder("service-host-bootstrap")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
     val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
@@ -842,7 +842,7 @@ class OpenCrayRuntimeServiceHostTest {
       ),
     )
 
-    val result = bootstrapSessionsForRuntimeServiceHost(chatSessionStore, runtimeAccess)
+    val result = bootstrapRuntimeServiceSessions(chatSessionStore, runtimeAccess)
 
     assertEquals(listOf(activeSessionId), runtimeManager.resumedSessionIds)
     assertEquals(listOf(activeSessionId), result.scannedSessionIds)
@@ -851,7 +851,7 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun bootstrapSessionsForRuntimeServiceHostAlsoResumesNonActiveSessionsWithRetainedWork() {
+  fun bootstrapRuntimeServiceSessionsAlsoResumesNonActiveSessionsWithRetainedWork() {
     val root = temporaryFolder.newFolder("service-host-bootstrap-multi-session")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
     val firstSessionId = chatSessionStore.loadState().activeSession.sessionId
@@ -923,7 +923,7 @@ class OpenCrayRuntimeServiceHostTest {
       ),
     )
 
-    val result = bootstrapSessionsForRuntimeServiceHost(chatSessionStore, runtimeAccess)
+    val result = bootstrapRuntimeServiceSessions(chatSessionStore, runtimeAccess)
 
     assertEquals(
       setOf(firstSessionId, retainedWorkSessionId),
@@ -939,7 +939,7 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun bootstrapSessionsForRuntimeServiceHostAlsoResumesNonActiveSessionsWithLiveSubAgents() {
+  fun bootstrapRuntimeServiceSessionsAlsoResumesNonActiveSessionsWithLiveSubAgents() {
     val root = temporaryFolder.newFolder("service-host-bootstrap-subagent")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
     val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
@@ -997,7 +997,7 @@ class OpenCrayRuntimeServiceHostTest {
       ),
     )
 
-    val result = bootstrapSessionsForRuntimeServiceHost(chatSessionStore, runtimeAccess)
+    val result = bootstrapRuntimeServiceSessions(chatSessionStore, runtimeAccess)
 
     assertEquals(
       setOf(activeSessionId, subAgentSessionId),
@@ -1011,7 +1011,7 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun bootstrapSessionsForRuntimeServiceHostSubmitsRecoveryTaskForQueuedSubAgentWithoutActiveParentRun() {
+  fun bootstrapRuntimeServiceSessionsSubmitsRecoveryTaskForQueuedSubAgentWithoutActiveParentRun() {
     val root = temporaryFolder.newFolder("service-host-bootstrap-subagent-recovery")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
     val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
@@ -1061,7 +1061,7 @@ class OpenCrayRuntimeServiceHostTest {
       ),
     )
 
-    bootstrapSessionsForRuntimeServiceHost(chatSessionStore, runtimeAccess)
+    bootstrapRuntimeServiceSessions(chatSessionStore, runtimeAccess)
 
     assertEquals(1, recoverySession.detachedControlTasks.size)
     val recoveryTask = recoverySession.detachedControlTasks.single()
@@ -1084,18 +1084,9 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun inProcessBridgeLoadsSnapshotFromHostProvider() {
+  fun inProcessBridgeLoadsSnapshotFromSnapshotProvider() {
     val expected = bridgeSnapshot(temporaryFolder.newFolder("in-process-bridge"))
-    val bridge = InProcessOpenCrayRuntimeServiceBridge {
-      OpenCrayRuntimeServiceHost(
-        dependencies = expected.dependencies,
-        runtimeAccess = expected.runtimeAccess,
-        serviceLifecycle = expected.serviceLifecycle,
-        serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-          expected.runtimeAccess.hostAccess::activeWorkSummary,
-        ).apply { refresh() },
-      )
-    }
+    val bridge = InProcessOpenCrayRuntimeServiceBridge { expected }
 
     val actual = bridge.loadSnapshot()
 
@@ -1111,19 +1102,10 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun existingBridgeLoadsSnapshotFromExistingHost() {
+  fun existingBridgeLoadsSnapshotFromSnapshotProvider() {
     val expected = bridgeSnapshot(temporaryFolder.newFolder("existing-bridge"))
     val bridge = ExistingOpenCrayRuntimeServiceBridge(
-      hostProvider = {
-        OpenCrayRuntimeServiceHost(
-          dependencies = expected.dependencies,
-          runtimeAccess = expected.runtimeAccess,
-          serviceLifecycle = expected.serviceLifecycle,
-          serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-            expected.runtimeAccess.hostAccess::activeWorkSummary,
-          ).apply { refresh() },
-        )
-      },
+      snapshotProvider = { expected },
     )
 
     val actual = bridge.loadSnapshot()
@@ -1142,7 +1124,7 @@ class OpenCrayRuntimeServiceHostTest {
   @Test
   fun existingBridgeFailsExplicitlyWhenHostMissing() {
     val bridge = ExistingOpenCrayRuntimeServiceBridge(
-      hostProvider = { null },
+      snapshotProvider = { null },
       missingHostMessage = "runtime host missing",
     )
 
@@ -1186,16 +1168,7 @@ class OpenCrayRuntimeServiceHostTest {
       serviceStartRequested = true,
     )
     val client = BridgeBackedOpenCrayRuntimeServiceClient(
-      bridge = InProcessOpenCrayRuntimeServiceBridge {
-        OpenCrayRuntimeServiceHost(
-          dependencies = expected.dependencies,
-          runtimeAccess = expected.runtimeAccess,
-          serviceLifecycle = expected.serviceLifecycle,
-          serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-            expected.runtimeAccess.hostAccess::activeWorkSummary,
-          ).apply { refresh() },
-        )
-      },
+      bridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       connectionState = connectionState,
     )
 
@@ -1786,16 +1759,7 @@ class OpenCrayRuntimeServiceHostTest {
     var startRequestCount = 0
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
-        OpenCrayRuntimeServiceHost(
-          dependencies = expected.dependencies,
-          runtimeAccess = expected.runtimeAccess,
-          serviceLifecycle = expected.serviceLifecycle,
-          serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-            expected.runtimeAccess.hostAccess::activeWorkSummary,
-          ).apply { refresh() },
-        )
-      },
+      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       bindingAdapter = bindingAdapter,
       startRequester = { startRequestCount += 1 },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -1845,16 +1809,7 @@ class OpenCrayRuntimeServiceHostTest {
     val binderGateway = RecordingChatRuntimeGateway("binder")
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
-        OpenCrayRuntimeServiceHost(
-          dependencies = expected.dependencies,
-          runtimeAccess = expected.runtimeAccess,
-          serviceLifecycle = expected.serviceLifecycle,
-          serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-            expected.runtimeAccess.hostAccess::activeWorkSummary,
-          ).apply { refresh() },
-        )
-      },
+      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       bindingAdapter = bindingAdapter,
       startRequester = { },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -1881,16 +1836,7 @@ class OpenCrayRuntimeServiceHostTest {
     val binderGateway = RecordingShellGateway("binder")
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
-        OpenCrayRuntimeServiceHost(
-          dependencies = expected.dependencies,
-          runtimeAccess = expected.runtimeAccess,
-          serviceLifecycle = expected.serviceLifecycle,
-          serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-            expected.runtimeAccess.hostAccess::activeWorkSummary,
-          ).apply { refresh() },
-        )
-      },
+      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       bindingAdapter = bindingAdapter,
       startRequester = { },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -1917,16 +1863,7 @@ class OpenCrayRuntimeServiceHostTest {
     var startRequestCount = 0
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
-        OpenCrayRuntimeServiceHost(
-          dependencies = expected.dependencies,
-          runtimeAccess = expected.runtimeAccess,
-          serviceLifecycle = expected.serviceLifecycle,
-          serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-            expected.runtimeAccess.hostAccess::activeWorkSummary,
-          ).apply { refresh() },
-        )
-      },
+      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       bindingAdapter = bindingAdapter,
       startRequester = { startRequestCount += 1 },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -2049,16 +1986,7 @@ class OpenCrayRuntimeServiceHostTest {
     val binderGateway = RecordingSkillsGateway("binder")
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
-        OpenCrayRuntimeServiceHost(
-          dependencies = expected.dependencies,
-          runtimeAccess = expected.runtimeAccess,
-          serviceLifecycle = expected.serviceLifecycle,
-          serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-            expected.runtimeAccess.hostAccess::activeWorkSummary,
-          ).apply { refresh() },
-        )
-      },
+      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       bindingAdapter = bindingAdapter,
       startRequester = { },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -2085,16 +2013,7 @@ class OpenCrayRuntimeServiceHostTest {
     val binderGateway = RecordingSettingsGateway("binder")
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
-        OpenCrayRuntimeServiceHost(
-          dependencies = expected.dependencies,
-          runtimeAccess = expected.runtimeAccess,
-          serviceLifecycle = expected.serviceLifecycle,
-          serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-            expected.runtimeAccess.hostAccess::activeWorkSummary,
-          ).apply { refresh() },
-        )
-      },
+      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       bindingAdapter = bindingAdapter,
       startRequester = { },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -2121,16 +2040,7 @@ class OpenCrayRuntimeServiceHostTest {
     val releaseScheduler = RecordingRuntimeServiceDelayScheduler()
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
-        OpenCrayRuntimeServiceHost(
-          dependencies = expected.dependencies,
-          runtimeAccess = expected.runtimeAccess,
-          serviceLifecycle = expected.serviceLifecycle,
-          serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-            expected.runtimeAccess.hostAccess::activeWorkSummary,
-          ).apply { refresh() },
-        )
-      },
+      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       bindingAdapter = bindingAdapter,
       startRequester = { },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -2167,16 +2077,7 @@ class OpenCrayRuntimeServiceHostTest {
     val releaseScheduler = RecordingRuntimeServiceDelayScheduler()
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
-        OpenCrayRuntimeServiceHost(
-          dependencies = expected.dependencies,
-          runtimeAccess = expected.runtimeAccess,
-          serviceLifecycle = expected.serviceLifecycle,
-          serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-            expected.runtimeAccess.hostAccess::activeWorkSummary,
-          ).apply { refresh() },
-        )
-      },
+      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       bindingAdapter = bindingAdapter,
       startRequester = { },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -2294,16 +2195,7 @@ class OpenCrayRuntimeServiceHostTest {
     var startRequestCount = 0
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
-        OpenCrayRuntimeServiceHost(
-          dependencies = expected.dependencies,
-          runtimeAccess = expected.runtimeAccess,
-          serviceLifecycle = expected.serviceLifecycle,
-          serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-            expected.runtimeAccess.hostAccess::activeWorkSummary,
-          ).apply { refresh() },
-        )
-      },
+      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       bindingAdapter = bindingAdapter,
       startRequester = { startRequestCount += 1 },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -2331,16 +2223,7 @@ class OpenCrayRuntimeServiceHostTest {
     val bindingAdapter = RecordingBindingAdapter()
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
-        OpenCrayRuntimeServiceHost(
-          dependencies = expected.dependencies,
-          runtimeAccess = expected.runtimeAccess,
-          serviceLifecycle = expected.serviceLifecycle,
-          serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-            expected.runtimeAccess.hostAccess::activeWorkSummary,
-          ).apply { refresh() },
-        )
-      },
+      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       bindingAdapter = bindingAdapter,
       startRequester = { },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -2740,16 +2623,7 @@ class OpenCrayRuntimeServiceHostTest {
     val gateway = ServiceBackedOpenCrayChatRuntimeGateway(
       serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
         appContext = ContextWrapper(null),
-        fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
-          OpenCrayRuntimeServiceHost(
-            dependencies = expected.dependencies,
-            runtimeAccess = expected.runtimeAccess,
-            serviceLifecycle = expected.serviceLifecycle,
-            serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-              expected.runtimeAccess.hostAccess::activeWorkSummary,
-            ).apply { refresh() },
-          )
-        },
+        fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
         bindingAdapter = bindingAdapter,
         startRequester = { },
         mainThreadPoster = ImmediateMainThreadPoster,
@@ -2838,37 +2712,25 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun serviceBackedChatRuntimeGatewayChatObserverRechecksGatewayAfterConnectionObservationStarts() {
+  fun serviceBackedChatRuntimeGatewayObserversRecheckGatewayAfterConnectionObservationStarts() {
     val binderGateway = RecordingChatRuntimeGateway("binder")
     val fallbackGateway = RecordingChatRuntimeGateway("fallback")
     val gateway = ServiceBackedOpenCrayChatRuntimeGateway(
       serviceClient = ChatGatewayAvailableOnObserveClient(binderGateway),
       fallbackGateway = fallbackGateway,
     )
-    val observedSources = mutableListOf<String?>()
+    val observedChatSources = mutableListOf<String?>()
+    val observedRuntimeSources = mutableListOf<String?>()
 
     gateway.observeChat { snapshot ->
-      observedSources += snapshot["source"] as String?
+      observedChatSources += snapshot["source"] as String?
     }
-
-    assertEquals(listOf("fallback-chat", "binder-chat"), observedSources)
-  }
-
-  @Test
-  fun serviceBackedChatRuntimeGatewayRuntimeObserverRechecksGatewayAfterConnectionObservationStarts() {
-    val binderGateway = RecordingChatRuntimeGateway("binder")
-    val fallbackGateway = RecordingChatRuntimeGateway("fallback")
-    val gateway = ServiceBackedOpenCrayChatRuntimeGateway(
-      serviceClient = ChatGatewayAvailableOnObserveClient(binderGateway),
-      fallbackGateway = fallbackGateway,
-    )
-    val observedSources = mutableListOf<String?>()
-
     gateway.observeChatRuntime { snapshot ->
-      observedSources += snapshot["source"] as String?
+      observedRuntimeSources += snapshot["source"] as String?
     }
 
-    assertEquals(listOf("fallback-runtime", "binder-runtime"), observedSources)
+    assertEquals(listOf("fallback-chat", "binder-chat"), observedChatSources)
+    assertEquals(listOf("fallback-runtime", "binder-runtime"), observedRuntimeSources)
   }
 
   @Test
@@ -3000,16 +2862,7 @@ class OpenCrayRuntimeServiceHostTest {
     val gateway = ServiceBackedOpenCraySkillsGateway(
       serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
         appContext = ContextWrapper(null),
-        fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
-          OpenCrayRuntimeServiceHost(
-            dependencies = expected.dependencies,
-            runtimeAccess = expected.runtimeAccess,
-            serviceLifecycle = expected.serviceLifecycle,
-            serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-              expected.runtimeAccess.hostAccess::activeWorkSummary,
-            ).apply { refresh() },
-          )
-        },
+        fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
         bindingAdapter = bindingAdapter,
         startRequester = { },
         mainThreadPoster = ImmediateMainThreadPoster,
@@ -4743,16 +4596,7 @@ class OpenCrayRuntimeServiceHostTest {
     val gateway = ServiceBackedOpenCraySettingsGateway(
       serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
         appContext = ContextWrapper(null),
-        fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
-          OpenCrayRuntimeServiceHost(
-            dependencies = expected.dependencies,
-            runtimeAccess = expected.runtimeAccess,
-            serviceLifecycle = expected.serviceLifecycle,
-            serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-              expected.runtimeAccess.hostAccess::activeWorkSummary,
-            ).apply { refresh() },
-          )
-        },
+        fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
         bindingAdapter = bindingAdapter,
         startRequester = { },
         mainThreadPoster = ImmediateMainThreadPoster,
@@ -4810,16 +4654,7 @@ class OpenCrayRuntimeServiceHostTest {
     val gateway = ServiceBackedOpenCraySettingsGateway(
       serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
         appContext = ContextWrapper(null),
-        fallbackBridge = InProcessOpenCrayRuntimeServiceBridge {
-          OpenCrayRuntimeServiceHost(
-            dependencies = expected.dependencies,
-            runtimeAccess = expected.runtimeAccess,
-            serviceLifecycle = expected.serviceLifecycle,
-            serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-              expected.runtimeAccess.hostAccess::activeWorkSummary,
-            ).apply { refresh() },
-          )
-        },
+        fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
         bindingAdapter = bindingAdapter,
         startRequester = { },
         mainThreadPoster = ImmediateMainThreadPoster,
@@ -6056,6 +5891,8 @@ class OpenCrayRuntimeServiceHostTest {
       readOnlyOutsideWorkspace: Boolean,
       liveContextModeId: String,
       memoryToolsEnabled: Boolean,
+      subAgentContextDefaultModeId: String?,
+      subAgentContextProfileOverrides: Map<String, String>,
     ): Map<String, Any?> {
       lastSafetyAutomationModeId = automationModeId
       return mapOf(

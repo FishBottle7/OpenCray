@@ -19,7 +19,6 @@ import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayCancellationEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
-import java.util.Locale
 import kotlin.math.absoluteValue
 import org.opencray.app.R
 
@@ -281,26 +280,25 @@ internal class RuntimeNotificationCoordinator(
   private fun pendingApprovalNotificationsForSession(
     sessionId: String,
   ): List<RuntimeApprovalNotificationModel> {
-    val session = hostAccess.session(sessionId)
-    val runsByTaskId = session.listRuns().associateBy(AgentRunSnapshot::taskId)
-    return session.snapshot().tasks
+    return approvalRequiredTaskProjectionsForSession(
+      sessionId = sessionId,
+      hostAccess = hostAccess,
+      approvalRequiredErrorCode = ERROR_APPROVAL_REQUIRED,
+      highRiskApprovalRequiredErrorCode = ERROR_HIGH_RISK_APPROVAL_REQUIRED,
+    )
       .asSequence()
-      .filter { taskSnapshot ->
-        (taskSnapshot.lifecycleState == QueueTaskLifecycleState.SUSPENDED ||
-          taskSnapshot.lifecycleState == QueueTaskLifecycleState.FAILED) &&
-          isApprovalRequiredError(taskSnapshot.lastErrorCode) &&
-          shouldNotifyApproval(taskSnapshot.task)
+      .filter { projection ->
+        projection.isVisibleApprovalLifecycle() &&
+          shouldNotifyApproval(projection.taskSnapshot.task)
       }
-      .mapNotNull { taskSnapshot ->
-        val runSnapshot = runsByTaskId[taskSnapshot.task.id]
+      .mapNotNull { projection ->
         approvalNotificationModel(
-          sessionId = sessionId,
-          task = taskSnapshot.task,
-          errorCode = taskSnapshot.lastErrorCode,
-          metadata = runSnapshot?.resultMetadata.orEmpty(),
-          errorBody = runSnapshot?.errorMessage ?: taskSnapshot.lastErrorMessage,
-          toolReason = runSnapshot?.resultMetadata?.get("toolReason")
-            ?: (runSnapshot?.lastEvent as? OpenCrayToolCallEvent)?.call?.reason,
+          sessionId = projection.sessionId,
+          task = projection.taskSnapshot.task,
+          errorCode = projection.errorCode,
+          metadata = projection.metadata,
+          errorBody = projection.errorBody,
+          toolReason = projection.toolReason,
         )
       }
       .toList()
@@ -750,36 +748,28 @@ internal class RuntimeNotificationCoordinator(
     taskId: String,
     runId: String,
   ): PendingIntent {
-    val intent = Intent(appContext, OpenCrayAgentRuntimeService::class.java).apply {
-      setAction(action)
-      putExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SESSION_ID, sessionId)
-      putExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_TASK_ID, taskId)
-      putExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_RUN_ID, runId)
-    }
-    return PendingIntent.getService(
-      appContext,
-      stableRequestCode("$action:$sessionId:$taskId"),
-      intent,
-      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    return OpenCrayRuntimeServiceAccess.approvalActionPendingIntent(
+      context = appContext,
+      action = action,
+      sessionId = sessionId,
+      taskId = taskId,
+      runId = runId,
+      requestCode = stableRequestCode("$action:$sessionId:$taskId"),
     )
   }
 
   private fun knownSessionIds(): List<String> {
-    val state = chatSessionStore.loadState()
-    return buildList {
-      add(state.activeSession.sessionId)
-      addAll(state.sessions.map(ChatSessionLocalStore.SessionSummary::sessionId))
-    }.distinct()
+    return knownChatSessionIds(chatSessionStore)
   }
 
   private fun approvalIsHighRisk(
     errorCode: String?,
     metadata: Map<String, String>,
-  ): Boolean =
-    errorCode == ERROR_HIGH_RISK_APPROVAL_REQUIRED ||
-      metadata[SubAgentApprovalResumeMetadata.KEY_IS_HIGH_RISK]
-        ?.trim()
-        ?.equals("true", ignoreCase = true) == true
+  ): Boolean = approvalMetadataIsHighRisk(
+    errorCode = errorCode,
+    highRiskErrorCode = ERROR_HIGH_RISK_APPROVAL_REQUIRED,
+    metadata = metadata,
+  )
 
   private fun sanitizeApprovalBody(
     body: String?,
@@ -801,176 +791,15 @@ internal class RuntimeNotificationCoordinator(
     body: String,
     toolReason: String?,
     metadata: Map<String, String>,
-  ): String {
-    val details = mutableListOf<String>()
-    approvalPrimaryDetailLine(metadata)?.let(details::add)
-    approvalPathDetailLines(metadata).forEach(details::add)
-    approvalWorkingDirectoryLine(metadata)?.let(details::add)
-    approvalReasonLine(toolReason)?.let(details::add)
-    if (details.isEmpty()) {
-      return body
-    }
-    return buildString {
-      details.forEach { line -> appendLine(line) }
-      appendLine()
-      append(body)
-    }.trim()
-  }
+  ): String = approvalSupportComposeBody(
+    body = body,
+    toolReason = toolReason,
+    metadata = metadata,
+    isChinese = isChineseNotificationLocale(),
+  )
 
-  private fun approvalPrimaryDetailLine(metadata: Map<String, String>): String? =
-    when {
-      metadata["scriptPath"]?.isNotBlank() == true ->
-        approvalPrimaryDetailValue(metadata)?.let { detail ->
-          "${approvalLabel("script")}: $detail"
-        }
-      shellCommandSummary(metadata) != null ->
-        approvalPrimaryDetailValue(metadata)?.let { detail ->
-          "${approvalLabel("command")}: $detail"
-        }
-      metadata["query"]?.isNotBlank() == true ->
-        approvalPrimaryDetailValue(metadata)?.let { detail ->
-          "${approvalLabel("query")}: $detail"
-        }
-      metadata["requestedUrl"]?.isNotBlank() == true || metadata["finalUrl"]?.isNotBlank() == true ->
-        approvalPrimaryDetailValue(metadata)?.let { detail ->
-          "${approvalLabel("url")}: $detail"
-        }
-      metadata["processId"]?.isNotBlank() == true && metadata["targetKind"] == "process" ->
-        approvalPrimaryDetailValue(metadata)?.let { detail ->
-          "${approvalLabel("process")}: $detail"
-        }
-      else ->
-        approvalPrimaryDetailValue(metadata)?.let { detail ->
-          "${approvalLabel("request")}: $detail"
-        }
-    }
-
-  private fun approvalPrimaryDetailValue(metadata: Map<String, String>): String? {
-    metadata["scriptPath"]?.takeIf(String::isNotBlank)?.let { return it }
-    shellCommandSummary(metadata)?.let { return it }
-    metadata["query"]?.takeIf(String::isNotBlank)?.let { return it }
-    metadata["requestedUrl"]?.takeIf(String::isNotBlank)?.let { return it }
-    metadata["finalUrl"]?.takeIf(String::isNotBlank)?.let { return it }
-    metadata["processId"]?.takeIf(String::isNotBlank)?.let { processId ->
-      if (metadata["targetKind"] == "process") {
-        return processId
-      }
-    }
-    metadata["delegationDescription"]?.takeIf(String::isNotBlank)?.let { return it }
-    metadata["targetSummary"]?.takeIf(String::isNotBlank)?.let { return it }
-    return null
-  }
-
-  private fun approvalPathDetailLines(metadata: Map<String, String>): List<String> {
-    val sourcePath = metadata["sourcePath"]?.trim().orEmpty()
-    val destinationPath = metadata["destinationPath"]?.trim().orEmpty()
-    val delegationPromptPreview = metadata["delegationPromptPreview"]?.trim().orEmpty()
-    val delegationAllowedTools = metadata["delegationAllowedTools"]?.trim().orEmpty()
-    if (sourcePath.isNotEmpty() || destinationPath.isNotEmpty()) {
-      return buildList {
-        if (sourcePath.isNotEmpty()) {
-          add("${approvalLabel("from")}: $sourcePath")
-        }
-        if (destinationPath.isNotEmpty()) {
-          add("${approvalLabel("to")}: $destinationPath")
-        }
-        if (delegationPromptPreview.isNotEmpty()) {
-          add("${approvalLabel("prompt")}: $delegationPromptPreview")
-        }
-        if (delegationAllowedTools.isNotEmpty()) {
-          add("${approvalLabel("allowed_tools")}: $delegationAllowedTools")
-        }
-      }
-    }
-    val primaryTargetPath = metadata["primaryTargetPath"]?.trim().orEmpty()
-    val secondaryTargetPath = metadata["secondaryTargetPath"]?.trim().orEmpty()
-    val scriptPath = metadata["scriptPath"]?.trim().orEmpty()
-    val workingDirectory = metadata["workingDirectory"]?.trim().orEmpty()
-    return buildList {
-      if (
-        primaryTargetPath.isNotEmpty() &&
-        primaryTargetPath != scriptPath &&
-        primaryTargetPath != workingDirectory
-      ) {
-        add("${approvalLabel("target")}: $primaryTargetPath")
-      }
-      if (secondaryTargetPath.isNotEmpty()) {
-        add("${approvalLabel("to")}: $secondaryTargetPath")
-      }
-      if (delegationPromptPreview.isNotEmpty()) {
-        add("${approvalLabel("prompt")}: $delegationPromptPreview")
-      }
-      if (delegationAllowedTools.isNotEmpty()) {
-        add("${approvalLabel("allowed_tools")}: $delegationAllowedTools")
-      }
-    }
-  }
-
-  private fun approvalWorkingDirectoryLine(metadata: Map<String, String>): String? =
-    metadata["workingDirectory"]
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?.let { workingDirectory ->
-        "${approvalLabel("working_directory")}: $workingDirectory"
-      }
-
-  private fun approvalReasonLine(toolReason: String?): String? =
-    sanitizePotentialInternalAgentText(toolReason?.trim().orEmpty(), fallback = "")
-      .trim()
-      .takeIf(String::isNotBlank)
-      ?.let { reason ->
-        "${approvalLabel("reason")}: $reason"
-      }
-
-  private fun approvalLabel(kind: String): String {
-    val isChinese = localizedContext.resources.configuration.locales[0]
-      ?.toLanguageTag()
-      ?.startsWith("zh", ignoreCase = true) == true
-    return when (kind) {
-      "command" -> if (isChinese) "命令" else "Command"
-      "script" -> if (isChinese) "脚本" else "Script"
-      "query" -> if (isChinese) "查询" else "Query"
-      "url" -> if (isChinese) "地址" else "URL"
-      "process" -> if (isChinese) "进程" else "Process"
-      "request" -> if (isChinese) "操作" else "Request"
-      "prompt" -> if (isChinese) "委派内容" else "Prompt"
-      "allowed_tools" -> if (isChinese) "可用工具" else "Allowed tools"
-      "from" -> if (isChinese) "来源" else "From"
-      "to" -> if (isChinese) "目标" else "To"
-      "target" -> if (isChinese) "目标" else "Target"
-      "working_directory" -> if (isChinese) "工作目录" else "Working directory"
-      "reason" -> if (isChinese) "理由" else "Agent reason"
-      else -> if (isChinese) "详情" else "Details"
-    }
-  }
-
-  private fun shellCommandSummary(metadata: Map<String, String>): String? {
-    metadata["shellCommand"]?.takeIf(String::isNotBlank)?.let { return it }
-    val command = metadata["command"]?.trim().orEmpty()
-    if (command.isEmpty()) {
-      return null
-    }
-    val args = metadata["args"]
-      ?.split('\u0000')
-      ?.map(String::trim)
-      ?.filter(String::isNotEmpty)
-      .orEmpty()
-    return buildString {
-      append(command)
-      if (args.isNotEmpty()) {
-        append(' ')
-        append(args.joinToString(separator = " "))
-      }
-    }.trim()
-  }
-
-  private fun sanitizePotentialInternalAgentText(text: String, fallback: String): String {
-    val trimmed = text.trim()
-    if (trimmed.isBlank()) {
-      return fallback
-    }
-    return if (looksLikeInternalToolPayload(trimmed)) fallback else text
-  }
+  private fun sanitizePotentialInternalAgentText(text: String, fallback: String): String =
+    approvalSupportSanitizePotentialInternalAgentText(text = text, fallback = fallback)
 
   private fun sanitizePreviewText(
     text: String?,
@@ -982,47 +811,13 @@ internal class RuntimeNotificationCoordinator(
     return normalized.take(160).ifBlank { fallback }
   }
 
-  private fun looksLikeInternalToolPayload(text: String): Boolean {
-    val jsonCandidate = extractEmbeddedJsonObject(text) ?: return false
-    val normalized = jsonCandidate.lowercase(Locale.US)
-    val explicitToolAction =
-      "\"type\"" in normalized &&
-        ("\"tool_call\"" in normalized || "\"tool\"" in normalized)
-    val toolArgumentShape = "\"tool_name\"" in normalized && "\"arguments\"" in normalized
-    return explicitToolAction || toolArgumentShape
-  }
+  private fun looksLikeInternalToolPayload(text: String): Boolean =
+    approvalSupportLooksLikeInternalToolPayload(text)
 
-  private fun extractEmbeddedJsonObject(raw: String): String? {
-    val trimmed = raw.trim()
-    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-      return trimmed
-    }
-    var depth = 0
-    var startIndex = -1
-    var inString = false
-    var escaped = false
-    for ((index, character) in raw.withIndex()) {
-      when {
-        inString && escaped -> escaped = false
-        inString && character == '\\' -> escaped = true
-        character == '"' -> inString = !inString
-        !inString && character == '{' -> {
-          if (depth == 0) {
-            startIndex = index
-          }
-          depth += 1
-        }
-
-        !inString && character == '}' -> {
-          depth -= 1
-          if (depth == 0 && startIndex >= 0) {
-            return raw.substring(startIndex, index + 1)
-          }
-        }
-      }
-    }
-    return null
-  }
+  private fun isChineseNotificationLocale(): Boolean =
+    localizedContext.resources.configuration.locales[0]
+      ?.toLanguageTag()
+      ?.startsWith("zh", ignoreCase = true) == true
 
   private fun isApprovalRequiredResult(result: ExecutionResult): Boolean =
     isApprovalRequiredError(result.errorCode) && result.status == ExecutionStatus.DENIED

@@ -76,7 +76,7 @@ class OpenCrayFlutterActivity :
 
   override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
     super.configureFlutterEngine(flutterEngine)
-    val bridge = hostBridge ?: OpenCrayFlutterHostBridge(this).also { created ->
+    val bridge = hostBridge ?: openCrayFlutterHostBridge(this).also { created ->
       hostBridge = created
     }
     bridge.attach(flutterEngine)
@@ -200,9 +200,7 @@ class OpenCrayFlutterActivity :
       ?.trim()
       ?.takeIf(String::isNotBlank)
     if (targetSessionId != null) {
-      val selected = runCatching {
-        serviceBackedOpenCrayChatRuntimeGateway(applicationContext).selectChatSession(targetSessionId)
-      }.isSuccess
+      val selected = hostBridge?.selectChatSession(targetSessionId) == true
       if (selected) {
         RuntimeNotificationCoordinator.dismissApprovalNotification(
           applicationContext,

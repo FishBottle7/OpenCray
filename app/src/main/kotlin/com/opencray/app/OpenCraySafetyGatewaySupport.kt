@@ -20,6 +20,10 @@ internal fun SafetySettingsSnapshot.toSafetyGatewayMap(): Map<String, Any?> = ma
   "readOnlyOutsideWorkspace" to readOnlyOutsideWorkspace,
   "liveContextModeId" to liveContextMode.wireValue,
   "memoryToolsEnabled" to memoryToolsEnabled,
+  "subAgentContextDefaultModeId" to subAgentContextDefaultMode?.wireValue,
+  "subAgentContextProfileOverrides" to PublicSubAgentContextPolicySettings.toWireMap(
+    subAgentContextProfileOverrides,
+  ),
 )
 
 internal fun safetySaveRequest(
@@ -41,6 +45,8 @@ internal fun safetySaveRequest(
   readOnlyOutsideWorkspace: Boolean,
   liveContextModeId: String,
   memoryToolsEnabled: Boolean,
+  subAgentContextDefaultModeId: String?,
+  subAgentContextProfileOverrides: Map<String, String>,
 ): SaveSafetySettingsRequest = SaveSafetySettingsRequest(
   automationModeId = automationModeId,
   rollbackJournalEnabled = rollbackJournalEnabled,
@@ -60,6 +66,8 @@ internal fun safetySaveRequest(
   readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
   liveContextModeId = liveContextModeId,
   memoryToolsEnabled = memoryToolsEnabled,
+  subAgentContextDefaultModeId = subAgentContextDefaultModeId,
+  subAgentContextProfileOverrides = subAgentContextProfileOverrides,
 )
 
 private fun SafetySettingsLocationSnapshot.toSafetyGatewayMap(): Map<String, Any?> = mapOf(

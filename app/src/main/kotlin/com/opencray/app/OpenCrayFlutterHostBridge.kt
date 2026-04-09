@@ -9,13 +9,29 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 
+internal fun openCrayFlutterHostBridge(
+  context: Context,
+  gatewayBundleFactory: OpenCrayClientGatewayBundleFactory =
+    DefaultOpenCrayClientGatewayBundleFactory,
+): OpenCrayFlutterHostBridge {
+  val gatewayBundle = gatewayBundleFactory.create(context.applicationContext)
+  return OpenCrayFlutterHostBridge(
+    context = context,
+    localHostGateway = gatewayBundle.localHostGateway,
+    shellGateway = gatewayBundle.shellGateway,
+    chatRuntimeGateway = gatewayBundle.chatRuntimeGateway,
+    skillsGateway = gatewayBundle.skillsGateway,
+    settingsGateway = gatewayBundle.settingsGateway,
+  )
+}
+
 internal class OpenCrayFlutterHostBridge(
   private val context: Context,
-  private val localHostGateway: OpenCrayLocalHostGateway = openCrayLocalHostGateway(context),
-  private val shellGateway: OpenCrayShellGateway = serviceBackedOpenCrayShellGateway(context),
-  private val chatRuntimeGateway: OpenCrayChatRuntimeGateway = serviceBackedOpenCrayChatRuntimeGateway(context),
-  private val skillsGateway: OpenCraySkillsGateway = serviceBackedOpenCraySkillsGateway(context),
-  private val settingsGateway: OpenCraySettingsGateway = serviceBackedOpenCraySettingsGateway(context),
+  private val localHostGateway: OpenCrayLocalHostGateway,
+  private val shellGateway: OpenCrayShellGateway,
+  private val chatRuntimeGateway: OpenCrayChatRuntimeGateway,
+  private val skillsGateway: OpenCraySkillsGateway,
+  private val settingsGateway: OpenCraySettingsGateway,
   private val debugPythonScriptRunnerFactory: () -> DebugPythonScriptRunner = {
     DebugPythonScriptRunner(context.applicationContext)
   },
@@ -94,6 +110,11 @@ internal class OpenCrayFlutterHostBridge(
     chatObserverDisposer = null
     chatRuntimeObserverDisposer = null
   }
+
+  fun selectChatSession(sessionId: String): Boolean =
+    runCatching {
+      chatRuntimeGateway.selectChatSession(sessionId)
+    }.isSuccess
 
   internal fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
     if (call.method == "pickChatAttachments") {
@@ -436,6 +457,19 @@ internal class OpenCrayFlutterHostBridge(
               liveContextModeId =
                 call.argument<String>("liveContextModeId") ?: LiveContextMode.FULL.wireValue,
               memoryToolsEnabled = call.argument<Boolean>("memoryToolsEnabled") != false,
+              subAgentContextDefaultModeId = call.argument<String>("subAgentContextDefaultModeId"),
+              subAgentContextProfileOverrides = call.argument<Map<*, *>>(
+                "subAgentContextProfileOverrides",
+              )?.entries
+                ?.mapNotNull { (key, value) ->
+                  val profileId = (key as? String)?.trim()?.takeIf(String::isNotBlank)
+                    ?: return@mapNotNull null
+                  val modeId = (value as? String)?.trim()?.takeIf(String::isNotBlank)
+                    ?: return@mapNotNull null
+                  profileId to modeId
+                }
+                ?.toMap()
+                ?: emptyMap(),
             )
           }
           return

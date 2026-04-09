@@ -94,7 +94,7 @@ internal class ScheduledTaskWakeWorker(
       .takeIf { value -> value >= 0L }
       ?: return Result.failure()
     return runCatching {
-      OpenCrayAgentRuntimeService.startScheduledTask(
+      OpenCrayRuntimeServiceAccess.startScheduledTask(
         applicationContext,
         ScheduledTaskWakeCommand(
           scheduleId = scheduleId,
@@ -132,11 +132,11 @@ internal class ScheduledTaskRepairWorker(
       val hasInteractiveRepairWork = hasPotentialInteractiveRunRepairWork(applicationContext)
       val scheduledRepairStarted = when {
         !hasDueCommands -> true
-        else -> OpenCrayAgentRuntimeService.repairSchedules(applicationContext, reason)
+        else -> OpenCrayRuntimeServiceAccess.repairSchedules(applicationContext, reason)
       }
       val interactiveRepairStarted = when {
         !hasInteractiveRepairWork -> true
-        else -> OpenCrayAgentRuntimeService.resumeInterruptedRuns(applicationContext, reason)
+        else -> OpenCrayRuntimeServiceAccess.resumeInterruptedRuns(applicationContext, reason)
       }
       when {
         scheduledRepairStarted && interactiveRepairStarted -> Result.success()

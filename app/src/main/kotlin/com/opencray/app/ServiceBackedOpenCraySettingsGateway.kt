@@ -231,6 +231,8 @@ internal class ServiceBackedOpenCraySettingsGateway(
     readOnlyOutsideWorkspace: Boolean,
     liveContextModeId: String,
     memoryToolsEnabled: Boolean,
+    subAgentContextDefaultModeId: String?,
+    subAgentContextProfileOverrides: Map<String, String>,
   ): Map<String, Any?> = dispatchPayloadWriteCommand(
     operation = "saveSafetySettings",
     command = OpenCraySettingsWriteCommand.SaveSafetySettings(
@@ -252,6 +254,8 @@ internal class ServiceBackedOpenCraySettingsGateway(
       readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
       liveContextModeId = liveContextModeId,
       memoryToolsEnabled = memoryToolsEnabled,
+      subAgentContextDefaultModeId = subAgentContextDefaultModeId,
+      subAgentContextProfileOverrides = subAgentContextProfileOverrides,
     ),
   )
 
@@ -286,8 +290,8 @@ internal fun serviceBackedOpenCraySettingsGateway(
   context: Context,
 ): OpenCraySettingsGateway {
   val appContext = context.applicationContext
-  val serviceClient = OpenCrayAgentRuntimeService.ensureClient(appContext)
-  return ServiceBackedOpenCraySettingsGateway(
+  val serviceClient = OpenCrayRuntimeServiceAccess.ensureClient(appContext)
+  return serviceBackedOpenCraySettingsGateway(
     serviceClient = serviceClient,
     fallbackGateway = projectionOnlyOpenCraySettingsGateway(
       context = appContext,
@@ -297,9 +301,17 @@ internal fun serviceBackedOpenCraySettingsGateway(
 }
 
 internal fun serviceBackedOpenCraySettingsGateway(
-  context: Context,
+  serviceClient: OpenCrayRuntimeServiceClient,
   fallbackGateway: OpenCraySettingsGateway,
 ): OpenCraySettingsGateway = ServiceBackedOpenCraySettingsGateway(
-  serviceClient = OpenCrayAgentRuntimeService.ensureClient(context.applicationContext),
+  serviceClient = serviceClient,
+  fallbackGateway = fallbackGateway,
+)
+
+internal fun serviceBackedOpenCraySettingsGateway(
+  context: Context,
+  fallbackGateway: OpenCraySettingsGateway,
+): OpenCraySettingsGateway = serviceBackedOpenCraySettingsGateway(
+  serviceClient = OpenCrayRuntimeServiceAccess.ensureClient(context.applicationContext),
   fallbackGateway = fallbackGateway,
 )

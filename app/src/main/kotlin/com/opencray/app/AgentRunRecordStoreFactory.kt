@@ -27,6 +27,7 @@ import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionState
+import com.opencray.runtime.subagent.SubAgentLiveContextSnapshot
 import java.io.File
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
@@ -127,6 +128,7 @@ internal data class PersistedAgentRunEvent(
   val subAgentDepth: Int? = null,
   val subAgentExecutionState: String? = null,
   val subAgentContinuationKind: String? = null,
+  val subAgentLiveContext: SubAgentLiveContextSnapshot? = null,
   val subAgentResumable: Boolean? = null,
   val subAgentRequiresUserAction: Boolean? = null,
   val subAgentIsHighRisk: Boolean? = null,
@@ -360,6 +362,7 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     subAgentDepth = depth,
     subAgentExecutionState = executionState?.wireValue,
     subAgentContinuationKind = continuationKind?.wireValue,
+    subAgentLiveContext = liveContext?.takeUnless { it.isEmpty },
     subAgentResumable = resumable,
     subAgentRequiresUserAction = requiresUserAction,
     subAgentIsHighRisk = isHighRisk,
@@ -573,6 +576,7 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
       summary = text?.trim()?.takeIf(String::isNotBlank),
       executionState = restoredExecutionState,
       continuationKind = restoredContinuationKind,
+      liveContext = subAgentLiveContext?.takeUnless { it.isEmpty },
       resumable = subAgentResumable ?: (restoredContinuationKind != SubAgentContinuationKind.NONE),
       requiresUserAction = subAgentRequiresUserAction ?: (
         restoredExecutionState == SubAgentExecutionState.WAITING_APPROVAL ||

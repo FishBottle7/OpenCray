@@ -60,12 +60,14 @@ import com.opencray.runtime.subagent.SubAgentContextBuildRequest
 import com.opencray.runtime.subagent.SubAgentContextMode
 import com.opencray.runtime.subagent.SubAgentApprovalResume
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
+import com.opencray.runtime.subagent.SubAgentContextPolicy
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionCoordinator
 import com.opencray.runtime.subagent.SubAgentExecutionKey
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentExecutionSnapshot
 import com.opencray.runtime.subagent.SubAgentHandleState
+import com.opencray.runtime.subagent.SubAgentLiveContextSnapshot
 import com.opencray.runtime.subagent.SubAgentMetadataKeys
 import com.opencray.runtime.subagent.SubAgentProfile
 import com.opencray.runtime.subagent.SubAgentResultCompressor
@@ -118,6 +120,7 @@ data class OpenCrayAgentRuntimeConfig(
   val llmAuthHeaders: Map<String, String> = emptyMap(),
   val inheritedActiveSkillCapsule: ActiveSkillCapsule? = null,
   val subAgentContextBuilder: SubAgentContextBuilder = SubAgentContextBuilder(),
+  val subAgentContextPolicy: SubAgentContextPolicy = SubAgentContextPolicy(),
   val subAgentExecutionCoordinator: SubAgentExecutionCoordinator =
     InMemorySubAgentExecutionCoordinator(),
   val seededSubAgentHandles: List<SubAgentHandleState> = emptyList(),
@@ -5179,6 +5182,7 @@ class OpenCrayAgentRuntime(
       childTaskId = handle.childTaskId,
       summary = null,
       snapshot = SubAgentExecutionSnapshot.running(),
+      liveContext = handle.childLiveContext,
     )
     val approvalContinuation = takePendingApprovalContinuation(handle, handles)
     val execution = executeSubAgentHandleLifecycle(
@@ -5305,6 +5309,7 @@ class OpenCrayAgentRuntime(
           childTaskId = createdHandle.childTaskId,
           summary = createdHandle.snapshot.summaryText(),
           snapshot = createdHandle.snapshot,
+          liveContext = createdHandle.childLiveContext,
         )
       }
     }
@@ -5681,6 +5686,7 @@ class OpenCrayAgentRuntime(
           else -> "Queued delegated child run started."
         },
         snapshot = runningSnapshot,
+        liveContext = runningHandle.childLiveContext,
       )
     }
     val childResult = executeSubAgentHandleRuntime(
@@ -5701,11 +5707,13 @@ class OpenCrayAgentRuntime(
       childRunId = runningHandle.childRunId,
       childTaskId = runningHandle.childTaskId,
     )
+    val childLiveContext = SubAgentLiveContextSnapshot.fromRuntimeMetadata(childResult.metadata)
     val updatedHandle = runningHandle
       .withClearedChildPromptCheckpoint(updatedAtEpochMs = clock())
       .copy(
         snapshot = compressedChildResult,
         pendingApprovalResume = childApprovalResume,
+        childLiveContext = childLiveContext,
         childExecutionStatus = childResult.status.name,
         childTurnCount = childResult.metadata["turnCount"]?.toIntOrNull(),
         childToolCallCount = childResult.metadata["toolCallCount"]?.toIntOrNull(),
@@ -5733,6 +5741,7 @@ class OpenCrayAgentRuntime(
       childTaskId = updatedHandle.childTaskId,
       summary = compressedChildResult.summaryText(),
       snapshot = compressedChildResult,
+      liveContext = updatedHandle.childLiveContext,
     )
     return SubAgentHandleLifecycleExecution(
       handle = updatedHandle,
@@ -5904,11 +5913,13 @@ class OpenCrayAgentRuntime(
         childRunId = handle.childRunId,
         childTaskId = handle.childTaskId,
       )
+      val childLiveContext = SubAgentLiveContextSnapshot.fromRuntimeMetadata(childResult.metadata)
       updatedHandle = handle
         .withClearedChildPromptCheckpoint(updatedAtEpochMs = clock())
         .copy(
           snapshot = compressedChildResult,
           pendingApprovalResume = childApprovalResume,
+          childLiveContext = childLiveContext,
           childExecutionStatus = childResult.status.name,
           childTurnCount = childResult.metadata["turnCount"]?.toIntOrNull(),
           childToolCallCount = childResult.metadata["toolCallCount"]?.toIntOrNull(),
@@ -5933,6 +5944,7 @@ class OpenCrayAgentRuntime(
       childTaskId = finalizedHandle.childTaskId,
       summary = requireNotNull(updatedSnapshot).summaryText(),
       snapshot = requireNotNull(updatedSnapshot),
+      liveContext = finalizedHandle.childLiveContext,
     )
   }
 
@@ -6052,11 +6064,13 @@ class OpenCrayAgentRuntime(
       childRunId = handle.childRunId,
       childTaskId = handle.childTaskId,
     )
+    val childLiveContext = SubAgentLiveContextSnapshot.fromRuntimeMetadata(childResult.metadata)
     updatedHandle = handle
       .withClearedChildPromptCheckpoint(updatedAtEpochMs = clock())
       .copy(
         snapshot = compressedChildResult,
         pendingApprovalResume = childApprovalResume,
+        childLiveContext = childLiveContext,
         childExecutionStatus = childResult.status.name,
         childTurnCount = childResult.metadata["turnCount"]?.toIntOrNull(),
         childToolCallCount = childResult.metadata["toolCallCount"]?.toIntOrNull(),
@@ -6076,6 +6090,7 @@ class OpenCrayAgentRuntime(
       childTaskId = finalizedHandle.childTaskId,
       summary = requireNotNull(updatedSnapshot).summaryText(),
       snapshot = requireNotNull(updatedSnapshot),
+      liveContext = finalizedHandle.childLiveContext,
     )
   }
 
@@ -6162,6 +6177,7 @@ class OpenCrayAgentRuntime(
         else -> "Queued delegated child run started."
       },
       snapshot = handle.snapshot,
+      liveContext = handle.childLiveContext,
     )
   }
 
@@ -6289,6 +6305,7 @@ class OpenCrayAgentRuntime(
         childTaskId = handle.childTaskId,
         summary = cancelledSnapshot.summaryText(),
         snapshot = cancelledSnapshot,
+        liveContext = handle.childLiveContext,
       )
       return AgentToolResult(
         toolName = call.toolName,
@@ -6403,6 +6420,7 @@ class OpenCrayAgentRuntime(
         childTaskId = handle.childTaskId,
         summary = snapshot.summaryText(),
         snapshot = snapshot,
+        liveContext = handle.childLiveContext,
       )
     }
   }
@@ -6709,6 +6727,7 @@ class OpenCrayAgentRuntime(
       ?.let { put("childExecutionStatus", it) }
     handle.childTurnCount?.let { put("childTurnCount", it.toString()) }
     handle.childToolCallCount?.let { put("childToolCallCount", it.toString()) }
+    putAll(handle.childLiveContext.toMetadataMap())
     putAll(handle.snapshot.metadata())
     handle.pendingApprovalResume?.let { resume ->
       putAll(
@@ -6750,6 +6769,27 @@ class OpenCrayAgentRuntime(
         ?.let { status -> put("childExecutionStatus", status) }
       handle.childTurnCount?.let { turnCount -> put("childTurnCount", turnCount) }
       handle.childToolCallCount?.let { toolCallCount -> put("childToolCallCount", toolCallCount) }
+      handle.childLiveContext.toMap()?.let { liveContext ->
+        put(
+          "liveContext",
+          buildJsonObject {
+            (liveContext["mode"] as String?)?.let { put("mode", it) }
+            (liveContext["soulEnabled"] as Boolean?)?.let { put("soulEnabled", it) }
+            (liveContext["memoryRecallEnabled"] as Boolean?)?.let {
+              put("memoryRecallEnabled", it)
+            }
+            (liveContext["replaySource"] as String?)?.let { put("replaySource", it) }
+            (liveContext["replayMessageCount"] as Int?)?.let { put("replayMessageCount", it) }
+            (liveContext["canonicalSource"] as String?)?.let { put("canonicalSource", it) }
+            (liveContext["canonicalMessageCount"] as Int?)?.let {
+              put("canonicalMessageCount", it)
+            }
+            (liveContext["canonicalHistoryPreserved"] as Boolean?)?.let {
+              put("canonicalHistoryPreserved", it)
+            }
+          },
+        )
+      }
       handle.childPromptResumeState?.let { put("hasPromptResumeState", true) }
       handle.childPromptCheckpointBoundary?.wireValue?.let { boundary ->
         put("childPromptCheckpointBoundary", boundary)
@@ -7093,6 +7133,7 @@ class OpenCrayAgentRuntime(
   ): AgentToolResult {
     val childTurnCount = childResult.metadata["turnCount"].orEmpty()
     val childToolCallCount = childResult.metadata["toolCallCount"].orEmpty()
+    val childLiveContext = SubAgentLiveContextSnapshot.fromRuntimeMetadata(childResult.metadata)
     val childApprovalResume = childApprovalResume(
       childResult = childResult,
       agentId = handle.agentId,
@@ -7119,6 +7160,7 @@ class OpenCrayAgentRuntime(
       if (childToolCallCount.isNotBlank()) {
         put("childToolCallCount", childToolCallCount)
       }
+      putAll(childLiveContext.toMetadataMap())
       putAll(compressedChildResult.metadata())
       putAll(childApprovalMetadata)
     }
@@ -7190,6 +7232,7 @@ class OpenCrayAgentRuntime(
     childTaskId: String,
     summary: String?,
     snapshot: SubAgentExecutionSnapshot,
+    liveContext: SubAgentLiveContextSnapshot? = null,
   ) {
     eventSink.onRunEvent(
       task = task,
@@ -7206,6 +7249,7 @@ class OpenCrayAgentRuntime(
         summary = summary,
         executionState = snapshot.state,
         continuationKind = snapshot.continuationKind,
+        liveContext = liveContext?.takeUnless { it.isEmpty },
         resumable = snapshot.resumable,
         requiresUserAction = snapshot.requiresUserAction,
         isHighRisk = snapshot.isHighRisk,
