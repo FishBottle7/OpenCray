@@ -21,13 +21,14 @@ plugins {
     id("dev.flutter.flutter-plugin-loader") version "1.0.0"
     id("com.android.application") version "8.12.0" apply false
     id("com.android.library") version "8.12.0" apply false
-    id("org.jetbrains.kotlin.android") version "1.9.22" apply false
-    id("org.jetbrains.kotlin.plugin.serialization") version "1.9.22" apply false
+    id("org.jetbrains.kotlin.android") version "2.2.21" apply false
+    id("org.jetbrains.kotlin.plugin.serialization") version "2.2.21" apply false
 }
 
 include(":app")
 include(":core")
 include(":filesystem")
+include(":litertlm_bridge")
 include(":llm")
 include(":mcp")
 include(":persistence")
@@ -37,6 +38,7 @@ include(":skills")
 
 project(":core").projectDir = file("../../core")
 project(":filesystem").projectDir = file("../../filesystem")
+project(":litertlm_bridge").projectDir = file("../../litertlm_bridge")
 project(":llm").projectDir = file("../../llm")
 project(":mcp").projectDir = file("../../mcp")
 project(":persistence").projectDir = file("../../persistence")

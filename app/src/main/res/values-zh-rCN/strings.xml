@@ -32,6 +32,7 @@
     <string name="chat_default_session_title">新对话</string>
     <string name="chat_messages_badge">%1$d 条消息</string>
     <string name="chat_summary_reply_in_progress">正在生成回复</string>
+    <string name="chat_summary_on_device_preparing">正在准备端侧模型。</string>
     <string name="chat_summary_awaiting_direction">等待你的下一步指示。</string>
     <string name="chat_summary_supplement_recorded">已记录。到达下一个安全检查点时，这条消息会并入当前运行。</string>
     <string name="chat_summary_approval_follow_up_recorded">已记录。当前运行正在等待审批，这条消息会在审批决定之后处理。</string>
@@ -182,6 +183,7 @@
     <string name="llm_error_base_url_scheme">Base URL 必须以 http:// 或 https:// 开头。</string>
     <string name="chat_agent_thinking">思考中…</string>
     <string name="chat_message_opencray">给 OpenCray 发消息</string>
+    <string name="chat_message_on_device_preparing">正在准备端侧模型</string>
     <string name="chat_message_opencray_do_differently">换个方式说</string>
     <string name="chat_trace_thinking_active">正在分析请求，并决定下一步要做什么。</string>
     <string name="chat_trace_thinking_collapsed">已完成一轮思考。</string>
@@ -350,6 +352,11 @@
     <string name="runtime_notification_completion_channel_description">当后台运行结束或被中断时显示。</string>
     <string name="runtime_notification_schedule_channel_name">定时任务</string>
     <string name="runtime_notification_schedule_channel_description">当定时任务开始、跳过或失败时显示。</string>
+    <string name="model_download_notification_channel_name">模型下载</string>
+    <string name="model_download_notification_channel_description">当 OpenCray 下载端侧模型时显示进度。</string>
+    <string name="model_download_notification_title">正在下载 %1$s</string>
+    <string name="model_download_notification_progress_text">已下载 %1$s / %2$s</string>
+    <string name="model_download_notification_verifying_text">正在校验模型文件</string>
     <string name="runtime_notification_action_open">打开</string>
     <string name="runtime_notification_action_approve">批准</string>
     <string name="runtime_notification_action_reject">拒绝</string>

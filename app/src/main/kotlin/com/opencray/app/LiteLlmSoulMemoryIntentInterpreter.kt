@@ -40,6 +40,12 @@ internal class LiteLlmSoulMemoryIntentInterpreter(
         reason = "LLM settings are not configured for soul memory interpretation.",
       )
     }
+    if (settings.isOnDeviceProviderMode()) {
+      return SoulMemoryIntentInterpretation.Unavailable(
+        allowHeuristicFallback = false,
+        reason = "On-device LLM mode is not available for soul memory interpretation yet.",
+      )
+    }
 
     val gateway = gatewayFactory(
       buildRouting(settings),

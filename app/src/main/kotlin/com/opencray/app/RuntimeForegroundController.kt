@@ -168,6 +168,7 @@ internal object RuntimeNotificationChannelRegistry {
   const val CHANNEL_RUNTIME_APPROVAL: String = "runtime_approval"
   const val CHANNEL_RUNTIME_COMPLETION: String = "runtime_completion"
   const val CHANNEL_RUNTIME_SCHEDULE: String = "runtime_schedule"
+  const val CHANNEL_MODEL_DOWNLOAD: String = "model_download"
 
   fun ensureRegistered(context: Context) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
@@ -203,6 +204,13 @@ internal object RuntimeNotificationChannelRegistry {
           NotificationManager.IMPORTANCE_DEFAULT,
         ).apply {
           description = context.getString(R.string.runtime_notification_schedule_channel_description)
+        },
+        NotificationChannel(
+          CHANNEL_MODEL_DOWNLOAD,
+          context.getString(R.string.model_download_notification_channel_name),
+          NotificationManager.IMPORTANCE_LOW,
+        ).apply {
+          description = context.getString(R.string.model_download_notification_channel_description)
         },
       ),
     )

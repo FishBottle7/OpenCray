@@ -11,6 +11,29 @@ import 'package:opencray/core/models/opencray_image_reference.dart';
 import 'package:opencray/core/models/opencray_shell_snapshot.dart';
 import 'package:opencray/features/settings/settings.dart';
 
+const List<LlmOnDeviceModelOption> _defaultOnDeviceLlmModels =
+    <LlmOnDeviceModelOption>[
+      LlmOnDeviceModelOption(
+        id: 'gemma-4-e2b-it',
+        title: 'Gemma 4 E2B',
+        subtitle: 'Instruction-tuned Gemma 4 E2B for LiteRT-LM.',
+        sizeLabel: '2.58 GB',
+        fileSizeBytes: 2583085056,
+        installState: 'ready',
+        downloadedBytes: 2583085056,
+        downloadBytesPerSecond: 0,
+        sha256Verified: true,
+      ),
+      LlmOnDeviceModelOption(
+        id: 'gemma-4-e4b-it',
+        title: 'Gemma 4 E4B',
+        subtitle: 'Instruction-tuned Gemma 4 E4B for LiteRT-LM.',
+        sizeLabel: '3.65 GB',
+        fileSizeBytes: 3654467584,
+        installState: 'not_downloaded',
+      ),
+    ];
+
 void main() {
   testWidgets('standalone llm page auto-saves when a field loses focus', (
     tester,
@@ -73,6 +96,78 @@ void main() {
     expect(facade.llmConfig.apiKey, 'secret');
     expect(facade.llmConfig.enabled, isTrue);
   });
+
+  testWidgets(
+    'standalone llm page shows download speed without a separate downloading chip',
+    (tester) async {
+      final facade = _FakeSettingsFacade(
+        llmConfig: const LlmConfigSnapshot(
+          localeTag: 'en',
+          enabled: true,
+          providerId: 'openai',
+          selectedProviderOptionId: 'openai',
+          protocol: 'openai',
+          providerOptions: <LlmProviderOption>[
+            LlmProviderOption(
+              id: 'openai',
+              providerId: 'openai',
+              title: 'OpenAI',
+              subtitle: 'Official OpenAI-compatible endpoint.',
+              defaultBaseUrl: 'https://api.openai.com/v1',
+              defaultModel: 'gpt-4o-mini',
+              protocol: 'openai',
+              apiKey: '',
+              isCustom: false,
+            ),
+          ],
+          providerName: 'OpenAI',
+          providerNotes: '',
+          baseUrl: 'https://api.openai.com/v1',
+          apiKey: '',
+          model: 'gpt-4o-mini',
+          reasoningEffort: 'medium',
+          systemPrompt: '',
+          helperText: 'Helper text',
+          providerMode: 'on_device_model',
+          onDeviceModels: <LlmOnDeviceModelOption>[
+            LlmOnDeviceModelOption(
+              id: 'gemma-4-e2b-it',
+              title: 'Gemma 4 E2B',
+              subtitle: 'Instruction-tuned Gemma 4 E2B for LiteRT-LM.',
+              sizeLabel: '2.58 GB',
+              fileSizeBytes: 2583085056,
+              installState: 'downloading',
+              downloadedBytes: 260000000,
+              downloadBytesPerSecond: 12582912,
+            ),
+          ],
+          selectedOnDeviceModelId: 'gemma-4-e2b-it',
+        ),
+        validationResult: const LlmValidationResult(
+          isSuccess: true,
+          message: 'Validated.',
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.llm,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Downloading · 0.24 GB / 2.58 GB · 12.0 MB/s'),
+        findsOneWidget,
+      );
+      expect(find.text('Downloading'), findsNothing);
+      expect(find.text('Cancel'), findsOneWidget);
+    },
+  );
 
   testWidgets(
     'standalone llm page shows validation feedback when validation fails',
@@ -470,6 +565,8 @@ void main() {
     await tester.tap(find.text('Per session').last);
     await tester.pumpAndSettle();
 
+    await tester.ensureVisible(find.text('Default'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Default'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('24 hours').last);
@@ -552,6 +649,136 @@ void main() {
     expect(facade.saveCallCount, 2);
     expect(facade.llmConfig.anthropicPromptCacheTtl, '1h');
     expect(find.text('1 hour'), findsOneWidget);
+  });
+
+  testWidgets(
+    'standalone llm page switches to on-device cards and hides cloud validation',
+    (tester) async {
+      final facade = _buildSettingsFacade();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.llm,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Validate Model'), findsOneWidget);
+
+      await tester.tap(find.text('On-device'));
+      await tester.pumpAndSettle();
+
+      expect(facade.saveCallCount, 1);
+      expect(facade.llmConfig.providerMode, 'on_device_model');
+      expect(find.text('On-device model'), findsOneWidget);
+      expect(find.text('Sampling & limits'), findsOneWidget);
+      expect(find.text('Runtime'), findsOneWidget);
+      expect(find.text('Gemma 4 E2B'), findsOneWidget);
+      expect(find.text('Installed · 2.58 GB'), findsOneWidget);
+      expect(find.text('Validate Model'), findsNothing);
+    },
+  );
+
+  testWidgets('standalone llm page saves on-device tuning controls', (
+    tester,
+  ) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: true,
+        providerMode: 'on_device_model',
+        providerId: 'openai',
+        selectedProviderOptionId: 'openai',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'openai',
+            providerId: 'openai',
+            title: 'OpenAI',
+            subtitle: 'Official OpenAI-compatible endpoint.',
+            defaultBaseUrl: 'https://api.openai.com/v1',
+            defaultModel: 'gpt-4o-mini',
+            protocol: 'openai',
+            apiKey: '',
+            isCustom: false,
+          ),
+        ],
+        providerName: 'OpenAI',
+        providerNotes: '',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: '',
+        model: 'gpt-4o-mini',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+        onDeviceModels: _defaultOnDeviceLlmModels,
+        selectedOnDeviceModelId: 'gemma-4-e2b-it',
+        onDeviceMaxContextWindow: 32768,
+        onDeviceMaxTokens: 4096,
+        onDeviceTopK: 40,
+        onDeviceTopP: 0.95,
+        onDeviceTemperature: 0.70,
+        onDeviceAccelerator: 'gpu',
+        onDeviceThinkingEnabled: false,
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.llm,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField).at(0), '16384');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    await tester.enterText(find.byType(TextField).at(1), '2048');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    await tester.enterText(find.byType(TextField).at(2), '24');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    await tester.enterText(find.byType(TextField).at(3), '0.90');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    await tester.enterText(find.byType(TextField).at(4), '0.40');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    await tester.ensureVisible(find.text('CPU'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('CPU'), warnIfMissed: false);
+    await tester.pump(const Duration(milliseconds: 500));
+
+    await tester.ensureVisible(find.text('On'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('On'), warnIfMissed: false);
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(facade.llmConfig.onDeviceMaxContextWindow, 16384);
+    expect(facade.llmConfig.onDeviceMaxTokens, 2048);
+    expect(facade.llmConfig.onDeviceTopK, 24);
+    expect(facade.llmConfig.onDeviceTopP, 0.9);
+    expect(facade.llmConfig.onDeviceTemperature, 0.4);
+    expect(facade.llmConfig.onDeviceAccelerator, 'cpu');
+    expect(facade.llmConfig.onDeviceThinkingEnabled, isTrue);
   });
 
   testWidgets(
@@ -2709,6 +2936,7 @@ _FakeSettingsFacade _buildSettingsFacade() {
       reasoningEffort: 'medium',
       systemPrompt: '',
       helperText: 'Helper text',
+      onDeviceModels: _defaultOnDeviceLlmModels,
     ),
     validationResult: const LlmValidationResult(
       isSuccess: true,
@@ -2748,6 +2976,7 @@ _FakeSettingsFacade _buildDebugSettingsFacade({
       reasoningEffort: 'medium',
       systemPrompt: '',
       helperText: 'Helper text',
+      onDeviceModels: _defaultOnDeviceLlmModels,
     ),
     validationResult: const LlmValidationResult(
       isSuccess: true,
@@ -4071,6 +4300,7 @@ class _FakeSettingsFacade implements SettingsFacade {
   @override
   Future<LlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
+    String providerMode = 'cloud',
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -4085,12 +4315,22 @@ class _FakeSettingsFacade implements SettingsFacade {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    String selectedOnDeviceModelId = 'gemma-4-e2b-it',
+    int onDeviceMaxContextWindow = 32768,
+    int onDeviceMaxTokens = 4096,
+    int onDeviceTopK = 40,
+    double onDeviceTopP = 0.95,
+    double onDeviceTemperature = 0.70,
+    String onDeviceAccelerator = 'gpu',
+    bool onDeviceThinkingEnabled = false,
+    bool onDeviceLiteModeEnabled = false,
   }) async {
     saveCallCount += 1;
     await onSaveLlmConfig?.call();
     llmConfig = LlmConfigSnapshot(
       localeTag: llmConfig.localeTag,
       enabled: enabled,
+      providerMode: providerMode,
       providerId: providerId,
       selectedProviderOptionId: selectedProviderOptionId,
       protocol: protocol,
@@ -4104,7 +4344,8 @@ class _FakeSettingsFacade implements SettingsFacade {
       systemPrompt: systemPrompt,
       helperText: llmConfig.helperText,
       openAiPromptCacheKeyStrategy:
-          openAiPromptCacheKeyStrategy ?? llmConfig.openAiPromptCacheKeyStrategy,
+          openAiPromptCacheKeyStrategy ??
+          llmConfig.openAiPromptCacheKeyStrategy,
       openAiPromptCacheRetention:
           openAiPromptCacheRetention ?? llmConfig.openAiPromptCacheRetention,
       anthropicPromptCachingEnabled:
@@ -4112,6 +4353,16 @@ class _FakeSettingsFacade implements SettingsFacade {
           llmConfig.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl:
           anthropicPromptCacheTtl ?? llmConfig.anthropicPromptCacheTtl,
+      onDeviceModels: llmConfig.onDeviceModels,
+      selectedOnDeviceModelId: selectedOnDeviceModelId,
+      onDeviceMaxContextWindow: onDeviceMaxContextWindow,
+      onDeviceMaxTokens: onDeviceMaxTokens,
+      onDeviceTopK: onDeviceTopK,
+      onDeviceTopP: onDeviceTopP,
+      onDeviceTemperature: onDeviceTemperature,
+      onDeviceAccelerator: onDeviceAccelerator,
+      onDeviceThinkingEnabled: onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled: onDeviceLiteModeEnabled,
     );
     return llmConfig;
   }
@@ -4150,6 +4401,7 @@ class _FakeSettingsFacade implements SettingsFacade {
     llmConfig = LlmConfigSnapshot(
       localeTag: llmConfig.localeTag,
       enabled: baseUrl.isNotEmpty && apiKey.isNotEmpty,
+      providerMode: 'cloud',
       providerId: 'custom',
       selectedProviderOptionId: savedOptionId,
       protocol: protocol,
@@ -4167,7 +4419,8 @@ class _FakeSettingsFacade implements SettingsFacade {
       systemPrompt: systemPrompt,
       helperText: llmConfig.helperText,
       openAiPromptCacheKeyStrategy:
-          openAiPromptCacheKeyStrategy ?? llmConfig.openAiPromptCacheKeyStrategy,
+          openAiPromptCacheKeyStrategy ??
+          llmConfig.openAiPromptCacheKeyStrategy,
       openAiPromptCacheRetention:
           openAiPromptCacheRetention ?? llmConfig.openAiPromptCacheRetention,
       anthropicPromptCachingEnabled:
@@ -4175,6 +4428,16 @@ class _FakeSettingsFacade implements SettingsFacade {
           llmConfig.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl:
           anthropicPromptCacheTtl ?? llmConfig.anthropicPromptCacheTtl,
+      onDeviceModels: llmConfig.onDeviceModels,
+      selectedOnDeviceModelId: llmConfig.selectedOnDeviceModelId,
+      onDeviceMaxContextWindow: llmConfig.onDeviceMaxContextWindow,
+      onDeviceMaxTokens: llmConfig.onDeviceMaxTokens,
+      onDeviceTopK: llmConfig.onDeviceTopK,
+      onDeviceTopP: llmConfig.onDeviceTopP,
+      onDeviceTemperature: llmConfig.onDeviceTemperature,
+      onDeviceAccelerator: llmConfig.onDeviceAccelerator,
+      onDeviceThinkingEnabled: llmConfig.onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled: llmConfig.onDeviceLiteModeEnabled,
     );
     return llmConfig;
   }
@@ -4190,6 +4453,63 @@ class _FakeSettingsFacade implements SettingsFacade {
   }) async {
     validationCallCount += 1;
     return validationResult;
+  }
+
+  @override
+  Future<LlmConfigSnapshot> downloadOnDeviceLlmModel(String modelId) async {
+    llmConfig = llmConfig.copyWith(
+      onDeviceModels: llmConfig.onDeviceModels
+          .map(
+            (option) => option.id == modelId
+                ? LlmOnDeviceModelOption(
+                    id: option.id,
+                    title: option.title,
+                    subtitle: option.subtitle,
+                    sizeLabel: option.sizeLabel,
+                    fileSizeBytes: option.fileSizeBytes,
+                    installState: 'ready',
+                    downloadedBytes: option.fileSizeBytes,
+                    downloadBytesPerSecond: 0,
+                    sha256Verified: true,
+                    isSelected: option.isSelected,
+                    lastError: null,
+                  )
+                : option,
+          )
+          .toList(growable: false),
+    );
+    return llmConfig;
+  }
+
+  @override
+  Future<LlmConfigSnapshot> cancelOnDeviceLlmModelDownload(
+    String modelId,
+  ) async => llmConfig;
+
+  @override
+  Future<LlmConfigSnapshot> deleteOnDeviceLlmModel(String modelId) async {
+    llmConfig = llmConfig.copyWith(
+      onDeviceModels: llmConfig.onDeviceModels
+          .map(
+            (option) => option.id == modelId
+                ? LlmOnDeviceModelOption(
+                    id: option.id,
+                    title: option.title,
+                    subtitle: option.subtitle,
+                    sizeLabel: option.sizeLabel,
+                    fileSizeBytes: option.fileSizeBytes,
+                    installState: 'not_downloaded',
+                    downloadedBytes: 0,
+                    downloadBytesPerSecond: 0,
+                    sha256Verified: false,
+                    isSelected: option.isSelected,
+                    lastError: null,
+                  )
+                : option,
+          )
+          .toList(growable: false),
+    );
+    return llmConfig;
   }
 
   @override

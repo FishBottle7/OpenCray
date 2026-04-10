@@ -430,6 +430,7 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   @override
   Future<OpenCrayLlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
+    String providerMode = 'cloud',
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -444,9 +445,19 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    String selectedOnDeviceModelId = 'gemma-4-e2b-it',
+    int onDeviceMaxContextWindow = 32768,
+    int onDeviceMaxTokens = 4096,
+    int onDeviceTopK = 40,
+    double onDeviceTopP = 0.95,
+    double onDeviceTemperature = 0.70,
+    String onDeviceAccelerator = 'gpu',
+    bool onDeviceThinkingEnabled = false,
+    bool onDeviceLiteModeEnabled = false,
   }) async => OpenCrayLlmConfigSnapshot.fromMap(
     await _postMap('v1/save_llm_config', <String, Object?>{
       'enabled': enabled,
+      'providerMode': providerMode,
       'providerId': providerId,
       'selectedProviderOptionId': selectedProviderOptionId,
       'protocol': protocol,
@@ -465,6 +476,15 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
         'anthropicPromptCachingEnabled': anthropicPromptCachingEnabled,
       if (anthropicPromptCacheTtl != null)
         'anthropicPromptCacheTtl': anthropicPromptCacheTtl,
+      'selectedOnDeviceModelId': selectedOnDeviceModelId,
+      'onDeviceMaxContextWindow': onDeviceMaxContextWindow,
+      'onDeviceMaxTokens': onDeviceMaxTokens,
+      'onDeviceTopK': onDeviceTopK,
+      'onDeviceTopP': onDeviceTopP,
+      'onDeviceTemperature': onDeviceTemperature,
+      'onDeviceAccelerator': onDeviceAccelerator,
+      'onDeviceThinkingEnabled': onDeviceThinkingEnabled,
+      'onDeviceLiteModeEnabled': onDeviceLiteModeEnabled,
     }),
   );
 
@@ -521,6 +541,33 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
       'apiKey': apiKey,
       'model': model,
       'reasoningEffort': reasoningEffort,
+    }),
+  );
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> downloadOnDeviceLlmModel(
+    String modelId,
+  ) async => OpenCrayLlmConfigSnapshot.fromMap(
+    await _postMap('v1/download_on_device_llm_model', <String, Object?>{
+      'modelId': modelId,
+    }),
+  );
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> cancelOnDeviceLlmModelDownload(
+    String modelId,
+  ) async => OpenCrayLlmConfigSnapshot.fromMap(
+    await _postMap('v1/cancel_on_device_llm_model_download', <String, Object?>{
+      'modelId': modelId,
+    }),
+  );
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> deleteOnDeviceLlmModel(
+    String modelId,
+  ) async => OpenCrayLlmConfigSnapshot.fromMap(
+    await _postMap('v1/delete_on_device_llm_model', <String, Object?>{
+      'modelId': modelId,
     }),
   );
 

@@ -3,6 +3,8 @@ package com.opencray.app
 import android.content.Context
 import android.content.SharedPreferences
 import java.util.UUID
+import kotlin.math.pow
+import kotlin.math.roundToInt
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -10,6 +12,7 @@ private const val DEFAULT_LLM_SETTINGS_PREFERENCES = "opencray.llm-settings"
 
 internal object LlmSettingsStoreKeys {
   const val ENABLED = "enabled"
+  const val PROVIDER_MODE = "provider_mode"
   const val PROVIDER_ID = "provider_id"
   const val SELECTED_PROVIDER_OPTION_ID = "selected_provider_option_id"
   const val PROTOCOL = "protocol"
@@ -24,12 +27,22 @@ internal object LlmSettingsStoreKeys {
   const val OPENAI_PROMPT_CACHE_RETENTION = "openai_prompt_cache_retention"
   const val ANTHROPIC_PROMPT_CACHING_ENABLED = "anthropic_prompt_caching_enabled"
   const val ANTHROPIC_PROMPT_CACHE_TTL = "anthropic_prompt_cache_ttl"
+  const val SELECTED_ON_DEVICE_MODEL_ID = "selected_on_device_model_id"
+  const val ON_DEVICE_MAX_CONTEXT_WINDOW = "on_device_max_context_window"
+  const val ON_DEVICE_MAX_TOKENS = "on_device_max_tokens"
+  const val ON_DEVICE_TOP_K = "on_device_top_k"
+  const val ON_DEVICE_TOP_P = "on_device_top_p"
+  const val ON_DEVICE_TEMPERATURE = "on_device_temperature"
+  const val ON_DEVICE_ACCELERATOR = "on_device_accelerator"
+  const val ON_DEVICE_THINKING_ENABLED = "on_device_thinking_enabled"
+  const val ON_DEVICE_LITE_MODE_ENABLED = "on_device_lite_mode_enabled"
   const val SAVED_CUSTOM_PROVIDERS = "saved_custom_providers"
   const val AGENT_CAPABILITY_CACHE = "agent_capability_cache"
 }
 
 internal data class LlmSettingsState(
   val enabled: Boolean = false,
+  val providerMode: String = DEFAULT_PROVIDER_MODE,
   val providerId: String = DEFAULT_PROVIDER_ID,
   val protocol: String = DEFAULT_PROTOCOL,
   val providerName: String = DEFAULT_PROVIDER_NAME,
@@ -43,17 +56,38 @@ internal data class LlmSettingsState(
   val openAiPromptCacheRetention: String = DEFAULT_OPENAI_PROMPT_CACHE_RETENTION,
   val anthropicPromptCachingEnabled: Boolean = DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED,
   val anthropicPromptCacheTtl: String = DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL,
+  val selectedOnDeviceModelId: String = DEFAULT_ON_DEVICE_MODEL_ID,
+  val onDeviceMaxContextWindow: Int = DEFAULT_ON_DEVICE_MAX_CONTEXT_WINDOW,
+  val onDeviceMaxTokens: Int = DEFAULT_ON_DEVICE_MAX_TOKENS,
+  val onDeviceTopK: Int = DEFAULT_ON_DEVICE_TOP_K,
+  val onDeviceTopP: Double = DEFAULT_ON_DEVICE_TOP_P,
+  val onDeviceTemperature: Double = DEFAULT_ON_DEVICE_TEMPERATURE,
+  val onDeviceAccelerator: String = DEFAULT_ON_DEVICE_ACCELERATOR,
+  val onDeviceThinkingEnabled: Boolean = DEFAULT_ON_DEVICE_THINKING_ENABLED,
+  val onDeviceLiteModeEnabled: Boolean = DEFAULT_ON_DEVICE_LITE_MODE_ENABLED,
   val agentCapability: LlmAgentCapabilitySnapshot = LlmAgentCapabilitySnapshot(),
 ) {
+  fun isOnDeviceProviderMode(): Boolean = providerMode == LlmProviderModes.ON_DEVICE_MODEL
+
+  fun isOnDeviceLiteModeEnabled(): Boolean =
+    isOnDeviceProviderMode() && onDeviceLiteModeEnabled
+
   fun isConfigured(): Boolean =
-    baseUrl.trim().isNotEmpty() &&
-      apiKey.trim().isNotEmpty()
+    if (isOnDeviceProviderMode()) {
+      selectedOnDeviceModelId.trim().isNotEmpty()
+    } else {
+      baseUrl.trim().isNotEmpty() &&
+        apiKey.trim().isNotEmpty()
+    }
 
   fun sanitized(): LlmSettingsState {
+    val normalizedProviderMode = LlmProviderModes.normalize(providerMode)
     val normalizedProtocol = LlmProviderProtocols.normalize(protocol)
     val normalizedBaseUrl = baseUrl.trim()
     val normalizedModel = model.trim()
+    val normalizedContextWindow = normalizedOnDeviceMaxContextWindow(onDeviceMaxContextWindow)
     return copy(
+      providerMode = normalizedProviderMode,
       providerId = providerId.trim().ifBlank { inferProviderId(normalizedBaseUrl) },
       protocol = normalizedProtocol,
       providerName = providerName.trim(),
@@ -73,6 +107,18 @@ internal data class LlmSettingsState(
       anthropicPromptCacheTtl = normalizedAnthropicPromptCacheTtl(
         anthropicPromptCacheTtl,
       ),
+      selectedOnDeviceModelId = normalizedOnDeviceModelId(selectedOnDeviceModelId),
+      onDeviceMaxContextWindow = normalizedContextWindow,
+      onDeviceMaxTokens = normalizedOnDeviceMaxTokens(
+        rawValue = onDeviceMaxTokens,
+        contextWindow = normalizedContextWindow,
+      ),
+      onDeviceTopK = normalizedOnDeviceTopK(onDeviceTopK),
+      onDeviceTopP = normalizedOnDeviceTopP(onDeviceTopP),
+      onDeviceTemperature = normalizedOnDeviceTemperature(onDeviceTemperature),
+      onDeviceAccelerator = OnDeviceLlmAccelerators.normalize(onDeviceAccelerator),
+      onDeviceThinkingEnabled = onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled = onDeviceLiteModeEnabled,
       agentCapability = agentCapability.normalizedForRoute(
         protocol = normalizedProtocol,
         baseUrl = normalizedBaseUrl,
@@ -84,6 +130,7 @@ internal data class LlmSettingsState(
   companion object {
     const val DEFAULT_BASE_URL: String = "https://api.openai.com/v1"
     const val DEFAULT_MODEL: String = "gpt-4o-mini"
+    const val DEFAULT_PROVIDER_MODE: String = LlmProviderModes.CLOUD
     const val DEFAULT_PROVIDER_ID: String = "openai"
     const val DEFAULT_PROTOCOL: String = LlmProviderProtocols.OPENAI
     const val DEFAULT_PROVIDER_NAME: String = "OpenAI"
@@ -94,6 +141,24 @@ internal data class LlmSettingsState(
     const val DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED: Boolean = false
     const val DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL: String =
       AnthropicPromptCacheTtlPolicies.MINUTES_5
+    const val DEFAULT_ON_DEVICE_MODEL_ID: String = OnDeviceLlmCatalog.DEFAULT_MODEL_ID
+    const val DEFAULT_ON_DEVICE_MAX_CONTEXT_WINDOW: Int = 32_768
+    const val DEFAULT_ON_DEVICE_MAX_TOKENS: Int = 4_096
+    const val DEFAULT_ON_DEVICE_TOP_K: Int = 40
+    const val DEFAULT_ON_DEVICE_TOP_P: Double = 0.95
+    const val DEFAULT_ON_DEVICE_TEMPERATURE: Double = 0.70
+    const val DEFAULT_ON_DEVICE_ACCELERATOR: String = OnDeviceLlmAccelerators.GPU
+    const val DEFAULT_ON_DEVICE_THINKING_ENABLED: Boolean = false
+    const val DEFAULT_ON_DEVICE_LITE_MODE_ENABLED: Boolean = false
+    const val MIN_ON_DEVICE_MAX_CONTEXT_WINDOW: Int = 1_024
+    const val MAX_ON_DEVICE_MAX_CONTEXT_WINDOW: Int = 131_072
+    const val MIN_ON_DEVICE_MAX_TOKENS: Int = 256
+    const val MIN_ON_DEVICE_TOP_K: Int = 1
+    const val MAX_ON_DEVICE_TOP_K: Int = 128
+    const val MIN_ON_DEVICE_TOP_P: Double = 0.0
+    const val MAX_ON_DEVICE_TOP_P: Double = 1.0
+    const val MIN_ON_DEVICE_TEMPERATURE: Double = 0.0
+    const val MAX_ON_DEVICE_TEMPERATURE: Double = 2.0
 
     fun inferProviderId(baseUrl: String): String =
       LlmProviderCatalog.inferPresetId(baseUrl)
@@ -120,7 +185,42 @@ internal data class LlmSettingsState(
       AnthropicPromptCacheTtlPolicies.HOUR_1 -> AnthropicPromptCacheTtlPolicies.HOUR_1
       else -> DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL
     }
+
+    fun normalizedOnDeviceModelId(rawValue: String): String {
+      val normalized = rawValue.trim().lowercase()
+      return normalized.takeIf(OnDeviceLlmCatalog::hasModel) ?: DEFAULT_ON_DEVICE_MODEL_ID
+    }
+
+    fun normalizedOnDeviceMaxContextWindow(rawValue: Int): Int =
+      rawValue.coerceIn(
+        MIN_ON_DEVICE_MAX_CONTEXT_WINDOW,
+        MAX_ON_DEVICE_MAX_CONTEXT_WINDOW,
+      )
+
+    fun normalizedOnDeviceMaxTokens(
+      rawValue: Int,
+      contextWindow: Int,
+    ): Int = rawValue.coerceIn(
+      MIN_ON_DEVICE_MAX_TOKENS,
+      contextWindow.coerceAtLeast(MIN_ON_DEVICE_MAX_TOKENS),
+    )
+
+    fun normalizedOnDeviceTopK(rawValue: Int): Int =
+      rawValue.coerceIn(MIN_ON_DEVICE_TOP_K, MAX_ON_DEVICE_TOP_K)
+
+    fun normalizedOnDeviceTopP(rawValue: Double): Double =
+      rawValue.coerceIn(MIN_ON_DEVICE_TOP_P, MAX_ON_DEVICE_TOP_P)
+        .roundToDecimals(2)
+
+    fun normalizedOnDeviceTemperature(rawValue: Double): Double =
+      rawValue.coerceIn(MIN_ON_DEVICE_TEMPERATURE, MAX_ON_DEVICE_TEMPERATURE)
+        .roundToDecimals(2)
   }
+}
+
+private fun Double.roundToDecimals(decimals: Int): Double {
+  val factor = 10.0.pow(decimals.toDouble())
+  return (this * factor).roundToInt() / factor
 }
 
 internal data class SavedCustomLlmProvider(
@@ -245,6 +345,8 @@ internal class LlmSettingsStore(
   fun load(defaults: LlmSettingsState = LlmSettingsState()): LlmSettingsState {
     val resolved = defaults.copy(
       enabled = keyValueStore.getBoolean(LlmSettingsStoreKeys.ENABLED) ?: defaults.enabled,
+      providerMode =
+        keyValueStore.getString(LlmSettingsStoreKeys.PROVIDER_MODE) ?: defaults.providerMode,
       providerId = keyValueStore.getString(LlmSettingsStoreKeys.PROVIDER_ID)
         ?: LlmSettingsState.inferProviderId(
           keyValueStore.getString(LlmSettingsStoreKeys.BASE_URL) ?: defaults.baseUrl,
@@ -269,14 +371,50 @@ internal class LlmSettingsStore(
       anthropicPromptCacheTtl =
         keyValueStore.getString(LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHE_TTL)
           ?: defaults.anthropicPromptCacheTtl,
+      selectedOnDeviceModelId =
+        keyValueStore.getString(LlmSettingsStoreKeys.SELECTED_ON_DEVICE_MODEL_ID)
+          ?: defaults.selectedOnDeviceModelId,
+      onDeviceMaxContextWindow =
+        keyValueStore.getString(LlmSettingsStoreKeys.ON_DEVICE_MAX_CONTEXT_WINDOW)
+          ?.toIntOrNull()
+          ?: defaults.onDeviceMaxContextWindow,
+      onDeviceMaxTokens =
+        keyValueStore.getString(LlmSettingsStoreKeys.ON_DEVICE_MAX_TOKENS)
+          ?.toIntOrNull()
+          ?: defaults.onDeviceMaxTokens,
+      onDeviceTopK =
+        keyValueStore.getString(LlmSettingsStoreKeys.ON_DEVICE_TOP_K)
+          ?.toIntOrNull()
+          ?: defaults.onDeviceTopK,
+      onDeviceTopP =
+        keyValueStore.getString(LlmSettingsStoreKeys.ON_DEVICE_TOP_P)
+          ?.toDoubleOrNull()
+          ?: defaults.onDeviceTopP,
+      onDeviceTemperature =
+        keyValueStore.getString(LlmSettingsStoreKeys.ON_DEVICE_TEMPERATURE)
+          ?.toDoubleOrNull()
+          ?: defaults.onDeviceTemperature,
+      onDeviceAccelerator =
+        keyValueStore.getString(LlmSettingsStoreKeys.ON_DEVICE_ACCELERATOR)
+          ?: defaults.onDeviceAccelerator,
+      onDeviceThinkingEnabled =
+        keyValueStore.getBoolean(LlmSettingsStoreKeys.ON_DEVICE_THINKING_ENABLED)
+          ?: defaults.onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled =
+        keyValueStore.getBoolean(LlmSettingsStoreKeys.ON_DEVICE_LITE_MODE_ENABLED)
+          ?: defaults.onDeviceLiteModeEnabled,
     ).sanitized()
     return resolved.copy(
       enabled = resolved.isConfigured(),
-      agentCapability = loadAgentCapability(
-        protocol = resolved.protocol,
-        baseUrl = resolved.baseUrl,
-        model = resolved.model,
-      ),
+      agentCapability = if (resolved.isOnDeviceProviderMode()) {
+        resolved.agentCapability
+      } else {
+        loadAgentCapability(
+          protocol = resolved.protocol,
+          baseUrl = resolved.baseUrl,
+          model = resolved.model,
+        )
+      },
     ).sanitized()
   }
 
@@ -291,6 +429,7 @@ internal class LlmSettingsStore(
     val resolved = state.sanitized()
     val sanitized = resolved.copy(enabled = resolved.isConfigured())
     keyValueStore.putBoolean(LlmSettingsStoreKeys.ENABLED, sanitized.enabled)
+    keyValueStore.putString(LlmSettingsStoreKeys.PROVIDER_MODE, sanitized.providerMode)
     keyValueStore.putString(LlmSettingsStoreKeys.PROVIDER_ID, sanitized.providerId)
     keyValueStore.putString(
       LlmSettingsStoreKeys.SELECTED_PROVIDER_OPTION_ID,
@@ -319,6 +458,42 @@ internal class LlmSettingsStore(
     keyValueStore.putString(
       LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHE_TTL,
       sanitized.anthropicPromptCacheTtl,
+    )
+    keyValueStore.putString(
+      LlmSettingsStoreKeys.SELECTED_ON_DEVICE_MODEL_ID,
+      sanitized.selectedOnDeviceModelId,
+    )
+    keyValueStore.putString(
+      LlmSettingsStoreKeys.ON_DEVICE_MAX_CONTEXT_WINDOW,
+      sanitized.onDeviceMaxContextWindow.toString(),
+    )
+    keyValueStore.putString(
+      LlmSettingsStoreKeys.ON_DEVICE_MAX_TOKENS,
+      sanitized.onDeviceMaxTokens.toString(),
+    )
+    keyValueStore.putString(
+      LlmSettingsStoreKeys.ON_DEVICE_TOP_K,
+      sanitized.onDeviceTopK.toString(),
+    )
+    keyValueStore.putString(
+      LlmSettingsStoreKeys.ON_DEVICE_TOP_P,
+      sanitized.onDeviceTopP.toString(),
+    )
+    keyValueStore.putString(
+      LlmSettingsStoreKeys.ON_DEVICE_TEMPERATURE,
+      sanitized.onDeviceTemperature.toString(),
+    )
+    keyValueStore.putString(
+      LlmSettingsStoreKeys.ON_DEVICE_ACCELERATOR,
+      sanitized.onDeviceAccelerator,
+    )
+    keyValueStore.putBoolean(
+      LlmSettingsStoreKeys.ON_DEVICE_THINKING_ENABLED,
+      sanitized.onDeviceThinkingEnabled,
+    )
+    keyValueStore.putBoolean(
+      LlmSettingsStoreKeys.ON_DEVICE_LITE_MODE_ENABLED,
+      sanitized.onDeviceLiteModeEnabled,
     )
     if (sanitized.agentCapability.wasVerified) {
       saveAgentCapability(sanitized.agentCapability)

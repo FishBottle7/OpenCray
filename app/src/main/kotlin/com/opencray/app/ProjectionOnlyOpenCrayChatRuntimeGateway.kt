@@ -460,7 +460,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       )
       val acceptedAtEpochMs = record?.acceptedAtEpochMs ?: taskSnapshot?.task?.createdAtEpochMs ?: 0L
       val lastEvent = runJournalRuntimeEvents(sessionId = sessionId, runId = runId).lastOrNull()
-        ?: record?.lastEvent?.toRuntimeEvent()
+        ?: record?.lastEvent?.toRuntimeEventOrNull()
       val taskMetadata = taskSnapshot?.task?.metadata.orEmpty()
       val resultMetadata = result?.metadata.orEmpty()
       AgentRunSnapshot(
@@ -628,7 +628,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   ): List<OpenCrayAgentRunEvent> = dedupeRuntimeEventsPreservingOrder(
     runEventJournalStoreFactory.forChatSession(sessionId)
       .listForRun(runId)
-      .map { entry -> entry.payload.toRuntimeEvent() },
+      .mapNotNull { entry -> entry.payload.toRuntimeEventOrNull() },
   )
 
   private fun eventMatchesRunExecution(
@@ -1597,7 +1597,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
           .listForRun(run.runId)
           .lastOrNull()
           ?.payload
-          ?.toRuntimeEvent(),
+          ?.toRuntimeEventOrNull(),
       ),
     )
 

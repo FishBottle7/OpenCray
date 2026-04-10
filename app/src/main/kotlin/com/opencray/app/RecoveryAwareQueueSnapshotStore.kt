@@ -70,7 +70,7 @@ internal class RecoveryAwareQueueSnapshotStore(
         .asSequence()
         .mapNotNull { journalEntry -> journalEntry.payload.toRuntimeEventOrNull() }
         .firstOrNull()
-        ?: runRecord?.lastEvent?.toRuntimeEvent()
+        ?: runRecord?.lastEvent?.toRuntimeEventOrNull()
       val checkpoint = checkpointsByTaskId[entry.task.id]
         ?: synthesizeApprovalCheckpoint(
           entry = entry,
@@ -512,7 +512,7 @@ internal class RecoveryAwareQueueSnapshotStore(
       managedProcessIds = managedProcesses.map(ManagedProcessSnapshot::processId).distinct(),
       runningManagedProcessCount = runningManagedProcessCount,
       hasLiveManagedProcesses = runningManagedProcessCount > 0,
-      lastEvent = runRecord?.lastEvent?.toRuntimeEvent(),
+      lastEvent = runRecord?.lastEvent?.toRuntimeEventOrNull(),
       lifecycleDiagnostics = runLifecycleDiagnosticsFrom(
         taskMetadata = entry.task.metadata,
         resultMetadata = executionResult?.metadata.orEmpty(),

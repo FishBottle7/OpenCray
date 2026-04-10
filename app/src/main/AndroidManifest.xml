@@ -16,6 +16,12 @@
         android:extractNativeLibs="true"
         android:name="com.opencray.app.OpenCrayApplication"
         android:label="@string/app_name">
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
+        <uses-native-library
+            android:name="libvndksupport.so"
+            android:required="false" />
         <activity
             android:name="com.opencray.app.AppShellActivity"
             android:exported="true"

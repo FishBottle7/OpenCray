@@ -49,6 +49,17 @@ class LlmSettingsStoreTest {
   }
 
   @Test
+  fun configuredStateUsesSelectedOnDeviceModelInOnDeviceMode() {
+    val state = LlmSettingsState(
+      enabled = true,
+      providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+      selectedOnDeviceModelId = "gemma-4-e2b-it",
+    )
+
+    assertTrue(state.isConfigured())
+  }
+
+  @Test
   fun loadDerivesEnabledFromResolvedConfigFields() {
     val store = LlmSettingsStore(
       InMemoryLlmSettingsKeyValueStore(
@@ -80,6 +91,42 @@ class LlmSettingsStoreTest {
     store.save(saved)
 
     assertEquals(saved.sanitized(), store.load())
+  }
+
+  @Test
+  fun saveAndLoadPersistsOnDeviceSettings() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val saved = LlmSettingsState(
+      enabled = true,
+      providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+      providerId = "openai",
+      baseUrl = "https://api.openai.com/v1",
+      apiKey = "token",
+      model = "gpt-4o-mini",
+      selectedOnDeviceModelId = "gemma-4-e4b-it",
+      onDeviceMaxContextWindow = 16384,
+      onDeviceMaxTokens = 2048,
+      onDeviceTopK = 24,
+      onDeviceTopP = 0.9,
+      onDeviceTemperature = 0.4,
+      onDeviceAccelerator = OnDeviceLlmAccelerators.CPU,
+      onDeviceThinkingEnabled = true,
+      onDeviceLiteModeEnabled = true,
+    )
+
+    store.save(saved)
+
+    val loaded = store.load()
+    assertEquals(LlmProviderModes.ON_DEVICE_MODEL, loaded.providerMode)
+    assertEquals("gemma-4-e4b-it", loaded.selectedOnDeviceModelId)
+    assertEquals(16384, loaded.onDeviceMaxContextWindow)
+    assertEquals(2048, loaded.onDeviceMaxTokens)
+    assertEquals(24, loaded.onDeviceTopK)
+    assertEquals(0.9, loaded.onDeviceTopP, 0.0)
+    assertEquals(0.4, loaded.onDeviceTemperature, 0.0)
+    assertEquals(OnDeviceLlmAccelerators.CPU, loaded.onDeviceAccelerator)
+    assertTrue(loaded.onDeviceThinkingEnabled)
+    assertTrue(loaded.onDeviceLiteModeEnabled)
   }
 
   @Test

@@ -3,6 +3,7 @@ package com.opencray.app
 import com.opencray.app.facade.llm.LlmConfigFacade
 import com.opencray.app.facade.llm.LlmConfigSnapshot
 import com.opencray.app.facade.llm.LlmValidationResult
+import com.opencray.app.facade.llm.OnDeviceLlmModelOptionSnapshot
 import com.opencray.app.facade.llm.EmptyLlmConfigFacade
 import com.opencray.app.facade.llm.SaveCustomLlmProviderRequest
 import com.opencray.app.facade.llm.SaveLlmConfigRequest
@@ -495,6 +496,48 @@ class OpenCrayHostRuntimeTest {
     assertEquals(1_700_000_000_000L, snapshot["todoCompletedAtEpochMs"])
     assertEquals("Review chat composer layout", completedTodo["content"])
     assertEquals("completed", completedTodo["status"])
+  }
+
+  @Test
+  fun loadChatSnapshotBlocksInputWhileOnDeviceWarmupIsRunning() {
+    val warmupController = RecordingOnDeviceLlmWarmupController(
+      state = OnDeviceLlmWarmupState(phase = OnDeviceLlmWarmupPhase.WARMING),
+    )
+    val hostRuntime = hostRuntime(
+      chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-on-device-warmup")),
+      runtimeManager = RecordingRuntimeManager(),
+      llmConfigFacade = RecordingLlmConfigFacade(
+        snapshot = readyOnDeviceLlmConfigSnapshot(),
+      ),
+      onDeviceLlmWarmupController = warmupController,
+    )
+
+    val snapshot = hostRuntime.loadChatSnapshot()
+    val summary = snapshot["summary"] as Map<*, *>
+
+    assertEquals(false, snapshot["isInputEnabled"])
+    assertEquals("Preparing on-device model", snapshot["composerPlaceholder"])
+    assertEquals("Preparing the on-device model.", summary["body"])
+    assertEquals(OnDeviceLlmCatalog.GEMMA_4_E2B_IT, warmupController.lastSpec?.modelId)
+  }
+
+  @Test
+  fun loadChatSnapshotKeepsInputEnabledAfterOnDeviceWarmupIsReady() {
+    val hostRuntime = hostRuntime(
+      chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-on-device-ready")),
+      runtimeManager = RecordingRuntimeManager(),
+      llmConfigFacade = RecordingLlmConfigFacade(
+        snapshot = readyOnDeviceLlmConfigSnapshot(),
+      ),
+      onDeviceLlmWarmupController = RecordingOnDeviceLlmWarmupController(
+        state = OnDeviceLlmWarmupState(phase = OnDeviceLlmWarmupPhase.READY),
+      ),
+    )
+
+    val snapshot = hostRuntime.loadChatSnapshot()
+
+    assertEquals(true, snapshot["isInputEnabled"])
+    assertEquals("Message OpenCray", snapshot["composerPlaceholder"])
   }
 
   @Test
@@ -9417,6 +9460,7 @@ class OpenCrayHostRuntimeTest {
     networkSearchConfigFacade: NetworkSearchConfigFacade = EmptyNetworkSearchConfigFacade,
     sandboxSettingsRepository: SandboxSettingsRepository? = null,
     llmConfigFacade: LlmConfigFacade = RecordingLlmConfigFacade(),
+    onDeviceLlmWarmupController: OnDeviceLlmWarmupController? = null,
     personalizationFacade: PersonalizationFacade = RecordingPersonalizationFacade(),
     personalizationLocalStore: PersonalizationLocalStore? = null,
     mcpSettingsFacade: McpSettingsFacade = RecordingMcpSettingsFacade(),
@@ -9519,6 +9563,7 @@ class OpenCrayHostRuntimeTest {
     runtimeServiceConnectionStateProvider = runtimeServiceConnectionStateProvider,
     runtimeServiceConnectionChangeRegistrar = runtimeServiceConnectionChangeRegistrar,
     resumeActiveSessionOnInit = resumeActiveSessionOnInit,
+    onDeviceLlmWarmupController = onDeviceLlmWarmupController,
     strings = HostRuntimeStrings(
       localeTag = "en",
       shellHostLabel = "HOST CONNECTED",
@@ -9532,6 +9577,7 @@ class OpenCrayHostRuntimeTest {
       chatDefaultSessionTitle = "New chat",
       chatMessagesBadge = { count -> "$count messages" },
       chatSummaryReplyInProgress = "Reply in progress",
+      chatSummaryOnDevicePreparing = "Preparing the on-device model.",
       chatSummaryAwaitingDirection = "Waiting for your next instruction.",
       chatSummaryStartNewSession = "Start a new session",
       chatSummaryRestored = "Local transcript is restored into the runtime window for each task.",
@@ -9539,6 +9585,7 @@ class OpenCrayHostRuntimeTest {
       skillRemoved = { skillId -> "Removed $skillId." },
       skillsReloaded = "Reloaded skills from local storage.",
       composerPlaceholder = "Message OpenCray",
+      chatMessageOnDevicePreparing = "Preparing on-device model",
       composerRejectedPlaceholder = "Tell OpenCray differently",
       agentThinking = "Thinking",
       agentCancelled = "Cancelled",
@@ -9708,6 +9755,7 @@ class OpenCrayHostRuntimeTest {
   }
 
   private class RecordingLlmConfigFacade(
+    private val snapshot: LlmConfigSnapshot = EmptyLlmConfigFacade.load(),
     private val validationResult: LlmValidationResult = LlmValidationResult(
       isSuccess = false,
       message = "Not configured.",
@@ -9716,7 +9764,7 @@ class OpenCrayHostRuntimeTest {
   ) : LlmConfigFacade {
     var lastSavedCustomRequest: SaveCustomLlmProviderRequest? = null
 
-    override fun load(): LlmConfigSnapshot = EmptyLlmConfigFacade.load()
+    override fun load(): LlmConfigSnapshot = snapshot
 
     override fun save(request: SaveLlmConfigRequest): LlmConfigSnapshot =
       throw UnsupportedOperationException("save is not used in this test")
@@ -9745,7 +9793,52 @@ class OpenCrayHostRuntimeTest {
       onValidate?.invoke()
       return validationResult
     }
+
+    override fun downloadOnDeviceModel(modelId: String): LlmConfigSnapshot = load()
+
+    override fun cancelOnDeviceModelDownload(modelId: String): LlmConfigSnapshot = load()
+
+    override fun deleteOnDeviceModel(modelId: String): LlmConfigSnapshot = load()
   }
+
+  private class RecordingOnDeviceLlmWarmupController(
+    private val state: OnDeviceLlmWarmupState,
+  ) : OnDeviceLlmWarmupController {
+    var lastSpec: OnDeviceLlmWarmupSpec? = null
+      private set
+
+    override fun ensureWarm(spec: OnDeviceLlmWarmupSpec): OnDeviceLlmWarmupState {
+      lastSpec = spec
+      return state
+    }
+
+    override fun clear(): OnDeviceLlmWarmupState = OnDeviceLlmWarmupState()
+  }
+
+  private fun readyOnDeviceLlmConfigSnapshot(): LlmConfigSnapshot = EmptyLlmConfigFacade.load().copy(
+    enabled = true,
+    providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+    selectedOnDeviceModelId = OnDeviceLlmCatalog.GEMMA_4_E2B_IT,
+    onDeviceModels = listOf(
+      OnDeviceLlmModelOptionSnapshot(
+        id = OnDeviceLlmCatalog.GEMMA_4_E2B_IT,
+        title = "Gemma 4 E2B",
+        subtitle = "Ready",
+        sizeLabel = "2.6 GB",
+        fileSizeBytes = 2_580_000_000L,
+        installState = OnDeviceLlmDownloadStates.READY,
+        sha256Verified = true,
+        isSelected = true,
+      ),
+    ),
+    onDeviceAccelerator = OnDeviceLlmAccelerators.GPU,
+    onDeviceMaxContextWindow = 32_768,
+    onDeviceMaxTokens = 4_096,
+    onDeviceTopK = 40,
+    onDeviceTopP = 0.95,
+    onDeviceTemperature = 0.7,
+    onDeviceThinkingEnabled = true,
+  )
 
   private class RecordingPersonalizationFacade : PersonalizationFacade {
     var lastSaveRequest: SavePersonalizationConfigRequest? = null

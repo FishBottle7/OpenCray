@@ -25,6 +25,18 @@ if ($env:FLUTTER_ROOT) {
 }
 $fallbackFlutterBat = "D:\\Program Files\\flutter\\bin\\flutter.bat"
 
+function Get-WorktreeFallbackRepoRoot {
+  $worktreeParent = Split-Path -Parent $projectRoot
+  if ((Split-Path -Leaf $worktreeParent) -ne ".codex-worktrees") {
+    return $null
+  }
+  $fallbackRepoRoot = Split-Path -Parent $worktreeParent
+  if ([string]::IsNullOrWhiteSpace($fallbackRepoRoot)) {
+    return $null
+  }
+  return $fallbackRepoRoot
+}
+
 function Write-Step {
   param([string]$Message)
   Write-Host ""
@@ -78,13 +90,55 @@ function Convert-ToWslPath {
   return "/mnt/$drive/$rest"
 }
 
-function Get-EmbeddedPythonArtifacts {
-  $distDir = Join-Path $projectRoot "tools/android_python_runtime_p4a/dist"
-  if (-not (Test-Path $distDir)) {
-    return @()
+function Get-EmbeddedPythonDistDirectories {
+  $candidates = New-Object System.Collections.Generic.List[string]
+
+  $primaryDistDir = Join-Path $projectRoot "tools/android_python_runtime_p4a/dist"
+  $candidates.Add($primaryDistDir)
+
+  $fallbackRepoRoot = Get-WorktreeFallbackRepoRoot
+  if ($fallbackRepoRoot) {
+    $fallbackDistDir = Join-Path $fallbackRepoRoot "tools/android_python_runtime_p4a/dist"
+    if (-not $candidates.Contains($fallbackDistDir)) {
+      $candidates.Add($fallbackDistDir)
+    }
   }
-  return Get-ChildItem -Path $distDir -Filter "*.aar" -File -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTime -Descending
+
+  return $candidates
+}
+
+function Ensure-LocalGradleDistributionZip {
+  $localGradleZip = Join-Path $projectRoot "gradle-8.13-bin.zip"
+  if (Test-Path $localGradleZip) {
+    return
+  }
+
+  $fallbackRepoRoot = Get-WorktreeFallbackRepoRoot
+  if (-not $fallbackRepoRoot) {
+    return
+  }
+
+  $fallbackGradleZip = Join-Path $fallbackRepoRoot "gradle-8.13-bin.zip"
+  if (-not (Test-Path $fallbackGradleZip)) {
+    return
+  }
+
+  Write-Step "Seeding local Gradle distribution"
+  Copy-Item -Path $fallbackGradleZip -Destination $localGradleZip -Force
+}
+
+function Get-EmbeddedPythonArtifacts {
+  foreach ($distDir in Get-EmbeddedPythonDistDirectories) {
+    if (-not (Test-Path $distDir)) {
+      continue
+    }
+    $artifacts = Get-ChildItem -Path $distDir -Filter "*.aar" -File -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime -Descending
+    if ($artifacts) {
+      return $artifacts
+    }
+  }
+  return @()
 }
 
 function Assert-EmbeddedPythonRuntimeExists {
@@ -95,12 +149,14 @@ function Assert-EmbeddedPythonRuntimeExists {
     return
   }
 
-  $distDir = Join-Path $projectRoot "tools/android_python_runtime_p4a/dist"
+  $distDirs = Get-EmbeddedPythonDistDirectories
+  $distDir = $distDirs[0]
+  $candidateDirs = ($distDirs | ForEach-Object { " - $_" }) -join [Environment]::NewLine
   $projectRootWsl = Convert-ToWslPath -Path $projectRoot
   $wslCommand = "cd $projectRootWsl && ./build-p4a-service-library.sh"
   throw @"
 Embedded Python runtime AAR was not found in:
-$distDir
+$candidateDirs
 
 Build the p4a runtime in WSL first, then rerun this script.
 Suggested command:
@@ -173,6 +229,7 @@ if (($ClearData -or $UninstallFirst) -and -not $Install) {
 }
 
 Assert-EmbeddedPythonRuntimeExists
+Ensure-LocalGradleDistributionZip
 $flutterCommand = Get-FlutterCommand
 
 Push-Location $flutterAppDir

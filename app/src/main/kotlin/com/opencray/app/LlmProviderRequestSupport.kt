@@ -203,31 +203,43 @@ internal object AnthropicPromptCacheTtlPolicies {
 
 private const val DEFAULT_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS: Long = 30_000L
 private const val DEFAULT_SHORT_PROVIDER_ROUTE_TIMEOUT_MS: Long = 15_000L
+private const val ON_DEVICE_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS: Long = 180_000L
+private const val ON_DEVICE_SHORT_PROVIDER_ROUTE_TIMEOUT_MS: Long = 60_000L
 private const val KIMI_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS: Long = 120_000L
 private const val KIMI_SHORT_PROVIDER_ROUTE_TIMEOUT_MS: Long = 60_000L
 
 internal fun recommendedInteractiveProviderRouteTimeoutMs(
   model: String,
-): Long = if (isLongRunningKimiModel(model)) {
-  KIMI_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS
-} else {
-  DEFAULT_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS
+): Long = when {
+  isOnDeviceRuntimeModel(model) -> ON_DEVICE_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS
+  isLongRunningKimiModel(model) -> KIMI_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS
+  else -> DEFAULT_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS
 }
 
 internal fun recommendedInterpreterProviderRouteTimeoutMs(
   model: String,
-): Long = if (isLongRunningKimiModel(model)) {
-  KIMI_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
-} else {
-  DEFAULT_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
+): Long = when {
+  isOnDeviceRuntimeModel(model) -> ON_DEVICE_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
+  isLongRunningKimiModel(model) -> KIMI_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
+  else -> DEFAULT_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
 }
 
 internal fun recommendedValidationProviderRouteTimeoutMs(
   model: String,
-): Long = if (isLongRunningKimiModel(model)) {
-  KIMI_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
-} else {
-  DEFAULT_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
+): Long = when {
+  isOnDeviceRuntimeModel(model) -> ON_DEVICE_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
+  isLongRunningKimiModel(model) -> KIMI_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
+  else -> DEFAULT_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
+}
+
+private fun isOnDeviceRuntimeModel(
+  model: String,
+): Boolean {
+  val normalized = model.trim().lowercase()
+  if (normalized.isBlank()) {
+    return false
+  }
+  return OnDeviceLlmCatalog.hasModel(normalized)
 }
 
 private fun isLongRunningKimiModel(

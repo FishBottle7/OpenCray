@@ -721,6 +721,9 @@ class PromptAssembler(
   private fun resolveToolProtocolDetailMode(
     llmMetadata: Map<String, String>,
   ): ToolProtocolDetailMode {
+    llmMetadata.explicitToolProtocolDetailMode()?.let { detailMode ->
+      return detailMode
+    }
     val envelope = toolProtocolBudgetPolicy.resolve(llmMetadata)
     return when {
       envelope.targetInputBudgetTokens <= TOOL_PROTOCOL_MINIMAL_TARGET_TOKENS -> ToolProtocolDetailMode.MINIMAL
@@ -728,6 +731,19 @@ class PromptAssembler(
       else -> ToolProtocolDetailMode.FULL
     }
   }
+
+  private fun Map<String, String>.explicitToolProtocolDetailMode(): ToolProtocolDetailMode? =
+    sequenceOf("toolProtocolDetailMode", "tool_protocol_detail_mode")
+      .mapNotNull { key -> this[key] }
+      .map { value -> value.trim().lowercase() }
+      .firstNotNullOfOrNull { rawValue ->
+        when (rawValue) {
+          ToolProtocolDetailMode.FULL.wireValue -> ToolProtocolDetailMode.FULL
+          ToolProtocolDetailMode.COMPACT.wireValue -> ToolProtocolDetailMode.COMPACT
+          ToolProtocolDetailMode.MINIMAL.wireValue -> ToolProtocolDetailMode.MINIMAL
+          else -> null
+        }
+      }
 
   private fun hasAnyTool(toolNames: Set<String>, vararg candidates: String): Boolean =
     candidates.any { candidate -> candidate in toolNames }

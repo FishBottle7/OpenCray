@@ -3016,6 +3016,7 @@ class OpenCrayLocalRuntimeServerTest {
 
     override fun saveLlmConfig(
       enabled: Boolean,
+      providerMode: String,
       providerId: String,
       selectedProviderOptionId: String,
       protocol: String,
@@ -3030,7 +3031,20 @@ class OpenCrayLocalRuntimeServerTest {
       openAiPromptCacheRetention: String?,
       anthropicPromptCachingEnabled: Boolean?,
       anthropicPromptCacheTtl: String?,
-    ): Map<String, Any?> = mapOf("source" to "gateway-llm-save", "enabled" to enabled)
+      selectedOnDeviceModelId: String,
+      onDeviceMaxContextWindow: Int,
+      onDeviceMaxTokens: Int,
+      onDeviceTopK: Int,
+      onDeviceTopP: Double,
+      onDeviceTemperature: Double,
+      onDeviceAccelerator: String,
+      onDeviceThinkingEnabled: Boolean,
+      onDeviceLiteModeEnabled: Boolean,
+    ): Map<String, Any?> = mapOf(
+      "source" to "gateway-llm-save",
+      "enabled" to enabled,
+      "providerMode" to providerMode,
+    )
 
     override fun saveCustomLlmProvider(
       selectedProviderOptionId: String,
@@ -3056,6 +3070,15 @@ class OpenCrayLocalRuntimeServerTest {
       model: String,
       reasoningEffort: String,
     ): Map<String, Any?> = mapOf("source" to "gateway-llm-validate", "providerId" to providerId)
+
+    override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+      mapOf("source" to "gateway-on-device-download", "modelId" to modelId)
+
+    override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> =
+      mapOf("source" to "gateway-on-device-cancel", "modelId" to modelId)
+
+    override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+      mapOf("source" to "gateway-on-device-delete", "modelId" to modelId)
 
     override fun loadPersonalizationConfig(): Map<String, Any?> =
       mapOf("source" to "gateway-personalization")
@@ -3300,6 +3323,15 @@ class OpenCrayLocalRuntimeServerTest {
         message = "Validation succeeded.",
       )
     }
+
+    override fun downloadOnDeviceModel(modelId: String): LlmConfigSnapshot =
+      EmptyLlmConfigFacade.load()
+
+    override fun cancelOnDeviceModelDownload(modelId: String): LlmConfigSnapshot =
+      EmptyLlmConfigFacade.load()
+
+    override fun deleteOnDeviceModel(modelId: String): LlmConfigSnapshot =
+      EmptyLlmConfigFacade.load()
   }
 
   private class NoOpRuntimeManager : AgentSessionRuntimeManager {

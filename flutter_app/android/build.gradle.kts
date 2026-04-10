@@ -6,6 +6,19 @@ allprojects {
 }
 
 val androidJvmVersion = JavaVersion.VERSION_11
+val localAndroidProjects =
+    setOf(
+        ":app",
+        ":core",
+        ":filesystem",
+        ":litertlm_bridge",
+        ":llm",
+        ":mcp",
+        ":persistence",
+        ":policy",
+        ":runtime",
+        ":skills",
+    )
 
 val newBuildDir: Directory =
     rootProject.layout.buildDirectory
@@ -22,9 +35,11 @@ subprojects {
 }
 
 subprojects {
-    tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
-        kotlinOptions {
-            jvmTarget = androidJvmVersion.toString()
+    if (project.path in localAndroidProjects) {
+        tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+            compilerOptions {
+                jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+            }
         }
     }
 }

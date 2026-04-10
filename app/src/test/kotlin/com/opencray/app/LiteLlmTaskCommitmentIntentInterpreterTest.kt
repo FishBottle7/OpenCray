@@ -162,6 +162,40 @@ class LiteLlmTaskCommitmentIntentInterpreterTest {
     assertEquals(false, unavailable.allowHeuristicFallback)
   }
 
+  @Test
+  fun interpretReturnsUnavailableWhenOnDeviceModeIsSelected() {
+    val providerClient = RecordingProviderClient(
+      result = LiteLlmProviderResult.Success(outputText = """{"decisions":[]}"""),
+    )
+    val interpreter = LiteLlmTaskCommitmentIntentInterpreter(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+          selectedOnDeviceModelId = "gemma-4-e2b-it",
+        )
+      },
+      providerClient = providerClient,
+    )
+
+    val result = interpreter.interpret(
+      TaskCommitmentIntentRequest(
+        sessionId = "session-4",
+        commitments = listOf(
+          OpenTaskCommitment(
+            id = "commitment-1",
+            content = "run the targeted runtime tests",
+          ),
+        ),
+      ),
+    )
+
+    val unavailable = result as TaskCommitmentIntentInterpretation.Unavailable
+    assertEquals(false, unavailable.allowHeuristicFallback)
+    assertTrue(unavailable.reason.orEmpty().contains("On-device LLM mode"))
+    assertTrue(providerClient.lastRequest == null)
+  }
+
   private class RecordingProviderClient(
     private val result: LiteLlmProviderResult,
   ) : LiteLlmProviderClient {

@@ -152,6 +152,7 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
 
   override fun saveLlmConfig(
     enabled: Boolean,
+    providerMode: String,
     providerId: String,
     selectedProviderOptionId: String,
     protocol: String,
@@ -166,6 +167,15 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
     openAiPromptCacheRetention: String?,
     anthropicPromptCachingEnabled: Boolean?,
     anthropicPromptCacheTtl: String?,
+    selectedOnDeviceModelId: String,
+    onDeviceMaxContextWindow: Int,
+    onDeviceMaxTokens: Int,
+    onDeviceTopK: Int,
+    onDeviceTopP: Double,
+    onDeviceTemperature: Double,
+    onDeviceAccelerator: String,
+    onDeviceThinkingEnabled: Boolean,
+    onDeviceLiteModeEnabled: Boolean,
   ): Map<String, Any?> = throw writeUnavailable("saveLlmConfig")
 
   override fun saveCustomLlmProvider(
@@ -192,6 +202,15 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
     model: String,
     reasoningEffort: String,
   ): Map<String, Any?> = throw writeUnavailable("validateLlmConfig")
+
+  override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+    throw writeUnavailable("downloadOnDeviceLlmModel")
+
+  override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> =
+    throw writeUnavailable("cancelOnDeviceLlmModelDownload")
+
+  override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+    throw writeUnavailable("deleteOnDeviceLlmModel")
 
   override fun loadPersonalizationConfig(): Map<String, Any?> =
     personalizationFacade.load().toGatewayMap()

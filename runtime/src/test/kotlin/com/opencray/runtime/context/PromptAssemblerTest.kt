@@ -1212,6 +1212,52 @@ class PromptAssemblerTest {
   }
 
   @Test
+  fun assembleToolProtocolReducerHonorsExplicitDetailOverride() {
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      ContextManager().prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "You are OpenCray for testing.",
+          sessionContext = AgentRuntimeSessionContext(),
+          toolDefinitions = listOf(
+            AgentToolDefinition(
+              name = "Read",
+              description = "Read a file from the workspace.",
+            ),
+            AgentToolDefinition(
+              name = "Write",
+              description = "Write a file into the workspace.",
+            ),
+            AgentToolDefinition(
+              name = "GenerateImage",
+              description = "Generate an image.",
+            ),
+          ),
+          liveConversation = listOf(
+            RuntimeConversationMessage(
+              RuntimeConversationRole.USER,
+              "Inspect the override behavior.",
+            ),
+          ),
+          llmMetadata = mapOf(
+            "context_window_tokens" to "131072",
+            "toolProtocolDetailMode" to "minimal",
+          ),
+        ),
+      ),
+    )
+
+    assertEquals("minimal", prompt.report.toolProtocolTrace.detailMode)
+    assertFalse(
+      prompt.taskPrompt.contains(
+        "\"attachments\":[{\"artifact_id\":\"artifact-example-1234abcd\",\"kind\":\"image\"}]",
+      ),
+    )
+  }
+
+  @Test
   fun assembleBudgetCoordinatorStructurallyReducesWorkingStateBeforeDroppingIt() {
     val contextManager = ContextManager()
     val assembler = PromptAssembler()

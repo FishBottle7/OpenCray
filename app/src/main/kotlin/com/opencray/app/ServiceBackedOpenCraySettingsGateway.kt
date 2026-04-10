@@ -70,6 +70,7 @@ internal class ServiceBackedOpenCraySettingsGateway(
 
   override fun saveLlmConfig(
     enabled: Boolean,
+    providerMode: String,
     providerId: String,
     selectedProviderOptionId: String,
     protocol: String,
@@ -84,10 +85,20 @@ internal class ServiceBackedOpenCraySettingsGateway(
     openAiPromptCacheRetention: String?,
     anthropicPromptCachingEnabled: Boolean?,
     anthropicPromptCacheTtl: String?,
+    selectedOnDeviceModelId: String,
+    onDeviceMaxContextWindow: Int,
+    onDeviceMaxTokens: Int,
+    onDeviceTopK: Int,
+    onDeviceTopP: Double,
+    onDeviceTemperature: Double,
+    onDeviceAccelerator: String,
+    onDeviceThinkingEnabled: Boolean,
+    onDeviceLiteModeEnabled: Boolean,
   ): Map<String, Any?> = dispatchPayloadWriteCommand(
     operation = "saveLlmConfig",
     command = OpenCraySettingsWriteCommand.SaveLlmConfig(
       enabled = enabled,
+      providerMode = providerMode,
       providerId = providerId,
       selectedProviderOptionId = selectedProviderOptionId,
       protocol = protocol,
@@ -102,6 +113,15 @@ internal class ServiceBackedOpenCraySettingsGateway(
       openAiPromptCacheRetention = openAiPromptCacheRetention,
       anthropicPromptCachingEnabled = anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl = anthropicPromptCacheTtl,
+      selectedOnDeviceModelId = selectedOnDeviceModelId,
+      onDeviceMaxContextWindow = onDeviceMaxContextWindow,
+      onDeviceMaxTokens = onDeviceMaxTokens,
+      onDeviceTopK = onDeviceTopK,
+      onDeviceTopP = onDeviceTopP,
+      onDeviceTemperature = onDeviceTemperature,
+      onDeviceAccelerator = onDeviceAccelerator,
+      onDeviceThinkingEnabled = onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled = onDeviceLiteModeEnabled,
     ),
   )
 
@@ -156,6 +176,24 @@ internal class ServiceBackedOpenCraySettingsGateway(
       reasoningEffort = reasoningEffort,
     ),
   )
+
+  override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+    dispatchPayloadWriteCommand(
+      operation = "downloadOnDeviceLlmModel",
+      command = OpenCraySettingsWriteCommand.DownloadOnDeviceLlmModel(modelId),
+    )
+
+  override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> =
+    dispatchPayloadWriteCommand(
+      operation = "cancelOnDeviceLlmModelDownload",
+      command = OpenCraySettingsWriteCommand.CancelOnDeviceLlmModelDownload(modelId),
+    )
+
+  override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+    dispatchPayloadWriteCommand(
+      operation = "deleteOnDeviceLlmModel",
+      command = OpenCraySettingsWriteCommand.DeleteOnDeviceLlmModel(modelId),
+    )
 
   override fun loadPersonalizationConfig(): Map<String, Any?> =
     currentReadGateway().loadPersonalizationConfig()

@@ -43,6 +43,12 @@ internal class LiteLlmTaskCommitmentIntentInterpreter(
         reason = "LLM settings are not configured for task commitment interpretation.",
       )
     }
+    if (settings.isOnDeviceProviderMode()) {
+      return TaskCommitmentIntentInterpretation.Unavailable(
+        allowHeuristicFallback = false,
+        reason = "On-device LLM mode is not available for task commitment interpretation yet.",
+      )
+    }
 
     val gateway = gatewayFactory(
       buildRouting(settings),

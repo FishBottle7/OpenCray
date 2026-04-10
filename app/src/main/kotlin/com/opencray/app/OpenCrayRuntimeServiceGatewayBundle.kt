@@ -1125,6 +1125,7 @@ internal class ServiceOwnedSettingsGateway(
 
   override fun saveLlmConfig(
     enabled: Boolean,
+    providerMode: String,
     providerId: String,
     selectedProviderOptionId: String,
     protocol: String,
@@ -1139,9 +1140,19 @@ internal class ServiceOwnedSettingsGateway(
     openAiPromptCacheRetention: String?,
     anthropicPromptCachingEnabled: Boolean?,
     anthropicPromptCacheTtl: String?,
+    selectedOnDeviceModelId: String,
+    onDeviceMaxContextWindow: Int,
+    onDeviceMaxTokens: Int,
+    onDeviceTopK: Int,
+    onDeviceTopP: Double,
+    onDeviceTemperature: Double,
+    onDeviceAccelerator: String,
+    onDeviceThinkingEnabled: Boolean,
+    onDeviceLiteModeEnabled: Boolean,
   ): Map<String, Any?> = llmConfigFacade.save(
     com.opencray.app.facade.llm.SaveLlmConfigRequest(
       enabled = enabled,
+      providerMode = providerMode,
       providerId = providerId,
       selectedProviderOptionId = selectedProviderOptionId,
       protocol = protocol,
@@ -1156,6 +1167,15 @@ internal class ServiceOwnedSettingsGateway(
       openAiPromptCacheRetention = openAiPromptCacheRetention,
       anthropicPromptCachingEnabled = anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl = anthropicPromptCacheTtl,
+      selectedOnDeviceModelId = selectedOnDeviceModelId,
+      onDeviceMaxContextWindow = onDeviceMaxContextWindow,
+      onDeviceMaxTokens = onDeviceMaxTokens,
+      onDeviceTopK = onDeviceTopK,
+      onDeviceTopP = onDeviceTopP,
+      onDeviceTemperature = onDeviceTemperature,
+      onDeviceAccelerator = onDeviceAccelerator,
+      onDeviceThinkingEnabled = onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled = onDeviceLiteModeEnabled,
     ),
   ).toGatewayMap()
 
@@ -1212,6 +1232,24 @@ internal class ServiceOwnedSettingsGateway(
       reasoningEffort = reasoningEffort,
     ),
   ).toGatewayMap()
+
+  override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> {
+    val snapshot = llmConfigFacade.downloadOnDeviceModel(modelId).toGatewayMap()
+    notifySettingsOverviewChanged()
+    return snapshot
+  }
+
+  override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> {
+    val snapshot = llmConfigFacade.cancelOnDeviceModelDownload(modelId).toGatewayMap()
+    notifySettingsOverviewChanged()
+    return snapshot
+  }
+
+  override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> {
+    val snapshot = llmConfigFacade.deleteOnDeviceModel(modelId).toGatewayMap()
+    notifySettingsOverviewChanged()
+    return snapshot
+  }
 
   override fun loadMcpSettings(): Map<String, Any?> =
     mcpSettingsFacade.load().toGatewayMap()

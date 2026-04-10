@@ -6,6 +6,9 @@ import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
+import com.opencray.llm.LiteLlmProviderClient
+import com.opencray.llm.LiteLlmProviderRequest
+import com.opencray.llm.LiteLlmProviderResult
 import com.opencray.policy.SafetyAutomationMode
 import com.opencray.policy.SafetySettingsMetadataKeys
 import com.opencray.policy.ToolPolicyOverride
@@ -81,6 +84,197 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
     )
     assertTrue(result.stdout.contains("Ship update entry"))
     assertEquals(1, runtimeFactory.todoStoreForSession(chatStore.loadState().activeSession.sessionId).snapshot().size)
+  }
+
+  @Test
+  fun promptTaskReturnsMissingLlmConfigWhenOnDeviceModelIsNotReady() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-on-device-llm").toPath()
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-on-device-llm"))
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+          selectedOnDeviceModelId = "gemma-4-e2b-it",
+        )
+      },
+      onDeviceModelReadyProvider = { false },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    val runtime = runtimeFactory.create(
+      sessionId = chatStore.loadState().activeSession.sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val task = AgentTask(
+      id = "prompt-on-device-llm",
+      type = AgentTaskType.PROMPT,
+      input = "Explain the current repo structure.",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+    )
+
+    val result = runtime.execute(
+      task,
+      RuntimeExecutionHooks(
+        isCancellationRequested = { false },
+        requestRetry = { _ -> error("Retry was not expected for on-device runtime guard test.") },
+      ),
+    )
+
+    assertEquals(ExecutionStatus.FAILED, result.status)
+    assertEquals(
+      AppAgentSessionTaskRuntimeFactory.ERROR_CODE_MISSING_LLM_CONFIG,
+      result.errorCode,
+    )
+    assertEquals(
+      "LLM configuration is incomplete.",
+      result.errorMessage,
+    )
+  }
+
+  @Test
+  fun promptTaskBindsLiteRtAutomaticToolExecutionContextForOnDeviceDebugMode() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-on-device-auto-tool-context").toPath()
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-on-device-auto-tool-context"))
+    val providerClient = RecordingLiteRtContextProviderClient(
+      result = LiteLlmProviderResult.Failure(
+        errorCode = "TEST_STOP",
+        errorMessage = "Stop after provider capture.",
+      ),
+    )
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+          providerId = "",
+          selectedOnDeviceModelId = OnDeviceLlmCatalog.GEMMA_4_E2B_IT,
+        )
+      },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      providerClient = providerClient,
+      enableLiteRtDevAutomaticToolExecution = true,
+    )
+    val runtime = runtimeFactory.create(
+      sessionId = chatStore.loadState().activeSession.sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val task = AgentTask(
+      id = "prompt-on-device-auto-tool-context",
+      type = AgentTaskType.PROMPT,
+      input = "Summarize the project layout.",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+    )
+
+    val result = runtime.execute(
+      task,
+      RuntimeExecutionHooks(
+        isCancellationRequested = { false },
+        requestRetry = { _ -> error("Retry was not expected for on-device automatic tool binding test.") },
+      ),
+    )
+
+    assertEquals(ExecutionStatus.FAILED, result.status)
+    assertEquals("TEST_STOP", result.errorCode)
+    assertEquals(1, providerClient.requestCount)
+    assertEquals(
+      LlmProviderModes.ON_DEVICE_MODEL,
+      providerClient.recordedRequest?.route?.metadata?.get(LiteRtOnDeviceMetadataKeys.PROVIDER_MODE),
+    )
+    assertEquals(
+      OnDeviceLlmCatalog.GEMMA_4_E2B_IT,
+      providerClient.recordedRequest?.route?.model,
+    )
+    assertTrue(providerClient.recordedRequest?.route?.baseUrl.isNullOrBlank())
+    val context = checkNotNull(providerClient.recordedAutomaticToolExecutionContext)
+    assertEquals(task.id, context.task.id)
+    assertEquals(null, LiteRtAutomaticToolExecutionRegistry.current())
+  }
+
+  @Test
+  fun promptTaskSuppressesToolExposureWhenOnDeviceLiteModeEnabled() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-on-device-lite-mode").toPath()
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-on-device-lite-mode"))
+    val providerClient = RecordingLiteRtContextProviderClient(
+      result = LiteLlmProviderResult.Failure(
+        errorCode = "TEST_STOP",
+        errorMessage = "Stop after provider capture.",
+      ),
+    )
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+          providerId = "",
+          selectedOnDeviceModelId = OnDeviceLlmCatalog.GEMMA_4_E2B_IT,
+          onDeviceMaxContextWindow = 32_768,
+          onDeviceMaxTokens = 4_096,
+          onDeviceLiteModeEnabled = true,
+        )
+      },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      providerClient = providerClient,
+    )
+    val runtime = runtimeFactory.create(
+      sessionId = chatStore.loadState().activeSession.sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val task = AgentTask(
+      id = "prompt-on-device-lite-mode",
+      type = AgentTaskType.PROMPT,
+      input = "你好",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+    )
+
+    val result = runtime.execute(
+      task,
+      RuntimeExecutionHooks(
+        isCancellationRequested = { false },
+        requestRetry = { _ -> error("Retry was not expected for on-device lite mode test.") },
+      ),
+    )
+
+    assertEquals(ExecutionStatus.FAILED, result.status)
+    assertEquals("TEST_STOP", result.errorCode)
+    val request = checkNotNull(providerClient.recordedRequest)
+    assertEquals(
+      "true",
+      request.route.metadata[LiteRtOnDeviceMetadataKeys.LITE_MODE_ENABLED],
+    )
+    assertEquals(
+      "minimal",
+      request.route.metadata["toolProtocolDetailMode"],
+    )
+    assertEquals(
+      "7168",
+      request.route.metadata["context_window_tokens"],
+    )
+    assertTrue(request.request.tools.isEmpty())
+    assertTrue(request.request.builtinTools.isEmpty())
   }
 
   @Test
@@ -914,6 +1108,24 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
     automationMode?.let { mode ->
       put(SafetySettingsMetadataKeys.CHAT_MODE, mode.chatMetadataLabel)
       put(SafetySettingsMetadataKeys.EXECUTION_MODE, mode.executionMode.name)
+    }
+  }
+
+  private class RecordingLiteRtContextProviderClient(
+    private val result: LiteLlmProviderResult,
+  ) : LiteLlmProviderClient {
+    var requestCount: Int = 0
+      private set
+    var recordedRequest: LiteLlmProviderRequest? = null
+      private set
+    var recordedAutomaticToolExecutionContext: LiteRtAutomaticToolExecutionContext? = null
+      private set
+
+    override fun execute(request: LiteLlmProviderRequest): LiteLlmProviderResult {
+      requestCount += 1
+      recordedRequest = request
+      recordedAutomaticToolExecutionContext = LiteRtAutomaticToolExecutionRegistry.current()
+      return result
     }
   }
 

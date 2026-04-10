@@ -208,6 +208,35 @@ class LiteLlmSoulMemoryIntentInterpreterTest {
   }
 
   @Test
+  fun interpretReturnsUnavailableWhenOnDeviceModeIsSelected() {
+    val providerClient = RecordingProviderClient(
+      result = LiteLlmProviderResult.Success(outputText = """{"intents":[]}"""),
+    )
+    val interpreter = LiteLlmSoulMemoryIntentInterpreter(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+          selectedOnDeviceModelId = "gemma-4-e2b-it",
+        )
+      },
+      providerClient = providerClient,
+    )
+
+    val result = interpreter.interpret(
+      SoulMemoryIntentRequest(
+        sessionId = "session-on-device",
+        userInput = "以后叫你小白。",
+      ),
+    )
+
+    val unavailable = result as SoulMemoryIntentInterpretation.Unavailable
+    assertEquals(false, unavailable.allowHeuristicFallback)
+    assertTrue(unavailable.reason.orEmpty().contains("On-device LLM mode"))
+    assertTrue(providerClient.lastRequest == null)
+  }
+
+  @Test
   fun promptDocumentsSoulAdaptiveCoverageWithRealWorldPhrasing() {
     val providerClient = RecordingProviderClient(
       result = LiteLlmProviderResult.Success(outputText = """{"intents":[]}"""),

@@ -1571,6 +1571,18 @@ class OpenCrayAgentRuntime(
         }
       } ?: true
 
+  private fun onDeviceLiteModeEnabledForTurn(): Boolean =
+    config.llmMetadata["onDeviceLiteModeEnabled"]
+      ?.trim()
+      ?.lowercase()
+      ?.let { rawValue ->
+        when (rawValue) {
+          "true" -> true
+          "false" -> false
+          else -> null
+        }
+      } ?: false
+
   private fun dualExposeWebSearchEnabled(): Boolean =
     config.llmMetadata["dualExposeWebSearch"]
       ?.trim()
@@ -2419,6 +2431,9 @@ class OpenCrayAgentRuntime(
     activeSkillCapsule: ActiveSkillCapsule?,
     memoryToolsEnabled: Boolean,
   ): List<AgentToolDefinition> {
+    if (onDeviceLiteModeEnabledForTurn()) {
+      return emptyList()
+    }
     val memoryAwareDefinitions = if (memoryToolsEnabled) {
       allDefinitions
     } else {

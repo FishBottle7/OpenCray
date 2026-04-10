@@ -324,6 +324,7 @@ class OpenCrayFlutterHostBridgeTest {
 
     override fun saveLlmConfig(
       enabled: Boolean,
+      providerMode: String,
       providerId: String,
       selectedProviderOptionId: String,
       protocol: String,
@@ -338,6 +339,15 @@ class OpenCrayFlutterHostBridgeTest {
       openAiPromptCacheRetention: String?,
       anthropicPromptCachingEnabled: Boolean?,
       anthropicPromptCacheTtl: String?,
+      selectedOnDeviceModelId: String,
+      onDeviceMaxContextWindow: Int,
+      onDeviceMaxTokens: Int,
+      onDeviceTopK: Int,
+      onDeviceTopP: Double,
+      onDeviceTemperature: Double,
+      onDeviceAccelerator: String,
+      onDeviceThinkingEnabled: Boolean,
+      onDeviceLiteModeEnabled: Boolean,
     ): Map<String, Any?> = throw UnsupportedOperationException()
 
     override fun saveCustomLlmProvider(
@@ -364,6 +374,15 @@ class OpenCrayFlutterHostBridgeTest {
       model: String,
       reasoningEffort: String,
     ): Map<String, Any?> = throw UnsupportedOperationException()
+
+    override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
+    override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
+    override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
 
     override fun loadPersonalizationConfig(): Map<String, Any?> =
       throw UnsupportedOperationException()

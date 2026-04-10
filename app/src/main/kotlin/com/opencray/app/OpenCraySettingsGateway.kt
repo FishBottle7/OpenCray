@@ -31,6 +31,7 @@ internal interface OpenCraySettingsGateway {
 
   fun saveLlmConfig(
     enabled: Boolean,
+    providerMode: String = LlmProviderModes.CLOUD,
     providerId: String,
     selectedProviderOptionId: String,
     protocol: String,
@@ -45,6 +46,15 @@ internal interface OpenCraySettingsGateway {
     openAiPromptCacheRetention: String? = null,
     anthropicPromptCachingEnabled: Boolean? = null,
     anthropicPromptCacheTtl: String? = null,
+    selectedOnDeviceModelId: String = LlmSettingsState.DEFAULT_ON_DEVICE_MODEL_ID,
+    onDeviceMaxContextWindow: Int = LlmSettingsState.DEFAULT_ON_DEVICE_MAX_CONTEXT_WINDOW,
+    onDeviceMaxTokens: Int = LlmSettingsState.DEFAULT_ON_DEVICE_MAX_TOKENS,
+    onDeviceTopK: Int = LlmSettingsState.DEFAULT_ON_DEVICE_TOP_K,
+    onDeviceTopP: Double = LlmSettingsState.DEFAULT_ON_DEVICE_TOP_P,
+    onDeviceTemperature: Double = LlmSettingsState.DEFAULT_ON_DEVICE_TEMPERATURE,
+    onDeviceAccelerator: String = LlmSettingsState.DEFAULT_ON_DEVICE_ACCELERATOR,
+    onDeviceThinkingEnabled: Boolean = LlmSettingsState.DEFAULT_ON_DEVICE_THINKING_ENABLED,
+    onDeviceLiteModeEnabled: Boolean = LlmSettingsState.DEFAULT_ON_DEVICE_LITE_MODE_ENABLED,
   ): Map<String, Any?>
 
   fun saveCustomLlmProvider(
@@ -71,6 +81,12 @@ internal interface OpenCraySettingsGateway {
     model: String,
     reasoningEffort: String,
   ): Map<String, Any?>
+
+  fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?>
+
+  fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?>
+
+  fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?>
 
   fun loadPersonalizationConfig(): Map<String, Any?>
 
@@ -140,6 +156,7 @@ internal sealed interface OpenCraySettingsWriteCommand {
 
   data class SaveLlmConfig(
     val enabled: Boolean,
+    val providerMode: String = LlmProviderModes.CLOUD,
     val providerId: String,
     val selectedProviderOptionId: String,
     val protocol: String,
@@ -154,6 +171,15 @@ internal sealed interface OpenCraySettingsWriteCommand {
     val openAiPromptCacheRetention: String? = null,
     val anthropicPromptCachingEnabled: Boolean? = null,
     val anthropicPromptCacheTtl: String? = null,
+    val selectedOnDeviceModelId: String = LlmSettingsState.DEFAULT_ON_DEVICE_MODEL_ID,
+    val onDeviceMaxContextWindow: Int = LlmSettingsState.DEFAULT_ON_DEVICE_MAX_CONTEXT_WINDOW,
+    val onDeviceMaxTokens: Int = LlmSettingsState.DEFAULT_ON_DEVICE_MAX_TOKENS,
+    val onDeviceTopK: Int = LlmSettingsState.DEFAULT_ON_DEVICE_TOP_K,
+    val onDeviceTopP: Double = LlmSettingsState.DEFAULT_ON_DEVICE_TOP_P,
+    val onDeviceTemperature: Double = LlmSettingsState.DEFAULT_ON_DEVICE_TEMPERATURE,
+    val onDeviceAccelerator: String = LlmSettingsState.DEFAULT_ON_DEVICE_ACCELERATOR,
+    val onDeviceThinkingEnabled: Boolean = LlmSettingsState.DEFAULT_ON_DEVICE_THINKING_ENABLED,
+    val onDeviceLiteModeEnabled: Boolean = LlmSettingsState.DEFAULT_ON_DEVICE_LITE_MODE_ENABLED,
   ) : OpenCraySettingsWriteCommand
 
   data class SaveCustomLlmProvider(
@@ -179,6 +205,18 @@ internal sealed interface OpenCraySettingsWriteCommand {
     val apiKey: String,
     val model: String,
     val reasoningEffort: String,
+  ) : OpenCraySettingsWriteCommand
+
+  data class DownloadOnDeviceLlmModel(
+    val modelId: String,
+  ) : OpenCraySettingsWriteCommand
+
+  data class CancelOnDeviceLlmModelDownload(
+    val modelId: String,
+  ) : OpenCraySettingsWriteCommand
+
+  data class DeleteOnDeviceLlmModel(
+    val modelId: String,
   ) : OpenCraySettingsWriteCommand
 
   data class SavePersonalizationConfig(
@@ -258,6 +296,7 @@ internal fun OpenCraySettingsGateway.dispatchSettingsWriteCommand(
   is OpenCraySettingsWriteCommand.SaveLlmConfig -> OpenCraySettingsWriteDispatchResult.Payload(
     saveLlmConfig(
       enabled = command.enabled,
+      providerMode = command.providerMode,
       providerId = command.providerId,
       selectedProviderOptionId = command.selectedProviderOptionId,
       protocol = command.protocol,
@@ -272,6 +311,15 @@ internal fun OpenCraySettingsGateway.dispatchSettingsWriteCommand(
       openAiPromptCacheRetention = command.openAiPromptCacheRetention,
       anthropicPromptCachingEnabled = command.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl = command.anthropicPromptCacheTtl,
+      selectedOnDeviceModelId = command.selectedOnDeviceModelId,
+      onDeviceMaxContextWindow = command.onDeviceMaxContextWindow,
+      onDeviceMaxTokens = command.onDeviceMaxTokens,
+      onDeviceTopK = command.onDeviceTopK,
+      onDeviceTopP = command.onDeviceTopP,
+      onDeviceTemperature = command.onDeviceTemperature,
+      onDeviceAccelerator = command.onDeviceAccelerator,
+      onDeviceThinkingEnabled = command.onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled = command.onDeviceLiteModeEnabled,
     ),
   )
 
@@ -302,6 +350,18 @@ internal fun OpenCraySettingsGateway.dispatchSettingsWriteCommand(
       model = command.model,
       reasoningEffort = command.reasoningEffort,
     ),
+  )
+
+  is OpenCraySettingsWriteCommand.DownloadOnDeviceLlmModel -> OpenCraySettingsWriteDispatchResult.Payload(
+    downloadOnDeviceLlmModel(command.modelId),
+  )
+
+  is OpenCraySettingsWriteCommand.CancelOnDeviceLlmModelDownload -> OpenCraySettingsWriteDispatchResult.Payload(
+    cancelOnDeviceLlmModelDownload(command.modelId),
+  )
+
+  is OpenCraySettingsWriteCommand.DeleteOnDeviceLlmModel -> OpenCraySettingsWriteDispatchResult.Payload(
+    deleteOnDeviceLlmModel(command.modelId),
   )
 
   is OpenCraySettingsWriteCommand.SavePersonalizationConfig -> OpenCraySettingsWriteDispatchResult.Payload(

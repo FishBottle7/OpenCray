@@ -41,6 +41,12 @@ internal class LiteLlmUserMemoryIntentInterpreter(
         reason = "LLM settings are not configured for user memory interpretation.",
       )
     }
+    if (settings.isOnDeviceProviderMode()) {
+      return UserMemoryIntentInterpretation.Unavailable(
+        allowHeuristicFallback = false,
+        reason = "On-device LLM mode is not available for user memory interpretation yet.",
+      )
+    }
 
     val gateway = gatewayFactory(
       buildRouting(settings),

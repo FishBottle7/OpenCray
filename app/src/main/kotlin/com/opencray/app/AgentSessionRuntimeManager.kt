@@ -1392,7 +1392,7 @@ private class ManagedAgentSessionHandle(
         ),
         pendingMessageId = persisted.pendingMessageId,
         managedProcessIds = persisted.managedProcessIds,
-        lastEvent = persisted.lastEvent?.toRuntimeEvent(),
+        lastEvent = persisted.lastEvent?.toRuntimeEventOrNull(),
         lastResult = persisted.lastResult,
       )
     }

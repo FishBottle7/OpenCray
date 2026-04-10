@@ -7,8 +7,11 @@ import com.opencray.app.AppAgentWorkspace
 import com.opencray.app.LlmProviderCatalog
 import com.opencray.app.LlmSettingsState
 import com.opencray.app.LlmSettingsStore
+import com.opencray.app.LiteRtOnDeviceModelInstallStore
 import com.opencray.app.LocaleSettingsStore
+import com.opencray.app.OnDeviceLlmCatalog
 import com.opencray.app.OpenCrayLocaleManager
+import com.opencray.app.isOperationallyConfigured
 import android.content.Context
 import com.opencray.app.TelemetrySettingsStore
 import com.opencray.app.TelemetryTogglesState
@@ -139,6 +142,7 @@ interface SettingsFacade {
 internal class LocalSettingsFacade(
   private val context: Context,
   private val llmSettingsStore: LlmSettingsStore,
+  private val onDeviceModelInstallStore: LiteRtOnDeviceModelInstallStore,
   private val localeSettingsStore: LocaleSettingsStore,
   private val telemetrySettingsStore: TelemetrySettingsStore,
   private val soulProfileStore: WorkspaceSoulProfileStore,
@@ -433,11 +437,15 @@ internal class LocalSettingsFacade(
     soulProfileStore.loadSoulProfile(workspaceRootProvider())
 
   private fun llmStatusLabel(state: LlmSettingsState): String = when {
-    state.isConfigured() -> context.getString(R.string.llm_settings_status_configured)
+    state.isOperationallyConfigured(onDeviceModelInstallStore) ->
+      context.getString(R.string.llm_settings_status_configured)
     else -> context.getString(R.string.llm_settings_status_incomplete)
   }
 
   private fun providerLabel(state: LlmSettingsState): String {
+    if (state.isOnDeviceProviderMode()) {
+      return OnDeviceLlmCatalog.titleFor(state.selectedOnDeviceModelId)
+    }
     if (state.baseUrl.isBlank()) {
       return "Not set"
     }
@@ -541,6 +549,7 @@ internal class LocalSettingsFacade(
     fun fromContext(context: Context): SettingsFacade = LocalSettingsFacade(
       context = OpenCrayLocaleManager.wrap(context.applicationContext),
       llmSettingsStore = LlmSettingsStore.fromContext(context),
+      onDeviceModelInstallStore = LiteRtOnDeviceModelInstallStore.fromContext(context),
       localeSettingsStore = LocaleSettingsStore.fromContext(context),
       telemetrySettingsStore = TelemetrySettingsStore.fromContext(context),
       soulProfileStore = WorkspaceSoulProfileStore(),

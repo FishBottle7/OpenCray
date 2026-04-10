@@ -10,6 +10,7 @@ import com.opencray.llm.DefaultLiteLlmGateway
 import com.opencray.llm.InMemoryLiteLlmRoutingSettingsStore
 import com.opencray.llm.LiteLlmGateway
 import com.opencray.llm.LiteLlmGatewayRequest
+import com.opencray.llm.LiteLlmProviderClient
 import com.opencray.llm.ModelProfile
 import com.opencray.llm.ProviderRoute
 import com.opencray.llm.ProviderRouting
@@ -131,6 +132,9 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val memoryIngestionCoordinator: ChatMemoryIngestionCoordinator? = null,
   private val soulTurnSemanticSignalInterpreter: SoulTurnSemanticSignalInterpreter =
     NoOpSoulTurnSemanticSignalInterpreter,
+  private val providerClient: LiteLlmProviderClient = defaultProviderClient(providerUserAgent),
+  private val onDeviceModelReadyProvider: (String) -> Boolean = { true },
+  private val enableLiteRtDevAutomaticToolExecution: Boolean = false,
   private val commandExecutorProvider: () -> CommandExecutor? = { null },
   private val pythonRuntimeProvider: () -> PythonScriptRuntime = { HostProcessPythonRuntime() },
   private val pythonRuntimeManifestProvider: (() -> PythonRuntimeManifestSnapshot?)? = null,
@@ -288,7 +292,13 @@ internal class AppAgentSessionTaskRuntimeFactory(
         approvedSubAgentResume = approvedSubAgentResume,
         rejectedSubAgentResume = rejectedSubAgentResume,
       )
-    if (requiresLlmConfig && !llmSettings.isConfigured()) {
+    val hasOperationalLlmConfig = when {
+      !llmSettings.isConfigured() -> false
+      llmSettings.isOnDeviceProviderMode() ->
+        onDeviceModelReadyProvider(llmSettings.selectedOnDeviceModelId)
+      else -> true
+    }
+    if (requiresLlmConfig && !hasOperationalLlmConfig) {
       return ExecutionResult(
         taskId = task.id,
         status = ExecutionStatus.FAILED,
@@ -299,20 +309,30 @@ internal class AppAgentSessionTaskRuntimeFactory(
         metadata = task.metadata,
       )
     }
-
-    val routeProviderId = llmSettings.providerId.ifBlank { "openai-compatible" }
+    val routeProviderId = llmSettings.providerId.ifBlank {
+      if (llmSettings.isOnDeviceProviderMode()) {
+        "on-device"
+      } else {
+        "openai-compatible"
+      }
+    }
     val routeMetadata = if (requiresLlmConfig) {
       effectiveLlmRouteMetadata(settings = llmSettings)
     } else {
       emptyMap()
     }
     val gateway: LiteLlmGateway = if (requiresLlmConfig) {
+      val routeModel = if (llmSettings.isOnDeviceProviderMode()) {
+        llmSettings.selectedOnDeviceModelId
+      } else {
+        llmSettings.model
+      }
       val route = ProviderRoute(
         id = "route-$routeProviderId",
         providerId = routeProviderId,
-        baseUrl = llmSettings.baseUrl,
-        model = llmSettings.model,
-        timeoutMs = recommendedInteractiveProviderRouteTimeoutMs(llmSettings.model),
+        baseUrl = llmSettings.baseUrl.takeUnless { llmSettings.isOnDeviceProviderMode() },
+        model = routeModel,
+        timeoutMs = recommendedInteractiveProviderRouteTimeoutMs(routeModel),
         metadata = routeMetadata,
       )
       DefaultLiteLlmGateway(
@@ -329,9 +349,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
             ),
           ),
         ),
-        providerClient = OpenAiCompatibleLiteLlmProviderClient(
-          userAgent = providerUserAgent,
-        ),
+        providerClient = providerClient,
       )
     } else {
       NonPromptTaskLiteLlmGateway
@@ -397,70 +415,77 @@ internal class AppAgentSessionTaskRuntimeFactory(
       appendTaskInputToTranscript = task.type == com.opencray.core.contracts.AgentTaskType.PROMPT &&
         promptResumeState == null,
       llmMetadata = llmMetadata,
-      liveContextMode = liveContextModeProvider(),
-      memoryToolsEnabled = safetySettings.memoryToolsEnabled,
+      liveContextMode = effectiveLiveContextMode(
+        configuredMode = liveContextModeProvider(),
+        llmSettings = llmSettings,
+      ),
+      memoryToolsEnabled = effectiveMemoryToolsEnabled(
+        configuredValue = safetySettings.memoryToolsEnabled,
+        llmSettings = llmSettings,
+      ),
     )
     val sessionContext = preparedContext.sessionContext
     val effectiveMemoryRecords = preparedContext.effectiveMemoryRecords
+    val toolDispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = workspaceRootsProvider(),
+        readRoots = readRootsProvider(),
+        hiddenToolNamePrefixes = hiddenToolNamePrefixesProvider(),
+        extraPolicyReadRoots = skillPolicyReadRoots,
+        extraPolicyWriteRoots = skillPolicyWriteRoots,
+        skillsRoots = skillsRootsProvider(),
+        skillPackageManager = skillPackageManager,
+        mcpExposureReport = mcpReportProvider(),
+        // Host UI tool actions are already user-initiated, so nested policy gates should not
+        // bounce them back into chat approval just because the internal gate uses Read/WebFetch.
+        approvedTaskId = task.id.takeIf {
+          approvalGrant != null || hostUiTaskPreapproved
+        },
+        approvedToolName = approvalGrant?.toolName,
+        rejectedTaskId = task.id.takeIf { approvalRejection != null },
+        rejectedToolName = approvalRejection?.toolName,
+        commandExecutor = commandExecutorProvider(),
+        pythonRuntimeAdapter = pythonRuntimeProvider(),
+        pythonRuntimeManifestProvider = pythonRuntimeManifestProvider,
+        supportsManagedPythonProcessStart = true,
+        managedPythonProcessUsesRuntimeAdapter = true,
+        todoStore = todoStoreForSession(sessionId),
+        processRegistry = processRegistryForSession(sessionId),
+        webSearchProvider = webSearchProviderFactory(),
+        sandboxPreviewService = sandboxPreviewServiceProvider(),
+        sandboxSessionControlService = sandboxSessionControlServiceProvider(),
+        sandboxSessionInfoService = sandboxSessionInfoServiceProvider(),
+        mediaToolSettingsProvider = mediaToolSettingsProvider,
+        imageGenerationClient = imageGenerationClientProvider(),
+        speechSynthesisClient = speechSynthesisClientProvider(),
+        chatAttachmentResolver = fun(chatAttachmentId: String): OpenCrayChatAttachmentSource? {
+          val attachment = sessionContextFactory.resolveChatAttachmentEntry(
+            sessionId = sessionId,
+            attachmentId = chatAttachmentId,
+          ) ?: return null
+          val sourcePath = sessionContextFactory.resolveChatAttachmentFilePath(attachment) ?: return null
+          return OpenCrayChatAttachmentSource(
+            attachmentId = attachment.attachmentId,
+            displayName = attachment.displayName,
+            sourcePath = sourcePath,
+            mimeType = attachment.mimeType?.trim()?.takeIf(String::isNotBlank),
+          )
+        },
+        memoryToolContext = if (safetySettings.memoryToolsEnabled) {
+          MemoryToolContext(
+            sessionId = sessionId,
+            workspaceId = workspaceId,
+            records = effectiveMemoryRecords,
+          )
+        } else {
+          null
+        },
+      ),
+      managedProcessObservationTracker = managedProcessObservationTrackerForSession(sessionId),
+    )
     val runtime = OpenCrayAgentRuntime(
       gateway = gateway,
-      toolDispatcher = OpenCrayToolDispatcher(
-        OpenCrayToolDispatcherConfig(
-          workspaceRoots = workspaceRootsProvider(),
-          readRoots = readRootsProvider(),
-          hiddenToolNamePrefixes = hiddenToolNamePrefixesProvider(),
-          extraPolicyReadRoots = skillPolicyReadRoots,
-          extraPolicyWriteRoots = skillPolicyWriteRoots,
-          skillsRoots = skillsRootsProvider(),
-          skillPackageManager = skillPackageManager,
-          mcpExposureReport = mcpReportProvider(),
-          // Host UI tool actions are already user-initiated, so nested policy gates should not
-          // bounce them back into chat approval just because the internal gate uses Read/WebFetch.
-          approvedTaskId = task.id.takeIf {
-            approvalGrant != null || hostUiTaskPreapproved
-          },
-          approvedToolName = approvalGrant?.toolName,
-          rejectedTaskId = task.id.takeIf { approvalRejection != null },
-          rejectedToolName = approvalRejection?.toolName,
-          commandExecutor = commandExecutorProvider(),
-          pythonRuntimeAdapter = pythonRuntimeProvider(),
-          pythonRuntimeManifestProvider = pythonRuntimeManifestProvider,
-          supportsManagedPythonProcessStart = true,
-          managedPythonProcessUsesRuntimeAdapter = true,
-          todoStore = todoStoreForSession(sessionId),
-          processRegistry = processRegistryForSession(sessionId),
-          webSearchProvider = webSearchProviderFactory(),
-          sandboxPreviewService = sandboxPreviewServiceProvider(),
-          sandboxSessionControlService = sandboxSessionControlServiceProvider(),
-          sandboxSessionInfoService = sandboxSessionInfoServiceProvider(),
-          mediaToolSettingsProvider = mediaToolSettingsProvider,
-          imageGenerationClient = imageGenerationClientProvider(),
-          speechSynthesisClient = speechSynthesisClientProvider(),
-          chatAttachmentResolver = fun(chatAttachmentId: String): OpenCrayChatAttachmentSource? {
-            val attachment = sessionContextFactory.resolveChatAttachmentEntry(
-              sessionId = sessionId,
-              attachmentId = chatAttachmentId,
-            ) ?: return null
-            val sourcePath = sessionContextFactory.resolveChatAttachmentFilePath(attachment) ?: return null
-            return OpenCrayChatAttachmentSource(
-              attachmentId = attachment.attachmentId,
-              displayName = attachment.displayName,
-              sourcePath = sourcePath,
-              mimeType = attachment.mimeType?.trim()?.takeIf(String::isNotBlank),
-            )
-          },
-          memoryToolContext = if (safetySettings.memoryToolsEnabled) {
-            MemoryToolContext(
-              sessionId = sessionId,
-              workspaceId = workspaceId,
-              records = effectiveMemoryRecords,
-            )
-          } else {
-            null
-          },
-        ),
-        managedProcessObservationTracker = managedProcessObservationTrackerForSession(sessionId),
-      ),
+      toolDispatcher = toolDispatcher,
       config = OpenCrayAgentRuntimeConfig(
         maxTurns = safetySettings.maxAgentTurns,
         maxToolCalls = safetySettings.maxToolCalls,
@@ -508,23 +533,39 @@ internal class AppAgentSessionTaskRuntimeFactory(
         delegate = eventSink,
       ),
     )
-    val result = when (detachedControlTask) {
-      is DetachedSubAgentRecoveryWaitTaskSpec -> {
-        runtime.ensureDetachedSubAgentRecoveryExecution(
-          task = task,
-          hooks = hooks,
-          agentId = detachedControlTask.agentId,
-          parentRunId = detachedControlTask.parentRunId,
-        )
-        runtime.executeDetachedSubAgentRecoveryWait(
-          task = task,
-          hooks = hooks,
-          agentId = detachedControlTask.agentId,
-          parentRunId = detachedControlTask.parentRunId,
-        )
-      }
+    val liteRtAutomaticToolExecutionContext = if (
+      enableLiteRtDevAutomaticToolExecution &&
+      llmSettings.isOnDeviceProviderMode()
+    ) {
+      LiteRtAutomaticToolExecutionContext(
+        task = task,
+        hooks = hooks,
+        toolDispatcher = toolDispatcher,
+      )
+    } else {
+      null
+    }
+    val result = LiteRtAutomaticToolExecutionRegistry.withContext(
+      liteRtAutomaticToolExecutionContext,
+    ) {
+      when (detachedControlTask) {
+        is DetachedSubAgentRecoveryWaitTaskSpec -> {
+          runtime.ensureDetachedSubAgentRecoveryExecution(
+            task = task,
+            hooks = hooks,
+            agentId = detachedControlTask.agentId,
+            parentRunId = detachedControlTask.parentRunId,
+          )
+          runtime.executeDetachedSubAgentRecoveryWait(
+            task = task,
+            hooks = hooks,
+            agentId = detachedControlTask.agentId,
+            parentRunId = detachedControlTask.parentRunId,
+          )
+        }
 
-      null -> runtime.execute(task, hooks)
+        null -> runtime.execute(task, hooks)
+      }
     }
     recordSuccessfulAssistantTurn(
       sessionId = sessionId,
@@ -1007,6 +1048,26 @@ internal class AppAgentSessionTaskRuntimeFactory(
   } else {
     mapOf("sessionId" to sessionId)
   }
+
+  private fun effectiveLiveContextMode(
+    configuredMode: LiveContextMode,
+    llmSettings: LlmSettingsState,
+  ): LiveContextMode =
+    if (llmSettings.isOnDeviceLiteModeEnabled()) {
+      LiveContextMode.NO_MEMORY_OR_SOUL
+    } else {
+      configuredMode
+    }
+
+  private fun effectiveMemoryToolsEnabled(
+    configuredValue: Boolean,
+    llmSettings: LlmSettingsState,
+  ): Boolean =
+    if (llmSettings.isOnDeviceLiteModeEnabled()) {
+      false
+    } else {
+      configuredValue
+    }
 
   internal fun prepareSessionContext(
     sessionId: String,
@@ -1601,6 +1662,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
 
   companion object {
     const val ERROR_CODE_MISSING_LLM_CONFIG: String = "MISSING_LLM_CONFIG"
+    const val ERROR_CODE_ON_DEVICE_LLM_NOT_SUPPORTED: String = "ON_DEVICE_LLM_NOT_SUPPORTED"
     const val METADATA_HOST_PREFIX: String = "_host."
     const val HOST_METADATA_PROVIDER_ID: String = "${METADATA_HOST_PREFIX}providerId"
     const val METADATA_RUN_ID: String = "${METADATA_HOST_PREFIX}runId"
@@ -1610,6 +1672,19 @@ internal class AppAgentSessionTaskRuntimeFactory(
     const val METADATA_PROMPT_USER_TEXT: String = "${METADATA_HOST_PREFIX}promptUserText"
     const val METADATA_PROMPT_RUNTIME_ATTACHMENTS_JSON: String = "${METADATA_HOST_PREFIX}promptRuntimeAttachmentsJson"
     fun isLlmVisibleMetadataKey(key: String): Boolean = !key.startsWith(METADATA_HOST_PREFIX)
+
+    private fun defaultProviderClient(
+      providerUserAgent: String,
+    ): LiteLlmProviderClient = AppConfiguredLiteLlmProviderClient(
+      cloudProviderClient = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = providerUserAgent,
+      ),
+      onDeviceProviderClient = LiteRtOnDeviceLlmProviderClient(
+        runtime = LiteRtOnDeviceRuntime(
+          installStore = InMemoryLiteRtOnDeviceModelInstallStore(),
+        ),
+      ),
+    )
   }
 }
 

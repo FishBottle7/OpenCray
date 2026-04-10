@@ -169,6 +169,7 @@ abstract interface class OpenCrayHostBridge {
 
   Future<OpenCrayLlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
+    String providerMode = 'cloud',
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -183,6 +184,15 @@ abstract interface class OpenCrayHostBridge {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    String selectedOnDeviceModelId = 'gemma-4-e2b-it',
+    int onDeviceMaxContextWindow = 32768,
+    int onDeviceMaxTokens = 4096,
+    int onDeviceTopK = 40,
+    double onDeviceTopP = 0.95,
+    double onDeviceTemperature = 0.70,
+    String onDeviceAccelerator = 'gpu',
+    bool onDeviceThinkingEnabled = false,
+    bool onDeviceLiteModeEnabled = false,
   });
 
   Future<OpenCrayLlmConfigSnapshot> saveCustomLlmProvider({
@@ -209,6 +219,14 @@ abstract interface class OpenCrayHostBridge {
     required String model,
     required String reasoningEffort,
   });
+
+  Future<OpenCrayLlmConfigSnapshot> downloadOnDeviceLlmModel(String modelId);
+
+  Future<OpenCrayLlmConfigSnapshot> cancelOnDeviceLlmModelDownload(
+    String modelId,
+  );
+
+  Future<OpenCrayLlmConfigSnapshot> deleteOnDeviceLlmModel(String modelId);
 
   Future<OpenCrayPersonalizationConfigSnapshot> loadPersonalizationConfig();
 

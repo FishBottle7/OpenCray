@@ -171,6 +171,7 @@ class BridgeSettingsFacade implements SettingsFacade {
   @override
   Future<LlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
+    String providerMode = 'cloud',
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -185,9 +186,19 @@ class BridgeSettingsFacade implements SettingsFacade {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    String selectedOnDeviceModelId = 'gemma-4-e2b-it',
+    int onDeviceMaxContextWindow = 32768,
+    int onDeviceMaxTokens = 4096,
+    int onDeviceTopK = 40,
+    double onDeviceTopP = 0.95,
+    double onDeviceTemperature = 0.70,
+    String onDeviceAccelerator = 'gpu',
+    bool onDeviceThinkingEnabled = false,
+    bool onDeviceLiteModeEnabled = false,
   }) async => _mapLlmConfig(
     await _bridge.saveLlmConfig(
       enabled: enabled,
+      providerMode: providerMode,
       providerId: providerId,
       selectedProviderOptionId: selectedProviderOptionId,
       protocol: protocol,
@@ -202,6 +213,15 @@ class BridgeSettingsFacade implements SettingsFacade {
       openAiPromptCacheRetention: openAiPromptCacheRetention,
       anthropicPromptCachingEnabled: anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl: anthropicPromptCacheTtl,
+      selectedOnDeviceModelId: selectedOnDeviceModelId,
+      onDeviceMaxContextWindow: onDeviceMaxContextWindow,
+      onDeviceMaxTokens: onDeviceMaxTokens,
+      onDeviceTopK: onDeviceTopK,
+      onDeviceTopP: onDeviceTopP,
+      onDeviceTemperature: onDeviceTemperature,
+      onDeviceAccelerator: onDeviceAccelerator,
+      onDeviceThinkingEnabled: onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled: onDeviceLiteModeEnabled,
     ),
   );
 
@@ -256,6 +276,20 @@ class BridgeSettingsFacade implements SettingsFacade {
       reasoningEffort: reasoningEffort,
     ),
   );
+
+  @override
+  Future<LlmConfigSnapshot> downloadOnDeviceLlmModel(String modelId) async =>
+      _mapLlmConfig(await _bridge.downloadOnDeviceLlmModel(modelId));
+
+  @override
+  Future<LlmConfigSnapshot> cancelOnDeviceLlmModelDownload(
+    String modelId,
+  ) async =>
+      _mapLlmConfig(await _bridge.cancelOnDeviceLlmModelDownload(modelId));
+
+  @override
+  Future<LlmConfigSnapshot> deleteOnDeviceLlmModel(String modelId) async =>
+      _mapLlmConfig(await _bridge.deleteOnDeviceLlmModel(modelId));
 
   @override
   Future<PersonalizationConfigSnapshot> loadPersonalizationConfig() async =>
@@ -507,6 +541,7 @@ class BridgeSettingsFacade implements SettingsFacade {
     return LlmConfigSnapshot(
       localeTag: snapshot.localeTag,
       enabled: snapshot.enabled,
+      providerMode: snapshot.providerMode,
       providerId: snapshot.providerId,
       selectedProviderOptionId: snapshot.selectedProviderOptionId,
       protocol: snapshot.protocol,
@@ -537,6 +572,32 @@ class BridgeSettingsFacade implements SettingsFacade {
       openAiPromptCacheRetention: snapshot.openAiPromptCacheRetention,
       anthropicPromptCachingEnabled: snapshot.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl: snapshot.anthropicPromptCacheTtl,
+      onDeviceModels: snapshot.onDeviceModels
+          .map(
+            (option) => LlmOnDeviceModelOption(
+              id: option.id,
+              title: option.title,
+              subtitle: option.subtitle,
+              sizeLabel: option.sizeLabel,
+              fileSizeBytes: option.fileSizeBytes,
+              installState: option.installState,
+              downloadedBytes: option.downloadedBytes,
+              downloadBytesPerSecond: option.downloadBytesPerSecond,
+              sha256Verified: option.sha256Verified,
+              isSelected: option.isSelected,
+              lastError: option.lastError,
+            ),
+          )
+          .toList(growable: false),
+      selectedOnDeviceModelId: snapshot.selectedOnDeviceModelId,
+      onDeviceMaxContextWindow: snapshot.onDeviceMaxContextWindow,
+      onDeviceMaxTokens: snapshot.onDeviceMaxTokens,
+      onDeviceTopK: snapshot.onDeviceTopK,
+      onDeviceTopP: snapshot.onDeviceTopP,
+      onDeviceTemperature: snapshot.onDeviceTemperature,
+      onDeviceAccelerator: snapshot.onDeviceAccelerator,
+      onDeviceThinkingEnabled: snapshot.onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled: snapshot.onDeviceLiteModeEnabled,
     );
   }
 
