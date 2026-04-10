@@ -12,6 +12,9 @@ internal class ToolCapabilityClassifier {
     "workspace_import_file",
     "import_chat_attachment",
     "extract_workspace_package",
+    "ScheduledTaskCreate",
+    "ScheduledTaskDelete",
+    "ScheduledTaskUpdate",
     "SkillsAdd",
     "SkillsAddBatch",
     "SkillsUpdate",
@@ -59,6 +62,8 @@ internal class ToolCapabilityClassifier {
     "SkillsList",
     "SkillsCheck",
     "sandbox_session_info",
+    "ScheduledTaskList",
+    "ScheduledTaskGet",
     -> PolicyToolClass.READ_FILE
 
     else -> error("No PolicyToolClass mapping is registered for tool '$toolName'.")
@@ -66,6 +71,12 @@ internal class ToolCapabilityClassifier {
 
   fun classifyCapabilityKind(toolName: String): String = when (toolName) {
     "TodoWrite" -> "todo_management"
+    "ScheduledTaskCreate",
+    "ScheduledTaskList",
+    "ScheduledTaskGet",
+    "ScheduledTaskUpdate",
+    "ScheduledTaskDelete",
+    -> "schedule_task"
 
     "Task",
     "spawn_agent",

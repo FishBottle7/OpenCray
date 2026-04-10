@@ -49,6 +49,7 @@ import com.opencray.runtime.PythonRuntimeManifestSnapshot
 import com.opencray.runtime.SandboxPreviewService
 import com.opencray.runtime.SandboxSessionControlService
 import com.opencray.runtime.SandboxSessionInfoService
+import com.opencray.runtime.ScheduledTaskManager
 import com.opencray.runtime.bootstrap.BootstrapContextResolver
 import com.opencray.runtime.bootstrap.BootstrapMode
 import com.opencray.runtime.PythonScriptRuntime
@@ -139,6 +140,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val sandboxSessionControlServiceProvider: () -> SandboxSessionControlService? = { null },
   private val sandboxSessionInfoServiceProvider: () -> SandboxSessionInfoService? = { null },
   private val skillPackageManagerProvider: () -> SkillPackageManager? = { null },
+  private val scheduledTaskManagerProvider: () -> ScheduledTaskManager? = { null },
   private val mediaToolSettingsProvider: () -> OpenCrayMediaToolSettings? = { null },
   private val imageGenerationClientProvider: () -> OpenCrayImageGenerationClient? = { null },
   private val speechSynthesisClientProvider: () -> OpenCraySpeechSynthesisClient? = { null },
@@ -373,6 +375,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
         manager.compatStagingRootPath()?.let(::add)
       }
     }.orEmpty()
+    val scheduledTaskManager = scheduledTaskManagerProvider()
+    val scheduledTaskPolicyRoots = scheduledTaskManager?.let { manager ->
+      setOf(manager.policyTargetPath())
+    }.orEmpty()
     val workspaceId = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider())
     val llmMetadata = buildRuntimeLlmMetadata(
       requiresLlmConfig = requiresLlmConfig,
@@ -409,10 +415,11 @@ internal class AppAgentSessionTaskRuntimeFactory(
           workspaceRoots = workspaceRootsProvider(),
           readRoots = readRootsProvider(),
           hiddenToolNamePrefixes = hiddenToolNamePrefixesProvider(),
-          extraPolicyReadRoots = skillPolicyReadRoots,
-          extraPolicyWriteRoots = skillPolicyWriteRoots,
+          extraPolicyReadRoots = skillPolicyReadRoots + scheduledTaskPolicyRoots,
+          extraPolicyWriteRoots = skillPolicyWriteRoots + scheduledTaskPolicyRoots,
           skillsRoots = skillsRootsProvider(),
           skillPackageManager = skillPackageManager,
+          scheduledTaskManager = scheduledTaskManager,
           mcpExposureReport = mcpReportProvider(),
           // Host UI tool actions are already user-initiated, so nested policy gates should not
           // bounce them back into chat approval just because the internal gate uses Read/WebFetch.

@@ -96,7 +96,7 @@ The design must respect platform reality.
 - if the user force-stops the app, the package cannot self-start until the user explicitly interacts with it again
 - if the user stops an app from Android's Active apps UI, the whole app process dies immediately
 - Android 14+ does not pre-grant exact alarm access for most newly installed apps
-- `WorkManager` is durable but not exact, and periodic work is inexact
+- `WorkManager` is durable but not exact, and recurring work is inexact
 - Android 14+ requires foreground service types
 - Android 15 imposes timeout rules on some foreground service types such as `dataSync`
 
@@ -179,12 +179,14 @@ data class ScheduledTaskSpec(
 )
 
 sealed interface ScheduledTrigger {
-  data class RunAtTimestamp(val triggerAtEpochMs: Long) : ScheduledTrigger
-  data class RunAfterDelay(val delayMs: Long, val createdAtEpochMs: Long) : ScheduledTrigger
-  data class Periodic(
-    val intervalMs: Long,
-    val flexMs: Long? = null,
-    val anchorEpochMs: Long? = null,
+  data class At(val atEpochMs: Long) : ScheduledTrigger
+  data class After(val delayMs: Long, val createdAtEpochMs: Long) : ScheduledTrigger
+  data class Recurrence(
+    val startAtEpochMs: Long,
+    val timezoneId: String,
+    val rrule: String,
+    val exdatesEpochMs: List<Long> = emptyList(),
+    val rdatesEpochMs: List<Long> = emptyList(),
   ) : ScheduledTrigger
 }
 
@@ -253,6 +255,216 @@ This keeps scheduled execution compatible with the same:
 - approval model
 - interruption model
 
+### 4. Agent-facing schedule contract
+
+The model-facing scheduling tool should not use raw `epoch_ms` as its primary input surface.
+
+The agent should describe schedule intent in a structured trigger object that the runtime then validates,
+normalizes, persists, and compiles into the next concrete wake time.
+
+Recommended first-class tool shape:
+
+```json
+{
+  "prompt": "Every Monday and Tuesday at 09:00, review the repo and summarize changes.",
+  "session_id": "existing-session-id",
+  "title": "Weekly repo review",
+  "trigger": {
+    "timezone": "Asia/Shanghai",
+    "start_at": "2026-04-13T09:00:00+08:00",
+    "rrule": "FREQ=WEEKLY;BYDAY=MO,TU"
+  }
+}
+```
+
+Notes:
+
+- the public agent-facing contract is `trigger.at`, `trigger.after`, or `trigger.start_at + trigger.rrule`
+
+The trigger object should support exactly one of these user-facing forms:
+
+- absolute one-shot:
+  - `trigger.at`
+  - example: `"2026-04-11T09:00:00+08:00"`
+- relative one-shot:
+  - `trigger.after`
+  - example: `"PT2H"` or `"P1D"`
+- recurring calendar schedule:
+  - `trigger.rrule`
+  - paired with `trigger.start_at`
+  - optional `trigger.timezone`
+
+Recommended examples:
+
+- one time at an exact wall-clock moment:
+
+```json
+{
+  "prompt": "At 21:00, remind me to send the release note.",
+  "trigger": {
+    "at": "2026-04-11T21:00:00+08:00"
+  }
+}
+```
+
+- after a relative delay:
+
+```json
+{
+  "prompt": "Two hours from now, check whether the build is green.",
+  "trigger": {
+    "after": "PT2H"
+  }
+}
+```
+
+- every Monday and Tuesday:
+
+```json
+{
+  "prompt": "Every Monday and Tuesday at 09:00, review the repo and summarize changes.",
+  "trigger": {
+    "timezone": "Asia/Shanghai",
+    "start_at": "2026-04-13T09:00:00+08:00",
+    "rrule": "FREQ=WEEKLY;BYDAY=MO,TU"
+  }
+}
+```
+
+- first day of every month:
+
+```json
+{
+  "prompt": "On the first day of each month, prepare the monthly summary.",
+  "trigger": {
+    "timezone": "Asia/Shanghai",
+    "start_at": "2026-05-01T09:00:00+08:00",
+    "rrule": "FREQ=MONTHLY;BYMONTHDAY=1"
+  }
+}
+```
+
+Why not use RRULE alone for everything:
+
+- RRULE is a strong fit for recurring calendar schedules, but it is not the right primary surface for
+  relative delay semantics like "in two hours".
+- one-shot absolute schedules can be encoded awkwardly through recurrence constructs such as `COUNT=1`,
+  but that is harder to validate, preview, explain, and map from UI controls than a plain `at`.
+- many UI entry points are naturally "pick a date-time", "after 10 minutes", or "every Monday"; the
+  tool contract should preserve those distinctions instead of forcing all of them through one calendar DSL.
+
+The runtime may still normalize every accepted trigger into an internal enum such as:
+
+- `ONCE_AT`
+- `ONCE_AFTER`
+- `RECURRENCE`
+
+That normalized kind is useful internally for storage, validation, repair, and next-wake compilation.
+It should not be required as an agent-facing tool field if the trigger shape is already unambiguous.
+
+The runtime should be responsible for:
+
+- parsing ISO date-time values
+- parsing ISO-8601 durations
+- validating RRULE shape and timezone requirements
+- computing the next trigger time
+- storing the normalized trigger model rather than model-supplied raw math
+
+This keeps the model focused on user intent, keeps the UI easy to map onto the same contract, and avoids
+making the agent hand-calculate millisecond timestamps.
+
+### 5. Agent-facing schedule tool set
+
+The public scheduling surface should be a small CRUD-style tool family instead of a single create-only tool.
+
+Recommended first formal tool set:
+
+- `ScheduledTaskCreate`
+  - create one persisted schedule bound to one target session
+  - required:
+    - `prompt`
+    - `trigger`
+  - optional:
+    - `session_id`
+    - `title`
+    - `conflict_policy`
+    - notification policy fields
+  - returns:
+    - `schedule_id`
+    - `session_id`
+    - normalized `trigger_kind`
+    - `trigger_summary`
+    - `enabled`
+    - `next_trigger_at`
+
+- `ScheduledTaskList`
+  - list persisted schedules, defaulting to the current session when `session_id` is omitted
+  - optional filters:
+    - `session_id`
+    - `enabled`
+    - `limit`
+  - each item should include:
+    - `schedule_id`
+    - `title`
+    - `session_id`
+    - `enabled`
+    - `trigger_kind`
+    - `trigger_summary`
+    - `next_trigger_at`
+
+- `ScheduledTaskGet`
+  - fetch one schedule in detail by `schedule_id`
+  - should also return a bounded slice of recent run records so the agent can inspect trigger history without
+    needing a separate run-history tool in the first phase
+  - recommended response shape:
+    - full schedule spec
+    - computed `next_trigger_at`
+    - recent run attempts
+
+- `ScheduledTaskUpdate`
+  - patch one existing schedule by `schedule_id`
+  - mutable fields:
+    - `title`
+    - `prompt`
+    - full `trigger`
+    - `conflict_policy`
+    - notification policy fields
+  - if `trigger` is present, it should replace the whole trigger definition rather than attempting a fieldwise
+    merge against the stored trigger
+  - returns the same normalized summary fields as `ScheduledTaskCreate`
+
+- `ScheduledTaskDelete`
+  - delete one schedule by `schedule_id`
+  - deletion should:
+    - remove the persisted schedule spec
+    - unregister the next wake from `AlarmManager` / `WorkManager`
+    - remove persisted run history for that schedule in the same transaction or cleanup path
+
+Explicit non-goals for the agent tool surface:
+
+- `enable` / `disable` should remain a host or UI action, not an agent-planned decision
+- the agent should not be asked to mutate a schedule's enabled state as part of the first formal tool set
+- if we later need agent-driven state toggling, add a separate explicit tool such as `ScheduledTaskSetEnabled`
+  instead of overloading `ScheduledTaskUpdate`
+
+Development-stage compatibility policy:
+
+- no backward compatibility with pre-release local schedule data is required
+- old persisted trigger layouts and pre-contract schedule files should be treated as disposable development data,
+  not migration targets
+- the agent-facing public contract should remain only:
+  - `trigger.at`
+  - `trigger.after`
+  - `trigger.start_at + trigger.rrule`
+
+Pipeline requirements for the full tool family:
+
+- `ScheduledTaskList` and `ScheduledTaskGet` should still emit shared metadata through `ToolPolicyPipeline`
+- `ScheduledTaskCreate`, `ScheduledTaskUpdate`, and `ScheduledTaskDelete` must go through the same scheduling /
+  write pipeline path so UI inspection and approval metadata stay consistent
+- tool results should always include the normalized schedule metadata that UI and working-state surfaces need,
+  rather than rebuilding that information ad hoc downstream
+
 ## Android Architecture
 
 ## 1. Trigger layer
@@ -291,12 +503,12 @@ Recommended behavior:
 - after a trigger fires, compute and register the next wake
 - if exact alarm permission is unavailable, degrade to inexact fallback and surface that downgrade in UI
 
-### Durable delayed or inexact periodic work
+### Durable delayed or inexact recurring work
 
 Use `WorkManager` for:
 
 - delayed execution that does not need exact wall-clock precision
-- periodic maintenance
+- recurring maintenance
 - reconciliation after missed alarms or process loss
 - boot-time and app-upgrade repair scans
 
@@ -544,7 +756,7 @@ They should not be used for:
 Recommended policy:
 
 - exact time schedules require exact alarm capability or a clear user-visible downgrade
-- periodic non-critical schedules use inexact wake plus `WorkManager`
+- recurrence schedules that do not need exact wall-clock precision use inexact wake plus `WorkManager`
 - cron-style schedules are compiled into the next single wake rather than permanently repeating exact alarms
 
 ## Runtime Process Reservation
@@ -676,14 +888,14 @@ Exit criteria:
 
 1. Should generic agent execution use `specialUse` foreground service type for Android 14+ builds, or should foreground keepalive be restricted to a narrower task class for policy safety?
 2. Should approval-needed state keep the runtime in foreground mode, or should it downgrade to a high-priority notification plus dormant checkpoint state?
-3. Should periodic schedules support full cron syntax, or should the first release limit itself to timestamp, delay, and interval?
+3. Should recurring schedules support full cron syntax, or should the first release stay with `at`, `after`, and `rrule`?
 4. When a scheduled trigger fires into a busy session, should the default conflict policy be queue-behind or skip?
 5. Should the "Strong background mode" setup be per-device global, per-workspace, or per-schedule?
 
 ## Recommended Initial Answers
 
 - use queue-behind as the default conflict policy
-- ship timestamp, delay, and interval first; cron can be compiled onto the same trigger model later
+- ship `at`, `after`, and `rrule` first; cron can be compiled onto the same recurrence model later
 - keep approval decisions durable and actionable from notifications
 - make strong-background setup device-global, while notification behavior remains per-schedule
 - preserve the option for a later dedicated runtime process without blocking the first same-process rollout

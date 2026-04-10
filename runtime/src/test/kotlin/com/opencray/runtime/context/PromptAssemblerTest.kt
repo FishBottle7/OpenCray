@@ -87,6 +87,26 @@ class PromptAssemblerTest {
               description = "Keep a short live plan for multi-step work.",
             ),
             AgentToolDefinition(
+              name = "ScheduledTaskCreate",
+              description = "Create one persisted scheduled task.",
+            ),
+            AgentToolDefinition(
+              name = "ScheduledTaskList",
+              description = "List persisted scheduled tasks.",
+            ),
+            AgentToolDefinition(
+              name = "ScheduledTaskGet",
+              description = "Inspect one persisted scheduled task.",
+            ),
+            AgentToolDefinition(
+              name = "ScheduledTaskUpdate",
+              description = "Patch one persisted scheduled task.",
+            ),
+            AgentToolDefinition(
+              name = "ScheduledTaskDelete",
+              description = "Delete one persisted scheduled task.",
+            ),
+            AgentToolDefinition(
               name = "WebFetch",
               description = "Fetch a web page.",
             ),
@@ -163,6 +183,10 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("Omit todos to read the current plan without mutating it"))
     assertTrue(prompt.taskPrompt.contains("at most one in_progress item"))
     assertTrue(prompt.taskPrompt.contains("before returning the final answer make sure the plan state is accurate"))
+    assertTrue(prompt.taskPrompt.contains("prefer ScheduledTaskCreate"))
+    assertTrue(prompt.taskPrompt.contains("use trigger.at for one absolute time"))
+    assertTrue(prompt.taskPrompt.contains("use ScheduledTaskList or ScheduledTaskGet before guessing"))
+    assertTrue(prompt.taskPrompt.contains("inspect it with ScheduledTaskGet first"))
     assertTrue(prompt.taskPrompt.contains("tool_name\":\"Bash"))
     assertTrue(prompt.taskPrompt.contains("tool_name\":\"python_exec"))
     assertTrue(prompt.taskPrompt.contains("tool_name\":\"WebFetch"))

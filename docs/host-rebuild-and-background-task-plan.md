@@ -476,7 +476,7 @@ Queue restore changes:
 - if only unsafe replay is possible, restore as `INTERRUPTED`
 - only explicit user or policy-approved recovery may requeue unsafe work
 
-### 6. Add scheduled and delayed task triggering
+### 6. Add scheduled and recurring task triggering
 
 Add two persistent models:
 
@@ -486,14 +486,16 @@ Add two persistent models:
 Recommended trigger support in first phase:
 
 - immediate detached execution
-- run at timestamp
-- run after delay
+- one-shot absolute time
+- one-shot relative delay
+- recurring schedule via `start_at + timezone + rrule`
 
-Use `WorkManager` for durable scheduling and wake-up.
+Use `AlarmManager` for the next concrete fire time and `WorkManager` for durable repair and wake-up fallback.
 
 Recommended split:
 
-- `WorkManager` owns persistence, wake-up, and restart after process death
+- `AlarmManager` owns the next exact wake when the platform allows it
+- `WorkManager` owns repair, restart after process death, and coarse wake fallback
 - `AgentRuntimeService` owns actual long-running execution
 
 Worker behavior:
@@ -595,7 +597,7 @@ Exit criteria:
 
 Goal:
 
-- enable delayed and future periodic task orchestration
+- enable delayed and future recurrence task orchestration
 
 Work:
 

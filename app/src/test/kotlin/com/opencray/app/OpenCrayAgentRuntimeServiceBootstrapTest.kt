@@ -1645,7 +1645,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         sessionId = sessionId,
         title = "Repair wake schedule",
         enabled = true,
-        trigger = ScheduledTrigger.RunAtTimestamp(triggerAtEpochMs = nowEpochMs - 500L),
+        trigger = ScheduledTrigger.At(atEpochMs = nowEpochMs - 500L),
         payload = ScheduledTaskPayload(prompt = "Run repaired scheduled task"),
         createdAtEpochMs = nowEpochMs - 1_000L,
         updatedAtEpochMs = nowEpochMs - 1_000L,

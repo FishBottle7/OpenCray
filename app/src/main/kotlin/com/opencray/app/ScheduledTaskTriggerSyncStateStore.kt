@@ -138,4 +138,4 @@ private data class ScheduledTaskTriggerSyncStateRecord(
   val scheduleIds: List<String> = emptyList(),
 )
 
-private const val TRIGGER_SYNC_STATE_FILE_NAME: String = "scheduled-task-trigger-sync-state.json"
+private const val TRIGGER_SYNC_STATE_FILE_NAME: String = "scheduled-task-trigger-sync-state-v2.json"

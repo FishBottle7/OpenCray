@@ -58,6 +58,11 @@ class AgentToolAliasDispatchTest {
     assertTrue("Edit" in definitionNames)
     assertTrue("MultiEdit" in definitionNames)
     assertTrue("TodoWrite" in definitionNames)
+    assertTrue("ScheduledTaskCreate" in definitionNames)
+    assertTrue("ScheduledTaskList" in definitionNames)
+    assertTrue("ScheduledTaskGet" in definitionNames)
+    assertTrue("ScheduledTaskUpdate" in definitionNames)
+    assertTrue("ScheduledTaskDelete" in definitionNames)
     assertTrue("read" in definitionNames)
     assertTrue("write" in definitionNames)
     assertTrue("list" in definitionNames)
@@ -69,6 +74,16 @@ class AgentToolAliasDispatchTest {
     assertTrue("edit" in definitionNames)
     assertTrue("multiedit" in definitionNames)
     assertTrue("todowrite" in definitionNames)
+    assertTrue("scheduledtaskcreate" in definitionNames)
+    assertTrue("scheduled_task_create" in definitionNames)
+    assertTrue("scheduledtasklist" in definitionNames)
+    assertTrue("scheduled_task_list" in definitionNames)
+    assertTrue("scheduledtaskget" in definitionNames)
+    assertTrue("scheduled_task_get" in definitionNames)
+    assertTrue("scheduledtaskupdate" in definitionNames)
+    assertTrue("scheduled_task_update" in definitionNames)
+    assertTrue("scheduledtaskdelete" in definitionNames)
+    assertTrue("scheduled_task_delete" in definitionNames)
     assertTrue("Bash" in definitionNames)
     assertTrue("bash" in definitionNames)
     assertTrue(readDefinition.description.contains("Compatibility alias for Read"))
@@ -147,6 +162,21 @@ class AgentToolAliasDispatchTest {
     val todoWriteDefinition = requireNotNull(
       dispatcher.definitions().firstOrNull { definition -> definition.name == "TodoWrite" },
     )
+    val scheduledTaskDefinition = requireNotNull(
+      dispatcher.definitions().firstOrNull { definition -> definition.name == "ScheduledTaskCreate" },
+    )
+    val scheduledTaskListDefinition = requireNotNull(
+      dispatcher.definitions().firstOrNull { definition -> definition.name == "ScheduledTaskList" },
+    )
+    val scheduledTaskGetDefinition = requireNotNull(
+      dispatcher.definitions().firstOrNull { definition -> definition.name == "ScheduledTaskGet" },
+    )
+    val scheduledTaskUpdateDefinition = requireNotNull(
+      dispatcher.definitions().firstOrNull { definition -> definition.name == "ScheduledTaskUpdate" },
+    )
+    val scheduledTaskDeleteDefinition = requireNotNull(
+      dispatcher.definitions().firstOrNull { definition -> definition.name == "ScheduledTaskDelete" },
+    )
 
     val multiEditSchema = multiEditDefinition.toJsonSchema()
     val editsSchema = multiEditSchema.requiredProperty("properties").requiredProperty("edits")
@@ -181,6 +211,32 @@ class AgentToolAliasDispatchTest {
     )
     assertTrue(todoItemSchema.requiredStringArray("required").containsAll(listOf("content", "status")))
     assertEquals("false", todoItemSchema.requiredPrimitive("additionalProperties").content)
+
+    val scheduledTaskSchema = scheduledTaskDefinition.toJsonSchema()
+    val triggerSchema = scheduledTaskSchema.requiredProperty("properties").requiredProperty("trigger")
+    val triggerProperties = triggerSchema.requiredProperty("properties")
+    assertEquals("object", triggerSchema.requiredString("type"))
+    assertEquals("string", triggerProperties.requiredProperty("at").requiredString("type"))
+    assertEquals("string", triggerProperties.requiredProperty("after").requiredString("type"))
+    assertEquals("string", triggerProperties.requiredProperty("start_at").requiredString("type"))
+    assertEquals("string", triggerProperties.requiredProperty("timezone").requiredString("type"))
+    assertEquals("string", triggerProperties.requiredProperty("rrule").requiredString("type"))
+    assertTrue(
+      triggerSchema.requiredString("description").contains("start_at plus rrule"),
+    )
+    assertEquals("false", triggerSchema.requiredPrimitive("additionalProperties").content)
+    assertTrue(
+      scheduledTaskListDefinition.description.contains("current chat session"),
+    )
+    assertTrue(
+      scheduledTaskGetDefinition.toJsonSchema().requiredStringArray("required").contains("schedule_id"),
+    )
+    assertTrue(
+      scheduledTaskUpdateDefinition.toJsonSchema().requiredStringArray("required").contains("schedule_id"),
+    )
+    assertTrue(
+      scheduledTaskDeleteDefinition.toJsonSchema().requiredStringArray("required").contains("schedule_id"),
+    )
   }
 
   @Test

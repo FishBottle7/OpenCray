@@ -40,6 +40,8 @@ internal interface ScheduledTaskRunRecordStore {
 
   fun upsert(record: ScheduledTaskRunRecord)
 
+  fun removeForSchedule(scheduleId: String)
+
   fun clear()
 }
 
@@ -155,45 +157,53 @@ internal data class ScheduledTaskSpec(
 @Serializable
 internal sealed class ScheduledTrigger {
   @Serializable
-  @SerialName("run_at_timestamp")
-  data class RunAtTimestamp(
-    val triggerAtEpochMs: Long,
+  @SerialName("at")
+  data class At(
+    val atEpochMs: Long,
   ) : ScheduledTrigger() {
     init {
-      require(triggerAtEpochMs >= 0L) {
-        "ScheduledTrigger.RunAtTimestamp triggerAtEpochMs must be >= 0."
+      require(atEpochMs >= 0L) {
+        "ScheduledTrigger.At atEpochMs must be >= 0."
       }
     }
   }
 
   @Serializable
-  @SerialName("run_after_delay")
-  data class RunAfterDelay(
+  @SerialName("after")
+  data class After(
     val delayMs: Long,
     val createdAtEpochMs: Long,
   ) : ScheduledTrigger() {
     init {
-      require(delayMs >= 1L) { "ScheduledTrigger.RunAfterDelay delayMs must be >= 1." }
+      require(delayMs >= 1L) { "ScheduledTrigger.After delayMs must be >= 1." }
       require(createdAtEpochMs >= 0L) {
-        "ScheduledTrigger.RunAfterDelay createdAtEpochMs must be >= 0."
+        "ScheduledTrigger.After createdAtEpochMs must be >= 0."
       }
     }
   }
 
   @Serializable
-  @SerialName("periodic")
-  data class Periodic(
-    val intervalMs: Long,
-    val flexMs: Long? = null,
-    val anchorEpochMs: Long? = null,
+  @SerialName("recurrence")
+  data class Recurrence(
+    val startAtEpochMs: Long,
+    val timezoneId: String,
+    val rrule: String,
+    val exdatesEpochMs: List<Long> = emptyList(),
+    val rdatesEpochMs: List<Long> = emptyList(),
   ) : ScheduledTrigger() {
     init {
-      require(intervalMs >= 1L) { "ScheduledTrigger.Periodic intervalMs must be >= 1." }
-      require(flexMs == null || flexMs >= 0L) {
-        "ScheduledTrigger.Periodic flexMs must be >= 0."
+      require(startAtEpochMs >= 0L) {
+        "ScheduledTrigger.Recurrence startAtEpochMs must be >= 0."
       }
-      require(anchorEpochMs == null || anchorEpochMs >= 0L) {
-        "ScheduledTrigger.Periodic anchorEpochMs must be >= 0."
+      require(timezoneId.isNotBlank()) {
+        "ScheduledTrigger.Recurrence timezoneId must not be blank."
+      }
+      require(rrule.isNotBlank()) { "ScheduledTrigger.Recurrence rrule must not be blank." }
+      require(exdatesEpochMs.all { value -> value >= 0L }) {
+        "ScheduledTrigger.Recurrence exdatesEpochMs must be >= 0."
+      }
+      require(rdatesEpochMs.all { value -> value >= 0L }) {
+        "ScheduledTrigger.Recurrence rdatesEpochMs must be >= 0."
       }
     }
   }
@@ -335,6 +345,15 @@ private class InMemoryScheduledTaskRunRecordStore : ScheduledTaskRunRecordStore 
   override fun upsert(record: ScheduledTaskRunRecord) {
     synchronized(lock) {
       recordsById[record.scheduleRunId] = record
+    }
+  }
+
+  override fun removeForSchedule(scheduleId: String) {
+    synchronized(lock) {
+      val retainedIds = recordsById.values
+        .filterNot { record -> record.scheduleId == scheduleId }
+        .mapTo(linkedSetOf(), ScheduledTaskRunRecord::scheduleRunId)
+      recordsById.keys.retainAll(retainedIds)
     }
   }
 
@@ -480,6 +499,23 @@ private class FileBackedScheduledTaskRunRecordStore(
     }
   }
 
+  override fun removeForSchedule(scheduleId: String) {
+    synchronized(lock) {
+      val existing = loadNormalizedRecord()
+      val retained = existing.records.filterNot { record -> record.scheduleId == scheduleId }
+      if (retained.size == existing.records.size) {
+        return
+      }
+      saveRecord(
+        existing.copy(
+          recordVersion = existing.recordVersion + 1L,
+          updatedAtEpochMs = clock(),
+          records = retained,
+        ),
+      )
+    }
+  }
+
   override fun clear() {
     synchronized(lock) {
       storage.delete(RUN_RECORD_STORE_FILE_NAME)
@@ -552,5 +588,5 @@ private data class ScheduledTaskRunRecordStoreRecord(
   val records: List<ScheduledTaskRunRecord> = emptyList(),
 )
 
-private const val SPEC_STORE_FILE_NAME: String = "scheduled-task-specs.json"
-private const val RUN_RECORD_STORE_FILE_NAME: String = "scheduled-task-run-records.json"
+private const val SPEC_STORE_FILE_NAME: String = "scheduled-task-specs-v2.json"
+private const val RUN_RECORD_STORE_FILE_NAME: String = "scheduled-task-run-records-v2.json"

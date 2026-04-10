@@ -267,6 +267,19 @@ class PromptAssembler(
     val hasGlobTool = hasAnyTool(normalizedToolNames, "glob")
     val hasWriteTool = hasAnyTool(normalizedToolNames, "write", "workspace_write_file")
     val hasTodoWriteTool = hasAnyTool(normalizedToolNames, "todowrite")
+    val hasScheduledTaskTool = hasAnyTool(
+      normalizedToolNames,
+      "scheduledtaskcreate",
+      "scheduled_task_create",
+      "scheduledtasklist",
+      "scheduled_task_list",
+      "scheduledtaskget",
+      "scheduled_task_get",
+      "scheduledtaskupdate",
+      "scheduled_task_update",
+      "scheduledtaskdelete",
+      "scheduled_task_delete",
+    )
     val hasBashTool = hasAnyTool(normalizedToolNames, "bash")
     val hasPythonExecTool = hasAnyTool(normalizedToolNames, "python_exec")
     val hasWebSearchTool = hasAnyTool(normalizedToolNames, "websearch")
@@ -451,6 +464,12 @@ class PromptAssembler(
           appendToolGuidance("Keep TodoWrite aligned with reality. Allow at most one in_progress item, and only that item may set activeForm.")
         }
       }
+    }
+    if (hasScheduledTaskTool) {
+      appendToolGuidance("When the user wants an automatic future follow-up, reminder, delayed retry, or recurring check-in, prefer ScheduledTaskCreate.")
+      appendToolGuidance("For ScheduledTaskCreate, use trigger.at for one absolute time, trigger.after for one relative delay, or trigger.timezone plus trigger.start_at and trigger.rrule for recurrence. Do not calculate milliseconds manually.")
+      appendToolGuidance("When the user asks what schedules already exist or when they will run next, use ScheduledTaskList or ScheduledTaskGet before guessing.")
+      appendToolGuidance("When the user wants to change or remove an existing schedule, inspect it with ScheduledTaskGet first, then use ScheduledTaskUpdate or ScheduledTaskDelete.")
     }
     if (hasBashTool) {
       appendToolGuidance("Use Bash for one-off shell commands that do not require Python. Bash runs through the host shell, so use PowerShell syntax on Windows hosts.")

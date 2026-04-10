@@ -3,6 +3,7 @@ package com.opencray.runtime.context
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.ScheduledTaskToolMetadataKeys
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -491,6 +492,133 @@ class RecentToolObservationSupportTest {
       entries.single().text,
     )
     assertEquals("process_execution", entries.single().sourceType)
+  }
+
+  @Test
+  fun workingStateEntriesIncludeScheduledTaskCreateObservations() {
+    val support = RecentToolObservationSupport()
+
+    val entries = support.workingStateEntries(
+      listOf(
+        toolResultMessage(
+          toolName = "ScheduledTaskCreate",
+          content =
+            """
+            Scheduled task created.
+            schedule_id=schedule-nightly
+            session_id=session-main
+            title=Nightly summary
+            trigger_kind=after
+            trigger_summary=after:PT1M
+            enabled=true
+            next_trigger_at_epoch_ms=61000
+            """.trimIndent(),
+          metadata = mapOf(
+            ScheduledTaskToolMetadataKeys.SCHEDULE_ID to "schedule-nightly",
+            ScheduledTaskToolMetadataKeys.SESSION_ID to "session-main",
+            ScheduledTaskToolMetadataKeys.TRIGGER_KIND to "after",
+            ScheduledTaskToolMetadataKeys.ENABLED to "true",
+            ScheduledTaskToolMetadataKeys.NEXT_TRIGGER_AT_EPOCH_MS to "61000",
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(1, entries.size)
+    assertEquals(
+      "ScheduledTaskCreate trigger=after schedule=schedule-nightly session=session-main enabled=true next_at=61000",
+      entries.single().text,
+    )
+    assertEquals("automation_scheduling", entries.single().sourceType)
+  }
+
+  @Test
+  fun workingStateEntriesIncludeScheduledTaskListAndGetObservations() {
+    val support = RecentToolObservationSupport()
+
+    val entries = support.workingStateEntries(
+      listOf(
+        toolResultMessage(
+          toolName = "ScheduledTaskList",
+          content =
+            """
+            Listed 1 scheduled task(s) (session_mode=current_session total=1).
+            schedule_id=schedule-nightly
+            session_id=session-main
+            title=Nightly summary
+            trigger_kind=after
+            trigger_summary=after:PT1M
+            enabled=true
+            next_trigger_at_epoch_ms=61000
+            """.trimIndent(),
+          metadata = mapOf(
+            ScheduledTaskToolMetadataKeys.SESSION_ID to "session-main",
+            ScheduledTaskToolMetadataKeys.RETURNED_COUNT to "1",
+            ScheduledTaskToolMetadataKeys.TOTAL_COUNT to "1",
+          ),
+        ),
+        toolResultMessage(
+          toolName = "ScheduledTaskGet",
+          content = "Scheduled task details.",
+          metadata = mapOf(
+            ScheduledTaskToolMetadataKeys.SCHEDULE_ID to "schedule-nightly",
+            ScheduledTaskToolMetadataKeys.SESSION_ID to "session-main",
+            ScheduledTaskToolMetadataKeys.TRIGGER_KIND to "after",
+            ScheduledTaskToolMetadataKeys.ENABLED to "true",
+            ScheduledTaskToolMetadataKeys.RECENT_RUN_COUNT to "1",
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(2, entries.size)
+    assertEquals(
+      "ScheduledTaskList returned=1 total=1 session=session-main",
+      entries.first().text,
+    )
+    assertEquals(
+      "ScheduledTaskGet schedule=schedule-nightly trigger=after session=session-main enabled=true recent_runs=1",
+      entries.last().text,
+    )
+  }
+
+  @Test
+  fun workingStateEntriesIncludeScheduledTaskUpdateAndDeleteObservations() {
+    val support = RecentToolObservationSupport()
+
+    val entries = support.workingStateEntries(
+      listOf(
+        toolResultMessage(
+          toolName = "ScheduledTaskUpdate",
+          content = "Scheduled task updated.",
+          metadata = mapOf(
+            ScheduledTaskToolMetadataKeys.SCHEDULE_ID to "schedule-weekly",
+            ScheduledTaskToolMetadataKeys.SESSION_ID to "session-main",
+            ScheduledTaskToolMetadataKeys.TRIGGER_KIND to "rrule",
+            ScheduledTaskToolMetadataKeys.NEXT_TRIGGER_AT_EPOCH_MS to "171000",
+          ),
+        ),
+        toolResultMessage(
+          toolName = "ScheduledTaskDelete",
+          content = "Scheduled task deleted.",
+          metadata = mapOf(
+            ScheduledTaskToolMetadataKeys.SCHEDULE_ID to "schedule-old",
+            ScheduledTaskToolMetadataKeys.SESSION_ID to "session-main",
+            ScheduledTaskToolMetadataKeys.TITLE to "Old reminder",
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(2, entries.size)
+    assertEquals(
+      "ScheduledTaskUpdate trigger=rrule schedule=schedule-weekly session=session-main next_at=171000",
+      entries.first().text,
+    )
+    assertEquals(
+      "ScheduledTaskDelete schedule=schedule-old session=session-main title=Old reminder",
+      entries.last().text,
+    )
   }
 
   @Test

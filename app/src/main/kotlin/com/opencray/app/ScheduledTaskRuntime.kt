@@ -138,7 +138,10 @@ internal class DefaultScheduledTriggerRegistrar(
       return
     }
     when (spec.trigger) {
-      is ScheduledTrigger.RunAtTimestamp -> {
+      is ScheduledTrigger.At,
+      is ScheduledTrigger.After,
+      is ScheduledTrigger.Recurrence,
+      -> {
         alarmScheduler.schedule(
           ScheduledAlarmRequest(
             scheduleId = spec.scheduleId,
@@ -147,13 +150,6 @@ internal class DefaultScheduledTriggerRegistrar(
           ),
         )
       }
-
-      is ScheduledTrigger.RunAfterDelay,
-      is ScheduledTrigger.Periodic,
-      -> workScheduler.scheduleWake(
-        scheduleId = spec.scheduleId,
-        triggerAtEpochMs = maxOf(nextAtEpochMs, nowEpochMs),
-      )
     }
   }
 
@@ -729,52 +725,42 @@ private fun scheduledTaskWakeReceiverIntent(
   .putExtra(EXTRA_SCHEDULE_ID, scheduleId)
   .putExtra(EXTRA_SCHEDULED_FOR_EPOCH_MS, scheduledForEpochMs)
 
-private fun nextScheduledTriggerAtEpochMs(
+internal fun nextScheduledTriggerAtEpochMs(
   spec: ScheduledTaskSpec,
   nowEpochMs: Long,
 ): Long? = when (val trigger = spec.trigger) {
-  is ScheduledTrigger.RunAtTimestamp ->
-    trigger.triggerAtEpochMs.takeIf { triggerAtEpochMs -> triggerAtEpochMs > nowEpochMs }
+  is ScheduledTrigger.At ->
+    trigger.atEpochMs.takeIf { triggerAtEpochMs -> triggerAtEpochMs > nowEpochMs }
 
-  is ScheduledTrigger.RunAfterDelay -> {
+  is ScheduledTrigger.After -> {
     val runAtEpochMs = trigger.createdAtEpochMs + trigger.delayMs
     runAtEpochMs.takeIf { candidate -> candidate > nowEpochMs }
   }
 
-  is ScheduledTrigger.Periodic -> {
-    val firstRunAtEpochMs = (trigger.anchorEpochMs ?: spec.createdAtEpochMs) + trigger.intervalMs
-    if (nowEpochMs < firstRunAtEpochMs) {
-      firstRunAtEpochMs
-    } else {
-      val elapsed = nowEpochMs - firstRunAtEpochMs
-      val intervalsElapsed = (elapsed / trigger.intervalMs) + 1L
-      firstRunAtEpochMs + (intervalsElapsed * trigger.intervalMs)
-    }
-  }
+  is ScheduledTrigger.Recurrence ->
+    nextScheduledRecurrenceTriggerAtEpochMs(
+      trigger = trigger,
+      afterEpochMs = nowEpochMs,
+    )
 }
 
 internal fun dueScheduledTriggerAtEpochMs(
   spec: ScheduledTaskSpec,
   nowEpochMs: Long,
 ): Long? = when (val trigger = spec.trigger) {
-  is ScheduledTrigger.RunAtTimestamp ->
-    trigger.triggerAtEpochMs.takeIf { triggerAtEpochMs -> triggerAtEpochMs <= nowEpochMs }
+  is ScheduledTrigger.At ->
+    trigger.atEpochMs.takeIf { triggerAtEpochMs -> triggerAtEpochMs <= nowEpochMs }
 
-  is ScheduledTrigger.RunAfterDelay -> {
+  is ScheduledTrigger.After -> {
     val runAtEpochMs = trigger.createdAtEpochMs + trigger.delayMs
     runAtEpochMs.takeIf { candidate -> candidate <= nowEpochMs }
   }
 
-  is ScheduledTrigger.Periodic -> {
-    val firstRunAtEpochMs = (trigger.anchorEpochMs ?: spec.createdAtEpochMs) + trigger.intervalMs
-    if (firstRunAtEpochMs > nowEpochMs) {
-      null
-    } else {
-      val elapsed = nowEpochMs - firstRunAtEpochMs
-      val intervalsElapsed = elapsed / trigger.intervalMs
-      firstRunAtEpochMs + (intervalsElapsed * trigger.intervalMs)
-    }
-  }
+  is ScheduledTrigger.Recurrence ->
+    dueScheduledRecurrenceTriggerAtEpochMs(
+      trigger = trigger,
+      nowEpochMs = nowEpochMs,
+    )
 }
 
 internal fun scheduledTaskRunId(
@@ -786,7 +772,12 @@ private fun scheduledTaskAlarmRequestCode(scheduleId: String): Int =
   scheduleId.hashCode()
 
 private fun requiresExactScheduling(trigger: ScheduledTrigger): Boolean =
-  trigger is ScheduledTrigger.RunAtTimestamp
+  when (trigger) {
+    is ScheduledTrigger.At,
+    is ScheduledTrigger.After,
+    is ScheduledTrigger.Recurrence,
+    -> true
+  }
 
 private fun canScheduleExactAlarms(alarmManager: AlarmManager): Boolean =
   if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {

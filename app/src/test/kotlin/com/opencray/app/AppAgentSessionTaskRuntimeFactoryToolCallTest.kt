@@ -84,6 +84,92 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
   }
 
   @Test
+  fun toolCallTaskCanCreateScheduledTaskThroughRuntimeManager() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-scheduled-tool-call").toPath()
+    val scheduledStorageRoot = temporaryFolder.newFolder("scheduled-tool-call-storage").toPath()
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-scheduled-tool-call"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val specStore = inMemoryScheduledTaskSpecStoreFactory().create()
+    val runRecordStore = inMemoryScheduledTaskRunRecordStoreFactory().create()
+    val triggerSyncStateStore = inMemoryScheduledTaskTriggerSyncStateStoreFactory().create()
+    val triggerRegistrar = RecordingScheduledTriggerRegistrar()
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      scheduledTaskManagerProvider = {
+        AppScheduledTaskManager(
+          storageRootPath = scheduledStorageRoot,
+          chatSessionStore = chatStore,
+          specStore = specStore,
+          runRecordStore = runRecordStore,
+          triggerRegistrar = triggerRegistrar,
+          triggerSyncStateStore = triggerSyncStateStore,
+          clock = { 10_000L },
+        )
+      },
+    )
+    val runtime = runtimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val task = AgentTask(
+      id = "tool-call-scheduled-create",
+      type = AgentTaskType.TOOL_CALL,
+      input =
+        """
+        {
+          "type":"tool_call",
+          "tool_name":"ScheduledTaskCreate",
+          "arguments":{
+            "prompt":"Summarize the session status",
+            "trigger":{
+              "after":"PT1M"
+            }
+          }
+        }
+        """.trimIndent(),
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      metadata = mapOf(
+        "chatMode" to "DEVELOPER",
+        "_host.sessionId" to sessionId,
+      ),
+      createdAtEpochMs = 1_000L,
+    )
+
+    val result = runtime.execute(
+      task,
+      RuntimeExecutionHooks(
+        isCancellationRequested = { false },
+        requestRetry = { _ -> error("Retry was not expected for scheduled task tool call test.") },
+      ),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("schedule_task", result.metadata["capabilityKind"])
+    assertEquals("scheduling", result.metadata["intentCategory"])
+    assertEquals("create_scheduled_task", result.metadata["schedulingIntentKind"])
+    assertEquals("after", result.metadata["scheduleTriggerKind"])
+    assertTrue(result.stdout.contains("Scheduled task created."))
+    assertTrue(result.stdout.contains("session_id=$sessionId"))
+    val spec = specStore.list().single()
+    assertEquals(sessionId, spec.sessionId)
+    assertEquals("Summarize the session status", spec.title)
+    assertEquals("Summarize the session status", spec.payload.prompt)
+    assertTrue(spec.trigger is ScheduledTrigger.After)
+    assertEquals(60_000L, (spec.trigger as ScheduledTrigger.After).delayMs)
+    assertEquals(10_000L, (spec.trigger as ScheduledTrigger.After).createdAtEpochMs)
+    assertEquals(listOf(spec.scheduleId), triggerRegistrar.syncedScheduleIds)
+    assertEquals(linkedSetOf(spec.scheduleId), triggerSyncStateStore.loadScheduleIds())
+  }
+
+  @Test
   fun releaseSessionEvictsSessionScopedCaches() {
     val workspaceRoot = temporaryFolder.newFolder("workspace-release-session-caches").toPath()
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-release-session-caches"))
@@ -915,6 +1001,18 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
       put(SafetySettingsMetadataKeys.CHAT_MODE, mode.chatMetadataLabel)
       put(SafetySettingsMetadataKeys.EXECUTION_MODE, mode.executionMode.name)
     }
+  }
+
+  private class RecordingScheduledTriggerRegistrar : ScheduledTriggerRegistrar {
+    val syncedScheduleIds = mutableListOf<String>()
+
+    override fun syncSpec(spec: ScheduledTaskSpec) = Unit
+
+    override fun syncAll(specs: List<ScheduledTaskSpec>) {
+      syncedScheduleIds += specs.map(ScheduledTaskSpec::scheduleId)
+    }
+
+    override fun cancel(scheduleId: String) = Unit
   }
 
   private data class ObservationSnapshotPlan(

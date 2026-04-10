@@ -442,7 +442,7 @@ Recommended service modes:
 
 ### Purpose
 
-Prepare delayed execution and future periodic tasks without reintroducing UI ownership.
+Prepare future scheduled execution and recurring automation without reintroducing UI ownership.
 
 ### Current implementation status
 
@@ -458,7 +458,7 @@ Still pending in this phase:
 
 - richer schedule-side notification actions beyond the current approval/open flows
 - broader autonomous repair policy for interrupted interactive runs beyond the current `WorkManager` precheck plus `ACTION_RESUME_INTERRUPTED_RUNS` wake-and-resume scan
-- any future periodic/task-automation expansions that need more than the current wake/dispatch bridge
+- any future automation expansions that need more than the current wake/dispatch bridge
 
 ### Components in this phase
 

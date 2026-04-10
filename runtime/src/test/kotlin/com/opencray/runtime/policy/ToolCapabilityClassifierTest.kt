@@ -26,6 +26,11 @@ class ToolCapabilityClassifierTest {
     assertEquals(PolicyToolClass.WRITE_FILE, classifier.classifyPolicyToolClass("Write"))
     assertEquals(PolicyToolClass.WRITE_FILE, classifier.classifyPolicyToolClass("Edit"))
     assertEquals(PolicyToolClass.WRITE_FILE, classifier.classifyPolicyToolClass("import_chat_attachment"))
+    assertEquals(PolicyToolClass.WRITE_FILE, classifier.classifyPolicyToolClass("ScheduledTaskCreate"))
+    assertEquals(PolicyToolClass.WRITE_FILE, classifier.classifyPolicyToolClass("ScheduledTaskUpdate"))
+    assertEquals(PolicyToolClass.WRITE_FILE, classifier.classifyPolicyToolClass("ScheduledTaskDelete"))
+    assertEquals(PolicyToolClass.READ_FILE, classifier.classifyPolicyToolClass("ScheduledTaskList"))
+    assertEquals(PolicyToolClass.READ_FILE, classifier.classifyPolicyToolClass("ScheduledTaskGet"))
     assertEquals(PolicyToolClass.MOVE_FILE, classifier.classifyPolicyToolClass("workspace_move_file"))
     assertEquals(PolicyToolClass.DELETE_FILE, classifier.classifyPolicyToolClass("workspace_delete_file"))
     assertEquals(PolicyToolClass.NETWORK_ACCESS, classifier.classifyPolicyToolClass("WebFetch"))
@@ -62,5 +67,10 @@ class ToolCapabilityClassifierTest {
     assertEquals("write_file", classifier.classifyCapabilityKind("extract_workspace_package"))
     assertEquals("read_python_runtime", classifier.classifyCapabilityKind("python_runtime_manifest"))
     assertEquals("todo_management", classifier.classifyCapabilityKind("TodoWrite"))
+    assertEquals("schedule_task", classifier.classifyCapabilityKind("ScheduledTaskCreate"))
+    assertEquals("schedule_task", classifier.classifyCapabilityKind("ScheduledTaskList"))
+    assertEquals("schedule_task", classifier.classifyCapabilityKind("ScheduledTaskGet"))
+    assertEquals("schedule_task", classifier.classifyCapabilityKind("ScheduledTaskUpdate"))
+    assertEquals("schedule_task", classifier.classifyCapabilityKind("ScheduledTaskDelete"))
   }
 }

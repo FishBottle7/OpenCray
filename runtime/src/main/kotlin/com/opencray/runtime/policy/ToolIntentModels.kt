@@ -91,3 +91,32 @@ internal data class DelegationIntent(
     }
   }
 }
+
+internal enum class SchedulingIntentKind(val wireValue: String) {
+  CREATE_SCHEDULED_TASK("create_scheduled_task"),
+  LIST_SCHEDULED_TASKS("list_scheduled_tasks"),
+  GET_SCHEDULED_TASK("get_scheduled_task"),
+  UPDATE_SCHEDULED_TASK("update_scheduled_task"),
+  DELETE_SCHEDULED_TASK("delete_scheduled_task"),
+}
+
+internal data class SchedulingIntent(
+  val kind: SchedulingIntentKind,
+  val triggerKind: String? = null,
+  val sessionMode: String? = null,
+  val targetSessionId: String? = null,
+  val targetScheduleId: String? = null,
+  val title: String? = null,
+) : ToolRuntimeIntent {
+  override val categoryWireValue: String = "scheduling"
+
+  override fun metadata(): Map<String, String> = buildMap {
+    put("intentCategory", categoryWireValue)
+    put("schedulingIntentKind", kind.wireValue)
+    triggerKind?.takeIf(String::isNotBlank)?.let { put("scheduleTriggerKind", it) }
+    sessionMode?.takeIf(String::isNotBlank)?.let { put("scheduleSessionMode", it) }
+    targetSessionId?.takeIf(String::isNotBlank)?.let { put("scheduleTargetSessionId", it) }
+    targetScheduleId?.takeIf(String::isNotBlank)?.let { put("scheduleTargetScheduleId", it) }
+    title?.takeIf(String::isNotBlank)?.let { put("scheduleTitle", it) }
+  }
+}

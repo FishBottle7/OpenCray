@@ -157,11 +157,12 @@ internal fun createInProcessOpenCrayRuntimeOwner(
   val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext)
   val runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext)
   val subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext)
+  val runtimeRootDirectory = File(
+    appContext.filesDir,
+    FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
+  )
   val processRegistryFactory = FileBackedAgentProcessRegistryFactory(
-    runtimeRootDirectory = File(
-      appContext.filesDir,
-      FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
-    ),
+    runtimeRootDirectory = runtimeRootDirectory,
     controllerFactory = managedProcessControllerFactory,
   )
   val liteLlmProviderClient = OpenAiCompatibleLiteLlmProviderClient(
@@ -311,6 +312,21 @@ internal fun createInProcessOpenCrayRuntimeOwner(
         manifestStore = SkillInstallManifestStore.fromFile(
           AppSkillsStorage.manifestFileForContext(appContext),
         ),
+      )
+    },
+    scheduledTaskManagerProvider = {
+      AppScheduledTaskManager(
+        storageRootPath = runtimeRootDirectory.toPath(),
+        chatSessionStore = chatSessionStore,
+        specStore = FileBackedScheduledTaskSpecStoreFactory(runtimeRootDirectory).create(),
+        runRecordStore = FileBackedScheduledTaskRunRecordStoreFactory(runtimeRootDirectory).create(),
+        triggerRegistrar = DefaultScheduledTriggerRegistrar(
+          alarmScheduler = AlarmManagerScheduledAlarmScheduler.fromContext(appContext),
+          workScheduler = WorkManagerScheduledWorkScheduler.fromContext(appContext),
+        ),
+        triggerSyncStateStore = FileBackedScheduledTaskTriggerSyncStateStoreFactory(
+          runtimeRootDirectory,
+        ).create(),
       )
     },
   )

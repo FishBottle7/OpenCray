@@ -64,6 +64,8 @@
 /.codex-home/
 /.codex-temp/
 /.codex-build/
+/.codex-worktrees/
+/_worktrees/
 /.opencray/
 /.pytest_local/
 /.pytest-temp/
