@@ -28,6 +28,17 @@ class OpenCrayApplicationTest {
   }
 
   @Test
+  fun shouldBootstrapOpenCrayApplicationReturnsFalseForRuntimeProcess() {
+    assertEquals(
+      false,
+      shouldBootstrapOpenCrayApplication(
+        packageName = "org.opencray.app",
+        processName = "org.opencray.app:runtime",
+      ),
+    )
+  }
+
+  @Test
   fun shouldBootstrapOpenCrayApplicationDefaultsToTrueWhenProcessNameMissing() {
     assertEquals(
       true,
@@ -69,6 +80,30 @@ class OpenCrayApplicationTest {
         "seed_skills",
         "resync_schedules",
         "enqueue_repair:${ScheduledTaskRepairReasons.APP_START}",
+      ),
+      steps,
+    )
+  }
+
+  @Test
+  fun bootstrapOpenCrayRuntimeProcessSupportInitializesDocumentsAndSeedsSkillsOnly() {
+    val application = Application()
+    val steps = mutableListOf<String>()
+
+    bootstrapOpenCrayRuntimeProcessSupport(
+      context = application,
+      initializeRuntimeDocumentSupport = {
+        steps += "initialize_document_support"
+      },
+      seedBundledSkills = {
+        steps += "seed_skills"
+      },
+    )
+
+    assertEquals(
+      listOf(
+        "initialize_document_support",
+        "seed_skills",
       ),
       steps,
     )

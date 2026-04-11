@@ -3,6 +3,8 @@ package com.opencray.app
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import androidx.core.content.ContextCompat
 
 internal data class RuntimeServiceStartRequest(
@@ -89,6 +91,10 @@ private object AndroidBindingRuntimeServiceClientProvider : RuntimeServiceClient
     appContext = context.applicationContext,
     startRequester = bootstrap.startRequester,
     serviceIntentFactory = bootstrap.serviceIntentFactory,
+    fallbackGatewayBundle = loopbackRuntimeServiceReadFallbackGatewayBundle(
+      mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
+    ),
+    commandFallbackTransport = LoopbackHttpRuntimeServiceCommandFallbackTransport(),
   )
 }
 

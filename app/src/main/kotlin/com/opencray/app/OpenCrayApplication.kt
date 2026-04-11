@@ -57,10 +57,26 @@ internal fun bootstrapOpenCrayApplication(
   },
 ) {
   registerVisibility(application)
-  initializeRuntimeDocumentSupport(application)
-  seedBundledSkills(application)
+  bootstrapOpenCrayRuntimeProcessSupport(
+    context = application,
+    initializeRuntimeDocumentSupport = initializeRuntimeDocumentSupport,
+    seedBundledSkills = seedBundledSkills,
+  )
   runCatching {
     resyncEnabledSchedules(application)
   }
   enqueueRepair(application, ScheduledTaskRepairReasons.APP_START)
+}
+
+internal fun bootstrapOpenCrayRuntimeProcessSupport(
+  context: Context,
+  initializeRuntimeDocumentSupport: (Context) -> Unit = { runtimeContext ->
+    OpenCrayDocumentRuntimeEnvironment.initialize(runtimeContext)
+  },
+  seedBundledSkills: (Context) -> Unit = { runtimeContext ->
+    BuiltinSkillsSeeder.fromContext(runtimeContext).seedBundledSkillsIfNeeded()
+  },
+) {
+  initializeRuntimeDocumentSupport(context)
+  seedBundledSkills(context)
 }

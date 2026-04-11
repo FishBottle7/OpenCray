@@ -56,7 +56,8 @@ internal class ProjectionOnlyOpenCrayShellGateway(
     put("hostSummary", hostSummary)
     put("isHostConnected", true)
     putRuntimeServiceDiagnosticsSnapshot(
-      localRuntimeServerState = OpenCrayLocalRuntimeServerRegistry.peekState(),
+      localRuntimeServerState = projectionSnapshot?.localRuntimeServerState
+        ?: OpenCrayLocalRuntimeServerRegistry.peekState(),
       hostLifecycle = hostLifecycleDescriptor,
       runtimeOwnerLifecycle = projectionSnapshot?.runtimeOwnerLifecycle,
       runtimeOwnerWorkSummary = projectionSnapshot?.runtimeOwnerWorkSummary,

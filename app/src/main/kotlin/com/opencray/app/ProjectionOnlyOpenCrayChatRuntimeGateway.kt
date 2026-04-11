@@ -77,6 +77,8 @@ internal data class ProjectionOnlyChatStrings(
 
 internal data class ProjectionOnlyChatRuntimeDiagnosticsSource(
   val connectionStateProvider: () -> RuntimeServiceConnectionState,
+  val localRuntimeServerStateProvider: () -> LocalRuntimeServerState? =
+    OpenCrayLocalRuntimeServerRegistry::peekState,
   val runtimeOwnerLifecycleProvider: () -> HostRuntimeLifecycleDescriptor? = { null },
   val runtimeOwnerWorkSummaryProvider: () -> RuntimeOwnerWorkSummary? = { null },
   val serviceLifecycleProvider: () -> RuntimeServiceLifecycleDescriptor? = { null },
@@ -96,6 +98,8 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private val strings: ProjectionOnlyChatStrings,
   private val stringsProvider: (() -> ProjectionOnlyChatStrings)? = null,
   private val connectionStateProvider: () -> RuntimeServiceConnectionState,
+  private val localRuntimeServerStateProvider: () -> LocalRuntimeServerState? =
+    OpenCrayLocalRuntimeServerRegistry::peekState,
   private val personalizationLocalStore: PersonalizationLocalStore? = null,
   private val workspaceRootProvider: (() -> Path?)? = null,
   private val workspaceSoulProfileStore: WorkspaceSoulProfileStore = WorkspaceSoulProfileStore(),
@@ -407,6 +411,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       snapshot = buildMap {
         put("sessionId", sessionId)
         putRuntimeServiceDiagnosticsSnapshot(
+          localRuntimeServerState = localRuntimeServerStateProvider(),
           hostLifecycle = hostLifecycleDescriptor,
           runtimeOwnerLifecycle = runtimeOwnerLifecycleProvider(),
           runtimeOwnerWorkSummary = runtimeOwnerWorkSummaryProvider(),
@@ -1609,6 +1614,10 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
 ): OpenCrayChatRuntimeGateway {
   val diagnosticsSource = ProjectionOnlyChatRuntimeDiagnosticsSource(
     connectionStateProvider = connectionStateProvider,
+    localRuntimeServerStateProvider = {
+      projectionSnapshotProvider()?.localRuntimeServerState
+        ?: OpenCrayLocalRuntimeServerRegistry.peekState()
+    },
     runtimeOwnerLifecycleProvider = { projectionSnapshotProvider()?.runtimeOwnerLifecycle },
     runtimeOwnerWorkSummaryProvider = {
       projectionSnapshotProvider()?.runtimeOwnerWorkSummary
@@ -1645,6 +1654,7 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
     strings = strings,
     stringsProvider = stringsProvider,
     connectionStateProvider = diagnosticsSource.connectionStateProvider,
+    localRuntimeServerStateProvider = diagnosticsSource.localRuntimeServerStateProvider,
     personalizationLocalStore = PersonalizationLocalStore.fromContext(appContext),
     workspaceRootProvider = {
       AppAgentWorkspace.directoryForContext(appContext)

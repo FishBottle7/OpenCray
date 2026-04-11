@@ -8,7 +8,7 @@ internal fun serviceOwnedGatewayUnavailableMessage(
   append(surface)
   append(" operation '")
   append(operation)
-  append("' requires a binder-backed runtime service gateway. ")
+  append("' requires a live runtime service gateway. ")
   append("Current connection state: phase=")
   append(connectionState.phase)
   append(", transport=")

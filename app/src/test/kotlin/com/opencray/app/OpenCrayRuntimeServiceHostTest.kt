@@ -1174,17 +1174,23 @@ class OpenCrayRuntimeServiceHostTest {
 
     val actual = client.loadSnapshot()
 
-    assertSame(expected.dependencies, actual.bridgeSnapshot.dependencies)
-    assertSame(expected.runtimeAccess, actual.bridgeSnapshot.runtimeAccess)
-    assertSame(expected.serviceLifecycle, actual.bridgeSnapshot.serviceLifecycle)
-    assertEquals(expected.serviceWorkState.phase, actual.bridgeSnapshot.serviceWorkState.phase)
+    assertSame(expected, actual.bridgeSnapshot)
+    assertEquals(
+      expected.runtimeAccess.lifecycleDescriptor.runtimeOwnerId,
+      actual.diagnosticsSnapshot.runtimeOwnerLifecycle.runtimeOwnerId,
+    )
+    assertEquals(
+      expected.serviceLifecycle.serviceInstanceId,
+      actual.diagnosticsSnapshot.serviceLifecycle.serviceInstanceId,
+    )
+    assertEquals(expected.serviceWorkState.phase, actual.diagnosticsSnapshot.serviceWorkState.phase)
     assertEquals(
       expected.serviceKeepAliveState.phase,
-      actual.bridgeSnapshot.serviceKeepAliveState.phase,
+      actual.diagnosticsSnapshot.serviceKeepAliveState.phase,
     )
     assertEquals(
       expected.serviceWorkState.keepAliveRequired,
-      actual.bridgeSnapshot.serviceWorkState.keepAliveRequired,
+      actual.diagnosticsSnapshot.serviceWorkState.keepAliveRequired,
     )
     assertSame(connectionState, actual.connectionState)
   }
@@ -1775,7 +1781,11 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals(true, initial.connectionState.serviceStartRequested)
     assertEquals(true, initial.connectionState.bindingRequested)
     assertFalse(initial.connectionState.binderAvailable)
-    assertSame(expected.dependencies, initial.bridgeSnapshot.dependencies)
+    assertSame(expected, initial.bridgeSnapshot)
+    assertEquals(
+      expected.runtimeAccess.lifecycleDescriptor.runtimeOwnerId,
+      initial.diagnosticsSnapshot.runtimeOwnerLifecycle.runtimeOwnerId,
+    )
 
     bindingAdapter.connect(
       object : Binder(), OpenCrayRuntimeServiceBinderAccess {
@@ -1790,15 +1800,18 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals("binder", connectedState.transport)
     assertTrue(connectedState.bindingRequested)
     assertTrue(connectedState.binderAvailable)
-    assertSame(expected.dependencies, connectedSnapshot.bridgeSnapshot.dependencies)
-    assertSame(expected.runtimeAccess, connectedSnapshot.bridgeSnapshot.runtimeAccess)
+    assertSame(expected, connectedSnapshot.bridgeSnapshot)
+    assertEquals(
+      expected.runtimeAccess.lifecycleDescriptor.runtimeOwnerId,
+      connectedSnapshot.diagnosticsSnapshot.runtimeOwnerLifecycle.runtimeOwnerId,
+    )
     assertEquals(
       expected.serviceWorkState.phase,
-      connectedSnapshot.bridgeSnapshot.serviceWorkState.phase,
+      connectedSnapshot.diagnosticsSnapshot.serviceWorkState.phase,
     )
     assertEquals(
       expected.serviceWorkState.keepAliveRequired,
-      connectedSnapshot.bridgeSnapshot.serviceWorkState.keepAliveRequired,
+      connectedSnapshot.diagnosticsSnapshot.serviceWorkState.keepAliveRequired,
     )
   }
 
@@ -1872,7 +1885,11 @@ class OpenCrayRuntimeServiceHostTest {
 
     val snapshot = client.peekSnapshot()
 
-    assertSame(expected.dependencies, snapshot?.bridgeSnapshot?.dependencies)
+    assertSame(expected, snapshot?.bridgeSnapshot)
+    assertEquals(
+      expected.runtimeAccess.lifecycleDescriptor.runtimeOwnerId,
+      snapshot?.diagnosticsSnapshot?.runtimeOwnerLifecycle?.runtimeOwnerId,
+    )
     assertEquals(0, startRequestCount)
     assertEquals(0, bindingAdapter.bindCount)
     assertEquals("fallback", snapshot?.connectionState?.phase)
@@ -1940,6 +1957,14 @@ class OpenCrayRuntimeServiceHostTest {
       expected.serviceKeepAliveState.stopDeadlineEpochMs,
       actual?.serviceKeepAliveState?.stopDeadlineEpochMs,
     )
+    assertEquals(
+      expected.localRuntimeServerState?.phase,
+      actual?.localRuntimeServerState?.phase,
+    )
+    assertEquals(
+      expected.localRuntimeServerState?.listeningPort,
+      actual?.localRuntimeServerState?.listeningPort,
+    )
   }
 
   @Test
@@ -1977,6 +2002,120 @@ class OpenCrayRuntimeServiceHostTest {
     )
     assertEquals(0, startRequestCount)
     assertEquals(0, bindingAdapter.bindCount)
+  }
+
+  @Test
+  fun androidBindingClientLoadSnapshotUsesProjectionStoreWhenLiveBridgeSnapshotIsUnavailable() {
+    val expected = bridgeSnapshot(
+      temporaryFolder.newFolder("binding-client-projection-load"),
+    ).toProjectionSnapshot()
+    val bindingAdapter = RecordingBindingAdapter()
+    val projectionStore = inMemoryRuntimeServiceProjectionStore().apply {
+      saveSnapshot(expected)
+    }
+    var startRequestCount = 0
+    val client = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      projectionStore = projectionStore,
+      bindingAdapter = bindingAdapter,
+      startRequester = { startRequestCount += 1 },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+    )
+
+    val snapshot = client.loadSnapshot()
+
+    assertNull(snapshot.bridgeSnapshot)
+    assertEquals(
+      expected.runtimeOwnerLifecycle.runtimeOwnerId,
+      snapshot.diagnosticsSnapshot.runtimeOwnerLifecycle.runtimeOwnerId,
+    )
+    assertEquals(
+      expected.runtimeOwnerWorkSummary.activeSessionIds,
+      snapshot.diagnosticsSnapshot.runtimeOwnerWorkSummary.activeSessionIds,
+    )
+    assertEquals(
+      expected.serviceLifecycle.serviceInstanceId,
+      snapshot.diagnosticsSnapshot.serviceLifecycle.serviceInstanceId,
+    )
+    assertEquals(
+      expected.serviceWorkState.phase,
+      snapshot.diagnosticsSnapshot.serviceWorkState.phase,
+    )
+    assertEquals(
+      expected.serviceKeepAliveState.phase,
+      snapshot.diagnosticsSnapshot.serviceKeepAliveState.phase,
+    )
+    assertEquals(1, startRequestCount)
+    assertEquals(1, bindingAdapter.bindCount)
+  }
+
+  @Test
+  fun androidBindingClientPeekSnapshotUsesProjectionStoreWithoutStartingServiceOrBind() {
+    val expected = bridgeSnapshot(
+      temporaryFolder.newFolder("binding-client-projection-snapshot-peek"),
+    ).toProjectionSnapshot()
+    val bindingAdapter = RecordingBindingAdapter()
+    val projectionStore = inMemoryRuntimeServiceProjectionStore().apply {
+      saveSnapshot(expected)
+    }
+    var startRequestCount = 0
+    val client = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      projectionStore = projectionStore,
+      bindingAdapter = bindingAdapter,
+      startRequester = { startRequestCount += 1 },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+    )
+
+    val snapshot = client.peekSnapshot()
+
+    assertNull(snapshot?.bridgeSnapshot)
+    assertEquals(
+      expected.runtimeOwnerLifecycle.runtimeOwnerId,
+      snapshot?.diagnosticsSnapshot?.runtimeOwnerLifecycle?.runtimeOwnerId,
+    )
+    assertEquals(
+      expected.serviceLifecycle.serviceInstanceId,
+      snapshot?.diagnosticsSnapshot?.serviceLifecycle?.serviceInstanceId,
+    )
+    assertEquals(0, startRequestCount)
+    assertEquals(0, bindingAdapter.bindCount)
+  }
+
+  @Test
+  fun androidBindingClientStopsRebindingAfterUnsupportedBinderWhenLoopbackFallbackIsAvailable() {
+    val fallbackShellGateway = RecordingShellGateway("fallback")
+    val bindingAdapter = RecordingBindingAdapter()
+    var startRequestCount = 0
+    val client = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      bindingAdapter = bindingAdapter,
+      startRequester = { startRequestCount += 1 },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+      fallbackGatewayBundle = RuntimeServiceReadFallbackGatewayBundle(
+        shellGateway = fallbackShellGateway,
+      ),
+    )
+
+    assertSame(fallbackShellGateway, client.loadShellGateway())
+    assertEquals(1, startRequestCount)
+    assertEquals(1, bindingAdapter.bindCount)
+
+    bindingAdapter.connect(Binder())
+
+    val connectionState = client.loadConnectionState()
+
+    assertEquals("invalid_binder", connectionState.phase)
+    assertEquals("loopback_http", connectionState.transport)
+    assertFalse(connectionState.bindingRequested)
+    assertEquals(1, bindingAdapter.unbindCount)
+
+    assertSame(fallbackShellGateway, client.loadShellGateway())
+    assertEquals(1, startRequestCount)
+    assertEquals(1, bindingAdapter.bindCount)
   }
 
   @Test
@@ -2127,6 +2266,71 @@ class OpenCrayRuntimeServiceHostTest {
     serviceClient.currentShellGateway = null
 
     assertEquals("fallback-shell", gateway.loadShellSnapshot()["source"])
+  }
+
+  @Test
+  fun serviceBackedGatewaysReadThroughLoopbackFallbackBundleWhenBinderIsUnavailable() {
+    val loopbackShellGateway = RecordingShellGateway("loopback")
+    val loopbackChatGateway = RecordingChatRuntimeGateway("loopback")
+    val loopbackSkillsGateway = RecordingSkillsGateway("loopback")
+    val loopbackSettingsGateway = RecordingSettingsGateway("loopback")
+    val server = OpenCrayLocalRuntimeServer(
+      localGatewayProvider = { UnsupportedLocalGateway() },
+      shellGatewayProvider = { loopbackShellGateway },
+      chatRuntimeGatewayProvider = { loopbackChatGateway },
+      skillsGatewayProvider = { loopbackSkillsGateway },
+      settingsGatewayProvider = { loopbackSettingsGateway },
+      requestedPort = 0,
+      shutdownExecutorOnClose = true,
+    )
+    server.ensureStarted()
+
+    try {
+      val requestClient = OpenCrayLocalRuntimeLoopbackHttpClient(
+        baseUrlProvider = { "http://127.0.0.1:${server.listeningPort}/" },
+        bootstrapTimeoutMs = 0L,
+      )
+      val bindingAdapter = RecordingBindingAdapter()
+      val serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
+        appContext = ContextWrapper(null),
+        bindingAdapter = bindingAdapter,
+        startRequester = { },
+        mainThreadPoster = ImmediateMainThreadPoster,
+        serviceIntentFactory = { Intent() },
+        fallbackGatewayBundle = loopbackRuntimeServiceReadFallbackGatewayBundle(
+          requestClient = requestClient,
+          mainThreadPoster = ImmediateMainThreadPoster,
+        ),
+        commandFallbackTransport = LoopbackHttpRuntimeServiceCommandFallbackTransport(
+          requestClient = requestClient,
+        ),
+      )
+      val shellGateway = ServiceBackedOpenCrayShellGateway(
+        serviceClient = serviceClient,
+        fallbackGateway = RecordingShellGateway("projection"),
+      )
+      val chatGateway = ServiceBackedOpenCrayChatRuntimeGateway(
+        serviceClient = serviceClient,
+        fallbackGateway = RecordingChatRuntimeGateway("projection"),
+      )
+      val skillsGateway = ServiceBackedOpenCraySkillsGateway(
+        serviceClient = serviceClient,
+        fallbackGateway = RecordingSkillsGateway("projection"),
+      )
+      val settingsGateway = ServiceBackedOpenCraySettingsGateway(
+        serviceClient = serviceClient,
+        fallbackGateway = RecordingSettingsGateway("projection"),
+      )
+
+      assertEquals("loopback-shell", shellGateway.loadShellSnapshot()["source"])
+      assertEquals("loopback-chat", chatGateway.loadChatSnapshot()["source"])
+      assertEquals("loopback-skills", skillsGateway.loadSkillsSnapshot(query = "", suggestedLimit = 0)["source"])
+      assertEquals("loopback-settings", settingsGateway.loadSettingsOverview()["source"])
+      assertEquals(0, bindingAdapter.bindCount)
+      assertEquals("loopback_http", serviceClient.loadConnectionState().transport)
+    } finally {
+      server.close()
+    }
   }
 
   @Test
@@ -2536,6 +2740,44 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun projectionOnlyShellGatewayPrefersProjectedLocalRuntimeServerState() {
+    OpenCrayLocalRuntimeServerRegistry.clearForTest()
+    try {
+      val projectedServerState = LocalRuntimeServerState(
+        phase = LocalRuntimeServerState.PHASE_LISTENING,
+        bindAddress = "127.0.0.1",
+        requestedPort = 42_617,
+        listeningPort = 48_200,
+        lastStartedAtEpochMs = 1_250L,
+        changedAtEpochMs = 1_250L,
+      )
+      val projectionSnapshot = bridgeSnapshot(
+        temporaryFolder.newFolder("projection-shell-projected-local-state"),
+      ).copy(
+        localRuntimeServerState = projectedServerState,
+      ).toProjectionSnapshot()
+      val gateway = ProjectionOnlyOpenCrayShellGateway(
+        stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+        localeTagProvider = { "en" },
+        hostLabel = "HOST",
+        hostSummary = "summary",
+        connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
+        projectionSnapshotProvider = { projectionSnapshot },
+        mainThreadPoster = ImmediateMainThreadPoster,
+      )
+
+      val snapshot = gateway.loadShellSnapshot()
+      @Suppress("UNCHECKED_CAST")
+      val localRuntimeServerState = snapshot["localRuntimeServerState"] as Map<String, Any?>
+
+      assertEquals(LocalRuntimeServerState.PHASE_LISTENING, localRuntimeServerState["phase"])
+      assertEquals(48_200, localRuntimeServerState["listeningPort"])
+    } finally {
+      OpenCrayLocalRuntimeServerRegistry.clearForTest()
+    }
+  }
+
+  @Test
   fun serviceBackedChatRuntimeGatewayAllowsFallbackLoadsButRequiresBinderForCommands() {
     val binderGateway = RecordingChatRuntimeGateway("binder")
     val fallbackGateway = RecordingChatRuntimeGateway("fallback")
@@ -2665,6 +2907,39 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals(null, failure)
     assertEquals("hello", binderGateway.submittedText)
     assertEquals("binder-submit", result?.get("source"))
+  }
+
+  @Test
+  fun serviceBackedChatRuntimeGatewayFallsBackToLoopbackTransportWhenBinderIsUnavailable() {
+    val loopbackGateway = RecordingChatRuntimeGateway("loopback")
+    val server = recordingLoopbackLocalRuntimeServer(chatRuntimeGateway = loopbackGateway)
+    server.ensureStarted()
+
+    try {
+      val bindingAdapter = RecordingBindingAdapter()
+      val serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
+        appContext = ContextWrapper(null),
+        bindingAdapter = bindingAdapter,
+        startRequester = { },
+        mainThreadPoster = ImmediateMainThreadPoster,
+        serviceIntentFactory = { Intent() },
+        commandFallbackTransport = loopbackCommandFallbackTransport(server),
+      )
+      val gateway = ServiceBackedOpenCrayChatRuntimeGateway(
+        serviceClient = serviceClient,
+        fallbackGateway = RecordingChatRuntimeGateway("fallback"),
+      )
+
+      val result = gateway.submitChatMessage("through loopback", emptyList())
+
+      assertEquals(1, bindingAdapter.bindCount)
+      assertEquals("through loopback", loopbackGateway.submittedText)
+      assertEquals("loopback-submit", result?.get("source"))
+      assertEquals("binding", serviceClient.loadConnectionState().phase)
+      assertEquals("loopback_http", serviceClient.loadConnectionState().transport)
+    } finally {
+      server.close()
+    }
   }
 
   @Test
@@ -2904,6 +3179,44 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun serviceBackedSkillsGatewayFallsBackToLoopbackTransportWhenBinderIsUnavailable() {
+    val loopbackGateway = RecordingSkillsGateway("loopback")
+    val server = recordingLoopbackLocalRuntimeServer(skillsGateway = loopbackGateway)
+    server.ensureStarted()
+
+    try {
+      val bindingAdapter = RecordingBindingAdapter()
+      val serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
+        appContext = ContextWrapper(null),
+        bindingAdapter = bindingAdapter,
+        startRequester = { },
+        mainThreadPoster = ImmediateMainThreadPoster,
+        serviceIntentFactory = { Intent() },
+        commandFallbackTransport = loopbackCommandFallbackTransport(server),
+      )
+      val gateway = ServiceBackedOpenCraySkillsGateway(
+        serviceClient = serviceClient,
+        fallbackGateway = RecordingSkillsGateway("fallback"),
+      )
+
+      val installResult = gateway.installSkillSourceBatch(
+        sourceRef = "roin-orca/skills",
+        selectedSkillNames = listOf("find-skills", "skill-creator"),
+      )
+      val activationResult = gateway.activateSkillsInstallSource("github-url")
+
+      assertEquals(1, bindingAdapter.bindCount)
+      assertEquals("Installed 2 skills via loopback.", installResult)
+      assertEquals("github-url", activationResult)
+      assertEquals("github-url", loopbackGateway.lastActivatedSourceId)
+      assertEquals("binding", serviceClient.loadConnectionState().phase)
+      assertEquals("loopback_http", serviceClient.loadConnectionState().transport)
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun projectionOnlySkillsGatewayDelegatesQuerySearchToSkillsFacade() {
     val skillsFacade = RecordingProjectionSkillsFacade()
     val gateway = ProjectionOnlyOpenCraySkillsGateway(
@@ -2926,7 +3239,7 @@ class OpenCrayRuntimeServiceHostTest {
     }.exceptionOrNull()
 
     assertTrue(failure is IllegalStateException)
-    assertTrue(failure?.message?.contains("binder-backed runtime service gateway") == true)
+    assertTrue(failure?.message?.contains("live runtime service gateway") == true)
   }
 
   @Test
@@ -2997,6 +3310,14 @@ class OpenCrayRuntimeServiceHostTest {
       ),
     )
 
+    val projectedServerState = LocalRuntimeServerState(
+      phase = LocalRuntimeServerState.PHASE_LISTENING,
+      bindAddress = "127.0.0.1",
+      requestedPort = 42_617,
+      listeningPort = 48_201,
+      lastStartedAtEpochMs = 1_240L,
+      changedAtEpochMs = 1_240L,
+    )
     val gateway = ProjectionOnlyOpenCrayChatRuntimeGateway(
       chatSessionStore = chatStore,
       queueSnapshotStoreFactory = queueFactory,
@@ -3030,6 +3351,7 @@ class OpenCrayRuntimeServiceHostTest {
         composerRejectedPlaceholder = "Message OpenCray differently",
       ),
       connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
+      localRuntimeServerStateProvider = { projectedServerState },
       mainThreadPoster = ImmediateMainThreadPoster,
       clock = { 1_500L },
     )
@@ -3039,6 +3361,8 @@ class OpenCrayRuntimeServiceHostTest {
     val activeRuns = runtimeSnapshot["activeRuns"] as List<Map<String, Any?>>
     @Suppress("UNCHECKED_CAST")
     val events = runtimeSnapshot["events"] as List<Map<String, Any?>>
+    @Suppress("UNCHECKED_CAST")
+    val localRuntimeServerState = runtimeSnapshot["localRuntimeServerState"] as Map<String, Any?>
     val runSnapshot = gateway.loadChatRunSnapshot(runId)
     val chatSnapshot = gateway.loadChatSnapshot()
     @Suppress("UNCHECKED_CAST")
@@ -3052,6 +3376,8 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals("assistant_phase", events.single()["kind"])
     assertEquals("commentary", events.single()["phase"])
     assertEquals("Inspecting workspace", events.single()["text"])
+    assertEquals(LocalRuntimeServerState.PHASE_LISTENING, localRuntimeServerState["phase"])
+    assertEquals(48_201, localRuntimeServerState["listeningPort"])
     assertNotNull(runSnapshot)
     assertEquals(runId, runSnapshot?.get("runId"))
     assertEquals("running", runSnapshot?.get("lifecycleState"))
@@ -4647,6 +4973,56 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun serviceBackedSettingsGatewayFallsBackToLoopbackTransportWhenBinderIsUnavailable() {
+    val loopbackGateway = RecordingSettingsGateway("loopback")
+    val server = recordingLoopbackLocalRuntimeServer(settingsGateway = loopbackGateway)
+    server.ensureStarted()
+
+    try {
+      val bindingAdapter = RecordingBindingAdapter()
+      val serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
+        appContext = ContextWrapper(null),
+        bindingAdapter = bindingAdapter,
+        startRequester = { },
+        mainThreadPoster = ImmediateMainThreadPoster,
+        serviceIntentFactory = { Intent() },
+        commandFallbackTransport = loopbackCommandFallbackTransport(server),
+      )
+      val gateway = ServiceBackedOpenCraySettingsGateway(
+        serviceClient = serviceClient,
+        fallbackGateway = RecordingSettingsGateway("fallback"),
+      )
+
+      val customProvider = gateway.saveCustomLlmProvider(
+        selectedProviderOptionId = "provider-option",
+        protocol = "anthropic",
+        providerName = "Third-party Anthropic",
+        providerNotes = "loopback",
+        baseUrl = "https://example.com",
+        apiKey = "sk-loopback",
+        model = "kimi-k2.5",
+        reasoningEffort = "medium",
+        systemPrompt = "prompt",
+      )
+      val strongBackground = gateway.performStrongBackgroundAction(
+        StrongBackgroundActionIds.OPEN_NOTIFICATION_SETTINGS,
+      )
+
+      assertEquals(1, bindingAdapter.bindCount)
+      assertEquals("loopback-custom-llm", customProvider["source"])
+      assertEquals(
+        StrongBackgroundActionIds.OPEN_NOTIFICATION_SETTINGS,
+        loopbackGateway.lastStrongBackgroundActionId,
+      )
+      assertEquals("loopback-strong-background-action", strongBackground["source"])
+      assertEquals("binding", serviceClient.loadConnectionState().phase)
+      assertEquals("loopback_http", serviceClient.loadConnectionState().transport)
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun serviceBackedSettingsGatewayWaitsForPendingBinderBeforePerformingStrongBackgroundAction() {
     val expected = bridgeSnapshot(temporaryFolder.newFolder("settings-gateway-await-strong-background"))
     val bindingAdapter = RecordingBindingAdapter()
@@ -5065,6 +5441,94 @@ class OpenCrayRuntimeServiceHostTest {
       listener(loadShellSnapshot())
       return { }
     }
+  }
+
+  private fun recordingLoopbackLocalRuntimeServer(
+    chatRuntimeGateway: OpenCrayChatRuntimeGateway = RecordingChatRuntimeGateway("loopback"),
+    skillsGateway: OpenCraySkillsGateway = RecordingSkillsGateway("loopback"),
+    settingsGateway: OpenCraySettingsGateway = RecordingSettingsGateway("loopback"),
+  ): OpenCrayLocalRuntimeServer = OpenCrayLocalRuntimeServer(
+    localGatewayProvider = { UnsupportedLocalGateway() },
+    shellGatewayProvider = { RecordingShellGateway("loopback") },
+    chatRuntimeGatewayProvider = { chatRuntimeGateway },
+    skillsGatewayProvider = { skillsGateway },
+    settingsGatewayProvider = { settingsGateway },
+    requestedPort = 0,
+    shutdownExecutorOnClose = true,
+  )
+
+  private fun loopbackCommandFallbackTransport(
+    server: OpenCrayLocalRuntimeServer,
+  ): RuntimeServiceCommandFallbackTransport = LoopbackHttpRuntimeServiceCommandFallbackTransport(
+    requestClient = OpenCrayLocalRuntimeLoopbackHttpClient(
+      baseUrlProvider = { "http://127.0.0.1:${server.listeningPort}/" },
+      bootstrapTimeoutMs = 0L,
+    ),
+  )
+
+  private open class UnsupportedLocalGateway : OpenCrayLocalHostGateway {
+    override fun loadFilesSnapshot(): Map<String, Any?> = throw UnsupportedOperationException()
+
+    override fun loadWorkspaceImagePreview(relativePath: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
+    override fun loadWorkspaceTextPreview(relativePath: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
+    override fun loadWorkspaceVoicePlaybackSource(relativePath: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
+    override fun loadWorkspaceTextDocument(relativePath: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
+    override fun openWorkspaceEntry(relativePath: String) {
+      throw UnsupportedOperationException()
+    }
+
+    override fun openExternalUri(uri: String) {
+      throw UnsupportedOperationException()
+    }
+
+    override fun copyRichTextToClipboard(plainText: String, htmlText: String?) {
+      throw UnsupportedOperationException()
+    }
+
+    override fun createWorkspaceFolder(parentRelativePath: String, name: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
+    override fun createWorkspaceTextFile(parentRelativePath: String, name: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
+    override fun renameWorkspaceEntry(targetRelativePath: String, newName: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
+    override fun deleteWorkspaceEntries(relativePaths: List<String>): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
+    override fun saveWorkspaceTextDocument(targetRelativePath: String, content: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
+    override fun pasteWorkspaceEntries(
+      sourceRelativePaths: List<String>,
+      destinationRelativePath: String,
+      move: Boolean,
+    ): Map<String, Any?> = throw UnsupportedOperationException()
+
+    override fun shareWorkspaceEntries(relativePaths: List<String>) {
+      throw UnsupportedOperationException()
+    }
+
+    override fun showNativeToast(message: String) {
+      throw UnsupportedOperationException()
+    }
+
+    override fun importDraftChatAttachments(
+      requestedKind: String,
+      uriStrings: List<String>,
+    ): List<Map<String, Any?>> = throw UnsupportedOperationException()
+
+    override fun probeTwinImportSource(filePath: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
   }
 
   private class RecordingRuntimeServiceClient(
@@ -6670,6 +7134,14 @@ class OpenCrayRuntimeServiceHostTest {
       }.currentState(),
       serviceKeepAliveState = RuntimeServiceKeepAliveState(
         phase = RuntimeServiceKeepAliveState.PHASE_CREATED,
+        changedAtEpochMs = 1_000L,
+      ),
+      localRuntimeServerState = LocalRuntimeServerState(
+        phase = LocalRuntimeServerState.PHASE_LISTENING,
+        bindAddress = "127.0.0.1",
+        requestedPort = 42_617,
+        listeningPort = 42_617,
+        lastStartedAtEpochMs = 900L,
         changedAtEpochMs = 1_000L,
       ),
     )

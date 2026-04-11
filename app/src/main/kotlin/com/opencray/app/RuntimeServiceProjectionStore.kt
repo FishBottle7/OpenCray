@@ -9,6 +9,7 @@ import java.io.File
 import kotlinx.serialization.Serializable
 
 internal data class RuntimeServiceProjectionSnapshot(
+  val localRuntimeServerState: LocalRuntimeServerState? = null,
   val runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor,
   val runtimeOwnerWorkSummary: RuntimeOwnerWorkSummary,
   val serviceLifecycle: RuntimeServiceLifecycleDescriptor,
@@ -52,6 +53,7 @@ internal class FileBackedRuntimeServiceProjectionStoreFactory(
 
 internal fun OpenCrayRuntimeServiceBridgeSnapshot.toProjectionSnapshot(): RuntimeServiceProjectionSnapshot =
   RuntimeServiceProjectionSnapshot(
+    localRuntimeServerState = localRuntimeServerState,
     runtimeOwnerLifecycle = runtimeAccess.lifecycleDescriptor,
     runtimeOwnerWorkSummary = runtimeAccess.hostAccess.activeWorkSummary(),
     serviceLifecycle = serviceLifecycle,
@@ -124,11 +126,13 @@ private class FileBackedRuntimeServiceProjectionStore(
 private fun RuntimeServiceProjectionSnapshot.toPersistedRecord():
   PersistedRuntimeServiceProjectionRecord = PersistedRuntimeServiceProjectionRecord(
     updatedAtEpochMs = maxOf(
+      localRuntimeServerState?.changedAtEpochMs ?: 0L,
       runtimeOwnerLifecycle.hostCreatedAtEpochMs,
       serviceLifecycle.serviceCreatedAtEpochMs,
       serviceWorkState.changedAtEpochMs,
       serviceKeepAliveState.changedAtEpochMs,
     ),
+    localRuntimeServerState = localRuntimeServerState?.toPersistedRecord(),
     runtimeOwnerLifecycle = PersistedHostRuntimeLifecycleDescriptor(
       processStartId = runtimeOwnerLifecycle.processStartId,
       processStartedAtEpochMs = runtimeOwnerLifecycle.processStartedAtEpochMs,
@@ -179,6 +183,7 @@ private fun RuntimeServiceProjectionSnapshot.toPersistedRecord():
 
 private fun PersistedRuntimeServiceProjectionRecord.toSnapshot(): RuntimeServiceProjectionSnapshot =
   RuntimeServiceProjectionSnapshot(
+    localRuntimeServerState = localRuntimeServerState?.toSnapshot(),
     runtimeOwnerLifecycle = HostRuntimeLifecycleDescriptor(
       processStartId = runtimeOwnerLifecycle.processStartId,
       processStartedAtEpochMs = runtimeOwnerLifecycle.processStartedAtEpochMs,
@@ -231,11 +236,24 @@ private fun PersistedRuntimeServiceProjectionRecord.toSnapshot(): RuntimeService
 private data class PersistedRuntimeServiceProjectionRecord(
   val schemaVersion: Int = PersistenceSchemaVersion.CURRENT,
   val updatedAtEpochMs: Long = 0L,
+  val localRuntimeServerState: PersistedLocalRuntimeServerState? = null,
   val runtimeOwnerLifecycle: PersistedHostRuntimeLifecycleDescriptor,
   val runtimeOwnerWorkSummary: PersistedRuntimeOwnerWorkSummary,
   val serviceLifecycle: PersistedRuntimeServiceLifecycleDescriptor,
   val serviceWorkState: PersistedRuntimeServiceWorkState,
   val serviceKeepAliveState: PersistedRuntimeServiceKeepAliveState,
+)
+
+@Serializable
+private data class PersistedLocalRuntimeServerState(
+  val phase: String,
+  val bindAddress: String,
+  val requestedPort: Int,
+  val listeningPort: Int? = null,
+  val lastStartAttemptAtEpochMs: Long? = null,
+  val lastStartedAtEpochMs: Long? = null,
+  val failureReason: String? = null,
+  val changedAtEpochMs: Long,
 )
 
 @Serializable
@@ -293,3 +311,27 @@ private data class PersistedRuntimeServiceKeepAliveState(
   val lastStopSucceeded: Boolean? = null,
   val changedAtEpochMs: Long,
 )
+
+private fun LocalRuntimeServerState.toPersistedRecord(): PersistedLocalRuntimeServerState =
+  PersistedLocalRuntimeServerState(
+    phase = phase,
+    bindAddress = bindAddress,
+    requestedPort = requestedPort,
+    listeningPort = listeningPort,
+    lastStartAttemptAtEpochMs = lastStartAttemptAtEpochMs,
+    lastStartedAtEpochMs = lastStartedAtEpochMs,
+    failureReason = failureReason,
+    changedAtEpochMs = changedAtEpochMs,
+  )
+
+private fun PersistedLocalRuntimeServerState.toSnapshot(): LocalRuntimeServerState =
+  LocalRuntimeServerState(
+    phase = phase,
+    bindAddress = bindAddress,
+    requestedPort = requestedPort,
+    listeningPort = listeningPort,
+    lastStartAttemptAtEpochMs = lastStartAttemptAtEpochMs,
+    lastStartedAtEpochMs = lastStartedAtEpochMs,
+    failureReason = failureReason,
+    changedAtEpochMs = changedAtEpochMs,
+  )

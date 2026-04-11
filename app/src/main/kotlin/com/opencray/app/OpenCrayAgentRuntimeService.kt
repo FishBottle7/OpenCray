@@ -18,6 +18,7 @@ internal class OpenCrayAgentRuntimeService : Service() {
 
   override fun onCreate() {
     super.onCreate()
+    bootstrapOpenCrayRuntimeProcessSupport(applicationContext)
     RuntimeNotificationChannelRegistry.ensureRegistered(applicationContext)
     serviceBootstrapInstance = openCrayAgentRuntimeServiceBootstrap(
       service = this,

@@ -53,9 +53,11 @@ internal object DefaultRuntimeServiceExecutionCoordinatorFactory :
 }
 
 internal data class RuntimeServiceExecutionCoordinatorDependencies(
+  val localRuntimeServerStateProvider: () -> LocalRuntimeServerState? = { null },
   val runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor,
   val runtimeHostAccess: OpenCrayRuntimeHostAccess,
   val serviceLifecycle: RuntimeServiceLifecycleDescriptor,
+  val bootstrapResult: RuntimeServiceBootstrapResult,
   val serviceWorkStateTracker: RuntimeServiceWorkStateTracker,
   val localizedContext: android.content.Context,
   val chatSessionStore: ChatSessionLocalStore,
@@ -110,6 +112,10 @@ private class DefaultRuntimeServiceExecutionCoordinator(
       )
     }
     runtimeNotificationController.start()
+    runtimeNotificationController.onServiceBootstrapCompleted(
+      bootstrapResult = coordinatorDependencies.bootstrapResult,
+      processStartId = coordinatorDependencies.serviceLifecycle.processStartId,
+    )
     onServiceWorkStateChanged(serviceWorkStateTracker.currentState())
     persistProjectionSnapshot()
   }
@@ -128,6 +134,7 @@ private class DefaultRuntimeServiceExecutionCoordinator(
   ) {
     projectionStore.saveSnapshot(
       RuntimeServiceProjectionSnapshot(
+        localRuntimeServerState = coordinatorDependencies.localRuntimeServerStateProvider(),
         runtimeOwnerLifecycle = coordinatorDependencies.runtimeOwnerLifecycle,
         runtimeOwnerWorkSummary = coordinatorDependencies.runtimeHostAccess.activeWorkSummary(),
         serviceLifecycle = coordinatorDependencies.serviceLifecycle,

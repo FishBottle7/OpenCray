@@ -71,7 +71,8 @@
         </provider>
         <service
             android:name="com.opencray.app.OpenCrayAgentRuntimeService"
-            android:exported="false" />
+            android:exported="false"
+            android:process=":runtime" />
         <receiver
             android:name="com.opencray.app.ScheduledTaskWakeReceiver"
             android:exported="false" />

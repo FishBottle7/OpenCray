@@ -6,6 +6,7 @@ internal data class RuntimeServiceBootstrapAssembly(
   val dependencies: OpenCrayRuntimeContextDependencies,
   val runtimeAccess: OpenCrayRuntimeOwnerAccess,
   val serviceLifecycle: RuntimeServiceLifecycleDescriptor,
+  val bootstrapResult: RuntimeServiceBootstrapResult,
   val serviceWorkStateTracker: RuntimeServiceWorkStateTracker,
   val scheduledTaskSpecStore: ScheduledTaskSpecStore,
   val scheduledTaskRunRecordStore: ScheduledTaskRunRecordStore,
@@ -45,7 +46,7 @@ internal fun createRuntimeServiceBootstrapAssembly(
     appContext = appContext,
     runtimeOwnerAccessFactory = runtimeOwnerAccessFactory,
   )
-  bootstrapRuntimeServiceSessions(
+  val bootstrapResult = bootstrapRuntimeServiceSessions(
     chatSessionStore = bootstrap.dependencies.chatSessionStore,
     runtimeAccess = bootstrap.runtimeAccess,
   )
@@ -85,6 +86,7 @@ internal fun createRuntimeServiceBootstrapAssembly(
     dependencies = bootstrap.dependencies,
     runtimeAccess = bootstrap.runtimeAccess,
     serviceLifecycle = serviceLifecycle,
+    bootstrapResult = bootstrapResult,
     serviceWorkStateTracker = serviceWorkStateTracker,
     scheduledTaskSpecStore = bootstrap.scheduledTaskSpecStore,
     scheduledTaskRunRecordStore = bootstrap.scheduledTaskRunRecordStore,
@@ -130,9 +132,11 @@ private fun RuntimeServiceBootstrapAssembly.toGatewayBundleDependencies():
 
 private fun RuntimeServiceBootstrapAssembly.toExecutionCoordinatorDependencies():
   RuntimeServiceExecutionCoordinatorDependencies = RuntimeServiceExecutionCoordinatorDependencies(
+  localRuntimeServerStateProvider = OpenCrayLocalRuntimeServerRegistry::peekState,
   runtimeOwnerLifecycle = runtimeAccess.lifecycleDescriptor,
   runtimeHostAccess = runtimeAccess.hostAccess,
   serviceLifecycle = serviceLifecycle,
+  bootstrapResult = bootstrapResult,
   serviceWorkStateTracker = serviceWorkStateTracker,
   localizedContext = dependencies.localizedContext,
   chatSessionStore = dependencies.chatSessionStore,
@@ -145,6 +149,7 @@ private fun RuntimeServiceBootstrapAssembly.toBridgeSnapshotDependencies():
   dependencies = dependencies,
   runtimeAccess = runtimeAccess,
   serviceLifecycle = serviceLifecycle,
+  localRuntimeServerStateProvider = OpenCrayLocalRuntimeServerRegistry::peekState,
 )
 
 private fun RuntimeServiceBootstrapAssembly.toScheduledTaskDispatcherDependencies():

@@ -5,6 +5,11 @@ internal data class OpenCrayRuntimeServiceHost(
   val runtimeAccess: OpenCrayRuntimeOwnerAccess,
   val serviceLifecycle: RuntimeServiceLifecycleDescriptor,
   val serviceWorkStateTracker: RuntimeServiceWorkStateTracker,
+  val bootstrapResult: RuntimeServiceBootstrapResult = RuntimeServiceBootstrapResult(
+    scannedSessionIds = emptyList(),
+    resumedSessionIds = emptyList(),
+    repairedSessionIds = emptyList(),
+  ),
   val scheduledTaskSpecStore: ScheduledTaskSpecStore = inMemoryScheduledTaskSpecStoreFactory().create(),
   val scheduledTaskRunRecordStore: ScheduledTaskRunRecordStore =
     inMemoryScheduledTaskRunRecordStoreFactory().create(),
@@ -57,6 +62,7 @@ internal fun OpenCrayRuntimeServiceHost.toRuntimeServiceBootstrapAssembly():
   dependencies = dependencies,
   runtimeAccess = runtimeAccess,
   serviceLifecycle = serviceLifecycle,
+  bootstrapResult = bootstrapResult,
   serviceWorkStateTracker = serviceWorkStateTracker,
   scheduledTaskSpecStore = scheduledTaskSpecStore,
   scheduledTaskRunRecordStore = scheduledTaskRunRecordStore,

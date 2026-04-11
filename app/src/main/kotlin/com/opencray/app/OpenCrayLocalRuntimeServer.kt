@@ -464,6 +464,9 @@ internal class OpenCrayLocalRuntimeServer(
       "POST" to "/v1/update_installed_skill" -> skillsGateway.updateInstalledSkill(
         skillId = body.optString("skillId"),
       )
+      "POST" to "/v1/activate_skills_install_source" -> skillsGateway.activateSkillsInstallSource(
+        sourceId = body.optString("sourceId"),
+      )
       "POST" to "/v1/inspect_skill_source" -> skillsGateway.inspectSkillSource(
         sourceRef = body.optString("sourceRef"),
       )

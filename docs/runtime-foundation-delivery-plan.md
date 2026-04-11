@@ -1,10 +1,10 @@
 # Runtime Foundation Delivery Plan
 
-Last updated: 2026-04-07
+Last updated: 2026-04-11
 
 ## Status
 
-Phase 1 complete; Phase 2 approval-boundary and generalized checkpoint restore slice substantially implemented; in-process detached-owner foundation, same-process service host, foreground keepalive, scheduled wake bridges, a first interrupted-run repair wake path, service-owned approval notification handling, and a dedicated service wake-command dispatcher seam landed. True detached ownership and controller-level managed-process reconnect remain pending.
+Phase 1 complete; Phase 2 approval-boundary and generalized checkpoint restore slice substantially implemented; in-process detached-owner foundation, a production `:runtime` service shell, foreground keepalive, scheduled wake bridges, a first interrupted-run repair wake path, service-owned approval notification handling, and a dedicated service wake-command dispatcher seam landed. True detached ownership and controller-level managed-process reconnect remain pending.
 
 ## Goal
 
@@ -210,6 +210,8 @@ Detached-owner foundation landed in app process:
 First service-host slice landed:
 
 - `OpenCrayAgentRuntimeService` is now declared in the app manifest and started from app bootstrap and host access paths
+- the production runtime service now runs in a dedicated `:runtime` process, while runtime ownership and executors still live inside that service process rather than yet moving to a separate controller tier
+- the runtime service now bootstraps runtime-process-only document support and bundled-skill seeding on `onCreate()`, so the dedicated service process no longer depends on main-process `Application` bootstrap side effects before serving runtime or skills work
 - the service eagerly initializes the shared in-process runtime owner on `onCreate()`, so owner bootstrap is no longer implicit in `OpenCrayHostRuntime` alone
 - the service host now exposes a host-facing runtime access bundle instead of handing `OpenCrayHostRuntime` the raw owner object, which reduces coupling ahead of binder-backed control flow
 - `OpenCrayHostRuntime` itself now talks to that owner only through `OpenCrayRuntimeHostAccess`, so session-manager, approval-registry, and journal/checkpoint/supplement store wiring no longer leak into the host facade
@@ -250,8 +252,10 @@ First service-host slice landed:
 - shell and chat projection fallback now source runtime-owner/service lifecycle, work-summary, and keepalive metadata from a durable runtime-service projection store when binder access is unavailable, so binder-pending or host-rebuilt reads no longer need to fall back through a live service-host registry bridge
 - projection-only chat pending-approval rendering now reuses the same shared approval lookup/projection helper as the service-owned approval path, so detached approval runs that only have durable run/checkpoint state still surface approval cards even when the queue task snapshot is gone
 - the Android runtime-service client no longer defaults legacy `loadSnapshot()/peekSnapshot()` fallback to `OpenCrayRuntimeServiceHostRegistry.peek()` in production; only explicitly injected test/compat bridges can still use that live-host snapshot path
+- legacy client snapshot reads now also fall back to the durable runtime-service projection snapshot instead of requiring a live same-process bridge object, which removes the last snapshot/diagnostics blocker for dedicated-process service transport
 - the service-owned loopback HTTP server now receives direct service-owned gateways when started from `OpenCrayAgentRuntimeService`, so same-process runtime HTTP traffic no longer bounces through the client/binder abstraction just to get back into the same service owner
 - the loopback runtime server production surface is now provider- and gateway-only in main code; the old `OpenCrayHostRuntime` convenience constructor was removed from production code and replaced by test-local helpers, which keeps the loopback transport aligned with the same host-detached boundary used in service bootstrap
+- the Android runtime-service client now also treats unsupported remote binder attachment as a stable loopback/projection fallback mode instead of rebinding on every later gateway access, which keeps dedicated-process runtime transport from thrashing once the platform returns a `BinderProxy`
 - local-only sandbox preview embed resolution no longer depends on `ensureInProcessRuntimeOwner(...)`; that helper is now constructed directly from sandbox settings and persisted E2B session state, which removes another non-service path back into the old owner singleton
 - the runtime-service gateway bundle itself is now gateway-shaped instead of host-runtime-shaped: chat/skills/settings writes dispatch through the normalized gateway command surfaces, and chat snapshot invalidation is carried by a service-owned chat gateway capability instead of separate `OpenCrayHostRuntime` function references
 - the runtime-service gateway bundle no longer constructs `OpenCrayHostRuntime` at all during service bootstrap; service-owned shell/chat/skills/settings gateways are now assembled directly from projection stores, local facades, and narrowed access seams, and sandbox-session refresh now writes through the shared runtime-owner helper instead of bouncing through the host facade

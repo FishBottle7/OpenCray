@@ -1,6 +1,6 @@
 # Android Local Strong Background Runtime Design
 
-Last updated: 2026-04-07
+Last updated: 2026-04-11
 
 ## Status
 
@@ -27,8 +27,10 @@ Those documents define detached runtime ownership, journaling, and checkpoint re
 Today OpenCray already has a service-host boundary:
 
 - `OpenCrayAgentRuntimeService` exists and bootstraps the runtime owner
+- the production runtime service now runs in a dedicated `:runtime` process, while the owner and executors still live inside that service process
 - `OpenCrayHostRuntime` is no longer the production execution owner
 - UI transport can detach without immediately destroying runtime ownership
+- runtime-process-only bootstrap now initializes document support and bundled skills from service startup itself, so the dedicated service process does not depend on main-process `Application` bootstrap side effects before serving runtime work
 - caller-side runtime entrypoints now only request service start or wake, so the UI process no longer pre-creates the runtime host before the service lifecycle begins
 - runtime-service bootstrap factories now also resolve as a single `RuntimeServiceBootstrapDependencies` bundle captured once per service instance, and caller-side start/client access now also resolves as `RuntimeServiceAccessDependencies`, which narrows the remaining same-process global seam fanout around the detached runtime shell
 - service-owned gateway-bundle assembly inside transport bootstrap now also resolves through `RuntimeServiceGatewayBundleFactory` carried by that same bootstrap-dependency bundle, and that factory now consumes a narrowed `RuntimeServiceGatewayBundleDependencies` bundle instead of the whole `OpenCrayRuntimeServiceHost`, so local HTTP transport startup no longer hardcodes or passes around the monolithic service host just to build shell/chat/skills/settings surfaces
@@ -52,9 +54,10 @@ Today OpenCray already has a service-host boundary:
 
 But the background product surface is still incomplete:
 
-- execution is still driven by same-process executors
-- the runtime service now promotes itself to foreground while keepalive-required work exists, but execution ownership is still same-process and not yet a separate stronger runtime process
+- execution is still driven by in-runtime-process executors rather than a deeper controller/process split
+- the runtime service now promotes itself to foreground while keepalive-required work exists, but execution ownership is still only isolated to the dedicated runtime service process and not yet a separate stronger controller tier
 - binder-unavailable shell/chat projection now reads service/runtime status from a file-backed runtime-service projection snapshot rather than consulting a live host-registry bridge, which makes host rebuild UI reads closer to the detached-owner target
+- when Android returns a remote `BinderProxy` instead of a same-process binder endpoint, the client now degrades once into loopback/projection fallback and stops repeated rebinding churn for later reads or commands
 - `AlarmManager` and `WorkManager` trigger bridges now exist for scheduled wake-up and repair
 - active-runtime, approval-needed, completion/interruption, and scheduled-dispatch notifications now exist, including notification-side approve/reject entry for approval waits
 - file-backed managed-process registries can now reattach live controllers across registry or host rebuild while the same app process remains alive, but true cross-process reconnect after process death is still not implemented
@@ -603,7 +606,7 @@ Exit criteria:
 
 Status:
 
-- partially implemented; capability checks, settings actions, and the in-app notifications/background page are already present, but the overall detached/background runtime is still same-process and not yet a stronger isolated runtime
+- partially implemented; capability checks, settings actions, and the in-app notifications/background page are already present, and the production service shell now runs in a dedicated `:runtime` process, but the overall detached/background runtime still uses a single runtime-process owner/executor and is not yet a stronger controller-isolated runtime
 - approval notification approve/reject actions now wake the service into a service-owned command path instead of going back through a service-local `OpenCrayHostRuntime` facade
 - the runtime service now also resolves wake intent parsing and dispatch through a dedicated wake-command-dispatcher seam, so notification approval actions, scheduled task wakes, interrupted-run resume wakes, and schedule repair wakes all share the same service-owned handoff boundary instead of living inline in `OpenCrayAgentRuntimeService`
 - the runtime service now also resolves its binder-facing endpoint through a dedicated seam, so the binder object and binder-only chat/skills/settings write-dispatch logic no longer live inline in `OpenCrayAgentRuntimeService`
