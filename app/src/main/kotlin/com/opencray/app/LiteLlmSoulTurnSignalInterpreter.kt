@@ -3,6 +3,8 @@ package com.opencray.app
 import com.opencray.llm.DefaultLiteLlmGateway
 import com.opencray.llm.InMemoryLiteLlmRoutingSettingsStore
 import com.opencray.llm.LiteLlmGateway
+import com.opencray.llm.LiteLlmGatewayMessage
+import com.opencray.llm.LiteLlmGatewayMessageRole
 import com.opencray.llm.LiteLlmGatewayRequest
 import com.opencray.llm.LiteLlmGatewayStatus
 import com.opencray.llm.LiteLlmProviderClient
@@ -46,11 +48,17 @@ internal class LiteLlmSoulTurnSignalInterpreter(
       buildRouting(settings),
       providerClient,
     )
+    val prompt = buildPrompt(request)
     val result = gateway.execute(
       LiteLlmGatewayRequest(
         requestId = "soul-turn-signal-${UUID.randomUUID()}",
         systemPrompt = INTERPRETER_SYSTEM_PROMPT,
-        prompt = buildPrompt(request),
+        messages = listOf(
+          LiteLlmGatewayMessage(
+            role = LiteLlmGatewayMessageRole.USER,
+            content = prompt,
+          ),
+        ),
         metadata = mapOf(
           "source" to "soul_turn_signal_interpreter",
           "sessionId" to request.sessionId,

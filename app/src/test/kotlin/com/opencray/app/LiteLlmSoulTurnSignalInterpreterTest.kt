@@ -61,7 +61,9 @@ class LiteLlmSoulTurnSignalInterpreterTest {
     assertEquals(true, success.signal.clarificationNeeded)
     assertEquals("gpt-4o-mini", providerClient.lastRequest?.route?.model)
     assertEquals("Bearer test-key", providerClient.lastRequest?.request?.authHeaders?.get("Authorization"))
-    val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
+    val gatewayRequest = providerClient.lastRequest?.request
+    val prompt = gatewayRequest?.prompt.orEmpty()
+    assertTrue(prompt.contains(gatewayRequest?.messages?.single()?.content?.trim().orEmpty()))
     assertTrue(prompt.contains("clarification_needed means the assistant likely still needs at least one missing fact"))
     assertTrue(prompt.contains("Current user message:"))
     assertTrue(prompt.contains("Recent conversation before the current user message:"))

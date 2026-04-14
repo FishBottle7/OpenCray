@@ -16,7 +16,6 @@ internal object RuntimeNotificationSettingsStoreKeys {
   const val APPROVAL_REMINDER_ENABLED = "approval_reminder_enabled"
   const val TASK_FINISHED_ENABLED = "task_finished_enabled"
   const val TASK_FAILED_ENABLED = "task_failed_enabled"
-  const val NEW_USER_MESSAGE_ENABLED = "new_user_message_enabled"
   const val SCHEDULED_WAKE_ENABLED = "scheduled_wake_enabled"
   const val BACKGROUND_TASK_PAUSED_ENABLED = "background_task_paused_enabled"
   const val SERVICE_RECOVERED_ENABLED = "service_recovered_enabled"
@@ -38,18 +37,17 @@ enum class RuntimeNotificationDeliveryMode(
 internal data class RuntimeNotificationSettingsState(
   val masterEnabled: Boolean = true,
   val defaultDeliveryMode: RuntimeNotificationDeliveryMode =
-    RuntimeNotificationDeliveryMode.CRITICAL,
+    RuntimeNotificationDeliveryMode.ALL,
   val quietHoursEnabled: Boolean = true,
   val quietHoursStartMinutes: Int = DEFAULT_QUIET_HOURS_START_MINUTES,
   val quietHoursEndMinutes: Int = DEFAULT_QUIET_HOURS_END_MINUTES,
   val approvalRequestsEnabled: Boolean = true,
   val approvalReminderEnabled: Boolean = true,
-  val taskFinishedEnabled: Boolean = false,
+  val taskFinishedEnabled: Boolean = true,
   val taskFailedEnabled: Boolean = true,
-  val newUserMessageEnabled: Boolean = true,
-  val scheduledWakeEnabled: Boolean = false,
+  val scheduledWakeEnabled: Boolean = true,
   val backgroundTaskPausedEnabled: Boolean = true,
-  val serviceRecoveredEnabled: Boolean = false,
+  val serviceRecoveredEnabled: Boolean = true,
 ) {
   fun sanitized(): RuntimeNotificationSettingsState = copy(
     quietHoursStartMinutes = quietHoursStartMinutes.normalizedMinutesOfDay(),
@@ -214,9 +212,6 @@ internal class RuntimeNotificationSettingsStore(
     taskFailedEnabled =
       keyValueStore.getBoolean(RuntimeNotificationSettingsStoreKeys.TASK_FAILED_ENABLED)
         ?: defaults.taskFailedEnabled,
-    newUserMessageEnabled =
-      keyValueStore.getBoolean(RuntimeNotificationSettingsStoreKeys.NEW_USER_MESSAGE_ENABLED)
-        ?: defaults.newUserMessageEnabled,
     scheduledWakeEnabled =
       keyValueStore.getBoolean(RuntimeNotificationSettingsStoreKeys.SCHEDULED_WAKE_ENABLED)
         ?: defaults.scheduledWakeEnabled,
@@ -265,10 +260,6 @@ internal class RuntimeNotificationSettingsStore(
     keyValueStore.putBoolean(
       RuntimeNotificationSettingsStoreKeys.TASK_FAILED_ENABLED,
       sanitized.taskFailedEnabled,
-    )
-    keyValueStore.putBoolean(
-      RuntimeNotificationSettingsStoreKeys.NEW_USER_MESSAGE_ENABLED,
-      sanitized.newUserMessageEnabled,
     )
     keyValueStore.putBoolean(
       RuntimeNotificationSettingsStoreKeys.SCHEDULED_WAKE_ENABLED,

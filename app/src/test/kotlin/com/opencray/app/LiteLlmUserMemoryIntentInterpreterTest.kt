@@ -98,7 +98,9 @@ class LiteLlmUserMemoryIntentInterpreterTest {
     assertEquals("low", providerClient.lastRequest?.route?.metadata?.get("reasoning_effort"))
     assertEquals("512", providerClient.lastRequest?.route?.metadata?.get("max_tokens"))
     assertEquals("0", providerClient.lastRequest?.route?.metadata?.get("temperature"))
-    val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
+    val gatewayRequest = providerClient.lastRequest?.request
+    val prompt = gatewayRequest?.prompt.orEmpty()
+    assertTrue(prompt.contains(gatewayRequest?.messages?.single()?.content?.trim().orEmpty()))
     assertTrue(prompt.contains("git reset --hard"))
     assertTrue(prompt.contains("A single message may yield multiple durable intents"))
     assertTrue(prompt.contains("If the user tells the agent how to address them"))

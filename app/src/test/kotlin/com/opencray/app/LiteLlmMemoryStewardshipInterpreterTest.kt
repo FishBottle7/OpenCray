@@ -75,8 +75,11 @@ class LiteLlmMemoryStewardshipInterpreterTest {
     assertEquals("low", providerClient.lastRequest?.route?.metadata?.get("reasoning_effort"))
     assertEquals("512", providerClient.lastRequest?.route?.metadata?.get("max_tokens"))
     assertEquals("0", providerClient.lastRequest?.route?.metadata?.get("temperature"))
-    assertTrue(providerClient.lastRequest?.request?.prompt.orEmpty().contains("Active related records:\n<none>"))
-    assertTrue(providerClient.lastRequest?.request?.prompt.orEmpty().contains("drop_candidate"))
+    val gatewayRequest = providerClient.lastRequest?.request
+    val prompt = gatewayRequest?.prompt.orEmpty()
+    assertTrue(prompt.contains(gatewayRequest?.messages?.single()?.content?.trim().orEmpty()))
+    assertTrue(prompt.contains("Active related records:\n<none>"))
+    assertTrue(prompt.contains("drop_candidate"))
   }
 
   @Test

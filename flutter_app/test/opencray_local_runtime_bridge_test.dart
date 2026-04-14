@@ -689,7 +689,6 @@ void main() {
         'approvalReminderEnabled': true,
         'taskFinishedEnabled': false,
         'taskFailedEnabled': true,
-        'newUserMessageEnabled': false,
         'scheduledWakeEnabled': true,
         'backgroundTaskPausedEnabled': true,
         'serviceRecoveredEnabled': false,
@@ -708,7 +707,6 @@ void main() {
     expect(snapshot.approvalReminderEnabled, isTrue);
     expect(snapshot.taskFinishedEnabled, isFalse);
     expect(snapshot.taskFailedEnabled, isTrue);
-    expect(snapshot.newUserMessageEnabled, isFalse);
     expect(snapshot.scheduledWakeEnabled, isTrue);
     expect(snapshot.backgroundTaskPausedEnabled, isTrue);
     expect(snapshot.serviceRecoveredEnabled, isFalse);
@@ -726,7 +724,6 @@ void main() {
       approvalReminderEnabled: false,
       taskFinishedEnabled: true,
       taskFailedEnabled: true,
-      newUserMessageEnabled: true,
       scheduledWakeEnabled: true,
       backgroundTaskPausedEnabled: false,
       serviceRecoveredEnabled: true,
@@ -745,7 +742,6 @@ void main() {
         'approvalReminderEnabled': capturedBody['approvalReminderEnabled'],
         'taskFinishedEnabled': capturedBody['taskFinishedEnabled'],
         'taskFailedEnabled': capturedBody['taskFailedEnabled'],
-        'newUserMessageEnabled': capturedBody['newUserMessageEnabled'],
         'scheduledWakeEnabled': capturedBody['scheduledWakeEnabled'],
         'backgroundTaskPausedEnabled':
             capturedBody['backgroundTaskPausedEnabled'],
@@ -765,7 +761,6 @@ void main() {
     expect(capturedBody['approvalReminderEnabled'], isFalse);
     expect(capturedBody['taskFinishedEnabled'], isTrue);
     expect(capturedBody['taskFailedEnabled'], isTrue);
-    expect(capturedBody['newUserMessageEnabled'], isTrue);
     expect(capturedBody['scheduledWakeEnabled'], isTrue);
     expect(capturedBody['backgroundTaskPausedEnabled'], isFalse);
     expect(capturedBody['serviceRecoveredEnabled'], isTrue);
@@ -778,7 +773,6 @@ void main() {
     expect(snapshot.approvalReminderEnabled, isFalse);
     expect(snapshot.taskFinishedEnabled, isTrue);
     expect(snapshot.taskFailedEnabled, isTrue);
-    expect(snapshot.newUserMessageEnabled, isTrue);
     expect(snapshot.scheduledWakeEnabled, isTrue);
     expect(snapshot.backgroundTaskPausedEnabled, isFalse);
     expect(snapshot.serviceRecoveredEnabled, isTrue);

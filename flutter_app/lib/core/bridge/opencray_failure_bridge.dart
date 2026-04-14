@@ -221,18 +221,17 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   loadNotificationSettings() async =>
       const OpenCrayNotificationSettingsSnapshot(
         masterEnabled: false,
-        defaultDeliveryModeId: 'critical',
+        defaultDeliveryModeId: 'all',
         quietHoursEnabled: true,
         quietHoursStartMinutes: 1380,
         quietHoursEndMinutes: 480,
         approvalRequestsEnabled: true,
         approvalReminderEnabled: true,
-        taskFinishedEnabled: false,
+        taskFinishedEnabled: true,
         taskFailedEnabled: true,
-        newUserMessageEnabled: true,
-        scheduledWakeEnabled: false,
+        scheduledWakeEnabled: true,
         backgroundTaskPausedEnabled: true,
-        serviceRecoveredEnabled: false,
+        serviceRecoveredEnabled: true,
       );
 
   @override

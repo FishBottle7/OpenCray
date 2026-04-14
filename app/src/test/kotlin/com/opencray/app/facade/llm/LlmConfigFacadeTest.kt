@@ -216,6 +216,7 @@ class LlmConfigFacadeTest {
     assertEquals("true", providerClient.requests[0].route.metadata["pdfInputSupported"])
     assertEquals("Bearer test-key", providerClient.requests[0].request.authHeaders["Authorization"])
     assertEquals("Reply with OK.", providerClient.requests[0].request.prompt)
+    assertEquals("Reply with OK.", providerClient.requests[0].request.messages.single().content)
     assertEquals("capability_probe", providerClient.requests[1].request.tools.single().name)
     assertNull(providerClient.requests[1].request.toolChoice)
     assertEquals(LiteLlmToolChoiceMode.TOOL, providerClient.requests[2].request.toolChoice?.mode)

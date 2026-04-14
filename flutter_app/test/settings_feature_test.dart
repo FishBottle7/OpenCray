@@ -4101,18 +4101,17 @@ class _FakeSettingsFacade implements SettingsFacade {
   NotificationSettingsSnapshot notificationSettings =
       const NotificationSettingsSnapshot(
         masterEnabled: true,
-        defaultDeliveryMode: NotificationDeliveryMode.critical,
+        defaultDeliveryMode: NotificationDeliveryMode.all,
         quietHoursEnabled: true,
         quietHoursStartMinutes: 23 * 60,
         quietHoursEndMinutes: 8 * 60,
         approvalRequestsEnabled: true,
         approvalReminderEnabled: true,
-        taskFinishedEnabled: false,
+        taskFinishedEnabled: true,
         taskFailedEnabled: true,
-        newUserMessageEnabled: true,
-        scheduledWakeEnabled: false,
+        scheduledWakeEnabled: true,
         backgroundTaskPausedEnabled: true,
-        serviceRecoveredEnabled: false,
+        serviceRecoveredEnabled: true,
       );
   StrongBackgroundSnapshot strongBackgroundSnapshot =
       const StrongBackgroundSnapshot(

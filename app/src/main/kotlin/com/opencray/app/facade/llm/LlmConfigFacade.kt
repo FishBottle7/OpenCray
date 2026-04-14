@@ -17,6 +17,8 @@ import com.opencray.app.effectiveLlmRouteMetadata
 import com.opencray.app.recommendedValidationProviderRouteTimeoutMs
 import com.opencray.llm.DefaultLiteLlmGateway
 import com.opencray.llm.InMemoryLiteLlmRoutingSettingsStore
+import com.opencray.llm.LiteLlmGatewayMessage
+import com.opencray.llm.LiteLlmGatewayMessageRole
 import com.opencray.llm.LiteLlmGatewayRequest
 import com.opencray.llm.LiteLlmGatewayResult
 import com.opencray.llm.LiteLlmGatewayStatus
@@ -693,7 +695,12 @@ internal class LocalLlmConfigFacade private constructor(
     metadata: Map<String, String> = emptyMap(),
   ): LiteLlmGatewayResult = gateway.execute(
     LiteLlmGatewayRequest(
-      prompt = prompt,
+      messages = listOf(
+        LiteLlmGatewayMessage(
+          role = LiteLlmGatewayMessageRole.USER,
+          content = prompt,
+        ),
+      ),
       tools = tools,
       builtinTools = builtinTools,
       toolChoice = toolChoice,

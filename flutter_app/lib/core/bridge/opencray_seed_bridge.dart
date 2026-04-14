@@ -152,18 +152,17 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
            initialNotificationSettings ??
            const OpenCrayNotificationSettingsSnapshot(
              masterEnabled: true,
-             defaultDeliveryModeId: 'critical',
+             defaultDeliveryModeId: 'all',
              quietHoursEnabled: true,
              quietHoursStartMinutes: 1380,
              quietHoursEndMinutes: 480,
              approvalRequestsEnabled: true,
              approvalReminderEnabled: true,
-             taskFinishedEnabled: false,
+             taskFinishedEnabled: true,
              taskFailedEnabled: true,
-             newUserMessageEnabled: true,
-             scheduledWakeEnabled: false,
+             scheduledWakeEnabled: true,
              backgroundTaskPausedEnabled: true,
-             serviceRecoveredEnabled: false,
+             serviceRecoveredEnabled: true,
            ),
        _safetySettings =
            initialSafetySettings ??

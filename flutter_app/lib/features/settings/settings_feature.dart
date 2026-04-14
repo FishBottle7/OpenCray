@@ -1667,16 +1667,6 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
           Text(copy.llmPageSubtitle, style: _SettingsTextStyles.subtitle),
           const SizedBox(height: 16),
           _SettingsCard(
-            child: _PrototypeToggleRow(
-              rowKey: const ValueKey<String>('settings-llm-streaming-toggle'),
-              title: copy.llmStreamingTitle,
-              subtitle: copy.llmStreamingSubtitle,
-              value: _streamingEnabled,
-              onChanged: _handleStreamingEnabledChanged,
-            ),
-          ),
-          const SizedBox(height: 16),
-          _SettingsCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1899,6 +1889,16 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                   ),
                 ],
               ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          _SettingsCard(
+            child: _PrototypeToggleRow(
+              rowKey: const ValueKey<String>('settings-llm-streaming-toggle'),
+              title: copy.llmStreamingTitle,
+              subtitle: copy.llmStreamingSubtitle,
+              value: _streamingEnabled,
+              onChanged: _handleStreamingEnabledChanged,
             ),
           ),
           const SizedBox(height: 16),

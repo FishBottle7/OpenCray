@@ -955,13 +955,6 @@ List<_NotificationChannelDescriptor> _notificationChannelDescriptors(
           snapshot.copyWith(taskFailedEnabled: value),
     ),
     _NotificationChannelDescriptor(
-      title: copy.newUserMessageTitle,
-      subtitle: copy.newUserMessageSubtitle,
-      valueOf: (snapshot) => snapshot.newUserMessageEnabled,
-      update: (snapshot, value) =>
-          snapshot.copyWith(newUserMessageEnabled: value),
-    ),
-    _NotificationChannelDescriptor(
       title: copy.scheduledWakeTitle,
       subtitle: copy.scheduledWakeSubtitle,
       valueOf: (snapshot) => snapshot.scheduledWakeEnabled,
@@ -1023,8 +1016,6 @@ class _NotificationSettingsCopy {
     required this.taskFinishedSubtitle,
     required this.taskFailedTitle,
     required this.taskFailedSubtitle,
-    required this.newUserMessageTitle,
-    required this.newUserMessageSubtitle,
     required this.scheduledWakeTitle,
     required this.scheduledWakeSubtitle,
     required this.backgroundTaskPausedTitle,
@@ -1073,8 +1064,6 @@ class _NotificationSettingsCopy {
         taskFinishedSubtitle: '任务成功结束时提醒。',
         taskFailedTitle: '任务失败',
         taskFailedSubtitle: '任务失败、被中断或恢复失败时提醒。',
-        newUserMessageTitle: '新用户消息',
-        newUserMessageSubtitle: '后台任务仍在运行时，新的用户消息进入当前会话时提醒。',
         scheduledWakeTitle: '定时唤醒触发',
         scheduledWakeSubtitle: '计划中的定时任务或唤醒事件被触发时提醒。',
         backgroundTaskPausedTitle: '后台任务暂停',
@@ -1129,9 +1118,6 @@ class _NotificationSettingsCopy {
       taskFailedTitle: 'Task failed',
       taskFailedSubtitle:
           'Alert when a run fails, is interrupted, or cannot be recovered.',
-      newUserMessageTitle: 'New user message',
-      newUserMessageSubtitle:
-          'Alert when a new user message lands while background work is still active.',
       scheduledWakeTitle: 'Scheduled wake fired',
       scheduledWakeSubtitle:
           'Alert when a scheduled wake or automation starts running.',
@@ -1180,8 +1166,6 @@ class _NotificationSettingsCopy {
   final String taskFinishedSubtitle;
   final String taskFailedTitle;
   final String taskFailedSubtitle;
-  final String newUserMessageTitle;
-  final String newUserMessageSubtitle;
   final String scheduledWakeTitle;
   final String scheduledWakeSubtitle;
   final String backgroundTaskPausedTitle;
