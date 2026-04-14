@@ -583,7 +583,6 @@ class OpenCrayAgentRuntime(
           }
         }
         val gatewayMessagesEnabled = true
-
         val runId = runIdFor(task)
         val requestedPreviousResponseIdOverride =
           gatewayMessagePlan.previousResponseId ?: requestedPreviousResponseId(cursor)
@@ -5358,7 +5357,6 @@ class OpenCrayAgentRuntime(
     }
     return messages
   }
-
   private fun applyFrozenReplayProjection(
     entry: RuntimeConversationMessage,
     toolResult: LiteLlmGatewayToolResult,
@@ -5386,7 +5384,6 @@ class OpenCrayAgentRuntime(
       ?.restoredToolResult()
       ?: projection.restoredToolResult()
   }
-
   private fun projectedPlainToolTranscriptContent(
     entry: RuntimeConversationMessage,
   ): String? {

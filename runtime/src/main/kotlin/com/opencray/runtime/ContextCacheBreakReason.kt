@@ -12,6 +12,7 @@ internal fun deriveContextCacheBreakReason(
     "anchor_changed" -> "system_prefix_changed"
     "durable_context_changed" -> "durable_context_changed"
     "dynamic_context_changed" -> "dynamic_context_changed"
+    "front_context_changed" -> "dynamic_context_changed"
     "transcript_mismatch" -> "replay_projection_changed"
     "responses_restored_replay_required" -> "continuation_lineage_untrusted"
     "responses_shape_unavailable" -> "continuation_lineage_untrusted"

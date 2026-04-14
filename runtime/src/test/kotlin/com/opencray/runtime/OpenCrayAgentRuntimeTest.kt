@@ -3121,6 +3121,27 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
+  fun deriveContextCacheBreakReasonMapsFrontContextChangeToDynamicContextCategory() {
+    assertEquals(
+      "dynamic_context_changed",
+      deriveContextCacheBreakReason(localContinuationReason = "front_context_changed"),
+    )
+    assertEquals(
+      "continuation_lineage_untrusted",
+      deriveContextCacheBreakReason(
+        localContinuationReason = "responses_legacy_json_fallback_enabled",
+        hasHistoricalResponsesContinuation = true,
+      ),
+    )
+    assertNull(
+      deriveContextCacheBreakReason(
+        localContinuationReason = "responses_lineage_unavailable",
+        hasHistoricalResponsesContinuation = false,
+      ),
+    )
+  }
+
+  @Test
   fun runPromptTaskFullRebuildReplaysResponsesAssistantPhases() {
     val workspaceRoot = temporaryFolder.newFolder("agent-responses-full-rebuild")
     val selection = LiteLlmRouteSelectionMetadata(

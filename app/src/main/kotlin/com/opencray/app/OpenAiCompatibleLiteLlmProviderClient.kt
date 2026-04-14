@@ -1149,6 +1149,10 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   ): Map<String, String> = buildMap {
     put("statusCode", statusCode.toString())
     put(LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED, nativeToolCallRequested.toString())
+    put(
+      "conversationTransportMode",
+      if (request.request.messages.isNotEmpty()) "messages" else "prompt_projection",
+    )
     payload.optString("id")
       .takeIf { value -> value.isNotBlank() }
       ?.let { providerRequestId ->
@@ -1318,6 +1322,10 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     if (request.request.responseApiPreferred) {
       put("responseApiPreferred", "true")
     }
+    put(
+      "conversationTransportMode",
+      if (request.request.messages.isNotEmpty()) "messages" else "prompt_projection",
+    )
     putAll(promptCacheRequestMetadata(request))
   }
 
@@ -1739,6 +1747,15 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
   private fun openAiConversationMessages(
     request: LiteLlmGatewayRequest,
+  ): List<LiteLlmGatewayMessage> = projectedConversationMessages(request)
+
+  private fun anthropicConversationMessages(
+    request: LiteLlmGatewayRequest,
+  ): List<LiteLlmGatewayMessage> = projectedConversationMessages(request)
+
+  // Keep provider encoding message-first even when a legacy caller still sends only `prompt`.
+  private fun projectedConversationMessages(
+    request: LiteLlmGatewayRequest,
   ): List<LiteLlmGatewayMessage> = if (request.messages.isNotEmpty()) {
     request.messages
   } else {
@@ -1749,10 +1766,6 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       ),
     )
   }
-
-  private fun anthropicConversationMessages(
-    request: LiteLlmGatewayRequest,
-  ): List<LiteLlmGatewayMessage> = openAiConversationMessages(request)
 
   private fun builtinWebSearchFallbackQueries(
     request: LiteLlmProviderRequest,
