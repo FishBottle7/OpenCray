@@ -332,6 +332,20 @@ internal class OpenCrayLocalRuntimeServer(
         } else {
           null
         },
+        contextBudgetPreset = if (body.has("contextBudgetPreset")) {
+          body.optString("contextBudgetPreset")
+        } else {
+          null
+        },
+        contextBudgetReservedOutputTokens =
+          body.takeIf { !it.isNull("contextBudgetReservedOutputTokens") }
+            ?.optInt("contextBudgetReservedOutputTokens"),
+        contextBudgetSafetyMarginTokens =
+          body.takeIf { !it.isNull("contextBudgetSafetyMarginTokens") }
+            ?.optInt("contextBudgetSafetyMarginTokens"),
+        contextBudgetEffectiveInputPercent =
+          body.takeIf { !it.isNull("contextBudgetEffectiveInputPercent") }
+            ?.optDouble("contextBudgetEffectiveInputPercent"),
       )
       "POST" to "/v1/save_custom_llm_provider" -> settingsGateway.saveCustomLlmProvider(
         selectedProviderOptionId = body.optString("selectedProviderOptionId"),
@@ -368,6 +382,20 @@ internal class OpenCrayLocalRuntimeServer(
         } else {
           null
         },
+        contextBudgetPreset = if (body.has("contextBudgetPreset")) {
+          body.optString("contextBudgetPreset")
+        } else {
+          null
+        },
+        contextBudgetReservedOutputTokens =
+          body.takeIf { !it.isNull("contextBudgetReservedOutputTokens") }
+            ?.optInt("contextBudgetReservedOutputTokens"),
+        contextBudgetSafetyMarginTokens =
+          body.takeIf { !it.isNull("contextBudgetSafetyMarginTokens") }
+            ?.optInt("contextBudgetSafetyMarginTokens"),
+        contextBudgetEffectiveInputPercent =
+          body.takeIf { !it.isNull("contextBudgetEffectiveInputPercent") }
+            ?.optDouble("contextBudgetEffectiveInputPercent"),
       )
       "POST" to "/v1/validate_llm_config" -> settingsGateway.validateLlmConfig(
         providerId = body.optString("providerId"),

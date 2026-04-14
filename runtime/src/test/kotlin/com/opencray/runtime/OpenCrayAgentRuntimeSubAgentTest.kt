@@ -121,18 +121,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
     assertFalse(childToolNames.contains("Bash"))
     assertFalse(childToolNames.contains("python_exec"))
     assertTrue(gateway.requests[2].prompt.contains("README says hello."))
-    assertTrue(gateway.requests[2].prompt.contains("[Recent Working Observations]"))
-    assertTrue(
-      gateway.requests[2].prompt.contains(
-        "Recent successful workspace and delegation observations from the current task are available below.",
-      ),
-    )
-    assertTrue(
-      gateway.requests[2].prompt.contains(
-        "Task description=inspect readme subagent=researcher state=completed context=minimal",
-      ),
-    )
-    assertTrue(gateway.requests[2].prompt.contains("Summary: README says hello."))
+    assertFalse(gateway.requests[2].prompt.contains("[Recent Working Observations]"))
   }
 
   @Test
@@ -175,11 +164,8 @@ class OpenCrayAgentRuntimeSubAgentTest {
     assertTrue(childToolNames.contains("Read"))
     assertFalse(childToolNames.contains("Task"))
     assertFalse(childToolNames.contains("Write"))
-    assertTrue(
-      gateway.requests[2].prompt.contains(
-        "Task description=inspect readme subagent=explorer state=completed context=minimal",
-      ),
-    )
+    assertFalse(gateway.requests[2].prompt.contains("[Recent Working Observations]"))
+    assertTrue(gateway.requests[2].prompt.contains("README says hello."))
   }
 
   @Test
@@ -305,7 +291,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
   }
 
   @Test
-  fun delegatedChildReceivesRecentWorkspaceObservationSummaries() {
+  fun delegatedChildKeepsWorkspaceDiscoveryOutOfRecentObservationSummaries() {
     val workspaceRoot = temporaryFolder.newFolder("subagent-delegated-observations").toPath()
     Files.write(
       workspaceRoot.resolve("README.md"),
@@ -332,8 +318,8 @@ class OpenCrayAgentRuntimeSubAgentTest {
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("Delegated result received.", result.stdout)
     assertTrue(gateway.requests.size in 4..5)
-    assertTrue(gateway.requests[2].prompt.contains("recent_observations:"))
-    assertTrue(gateway.requests[2].prompt.contains("Read file_path=README.md"))
+    assertFalse(gateway.requests[2].prompt.contains("recent_observations:"))
+    assertFalse(gateway.requests[2].prompt.contains("Read file_path=README.md"))
     assertFalse(gateway.requests[2].prompt.contains("tool_result Read"))
     assertFalse(gateway.requests[2].prompt.contains("hello"))
   }

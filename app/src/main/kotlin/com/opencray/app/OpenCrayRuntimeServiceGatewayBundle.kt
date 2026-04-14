@@ -1201,6 +1201,10 @@ internal class ServiceOwnedSettingsGateway(
     openAiPromptCacheRetention: String?,
     anthropicPromptCachingEnabled: Boolean?,
     anthropicPromptCacheTtl: String?,
+    contextBudgetPreset: String?,
+    contextBudgetReservedOutputTokens: Int?,
+    contextBudgetSafetyMarginTokens: Int?,
+    contextBudgetEffectiveInputPercent: Double?,
   ): Map<String, Any?> = llmConfigFacade.save(
     com.opencray.app.facade.llm.SaveLlmConfigRequest(
       enabled = enabled,
@@ -1219,6 +1223,10 @@ internal class ServiceOwnedSettingsGateway(
       openAiPromptCacheRetention = openAiPromptCacheRetention,
       anthropicPromptCachingEnabled = anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl = anthropicPromptCacheTtl,
+      contextBudgetPreset = contextBudgetPreset,
+      contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
     ),
   ).toGatewayMap()
 
@@ -1237,6 +1245,10 @@ internal class ServiceOwnedSettingsGateway(
     openAiPromptCacheRetention: String?,
     anthropicPromptCachingEnabled: Boolean?,
     anthropicPromptCacheTtl: String?,
+    contextBudgetPreset: String?,
+    contextBudgetReservedOutputTokens: Int?,
+    contextBudgetSafetyMarginTokens: Int?,
+    contextBudgetEffectiveInputPercent: Double?,
   ): Map<String, Any?> = llmConfigFacade.saveCustomProvider(
     com.opencray.app.facade.llm.SaveCustomLlmProviderRequest(
       selectedProviderOptionId = selectedProviderOptionId,
@@ -1257,6 +1269,10 @@ internal class ServiceOwnedSettingsGateway(
         ?: LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED,
       anthropicPromptCacheTtl = anthropicPromptCacheTtl
         ?: LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL,
+      contextBudgetPreset = contextBudgetPreset,
+      contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
     ),
   ).toGatewayMap()
 

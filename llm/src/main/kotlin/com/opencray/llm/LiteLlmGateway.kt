@@ -17,8 +17,10 @@ object NoOpLiteLlmVisibleTextObserver : LiteLlmVisibleTextObserver
 
 data class LiteLlmGatewayRequest(
   val requestId: String = "llm-${UUID.randomUUID()}",
-  val prompt: String,
+  // Compatibility/debug fallback for providers or flows that still accept a single text blob.
+  var prompt: String = "",
   val systemPrompt: String? = null,
+  // Authoritative transport for the main agent request path.
   val messages: List<LiteLlmGatewayMessage> = emptyList(),
   val tools: List<LiteLlmToolDefinition> = emptyList(),
   val builtinTools: List<LiteLlmBuiltinToolDefinition> = emptyList(),
@@ -31,12 +33,132 @@ data class LiteLlmGatewayRequest(
   val streamObserver: LiteLlmVisibleTextObserver = NoOpLiteLlmVisibleTextObserver,
 ) {
   init {
+    prompt = prompt.trim().takeIf(String::isNotBlank)
+      ?: projectedPromptFromConversation(
+        systemPrompt = systemPrompt,
+        messages = messages,
+      )
     require(requestId.isNotBlank()) { "LiteLlmGatewayRequest requestId must not be blank." }
-    require(prompt.isNotBlank()) { "LiteLlmGatewayRequest prompt must not be blank." }
+    require(prompt.isNotBlank() || messages.isNotEmpty()) {
+      "LiteLlmGatewayRequest must provide a non-blank prompt or at least one message."
+    }
     require(previousResponseId == null || previousResponseId.isNotBlank()) {
       "LiteLlmGatewayRequest previousResponseId must not be blank."
     }
   }
+}
+
+private fun projectedPromptFromConversation(
+  systemPrompt: String?,
+  messages: List<LiteLlmGatewayMessage>,
+): String = buildList {
+  systemPrompt?.trim()?.takeIf(String::isNotBlank)?.let(::add)
+  projectedPromptFromMessages(messages).takeIf(String::isNotBlank)?.let(::add)
+}.joinToString(separator = "\n\n").trim()
+
+private fun projectedPromptFromMessages(
+  messages: List<LiteLlmGatewayMessage>,
+): String = messages.joinToString(separator = "\n\n") { message ->
+  buildString {
+    message.content?.trim()?.takeIf(String::isNotBlank)?.let(::append)
+    when (message.role) {
+      LiteLlmGatewayMessageRole.SYSTEM -> Unit
+
+      LiteLlmGatewayMessageRole.USER -> {
+        projectedAttachmentFallback(message.attachments)
+          ?.let { attachmentsText ->
+            if (isNotEmpty()) {
+              append("\n\n")
+            }
+            append(attachmentsText)
+          }
+      }
+
+      LiteLlmGatewayMessageRole.ASSISTANT -> {
+        if (message.toolCalls.isNotEmpty()) {
+          if (isNotEmpty()) {
+            appendLine()
+          }
+          message.toolCalls.forEachIndexed { index, toolCall ->
+            if (index > 0) {
+              appendLine()
+            }
+            append("{\"tool_name\": \"")
+            append(toolCall.toolName)
+            append("\", \"arguments\": ")
+            append(toolCall.arguments.toString())
+            toolCall.id?.takeIf(String::isNotBlank)?.let { toolCallId ->
+              append(", \"id\": \"")
+              append(escapePromptProjectionText(toolCallId))
+              append("\"")
+            }
+            toolCall.reason?.takeIf(String::isNotBlank)?.let { reason ->
+              append(", \"reason\": \"")
+              append(escapePromptProjectionText(reason))
+              append("\"")
+            }
+            append('}')
+          }
+        }
+      }
+
+      LiteLlmGatewayMessageRole.TOOL -> {
+        message.toolResult?.let { toolResult ->
+          toolResult.errorCode?.trim()?.takeIf(String::isNotBlank)?.let { errorCode ->
+            if (isNotEmpty()) {
+              appendLine()
+            }
+            append(errorCode)
+          }
+          toolResult.content.trim().takeIf(String::isNotBlank)?.let { toolResultContent ->
+            if (isNotEmpty()) {
+              appendLine()
+            }
+            append(toolResultContent)
+          }
+        }
+      }
+    }
+  }.trim()
+}.trim()
+
+private fun escapePromptProjectionText(
+  raw: String,
+): String = raw
+  .replace("\\", "\\\\")
+  .replace("\"", "\\\"")
+
+private fun projectedAttachmentFallback(
+  attachments: List<LiteLlmGatewayAttachment>,
+): String? {
+  if (attachments.isEmpty()) {
+    return null
+  }
+  return buildString {
+    appendLine("Attachments:")
+    attachments.forEach { attachment ->
+      append("- ")
+      append(
+        attachment.displayName
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: attachment.attachmentId
+          ?: "attachment",
+      )
+      append(" [kind=")
+      append(attachment.kind.name.lowercase())
+      attachment.filePath?.trim()?.takeIf(String::isNotBlank)?.let { filePath ->
+        append(", file_path=")
+        append(filePath)
+      }
+      attachment.mimeType?.trim()?.takeIf(String::isNotBlank)?.let { mimeType ->
+        append(", mime_type=")
+        append(mimeType)
+      }
+      append(']')
+      appendLine()
+    }
+  }.trim().takeIf(String::isNotBlank)
 }
 
 enum class LiteLlmToolChoiceMode {

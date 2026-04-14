@@ -20,6 +20,7 @@ import com.opencray.runtime.memory.TaskCommitmentResolver
 import com.opencray.runtime.memory.MemoryTurnEvidence
 import com.opencray.runtime.memory.MemoryWriter
 import com.opencray.runtime.context.RuntimeConversationMessage
+import com.opencray.runtime.context.ContextSourceBudgetPolicy
 import com.opencray.runtime.soul.InteractionPreferenceMemoryWritePlanner
 import com.opencray.runtime.soul.NoOpRelationshipEventInterpreter
 import com.opencray.runtime.soul.RelationshipEventInterpretation
@@ -57,6 +58,7 @@ internal class ChatMemoryIngestionCoordinator(
     candidateExtractor = candidateExtractor,
     writer = writer,
     existingRecordIdsProvider = { memoryStore.list().mapTo(linkedSetOf(), MemoryRecord::id) },
+    sourceBudgetPolicy = ContextSourceBudgetPolicy(),
   ),
 ) {
   fun flushBeforeCompaction(

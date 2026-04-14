@@ -48,6 +48,7 @@ import com.opencray.runtime.memory.MemoryRecallTrace
 import com.opencray.runtime.memory.MemoryRecallSelectedTrace
 import com.opencray.runtime.memory.MemoryScope
 import com.opencray.runtime.memory.MemoryStatus
+import com.opencray.runtime.memory.MemoryToolContext
 import com.opencray.runtime.memory.RetrievedMemory
 import com.opencray.runtime.process.AgentProcessRegistry
 import com.opencray.runtime.process.ManagedProcessSnapshot
@@ -72,11 +73,13 @@ import com.opencray.skills.SkillInvocationControl
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.security.MessageDigest
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -88,6 +91,8 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 class OpenCrayAgentRuntimeTest {
@@ -136,6 +141,149 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
+  fun runPromptTaskFreezesProjectedToolReplayAcrossResumeAndFullRebuild() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-frozen-tool-replay")
+    val attachmentPayload = "data:text/plain;base64," + "A".repeat(12_000)
+    Files.write(
+      workspaceRoot.toPath().resolve("blob.txt"),
+      attachmentPayload.toByteArray(StandardCharsets.UTF_8),
+    )
+    val task = promptTask(input = "Read blob.txt and then answer.")
+    val eventSink = RecordingEventSink()
+    val initialGateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"workspace_read_file","arguments":{"path":"blob.txt"}}""",
+        """{"type":"final","answer":"Read the blob."}""",
+      ),
+    )
+    val initialRuntime = OpenCrayAgentRuntime(
+      gateway = initialGateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 4, maxToolCalls = 2),
+      eventSink = eventSink,
+      clock = IncrementingClock(start = 6_000L)::next,
+    )
+
+    val initialResult = initialRuntime.execute(
+      task = task,
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, initialResult.status)
+    assertEquals(2, initialGateway.requests.size)
+    val initialProjectedToolResult = requireNotNull(
+      initialGateway.requests[1].messages.firstOrNull { message ->
+        message.role == LiteLlmGatewayMessageRole.TOOL &&
+          message.toolResult?.toolName == "workspace_read_file"
+      }?.toolResult,
+    )
+    assertTrue(initialProjectedToolResult.content.contains("[frozen replay preview]"))
+    assertTrue(initialProjectedToolResult.content.contains("projection_reasons=attachment_like_content"))
+
+    val checkpointState = requireNotNull(
+      OpenCrayPromptResumeMetadata.decodeFromMetadata(
+        metadata = eventSink.events
+          .filterIsInstance<OpenCrayToolResultEvent>()
+          .first()
+          .result
+          .metadata,
+        json = Json { ignoreUnknownKeys = true },
+      ),
+    )
+    assertEquals(1, checkpointState.replayToolResultProjections.size)
+    assertTrue(checkpointState.transcript.last().content.contains(attachmentPayload.take(256)))
+    assertEquals(
+      initialProjectedToolResult.content,
+      checkpointState.replayToolResultProjections.values.single().projectedToolResult.content,
+    )
+
+    val resumedGateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"Replayed the same frozen preview."}""",
+      ),
+    )
+    val resumedRuntime = OpenCrayAgentRuntime(
+      gateway = resumedGateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        promptResumeState = checkpointState.copy(localContinuationEnvelope = null),
+      ),
+      clock = IncrementingClock(start = 6_500L)::next,
+    )
+
+    val resumedResult = resumedRuntime.execute(
+      task = task,
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, resumedResult.status)
+    assertEquals("Replayed the same frozen preview.", resumedResult.stdout)
+    assertEquals(1, resumedGateway.requests.size)
+    assertEquals("full_rebuild", resumedGateway.requests.single().metadata["localContinuationMode"])
+    assertEquals("no_envelope", resumedGateway.requests.single().metadata["localContinuationReason"])
+    val resumedProjectedToolResult = requireNotNull(
+      resumedGateway.requests.single().messages.firstOrNull { message ->
+        message.role == LiteLlmGatewayMessageRole.TOOL &&
+          message.toolResult?.toolName == "workspace_read_file"
+      }?.toolResult,
+    )
+    assertEquals(initialProjectedToolResult.content, resumedProjectedToolResult.content)
+  }
+
+  @Test
+  fun runPromptTaskFallsBackWhenLocalContinuationToolPoolFingerprintChanges() {
+    assertLocalContinuationFingerprintFallback(
+      expectedLocalContinuationReason = "tool_pool_changed",
+      expectedContextCacheBreakReason = "tool_pool_changed",
+    ) { envelope ->
+      envelope.copy(toolPoolFingerprint = "mismatched-tool-pool")
+    }
+  }
+
+  @Test
+  fun runPromptTaskFallsBackWhenLocalContinuationToolSchemaFingerprintChanges() {
+    assertLocalContinuationFingerprintFallback(
+      expectedLocalContinuationReason = "tool_schema_changed",
+      expectedContextCacheBreakReason = "tool_schema_changed",
+    ) { envelope ->
+      envelope.copy(toolSchemaFingerprint = "mismatched-tool-schema")
+    }
+  }
+
+  @Test
+  fun runPromptTaskFallsBackWhenLocalContinuationRequestSettingsFingerprintChanges() {
+    assertLocalContinuationFingerprintFallback(
+      expectedLocalContinuationReason = "user_setting_changed",
+      expectedContextCacheBreakReason = "user_setting_changed",
+    ) { envelope ->
+      envelope.copy(requestSettingsFingerprint = "mismatched-request-settings")
+    }
+  }
+
+  @Test
+  fun runPromptTaskFallsBackWhenDurableContextZoneChanges() {
+    assertLocalContinuationFingerprintFallback(
+      expectedLocalContinuationReason = "durable_context_changed",
+      expectedContextCacheBreakReason = "durable_context_changed",
+    ) { envelope ->
+      envelope.copy(
+        frontContextPrompts = listOf("mismatched durable context") + envelope.frontContextPrompts.drop(1),
+        durableContextPrompt = "mismatched durable context",
+      )
+    }
+  }
+
+  @Test
   fun runPromptTaskRequiresClosingActiveTodoBeforeFinalAnswer() {
     val workspaceRoot = temporaryFolder.newFolder("agent-todo-plan-closure")
     val todoStore = InMemoryAgentTodoStore()
@@ -167,6 +315,19 @@ class OpenCrayAgentRuntimeTest {
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("Closed the plan before finishing.", result.stdout)
     assertEquals(4, gateway.requests.size)
+    assertEquals("local_front_patch", gateway.requests[1].metadata["localContinuationMode"])
+    assertEquals("dynamic_context_changed", gateway.requests[1].metadata["localContinuationReason"])
+    assertEquals(
+      "dynamic_context_changed",
+      gateway.requests[1].metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON],
+    )
+    assertTrue(gateway.requests[1].prompt.contains("[Working State]"))
+    assertTrue(
+      gateway.requests[1].messages.any { message ->
+        message.role == LiteLlmGatewayMessageRole.TOOL &&
+          message.toolResult?.toolName == "TodoWrite"
+      },
+    )
     assertTrue(gateway.requests[2].prompt.contains("TodoWrite still has an in_progress item"))
     assertTrue(gateway.requests[2].prompt.contains("Active todo: Inspect README"))
     assertEquals(
@@ -181,7 +342,7 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
-  fun runPromptTaskInjectsTodoDerivedWorkingStateIntoGatewayPrompt() {
+  fun runPromptTaskInjectsTodoDerivedWorkingStateIntoGatewayMessages() {
     val workspaceRoot = temporaryFolder.newFolder("agent-working-state-todos")
     val todoStore = InMemoryAgentTodoStore(
       initialEntries = listOf(
@@ -225,13 +386,94 @@ class OpenCrayAgentRuntimeTest {
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("Observed the injected working state.", result.stdout)
     assertEquals(1, gateway.requests.size)
-    assertTrue(gateway.requests[0].prompt.contains("[Working State]"))
-    assertTrue(gateway.requests[0].prompt.contains("primary_goal=Continue the runtime rollout."))
-    assertTrue(gateway.requests[0].prompt.contains("current_subgoal=Wiring working state todo projection"))
-    assertTrue(gateway.requests[0].prompt.contains("Add context-manager assertions"))
-    assertTrue(gateway.requests[0].prompt.contains("Run runtime unit tests"))
-    assertEquals("true", gateway.requests[0].metadata["contextWorkingStateSynthesizedFromTodos"])
-    assertEquals("2", gateway.requests[0].metadata["contextWorkingStateNextActionCount"])
+    val request = gateway.requests.single()
+    val messageText = gatewayStructuredPayloadText(request)
+    assertTrue(request.messages.isNotEmpty())
+    assertEquals("messages_primary", request.metadata["gatewayTransportMode"])
+    assertEquals("fallback_debug_only", request.metadata["gatewayPromptFieldRole"])
+    assertEquals("full_rebuild", request.metadata["localContinuationMode"])
+    assertTrue(messageText.contains("[Working State]"))
+    assertTrue(messageText.contains("primary_goal=Continue the runtime rollout."))
+    assertTrue(messageText.contains("current_subgoal=Wiring working state todo projection"))
+    assertTrue(messageText.contains("Add context-manager assertions"))
+    assertTrue(messageText.contains("Run runtime unit tests"))
+    assertEquals("true", request.metadata["contextWorkingStateSynthesizedFromTodos"])
+    assertEquals("2", request.metadata["contextWorkingStateNextActionCount"])
+  }
+
+  @Test
+  fun runPromptTaskUsesStructuredMessagesWithoutToolsOnResponsesProtocol() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-responses-no-tools-messages")
+    val requests = mutableListOf<LiteLlmGatewayRequest>()
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "responses-route",
+      providerId = "openai",
+      model = "gpt-5-mini",
+      attemptIndex = 0,
+    )
+    val gateway = object : LiteLlmGateway {
+      override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+        requests += request
+        return LiteLlmGatewayResult(
+          requestId = request.requestId,
+          status = LiteLlmGatewayStatus.SUCCESS,
+          completionMode = LiteLlmCompletionMode.PRIMARY,
+          outputText = "Structured responses path stayed on messages.",
+          completion = LiteLlmStructuredCompletion(
+            finalText = "Structured responses path stayed on messages.",
+          ),
+          providerResponseId = "resp_no_tools_1",
+          providerLineageId = "lineage_no_tools_1",
+          selectedRoute = selection,
+          attempts = listOf(
+            LiteLlmAttemptRecord(
+              route = selection,
+              outcome = LiteLlmAttemptOutcome.SUCCESS,
+              outputChars = 42,
+              startedAtEpochMs = 19_000L,
+              finishedAtEpochMs = 19_001L,
+            ),
+          ),
+          startedAtEpochMs = 19_000L,
+          finishedAtEpochMs = 19_001L,
+        )
+      }
+    }
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        llmMetadata = mapOf(
+          "protocol" to "openai_responses",
+          "responseApiPreferred" to "true",
+          "responsesContinuationSupported" to "true",
+        ),
+      ),
+      clock = IncrementingClock(start = 19_500L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Answer directly without calling tools."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Structured responses path stayed on messages.", result.stdout)
+    assertEquals(1, requests.size)
+    val request = requests.single()
+    val messageText = gatewayStructuredPayloadText(request)
+    assertTrue(request.responseApiPreferred)
+    assertTrue(request.messages.isNotEmpty())
+    assertEquals("messages_primary", request.metadata["gatewayTransportMode"])
+    assertEquals("fallback_debug_only", request.metadata["gatewayPromptFieldRole"])
+    assertEquals("full_rebuild", request.metadata["localContinuationMode"])
+    assertTrue(messageText.contains("[Tool Protocol]"))
+    assertTrue(messageText.contains("Answer directly without calling tools."))
   }
 
   @Test
@@ -551,6 +793,10 @@ class OpenCrayAgentRuntimeTest {
     )
     assertEquals(0, actionBatchResumeState.turnIndex)
     assertEquals(1, actionBatchResumeState.pendingActions.size)
+    val actionBatchEnvelope = requireNotNull(actionBatchResumeState.localContinuationEnvelope)
+    assertTrue(actionBatchEnvelope.gatewayMessages.isNotEmpty())
+    assertTrue(actionBatchEnvelope.durableContextPrompt.orEmpty().contains("[Tool Protocol]"))
+    assertFalse(actionBatchEnvelope.dynamicContextPrompt.orEmpty().contains("[Task Metadata]"))
   }
 
   @Test
@@ -1280,6 +1526,242 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
+  fun responsesContinuationUsesNativeDeltaWhenPendingToolResultKeepsPromptShapeStable() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-responses-native-delta")
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "responses-route",
+      providerId = "openai",
+      model = "gpt-5-mini",
+      attemptIndex = 0,
+    )
+    val gatewayRequests = mutableListOf<LiteLlmGatewayRequest>()
+    var requestIndex = 0
+    val gateway = object : LiteLlmGateway {
+      override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+        gatewayRequests += request
+        return if (requestIndex++ == 0) {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              toolCalls = listOf(
+                LiteLlmStructuredToolCall(
+                  id = "call_1",
+                  toolName = "memory_search",
+                  arguments = JsonObject(
+                    mapOf("query" to JsonPrimitive("repo root")),
+                  ),
+                ),
+              ),
+            ),
+            providerResponseId = "resp_native_1",
+            providerLineageId = "lineage_native_1",
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 0,
+                startedAtEpochMs = 49_000L,
+                finishedAtEpochMs = 49_001L,
+              ),
+            ),
+            startedAtEpochMs = 49_000L,
+            finishedAtEpochMs = 49_001L,
+          )
+        } else {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              finalText = "Used provider-native continuation.",
+            ),
+            providerResponseId = "resp_native_2",
+            providerLineageId = "lineage_native_2",
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 0,
+                startedAtEpochMs = 49_002L,
+                finishedAtEpochMs = 49_003L,
+              ),
+            ),
+            startedAtEpochMs = 49_002L,
+            finishedAtEpochMs = 49_003L,
+          )
+        }
+      }
+    }
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+          memoryToolContext = MemoryToolContext(
+            sessionId = "session-main",
+            workspaceId = "workspace-main",
+          ),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        llmMetadata = mapOf(
+          "protocol" to "openai_responses",
+          "responseApiPreferred" to "true",
+          "nativeToolCallingAvailable" to "true",
+          "responsesContinuationSupported" to "true",
+          "nativeWebSearchEnabled" to "false",
+        ),
+      ),
+      clock = IncrementingClock(start = 49_500L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Search memory and then answer."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Used provider-native continuation.", result.stdout)
+    assertEquals(2, gatewayRequests.size)
+    assertNull(gatewayRequests[0].previousResponseId)
+    assertEquals("resp_native_1", gatewayRequests[1].previousResponseId)
+    assertEquals("responses_native", gatewayRequests[1].metadata["localContinuationMode"])
+    assertEquals("responses_previous_response_id", gatewayRequests[1].metadata["localContinuationReason"])
+    assertEquals("responses_native", result.metadata["localContinuationLastMode"])
+    assertEquals("responses_previous_response_id", result.metadata["localContinuationLastReason"])
+    assertEquals(1, gatewayRequests[1].messages.size)
+    val toolResult = requireNotNull(gatewayRequests[1].messages.single().toolResult)
+    assertEquals("call_1", toolResult.toolCallId)
+    assertEquals("memory_search", toolResult.toolName)
+    assertTrue(toolResult.content.contains("No matching projected memory snippets were found."))
+  }
+
+  @Test
+  fun responsesContinuationUsesNativeDeltaForWorkspaceDiscoveryOwnedByReplay() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-responses-native-workspace-replay")
+    Files.write(
+      workspaceRoot.toPath().resolve("README.md"),
+      "hello from workspace".toByteArray(StandardCharsets.UTF_8),
+    )
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "responses-route",
+      providerId = "openai",
+      model = "gpt-5-mini",
+      attemptIndex = 0,
+    )
+    val gatewayRequests = mutableListOf<LiteLlmGatewayRequest>()
+    var requestIndex = 0
+    val gateway = object : LiteLlmGateway {
+      override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+        gatewayRequests += request
+        return if (requestIndex++ == 0) {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              toolCalls = listOf(
+                LiteLlmStructuredToolCall(
+                  id = "call_1",
+                  toolName = "LS",
+                  arguments = JsonObject(
+                    mapOf("path" to JsonPrimitive(".")),
+                  ),
+                ),
+              ),
+            ),
+            providerResponseId = "resp_native_workspace_1",
+            providerLineageId = "lineage_native_workspace_1",
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 0,
+                startedAtEpochMs = 49_500L,
+                finishedAtEpochMs = 49_501L,
+              ),
+            ),
+            startedAtEpochMs = 49_500L,
+            finishedAtEpochMs = 49_501L,
+          )
+        } else {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              finalText = "Reused provider-native continuation for LS.",
+            ),
+            providerResponseId = "resp_native_workspace_2",
+            providerLineageId = "lineage_native_workspace_2",
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 0,
+                startedAtEpochMs = 49_502L,
+                finishedAtEpochMs = 49_503L,
+              ),
+            ),
+            startedAtEpochMs = 49_502L,
+            finishedAtEpochMs = 49_503L,
+          )
+        }
+      }
+    }
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        llmMetadata = mapOf(
+          "protocol" to "openai_responses",
+          "responseApiPreferred" to "true",
+          "nativeToolCallingAvailable" to "true",
+          "responsesContinuationSupported" to "true",
+          "nativeWebSearchEnabled" to "false",
+        ),
+      ),
+      clock = IncrementingClock(start = 49_900L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "List the workspace and then answer."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Reused provider-native continuation for LS.", result.stdout)
+    assertEquals(2, gatewayRequests.size)
+    assertNull(gatewayRequests[0].previousResponseId)
+    assertEquals("resp_native_workspace_1", gatewayRequests[1].previousResponseId)
+    assertEquals("responses_native", gatewayRequests[1].metadata["localContinuationMode"])
+    assertEquals("responses_previous_response_id", gatewayRequests[1].metadata["localContinuationReason"])
+    assertEquals("responses_native", result.metadata["localContinuationLastMode"])
+    assertEquals("responses_previous_response_id", result.metadata["localContinuationLastReason"])
+    assertEquals(1, gatewayRequests[1].messages.size)
+    val toolResult = requireNotNull(gatewayRequests[1].messages.single().toolResult)
+    assertEquals("call_1", toolResult.toolCallId)
+    assertEquals("LS", toolResult.toolName)
+    assertTrue(toolResult.content.contains("README.md"))
+  }
+
+  @Test
   fun responsesContinuationFallsBackToTranscriptReplayWhenLegacyJsonFallbackIsEnabled() {
     val workspaceRoot = temporaryFolder.newFolder("agent-responses-continuation-replay")
     val selection = LiteLlmRouteSelectionMetadata(
@@ -1299,17 +1781,16 @@ class OpenCrayAgentRuntimeTest {
             requestId = request.requestId,
             status = LiteLlmGatewayStatus.SUCCESS,
             completionMode = LiteLlmCompletionMode.PRIMARY,
-            completion = LiteLlmStructuredCompletion(
-              toolCalls = listOf(
-                LiteLlmStructuredToolCall(
-                  id = "call_1",
-                  toolName = "LS",
-                  arguments = JsonObject(
-                    mapOf("path" to JsonPrimitive(".")),
-                  ),
-                ),
-              ),
-            ),
+            outputText = """
+            {
+              "type": "tool_call",
+              "id": "call_1",
+              "tool_name": "LS",
+              "arguments": {
+                "path": "."
+              }
+            }
+            """.trimIndent(),
             providerResponseId = "resp_cont_1",
             providerLineageId = "lineage_cont_1",
             selectedRoute = selection,
@@ -1419,6 +1900,336 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
+  fun responsesContinuationFallsBackToFullRebuildWhenTodoWriteChangesWorkingState() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-responses-working-state-rebuild")
+    val todoStore = InMemoryAgentTodoStore()
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "responses-route",
+      providerId = "openai",
+      model = "gpt-5-mini",
+      attemptIndex = 0,
+    )
+    val gatewayRequests = mutableListOf<LiteLlmGatewayRequest>()
+    var requestIndex = 0
+    val gateway = object : LiteLlmGateway {
+      override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+        gatewayRequests += request
+        return if (requestIndex++ == 0) {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              toolCalls = listOf(
+                LiteLlmStructuredToolCall(
+                  id = "call_1",
+                  toolName = "TodoWrite",
+                  arguments = JsonObject(
+                    mapOf(
+                      "todos" to Json.parseToJsonElement(
+                        """
+                        [
+                          {
+                            "content": "Inspect README",
+                            "status": "completed"
+                          }
+                        ]
+                        """.trimIndent(),
+                      ).jsonArray,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            providerResponseId = "resp_working_1",
+            providerLineageId = "lineage_working_1",
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 0,
+                startedAtEpochMs = 53_000L,
+                finishedAtEpochMs = 53_001L,
+              ),
+            ),
+            startedAtEpochMs = 53_000L,
+            finishedAtEpochMs = 53_001L,
+          )
+        } else {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              finalText = "Rebuilt after working state changed.",
+            ),
+            providerResponseId = "resp_working_2",
+            providerLineageId = "lineage_working_2",
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 0,
+                startedAtEpochMs = 53_002L,
+                finishedAtEpochMs = 53_003L,
+              ),
+            ),
+            startedAtEpochMs = 53_002L,
+            finishedAtEpochMs = 53_003L,
+          )
+        }
+      }
+    }
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+          todoStore = todoStore,
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        llmMetadata = mapOf(
+          "protocol" to "openai_responses",
+          "responseApiPreferred" to "true",
+          "nativeToolCallingAvailable" to "true",
+          "responsesContinuationSupported" to "true",
+          "nativeWebSearchEnabled" to "false",
+        ),
+      ),
+      clock = IncrementingClock(start = 53_500L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Keep the todo list up to date."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Rebuilt after working state changed.", result.stdout)
+    assertEquals(2, gatewayRequests.size)
+    assertNull(gatewayRequests[1].previousResponseId)
+    assertEquals("full_rebuild", gatewayRequests[1].metadata["localContinuationMode"])
+    assertEquals("dynamic_context_changed", gatewayRequests[1].metadata["localContinuationReason"])
+    assertEquals(
+      "dynamic_context_changed",
+      gatewayRequests[1].metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON],
+    )
+    val messageText = gatewayStructuredPayloadText(gatewayRequests[1])
+    assertTrue(messageText.contains("[Working State]"))
+    assertTrue(messageText.contains("primary_goal=Keep the todo list up to date"))
+    assertTrue(messageText.contains("TodoWrite todos=1 changed=true"))
+    assertFalse(messageText.contains("[Recent Working Observations]"))
+    assertEquals(
+      listOf(
+        AgentTodoEntry(
+          content = "Inspect README",
+          status = AgentTodoStatus.COMPLETED,
+        ),
+      ),
+      todoStore.snapshot(),
+    )
+  }
+
+  @Test
+  fun runPromptTaskEmitsNonResponsesContextCacheShapeMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-context-cache-shape-metadata")
+    val gateway = RecordingGateway(
+      outputs = listOf("""{"type":"final","answer":"Done."}"""),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(workspaceRoots = setOf(workspaceRoot.toPath())),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 2),
+      clock = IncrementingClock(start = 12_000L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Say done."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    val requestMetadata = gateway.requests.single().metadata
+    assertEquals(
+      "non_responses_front_zone_v1",
+      requestMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_CONTRACT_VERSION],
+    )
+    assertEquals(
+      requestMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_CONTRACT_VERSION],
+      result.metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_CONTRACT_VERSION],
+    )
+    assertEquals(
+      requestMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_STABLE_ANCHOR_HASH],
+      result.metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_STABLE_ANCHOR_HASH],
+    )
+    assertEquals(
+      requestMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_DURABLE_CONTEXT_HASH],
+      result.metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_DURABLE_CONTEXT_HASH],
+    )
+    assertEquals(
+      requestMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_DYNAMIC_CONTEXT_HASH],
+      result.metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_DYNAMIC_CONTEXT_HASH],
+    )
+    assertEquals(
+      requestMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_FRONT_CONTEXT_ZONE_MASK],
+      result.metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_FRONT_CONTEXT_ZONE_MASK],
+    )
+    assertEquals(
+      requestMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_FRONT_CONTEXT_MESSAGE_COUNT],
+      result.metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_FRONT_CONTEXT_MESSAGE_COUNT],
+    )
+    assertNotNull(requestMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_STABLE_ANCHOR_HASH])
+    assertNotNull(requestMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_DURABLE_CONTEXT_HASH])
+    assertNotNull(requestMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_DYNAMIC_CONTEXT_HASH])
+    assertEquals("durable", requestMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_FRONT_CONTEXT_ZONE_MASK])
+    assertEquals("1", requestMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_FRONT_CONTEXT_MESSAGE_COUNT])
+  }
+
+  @Test
+  fun responsesContinuationFallsBackToFullRebuildWhenActiveSkillChangesToolPool() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-responses-skill-rebuild")
+    val skillsRoot = temporaryFolder.newFolder("agent-responses-skill-root")
+    writeSkill(
+      root = skillsRoot,
+      relativeDirectory = "ui-ux-pro-max",
+      frontMatter = """
+        name: ui-ux-pro-max
+        description: High-end UI review workflow.
+        invocation-control: explicit-only
+        user-invocable: true
+        allowed-tools: [ read, write ]
+      """.trimIndent(),
+      body = """
+        # UI UX Pro Max
+
+        Audit the current interface first, then apply a concrete design system.
+      """.trimIndent(),
+    )
+    val skillCatalog = SkillCatalogResolver().resolve(listOf(skillsRoot))
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "responses-route",
+      providerId = "openai",
+      model = "gpt-5-mini",
+      attemptIndex = 0,
+    )
+    val gatewayRequests = mutableListOf<LiteLlmGatewayRequest>()
+    var requestIndex = 0
+    val gateway = object : LiteLlmGateway {
+      override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+        gatewayRequests += request
+        return if (requestIndex++ == 0) {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              toolCalls = listOf(
+                LiteLlmStructuredToolCall(
+                  id = "call_1",
+                  toolName = "skill_read",
+                  arguments = JsonObject(
+                    mapOf("name" to JsonPrimitive("ui-ux-pro-max")),
+                  ),
+                ),
+              ),
+            ),
+            providerResponseId = "resp_skill_1",
+            providerLineageId = "lineage_skill_1",
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 0,
+                startedAtEpochMs = 54_000L,
+                finishedAtEpochMs = 54_001L,
+              ),
+            ),
+            startedAtEpochMs = 54_000L,
+            finishedAtEpochMs = 54_001L,
+          )
+        } else {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              finalText = "Rebuilt after the tool pool changed.",
+            ),
+            providerResponseId = "resp_skill_2",
+            providerLineageId = "lineage_skill_2",
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 0,
+                startedAtEpochMs = 54_002L,
+                finishedAtEpochMs = 54_003L,
+              ),
+            ),
+            startedAtEpochMs = 54_002L,
+            finishedAtEpochMs = 54_003L,
+          )
+        }
+      }
+    }
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+          skillsRoots = listOf(skillsRoot),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        sessionContext = AgentRuntimeSessionContext(
+          skillInventory = skillCatalog.inventory,
+          skillCatalog = skillCatalog,
+        ),
+        llmMetadata = mapOf(
+          "protocol" to "openai_responses",
+          "responseApiPreferred" to "true",
+          "nativeToolCallingAvailable" to "true",
+          "responsesContinuationSupported" to "true",
+          "nativeWebSearchEnabled" to "false",
+        ),
+      ),
+      clock = IncrementingClock(start = 54_500L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Load the UI skill, then follow it."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Rebuilt after the tool pool changed.", result.stdout)
+    assertEquals(2, gatewayRequests.size)
+    assertNull(gatewayRequests[1].previousResponseId)
+    assertEquals("full_rebuild", gatewayRequests[1].metadata["localContinuationMode"])
+    assertEquals("tool_pool_changed", gatewayRequests[1].metadata["localContinuationReason"])
+    assertEquals(
+      "tool_pool_changed",
+      gatewayRequests[1].metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON],
+    )
+    val messageText = gatewayStructuredPayloadText(gatewayRequests[1])
+    assertTrue(messageText.contains("[Active Skill]"))
+    assertTrue(messageText.contains("name=ui-ux-pro-max"))
+  }
+
+  @Test
   fun duplicateStructuredToolCallIdsAreTreatedAsProtocolErrorWithoutExecutingTools() {
     val workspaceRoot = temporaryFolder.newFolder("agent-duplicate-tool-id-workspace")
     val selection = LiteLlmRouteSelectionMetadata(
@@ -1522,6 +2333,117 @@ class OpenCrayAgentRuntimeTest {
     assertEquals(2, gatewayRequests.size)
     assertTrue(eventSink.events.none { event -> event is OpenCrayToolCallEvent })
     assertTrue(eventSink.events.none { event -> event is OpenCrayToolResultEvent })
+  }
+
+  @Test
+  fun responsesContinuationEmitsCacheBreakReasonWhenLineageIsUnavailable() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-responses-lineage-unavailable")
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "responses-route",
+      providerId = "openai",
+      model = "gpt-5-mini",
+      attemptIndex = 0,
+    )
+    val gatewayRequests = mutableListOf<LiteLlmGatewayRequest>()
+    var requestIndex = 0
+    val gateway = object : LiteLlmGateway {
+      override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+        gatewayRequests += request
+        return if (requestIndex++ == 0) {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              toolCalls = listOf(
+                LiteLlmStructuredToolCall(
+                  id = "call_1",
+                  toolName = "LS",
+                  arguments = JsonObject(mapOf("path" to JsonPrimitive("."))),
+                ),
+              ),
+            ),
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 0,
+                startedAtEpochMs = 52_100L,
+                finishedAtEpochMs = 52_101L,
+              ),
+            ),
+            startedAtEpochMs = 52_100L,
+            finishedAtEpochMs = 52_101L,
+          )
+        } else {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              finalText = "Recovered after lineage was unavailable.",
+            ),
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 0,
+                startedAtEpochMs = 52_102L,
+                finishedAtEpochMs = 52_103L,
+              ),
+            ),
+            startedAtEpochMs = 52_102L,
+            finishedAtEpochMs = 52_103L,
+          )
+        }
+      }
+    }
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        llmMetadata = mapOf(
+          "protocol" to "openai_responses",
+          "responseApiPreferred" to "true",
+          "nativeToolCallingAvailable" to "true",
+          "responsesContinuationSupported" to "true",
+          "nativeWebSearchEnabled" to "false",
+        ),
+      ),
+      clock = IncrementingClock(start = 52_600L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "List files safely and answer."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Recovered after lineage was unavailable.", result.stdout)
+    assertEquals(2, gatewayRequests.size)
+    assertNull(gatewayRequests[1].previousResponseId)
+    assertEquals("full_rebuild", gatewayRequests[1].metadata["localContinuationMode"])
+    assertEquals(
+      "responses_lineage_unavailable",
+      gatewayRequests[1].metadata["localContinuationReason"],
+    )
+    assertEquals(
+      "continuation_lineage_untrusted",
+      gatewayRequests[1].metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON],
+    )
+    assertEquals(
+      "continuation_lineage_untrusted",
+      result.metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON],
+    )
   }
 
   @Test
@@ -1644,11 +2566,11 @@ class OpenCrayAgentRuntimeTest {
     assertNull(gatewayRequests[1].previousResponseId)
     assertEquals("full_rebuild", gatewayRequests[1].metadata["localContinuationMode"])
     assertEquals(
-      "responses_legacy_json_fallback_enabled",
+      "responses_pending_user_message",
       gatewayRequests[1].metadata["localContinuationReason"],
     )
     assertEquals(
-      "responses_legacy_json_fallback_enabled",
+      "responses_pending_user_message",
       result.metadata["localContinuationLastReason"],
     )
     assertTrue(
@@ -1799,11 +2721,11 @@ class OpenCrayAgentRuntimeTest {
     assertNull(gatewayRequests[1].previousResponseId)
     assertEquals("full_rebuild", gatewayRequests[1].metadata["localContinuationMode"])
     assertEquals(
-      "responses_legacy_json_fallback_enabled",
+      "responses_pending_tool_result_attachment_artifact",
       gatewayRequests[1].metadata["localContinuationReason"],
     )
     assertEquals(
-      "responses_legacy_json_fallback_enabled",
+      "responses_pending_tool_result_attachment_artifact",
       result.metadata["localContinuationLastReason"],
     )
     assertTrue(
@@ -1835,7 +2757,7 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
-  fun restoredGeneralResumeCheckpointFallsBackToFullRebuildWhenResumeWorkingStateChangesPrompt() {
+  fun restoredGeneralResumeCheckpointUsesLocalFrontPatchWhenResumeWorkingStateChangesDynamicContext() {
     val workspaceRoot = temporaryFolder.newFolder("agent-restored-local-continuation")
     Files.write(
       workspaceRoot.toPath().resolve("README.md"),
@@ -1942,6 +2864,17 @@ class OpenCrayAgentRuntimeTest {
       ),
     )
     assertNotNull(checkpointState.localContinuationEnvelope)
+    val checkpointEnvelope = requireNotNull(checkpointState.localContinuationEnvelope)
+    assertTrue(checkpointEnvelope.durableContextPrompt.orEmpty().contains("[Tool Protocol]"))
+    assertFalse(checkpointEnvelope.durableContextPrompt.orEmpty().contains("[Task Metadata]"))
+    assertFalse(checkpointEnvelope.dynamicContextPrompt.orEmpty().contains("[Task Metadata]"))
+    assertFalse(checkpointEnvelope.dynamicContextPrompt.orEmpty().contains("[Tool Protocol]"))
+    val checkpointFrontUserMessages = checkpointEnvelope
+      .gatewayMessages
+      .filter { message -> message.role == LiteLlmGatewayMessageRole.USER.name }
+      .mapNotNull { message -> message.content }
+    assertTrue(checkpointFrontUserMessages[0].contains("[Tool Protocol]"))
+    assertTrue(checkpointFrontUserMessages.none { message -> message.contains("[Task Metadata]") })
 
     val resumedRequests = mutableListOf<LiteLlmGatewayRequest>()
     val resumedGateway = object : LiteLlmGateway {
@@ -2005,10 +2938,40 @@ class OpenCrayAgentRuntimeTest {
     assertEquals(ExecutionStatus.SUCCESS, resumedResult.status)
     assertEquals("Resumed with durable local continuation.", resumedResult.stdout)
     assertEquals(1, resumedRequests.size)
-    assertEquals("full_rebuild", resumedRequests.single().metadata["localContinuationMode"])
-    assertEquals("anchor_changed", resumedRequests.single().metadata["localContinuationReason"])
-    assertEquals("0", resumedResult.metadata["localContinuationUsedCount"])
-    assertEquals("1", resumedResult.metadata["localContinuationFallbackCount"])
+    val resumedCacheMetadata = resumedRequests.single().metadata
+    assertEquals("local_front_patch", resumedRequests.single().metadata["localContinuationMode"])
+    assertEquals("dynamic_context_changed", resumedRequests.single().metadata["localContinuationReason"])
+    assertEquals(
+      "dynamic_context_changed",
+      resumedRequests.single().metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON],
+    )
+    assertEquals(
+      "non_responses_front_zone_v1",
+      resumedCacheMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_CONTRACT_VERSION],
+    )
+    assertEquals(
+      promptCacheShapeHash(checkpointEnvelope.stableAnchor),
+      resumedCacheMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_STABLE_ANCHOR_HASH],
+    )
+    assertEquals(
+      promptCacheShapeHash(checkpointEnvelope.durableContextPrompt.orEmpty()),
+      resumedCacheMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_DURABLE_CONTEXT_HASH],
+    )
+    assertNotEquals(
+      promptCacheShapeHash(checkpointEnvelope.dynamicContextPrompt.orEmpty()),
+      resumedCacheMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_DYNAMIC_CONTEXT_HASH],
+    )
+    assertEquals(
+      resumedCacheMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_DYNAMIC_CONTEXT_HASH],
+      resumedResult.metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_DYNAMIC_CONTEXT_HASH],
+    )
+    assertEquals("1", resumedResult.metadata["localContinuationUsedCount"])
+    assertEquals("0", resumedResult.metadata["localContinuationFallbackCount"])
+    assertEquals("local_front_patch", resumedResult.metadata["localContinuationLastMode"])
+    assertEquals(
+      "dynamic_context_changed",
+      resumedResult.metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON],
+    )
     val resumedUserMessages = resumedRequests.single().messages
       .filter { message -> message.role == LiteLlmGatewayMessageRole.USER }
       .mapNotNull { message -> message.content }
@@ -2016,6 +2979,143 @@ class OpenCrayAgentRuntimeTest {
     assertTrue(
       resumedRequests.single().prompt.contains(
         "Continue from the saved checkpoint state instead of restarting from the original task input.",
+      ),
+    )
+    assertTrue(
+      resumedRequests.single().messages.any { message ->
+        message.role == LiteLlmGatewayMessageRole.TOOL &&
+          message.toolResult?.toolName == "workspace_read_file"
+      },
+    )
+  }
+
+  @Test
+  fun restoredGeneralResumeCheckpointFallsBackWhenDynamicFrontPatchCannotAlignStoredPrefix() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-restored-local-continuation-corrupt-prefix")
+    Files.write(
+      workspaceRoot.toPath().resolve("README.md"),
+      "hello from workspace".toByteArray(StandardCharsets.UTF_8),
+    )
+    val task = promptTask(input = "Read the README and then answer.")
+    val eventSink = RecordingEventSink()
+    val initialGateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"workspace_read_file","arguments":{"path":"README.md"}}""",
+        """{"type":"final","answer":"Initial run finished."}""",
+      ),
+    )
+    val initialRuntime = OpenCrayAgentRuntime(
+      gateway = initialGateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        llmMetadata = mapOf(
+          "protocol" to "openai",
+          "nativeToolCallingAvailable" to "true",
+        ),
+      ),
+      eventSink = eventSink,
+      clock = IncrementingClock(start = 45_000L)::next,
+    )
+
+    val initialResult = initialRuntime.execute(
+      task = task,
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, initialResult.status)
+    val checkpointState = checkpointStateFromFirstToolResult(eventSink)
+    val checkpointEnvelope = requireNotNull(checkpointState.localContinuationEnvelope)
+    val corruptedEnvelope = checkpointEnvelope.copy(
+      gatewayMessages = checkpointEnvelope.gatewayMessages.drop(1),
+    )
+    val resumedGateway = RecordingGateway(
+      outputs = listOf("""{"type":"final","answer":"Recovered after invalid front patch."}"""),
+    )
+    val resumedRuntime = OpenCrayAgentRuntime(
+      gateway = resumedGateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        promptResumeState = checkpointState.copy(localContinuationEnvelope = corruptedEnvelope),
+        supplementInputProvider = { _, _ ->
+          listOf(
+            OpenCraySupplementInput(
+              entryId = "supplement-restored",
+              text = "Also check the durable resume path.",
+              createdAtEpochMs = 45_250L,
+            ),
+          )
+        },
+        llmMetadata = mapOf(
+          "protocol" to "openai",
+          "nativeToolCallingAvailable" to "true",
+        ),
+      ),
+      clock = IncrementingClock(start = 45_500L)::next,
+    )
+
+    val resumedResult = resumedRuntime.execute(
+      task = task,
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, resumedResult.status)
+    assertEquals("Recovered after invalid front patch.", resumedResult.stdout)
+    assertEquals(1, resumedGateway.requests.size)
+    assertEquals("full_rebuild", resumedGateway.requests.single().metadata["localContinuationMode"])
+    assertEquals("dynamic_context_changed", resumedGateway.requests.single().metadata["localContinuationReason"])
+    assertEquals(
+      "dynamic_context_changed",
+      resumedGateway.requests.single().metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON],
+    )
+    assertEquals("0", resumedResult.metadata["localContinuationUsedCount"])
+    assertEquals("1", resumedResult.metadata["localContinuationFallbackCount"])
+  }
+
+  @Test
+  fun deriveContextCacheBreakReasonMapsZoneAwareLocalContinuationReasons() {
+    assertEquals(
+      "tool_pool_changed",
+      deriveContextCacheBreakReason(localContinuationReason = "tool_pool_changed"),
+    )
+    assertEquals(
+      "tool_schema_changed",
+      deriveContextCacheBreakReason(localContinuationReason = "tool_schema_changed"),
+    )
+    assertEquals(
+      "user_setting_changed",
+      deriveContextCacheBreakReason(localContinuationReason = "user_setting_changed"),
+    )
+    assertEquals(
+      "durable_context_changed",
+      deriveContextCacheBreakReason(localContinuationReason = "durable_context_changed"),
+    )
+    assertEquals(
+      "dynamic_context_changed",
+      deriveContextCacheBreakReason(localContinuationReason = "dynamic_context_changed"),
+    )
+    assertEquals(
+      "continuation_lineage_untrusted",
+      deriveContextCacheBreakReason(
+        localContinuationReason = "responses_legacy_json_fallback_enabled",
+        hasHistoricalResponsesContinuation = true,
+      ),
+    )
+    assertNull(
+      deriveContextCacheBreakReason(
+        localContinuationReason = "responses_lineage_unavailable",
+        hasHistoricalResponsesContinuation = false,
       ),
     )
   }
@@ -2488,9 +3588,17 @@ class OpenCrayAgentRuntimeTest {
     assertEquals("transcript_delta", requests[1].metadata["localContinuationReason"])
     assertEquals("1", result.metadata["localContinuationUsedCount"])
     assertEquals("0", result.metadata["localContinuationFallbackCount"])
+    val firstTurnUserMessages = requests[0].messages
+      .filter { message -> message.role == LiteLlmGatewayMessageRole.USER }
+      .mapNotNull { message -> message.content }
+    assertTrue(firstTurnUserMessages[0].contains("[Tool Protocol]"))
+    assertTrue(firstTurnUserMessages.none { message -> message.contains("[Task Metadata]") })
+    assertEquals("Read the README and then answer.", firstTurnUserMessages.last())
     val secondTurnUserMessages = requests[1].messages
       .filter { message -> message.role == LiteLlmGatewayMessageRole.USER }
       .mapNotNull { message -> message.content }
+    assertTrue(secondTurnUserMessages[0].contains("[Tool Protocol]"))
+    assertTrue(secondTurnUserMessages.none { message -> message.contains("[Task Metadata]") })
     assertTrue(secondTurnUserMessages.contains("Read the README and then answer."))
     assertTrue(secondTurnUserMessages.contains("Also verify the tests before you answer."))
     val replayedToolResult = requests[1].messages
@@ -2501,7 +3609,7 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
-  fun runPromptTaskFallsBackToFullRebuildWhenActiveSkillChangesContinuationAnchor() {
+  fun runPromptTaskFallsBackToFullRebuildWhenActiveSkillChangesToolPoolFingerprint() {
     val workspaceRoot = temporaryFolder.newFolder("agent-local-continuation-skill-workspace")
     val skillsRoot = temporaryFolder.newFolder("agent-local-continuation-skill-root")
     writeSkill(
@@ -2569,10 +3677,18 @@ class OpenCrayAgentRuntimeTest {
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals(2, gateway.requests.size)
     assertEquals("full_rebuild", gateway.requests[1].metadata["localContinuationMode"])
-    assertEquals("anchor_changed", gateway.requests[1].metadata["localContinuationReason"])
+    assertEquals("tool_pool_changed", gateway.requests[1].metadata["localContinuationReason"])
+    assertEquals(
+      "tool_pool_changed",
+      gateway.requests[1].metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON],
+    )
     assertEquals("1", result.metadata["localContinuationFallbackCount"])
     assertEquals("full_rebuild", result.metadata["localContinuationLastMode"])
-    assertEquals("anchor_changed", result.metadata["localContinuationLastReason"])
+    assertEquals("tool_pool_changed", result.metadata["localContinuationLastReason"])
+    assertEquals(
+      "tool_pool_changed",
+      result.metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON],
+    )
     assertTrue(gateway.requests[1].prompt.contains("[Active Skill]"))
     assertTrue(gateway.requests[1].prompt.contains("name=ui-ux-pro-max"))
     val secondTurnUserMessages = gateway.requests[1].messages
@@ -3013,7 +4129,7 @@ class OpenCrayAgentRuntimeTest {
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("延续了之前的对话", result.stdout)
     assertEquals("3", result.metadata["contextMessageCount"])
-    assertTrue(result.metadata["contextLayerNames"].orEmpty().contains("Task Metadata"))
+    assertFalse(result.metadata["contextLayerNames"].orEmpty().contains("Task Metadata"))
     assertTrue(result.metadata["contextLayerNames"].orEmpty().contains("Conversation"))
     assertTrue(gateway.requests[0].systemPrompt.orEmpty().contains("[Session Policy]"))
     assertTrue(gateway.requests[0].prompt.contains("Earlier question."))
@@ -5824,19 +6940,97 @@ class OpenCrayAgentRuntimeTest {
     assertEquals("900", requestMetadata["contextBudgetContextWindowTokens"])
     assertEquals("256", requestMetadata["contextBudgetReservedOutputTokens"])
     assertEquals("96", requestMetadata["contextBudgetSafetyMarginTokens"])
+    assertEquals("balanced", requestMetadata["contextBudgetSelectedPreset"])
+    assertEquals("dev", requestMetadata["contextBudgetEffectivePreset"])
+    assertEquals("raw", requestMetadata["contextBudgetPresetSource"])
+    assertEquals("true", requestMetadata["contextBudgetPresetDiverged"])
+    assertEquals("balanced", requestMetadata["contextBudgetSourcePreset"])
+    assertEquals("12", requestMetadata["contextBudgetSourceTranscriptMaxMessages"])
+    assertEquals("4", requestMetadata["contextBudgetSourceInjectedMemoryMaxRecords"])
+    assertEquals("6", requestMetadata["contextBudgetSourceMemoryRecallMaxRecords"])
+    assertEquals("3200", requestMetadata["contextBudgetSourceBootstrapMaxChars"])
+    assertEquals("8", requestMetadata["contextBudgetSourceSkillInventoryMaxSkills"])
+    assertEquals("3200", requestMetadata["contextBudgetSourceActiveSkillMaxChars"])
+    assertEquals("4", requestMetadata["contextBudgetSourceRecentObservationMaxEntries"])
+    assertEquals("8", requestMetadata["contextBudgetSourceMemoryFlushMaxToolObservations"])
     assertEquals("548", requestMetadata["contextBudgetHardInputTokens"])
     assertEquals("512", requestMetadata["contextBudgetTargetInputTokens"])
     assertEquals("548", requestMetadata["contextBudgetEmergencyInputTokens"])
     assertEquals("true", requestMetadata["contextBudgetUnresolvedOverflow"])
+    assertTrue(requestMetadata["contextBudgetFullLayerCount"].orEmpty().isNotBlank())
+    assertTrue(requestMetadata["contextBudgetCompactLayerCount"].orEmpty().isNotBlank())
+    assertTrue(requestMetadata["contextBudgetMinimalLayerCount"].orEmpty().isNotBlank())
     assertEquals("minimal", requestMetadata["contextToolProtocolDetailMode"])
     assertEquals("true", requestMetadata["contextToolProtocolReducedForBudget"])
     assertEquals("0", requestMetadata["contextToolProtocolAttachmentExampleCount"])
     assertTrue(requestMetadata["contextBudgetLayerSummary"].orEmpty().contains("RETRIEVED_MEMORY:"))
     assertTrue(requestMetadata["contextBudgetLayerSummary"].orEmpty().contains("CONVERSATION:"))
+    assertFalse(requestMetadata["contextBudgetLayerSummary"].orEmpty().contains(":reduced"))
+    assertFalse(requestMetadata["contextBudgetLayerSummary"].orEmpty().contains(":kept"))
+    val layerDetails = Json.parseToJsonElement(
+      requestMetadata["contextBudgetLayerDetails"].orEmpty(),
+    ).jsonArray
+    assertTrue(layerDetails.isNotEmpty())
+    val conversationLayer = layerDetails.firstOrNull { layer ->
+      (layer.jsonObject["id"] as? JsonPrimitive)?.content == "CONVERSATION"
+    }?.jsonObject
+    assertNotNull(conversationLayer)
+    assertTrue(
+      setOf("full", "compact", "minimal", "omitted").contains(
+        (conversationLayer?.get("finalState") as? JsonPrimitive)?.content,
+      ),
+    )
     assertEquals(requestMetadata["contextBudgetPressureMode"], result.metadata["contextBudgetPressureMode"])
     assertEquals(requestMetadata["contextBudgetHardInputTokens"], result.metadata["contextBudgetHardInputTokens"])
     assertEquals(requestMetadata["contextBudgetTargetInputTokens"], result.metadata["contextBudgetTargetInputTokens"])
     assertEquals(requestMetadata["contextBudgetUnresolvedOverflow"], result.metadata["contextBudgetUnresolvedOverflow"])
+    assertEquals(
+      requestMetadata["contextBudgetEffectivePreset"],
+      result.metadata["contextBudgetEffectivePreset"],
+    )
+    assertEquals(requestMetadata["contextBudgetPresetSource"], result.metadata["contextBudgetPresetSource"])
+    assertEquals(requestMetadata["contextBudgetSourcePreset"], result.metadata["contextBudgetSourcePreset"])
+    assertEquals(
+      requestMetadata["contextBudgetSourceTranscriptMaxMessages"],
+      result.metadata["contextBudgetSourceTranscriptMaxMessages"],
+    )
+    assertEquals(
+      requestMetadata["contextBudgetSourceInjectedMemoryMaxRecords"],
+      result.metadata["contextBudgetSourceInjectedMemoryMaxRecords"],
+    )
+    assertEquals(
+      requestMetadata["contextBudgetSourceMemoryRecallMaxRecords"],
+      result.metadata["contextBudgetSourceMemoryRecallMaxRecords"],
+    )
+    assertEquals(
+      requestMetadata["contextBudgetSourceBootstrapMaxChars"],
+      result.metadata["contextBudgetSourceBootstrapMaxChars"],
+    )
+    assertEquals(
+      requestMetadata["contextBudgetSourceSkillInventoryMaxSkills"],
+      result.metadata["contextBudgetSourceSkillInventoryMaxSkills"],
+    )
+    assertEquals(
+      requestMetadata["contextBudgetSourceActiveSkillMaxChars"],
+      result.metadata["contextBudgetSourceActiveSkillMaxChars"],
+    )
+    assertEquals(
+      requestMetadata["contextBudgetSourceRecentObservationMaxEntries"],
+      result.metadata["contextBudgetSourceRecentObservationMaxEntries"],
+    )
+    assertEquals(
+      requestMetadata["contextBudgetSourceMemoryFlushMaxToolObservations"],
+      result.metadata["contextBudgetSourceMemoryFlushMaxToolObservations"],
+    )
+    assertEquals(requestMetadata["contextBudgetFullLayerCount"], result.metadata["contextBudgetFullLayerCount"])
+    assertEquals(
+      requestMetadata["contextBudgetCompactLayerCount"],
+      result.metadata["contextBudgetCompactLayerCount"],
+    )
+    assertEquals(
+      requestMetadata["contextBudgetMinimalLayerCount"],
+      result.metadata["contextBudgetMinimalLayerCount"],
+    )
     assertEquals(requestMetadata["contextBudgetLayerSummary"], result.metadata["contextBudgetLayerSummary"])
     assertEquals(requestMetadata["contextToolProtocolDetailMode"], result.metadata["contextToolProtocolDetailMode"])
     assertEquals(requestMetadata["contextToolProtocolReducedForBudget"], result.metadata["contextToolProtocolReducedForBudget"])
@@ -5926,23 +7120,31 @@ class OpenCrayAgentRuntimeTest {
     val requestMetadata = request.metadata
     val layerSummary = requestMetadata["contextBudgetLayerSummary"].orEmpty()
 
+    val messageText = gatewayStructuredPayloadText(request)
+
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("working state budget metadata captured", result.stdout)
-    assertTrue(request.prompt.contains("[Working State]"))
-    assertTrue(request.prompt.contains("Recent action 8"))
-    assertTrue(request.prompt.contains("Decision 4"))
-    assertTrue(request.prompt.contains("Blocker 3"))
-    assertTrue(request.prompt.contains("Next action 4"))
-    assertFalse(request.prompt.contains("[Recent Findings]"))
-    assertFalse(request.prompt.contains("Finding 1"))
-    assertFalse(request.prompt.contains("Recent action 1"))
-    assertFalse(request.prompt.contains("Decision 1"))
-    assertFalse(request.prompt.contains("Blocker 1"))
-    assertFalse(request.prompt.contains("Next action 1"))
-    assertFalse(request.prompt.contains("updated_at_epoch_ms=456789"))
+    assertTrue(request.messages.isNotEmpty())
+    assertEquals("messages_primary", request.metadata["gatewayTransportMode"])
+    assertEquals("fallback_debug_only", request.metadata["gatewayPromptFieldRole"])
+    assertTrue(messageText.contains("[Working State]"))
+    assertTrue(messageText.contains("Recent action 8"))
+    assertTrue(messageText.contains("Decision 4"))
+    assertTrue(messageText.contains("Blocker 3"))
+    assertTrue(messageText.contains("Next action 4"))
+    assertFalse(messageText.contains("[Recent Findings]"))
+    assertFalse(messageText.contains("Finding 1"))
+    assertFalse(messageText.contains("Recent action 1"))
+    assertFalse(messageText.contains("Decision 1"))
+    assertFalse(messageText.contains("Blocker 1"))
+    assertFalse(messageText.contains("Next action 1"))
+    assertFalse(messageText.contains("updated_at_epoch_ms=456789"))
     assertTrue(layerSummary.contains("WORKING_STATE:"))
-    assertTrue(layerSummary.contains("reduced"))
+    assertTrue(layerSummary.contains(":minimal["))
     assertTrue(layerSummary.contains("reduce_working_state_minimal"))
+    assertEquals("dev", requestMetadata["contextBudgetEffectivePreset"])
+    assertEquals("raw", requestMetadata["contextBudgetPresetSource"])
+    assertTrue(requestMetadata["contextBudgetMinimalLayerCount"].orEmpty().isNotBlank())
     assertTrue(requestMetadata["contextBudgetReducedLayerNames"].orEmpty().contains("Working State"))
     assertEquals(layerSummary, result.metadata["contextBudgetLayerSummary"])
     assertEquals(
@@ -6026,6 +7228,129 @@ class OpenCrayAgentRuntimeTest {
     requestRetry = { _: RetryRequest -> error("Retry not expected in OpenCrayAgentRuntimeTest.") },
     requestSuspend = onSuspend,
   )
+
+  private fun assertLocalContinuationFingerprintFallback(
+    expectedLocalContinuationReason: String,
+    expectedContextCacheBreakReason: String,
+    mutateEnvelope: (
+      OpenCraySerializableLocalContinuationEnvelope,
+    ) -> OpenCraySerializableLocalContinuationEnvelope,
+  ) {
+    val workspaceRoot = temporaryFolder.newFolder(
+      "agent-local-continuation-$expectedLocalContinuationReason",
+    )
+    Files.write(
+      workspaceRoot.toPath().resolve("README.md"),
+      "hello from workspace".toByteArray(StandardCharsets.UTF_8),
+    )
+    val task = promptTask(input = "Read the README and then answer.")
+    val eventSink = RecordingEventSink()
+    val initialGateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"workspace_read_file","arguments":{"path":"README.md"}}""",
+        """{"type":"final","answer":"Read the README."}""",
+      ),
+    )
+    val initialRuntime = OpenCrayAgentRuntime(
+      gateway = initialGateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 4, maxToolCalls = 2),
+      eventSink = eventSink,
+      clock = IncrementingClock(start = 70_000L)::next,
+    )
+
+    val initialResult = initialRuntime.execute(
+      task = task,
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, initialResult.status)
+    val checkpointState = checkpointStateFromFirstToolResult(eventSink)
+    val originalEnvelope = requireNotNull(checkpointState.localContinuationEnvelope)
+    val mutatedState = checkpointState.copy(
+      localContinuationEnvelope = mutateEnvelope(originalEnvelope),
+    )
+
+    val resumedGateway = RecordingGateway(
+      outputs = listOf("""{"type":"final","answer":"Recovered after fingerprint mismatch."}"""),
+    )
+    val resumedRuntime = OpenCrayAgentRuntime(
+      gateway = resumedGateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        promptResumeState = mutatedState,
+      ),
+      clock = IncrementingClock(start = 70_500L)::next,
+    )
+
+    val resumedResult = resumedRuntime.execute(
+      task = task,
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, resumedResult.status)
+    assertEquals("Recovered after fingerprint mismatch.", resumedResult.stdout)
+    assertEquals(1, resumedGateway.requests.size)
+    assertEquals("full_rebuild", resumedGateway.requests.single().metadata["localContinuationMode"])
+    assertEquals(
+      expectedLocalContinuationReason,
+      resumedGateway.requests.single().metadata["localContinuationReason"],
+    )
+    assertEquals(
+      expectedContextCacheBreakReason,
+      resumedGateway.requests.single().metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON],
+    )
+    assertEquals("0", resumedResult.metadata["localContinuationUsedCount"])
+    assertEquals("1", resumedResult.metadata["localContinuationFallbackCount"])
+    assertEquals(
+      expectedContextCacheBreakReason,
+      resumedResult.metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON],
+    )
+    val resumedCacheMetadata = resumedGateway.requests.single().metadata
+    assertEquals(
+      "non_responses_front_zone_v1",
+      resumedCacheMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_CONTRACT_VERSION],
+    )
+    val initialContinuationCacheMetadata = initialGateway.requests.last().metadata
+    assertEquals(
+      initialContinuationCacheMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_STABLE_ANCHOR_HASH],
+      resumedCacheMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_STABLE_ANCHOR_HASH],
+    )
+    assertEquals(
+      initialContinuationCacheMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_DURABLE_CONTEXT_HASH],
+      resumedCacheMetadata[LiteLlmMetadataKeys.CONTEXT_CACHE_DURABLE_CONTEXT_HASH],
+    )
+  }
+
+  private fun checkpointStateFromFirstToolResult(
+    eventSink: RecordingEventSink,
+  ): OpenCrayPromptResumeState = requireNotNull(
+    OpenCrayPromptResumeMetadata.decodeFromMetadata(
+      metadata = eventSink.events
+        .filterIsInstance<OpenCrayToolResultEvent>()
+        .first()
+        .result
+        .metadata,
+      json = Json { ignoreUnknownKeys = true },
+    ),
+  )
+
+  private fun promptCacheShapeHash(
+    value: String,
+  ): String = MessageDigest.getInstance("SHA-256")
+    .digest(value.trim().toByteArray(Charsets.UTF_8))
+    .joinToString(separator = "") { byte -> "%02x".format(byte) }
+    .take(24)
 
   private class IncrementingClock(
     start: Long,
@@ -6244,6 +7569,20 @@ class OpenCrayAgentRuntimeTest {
         is OpenCrayCancellationEvent -> "cancelled"
       }
     }
+
+  private fun gatewayStructuredPayloadText(
+    request: LiteLlmGatewayRequest,
+  ): String = request.messages.joinToString(separator = "\n\n") { message ->
+    buildString {
+      message.content?.trim()?.takeIf(String::isNotBlank)?.let(::append)
+      message.toolResult?.content?.trim()?.takeIf(String::isNotBlank)?.let { toolResultText ->
+        if (isNotEmpty()) {
+          append("\n")
+        }
+        append(toolResultText)
+      }
+    }.trim()
+  }.trim()
 
   private class ScriptedProcessRegistry : AgentProcessRegistry {
     private val snapshotsById = linkedMapOf<String, ManagedProcessSnapshot>()

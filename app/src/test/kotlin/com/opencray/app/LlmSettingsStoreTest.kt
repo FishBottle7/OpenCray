@@ -2,6 +2,7 @@ package com.opencray.app
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -288,5 +289,54 @@ class LlmSettingsStoreTest {
     )
 
     assertFalse(loaded.streamingEnabled)
+  }
+
+  @Test
+  fun saveAndLoadPersistsContextBudgetSettings() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val saved = LlmSettingsState(
+      enabled = true,
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      baseUrl = "https://api.openai.com/v1",
+      apiKey = "token",
+      model = "gpt-5-mini",
+      contextBudgetPreset = "expanded",
+      contextBudgetReservedOutputTokens = 3072,
+      contextBudgetSafetyMarginTokens = 1536,
+      contextBudgetEffectiveInputPercent = 0.92,
+    )
+
+    store.save(saved)
+
+    val loaded = store.load(
+      defaults = LlmSettingsState(
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+      ),
+    )
+
+    assertEquals("expanded", loaded.contextBudgetPreset)
+    assertEquals(3072, loaded.contextBudgetReservedOutputTokens)
+    assertEquals(1536, loaded.contextBudgetSafetyMarginTokens)
+    assertEquals(0.92, loaded.contextBudgetEffectiveInputPercent)
+  }
+
+  @Test
+  fun sanitizedContextBudgetSettingsNormalizePresetAndInvalidOverrides() {
+    val state = LlmSettingsState(
+      contextBudgetPreset = "unknown",
+      contextBudgetReservedOutputTokens = 0,
+      contextBudgetSafetyMarginTokens = -8,
+      contextBudgetEffectiveInputPercent = 2.5,
+    )
+
+    val sanitized = state.sanitized()
+
+    assertEquals(LlmSettingsState.DEFAULT_CONTEXT_BUDGET_PRESET, sanitized.contextBudgetPreset)
+    assertNull(sanitized.contextBudgetReservedOutputTokens)
+    assertNull(sanitized.contextBudgetSafetyMarginTokens)
+    assertEquals(1.0, sanitized.contextBudgetEffectiveInputPercent)
   }
 }

@@ -37,9 +37,13 @@ import com.opencray.runtime.context.AgentRuntimeSessionContext
 import com.opencray.runtime.context.ContextBudgetReport
 import com.opencray.runtime.context.ContextManager
 import com.opencray.runtime.context.ContextAssemblyReport
+import com.opencray.runtime.context.ContextSourceBudgetPolicy
+import com.opencray.runtime.context.ContextSourceBudgetProfile
 import com.opencray.runtime.context.DuplicateDiscoveryToolHit
+import com.opencray.runtime.context.FrontContextZones
 import com.opencray.runtime.context.PromptAssembler
 import com.opencray.runtime.context.PromptAssemblyInput
+import com.opencray.runtime.context.PromptLayerTransportGroup
 import com.opencray.runtime.context.RecentToolObservationSupport
 import com.opencray.runtime.context.RuntimeConversationAttachment
 import com.opencray.runtime.context.RuntimeConversationAttachmentKind
@@ -50,7 +54,9 @@ import com.opencray.runtime.context.RuntimeConversationCommentary
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.RuntimeConversationToolCall
 import com.opencray.runtime.context.RuntimeConversationToolResult
+import com.opencray.runtime.context.FrozenToolResultReplayProjection
 import com.opencray.runtime.context.ToolProtocolTrace
+import com.opencray.runtime.context.ToolResultReplayProjector
 import com.opencray.runtime.policy.ToolPolicyPlan
 import com.opencray.runtime.subagent.BuiltInSubAgentProfiles
 import com.opencray.runtime.subagent.InMemorySubAgentExecutionCoordinator
@@ -81,6 +87,7 @@ import com.opencray.runtime.workingstate.InMemoryWorkingStateStore
 import com.opencray.runtime.workingstate.WorkingStateResumeContext
 import com.opencray.runtime.workingstate.WorkingStateSupport
 import com.opencray.runtime.workingstate.WorkingStateStore
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -92,6 +99,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -117,6 +125,7 @@ data class OpenCrayAgentRuntimeConfig(
   val supplementInputProvider: (String, String) -> List<OpenCraySupplementInput> = { _, _ -> emptyList() },
   val promptCheckpointSink: (OpenCrayPromptCheckpointEmission) -> Unit = { _ -> },
   val llmMetadata: Map<String, String> = emptyMap(),
+  val contextSourceBudgetProfile: ContextSourceBudgetProfile = ContextSourceBudgetPolicy().resolve(llmMetadata),
   val llmAuthHeaders: Map<String, String> = emptyMap(),
   val inheritedActiveSkillCapsule: ActiveSkillCapsule? = null,
   val subAgentContextBuilder: SubAgentContextBuilder = SubAgentContextBuilder(),
@@ -161,7 +170,10 @@ class OpenCrayAgentRuntime(
   private val clock: () -> Long = System::currentTimeMillis,
 ) : SessionTaskRuntime {
   private val activeSkillCapsuleResolver: ActiveSkillCapsuleResolver = ActiveSkillCapsuleResolver()
-  private val recentToolObservationSupport: RecentToolObservationSupport = RecentToolObservationSupport()
+  private val recentToolObservationSupport: RecentToolObservationSupport = RecentToolObservationSupport(
+    config = config.contextSourceBudgetProfile.recentToolObservationConfig,
+  )
+  private val toolResultReplayProjector: ToolResultReplayProjector = ToolResultReplayProjector()
   private val workingStateSupport: WorkingStateSupport = WorkingStateSupport()
   private var pendingApprovedSubAgentResume: SubAgentApprovalResume? = config.approvedSubAgentResume
   private var pendingRejectedSubAgentResume: SubAgentApprovalResume? = config.rejectedSubAgentResume
@@ -305,13 +317,30 @@ class OpenCrayAgentRuntime(
       responsesProviderLineageId = config.promptResumeState?.responsesProviderLineageId,
       responsesLineageTrusted = config.promptResumeState == null,
       responsesFullReplayRequired = config.promptResumeState != null,
+      responsesContinuationShape = config.promptResumeState?.responsesContinuationShape?.let { shape ->
+        ResponsesContinuationShape(
+          stableAnchor = shape.stableAnchor,
+          frontContextZones = shape.restoredFrontContextZones(),
+          toolPoolFingerprint = shape.toolPoolFingerprint,
+          toolSchemaFingerprint = shape.toolSchemaFingerprint,
+          requestSettingsFingerprint = shape.requestSettingsFingerprint,
+        )
+      },
       responsesPendingMessages = config.promptResumeState
         ?.restoredResponsesPendingMessages()
         ?.toMutableList()
         ?: mutableListOf(),
+      replayToolResultProjections = config.promptResumeState
+        ?.replayToolResultProjections
+        ?.toMutableMap()
+        ?: linkedMapOf(),
       localContinuationEnvelope = config.promptResumeState?.localContinuationEnvelope?.let { envelope ->
         LocalContinuationEnvelope(
           stableAnchor = envelope.stableAnchor,
+          frontContextZones = envelope.restoredFrontContextZones(),
+          toolPoolFingerprint = envelope.toolPoolFingerprint,
+          toolSchemaFingerprint = envelope.toolSchemaFingerprint,
+          requestSettingsFingerprint = envelope.requestSettingsFingerprint,
           transcriptFrontier = envelope.restoredTranscriptFrontier(executionTranscript),
           gatewayMessages = envelope.restoredGatewayMessages(),
         )
@@ -377,6 +406,9 @@ class OpenCrayAgentRuntime(
             legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
             actionStartIndex = resumeActionIndex,
             suppressToolCallEventAtActionIndex = resumeActionIndex,
+            localContinuationToolPoolFingerprint = null,
+            localContinuationToolSchemaFingerprint = null,
+            localContinuationRequestSettingsFingerprint = null,
           )
         ) {
           is PromptBatchExecutionOutcome.Continue -> Unit
@@ -483,14 +515,30 @@ class OpenCrayAgentRuntime(
           turn = cursor.turn,
           legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
         )
-      val gatewayMessagePlan = if (
-        requestedNativeToolDefinitions.isNotEmpty() ||
-          activeBuiltinTools.isNotEmpty()
-      ) {
-        if (isResponsesProtocol()) {
+        val requestedToolChoiceOverride = requestedToolChoice()
+        val responseApiPreferredOverride = responseApiPreferred() || isResponsesProtocol()
+        val toolPoolFingerprint = promptCacheToolPoolFingerprint(
+          requestedNativeToolDefinitions = requestedNativeToolDefinitions,
+          activeBuiltinTools = activeBuiltinTools,
+        )
+        val toolSchemaFingerprint = promptCacheToolSchemaFingerprint(
+          requestedNativeToolDefinitions = requestedNativeToolDefinitions,
+          activeBuiltinTools = activeBuiltinTools,
+        )
+        val requestSettingsFingerprint = promptCacheRequestSettingsFingerprint(
+          nativeToolCallingEnabled = nativeToolCallingEnabled,
+          requestedParallelToolCalls = requestedParallelToolCallsOverride,
+          requestedToolChoice = requestedToolChoiceOverride,
+          responseApiPreferred = responseApiPreferredOverride,
+        )
+        val gatewayMessagePlan = if (isResponsesProtocol()) {
           buildResponsesGatewayMessagePlan(
             cursor = cursor,
-            contextPrompt = assembledPrompt.contextPrompt,
+            frontContextPrompts = assembledPrompt.frontContextPrompts,
+            stableAnchor = stableLocalContinuationAnchor,
+            toolPoolFingerprint = toolPoolFingerprint,
+            toolSchemaFingerprint = toolSchemaFingerprint,
+            requestSettingsFingerprint = requestSettingsFingerprint,
             transcript = turnAwareConversation,
           )
         } else {
@@ -498,127 +546,146 @@ class OpenCrayAgentRuntime(
             cursor = cursor,
             transcript = cursor.transcript,
             turnAwareConversation = turnAwareConversation,
-            contextPrompt = assembledPrompt.contextPrompt,
+            frontContextPrompts = assembledPrompt.frontContextPrompts,
             stableAnchor = stableLocalContinuationAnchor,
+            toolPoolFingerprint = toolPoolFingerprint,
+            toolSchemaFingerprint = toolSchemaFingerprint,
+            requestSettingsFingerprint = requestSettingsFingerprint,
           )
         }
-      } else {
-        GatewayMessagePlan(
-          messages = emptyList(),
-          mode = LocalContinuationMode.DISABLED,
-          reason = "no_message_route",
+        val contextCacheBreakReason = contextCacheBreakReason(
+          cursor = cursor,
+          plan = gatewayMessagePlan,
         )
-      }
-      diagnostics.recordGatewayMessagePlan(gatewayMessagePlan)
-      val gatewayMessages = gatewayMessagePlan.messages
-
-      val runId = runIdFor(task)
-      val requestedToolChoiceOverride = runCatching {
-        val mode = when (config.llmMetadata["toolChoiceMode"]?.trim()?.lowercase()) {
-          "auto" -> LiteLlmToolChoiceMode.AUTO
-          "none" -> LiteLlmToolChoiceMode.NONE
-          "required", "any" -> LiteLlmToolChoiceMode.REQUIRED
-          "tool", "function" -> LiteLlmToolChoiceMode.TOOL
-          else -> null
-        } ?: return@runCatching null
-        LiteLlmToolChoice(
-          mode = mode,
-          toolName = config.llmMetadata["toolChoiceName"]?.trim()?.takeIf(String::isNotBlank),
+        diagnostics.recordGatewayMessagePlan(
+          plan = gatewayMessagePlan,
+          contextCacheBreakReason = contextCacheBreakReason,
         )
-      }.getOrNull()
-      val requestedPreviousResponseIdOverride =
-        gatewayMessagePlan.previousResponseId ?: requestedPreviousResponseId(cursor)
-      val responseApiPreferredOverride = responseApiPreferred() || isResponsesProtocol()
-      val request = LiteLlmGatewayRequest(
-        requestId = "agent-$runId-turn-${cursor.turn}-${UUID.randomUUID().toString().take(8)}",
-        prompt = assembledPrompt.taskPrompt,
-        systemPrompt = enforcedSystemPrompt,
-        messages = gatewayMessages,
-        tools = requestedNativeToolDefinitions,
-        builtinTools = activeBuiltinTools,
-        toolChoice = requestedToolChoiceOverride,
-        parallelToolCalls = requestedParallelToolCallsOverride,
-        previousResponseId = requestedPreviousResponseIdOverride,
-        responseApiPreferred = responseApiPreferredOverride,
-        metadata = buildMap {
-          put("runId", runId)
-          put("taskId", task.id)
-          put("taskType", task.type.name)
-          put("turnIndex", cursor.turn.toString())
-          remainingTurnBudget(cursor.turn)?.let { remainingTurns ->
-            put("remainingTurnCount", remainingTurns.toString())
-            put("maxTurnCount", config.maxTurns.toString())
-          }
-          put("contextSourceMessageCount", assembledPrompt.report.sourceTranscriptMessageCount.toString())
-          put("contextWindowMessageCount", assembledPrompt.report.windowedTranscriptMessageCount.toString())
-          put("contextMessageCount", assembledPrompt.report.windowedTranscriptMessageCount.toString())
-          put("contextOmittedMessageCount", assembledPrompt.report.omittedTranscriptMessageCount.toString())
-          put("contextTruncatedMessageCount", assembledPrompt.report.truncatedTranscriptMessageCount.toString())
-          put("contextPrunedMessageCount", assembledPrompt.report.prunedTranscriptMessageCount.toString())
-          put("contextRewrittenMessageCount", assembledPrompt.report.rewrittenTranscriptMessageCount.toString())
-          put("contextPruningSummaryIncluded", assembledPrompt.report.pruningSummaryIncluded.toString())
-          put("contextRecentObservationCount", assembledPrompt.report.recentToolObservationCount.toString())
-          put("contextRecentObservationLayerIncluded", assembledPrompt.report.recentToolObservationLayerIncluded.toString())
-          put("contextWorkingStateIncluded", assembledPrompt.report.workingStateTrace.included.toString())
-          put("contextWorkingStateObjectivePresent", assembledPrompt.report.workingStateTrace.objectivePresent.toString())
-          put("contextWorkingStateFindingCount", assembledPrompt.report.workingStateTrace.findingCount.toString())
-          put("contextWorkingStateRecentActionCount", assembledPrompt.report.workingStateTrace.recentActionCount.toString())
-          put("contextWorkingStateDecisionCount", assembledPrompt.report.workingStateTrace.decisionCount.toString())
-          put("contextWorkingStateBlockerCount", assembledPrompt.report.workingStateTrace.blockerCount.toString())
-          put("contextWorkingStateNextActionCount", assembledPrompt.report.workingStateTrace.nextActionCount.toString())
-          put(
-            "contextWorkingStateSynthesizedFromResumeContext",
-            assembledPrompt.report.workingStateTrace.synthesizedFromResumeContext.toString(),
-          )
-          put("contextWorkingStateSynthesizedFromTodos", assembledPrompt.report.workingStateTrace.synthesizedFromTodoSnapshot.toString())
-          putContextBudgetMetadata(assembledPrompt.report.budgetReport)
-          putContextToolProtocolMetadata(this, assembledPrompt.report.toolProtocolTrace)
-          put("localContinuationMode", gatewayMessagePlan.mode.wireValue)
-          gatewayMessagePlan.reason?.let { reason ->
-            put("localContinuationReason", reason)
-          }
-          cursor.responsesProviderLineageId
-            ?.trim()
-            ?.takeIf(String::isNotBlank)
-            ?.let { lineageId ->
-              put(LiteLlmMetadataKeys.RESPONSES_LINEAGE_ID, lineageId)
+        val contextCacheShapeMetadata = nonResponsesContextCacheShapeMetadata(
+          stableAnchor = stableLocalContinuationAnchor,
+          frontContextZones = assembledPrompt.frontContextZones,
+        )
+        diagnostics.recordContextCacheShapeMetadata(contextCacheShapeMetadata)
+        val gatewayMessages = gatewayMessagePlan.messages
+        check(gatewayMessages.isNotEmpty()) {
+          buildString {
+            append("Prompt-task gateway request must always use message assembly. ")
+            append("Received an empty messages list for task_id=")
+            append(task.id)
+            append(", turn=")
+            append(cursor.turn)
+            append(", mode=")
+            append(gatewayMessagePlan.mode.wireValue)
+            gatewayMessagePlan.reason?.let { reason ->
+              append(", reason=")
+              append(reason)
             }
-          put(LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED, requestedNativeToolDefinitions.isNotEmpty().toString())
-          putAll(task.metadata.filterKeys(::isGatewayVisibleMetadataKey))
-          putAll(config.llmMetadata)
-        },
-        authHeaders = config.llmAuthHeaders,
-      )
-      val preModelCheckpointEpochMs = clock()
-      emitPromptCheckpoint(
-        boundary = OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST,
-        cursor = cursor,
-        turnIndex = cursor.turn,
-        emittedAtEpochMs = preModelCheckpointEpochMs,
-        localContinuationContextPrompt = assembledPrompt.contextPrompt,
-        localContinuationStableAnchor = stableLocalContinuationAnchor,
-        localContinuationGatewayMessagesEnabled =
-          requestedNativeToolDefinitions.isNotEmpty() || activeBuiltinTools.isNotEmpty(),
-      )
-      emitInternalCheckpointJournalMarker(
-        task = task,
-        turn = cursor.turn,
-        boundary = OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST,
-        cursor = cursor,
-        turnIndex = cursor.turn,
-        emittedAtEpochMs = preModelCheckpointEpochMs,
-        localContinuationContextPrompt = assembledPrompt.contextPrompt,
-        localContinuationStableAnchor = stableLocalContinuationAnchor,
-        localContinuationGatewayMessagesEnabled =
-          requestedNativeToolDefinitions.isNotEmpty() || activeBuiltinTools.isNotEmpty(),
-      )
-      val gatewayTurnExecution = executeGatewayTurnWithRecovery(
-        task = task,
-        request = request,
-        turn = cursor.turn,
-        hooks = hooks,
-        diagnostics = diagnostics,
-      )
+          }
+        }
+        val gatewayMessagesEnabled = true
+
+        val runId = runIdFor(task)
+        val requestedPreviousResponseIdOverride =
+          gatewayMessagePlan.previousResponseId ?: requestedPreviousResponseId(cursor)
+        val request = LiteLlmGatewayRequest(
+          requestId = "agent-$runId-turn-${cursor.turn}-${UUID.randomUUID().toString().take(8)}",
+          systemPrompt = enforcedSystemPrompt,
+          messages = gatewayMessages,
+          tools = requestedNativeToolDefinitions,
+          builtinTools = activeBuiltinTools,
+          toolChoice = requestedToolChoiceOverride,
+          parallelToolCalls = requestedParallelToolCallsOverride,
+          previousResponseId = requestedPreviousResponseIdOverride,
+          responseApiPreferred = responseApiPreferredOverride,
+          metadata = buildMap {
+            put("runId", runId)
+            put("taskId", task.id)
+            put("taskType", task.type.name)
+            put("turnIndex", cursor.turn.toString())
+            remainingTurnBudget(cursor.turn)?.let { remainingTurns ->
+              put("remainingTurnCount", remainingTurns.toString())
+              put("maxTurnCount", config.maxTurns.toString())
+            }
+            put("contextSourceMessageCount", assembledPrompt.report.sourceTranscriptMessageCount.toString())
+            put("contextWindowMessageCount", assembledPrompt.report.windowedTranscriptMessageCount.toString())
+            put("contextMessageCount", assembledPrompt.report.windowedTranscriptMessageCount.toString())
+            put("contextOmittedMessageCount", assembledPrompt.report.omittedTranscriptMessageCount.toString())
+            put("contextTruncatedMessageCount", assembledPrompt.report.truncatedTranscriptMessageCount.toString())
+            put("contextPrunedMessageCount", assembledPrompt.report.prunedTranscriptMessageCount.toString())
+            put("contextRewrittenMessageCount", assembledPrompt.report.rewrittenTranscriptMessageCount.toString())
+            put("contextPruningSummaryIncluded", assembledPrompt.report.pruningSummaryIncluded.toString())
+            put("contextRecentObservationCount", assembledPrompt.report.recentToolObservationCount.toString())
+            put("contextRecentObservationLayerIncluded", assembledPrompt.report.recentToolObservationLayerIncluded.toString())
+            put("contextWorkingStateIncluded", assembledPrompt.report.workingStateTrace.included.toString())
+            put("contextWorkingStateObjectivePresent", assembledPrompt.report.workingStateTrace.objectivePresent.toString())
+            put("contextWorkingStateFindingCount", assembledPrompt.report.workingStateTrace.findingCount.toString())
+            put("contextWorkingStateRecentActionCount", assembledPrompt.report.workingStateTrace.recentActionCount.toString())
+            put("contextWorkingStateDecisionCount", assembledPrompt.report.workingStateTrace.decisionCount.toString())
+            put("contextWorkingStateBlockerCount", assembledPrompt.report.workingStateTrace.blockerCount.toString())
+            put("contextWorkingStateNextActionCount", assembledPrompt.report.workingStateTrace.nextActionCount.toString())
+            put(
+              "contextWorkingStateSynthesizedFromResumeContext",
+              assembledPrompt.report.workingStateTrace.synthesizedFromResumeContext.toString(),
+            )
+            put("contextWorkingStateSynthesizedFromTodos", assembledPrompt.report.workingStateTrace.synthesizedFromTodoSnapshot.toString())
+            putContextBudgetMetadata(assembledPrompt.report.budgetReport)
+            putContextToolProtocolMetadata(this, assembledPrompt.report.toolProtocolTrace)
+            put("gatewayTransportMode", "messages_primary")
+            put("gatewayPromptFieldRole", "fallback_debug_only")
+            put("localContinuationMode", gatewayMessagePlan.mode.wireValue)
+            gatewayMessagePlan.reason?.let { reason ->
+              put("localContinuationReason", reason)
+            }
+            contextCacheBreakReason?.let { reason ->
+              put(LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON, reason)
+            }
+            putAll(contextCacheShapeMetadata)
+            cursor.responsesProviderLineageId
+              ?.trim()
+              ?.takeIf(String::isNotBlank)
+              ?.let { lineageId ->
+                put(LiteLlmMetadataKeys.RESPONSES_LINEAGE_ID, lineageId)
+              }
+            put(LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED, requestedNativeToolDefinitions.isNotEmpty().toString())
+            putAll(task.metadata.filterKeys(::isGatewayVisibleMetadataKey))
+            putAll(config.llmMetadata)
+          },
+          authHeaders = config.llmAuthHeaders,
+        )
+        val preModelCheckpointEpochMs = clock()
+        emitPromptCheckpoint(
+          boundary = OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST,
+          cursor = cursor,
+          turnIndex = cursor.turn,
+          emittedAtEpochMs = preModelCheckpointEpochMs,
+          localContinuationContextPrompts = assembledPrompt.frontContextPrompts,
+          localContinuationStableAnchor = stableLocalContinuationAnchor,
+          localContinuationGatewayMessagesEnabled = gatewayMessagesEnabled,
+          localContinuationToolPoolFingerprint = toolPoolFingerprint,
+          localContinuationToolSchemaFingerprint = toolSchemaFingerprint,
+          localContinuationRequestSettingsFingerprint = requestSettingsFingerprint,
+        )
+        emitInternalCheckpointJournalMarker(
+          task = task,
+          turn = cursor.turn,
+          boundary = OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST,
+          cursor = cursor,
+          turnIndex = cursor.turn,
+          emittedAtEpochMs = preModelCheckpointEpochMs,
+          localContinuationContextPrompts = assembledPrompt.frontContextPrompts,
+          localContinuationStableAnchor = stableLocalContinuationAnchor,
+          localContinuationGatewayMessagesEnabled = gatewayMessagesEnabled,
+          localContinuationToolPoolFingerprint = toolPoolFingerprint,
+          localContinuationToolSchemaFingerprint = toolSchemaFingerprint,
+          localContinuationRequestSettingsFingerprint = requestSettingsFingerprint,
+        )
+        val gatewayTurnExecution = executeGatewayTurnWithRecovery(
+          task = task,
+          request = request,
+          turn = cursor.turn,
+          hooks = hooks,
+          diagnostics = diagnostics,
+        )
       if (gatewayTurnExecution is GatewayTurnExecution.Cancelled) {
         cancelOpenSubAgentsOnExit = true
         cancelOpenSubAgentsReason = "Parent run was cancelled by the user."
@@ -642,10 +709,12 @@ class OpenCrayAgentRuntime(
           cursor = cursor,
           hooks = hooks,
           diagnostics = diagnostics,
-          localContinuationContextPrompt = assembledPrompt.contextPrompt,
+          localContinuationContextPrompts = assembledPrompt.frontContextPrompts,
           localContinuationStableAnchor = stableLocalContinuationAnchor,
-          localContinuationGatewayMessagesEnabled =
-            requestedNativeToolDefinitions.isNotEmpty() || activeBuiltinTools.isNotEmpty(),
+          localContinuationGatewayMessagesEnabled = gatewayMessagesEnabled,
+          localContinuationToolPoolFingerprint = toolPoolFingerprint,
+          localContinuationToolSchemaFingerprint = toolSchemaFingerprint,
+          localContinuationRequestSettingsFingerprint = requestSettingsFingerprint,
         )
       }
       if (gatewayResult.status != LiteLlmGatewayStatus.SUCCESS) {
@@ -713,10 +782,12 @@ class OpenCrayAgentRuntime(
         cursor = cursor,
         gatewayResult = gatewayResult,
         diagnostics = diagnostics,
-        localContinuationContextPrompt = assembledPrompt.contextPrompt,
+        localContinuationContextPrompts = assembledPrompt.frontContextPrompts,
         localContinuationStableAnchor = stableLocalContinuationAnchor,
-        localContinuationGatewayMessagesEnabled =
-          requestedNativeToolDefinitions.isNotEmpty() || activeBuiltinTools.isNotEmpty(),
+        localContinuationGatewayMessagesEnabled = gatewayMessagesEnabled,
+        localContinuationToolPoolFingerprint = toolPoolFingerprint,
+        localContinuationToolSchemaFingerprint = toolSchemaFingerprint,
+        localContinuationRequestSettingsFingerprint = requestSettingsFingerprint,
       )
 
       val parsedGatewayResult = parseGatewayResultActionBatch(
@@ -802,6 +873,13 @@ class OpenCrayAgentRuntime(
           updateResponsesContinuationState(
             cursor = cursor,
             gatewayResult = gatewayResult,
+            continuationShape = ResponsesContinuationShape(
+              stableAnchor = stableLocalContinuationAnchor,
+              frontContextZones = assembledPrompt.frontContextZones,
+              toolPoolFingerprint = toolPoolFingerprint,
+              toolSchemaFingerprint = toolSchemaFingerprint,
+              requestSettingsFingerprint = requestSettingsFingerprint,
+            ),
           )
           val actionBatchCheckpointEpochMs = clock()
           emitPromptCheckpoint(
@@ -812,10 +890,12 @@ class OpenCrayAgentRuntime(
             pendingActions = parsedBatch.actions,
             nextActionIndex = 0,
             requiresSingleActionReminder = parsedBatch.requiresSingleActionReminder,
-            localContinuationContextPrompt = assembledPrompt.contextPrompt,
+            localContinuationContextPrompts = assembledPrompt.frontContextPrompts,
             localContinuationStableAnchor = stableLocalContinuationAnchor,
-            localContinuationGatewayMessagesEnabled =
-              requestedNativeToolDefinitions.isNotEmpty() || activeBuiltinTools.isNotEmpty(),
+            localContinuationGatewayMessagesEnabled = gatewayMessagesEnabled,
+            localContinuationToolPoolFingerprint = toolPoolFingerprint,
+            localContinuationToolSchemaFingerprint = toolSchemaFingerprint,
+            localContinuationRequestSettingsFingerprint = requestSettingsFingerprint,
           )
           emitInternalCheckpointJournalMarker(
             task = task,
@@ -827,10 +907,12 @@ class OpenCrayAgentRuntime(
             pendingActions = parsedBatch.actions,
             nextActionIndex = 0,
             requiresSingleActionReminder = parsedBatch.requiresSingleActionReminder,
-            localContinuationContextPrompt = assembledPrompt.contextPrompt,
+            localContinuationContextPrompts = assembledPrompt.frontContextPrompts,
             localContinuationStableAnchor = stableLocalContinuationAnchor,
-            localContinuationGatewayMessagesEnabled =
-              requestedNativeToolDefinitions.isNotEmpty() || activeBuiltinTools.isNotEmpty(),
+            localContinuationGatewayMessagesEnabled = gatewayMessagesEnabled,
+            localContinuationToolPoolFingerprint = toolPoolFingerprint,
+            localContinuationToolSchemaFingerprint = toolSchemaFingerprint,
+            localContinuationRequestSettingsFingerprint = requestSettingsFingerprint,
           )
           when (
             val outcome = executePromptActionBatch(
@@ -845,19 +927,24 @@ class OpenCrayAgentRuntime(
               diagnostics = diagnostics,
               nativeToolCallingEnabled = nativeToolCallingEnabled,
               legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
-              localContinuationContextPrompt = assembledPrompt.contextPrompt,
+              localContinuationContextPrompts = assembledPrompt.frontContextPrompts,
               localContinuationStableAnchor = stableLocalContinuationAnchor,
-              localContinuationGatewayMessagesEnabled =
-                requestedNativeToolDefinitions.isNotEmpty() || activeBuiltinTools.isNotEmpty(),
+              localContinuationGatewayMessagesEnabled = gatewayMessagesEnabled,
+              localContinuationToolPoolFingerprint = toolPoolFingerprint,
+              localContinuationToolSchemaFingerprint = toolSchemaFingerprint,
+              localContinuationRequestSettingsFingerprint = requestSettingsFingerprint,
             )
           ) {
             is PromptBatchExecutionOutcome.Continue -> {
               clearAssistantDraft(task)
               refreshLocalContinuationEnvelope(
                 cursor = cursor,
-                contextPrompt = assembledPrompt.contextPrompt,
+                frontContextPrompts = assembledPrompt.frontContextPrompts,
                 stableAnchor = stableLocalContinuationAnchor,
-                gatewayMessagesEnabled = requestedNativeToolDefinitions.isNotEmpty() || activeBuiltinTools.isNotEmpty(),
+                gatewayMessagesEnabled = gatewayMessagesEnabled,
+                toolPoolFingerprint = toolPoolFingerprint,
+                toolSchemaFingerprint = toolSchemaFingerprint,
+                requestSettingsFingerprint = requestSettingsFingerprint,
               )
               continue
             }
@@ -1581,13 +1668,13 @@ class OpenCrayAgentRuntime(
     nativeToolCallingEnabled: Boolean,
     priorFallbackEnabled: Boolean,
   ): Boolean {
-    if (priorFallbackEnabled || !nativeToolCallingEnabled) {
+    if (priorFallbackEnabled) {
       return true
     }
-    // Final attachments currently travel through the legacy JSON final shape.
-    // Keep that path available even when provider-native tool calling works so
-    // the model can still attach existing workspace files and generated media.
-    return true
+    // Keep native Responses continuation reachable until the route actually
+    // falls back to raw JSON parsing. Attachment-capable final answers still
+    // keep a JSON final-action escape hatch through prompt guidance.
+    return !nativeToolCallingEnabled
   }
 
   private fun requestedToolChoice(): LiteLlmToolChoice? {
@@ -1676,12 +1763,131 @@ class OpenCrayAgentRuntime(
       ?.trim()
       ?.lowercase() == "true"
 
+  private fun promptCacheToolPoolFingerprint(
+    requestedNativeToolDefinitions: List<LiteLlmToolDefinition>,
+    activeBuiltinTools: List<LiteLlmBuiltinToolDefinition>,
+  ): String = promptCacheFingerprint(
+    buildString {
+      appendLine("native_tools")
+      requestedNativeToolDefinitions.forEach { definition ->
+        appendLine(definition.name)
+      }
+      appendLine("builtin_tools")
+      activeBuiltinTools.forEach { tool ->
+        append(tool.type.name)
+        append('|')
+        append(tool.includeSources.toString())
+        appendLine()
+      }
+    },
+  )
+
+  private fun promptCacheToolSchemaFingerprint(
+    requestedNativeToolDefinitions: List<LiteLlmToolDefinition>,
+    activeBuiltinTools: List<LiteLlmBuiltinToolDefinition>,
+  ): String = promptCacheFingerprint(
+    buildString {
+      appendLine("native_tool_schemas")
+      requestedNativeToolDefinitions.forEach { definition ->
+        append(definition.name)
+        append('|')
+        append(definition.description)
+        append('|')
+        append(definition.strict?.toString() ?: "null")
+        append('|')
+        append(definition.inputSchema.toString())
+        appendLine()
+      }
+      appendLine("builtin_tool_schemas")
+      activeBuiltinTools.forEach { tool ->
+        append(tool.type.name)
+        append('|')
+        append(tool.includeSources.toString())
+        appendLine()
+      }
+    },
+  )
+
+  private fun promptCacheRequestSettingsFingerprint(
+    nativeToolCallingEnabled: Boolean,
+    requestedParallelToolCalls: Boolean?,
+    requestedToolChoice: LiteLlmToolChoice?,
+    responseApiPreferred: Boolean,
+  ): String = promptCacheFingerprint(
+    buildString {
+      appendLine("protocol=${config.llmMetadata["protocol"].orEmpty()}")
+      appendLine("responses_continuation_supported=${responsesContinuationSupported()}")
+      appendLine("response_api_preferred=$responseApiPreferred")
+      appendLine("native_tool_calling_enabled=$nativeToolCallingEnabled")
+      appendLine("parallel_tool_calls=${requestedParallelToolCalls?.toString() ?: "null"}")
+      appendLine("tool_choice_mode=${requestedToolChoice?.mode?.name ?: "null"}")
+      appendLine("tool_choice_name=${requestedToolChoice?.toolName ?: "null"}")
+      appendLine("native_provider_web_search_enabled=${nativeProviderWebSearchEnabled()}")
+      appendLine("dual_expose_web_search=${dualExposeWebSearchEnabled()}")
+    },
+  )
+
+  private fun promptCacheFingerprint(
+    source: String,
+  ): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(source.toByteArray(Charsets.UTF_8))
+    return digest.joinToString(separator = "") { byte -> "%02x".format(byte) }.take(24)
+  }
+
+  private fun nonResponsesContextCacheShapeMetadata(
+    stableAnchor: String,
+    frontContextZones: FrontContextZones,
+  ): Map<String, String> {
+    if (isResponsesProtocol()) {
+      return emptyMap()
+    }
+    val zoneMask = buildList {
+      if (frontContextZones.durableContextPrompt.trim().isNotBlank()) {
+        add("durable")
+      }
+      if (frontContextZones.dynamicContextPrompt.trim().isNotBlank()) {
+        add("dynamic")
+      }
+    }.joinToString(separator = ",")
+      .ifBlank { "none" }
+    return buildMap {
+      put(LiteLlmMetadataKeys.CONTEXT_CACHE_CONTRACT_VERSION, NON_RESPONSES_CONTEXT_CACHE_CONTRACT_VERSION)
+      put(LiteLlmMetadataKeys.CONTEXT_CACHE_STABLE_ANCHOR_HASH, promptCacheFingerprint(stableAnchor))
+      put(
+        LiteLlmMetadataKeys.CONTEXT_CACHE_DURABLE_CONTEXT_HASH,
+        promptCacheFingerprint(frontContextZones.durableContextPrompt.trim()),
+      )
+      put(
+        LiteLlmMetadataKeys.CONTEXT_CACHE_DYNAMIC_CONTEXT_HASH,
+        promptCacheFingerprint(frontContextZones.dynamicContextPrompt.trim()),
+      )
+      put(LiteLlmMetadataKeys.CONTEXT_CACHE_FRONT_CONTEXT_ZONE_MASK, zoneMask)
+      put(
+        LiteLlmMetadataKeys.CONTEXT_CACHE_FRONT_CONTEXT_MESSAGE_COUNT,
+        frontContextZones.promptsInTransportOrder.size.toString(),
+      )
+    }
+  }
+
   private fun buildResponsesGatewayMessagePlan(
     cursor: PromptTurnCursor,
-    contextPrompt: String,
+    frontContextPrompts: List<String>,
+    stableAnchor: String,
+    toolPoolFingerprint: String,
+    toolSchemaFingerprint: String,
+    requestSettingsFingerprint: String,
     transcript: List<RuntimeConversationMessage>,
   ): GatewayMessagePlan {
-    val decision = responsesContinuationDecision(cursor)
+    val decision = responsesContinuationDecision(
+      cursor = cursor,
+      requestedShape = ResponsesContinuationShape(
+        stableAnchor = stableAnchor,
+        frontContextZones = normalizeFrontContextZones(frontContextPrompts),
+        toolPoolFingerprint = toolPoolFingerprint,
+        toolSchemaFingerprint = toolSchemaFingerprint,
+        requestSettingsFingerprint = requestSettingsFingerprint,
+      ),
+    )
     val previousResponseId = decision.previousResponseId
     return if (previousResponseId != null) {
       GatewayMessagePlan(
@@ -1692,7 +1898,8 @@ class OpenCrayAgentRuntime(
       )
     } else {
       fullGatewayMessageRebuild(
-        contextPrompt = contextPrompt,
+        cursor = cursor,
+        frontContextPrompts = frontContextPrompts,
         transcript = transcript,
         reason = decision.reason,
       )
@@ -1701,6 +1908,7 @@ class OpenCrayAgentRuntime(
 
   private fun responsesContinuationDecision(
     cursor: PromptTurnCursor,
+    requestedShape: ResponsesContinuationShape,
   ): ResponsesContinuationDecision {
     if (!responsesContinuationSupported()) {
       return ResponsesContinuationDecision(reason = "responses_continuation_disabled")
@@ -1733,10 +1941,42 @@ class OpenCrayAgentRuntime(
           reason = responsesContinuationFallbackReason(message),
         )
       }
+    responsesContinuationShapeMismatchReason(
+      storedShape = cursor.responsesContinuationShape,
+      requestedShape = requestedShape,
+    )?.let { reason ->
+      return ResponsesContinuationDecision(reason = reason)
+    }
     return ResponsesContinuationDecision(
       previousResponseId = previousResponseId,
       reason = "responses_previous_response_id",
     )
+  }
+
+  private fun responsesContinuationShapeMismatchReason(
+    storedShape: ResponsesContinuationShape?,
+    requestedShape: ResponsesContinuationShape,
+  ): String? {
+    val shape = storedShape ?: return "responses_shape_unavailable"
+    if (shape.toolPoolFingerprint != requestedShape.toolPoolFingerprint) {
+      return "tool_pool_changed"
+    }
+    if (shape.toolSchemaFingerprint != requestedShape.toolSchemaFingerprint) {
+      return "tool_schema_changed"
+    }
+    if (shape.requestSettingsFingerprint != requestedShape.requestSettingsFingerprint) {
+      return "user_setting_changed"
+    }
+    if (shape.stableAnchor != requestedShape.stableAnchor) {
+      return "anchor_changed"
+    }
+    if (shape.frontContextZones.durableContextPrompt != requestedShape.frontContextZones.durableContextPrompt) {
+      return "durable_context_changed"
+    }
+    if (shape.frontContextZones.dynamicContextPrompt != requestedShape.frontContextZones.dynamicContextPrompt) {
+      return "dynamic_context_changed"
+    }
+    return null
   }
 
   private fun hasResponsesLineage(cursor: PromptTurnCursor): Boolean =
@@ -1804,20 +2044,65 @@ class OpenCrayAgentRuntime(
     cursor: PromptTurnCursor,
     transcript: List<RuntimeConversationMessage>,
     turnAwareConversation: List<RuntimeConversationMessage>,
-    contextPrompt: String,
+    frontContextPrompts: List<String>,
     stableAnchor: String,
+    toolPoolFingerprint: String,
+    toolSchemaFingerprint: String,
+    requestSettingsFingerprint: String,
   ): GatewayMessagePlan {
     val envelope = cursor.localContinuationEnvelope ?: return fullGatewayMessageRebuild(
-      contextPrompt = contextPrompt,
+      cursor = cursor,
+      frontContextPrompts = frontContextPrompts,
       transcript = turnAwareConversation,
       reason = "no_envelope",
     )
+    val normalizedFrontContextZones = normalizeFrontContextZones(frontContextPrompts)
+    if (envelope.toolPoolFingerprint != null && envelope.toolPoolFingerprint != toolPoolFingerprint) {
+      invalidateLocalContinuation(cursor)
+      return fullGatewayMessageRebuild(
+        cursor = cursor,
+        frontContextPrompts = frontContextPrompts,
+        transcript = turnAwareConversation,
+        reason = "tool_pool_changed",
+      )
+    }
+    if (envelope.toolSchemaFingerprint != null && envelope.toolSchemaFingerprint != toolSchemaFingerprint) {
+      invalidateLocalContinuation(cursor)
+      return fullGatewayMessageRebuild(
+        cursor = cursor,
+        frontContextPrompts = frontContextPrompts,
+        transcript = turnAwareConversation,
+        reason = "tool_schema_changed",
+      )
+    }
+    if (
+      envelope.requestSettingsFingerprint != null &&
+      envelope.requestSettingsFingerprint != requestSettingsFingerprint
+    ) {
+      invalidateLocalContinuation(cursor)
+      return fullGatewayMessageRebuild(
+        cursor = cursor,
+        frontContextPrompts = frontContextPrompts,
+        transcript = turnAwareConversation,
+        reason = "user_setting_changed",
+      )
+    }
     if (envelope.stableAnchor != stableAnchor) {
       invalidateLocalContinuation(cursor)
       return fullGatewayMessageRebuild(
-        contextPrompt = contextPrompt,
+        cursor = cursor,
+        frontContextPrompts = frontContextPrompts,
         transcript = turnAwareConversation,
         reason = "anchor_changed",
+      )
+    }
+    if (envelope.frontContextZones.durableContextPrompt != normalizedFrontContextZones.durableContextPrompt) {
+      invalidateLocalContinuation(cursor)
+      return fullGatewayMessageRebuild(
+        cursor = cursor,
+        frontContextPrompts = frontContextPrompts,
+        transcript = turnAwareConversation,
+        reason = "durable_context_changed",
       )
     }
     val transcriptDelta = transcriptDeltaSince(
@@ -1826,7 +2111,8 @@ class OpenCrayAgentRuntime(
     ) ?: run {
       invalidateLocalContinuation(cursor)
       return fullGatewayMessageRebuild(
-        contextPrompt = contextPrompt,
+        cursor = cursor,
+        frontContextPrompts = frontContextPrompts,
         transcript = turnAwareConversation,
         reason = "transcript_mismatch",
       )
@@ -1836,33 +2122,121 @@ class OpenCrayAgentRuntime(
     } else {
       emptyList()
     }
-    val deltaMessages = buildGatewayMessages(
-      contextPrompt = "",
-      transcript = transcriptDelta + promptOnlyDelta,
-    )
+    if (envelope.frontContextZones.dynamicContextPrompt != normalizedFrontContextZones.dynamicContextPrompt) {
+      val patchedGatewayMessages = patchDynamicFrontContextGatewayMessages(
+        gatewayMessages = envelope.gatewayMessages,
+        existingFrontContextZones = envelope.frontContextZones,
+        requestedFrontContextZones = normalizedFrontContextZones,
+      )
+      if (patchedGatewayMessages != null) {
+        return GatewayMessagePlan(
+          messages = patchedGatewayMessages + buildLocalContinuationDeltaMessages(
+            transcriptDelta = transcriptDelta,
+            promptOnlyDelta = promptOnlyDelta,
+            replayToolResultProjections = cursor.replayToolResultProjections,
+          ),
+          mode = LocalContinuationMode.LOCAL_FRONT_PATCH,
+          reason = "dynamic_context_changed",
+        )
+      }
+      invalidateLocalContinuation(cursor)
+      return fullGatewayMessageRebuild(
+        cursor = cursor,
+        frontContextPrompts = frontContextPrompts,
+        transcript = turnAwareConversation,
+        reason = "dynamic_context_changed",
+      )
+    }
     return GatewayMessagePlan(
-      messages = envelope.gatewayMessages + deltaMessages,
+      messages = envelope.gatewayMessages + buildLocalContinuationDeltaMessages(
+        transcriptDelta = transcriptDelta,
+        promptOnlyDelta = promptOnlyDelta,
+        replayToolResultProjections = cursor.replayToolResultProjections,
+      ),
       mode = LocalContinuationMode.LOCAL_DELTA,
       reason = if (transcriptDelta.isEmpty()) "steady_turn" else "transcript_delta",
     )
   }
 
   private fun fullGatewayMessageRebuild(
-    contextPrompt: String,
+    cursor: PromptTurnCursor,
+    frontContextPrompts: List<String>,
     transcript: List<RuntimeConversationMessage>,
     reason: String,
   ): GatewayMessagePlan = GatewayMessagePlan(
     messages = buildGatewayMessages(
-      contextPrompt = contextPrompt,
+      frontContextPrompts = frontContextPrompts,
       transcript = transcript,
+      replayToolResultProjections = cursor.replayToolResultProjections,
     ),
     mode = LocalContinuationMode.FULL_REBUILD,
-    reason = reason,
+      reason = reason,
+  )
+
+  private fun buildLocalContinuationDeltaMessages(
+    transcriptDelta: List<RuntimeConversationMessage>,
+    promptOnlyDelta: List<RuntimeConversationMessage>,
+    replayToolResultProjections: MutableMap<String, FrozenToolResultReplayProjection>?,
+  ): List<LiteLlmGatewayMessage> = buildGatewayMessages(
+    frontContextPrompts = emptyList(),
+    transcript = transcriptDelta + promptOnlyDelta,
+    replayToolResultProjections = replayToolResultProjections,
+  )
+
+  private fun patchDynamicFrontContextGatewayMessages(
+    gatewayMessages: List<LiteLlmGatewayMessage>,
+    existingFrontContextZones: FrontContextZones,
+    requestedFrontContextZones: FrontContextZones,
+  ): List<LiteLlmGatewayMessage>? {
+    val existingFrontContextPrompts = existingFrontContextZones.promptsInTransportOrder
+    if (!gatewayMessagesStartWithFrontContextPrompts(gatewayMessages, existingFrontContextPrompts)) {
+      return null
+    }
+    return requestedFrontContextZones.promptsInTransportOrder.map(::frontContextGatewayMessage) +
+      gatewayMessages.drop(existingFrontContextPrompts.size)
+  }
+
+  private fun gatewayMessagesStartWithFrontContextPrompts(
+    gatewayMessages: List<LiteLlmGatewayMessage>,
+    frontContextPrompts: List<String>,
+  ): Boolean {
+    if (frontContextPrompts.size > gatewayMessages.size) {
+      return false
+    }
+    return frontContextPrompts.indices.all { index ->
+      val message = gatewayMessages[index]
+      message.role == LiteLlmGatewayMessageRole.USER &&
+        message.attachments.isEmpty() &&
+        message.toolCalls.isEmpty() &&
+        message.toolResult == null &&
+        message.assistantPhase == null &&
+        message.content?.trim().orEmpty() == frontContextPrompts[index]
+    }
+  }
+
+  private fun frontContextGatewayMessage(prompt: String): LiteLlmGatewayMessage =
+    LiteLlmGatewayMessage(
+      role = LiteLlmGatewayMessageRole.USER,
+      content = prompt,
+    )
+
+  private fun contextCacheBreakReason(
+    cursor: PromptTurnCursor,
+    plan: GatewayMessagePlan,
+  ): String? = deriveContextCacheBreakReason(
+    localContinuationReason = plan.reason,
+    hasHistoricalResponsesContinuation = config.promptResumeState != null ||
+      cursor.turn > 0 ||
+      cursor.toolCallCount > 0 ||
+      !cursor.responsesPreviousResponseId.isNullOrBlank() ||
+      !cursor.responsesProviderLineageId.isNullOrBlank() ||
+      cursor.responsesPendingMessages.isNotEmpty(),
   )
 
   private fun updateResponsesContinuationState(
     cursor: PromptTurnCursor,
     gatewayResult: LiteLlmGatewayResult,
+    continuationShape: ResponsesContinuationShape,
   ) {
     if (!isResponsesProtocol()) {
       invalidateResponsesLineage(cursor)
@@ -1884,6 +2258,7 @@ class OpenCrayAgentRuntime(
     cursor.responsesProviderLineageId = providerLineageId
     cursor.responsesLineageTrusted = providerLineageId.isNotBlank()
     cursor.responsesFullReplayRequired = false
+    cursor.responsesContinuationShape = continuationShape
     cursor.responsesPendingMessages.clear()
   }
 
@@ -1891,20 +2266,27 @@ class OpenCrayAgentRuntime(
     cursor.responsesPreviousResponseId = null
     cursor.responsesProviderLineageId = null
     cursor.responsesLineageTrusted = false
+    cursor.responsesContinuationShape = null
     cursor.responsesPendingMessages.clear()
   }
 
   private fun refreshLocalContinuationEnvelope(
     cursor: PromptTurnCursor,
-    contextPrompt: String,
+    frontContextPrompts: List<String>,
     stableAnchor: String,
     gatewayMessagesEnabled: Boolean,
+    toolPoolFingerprint: String,
+    toolSchemaFingerprint: String,
+    requestSettingsFingerprint: String,
   ) {
     cursor.localContinuationEnvelope = buildLocalContinuationEnvelope(
       cursor = cursor,
-      contextPrompt = contextPrompt,
+      frontContextPrompts = frontContextPrompts,
       stableAnchor = stableAnchor,
       gatewayMessagesEnabled = gatewayMessagesEnabled,
+      toolPoolFingerprint = toolPoolFingerprint,
+      toolSchemaFingerprint = toolSchemaFingerprint,
+      requestSettingsFingerprint = requestSettingsFingerprint,
     )
   }
 
@@ -1914,19 +2296,28 @@ class OpenCrayAgentRuntime(
 
   private fun buildLocalContinuationEnvelope(
     cursor: PromptTurnCursor,
-    contextPrompt: String,
+    frontContextPrompts: List<String>,
     stableAnchor: String,
     gatewayMessagesEnabled: Boolean,
+    toolPoolFingerprint: String,
+    toolSchemaFingerprint: String,
+    requestSettingsFingerprint: String,
   ): LocalContinuationEnvelope? {
     if (isResponsesProtocol() || !gatewayMessagesEnabled) {
       return null
     }
+    val normalizedFrontContextZones = normalizeFrontContextZones(frontContextPrompts)
     return LocalContinuationEnvelope(
       stableAnchor = stableAnchor,
+      frontContextZones = normalizedFrontContextZones,
+      toolPoolFingerprint = toolPoolFingerprint,
+      toolSchemaFingerprint = toolSchemaFingerprint,
+      requestSettingsFingerprint = requestSettingsFingerprint,
       transcriptFrontier = cursor.transcript.toList(),
       gatewayMessages = buildGatewayMessages(
-        contextPrompt = contextPrompt,
+        frontContextPrompts = normalizedFrontContextZones.promptsInTransportOrder,
         transcript = cursor.transcript,
+        replayToolResultProjections = cursor.replayToolResultProjections,
       ),
     )
   }
@@ -1944,12 +2335,14 @@ class OpenCrayAgentRuntime(
     return transcript.drop(frontier.size)
   }
 
+  private fun normalizeFrontContextZones(
+    prompts: List<String>,
+  ): FrontContextZones = FrontContextZones.fromTransportPrompts(prompts)
+
   private fun stableLocalContinuationAnchor(assembledPrompt: com.opencray.runtime.context.AssembledPrompt): String =
     assembledPrompt.layers
-      .filterNot { layer ->
-        layer.name == "Conversation" ||
-          layer.name == "Recent Working Observations" ||
-          layer.name == "Pruning Summary"
+      .filter { layer ->
+        layer.transportGroup == PromptLayerTransportGroup.SYSTEM_PREFIX
       }
       .joinToString(separator = "\n\n") { layer ->
         buildString {
@@ -1964,16 +2357,7 @@ class OpenCrayAgentRuntime(
 
   private fun stableLocalContinuationLayerContent(
     layer: com.opencray.runtime.context.PromptLayer,
-  ): String {
-    val trimmed = layer.content.trim()
-    if (layer.name != "Task Metadata") {
-      return trimmed
-    }
-    return trimmed.lineSequence()
-      .filterNot { line -> line.startsWith("task_id=") }
-      .joinToString(separator = "\n")
-      .trim()
-  }
+  ): String = layer.content.trim()
 
   private fun parseStructuredToolCall(
     toolCall: LiteLlmStructuredToolCall,
@@ -2418,6 +2802,11 @@ class OpenCrayAgentRuntime(
         ?.trim()
         ?.takeIf(String::isNotBlank)
         ?.let { reason -> put("localContinuationLastReason", reason) }
+      promptDiagnostics.contextCacheBreakReason
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { reason -> put(LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON, reason) }
+      putAll(promptDiagnostics.contextCacheShapeMetadata)
       promptDiagnostics.lastSuccessfulToolName
         ?.trim()
         ?.takeIf(String::isNotBlank)
@@ -2442,17 +2831,58 @@ class OpenCrayAgentRuntime(
   private fun MutableMap<String, String>.putContextBudgetMetadata(
     report: ContextBudgetReport,
   ) {
+    val sourceBudgetProfile = config.contextSourceBudgetProfile
     put("contextBudgetApplied", report.applied.toString())
     put("contextBudgetPressureMode", report.pressureMode.name)
     put("contextBudgetContextWindowTokens", report.contextWindowTokens.toString())
     put("contextBudgetReservedOutputTokens", report.reservedOutputTokens.toString())
     put("contextBudgetSafetyMarginTokens", report.safetyMarginTokens.toString())
+    put("contextBudgetSelectedPreset", report.selectedPreset)
+    put("contextBudgetEffectivePreset", report.effectivePreset)
+    put("contextBudgetPresetSource", report.presetSource)
+    put("contextBudgetPresetDiverged", report.presetDiverged.toString())
+    put("contextBudgetSourcePreset", sourceBudgetProfile.sourcePresetWireValue)
+    put(
+      "contextBudgetSourceTranscriptMaxMessages",
+      sourceBudgetProfile.transcriptWindowConfig.maxMessages.toString(),
+    )
+    put(
+      "contextBudgetSourceInjectedMemoryMaxRecords",
+      sourceBudgetProfile.contextManagerConfig.maxInjectedMemoryRecords.toString(),
+    )
+    put(
+      "contextBudgetSourceMemoryRecallMaxRecords",
+      sourceBudgetProfile.memoryPolicy.recallBudget.maxRecords.toString(),
+    )
+    put(
+      "contextBudgetSourceBootstrapMaxChars",
+      sourceBudgetProfile.bootstrapContextResolverConfig.maxTotalChars.toString(),
+    )
+    put(
+      "contextBudgetSourceSkillInventoryMaxSkills",
+      sourceBudgetProfile.skillInventoryPromptLayerConfig.maxSkills.toString(),
+    )
+    put(
+      "contextBudgetSourceActiveSkillMaxChars",
+      sourceBudgetProfile.activeSkillPromptLayerConfig.maxBodyChars.toString(),
+    )
+    put(
+      "contextBudgetSourceRecentObservationMaxEntries",
+      sourceBudgetProfile.recentToolObservationConfig.maxEntries.toString(),
+    )
+    put(
+      "contextBudgetSourceMemoryFlushMaxToolObservations",
+      sourceBudgetProfile.memoryFlushPolicy.maxToolObservations.toString(),
+    )
     put("contextBudgetHardInputTokens", report.hardInputBudgetTokens.toString())
     put("contextBudgetTargetInputTokens", report.targetInputBudgetTokens.toString())
     put("contextBudgetEmergencyInputTokens", report.emergencyInputBudgetTokens.toString())
     put("contextBudgetEffectiveInputPercent", report.effectiveInputPercent.toString())
     put("contextBudgetEstimatedInputTokensBefore", report.estimatedInputTokensBefore.toString())
     put("contextBudgetEstimatedInputTokensAfter", report.estimatedInputTokensAfter.toString())
+    put("contextBudgetFullLayerCount", report.fullLayerCount.toString())
+    put("contextBudgetCompactLayerCount", report.compactLayerCount.toString())
+    put("contextBudgetMinimalLayerCount", report.minimalLayerCount.toString())
     put("contextBudgetOmittedLayerCount", report.omittedLayerCount.toString())
     put("contextBudgetReducedLayerCount", report.reducedLayerCount.toString())
     put("contextBudgetUnresolvedOverflow", report.unresolvedOverflow.toString())
@@ -2470,6 +2900,34 @@ class OpenCrayAgentRuntime(
       .takeIf { layers -> layers.isNotEmpty() }
       ?.let { layers ->
         put(
+          "contextBudgetLayerDetails",
+          buildJsonArray {
+            layers.forEach { layer ->
+              add(
+                buildJsonObject {
+                  put("id", layer.id.name)
+                  put("name", layer.name)
+                  put("priorityClass", layer.priorityClass.name)
+                  put("retentionPriority", layer.retentionPriority)
+                  put("estimatedTokensBefore", layer.estimatedTokensBefore)
+                  put("estimatedTokensAfter", layer.estimatedTokensAfter)
+                  put("finalState", layer.finalState.wireValue)
+                  put("omitted", layer.omitted)
+                  put("reduced", layer.reduced)
+                  put(
+                    "appliedOperators",
+                    buildJsonArray {
+                      layer.appliedOperators.forEach { operator ->
+                        add(JsonPrimitive(operator))
+                      }
+                    },
+                  )
+                },
+              )
+            }
+          }.toString(),
+        )
+        put(
           "contextBudgetLayerSummary",
           layers.joinToString(separator = ";") { layer ->
             buildString {
@@ -2479,13 +2937,7 @@ class OpenCrayAgentRuntime(
               append(">")
               append(layer.estimatedTokensAfter)
               append(":")
-              append(
-                when {
-                  layer.omitted -> "omitted"
-                  layer.reduced -> "reduced"
-                  else -> "kept"
-                },
-              )
+              append(layer.finalState.wireValue)
               if (layer.appliedOperators.isNotEmpty()) {
                 append("[")
                 append(layer.appliedOperators.joinToString(separator = "|"))
@@ -2750,9 +3202,12 @@ class OpenCrayAgentRuntime(
     cursor: PromptTurnCursor,
     hooks: RuntimeExecutionHooks,
     diagnostics: PromptRunDiagnostics,
-    localContinuationContextPrompt: String? = null,
+    localContinuationContextPrompts: List<String>? = null,
     localContinuationStableAnchor: String? = null,
     localContinuationGatewayMessagesEnabled: Boolean = false,
+    localContinuationToolPoolFingerprint: String? = null,
+    localContinuationToolSchemaFingerprint: String? = null,
+    localContinuationRequestSettingsFingerprint: String? = null,
   ): ExecutionResult {
     val message = buildRecoverableRetryExhaustedMessage(
       gatewayResult = gatewayResult,
@@ -2788,9 +3243,12 @@ class OpenCrayAgentRuntime(
         state = promptCheckpointState(
           cursor = cursor,
           turnIndex = cursor.turn,
-          localContinuationContextPrompt = localContinuationContextPrompt,
+          localContinuationContextPrompts = localContinuationContextPrompts,
           localContinuationStableAnchor = localContinuationStableAnchor,
           localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+          localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
+          localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
+          localContinuationRequestSettingsFingerprint = localContinuationRequestSettingsFingerprint,
         ),
         json = config.json,
       ),
@@ -3084,9 +3542,12 @@ class OpenCrayAgentRuntime(
     legacyJsonFallbackEnabled: Boolean,
     actionStartIndex: Int = 0,
     suppressToolCallEventAtActionIndex: Int? = null,
-    localContinuationContextPrompt: String? = null,
+    localContinuationContextPrompts: List<String>? = null,
     localContinuationStableAnchor: String? = null,
     localContinuationGatewayMessagesEnabled: Boolean = false,
+    localContinuationToolPoolFingerprint: String? = null,
+    localContinuationToolSchemaFingerprint: String? = null,
+    localContinuationRequestSettingsFingerprint: String? = null,
   ): PromptBatchExecutionOutcome {
     val batchActions = normalizeToolCallIds(
       actions = parsedBatch.actions,
@@ -3157,9 +3618,12 @@ class OpenCrayAgentRuntime(
               batchActions = batchActions,
               nextActionIndex = index + 1,
               requiresSingleActionReminder = parsedBatch.requiresSingleActionReminder,
-              localContinuationContextPrompt = localContinuationContextPrompt,
+              localContinuationContextPrompts = localContinuationContextPrompts,
               localContinuationStableAnchor = localContinuationStableAnchor,
               localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+              localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
+              localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
+              localContinuationRequestSettingsFingerprint = localContinuationRequestSettingsFingerprint,
             ),
           )
           index += 1
@@ -3228,9 +3692,13 @@ class OpenCrayAgentRuntime(
                   activeSkillCapsule = activeSkillCapsule,
                   diagnostics = diagnostics,
                   group = parallelGroup,
-                  localContinuationContextPrompt = localContinuationContextPrompt,
+                  localContinuationContextPrompts = localContinuationContextPrompts,
                   localContinuationStableAnchor = localContinuationStableAnchor,
                   localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+                  localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
+                  localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
+                  localContinuationRequestSettingsFingerprint =
+                    localContinuationRequestSettingsFingerprint,
                 )
               ) {
                 is ParallelToolActionGroupOutcome.Advance -> {
@@ -3294,9 +3762,12 @@ class OpenCrayAgentRuntime(
             batchActions = batchActions,
             nextActionIndex = index + 1,
             requiresSingleActionReminder = parsedBatch.requiresSingleActionReminder,
-            localContinuationContextPrompt = localContinuationContextPrompt,
+            localContinuationContextPrompts = localContinuationContextPrompts,
             localContinuationStableAnchor = localContinuationStableAnchor,
             localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+            localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
+            localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
+            localContinuationRequestSettingsFingerprint = localContinuationRequestSettingsFingerprint,
           )
           index += 1
           continue
@@ -3439,9 +3910,12 @@ class OpenCrayAgentRuntime(
     activeSkillCapsule: ActiveSkillCapsule?,
     diagnostics: PromptRunDiagnostics,
     group: List<ParallelToolActionStep>,
-    localContinuationContextPrompt: String?,
+    localContinuationContextPrompts: List<String>?,
     localContinuationStableAnchor: String?,
     localContinuationGatewayMessagesEnabled: Boolean,
+    localContinuationToolPoolFingerprint: String? = null,
+    localContinuationToolSchemaFingerprint: String? = null,
+    localContinuationRequestSettingsFingerprint: String? = null,
   ): ParallelToolActionGroupOutcome {
     group.forEach { step ->
       announcePromptToolCall(
@@ -3495,9 +3969,12 @@ class OpenCrayAgentRuntime(
           null
         },
         requiresSingleActionReminder = parsedBatch.requiresSingleActionReminder,
-        localContinuationContextPrompt = localContinuationContextPrompt,
+        localContinuationContextPrompts = localContinuationContextPrompts,
         localContinuationStableAnchor = localContinuationStableAnchor,
         localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+        localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
+        localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
+        localContinuationRequestSettingsFingerprint = localContinuationRequestSettingsFingerprint,
       )
       if (!shouldContinueBatch) {
         break
@@ -3678,7 +4155,9 @@ class OpenCrayAgentRuntime(
           responsesPreviousResponseId = cursor.responsesPreviousResponseId,
           responsesProviderLineageId = cursor.responsesProviderLineageId,
           responsesLineageTrusted = cursor.responsesLineageTrusted,
+          responsesContinuationShape = cursor.responsesContinuationShape,
           responsesPendingMessages = cursor.responsesPendingMessages.toList(),
+          replayToolResultProjections = cursor.replayToolResultProjections.toMap(),
           subAgentHandles = synchronizedSubAgentHandles(cursor),
           hooks = hooks,
           diagnostics = diagnostics,
@@ -3698,9 +4177,12 @@ class OpenCrayAgentRuntime(
     batchActions: List<AgentModelAction>? = null,
     nextActionIndex: Int? = null,
     requiresSingleActionReminder: Boolean = false,
-    localContinuationContextPrompt: String?,
+    localContinuationContextPrompts: List<String>?,
     localContinuationStableAnchor: String?,
     localContinuationGatewayMessagesEnabled: Boolean,
+    localContinuationToolPoolFingerprint: String? = null,
+    localContinuationToolSchemaFingerprint: String? = null,
+    localContinuationRequestSettingsFingerprint: String? = null,
   ): Boolean {
     val promptSupplement = successfulPromptSupplementFrom(toolResult)
     if (toolResult.status == AgentToolResultStatus.SUCCESS) {
@@ -3714,16 +4196,17 @@ class OpenCrayAgentRuntime(
         cursor.activeSkillActivationSource = ACTIVATION_SOURCE_SKILL_READ
       }
     }
-    cursor.transcript += transcriptWithToolResult(
+    val transcriptEntry = transcriptWithToolResult(
       task = task,
       turn = turn,
       transcript = emptyList(),
       toolCall = call,
       toolResult = toolResult,
     ).single()
+    cursor.transcript += transcriptEntry
     if (isResponsesProtocol() && hasResponsesLineage(cursor)) {
-      cursor.responsesPendingMessages += LiteLlmGatewayMessage(
-        role = LiteLlmGatewayMessageRole.TOOL,
+      val pendingToolResult = applyFrozenReplayProjection(
+        entry = transcriptEntry,
         toolResult = LiteLlmGatewayToolResult(
           toolCallId = call.id,
           toolName = toolResult.toolName,
@@ -3736,6 +4219,11 @@ class OpenCrayAgentRuntime(
           errorMessage = toolResult.errorMessage,
           metadata = toolResult.metadata,
         ),
+        replayToolResultProjections = cursor.replayToolResultProjections,
+      )
+      cursor.responsesPendingMessages += LiteLlmGatewayMessage(
+        role = LiteLlmGatewayMessageRole.TOOL,
+        toolResult = pendingToolResult,
       )
     }
     cursor.toolCallCount += 1
@@ -3748,7 +4236,7 @@ class OpenCrayAgentRuntime(
         boundary = OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
         cursor = cursor,
         turnIndex = cursor.turn + 1,
-        localContinuationContextPrompt = localContinuationContextPrompt,
+        localContinuationContextPrompts = localContinuationContextPrompts,
         localContinuationStableAnchor = localContinuationStableAnchor,
         localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
       )
@@ -3759,9 +4247,12 @@ class OpenCrayAgentRuntime(
         batchActions = batchActions,
         nextActionIndex = nextActionIndex,
         requiresSingleActionReminder = requiresSingleActionReminder,
-        localContinuationContextPrompt = localContinuationContextPrompt,
+        localContinuationContextPrompts = localContinuationContextPrompts,
         localContinuationStableAnchor = localContinuationStableAnchor,
         localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+        localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
+        localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
+        localContinuationRequestSettingsFingerprint = localContinuationRequestSettingsFingerprint,
       )
     } else {
       emptyMap()
@@ -3785,7 +4276,7 @@ class OpenCrayAgentRuntime(
         call = call,
         supplement = promptSupplement,
         cursor = cursor,
-        localContinuationContextPrompt = localContinuationContextPrompt,
+        localContinuationContextPrompts = localContinuationContextPrompts,
         localContinuationStableAnchor = localContinuationStableAnchor,
         localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
       )
@@ -3819,7 +4310,7 @@ class OpenCrayAgentRuntime(
     call: AgentToolCall,
     supplement: PromptSupplementPayload,
     cursor: PromptTurnCursor,
-    localContinuationContextPrompt: String?,
+    localContinuationContextPrompts: List<String>?,
     localContinuationStableAnchor: String?,
     localContinuationGatewayMessagesEnabled: Boolean,
   ) {
@@ -3843,7 +4334,7 @@ class OpenCrayAgentRuntime(
       boundary = OpenCrayPromptCheckpointBoundary.SUPPLEMENT_INGESTED,
       cursor = cursor,
       turnIndex = cursor.turn + 1,
-      localContinuationContextPrompt = localContinuationContextPrompt,
+      localContinuationContextPrompts = localContinuationContextPrompts,
       localContinuationStableAnchor = localContinuationStableAnchor,
       localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
     )
@@ -4012,7 +4503,9 @@ class OpenCrayAgentRuntime(
     responsesPreviousResponseId: String?,
     responsesProviderLineageId: String?,
     responsesLineageTrusted: Boolean,
+    responsesContinuationShape: ResponsesContinuationShape?,
     responsesPendingMessages: List<LiteLlmGatewayMessage>,
+    replayToolResultProjections: Map<String, FrozenToolResultReplayProjection>,
     subAgentHandles: List<SubAgentHandleState>,
     hooks: RuntimeExecutionHooks,
     diagnostics: PromptRunDiagnostics,
@@ -4063,7 +4556,9 @@ class OpenCrayAgentRuntime(
             responsesPreviousResponseId = responsesPreviousResponseId,
             responsesProviderLineageId = responsesProviderLineageId,
             responsesLineageTrusted = responsesLineageTrusted,
+            responsesContinuationShape = responsesContinuationShape?.toSerializable(),
             responsesPendingMessages = responsesPendingMessages.map(OpenCraySerializableGatewayMessage::from),
+            replayToolResultProjections = replayToolResultProjections.toSortedMap(),
             subAgentHandles = subAgentHandles,
           ),
           json = config.json,
@@ -4124,9 +4619,12 @@ class OpenCrayAgentRuntime(
     cursor: PromptTurnCursor,
     gatewayResult: LiteLlmGatewayResult,
     diagnostics: PromptRunDiagnostics,
-    localContinuationContextPrompt: String? = null,
+    localContinuationContextPrompts: List<String>? = null,
     localContinuationStableAnchor: String? = null,
     localContinuationGatewayMessagesEnabled: Boolean = false,
+    localContinuationToolPoolFingerprint: String? = null,
+    localContinuationToolSchemaFingerprint: String? = null,
+    localContinuationRequestSettingsFingerprint: String? = null,
   ) {
     val observations = decodeBuiltinWebSearchObservations(gatewayResult)
     if (observations.isEmpty()) {
@@ -4139,9 +4637,12 @@ class OpenCrayAgentRuntime(
         boundary = OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
         cursor = cursor,
         turnIndex = cursor.turn + 1,
-        localContinuationContextPrompt = localContinuationContextPrompt,
+        localContinuationContextPrompts = localContinuationContextPrompts,
         localContinuationStableAnchor = localContinuationStableAnchor,
         localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+        localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
+        localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
+        localContinuationRequestSettingsFingerprint = localContinuationRequestSettingsFingerprint,
       )
       val eventToolResult = if (checkpointMetadata.isEmpty()) {
         result
@@ -4728,19 +5229,20 @@ class OpenCrayAgentRuntime(
   )
 
   private fun buildGatewayMessages(
-    contextPrompt: String,
+    frontContextPrompts: List<String>,
     transcript: List<RuntimeConversationMessage>,
+    replayToolResultProjections: MutableMap<String, FrozenToolResultReplayProjection>? = null,
   ): List<LiteLlmGatewayMessage> {
     val messages = mutableListOf<LiteLlmGatewayMessage>()
-    contextPrompt
-      .trim()
-      .takeIf(String::isNotBlank)
-      ?.let { prompt ->
+    frontContextPrompts
+      .map(String::trim)
+      .filter(String::isNotBlank)
+      .forEach { prompt ->
         messages += LiteLlmGatewayMessage(
           role = LiteLlmGatewayMessageRole.USER,
           content = prompt,
         )
-    }
+      }
     var syntheticToolCallIndex = nextSyntheticToolCallSequence(transcript) - 1
     var pendingToolCallId: String? = null
     transcript.forEach { entry ->
@@ -4819,10 +5321,9 @@ class OpenCrayAgentRuntime(
             }
             return@forEach
           }
-          val observation = runtimeToolResultFor(entry) ?: return@forEach
-          messages += LiteLlmGatewayMessage(
-            role = LiteLlmGatewayMessageRole.TOOL,
-            toolResult = LiteLlmGatewayToolResult(
+          val observation = runtimeToolResultFor(entry)
+          if (observation != null) {
+            val canonicalToolResult = LiteLlmGatewayToolResult(
               toolCallId = observation.toolCallId ?: pendingToolCallId,
               toolName = observation.toolName,
               content = observation.content,
@@ -4834,25 +5335,96 @@ class OpenCrayAgentRuntime(
               errorCode = observation.errorCode,
               errorMessage = observation.errorMessage,
               metadata = observation.metadata,
-            ),
-          )
-          pendingToolCallId = null
+            )
+            messages += LiteLlmGatewayMessage(
+              role = LiteLlmGatewayMessageRole.TOOL,
+              toolResult = applyFrozenReplayProjection(
+                entry = entry,
+                toolResult = canonicalToolResult,
+                replayToolResultProjections = replayToolResultProjections,
+              ),
+            )
+            pendingToolCallId = null
+          } else {
+            projectedPlainToolTranscriptContent(entry)?.let { toolContent ->
+              messages += LiteLlmGatewayMessage(
+                role = LiteLlmGatewayMessageRole.USER,
+                content = "[tool]\n$toolContent",
+              )
+            }
+          }
         }
       }
     }
     return messages
   }
 
+  private fun applyFrozenReplayProjection(
+    entry: RuntimeConversationMessage,
+    toolResult: LiteLlmGatewayToolResult,
+    replayToolResultProjections: MutableMap<String, FrozenToolResultReplayProjection>?,
+  ): LiteLlmGatewayToolResult {
+    if (replayToolResultProjections == null) {
+      return toolResult
+    }
+    val projectionKey = toolResultReplayProjector.projectionKey(
+      entry = entry,
+      toolResult = toolResult,
+    )
+    replayToolResultProjections[projectionKey]?.let { projection ->
+      return projection.restoredToolResult()
+    }
+    val projection = toolResultReplayProjector.maybeProject(
+      entry = entry,
+      toolResult = toolResult,
+    ) ?: return toolResult
+    replayToolResultProjections.putIfAbsent(
+      projection.projectionKey,
+      projection,
+    )
+    return replayToolResultProjections[projection.projectionKey]
+      ?.restoredToolResult()
+      ?: projection.restoredToolResult()
+  }
+
+  private fun projectedPlainToolTranscriptContent(
+    entry: RuntimeConversationMessage,
+  ): String? {
+    val content = entry.content.trim().takeIf(String::isNotBlank) ?: return null
+    if (entry.role != RuntimeConversationRole.TOOL || entry.kind != RuntimeConversationMessageKind.PLAIN) {
+      return content
+    }
+    return runCatching {
+      com.opencray.runtime.context.ContextPruner()
+        .prune(listOf(entry.copy(content = content)))
+        .messages
+        .single()
+        .content
+        .trim()
+    }.getOrNull()?.takeIf(String::isNotBlank) ?: content
+  }
+
   private fun PromptRunDiagnostics.recordGatewayMessagePlan(
     plan: GatewayMessagePlan,
+    contextCacheBreakReason: String?,
   ) {
     localContinuationLastMode = plan.mode
     localContinuationLastReason = plan.reason
-    if (plan.mode == LocalContinuationMode.LOCAL_DELTA) {
+    this.contextCacheBreakReason = contextCacheBreakReason
+    if (plan.mode == LocalContinuationMode.LOCAL_DELTA || plan.mode == LocalContinuationMode.LOCAL_FRONT_PATCH) {
       localContinuationUsedCount += 1
     } else if (
       plan.mode == LocalContinuationMode.FULL_REBUILD &&
-      (plan.reason == "anchor_changed" || plan.reason == "transcript_mismatch")
+      (
+        plan.reason == "anchor_changed" ||
+          plan.reason == "durable_context_changed" ||
+          plan.reason == "dynamic_context_changed" ||
+          plan.reason == "transcript_mismatch" ||
+          plan.reason == "responses_shape_unavailable" ||
+          plan.reason == "tool_pool_changed" ||
+          plan.reason == "tool_schema_changed" ||
+          plan.reason == "user_setting_changed"
+        )
     ) {
       localContinuationFallbackCount += 1
     }
@@ -7374,9 +7946,9 @@ class OpenCrayAgentRuntime(
     appendLine("Turn budget note: this is the last allowed model turn.")
     appendLine("Do not call any more tools.")
     if (legacyJsonFallbackEnabled) {
-      append("Return the best user-facing final answer now. Prefer plain assistant text. If this endpoint is still on the legacy fallback path, return exactly one JSON final action.")
+      append("Return the best user-facing final answer now. If plain assistant text is sufficient, prefer that. If you must attach existing artifacts, return exactly one JSON final action.")
     } else {
-      append("Return the best user-facing final answer now as plain assistant text.")
+      append("Return the best user-facing final answer now as plain assistant text. If you must attach existing artifacts, return exactly one JSON final action instead.")
     }
   }.trim()
 
@@ -7386,9 +7958,12 @@ class OpenCrayAgentRuntime(
     pendingActions: List<AgentModelAction> = emptyList(),
     nextActionIndex: Int = 0,
     requiresSingleActionReminder: Boolean = false,
-    localContinuationContextPrompt: String? = null,
+    localContinuationContextPrompts: List<String>? = null,
     localContinuationStableAnchor: String? = null,
     localContinuationGatewayMessagesEnabled: Boolean = false,
+    localContinuationToolPoolFingerprint: String? = null,
+    localContinuationToolSchemaFingerprint: String? = null,
+    localContinuationRequestSettingsFingerprint: String? = null,
   ): OpenCrayPromptResumeState = OpenCrayPromptResumeState(
     transcript = cursor.transcript.toList(),
     turnIndex = turnIndex,
@@ -7398,14 +7973,24 @@ class OpenCrayAgentRuntime(
     requiresSingleActionReminder = requiresSingleActionReminder,
     activeSkillName = cursor.activeSkillName,
     activeSkillActivationSource = cursor.activeSkillActivationSource,
-    localContinuationEnvelope = localContinuationContextPrompt
-      ?.let { contextPrompt ->
+    localContinuationEnvelope = localContinuationContextPrompts
+      ?.takeIf { prompts -> prompts.isNotEmpty() }
+      ?.let { frontContextPrompts ->
         localContinuationStableAnchor?.let { stableAnchor ->
           buildLocalContinuationEnvelope(
             cursor = cursor,
-            contextPrompt = contextPrompt,
+            frontContextPrompts = frontContextPrompts,
             stableAnchor = stableAnchor,
             gatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+            toolPoolFingerprint = localContinuationToolPoolFingerprint
+              ?: cursor.localContinuationEnvelope?.toolPoolFingerprint
+              ?: "absent",
+            toolSchemaFingerprint = localContinuationToolSchemaFingerprint
+              ?: cursor.localContinuationEnvelope?.toolSchemaFingerprint
+              ?: "absent",
+            requestSettingsFingerprint = localContinuationRequestSettingsFingerprint
+              ?: cursor.localContinuationEnvelope?.requestSettingsFingerprint
+              ?: "absent",
           )?.toSerializable()
         }
       }
@@ -7413,7 +7998,9 @@ class OpenCrayAgentRuntime(
     responsesPreviousResponseId = cursor.responsesPreviousResponseId,
     responsesProviderLineageId = cursor.responsesProviderLineageId,
     responsesLineageTrusted = cursor.responsesLineageTrusted,
+    responsesContinuationShape = cursor.responsesContinuationShape?.toSerializable(),
     responsesPendingMessages = cursor.responsesPendingMessages.map(OpenCraySerializableGatewayMessage::from),
+    replayToolResultProjections = cursor.replayToolResultProjections.toSortedMap(),
     subAgentHandles = synchronizedSubAgentHandles(cursor),
   )
 
@@ -7424,9 +8011,12 @@ class OpenCrayAgentRuntime(
     pendingActions: List<AgentModelAction> = emptyList(),
     nextActionIndex: Int = 0,
     requiresSingleActionReminder: Boolean = false,
-    localContinuationContextPrompt: String? = null,
+    localContinuationContextPrompts: List<String>? = null,
     localContinuationStableAnchor: String? = null,
     localContinuationGatewayMessagesEnabled: Boolean = false,
+    localContinuationToolPoolFingerprint: String? = null,
+    localContinuationToolSchemaFingerprint: String? = null,
+    localContinuationRequestSettingsFingerprint: String? = null,
   ): Map<String, String> = OpenCrayPromptResumeMetadata.encodeToMetadata(
     state = promptCheckpointState(
       cursor = cursor,
@@ -7434,9 +8024,12 @@ class OpenCrayAgentRuntime(
       pendingActions = pendingActions,
       nextActionIndex = nextActionIndex,
       requiresSingleActionReminder = requiresSingleActionReminder,
-      localContinuationContextPrompt = localContinuationContextPrompt,
+      localContinuationContextPrompts = localContinuationContextPrompts,
       localContinuationStableAnchor = localContinuationStableAnchor,
       localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+      localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
+      localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
+      localContinuationRequestSettingsFingerprint = localContinuationRequestSettingsFingerprint,
     ),
     json = config.json,
     checkpointBoundary = boundary,
@@ -7451,9 +8044,12 @@ class OpenCrayAgentRuntime(
     pendingActions: List<AgentModelAction> = emptyList(),
     nextActionIndex: Int = 0,
     requiresSingleActionReminder: Boolean = false,
-    localContinuationContextPrompt: String? = null,
+    localContinuationContextPrompts: List<String>? = null,
     localContinuationStableAnchor: String? = null,
     localContinuationGatewayMessagesEnabled: Boolean = false,
+    localContinuationToolPoolFingerprint: String? = null,
+    localContinuationToolSchemaFingerprint: String? = null,
+    localContinuationRequestSettingsFingerprint: String? = null,
   ) {
     config.promptCheckpointSink(
       OpenCrayPromptCheckpointEmission(
@@ -7464,9 +8060,12 @@ class OpenCrayAgentRuntime(
           pendingActions = pendingActions,
           nextActionIndex = nextActionIndex,
           requiresSingleActionReminder = requiresSingleActionReminder,
-          localContinuationContextPrompt = localContinuationContextPrompt,
+          localContinuationContextPrompts = localContinuationContextPrompts,
           localContinuationStableAnchor = localContinuationStableAnchor,
           localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+          localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
+          localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
+          localContinuationRequestSettingsFingerprint = localContinuationRequestSettingsFingerprint,
         ),
         emittedAtEpochMs = emittedAtEpochMs,
         toolName = toolName,
@@ -7484,9 +8083,12 @@ class OpenCrayAgentRuntime(
     pendingActions: List<AgentModelAction> = emptyList(),
     nextActionIndex: Int = 0,
     requiresSingleActionReminder: Boolean = false,
-    localContinuationContextPrompt: String? = null,
+    localContinuationContextPrompts: List<String>? = null,
     localContinuationStableAnchor: String? = null,
     localContinuationGatewayMessagesEnabled: Boolean = false,
+    localContinuationToolPoolFingerprint: String? = null,
+    localContinuationToolSchemaFingerprint: String? = null,
+    localContinuationRequestSettingsFingerprint: String? = null,
   ) {
     if (
       boundary != OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST &&
@@ -7510,9 +8112,12 @@ class OpenCrayAgentRuntime(
           pendingActions = pendingActions,
           nextActionIndex = nextActionIndex,
           requiresSingleActionReminder = requiresSingleActionReminder,
-          localContinuationContextPrompt = localContinuationContextPrompt,
+          localContinuationContextPrompts = localContinuationContextPrompts,
           localContinuationStableAnchor = localContinuationStableAnchor,
           localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+          localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
+          localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
+          localContinuationRequestSettingsFingerprint = localContinuationRequestSettingsFingerprint,
         ),
         emittedAtEpochMs = emittedAtEpochMs,
       ),
@@ -7525,9 +8130,12 @@ class OpenCrayAgentRuntime(
     batchActions: List<AgentModelAction>,
     nextActionIndex: Int,
     requiresSingleActionReminder: Boolean,
-    localContinuationContextPrompt: String? = null,
+    localContinuationContextPrompts: List<String>? = null,
     localContinuationStableAnchor: String? = null,
     localContinuationGatewayMessagesEnabled: Boolean = false,
+    localContinuationToolPoolFingerprint: String? = null,
+    localContinuationToolSchemaFingerprint: String? = null,
+    localContinuationRequestSettingsFingerprint: String? = null,
   ): Map<String, String> = if (nextActionIndex < batchActions.size) {
     promptCheckpointMetadata(
       boundary = boundary,
@@ -7536,18 +8144,24 @@ class OpenCrayAgentRuntime(
       pendingActions = batchActions,
       nextActionIndex = nextActionIndex,
       requiresSingleActionReminder = requiresSingleActionReminder,
-      localContinuationContextPrompt = localContinuationContextPrompt,
+      localContinuationContextPrompts = localContinuationContextPrompts,
       localContinuationStableAnchor = localContinuationStableAnchor,
       localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+      localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
+      localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
+      localContinuationRequestSettingsFingerprint = localContinuationRequestSettingsFingerprint,
     )
   } else {
     promptCheckpointMetadata(
       boundary = boundary,
       cursor = cursor,
       turnIndex = cursor.turn + 1,
-      localContinuationContextPrompt = localContinuationContextPrompt,
+      localContinuationContextPrompts = localContinuationContextPrompts,
       localContinuationStableAnchor = localContinuationStableAnchor,
       localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+      localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
+      localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
+      localContinuationRequestSettingsFingerprint = localContinuationRequestSettingsFingerprint,
     )
   }
 
@@ -7615,6 +8229,9 @@ class OpenCrayAgentRuntime(
     appendLine("A tool_call may include reason or justification, but it must not include a final answer.")
     appendLine("If you include commentary, keep it public, short, and non-sensitive.")
     appendLine("If you need multiple tools, call only the next tool now and wait for the next turn.")
+    if (nativeToolCallingEnabled) {
+      appendLine("If the final answer must attach existing artifacts, return exactly one JSON final action instead of plain text.")
+    }
     appendLine("Do not explain the protocol. Do not answer in prose unless you emit type=final.")
     appendLine("Reason: $reason")
     val preview = rawOutput.trim().take(MAX_PROTOCOL_ERROR_PREVIEW_CHARS)
@@ -7641,7 +8258,11 @@ class OpenCrayAgentRuntime(
     appendLine("Return only the next valid step now.")
     appendLine("Do not emit hidden reasoning by itself.")
     appendLine("If you need a tool, emit one valid tool call with schema-correct arguments.")
-    appendLine("If you are done, return the final user-facing answer.")
+    if (nativeToolCallingEnabled) {
+      appendLine("If you are done, return the final user-facing answer as plain assistant text, or one JSON final action if you must attach artifacts.")
+    } else {
+      appendLine("If you are done, return the final user-facing answer.")
+    }
     appendLine("Reason: $detail")
     reasoningText
       ?.trim()
@@ -7678,9 +8299,9 @@ class OpenCrayAgentRuntime(
   private fun finalTurnSystemPromptAppendix(
     legacyJsonFallbackEnabled: Boolean,
   ): String = if (legacyJsonFallbackEnabled) {
-    "[Turn Budget]\nThis is the last allowed model turn. Do not call any more tools. Return the final user-facing answer now. Prefer plain assistant text, and use the legacy JSON final action only if this endpoint is still on fallback."
+    "[Turn Budget]\nThis is the last allowed model turn. Do not call any more tools. Return the final user-facing answer now. If plain assistant text is sufficient, prefer that. If you must attach existing artifacts, return exactly one JSON final action."
   } else {
-    "[Turn Budget]\nThis is the last allowed model turn. Do not call any more tools. Return the final user-facing answer now as plain assistant text."
+    "[Turn Budget]\nThis is the last allowed model turn. Do not call any more tools. Return the final user-facing answer now as plain assistant text. If you must attach existing artifacts, return exactly one JSON final action instead."
   }
 
   private fun toolPolicyKey(toolName: String): String = when (toolName.trim().lowercase()) {
@@ -7769,7 +8390,9 @@ class OpenCrayAgentRuntime(
     var responsesProviderLineageId: String?,
     var responsesLineageTrusted: Boolean,
     var responsesFullReplayRequired: Boolean,
+    var responsesContinuationShape: ResponsesContinuationShape?,
     val responsesPendingMessages: MutableList<LiteLlmGatewayMessage>,
+    val replayToolResultProjections: MutableMap<String, FrozenToolResultReplayProjection>,
     var localContinuationEnvelope: LocalContinuationEnvelope?,
     val subAgentHandles: MutableMap<String, SubAgentHandleState>,
     val subAgentExecutionLock: Any,
@@ -7799,7 +8422,15 @@ class OpenCrayAgentRuntime(
     var localContinuationFallbackCount: Int = 0,
     var localContinuationLastMode: LocalContinuationMode = LocalContinuationMode.DISABLED,
     var localContinuationLastReason: String? = null,
+    var contextCacheBreakReason: String? = null,
+    var contextCacheShapeMetadata: Map<String, String> = emptyMap(),
   )
+
+  private fun PromptRunDiagnostics.recordContextCacheShapeMetadata(
+    metadata: Map<String, String>,
+  ) {
+    contextCacheShapeMetadata = metadata
+  }
 
   private data class GatewayMessagePlan(
     val messages: List<LiteLlmGatewayMessage>,
@@ -7848,20 +8479,52 @@ class OpenCrayAgentRuntime(
 
   private data class LocalContinuationEnvelope(
     val stableAnchor: String,
+    val frontContextZones: FrontContextZones,
+    val toolPoolFingerprint: String? = null,
+    val toolSchemaFingerprint: String? = null,
+    val requestSettingsFingerprint: String? = null,
     val transcriptFrontier: List<RuntimeConversationMessage>,
     val gatewayMessages: List<LiteLlmGatewayMessage>,
-  )
+  ) {
+    val frontContextPrompts: List<String>
+      get() = frontContextZones.promptsInTransportOrder
+  }
 
   private fun LocalContinuationEnvelope.toSerializable(): OpenCraySerializableLocalContinuationEnvelope =
     OpenCraySerializableLocalContinuationEnvelope(
       stableAnchor = stableAnchor,
+      frontContextPrompts = frontContextPrompts,
+      durableContextPrompt = frontContextZones.durableContextPrompt.takeIf(String::isNotBlank),
+      dynamicContextPrompt = frontContextZones.dynamicContextPrompt.takeIf(String::isNotBlank),
+      toolPoolFingerprint = toolPoolFingerprint,
+      toolSchemaFingerprint = toolSchemaFingerprint,
+      requestSettingsFingerprint = requestSettingsFingerprint,
       transcriptFrontier = transcriptFrontier,
       gatewayMessages = gatewayMessages.map(OpenCraySerializableGatewayMessage::from),
+    )
+
+  private data class ResponsesContinuationShape(
+    val stableAnchor: String,
+    val frontContextZones: FrontContextZones,
+    val toolPoolFingerprint: String,
+    val toolSchemaFingerprint: String,
+    val requestSettingsFingerprint: String,
+  )
+
+  private fun ResponsesContinuationShape.toSerializable(): OpenCraySerializableResponsesContinuationShape =
+    OpenCraySerializableResponsesContinuationShape(
+      stableAnchor = stableAnchor,
+      durableContextPrompt = frontContextZones.durableContextPrompt.takeIf(String::isNotBlank),
+      dynamicContextPrompt = frontContextZones.dynamicContextPrompt.takeIf(String::isNotBlank),
+      toolPoolFingerprint = toolPoolFingerprint,
+      toolSchemaFingerprint = toolSchemaFingerprint,
+      requestSettingsFingerprint = requestSettingsFingerprint,
     )
 
   private enum class LocalContinuationMode(val wireValue: String) {
     DISABLED("disabled"),
     FULL_REBUILD("full_rebuild"),
+    LOCAL_FRONT_PATCH("local_front_patch"),
     LOCAL_DELTA("local_delta"),
     RESPONSES_NATIVE("responses_native"),
   }
@@ -7972,6 +8635,7 @@ class OpenCrayAgentRuntime(
   }
 
   private companion object {
+    const val NON_RESPONSES_CONTEXT_CACHE_CONTRACT_VERSION: String = "non_responses_front_zone_v1"
     const val RESPONSES_PROTOCOL: String = "openai_responses"
     const val HIDDEN_METADATA_PREFIX: String = "_host."
     const val HOST_PROVIDER_ID_METADATA_KEY: String = "${HIDDEN_METADATA_PREFIX}providerId"
@@ -8037,3 +8701,4 @@ class OpenCrayAgentEngine(
     ),
   )
 }
+

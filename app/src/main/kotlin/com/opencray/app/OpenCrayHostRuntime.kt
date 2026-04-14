@@ -849,6 +849,10 @@ internal class OpenCrayHostRuntime private constructor(
     openAiPromptCacheRetention: String?,
     anthropicPromptCachingEnabled: Boolean?,
     anthropicPromptCacheTtl: String?,
+    contextBudgetPreset: String?,
+    contextBudgetReservedOutputTokens: Int?,
+    contextBudgetSafetyMarginTokens: Int?,
+    contextBudgetEffectiveInputPercent: Double?,
   ): Map<String, Any?> {
     val snapshot = synchronized(lock) {
       llmConfigFacade.save(
@@ -869,6 +873,10 @@ internal class OpenCrayHostRuntime private constructor(
           openAiPromptCacheRetention = openAiPromptCacheRetention,
           anthropicPromptCachingEnabled = anthropicPromptCachingEnabled,
           anthropicPromptCacheTtl = anthropicPromptCacheTtl,
+          contextBudgetPreset = contextBudgetPreset,
+          contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
+          contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
+          contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
         ),
       )
     }
@@ -890,6 +898,10 @@ internal class OpenCrayHostRuntime private constructor(
     openAiPromptCacheRetention: String?,
     anthropicPromptCachingEnabled: Boolean?,
     anthropicPromptCacheTtl: String?,
+    contextBudgetPreset: String?,
+    contextBudgetReservedOutputTokens: Int?,
+    contextBudgetSafetyMarginTokens: Int?,
+    contextBudgetEffectiveInputPercent: Double?,
   ): Map<String, Any?> {
     val snapshot = synchronized(lock) {
       llmConfigFacade.saveCustomProvider(
@@ -912,6 +924,10 @@ internal class OpenCrayHostRuntime private constructor(
             ?: LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED,
           anthropicPromptCacheTtl = anthropicPromptCacheTtl
             ?: LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL,
+          contextBudgetPreset = contextBudgetPreset,
+          contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
+          contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
+          contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
         ),
       )
     }
@@ -4785,6 +4801,7 @@ internal class OpenCrayHostRuntime private constructor(
     "responseFormat" to run.responseFormat,
     "llmDiagnostics" to llmDiagnosticsFromMetadata(run.resultMetadata),
     "liveContext" to liveContextFromMetadata(run.resultMetadata),
+    "contextBudget" to contextBudgetFromMetadata(run.resultMetadata),
     "memoryTrace" to memoryTraceFromMetadata(run.resultMetadata),
     "memoryFlush" to memoryFlushFromMetadata(run.resultMetadata),
     "bootstrap" to bootstrapFromMetadata(run.resultMetadata),
@@ -4836,10 +4853,22 @@ internal class OpenCrayHostRuntime private constructor(
       ?.toBooleanStrictOrNull()
     val fallbackParserSucceeded = metadata[LiteLlmMetadataKeys.FALLBACK_PARSER_SUCCEEDED]
       ?.toBooleanStrictOrNull()
+    val responsesContinuationRecoveryCount = metadata["responsesContinuationRecoveryCount"]
+      ?.toIntOrNull()
+    val responsesContinuationRecoveryLastReason = metadata["responsesContinuationRecoveryLastReason"]
+      ?.takeIf(String::isNotBlank)
+    val localContinuationUsedCount = metadata["localContinuationUsedCount"]?.toIntOrNull()
+    val localContinuationFallbackCount = metadata["localContinuationFallbackCount"]?.toIntOrNull()
+    val localContinuationLastMode = metadata["localContinuationLastMode"]
+      ?.takeIf(String::isNotBlank)
+    val localContinuationLastReason = metadata["localContinuationLastReason"]
+      ?.takeIf(String::isNotBlank)
     val toolCallEventEmitted = metadata[LiteLlmMetadataKeys.TOOL_CALL_EVENT_EMITTED]
       ?.toBooleanStrictOrNull()
     val toolResultEventEmitted = metadata[LiteLlmMetadataKeys.TOOL_RESULT_EVENT_EMITTED]
       ?.toBooleanStrictOrNull()
+    val contextCacheBreakReason = metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON]
+      ?.takeIf(String::isNotBlank)
     val lastSuccessfulToolName = metadata[LiteLlmMetadataKeys.LAST_SUCCESSFUL_TOOL_NAME]
       ?.takeIf(String::isNotBlank)
     if (
@@ -4849,8 +4878,15 @@ internal class OpenCrayHostRuntime private constructor(
       parsedToolCallObserved == null &&
       fallbackParserAttempted == null &&
       fallbackParserSucceeded == null &&
+      responsesContinuationRecoveryCount == null &&
+      responsesContinuationRecoveryLastReason == null &&
+      localContinuationUsedCount == null &&
+      localContinuationFallbackCount == null &&
+      localContinuationLastMode == null &&
+      localContinuationLastReason == null &&
       toolCallEventEmitted == null &&
       toolResultEventEmitted == null &&
+      contextCacheBreakReason == null &&
       lastSuccessfulToolName == null
     ) {
       return null
@@ -4862,8 +4898,15 @@ internal class OpenCrayHostRuntime private constructor(
       put("parsedToolCallObserved", parsedToolCallObserved)
       put("fallbackParserAttempted", fallbackParserAttempted)
       put("fallbackParserSucceeded", fallbackParserSucceeded)
+      put("responsesContinuationRecoveryCount", responsesContinuationRecoveryCount)
+      put("responsesContinuationRecoveryLastReason", responsesContinuationRecoveryLastReason)
+      put("localContinuationUsedCount", localContinuationUsedCount)
+      put("localContinuationFallbackCount", localContinuationFallbackCount)
+      put("localContinuationLastMode", localContinuationLastMode)
+      put("localContinuationLastReason", localContinuationLastReason)
       put("toolCallEventEmitted", toolCallEventEmitted)
       put("toolResultEventEmitted", toolResultEventEmitted)
+      put("contextCacheBreakReason", contextCacheBreakReason)
       put("lastSuccessfulToolName", lastSuccessfulToolName)
     }
   }
@@ -4923,6 +4966,172 @@ internal class OpenCrayHostRuntime private constructor(
       memoryRecallEnabled?.let { put("memoryRecallEnabled", it) }
     }
   }
+
+  private fun contextBudgetFromMetadata(metadata: Map<String, String>): Map<String, Any?>? {
+    val applied = metadata["contextBudgetApplied"]?.toBooleanStrictOrNull()
+    val pressureMode = metadata["contextBudgetPressureMode"]?.takeIf(String::isNotBlank)
+    val selectedPreset = metadata["contextBudgetSelectedPreset"]?.takeIf(String::isNotBlank)
+    val effectivePreset = metadata["contextBudgetEffectivePreset"]?.takeIf(String::isNotBlank)
+    val presetSource = metadata["contextBudgetPresetSource"]?.takeIf(String::isNotBlank)
+    val presetDiverged = metadata["contextBudgetPresetDiverged"]?.toBooleanStrictOrNull()
+    val sourcePreset = metadata["contextBudgetSourcePreset"]?.takeIf(String::isNotBlank)
+    val sourceTranscriptMaxMessages = metadata["contextBudgetSourceTranscriptMaxMessages"]?.toIntOrNull()
+    val sourceInjectedMemoryMaxRecords = metadata["contextBudgetSourceInjectedMemoryMaxRecords"]?.toIntOrNull()
+    val sourceMemoryRecallMaxRecords = metadata["contextBudgetSourceMemoryRecallMaxRecords"]?.toIntOrNull()
+    val sourceBootstrapMaxChars = metadata["contextBudgetSourceBootstrapMaxChars"]?.toIntOrNull()
+    val sourceSkillInventoryMaxSkills = metadata["contextBudgetSourceSkillInventoryMaxSkills"]?.toIntOrNull()
+    val sourceActiveSkillMaxChars = metadata["contextBudgetSourceActiveSkillMaxChars"]?.toIntOrNull()
+    val sourceRecentObservationMaxEntries = metadata["contextBudgetSourceRecentObservationMaxEntries"]?.toIntOrNull()
+    val sourceMemoryFlushMaxToolObservations = metadata["contextBudgetSourceMemoryFlushMaxToolObservations"]?.toIntOrNull()
+    val contextWindowTokens = metadata["contextBudgetContextWindowTokens"]?.toIntOrNull()
+    val reservedOutputTokens = metadata["contextBudgetReservedOutputTokens"]?.toIntOrNull()
+    val safetyMarginTokens = metadata["contextBudgetSafetyMarginTokens"]?.toIntOrNull()
+    val hardInputTokens = metadata["contextBudgetHardInputTokens"]?.toIntOrNull()
+    val targetInputTokens = metadata["contextBudgetTargetInputTokens"]?.toIntOrNull()
+    val emergencyInputTokens = metadata["contextBudgetEmergencyInputTokens"]?.toIntOrNull()
+    val unresolvedOverflow = metadata["contextBudgetUnresolvedOverflow"]?.toBooleanStrictOrNull()
+    val fullLayerCount = metadata["contextBudgetFullLayerCount"]?.toIntOrNull()
+    val compactLayerCount = metadata["contextBudgetCompactLayerCount"]?.toIntOrNull()
+    val minimalLayerCount = metadata["contextBudgetMinimalLayerCount"]?.toIntOrNull()
+    val omittedLayerCount = metadata["contextBudgetOmittedLayerCount"]?.toIntOrNull()
+    val reducedLayerNames = metadata["contextBudgetReducedLayerNames"]
+      .orEmpty()
+      .split(',')
+      .map(String::trim)
+      .filter(String::isNotBlank)
+    val omittedLayerNames = metadata["contextBudgetOmittedLayerNames"]
+      .orEmpty()
+      .split(',')
+      .map(String::trim)
+      .filter(String::isNotBlank)
+    val layers = parseContextBudgetLayers(metadata["contextBudgetLayerDetails"].orEmpty())
+    val layerSummary = metadata["contextBudgetLayerSummary"]?.takeIf(String::isNotBlank)
+    if (
+      applied == null &&
+      pressureMode == null &&
+      selectedPreset == null &&
+      effectivePreset == null &&
+      presetSource == null &&
+      presetDiverged == null &&
+      sourcePreset == null &&
+      sourceTranscriptMaxMessages == null &&
+      sourceInjectedMemoryMaxRecords == null &&
+      sourceMemoryRecallMaxRecords == null &&
+      sourceBootstrapMaxChars == null &&
+      sourceSkillInventoryMaxSkills == null &&
+      sourceActiveSkillMaxChars == null &&
+      sourceRecentObservationMaxEntries == null &&
+      sourceMemoryFlushMaxToolObservations == null &&
+      contextWindowTokens == null &&
+      reservedOutputTokens == null &&
+      safetyMarginTokens == null &&
+      hardInputTokens == null &&
+      targetInputTokens == null &&
+      emergencyInputTokens == null &&
+      unresolvedOverflow == null &&
+      fullLayerCount == null &&
+      compactLayerCount == null &&
+      minimalLayerCount == null &&
+      omittedLayerCount == null &&
+      reducedLayerNames.isEmpty() &&
+      omittedLayerNames.isEmpty() &&
+      layers.isEmpty() &&
+      layerSummary == null
+    ) {
+      return null
+    }
+    return buildMap {
+      applied?.let { put("applied", it) }
+      pressureMode?.let { put("pressureMode", it) }
+      selectedPreset?.let { put("selectedPreset", it) }
+      effectivePreset?.let { put("effectivePreset", it) }
+      presetSource?.let { put("presetSource", it) }
+      presetDiverged?.let { put("presetDiverged", it) }
+      sourcePreset?.let { put("sourcePreset", it) }
+      sourceTranscriptMaxMessages?.let { put("sourceTranscriptMaxMessages", it) }
+      sourceInjectedMemoryMaxRecords?.let { put("sourceInjectedMemoryMaxRecords", it) }
+      sourceMemoryRecallMaxRecords?.let { put("sourceMemoryRecallMaxRecords", it) }
+      sourceBootstrapMaxChars?.let { put("sourceBootstrapMaxChars", it) }
+      sourceSkillInventoryMaxSkills?.let { put("sourceSkillInventoryMaxSkills", it) }
+      sourceActiveSkillMaxChars?.let { put("sourceActiveSkillMaxChars", it) }
+      sourceRecentObservationMaxEntries?.let { put("sourceRecentObservationMaxEntries", it) }
+      sourceMemoryFlushMaxToolObservations?.let { put("sourceMemoryFlushMaxToolObservations", it) }
+      contextWindowTokens?.let { put("contextWindowTokens", it) }
+      reservedOutputTokens?.let { put("reservedOutputTokens", it) }
+      safetyMarginTokens?.let { put("safetyMarginTokens", it) }
+      hardInputTokens?.let { put("hardInputTokens", it) }
+      targetInputTokens?.let { put("targetInputTokens", it) }
+      emergencyInputTokens?.let { put("emergencyInputTokens", it) }
+      unresolvedOverflow?.let { put("unresolvedOverflow", it) }
+      fullLayerCount?.let { put("fullLayerCount", it) }
+      compactLayerCount?.let { put("compactLayerCount", it) }
+      minimalLayerCount?.let { put("minimalLayerCount", it) }
+      omittedLayerCount?.let { put("omittedLayerCount", it) }
+      if (reducedLayerNames.isNotEmpty()) {
+        put("reducedLayerNames", reducedLayerNames)
+      }
+      if (omittedLayerNames.isNotEmpty()) {
+        put("omittedLayerNames", omittedLayerNames)
+      }
+      if (layers.isNotEmpty()) {
+        put("layers", layers)
+      }
+      layerSummary?.let { put("layerSummary", it) }
+    }
+  }
+
+  private fun parseContextBudgetLayers(summary: String): List<Map<String, Any?>> {
+    val normalized = summary.trim()
+    if (normalized.isEmpty()) {
+      return emptyList()
+    }
+    val payload = runCatching { replayJson.parseToJsonElement(normalized) }.getOrNull() as? JsonArray
+      ?: return emptyList()
+    return payload.mapNotNull { element ->
+      val layer = element as? JsonObject ?: return@mapNotNull null
+      val id = layer.stringValue("id") ?: return@mapNotNull null
+      val name = layer.stringValue("name") ?: id
+      buildMap {
+        put("id", id)
+        put("name", name)
+        layer.stringValue("priorityClass")?.let { put("priorityClass", it) }
+        layer.intValue("retentionPriority")?.let { put("retentionPriority", it) }
+        layer.intValue("estimatedTokensBefore")?.let { put("estimatedTokensBefore", it) }
+        layer.intValue("estimatedTokensAfter")?.let { put("estimatedTokensAfter", it) }
+        layer.stringValue("finalState")?.let { put("finalState", it) }
+        layer.booleanValue("omitted")?.let { put("omitted", it) }
+        layer.booleanValue("reduced")?.let { put("reduced", it) }
+        val appliedOperators = layer.stringArray("appliedOperators")
+        if (appliedOperators.isNotEmpty()) {
+          put("appliedOperators", appliedOperators)
+        }
+      }
+    }
+  }
+
+  private fun JsonObject.stringValue(key: String): String? = (this[key] as? JsonPrimitive)
+    ?.content
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+
+  private fun JsonObject.intValue(key: String): Int? = (this[key] as? JsonPrimitive)
+    ?.content
+    ?.trim()
+    ?.toIntOrNull()
+
+  private fun JsonObject.booleanValue(key: String): Boolean? = (this[key] as? JsonPrimitive)
+    ?.content
+    ?.trim()
+    ?.toBooleanStrictOrNull()
+
+  private fun JsonObject.stringArray(key: String): List<String> = (this[key] as? JsonArray)
+    ?.mapNotNull { element ->
+      (element as? JsonPrimitive)
+        ?.content
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+    }
+    ?: emptyList()
 
   private fun memoryFlushFromMetadata(metadata: Map<String, String>): Map<String, Any?>? {
     val outcome = metadata["contextMemoryFlushOutcome"]?.takeIf(String::isNotBlank)
@@ -6969,6 +7178,10 @@ internal class OpenCrayHostRuntime private constructor(
     "openAiPromptCacheRetention" to openAiPromptCacheRetention,
     "anthropicPromptCachingEnabled" to anthropicPromptCachingEnabled,
     "anthropicPromptCacheTtl" to anthropicPromptCacheTtl,
+    "contextBudgetPreset" to contextBudgetPreset,
+    "contextBudgetReservedOutputTokens" to contextBudgetReservedOutputTokens,
+    "contextBudgetSafetyMarginTokens" to contextBudgetSafetyMarginTokens,
+    "contextBudgetEffectiveInputPercent" to contextBudgetEffectiveInputPercent,
     "helperText" to helperText,
     "agentCapability" to agentCapability.toMap(),
   )

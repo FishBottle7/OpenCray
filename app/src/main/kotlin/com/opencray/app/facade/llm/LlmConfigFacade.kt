@@ -69,6 +69,10 @@ data class LlmConfigSnapshot(
   val openAiPromptCacheRetention: String? = null,
   val anthropicPromptCachingEnabled: Boolean? = null,
   val anthropicPromptCacheTtl: String? = null,
+  val contextBudgetPreset: String = LlmSettingsState.DEFAULT_CONTEXT_BUDGET_PRESET,
+  val contextBudgetReservedOutputTokens: Int? = null,
+  val contextBudgetSafetyMarginTokens: Int? = null,
+  val contextBudgetEffectiveInputPercent: Double? = null,
   val helperText: String,
   val agentCapability: LlmAgentCapabilitySnapshot = LlmAgentCapabilitySnapshot(),
 )
@@ -90,6 +94,10 @@ data class SaveLlmConfigRequest(
   val openAiPromptCacheRetention: String? = null,
   val anthropicPromptCachingEnabled: Boolean? = null,
   val anthropicPromptCacheTtl: String? = null,
+  val contextBudgetPreset: String? = null,
+  val contextBudgetReservedOutputTokens: Int? = null,
+  val contextBudgetSafetyMarginTokens: Int? = null,
+  val contextBudgetEffectiveInputPercent: Double? = null,
 )
 
 data class SaveCustomLlmProviderRequest(
@@ -110,6 +118,10 @@ data class SaveCustomLlmProviderRequest(
   val anthropicPromptCachingEnabled: Boolean =
     LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED,
   val anthropicPromptCacheTtl: String = LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL,
+  val contextBudgetPreset: String? = null,
+  val contextBudgetReservedOutputTokens: Int? = null,
+  val contextBudgetSafetyMarginTokens: Int? = null,
+  val contextBudgetEffectiveInputPercent: Double? = null,
 )
 
 data class ValidateLlmConfigRequest(
@@ -214,6 +226,10 @@ internal class LocalLlmConfigFacade private constructor(
         openAiPromptCacheRetention = request.openAiPromptCacheRetention,
         anthropicPromptCachingEnabled = request.anthropicPromptCachingEnabled,
         anthropicPromptCacheTtl = request.anthropicPromptCacheTtl,
+        contextBudgetPreset = request.contextBudgetPreset,
+        contextBudgetReservedOutputTokens = request.contextBudgetReservedOutputTokens,
+        contextBudgetSafetyMarginTokens = request.contextBudgetSafetyMarginTokens,
+        contextBudgetEffectiveInputPercent = request.contextBudgetEffectiveInputPercent,
       ),
     )
     llmSettingsStore.save(
@@ -464,6 +480,10 @@ internal class LocalLlmConfigFacade private constructor(
       openAiPromptCacheRetention = sanitized.openAiPromptCacheRetention,
       anthropicPromptCachingEnabled = sanitized.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl = sanitized.anthropicPromptCacheTtl,
+      contextBudgetPreset = sanitized.contextBudgetPreset,
+      contextBudgetReservedOutputTokens = sanitized.contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens = sanitized.contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent = sanitized.contextBudgetEffectiveInputPercent,
       helperText = strings.helperText,
       agentCapability = sanitized.agentCapability,
     )
@@ -599,6 +619,10 @@ internal class LocalLlmConfigFacade private constructor(
       anthropicPromptCachingEnabled = request.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl = request.anthropicPromptCacheTtl,
     )
+    val contextBudgetSettings = resolvedContextBudgetSettings(
+      request = request,
+      persisted = persisted,
+    )
     return LlmSettingsState(
       enabled = request.enabled,
       streamingEnabled = request.streamingEnabled ?: persisted.streamingEnabled,
@@ -619,12 +643,41 @@ internal class LocalLlmConfigFacade private constructor(
       openAiPromptCacheRetention = promptCachingSettings.openAiPromptCacheRetention,
       anthropicPromptCachingEnabled = promptCachingSettings.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl = promptCachingSettings.anthropicPromptCacheTtl,
+      contextBudgetPreset = contextBudgetSettings.contextBudgetPreset,
+      contextBudgetReservedOutputTokens = contextBudgetSettings.contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens = contextBudgetSettings.contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent = contextBudgetSettings.contextBudgetEffectiveInputPercent,
       agentCapability = llmSettingsStore.loadAgentCapability(
         protocol = protocol,
         baseUrl = baseUrl,
         model = model,
       ),
     ).sanitized()
+  }
+
+  private fun resolvedContextBudgetSettings(
+    request: SaveLlmConfigRequest,
+    persisted: LlmSettingsState,
+  ): ResolvedContextBudgetSettings {
+    val hasExplicitBudgetPayload = request.contextBudgetPreset != null ||
+      request.contextBudgetReservedOutputTokens != null ||
+      request.contextBudgetSafetyMarginTokens != null ||
+      request.contextBudgetEffectiveInputPercent != null
+    if (!hasExplicitBudgetPayload) {
+      return ResolvedContextBudgetSettings(
+        contextBudgetPreset = persisted.contextBudgetPreset,
+        contextBudgetReservedOutputTokens = persisted.contextBudgetReservedOutputTokens,
+        contextBudgetSafetyMarginTokens = persisted.contextBudgetSafetyMarginTokens,
+        contextBudgetEffectiveInputPercent = persisted.contextBudgetEffectiveInputPercent,
+      )
+    }
+    return ResolvedContextBudgetSettings(
+      contextBudgetPreset = request.contextBudgetPreset
+        ?: persisted.contextBudgetPreset,
+      contextBudgetReservedOutputTokens = request.contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens = request.contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent = request.contextBudgetEffectiveInputPercent,
+    )
   }
 
   private fun executeValidationRequest(
@@ -1191,6 +1244,10 @@ internal object EmptyLlmConfigFacade : LlmConfigFacade {
     openAiPromptCacheRetention = LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_RETENTION,
     anthropicPromptCachingEnabled = LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED,
     anthropicPromptCacheTtl = LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL,
+    contextBudgetPreset = LlmSettingsState.DEFAULT_CONTEXT_BUDGET_PRESET,
+    contextBudgetReservedOutputTokens = null,
+    contextBudgetSafetyMarginTokens = null,
+    contextBudgetEffectiveInputPercent = null,
     helperText = "LLM settings host support is unavailable.",
     agentCapability = LlmAgentCapabilitySnapshot(),
   )
@@ -1225,4 +1282,11 @@ private data class ResolvedPromptCachingSettings(
   val openAiPromptCacheRetention: String,
   val anthropicPromptCachingEnabled: Boolean,
   val anthropicPromptCacheTtl: String,
+)
+
+private data class ResolvedContextBudgetSettings(
+  val contextBudgetPreset: String,
+  val contextBudgetReservedOutputTokens: Int?,
+  val contextBudgetSafetyMarginTokens: Int?,
+  val contextBudgetEffectiveInputPercent: Double?,
 )

@@ -46,6 +46,12 @@ class WorkingStateSupportTest {
     val resolution = support.resolve(
       task = promptTask(input = "Continue the runtime rollout."),
       runId = "run-working-state-1",
+      recentActionEntries = listOf(
+        WorkingStateEntry(
+          text = "Write file_path=README.md",
+          sourceType = "workspace_mutation",
+        ),
+      ),
     )
 
     assertEquals("task-working-state", resolution.state.objective?.taskId)
@@ -322,13 +328,26 @@ class WorkingStateSupportTest {
       ),
     )
 
-    assertTrue(resolution.trace.included)
-    assertTrue(resolution.trace.synthesizedFromTaskInput)
+    assertFalse(resolution.trace.included)
+    assertFalse(resolution.trace.objectivePresent)
+    assertFalse(resolution.trace.synthesizedFromTaskInput)
     assertFalse(resolution.trace.synthesizedFromRecentObservations)
     assertFalse(resolution.trace.synthesizedFromTodoSnapshot)
-    assertEquals("Continue the runtime rollout.", resolution.state.objective?.primaryGoal)
-    assertEquals(null, resolution.state.objective?.currentSubgoal)
-    assertEquals("active", resolution.state.objective?.status)
+    assertTrue(resolution.state.isEmpty)
+  }
+
+  @Test
+  fun resolveReturnsEmptyWhenOnlyTaskInputExistsWithoutOperationalState() {
+    val resolution = support.resolve(
+      task = promptTask(input = "Continue the runtime rollout."),
+    )
+
+    assertFalse(resolution.trace.included)
+    assertFalse(resolution.trace.objectivePresent)
+    assertFalse(resolution.trace.synthesizedFromTaskInput)
+    assertFalse(resolution.trace.synthesizedFromRecentObservations)
+    assertFalse(resolution.trace.synthesizedFromTodoSnapshot)
+    assertTrue(resolution.state.isEmpty)
     assertTrue(resolution.state.nextActions.isEmpty())
   }
 

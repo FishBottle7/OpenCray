@@ -3,6 +3,7 @@ package com.opencray.runtime.memory
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.store.MemoryStore
 import com.opencray.runtime.context.ContextPruner
+import com.opencray.runtime.context.ContextSourceBudgetPolicy
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationMessageKind
 import com.opencray.runtime.context.RuntimeConversationRole
@@ -104,6 +105,82 @@ class MemoryFlushCoordinatorTest {
     assertFalse(summary.wasWritten)
     assertEquals(MemoryFlushOutcome.NO_PRESSURE, summary.trace.outcome)
     assertTrue(store.list().isEmpty())
+  }
+
+  @Test
+  fun flushBeforeCompactionCouplesTranscriptWindowToExpandedSourcePreset() {
+    val balancedStore = InMemoryMemoryStore()
+    val expandedStore = InMemoryMemoryStore()
+    val balancedCoordinator = MemoryFlushCoordinator(
+      writer = MemoryWriter(store = balancedStore),
+      sourceBudgetPolicy = ContextSourceBudgetPolicy(),
+    )
+    val expandedCoordinator = MemoryFlushCoordinator(
+      writer = MemoryWriter(store = expandedStore),
+      sourceBudgetPolicy = ContextSourceBudgetPolicy(),
+    )
+    val conversation = buildList {
+      add(RuntimeConversationMessage(RuntimeConversationRole.USER, "Capture the project fact."))
+      add(
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.ASSISTANT,
+          content = """{"run_id":"run-1","task_id":"task-1","turn":0,"tool_call_id":"call-1","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
+          kind = RuntimeConversationMessageKind.TOOL_CALL,
+          toolCall = RuntimeConversationToolCall(
+            id = "call-1",
+            toolName = "Read",
+          ),
+        ),
+      )
+      add(
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.TOOL,
+          content = """{"run_id":"run-1","task_id":"task-1","turn":0,"tool_call_id":"call-1","tool_name":"Read","status":"success","content":"Project uses Gradle Kotlin DSL and sharedtoken evidence from README","metadata":{"filePath":"README.md"}}""",
+          kind = RuntimeConversationMessageKind.TOOL_RESULT,
+          toolResult = RuntimeConversationToolResult(
+            toolCallId = "call-1",
+            toolName = "Read",
+            status = "success",
+            isError = false,
+          ),
+        ),
+      )
+      add(RuntimeConversationMessage(RuntimeConversationRole.USER, "Keep that sharedtoken fact in mind."))
+      repeat(12) { index ->
+        add(
+          RuntimeConversationMessage(
+            role = if (index % 2 == 0) RuntimeConversationRole.USER else RuntimeConversationRole.ASSISTANT,
+            content = "Later conversation message ${index + 1} with enough content to keep replay pressure high and preserve current-turn context.",
+          ),
+        )
+      }
+    }
+
+    val balancedSummary = balancedCoordinator.flushBeforeCompaction(
+      sessionId = "session-balanced",
+      workspaceId = "workspace-main",
+      conversation = conversation,
+      llmMetadata = mapOf("context_window_tokens" to "64"),
+      taskId = "task-balanced",
+    )
+    val expandedSummary = expandedCoordinator.flushBeforeCompaction(
+      sessionId = "session-expanded",
+      workspaceId = "workspace-main",
+      conversation = conversation,
+      llmMetadata = mapOf(
+        "context_window_tokens" to "64",
+        "context_budget_preset" to "expanded",
+      ),
+      taskId = "task-expanded",
+    )
+
+    assertTrue(balancedSummary.wasWritten)
+    assertEquals(MemoryFlushOutcome.WRITTEN, balancedSummary.trace.outcome)
+    assertEquals(4, balancedSummary.trace.omittedMessageCount)
+    assertEquals(1, balancedSummary.writtenRecords.size)
+    assertFalse(expandedSummary.wasWritten)
+    assertEquals(MemoryFlushOutcome.NO_PRESSURE, expandedSummary.trace.outcome)
+    assertEquals(0, expandedSummary.trace.omittedMessageCount)
   }
 
   private class InMemoryMemoryStore : MemoryStore {

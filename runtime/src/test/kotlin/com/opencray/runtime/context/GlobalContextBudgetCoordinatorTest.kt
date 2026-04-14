@@ -26,6 +26,7 @@ import com.opencray.runtime.skills.SkillInventoryPromptLayerConfig
 import com.opencray.runtime.skills.VisibleSkill
 import com.opencray.skills.SkillExecutionContext
 import com.opencray.skills.SkillInvocationControl
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -114,6 +115,7 @@ class GlobalContextBudgetCoordinatorTest {
     assertTrue(memoryBudgetReport.reduced)
     assertFalse(memoryBudgetReport.omitted)
     assertTrue(memoryBudgetReport.appliedOperators.contains("reduce_retrieved_memory_compact"))
+    assertEquals(ContextBudgetLayerFinalState.COMPACT, memoryBudgetReport.finalState)
   }
 
   @Test
@@ -224,6 +226,7 @@ class GlobalContextBudgetCoordinatorTest {
       observationBudgetReport.appliedOperators.contains("reduce_recent_tool_observations_compact") ||
         observationBudgetReport.appliedOperators.contains("reduce_recent_tool_observations_minimal"),
     )
+    assertReducedLayerFinalStateMatchesOperators(observationBudgetReport)
   }
 
   @Test
@@ -325,6 +328,7 @@ class GlobalContextBudgetCoordinatorTest {
       activeSkillBudgetReport.appliedOperators.contains("reduce_active_skill_compact") ||
         activeSkillBudgetReport.appliedOperators.contains("reduce_active_skill_minimal"),
     )
+    assertReducedLayerFinalStateMatchesOperators(activeSkillBudgetReport)
   }
 
   @Test
@@ -415,6 +419,7 @@ class GlobalContextBudgetCoordinatorTest {
       bootstrapBudgetReport.appliedOperators.contains("reduce_bootstrap_compact") ||
         bootstrapBudgetReport.appliedOperators.contains("reduce_bootstrap_minimal"),
     )
+    assertReducedLayerFinalStateMatchesOperators(bootstrapBudgetReport)
   }
 
   @Test
@@ -519,6 +524,7 @@ class GlobalContextBudgetCoordinatorTest {
       inventoryBudgetReport.appliedOperators.contains("reduce_skill_inventory_compact") ||
         inventoryBudgetReport.appliedOperators.contains("reduce_skill_inventory_minimal"),
     )
+    assertReducedLayerFinalStateMatchesOperators(inventoryBudgetReport)
   }
 
   @Test
@@ -616,6 +622,7 @@ class GlobalContextBudgetCoordinatorTest {
       durableCompactionBudgetReport.appliedOperators.contains("reduce_durable_compaction_compact") ||
         durableCompactionBudgetReport.appliedOperators.contains("reduce_durable_compaction_minimal"),
     )
+    assertReducedLayerFinalStateMatchesOperators(durableCompactionBudgetReport)
   }
 
   @Test
@@ -702,6 +709,7 @@ class GlobalContextBudgetCoordinatorTest {
       pruningBudgetReport.appliedOperators.contains("reduce_pruning_summary_compact") ||
         pruningBudgetReport.appliedOperators.contains("reduce_pruning_summary_minimal"),
     )
+    assertReducedLayerFinalStateMatchesOperators(pruningBudgetReport)
   }
 
   @Test
@@ -789,6 +797,7 @@ class GlobalContextBudgetCoordinatorTest {
       compactionBudgetReport.appliedOperators.contains("reduce_compaction_summary_compact") ||
         compactionBudgetReport.appliedOperators.contains("reduce_compaction_summary_minimal"),
     )
+    assertReducedLayerFinalStateMatchesOperators(compactionBudgetReport)
   }
 
   private fun promptTask(): AgentTask = AgentTask(
@@ -813,4 +822,17 @@ class GlobalContextBudgetCoordinatorTest {
     "prompt_safety_margin_tokens" to safetyMarginTokens.toString(),
     "effective_input_percent" to effectiveInputPercent,
   )
+
+  private fun assertReducedLayerFinalStateMatchesOperators(
+    report: ContextBudgetLayerReport,
+  ) {
+    val expectedFinalState = when {
+      report.appliedOperators.any { operator -> operator.endsWith("_minimal") } ->
+        ContextBudgetLayerFinalState.MINIMAL
+      report.appliedOperators.any { operator -> operator.endsWith("_compact") } ->
+        ContextBudgetLayerFinalState.COMPACT
+      else -> error("Expected a compact or minimal reduction operator for ${report.id}.")
+    }
+    assertEquals(expectedFinalState, report.finalState)
+  }
 }

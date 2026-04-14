@@ -1,5 +1,6 @@
 package com.opencray.runtime.bootstrap
 
+import com.opencray.runtime.context.ContextSourceBudgetPolicy
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import org.junit.Assert.assertEquals
@@ -80,6 +81,35 @@ class BootstrapContextResolverTest {
     assertTrue(context.files.all { file -> file.truncated })
     assertEquals(listOf(160, 90), context.files.map { file -> file.content.length })
     assertEquals(listOf(220, 220), context.files.map { file -> file.sourceCharCount })
+  }
+
+  @Test
+  fun resolveCanUseExpandedSourceBudgetProfileToInjectMoreBootstrapText() {
+    val workspaceRoot = temporaryFolder.newFolder("bootstrap-expanded-profile").toPath()
+    writeFile(workspaceRoot.resolve("AGENTS.md"), "A".repeat(2_200))
+    writeFile(workspaceRoot.resolve("PROJECT.md"), "B".repeat(2_200))
+    val sourceBudgetPolicy = ContextSourceBudgetPolicy()
+
+    val compactContext = BootstrapContextResolver(
+      sourceBudgetPolicy.resolve(
+        mapOf("context_budget_preset" to "compact"),
+      ).bootstrapContextResolverConfig,
+    ).resolve(
+      workspaceRoots = setOf(workspaceRoot),
+      mode = BootstrapMode.FULL,
+    )
+    val expandedContext = BootstrapContextResolver(
+      sourceBudgetPolicy.resolve(
+        mapOf("context_budget_preset" to "expanded"),
+      ).bootstrapContextResolverConfig,
+    ).resolve(
+      workspaceRoots = setOf(workspaceRoot),
+      mode = BootstrapMode.FULL,
+    )
+
+    assertTrue(expandedContext.files.sumOf { file -> file.content.length } > compactContext.files.sumOf { file -> file.content.length })
+    assertEquals(2_800, compactContext.files.sumOf { file -> file.content.length })
+    assertEquals(4_400, expandedContext.files.sumOf { file -> file.content.length })
   }
 
   private fun writeFile(path: java.nio.file.Path, content: String) {

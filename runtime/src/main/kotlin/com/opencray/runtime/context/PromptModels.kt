@@ -295,11 +295,19 @@ data class PromptLayer(
   val name: String,
   val kind: PromptLayerKind,
   val content: String,
+  val transportGroup: PromptLayerTransportGroup = defaultPromptLayerTransportGroup(kind),
 ) {
   init {
     require(name.isNotBlank()) { "PromptLayer name must not be blank." }
     require(content.isNotBlank()) { "PromptLayer content must not be blank." }
   }
+}
+
+enum class PromptLayerTransportGroup {
+  SYSTEM_PREFIX,
+  DURABLE_CONTEXT,
+  DYNAMIC_CONTEXT,
+  REPLAY_TRANSCRIPT,
 }
 
 enum class PromptLayerId {
@@ -331,10 +339,45 @@ enum class PromptLayerKind {
 data class AssembledPrompt(
   val systemPrompt: String,
   val contextPrompt: String,
+  val durableContextPrompt: String,
+  val dynamicContextPrompt: String,
+  val replayTranscriptPrompt: String,
   val taskPrompt: String,
   val layers: List<PromptLayer>,
   val report: ContextAssemblyReport,
-)
+) {
+  val frontContextZones: FrontContextZones
+    get() = FrontContextZones(
+      durableContextPrompt = durableContextPrompt,
+      dynamicContextPrompt = dynamicContextPrompt,
+    )
+
+  val frontContextPrompts: List<String>
+    get() = frontContextZones.promptsInTransportOrder
+}
+
+data class FrontContextZones(
+  val durableContextPrompt: String = "",
+  val dynamicContextPrompt: String = "",
+) {
+  val promptsInTransportOrder: List<String>
+    get() = listOf(
+      normalizePrompt(durableContextPrompt),
+      normalizePrompt(dynamicContextPrompt),
+    ).filter(String::isNotBlank)
+
+  companion object {
+    fun fromTransportPrompts(prompts: List<String>): FrontContextZones {
+      val normalizedPrompts = prompts.map(::normalizePrompt).filter(String::isNotBlank)
+      return FrontContextZones(
+        durableContextPrompt = normalizedPrompts.getOrNull(0).orEmpty(),
+        dynamicContextPrompt = normalizedPrompts.getOrNull(1).orEmpty(),
+      )
+    }
+
+    private fun normalizePrompt(prompt: String): String = prompt.trim().takeIf(String::isNotBlank).orEmpty()
+  }
+}
 
 data class ToolProtocolTrace(
   val detailMode: String = "full",
@@ -388,6 +431,7 @@ data class ContextLayerReport(
   val id: PromptLayerId,
   val name: String,
   val kind: PromptLayerKind,
+  val transportGroup: PromptLayerTransportGroup,
   val characterCount: Int,
   val estimatedTokenCount: Int,
 )
@@ -437,4 +481,13 @@ data class CompactionSummary(
     require(text.isNotBlank()) { "CompactionSummary text must not be blank." }
     require(compactedMessageCount >= 1) { "CompactionSummary compactedMessageCount must be >= 1." }
   }
+}
+
+private fun defaultPromptLayerTransportGroup(
+  kind: PromptLayerKind,
+): PromptLayerTransportGroup = when (kind) {
+  PromptLayerKind.SYSTEM -> PromptLayerTransportGroup.SYSTEM_PREFIX
+  PromptLayerKind.PROTOCOL,
+  PromptLayerKind.CONTEXT,
+  -> PromptLayerTransportGroup.DYNAMIC_CONTEXT
 }

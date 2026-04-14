@@ -1754,6 +1754,32 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     request: LiteLlmGatewayRequest,
   ): List<LiteLlmGatewayMessage> = openAiConversationMessages(request)
 
+  private fun builtinWebSearchFallbackQueries(
+    request: LiteLlmProviderRequest,
+  ): List<String> = request.request.messages
+    .asReversed()
+    .asSequence()
+    .filter { message -> message.role == LiteLlmGatewayMessageRole.USER }
+    .mapNotNull(::builtinWebSearchFallbackQueryText)
+    .firstOrNull()
+    ?.let(::listOf)
+    ?: listOf(request.request.prompt.trim()).filter(String::isNotBlank)
+
+  private fun builtinWebSearchFallbackQueryText(
+    message: LiteLlmGatewayMessage,
+  ): String? {
+    message.content?.trim()?.takeIf(String::isNotBlank)?.let { content ->
+      return content
+    }
+    return message.attachments
+      .asSequence()
+      .mapNotNull { attachment ->
+        attachment.transcriptText?.trim()?.takeIf(String::isNotBlank)
+          ?: attachment.displayName?.trim()?.takeIf(String::isNotBlank)
+      }
+      .firstOrNull()
+  }
+
   private fun mergeBuiltinWebSearchMetadata(
     metadata: Map<String, String>,
     observations: List<LiteLlmBuiltinWebSearchObservation>,
@@ -2009,6 +2035,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   }
 
   private fun buildOpenAiMessagesArray(request: LiteLlmProviderRequest): JSONArray = JSONArray().apply {
+    val conversationMessages = openAiConversationMessages(request.request)
     request.request.systemPrompt?.takeIf { it.isNotBlank() }?.let { systemPrompt ->
       put(
         JSONObject()
@@ -2016,15 +2043,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
           .put("content", systemPrompt),
       )
     }
-    if (request.request.messages.isEmpty()) {
-      put(
-        JSONObject()
-          .put("role", "user")
-          .put("content", request.request.prompt),
-      )
-      return@apply
-    }
-    request.request.messages.forEach { message ->
+    conversationMessages.forEach { message ->
       when (message.role) {
         LiteLlmGatewayMessageRole.SYSTEM -> {
           message.content?.takeIf(String::isNotBlank)?.let { content ->
@@ -2075,11 +2094,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
   private fun buildResponsesInputArray(request: LiteLlmProviderRequest): JSONArray = JSONArray().apply {
     val assistantPhasesSupported = responsesAssistantPhasesSupported(request)
-    if (request.request.messages.isEmpty()) {
-      put(buildResponsesTextMessage(role = "user", content = request.request.prompt))
-      return@apply
-    }
-    request.request.messages.forEach { message ->
+    openAiConversationMessages(request.request).forEach { message ->
       when (message.role) {
         LiteLlmGatewayMessageRole.SYSTEM -> {
           message.content?.takeIf(String::isNotBlank)?.let { content ->
@@ -2555,15 +2570,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   }
 
   private fun buildAnthropicMessagesArray(request: LiteLlmProviderRequest): JSONArray = JSONArray().apply {
-    if (request.request.messages.isEmpty()) {
-      put(
-        JSONObject()
-          .put("role", "user")
-          .put("content", request.request.prompt),
-      )
-      return@apply
-    }
-    val messages = request.request.messages
+    val messages = anthropicConversationMessages(request.request)
     var index = 0
     while (index < messages.size) {
       val message = messages[index]
@@ -2979,9 +2986,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     }
     return queriesByToolUseId.values
       .ifEmpty {
-        listOf(
-          listOf(request.request.prompt.trim()).filter(String::isNotBlank),
-        )
+        listOf(builtinWebSearchFallbackQueries(request))
       }
       .map { queries ->
         LiteLlmBuiltinWebSearchObservation(
@@ -3039,7 +3044,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         LiteLlmBuiltinWebSearchObservation(
           actionType = "search",
           status = "completed",
-          queries = listOf(request.request.prompt.trim()).filter(String::isNotBlank),
+          queries = builtinWebSearchFallbackQueries(request),
           domains = request.request.builtinTools
             .flatMap(LiteLlmBuiltinToolDefinition::domains)
             .distinct(),

@@ -804,6 +804,125 @@ class LlmConfigFacadeTest {
     assertEquals(ANTHROPIC_PROMPT_CACHE_TTL_1H, snapshot.anthropicPromptCacheTtl)
   }
 
+  @Test
+  fun savePersistsContextBudgetSettings() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val facade = LocalLlmConfigFacade.createForTest(
+      llmSettingsStore = store,
+      providerClient = RecordingProviderClient(
+        LiteLlmProviderResult.Success(outputText = "OK"),
+      ),
+    )
+
+    val snapshot = facade.save(
+      SaveLlmConfigRequest(
+        enabled = true,
+        providerId = "openai",
+        selectedProviderOptionId = "openai",
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        providerName = "OpenAI",
+        providerNotes = "",
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+        reasoningEffort = "medium",
+        systemPrompt = "Be concise.",
+        contextBudgetPreset = "expanded",
+        contextBudgetReservedOutputTokens = 3072,
+        contextBudgetSafetyMarginTokens = 1536,
+        contextBudgetEffectiveInputPercent = 0.92,
+      ),
+    )
+
+    assertEquals("expanded", snapshot.contextBudgetPreset)
+    assertEquals(3072, snapshot.contextBudgetReservedOutputTokens)
+    assertEquals(1536, snapshot.contextBudgetSafetyMarginTokens)
+    assertEquals(0.92, snapshot.contextBudgetEffectiveInputPercent ?: 0.0, 0.0001)
+
+    val stored = store.load(
+      defaults = LlmSettingsState(
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+      ),
+    )
+    assertEquals("expanded", stored.contextBudgetPreset)
+    assertEquals(3072, stored.contextBudgetReservedOutputTokens)
+    assertEquals(1536, stored.contextBudgetSafetyMarginTokens)
+    assertEquals(0.92, stored.contextBudgetEffectiveInputPercent ?: 0.0, 0.0001)
+  }
+
+  @Test
+  fun savePreservesOrClearsContextBudgetSettingsBasedOnExplicitPayload() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    store.save(
+      LlmSettingsState(
+        enabled = true,
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+        contextBudgetPreset = "expanded",
+        contextBudgetReservedOutputTokens = 3072,
+        contextBudgetSafetyMarginTokens = 1536,
+        contextBudgetEffectiveInputPercent = 0.92,
+      ),
+    )
+    val facade = LocalLlmConfigFacade.createForTest(
+      llmSettingsStore = store,
+      providerClient = RecordingProviderClient(
+        LiteLlmProviderResult.Success(outputText = "OK"),
+      ),
+    )
+
+    val preserved = facade.save(
+      SaveLlmConfigRequest(
+        enabled = true,
+        providerId = "openai",
+        selectedProviderOptionId = "openai",
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        providerName = "OpenAI",
+        providerNotes = "",
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+        reasoningEffort = "medium",
+        systemPrompt = "Stay concise.",
+      ),
+    )
+
+    assertEquals("expanded", preserved.contextBudgetPreset)
+    assertEquals(3072, preserved.contextBudgetReservedOutputTokens)
+    assertEquals(1536, preserved.contextBudgetSafetyMarginTokens)
+    assertEquals(0.92, preserved.contextBudgetEffectiveInputPercent ?: 0.0, 0.0001)
+
+    val cleared = facade.save(
+      SaveLlmConfigRequest(
+        enabled = true,
+        providerId = "openai",
+        selectedProviderOptionId = "openai",
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        providerName = "OpenAI",
+        providerNotes = "",
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+        reasoningEffort = "medium",
+        systemPrompt = "Stay concise.",
+        contextBudgetPreset = "balanced",
+        contextBudgetReservedOutputTokens = null,
+        contextBudgetSafetyMarginTokens = null,
+        contextBudgetEffectiveInputPercent = null,
+      ),
+    )
+
+    assertEquals("balanced", cleared.contextBudgetPreset)
+    assertNull(cleared.contextBudgetReservedOutputTokens)
+    assertNull(cleared.contextBudgetSafetyMarginTokens)
+    assertNull(cleared.contextBudgetEffectiveInputPercent)
+  }
+
   private class RecordingProviderClient(
     vararg queuedResults: LiteLlmProviderResult,
   ) : LiteLlmProviderClient {

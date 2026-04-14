@@ -85,6 +85,10 @@ internal class ServiceBackedOpenCraySettingsGateway(
     openAiPromptCacheRetention: String?,
     anthropicPromptCachingEnabled: Boolean?,
     anthropicPromptCacheTtl: String?,
+    contextBudgetPreset: String?,
+    contextBudgetReservedOutputTokens: Int?,
+    contextBudgetSafetyMarginTokens: Int?,
+    contextBudgetEffectiveInputPercent: Double?,
   ): Map<String, Any?> = dispatchPayloadWriteCommand(
     operation = "saveLlmConfig",
     command = OpenCraySettingsWriteCommand.SaveLlmConfig(
@@ -104,6 +108,10 @@ internal class ServiceBackedOpenCraySettingsGateway(
       openAiPromptCacheRetention = openAiPromptCacheRetention,
       anthropicPromptCachingEnabled = anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl = anthropicPromptCacheTtl,
+      contextBudgetPreset = contextBudgetPreset,
+      contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
     ),
   )
 
@@ -122,6 +130,10 @@ internal class ServiceBackedOpenCraySettingsGateway(
     openAiPromptCacheRetention: String?,
     anthropicPromptCachingEnabled: Boolean?,
     anthropicPromptCacheTtl: String?,
+    contextBudgetPreset: String?,
+    contextBudgetReservedOutputTokens: Int?,
+    contextBudgetSafetyMarginTokens: Int?,
+    contextBudgetEffectiveInputPercent: Double?,
   ): Map<String, Any?> = dispatchPayloadWriteCommand(
     operation = "saveCustomLlmProvider",
     command = OpenCraySettingsWriteCommand.SaveCustomLlmProvider(
@@ -139,6 +151,10 @@ internal class ServiceBackedOpenCraySettingsGateway(
       openAiPromptCacheRetention = openAiPromptCacheRetention,
       anthropicPromptCachingEnabled = anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl = anthropicPromptCacheTtl,
+      contextBudgetPreset = contextBudgetPreset,
+      contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
     ),
   )
 

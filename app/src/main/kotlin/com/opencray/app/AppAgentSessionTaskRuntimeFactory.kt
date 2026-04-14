@@ -57,7 +57,13 @@ import com.opencray.runtime.compaction.DurableCompactionCoordinator
 import com.opencray.runtime.compaction.InMemorySessionCompactionStore
 import com.opencray.runtime.compaction.SessionCompactionStore
 import com.opencray.runtime.context.AgentRuntimeSessionContext
+import com.opencray.runtime.context.ContextManager
+import com.opencray.runtime.context.ContextSourceBudgetPolicy
+import com.opencray.runtime.context.ContextSourceBudgetProfile
+import com.opencray.runtime.context.GlobalContextBudgetCoordinator
 import com.opencray.runtime.context.LiveContextTrace
+import com.opencray.runtime.context.PromptAssembler
+import com.opencray.runtime.context.RecentToolObservationSupport
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationAssistantPhase
 import com.opencray.runtime.context.RuntimeConversationMessageKind
@@ -65,6 +71,7 @@ import com.opencray.runtime.context.RuntimeConversationCommentary
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.RuntimeConversationToolCall
 import com.opencray.runtime.context.RuntimeConversationToolResult
+import com.opencray.runtime.context.TranscriptWindowBuilder
 import com.opencray.runtime.memory.MemoryRecallRequest
 import com.opencray.runtime.memory.MemoryRecallResult
 import com.opencray.runtime.memory.MemoryRetriever
@@ -75,7 +82,9 @@ import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.session.InMemorySessionTranscriptStore
 import com.opencray.runtime.session.SessionTranscriptStore
 import com.opencray.runtime.skills.SkillCatalogResolver
+import com.opencray.runtime.skills.ActiveSkillPromptLayer
 import com.opencray.runtime.skills.SkillInstallManifestStore
+import com.opencray.runtime.skills.SkillInventoryPromptLayer
 import com.opencray.runtime.skills.SkillInventoryResolver
 import com.opencray.runtime.skills.SkillPackageManager
 import com.opencray.runtime.subagent.SubAgentExecutionCoordinator
@@ -161,10 +170,11 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val subAgentHandleStoresBySession: ConcurrentMap<String, SubAgentHandleStore> = ConcurrentHashMap()
   private val subAgentExecutionCoordinatorsBySession: ConcurrentMap<String, SubAgentExecutionCoordinator> =
     ConcurrentHashMap()
-  private val memoryRetriever: MemoryRetriever = MemoryRetriever()
+  private val contextSourceBudgetPolicy: ContextSourceBudgetPolicy = ContextSourceBudgetPolicy()
   private val memoryBackedSoulResolver: MemoryBackedSoulProfileResolver = MemoryBackedSoulProfileResolver()
-  private val bootstrapContextResolver: BootstrapContextResolver = BootstrapContextResolver()
-  private val durableCompactionCoordinator: DurableCompactionCoordinator = DurableCompactionCoordinator()
+  private val durableCompactionCoordinator: DurableCompactionCoordinator = DurableCompactionCoordinator(
+    sourceBudgetPolicy = contextSourceBudgetPolicy,
+  )
   private val skillCatalogResolver: SkillCatalogResolver = SkillCatalogResolver()
   private val skillInventoryResolver: SkillInventoryResolver = SkillInventoryResolver()
   private val replayJson: Json = Json { prettyPrint = false }
@@ -389,6 +399,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
       llmSettings = llmSettings,
       routeMetadata = routeMetadata,
     )
+    val sourceBudgetProfile = contextSourceBudgetPolicy.resolve(llmMetadata)
     val preparedContext = prepareSessionContext(
       sessionId = sessionId,
       workspaceId = workspaceId,
@@ -403,6 +414,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
       appendTaskInputToTranscript = task.type == com.opencray.core.contracts.AgentTaskType.PROMPT &&
         promptResumeState == null,
       llmMetadata = llmMetadata,
+      sourceBudgetProfile = sourceBudgetProfile,
       liveContextMode = liveContextModeProvider(),
       memoryToolsEnabled = safetySettings.memoryToolsEnabled,
     )
@@ -499,7 +511,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
             emission = emission,
           )
         },
+        contextManager = contextManagerFor(sourceBudgetProfile),
+        promptAssembler = promptAssemblerFor(sourceBudgetProfile),
         llmMetadata = llmMetadata,
+        contextSourceBudgetProfile = sourceBudgetProfile,
         llmAuthHeaders = if (requiresLlmConfig) {
           LlmProviderProtocols.authHeaders(
             protocol = llmSettings.protocol,
@@ -949,7 +964,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
     taskInput: String,
     memoryRecords: List<MemoryRecord> = memoryRecordsProvider(),
     workspaceId: String? = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider()),
-  ): MemoryRecallResult = memoryRetriever.retrieve(
+    sourceBudgetProfile: ContextSourceBudgetProfile = contextSourceBudgetPolicy.resolve(emptyMap()),
+  ): MemoryRecallResult = MemoryRetriever(
+    policy = sourceBudgetProfile.memoryPolicy,
+  ).retrieve(
     records = memoryRecords,
     request = MemoryRecallRequest(
       sessionId = sessionId,
@@ -976,8 +994,12 @@ internal class AppAgentSessionTaskRuntimeFactory(
   internal fun visibleSkillInventoryFor() =
     skillInventoryResolver.resolve(skillsRootsProvider())
 
-  internal fun bootstrapContextFor(mode: BootstrapMode) =
-    bootstrapContextResolver.resolve(
+  internal fun bootstrapContextFor(
+    mode: BootstrapMode,
+    sourceBudgetProfile: ContextSourceBudgetProfile = contextSourceBudgetPolicy.resolve(emptyMap()),
+  ) = BootstrapContextResolver(
+    config = sourceBudgetProfile.bootstrapContextResolverConfig,
+  ).resolve(
       workspaceRoots = workspaceRootsProvider(),
       mode = mode,
     )
@@ -987,6 +1009,37 @@ internal class AppAgentSessionTaskRuntimeFactory(
 
   internal fun skillCatalogFor() =
     skillCatalogResolver.resolve(skillsRootsProvider())
+
+  internal fun contextManagerFor(
+    sourceBudgetProfile: ContextSourceBudgetProfile,
+  ): ContextManager {
+    val transcriptWindowBuilder = TranscriptWindowBuilder(sourceBudgetProfile.transcriptWindowConfig)
+    val skillInventoryPromptLayer = SkillInventoryPromptLayer(sourceBudgetProfile.skillInventoryPromptLayerConfig)
+    val activeSkillPromptLayer = ActiveSkillPromptLayer(sourceBudgetProfile.activeSkillPromptLayerConfig)
+    val recentToolObservationSupport = RecentToolObservationSupport(sourceBudgetProfile.recentToolObservationConfig)
+    return ContextManager(
+      transcriptWindowBuilder = transcriptWindowBuilder,
+      skillInventoryPromptLayer = skillInventoryPromptLayer,
+      activeSkillPromptLayer = activeSkillPromptLayer,
+      recentToolObservationSupport = recentToolObservationSupport,
+      config = sourceBudgetProfile.contextManagerConfig,
+    )
+  }
+
+  internal fun promptAssemblerFor(
+    sourceBudgetProfile: ContextSourceBudgetProfile,
+  ): PromptAssembler {
+    val skillInventoryPromptLayer = SkillInventoryPromptLayer(sourceBudgetProfile.skillInventoryPromptLayerConfig)
+    val activeSkillPromptLayer = ActiveSkillPromptLayer(sourceBudgetProfile.activeSkillPromptLayerConfig)
+    val recentToolObservationSupport = RecentToolObservationSupport(sourceBudgetProfile.recentToolObservationConfig)
+    return PromptAssembler(
+      budgetCoordinator = GlobalContextBudgetCoordinator(
+        skillInventoryPromptLayer = skillInventoryPromptLayer,
+        activeSkillPromptLayer = activeSkillPromptLayer,
+        recentToolObservationSupport = recentToolObservationSupport,
+      ),
+    )
+  }
 
   private fun buildRuntimeLlmMetadata(
     requiresLlmConfig: Boolean,
@@ -1010,6 +1063,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
       )
       put(HOST_METADATA_PROVIDER_ID, llmSettings.providerId)
       putAll(routeMetadata)
+      putAll(llmSettings.contextBudgetRuntimeMetadataOverrides())
       putAll(llmSettings.agentCapability.runtimeMetadataOverrides())
     }
   } else {
@@ -1029,6 +1083,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     memoryRecords: List<MemoryRecord>,
     appendTaskInputToTranscript: Boolean = taskType == com.opencray.core.contracts.AgentTaskType.PROMPT,
     llmMetadata: Map<String, String> = emptyMap(),
+    sourceBudgetProfile: ContextSourceBudgetProfile = contextSourceBudgetPolicy.resolve(llmMetadata),
     liveContextMode: LiveContextMode = LiveContextMode.FULL,
     memoryToolsEnabled: Boolean = safetySettingsProvider().sanitized().memoryToolsEnabled,
   ): PreparedSessionContext {
@@ -1084,6 +1139,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
       } else {
         BootstrapMode.NONE
       },
+      sourceBudgetProfile = sourceBudgetProfile,
     )
     val turnSemanticSignal = if (
       taskType == com.opencray.core.contracts.AgentTaskType.PROMPT &&
@@ -1131,6 +1187,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
             taskInput = taskInput,
             memoryRecords = effectiveMemoryRecords,
             workspaceId = workspaceId,
+            sourceBudgetProfile = sourceBudgetProfile,
           )
         } else {
           MemoryRecallResult()

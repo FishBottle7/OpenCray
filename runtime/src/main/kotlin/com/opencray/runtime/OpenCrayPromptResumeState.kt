@@ -7,6 +7,8 @@ import com.opencray.llm.LiteLlmGatewayMessage
 import com.opencray.llm.LiteLlmGatewayMessageRole
 import com.opencray.llm.LiteLlmGatewayToolResult
 import com.opencray.llm.LiteLlmStructuredToolCall
+import com.opencray.runtime.context.FrontContextZones
+import com.opencray.runtime.context.FrozenToolResultReplayProjection
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.subagent.SubAgentHandleState
@@ -234,6 +236,12 @@ data class OpenCraySerializableGatewayMessage(
 @Serializable
 data class OpenCraySerializableLocalContinuationEnvelope(
   val stableAnchor: String,
+  val frontContextPrompts: List<String> = emptyList(),
+  val durableContextPrompt: String? = null,
+  val dynamicContextPrompt: String? = null,
+  val toolPoolFingerprint: String? = null,
+  val toolSchemaFingerprint: String? = null,
+  val requestSettingsFingerprint: String? = null,
   val transcriptFrontier: List<RuntimeConversationMessage> = emptyList(),
   val gatewayMessages: List<OpenCraySerializableGatewayMessage>,
 ) {
@@ -244,16 +252,69 @@ data class OpenCraySerializableLocalContinuationEnvelope(
     require(gatewayMessages.isNotEmpty()) {
       "OpenCraySerializableLocalContinuationEnvelope gatewayMessages must not be empty."
     }
+    require(toolPoolFingerprint == null || toolPoolFingerprint.isNotBlank()) {
+      "OpenCraySerializableLocalContinuationEnvelope toolPoolFingerprint must not be blank."
+    }
+    require(toolSchemaFingerprint == null || toolSchemaFingerprint.isNotBlank()) {
+      "OpenCraySerializableLocalContinuationEnvelope toolSchemaFingerprint must not be blank."
+    }
+    require(requestSettingsFingerprint == null || requestSettingsFingerprint.isNotBlank()) {
+      "OpenCraySerializableLocalContinuationEnvelope requestSettingsFingerprint must not be blank."
+    }
   }
 
   fun restoredGatewayMessages(): List<LiteLlmGatewayMessage> =
     gatewayMessages.map(OpenCraySerializableGatewayMessage::toGatewayMessage)
+
+  fun restoredFrontContextZones(): FrontContextZones {
+    val legacyZones = FrontContextZones.fromTransportPrompts(frontContextPrompts)
+    return FrontContextZones(
+      durableContextPrompt = durableContextPrompt
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: legacyZones.durableContextPrompt,
+      dynamicContextPrompt = dynamicContextPrompt
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: legacyZones.dynamicContextPrompt,
+    )
+  }
 
   fun restoredTranscriptFrontier(
     fallback: List<RuntimeConversationMessage>,
   ): List<RuntimeConversationMessage> = transcriptFrontier.takeIf { frontier ->
     frontier.isNotEmpty()
   } ?: fallback
+}
+
+@Serializable
+data class OpenCraySerializableResponsesContinuationShape(
+  val stableAnchor: String,
+  val durableContextPrompt: String? = null,
+  val dynamicContextPrompt: String? = null,
+  val toolPoolFingerprint: String,
+  val toolSchemaFingerprint: String,
+  val requestSettingsFingerprint: String,
+) {
+  init {
+    require(stableAnchor.isNotBlank()) {
+      "OpenCraySerializableResponsesContinuationShape stableAnchor must not be blank."
+    }
+    require(toolPoolFingerprint.isNotBlank()) {
+      "OpenCraySerializableResponsesContinuationShape toolPoolFingerprint must not be blank."
+    }
+    require(toolSchemaFingerprint.isNotBlank()) {
+      "OpenCraySerializableResponsesContinuationShape toolSchemaFingerprint must not be blank."
+    }
+    require(requestSettingsFingerprint.isNotBlank()) {
+      "OpenCraySerializableResponsesContinuationShape requestSettingsFingerprint must not be blank."
+    }
+  }
+
+  fun restoredFrontContextZones(): FrontContextZones = FrontContextZones(
+    durableContextPrompt = durableContextPrompt?.trim()?.takeIf(String::isNotBlank).orEmpty(),
+    dynamicContextPrompt = dynamicContextPrompt?.trim()?.takeIf(String::isNotBlank).orEmpty(),
+  )
 }
 
 @Serializable
@@ -309,7 +370,9 @@ data class OpenCrayPromptResumeState(
   val responsesPreviousResponseId: String? = null,
   val responsesProviderLineageId: String? = null,
   val responsesLineageTrusted: Boolean = false,
+  val responsesContinuationShape: OpenCraySerializableResponsesContinuationShape? = null,
   val responsesPendingMessages: List<OpenCraySerializableGatewayMessage> = emptyList(),
+  val replayToolResultProjections: Map<String, FrozenToolResultReplayProjection> = emptyMap(),
   val subAgentHandles: List<SubAgentHandleState> = emptyList(),
 ) {
   init {

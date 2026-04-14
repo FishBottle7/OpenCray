@@ -2,6 +2,7 @@ package com.opencray.app
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.opencray.runtime.context.ModelContextBudgetPreset
 import java.util.UUID
 import org.json.JSONArray
 import org.json.JSONObject
@@ -25,6 +26,10 @@ internal object LlmSettingsStoreKeys {
   const val OPENAI_PROMPT_CACHE_RETENTION = "openai_prompt_cache_retention"
   const val ANTHROPIC_PROMPT_CACHING_ENABLED = "anthropic_prompt_caching_enabled"
   const val ANTHROPIC_PROMPT_CACHE_TTL = "anthropic_prompt_cache_ttl"
+  const val CONTEXT_BUDGET_PRESET = "context_budget_preset"
+  const val CONTEXT_BUDGET_RESERVED_OUTPUT_TOKENS = "context_budget_reserved_output_tokens"
+  const val CONTEXT_BUDGET_SAFETY_MARGIN_TOKENS = "context_budget_safety_margin_tokens"
+  const val CONTEXT_BUDGET_EFFECTIVE_INPUT_PERCENT = "context_budget_effective_input_percent"
   const val SAVED_CUSTOM_PROVIDERS = "saved_custom_providers"
   const val AGENT_CAPABILITY_CACHE = "agent_capability_cache"
 }
@@ -45,11 +50,28 @@ internal data class LlmSettingsState(
   val openAiPromptCacheRetention: String = DEFAULT_OPENAI_PROMPT_CACHE_RETENTION,
   val anthropicPromptCachingEnabled: Boolean = DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED,
   val anthropicPromptCacheTtl: String = DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL,
+  val contextBudgetPreset: String = DEFAULT_CONTEXT_BUDGET_PRESET,
+  val contextBudgetReservedOutputTokens: Int? = null,
+  val contextBudgetSafetyMarginTokens: Int? = null,
+  val contextBudgetEffectiveInputPercent: Double? = null,
   val agentCapability: LlmAgentCapabilitySnapshot = LlmAgentCapabilitySnapshot(),
 ) {
   fun isConfigured(): Boolean =
     baseUrl.trim().isNotEmpty() &&
       apiKey.trim().isNotEmpty()
+
+  fun contextBudgetRuntimeMetadataOverrides(): Map<String, String> = buildMap {
+    put("context_budget_preset", contextBudgetPreset)
+    contextBudgetReservedOutputTokens?.let { override ->
+      put("reserved_output_tokens", override.toString())
+    }
+    contextBudgetSafetyMarginTokens?.let { override ->
+      put("prompt_safety_margin_tokens", override.toString())
+    }
+    contextBudgetEffectiveInputPercent?.let { override ->
+      put("effective_input_percent", override.toString())
+    }
+  }
 
   fun sanitized(): LlmSettingsState {
     val normalizedProtocol = LlmProviderProtocols.normalize(protocol)
@@ -75,6 +97,16 @@ internal data class LlmSettingsState(
       anthropicPromptCacheTtl = normalizedAnthropicPromptCacheTtl(
         anthropicPromptCacheTtl,
       ),
+      contextBudgetPreset = normalizedContextBudgetPreset(contextBudgetPreset),
+      contextBudgetReservedOutputTokens = normalizedContextBudgetTokenOverride(
+        contextBudgetReservedOutputTokens,
+      ),
+      contextBudgetSafetyMarginTokens = normalizedContextBudgetTokenOverride(
+        contextBudgetSafetyMarginTokens,
+      ),
+      contextBudgetEffectiveInputPercent = normalizedContextBudgetEffectiveInputPercent(
+        contextBudgetEffectiveInputPercent,
+      ),
       agentCapability = agentCapability.normalizedForRoute(
         protocol = normalizedProtocol,
         baseUrl = normalizedBaseUrl,
@@ -97,6 +129,7 @@ internal data class LlmSettingsState(
     const val DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED: Boolean = false
     const val DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL: String =
       AnthropicPromptCacheTtlPolicies.MINUTES_5
+    val DEFAULT_CONTEXT_BUDGET_PRESET: String = ModelContextBudgetPreset.BALANCED.wireValue
 
     fun inferProviderId(baseUrl: String): String =
       LlmProviderCatalog.inferPresetId(baseUrl)
@@ -123,6 +156,18 @@ internal data class LlmSettingsState(
       AnthropicPromptCacheTtlPolicies.HOUR_1 -> AnthropicPromptCacheTtlPolicies.HOUR_1
       else -> DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL
     }
+
+    fun normalizedContextBudgetPreset(rawValue: String): String =
+      ModelContextBudgetPreset.fromWireValue(rawValue)?.wireValue
+        ?: DEFAULT_CONTEXT_BUDGET_PRESET
+
+    private fun normalizedContextBudgetTokenOverride(rawValue: Int?): Int? =
+      rawValue?.takeIf { value -> value > 0 }
+
+    private fun normalizedContextBudgetEffectiveInputPercent(rawValue: Double?): Double? =
+      rawValue
+        ?.takeIf(Double::isFinite)
+        ?.coerceIn(0.1, 1.0)
   }
 }
 
@@ -275,6 +320,21 @@ internal class LlmSettingsStore(
       anthropicPromptCacheTtl =
         keyValueStore.getString(LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHE_TTL)
           ?: defaults.anthropicPromptCacheTtl,
+      contextBudgetPreset =
+        keyValueStore.getString(LlmSettingsStoreKeys.CONTEXT_BUDGET_PRESET)
+          ?: defaults.contextBudgetPreset,
+      contextBudgetReservedOutputTokens = optionalIntValue(
+        key = LlmSettingsStoreKeys.CONTEXT_BUDGET_RESERVED_OUTPUT_TOKENS,
+        defaultValue = defaults.contextBudgetReservedOutputTokens,
+      ),
+      contextBudgetSafetyMarginTokens = optionalIntValue(
+        key = LlmSettingsStoreKeys.CONTEXT_BUDGET_SAFETY_MARGIN_TOKENS,
+        defaultValue = defaults.contextBudgetSafetyMarginTokens,
+      ),
+      contextBudgetEffectiveInputPercent = optionalDoubleValue(
+        key = LlmSettingsStoreKeys.CONTEXT_BUDGET_EFFECTIVE_INPUT_PERCENT,
+        defaultValue = defaults.contextBudgetEffectiveInputPercent,
+      ),
     ).sanitized()
     return resolved.copy(
       enabled = resolved.isConfigured(),
@@ -329,6 +389,22 @@ internal class LlmSettingsStore(
     keyValueStore.putString(
       LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHE_TTL,
       sanitized.anthropicPromptCacheTtl,
+    )
+    keyValueStore.putString(
+      LlmSettingsStoreKeys.CONTEXT_BUDGET_PRESET,
+      sanitized.contextBudgetPreset,
+    )
+    keyValueStore.putString(
+      LlmSettingsStoreKeys.CONTEXT_BUDGET_RESERVED_OUTPUT_TOKENS,
+      sanitized.contextBudgetReservedOutputTokens?.toString().orEmpty(),
+    )
+    keyValueStore.putString(
+      LlmSettingsStoreKeys.CONTEXT_BUDGET_SAFETY_MARGIN_TOKENS,
+      sanitized.contextBudgetSafetyMarginTokens?.toString().orEmpty(),
+    )
+    keyValueStore.putString(
+      LlmSettingsStoreKeys.CONTEXT_BUDGET_EFFECTIVE_INPUT_PERCENT,
+      sanitized.contextBudgetEffectiveInputPercent?.toString().orEmpty(),
     )
     if (sanitized.agentCapability.wasVerified) {
       saveAgentCapability(sanitized.agentCapability)
@@ -428,6 +504,22 @@ internal class LlmSettingsStore(
         }
       }
     }
+  }
+
+  private fun optionalIntValue(
+    key: String,
+    defaultValue: Int?,
+  ): Int? = when (val rawValue = keyValueStore.getString(key)) {
+    null -> defaultValue
+    else -> rawValue.trim().takeIf(String::isNotBlank)?.toIntOrNull()
+  }
+
+  private fun optionalDoubleValue(
+    key: String,
+    defaultValue: Double?,
+  ): Double? = when (val rawValue = keyValueStore.getString(key)) {
+    null -> defaultValue
+    else -> rawValue.trim().takeIf(String::isNotBlank)?.toDoubleOrNull()
   }
 
   private fun saveAgentCapabilityCache(entries: List<LlmAgentCapabilitySnapshot>) {

@@ -1,5 +1,6 @@
 package com.opencray.runtime.compaction
 
+import com.opencray.runtime.context.ContextSourceBudgetPolicy
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.TranscriptWindowBuilder
@@ -144,6 +145,51 @@ class DurableCompactionCoordinatorTest {
     assertEquals(8, context.trace.retainedTranscriptMessageCount)
     assertEquals(0, context.trace.latestCompactedMessageCount)
     assertFalse(context.included)
+  }
+
+  @Test
+  fun compactIfNeededCouplesTranscriptWindowToExpandedSourcePreset() {
+    val balancedTranscriptStore = InMemorySessionTranscriptStore()
+    balancedTranscriptStore.seedIfEmpty(
+      (1..16).map { index ->
+        if (index % 2 == 0) {
+          assistant("Assistant reply $index with enough content to keep replay pressure high.")
+        } else {
+          user("User request $index with enough content to keep replay pressure high.")
+        }
+      },
+    )
+    val expandedTranscriptStore = InMemorySessionTranscriptStore()
+    expandedTranscriptStore.seedIfEmpty(balancedTranscriptStore.snapshot())
+    val balancedCoordinator = DurableCompactionCoordinator(
+      sourceBudgetPolicy = ContextSourceBudgetPolicy(),
+      clock = { 5_000L },
+    )
+    val expandedCoordinator = DurableCompactionCoordinator(
+      sourceBudgetPolicy = ContextSourceBudgetPolicy(),
+      clock = { 5_000L },
+    )
+
+    val balancedContext = balancedCoordinator.compactIfNeeded(
+      transcriptStore = balancedTranscriptStore,
+      compactionStore = InMemorySessionCompactionStore(),
+      llmMetadata = mapOf("context_window_tokens" to "64"),
+    )
+    val expandedContext = expandedCoordinator.compactIfNeeded(
+      transcriptStore = expandedTranscriptStore,
+      compactionStore = InMemorySessionCompactionStore(),
+      llmMetadata = mapOf(
+        "context_window_tokens" to "64",
+        "context_budget_preset" to "expanded",
+      ),
+    )
+
+    assertTrue(balancedContext.trace.compactedThisRun)
+    assertEquals(12, balancedContext.trace.retainedTranscriptMessageCount)
+    assertEquals(12, balancedTranscriptStore.snapshot().size)
+    assertFalse(expandedContext.trace.compactedThisRun)
+    assertEquals(16, expandedContext.trace.retainedTranscriptMessageCount)
+    assertEquals(16, expandedTranscriptStore.snapshot().size)
   }
 
   private fun user(content: String): RuntimeConversationMessage =

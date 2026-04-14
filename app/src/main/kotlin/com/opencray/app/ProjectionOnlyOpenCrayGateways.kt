@@ -158,6 +158,10 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
     openAiPromptCacheRetention: String?,
     anthropicPromptCachingEnabled: Boolean?,
     anthropicPromptCacheTtl: String?,
+    contextBudgetPreset: String?,
+    contextBudgetReservedOutputTokens: Int?,
+    contextBudgetSafetyMarginTokens: Int?,
+    contextBudgetEffectiveInputPercent: Double?,
   ): Map<String, Any?> = throw writeUnavailable("saveLlmConfig")
 
   override fun saveCustomLlmProvider(
@@ -175,6 +179,10 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
     openAiPromptCacheRetention: String?,
     anthropicPromptCachingEnabled: Boolean?,
     anthropicPromptCacheTtl: String?,
+    contextBudgetPreset: String?,
+    contextBudgetReservedOutputTokens: Int?,
+    contextBudgetSafetyMarginTokens: Int?,
+    contextBudgetEffectiveInputPercent: Double?,
   ): Map<String, Any?> = throw writeUnavailable("saveCustomLlmProvider")
 
   override fun validateLlmConfig(

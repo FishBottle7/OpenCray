@@ -1982,6 +1982,10 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           openAiPromptCacheRetention: String?,
           anthropicPromptCachingEnabled: Boolean?,
           anthropicPromptCacheTtl: String?,
+          contextBudgetPreset: String?,
+          contextBudgetReservedOutputTokens: Int?,
+          contextBudgetSafetyMarginTokens: Int?,
+          contextBudgetEffectiveInputPercent: Double?,
         ): Map<String, Any?> = emptyMap()
 
         override fun saveCustomLlmProvider(
@@ -1999,6 +2003,10 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           openAiPromptCacheRetention: String?,
           anthropicPromptCachingEnabled: Boolean?,
           anthropicPromptCacheTtl: String?,
+          contextBudgetPreset: String?,
+          contextBudgetReservedOutputTokens: Int?,
+          contextBudgetSafetyMarginTokens: Int?,
+          contextBudgetEffectiveInputPercent: Double?,
         ): Map<String, Any?> = emptyMap()
 
         override fun validateLlmConfig(

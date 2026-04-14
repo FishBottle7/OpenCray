@@ -379,4 +379,6 @@
     <string name="runtime_notification_interruption_title">Background task interrupted</string>
     <string name="runtime_notification_interruption_text">%1$s was interrupted: %2$s</string>
     <string name="runtime_notification_interruption_body">The background run was interrupted and now needs attention.</string>
+    <string name="runtime_notification_service_recovered_title">Background runtime recovered</string>
+    <string name="runtime_notification_service_recovered_body">Recovered %1$d session(s) and repaired %2$d restored run set(s).</string>
 </resources>

@@ -46,6 +46,10 @@ internal interface OpenCraySettingsGateway {
     openAiPromptCacheRetention: String? = null,
     anthropicPromptCachingEnabled: Boolean? = null,
     anthropicPromptCacheTtl: String? = null,
+    contextBudgetPreset: String? = null,
+    contextBudgetReservedOutputTokens: Int? = null,
+    contextBudgetSafetyMarginTokens: Int? = null,
+    contextBudgetEffectiveInputPercent: Double? = null,
   ): Map<String, Any?>
 
   fun saveCustomLlmProvider(
@@ -63,6 +67,10 @@ internal interface OpenCraySettingsGateway {
     openAiPromptCacheRetention: String? = null,
     anthropicPromptCachingEnabled: Boolean? = null,
     anthropicPromptCacheTtl: String? = null,
+    contextBudgetPreset: String? = null,
+    contextBudgetReservedOutputTokens: Int? = null,
+    contextBudgetSafetyMarginTokens: Int? = null,
+    contextBudgetEffectiveInputPercent: Double? = null,
   ): Map<String, Any?>
 
   fun validateLlmConfig(
@@ -159,6 +167,10 @@ internal sealed interface OpenCraySettingsWriteCommand {
     val openAiPromptCacheRetention: String? = null,
     val anthropicPromptCachingEnabled: Boolean? = null,
     val anthropicPromptCacheTtl: String? = null,
+    val contextBudgetPreset: String? = null,
+    val contextBudgetReservedOutputTokens: Int? = null,
+    val contextBudgetSafetyMarginTokens: Int? = null,
+    val contextBudgetEffectiveInputPercent: Double? = null,
   ) : OpenCraySettingsWriteCommand
 
   data class SaveCustomLlmProvider(
@@ -176,6 +188,10 @@ internal sealed interface OpenCraySettingsWriteCommand {
     val openAiPromptCacheRetention: String? = null,
     val anthropicPromptCachingEnabled: Boolean? = null,
     val anthropicPromptCacheTtl: String? = null,
+    val contextBudgetPreset: String? = null,
+    val contextBudgetReservedOutputTokens: Int? = null,
+    val contextBudgetSafetyMarginTokens: Int? = null,
+    val contextBudgetEffectiveInputPercent: Double? = null,
   ) : OpenCraySettingsWriteCommand
 
   data class ValidateLlmConfig(
@@ -281,6 +297,10 @@ internal fun OpenCraySettingsGateway.dispatchSettingsWriteCommand(
       openAiPromptCacheRetention = command.openAiPromptCacheRetention,
       anthropicPromptCachingEnabled = command.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl = command.anthropicPromptCacheTtl,
+      contextBudgetPreset = command.contextBudgetPreset,
+      contextBudgetReservedOutputTokens = command.contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens = command.contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent = command.contextBudgetEffectiveInputPercent,
     ),
   )
 
@@ -300,6 +320,10 @@ internal fun OpenCraySettingsGateway.dispatchSettingsWriteCommand(
       openAiPromptCacheRetention = command.openAiPromptCacheRetention,
       anthropicPromptCachingEnabled = command.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl = command.anthropicPromptCacheTtl,
+      contextBudgetPreset = command.contextBudgetPreset,
+      contextBudgetReservedOutputTokens = command.contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens = command.contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent = command.contextBudgetEffectiveInputPercent,
     ),
   )
 

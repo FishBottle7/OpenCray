@@ -3,6 +3,7 @@ package com.opencray.runtime.compaction
 import com.opencray.runtime.context.CompactionPolicy
 import com.opencray.runtime.context.CompactionSummary
 import com.opencray.runtime.context.ContextPruner
+import com.opencray.runtime.context.ContextSourceBudgetPolicy
 import com.opencray.runtime.context.ReplayPressureEvaluator
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.TranscriptWindowBuilder
@@ -218,6 +219,7 @@ class DurableCompactionCoordinator(
   private val durableCompactionPolicy: DurableCompactionPolicy = DurableCompactionPolicy(),
   private val replayPressureEvaluator: ReplayPressureEvaluator = ReplayPressureEvaluator(),
   private val renderer: DurableCompactionRenderer = DurableCompactionRenderer(durableCompactionPolicy),
+  private val sourceBudgetPolicy: ContextSourceBudgetPolicy? = null,
   private val clock: () -> Long = System::currentTimeMillis,
 ) {
   fun compactIfNeeded(
@@ -226,7 +228,11 @@ class DurableCompactionCoordinator(
     llmMetadata: Map<String, String> = emptyMap(),
   ): DurableCompactionContext {
     val conversation = transcriptStore.snapshot()
-    val selection = transcriptWindowBuilder.buildSelection(conversation)
+    val effectiveTranscriptWindowBuilder = sourceBudgetPolicy
+      ?.resolve(llmMetadata)
+      ?.let { profile -> TranscriptWindowBuilder(profile.transcriptWindowConfig) }
+      ?: transcriptWindowBuilder
+    val selection = effectiveTranscriptWindowBuilder.buildSelection(conversation)
     val replayPressure = replayPressureEvaluator.evaluate(
       conversation = contextPruner.prune(conversation).messages,
       llmMetadata = llmMetadata,

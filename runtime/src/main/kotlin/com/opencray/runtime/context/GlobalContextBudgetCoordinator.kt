@@ -199,6 +199,22 @@ class GlobalContextBudgetCoordinator(
       else -> ContextBudgetPressureMode.NORMAL
     }
 
+    val layerReports = states.map { state ->
+      val finalState = finalStateFor(state)
+      ContextBudgetLayerReport(
+        id = state.originalLayer.id,
+        name = state.originalLayer.name,
+        priorityClass = state.spec.priorityClass,
+        retentionPriority = state.spec.retentionPriority,
+        estimatedTokensBefore = state.estimatedTokensBefore,
+        estimatedTokensAfter = state.estimatedTokensAfter,
+        finalState = finalState,
+        omitted = finalState == ContextBudgetLayerFinalState.OMITTED,
+        reduced = finalState != ContextBudgetLayerFinalState.FULL && finalState != ContextBudgetLayerFinalState.OMITTED,
+        appliedOperators = state.appliedOperators.toList(),
+      )
+    }
+
     return CoordinatedPromptLayers(
       layers = states.mapNotNull(LayerBudgetState::currentLayer),
       report = ContextBudgetReport(
@@ -207,30 +223,36 @@ class GlobalContextBudgetCoordinator(
         contextWindowTokens = envelope.contextWindowTokens,
         reservedOutputTokens = envelope.reservedOutputTokens,
         safetyMarginTokens = envelope.safetyMarginTokens,
+        selectedPreset = envelope.selectedPreset,
+        effectivePreset = envelope.effectivePreset,
+        presetSource = envelope.presetSource,
+        presetDiverged = envelope.presetDiverged,
         hardInputBudgetTokens = envelope.hardInputBudgetTokens,
         targetInputBudgetTokens = envelope.targetInputBudgetTokens,
         emergencyInputBudgetTokens = envelope.emergencyInputBudgetTokens,
         effectiveInputPercent = envelope.effectiveInputPercent,
         estimatedInputTokensBefore = estimatedBefore,
         estimatedInputTokensAfter = estimatedAfter,
-        omittedLayerCount = omittedLayerNames.size,
-        reducedLayerCount = reducedLayerNames.size,
+        fullLayerCount = layerReports.count { report ->
+          report.finalState == ContextBudgetLayerFinalState.FULL
+        },
+        compactLayerCount = layerReports.count { report ->
+          report.finalState == ContextBudgetLayerFinalState.COMPACT
+        },
+        minimalLayerCount = layerReports.count { report ->
+          report.finalState == ContextBudgetLayerFinalState.MINIMAL
+        },
+        omittedLayerCount = layerReports.count { report ->
+          report.finalState == ContextBudgetLayerFinalState.OMITTED
+        },
+        reducedLayerCount = layerReports.count { report ->
+          report.finalState == ContextBudgetLayerFinalState.COMPACT ||
+            report.finalState == ContextBudgetLayerFinalState.MINIMAL
+        },
         omittedLayerNames = omittedLayerNames,
         reducedLayerNames = reducedLayerNames,
         unresolvedOverflow = unresolvedOverflow,
-        layers = states.map { state ->
-          ContextBudgetLayerReport(
-            id = state.originalLayer.id,
-            name = state.originalLayer.name,
-            priorityClass = state.spec.priorityClass,
-            retentionPriority = state.spec.retentionPriority,
-            estimatedTokensBefore = state.estimatedTokensBefore,
-            estimatedTokensAfter = state.estimatedTokensAfter,
-            omitted = state.currentLayer == null,
-            reduced = state.currentLayer != null && state.estimatedTokensAfter < state.estimatedTokensBefore,
-            appliedOperators = state.appliedOperators.toList(),
-          )
-        },
+        layers = layerReports,
       ),
     )
   }
@@ -1043,6 +1065,29 @@ class GlobalContextBudgetCoordinator(
     } else {
       truncated + suffix
     }
+  }
+
+  private fun finalStateFor(
+    state: LayerBudgetState,
+  ): ContextBudgetLayerFinalState {
+    if (state.currentLayer == null) {
+      return ContextBudgetLayerFinalState.OMITTED
+    }
+    if (state.appliedOperators.any { operator -> operator.endsWith("_minimal") }) {
+      return ContextBudgetLayerFinalState.MINIMAL
+    }
+    if (
+      state.appliedOperators.any { operator ->
+        operator == OPERATOR_TRIM_OLDEST_CONVERSATION_MESSAGES ||
+          operator == OPERATOR_TRUNCATE_LAYER_CONTENT
+      }
+    ) {
+      return ContextBudgetLayerFinalState.MINIMAL
+    }
+    if (state.appliedOperators.any { operator -> operator.endsWith("_compact") }) {
+      return ContextBudgetLayerFinalState.COMPACT
+    }
+    return ContextBudgetLayerFinalState.FULL
   }
 
   private data class LayerBudgetState(

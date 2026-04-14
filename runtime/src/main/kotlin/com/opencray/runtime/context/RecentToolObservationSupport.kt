@@ -263,10 +263,7 @@ class RecentToolObservationSupport(
       .filter { parsed ->
         parsed.status.equals("success", ignoreCase = true) &&
           parsed.metadata["duplicateGuard"] != "true" &&
-          categoryForToolName(parsed.toolName).let { category ->
-            category == ObservationCategory.DISCOVERY ||
-              category == ObservationCategory.DELEGATION
-          }
+          frontContextObservationCategoryForToolName(parsed.toolName) != null
       }
       .mapNotNull(::renderObservation)
 
@@ -330,14 +327,8 @@ class RecentToolObservationSupport(
 
   private fun renderWorkingStateAction(parsed: ParsedToolResult): RenderedWorkingStateAction? {
     val canonicalToolName = canonicalToolName(parsed.toolName)
-    renderObservation(parsed)?.let { observation ->
-      return RenderedWorkingStateAction(
-        signature = "observation|${observation.signature}",
-        entry = WorkingStateEntry(
-          text = observation.summaryLine.removePrefix("- ").trim(),
-          sourceType = workingStateSourceTypeFor(canonicalToolName),
-        ),
-      )
+    if (frontContextObservationCategoryForToolName(canonicalToolName) != null) {
+      return renderObservationBackedWorkingStateAction(parsed, canonicalToolName)
     }
     return when (canonicalToolName) {
       "Write",
@@ -407,10 +398,26 @@ class RecentToolObservationSupport(
         sourceType = "skills_mutation",
       )
 
-      "ScheduledTaskCreate" -> renderScheduledTaskCreateAction(parsed)
+      "ScheduledTaskCreate",
+      "ScheduledTaskUpdate",
+      "ScheduledTaskDelete",
+      -> renderObservationBackedWorkingStateAction(parsed, canonicalToolName)
 
       else -> null
     }
+  }
+
+  private fun renderObservationBackedWorkingStateAction(
+    parsed: ParsedToolResult,
+    canonicalToolName: String,
+  ): RenderedWorkingStateAction? = renderObservation(parsed)?.let { observation ->
+    RenderedWorkingStateAction(
+      signature = "observation|${observation.signature}",
+      entry = WorkingStateEntry(
+        text = observation.summaryLine.removePrefix("- ").trim(),
+        sourceType = workingStateSourceTypeFor(canonicalToolName),
+      ),
+    )
   }
 
   private fun renderWorkspaceMutationAction(
@@ -540,33 +547,6 @@ class RecentToolObservationSupport(
       signatureKey = activeTodo ?: todoCount ?: parts.joinToString(separator = "|"),
       text = "TodoWrite ${parts.joinToString(separator = " ")}",
       sourceType = "todo_management",
-    )
-  }
-
-  private fun renderScheduledTaskCreateAction(
-    parsed: ParsedToolResult,
-  ): RenderedWorkingStateAction? {
-    val scheduleId = parsed.metadata[ScheduledTaskToolMetadataKeys.SCHEDULE_ID]
-      ?.trim()
-      .takeUnless { it.isNullOrBlank() }
-    val sessionId = parsed.metadata[ScheduledTaskToolMetadataKeys.SESSION_ID]
-      ?.trim()
-      .takeUnless { it.isNullOrBlank() }
-    val triggerKind = parsed.metadata[ScheduledTaskToolMetadataKeys.TRIGGER_KIND]
-      ?.trim()
-      .takeUnless { it.isNullOrBlank() }
-    val parts = mutableListOf<String>()
-    scheduleId?.let { parts += "schedule_id=$it" }
-    sessionId?.let { parts += "session_id=$it" }
-    triggerKind?.let { parts += "trigger=$it" }
-    if (parts.isEmpty()) {
-      return null
-    }
-    return renderedWorkingStateAction(
-      canonicalToolName = "ScheduledTaskCreate",
-      signatureKey = scheduleId ?: sessionId ?: triggerKind,
-      text = "ScheduledTaskCreate ${parts.joinToString(separator = " ")}",
-      sourceType = "automation_scheduling",
     )
   }
 
@@ -1590,18 +1570,18 @@ class RecentToolObservationSupport(
     val lines = mutableListOf<String>()
     when (detailMode) {
       RecentToolObservationDetailMode.FULL -> {
-        lines += "Recent successful workspace and delegation observations from the current task are available below."
-        lines += "Reuse them before repeating identical workspace discovery, skills lookup, or delegated investigation calls."
-        lines += "If you still need more detail, narrow the next discovery call with offset, limit, path, pattern, glob, query, or source."
+        lines += "Recent replay-independent task observations are available below."
+        lines += "Reuse them before repeating the same delegated investigation, scheduling inspection, or skills lookup."
+        lines += "Workspace discovery tools such as Read or LS stay in conversation replay; use this layer only for control-plane context that replay does not keep front-loaded."
       }
 
       RecentToolObservationDetailMode.COMPACT -> {
-        lines += "Recent workspace and delegation observations from the current task are available below."
-        lines += "Reuse them before repeating the same discovery or delegation call."
+        lines += "Recent replay-independent task observations are available below."
+        lines += "Reuse them before repeating the same delegation, scheduling, or skills-discovery call."
       }
 
       RecentToolObservationDetailMode.MINIMAL -> {
-        lines += "Latest workspace or delegation observations from the current task:"
+        lines += "Latest replay-independent task observations:"
       }
     }
     selectedItems.forEach { item ->
@@ -1615,7 +1595,7 @@ class RecentToolObservationSupport(
     }
     if (detailMode == RecentToolObservationDetailMode.FULL && effectiveOmittedCount > 0) {
       lines += ""
-      lines += "Omitted $effectiveOmittedCount older unique workspace observation(s) from this working set."
+      lines += "Omitted $effectiveOmittedCount older unique task observation(s) from this working set."
     }
     return RecentToolObservationLayer(
       text = boundRenderedText(lines.joinToString(separator = "\n").trim()),
@@ -1761,6 +1741,12 @@ class RecentToolObservationSupport(
 
     else -> null
   }
+
+  // Keep replay-clean discovery tools in conversation history, closer to Codex's ResponseItem model.
+  // Codex-style assembly keeps ordinary tool traces in replay/history instead of duplicating them into
+  // a separate front-loaded observation block. The front observation layer stays empty until a future
+  // category is explicitly promoted as replay-independent runtime state.
+  private fun frontContextObservationCategoryForToolName(toolName: String): ObservationCategory? = null
 
   private fun JsonObject.stringValue(key: String): String? =
     (this[key] as? JsonPrimitive)?.content

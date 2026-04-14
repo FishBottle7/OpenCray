@@ -1,6 +1,6 @@
 # Context Management Remaining Work Checklist
 
-Last updated: 2026-04-03
+Last updated: 2026-04-13
 
 ## Current checkpoint
 
@@ -202,7 +202,8 @@ Additional context-budget checkpoint:
 13. Budget-layer final state reporting
    - Add an explicit final state per layer such as `full`, `compact`, `minimal`, or `omitted`.
    - Thread that state through runtime reports and snapshot surfaces instead of relying only on `appliedOperators` plus token deltas.
-   - Current status: not implemented yet. Downstream still infers state from operator names, token deltas, and omission flags.
+   - Current status: implemented in the runtime budget report and run metadata path. `ContextBudgetLayerReport` now carries an explicit `finalState`, coordinator output also exposes aggregate full/compact/minimal/omitted counts, and `contextBudgetLayerSummary` / related metadata now serialize the explicit final state instead of the earlier ambiguous `kept` / `reduced` wording.
+   - Current status: downstream snapshot/debug surfaces now also consume explicit per-layer state directly. Runtime emits structured layer details alongside the legacy summary string, the host run snapshot projects those layer entries, and Settings `Context & Memory Trace` renders per-layer state/token/operator rows instead of relying only on the serialized shorthand.
 
 14. Context-budget settings and source-cap coupling
    - Expose preset tiers for normal users.
@@ -210,7 +211,24 @@ Additional context-budget checkpoint:
    - When raw values diverge from a known preset, surface the preset as `dev`.
    - Map these settings into `ModelContextBudgetPolicy`.
    - Later couple higher presets to larger source-acquisition caps, especially transcript `maxMessages`, injected memory count, bootstrap caps, skill inventory or active-skill caps, and recent-observation caps.
-   - Current status: the runtime budget envelope exists, but live settings do not expose this slice yet, and larger budgets currently reduce compression pressure only instead of automatically enlarging source caps.
+   - Current status: runtime and app-side contract are now in place. `ModelContextBudgetPolicy` understands `context_budget_preset` plus raw numeric overrides, resolves stable internal presets (`compact`, `balanced`, `expanded`), and surfaces `dev` when the effective numeric envelope no longer matches a known preset. `LlmSettingsStore`, `LlmConfigFacade`, host/service/local/Flutter settings gateways, and `AppAgentSessionTaskRuntimeFactory.buildRuntimeLlmMetadata(...)` now persist, round-trip, and inject `context_budget_preset`, `reserved_output_tokens`, `prompt_safety_margin_tokens`, and `effective_input_percent` into live runtime metadata without adding a separate settings side channel.
+   - Current status: preset/raw envelopes are now coupled into a stable runtime-side source-cap profile. Main prompt assembly now scales transcript window size, final injected-memory cap, memory recall budget, bootstrap caps, skill inventory caps, active-skill capsule caps, and recent-tool-observation caps from the resolved source profile, while pre-compaction `memory flush` and `durable compaction` also use the same profile so larger presets widen omitted-history maintenance windows instead of only reducing compression pressure.
+   - Current status: runtime transport grouping is now stricter about volatility. Automatic `Retrieved Memory` and the current `Active Skill` capsule both default to the dynamic front-context zone instead of the durable front zone, so ordinary recall churn and skill switching do not invalidate the most cache-critical prefix by default.
+   - Current status: the main prompt-task runtime path now treats message assembly as mandatory. Prompt-task gateway requests fail fast if they ever lose their assembled `messages`, and runtime metadata now always reports `gatewayTransportMode=messages_primary` with the prompt field marked as `fallback_debug_only` instead of surfacing a live `prompt_only` main-path mode.
+   - Current status: provider-side builtin web-search fallback metadata is now also `messages`-first. When a provider does not echo the actual search query, fallback observation queries are derived from the latest structured user message before falling back to the debug `prompt` blob, so provider-side telemetry no longer depends on the merged prompt field in the normal path.
+   - Current status: non-Responses local continuation is now explicit about Zone B versus Zone C. The continuation envelope persists `durableContextPrompt` plus `dynamicContextPrompt`, zone-aware diagnostics distinguish `durable_context_changed` versus `dynamic_context_changed`, and no-tool checkpoint boundaries keep the envelope instead of accidentally discarding it.
+   - Current status: non-Responses continuation now also has a conservative local Zone C patch path. When only `dynamicContextPrompt` changed and the stored envelope prefix still matches the stored front-context shape, runtime replaces only that dynamic front block and appends transcript delta instead of rebuilding the entire request; if the stored prefix cannot be verified, it still falls back to `full_rebuild`.
+   - Current status: non-Responses main-path requests/results now emit an explicit cache-shape contract for downstream consumers: `contextCacheContractVersion=non_responses_front_zone_v1`, plus stable-anchor, durable-context, and dynamic-context hashes, together with front-zone mask/message-count metadata. This gives the upcoming local-model cache layer a stable surface to key off without inferring shape from raw gateway messages.
+   - Current status: Responses-native continuation is now reachable on the live runtime path instead of being blocked by unconditional legacy fallback. The runtime persists a dedicated Responses continuation shape with stable anchor, Zone B and Zone C front-context bytes, tool-pool/schema fingerprints, and request-settings fingerprint; `previous_response_id` is reused only when lineage is available, that stored shape still matches, and the pending delta contains only safe tool-result messages.
+   - Current status: attachment-capable final answers no longer require preemptively disabling native continuation. Final-turn guidance now keeps plain text as the default but explicitly allows one JSON final action when the model must attach existing artifacts.
+   - Current status: explicit rebuild reasons now cover the main Responses-native invalidation paths as first-class causes: `responses_legacy_json_fallback_enabled`, `responses_lineage_unavailable`, `responses_pending_user_message`, `responses_pending_tool_result_attachment_artifact`, `tool_pool_changed`, and `dynamic_context_changed`.
+   - Planned redesign for Responses-native: move closer to Codex's `reference_context_item` pattern. Keep only truly stable slices in the native baseline, replace high-volatility Zone C front-context dependency with append-only provider-safe context update items, and stop letting opportunistic automatic recall mutate the native continuation baseline by default.
+   - Planned redesign for Responses-native: introduce a persisted baseline-plus-diff contract such as `ResponsesContextBaselineSnapshot`, structured reference state for diff generation, and pending provider-safe context updates, so native continuation can survive working-state or skill changes without pretending provider-hidden prefix bytes were patched in place.
+   - Remaining gaps: there is still no explicit sticky-memory capsule or pinned active-skill mechanism. Until those exist, OpenCray cannot selectively promote genuinely session-stable memory or skill state back into the durable front zone under an explicit contract.
+  - Current status: ordinary workspace discovery now stays replay-owned on the main path. `Read`, `LS`, `Grep`, and `Glob` no longer populate `Recent Working Observations` or observation-derived `Working State`, so shape-stable discovery turns can keep Responses-native continuation closer to the Codex `ResponseItem` pattern instead of forcing a synthetic front-layer rebuild.
+  - Current status: the Codex-aligned tightening now also applies to the broader control-plane path. Delegation summaries, skills/scheduling inspection summaries, workspace package/document inspection summaries, and `Task Metadata` no longer get front-loaded into Zone C on the main path, and `Working State` now stays absent unless there is real operational state to anchor it.
+  - Remaining gaps: provider-native continuation is still intentionally narrow for true operational churn. Real working-state mutations such as `TodoWrite`, schedule create/update/delete mutations, resume checkpoints, blockers, and similar live procedural-state changes still mutate the current Responses front dependency and therefore still force explicit provider-native rebuild until the new baseline-plus-context-update design replaces the old Zone C front-shape contract. The new local Zone C patch currently applies only to the non-Responses continuation path.
+  - Remaining gaps: live settings UI still does not expose the preset/raw override controls. Current status: the host run snapshot now projects structured context-budget data, and Settings `Context & Memory Trace` renders the run-level preset/source, stable source-cap profile mapping, pressure mode, layer-state counts, and reduction summary directly instead of leaving this slice hidden inside raw metadata only.
 
 ## Recommended execution order
 
@@ -260,3 +278,4 @@ Rationale for the defer:
   - explicit budget rules
   - unit tests
   - report/trace visibility
+

@@ -297,6 +297,13 @@ internal class OpenCrayFlutterHostBridge(
               anthropicPromptCachingEnabled =
                 call.argument<Boolean>("anthropicPromptCachingEnabled"),
               anthropicPromptCacheTtl = call.argument<String>("anthropicPromptCacheTtl"),
+              contextBudgetPreset = call.argument<String>("contextBudgetPreset"),
+              contextBudgetReservedOutputTokens =
+                call.argument<Number>("contextBudgetReservedOutputTokens")?.toInt(),
+              contextBudgetSafetyMarginTokens =
+                call.argument<Number>("contextBudgetSafetyMarginTokens")?.toInt(),
+              contextBudgetEffectiveInputPercent =
+                call.argument<Number>("contextBudgetEffectiveInputPercent")?.toDouble(),
             )
           }
           return
@@ -319,6 +326,13 @@ internal class OpenCrayFlutterHostBridge(
               anthropicPromptCachingEnabled =
                 call.argument<Boolean>("anthropicPromptCachingEnabled"),
               anthropicPromptCacheTtl = call.argument<String>("anthropicPromptCacheTtl"),
+              contextBudgetPreset = call.argument<String>("contextBudgetPreset"),
+              contextBudgetReservedOutputTokens =
+                call.argument<Number>("contextBudgetReservedOutputTokens")?.toInt(),
+              contextBudgetSafetyMarginTokens =
+                call.argument<Number>("contextBudgetSafetyMarginTokens")?.toInt(),
+              contextBudgetEffectiveInputPercent =
+                call.argument<Number>("contextBudgetEffectiveInputPercent")?.toDouble(),
             )
           }
           return

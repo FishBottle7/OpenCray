@@ -379,4 +379,6 @@
     <string name="runtime_notification_interruption_title">后台任务已中断</string>
     <string name="runtime_notification_interruption_text">%1$s 已中断：%2$s</string>
     <string name="runtime_notification_interruption_body">后台运行已中断，需要你处理后才能继续。</string>
+    <string name="runtime_notification_service_recovered_title">后台运行已恢复</string>
+    <string name="runtime_notification_service_recovered_body">已恢复 %1$d 个会话，并修复 %2$d 组恢复中的运行记录。</string>
 </resources>

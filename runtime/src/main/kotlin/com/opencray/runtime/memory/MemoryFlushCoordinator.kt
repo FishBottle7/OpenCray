@@ -2,6 +2,7 @@ package com.opencray.runtime.memory
 
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.runtime.context.ContextPruner
+import com.opencray.runtime.context.ContextSourceBudgetPolicy
 import com.opencray.runtime.context.ReplayPressureEvaluator
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
@@ -55,6 +56,7 @@ class MemoryFlushCoordinator(
   private val candidateExtractor: MemoryCandidateExtractor = MemoryCandidateExtractor(),
   private val writer: MemoryWriter,
   private val existingRecordIdsProvider: (() -> Set<String>)? = null,
+  private val sourceBudgetPolicy: ContextSourceBudgetPolicy? = null,
   private val lastFlushedSignatureBySession: ConcurrentMap<String, String> = ConcurrentHashMap(),
   private val flushedCandidateRecordIdsBySession: ConcurrentMap<String, MutableSet<String>> = ConcurrentHashMap(),
 ) {
@@ -65,16 +67,21 @@ class MemoryFlushCoordinator(
     llmMetadata: Map<String, String> = emptyMap(),
     taskId: String? = null,
   ): MemoryFlushSummary {
+    val effectiveProfile = sourceBudgetPolicy?.resolve(llmMetadata)
+    val effectiveTranscriptWindowBuilder = effectiveProfile
+      ?.let { profile -> TranscriptWindowBuilder(profile.transcriptWindowConfig) }
+      ?: transcriptWindowBuilder
+    val effectivePolicy = effectiveProfile?.memoryFlushPolicy ?: policy
     val prunedConversation = contextPruner.prune(conversation).messages
     val replayPressure = replayPressureEvaluator.evaluate(
       conversation = prunedConversation,
       llmMetadata = llmMetadata,
     )
-    val omittedMessages = transcriptWindowBuilder
+    val omittedMessages = effectiveTranscriptWindowBuilder
       .buildSelection(prunedConversation)
       .omittedMessages
     val omittedCharCount = omittedMessages.sumOf { message -> message.content.length }
-    if (!policy.shouldFlush(omittedMessages, replayPressure)) {
+    if (!effectivePolicy.shouldFlush(omittedMessages, replayPressure)) {
       return MemoryFlushSummary(
         trace = MemoryFlushTrace(
           outcome = MemoryFlushOutcome.NO_PRESSURE,
@@ -104,10 +111,10 @@ class MemoryFlushCoordinator(
       sessionId = sessionId,
       taskId = taskId,
       workspaceId = workspaceId,
-      userInput = policy.mergeUserInput(
+      userInput = effectivePolicy.mergeUserInput(
         omittedMessages.filter { message -> message.role == RuntimeConversationRole.USER },
       ),
-      assistantOutput = policy.mergeAssistantOutput(
+      assistantOutput = effectivePolicy.mergeAssistantOutput(
         omittedMessages.filter { message ->
           message.role == RuntimeConversationRole.ASSISTANT &&
             !message.isAssistantToolCallMessage()
@@ -119,7 +126,7 @@ class MemoryFlushCoordinator(
         .map(String::trim)
         .filter(String::isNotBlank)
         .distinct()
-        .take(policy.maxToolObservations)
+        .take(effectivePolicy.maxToolObservations)
         .toList(),
     )
     val candidates = candidateExtractor.extract(evidence)

@@ -1642,9 +1642,65 @@ void main() {
         ),
         findsOneWidget,
       );
+      expect(find.text('Response shape: openai_tool_calls'), findsOneWidget);
+      expect(find.text('Cache break: user_setting_changed'), findsOneWidget);
+      expect(
+        find.textContaining(
+          'Tool path: requested yes, observed yes, parsed yes',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Responses recovery: 1 (responses_restored_replay_required)',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Local continuation: used 0, fallback 1, mode full_rebuild, reason user_setting_changed',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Last successful tool: EchoProbe',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
       expect(find.text('Mode: full'), findsOneWidget);
       expect(find.text('Soul: disabled'), findsOneWidget);
       expect(find.text('Memory recall: enabled'), findsOneWidget);
+      expect(find.text('Preset: dev (selected balanced)'), findsOneWidget);
+      expect(find.text('Pressure: emergency'), findsOneWidget);
+      expect(find.text('Layers: 4/2/1/1'), findsOneWidget);
+      expect(find.text('Overflow: unresolved'), findsOneWidget);
+      expect(find.text('Source caps: expanded'), findsOneWidget);
+      expect(
+        find.textContaining(
+          'Source cap profile: expanded (stable fallback for dev envelope)',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Working State: compact, 220 -> 120 tokens, optional support context #70, ops reduce_working_state_compact',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Retrieved Memory: omitted, 48 -> 0 tokens, bounded durable recall #90, ops omit_layer',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
       expect(
         find.textContaining('Attempt: 1', findRichText: true),
         findsOneWidget,
@@ -3028,10 +3084,99 @@ _FakeDebugBridge _buildDebugBridge({
         diagnostics: OpenCrayChatRunDiagnosticsSnapshot(
           recoveryReason: 'host_restart_inflight_task_interrupted',
         ),
+        llmDiagnostics: OpenCrayChatRunLlmDiagnosticsSnapshot(
+          providerResponseShape: 'openai_tool_calls',
+          nativeToolCallRequested: true,
+          nativeToolCallObserved: true,
+          parsedToolCallObserved: true,
+          fallbackParserAttempted: false,
+          fallbackParserSucceeded: false,
+          responsesContinuationRecoveryCount: 1,
+          responsesContinuationRecoveryLastReason:
+              'responses_restored_replay_required',
+          localContinuationUsedCount: 0,
+          localContinuationFallbackCount: 1,
+          localContinuationLastMode: 'full_rebuild',
+          localContinuationLastReason: 'user_setting_changed',
+          toolCallEventEmitted: true,
+          toolResultEventEmitted: true,
+          contextCacheBreakReason: 'user_setting_changed',
+          lastSuccessfulToolName: 'EchoProbe',
+        ),
         liveContext: OpenCrayChatRunLiveContextSnapshot(
           mode: 'no_soul',
           soulEnabled: false,
           memoryRecallEnabled: true,
+        ),
+        contextBudget: OpenCrayChatRunContextBudgetSnapshot(
+          applied: true,
+          pressureMode: 'EMERGENCY',
+          selectedPreset: 'balanced',
+          effectivePreset: 'dev',
+          presetSource: 'raw',
+          presetDiverged: true,
+          sourcePreset: 'expanded',
+          sourceTranscriptMaxMessages: 16,
+          sourceInjectedMemoryMaxRecords: 6,
+          sourceMemoryRecallMaxRecords: 8,
+          sourceBootstrapMaxChars: 4800,
+          sourceSkillInventoryMaxSkills: 12,
+          sourceActiveSkillMaxChars: 4800,
+          sourceRecentObservationMaxEntries: 6,
+          sourceMemoryFlushMaxToolObservations: 12,
+          contextWindowTokens: 900,
+          reservedOutputTokens: 256,
+          safetyMarginTokens: 96,
+          hardInputTokens: 548,
+          targetInputTokens: 512,
+          emergencyInputTokens: 548,
+          unresolvedOverflow: true,
+          fullLayerCount: 4,
+          compactLayerCount: 2,
+          minimalLayerCount: 1,
+          omittedLayerCount: 1,
+          reducedLayerNames: <String>['Working State', 'Conversation'],
+          omittedLayerNames: <String>['Retrieved Memory'],
+          layers: <OpenCrayChatRunContextBudgetLayerSnapshot>[
+            OpenCrayChatRunContextBudgetLayerSnapshot(
+              id: 'WORKING_STATE',
+              name: 'Working State',
+              priorityClass: 'OPTIONAL_SUPPORT_CONTEXT',
+              retentionPriority: 70,
+              estimatedTokensBefore: 220,
+              estimatedTokensAfter: 120,
+              finalState: 'compact',
+              omitted: false,
+              reduced: true,
+              appliedOperators: <String>['reduce_working_state_compact'],
+            ),
+            OpenCrayChatRunContextBudgetLayerSnapshot(
+              id: 'CONVERSATION',
+              name: 'Conversation',
+              priorityClass: 'RECENT_REPLAY',
+              retentionPriority: 110,
+              estimatedTokensBefore: 420,
+              estimatedTokensAfter: 180,
+              finalState: 'minimal',
+              omitted: false,
+              reduced: true,
+              appliedOperators: <String>['reduce_conversation_window_minimal'],
+            ),
+            OpenCrayChatRunContextBudgetLayerSnapshot(
+              id: 'RETRIEVED_MEMORY',
+              name: 'Retrieved Memory',
+              priorityClass: 'BOUNDED_DURABLE_RECALL',
+              retentionPriority: 90,
+              estimatedTokensBefore: 48,
+              estimatedTokensAfter: 0,
+              finalState: 'omitted',
+              omitted: true,
+              reduced: false,
+              appliedOperators: <String>['omit_layer'],
+            ),
+          ],
+          layerSummary:
+              'WORKING_STATE:compact:20;CONVERSATION:minimal:120;RETRIEVED_MEMORY:omitted:48',
         ),
         memoryFlush: OpenCrayChatRunMemoryFlushSnapshot(
           outcome: 'written',

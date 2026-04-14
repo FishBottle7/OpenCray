@@ -18,7 +18,7 @@ class RecentToolObservationSupportTest {
   private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
 
   @Test
-  fun buildLayerKeepsLatestUniqueDiscoveryObservations() {
+  fun buildLayerSkipsReplayOwnedControlPlaneObservations() {
     val support = RecentToolObservationSupport(
       config = RecentToolObservationConfig(
         maxEntries = 2,
@@ -29,54 +29,49 @@ class RecentToolObservationSupportTest {
       ),
     )
 
-    val layer = requireNotNull(
-      support.buildLayer(
-        listOf(
-          toolResultMessage(
-            toolName = "Read",
-            content = "README intro",
-            metadata = mapOf(
-              "filePath" to "README.md",
-              "offset" to "1",
-              "returnedLineCount" to "4",
-              "totalLineCount" to "20",
-              "truncated" to "false",
-            ),
+    val layer = support.buildLayer(
+      listOf(
+        toolResultMessage(
+          toolName = "ScheduledTaskList",
+          content = "Listed 1 scheduled task(s).",
+          metadata = mapOf(
+            ScheduledTaskToolMetadataKeys.SESSION_ID to "session-main",
+            ScheduledTaskToolMetadataKeys.RETURNED_COUNT to "1",
+            ScheduledTaskToolMetadataKeys.TOTAL_COUNT to "2",
           ),
-          toolResultMessage(
-            toolName = "Grep",
-            content = "src/App.kt:12:needle",
-            metadata = mapOf(
-              "pattern" to "needle",
-              "path" to "src",
-              "matchCount" to "1",
-            ),
+        ),
+        toolResultMessage(
+          toolName = "SkillsFind",
+          content = "ui-ux-pro-max\tremote\tinstall_ref=ui-ux-pro-max\tsource=skills.sh",
+          metadata = mapOf(
+            "query" to "ui",
+            "providerName" to "skills.sh",
+            "remoteResultCount" to "1",
+            "localResultCount" to "0",
+            "resultCount" to "1",
           ),
-          toolResultMessage(
-            toolName = "Read",
-            content = "NOTES body",
-            metadata = mapOf(
-              "filePath" to "NOTES.md",
-              "offset" to "1",
-              "returnedLineCount" to "3",
-              "totalLineCount" to "8",
-              "truncated" to "false",
-            ),
+        ),
+        toolResultMessage(
+          toolName = "Task",
+          content = "Subagent completed: README says hello.",
+          metadata = mapOf(
+            "delegationDescription" to "inspect readme",
+            "delegationSubagentType" to "researcher",
+            "delegationContextMode" to "minimal",
+            "childExecutionState" to "completed",
+            "childTurnCount" to "1",
+            "childToolCallCount" to "1",
+            "childSummaryHeadline" to "README says hello.",
           ),
         ),
       ),
     )
 
-    assertEquals(2, layer.observationCount)
-    assertEquals(1, layer.omittedObservationCount)
-    assertTrue(layer.text.contains("Recent successful workspace and delegation observations from the current task are available below."))
-    assertTrue(layer.text.contains("Grep pattern=needle path=src matches=1"))
-    assertTrue(layer.text.contains("Read file_path=NOTES.md"))
-    assertTrue(!layer.text.contains("Read file_path=README.md"))
+    assertNull(layer)
   }
 
   @Test
-  fun buildLayerCompactKeepsLatestSubsetWithShorterGuidance() {
+  fun buildLayerCompactSkipsReplayOwnedControlPlaneObservations() {
     val support = RecentToolObservationSupport(
       config = RecentToolObservationConfig(
         maxEntries = 3,
@@ -90,60 +85,48 @@ class RecentToolObservationSupportTest {
       ),
     )
 
-    val fullLayer = requireNotNull(
-      support.buildLayer(
-        listOf(
-          toolResultMessage(
-            toolName = "Read",
-            content = "README intro",
-            metadata = mapOf(
-              "filePath" to "README.md",
-              "offset" to "1",
-              "returnedLineCount" to "4",
-              "totalLineCount" to "20",
-              "truncated" to "false",
-            ),
+    val layer = support.buildLayer(
+      listOf(
+        toolResultMessage(
+          toolName = "ScheduledTaskList",
+          content = "Listed 1 scheduled task(s).",
+          metadata = mapOf(
+            ScheduledTaskToolMetadataKeys.SESSION_ID to "session-main",
+            ScheduledTaskToolMetadataKeys.RETURNED_COUNT to "1",
+            ScheduledTaskToolMetadataKeys.TOTAL_COUNT to "2",
           ),
-          toolResultMessage(
-            toolName = "Grep",
-            content = "src/App.kt:12:needle\nsrc/App.kt:40:needle",
-            metadata = mapOf(
-              "pattern" to "needle",
-              "path" to "src",
-              "matchCount" to "2",
-            ),
+        ),
+        toolResultMessage(
+          toolName = "SkillsFind",
+          content = "ui-ux-pro-max\tremote\tinstall_ref=ui-ux-pro-max\tsource=skills.sh",
+          metadata = mapOf(
+            "query" to "ui",
+            "providerName" to "skills.sh",
+            "remoteResultCount" to "1",
+            "localResultCount" to "0",
+            "resultCount" to "1",
           ),
-          toolResultMessage(
-            toolName = "SkillsFind",
-            content = "ui-ux-pro-max\tremote\tinstall_ref=ui-ux-pro-max\tsource=skills.sh",
-            metadata = mapOf(
-              "query" to "ui",
-              "providerName" to "skills.sh",
-              "remoteResultCount" to "1",
-              "localResultCount" to "0",
-              "resultCount" to "1",
-            ),
+        ),
+        toolResultMessage(
+          toolName = "SkillsInspect",
+          content =
+            "inspection\tremote_github\tsource_ref=github:opencray/skills\tcandidate_count=2\n" +
+              "candidate\tui-ux-pro-max\tdescription=UI helpers\trelative_path=skills/ui-ux-pro-max\n" +
+              "candidate\thumanizer\tdescription=Writing polish\trelative_path=skills/humanizer",
+          metadata = mapOf(
+            "sourceRef" to "github:opencray/skills",
+            "sourceType" to "remote_github",
+            "candidateCount" to "2",
           ),
         ),
       ),
     )
 
-    val compactLayer = support.renderLayer(
-      layer = fullLayer,
-      detailMode = RecentToolObservationDetailMode.COMPACT,
-    )
-
-    assertEquals(2, compactLayer.observationCount)
-    assertEquals(1, compactLayer.omittedObservationCount)
-    assertTrue(compactLayer.text.contains("Recent workspace and delegation observations from the current task are available below."))
-    assertFalse(compactLayer.text.contains("If you still need more detail"))
-    assertFalse(compactLayer.text.contains("Read file_path=README.md"))
-    assertTrue(compactLayer.text.contains("Grep pattern=needle path=src matches=2"))
-    assertTrue(compactLayer.text.contains("SkillsFind query=ui results=1"))
+    assertNull(layer)
   }
 
   @Test
-  fun buildLayerMinimalKeepsLatestSummaryOnly() {
+  fun buildLayerMinimalSkipsReplayOwnedControlPlaneObservations() {
     val support = RecentToolObservationSupport(
       config = RecentToolObservationConfig(
         maxEntries = 3,
@@ -155,41 +138,35 @@ class RecentToolObservationSupportTest {
       ),
     )
 
-    val layer = requireNotNull(
-      support.buildLayer(
-        messages = listOf(
-          toolResultMessage(
-            toolName = "Read",
-            content = "README intro",
-            metadata = mapOf(
-              "filePath" to "README.md",
-              "offset" to "1",
-              "returnedLineCount" to "4",
-              "totalLineCount" to "20",
-              "truncated" to "false",
-            ),
-          ),
-          toolResultMessage(
-            toolName = "Grep",
-            content = "src/App.kt:12:needle",
-            metadata = mapOf(
-              "pattern" to "needle",
-              "path" to "src",
-              "matchCount" to "1",
-            ),
+    val layer = support.buildLayer(
+      messages = listOf(
+        toolResultMessage(
+          toolName = "ScheduledTaskGet",
+          content = "Scheduled task details.",
+          metadata = mapOf(
+            ScheduledTaskToolMetadataKeys.SCHEDULE_ID to "schedule-nightly",
+            ScheduledTaskToolMetadataKeys.SESSION_ID to "session-main",
+            ScheduledTaskToolMetadataKeys.TRIGGER_KIND to "after",
+            ScheduledTaskToolMetadataKeys.ENABLED to "true",
+            ScheduledTaskToolMetadataKeys.RECENT_RUN_COUNT to "1",
           ),
         ),
-        detailMode = RecentToolObservationDetailMode.MINIMAL,
+        toolResultMessage(
+          toolName = "SkillsFind",
+          content = "ui-ux-pro-max\tremote\tinstall_ref=ui-ux-pro-max\tsource=skills.sh",
+          metadata = mapOf(
+            "query" to "ui",
+            "providerName" to "skills.sh",
+            "remoteResultCount" to "1",
+            "localResultCount" to "0",
+            "resultCount" to "1",
+          ),
+        ),
       ),
+      detailMode = RecentToolObservationDetailMode.MINIMAL,
     )
 
-    assertEquals(1, layer.observationCount)
-    assertEquals(1, layer.omittedObservationCount)
-    assertTrue(layer.text.contains("Latest workspace or delegation observations from the current task:"))
-    assertTrue(layer.text.contains("Grep pattern=needle path=src matches=1"))
-    assertFalse(layer.text.contains("Read file_path=README.md"))
-    assertFalse(layer.text.contains("src/App.kt:12:needle"))
-    assertFalse(layer.text.contains("If you still need more detail"))
+    assertNull(layer)
   }
 
   @Test
@@ -250,12 +227,49 @@ class RecentToolObservationSupportTest {
   }
 
   @Test
-  fun buildLayerPrefersStableResultLimitMetadataOverLegacyTruncatedField() {
+  fun buildLayerSkipsWorkspaceDiscoveryObservationsOwnedByReplay() {
     val support = RecentToolObservationSupport()
 
-    val layer = requireNotNull(
-      support.buildLayer(
-        listOf(
+    val layer = support.buildLayer(
+      listOf(
+        toolResultMessage(
+          toolName = "Read",
+          content = "truncated body",
+          metadata = mapOf(
+            "filePath" to "README.md",
+            "offset" to "1",
+            "returnedLineCount" to "12",
+            "totalLineCount" to "100",
+            "resultLimitApplied" to "true",
+            "resultTruncated" to "true",
+            "resultLimitKind" to "read_byte_budget",
+          ),
+        ),
+        toolResultMessage(
+          toolName = "Grep",
+          content = "src/App.kt:12:needle",
+          metadata = mapOf(
+            "pattern" to "needle",
+            "path" to "src",
+            "matchCount" to "25",
+            "resultLimitApplied" to "true",
+            "resultTruncated" to "true",
+            "resultLimitKind" to "search_match_limit",
+          ),
+        ),
+      ),
+    )
+
+    assertNull(layer)
+  }
+
+  @Test
+  fun duplicateReadGuardStillCarriesStableResultLimitMetadata() {
+    val support = RecentToolObservationSupport()
+
+    val duplicateHit = requireNotNull(
+      support.findDuplicateDiscoveryCall(
+        messages = listOf(
           toolResultMessage(
             toolName = "Read",
             content = "truncated body",
@@ -269,134 +283,143 @@ class RecentToolObservationSupportTest {
               "resultLimitKind" to "read_byte_budget",
             ),
           ),
-          toolResultMessage(
-            toolName = "Grep",
-            content = "src/App.kt:12:needle",
-            metadata = mapOf(
-              "pattern" to "needle",
-              "path" to "src",
-              "matchCount" to "25",
-              "resultLimitApplied" to "true",
-              "resultTruncated" to "true",
-              "resultLimitKind" to "search_match_limit",
-            ),
-          ),
+        ),
+        call = AgentToolCall(
+          toolName = "Read",
+          arguments = buildJsonObject {
+            put("file_path", "README.md")
+          },
         ),
       ),
     )
 
-    assertTrue(layer.text.contains("Read file_path=README.md"))
-    assertTrue(layer.text.contains("truncated=true"))
-    assertTrue(layer.text.contains("limit_kind=read_byte_budget"))
-    assertTrue(layer.text.contains("Grep pattern=needle path=src matches=25 truncated=true limit_kind=search_match_limit"))
+    assertTrue(duplicateHit.summaryLine.contains("Read file_path=README.md"))
+    assertTrue(duplicateHit.summaryLine.contains("truncated=true"))
+    assertTrue(duplicateHit.summaryLine.contains("limit_kind=read_byte_budget"))
+    assertTrue(duplicateHit.excerpt.contains("truncated body"))
   }
 
   @Test
-  fun buildLayerIncludesWorkspacePackageInspectionObservations() {
+  fun buildLayerSkipsWorkspacePackageInspectionObservationsOwnedByReplay() {
     val support = RecentToolObservationSupport()
 
-    val layer = requireNotNull(
-      support.buildLayer(
-        listOf(
-          toolResultMessage(
-            toolName = "inspect_workspace_package",
-            content = "Workspace package inspection: docs/report.docx\nkind=docx entry_count=6 matched_entries=2 returned_entries=2 previews=1 media_entries=0",
-            metadata = mapOf(
-              "path" to "docs/report.docx",
-              "packageKind" to "docx",
-              "matchedEntryCount" to "2",
-              "returnedEntryCount" to "2",
-              "previewCount" to "1",
-              "requestedGlob" to "word/**/*.xml",
-              "requestedPreviewEntries" to "word/document.xml",
-              "requestedMaxEntries" to "10",
-              "previewChars" to "1200",
-              "includeRelationshipHints" to "true",
-              "resultLimitApplied" to "true",
-              "resultTruncated" to "false",
-              "resultLimitKind" to "directory_entry_limit",
-            ),
+    val layer = support.buildLayer(
+      listOf(
+        toolResultMessage(
+          toolName = "inspect_workspace_package",
+          content = "Workspace package inspection: docs/report.docx\nkind=docx entry_count=6 matched_entries=2 returned_entries=2 previews=1 media_entries=0",
+          metadata = mapOf(
+            "path" to "docs/report.docx",
+            "packageKind" to "docx",
+            "matchedEntryCount" to "2",
+            "returnedEntryCount" to "2",
+            "previewCount" to "1",
+            "requestedGlob" to "word/**/*.xml",
+            "requestedPreviewEntries" to "word/document.xml",
+            "requestedMaxEntries" to "10",
+            "previewChars" to "1200",
+            "includeRelationshipHints" to "true",
+            "resultLimitApplied" to "true",
+            "resultTruncated" to "false",
+            "resultLimitKind" to "directory_entry_limit",
           ),
         ),
       ),
     )
 
-    assertTrue(layer.text.contains("inspect_workspace_package path=docs/report.docx kind=docx matched=2 returned=2 previews=1"))
-    assertTrue(layer.text.contains("glob=word/**/*.xml"))
-    assertTrue(layer.text.contains("preview_entries=word/document.xml"))
-    assertTrue(layer.text.contains("max_entries=10"))
-    assertTrue(layer.text.contains("preview_chars=1200"))
-    assertTrue(layer.text.contains("relationship_hints=true"))
+    assertNull(layer)
   }
 
   @Test
-  fun buildLayerIncludesSkillsDiscoveryObservations() {
+  fun buildLayerSkipsSkillsDiscoveryObservationsOwnedByReplay() {
     val support = RecentToolObservationSupport()
 
-    val layer = requireNotNull(
-      support.buildLayer(
-        listOf(
-          toolResultMessage(
-            toolName = "SkillsFind",
-            content = "ui-ux-pro-max\tremote\tinstall_ref=ui-ux-pro-max\tsource=skills.sh",
-            metadata = mapOf(
-              "query" to "ui",
-              "providerName" to "skills.sh",
-              "remoteResultCount" to "1",
-              "localResultCount" to "0",
-              "resultCount" to "1",
-            ),
+    val layer = support.buildLayer(
+      listOf(
+        toolResultMessage(
+          toolName = "SkillsFind",
+          content = "ui-ux-pro-max\tremote\tinstall_ref=ui-ux-pro-max\tsource=skills.sh",
+          metadata = mapOf(
+            "query" to "ui",
+            "providerName" to "skills.sh",
+            "remoteResultCount" to "1",
+            "localResultCount" to "0",
+            "resultCount" to "1",
           ),
-          toolResultMessage(
-            toolName = "SkillsInspect",
-            content =
-              "inspection\tremote_github\tsource_ref=github:opencray/skills\tcandidate_count=2\n" +
-                "candidate\tui-ux-pro-max\tdescription=UI helpers\trelative_path=skills/ui-ux-pro-max\n" +
-                "candidate\thumanizer\tdescription=Writing polish\trelative_path=skills/humanizer",
-            metadata = mapOf(
-              "sourceRef" to "github:opencray/skills",
-              "sourceType" to "remote_github",
-              "candidateCount" to "2",
-            ),
+        ),
+        toolResultMessage(
+          toolName = "SkillsInspect",
+          content =
+            "inspection\tremote_github\tsource_ref=github:opencray/skills\tcandidate_count=2\n" +
+              "candidate\tui-ux-pro-max\tdescription=UI helpers\trelative_path=skills/ui-ux-pro-max\n" +
+              "candidate\thumanizer\tdescription=Writing polish\trelative_path=skills/humanizer",
+          metadata = mapOf(
+            "sourceRef" to "github:opencray/skills",
+            "sourceType" to "remote_github",
+            "candidateCount" to "2",
           ),
         ),
       ),
     )
 
-    assertTrue(layer.text.contains("SkillsFind query=ui results=1 provider=skills.sh remote=1 local=0"))
-    assertTrue(layer.text.contains("SkillsInspect source_ref=github:opencray/skills candidates=2 source_type=remote_github"))
-    assertTrue(layer.text.contains("candidate\tui-ux-pro-max"))
+    assertNull(layer)
   }
 
   @Test
-  fun buildLayerIncludesDelegatedTaskObservations() {
+  fun buildLayerSkipsDelegatedTaskObservationsOwnedByReplay() {
     val support = RecentToolObservationSupport()
 
-    val layer = requireNotNull(
-      support.buildLayer(
-        listOf(
-          toolResultMessage(
-            toolName = "Task",
-            content = "Subagent completed: README says hello.",
-            metadata = mapOf(
-              "delegationDescription" to "inspect readme",
-              "delegationSubagentType" to "researcher",
-              "delegationContextMode" to "minimal",
-              "childExecutionState" to "completed",
-              "childTurnCount" to "1",
-              "childToolCallCount" to "1",
-              "childSummaryHeadline" to "README says hello.",
-              "childSummaryDetails" to "Read README.md\nSummarized the intro.",
-            ),
+    val layer = support.buildLayer(
+      listOf(
+        toolResultMessage(
+          toolName = "Task",
+          content = "Subagent completed: README says hello.",
+          metadata = mapOf(
+            "delegationDescription" to "inspect readme",
+            "delegationSubagentType" to "researcher",
+            "delegationContextMode" to "minimal",
+            "childExecutionState" to "completed",
+            "childTurnCount" to "1",
+            "childToolCallCount" to "1",
+            "childSummaryHeadline" to "README says hello.",
+            "childSummaryDetails" to "Read README.md\nSummarized the intro.",
           ),
         ),
       ),
     )
 
-    assertTrue(layer.text.contains("Task description=inspect readme subagent=researcher state=completed context=minimal turns=1 tool_calls=1"))
-    assertTrue(layer.text.contains("Summary: README says hello."))
-    assertTrue(layer.text.contains("Detail: Read README.md"))
-    assertTrue(layer.text.contains("Detail: Summarized the intro."))
+    assertNull(layer)
+  }
+
+  @Test
+  fun workingStateEntriesSkipWorkspaceDiscoveryObservationsOwnedByReplay() {
+    val support = RecentToolObservationSupport()
+
+    val entries = support.workingStateEntries(
+      listOf(
+        toolResultMessage(
+          toolName = "Read",
+          content = "README intro",
+          metadata = mapOf(
+            "filePath" to "README.md",
+            "offset" to "1",
+            "returnedLineCount" to "4",
+            "totalLineCount" to "20",
+            "truncated" to "false",
+          ),
+        ),
+        toolResultMessage(
+          toolName = "LS",
+          content = "README.md",
+          metadata = mapOf(
+            "path" to ".",
+            "entryCount" to "1",
+          ),
+        ),
+      ),
+    )
+
+    assertTrue(entries.isEmpty())
   }
 
   @Test
@@ -533,7 +556,7 @@ class RecentToolObservationSupportTest {
   }
 
   @Test
-  fun workingStateEntriesIncludeScheduledTaskListAndGetObservations() {
+  fun workingStateEntriesSkipScheduledTaskListAndGetObservationsOwnedByReplay() {
     val support = RecentToolObservationSupport()
 
     val entries = support.workingStateEntries(
@@ -571,15 +594,7 @@ class RecentToolObservationSupportTest {
       ),
     )
 
-    assertEquals(2, entries.size)
-    assertEquals(
-      "ScheduledTaskList returned=1 total=1 session=session-main",
-      entries.first().text,
-    )
-    assertEquals(
-      "ScheduledTaskGet schedule=schedule-nightly trigger=after session=session-main enabled=true recent_runs=1",
-      entries.last().text,
-    )
+    assertTrue(entries.isEmpty())
   }
 
   @Test

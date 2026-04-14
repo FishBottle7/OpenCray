@@ -471,6 +471,92 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
   }
 
   @Test
+  fun executeDerivesGlmBuiltinWebSearchObservationQueryFromStructuredMessages() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpResponse(
+            client = client,
+            body = """
+              {
+                "id": "glm_search_response",
+                "choices": [
+                  {
+                    "message": { "content": "https://example.com" },
+                    "finish_reason": "stop"
+                  }
+                ]
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-glm-search",
+            providerId = "custom",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "zhipuai/glm-4.6:online",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI,
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "stale fallback prompt",
+            messages = listOf(
+              LiteLlmGatewayMessage(
+                role = LiteLlmGatewayMessageRole.USER,
+                content = "Search the canonical example.com URL.",
+              ),
+            ),
+            builtinTools = listOf(
+              LiteLlmBuiltinToolDefinition(
+                type = LiteLlmBuiltinToolType.WEB_SEARCH,
+                includeSources = true,
+              ),
+            ),
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-glm-search",
+            providerId = "custom",
+            model = "zhipuai/glm-4.6:online",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val success = result as LiteLlmProviderResult.Success
+      val observations = JSONArray(
+        success.metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_OBSERVATIONS_JSON],
+      )
+      assertEquals(
+        "Search the canonical example.com URL.",
+        observations.getJSONObject(0).getJSONArray("queries").getString(0),
+      )
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
   fun executeInfersKimiBuiltinWebSearchDialectFromModelNameAndAutoContinues() {
     val requestBodies = mutableListOf<String>()
     val responseSent = CountDownLatch(2)
@@ -1722,6 +1808,100 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
       assertEquals(
         "https://example.com",
         observations.getJSONObject(0).getJSONArray("sources").getJSONObject(0).getString("url"),
+      )
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeDerivesAnthropicBuiltinWebSearchFallbackQueryFromStructuredMessages() {
+    val requestLine = AtomicReference<String>()
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, requestLine, AtomicReference(), requestBody)
+          writeHttpResponse(
+            client = client,
+            body = """
+              {
+                "id": "msg_builtin_web_search",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "The canonical URL is https://example.com."
+                  }
+                ],
+                "stop_reason": "end_turn",
+                "usage": {
+                  "server_tool_use": {
+                    "web_search_requests": 1
+                  }
+                }
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-anthropic-builtin-web-search",
+            providerId = "anthropic",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "claude-sonnet-4-5",
+            timeoutMs = 5_000L,
+            metadata = mapOf("protocol" to LlmProviderProtocols.ANTHROPIC),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "stale fallback prompt",
+            messages = listOf(
+              LiteLlmGatewayMessage(
+                role = LiteLlmGatewayMessageRole.USER,
+                content = "Search the canonical example.com URL.",
+              ),
+            ),
+            builtinTools = listOf(
+              LiteLlmBuiltinToolDefinition(
+                type = LiteLlmBuiltinToolType.WEB_SEARCH,
+                domains = listOf("example.com"),
+              ),
+            ),
+            authHeaders = mapOf("x-api-key" to "test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-anthropic-builtin-web-search",
+            providerId = "anthropic",
+            model = "claude-sonnet-4-5",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      assertEquals("POST /v1/messages HTTP/1.1", requestLine.get())
+      val success = result as LiteLlmProviderResult.Success
+      val observations = JSONArray(
+        success.metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_OBSERVATIONS_JSON],
+      )
+      assertEquals(
+        "Search the canonical example.com URL.",
+        observations.getJSONObject(0).getJSONArray("queries").getString(0),
       )
     } finally {
       runCatching { server.close() }

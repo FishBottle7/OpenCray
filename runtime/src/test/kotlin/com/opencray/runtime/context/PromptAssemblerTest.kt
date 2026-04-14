@@ -239,13 +239,11 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("Use list_subagents to inspect the delegated child registry"))
     assertTrue(prompt.taskPrompt.contains("Generated speech should usually be attached with kind=voice"))
     assertTrue(prompt.taskPrompt.contains("Available tools:"))
-    assertTrue(prompt.taskPrompt.contains("[Task Metadata]"))
     assertTrue(prompt.taskPrompt.contains("[Conversation]"))
     assertTrue(prompt.taskPrompt.contains("[Compaction Summary]"))
     assertTrue(prompt.taskPrompt.contains("Compacted 1 older message(s) outside the active transcript window."))
-    assertTrue(prompt.taskPrompt.contains("task_id=task-context"))
     assertTrue(prompt.taskPrompt.contains("Omitted 1 older message(s)"))
-    assertTrue(prompt.contextPrompt.contains("[Task Metadata]"))
+    assertFalse(prompt.contextPrompt.contains("[Task Metadata]"))
     assertFalse(prompt.contextPrompt.contains("[Conversation]"))
     assertFalse(prompt.contextPrompt.contains("Latest request."))
     assertEquals(3, prompt.report.sourceTranscriptMessageCount)
@@ -259,6 +257,87 @@ class PromptAssemblerTest {
     assertEquals(1, prompt.report.compactedTranscriptMessageCount)
     assertTrue(prompt.report.compactionSummaryIncluded)
     assertEquals(0, prompt.report.injectedMemoryRecordCount)
+  }
+
+  @Test
+  fun assembleSeparatesDurableAndDynamicFrontContextPrompts() {
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      ContextManager().prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "You are OpenCray for testing.",
+          sessionContext = AgentRuntimeSessionContext(
+            workingState = WorkingState(
+              objective = WorkingStateObjective(
+                taskId = "task-front-context",
+                runId = "run-front-context",
+                primaryGoal = "Keep transport-facing prompt groups explicit.",
+                currentSubgoal = "Separate durable context from dynamic context.",
+                status = "in_progress",
+              ),
+              nextActions = listOf(
+                WorkingStateEntry(text = "Verify grouped front context ordering."),
+              ),
+            ),
+            recalledMemory = MemoryRecallResult(
+              memories = listOf(
+                RetrievedMemory(
+                  id = "memory-front-context",
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.USER,
+                  status = MemoryStatus.ACTIVE,
+                  content = "The user prefers stable prompt prefixes when the runtime can preserve them.",
+                  lastConfirmedAtEpochMs = 42L,
+                  score = 640,
+                ),
+              ),
+              matchedRecordCount = 1,
+            ),
+          ),
+          toolDefinitions = listOf(
+            AgentToolDefinition(
+              name = "Read",
+              description = "Read a file from the workspace.",
+            ),
+          ),
+          liveConversation = listOf(
+            RuntimeConversationMessage(RuntimeConversationRole.USER, "Keep the grouped context stable."),
+            RuntimeConversationMessage(RuntimeConversationRole.ASSISTANT, "I will keep the replay separate."),
+          ),
+        ),
+      ),
+    )
+
+    assertTrue(prompt.durableContextPrompt.contains("[Tool Protocol]"))
+    assertFalse(prompt.durableContextPrompt.contains("[Working State]"))
+    assertFalse(prompt.durableContextPrompt.contains("[Task Metadata]"))
+    assertFalse(prompt.durableContextPrompt.contains("[Retrieved Memory]"))
+    assertFalse(prompt.durableContextPrompt.contains("[Active Skill]"))
+
+    assertTrue(prompt.dynamicContextPrompt.contains("[Working State]"))
+    assertFalse(prompt.dynamicContextPrompt.contains("[Task Metadata]"))
+    assertTrue(prompt.dynamicContextPrompt.contains("[Retrieved Memory]"))
+    assertFalse(prompt.dynamicContextPrompt.contains("[Conversation]"))
+
+    assertTrue(prompt.replayTranscriptPrompt.contains("[Conversation]"))
+    assertFalse(prompt.replayTranscriptPrompt.contains("[Task Metadata]"))
+    assertEquals(prompt.durableContextPrompt, prompt.frontContextZones.durableContextPrompt)
+    assertEquals(prompt.dynamicContextPrompt, prompt.frontContextZones.dynamicContextPrompt)
+    assertEquals(
+      listOf(prompt.durableContextPrompt, prompt.dynamicContextPrompt),
+      prompt.frontContextPrompts,
+    )
+
+    val toolProtocolLayer = prompt.report.layers.first { layer -> layer.id == PromptLayerId.TOOL_PROTOCOL }
+    val memoryLayer = prompt.report.layers.first { layer -> layer.id == PromptLayerId.RETRIEVED_MEMORY }
+    val conversationLayer = prompt.report.layers.first { layer -> layer.id == PromptLayerId.CONVERSATION }
+
+    assertEquals(PromptLayerTransportGroup.DURABLE_CONTEXT, toolProtocolLayer.transportGroup)
+    assertEquals(PromptLayerTransportGroup.DYNAMIC_CONTEXT, memoryLayer.transportGroup)
+    assertTrue(prompt.report.layers.none { layer -> layer.id == PromptLayerId.TASK_METADATA })
+    assertEquals(PromptLayerTransportGroup.REPLAY_TRANSCRIPT, conversationLayer.transportGroup)
   }
 
   @Test
@@ -538,7 +617,7 @@ class PromptAssemblerTest {
   }
 
   @Test
-  fun assembleOmitsHostOnlyTaskMetadataFromPrompt() {
+  fun assembleDoesNotExposeTaskMetadataInPrompt() {
     val contextManager = ContextManager()
     val assembler = PromptAssembler()
 
@@ -559,7 +638,7 @@ class PromptAssemblerTest {
       ),
     )
 
-    assertTrue(prompt.taskPrompt.contains("chatMode=AUTO"))
+    assertFalse(prompt.taskPrompt.contains("chatMode=AUTO"))
     assertFalse(prompt.taskPrompt.contains("_host.pendingMessageId"))
     assertFalse(prompt.taskPrompt.contains("assistant-1"))
   }
@@ -943,11 +1022,17 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("allowed_tools=read,write"))
     assertTrue(prompt.taskPrompt.contains("[Instructions]"))
     assertTrue(prompt.taskPrompt.indexOf("[Active Skill]") < prompt.taskPrompt.indexOf("[Tool Protocol]"))
+    assertTrue(prompt.dynamicContextPrompt.contains("[Active Skill]"))
+    assertFalse(prompt.durableContextPrompt.contains("[Active Skill]"))
     assertEquals("ui-ux-pro-max", prompt.report.activeSkillTrace.name)
     assertEquals(".codex/skills/ui-ux-pro-max/SKILL.md", prompt.report.activeSkillTrace.relativePath)
     assertEquals("skill_read", prompt.report.activeSkillTrace.activationSource)
     assertTrue(prompt.report.activeSkillTrace.toolRestrictionEnabled)
     assertEquals(listOf("read", "write"), prompt.report.activeSkillTrace.allowedToolKeys)
+    assertEquals(
+      PromptLayerTransportGroup.DYNAMIC_CONTEXT,
+      prompt.report.layers.first { layer -> layer.id == PromptLayerId.ACTIVE_SKILL }.transportGroup,
+    )
   }
 
   @Test
@@ -1053,7 +1138,7 @@ class PromptAssemblerTest {
   }
 
   @Test
-  fun assembleBudgetCoordinatorTrimsConversationReplayBeforeDroppingMemory() {
+  fun assembleBudgetCoordinatorTrimsConversationReplayUnderPressure() {
     val contextManager = ContextManager(
       transcriptWindowBuilder = TranscriptWindowBuilder(
         TranscriptWindowConfig(
@@ -1105,17 +1190,15 @@ class PromptAssemblerTest {
             ),
           ),
           llmMetadata = budgetMetadata(
-            contextWindowTokens = 3_600,
-            reservedOutputTokens = 128,
+            contextWindowTokens = 2_400,
+            reservedOutputTokens = 256,
             safetyMarginTokens = 96,
-            effectiveInputPercent = "0.346",
+            effectiveInputPercent = "0.22",
           ),
         ),
       ),
     )
 
-    assertTrue(prompt.taskPrompt.contains("[Retrieved Memory]"))
-    assertTrue(prompt.taskPrompt.contains("Keep working state explicit instead of hiding progress inside generic summaries."))
     assertFalse(prompt.taskPrompt.contains("First replay note about the runtime rollout"))
     assertFalse(prompt.taskPrompt.contains("Second replay note describing the previous prompt composition"))
     assertTrue(prompt.taskPrompt.contains("Third replay note asking whether bounded transcript replay can shrink before memory injection disappears."))
@@ -1123,13 +1206,9 @@ class PromptAssemblerTest {
     val conversationBudgetReport = prompt.report.budgetReport.layers.first { layer ->
       layer.id == PromptLayerId.CONVERSATION
     }
-    val memoryBudgetReport = prompt.report.budgetReport.layers.first { layer ->
-      layer.id == PromptLayerId.RETRIEVED_MEMORY
-    }
     assertTrue(conversationBudgetReport.reduced)
+    assertEquals(ContextBudgetLayerFinalState.MINIMAL, conversationBudgetReport.finalState)
     assertTrue(conversationBudgetReport.appliedOperators.contains("trim_oldest_conversation_messages"))
-    assertFalse(memoryBudgetReport.omitted)
-    assertFalse(prompt.report.budgetReport.omittedLayerNames.contains("Retrieved Memory"))
   }
 
   fun assembleToolProtocolReducerAdjustsDetailModeAcrossBudgetBands() {
@@ -1293,7 +1372,7 @@ class PromptAssemblerTest {
             RuntimeConversationMessage(RuntimeConversationRole.USER, "Keep the reducer honest."),
           ),
           llmMetadata = budgetMetadata(
-            contextWindowTokens = 900,
+            contextWindowTokens = 600,
             reservedOutputTokens = 256,
             safetyMarginTokens = 96,
             effectiveInputPercent = "0.15",
@@ -1321,6 +1400,7 @@ class PromptAssemblerTest {
     assertFalse(prompt.taskPrompt.contains("updated_at_epoch_ms=123456"))
     assertTrue(workingStateBudgetReport.reduced)
     assertFalse(workingStateBudgetReport.omitted)
+    assertEquals(ContextBudgetLayerFinalState.MINIMAL, workingStateBudgetReport.finalState)
     assertTrue(workingStateBudgetReport.appliedOperators.contains("reduce_working_state_minimal"))
   }
 
@@ -1340,7 +1420,7 @@ class PromptAssemblerTest {
             RuntimeConversationMessage(RuntimeConversationRole.USER, "Keep the latest task prompt intact."),
           ),
           llmMetadata = budgetMetadata(
-            contextWindowTokens = 900,
+            contextWindowTokens = 600,
             reservedOutputTokens = 256,
             safetyMarginTokens = 96,
             effectiveInputPercent = "0.15",

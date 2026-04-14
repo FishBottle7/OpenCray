@@ -1,6 +1,13 @@
 package com.opencray.llm
 
 object LiteLlmMetadataKeys {
+  const val CONTEXT_CACHE_CONTRACT_VERSION: String = "contextCacheContractVersion"
+  const val CONTEXT_CACHE_BREAK_REASON: String = "contextCacheBreakReason"
+  const val CONTEXT_CACHE_STABLE_ANCHOR_HASH: String = "contextCacheStableAnchorHash"
+  const val CONTEXT_CACHE_DURABLE_CONTEXT_HASH: String = "contextCacheDurableContextHash"
+  const val CONTEXT_CACHE_DYNAMIC_CONTEXT_HASH: String = "contextCacheDynamicContextHash"
+  const val CONTEXT_CACHE_FRONT_CONTEXT_ZONE_MASK: String = "contextCacheFrontContextZoneMask"
+  const val CONTEXT_CACHE_FRONT_CONTEXT_MESSAGE_COUNT: String = "contextCacheFrontContextMessageCount"
   const val RESPONSES_LINEAGE_ID: String = "responsesLineageId"
   const val VALIDATION_ENABLE_RESPONSES_CONTINUATION: String = "validationEnableResponsesContinuation"
   const val VALIDATION_ENABLE_RESPONSES_ASSISTANT_PHASES: String = "validationEnableResponsesAssistantPhases"

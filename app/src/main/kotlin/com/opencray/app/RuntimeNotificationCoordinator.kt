@@ -65,6 +65,11 @@ internal data class RuntimeScheduleNotificationModel(
   val body: String,
 )
 
+internal data class RuntimeServiceRecoveredNotificationModel(
+  val title: String,
+  val body: String,
+)
+
 internal class RuntimeNotificationCoordinator(
   private val appContext: Context,
   private val localizedContext: Context,
@@ -103,6 +108,21 @@ internal class RuntimeNotificationCoordinator(
     if (!appVisibleProvider()) {
       syncOutstandingTerminalNotifications()
     }
+  }
+
+  fun onServiceBootstrapCompleted(
+    bootstrapResult: RuntimeServiceBootstrapResult,
+    processStartId: String,
+  ) {
+    if (appVisibleProvider()) {
+      return
+    }
+    val model = serviceRecoveredNotificationModel(bootstrapResult) ?: return
+    publishServiceRecoveredNotification(
+      model = model,
+      processStartId = processStartId,
+      bootstrapResult = bootstrapResult,
+    )
   }
 
   fun dispose() {
@@ -289,7 +309,7 @@ internal class RuntimeNotificationCoordinator(
       .asSequence()
       .filter { projection ->
         projection.isVisibleApprovalLifecycle() &&
-          shouldNotifyApproval(projection.taskSnapshot.task)
+          shouldNotifyApprovalReminder(projection.taskSnapshot.task)
       }
       .mapNotNull { projection ->
         approvalNotificationModel(
@@ -411,6 +431,27 @@ internal class RuntimeNotificationCoordinator(
     terminalDeliveryStore.markDelivered(deliveryKey, fingerprint)
   }
 
+  private fun publishServiceRecoveredNotification(
+    model: RuntimeServiceRecoveredNotificationModel,
+    processStartId: String,
+    bootstrapResult: RuntimeServiceBootstrapResult,
+  ) {
+    val fingerprint = listOf(
+      processStartId,
+      bootstrapResult.resumedSessionIds.sorted(),
+      bootstrapResult.repairedSessionIds.sorted(),
+    ).joinToString("|")
+    val deliveryKey = "service_recovered:$processStartId"
+    if (terminalDeliveryStore.wasDelivered(deliveryKey, fingerprint)) {
+      return
+    }
+    notificationManager.notify(
+      serviceRecoveredNotificationId(processStartId),
+      buildServiceRecoveredNotification(model),
+    )
+    terminalDeliveryStore.markDelivered(deliveryKey, fingerprint)
+  }
+
   private fun scheduleNotificationModel(
     outcome: ScheduledTaskDispatchOutcome,
     spec: ScheduledTaskSpec?,
@@ -456,6 +497,27 @@ internal class RuntimeNotificationCoordinator(
         ?: localizedContext.getString(R.string.runtime_notification_schedule_default_title),
       title = localizedContext.getString(titleResId),
       body = body,
+    )
+  }
+
+  private fun serviceRecoveredNotificationModel(
+    bootstrapResult: RuntimeServiceBootstrapResult,
+  ): RuntimeServiceRecoveredNotificationModel? {
+    val resumedCount = bootstrapResult.resumedSessionIds.distinct().size
+    val repairedCount = bootstrapResult.repairedSessionIds.distinct().size
+    if (resumedCount <= 0 && repairedCount <= 0) {
+      return null
+    }
+    if (!shouldDeliverUserNotification(RuntimeNotificationUserEvent.SERVICE_RECOVERED)) {
+      return null
+    }
+    return RuntimeServiceRecoveredNotificationModel(
+      title = localizedContext.getString(R.string.runtime_notification_service_recovered_title),
+      body = localizedContext.getString(
+        R.string.runtime_notification_service_recovered_body,
+        resumedCount,
+        repairedCount,
+      ),
     )
   }
 
@@ -571,9 +633,36 @@ internal class RuntimeNotificationCoordinator(
     )
     .build()
 
+  private fun buildServiceRecoveredNotification(
+    model: RuntimeServiceRecoveredNotificationModel,
+  ): Notification = NotificationCompat.Builder(
+    localizedContext,
+    RuntimeNotificationChannelRegistry.CHANNEL_RUNTIME_COMPLETION,
+  )
+    .setSmallIcon(android.R.drawable.stat_notify_sync)
+    .setContentTitle(model.title)
+    .setContentText(model.body)
+    .setContentIntent(openChatPendingIntent(sessionId = null))
+    .setAutoCancel(true)
+    .setOnlyAlertOnce(true)
+    .setCategory(NotificationCompat.CATEGORY_STATUS)
+    .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+    .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+    .setStyle(NotificationCompat.BigTextStyle().bigText(model.body))
+    .addAction(
+      0,
+      localizedContext.getString(R.string.runtime_notification_action_open),
+      openChatPendingIntent(sessionId = null),
+    )
+    .build()
+
   private fun shouldNotifyApproval(task: AgentTask): Boolean =
     (scheduledSpecFor(task)?.policy?.notifyOnApproval ?: true) &&
       shouldDeliverUserNotification(RuntimeNotificationUserEvent.APPROVAL_REQUEST)
+
+  private fun shouldNotifyApprovalReminder(task: AgentTask): Boolean =
+    (scheduledSpecFor(task)?.policy?.notifyOnApproval ?: true) &&
+      shouldDeliverUserNotification(RuntimeNotificationUserEvent.APPROVAL_REMINDER)
 
   private fun shouldNotifyTerminal(
     spec: ScheduledTaskSpec?,
@@ -840,6 +929,9 @@ internal class RuntimeNotificationCoordinator(
     53_100 + notificationStableHash("$scheduleId:$outcome", modulo = 4_000)
 
   private fun stableRequestCode(key: String): Int = 60_000 + notificationStableHash(key, modulo = 30_000)
+
+  private fun serviceRecoveredNotificationId(processStartId: String): Int =
+    53_800 + notificationStableHash(processStartId, modulo = 1_000)
 
   companion object {
     private const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"

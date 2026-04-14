@@ -1661,7 +1661,9 @@ extension on _ContextMemoryTracePageState {
 
 extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
   Widget _buildContextSetupCard(OpenCrayChatRunSnapshot run) {
+    final llmDiagnostics = run.llmDiagnostics;
     final liveContext = run.liveContext;
+    final contextBudget = run.contextBudget;
     final bootstrap = run.bootstrap;
     final memoryFlush = run.memoryFlush;
     final durableCompaction = run.durableCompaction;
@@ -1671,16 +1673,96 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
         children: [
           const Text('Context setup', style: _SettingsTextStyles.cardTitle),
           const SizedBox(height: 10),
-          if (liveContext == null &&
+          if (llmDiagnostics == null &&
+              liveContext == null &&
+              contextBudget == null &&
               bootstrap == null &&
               memoryFlush == null &&
               durableCompaction == null)
             const Text(
-              'No live-context, bootstrap, memory flush, or durable compaction trace was captured for this run.',
+              'No LLM diagnostics, live-context, context-budget, bootstrap, memory flush, or durable compaction trace was captured for this run.',
               style: _SettingsTextStyles.body,
             )
           else ...[
+            if (llmDiagnostics != null) ...[
+              const Text(
+                'LLM diagnostics',
+                style: _SettingsTextStyles.bodyStrong,
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _DebugValueChip(
+                    label: 'Response shape',
+                    value:
+                        llmDiagnostics.providerResponseShape?.trim().isNotEmpty ==
+                            true
+                        ? llmDiagnostics.providerResponseShape!.trim()
+                        : 'unknown',
+                  ),
+                  _DebugValueChip(
+                    label: 'Cache break',
+                    value:
+                        llmDiagnostics.contextCacheBreakReason
+                            ?.trim()
+                            .isNotEmpty ==
+                        true
+                        ? llmDiagnostics.contextCacheBreakReason!.trim()
+                        : 'clear',
+                  ),
+                ],
+              ),
+              if (llmDiagnostics.nativeToolCallRequested != null ||
+                  llmDiagnostics.nativeToolCallObserved != null ||
+                  llmDiagnostics.parsedToolCallObserved != null)
+                _DebugKeyValueLine(
+                  'Tool path',
+                  'requested ${llmDiagnostics.nativeToolCallRequested == true ? 'yes' : 'no'}, observed ${llmDiagnostics.nativeToolCallObserved == true ? 'yes' : 'no'}, parsed ${llmDiagnostics.parsedToolCallObserved == true ? 'yes' : 'no'}',
+                ),
+              if (llmDiagnostics.fallbackParserAttempted != null ||
+                  llmDiagnostics.fallbackParserSucceeded != null)
+                _DebugKeyValueLine(
+                  'Fallback parser',
+                  'attempted ${llmDiagnostics.fallbackParserAttempted == true ? 'yes' : 'no'}, succeeded ${llmDiagnostics.fallbackParserSucceeded == true ? 'yes' : 'no'}',
+                ),
+              if ((llmDiagnostics.responsesContinuationRecoveryCount ?? 0) > 0 ||
+                  llmDiagnostics.responsesContinuationRecoveryLastReason
+                          ?.trim()
+                          .isNotEmpty ==
+                      true)
+                _DebugKeyValueLine(
+                  'Responses recovery',
+                  '${llmDiagnostics.responsesContinuationRecoveryCount ?? 0} (${llmDiagnostics.responsesContinuationRecoveryLastReason?.trim().isNotEmpty == true ? llmDiagnostics.responsesContinuationRecoveryLastReason!.trim() : 'no_reason'})',
+                ),
+              if ((llmDiagnostics.localContinuationUsedCount ?? 0) > 0 ||
+                  (llmDiagnostics.localContinuationFallbackCount ?? 0) > 0 ||
+                  llmDiagnostics.localContinuationLastMode?.trim().isNotEmpty ==
+                      true ||
+                  llmDiagnostics.localContinuationLastReason
+                          ?.trim()
+                          .isNotEmpty ==
+                      true)
+                _DebugKeyValueLine(
+                  'Local continuation',
+                  'used ${llmDiagnostics.localContinuationUsedCount ?? 0}, fallback ${llmDiagnostics.localContinuationFallbackCount ?? 0}, mode ${llmDiagnostics.localContinuationLastMode?.trim().isNotEmpty == true ? llmDiagnostics.localContinuationLastMode!.trim() : 'unknown'}, reason ${llmDiagnostics.localContinuationLastReason?.trim().isNotEmpty == true ? llmDiagnostics.localContinuationLastReason!.trim() : 'none'}',
+                ),
+              if (llmDiagnostics.toolCallEventEmitted != null ||
+                  llmDiagnostics.toolResultEventEmitted != null)
+                _DebugKeyValueLine(
+                  'Tool events',
+                  'call ${llmDiagnostics.toolCallEventEmitted == true ? 'yes' : 'no'}, result ${llmDiagnostics.toolResultEventEmitted == true ? 'yes' : 'no'}',
+                ),
+              if (llmDiagnostics.lastSuccessfulToolName?.trim().isNotEmpty ==
+                  true)
+                _DebugKeyValueLine(
+                  'Last successful tool',
+                  llmDiagnostics.lastSuccessfulToolName!.trim(),
+                ),
+            ],
             if (liveContext != null) ...[
+              if (llmDiagnostics != null) const SizedBox(height: 16),
               const Text('Live context', style: _SettingsTextStyles.bodyStrong),
               const SizedBox(height: 8),
               Wrap(
@@ -1708,8 +1790,118 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                 ],
               ),
             ],
-            if (bootstrap != null) ...[
+            if (contextBudget != null) ...[
               if (liveContext != null) const SizedBox(height: 16),
+              const Text(
+                'Context budget',
+                style: _SettingsTextStyles.bodyStrong,
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _DebugValueChip(
+                    label: 'Preset',
+                    value: _formatContextBudgetPreset(contextBudget),
+                  ),
+                  _DebugValueChip(
+                    label: 'Pressure',
+                    value: contextBudget.pressureMode?.trim().isNotEmpty == true
+                        ? contextBudget.pressureMode!.trim().toLowerCase()
+                        : 'unknown',
+                  ),
+                  _DebugValueChip(
+                    label: 'Layers',
+                    value: _formatContextBudgetLayerCounts(contextBudget),
+                  ),
+                  _DebugValueChip(
+                    label: 'Overflow',
+                    value: contextBudget.unresolvedOverflow == true
+                        ? 'unresolved'
+                        : 'clear',
+                  ),
+                  if (contextBudget.sourcePreset?.trim().isNotEmpty == true)
+                    _DebugValueChip(
+                      label: 'Source caps',
+                      value: contextBudget.sourcePreset!.trim(),
+                    ),
+                ],
+              ),
+              _DebugKeyValueLine(
+                'Applied',
+                contextBudget.applied == true ? 'yes' : 'no',
+              ),
+              if ((contextBudget.contextWindowTokens ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Window tokens',
+                  '${contextBudget.contextWindowTokens}',
+                ),
+              if ((contextBudget.hardInputTokens ?? 0) > 0 ||
+                  (contextBudget.targetInputTokens ?? 0) > 0 ||
+                  (contextBudget.emergencyInputTokens ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Input envelope',
+                  'hard ${contextBudget.hardInputTokens ?? 0}, target ${contextBudget.targetInputTokens ?? 0}, emergency ${contextBudget.emergencyInputTokens ?? 0}',
+                ),
+              if ((contextBudget.reservedOutputTokens ?? 0) > 0 ||
+                  (contextBudget.safetyMarginTokens ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Reserve',
+                  'output ${contextBudget.reservedOutputTokens ?? 0}, margin ${contextBudget.safetyMarginTokens ?? 0}',
+                ),
+              if (_hasContextBudgetSourceCapDetails(contextBudget))
+                _DebugKeyValueLine(
+                  'Source cap profile',
+                  _formatContextBudgetSourceProfile(contextBudget),
+                ),
+              if ((contextBudget.sourceTranscriptMaxMessages ?? 0) > 0 ||
+                  (contextBudget.sourceInjectedMemoryMaxRecords ?? 0) > 0 ||
+                  (contextBudget.sourceMemoryRecallMaxRecords ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Source caps',
+                  'transcript ${contextBudget.sourceTranscriptMaxMessages ?? 0}, injected memory ${contextBudget.sourceInjectedMemoryMaxRecords ?? 0}, recall ${contextBudget.sourceMemoryRecallMaxRecords ?? 0}',
+                ),
+              if ((contextBudget.sourceBootstrapMaxChars ?? 0) > 0 ||
+                  (contextBudget.sourceSkillInventoryMaxSkills ?? 0) > 0 ||
+                  (contextBudget.sourceActiveSkillMaxChars ?? 0) > 0 ||
+                  (contextBudget.sourceRecentObservationMaxEntries ?? 0) > 0 ||
+                  (contextBudget.sourceMemoryFlushMaxToolObservations ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Source auxiliaries',
+                  'bootstrap ${contextBudget.sourceBootstrapMaxChars ?? 0} chars, skills ${contextBudget.sourceSkillInventoryMaxSkills ?? 0}, active skill ${contextBudget.sourceActiveSkillMaxChars ?? 0} chars, observations ${contextBudget.sourceRecentObservationMaxEntries ?? 0}, flush tools ${contextBudget.sourceMemoryFlushMaxToolObservations ?? 0}',
+                ),
+              if (contextBudget.reducedLayerNames.isNotEmpty)
+                _DebugKeyValueLine(
+                  'Reduced layers',
+                  contextBudget.reducedLayerNames.join(', '),
+                ),
+              if (contextBudget.omittedLayerNames.isNotEmpty)
+                _DebugKeyValueLine(
+                  'Omitted layers',
+                  contextBudget.omittedLayerNames.join(', '),
+                ),
+              if (contextBudget.layers.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                const Text(
+                  'Layer states',
+                  style: _SettingsTextStyles.bodyStrong,
+                ),
+                const SizedBox(height: 8),
+                for (final layer in contextBudget.layers)
+                  _DebugKeyValueLine(
+                    layer.name,
+                    _formatContextBudgetLayerDetail(layer),
+                  ),
+              ] else if (contextBudget.layerSummary?.trim().isNotEmpty == true)
+                _DebugKeyValueLine(
+                  'Layer summary',
+                  _truncateDebugText(contextBudget.layerSummary!.trim(), 180),
+                ),
+            ],
+            if (bootstrap != null) ...[
+              if (liveContext != null || contextBudget != null)
+                const SizedBox(height: 16),
               const Text('Bootstrap', style: _SettingsTextStyles.bodyStrong),
               const SizedBox(height: 8),
               Wrap(
@@ -1750,7 +1942,10 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
               ],
             ],
             if (memoryFlush != null) ...[
-              if (bootstrap != null) const SizedBox(height: 16),
+              if (liveContext != null ||
+                  contextBudget != null ||
+                  bootstrap != null)
+                const SizedBox(height: 16),
               const Text('Memory flush', style: _SettingsTextStyles.bodyStrong),
               const SizedBox(height: 8),
               Wrap(
@@ -1799,7 +1994,10 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                 ),
             ],
             if (durableCompaction != null) ...[
-              if (bootstrap != null || memoryFlush != null)
+              if (liveContext != null ||
+                  contextBudget != null ||
+                  bootstrap != null ||
+                  memoryFlush != null)
                 const SizedBox(height: 16),
               const Text(
                 'Durable compaction',
@@ -1860,6 +2058,103 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
         ],
       ),
     );
+  }
+
+  String _formatContextBudgetPreset(OpenCrayChatRunContextBudgetSnapshot budget) {
+    final effective = budget.effectivePreset?.trim();
+    final selected = budget.selectedPreset?.trim();
+    final source = budget.presetSource?.trim();
+    if (effective != null &&
+        effective.isNotEmpty &&
+        selected != null &&
+        selected.isNotEmpty &&
+        effective != selected) {
+      return '$effective (selected $selected)';
+    }
+    if (effective != null && effective.isNotEmpty) {
+      return effective;
+    }
+    if (selected != null && selected.isNotEmpty && source != null && source.isNotEmpty) {
+      return '$selected ($source)';
+    }
+    if (selected != null && selected.isNotEmpty) {
+      return selected;
+    }
+    return 'unknown';
+  }
+
+  String _formatContextBudgetLayerCounts(
+    OpenCrayChatRunContextBudgetSnapshot budget,
+  ) {
+    final full = budget.fullLayerCount ?? 0;
+    final compact = budget.compactLayerCount ?? 0;
+    final minimal = budget.minimalLayerCount ?? 0;
+    final omitted = budget.omittedLayerCount ?? 0;
+    return '$full/$compact/$minimal/$omitted';
+  }
+
+  bool _hasContextBudgetSourceCapDetails(
+    OpenCrayChatRunContextBudgetSnapshot budget,
+  ) {
+    return budget.sourcePreset?.trim().isNotEmpty == true ||
+        (budget.sourceTranscriptMaxMessages ?? 0) > 0 ||
+        (budget.sourceInjectedMemoryMaxRecords ?? 0) > 0 ||
+        (budget.sourceMemoryRecallMaxRecords ?? 0) > 0 ||
+        (budget.sourceBootstrapMaxChars ?? 0) > 0 ||
+        (budget.sourceSkillInventoryMaxSkills ?? 0) > 0 ||
+        (budget.sourceActiveSkillMaxChars ?? 0) > 0 ||
+        (budget.sourceRecentObservationMaxEntries ?? 0) > 0 ||
+        (budget.sourceMemoryFlushMaxToolObservations ?? 0) > 0;
+  }
+
+  String _formatContextBudgetSourceProfile(
+    OpenCrayChatRunContextBudgetSnapshot budget,
+  ) {
+    final sourcePreset = budget.sourcePreset?.trim();
+    if (sourcePreset != null &&
+        sourcePreset.isNotEmpty &&
+        budget.effectivePreset?.trim().isNotEmpty == true &&
+        sourcePreset != budget.effectivePreset!.trim()) {
+      return '$sourcePreset (stable fallback for ${budget.effectivePreset!.trim()} envelope)';
+    }
+    if (sourcePreset != null && sourcePreset.isNotEmpty) {
+      return sourcePreset;
+    }
+    return 'unknown';
+  }
+
+  String _formatContextBudgetLayerDetail(
+    OpenCrayChatRunContextBudgetLayerSnapshot layer,
+  ) {
+    final parts = <String>[
+      layer.finalState?.trim().isNotEmpty == true
+          ? layer.finalState!.trim()
+          : 'unknown',
+    ];
+    final estimatedBefore = layer.estimatedTokensBefore;
+    final estimatedAfter = layer.estimatedTokensAfter;
+    if (estimatedBefore != null || estimatedAfter != null) {
+      parts.add('${estimatedBefore ?? 0} -> ${estimatedAfter ?? 0} tokens');
+    }
+    final priority = _formatContextBudgetLayerPriority(layer.priorityClass);
+    if (priority.isNotEmpty) {
+      final retentionPriority = layer.retentionPriority;
+      parts.add(
+        retentionPriority == null ? priority : '$priority #$retentionPriority',
+      );
+    }
+    if (layer.appliedOperators.isNotEmpty) {
+      parts.add('ops ${layer.appliedOperators.join(', ')}');
+    }
+    return parts.join(', ');
+  }
+
+  String _formatContextBudgetLayerPriority(String? raw) {
+    final normalized = raw?.trim();
+    if (normalized == null || normalized.isEmpty) {
+      return '';
+    }
+    return normalized.toLowerCase().replaceAll('_', ' ');
   }
 
   Widget _buildSoulResolutionCard() {

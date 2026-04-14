@@ -6247,6 +6247,229 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun completedRunSnapshotIncludesStructuredContextBudget() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-context-budget"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    val submission = hostRuntime.submitChatMessage("Need run context budget trace")!!
+    val task = handle.submittedTasks.single()
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "Applied context budget.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          "responseFormat" to "json_final",
+          "contextBudgetApplied" to "true",
+          "contextBudgetPressureMode" to "EMERGENCY",
+          "contextBudgetContextWindowTokens" to "900",
+          "contextBudgetReservedOutputTokens" to "256",
+          "contextBudgetSafetyMarginTokens" to "96",
+          "contextBudgetSelectedPreset" to "balanced",
+          "contextBudgetEffectivePreset" to "dev",
+          "contextBudgetPresetSource" to "raw",
+          "contextBudgetPresetDiverged" to "true",
+          "contextBudgetSourcePreset" to "expanded",
+          "contextBudgetSourceTranscriptMaxMessages" to "16",
+          "contextBudgetSourceInjectedMemoryMaxRecords" to "6",
+          "contextBudgetSourceMemoryRecallMaxRecords" to "8",
+          "contextBudgetSourceBootstrapMaxChars" to "4800",
+          "contextBudgetSourceSkillInventoryMaxSkills" to "12",
+          "contextBudgetSourceActiveSkillMaxChars" to "4800",
+          "contextBudgetSourceRecentObservationMaxEntries" to "6",
+          "contextBudgetSourceMemoryFlushMaxToolObservations" to "12",
+          "contextBudgetHardInputTokens" to "548",
+          "contextBudgetTargetInputTokens" to "512",
+          "contextBudgetEmergencyInputTokens" to "548",
+          "contextBudgetUnresolvedOverflow" to "true",
+          "contextBudgetFullLayerCount" to "4",
+          "contextBudgetCompactLayerCount" to "2",
+          "contextBudgetMinimalLayerCount" to "1",
+          "contextBudgetOmittedLayerCount" to "1",
+          "contextBudgetReducedLayerNames" to "Working State,Conversation",
+          "contextBudgetOmittedLayerNames" to "Retrieved Memory",
+          "contextBudgetLayerDetails" to """
+            [
+              {
+                "id": "WORKING_STATE",
+                "name": "Working State",
+                "priorityClass": "OPTIONAL_SUPPORT_CONTEXT",
+                "retentionPriority": 70,
+                "estimatedTokensBefore": 220,
+                "estimatedTokensAfter": 120,
+                "finalState": "compact",
+                "omitted": false,
+                "reduced": true,
+                "appliedOperators": ["reduce_working_state_compact"]
+              },
+              {
+                "id": "CONVERSATION",
+                "name": "Conversation",
+                "priorityClass": "RECENT_REPLAY",
+                "retentionPriority": 110,
+                "estimatedTokensBefore": 420,
+                "estimatedTokensAfter": 180,
+                "finalState": "minimal",
+                "omitted": false,
+                "reduced": true,
+                "appliedOperators": ["reduce_conversation_window_minimal"]
+              },
+              {
+                "id": "RETRIEVED_MEMORY",
+                "name": "Retrieved Memory",
+                "priorityClass": "BOUNDED_DURABLE_RECALL",
+                "retentionPriority": 90,
+                "estimatedTokensBefore": 48,
+                "estimatedTokensAfter": 0,
+                "finalState": "omitted",
+                "omitted": true,
+                "reduced": false,
+                "appliedOperators": ["omit_layer"]
+              }
+            ]
+          """.trimIndent(),
+          "contextBudgetLayerSummary" to
+            "WORKING_STATE:compact:20;CONVERSATION:minimal:120;RETRIEVED_MEMORY:omitted:48",
+        ),
+      ),
+    )
+
+    val runSnapshot = hostRuntime.loadChatRunSnapshot(submission["runId"] as String)!!
+    val contextBudget = runSnapshot["contextBudget"] as Map<*, *>
+
+    assertEquals(true, contextBudget["applied"])
+    assertEquals("EMERGENCY", contextBudget["pressureMode"])
+    assertEquals("balanced", contextBudget["selectedPreset"])
+    assertEquals("dev", contextBudget["effectivePreset"])
+    assertEquals("raw", contextBudget["presetSource"])
+    assertEquals(true, contextBudget["presetDiverged"])
+    assertEquals("expanded", contextBudget["sourcePreset"])
+    assertEquals(16, contextBudget["sourceTranscriptMaxMessages"])
+    assertEquals(6, contextBudget["sourceInjectedMemoryMaxRecords"])
+    assertEquals(8, contextBudget["sourceMemoryRecallMaxRecords"])
+    assertEquals(4800, contextBudget["sourceBootstrapMaxChars"])
+    assertEquals(12, contextBudget["sourceSkillInventoryMaxSkills"])
+    assertEquals(4800, contextBudget["sourceActiveSkillMaxChars"])
+    assertEquals(6, contextBudget["sourceRecentObservationMaxEntries"])
+    assertEquals(12, contextBudget["sourceMemoryFlushMaxToolObservations"])
+    assertEquals(900, contextBudget["contextWindowTokens"])
+    assertEquals(256, contextBudget["reservedOutputTokens"])
+    assertEquals(96, contextBudget["safetyMarginTokens"])
+    assertEquals(548, contextBudget["hardInputTokens"])
+    assertEquals(512, contextBudget["targetInputTokens"])
+    assertEquals(548, contextBudget["emergencyInputTokens"])
+    assertEquals(true, contextBudget["unresolvedOverflow"])
+    assertEquals(4, contextBudget["fullLayerCount"])
+    assertEquals(2, contextBudget["compactLayerCount"])
+    assertEquals(1, contextBudget["minimalLayerCount"])
+    assertEquals(1, contextBudget["omittedLayerCount"])
+    assertEquals(
+      listOf("Working State", "Conversation"),
+      contextBudget["reducedLayerNames"],
+    )
+    assertEquals(listOf("Retrieved Memory"), contextBudget["omittedLayerNames"])
+    assertEquals(
+      "WORKING_STATE:compact:20;CONVERSATION:minimal:120;RETRIEVED_MEMORY:omitted:48",
+      contextBudget["layerSummary"],
+    )
+    val layers = contextBudget["layers"] as List<*>
+    assertEquals(3, layers.size)
+    val workingStateLayer = layers[0] as Map<*, *>
+    assertEquals("WORKING_STATE", workingStateLayer["id"])
+    assertEquals("Working State", workingStateLayer["name"])
+    assertEquals("OPTIONAL_SUPPORT_CONTEXT", workingStateLayer["priorityClass"])
+    assertEquals(70, workingStateLayer["retentionPriority"])
+    assertEquals(220, workingStateLayer["estimatedTokensBefore"])
+    assertEquals(120, workingStateLayer["estimatedTokensAfter"])
+    assertEquals("compact", workingStateLayer["finalState"])
+    assertEquals(false, workingStateLayer["omitted"])
+    assertEquals(true, workingStateLayer["reduced"])
+    assertEquals(
+      listOf("reduce_working_state_compact"),
+      workingStateLayer["appliedOperators"],
+    )
+  }
+
+  @Test
+  fun completedRunSnapshotIncludesLlmDiagnosticsCacheBreakReason() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-llm-diagnostics"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    val submission = hostRuntime.submitChatMessage("Need cache-break diagnostics")!!
+    val task = handle.submittedTasks.single()
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "Captured LLM diagnostics.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          LiteLlmMetadataKeys.PROVIDER_RESPONSE_SHAPE to "openai_tool_calls",
+          LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED to "true",
+          LiteLlmMetadataKeys.NATIVE_TOOL_CALL_OBSERVED to "true",
+          LiteLlmMetadataKeys.PARSED_TOOL_CALL_OBSERVED to "true",
+          LiteLlmMetadataKeys.FALLBACK_PARSER_ATTEMPTED to "false",
+          LiteLlmMetadataKeys.FALLBACK_PARSER_SUCCEEDED to "false",
+          "responsesContinuationRecoveryCount" to "1",
+          "responsesContinuationRecoveryLastReason" to "responses_restored_replay_required",
+          "localContinuationUsedCount" to "0",
+          "localContinuationFallbackCount" to "1",
+          "localContinuationLastMode" to "full_rebuild",
+          "localContinuationLastReason" to "user_setting_changed",
+          LiteLlmMetadataKeys.TOOL_CALL_EVENT_EMITTED to "true",
+          LiteLlmMetadataKeys.TOOL_RESULT_EVENT_EMITTED to "true",
+          LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON to "user_setting_changed",
+          LiteLlmMetadataKeys.LAST_SUCCESSFUL_TOOL_NAME to "EchoProbe",
+        ),
+      ),
+    )
+
+    val runSnapshot = hostRuntime.loadChatRunSnapshot(submission["runId"] as String)!!
+    val llmDiagnostics = runSnapshot["llmDiagnostics"] as Map<*, *>
+
+    assertEquals("openai_tool_calls", llmDiagnostics["providerResponseShape"])
+    assertEquals(true, llmDiagnostics["nativeToolCallRequested"])
+    assertEquals(true, llmDiagnostics["nativeToolCallObserved"])
+    assertEquals(true, llmDiagnostics["parsedToolCallObserved"])
+    assertEquals(false, llmDiagnostics["fallbackParserAttempted"])
+    assertEquals(false, llmDiagnostics["fallbackParserSucceeded"])
+    assertEquals(1, llmDiagnostics["responsesContinuationRecoveryCount"])
+    assertEquals(
+      "responses_restored_replay_required",
+      llmDiagnostics["responsesContinuationRecoveryLastReason"],
+    )
+    assertEquals(0, llmDiagnostics["localContinuationUsedCount"])
+    assertEquals(1, llmDiagnostics["localContinuationFallbackCount"])
+    assertEquals("full_rebuild", llmDiagnostics["localContinuationLastMode"])
+    assertEquals("user_setting_changed", llmDiagnostics["localContinuationLastReason"])
+    assertEquals(true, llmDiagnostics["toolCallEventEmitted"])
+    assertEquals(true, llmDiagnostics["toolResultEventEmitted"])
+    assertEquals("user_setting_changed", llmDiagnostics["contextCacheBreakReason"])
+    assertEquals("EchoProbe", llmDiagnostics["lastSuccessfulToolName"])
+  }
+
+  @Test
   fun runSnapshotIncludesManagedProcessLinkageAndKeepsLiveProcessRunVisible() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-process-linkage"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId

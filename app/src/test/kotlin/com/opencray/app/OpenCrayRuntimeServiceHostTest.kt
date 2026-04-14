@@ -1631,6 +1631,10 @@ class OpenCrayRuntimeServiceHostTest {
       model = "kimi-k2.5",
       reasoningEffort = "medium",
       systemPrompt = "Prompt",
+      contextBudgetPreset = "expanded",
+      contextBudgetReservedOutputTokens = 3072,
+      contextBudgetSafetyMarginTokens = 1536,
+      contextBudgetEffectiveInputPercent = 0.92,
     )
     val validatedLlm = gateway.validateLlmConfig(
       providerId = "custom",
@@ -1650,6 +1654,8 @@ class OpenCrayRuntimeServiceHostTest {
       model = "claude-kimi-hybrid",
       reasoningEffort = "high",
       systemPrompt = "Prompt 2",
+      contextBudgetPreset = "compact",
+      contextBudgetReservedOutputTokens = 2048,
     )
     val mcp = gateway.loadMcpSettings()
     val mcpMaster = gateway.setMcpMasterEnabled(false)
@@ -1658,7 +1664,15 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals("kimi-k2.5", llm["model"])
     assertEquals("anthropic", savedLlm["protocol"])
     assertEquals("custom-provider", llmFacade.lastSavedRequest?.selectedProviderOptionId)
+    assertEquals("expanded", llmFacade.lastSavedRequest?.contextBudgetPreset)
+    assertEquals(3072, llmFacade.lastSavedRequest?.contextBudgetReservedOutputTokens)
+    assertEquals(1536, llmFacade.lastSavedRequest?.contextBudgetSafetyMarginTokens)
+    assertEquals(0.92, llmFacade.lastSavedRequest?.contextBudgetEffectiveInputPercent)
     assertEquals("custom-provider-2", llmFacade.lastCustomProviderRequest?.selectedProviderOptionId)
+    assertEquals("compact", llmFacade.lastCustomProviderRequest?.contextBudgetPreset)
+    assertEquals(2048, llmFacade.lastCustomProviderRequest?.contextBudgetReservedOutputTokens)
+    assertEquals("expanded", savedLlm["contextBudgetPreset"])
+    assertEquals(3072, savedLlm["contextBudgetReservedOutputTokens"])
     assertEquals("claude-kimi-hybrid", savedCustomProvider["model"])
     assertEquals("kimi-k2.5", llmFacade.lastValidatedRequest?.model)
     assertEquals(true, (validatedLlm["agentCapability"] as Map<String, Any?>)["nativeToolCallingAvailable"])
@@ -5800,6 +5814,10 @@ class OpenCrayRuntimeServiceHostTest {
       openAiPromptCacheRetention: String?,
       anthropicPromptCachingEnabled: Boolean?,
       anthropicPromptCacheTtl: String?,
+      contextBudgetPreset: String?,
+      contextBudgetReservedOutputTokens: Int?,
+      contextBudgetSafetyMarginTokens: Int?,
+      contextBudgetEffectiveInputPercent: Double?,
     ): Map<String, Any?> = mapOf("source" to "$label-llm-save", "enabled" to enabled)
 
     override fun saveCustomLlmProvider(
@@ -5817,6 +5835,10 @@ class OpenCrayRuntimeServiceHostTest {
       openAiPromptCacheRetention: String?,
       anthropicPromptCachingEnabled: Boolean?,
       anthropicPromptCacheTtl: String?,
+      contextBudgetPreset: String?,
+      contextBudgetReservedOutputTokens: Int?,
+      contextBudgetSafetyMarginTokens: Int?,
+      contextBudgetEffectiveInputPercent: Double?,
     ): Map<String, Any?> = mapOf("source" to "$label-custom-llm")
 
     override fun validateLlmConfig(
@@ -5982,6 +6004,10 @@ class OpenCrayRuntimeServiceHostTest {
         model = request.model,
         reasoningEffort = request.reasoningEffort,
         systemPrompt = request.systemPrompt,
+        contextBudgetPreset = request.contextBudgetPreset ?: LlmSettingsState.DEFAULT_CONTEXT_BUDGET_PRESET,
+        contextBudgetReservedOutputTokens = request.contextBudgetReservedOutputTokens,
+        contextBudgetSafetyMarginTokens = request.contextBudgetSafetyMarginTokens,
+        contextBudgetEffectiveInputPercent = request.contextBudgetEffectiveInputPercent,
       )
     }
 
@@ -6000,6 +6026,10 @@ class OpenCrayRuntimeServiceHostTest {
         model = request.model,
         reasoningEffort = request.reasoningEffort,
         systemPrompt = request.systemPrompt,
+        contextBudgetPreset = request.contextBudgetPreset ?: LlmSettingsState.DEFAULT_CONTEXT_BUDGET_PRESET,
+        contextBudgetReservedOutputTokens = request.contextBudgetReservedOutputTokens,
+        contextBudgetSafetyMarginTokens = request.contextBudgetSafetyMarginTokens,
+        contextBudgetEffectiveInputPercent = request.contextBudgetEffectiveInputPercent,
       )
     }
 
@@ -6037,6 +6067,10 @@ class OpenCrayRuntimeServiceHostTest {
       model: String,
       reasoningEffort: String,
       systemPrompt: String,
+      contextBudgetPreset: String = LlmSettingsState.DEFAULT_CONTEXT_BUDGET_PRESET,
+      contextBudgetReservedOutputTokens: Int? = null,
+      contextBudgetSafetyMarginTokens: Int? = null,
+      contextBudgetEffectiveInputPercent: Double? = null,
     ): com.opencray.app.facade.llm.LlmConfigSnapshot =
       com.opencray.app.facade.llm.LlmConfigSnapshot(
         localeTag = "en",
@@ -6075,6 +6109,10 @@ class OpenCrayRuntimeServiceHostTest {
         model = model,
         reasoningEffort = reasoningEffort,
         systemPrompt = systemPrompt,
+        contextBudgetPreset = contextBudgetPreset,
+        contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
+        contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
+        contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
         helperText = "helper",
         agentCapability = LlmAgentCapabilitySnapshot(
           routeFingerprint = llmRouteFingerprint(

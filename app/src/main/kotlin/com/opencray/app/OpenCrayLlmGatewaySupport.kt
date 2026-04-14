@@ -23,6 +23,10 @@ internal fun LlmConfigSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "openAiPromptCacheRetention" to openAiPromptCacheRetention,
   "anthropicPromptCachingEnabled" to anthropicPromptCachingEnabled,
   "anthropicPromptCacheTtl" to anthropicPromptCacheTtl,
+  "contextBudgetPreset" to contextBudgetPreset,
+  "contextBudgetReservedOutputTokens" to contextBudgetReservedOutputTokens,
+  "contextBudgetSafetyMarginTokens" to contextBudgetSafetyMarginTokens,
+  "contextBudgetEffectiveInputPercent" to contextBudgetEffectiveInputPercent,
   "helperText" to helperText,
   "agentCapability" to agentCapability.toGatewayMap(),
 )

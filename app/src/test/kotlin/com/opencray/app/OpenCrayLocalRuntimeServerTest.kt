@@ -3023,6 +3023,10 @@ class OpenCrayLocalRuntimeServerTest {
       openAiPromptCacheRetention: String?,
       anthropicPromptCachingEnabled: Boolean?,
       anthropicPromptCacheTtl: String?,
+      contextBudgetPreset: String?,
+      contextBudgetReservedOutputTokens: Int?,
+      contextBudgetSafetyMarginTokens: Int?,
+      contextBudgetEffectiveInputPercent: Double?,
     ): Map<String, Any?> = mapOf("source" to "gateway-llm-save", "enabled" to enabled)
 
     override fun saveCustomLlmProvider(
@@ -3040,6 +3044,10 @@ class OpenCrayLocalRuntimeServerTest {
       openAiPromptCacheRetention: String?,
       anthropicPromptCachingEnabled: Boolean?,
       anthropicPromptCacheTtl: String?,
+      contextBudgetPreset: String?,
+      contextBudgetReservedOutputTokens: Int?,
+      contextBudgetSafetyMarginTokens: Int?,
+      contextBudgetEffectiveInputPercent: Double?,
     ): Map<String, Any?> = mapOf("source" to "gateway-custom-llm")
 
     override fun validateLlmConfig(

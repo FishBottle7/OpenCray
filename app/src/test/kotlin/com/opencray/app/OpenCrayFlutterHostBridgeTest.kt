@@ -189,6 +189,55 @@ class OpenCrayFlutterHostBridgeTest {
     assertEquals(localGateway.selectAgentResult, result.successPayload)
   }
 
+  @Test
+  fun saveLlmConfigMethodCallRoutesContextBudgetFieldsThroughSettingsGateway() {
+    val settingsGateway = RecordingSettingsGateway()
+    val result = RecordingMethodResult()
+    val bridge = OpenCrayFlutterHostBridge(
+      context = MinimalContext(),
+      localHostGateway = UnsupportedLocalGateway(),
+      shellGateway = UnsupportedShellGateway(),
+      chatRuntimeGateway = RecordingChatRuntimeGateway(),
+      skillsGateway = UnsupportedSkillsGateway(),
+      settingsGateway = settingsGateway,
+      debugPythonScriptRunnerFactory = {
+        throw UnsupportedOperationException("Debug Python runner should not be used.")
+      },
+      backgroundRunner = { action -> action() },
+      mainThreadPoster = { action -> action() },
+    )
+
+    bridge.onMethodCall(
+      MethodCall(
+        "saveLlmConfig",
+        mapOf(
+          "enabled" to true,
+          "providerId" to "openai",
+          "selectedProviderOptionId" to "openai",
+          "protocol" to "openai_responses",
+          "providerName" to "OpenAI",
+          "providerNotes" to "",
+          "baseUrl" to "https://api.openai.com/v1",
+          "apiKey" to "token",
+          "model" to "gpt-5-mini",
+          "reasoningEffort" to "medium",
+          "systemPrompt" to "Stay concise.",
+          "contextBudgetPreset" to "expanded",
+          "contextBudgetReservedOutputTokens" to 3072,
+          "contextBudgetSafetyMarginTokens" to 1536,
+          "contextBudgetEffectiveInputPercent" to 0.92,
+        ),
+      ),
+      result,
+    )
+
+    assertTrue(result.successCalled)
+    assertEquals("expanded", settingsGateway.lastSavedLlmConfig?.contextBudgetPreset)
+    assertEquals(3072, settingsGateway.lastSavedLlmConfig?.contextBudgetReservedOutputTokens)
+    assertEquals(1536, settingsGateway.lastSavedLlmConfig?.contextBudgetSafetyMarginTokens)
+    assertEquals(0.92, settingsGateway.lastSavedLlmConfig?.contextBudgetEffectiveInputPercent)
+  }
+
   private fun hostBridge(
     chatGateway: RecordingChatRuntimeGateway,
     localHostGateway: OpenCrayLocalHostGateway = UnsupportedLocalGateway(),
@@ -373,6 +422,10 @@ class OpenCrayFlutterHostBridgeTest {
       openAiPromptCacheRetention: String?,
       anthropicPromptCachingEnabled: Boolean?,
       anthropicPromptCacheTtl: String?,
+      contextBudgetPreset: String?,
+      contextBudgetReservedOutputTokens: Int?,
+      contextBudgetSafetyMarginTokens: Int?,
+      contextBudgetEffectiveInputPercent: Double?,
     ): Map<String, Any?> = throw UnsupportedOperationException()
 
     override fun saveCustomLlmProvider(
@@ -390,6 +443,10 @@ class OpenCrayFlutterHostBridgeTest {
       openAiPromptCacheRetention: String?,
       anthropicPromptCachingEnabled: Boolean?,
       anthropicPromptCacheTtl: String?,
+      contextBudgetPreset: String?,
+      contextBudgetReservedOutputTokens: Int?,
+      contextBudgetSafetyMarginTokens: Int?,
+      contextBudgetEffectiveInputPercent: Double?,
     ): Map<String, Any?> = throw UnsupportedOperationException()
 
     override fun validateLlmConfig(
@@ -449,6 +506,55 @@ class OpenCrayFlutterHostBridgeTest {
       subAgentContextProfileOverrides: Map<String, String>,
     ): Map<String, Any?> = throw UnsupportedOperationException()
   }
+
+  private class RecordingSettingsGateway : UnsupportedSettingsGateway() {
+    var lastSavedLlmConfig: SavedLlmConfigCall? = null
+      private set
+
+    override fun saveLlmConfig(
+      enabled: Boolean,
+      streamingEnabled: Boolean?,
+      providerId: String,
+      selectedProviderOptionId: String,
+      protocol: String,
+      providerName: String,
+      providerNotes: String,
+      baseUrl: String,
+      apiKey: String,
+      model: String,
+      reasoningEffort: String,
+      systemPrompt: String,
+      openAiPromptCacheKeyStrategy: String?,
+      openAiPromptCacheRetention: String?,
+      anthropicPromptCachingEnabled: Boolean?,
+      anthropicPromptCacheTtl: String?,
+      contextBudgetPreset: String?,
+      contextBudgetReservedOutputTokens: Int?,
+      contextBudgetSafetyMarginTokens: Int?,
+      contextBudgetEffectiveInputPercent: Double?,
+    ): Map<String, Any?> {
+      lastSavedLlmConfig = SavedLlmConfigCall(
+        enabled = enabled,
+        providerId = providerId,
+        selectedProviderOptionId = selectedProviderOptionId,
+        contextBudgetPreset = contextBudgetPreset,
+        contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
+        contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
+        contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
+      )
+      return mapOf("saved" to true)
+    }
+  }
+
+  private data class SavedLlmConfigCall(
+    val enabled: Boolean,
+    val providerId: String,
+    val selectedProviderOptionId: String,
+    val contextBudgetPreset: String?,
+    val contextBudgetReservedOutputTokens: Int?,
+    val contextBudgetSafetyMarginTokens: Int?,
+    val contextBudgetEffectiveInputPercent: Double?,
+  )
 
   private open class UnsupportedSkillsGateway : OpenCraySkillsGateway {
     override fun loadSkillsSnapshot(query: String, suggestedLimit: Int): Map<String, Any?> =
