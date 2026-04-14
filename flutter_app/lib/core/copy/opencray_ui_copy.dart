@@ -228,8 +228,11 @@ class OpenCrayUiCopy {
       : 'Installed $installedCount of $totalCount skills.';
 
   String get llmPageSubtitle => isChinese
-      ? '选择提供商、路由和响应默认值。'
-      : 'Select providers, routing, and response defaults.';
+      ? '选择 OpenCray 运行语言模型的位置。'
+      : 'Choose where OpenCray runs language models.';
+  String get llmModelSourceTitle => isChinese ? '模型来源' : 'Model source';
+  String get llmSourceCloudLabel => isChinese ? '云端' : 'Cloud';
+  String get llmSourceOnDeviceLabel => isChinese ? '端侧' : 'On-device';
   String get llmPrimaryProviderTitle =>
       isChinese ? '主要提供商' : 'Primary provider';
   String get llmPrimaryProviderCustomHelper =>
@@ -274,6 +277,63 @@ class OpenCrayUiCopy {
   String get llmGptModelDetected =>
       isChinese ? '已检测到 GPT 模型' : 'GPT model detected';
   String get llmPromptCacheTitle => isChinese ? '提示缓存' : 'Prompt cache';
+  String get llmOnDeviceModelTitle => isChinese ? '端侧模型' : 'On-device model';
+  String get llmSamplingLimitsTitle =>
+      isChinese ? '采样与限制' : 'Sampling & limits';
+  String get llmRuntimeTitle => isChinese ? '运行时' : 'Runtime';
+  String get llmOnDeviceLiteModeTitle =>
+      isChinese ? '端侧轻量模式' : 'On-device lite mode';
+  String get llmOnDeviceLiteModeBody => isChinese
+      ? '优先本地回复速度和温控。开启后会关闭工具、记忆召回和人格注入，并压缩提示词预算。'
+      : 'Prioritize on-device speed and thermals. When enabled, OpenCray disables tools, memory recall, and soul injection, and uses a tighter prompt budget.';
+  String get llmMaxContextWindowLabel =>
+      isChinese ? '最大上下文窗口' : 'Max context window';
+  String get llmMaxTokensLabel => isChinese ? '最大输出 token' : 'Max tokens';
+  String get llmTopKLabel => 'Top K';
+  String get llmTopPLabel => 'Top P';
+  String get llmTemperatureLabel => isChinese ? '温度' : 'Temperature';
+  String get llmAcceleratorLabel => isChinese ? '加速器' : 'Accelerator';
+  String get llmAcceleratorGpu => 'GPU';
+  String get llmAcceleratorCpu => 'CPU';
+  String get llmThinkingOff => isChinese ? 'Off' : 'Off';
+  String get llmThinkingOn => isChinese ? 'On' : 'On';
+  String get llmSelectedChip => isChinese ? '已选中' : 'Selected';
+  String get llmUseModelChip => isChinese ? '使用' : 'Use';
+  String get llmDownloadModelChip => isChinese ? '下载' : 'Download';
+  String get llmDownloadingChip => isChinese ? '下载中' : 'Downloading';
+  String get llmPreparingChip => isChinese ? '校验中' : 'Preparing';
+  String get llmRetryModelChip => isChinese ? '重试' : 'Retry';
+  String get llmCancelChip => isChinese ? '取消' : 'Cancel';
+  String get llmDeleteChip => isChinese ? '删除' : 'Delete';
+  String llmInstalledStatus(String sizeLabel) =>
+      isChinese ? '已安装 · $sizeLabel' : 'Installed · $sizeLabel';
+  String llmNotDownloadedStatus(String sizeLabel) =>
+      isChinese ? '未下载 · $sizeLabel' : 'Not downloaded · $sizeLabel';
+  String llmDownloadingStatus(
+    String progressLabel,
+    String sizeLabel, {
+    String? speedLabel,
+  }) {
+    final text = isChinese
+        ? '下载中 · $progressLabel / $sizeLabel'
+        : 'Downloading · $progressLabel / $sizeLabel';
+    if (speedLabel == null || speedLabel.trim().isEmpty) {
+      return text;
+    }
+    return '$text · $speedLabel';
+  }
+
+  String llmVerifyingStatus(String sizeLabel) =>
+      isChinese ? '校验中 · $sizeLabel' : 'Verifying · $sizeLabel';
+  String llmFailedStatus(String message) => isChinese
+      ? '失败 · ${message.isEmpty ? '请重试' : message}'
+      : 'Failed · ${message.isEmpty ? 'Retry required' : message}';
+  String llmModelDownloadStarted(String title) =>
+      isChinese ? '开始下载 $title。' : 'Started downloading $title.';
+  String llmModelDownloadCancelled(String title) =>
+      isChinese ? '已取消 $title 下载。' : 'Cancelled $title download.';
+  String llmModelDeleted(String title) =>
+      isChinese ? '已删除 $title。' : 'Deleted $title.';
   String get llmPromptCacheOpenAiHelper => isChinese
       ? '控制 OpenAI 路由的 prompt cache hints。仅在目标路由支持时发送。'
       : 'Controls OpenAI prompt cache hints. They are only sent when the target route supports them.';

@@ -216,6 +216,35 @@ class LiteLlmUserMemoryIntentInterpreterTest {
   }
 
   @Test
+  fun interpretReturnsUnavailableWhenOnDeviceModeIsSelected() {
+    val providerClient = RecordingProviderClient(
+      result = LiteLlmProviderResult.Success(outputText = """{"intents":[]}"""),
+    )
+    val interpreter = LiteLlmUserMemoryIntentInterpreter(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+          selectedOnDeviceModelId = "gemma-4-e2b-it",
+        )
+      },
+      providerClient = providerClient,
+    )
+
+    val result = interpreter.interpret(
+      UserMemoryIntentRequest(
+        sessionId = "session-on-device",
+        userInput = "以后都用 PowerShell。",
+      ),
+    )
+
+    val unavailable = result as UserMemoryIntentInterpretation.Unavailable
+    assertEquals(false, unavailable.allowHeuristicFallback)
+    assertTrue(unavailable.reason.orEmpty().contains("On-device LLM mode"))
+    assertTrue(providerClient.lastRequest == null)
+  }
+
+  @Test
   fun promptDocumentsAdaptivePreferenceCoverageWithRealWorldPhrasing() {
     val providerClient = RecordingProviderClient(
       result = LiteLlmProviderResult.Success(outputText = """{"intents":[]}"""),

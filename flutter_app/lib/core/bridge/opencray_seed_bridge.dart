@@ -107,6 +107,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
            const OpenCrayLlmConfigSnapshot(
              localeTag: 'en',
              enabled: false,
+             providerMode: 'cloud',
              providerId: 'openai',
              selectedProviderOptionId: 'openai',
              providerOptions: <OpenCrayLlmProviderOptionSnapshot>[
@@ -144,6 +145,35 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
              systemPrompt: '',
              helperText:
                  'Seed bridge stores LLM settings locally. Base URL and API key must be ready before chat can call a provider.',
+             onDeviceModels: <OpenCrayOnDeviceLlmModelOptionSnapshot>[
+               OpenCrayOnDeviceLlmModelOptionSnapshot(
+                 id: 'gemma-4-e2b-it',
+                 title: 'Gemma 4 E2B',
+                 subtitle: 'Instruction-tuned Gemma 4 E2B for LiteRT-LM.',
+                 sizeLabel: '2.58 GB',
+                 fileSizeBytes: 2583085056,
+                 installState: 'ready',
+                 downloadedBytes: 2583085056,
+                 downloadBytesPerSecond: 0,
+                 sha256Verified: true,
+               ),
+               OpenCrayOnDeviceLlmModelOptionSnapshot(
+                 id: 'gemma-4-e4b-it',
+                 title: 'Gemma 4 E4B',
+                 subtitle: 'Instruction-tuned Gemma 4 E4B for LiteRT-LM.',
+                 sizeLabel: '3.65 GB',
+                 fileSizeBytes: 3654467584,
+                 installState: 'not_downloaded',
+               ),
+             ],
+             selectedOnDeviceModelId: 'gemma-4-e2b-it',
+             onDeviceMaxContextWindow: 32768,
+             onDeviceMaxTokens: 4096,
+             onDeviceTopK: 40,
+             onDeviceTopP: 0.95,
+             onDeviceTemperature: 0.70,
+             onDeviceAccelerator: 'gpu',
+             onDeviceThinkingEnabled: false,
            ),
        _personalizationConfig =
            initialPersonalizationConfig ?? _buildSeedPersonalizationConfig(),
@@ -919,6 +949,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   Future<OpenCrayLlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
     bool? streamingEnabled,
+    String providerMode = 'cloud',
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -933,15 +964,30 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    String selectedOnDeviceModelId = 'gemma-4-e2b-it',
+    int onDeviceMaxContextWindow = 32768,
+    int onDeviceMaxTokens = 4096,
+    int onDeviceTopK = 40,
+    double onDeviceTopP = 0.95,
+    double onDeviceTemperature = 0.70,
+    String onDeviceAccelerator = 'gpu',
+    bool onDeviceThinkingEnabled = false,
+    bool onDeviceLiteModeEnabled = false,
   }) async {
-    final isConfigured =
-        baseUrl.trim().isNotEmpty &&
-        apiKey.trim().isNotEmpty &&
-        model.trim().isNotEmpty;
+    final isConfigured = providerMode == 'on_device_model'
+        ? _llmConfig.onDeviceModels.any(
+            (option) =>
+                option.id == selectedOnDeviceModelId &&
+                option.installState.trim().toLowerCase() == 'ready',
+          )
+        : (baseUrl.trim().isNotEmpty &&
+              apiKey.trim().isNotEmpty &&
+              model.trim().isNotEmpty);
     _llmConfig = OpenCrayLlmConfigSnapshot(
       localeTag: _llmConfig.localeTag,
       enabled: isConfigured,
       streamingEnabled: streamingEnabled ?? _llmConfig.streamingEnabled,
+      providerMode: providerMode,
       providerId: providerId,
       selectedProviderOptionId: selectedProviderOptionId,
       protocol: protocol,
@@ -964,6 +1010,16 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
           _llmConfig.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl:
           anthropicPromptCacheTtl ?? _llmConfig.anthropicPromptCacheTtl,
+      onDeviceModels: _llmConfig.onDeviceModels,
+      selectedOnDeviceModelId: selectedOnDeviceModelId,
+      onDeviceMaxContextWindow: onDeviceMaxContextWindow,
+      onDeviceMaxTokens: onDeviceMaxTokens,
+      onDeviceTopK: onDeviceTopK,
+      onDeviceTopP: onDeviceTopP,
+      onDeviceTemperature: onDeviceTemperature,
+      onDeviceAccelerator: onDeviceAccelerator,
+      onDeviceThinkingEnabled: onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled: onDeviceLiteModeEnabled,
     );
     return _llmConfig;
   }
@@ -1015,6 +1071,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
           apiKey.trim().isNotEmpty &&
           model.trim().isNotEmpty,
       streamingEnabled: streamingEnabled ?? _llmConfig.streamingEnabled,
+      providerMode: 'cloud',
       providerId: 'custom',
       selectedProviderOptionId: providerOptionId,
       protocol: savedOption.protocol,
@@ -1037,6 +1094,15 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
           _llmConfig.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl:
           anthropicPromptCacheTtl ?? _llmConfig.anthropicPromptCacheTtl,
+      onDeviceModels: _llmConfig.onDeviceModels,
+      selectedOnDeviceModelId: _llmConfig.selectedOnDeviceModelId,
+      onDeviceMaxContextWindow: _llmConfig.onDeviceMaxContextWindow,
+      onDeviceMaxTokens: _llmConfig.onDeviceMaxTokens,
+      onDeviceTopK: _llmConfig.onDeviceTopK,
+      onDeviceTopP: _llmConfig.onDeviceTopP,
+      onDeviceTemperature: _llmConfig.onDeviceTemperature,
+      onDeviceAccelerator: _llmConfig.onDeviceAccelerator,
+      onDeviceThinkingEnabled: _llmConfig.onDeviceThinkingEnabled,
     );
     return _llmConfig;
   }
@@ -1053,6 +1119,67 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     isSuccess: false,
     message: 'Seed bridge does not support live model validation.',
   );
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> downloadOnDeviceLlmModel(
+    String modelId,
+  ) async {
+    _llmConfig = _llmConfig.copyWith(
+      onDeviceModels: _llmConfig.onDeviceModels
+          .map(
+            (option) => option.id == modelId
+                ? OpenCrayOnDeviceLlmModelOptionSnapshot(
+                    id: option.id,
+                    title: option.title,
+                    subtitle: option.subtitle,
+                    sizeLabel: option.sizeLabel,
+                    fileSizeBytes: option.fileSizeBytes,
+                    installState: 'ready',
+                    downloadedBytes: option.fileSizeBytes,
+                    downloadBytesPerSecond: 0,
+                    sha256Verified: true,
+                    isSelected: option.isSelected,
+                    lastError: null,
+                  )
+                : option,
+          )
+          .toList(growable: false),
+    );
+    return _llmConfig;
+  }
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> cancelOnDeviceLlmModelDownload(
+    String modelId,
+  ) async => _llmConfig;
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> deleteOnDeviceLlmModel(
+    String modelId,
+  ) async {
+    _llmConfig = _llmConfig.copyWith(
+      onDeviceModels: _llmConfig.onDeviceModels
+          .map(
+            (option) => option.id == modelId
+                ? OpenCrayOnDeviceLlmModelOptionSnapshot(
+                    id: option.id,
+                    title: option.title,
+                    subtitle: option.subtitle,
+                    sizeLabel: option.sizeLabel,
+                    fileSizeBytes: option.fileSizeBytes,
+                    installState: 'not_downloaded',
+                    downloadedBytes: 0,
+                    downloadBytesPerSecond: 0,
+                    sha256Verified: false,
+                    isSelected: option.isSelected,
+                    lastError: null,
+                  )
+                : option,
+          )
+          .toList(growable: false),
+    );
+    return _llmConfig;
+  }
 
   @override
   Future<OpenCrayPersonalizationConfigSnapshot>

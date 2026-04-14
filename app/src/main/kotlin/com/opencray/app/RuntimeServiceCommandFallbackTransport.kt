@@ -323,6 +323,7 @@ internal class LoopbackHttpRuntimeServiceCommandFallbackTransport(
         body = JSONObject()
           .put("enabled", command.enabled)
           .putIfNotNull("streamingEnabled", command.streamingEnabled)
+          .put("providerMode", command.providerMode)
           .put("providerId", command.providerId)
           .put("selectedProviderOptionId", command.selectedProviderOptionId)
           .put("protocol", command.protocol)
@@ -336,7 +337,29 @@ internal class LoopbackHttpRuntimeServiceCommandFallbackTransport(
           .putIfNotNull("openAiPromptCacheKeyStrategy", command.openAiPromptCacheKeyStrategy)
           .putIfNotNull("openAiPromptCacheRetention", command.openAiPromptCacheRetention)
           .putIfNotNull("anthropicPromptCachingEnabled", command.anthropicPromptCachingEnabled)
-          .putIfNotNull("anthropicPromptCacheTtl", command.anthropicPromptCacheTtl),
+          .putIfNotNull("anthropicPromptCacheTtl", command.anthropicPromptCacheTtl)
+          .putIfNotNull("contextBudgetPreset", command.contextBudgetPreset)
+          .putIfNotNull(
+            "contextBudgetReservedOutputTokens",
+            command.contextBudgetReservedOutputTokens,
+          )
+          .putIfNotNull(
+            "contextBudgetSafetyMarginTokens",
+            command.contextBudgetSafetyMarginTokens,
+          )
+          .putIfNotNull(
+            "contextBudgetEffectiveInputPercent",
+            command.contextBudgetEffectiveInputPercent,
+          )
+          .put("selectedOnDeviceModelId", command.selectedOnDeviceModelId)
+          .put("onDeviceMaxContextWindow", command.onDeviceMaxContextWindow)
+          .put("onDeviceMaxTokens", command.onDeviceMaxTokens)
+          .put("onDeviceTopK", command.onDeviceTopK)
+          .put("onDeviceTopP", command.onDeviceTopP)
+          .put("onDeviceTemperature", command.onDeviceTemperature)
+          .put("onDeviceAccelerator", command.onDeviceAccelerator)
+          .put("onDeviceThinkingEnabled", command.onDeviceThinkingEnabled)
+          .put("onDeviceLiteModeEnabled", command.onDeviceLiteModeEnabled),
       ),
     )
 
@@ -371,6 +394,27 @@ internal class LoopbackHttpRuntimeServiceCommandFallbackTransport(
           .put("apiKey", command.apiKey)
           .put("model", command.model)
           .put("reasoningEffort", command.reasoningEffort),
+      ),
+    )
+
+    is OpenCraySettingsWriteCommand.DownloadOnDeviceLlmModel -> payloadResult(
+      requestClient.postObject(
+        path = "v1/download_on_device_llm_model",
+        body = JSONObject().put("modelId", command.modelId),
+      ),
+    )
+
+    is OpenCraySettingsWriteCommand.CancelOnDeviceLlmModelDownload -> payloadResult(
+      requestClient.postObject(
+        path = "v1/cancel_on_device_llm_model_download",
+        body = JSONObject().put("modelId", command.modelId),
+      ),
+    )
+
+    is OpenCraySettingsWriteCommand.DeleteOnDeviceLlmModel -> payloadResult(
+      requestClient.postObject(
+        path = "v1/delete_on_device_llm_model",
+        body = JSONObject().put("modelId", command.modelId),
       ),
     )
 
@@ -1081,6 +1125,7 @@ private class LoopbackHttpOpenCraySettingsGateway(
   override fun saveLlmConfig(
     enabled: Boolean,
     streamingEnabled: Boolean?,
+    providerMode: String,
     providerId: String,
     selectedProviderOptionId: String,
     protocol: String,
@@ -1099,10 +1144,20 @@ private class LoopbackHttpOpenCraySettingsGateway(
     contextBudgetReservedOutputTokens: Int?,
     contextBudgetSafetyMarginTokens: Int?,
     contextBudgetEffectiveInputPercent: Double?,
+    selectedOnDeviceModelId: String,
+    onDeviceMaxContextWindow: Int,
+    onDeviceMaxTokens: Int,
+    onDeviceTopK: Int,
+    onDeviceTopP: Double,
+    onDeviceTemperature: Double,
+    onDeviceAccelerator: String,
+    onDeviceThinkingEnabled: Boolean,
+    onDeviceLiteModeEnabled: Boolean,
   ): Map<String, Any?> = commandTransport.requireSettingsPayload(
     OpenCraySettingsWriteCommand.SaveLlmConfig(
       enabled = enabled,
       streamingEnabled = streamingEnabled,
+      providerMode = providerMode,
       providerId = providerId,
       selectedProviderOptionId = selectedProviderOptionId,
       protocol = protocol,
@@ -1121,6 +1176,15 @@ private class LoopbackHttpOpenCraySettingsGateway(
       contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
       contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
       contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
+      selectedOnDeviceModelId = selectedOnDeviceModelId,
+      onDeviceMaxContextWindow = onDeviceMaxContextWindow,
+      onDeviceMaxTokens = onDeviceMaxTokens,
+      onDeviceTopK = onDeviceTopK,
+      onDeviceTopP = onDeviceTopP,
+      onDeviceTemperature = onDeviceTemperature,
+      onDeviceAccelerator = onDeviceAccelerator,
+      onDeviceThinkingEnabled = onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled = onDeviceLiteModeEnabled,
     ),
   )
 
@@ -1183,6 +1247,21 @@ private class LoopbackHttpOpenCraySettingsGateway(
       reasoningEffort = reasoningEffort,
     ),
   )
+
+  override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+    commandTransport.requireSettingsPayload(
+      OpenCraySettingsWriteCommand.DownloadOnDeviceLlmModel(modelId),
+    )
+
+  override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> =
+    commandTransport.requireSettingsPayload(
+      OpenCraySettingsWriteCommand.CancelOnDeviceLlmModelDownload(modelId),
+    )
+
+  override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+    commandTransport.requireSettingsPayload(
+      OpenCraySettingsWriteCommand.DeleteOnDeviceLlmModel(modelId),
+    )
 
   override fun loadPersonalizationConfig(): Map<String, Any?> =
     requestClient.getObject(path = "v1/personalization_config")

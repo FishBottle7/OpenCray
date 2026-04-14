@@ -45,6 +45,7 @@ abstract interface class SettingsFacade {
   Future<LlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
     bool? streamingEnabled,
+    String providerMode = 'cloud',
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -59,6 +60,15 @@ abstract interface class SettingsFacade {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    String selectedOnDeviceModelId = 'gemma-4-e2b-it',
+    int onDeviceMaxContextWindow = 32768,
+    int onDeviceMaxTokens = 4096,
+    int onDeviceTopK = 40,
+    double onDeviceTopP = 0.95,
+    double onDeviceTemperature = 0.70,
+    String onDeviceAccelerator = 'gpu',
+    bool onDeviceThinkingEnabled = false,
+    bool onDeviceLiteModeEnabled = false,
   });
 
   Future<LlmConfigSnapshot> saveCustomLlmProvider({
@@ -86,6 +96,12 @@ abstract interface class SettingsFacade {
     required String model,
     required String reasoningEffort,
   });
+
+  Future<LlmConfigSnapshot> downloadOnDeviceLlmModel(String modelId);
+
+  Future<LlmConfigSnapshot> cancelOnDeviceLlmModelDownload(String modelId);
+
+  Future<LlmConfigSnapshot> deleteOnDeviceLlmModel(String modelId);
 
   Future<PersonalizationConfigSnapshot> loadPersonalizationConfig();
 

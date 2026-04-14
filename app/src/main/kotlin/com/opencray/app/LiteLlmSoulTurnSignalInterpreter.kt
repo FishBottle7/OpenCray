@@ -43,6 +43,11 @@ internal class LiteLlmSoulTurnSignalInterpreter(
         reason = "LLM settings are not configured for soul turn signal interpretation.",
       )
     }
+    if (settings.isOnDeviceProviderMode()) {
+      return SoulTurnSemanticSignalInterpretation.Unavailable(
+        reason = "On-device LLM mode is not available for soul turn signal interpretation yet.",
+      )
+    }
 
     val gateway = gatewayFactory(
       buildRouting(settings),

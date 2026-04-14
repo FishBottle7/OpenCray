@@ -6,14 +6,21 @@ import com.opencray.app.LlmModelCapabilityRegistry
 import com.opencray.app.LlmProviderCatalog
 import com.opencray.app.LlmProviderPreset
 import com.opencray.app.LlmProviderProtocols
+import com.opencray.app.LlmProviderModes
 import com.opencray.app.LlmSettingsState
 import com.opencray.app.LlmSettingsStore
+import com.opencray.app.InMemoryLiteRtOnDeviceModelInstallStore
+import com.opencray.app.LiteRtOnDeviceModelDownloadManager
+import com.opencray.app.LiteRtOnDeviceModelInstallStore
 import com.opencray.app.LocaleSettingsStore
+import com.opencray.app.OnDeviceLlmCatalog
+import com.opencray.app.OnDeviceLlmDownloadStates
 import com.opencray.app.OpenAiCompatibleLiteLlmProviderClient
 import com.opencray.app.OpenCrayLocaleManager
 import com.opencray.app.OpenCrayUserAgent
 import com.opencray.app.SavedCustomLlmProvider
 import com.opencray.app.effectiveLlmRouteMetadata
+import com.opencray.app.isOperationallyConfigured
 import com.opencray.app.recommendedValidationProviderRouteTimeoutMs
 import com.opencray.llm.DefaultLiteLlmGateway
 import com.opencray.llm.InMemoryLiteLlmRoutingSettingsStore
@@ -52,10 +59,25 @@ data class LlmProviderOptionSnapshot(
   val isCustom: Boolean,
 )
 
+data class OnDeviceLlmModelOptionSnapshot(
+  val id: String,
+  val title: String,
+  val subtitle: String,
+  val sizeLabel: String,
+  val fileSizeBytes: Long,
+  val installState: String,
+  val downloadedBytes: Long = 0L,
+  val downloadBytesPerSecond: Long = 0L,
+  val sha256Verified: Boolean = false,
+  val isSelected: Boolean = false,
+  val lastError: String? = null,
+)
+
 data class LlmConfigSnapshot(
   val localeTag: String,
   val enabled: Boolean,
   val streamingEnabled: Boolean = LlmSettingsState.DEFAULT_STREAMING_ENABLED,
+  val providerMode: String = LlmProviderModes.CLOUD,
   val providerId: String,
   val selectedProviderOptionId: String,
   val protocol: String,
@@ -75,6 +97,16 @@ data class LlmConfigSnapshot(
   val contextBudgetReservedOutputTokens: Int? = null,
   val contextBudgetSafetyMarginTokens: Int? = null,
   val contextBudgetEffectiveInputPercent: Double? = null,
+  val onDeviceModels: List<OnDeviceLlmModelOptionSnapshot> = emptyList(),
+  val selectedOnDeviceModelId: String = LlmSettingsState.DEFAULT_ON_DEVICE_MODEL_ID,
+  val onDeviceMaxContextWindow: Int = LlmSettingsState.DEFAULT_ON_DEVICE_MAX_CONTEXT_WINDOW,
+  val onDeviceMaxTokens: Int = LlmSettingsState.DEFAULT_ON_DEVICE_MAX_TOKENS,
+  val onDeviceTopK: Int = LlmSettingsState.DEFAULT_ON_DEVICE_TOP_K,
+  val onDeviceTopP: Double = LlmSettingsState.DEFAULT_ON_DEVICE_TOP_P,
+  val onDeviceTemperature: Double = LlmSettingsState.DEFAULT_ON_DEVICE_TEMPERATURE,
+  val onDeviceAccelerator: String = LlmSettingsState.DEFAULT_ON_DEVICE_ACCELERATOR,
+  val onDeviceThinkingEnabled: Boolean = LlmSettingsState.DEFAULT_ON_DEVICE_THINKING_ENABLED,
+  val onDeviceLiteModeEnabled: Boolean = LlmSettingsState.DEFAULT_ON_DEVICE_LITE_MODE_ENABLED,
   val helperText: String,
   val agentCapability: LlmAgentCapabilitySnapshot = LlmAgentCapabilitySnapshot(),
 )
@@ -82,6 +114,7 @@ data class LlmConfigSnapshot(
 data class SaveLlmConfigRequest(
   val enabled: Boolean,
   val streamingEnabled: Boolean? = null,
+  val providerMode: String = LlmProviderModes.CLOUD,
   val providerId: String,
   val selectedProviderOptionId: String,
   val protocol: String,
@@ -100,6 +133,15 @@ data class SaveLlmConfigRequest(
   val contextBudgetReservedOutputTokens: Int? = null,
   val contextBudgetSafetyMarginTokens: Int? = null,
   val contextBudgetEffectiveInputPercent: Double? = null,
+  val selectedOnDeviceModelId: String = LlmSettingsState.DEFAULT_ON_DEVICE_MODEL_ID,
+  val onDeviceMaxContextWindow: Int = LlmSettingsState.DEFAULT_ON_DEVICE_MAX_CONTEXT_WINDOW,
+  val onDeviceMaxTokens: Int = LlmSettingsState.DEFAULT_ON_DEVICE_MAX_TOKENS,
+  val onDeviceTopK: Int = LlmSettingsState.DEFAULT_ON_DEVICE_TOP_K,
+  val onDeviceTopP: Double = LlmSettingsState.DEFAULT_ON_DEVICE_TOP_P,
+  val onDeviceTemperature: Double = LlmSettingsState.DEFAULT_ON_DEVICE_TEMPERATURE,
+  val onDeviceAccelerator: String = LlmSettingsState.DEFAULT_ON_DEVICE_ACCELERATOR,
+  val onDeviceThinkingEnabled: Boolean = LlmSettingsState.DEFAULT_ON_DEVICE_THINKING_ENABLED,
+  val onDeviceLiteModeEnabled: Boolean = LlmSettingsState.DEFAULT_ON_DEVICE_LITE_MODE_ENABLED,
 )
 
 data class SaveCustomLlmProviderRequest(
@@ -169,10 +211,18 @@ interface LlmConfigFacade {
   fun saveCustomProvider(request: SaveCustomLlmProviderRequest): LlmConfigSnapshot
 
   fun validate(request: ValidateLlmConfigRequest): LlmValidationResult
+
+  fun downloadOnDeviceModel(modelId: String): LlmConfigSnapshot
+
+  fun cancelOnDeviceModelDownload(modelId: String): LlmConfigSnapshot
+
+  fun deleteOnDeviceModel(modelId: String): LlmConfigSnapshot
 }
 
 internal class LocalLlmConfigFacade private constructor(
   private val llmSettingsStore: LlmSettingsStore,
+  private val onDeviceModelInstallStore: LiteRtOnDeviceModelInstallStore,
+  private val onDeviceModelDownloadManager: LiteRtOnDeviceModelDownloadManager,
   private val providerClient: LiteLlmProviderClient,
   private val strings: LlmConfigStrings,
 ) : LlmConfigFacade {
@@ -444,9 +494,25 @@ internal class LocalLlmConfigFacade private constructor(
     }
   }
 
+  override fun downloadOnDeviceModel(modelId: String): LlmConfigSnapshot {
+    onDeviceModelDownloadManager.download(modelId)
+    return snapshotFor(llmSettingsStore.load())
+  }
+
+  override fun cancelOnDeviceModelDownload(modelId: String): LlmConfigSnapshot {
+    onDeviceModelDownloadManager.cancel(modelId)
+    return snapshotFor(llmSettingsStore.load())
+  }
+
+  override fun deleteOnDeviceModel(modelId: String): LlmConfigSnapshot {
+    onDeviceModelDownloadManager.delete(modelId)
+    return snapshotFor(llmSettingsStore.load())
+  }
+
   private fun snapshotFor(state: LlmSettingsState): LlmConfigSnapshot {
     val sanitized = state.sanitized()
     val providerOptions = providerOptions()
+    val enabled = sanitized.isOperationallyConfigured(onDeviceModelInstallStore)
     val selectedProviderOptionId = llmSettingsStore.loadSelectedProviderOptionId(
       defaultProviderId = sanitized.providerId,
     ).takeIf { selectedId ->
@@ -454,8 +520,9 @@ internal class LocalLlmConfigFacade private constructor(
     } ?: sanitized.providerId
     return LlmConfigSnapshot(
       localeTag = strings.localeTag,
-      enabled = sanitized.enabled,
+      enabled = enabled,
       streamingEnabled = sanitized.streamingEnabled,
+      providerMode = sanitized.providerMode,
       providerId = sanitized.providerId,
       selectedProviderOptionId = selectedProviderOptionId,
       protocol = sanitized.protocol,
@@ -486,6 +553,16 @@ internal class LocalLlmConfigFacade private constructor(
       contextBudgetReservedOutputTokens = sanitized.contextBudgetReservedOutputTokens,
       contextBudgetSafetyMarginTokens = sanitized.contextBudgetSafetyMarginTokens,
       contextBudgetEffectiveInputPercent = sanitized.contextBudgetEffectiveInputPercent,
+      onDeviceModels = onDeviceModels(selectedModelId = sanitized.selectedOnDeviceModelId),
+      selectedOnDeviceModelId = sanitized.selectedOnDeviceModelId,
+      onDeviceMaxContextWindow = sanitized.onDeviceMaxContextWindow,
+      onDeviceMaxTokens = sanitized.onDeviceMaxTokens,
+      onDeviceTopK = sanitized.onDeviceTopK,
+      onDeviceTopP = sanitized.onDeviceTopP,
+      onDeviceTemperature = sanitized.onDeviceTemperature,
+      onDeviceAccelerator = sanitized.onDeviceAccelerator,
+      onDeviceThinkingEnabled = sanitized.onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled = sanitized.onDeviceLiteModeEnabled,
       helperText = strings.helperText,
       agentCapability = sanitized.agentCapability,
     )
@@ -494,6 +571,40 @@ internal class LocalLlmConfigFacade private constructor(
   private fun providerOptions(): List<LlmProviderOptionSnapshot> =
     LlmProviderCatalog.presets.map(::toSnapshot) +
       llmSettingsStore.loadSavedCustomProviders().map(::toSavedCustomSnapshot)
+
+  private fun onDeviceModels(selectedModelId: String): List<OnDeviceLlmModelOptionSnapshot> {
+    val installRecords = onDeviceModelInstallStore.loadAll().associateBy { record -> record.modelId }
+    return OnDeviceLlmCatalog.entries().map { entry ->
+      val installRecord = installRecords[entry.id]
+      val localFilePath = installRecord?.localFilePath
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+      val localFileExists = localFilePath?.let { path ->
+        runCatching { java.io.File(path).isFile }.getOrDefault(false)
+      } == true
+      val installState = when {
+        installRecord == null -> OnDeviceLlmDownloadStates.NOT_DOWNLOADED
+        installRecord.installState == OnDeviceLlmDownloadStates.READY && !localFileExists ->
+          OnDeviceLlmDownloadStates.NOT_DOWNLOADED
+
+        else -> installRecord.installState
+      }
+      OnDeviceLlmModelOptionSnapshot(
+        id = entry.id,
+        title = entry.title,
+        subtitle = entry.description,
+        sizeLabel = entry.sizeLabel,
+        fileSizeBytes = entry.fileSizeBytes,
+        installState = installState,
+        downloadedBytes = installRecord?.downloadedBytes?.coerceAtLeast(0L) ?: 0L,
+        downloadBytesPerSecond =
+          installRecord?.downloadBytesPerSecond?.coerceAtLeast(0L) ?: 0L,
+        sha256Verified = installRecord?.sha256Verified == true,
+        isSelected = entry.id == selectedModelId,
+        lastError = installRecord?.lastError,
+      )
+    }
+  }
 
   private fun toSnapshot(preset: LlmProviderPreset): LlmProviderOptionSnapshot =
     LlmProviderOptionSnapshot(
@@ -591,20 +702,29 @@ internal class LocalLlmConfigFacade private constructor(
     val persisted = llmSettingsStore.load()
     val providerPreset = LlmProviderCatalog.presetById(request.providerId)
       ?: throw IllegalArgumentException("Unsupported provider '${request.providerId}'.")
+    val providerMode = LlmProviderModes.normalize(request.providerMode)
     val protocol = resolvedProtocol(
       providerPreset = providerPreset,
       requestedProtocol = request.protocol,
     )
-    val baseUrl = request.baseUrl.trim().ifBlank {
-      providerPreset.defaultBaseUrl
+    val baseUrl = if (providerMode == LlmProviderModes.CLOUD) {
+      request.baseUrl.trim().ifBlank {
+        providerPreset.defaultBaseUrl
+      }
+    } else {
+      request.baseUrl.trim()
     }
-    val model = request.model.trim().ifBlank {
-      providerPreset.defaultModel
+    val model = if (providerMode == LlmProviderModes.CLOUD) {
+      request.model.trim().ifBlank {
+        providerPreset.defaultModel
+      }
+    } else {
+      request.model.trim()
     }
-    if (request.enabled && baseUrl.isBlank()) {
+    if (providerMode == LlmProviderModes.CLOUD && request.enabled && baseUrl.isBlank()) {
       throw IllegalArgumentException(strings.baseUrlRequiredEnabled)
     }
-    if (baseUrl.isNotBlank()) {
+    if (providerMode == LlmProviderModes.CLOUD && baseUrl.isNotBlank()) {
       requireValidBaseUrl(baseUrl)
     }
     val defaultProviderName = if (providerPreset.isCustom) {
@@ -628,6 +748,7 @@ internal class LocalLlmConfigFacade private constructor(
     return LlmSettingsState(
       enabled = request.enabled,
       streamingEnabled = request.streamingEnabled ?: persisted.streamingEnabled,
+      providerMode = providerMode,
       providerId = providerPreset.id,
       protocol = protocol,
       providerName = request.providerName.trim().ifBlank {
@@ -649,6 +770,15 @@ internal class LocalLlmConfigFacade private constructor(
       contextBudgetReservedOutputTokens = contextBudgetSettings.contextBudgetReservedOutputTokens,
       contextBudgetSafetyMarginTokens = contextBudgetSettings.contextBudgetSafetyMarginTokens,
       contextBudgetEffectiveInputPercent = contextBudgetSettings.contextBudgetEffectiveInputPercent,
+      selectedOnDeviceModelId = request.selectedOnDeviceModelId,
+      onDeviceMaxContextWindow = request.onDeviceMaxContextWindow,
+      onDeviceMaxTokens = request.onDeviceMaxTokens,
+      onDeviceTopK = request.onDeviceTopK,
+      onDeviceTopP = request.onDeviceTopP,
+      onDeviceTemperature = request.onDeviceTemperature,
+      onDeviceAccelerator = request.onDeviceAccelerator,
+      onDeviceThinkingEnabled = request.onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled = request.onDeviceLiteModeEnabled,
       agentCapability = llmSettingsStore.loadAgentCapability(
         protocol = protocol,
         baseUrl = baseUrl,
@@ -1142,8 +1272,11 @@ internal class LocalLlmConfigFacade private constructor(
     fun fromContext(context: Context): LlmConfigFacade {
       val localizedContext = OpenCrayLocaleManager.wrap(context.applicationContext)
       val localeTag = LocaleSettingsStore.fromContext(context.applicationContext).loadLanguage().tag
+      val installStore = LiteRtOnDeviceModelInstallStore.fromContext(context.applicationContext)
       return LocalLlmConfigFacade(
         llmSettingsStore = LlmSettingsStore.fromContext(context.applicationContext),
+        onDeviceModelInstallStore = installStore,
+        onDeviceModelDownloadManager = LiteRtOnDeviceModelDownloadManager.fromContext(context.applicationContext),
         providerClient = OpenAiCompatibleLiteLlmProviderClient(
           userAgent = OpenCrayUserAgent.fromContext(context.applicationContext),
         ),
@@ -1154,8 +1287,15 @@ internal class LocalLlmConfigFacade private constructor(
     internal fun createForTest(
       llmSettingsStore: LlmSettingsStore,
       providerClient: LiteLlmProviderClient,
+      onDeviceModelInstallStore: LiteRtOnDeviceModelInstallStore = InMemoryLiteRtOnDeviceModelInstallStore(),
+      onDeviceModelDownloadManager: LiteRtOnDeviceModelDownloadManager = LiteRtOnDeviceModelDownloadManager(
+        filesDir = java.io.File("."),
+        installStore = onDeviceModelInstallStore,
+      ),
     ): LlmConfigFacade = LocalLlmConfigFacade(
       llmSettingsStore = llmSettingsStore,
+      onDeviceModelInstallStore = onDeviceModelInstallStore,
+      onDeviceModelDownloadManager = onDeviceModelDownloadManager,
       providerClient = providerClient,
       strings = defaultStrings(),
     )
@@ -1270,6 +1410,15 @@ internal object EmptyLlmConfigFacade : LlmConfigFacade {
       isSuccess = false,
       message = "LLM settings host support is unavailable.",
     )
+
+  override fun downloadOnDeviceModel(modelId: String): LlmConfigSnapshot =
+    throw IllegalStateException("LLM settings host support is unavailable.")
+
+  override fun cancelOnDeviceModelDownload(modelId: String): LlmConfigSnapshot =
+    throw IllegalStateException("LLM settings host support is unavailable.")
+
+  override fun deleteOnDeviceModel(modelId: String): LlmConfigSnapshot =
+    throw IllegalStateException("LLM settings host support is unavailable.")
 }
 
 private data class CapabilityProbeOutcome(

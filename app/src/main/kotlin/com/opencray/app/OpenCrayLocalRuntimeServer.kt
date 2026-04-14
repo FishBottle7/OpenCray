@@ -302,6 +302,7 @@ internal class OpenCrayLocalRuntimeServer(
         } else {
           null
         },
+        providerMode = body.optString("providerMode", LlmProviderModes.CLOUD),
         providerId = body.optString("providerId"),
         selectedProviderOptionId = body.optString("selectedProviderOptionId"),
         protocol = body.optString("protocol"),
@@ -346,6 +347,42 @@ internal class OpenCrayLocalRuntimeServer(
         contextBudgetEffectiveInputPercent =
           body.takeIf { !it.isNull("contextBudgetEffectiveInputPercent") }
             ?.optDouble("contextBudgetEffectiveInputPercent"),
+        selectedOnDeviceModelId = body.optString(
+          "selectedOnDeviceModelId",
+          LlmSettingsState.DEFAULT_ON_DEVICE_MODEL_ID,
+        ),
+        onDeviceMaxContextWindow = body.optInt(
+          "onDeviceMaxContextWindow",
+          LlmSettingsState.DEFAULT_ON_DEVICE_MAX_CONTEXT_WINDOW,
+        ),
+        onDeviceMaxTokens = body.optInt(
+          "onDeviceMaxTokens",
+          LlmSettingsState.DEFAULT_ON_DEVICE_MAX_TOKENS,
+        ),
+        onDeviceTopK = body.optInt(
+          "onDeviceTopK",
+          LlmSettingsState.DEFAULT_ON_DEVICE_TOP_K,
+        ),
+        onDeviceTopP = body.optDouble(
+          "onDeviceTopP",
+          LlmSettingsState.DEFAULT_ON_DEVICE_TOP_P,
+        ),
+        onDeviceTemperature = body.optDouble(
+          "onDeviceTemperature",
+          LlmSettingsState.DEFAULT_ON_DEVICE_TEMPERATURE,
+        ),
+        onDeviceAccelerator = body.optString(
+          "onDeviceAccelerator",
+          LlmSettingsState.DEFAULT_ON_DEVICE_ACCELERATOR,
+        ),
+        onDeviceThinkingEnabled = body.optBoolean(
+          "onDeviceThinkingEnabled",
+          LlmSettingsState.DEFAULT_ON_DEVICE_THINKING_ENABLED,
+        ),
+        onDeviceLiteModeEnabled = body.optBoolean(
+          "onDeviceLiteModeEnabled",
+          LlmSettingsState.DEFAULT_ON_DEVICE_LITE_MODE_ENABLED,
+        ),
       )
       "POST" to "/v1/save_custom_llm_provider" -> settingsGateway.saveCustomLlmProvider(
         selectedProviderOptionId = body.optString("selectedProviderOptionId"),
@@ -404,6 +441,15 @@ internal class OpenCrayLocalRuntimeServer(
         apiKey = body.optString("apiKey"),
         model = body.optString("model"),
         reasoningEffort = body.optString("reasoningEffort"),
+      )
+      "POST" to "/v1/download_on_device_llm_model" -> settingsGateway.downloadOnDeviceLlmModel(
+        modelId = body.optString("modelId"),
+      )
+      "POST" to "/v1/cancel_on_device_llm_model_download" -> settingsGateway.cancelOnDeviceLlmModelDownload(
+        modelId = body.optString("modelId"),
+      )
+      "POST" to "/v1/delete_on_device_llm_model" -> settingsGateway.deleteOnDeviceLlmModel(
+        modelId = body.optString("modelId"),
       )
       "GET" to "/v1/personalization_config" -> settingsGateway.loadPersonalizationConfig()
       "POST" to "/v1/save_personalization_config" -> settingsGateway.savePersonalizationConfig(

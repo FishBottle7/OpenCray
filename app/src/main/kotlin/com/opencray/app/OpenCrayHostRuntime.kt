@@ -9,6 +9,7 @@ import com.opencray.app.facade.llm.LlmConfigSnapshot
 import com.opencray.app.facade.llm.LlmProviderOptionSnapshot
 import com.opencray.app.facade.llm.LlmValidationResult
 import com.opencray.app.facade.llm.LocalLlmConfigFacade
+import com.opencray.app.facade.llm.OnDeviceLlmModelOptionSnapshot
 import com.opencray.app.facade.llm.SaveCustomLlmProviderRequest
 import com.opencray.app.facade.llm.SaveLlmConfigRequest
 import com.opencray.app.facade.llm.ValidateLlmConfigRequest
@@ -216,6 +217,7 @@ internal class OpenCrayHostRuntime private constructor(
   private val terminalReplayRepairer: (String, List<AgentRunSnapshot>) -> Unit = { _, _ -> },
   private var strings: HostRuntimeStrings,
   private val mainThreadPoster: MainThreadPoster,
+  private val providedOnDeviceLlmWarmupController: OnDeviceLlmWarmupController? = null,
   private val localHostGateway: OpenCrayLocalHostGateway = DefaultOpenCrayLocalHostGateway(
     appContext = appContext,
     workspaceRootProvider = workspaceRootProvider,
@@ -411,6 +413,8 @@ internal class OpenCrayHostRuntime private constructor(
   private val skillsListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val chatListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val chatRuntimeListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  private val onDeviceLlmWarmupController: OnDeviceLlmWarmupController =
+    providedOnDeviceLlmWarmupController ?: defaultOnDeviceLlmWarmupController()
   private val voiceMetadataBackfillInFlight = ConcurrentHashMap.newKeySet<String>()
 
   private fun resolvedSandboxSettingsRepository(): SandboxSettingsRepository =
@@ -672,6 +676,7 @@ internal class OpenCrayHostRuntime private constructor(
     if (resumeActiveSessionOnInit) {
       ensureActiveSessionResumed()
     }
+    scheduleStartupOnDeviceWarmup()
   }
 
   override fun loadShellSnapshot(): Map<String, Any?> = buildMap {
@@ -835,6 +840,7 @@ internal class OpenCrayHostRuntime private constructor(
   override fun saveLlmConfig(
     enabled: Boolean,
     streamingEnabled: Boolean?,
+    providerMode: String,
     providerId: String,
     selectedProviderOptionId: String,
     protocol: String,
@@ -853,12 +859,22 @@ internal class OpenCrayHostRuntime private constructor(
     contextBudgetReservedOutputTokens: Int?,
     contextBudgetSafetyMarginTokens: Int?,
     contextBudgetEffectiveInputPercent: Double?,
+    selectedOnDeviceModelId: String,
+    onDeviceMaxContextWindow: Int,
+    onDeviceMaxTokens: Int,
+    onDeviceTopK: Int,
+    onDeviceTopP: Double,
+    onDeviceTemperature: Double,
+    onDeviceAccelerator: String,
+    onDeviceThinkingEnabled: Boolean,
+    onDeviceLiteModeEnabled: Boolean,
   ): Map<String, Any?> {
     val snapshot = synchronized(lock) {
       llmConfigFacade.save(
         SaveLlmConfigRequest(
           enabled = enabled,
           streamingEnabled = streamingEnabled,
+          providerMode = providerMode,
           providerId = providerId,
           selectedProviderOptionId = selectedProviderOptionId,
           protocol = protocol,
@@ -877,6 +893,15 @@ internal class OpenCrayHostRuntime private constructor(
           contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
           contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
           contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
+          selectedOnDeviceModelId = selectedOnDeviceModelId,
+          onDeviceMaxContextWindow = onDeviceMaxContextWindow,
+          onDeviceMaxTokens = onDeviceMaxTokens,
+          onDeviceTopK = onDeviceTopK,
+          onDeviceTopP = onDeviceTopP,
+          onDeviceTemperature = onDeviceTemperature,
+          onDeviceAccelerator = onDeviceAccelerator,
+          onDeviceThinkingEnabled = onDeviceThinkingEnabled,
+          onDeviceLiteModeEnabled = onDeviceLiteModeEnabled,
         ),
       )
     }
@@ -951,6 +976,30 @@ internal class OpenCrayHostRuntime private constructor(
       reasoningEffort = reasoningEffort,
     ),
   ).toMap()
+
+  override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> {
+    val snapshot = synchronized(lock) {
+      llmConfigFacade.downloadOnDeviceModel(modelId)
+    }
+    emitSettingsOverview()
+    return snapshot.toMap()
+  }
+
+  override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> {
+    val snapshot = synchronized(lock) {
+      llmConfigFacade.cancelOnDeviceModelDownload(modelId)
+    }
+    emitSettingsOverview()
+    return snapshot.toMap()
+  }
+
+  override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> {
+    val snapshot = synchronized(lock) {
+      llmConfigFacade.deleteOnDeviceModel(modelId)
+    }
+    emitSettingsOverview()
+    return snapshot.toMap()
+  }
 
   override fun loadPersonalizationConfig(): Map<String, Any?> =
     synchronized(lock) { personalizationFacade.load() }.toMap()
@@ -1485,23 +1534,26 @@ internal class OpenCrayHostRuntime private constructor(
   }
 
   override fun loadChatSnapshot(): Map<String, Any?> {
-    val (snapshot, visibleAttachments) = synchronized(lock) {
+    val initialBuild = synchronized(lock) {
       buildChatSnapshotLocked()
     }
-    val mergedSynchronously = scheduleVoiceMetadataBackfill(visibleAttachments)
-    return if (mergedSynchronously) {
+    val mergedSynchronously = scheduleVoiceMetadataBackfill(initialBuild.visibleAttachments)
+    val finalBuild = if (mergedSynchronously) {
       synchronized(lock) {
-        buildChatSnapshotLocked().first
+        buildChatSnapshotLocked()
       }
     } else {
-      snapshot
+      initialBuild
     }
+    return finalBuild.snapshot
   }
 
-  private fun buildChatSnapshotLocked(): Pair<Map<String, Any?>, List<ChatAttachmentEntry>> {
+  private fun buildChatSnapshotLocked(): ChatSnapshotBuildResult {
     val chatState = chatSessionStore.loadState()
     val activeSession = chatState.activeSession
     repairStaleSupplementsLocked(activeSession.sessionId)
+    val llmConfig = llmConfigFacade.load()
+    val warmupState = onDeviceWarmupStateForSnapshotLocked(llmConfig)
     val visibleMessages = activeSession.messages.filter(::isVisibleChatMessage)
     val pendingUserInputs = chatSessionStore.loadPendingUserInputs(activeSession.sessionId)
     val pendingSupplements = supplementStoreForSession(activeSession.sessionId).snapshot()
@@ -1534,7 +1586,16 @@ internal class OpenCrayHostRuntime private constructor(
     val awaitingDirection = latestRunForSnapshot(displayedRuns)?.let { run ->
       isAwaitingDirectionRun(run) || isDeferredApprovalDecisionAwaitingResumeRun(run)
     } == true
+    val shouldShowWarmupState = warmupState.blocksChatInput() &&
+      pendingApprovals.isEmpty() &&
+      pendingSupplementCount == 0 &&
+      pendingCount == 0 &&
+      pendingUserInputCount == 0 &&
+      !awaitingDirection
     val summaryBody = when {
+      shouldShowWarmupState -> {
+        strings.chatSummaryOnDevicePreparing
+      }
       pendingApprovals.isEmpty() && awaitingDirection -> {
         strings.chatSummaryAwaitingDirection
       }
@@ -1557,13 +1618,15 @@ internal class OpenCrayHostRuntime private constructor(
         strings.chatSummaryRestored
       }
     }
-    return mapOf(
+    return ChatSnapshotBuildResult(
+      snapshot = mapOf(
       "screenTitle" to strings.chatScreenTitle,
       "modeLabel" to currentChatModeLabelLocked(),
       "sessionButtonLabel" to strings.chatSessionButtonLabel,
       "composerPlaceholder" to composerPlaceholderForSnapshot(
         displayedRuns = displayedRuns,
         hasPendingApprovals = pendingApprovals.isNotEmpty(),
+        warmupState = warmupState,
       ),
       "summary" to mapOf(
         "title" to activeSessionTitle,
@@ -1629,8 +1692,10 @@ internal class OpenCrayHostRuntime private constructor(
         displayedRuns = displayedRuns,
         recentEvents = recentEvents,
       ),
-      "isInputEnabled" to true,
-    ) to visibleMessages.flatMap(ChatTranscriptMessageEntry::attachments)
+      "isInputEnabled" to !warmupState.blocksChatInput(),
+    ),
+      visibleAttachments = visibleMessages.flatMap(ChatTranscriptMessageEntry::attachments),
+    )
   }
 
   private fun todoSnapshotMap(entry: AgentTodoEntry): Map<String, Any?> = mapOf(
@@ -2979,7 +3044,11 @@ internal class OpenCrayHostRuntime private constructor(
   private fun composerPlaceholderForSnapshot(
     displayedRuns: List<AgentRunSnapshot>,
     hasPendingApprovals: Boolean,
+    warmupState: OnDeviceLlmWarmupState = OnDeviceLlmWarmupState(),
   ): String {
+    if (warmupState.blocksChatInput()) {
+      return strings.chatMessageOnDevicePreparing
+    }
     if (hasPendingApprovals) {
       return strings.composerPlaceholder
     }
@@ -2991,6 +3060,26 @@ internal class OpenCrayHostRuntime private constructor(
       strings.composerRejectedPlaceholder
     } else {
       strings.composerPlaceholder
+    }
+  }
+
+  private fun onDeviceWarmupStateForSnapshotLocked(
+    llmConfig: LlmConfigSnapshot,
+  ): OnDeviceLlmWarmupState = llmConfig.onDeviceWarmupSpecOrNull()?.let { spec ->
+    onDeviceLlmWarmupController.ensureWarm(spec)
+  } ?: onDeviceLlmWarmupController.clear()
+
+  private fun defaultOnDeviceLlmWarmupController(): OnDeviceLlmWarmupController {
+    val context = appContext ?: return NoOpOnDeviceLlmWarmupController
+    return AppOnDeviceLlmWarmupController(
+      runtime = LiteRtOnDeviceRuntime.fromContext(context),
+      onStateChanged = ::emitChatSnapshot,
+    )
+  }
+
+  private fun scheduleStartupOnDeviceWarmup() {
+    synchronized(lock) {
+      onDeviceWarmupStateForSnapshotLocked(llmConfigFacade.load())
     }
   }
 
@@ -7163,6 +7252,7 @@ internal class OpenCrayHostRuntime private constructor(
     "localeTag" to localeTag,
     "enabled" to enabled,
     "streamingEnabled" to streamingEnabled,
+    "providerMode" to providerMode,
     "providerId" to providerId,
     "selectedProviderOptionId" to selectedProviderOptionId,
     "protocol" to protocol,
@@ -7182,6 +7272,16 @@ internal class OpenCrayHostRuntime private constructor(
     "contextBudgetReservedOutputTokens" to contextBudgetReservedOutputTokens,
     "contextBudgetSafetyMarginTokens" to contextBudgetSafetyMarginTokens,
     "contextBudgetEffectiveInputPercent" to contextBudgetEffectiveInputPercent,
+    "onDeviceModels" to onDeviceModels.map { option -> option.toMap() },
+    "selectedOnDeviceModelId" to selectedOnDeviceModelId,
+    "onDeviceMaxContextWindow" to onDeviceMaxContextWindow,
+    "onDeviceMaxTokens" to onDeviceMaxTokens,
+    "onDeviceTopK" to onDeviceTopK,
+    "onDeviceTopP" to onDeviceTopP,
+    "onDeviceTemperature" to onDeviceTemperature,
+    "onDeviceAccelerator" to onDeviceAccelerator,
+    "onDeviceThinkingEnabled" to onDeviceThinkingEnabled,
+    "onDeviceLiteModeEnabled" to onDeviceLiteModeEnabled,
     "helperText" to helperText,
     "agentCapability" to agentCapability.toMap(),
   )
@@ -7196,6 +7296,21 @@ internal class OpenCrayHostRuntime private constructor(
     "protocol" to protocol,
     "apiKey" to apiKey,
     "isCustom" to isCustom,
+  )
+
+  private fun OnDeviceLlmModelOptionSnapshot.toMap(): Map<String, Any?> = mapOf(
+    "id" to id,
+    "title" to title,
+    "subtitle" to subtitle,
+    "sizeLabel" to sizeLabel,
+    "fileSizeBytes" to fileSizeBytes,
+    "installState" to installState,
+    "downloadState" to installState,
+    "downloadedBytes" to downloadedBytes,
+    "downloadBytesPerSecond" to downloadBytesPerSecond,
+    "sha256Verified" to sha256Verified,
+    "isSelected" to isSelected,
+    "lastError" to lastError,
   )
 
   private fun LlmValidationResult.toMap(): Map<String, Any?> = mapOf(
@@ -7510,6 +7625,7 @@ internal class OpenCrayHostRuntime private constructor(
         chatDefaultSessionTitle = "New chat",
         chatMessagesBadge = { count -> "$count messages" },
         chatSummaryReplyInProgress = "Reply in progress",
+        chatSummaryOnDevicePreparing = "Preparing the on-device model.",
         chatSummaryAwaitingDirection = "Waiting for your next instruction.",
         chatSummarySupplementRecorded = "Recorded. This will be applied to the current run when it reaches the next safe checkpoint.",
         chatSummaryApprovalFollowUpRecorded = "Recorded. The current run is waiting for approval, so this message will be handled after that decision.",
@@ -7519,6 +7635,7 @@ internal class OpenCrayHostRuntime private constructor(
         skillRemoved = { skillId -> "Removed $skillId." },
         skillsReloaded = "Reloaded skills from local storage.",
         composerPlaceholder = "Message OpenCray",
+        chatMessageOnDevicePreparing = "Preparing on-device model",
         composerRejectedPlaceholder = "Tell OpenCray differently",
         agentThinking = "Thinking",
         agentCancelled = "Interrupted",
@@ -7547,6 +7664,7 @@ internal class OpenCrayHostRuntime private constructor(
       },
       runtimeServiceConnectionChangeRegistrar: RuntimeServiceConnectionChangeRegistrar? = null,
       resumeActiveSessionOnInit: Boolean = true,
+      onDeviceLlmWarmupController: OnDeviceLlmWarmupController? = null,
     ): OpenCrayHostRuntime {
       val resolvedRuntimeHostAccess = DefaultOpenCrayRuntimeHostAccess(
         lifecycleDescriptor = runtimeOwnerDescriptor,
@@ -7605,6 +7723,7 @@ internal class OpenCrayHostRuntime private constructor(
         terminalReplayRepairer = terminalReplayRepairer,
         strings = strings,
         mainThreadPoster = mainThreadPoster,
+        providedOnDeviceLlmWarmupController = onDeviceLlmWarmupController,
         lifecycleDescriptor = lifecycleDescriptor,
         runtimeDiagnosticsBridge = runtimeDiagnosticsBridge,
         resumeActiveSessionOnInit = resumeActiveSessionOnInit,
@@ -7648,6 +7767,89 @@ internal class OpenCrayHostRuntime private constructor(
 
     private val NoOpVoiceMetadataAnalyzer: AppAgentWorkspaceVoiceMetadataAnalyzer =
       AppAgentWorkspaceVoiceMetadataAnalyzer { _, _ -> null }
+
+    internal fun localizedHostRuntimeStrings(context: Context): HostRuntimeStrings = HostRuntimeStrings(
+      localeTag = LocaleSettingsStore.fromContext(context).loadLanguage().tag,
+      shellHostLabel = context.getString(R.string.flutter_host_label_android),
+      shellHostSummary = context.getString(R.string.flutter_host_summary_android),
+      chatScreenTitle = context.getString(R.string.shell_tab_chat),
+      chatModeLabel = context.getString(R.string.chat_mode_auto),
+      chatModeSafeLabel = context.getStringByNameOrFallback(
+        resourceName = "chat_mode_safe",
+        fallback = "SAFE",
+      ),
+      chatModeDeveloperLabel = context.getStringByNameOrFallback(
+        resourceName = "chat_mode_dev",
+        fallback = "DEV",
+      ),
+      chatSessionButtonLabel = context.getString(R.string.chat_sessions_button),
+      chatRecentSessionsEyebrow = context.getString(R.string.chat_recent_sessions_eyebrow),
+      chatRecentSessionsTitle = context.getString(R.string.chat_recent_sessions_title),
+      chatNewSessionLabel = context.getString(R.string.chat_new_session),
+      chatDefaultSessionTitle = context.getString(R.string.chat_default_session_title),
+      chatMessagesBadge = { count ->
+        context.getString(R.string.chat_messages_badge, count)
+      },
+      chatSummaryReplyInProgress = context.getString(R.string.chat_summary_reply_in_progress),
+      chatSummaryOnDevicePreparing = context.getString(
+        R.string.chat_summary_on_device_preparing,
+      ),
+      chatSummaryAwaitingDirection = context.getString(R.string.chat_summary_awaiting_direction),
+      chatSummarySupplementRecorded = context.getString(R.string.chat_summary_supplement_recorded),
+      chatSummaryApprovalFollowUpRecorded = context.getString(
+        R.string.chat_summary_approval_follow_up_recorded,
+      ),
+      chatSummaryStartNewSession = context.getString(R.string.chat_summary_start_new_session),
+      chatSummaryRestored = context.getString(R.string.chat_summary_restored),
+      skillInstalled = { skillId ->
+        context.getString(R.string.skills_message_installed, skillId)
+      },
+      skillRemoved = { skillId ->
+        context.getString(R.string.skills_message_removed, skillId)
+      },
+      skillsReloaded = context.getString(R.string.skills_message_reloaded),
+      composerPlaceholder = context.getString(R.string.chat_message_opencray),
+      chatMessageOnDevicePreparing = context.getString(
+        R.string.chat_message_on_device_preparing,
+      ),
+      composerRejectedPlaceholder = context.getString(
+        R.string.chat_message_opencray_do_differently,
+      ),
+      agentThinking = context.getString(R.string.chat_agent_thinking),
+      agentCancelled = context.getString(R.string.chat_agent_cancelled),
+      agentMissingLlm = context.getString(R.string.chat_agent_missing_llm),
+      agentEmptyAnswer = context.getString(
+        R.string.chat_agent_failed,
+        "The model returned an empty answer.",
+      ),
+      agentFailed = { detail ->
+        context.getString(R.string.chat_agent_failed, detail)
+      },
+      chatApprovalApproveLabel = context.getStringByNameOrFallback(
+        resourceName = "chat_approval_approve_label",
+        fallback = "Approve",
+      ),
+      chatApprovalApproveForSessionLabel = context.getString(
+        R.string.chat_approval_approve_for_session_label,
+      ),
+      chatApprovalRejectLabel = context.getStringByNameOrFallback(
+        resourceName = "chat_approval_reject_label",
+        fallback = "Reject",
+      ),
+      chatApprovalApproved = context.getString(R.string.chat_approval_approved),
+      chatApprovalApprovedForSession = context.getString(
+        R.string.chat_approval_approved_for_session,
+      ),
+      chatApprovalRejected = context.getString(R.string.chat_approval_rejected),
+    )
+
+    private fun Context.getStringByNameOrFallback(
+      resourceName: String,
+      fallback: String,
+    ): String {
+      val resourceId = resources.getIdentifier(resourceName, "string", packageName)
+      return if (resourceId != 0) getString(resourceId) else fallback
+    }
   }
 }
 
@@ -7755,6 +7957,18 @@ private data class EventEmissionDecision(
   val shouldEmit: Boolean,
   val emitChatSnapshot: Boolean = true,
 )
+
+private data class ChatSnapshotBuildResult(
+  val snapshot: Map<String, Any?>,
+  val visibleAttachments: List<ChatAttachmentEntry>,
+)
+
+private fun PendingApprovalSnapshot.replayExecutionContext(): RuntimeReplayExecutionContext =
+  RuntimeReplayExecutionContext(
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
+    executionKind = executionKind,
+  )
 
 private fun AgentRunSnapshot.replayExecutionContext(): RuntimeReplayExecutionContext =
   RuntimeReplayExecutionContext(

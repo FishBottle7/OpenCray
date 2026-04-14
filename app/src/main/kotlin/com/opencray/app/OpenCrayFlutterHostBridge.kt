@@ -282,6 +282,7 @@ internal class OpenCrayFlutterHostBridge(
             settingsGateway.saveLlmConfig(
               enabled = call.argument<Boolean>("enabled") == true,
               streamingEnabled = call.argument<Boolean>("streamingEnabled"),
+              providerMode = call.argument<String>("providerMode") ?: LlmProviderModes.CLOUD,
               providerId = call.argument<String>("providerId").orEmpty(),
               selectedProviderOptionId = call.argument<String>("selectedProviderOptionId").orEmpty(),
               protocol = call.argument<String>("protocol").orEmpty(),
@@ -304,6 +305,33 @@ internal class OpenCrayFlutterHostBridge(
                 call.argument<Number>("contextBudgetSafetyMarginTokens")?.toInt(),
               contextBudgetEffectiveInputPercent =
                 call.argument<Number>("contextBudgetEffectiveInputPercent")?.toDouble(),
+              selectedOnDeviceModelId =
+                call.argument<String>("selectedOnDeviceModelId")
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_MODEL_ID,
+              onDeviceMaxContextWindow =
+                call.argument<Number>("onDeviceMaxContextWindow")?.toInt()
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_MAX_CONTEXT_WINDOW,
+              onDeviceMaxTokens =
+                call.argument<Number>("onDeviceMaxTokens")?.toInt()
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_MAX_TOKENS,
+              onDeviceTopK =
+                call.argument<Number>("onDeviceTopK")?.toInt()
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_TOP_K,
+              onDeviceTopP =
+                call.argument<Number>("onDeviceTopP")?.toDouble()
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_TOP_P,
+              onDeviceTemperature =
+                call.argument<Number>("onDeviceTemperature")?.toDouble()
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_TEMPERATURE,
+              onDeviceAccelerator =
+                call.argument<String>("onDeviceAccelerator")
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_ACCELERATOR,
+              onDeviceThinkingEnabled =
+                call.argument<Boolean>("onDeviceThinkingEnabled")
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_THINKING_ENABLED,
+              onDeviceLiteModeEnabled =
+                call.argument<Boolean>("onDeviceLiteModeEnabled")
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_LITE_MODE_ENABLED,
             )
           }
           return
@@ -346,6 +374,30 @@ internal class OpenCrayFlutterHostBridge(
               apiKey = call.argument<String>("apiKey").orEmpty(),
               model = call.argument<String>("model").orEmpty(),
               reasoningEffort = call.argument<String>("reasoningEffort").orEmpty(),
+            )
+          }
+          return
+        }
+        "downloadOnDeviceLlmModel" -> {
+          runAsync(result) {
+            settingsGateway.downloadOnDeviceLlmModel(
+              modelId = call.argument<String>("modelId").orEmpty(),
+            )
+          }
+          return
+        }
+        "cancelOnDeviceLlmModelDownload" -> {
+          runAsync(result) {
+            settingsGateway.cancelOnDeviceLlmModelDownload(
+              modelId = call.argument<String>("modelId").orEmpty(),
+            )
+          }
+          return
+        }
+        "deleteOnDeviceLlmModel" -> {
+          runAsync(result) {
+            settingsGateway.deleteOnDeviceLlmModel(
+              modelId = call.argument<String>("modelId").orEmpty(),
             )
           }
           return

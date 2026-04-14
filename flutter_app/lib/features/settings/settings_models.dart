@@ -465,6 +465,34 @@ class LlmProviderOption {
   final bool isCustom;
 }
 
+class LlmOnDeviceModelOption {
+  const LlmOnDeviceModelOption({
+    required this.id,
+    required this.title,
+    required this.subtitle,
+    required this.sizeLabel,
+    required this.fileSizeBytes,
+    required this.installState,
+    this.downloadedBytes = 0,
+    this.downloadBytesPerSecond = 0,
+    this.sha256Verified = false,
+    this.isSelected = false,
+    this.lastError,
+  });
+
+  final String id;
+  final String title;
+  final String subtitle;
+  final String sizeLabel;
+  final int fileSizeBytes;
+  final String installState;
+  final int downloadedBytes;
+  final int downloadBytesPerSecond;
+  final bool sha256Verified;
+  final bool isSelected;
+  final String? lastError;
+}
+
 class LlmConfigSnapshot {
   const LlmConfigSnapshot({
     required this.localeTag,
@@ -482,15 +510,27 @@ class LlmConfigSnapshot {
     required this.reasoningEffort,
     required this.systemPrompt,
     required this.helperText,
+    this.providerMode = 'cloud',
     this.openAiPromptCacheKeyStrategy = 'none',
     this.openAiPromptCacheRetention = '',
     this.anthropicPromptCachingEnabled = false,
     this.anthropicPromptCacheTtl = '5m',
+    this.onDeviceModels = const <LlmOnDeviceModelOption>[],
+    this.selectedOnDeviceModelId = 'gemma-4-e2b-it',
+    this.onDeviceMaxContextWindow = 32768,
+    this.onDeviceMaxTokens = 4096,
+    this.onDeviceTopK = 40,
+    this.onDeviceTopP = 0.95,
+    this.onDeviceTemperature = 0.70,
+    this.onDeviceAccelerator = 'gpu',
+    this.onDeviceThinkingEnabled = false,
+    this.onDeviceLiteModeEnabled = false,
   });
 
   final String localeTag;
   final bool enabled;
   final bool streamingEnabled;
+  final String providerMode;
   final String providerId;
   final String selectedProviderOptionId;
   final String protocol;
@@ -507,6 +547,55 @@ class LlmConfigSnapshot {
   final String openAiPromptCacheRetention;
   final bool anthropicPromptCachingEnabled;
   final String anthropicPromptCacheTtl;
+  final List<LlmOnDeviceModelOption> onDeviceModels;
+  final String selectedOnDeviceModelId;
+  final int onDeviceMaxContextWindow;
+  final int onDeviceMaxTokens;
+  final int onDeviceTopK;
+  final double onDeviceTopP;
+  final double onDeviceTemperature;
+  final String onDeviceAccelerator;
+  final bool onDeviceThinkingEnabled;
+  final bool onDeviceLiteModeEnabled;
+
+  LlmConfigSnapshot copyWith({
+    List<LlmOnDeviceModelOption>? onDeviceModels,
+    String? selectedOnDeviceModelId,
+  }) {
+    return LlmConfigSnapshot(
+      localeTag: localeTag,
+      enabled: enabled,
+      streamingEnabled: streamingEnabled,
+      providerMode: providerMode,
+      providerId: providerId,
+      selectedProviderOptionId: selectedProviderOptionId,
+      protocol: protocol,
+      providerOptions: providerOptions,
+      providerName: providerName,
+      providerNotes: providerNotes,
+      baseUrl: baseUrl,
+      apiKey: apiKey,
+      model: model,
+      reasoningEffort: reasoningEffort,
+      systemPrompt: systemPrompt,
+      helperText: helperText,
+      openAiPromptCacheKeyStrategy: openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention: openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled: anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl: anthropicPromptCacheTtl,
+      onDeviceModels: onDeviceModels ?? this.onDeviceModels,
+      selectedOnDeviceModelId:
+          selectedOnDeviceModelId ?? this.selectedOnDeviceModelId,
+      onDeviceMaxContextWindow: onDeviceMaxContextWindow,
+      onDeviceMaxTokens: onDeviceMaxTokens,
+      onDeviceTopK: onDeviceTopK,
+      onDeviceTopP: onDeviceTopP,
+      onDeviceTemperature: onDeviceTemperature,
+      onDeviceAccelerator: onDeviceAccelerator,
+      onDeviceThinkingEnabled: onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled: onDeviceLiteModeEnabled,
+    );
+  }
 }
 
 class LlmValidationResult {

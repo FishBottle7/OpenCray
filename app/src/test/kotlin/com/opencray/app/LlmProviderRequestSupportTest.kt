@@ -21,6 +21,18 @@ class LlmProviderRequestSupportTest {
   }
 
   @Test
+  fun recommendedProviderRouteTimeoutUsesLongerBudgetForOnDeviceCatalogModels() {
+    assertEquals(
+      180_000L,
+      recommendedInteractiveProviderRouteTimeoutMs(OnDeviceLlmCatalog.GEMMA_4_E2B_IT),
+    )
+    assertEquals(
+      60_000L,
+      recommendedValidationProviderRouteTimeoutMs(OnDeviceLlmCatalog.GEMMA_4_E2B_IT),
+    )
+  }
+
+  @Test
   fun anthropicRouteMetadataOmitsThinkingBudgetForKimiModels() {
     val metadata = LlmProviderProtocols.routeMetadata(
       protocol = LlmProviderProtocols.ANTHROPIC,

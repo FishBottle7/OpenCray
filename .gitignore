@@ -100,6 +100,7 @@
 /tools/android_python_runtime_p4a/gradle/
 **/.tmp_fonts/
 /.tmp/
+/.tmp-litert/
 /tmp_*.patch
 /opencray-python-runtime-*.aar
 /flutter_app/.tmp_flutter_version_err.txt

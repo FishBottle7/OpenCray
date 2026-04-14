@@ -165,8 +165,17 @@ internal fun createInProcessOpenCrayRuntimeOwner(
     runtimeRootDirectory = runtimeRootDirectory,
     controllerFactory = managedProcessControllerFactory,
   )
-  val liteLlmProviderClient = OpenAiCompatibleLiteLlmProviderClient(
-    userAgent = providerUserAgent,
+  val onDeviceModelInstallStore = LiteRtOnDeviceModelInstallStore.fromContext(appContext)
+  val liteLlmProviderClient = AppConfiguredLiteLlmProviderClient(
+    cloudProviderClient = OpenAiCompatibleLiteLlmProviderClient(
+      userAgent = providerUserAgent,
+    ),
+    onDeviceProviderClient = LiteRtOnDeviceLlmProviderClient(
+      runtime = LiteRtOnDeviceRuntime.fromContext(
+        context = appContext,
+        installStore = onDeviceModelInstallStore,
+      ),
+    ),
   )
   val mediaProviderClient = OpenCrayConfigurableMediaProviderClient(
     userAgent = providerUserAgent,
@@ -264,6 +273,12 @@ internal fun createInProcessOpenCrayRuntimeOwner(
     subAgentHandleStoreProvider = subAgentHandleStoreFactory::forChatSession,
     memoryIngestionCoordinator = memoryIngestionCoordinator,
     soulTurnSemanticSignalInterpreter = soulTurnSignalInterpreter,
+    providerClient = liteLlmProviderClient,
+    onDeviceModelReadyProvider = { modelId ->
+      LiteRtOnDeviceModelInstallStore.fromContext(appContext).hasReadyModel(modelId)
+    },
+    enableLiteRtDevAutomaticToolExecution =
+      (appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0,
     commandExecutorProvider = { commandExecutor },
     pythonRuntimeProvider = { pythonRuntime },
     pythonRuntimeManifestProvider = pythonRuntimeManifestProvider::currentManifest,

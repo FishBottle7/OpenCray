@@ -5,6 +5,7 @@ import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionState
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -162,5 +163,17 @@ class AgentRunRecordStoreFactoryTest {
     assertEquals("Legacy supplement", restored.text)
     assertEquals("turn_start", restored.checkpoint)
     assertTrue(restored.metadata.isEmpty())
+  }
+
+  @Test
+  fun checkpointEventsDoNotProjectIntoRuntimeEvents() {
+    val restored = PersistedAgentRunEvent(
+      kind = PersistedAgentRunEventKind.CHECKPOINT,
+      runId = "run-checkpoint",
+      taskId = "task-checkpoint",
+      emittedAtEpochMs = 55L,
+    ).toRuntimeEventOrNull()
+
+    assertNull(restored)
   }
 }

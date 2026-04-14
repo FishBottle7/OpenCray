@@ -1968,6 +1968,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         override fun saveLlmConfig(
           enabled: Boolean,
           streamingEnabled: Boolean?,
+          providerMode: String,
           providerId: String,
           selectedProviderOptionId: String,
           protocol: String,
@@ -1986,6 +1987,15 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           contextBudgetReservedOutputTokens: Int?,
           contextBudgetSafetyMarginTokens: Int?,
           contextBudgetEffectiveInputPercent: Double?,
+          selectedOnDeviceModelId: String,
+          onDeviceMaxContextWindow: Int,
+          onDeviceMaxTokens: Int,
+          onDeviceTopK: Int,
+          onDeviceTopP: Double,
+          onDeviceTemperature: Double,
+          onDeviceAccelerator: String,
+          onDeviceThinkingEnabled: Boolean,
+          onDeviceLiteModeEnabled: Boolean,
         ): Map<String, Any?> = emptyMap()
 
         override fun saveCustomLlmProvider(
@@ -2017,6 +2027,13 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           model: String,
           reasoningEffort: String,
         ): Map<String, Any?> = emptyMap()
+
+        override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> = emptyMap()
+
+        override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> =
+          emptyMap()
+
+        override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> = emptyMap()
 
         override fun loadPersonalizationConfig(): Map<String, Any?> = emptyMap()
 

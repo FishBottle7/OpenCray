@@ -1621,6 +1621,7 @@ class OpenCrayRuntimeServiceHostTest {
     val llm = gateway.loadLlmConfig()
     val savedLlm = gateway.saveLlmConfig(
       enabled = true,
+      providerMode = LlmProviderModes.CLOUD,
       providerId = "custom",
       selectedProviderOptionId = "custom-provider",
       protocol = "anthropic",
@@ -5800,6 +5801,7 @@ class OpenCrayRuntimeServiceHostTest {
     override fun saveLlmConfig(
       enabled: Boolean,
       streamingEnabled: Boolean?,
+      providerMode: String,
       providerId: String,
       selectedProviderOptionId: String,
       protocol: String,
@@ -5818,7 +5820,21 @@ class OpenCrayRuntimeServiceHostTest {
       contextBudgetReservedOutputTokens: Int?,
       contextBudgetSafetyMarginTokens: Int?,
       contextBudgetEffectiveInputPercent: Double?,
-    ): Map<String, Any?> = mapOf("source" to "$label-llm-save", "enabled" to enabled)
+      selectedOnDeviceModelId: String,
+      onDeviceMaxContextWindow: Int,
+      onDeviceMaxTokens: Int,
+      onDeviceTopK: Int,
+      onDeviceTopP: Double,
+      onDeviceTemperature: Double,
+      onDeviceAccelerator: String,
+      onDeviceThinkingEnabled: Boolean,
+      onDeviceLiteModeEnabled: Boolean,
+    ): Map<String, Any?> = mapOf(
+      "source" to "$label-llm-save",
+      "enabled" to enabled,
+      "streamingEnabled" to streamingEnabled,
+      "providerMode" to providerMode,
+    )
 
     override fun saveCustomLlmProvider(
       selectedProviderOptionId: String,
@@ -5849,6 +5865,15 @@ class OpenCrayRuntimeServiceHostTest {
       model: String,
       reasoningEffort: String,
     ): Map<String, Any?> = mapOf("source" to "$label-llm-validate", "providerId" to providerId)
+
+    override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+      mapOf("source" to "$label-on-device-download", "modelId" to modelId)
+
+    override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> =
+      mapOf("source" to "$label-on-device-cancel", "modelId" to modelId)
+
+    override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+      mapOf("source" to "$label-on-device-delete", "modelId" to modelId)
 
     override fun loadPersonalizationConfig(): Map<String, Any?> =
       mapOf("source" to "$label-personalization")
@@ -6055,6 +6080,18 @@ class OpenCrayRuntimeServiceHostTest {
         ),
       )
     }
+
+    override fun downloadOnDeviceModel(
+      modelId: String,
+    ): com.opencray.app.facade.llm.LlmConfigSnapshot = load()
+
+    override fun cancelOnDeviceModelDownload(
+      modelId: String,
+    ): com.opencray.app.facade.llm.LlmConfigSnapshot = load()
+
+    override fun deleteOnDeviceModel(
+      modelId: String,
+    ): com.opencray.app.facade.llm.LlmConfigSnapshot = load()
 
     private fun snapshot(
       enabled: Boolean = true,

@@ -408,6 +408,7 @@ class OpenCrayFlutterHostBridgeTest {
     override fun saveLlmConfig(
       enabled: Boolean,
       streamingEnabled: Boolean?,
+      providerMode: String,
       providerId: String,
       selectedProviderOptionId: String,
       protocol: String,
@@ -426,6 +427,15 @@ class OpenCrayFlutterHostBridgeTest {
       contextBudgetReservedOutputTokens: Int?,
       contextBudgetSafetyMarginTokens: Int?,
       contextBudgetEffectiveInputPercent: Double?,
+      selectedOnDeviceModelId: String,
+      onDeviceMaxContextWindow: Int,
+      onDeviceMaxTokens: Int,
+      onDeviceTopK: Int,
+      onDeviceTopP: Double,
+      onDeviceTemperature: Double,
+      onDeviceAccelerator: String,
+      onDeviceThinkingEnabled: Boolean,
+      onDeviceLiteModeEnabled: Boolean,
     ): Map<String, Any?> = throw UnsupportedOperationException()
 
     override fun saveCustomLlmProvider(
@@ -457,6 +467,15 @@ class OpenCrayFlutterHostBridgeTest {
       model: String,
       reasoningEffort: String,
     ): Map<String, Any?> = throw UnsupportedOperationException()
+
+    override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
+    override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
+    override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
 
     override fun loadPersonalizationConfig(): Map<String, Any?> =
       throw UnsupportedOperationException()
@@ -514,6 +533,7 @@ class OpenCrayFlutterHostBridgeTest {
     override fun saveLlmConfig(
       enabled: Boolean,
       streamingEnabled: Boolean?,
+      providerMode: String,
       providerId: String,
       selectedProviderOptionId: String,
       protocol: String,
@@ -532,9 +552,19 @@ class OpenCrayFlutterHostBridgeTest {
       contextBudgetReservedOutputTokens: Int?,
       contextBudgetSafetyMarginTokens: Int?,
       contextBudgetEffectiveInputPercent: Double?,
+      selectedOnDeviceModelId: String,
+      onDeviceMaxContextWindow: Int,
+      onDeviceMaxTokens: Int,
+      onDeviceTopK: Int,
+      onDeviceTopP: Double,
+      onDeviceTemperature: Double,
+      onDeviceAccelerator: String,
+      onDeviceThinkingEnabled: Boolean,
+      onDeviceLiteModeEnabled: Boolean,
     ): Map<String, Any?> {
       lastSavedLlmConfig = SavedLlmConfigCall(
         enabled = enabled,
+        providerMode = providerMode,
         providerId = providerId,
         selectedProviderOptionId = selectedProviderOptionId,
         contextBudgetPreset = contextBudgetPreset,
@@ -548,6 +578,7 @@ class OpenCrayFlutterHostBridgeTest {
 
   private data class SavedLlmConfigCall(
     val enabled: Boolean,
+    val providerMode: String,
     val providerId: String,
     val selectedProviderOptionId: String,
     val contextBudgetPreset: String?,

@@ -464,6 +464,7 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   Future<OpenCrayLlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
     bool? streamingEnabled,
+    String providerMode = 'cloud',
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -478,12 +479,22 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    String selectedOnDeviceModelId = 'gemma-4-e2b-it',
+    int onDeviceMaxContextWindow = 32768,
+    int onDeviceMaxTokens = 4096,
+    int onDeviceTopK = 40,
+    double onDeviceTopP = 0.95,
+    double onDeviceTemperature = 0.70,
+    String onDeviceAccelerator = 'gpu',
+    bool onDeviceThinkingEnabled = false,
+    bool onDeviceLiteModeEnabled = false,
   }) async => OpenCrayLlmConfigSnapshot.fromMap(
     await _invokeMap(
       'saveLlmConfig',
       arguments: <String, Object?>{
         'enabled': enabled,
         if (streamingEnabled != null) 'streamingEnabled': streamingEnabled,
+        'providerMode': providerMode,
         'providerId': providerId,
         'selectedProviderOptionId': selectedProviderOptionId,
         'protocol': protocol,
@@ -502,6 +513,15 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
           'anthropicPromptCachingEnabled': anthropicPromptCachingEnabled,
         if (anthropicPromptCacheTtl != null)
           'anthropicPromptCacheTtl': anthropicPromptCacheTtl,
+        'selectedOnDeviceModelId': selectedOnDeviceModelId,
+        'onDeviceMaxContextWindow': onDeviceMaxContextWindow,
+        'onDeviceMaxTokens': onDeviceMaxTokens,
+        'onDeviceTopK': onDeviceTopK,
+        'onDeviceTopP': onDeviceTopP,
+        'onDeviceTemperature': onDeviceTemperature,
+        'onDeviceAccelerator': onDeviceAccelerator,
+        'onDeviceThinkingEnabled': onDeviceThinkingEnabled,
+        'onDeviceLiteModeEnabled': onDeviceLiteModeEnabled,
       },
     ),
   );
@@ -567,6 +587,36 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
         'model': model,
         'reasoningEffort': reasoningEffort,
       },
+    ),
+  );
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> downloadOnDeviceLlmModel(
+    String modelId,
+  ) async => OpenCrayLlmConfigSnapshot.fromMap(
+    await _invokeMap(
+      'downloadOnDeviceLlmModel',
+      arguments: <String, Object?>{'modelId': modelId},
+    ),
+  );
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> cancelOnDeviceLlmModelDownload(
+    String modelId,
+  ) async => OpenCrayLlmConfigSnapshot.fromMap(
+    await _invokeMap(
+      'cancelOnDeviceLlmModelDownload',
+      arguments: <String, Object?>{'modelId': modelId},
+    ),
+  );
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> deleteOnDeviceLlmModel(
+    String modelId,
+  ) async => OpenCrayLlmConfigSnapshot.fromMap(
+    await _invokeMap(
+      'deleteOnDeviceLlmModel',
+      arguments: <String, Object?>{'modelId': modelId},
     ),
   );
 

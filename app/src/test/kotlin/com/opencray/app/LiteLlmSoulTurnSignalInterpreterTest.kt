@@ -102,6 +102,35 @@ class LiteLlmSoulTurnSignalInterpreterTest {
     assertTrue(result is SoulTurnSemanticSignalInterpretation.Unavailable)
   }
 
+  @Test
+  fun interpretReturnsUnavailableWhenOnDeviceModeIsSelected() {
+    val providerClient = RecordingProviderClient(
+      result = LiteLlmProviderResult.Success(outputText = "{}"),
+    )
+    val interpreter = LiteLlmSoulTurnSignalInterpreter(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+          selectedOnDeviceModelId = "gemma-4-e2b-it",
+        )
+      },
+      providerClient = providerClient,
+    )
+
+    val result = interpreter.interpret(
+      SoulTurnSemanticSignalRequest(
+        sessionId = "session-on-device",
+        taskId = "task-on-device",
+        userInput = "继续。",
+      ),
+    )
+
+    val unavailable = result as SoulTurnSemanticSignalInterpretation.Unavailable
+    assertTrue(unavailable.reason.orEmpty().contains("On-device LLM mode"))
+    assertTrue(providerClient.lastRequest == null)
+  }
+
   private class RecordingProviderClient(
     private val result: LiteLlmProviderResult,
   ) : LiteLlmProviderClient {
