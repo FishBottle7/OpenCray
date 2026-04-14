@@ -31,6 +31,8 @@ This document is intentionally deeper than the earlier audit and roadmap documen
 - `docs/multi-agent-runtime-design.md`
 - `docs/memory-design.md`
 - `docs/memory-soul-image-reference-design.md`
+- `docs/context-cache-hit-maximization-design.md`
+  - confirmed cache-hit policy follow-up covering immediate setting changes, deterministic replay projection, and late-triggered semantic compaction
 - `docs/done/design-p0-live-queue-persistence.md`
 - `docs/done/design-p0-session-runtime-manager.md`
 - `docs/done/design-p0-prompt-layer-architecture.md`
@@ -1258,6 +1260,13 @@ The checked-in runtime has now been narrowed part of the way toward the intended
 - ordinary long tool results are no longer proactively rewritten by prompt-local pruning
 - duplicate background transcript items are no longer dropped by default prompt-local pruning
 - attachment-like/blob payloads are still rewritten as a narrow guardrail
+
+For the cache-hit follow-up, OpenCray should push this one step further:
+
+- if deterministic replay downgrade is needed, decide it before provider-visible request assembly and cache-write opportunity
+- but keep that downgrade narrower than general-purpose replay compression
+- only obviously low-value operational exhaust should be pre-projected early
+- when there is doubt about semantic importance, keep the fuller replay form and let later budget pressure or semantic compaction handle it
 
 That is closer to the right design, but it is still only a partial convergence. The intended end state is:
 

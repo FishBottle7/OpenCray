@@ -686,6 +686,14 @@ child context 必须来自一个显式的 `SubAgentContextBuilder`。
 
 这一步的目标，不是再重复发明 control plane，而是把已经存在的 handle / lifecycle 模型，从“host-local 后台 child，可跨父 run completion / cold restart 继续推进”继续提升成“真正独立于宿主 session queue 的 detached runtime actor”。
 
+独立 child session 的收口方案已经单独写在 [`subagent-independent-child-session-plan.md`](./subagent-independent-child-session-plan.md)。
+
+这轮设计明确按开发期前提推进：
+
+- 不做旧数据兼容
+- 不做 migration / dual-read / dual-write
+- 直接把 durable schema 收口到目标语义
+
 下一阶段做完之后，希望 OpenCray 的抽象更接近：
 
 - `spawn_agent(...)`
