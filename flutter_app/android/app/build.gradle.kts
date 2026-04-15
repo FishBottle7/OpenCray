@@ -78,7 +78,7 @@ android {
         getByName("main") {
             manifest.srcFile("../../../app/src/main/AndroidManifest.xml")
             java.srcDirs("../../../app/src/main/kotlin")
-            res.srcDirs("../../../app/src/main/res")
+            res.setSrcDirs(listOf("../../../app/src/main/res"))
             assets.srcDirs("../../../app/src/main/assets")
         }
         getByName("test") {

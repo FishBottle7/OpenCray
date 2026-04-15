@@ -77,6 +77,71 @@ class ProjectionOnlyOpenCrayChatRuntimeGatewayTest {
   }
 
   @Test
+  fun projectionOnlyChatRuntimeGatewayExtractsVisibleAnswerFromStructuredProtocolOutput() {
+    val chatRoot = temporaryFolder.newFolder("projection-chat-structured-text-store")
+    val runtimeRoot = temporaryFolder.newFolder("projection-runtime-structured-text-store")
+    val chatStore = ChatSessionLocalStore(chatRoot)
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val pendingMessageId = chatStore.reserveMessageId(
+      com.opencray.persistence.model.ChatTranscriptRole.ASSISTANT,
+    )
+    chatStore.appendSubmittedTurn(
+      sessionId = sessionId,
+      userText = "Search OpenCray",
+      assistantMessageId = pendingMessageId,
+      assistantPlaceholderText = "Thinking",
+    )
+
+    val queueFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val runRecordFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
+    val journalFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val checkpointFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val processFactory = FileBackedAgentProcessRegistryFactory(runtimeRoot)
+    val supplementFactory = FileBackedAgentSessionSupplementStoreFactory(runtimeRoot)
+
+    runRecordFactory.forChatSession(sessionId).upsert(
+      PersistedAgentRunRecord(
+        runId = "run-structured-success",
+        taskId = "task-structured-success",
+        acceptedAtEpochMs = 1_000L,
+        pendingMessageId = pendingMessageId,
+        lastResult = ExecutionResult(
+          taskId = "task-structured-success",
+          status = ExecutionStatus.SUCCESS,
+          stdout =
+            """{"type":"tool_call","tool_name":"WebSearch","arguments":{"query":"OpenCray"}}{"type":"final","answer":"OpenCray is an open-source mobile agent app."}""",
+          startedAtEpochMs = 1_000L,
+          finishedAtEpochMs = 1_500L,
+        ),
+      ),
+    )
+
+    val gateway = ProjectionOnlyOpenCrayChatRuntimeGateway(
+      chatSessionStore = chatStore,
+      queueSnapshotStoreFactory = queueFactory,
+      runRecordStoreFactory = runRecordFactory,
+      runEventJournalStoreFactory = journalFactory,
+      promptCheckpointStoreFactory = checkpointFactory,
+      processRegistryFactory = processFactory,
+      supplementStoreFactory = supplementFactory,
+      strings = projectionTestStrings(),
+      connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { 2_000L },
+    )
+
+    @Suppress("UNCHECKED_CAST")
+    val messages = gateway.loadChatSnapshot()["messages"] as List<Map<String, Any?>>
+    val assistantMessage = messages.last()
+
+    assertEquals(pendingMessageId, assistantMessage["messageId"])
+    assertEquals(
+      "OpenCray is an open-source mobile agent app.",
+      assistantMessage["text"],
+    )
+  }
+
+  @Test
   fun projectionOnlyChatRuntimeGatewayIgnoresCheckpointJournalEntriesWhenLoadingRunSnapshots() {
     val chatRoot = temporaryFolder.newFolder("projection-chat-checkpoint-store")
     val runtimeRoot = temporaryFolder.newFolder("projection-runtime-checkpoint-store")

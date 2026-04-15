@@ -447,17 +447,10 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private fun sanitizeProjectedAssistantText(
     text: String,
     fallback: String,
-  ): String {
-    val trimmed = text.trim()
-    if (trimmed.isBlank()) {
-      return fallback
-    }
-    return if (approvalSupportLooksLikeInternalToolPayload(trimmed)) {
-      fallback
-    } else {
-      text
-    }
-  }
+  ): String = approvalSupportSanitizePotentialInternalAgentText(
+    text = text,
+    fallback = fallback,
+  )
 
   private fun projectionApprovalFallbackBody(errorCode: String?): String = if (
     errorCode == PROJECTION_HIGH_RISK_APPROVAL_REQUIRED_ERROR_CODE

@@ -1601,11 +1601,17 @@ class OpenCrayAgentRuntime(
           "\"user_requests_relational_support\"" in lowercase ||
           "\"clarification_needed\"" in lowercase
         )
-    if (!looksLikeStructuredProtocol && !looksLikeInternalSignal) {
+    if (!startsLikeJson) {
       return normalized
     }
     extractStructuredAssistantDraftText(normalized)?.let { return it }
-    return null
+    if (looksLikeStructuredProtocol || looksLikeInternalSignal) {
+      return null
+    }
+    if (!normalized.endsWith('}') && !normalized.endsWith(']')) {
+      return null
+    }
+    return normalized
   }
 
   private fun extractStructuredAssistantDraftText(rawText: String): String? {

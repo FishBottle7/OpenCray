@@ -1242,6 +1242,56 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun toolGeneratedSupplementEventStaysInRunTraceButNotChatBubble() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-tool-generated-supplement"),
+    )
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    hostRuntime.submitChatMessage("Search the latest OpenCray updates")
+    val task = handle.submittedTasks.single()
+    val run = handle.submissions.single()
+    manager.emitRunEvent(
+      sessionId = activeSessionId,
+      task = task,
+      event = OpenCraySupplementEvent(
+        runId = run.runId,
+        taskId = task.id,
+        turn = 1,
+        entryId = "tool-supplement-web-search-1",
+        text = "Provider-native web search ran for \"OpenCray\" within opencray.com.",
+        checkpoint = "post_tool_pre_model",
+        emittedAtEpochMs = 1_150L,
+      ),
+    )
+
+    val chatSnapshot = hostRuntime.loadChatSnapshot()
+    val renderedMessages = (chatSnapshot["messages"] as List<*>)
+      .map { it as Map<*, *> }
+    val runtimeActivity = chatSnapshot["runtimeActivity"] as Map<*, *>
+    val supplementEvents = (runtimeActivity["events"] as List<*>)
+      .map { it as Map<*, *> }
+      .filter { event -> event["kind"] == "supplement" }
+
+    assertEquals(
+      listOf("Search the latest OpenCray updates", "Thinking"),
+      renderedMessages.map { message -> message["text"] },
+    )
+    assertEquals(1, supplementEvents.size)
+    assertEquals(
+      "Provider-native web search ran for \"OpenCray\" within opencray.com.",
+      supplementEvents.single()["text"],
+    )
+  }
+
+  @Test
   fun liveProcessRunCompletionDoesNotPromoteExistingSupplementsIntoNewRun() {
     val chatStore = ChatSessionLocalStore(
       temporaryFolder.newFolder("chat-store-live-process-supplement-retention"),
@@ -1875,6 +1925,53 @@ class OpenCrayHostRuntimeTest {
     )
     assertEquals(
       "The agent produced an internal tool payload instead of a user-facing reply.",
+      firstSession["preview"],
+    )
+  }
+
+  @Test
+  fun taskSuccessExtractsVisibleAnswerFromStructuredProtocolOutput() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-structured-protocol-success"),
+    )
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+
+    hostRuntime.submitChatMessage("Search for OpenCray")
+    val task = handle.submittedTasks.single()
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout =
+          """{"type":"tool_call","tool_name":"WebSearch","arguments":{"query":"OpenCray"}}{"type":"final","answer":"OpenCray is an open-source mobile agent app."}""",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata,
+      ),
+    )
+
+    val messages = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+    val snapshot = hostRuntime.loadChatSnapshot()
+    val drawer = snapshot["drawer"] as Map<*, *>
+    val sessions = drawer["sessions"] as List<*>
+    val firstSession = sessions.first() as Map<*, *>
+
+    assertEquals(
+      "OpenCray is an open-source mobile agent app.",
+      messages.last().text,
+    )
+    assertEquals(
+      "OpenCray is an open-source mobile agent app.",
       firstSession["preview"],
     )
   }

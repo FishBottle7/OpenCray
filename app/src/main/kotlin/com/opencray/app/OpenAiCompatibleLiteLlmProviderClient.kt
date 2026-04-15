@@ -3971,6 +3971,50 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         visibleTextMayHaveChanged = true
       }
 
+      "response.function_call_arguments.delta" -> {
+        val outputIndex = resolveResponsesFunctionCallOutputIndex(
+          eventPayload = eventPayload,
+          outputItems = outputItems,
+          outputIndexByItemId = outputIndexByItemId,
+        )
+        val item = ensureResponsesFunctionCallItem(
+          outputItems = outputItems,
+          outputIndex = outputIndex,
+          eventPayload = eventPayload,
+        )
+        appendResponsesFunctionCallArgumentsDelta(
+          item = item,
+          delta = eventPayload.optString("delta"),
+        )
+        registerResponsesOutputItemIdentities(
+          outputIndexByItemId = outputIndexByItemId,
+          item = item,
+          outputIndex = outputIndex,
+        )
+      }
+
+      "response.function_call_arguments.done" -> {
+        val outputIndex = resolveResponsesFunctionCallOutputIndex(
+          eventPayload = eventPayload,
+          outputItems = outputItems,
+          outputIndexByItemId = outputIndexByItemId,
+        )
+        val item = ensureResponsesFunctionCallItem(
+          outputItems = outputItems,
+          outputIndex = outputIndex,
+          eventPayload = eventPayload,
+        )
+        setResponsesFunctionCallArgumentsValue(
+          item = item,
+          arguments = eventPayload.optString("arguments"),
+        )
+        registerResponsesOutputItemIdentities(
+          outputIndexByItemId = outputIndexByItemId,
+          item = item,
+          outputIndex = outputIndex,
+        )
+      }
+
       "response.output_item.done" -> {
         val item = eventPayload.optJSONObject("item") ?: return nextActiveAssistantMessageIndex
         val itemIndex = storeResponsesOutputItem(
@@ -3996,11 +4040,13 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         if (response != null) {
           mergeResponseObjectIntoPayload(payload, response)
           response.optJSONArray("output")?.let { output ->
-            replaceResponsesOutputItems(
-              outputItems = outputItems,
-              outputIndexByItemId = outputIndexByItemId,
-              output = output,
-            )
+            if (output.length() > 0 || outputItems.isEmpty()) {
+              replaceResponsesOutputItems(
+                outputItems = outputItems,
+                outputIndexByItemId = outputIndexByItemId,
+                output = output,
+              )
+            }
           }
         }
         if (!payload.has("status")) {
@@ -4013,11 +4059,13 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         eventPayload.optJSONObject("response")?.let { response ->
           mergeResponseObjectIntoPayload(payload, response)
           response.optJSONArray("output")?.let { output ->
-            replaceResponsesOutputItems(
-              outputItems = outputItems,
-              outputIndexByItemId = outputIndexByItemId,
-              output = output,
-            )
+            if (output.length() > 0 || outputItems.isEmpty()) {
+              replaceResponsesOutputItems(
+                outputItems = outputItems,
+                outputIndexByItemId = outputIndexByItemId,
+                output = output,
+              )
+            }
           }
         }
         if (!payload.has("status")) {
@@ -4067,8 +4115,8 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   ): Int {
     val normalizedItem = JSONObject(item.toString())
     val resolvedIndex = explicitIndex
-      ?: responsesOutputItemIdentity(normalizedItem)
-        ?.let(outputIndexByItemId::get)
+      ?: responsesOutputItemIdentities(normalizedItem)
+        .firstNotNullOfOrNull(outputIndexByItemId::get)
       ?: nextResponsesOutputIndex(outputItems)
     val storedItem = if (!replace) {
       outputItems[resolvedIndex]?.apply {
@@ -4077,13 +4125,18 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         outputItems[resolvedIndex] = inserted
       }
     } else {
+      outputItems[resolvedIndex]?.let { existing ->
+        responsesOutputItemIdentities(existing).forEach(outputIndexByItemId::remove)
+      }
       normalizedItem.also { inserted ->
         outputItems[resolvedIndex] = inserted
       }
     }
-    responsesOutputItemIdentity(storedItem)?.let { itemId ->
-      outputIndexByItemId[itemId] = resolvedIndex
-    }
+    registerResponsesOutputItemIdentities(
+      outputIndexByItemId = outputIndexByItemId,
+      item = storedItem,
+      outputIndex = resolvedIndex,
+    )
     return resolvedIndex
   }
 
@@ -4118,9 +4171,21 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       val item = output.optJSONObject(index) ?: continue
       val copiedItem = JSONObject(item.toString())
       outputItems[index] = copiedItem
-      responsesOutputItemIdentity(copiedItem)?.let { itemId ->
-        outputIndexByItemId[itemId] = index
-      }
+      registerResponsesOutputItemIdentities(
+        outputIndexByItemId = outputIndexByItemId,
+        item = copiedItem,
+        outputIndex = index,
+      )
+    }
+  }
+
+  private fun registerResponsesOutputItemIdentities(
+    outputIndexByItemId: MutableMap<String, Int>,
+    item: JSONObject,
+    outputIndex: Int,
+  ) {
+    responsesOutputItemIdentities(item).forEach { itemId ->
+      outputIndexByItemId[itemId] = outputIndex
     }
   }
 
@@ -4159,6 +4224,75 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     if (optString("role").isBlank()) {
       put("role", "assistant")
     }
+  }
+
+  private fun resolveResponsesFunctionCallOutputIndex(
+    eventPayload: JSONObject,
+    outputItems: Map<Int, JSONObject>,
+    outputIndexByItemId: Map<String, Int>,
+  ): Int {
+    eventPayload.optInt("output_index", -1).takeIf { index -> index >= 0 }?.let { return it }
+    firstNonBlankString(
+      eventPayload.nonBlankString("item_id"),
+      eventPayload.nonBlankString("output_item_id"),
+      eventPayload.nonBlankString("call_id"),
+      eventPayload.nonBlankString("id"),
+    )?.let { itemId ->
+      outputIndexByItemId[itemId]?.let { return it }
+    }
+    return nextResponsesOutputIndex(outputItems)
+  }
+
+  private fun ensureResponsesFunctionCallItem(
+    outputItems: MutableMap<Int, JSONObject>,
+    outputIndex: Int,
+    eventPayload: JSONObject,
+  ): JSONObject = outputItems.getOrPut(outputIndex) {
+    JSONObject()
+      .put("type", "function_call")
+      .put("arguments", "")
+  }.apply {
+    put("type", "function_call")
+    if (isMissingJsonValue(opt("arguments"))) {
+      put("arguments", "")
+    }
+    firstNonBlankString(
+      nonBlankString("id"),
+      eventPayload.nonBlankString("item_id"),
+      eventPayload.nonBlankString("output_item_id"),
+      eventPayload.nonBlankString("id"),
+    )?.let { itemId ->
+      put("id", itemId)
+    }
+    firstNonBlankString(
+      nonBlankString("call_id"),
+      eventPayload.nonBlankString("call_id"),
+    )?.let { callId ->
+      put("call_id", callId)
+    }
+    firstNonBlankString(
+      nonBlankString("name"),
+      eventPayload.nonBlankString("name"),
+    )?.let { toolName ->
+      put("name", toolName)
+    }
+  }
+
+  private fun appendResponsesFunctionCallArgumentsDelta(
+    item: JSONObject,
+    delta: String,
+  ) {
+    if (delta.isEmpty()) {
+      return
+    }
+    appendJsonStringField(item, "arguments", delta)
+  }
+
+  private fun setResponsesFunctionCallArgumentsValue(
+    item: JSONObject,
+    arguments: String,
+  ) {
+    item.put("arguments", arguments)
   }
 
   private fun appendResponsesOutputTextDelta(
@@ -4306,10 +4440,12 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     item?.optString("type") == "message" &&
       item.optString("role").trim().ifEmpty { "assistant" } == "assistant"
 
-  private fun responsesOutputItemIdentity(item: JSONObject): String? = firstNonBlankString(
-    item.nonBlankString("id"),
-    item.nonBlankString("call_id"),
-  )
+  private fun responsesOutputItemIdentities(item: JSONObject): List<String> = buildList {
+    item.nonBlankString("id")?.let(::add)
+    item.nonBlankString("call_id")
+      ?.takeIf { callId -> callId !in this }
+      ?.let(::add)
+  }
 
   private fun nextResponsesOutputIndex(
     outputItems: Map<Int, JSONObject>,
@@ -4487,10 +4623,17 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
           "\"user_requests_relational_support\"" in lowercase ||
           "\"clarification_needed\"" in lowercase
         )
-    if (!looksLikeStructuredProtocol && !looksLikeInternalSignal) {
+    if (!startsLikeJson) {
       return normalized
     }
-    return extractStructuredAssistantDraftText(normalized)
+    extractStructuredAssistantDraftText(normalized)?.let { return it }
+    if (looksLikeStructuredProtocol || looksLikeInternalSignal) {
+      return null
+    }
+    if (!normalized.endsWith('}') && !normalized.endsWith(']')) {
+      return null
+    }
+    return normalized
   }
 
   private fun extractStructuredAssistantDraftText(rawText: String): String? {

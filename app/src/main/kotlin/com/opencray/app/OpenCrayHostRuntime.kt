@@ -3331,7 +3331,7 @@ internal class OpenCrayHostRuntime private constructor(
     } else {
       chatProgressText(event)
     }
-    is OpenCraySupplementEvent -> event.text.trim().takeIf(String::isNotBlank)
+    is OpenCraySupplementEvent -> projectedRuntimeSupplementBubbleText(event)
     is OpenCrayApprovalEvent -> null
     is OpenCrayToolCallEvent -> null
     is OpenCrayToolResultEvent -> null
@@ -3351,6 +3351,17 @@ internal class OpenCrayHostRuntime private constructor(
       ?.lowercase(Locale.US)
       ?.let(HIDDEN_ASSISTANT_CHAT_STAGES::contains)
       ) == true
+
+  private fun projectedRuntimeSupplementBubbleText(
+    event: OpenCraySupplementEvent,
+  ): String? = if (hideSupplementFromChatBubble(event)) {
+    null
+  } else {
+    event.text.trim().takeIf(String::isNotBlank)
+  }
+
+  private fun hideSupplementFromChatBubble(event: OpenCraySupplementEvent): Boolean =
+    event.entryId.startsWith(TOOL_GENERATED_SUPPLEMENT_ENTRY_ID_PREFIX)
 
   private fun chatProgressText(event: OpenCrayAssistantPhaseEvent): String {
     val stage = event.stage?.trim().orEmpty()
@@ -6993,7 +7004,10 @@ internal class OpenCrayHostRuntime private constructor(
     if (trimmed.isBlank()) {
       return text
     }
-    return if (looksLikeInternalToolPayload(trimmed)) fallback else text
+    return approvalSupportSanitizePotentialInternalAgentText(
+      text = text,
+      fallback = fallback,
+    )
   }
 
   private fun toolResultMetadataSnapshot(metadata: Map<String, String>): Map<String, String> {
@@ -7600,6 +7614,7 @@ internal class OpenCrayHostRuntime private constructor(
   companion object {
     private const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
     private const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
+    private const val TOOL_GENERATED_SUPPLEMENT_ENTRY_ID_PREFIX: String = "tool-supplement-"
     private const val DEFAULT_RUN_WAIT_TIMEOUT_MS: Long = 15_000L
     private const val RUN_LOOKUP_POLL_INTERVAL_MS: Long = 50L
     private const val MAX_RUNTIME_EVENT_HISTORY: Int = 24
