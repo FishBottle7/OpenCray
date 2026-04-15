@@ -5138,6 +5138,53 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun liveAssistantDraftEventsEmitIncrementalUpdateAndClearPayloads() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-live-assistant-draft-events"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(sessionId = activeSessionId)
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+    )
+    val observedEvents = mutableListOf<Map<String, Any?>>()
+    val disposer = hostRuntime.observeLiveAssistantDraftEvents { payload ->
+      observedEvents += payload
+    }
+
+    try {
+      hostRuntime.submitChatMessage("Stream a long answer")
+      val task = handle.submittedTasks.single()
+
+      manager.emitAssistantDraftUpdated(
+        sessionId = activeSessionId,
+        task = task,
+        text = "Growing answer",
+        emittedAtEpochMs = 1_500L,
+      )
+      manager.emitAssistantDraftCleared(
+        sessionId = activeSessionId,
+        task = task,
+        emittedAtEpochMs = 1_550L,
+      )
+
+      assertEquals(2, observedEvents.size)
+      assertEquals(activeSessionId, observedEvents[0]["sessionId"])
+      assertEquals("Growing answer", observedEvents[0]["text"])
+      assertEquals(false, observedEvents[0]["cleared"])
+      assertEquals(
+        task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID],
+        observedEvents[0]["pendingMessageId"],
+      )
+      assertEquals(true, observedEvents[1]["cleared"])
+      assertEquals("", observedEvents[1]["text"])
+    } finally {
+      disposer()
+    }
+  }
+
+  @Test
   fun chatRuntimeSnapshotPrefersPromptCheckpointHandleStateOverOlderReplayEventState() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-subagent-runtime-merge"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId

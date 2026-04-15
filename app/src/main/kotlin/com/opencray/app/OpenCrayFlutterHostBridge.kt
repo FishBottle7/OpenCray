@@ -54,6 +54,7 @@ internal class OpenCrayFlutterHostBridge(
   private var skillsObserverDisposer: (() -> Unit)? = null
   private var chatObserverDisposer: (() -> Unit)? = null
   private var chatRuntimeObserverDisposer: (() -> Unit)? = null
+  private var liveAssistantDraftObserverDisposer: (() -> Unit)? = null
 
   fun attach(flutterEngine: FlutterEngine) {
     MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL).setMethodCallHandler(::onMethodCall)
@@ -90,6 +91,15 @@ internal class OpenCrayFlutterHostBridge(
         onDisposeChanged = { disposer -> chatRuntimeObserverDisposer = disposer },
       ),
     )
+    EventChannel(
+      flutterEngine.dartExecutor.binaryMessenger,
+      LIVE_ASSISTANT_DRAFT_CHANNEL,
+    ).setStreamHandler(
+      observerStreamHandler(
+        observe = chatRuntimeGateway::observeLiveAssistantDraftEvents,
+        onDisposeChanged = { disposer -> liveAssistantDraftObserverDisposer = disposer },
+      ),
+    )
   }
 
   fun detach(flutterEngine: FlutterEngine) {
@@ -99,16 +109,19 @@ internal class OpenCrayFlutterHostBridge(
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, SKILLS_SNAPSHOT_CHANNEL).setStreamHandler(null)
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, CHAT_SNAPSHOT_CHANNEL).setStreamHandler(null)
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, CHAT_RUNTIME_SNAPSHOT_CHANNEL).setStreamHandler(null)
+    EventChannel(flutterEngine.dartExecutor.binaryMessenger, LIVE_ASSISTANT_DRAFT_CHANNEL).setStreamHandler(null)
     shellObserverDisposer?.invoke()
     settingsObserverDisposer?.invoke()
     skillsObserverDisposer?.invoke()
     chatObserverDisposer?.invoke()
     chatRuntimeObserverDisposer?.invoke()
+    liveAssistantDraftObserverDisposer?.invoke()
     shellObserverDisposer = null
     settingsObserverDisposer = null
     skillsObserverDisposer = null
     chatObserverDisposer = null
     chatRuntimeObserverDisposer = null
+    liveAssistantDraftObserverDisposer = null
   }
 
   fun selectChatSession(sessionId: String): Boolean =
@@ -1024,5 +1037,6 @@ internal class OpenCrayFlutterHostBridge(
     private const val SKILLS_SNAPSHOT_CHANNEL = "com.opencray.host/skills_snapshot"
     private const val CHAT_SNAPSHOT_CHANNEL = "com.opencray.host/chat_snapshot"
     private const val CHAT_RUNTIME_SNAPSHOT_CHANNEL = "com.opencray.host/chat_runtime_snapshot"
+    private const val LIVE_ASSISTANT_DRAFT_CHANNEL = "com.opencray.host/live_assistant_draft"
   }
 }

@@ -81,6 +81,7 @@ void main() {
 
       expect(find.text('Files'), findsOneWidget);
       expect(find.text('Location'), findsOneWidget);
+      expect(find.text('2.0 KB available'), findsNothing);
       expect(find.text('docs'), findsOneWidget);
       expect(find.text('todo.txt'), findsOneWidget);
       expect(find.text('report.md'), findsNothing);

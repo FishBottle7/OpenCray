@@ -534,6 +534,7 @@ internal data class OpenCrayRuntimeOwnerAccess(
   val transcriptMessagesProvider: (String) -> List<RuntimeConversationMessage>,
   val memoryIngestionCoordinator: ChatMemoryIngestionCoordinator,
   val replayAccess: OpenCrayRuntimeReplayAccess,
+  val onDeviceWarmupPlanner: (String) -> OnDeviceLlmWarmupSpec? = { null },
 )
 
 internal fun InProcessOpenCrayRuntimeOwner.toRuntimeOwnerAccess(): OpenCrayRuntimeOwnerAccess =
@@ -550,4 +551,5 @@ internal fun InProcessOpenCrayRuntimeOwner.toRuntimeOwnerAccess(): OpenCrayRunti
     transcriptMessagesProvider = transcriptMessagesProvider,
     memoryIngestionCoordinator = memoryIngestionCoordinator,
     replayAccess = replayAccess,
+    onDeviceWarmupPlanner = onDeviceWarmupPlanner,
   )

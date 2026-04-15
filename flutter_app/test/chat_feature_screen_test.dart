@@ -286,6 +286,145 @@ void main() {
   );
 
   testWidgets(
+    'live assistant draft events update the chat bubble without a runtime snapshot refresh',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final draftEvents =
+          StreamController<OpenCrayChatLiveAssistantDraftEvent>.broadcast();
+      addTearDown(draftEvents.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Write a long summary.',
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+        ),
+        liveAssistantDraftEventStream: draftEvents.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      draftEvents.add(
+        const OpenCrayChatLiveAssistantDraftEvent(
+          sessionId: 'session-1',
+          runId: 'run-1',
+          taskId: 'task-1',
+          pendingMessageId: 'pending-1',
+          text: 'First streamed chunk',
+          updatedAtEpochMs: 1300,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('First streamed chunk'), findsOneWidget);
+
+      draftEvents.add(
+        const OpenCrayChatLiveAssistantDraftEvent(
+          sessionId: 'session-1',
+          runId: 'run-1',
+          taskId: 'task-1',
+          pendingMessageId: 'pending-1',
+          text: 'First streamed chunk and more',
+          updatedAtEpochMs: 1400,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('First streamed chunk'), findsNothing);
+      expect(find.text('First streamed chunk and more'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'live assistant drafts do not overwrite a settled assistant reply',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Write a long summary.',
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-1',
+              kind: 'inbound',
+              text: 'The final answer is ready.',
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-1',
+              taskId: 'task-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1200,
+              attempt: 1,
+              pendingMessageId: 'pending-1',
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+          liveAssistantDrafts: <OpenCrayChatLiveAssistantDraftSnapshot>[
+            OpenCrayChatLiveAssistantDraftSnapshot(
+              runId: 'run-1',
+              taskId: 'task-1',
+              pendingMessageId: 'pending-1',
+              text: 'Streaming answer in progress',
+              updatedAtEpochMs: 1300,
+            ),
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final settledBubble = find.byKey(
+        const ValueKey<String>('chat-bubble-pending-1'),
+      );
+      expect(settledBubble, findsOneWidget);
+      expect(
+        find.descendant(
+          of: settledBubble,
+          matching: find.text('The final answer is ready.'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: settledBubble,
+          matching: find.text('Streaming answer in progress'),
+        ),
+        findsNothing,
+      );
+    },
+  );
+
+  testWidgets(
     'live assistant drafts do not surface tool call payloads as chat bubbles',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');
@@ -336,7 +475,10 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.textContaining('"tool_name"'), findsNothing);
-      expect(find.byKey(const ValueKey<String>('chat-bubble-pending-1')), findsNothing);
+      expect(
+        find.byKey(const ValueKey<String>('chat-bubble-pending-1')),
+        findsNothing,
+      );
     },
   );
 
@@ -7189,6 +7331,7 @@ class _FakeChatBridge implements OpenCrayHostBridge {
         const <String, OpenCrayFileVoicePlaybackSource>{},
     this.chatSnapshotStream,
     this.runtimeSnapshotStream,
+    this.liveAssistantDraftEventStream,
     OpenCraySandboxSettingsSnapshot? sandboxSettings,
   }) : sandboxSettings =
            sandboxSettings ??
@@ -7215,6 +7358,8 @@ class _FakeChatBridge implements OpenCrayHostBridge {
   final Map<String, OpenCrayFileVoicePlaybackSource> voicePlaybackSources;
   final Stream<OpenCrayChatSnapshot>? chatSnapshotStream;
   final Stream<OpenCrayChatRuntimeSnapshot>? runtimeSnapshotStream;
+  final Stream<OpenCrayChatLiveAssistantDraftEvent>?
+  liveAssistantDraftEventStream;
   OpenCraySandboxSettingsSnapshot sandboxSettings;
   final List<String> approvedApprovalIds = <String>[];
   final List<String> cancelledRunIds = <String>[];
@@ -7381,6 +7526,11 @@ class _FakeChatBridge implements OpenCrayHostBridge {
   @override
   Stream<OpenCrayChatRuntimeSnapshot> watchChatRuntimeSnapshot() =>
       runtimeSnapshotStream ?? Stream<OpenCrayChatRuntimeSnapshot>.empty();
+
+  @override
+  Stream<OpenCrayChatLiveAssistantDraftEvent> watchLiveAssistantDraftEvents() =>
+      liveAssistantDraftEventStream ??
+      Stream<OpenCrayChatLiveAssistantDraftEvent>.empty();
 
   @override
   Future<OpenCrayMemoryDebugSnapshot> loadMemoryDebugSnapshot() async =>

@@ -1265,7 +1265,7 @@ class OpenCrayAgentRuntime(
     completion.finalText
       ?.trim()
       ?.takeIf(String::isNotBlank)
-      ?.takeIf { actions.isEmpty() }
+      ?.takeIf { completion.toolCalls.isEmpty() }
       ?.let { finalText ->
         actions += AgentModelAction.Final(
           answer = finalText,
@@ -1562,7 +1562,7 @@ class OpenCrayAgentRuntime(
     private var hasVisibleDraft: Boolean = false
 
     override fun onVisibleTextSnapshot(text: String) {
-      val normalized = text.trim().takeIf(String::isNotBlank) ?: return
+      val normalized = visibleAssistantDraftText(text) ?: return
       hasVisibleDraft = true
       eventSink.onAssistantDraftUpdated(
         task = task,
@@ -1577,6 +1577,147 @@ class OpenCrayAgentRuntime(
       }
       clearAssistantDraft(task)
       hasVisibleDraft = false
+    }
+  }
+
+  private fun visibleAssistantDraftText(rawText: String): String? {
+    val normalized = rawText.trim().takeIf(String::isNotBlank) ?: return null
+    val startsLikeJson = normalized.startsWith('{') || normalized.startsWith('[')
+    val lowercase = normalized.lowercase()
+    val looksLikeStructuredProtocol =
+      startsLikeJson && (
+        "\"type\"" in lowercase ||
+          "\"decision\"" in lowercase ||
+          "\"actions\"" in lowercase ||
+          "\"tool_name\"" in lowercase ||
+          "\"tool_calls\"" in lowercase ||
+          "\"arguments\"" in lowercase
+        )
+    val looksLikeInternalSignal =
+      startsLikeJson && (
+        "\"is_task_bearing_request\"" in lowercase ||
+          "\"user_affect\"" in lowercase ||
+          "\"user_invites_playfulness\"" in lowercase ||
+          "\"user_requests_relational_support\"" in lowercase ||
+          "\"clarification_needed\"" in lowercase
+        )
+    if (!looksLikeStructuredProtocol && !looksLikeInternalSignal) {
+      return normalized
+    }
+    extractStructuredAssistantDraftText(normalized)?.let { return it }
+    return null
+  }
+
+  private fun extractStructuredAssistantDraftText(rawText: String): String? {
+    val lowercase = rawText.lowercase()
+    val hasExplicitTypeField = "\"type\"" in lowercase || "\"decision\"" in lowercase
+    if (
+      "\"tool_name\"" in lowercase ||
+      "\"tool_calls\"" in lowercase ||
+      "\"arguments\"" in lowercase ||
+      "\"is_task_bearing_request\"" in lowercase ||
+      "\"user_affect\"" in lowercase ||
+      "\"user_invites_playfulness\"" in lowercase ||
+      "\"user_requests_relational_support\"" in lowercase ||
+      "\"clarification_needed\"" in lowercase
+    ) {
+      return null
+    }
+    val actionType = partialJsonStringFieldValue(rawText, "type")
+      ?.trim()
+      ?.lowercase()
+      ?: partialJsonStringFieldValue(rawText, "decision")
+        ?.trim()
+        ?.lowercase()
+    return when (actionType) {
+      "final",
+      "answer",
+      -> firstNonBlankAssistantDraftField(
+        partialJsonStringFieldValue(rawText, "answer"),
+        partialJsonStringFieldValue(rawText, "text"),
+        partialJsonStringFieldValue(rawText, "message"),
+        partialJsonStringFieldValue(rawText, "summary"),
+      )?.trim()?.takeIf(String::isNotBlank)
+
+      null,
+      "",
+      -> if (hasExplicitTypeField) {
+        partialJsonStringFieldValue(rawText, "answer")
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+      } else {
+        null
+      }
+
+      else -> null
+    }
+  }
+
+  private fun firstNonBlankAssistantDraftField(vararg values: String?): String? =
+    values.firstOrNull { value -> !value.isNullOrBlank() }
+
+  private fun partialJsonStringFieldValue(
+    rawText: String,
+    fieldName: String,
+  ): String? {
+    val fieldPattern = "\"$fieldName\""
+    var searchStart = 0
+    while (true) {
+      val keyIndex = rawText.indexOf(fieldPattern, startIndex = searchStart)
+      if (keyIndex < 0) {
+        return null
+      }
+      var index = keyIndex + fieldPattern.length
+      while (index < rawText.length && rawText[index].isWhitespace()) {
+        index += 1
+      }
+      if (index >= rawText.length || rawText[index] != ':') {
+        searchStart = keyIndex + fieldPattern.length
+        continue
+      }
+      index += 1
+      while (index < rawText.length && rawText[index].isWhitespace()) {
+        index += 1
+      }
+      if (index >= rawText.length || rawText[index] != '"') {
+        return null
+      }
+      index += 1
+      val builder = StringBuilder()
+      var escaped = false
+      while (index < rawText.length) {
+        val character = rawText[index]
+        if (escaped) {
+          builder.append(
+            when (character) {
+              'n' -> '\n'
+              'r' -> '\r'
+              't' -> '\t'
+              '\\',
+              '"',
+              '/',
+              -> character
+              else -> character
+            },
+          )
+          escaped = false
+          index += 1
+          continue
+        }
+        when (character) {
+          '\\' -> {
+            escaped = true
+            index += 1
+          }
+
+          '"' -> return builder.toString()
+          else -> {
+            builder.append(character)
+            index += 1
+          }
+        }
+      }
+      return builder.toString()
     }
   }
 

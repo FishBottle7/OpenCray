@@ -1,5 +1,6 @@
 package com.opencray.app
 
+import android.util.Log
 import com.opencray.llm.LiteLlmProviderClient
 import com.opencray.llm.LiteLlmGatewayMessage
 import com.opencray.llm.LiteLlmGatewayMessageRole
@@ -17,6 +18,7 @@ import com.opencray.llm.LiteLlmStructuredToolCall
 import com.opencray.llm.LiteLlmToolChoice
 import com.opencray.llm.LiteLlmToolChoiceMode
 import com.opencray.llm.LiteLlmVisibleTextObserver
+import java.io.BufferedInputStream
 import java.io.BufferedReader
 import java.io.InputStream
 import java.io.InputStreamReader
@@ -104,6 +106,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
     val protocol = resolvedProtocol(request)
     val streamResponses = shouldStreamResponses(request, protocol)
+    streamDebug(
+      "provider.execute protocol=$protocol stream=$streamResponses model=${request.route.model} routeStream=${request.route.metadata["stream"]}",
+    )
     val requestDiagnostics = requestDiagnosticsMetadata(request)
     invalidToolMessageContract(request.request.messages)?.let { validationError ->
       return LiteLlmProviderResult.Failure(
@@ -144,6 +149,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       }
 
       val responseCode = connection.responseCode
+      streamDebug(
+        "provider.response code=$responseCode protocol=$protocol contentType=${connection.contentType ?: "-"} contentEncoding=${connection.contentEncoding ?: "-"}",
+      )
       val responseText = if (responseCode in 200..299) {
         readSuccessResponse(
           input = connection.inputStream,
@@ -229,11 +237,15 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         }
       }
     } catch (timeout: java.net.SocketTimeoutException) {
+      streamDebug("provider.timeout protocol=$protocol message=${timeout.message ?: "-"}")
       LiteLlmProviderResult.Timeout(
         errorMessage = timeout.message ?: "Provider request timed out.",
         metadata = requestDiagnostics,
       )
     } catch (exception: Exception) {
+      streamDebug(
+        "provider.exception protocol=$protocol type=${exception::class.java.name} message=${exception.message ?: "-"}",
+      )
       LiteLlmProviderResult.Failure(
         errorCode = "PROVIDER_TRANSPORT_ERROR",
         errorMessage = exception.message ?: exception::class.java.simpleName,
@@ -3403,26 +3415,70 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     streamObserver: LiteLlmVisibleTextObserver,
   ): String = when {
     input == null -> ""
-    streamResponses &&
-      contentType.orEmpty().contains("text/event-stream", ignoreCase = true) -> when (protocol) {
-      LlmProviderProtocols.ANTHROPIC -> readAnthropicStream(
-        input = input,
-        streamObserver = streamObserver,
-      )
-
-      LlmProviderProtocols.OPENAI_RESPONSES -> readOpenAiResponsesStream(
-        input = input,
-        streamObserver = streamObserver,
-      )
-
-      else -> readOpenAiChatCompletionsStream(
-        input = input,
-        streamObserver = streamObserver,
-      )
-    }
     else -> {
-      readStream(input)
+      val normalizedInput = if (input is BufferedInputStream) {
+        input
+      } else {
+        BufferedInputStream(input)
+      }
+      if (
+        streamResponses &&
+        shouldTreatSuccessResponseAsEventStream(
+          input = normalizedInput,
+          contentType = contentType,
+        )
+      ) {
+        streamDebug(
+          "provider.readSuccessResponse protocol=$protocol stream=true contentType=$contentType mode=event_stream",
+        )
+        when (protocol) {
+          LlmProviderProtocols.ANTHROPIC -> readAnthropicStream(
+            input = normalizedInput,
+            streamObserver = streamObserver,
+          )
+
+          LlmProviderProtocols.OPENAI_RESPONSES -> readOpenAiResponsesStream(
+            input = normalizedInput,
+            streamObserver = streamObserver,
+          )
+
+          else -> readOpenAiChatCompletionsStream(
+            input = normalizedInput,
+            streamObserver = streamObserver,
+          )
+        }
+      } else {
+        streamDebug(
+          "provider.readSuccessResponse protocol=$protocol stream=$streamResponses contentType=$contentType mode=plain_body",
+        )
+        readStream(normalizedInput)
+      }
     }
+  }
+
+  private fun shouldTreatSuccessResponseAsEventStream(
+    input: BufferedInputStream,
+    contentType: String?,
+  ): Boolean {
+    if (contentType.orEmpty().contains("text/event-stream", ignoreCase = true)) {
+      return true
+    }
+    input.mark(STREAM_SNIFF_LIMIT_BYTES)
+    val buffer = ByteArray(STREAM_SNIFF_LIMIT_BYTES)
+    val bytesRead = runCatching { input.read(buffer) }.getOrDefault(-1)
+    input.reset()
+    if (bytesRead <= 0) {
+      return false
+    }
+    val preview = String(buffer, 0, bytesRead, StandardCharsets.UTF_8)
+    val firstSignalLine = preview
+      .lineSequence()
+      .map(String::trimStart)
+      .firstOrNull { line -> line.isNotBlank() }
+      ?: return false
+    return firstSignalLine.startsWith("event:") ||
+      firstSignalLine.startsWith("data:") ||
+      firstSignalLine.startsWith(":")
   }
 
   private fun readAnthropicStream(
@@ -3435,6 +3491,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     val visibleTextCoalescer = VisibleTextSnapshotCoalescer(
       observer = streamObserver,
       minIntervalMs = streamUpdateMinIntervalMs,
+      normalizer = ::visibleAssistantDraftText,
     )
     BufferedReader(InputStreamReader(input, StandardCharsets.UTF_8)).use { reader ->
       var currentEvent = ""
@@ -3580,6 +3637,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     val visibleTextCoalescer = VisibleTextSnapshotCoalescer(
       observer = streamObserver,
       minIntervalMs = streamUpdateMinIntervalMs,
+      normalizer = ::visibleAssistantDraftText,
     )
     BufferedReader(InputStreamReader(input, StandardCharsets.UTF_8)).use { reader ->
       var currentEvent = ""
@@ -3760,6 +3818,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     val visibleTextCoalescer = VisibleTextSnapshotCoalescer(
       observer = streamObserver,
       minIntervalMs = streamUpdateMinIntervalMs,
+      normalizer = ::visibleAssistantDraftText,
     )
     BufferedReader(InputStreamReader(input, StandardCharsets.UTF_8)).use { reader ->
       var currentEvent = ""
@@ -3975,6 +4034,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         throw IllegalStateException(message)
       }
     }
+    streamDebug(
+      "provider.responsesEvent type=$eventType activeOutputItems=${outputItems.size} visibleChanged=$visibleTextMayHaveChanged",
+    )
     if (visibleTextMayHaveChanged) {
       val visibleText = responsesVisibleText(outputItems)
       visibleTextCoalescer.update(visibleText)
@@ -4402,6 +4464,145 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   private fun firstNonBlankString(vararg values: String?): String? =
     values.firstOrNull { value -> !value.isNullOrBlank() }
 
+  private fun visibleAssistantDraftText(rawText: String): String? {
+    val normalized = rawText.trim().takeIf(String::isNotBlank) ?: return null
+    val startsLikeJson = normalized.startsWith('{') || normalized.startsWith('[')
+    val lowercase = normalized.lowercase()
+    val looksLikeStructuredProtocol =
+      startsLikeJson && (
+        "\"type\"" in lowercase ||
+          "\"decision\"" in lowercase ||
+          "\"actions\"" in lowercase ||
+          "\"tool_name\"" in lowercase ||
+          "\"tool_calls\"" in lowercase ||
+          "\"function_call\"" in lowercase ||
+          "\"call_id\"" in lowercase ||
+          "\"arguments\"" in lowercase
+        )
+    val looksLikeInternalSignal =
+      startsLikeJson && (
+        "\"is_task_bearing_request\"" in lowercase ||
+          "\"user_affect\"" in lowercase ||
+          "\"user_invites_playfulness\"" in lowercase ||
+          "\"user_requests_relational_support\"" in lowercase ||
+          "\"clarification_needed\"" in lowercase
+        )
+    if (!looksLikeStructuredProtocol && !looksLikeInternalSignal) {
+      return normalized
+    }
+    return extractStructuredAssistantDraftText(normalized)
+  }
+
+  private fun extractStructuredAssistantDraftText(rawText: String): String? {
+    val lowercase = rawText.lowercase()
+    val hasExplicitTypeField = "\"type\"" in lowercase || "\"decision\"" in lowercase
+    if (
+      "\"tool_name\"" in lowercase ||
+      "\"tool_calls\"" in lowercase ||
+      "\"function_call\"" in lowercase ||
+      "\"call_id\"" in lowercase ||
+      "\"arguments\"" in lowercase ||
+      "\"is_task_bearing_request\"" in lowercase ||
+      "\"user_affect\"" in lowercase ||
+      "\"user_invites_playfulness\"" in lowercase ||
+      "\"user_requests_relational_support\"" in lowercase ||
+      "\"clarification_needed\"" in lowercase
+    ) {
+      return null
+    }
+    val actionType = firstNonBlankString(
+      partialJsonStringFieldValue(rawText, "type")?.trim()?.lowercase()?.takeIf(String::isNotBlank),
+      partialJsonStringFieldValue(rawText, "decision")?.trim()?.lowercase()?.takeIf(String::isNotBlank),
+    )
+    return when (actionType) {
+      "final",
+      "answer",
+      -> firstNonBlankString(
+        partialJsonStringFieldValue(rawText, "answer"),
+        partialJsonStringFieldValue(rawText, "text"),
+        partialJsonStringFieldValue(rawText, "message"),
+        partialJsonStringFieldValue(rawText, "summary"),
+      )?.trim()?.takeIf(String::isNotBlank)
+
+      null,
+      "",
+      -> if (hasExplicitTypeField) {
+        partialJsonStringFieldValue(rawText, "answer")
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+      } else {
+        null
+      }
+
+      else -> null
+    }
+  }
+
+  private fun partialJsonStringFieldValue(
+    rawText: String,
+    fieldName: String,
+  ): String? {
+    val fieldPattern = "\"$fieldName\""
+    var searchStart = 0
+    while (true) {
+      val keyIndex = rawText.indexOf(fieldPattern, startIndex = searchStart)
+      if (keyIndex < 0) {
+        return null
+      }
+      var index = keyIndex + fieldPattern.length
+      while (index < rawText.length && rawText[index].isWhitespace()) {
+        index += 1
+      }
+      if (index >= rawText.length || rawText[index] != ':') {
+        searchStart = keyIndex + fieldPattern.length
+        continue
+      }
+      index += 1
+      while (index < rawText.length && rawText[index].isWhitespace()) {
+        index += 1
+      }
+      if (index >= rawText.length || rawText[index] != '"') {
+        return null
+      }
+      index += 1
+      val builder = StringBuilder()
+      var escaped = false
+      while (index < rawText.length) {
+        val character = rawText[index]
+        if (escaped) {
+          builder.append(
+            when (character) {
+              'n' -> '\n'
+              'r' -> '\r'
+              't' -> '\t'
+              '\\',
+              '"',
+              '/',
+              -> character
+              else -> character
+            },
+          )
+          escaped = false
+          index += 1
+          continue
+        }
+        when (character) {
+          '\\' -> {
+            escaped = true
+            index += 1
+          }
+
+          '"' -> return builder.toString()
+          else -> {
+            builder.append(character)
+            index += 1
+          }
+        }
+      }
+      return builder.toString()
+    }
+  }
+
   private data class ResponseTextSegments(
     val commentary: List<String> = emptyList(),
     val finalAnswer: List<String> = emptyList(),
@@ -4423,13 +4624,16 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   private class VisibleTextSnapshotCoalescer(
     private val observer: LiteLlmVisibleTextObserver,
     private val minIntervalMs: Long,
+    private val normalizer: (String) -> String? = { text ->
+      text.trim().takeIf(String::isNotBlank)
+    },
   ) {
     private var lastEmittedText: String? = null
     private var lastEmittedAtEpochMs: Long = 0L
     private var pendingText: String? = null
 
     fun update(text: String) {
-      val normalized = text.trim().takeIf(String::isNotBlank) ?: return
+      val normalized = normalizer(text) ?: return
       pendingText = normalized
       emitIfEligible(force = lastEmittedText == null)
     }
@@ -4448,6 +4652,12 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       if (!force && minIntervalMs > 0L && now - lastEmittedAtEpochMs < minIntervalMs) {
         return
       }
+      runCatching {
+        Log.d(
+          STREAM_DEBUG_TAG,
+          "provider.visibleDraft len=${text.length} preview=${text.take(STREAM_DEBUG_PREVIEW_CHARS).replace('\n', ' ')}",
+        )
+      }
       observer.onVisibleTextSnapshot(text)
       lastEmittedText = text
       lastEmittedAtEpochMs = now
@@ -4458,6 +4668,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   companion object {
     private const val DEFAULT_ANTHROPIC_MAX_TOKENS: Int = 4096
     private const val DEFAULT_STREAM_UPDATE_MIN_INTERVAL_MS: Long = 0L
+    private const val STREAM_SNIFF_LIMIT_BYTES: Int = 2_048
+    private const val STREAM_DEBUG_PREVIEW_CHARS: Int = 80
+    private const val STREAM_DEBUG_TAG: String = "OpenCrayStream"
     private const val MAX_INLINE_IMAGE_BYTES: Long = 20L * 1024L * 1024L
     private const val MAX_INLINE_PDF_BYTES: Long = 32L * 1024L * 1024L
     private const val ANTHROPIC_WEB_SEARCH_TOOL_TYPE: String = "web_search_20250305"
@@ -4475,5 +4688,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
     internal fun providerUserAgent(versionName: String): String =
       OpenCrayUserAgent.providerApi(versionName)
+  }
+
+  private fun streamDebug(message: String) {
+    runCatching { Log.d(STREAM_DEBUG_TAG, message) }
   }
 }

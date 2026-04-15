@@ -63,8 +63,6 @@ class OpenCrayUiCopy {
       isChinese ? '$action 还没接入。' : '$action is not wired yet.';
   String get filesLocationPath => 'OpenCray / src / main';
   String get filesLocationItemCount => isChinese ? '622 项' : '622 items';
-  String get filesLocationAvailableSpace =>
-      isChinese ? '可用 4.1 GB' : '4.1 GB available';
   String get filesRefreshAction => isChinese ? '刷新' : 'Refresh';
   String get filesTreeTitle => isChinese ? '文件树' : 'File tree';
   String get filesEmptyTitle => isChinese ? '工作区还是空的' : 'Workspace is empty';
@@ -90,8 +88,6 @@ class OpenCrayUiCopy {
   String filesWorkspaceTotals(int directoryCount, int fileCount) => isChinese
       ? '$directoryCount 个文件夹 · $fileCount 个文件'
       : '$directoryCount folders · $fileCount files';
-  String filesAvailableSpace(String amount) =>
-      isChinese ? '可用 $amount' : '$amount available';
   String filesItemsShown(int count) =>
       isChinese ? '显示 $count 项' : '$count shown';
   String get filesTreeTruncated => isChinese

@@ -116,24 +116,135 @@ String _hostInstanceId(OpenCrayChatRuntimeSnapshot snapshot) =>
 
 String? _visibleAssistantDraftText(String rawText) {
   final String normalized = rawText.trim();
-  if (normalized.isEmpty || _looksLikeToolCallPayload(normalized)) {
+  if (normalized.isEmpty) {
     return null;
   }
-  return normalized;
+  final bool startsLikeJson =
+      normalized.startsWith('{') || normalized.startsWith('[');
+  if (!startsLikeJson) {
+    return normalized;
+  }
+  final String lowercase = normalized.toLowerCase();
+  final bool hasExplicitTypeField =
+      lowercase.contains('"type"') || lowercase.contains('"decision"');
+  final bool looksLikeStructuredProtocol =
+      hasExplicitTypeField ||
+      lowercase.contains('"actions"') ||
+      lowercase.contains('"tool_name"') ||
+      lowercase.contains('"tool_calls"') ||
+      lowercase.contains('"function_call"') ||
+      lowercase.contains('"call_id"') ||
+      lowercase.contains('"arguments"');
+  final bool looksLikeInternalSignal =
+      lowercase.contains('"is_task_bearing_request"') ||
+      lowercase.contains('"user_affect"') ||
+      lowercase.contains('"user_invites_playfulness"') ||
+      lowercase.contains('"user_requests_relational_support"') ||
+      lowercase.contains('"clarification_needed"');
+  if (!looksLikeStructuredProtocol && !looksLikeInternalSignal) {
+    return normalized;
+  }
+  if (looksLikeInternalSignal ||
+      lowercase.contains('"tool_name"') ||
+      lowercase.contains('"tool_calls"') ||
+      lowercase.contains('"function_call"') ||
+      lowercase.contains('"call_id"') ||
+      lowercase.contains('"arguments"')) {
+    return null;
+  }
+  final String? actionType = _firstNonBlankDraftField(<String?>[
+    _partialJsonStringFieldValue(normalized, 'type')?.trim().toLowerCase(),
+    _partialJsonStringFieldValue(normalized, 'decision')?.trim().toLowerCase(),
+  ]);
+  switch (actionType) {
+    case 'final':
+    case 'answer':
+      return _firstNonBlankDraftField(<String?>[
+        _partialJsonStringFieldValue(normalized, 'answer'),
+        _partialJsonStringFieldValue(normalized, 'text'),
+        _partialJsonStringFieldValue(normalized, 'message'),
+        _partialJsonStringFieldValue(normalized, 'summary'),
+      ])?.trim();
+    case null:
+    case '':
+      return hasExplicitTypeField
+          ? _partialJsonStringFieldValue(normalized, 'answer')?.trim()
+          : null;
+    default:
+      return null;
+  }
 }
 
-bool _looksLikeToolCallPayload(String text) {
-  final String normalized = text.trimLeft();
-  if (!(normalized.startsWith('{') || normalized.startsWith('['))) {
-    return false;
+String? _firstNonBlankDraftField(List<String?> values) {
+  for (final String? value in values) {
+    final String trimmed = value?.trim() ?? '';
+    if (trimmed.isNotEmpty) {
+      return trimmed;
+    }
   }
-  final String lower = normalized.toLowerCase();
-  return lower.contains('"tool_name"') ||
-      lower.contains('"tool_calls"') ||
-      lower.contains('"function_call"') ||
-      lower.contains('"call_id"') ||
-      lower.contains('"type":"tool_call"') ||
-      lower.contains('"type": "tool_call"');
+  return null;
+}
+
+String? _partialJsonStringFieldValue(String rawText, String fieldName) {
+  final String fieldPattern = '"$fieldName"';
+  int searchStart = 0;
+  while (true) {
+    final int keyIndex = rawText.indexOf(fieldPattern, searchStart);
+    if (keyIndex < 0) {
+      return null;
+    }
+    int index = keyIndex + fieldPattern.length;
+    while (index < rawText.length && rawText[index].trim().isEmpty) {
+      index += 1;
+    }
+    if (index >= rawText.length || rawText[index] != ':') {
+      searchStart = keyIndex + fieldPattern.length;
+      continue;
+    }
+    index += 1;
+    while (index < rawText.length && rawText[index].trim().isEmpty) {
+      index += 1;
+    }
+    if (index >= rawText.length || rawText[index] != '"') {
+      return null;
+    }
+    index += 1;
+    final StringBuffer buffer = StringBuffer();
+    bool escaped = false;
+    while (index < rawText.length) {
+      final String character = rawText[index];
+      if (escaped) {
+        switch (character) {
+          case 'n':
+            buffer.write('\n');
+            break;
+          case 'r':
+            buffer.write('\r');
+            break;
+          case 't':
+            buffer.write('\t');
+            break;
+          default:
+            buffer.write(character);
+            break;
+        }
+        escaped = false;
+        index += 1;
+        continue;
+      }
+      if (character == '\\') {
+        escaped = true;
+        index += 1;
+        continue;
+      }
+      if (character == '"') {
+        return buffer.toString();
+      }
+      buffer.write(character);
+      index += 1;
+    }
+    return buffer.toString();
+  }
 }
 
 @visibleForTesting
@@ -295,8 +406,13 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   final GlobalKey _composerKey = GlobalKey();
   StreamSubscription<OpenCrayChatSnapshot>? _chatSubscription;
   StreamSubscription<OpenCrayChatRuntimeSnapshot>? _chatRuntimeSubscription;
+  StreamSubscription<OpenCrayChatLiveAssistantDraftEvent>?
+  _liveAssistantDraftSubscription;
   OpenCrayChatSnapshot? _latestChatSnapshot;
   OpenCrayChatRuntimeSnapshot? _latestChatRuntimeSnapshot;
+  final Map<String, Map<String, OpenCrayChatLiveAssistantDraftSnapshot>>
+  _liveAssistantDraftOverridesBySession =
+      <String, Map<String, OpenCrayChatLiveAssistantDraftSnapshot>>{};
   final Set<String> _approvalTaskIdsInFlight = <String>{};
   final Set<String> _interruptRunIdsInFlight = <String>{};
   final Set<String> _retryRunIdsInFlight = <String>{};
@@ -337,6 +453,13 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     if (_state.drawer.sessions.isNotEmpty) {
       return _state.drawer.sessions.first.sessionId;
+    }
+    final String runtimeSessionId =
+        _latestChatRuntimeSnapshot?.sessionId.trim() ??
+        _latestChatSnapshot?.runtimeActivity?.sessionId.trim() ??
+        '';
+    if (runtimeSessionId.isNotEmpty) {
+      return runtimeSessionId;
     }
     return 'chat-session';
   }
@@ -388,6 +511,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       _chatRuntimeSubscription = bridge.watchChatRuntimeSnapshot().listen(
         _handleChatRuntimeSnapshot,
       );
+      _liveAssistantDraftSubscription = bridge
+          .watchLiveAssistantDraftEvents()
+          .listen(_handleLiveAssistantDraftEvent);
     }
   }
 
@@ -420,6 +546,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     _chatScrollController.removeListener(_handleChatScrollChanged);
     _chatSubscription?.cancel();
     _chatRuntimeSubscription?.cancel();
+    _liveAssistantDraftSubscription?.cancel();
     _todoArchiveHideTimer?.cancel();
     _sandboxSessionAutoRefreshTimer?.cancel();
     _sandboxSessionLifecycleRefreshTimer?.cancel();
@@ -1655,13 +1782,230 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   void _handleChatSnapshot(OpenCrayChatSnapshot snapshot) {
+    _reconcileLiveAssistantDraftOverrides(snapshot.runtimeActivity);
     _latestChatSnapshot = snapshot;
     _applyHostState();
   }
 
   void _handleChatRuntimeSnapshot(OpenCrayChatRuntimeSnapshot snapshot) {
+    _reconcileLiveAssistantDraftOverrides(snapshot);
     _latestChatRuntimeSnapshot = snapshot;
     _applyHostState();
+  }
+
+  void _handleLiveAssistantDraftEvent(
+    OpenCrayChatLiveAssistantDraftEvent event,
+  ) {
+    _storeLiveAssistantDraftOverride(event);
+    if (!mounted || _latestChatSnapshot == null) {
+      return;
+    }
+    final String sessionId = event.sessionId.trim();
+    if (sessionId.isEmpty || sessionId != _activeSessionId) {
+      return;
+    }
+    final String? visibleText = event.cleared
+        ? null
+        : _visibleAssistantDraftText(event.text);
+    final List<ChatMessageData> nextMessages = _patchMessagesForLiveDraftEvent(
+      messages: _state.messages,
+      pendingMessageId: event.pendingMessageId,
+      text: visibleText,
+      updatedAtEpochMs: event.updatedAtEpochMs,
+    );
+    if (_chatMessagesEquivalent(_state.messages, nextMessages)) {
+      return;
+    }
+    final Set<String> retainedSelection = _selectedMessageIds
+        .where(
+          (messageId) =>
+              nextMessages.any((message) => message.messageId == messageId),
+        )
+        .toSet();
+    final bool appendedMessage =
+        nextMessages.length > _state.messages.length ||
+        (_state.messages.isNotEmpty &&
+            nextMessages.isNotEmpty &&
+            _state.messages.last.messageId != nextMessages.last.messageId);
+    setState(() {
+      _state = _state.copyWith(
+        messages: nextMessages,
+        variant:
+            nextMessages.isEmpty &&
+                _state.runTraces.isEmpty &&
+                _state.composer.todos.isEmpty &&
+                _state.pendingApprovals.isEmpty
+            ? ChatPrototypeVariant.empty
+            : ChatPrototypeVariant.main,
+        emptyThreadHeight: nextMessages.isEmpty && _state.runTraces.isEmpty
+            ? 260
+            : 0,
+      );
+      _selectedMessageIds
+        ..clear()
+        ..addAll(retainedSelection);
+    });
+    if (appendedMessage || visibleText != null) {
+      _scheduleScrollToBottom();
+    }
+  }
+
+  void _storeLiveAssistantDraftOverride(
+    OpenCrayChatLiveAssistantDraftEvent event,
+  ) {
+    final String sessionId = event.sessionId.trim();
+    final String pendingMessageId = event.pendingMessageId.trim();
+    if (sessionId.isEmpty || pendingMessageId.isEmpty) {
+      return;
+    }
+    final Map<String, OpenCrayChatLiveAssistantDraftSnapshot> sessionDrafts =
+        _liveAssistantDraftOverridesBySession.putIfAbsent(
+          sessionId,
+          () => <String, OpenCrayChatLiveAssistantDraftSnapshot>{},
+        );
+    if (event.cleared) {
+      sessionDrafts.remove(pendingMessageId);
+      if (sessionDrafts.isEmpty) {
+        _liveAssistantDraftOverridesBySession.remove(sessionId);
+      }
+      return;
+    }
+    sessionDrafts[pendingMessageId] = OpenCrayChatLiveAssistantDraftSnapshot(
+      runId: event.runId,
+      taskId: event.taskId,
+      pendingMessageId: pendingMessageId,
+      text: event.text,
+      updatedAtEpochMs: event.updatedAtEpochMs,
+    );
+  }
+
+  void _reconcileLiveAssistantDraftOverrides(
+    OpenCrayChatRuntimeSnapshot? authoritativeSnapshot,
+  ) {
+    final String sessionId = authoritativeSnapshot?.sessionId.trim() ?? '';
+    if (sessionId.isEmpty) {
+      return;
+    }
+    final Map<String, OpenCrayChatLiveAssistantDraftSnapshot>? sessionDrafts =
+        _liveAssistantDraftOverridesBySession[sessionId];
+    if (sessionDrafts == null || sessionDrafts.isEmpty) {
+      return;
+    }
+    final Map<String, OpenCrayChatLiveAssistantDraftSnapshot>
+    authoritativeDraftsByMessageId =
+        <String, OpenCrayChatLiveAssistantDraftSnapshot>{
+          for (final draft in authoritativeSnapshot!.liveAssistantDrafts)
+            if (draft.pendingMessageId.trim().isNotEmpty)
+              draft.pendingMessageId.trim(): draft,
+        };
+    final int authoritativeVersion = runtimeSnapshotVersion(
+      authoritativeSnapshot,
+    );
+    final List<String> keysToRemove = <String>[];
+    sessionDrafts.forEach((pendingMessageId, overrideDraft) {
+      final OpenCrayChatLiveAssistantDraftSnapshot? authoritativeDraft =
+          authoritativeDraftsByMessageId[pendingMessageId];
+      if (authoritativeDraft != null &&
+          authoritativeDraft.updatedAtEpochMs >=
+              overrideDraft.updatedAtEpochMs) {
+        keysToRemove.add(pendingMessageId);
+        return;
+      }
+      if (authoritativeDraft == null &&
+          authoritativeVersion >= overrideDraft.updatedAtEpochMs) {
+        keysToRemove.add(pendingMessageId);
+      }
+    });
+    for (final String key in keysToRemove) {
+      sessionDrafts.remove(key);
+    }
+    if (sessionDrafts.isEmpty) {
+      _liveAssistantDraftOverridesBySession.remove(sessionId);
+    }
+  }
+
+  List<ChatMessageData> _patchMessagesForLiveDraftEvent({
+    required List<ChatMessageData> messages,
+    required String pendingMessageId,
+    required String? text,
+    required int updatedAtEpochMs,
+  }) {
+    final String normalizedMessageId = pendingMessageId.trim();
+    if (normalizedMessageId.isEmpty) {
+      return messages;
+    }
+    final int messageIndex = messages.indexWhere(
+      (message) => message.messageId.trim() == normalizedMessageId,
+    );
+    if (text == null || text.trim().isEmpty) {
+      if (messageIndex < 0) {
+        return messages;
+      }
+      final ChatMessageData existing = messages[messageIndex];
+      if (!existing.isEphemeral) {
+        return messages;
+      }
+      return <ChatMessageData>[
+        ...messages.take(messageIndex),
+        ...messages.skip(messageIndex + 1),
+      ];
+    }
+    if (messageIndex >= 0) {
+      final ChatMessageData existing = messages[messageIndex];
+      if (existing.text == text) {
+        return messages;
+      }
+      final ChatMessageData updatedMessage = ChatMessageData(
+        messageId: existing.messageId,
+        kind: existing.kind,
+        text: text,
+        meta: existing.meta,
+        createdAtEpochMs: existing.createdAtEpochMs,
+        isEphemeral: existing.isEphemeral,
+        attachments: existing.attachments,
+      );
+      return <ChatMessageData>[
+        ...messages.take(messageIndex),
+        updatedMessage,
+        ...messages.skip(messageIndex + 1),
+      ];
+    }
+    return <ChatMessageData>[
+      ...messages,
+      ChatMessageData(
+        messageId: normalizedMessageId,
+        kind: ChatMessageKind.inbound,
+        text: text,
+        createdAtEpochMs: updatedAtEpochMs,
+        isEphemeral: true,
+      ),
+    ];
+  }
+
+  bool _chatMessagesEquivalent(
+    List<ChatMessageData> left,
+    List<ChatMessageData> right,
+  ) {
+    if (identical(left, right)) {
+      return true;
+    }
+    if (left.length != right.length) {
+      return false;
+    }
+    for (int index = 0; index < left.length; index += 1) {
+      final ChatMessageData leftMessage = left[index];
+      final ChatMessageData rightMessage = right[index];
+      if (leftMessage.messageId != rightMessage.messageId ||
+          leftMessage.kind != rightMessage.kind ||
+          leftMessage.text != rightMessage.text ||
+          leftMessage.meta != rightMessage.meta ||
+          leftMessage.createdAtEpochMs != rightMessage.createdAtEpochMs ||
+          leftMessage.isEphemeral != rightMessage.isEphemeral ||
+          leftMessage.attachments.length != rightMessage.attachments.length) {
+        return false;
+      }
+    }
+    return true;
   }
 
   String? _archivedTodoFingerprint(OpenCrayChatSnapshot snapshot) {
@@ -2606,10 +2950,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         .where((messageId) => messageId.isNotEmpty)
         .toSet();
     final List<ChatMessageData> projectedLiveDraftMessages =
-        _mapUnanchoredLiveDraftMessages(
-          effectiveRuntime,
-          existingMessageIds,
-        );
+        _mapUnanchoredLiveDraftMessages(effectiveRuntime, existingMessageIds);
     final Set<String> projectedLiveDraftMessageIds = projectedLiveDraftMessages
         .map((message) => message.messageId.trim())
         .where((messageId) => messageId.isNotEmpty)
@@ -2618,10 +2959,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     final List<ChatMessageData> messages = <ChatMessageData>[
       ...mappedMessages,
       ...projectedLiveDraftMessages,
-      ..._mapProjectedAssistantPhaseMessages(
-        effectiveRuntime,
-        <String>{...existingMessageIds, ...projectedLiveDraftMessageIds},
-      ),
+      ..._mapProjectedAssistantPhaseMessages(effectiveRuntime, <String>{
+        ...existingMessageIds,
+        ...projectedLiveDraftMessageIds,
+      }),
     ];
     return ChatFeatureState(
       variant:
@@ -2713,9 +3054,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
               'outbound' => ChatMessageKind.outbound,
               _ => ChatMessageKind.inbound,
             },
-            text:
-                draftTextByMessageId[entry.value.messageId.trim()] ??
-                entry.value.text,
+            text: _resolvedChatMessageText(
+              message: entry.value,
+              draftTextByMessageId: draftTextByMessageId,
+            ),
             meta: entry.value.meta,
             createdAtEpochMs: entry.value.createdAtEpochMs,
             isEphemeral: entry.value.isEphemeral,
@@ -2754,6 +3096,33 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       }
     }
     return mapped;
+  }
+
+  String _resolvedChatMessageText({
+    required OpenCrayChatMessageSnapshot message,
+    required Map<String, String> draftTextByMessageId,
+  }) {
+    final String baseText = message.text;
+    final String messageId = message.messageId.trim();
+    final String? liveDraftText = draftTextByMessageId[messageId];
+    if (liveDraftText == null ||
+        !_shouldReplacePendingThinkingBubble(
+          messageKind: message.kind,
+          text: baseText,
+        )) {
+      return baseText;
+    }
+    return liveDraftText;
+  }
+
+  bool _shouldReplacePendingThinkingBubble({
+    required String messageKind,
+    required String text,
+  }) {
+    if (messageKind == 'outbound' || messageKind == 'timeline') {
+      return false;
+    }
+    return _thinkingPlaceholders.contains(text.trim());
   }
 
   List<ChatRunTraceData> _mapRunTraces(
@@ -3055,17 +3424,17 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
     Set<String> existingMessageIds,
   ) {
-    if (runtimeSnapshot == null || runtimeSnapshot.liveAssistantDrafts.isEmpty) {
+    if (runtimeSnapshot == null ||
+        runtimeSnapshot.liveAssistantDrafts.isEmpty) {
       return const <ChatMessageData>[];
     }
     final List<ChatMessageData> projected = <ChatMessageData>[];
     final Set<String> seenMessageIds = <String>{...existingMessageIds};
     final List<OpenCrayChatLiveAssistantDraftSnapshot> sortedDrafts =
-        runtimeSnapshot.liveAssistantDrafts.toList(growable: false)
-          ..sort(
-            (left, right) =>
-                left.updatedAtEpochMs.compareTo(right.updatedAtEpochMs),
-          );
+        runtimeSnapshot.liveAssistantDrafts.toList(growable: false)..sort(
+          (left, right) =>
+              left.updatedAtEpochMs.compareTo(right.updatedAtEpochMs),
+        );
     for (final draft in sortedDrafts) {
       final String messageId = draft.pendingMessageId.trim();
       final String text = _visibleAssistantDraftText(draft.text) ?? '';
@@ -7064,6 +7433,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     'Thinking',
     'Thinking…',
     'Thinking...',
+    'OpenCray is thinking...',
     '思考中',
     '思考中…',
     '思考中...',
@@ -7072,7 +7442,52 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   OpenCrayChatRuntimeSnapshot? _resolveRuntimeSnapshot(
     OpenCrayChatRuntimeSnapshot? embedded,
     OpenCrayChatRuntimeSnapshot? streamed,
-  ) => resolveChatRuntimeSnapshot(embedded, streamed);
+  ) {
+    final OpenCrayChatRuntimeSnapshot? resolved = resolveChatRuntimeSnapshot(
+      embedded,
+      streamed,
+    );
+    final String sessionId = resolved?.sessionId.trim() ?? _activeSessionId;
+    final List<OpenCrayChatLiveAssistantDraftSnapshot> overrideDrafts =
+        _liveAssistantDraftOverridesBySession[sessionId]?.values.toList(
+          growable: false,
+        ) ??
+        const <OpenCrayChatLiveAssistantDraftSnapshot>[];
+    if (overrideDrafts.isEmpty) {
+      return resolved;
+    }
+    final Map<String, OpenCrayChatLiveAssistantDraftSnapshot> mergedDrafts =
+        <String, OpenCrayChatLiveAssistantDraftSnapshot>{
+          for (final draft
+              in resolved?.liveAssistantDrafts ??
+                  const <OpenCrayChatLiveAssistantDraftSnapshot>[])
+            if (draft.pendingMessageId.trim().isNotEmpty)
+              draft.pendingMessageId.trim(): draft,
+        };
+    for (final draft in overrideDrafts) {
+      final String pendingMessageId = draft.pendingMessageId.trim();
+      final OpenCrayChatLiveAssistantDraftSnapshot? existing =
+          mergedDrafts[pendingMessageId];
+      if (existing == null ||
+          draft.updatedAtEpochMs >= existing.updatedAtEpochMs) {
+        mergedDrafts[pendingMessageId] = draft;
+      }
+    }
+    final List<OpenCrayChatLiveAssistantDraftSnapshot> sortedDrafts =
+        mergedDrafts.values.toList(growable: false)..sort(
+          (left, right) =>
+              left.updatedAtEpochMs.compareTo(right.updatedAtEpochMs),
+        );
+    return OpenCrayChatRuntimeSnapshot(
+      sessionId: sessionId,
+      activeRuns: resolved?.activeRuns ?? const <OpenCrayChatRunSnapshot>[],
+      retainedRuns: resolved?.retainedRuns ?? const <OpenCrayChatRunSnapshot>[],
+      subAgents: resolved?.subAgents ?? const <OpenCrayChatSubAgentSnapshot>[],
+      events: resolved?.events ?? const <OpenCrayChatRuntimeEventSnapshot>[],
+      liveAssistantDrafts: sortedDrafts,
+      hostLifecycle: resolved?.hostLifecycle,
+    );
+  }
 }
 
 class _ChatScrollContent extends StatelessWidget {

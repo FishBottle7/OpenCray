@@ -24,6 +24,7 @@ internal data class InProcessOpenCrayRuntimeOwner(
   val promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
   val supplementStoreFactory: AgentSessionSupplementStoreFactory,
   val transcriptMessagesProvider: (String) -> List<RuntimeConversationMessage>,
+  val onDeviceWarmupPlanner: (String) -> OnDeviceLlmWarmupSpec? = { null },
   val approvalRegistry: AgentTaskApprovalRegistry,
   val memoryIngestionCoordinator: ChatMemoryIngestionCoordinator,
   val replayAccess: OpenCrayRuntimeReplayAccess,
@@ -169,6 +170,7 @@ internal fun createInProcessOpenCrayRuntimeOwner(
   val liteLlmProviderClient = AppConfiguredLiteLlmProviderClient(
     cloudProviderClient = OpenAiCompatibleLiteLlmProviderClient(
       userAgent = providerUserAgent,
+      streamUpdateMinIntervalMs = 40L,
     ),
     onDeviceProviderClient = LiteRtOnDeviceLlmProviderClient(
       runtime = LiteRtOnDeviceRuntime.fromContext(
@@ -364,6 +366,7 @@ internal fun createInProcessOpenCrayRuntimeOwner(
     transcriptMessagesProvider = { sessionId ->
       transcriptStoreFactory.forChatSession(sessionId).snapshot()
     },
+    onDeviceWarmupPlanner = runtimeFactory::buildOnDeviceWarmupSpec,
     approvalRegistry = approvalRegistry,
     memoryIngestionCoordinator = memoryIngestionCoordinator,
     replayAccess = OpenCrayRuntimeReplayAccess(

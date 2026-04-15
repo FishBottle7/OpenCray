@@ -249,10 +249,12 @@ public final class LiteRtLmBridge {
   private static final class LiteRtLmEngineHandle implements EngineHandle {
     private final Engine engine;
     private final ToolExecutorResolver toolExecutorResolver;
-    private volatile Conversation activeConversation;
+    private volatile Conversation inFlightConversation;
     private volatile ToolExecutor activeToolExecutor;
     private volatile ToolProviderCacheKey cachedToolProviderKey = ToolProviderCacheKey.empty();
     private volatile List<ToolProvider> cachedToolProviders = Collections.emptyList();
+    private volatile CachedConversationState activeConversationState;
+    private volatile CachedConversationState warmConversationState;
 
     private LiteRtLmEngineHandle(
         String modelPath,
@@ -285,55 +287,95 @@ public final class LiteRtLmBridge {
 
     @Override
     public Response generate(Request request) {
-      Conversation conversation =
-          engine.createConversation(conversationConfigFrom(request));
-      activeConversation = conversation;
+      ConversationGenerationPlan plan = selectGenerationPlan(request);
+      Conversation conversation = plan.getConversation();
+      inFlightConversation = conversation;
+      boolean keepConversation = false;
       try {
+        activeToolExecutor =
+            request.isAutomaticToolExecutionEnabled() ? request.getToolExecutor() : null;
         Message response =
-            conversation.sendMessage(request.getPrompt(), Collections.emptyMap());
-        return responseFromMessage(response);
+            sendConversationMessage(
+                conversation,
+                plan.getTurnMessage(),
+                request.getPrompt());
+        Response bridgeResponse = responseFromMessage(response);
+        retainActiveConversation(
+            new CachedConversationState(
+                conversation,
+                runtimeFingerprintFor(request),
+                projectedReplayMessages(request.getInitialMessages(), bridgeResponse)));
+        keepConversation = true;
+        return bridgeResponse;
       } finally {
         activeToolExecutor = null;
-        activeConversation = null;
-        conversation.close();
+        inFlightConversation = null;
+        if (!keepConversation) {
+          invalidateConversationState(conversation);
+          closeConversation(conversation);
+        }
       }
     }
 
     @Override
     public void prewarm(Request request) {
-      Conversation conversation =
-          engine.createConversation(conversationConfigFrom(request));
-      activeConversation = conversation;
-      try {
-        // Creating and closing a conversation eagerly hides the first-turn engine setup cost
-        // without mutating user-visible session state.
-      } finally {
-        activeToolExecutor = null;
-        activeConversation = null;
-        conversation.close();
+      String runtimeFingerprint = runtimeFingerprintFor(request);
+      List<MessagePayload> warmMessages = immutableList(request.getInitialMessages());
+      CachedConversationState activeState = activeConversationState;
+      if (activeState != null &&
+          activeState.startsWith(runtimeFingerprint, warmMessages) &&
+          activeState.getConversation().isAlive()) {
+        return;
       }
+      CachedConversationState warmState = warmConversationState;
+      if (warmState != null &&
+          warmState.matches(runtimeFingerprint, warmMessages) &&
+          warmState.getConversation().isAlive()) {
+        return;
+      }
+      retainWarmConversation(
+          new CachedConversationState(
+              engine.createConversation(conversationConfigFrom(request, warmMessages)),
+              runtimeFingerprint,
+              warmMessages));
+      activeToolExecutor = null;
     }
 
     @Override
     public void cancelActiveGeneration() {
-      Conversation conversation = activeConversation;
+      Conversation conversation = inFlightConversation;
       if (conversation != null) {
         conversation.cancelProcess();
+        invalidateConversationState(conversation);
       }
     }
 
     @Override
     public void close() {
       cancelActiveGeneration();
-      activeConversation = null;
+      CachedConversationState activeState = activeConversationState;
+      CachedConversationState warmState = warmConversationState;
+      activeConversationState = null;
+      warmConversationState = null;
+      closeConversation(activeState == null ? null : activeState.getConversation());
+      closeConversation(
+          warmState == null ? null : warmState.getConversation(),
+          activeState == null ? null : activeState.getConversation());
+      inFlightConversation = null;
       engine.close();
     }
 
     private ConversationConfig conversationConfigFrom(Request request) {
+      return conversationConfigFrom(request, request.getInitialMessages());
+    }
+
+    private ConversationConfig conversationConfigFrom(
+        Request request,
+        List<MessagePayload> initialMessages) {
       activeToolExecutor =
           request.isAutomaticToolExecutionEnabled() ? request.getToolExecutor() : null;
       Contents systemInstruction = contentsFromText(request.getSystemInstruction());
-      List<Message> initialMessages = toLiteRtMessages(request.getInitialMessages());
+      List<Message> liteRtInitialMessages = toLiteRtMessages(initialMessages);
       List<ToolProvider> tools = toolProvidersFor(request.getTools());
       SamplerConfig samplerConfig =
           new SamplerConfig(
@@ -344,18 +386,141 @@ public final class LiteRtLmBridge {
       if (request.isThinkingEnabled()) {
         return new ConversationConfig(
             systemInstruction,
-            initialMessages,
+            liteRtInitialMessages,
             tools,
             samplerConfig,
             false);
       }
       return new ConversationConfig(
           systemInstruction,
-          initialMessages,
+          liteRtInitialMessages,
           tools,
           samplerConfig,
           false,
           Collections.emptyList());
+    }
+
+    private ConversationGenerationPlan selectGenerationPlan(Request request) {
+      List<MessagePayload> initialMessages = immutableList(request.getInitialMessages());
+      MessagePayload turnMessage = null;
+      List<MessagePayload> seedMessages = Collections.emptyList();
+      String runtimeFingerprint = runtimeFingerprintFor(request);
+      if (!initialMessages.isEmpty()) {
+        // The gateway request already carries the current turn inside messages.
+        // Seed the conversation with the prefix only, then send the last message as the actual turn input.
+        turnMessage = initialMessages.get(initialMessages.size() - 1);
+        seedMessages = immutableList(initialMessages.subList(0, initialMessages.size() - 1));
+        CachedConversationState activeState = activeConversationState;
+        if (activeState != null &&
+            activeState.matches(runtimeFingerprint, seedMessages) &&
+            activeState.getConversation().isAlive()) {
+          return new ConversationGenerationPlan(activeState.getConversation(), turnMessage);
+        }
+        CachedConversationState warmState = warmConversationState;
+        if (warmState != null &&
+            warmState.matches(runtimeFingerprint, seedMessages) &&
+            warmState.getConversation().isAlive()) {
+          return new ConversationGenerationPlan(warmState.getConversation(), turnMessage);
+        }
+      }
+      return new ConversationGenerationPlan(
+          engine.createConversation(conversationConfigFrom(request, seedMessages)),
+          turnMessage);
+    }
+
+    private Message sendConversationMessage(
+        Conversation conversation,
+        MessagePayload turnMessage,
+        String fallbackPrompt) {
+      if (turnMessage != null) {
+        return conversation.sendMessage(toLiteRtMessage(turnMessage), Collections.emptyMap());
+      }
+      return conversation.sendMessage(fallbackPrompt, Collections.emptyMap());
+    }
+
+    private void retainActiveConversation(CachedConversationState nextActiveState) {
+      CachedConversationState previousActiveState = activeConversationState;
+      activeConversationState = nextActiveState;
+      CachedConversationState warmState = warmConversationState;
+      if (warmState != null &&
+          warmState.getConversation() == nextActiveState.getConversation()) {
+        warmConversationState = null;
+      }
+      closeConversation(
+          previousActiveState == null ? null : previousActiveState.getConversation(),
+          nextActiveState.getConversation(),
+          warmState == null ? null : warmState.getConversation());
+    }
+
+    private void retainWarmConversation(CachedConversationState nextWarmState) {
+      CachedConversationState previousWarmState = warmConversationState;
+      warmConversationState = nextWarmState;
+      CachedConversationState activeState = activeConversationState;
+      closeConversation(
+          previousWarmState == null ? null : previousWarmState.getConversation(),
+          nextWarmState.getConversation(),
+          activeState == null ? null : activeState.getConversation());
+    }
+
+    private void invalidateConversationState(Conversation conversation) {
+      CachedConversationState activeState = activeConversationState;
+      if (activeState != null && activeState.getConversation() == conversation) {
+        activeConversationState = null;
+      }
+      CachedConversationState warmState = warmConversationState;
+      if (warmState != null && warmState.getConversation() == conversation) {
+        warmConversationState = null;
+      }
+    }
+
+    private List<MessagePayload> projectedReplayMessages(
+        List<MessagePayload> requestMessages,
+        Response response) {
+      List<MessagePayload> replayMessages = new ArrayList<>(immutableList(requestMessages));
+      replayMessages.addAll(projectResponseMessages(response));
+      return Collections.unmodifiableList(replayMessages);
+    }
+
+    private List<MessagePayload> projectResponseMessages(Response response) {
+      String visibleText = normalizeText(response == null ? null : response.getText());
+      List<ToolCallPayload> toolCalls =
+          response == null ? Collections.<ToolCallPayload>emptyList() : response.getToolCalls();
+      if (toolCalls.isEmpty()) {
+        if (visibleText.isEmpty()) {
+          return Collections.emptyList();
+        }
+        return Collections.singletonList(
+            new MessagePayload("model", visibleText, Collections.emptyList(), null));
+      }
+      List<MessagePayload> projected = new ArrayList<>();
+      if (!visibleText.isEmpty()) {
+        projected.add(
+            new MessagePayload("model", visibleText, Collections.emptyList(), null));
+      }
+      projected.add(
+          new MessagePayload("model", null, toolCalls, null));
+      return Collections.unmodifiableList(projected);
+    }
+
+    private String runtimeFingerprintFor(Request request) {
+      StringBuilder builder = new StringBuilder();
+      builder.append("system=").append(normalizeText(request.getSystemInstruction())).append('\n');
+      builder.append("topK=").append(request.getTopK()).append('\n');
+      builder.append("topP=").append(request.getTopP()).append('\n');
+      builder.append("temperature=").append(request.getTemperature()).append('\n');
+      builder.append("thinking=").append(request.isThinkingEnabled()).append('\n');
+      builder.append("autoTools=").append(request.isAutomaticToolExecutionEnabled()).append('\n');
+      for (ToolDefinition definition : immutableList(request.getTools())) {
+        builder
+            .append("tool=")
+            .append(normalizeText(definition.getName()))
+            .append('\u0000')
+            .append(normalizeText(definition.getDescription()))
+            .append('\u0000')
+            .append(normalizeText(definition.getSchemaJson()))
+            .append('\n');
+      }
+      return builder.toString();
     }
 
     private List<ToolProvider> toolProvidersFor(List<ToolDefinition> definitions) {
@@ -478,6 +643,87 @@ public final class LiteRtLmBridge {
       return Role.TOOL;
     }
     return Role.USER;
+  }
+
+  private static String normalizeText(String value) {
+    return value == null ? "" : value.trim();
+  }
+
+  private static String fingerprintMessage(MessagePayload payload) {
+    StringBuilder builder = new StringBuilder();
+    builder.append("role=").append(normalizeText(payload.getRole()).toLowerCase()).append('\n');
+    builder.append("content=").append(normalizeText(payload.getContent())).append('\n');
+    for (ToolCallPayload toolCall : immutableList(payload.getToolCalls())) {
+      builder
+          .append("tool_call=")
+          .append(normalizeText(toolCall.getName()))
+          .append('\u0000')
+          .append(fingerprintValue(toolCall.getArguments()))
+          .append('\n');
+    }
+    ToolResultPayload toolResult = payload.getToolResult();
+    if (toolResult != null) {
+      builder
+          .append("tool_result=")
+          .append(normalizeText(toolResult.getToolName()))
+          .append('\u0000')
+          .append(fingerprintValue(toolResult.getResponse()))
+          .append('\n');
+    }
+    return builder.toString();
+  }
+
+  private static List<String> fingerprintMessages(List<MessagePayload> payloads) {
+    List<String> fingerprints = new ArrayList<>();
+    for (MessagePayload payload : immutableList(payloads)) {
+      fingerprints.add(fingerprintMessage(payload));
+    }
+    return Collections.unmodifiableList(fingerprints);
+  }
+
+  private static String fingerprintValue(Object value) {
+    if (value == null || value == JSONObject.NULL) {
+      return "null";
+    }
+    if (value instanceof Map) {
+      StringBuilder builder = new StringBuilder("{");
+      boolean first = true;
+      for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+        if (!first) {
+          builder.append(',');
+        }
+        first = false;
+        builder
+            .append(String.valueOf(entry.getKey()))
+            .append(':')
+            .append(fingerprintValue(entry.getValue()));
+      }
+      return builder.append('}').toString();
+    }
+    if (value instanceof Iterable) {
+      StringBuilder builder = new StringBuilder("[");
+      boolean first = true;
+      for (Object item : (Iterable<?>) value) {
+        if (!first) {
+          builder.append(',');
+        }
+        first = false;
+        builder.append(fingerprintValue(item));
+      }
+      return builder.append(']').toString();
+    }
+    if (value instanceof Object[]) {
+      StringBuilder builder = new StringBuilder("[");
+      Object[] array = (Object[]) value;
+      for (int index = 0; index < array.length; index += 1) {
+        if (index > 0) {
+          builder.append(',');
+        }
+        builder.append(fingerprintValue(array[index]));
+      }
+      return builder.append(']').toString();
+    }
+    return String.valueOf(value);
   }
 
   private static Contents contentsFromText(String text) {
@@ -615,6 +861,81 @@ public final class LiteRtLmBridge {
     return value
         .replace("\\", "\\\\")
         .replace("\"", "\\\"");
+  }
+
+  private static void closeConversation(
+      Conversation conversation,
+      Conversation... preserved) {
+    if (conversation == null) {
+      return;
+    }
+    for (Conversation kept : preserved) {
+      if (conversation == kept) {
+        return;
+      }
+    }
+    if (conversation.isAlive()) {
+      conversation.close();
+    }
+  }
+
+  private static final class CachedConversationState {
+    private final Conversation conversation;
+    private final String runtimeFingerprint;
+    private final List<String> replayMessageFingerprints;
+
+    private CachedConversationState(
+        Conversation conversation,
+        String runtimeFingerprint,
+        List<MessagePayload> replayMessages) {
+      this.conversation = conversation;
+      this.runtimeFingerprint = runtimeFingerprint == null ? "" : runtimeFingerprint;
+      this.replayMessageFingerprints = fingerprintMessages(replayMessages);
+    }
+
+    private Conversation getConversation() {
+      return conversation;
+    }
+
+    private boolean matches(
+        String requestedRuntimeFingerprint,
+        List<MessagePayload> requestedReplayMessages) {
+      return runtimeFingerprint.equals(requestedRuntimeFingerprint == null ? "" : requestedRuntimeFingerprint)
+          && replayMessageFingerprints.equals(fingerprintMessages(requestedReplayMessages));
+    }
+
+    private boolean startsWith(
+        String requestedRuntimeFingerprint,
+        List<MessagePayload> requestedPrefixMessages) {
+      if (!runtimeFingerprint.equals(requestedRuntimeFingerprint == null ? "" : requestedRuntimeFingerprint)) {
+        return false;
+      }
+      List<String> requestedFingerprints = fingerprintMessages(requestedPrefixMessages);
+      if (requestedFingerprints.size() > replayMessageFingerprints.size()) {
+        return false;
+      }
+      return replayMessageFingerprints.subList(0, requestedFingerprints.size()).equals(requestedFingerprints);
+    }
+  }
+
+  private static final class ConversationGenerationPlan {
+    private final Conversation conversation;
+    private final MessagePayload turnMessage;
+
+    private ConversationGenerationPlan(
+        Conversation conversation,
+        MessagePayload turnMessage) {
+      this.conversation = conversation;
+      this.turnMessage = turnMessage;
+    }
+
+    private Conversation getConversation() {
+      return conversation;
+    }
+
+    private MessagePayload getTurnMessage() {
+      return turnMessage;
+    }
   }
 
   private static final class ToolProviderCacheKey {

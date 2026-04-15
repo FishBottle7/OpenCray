@@ -73,6 +73,13 @@ internal data class ProjectionOnlyChatStrings(
   val summaryAwaitingDirection: String = "Waiting for your next instruction.",
   val composerPlaceholder: String,
   val composerRejectedPlaceholder: String,
+  val agentThinking: String = "Thinking",
+  val agentCancelled: String = "Interrupted",
+  val agentMissingLlm: String = "Missing LLM",
+  val agentEmptyAnswer: String = "The model returned an empty answer.",
+  val agentInternalPayloadHidden: String =
+    "The agent returned internal tool payload that was hidden.",
+  val agentFailed: (String) -> String = { detail -> "Failed: $detail" },
 )
 
 internal data class ProjectionOnlyChatRuntimeDiagnosticsSource(
@@ -288,7 +295,12 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     val visibleMessages = activeSession.messages.filter { message ->
       message.role != ChatTranscriptRole.SYSTEM
     }
-    val messageCount = visibleMessages.size
+    val renderedMessages = renderedProjectionMessages(
+      sessionId = activeSession.sessionId,
+      visibleMessages = visibleMessages,
+      runs = runtimeProjection.runs,
+    )
+    val messageCount = renderedMessages.size
     return mapOf(
       "screenTitle" to resolvedStrings.screenTitle,
       "modeLabel" to resolvedStrings.modeLabel,
@@ -307,7 +319,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
         ),
       ),
       "messages" to (
-        visibleMessages.map(::chatMessageToMap) +
+        renderedMessages +
           chatSessionStore.loadPendingUserInputs(activeSession.sessionId).map(::pendingUserInputToMap) +
           supplementStoreFactory.forChatSession(activeSession.sessionId).snapshot().map(::pendingSupplementToMap)
         ),
@@ -342,6 +354,129 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       "pendingApprovals" to pendingApprovals,
       "runtimeActivity" to runtimeProjection.snapshot,
     )
+  }
+
+  private fun renderedProjectionMessages(
+    sessionId: String,
+    visibleMessages: List<ChatTranscriptMessageEntry>,
+    runs: List<AgentRunSnapshot>,
+  ): List<Map<String, Any?>> {
+    if (visibleMessages.isEmpty()) {
+      return emptyList()
+    }
+    val projectedByMessageId = projectedSettledAssistantTextByMessageId(
+      sessionId = sessionId,
+      runs = runs,
+    )
+    if (projectedByMessageId.isEmpty()) {
+      return visibleMessages.map(::chatMessageToMap)
+    }
+    return visibleMessages.map { message ->
+      val replacementText = projectedByMessageId[message.messageId]
+      if (!shouldReplaceThinkingPlaceholder(message, replacementText)) {
+        chatMessageToMap(message)
+      } else {
+        chatMessageToMap(message, textOverride = replacementText)
+      }
+    }
+  }
+
+  private fun projectedSettledAssistantTextByMessageId(
+    sessionId: String,
+    runs: List<AgentRunSnapshot>,
+  ): Map<String, String> {
+    if (runs.isEmpty()) {
+      return emptyMap()
+    }
+    val recordsByRunId = runRecordStoreFactory.forChatSession(sessionId)
+      .list()
+      .associateBy(PersistedAgentRunRecord::runId)
+    if (recordsByRunId.isEmpty()) {
+      return emptyMap()
+    }
+    val projected = linkedMapOf<String, String>()
+    runs
+      .asSequence()
+      .filter(AgentRunSnapshot::isTerminal)
+      .sortedBy(AgentRunSnapshot::updatedAtEpochMs)
+      .forEach { run ->
+        val pendingMessageId = run.pendingMessageId
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: return@forEach
+        val result = recordsByRunId[run.runId]?.lastResult ?: return@forEach
+        val projectedText = projectedTerminalAssistantText(result) ?: return@forEach
+        projected[pendingMessageId] = projectedText
+      }
+    return projected
+  }
+
+  private fun projectedTerminalAssistantText(
+    result: ExecutionResult,
+  ): String? {
+    val rawText = when (result.status) {
+      ExecutionStatus.SUCCESS -> result.stdout.ifBlank {
+        resolvedStrings.agentEmptyAnswer
+      }
+
+      ExecutionStatus.CANCELLED -> resolvedStrings.agentCancelled
+      ExecutionStatus.DENIED -> result.errorMessage ?: resolvedStrings.agentFailed(
+        result.errorCode ?: result.status.name,
+      )
+      ExecutionStatus.FAILED -> if (
+        result.errorCode == AppAgentSessionTaskRuntimeFactory.ERROR_CODE_MISSING_LLM_CONFIG
+      ) {
+        resolvedStrings.agentMissingLlm
+      } else {
+        resolvedStrings.agentFailed(result.errorMessage ?: result.errorCode ?: result.status.name)
+      }
+
+      else -> resolvedStrings.agentFailed(
+        result.errorMessage ?: result.errorCode ?: result.status.name,
+      )
+    }
+    return sanitizeProjectedAssistantText(
+      text = rawText,
+      fallback = when (result.status) {
+        ExecutionStatus.DENIED -> projectionApprovalFallbackBody(result.errorCode)
+        else -> resolvedStrings.agentInternalPayloadHidden
+      },
+    )
+  }
+
+  private fun sanitizeProjectedAssistantText(
+    text: String,
+    fallback: String,
+  ): String {
+    val trimmed = text.trim()
+    if (trimmed.isBlank()) {
+      return fallback
+    }
+    return if (approvalSupportLooksLikeInternalToolPayload(trimmed)) {
+      fallback
+    } else {
+      text
+    }
+  }
+
+  private fun projectionApprovalFallbackBody(errorCode: String?): String = if (
+    errorCode == PROJECTION_HIGH_RISK_APPROVAL_REQUIRED_ERROR_CODE
+  ) {
+    resolvedStrings.highRiskApprovalRequiredBody
+  } else {
+    resolvedStrings.summaryApprovalRequired
+  }
+
+  private fun shouldReplaceThinkingPlaceholder(
+    message: ChatTranscriptMessageEntry,
+    replacementText: String?,
+  ): Boolean {
+    if (message.role != ChatTranscriptRole.ASSISTANT || replacementText == null) {
+      return false
+    }
+    val normalized = message.text?.trim().orEmpty()
+    return normalized.isNotEmpty() &&
+      normalized.equals(resolvedStrings.agentThinking.trim(), ignoreCase = false)
   }
 
   private fun loadProjectionRuntimeSnapshot(): Map<String, Any?> {
@@ -1452,7 +1587,10 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     )
   }
 
-  private fun chatMessageToMap(message: ChatTranscriptMessageEntry): Map<String, Any?> = buildMap {
+  private fun chatMessageToMap(
+    message: ChatTranscriptMessageEntry,
+    textOverride: String? = null,
+  ): Map<String, Any?> = buildMap {
     put("messageId", message.messageId)
     put(
       "kind",
@@ -1465,7 +1603,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     )
     put(
       "text",
-      message.text ?: chatSessionStore.promptTemplateBody(message.promptTemplateRefId).orEmpty(),
+      textOverride ?: message.text ?: chatSessionStore.promptTemplateBody(message.promptTemplateRefId).orEmpty(),
     )
     put("meta", "")
     put("createdAtEpochMs", message.createdAtEpochMs)
@@ -1664,6 +1802,7 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
 internal fun projectionOnlyChatStrings(context: Context): ProjectionOnlyChatStrings {
   val appContext = context.applicationContext
   val localizedContext = OpenCrayLocaleManager.wrap(appContext)
+  val hostStrings = localizedHostRuntimeStrings(localizedContext)
   return ProjectionOnlyChatStrings(
     localeTag = LocaleSettingsStore.fromContext(appContext).loadLanguage().tag,
     screenTitle = localizedContext.getString(R.string.shell_tab_chat),
@@ -1705,5 +1844,11 @@ internal fun projectionOnlyChatStrings(context: Context): ProjectionOnlyChatStri
     composerRejectedPlaceholder = localizedContext.getString(
       R.string.chat_message_opencray_do_differently,
     ),
+    agentThinking = hostStrings.agentThinking,
+    agentCancelled = hostStrings.agentCancelled,
+    agentMissingLlm = hostStrings.agentMissingLlm,
+    agentEmptyAnswer = hostStrings.agentEmptyAnswer,
+    agentInternalPayloadHidden = hostStrings.agentInternalPayloadHidden,
+    agentFailed = hostStrings.agentFailed,
   )
 }

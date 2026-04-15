@@ -726,8 +726,7 @@ class OpenCrayChatRunContextBudgetSnapshot {
       sourceTranscriptMaxMessages: map['sourceTranscriptMaxMessages'] as int?,
       sourceInjectedMemoryMaxRecords:
           map['sourceInjectedMemoryMaxRecords'] as int?,
-      sourceMemoryRecallMaxRecords:
-          map['sourceMemoryRecallMaxRecords'] as int?,
+      sourceMemoryRecallMaxRecords: map['sourceMemoryRecallMaxRecords'] as int?,
       sourceBootstrapMaxChars: map['sourceBootstrapMaxChars'] as int?,
       sourceSkillInventoryMaxSkills:
           map['sourceSkillInventoryMaxSkills'] as int?,
@@ -747,19 +746,22 @@ class OpenCrayChatRunContextBudgetSnapshot {
       compactLayerCount: map['compactLayerCount'] as int?,
       minimalLayerCount: map['minimalLayerCount'] as int?,
       omittedLayerCount: map['omittedLayerCount'] as int?,
-      reducedLayerNames: (map['reducedLayerNames'] as List<Object?>?)
+      reducedLayerNames:
+          (map['reducedLayerNames'] as List<Object?>?)
               ?.whereType<String>()
               .map((value) => value.trim())
               .where((value) => value.isNotEmpty)
               .toList(growable: false) ??
           const <String>[],
-      omittedLayerNames: (map['omittedLayerNames'] as List<Object?>?)
+      omittedLayerNames:
+          (map['omittedLayerNames'] as List<Object?>?)
               ?.whereType<String>()
               .map((value) => value.trim())
               .where((value) => value.isNotEmpty)
               .toList(growable: false) ??
           const <String>[],
-      layers: (map['layers'] as List<Object?>?)
+      layers:
+          (map['layers'] as List<Object?>?)
               ?.whereType<Map<Object?, Object?>>()
               .map(OpenCrayChatRunContextBudgetLayerSnapshot.fromMap)
               .toList(growable: false) ??
@@ -809,7 +811,8 @@ class OpenCrayChatRunContextBudgetLayerSnapshot {
       finalState: map['finalState'] as String?,
       omitted: map['omitted'] as bool?,
       reduced: map['reduced'] as bool?,
-      appliedOperators: (map['appliedOperators'] as List<Object?>?)
+      appliedOperators:
+          (map['appliedOperators'] as List<Object?>?)
               ?.whereType<String>()
               .map((value) => value.trim())
               .where((value) => value.isNotEmpty)
@@ -1497,6 +1500,40 @@ class OpenCrayChatLiveAssistantDraftSnapshot {
       pendingMessageId: map['pendingMessageId'] as String? ?? '',
       text: map['text'] as String? ?? '',
       updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
+    );
+  }
+}
+
+class OpenCrayChatLiveAssistantDraftEvent {
+  const OpenCrayChatLiveAssistantDraftEvent({
+    required this.sessionId,
+    required this.runId,
+    required this.taskId,
+    required this.pendingMessageId,
+    required this.text,
+    required this.updatedAtEpochMs,
+    this.cleared = false,
+  });
+
+  final String sessionId;
+  final String runId;
+  final String taskId;
+  final String pendingMessageId;
+  final String text;
+  final int updatedAtEpochMs;
+  final bool cleared;
+
+  factory OpenCrayChatLiveAssistantDraftEvent.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    return OpenCrayChatLiveAssistantDraftEvent(
+      sessionId: map['sessionId'] as String? ?? '',
+      runId: map['runId'] as String? ?? '',
+      taskId: map['taskId'] as String? ?? '',
+      pendingMessageId: map['pendingMessageId'] as String? ?? '',
+      text: map['text'] as String? ?? '',
+      updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
+      cleared: map['cleared'] as bool? ?? false,
     );
   }
 }

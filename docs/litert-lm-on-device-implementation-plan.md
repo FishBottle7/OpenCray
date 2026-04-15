@@ -122,29 +122,36 @@ Date: 2026-04-06
 
 1. `engine prewarm`
    - 进入应用或进入聊天后，如果当前已经选中并配置好可用的端侧模型，宿主会异步触发一次无输出预热
-   - 预热只负责把模型 engine 和 conversation 初始化起来，不让模型产生用户可见输出
+   - 预热会把 `Zone A` system prompt、`Zone B` durable front context、以及当前可见工具 schema 一起装入 LiteRT conversation
+   - 预热不让模型产生用户可见输出，也不写 transcript、memory flush、durable compaction 等副作用状态
 
 2. UI 输入门控
    - 预热进行中，聊天输入框和发送按钮置灰
    - 聊天摘要与输入框占位文案显示“正在准备端侧模型”
    - 预热完成后恢复输入
 
-3. 安全静态缓存
+3. 正确的消息传输形态
+   - 端侧 provider 以 `messages` 为主 transport，不再把同一份上下文同时通过 `messages` 和 `prompt` 双重重放
+   - bridge 创建 conversation 时只把“最后一条待送入模型前的历史消息”之前的部分作为 seed history
+   - 真正触发本轮生成的只是一条 turn input message，这样可以避免重复喂入整段上下文
+
+4. 安全缓存与安全续接
    - LiteRT bridge 缓存工具定义对应的 `ToolProvider`
-   - 这类缓存只覆盖工具 schema / provider 构建，不缓存带有会话状态的 conversation 本身
+   - 预热得到的 conversation 在“runtime 指纹一致且前缀完全匹配”时可以直接晋升为首轮可用会话
+   - 已完成一轮回复的 conversation 会保留为 active lineage；当下一轮请求的 replay prefix 与它完全一致时，直接在原 conversation 上续接
+   - 一旦 system prompt、工具集合、采样参数、front context、或 replay prefix 不一致，就自动回退成全量重建，避免状态漂移
 
-4. 当前明确不做的事
-   - 不在首发里做跨轮 conversation 复用
-   - 不直接做跨轮 KV cache / session cache
-
-原因是当前 OpenCray 的 prompt 组装仍会把 transcript、task prompt、memory layer、skill layer 重新拼装后送进 LLM。  
-如果直接把 LiteRT conversation 跨轮复用，很容易把隐藏 prompt 和显式 transcript 混在一起，导致状态漂移或重复注入。
+5. 当前仍明确不做的事
+   - 不做跨进程持久化的 KV cache / session cache
+   - 不做任意多消息 delta patch 的激进复用
+   - 不在 prefix 不一致时强行复用已有 conversation
 
 因此当前路线是：
 
-- 先做安全的 engine 预热
-- 先做工具定义层面的静态缓存
-- 等 prompt pipeline 能稳定生成“可增量续写”的单一路径后，再考虑真正的跨轮上下文缓存
+- 先做 service 持有的安全预热
+- 先消除 transport 层的上下文双重重放
+- 在“可证明安全”的前提下做 conversation 级续接
+- 更激进的跨轮上下文缓存继续留到后续阶段评估
 
 ## 5. 工具分层
 

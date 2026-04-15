@@ -1,6 +1,9 @@
 package com.opencray.app
 
 import com.opencray.app.facade.llm.LlmConfigSnapshot
+import com.opencray.llm.LiteLlmBuiltinToolDefinition
+import com.opencray.llm.LiteLlmGatewayMessage
+import com.opencray.llm.LiteLlmToolDefinition
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadFactory
@@ -15,6 +18,9 @@ internal data class OnDeviceLlmWarmupSpec(
   val temperature: Double,
   val thinkingEnabled: Boolean,
   val systemPrompt: String? = null,
+  val messages: List<LiteLlmGatewayMessage> = emptyList(),
+  val tools: List<LiteLlmToolDefinition> = emptyList(),
+  val builtinTools: List<LiteLlmBuiltinToolDefinition> = emptyList(),
   val timeoutMs: Long = DEFAULT_TIMEOUT_MS,
 ) {
   fun toRuntimeRequest(): LiteRtOnDeviceRuntimeRequest = LiteRtOnDeviceRuntimeRequest(
@@ -29,6 +35,9 @@ internal data class OnDeviceLlmWarmupSpec(
     thinkingEnabled = thinkingEnabled,
     prompt = "",
     systemPrompt = systemPrompt,
+    messages = messages,
+    tools = tools,
+    builtinTools = builtinTools,
     timeoutMs = timeoutMs,
   )
 
@@ -63,6 +72,38 @@ internal object NoOpOnDeviceLlmWarmupController : OnDeviceLlmWarmupController {
   override fun ensureWarm(spec: OnDeviceLlmWarmupSpec): OnDeviceLlmWarmupState = idleState
 
   override fun clear(): OnDeviceLlmWarmupState = idleState
+}
+
+internal interface OnDeviceLlmWarmupAccess {
+  fun ensureWarmForSession(sessionId: String): OnDeviceLlmWarmupState
+
+  fun ensureWarmForActiveSession(): OnDeviceLlmWarmupState
+
+  fun clear(): OnDeviceLlmWarmupState
+}
+
+internal object NoOpOnDeviceLlmWarmupAccess : OnDeviceLlmWarmupAccess {
+  private val idleState = OnDeviceLlmWarmupState()
+
+  override fun ensureWarmForSession(sessionId: String): OnDeviceLlmWarmupState = idleState
+
+  override fun ensureWarmForActiveSession(): OnDeviceLlmWarmupState = idleState
+
+  override fun clear(): OnDeviceLlmWarmupState = idleState
+}
+
+internal class SessionAwareOnDeviceLlmWarmupAccess(
+  private val activeSessionIdProvider: () -> String?,
+  private val warmupSpecProvider: (String) -> OnDeviceLlmWarmupSpec?,
+  private val controller: OnDeviceLlmWarmupController,
+) : OnDeviceLlmWarmupAccess {
+  override fun ensureWarmForSession(sessionId: String): OnDeviceLlmWarmupState =
+    warmupSpecProvider(sessionId)?.let(controller::ensureWarm) ?: controller.clear()
+
+  override fun ensureWarmForActiveSession(): OnDeviceLlmWarmupState =
+    activeSessionIdProvider()?.let(::ensureWarmForSession) ?: controller.clear()
+
+  override fun clear(): OnDeviceLlmWarmupState = controller.clear()
 }
 
 internal class AppOnDeviceLlmWarmupController(

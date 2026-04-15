@@ -1266,9 +1266,6 @@ class _LocationCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final statsLabel = copy.filesDirectoryItemCount(visibleItemCount);
-    final availableSpace = snapshot == null
-        ? copy.filesLocationAvailableSpace
-        : copy.filesAvailableSpace(_formatBytes(snapshot!.availableBytes));
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -1337,37 +1334,13 @@ class _LocationCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 10),
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                Text(
-                  statsLabel,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    height: 1.2,
-                    color: FilesFeatureScreen.textSecondary,
-                  ),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: FilesFeatureScreen.surfaceMuted,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    availableSpace,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                      color: FilesFeatureScreen.textSecondary,
-                    ),
-                  ),
-                ),
-              ],
+            Text(
+              statsLabel,
+              style: const TextStyle(
+                fontSize: 13,
+                height: 1.2,
+                color: FilesFeatureScreen.textSecondary,
+              ),
             ),
             const SizedBox(height: 12),
             Container(

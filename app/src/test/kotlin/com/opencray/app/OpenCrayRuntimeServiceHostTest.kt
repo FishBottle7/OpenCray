@@ -1687,6 +1687,51 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun serviceOwnedSettingsGatewayRefreshesChatAndWarmupAfterSavingLlmConfig() {
+    val llmFacade = RecordingLlmConfigFacade()
+    val warmupAccess = RecordingOnDeviceWarmupAccess()
+    var chatSnapshotNotificationCount = 0
+    val gateway = ServiceOwnedSettingsGateway(
+      localeTag = "en",
+      settingsFacade = RecordingServiceOwnedSettingsFacade(),
+      notificationSettingsFacade = com.opencray.app.facade.notifications
+        .LocalNotificationSettingsFacade
+        .createForTest(),
+      strongBackgroundSettingsAccess = RecordingStrongBackgroundSettingsAccess(),
+      appLanguageSettingsAccess = RecordingAppLanguageSettingsGatewayAccess(),
+      sandboxSettingsAccess = RecordingSandboxSettingsGatewayAccess(),
+      networkSearchConfigFacade = RecordingNetworkSearchConfigFacade(),
+      mediaSpeechSettingsFacade = RecordingMediaSpeechSettingsFacade(),
+      personalizationFacade = RecordingPersonalizationFacade(),
+      safetySettingsFacade = RecordingSafetySettingsFacade(),
+      llmConfigFacade = llmFacade,
+      mcpSettingsFacade = RecordingMcpSettingsFacade(),
+      chatSnapshotNotifier = { chatSnapshotNotificationCount += 1 },
+      onDeviceWarmupAccess = warmupAccess,
+    )
+
+    gateway.saveLlmConfig(
+      enabled = true,
+      providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+      providerId = "on-device",
+      selectedProviderOptionId = "on-device",
+      protocol = "openai",
+      providerName = "On device",
+      providerNotes = "",
+      baseUrl = "",
+      apiKey = "",
+      model = "",
+      reasoningEffort = "medium",
+      systemPrompt = "Prompt",
+      selectedOnDeviceModelId = "gemma3n-e2b-it-int4",
+      onDeviceAccelerator = OnDeviceLlmAccelerators.GPU,
+    )
+
+    assertEquals(1, warmupAccess.ensureWarmForActiveSessionCallCount)
+    assertEquals(1, chatSnapshotNotificationCount)
+  }
+
+  @Test
   fun serviceOwnedSkillsGatewayHandlesSimpleFacadeBackedFlowsWithoutDelegateRoundTrip() {
     val delegate = RecordingSkillsGateway("delegate")
     val facade = RecordingServiceOwnedSkillsFacade()
@@ -6514,6 +6559,21 @@ class OpenCrayRuntimeServiceHostTest {
           ),
         ),
       )
+  }
+
+  private class RecordingOnDeviceWarmupAccess : OnDeviceLlmWarmupAccess {
+    var ensureWarmForActiveSessionCallCount: Int = 0
+      private set
+
+    override fun ensureWarmForSession(sessionId: String): OnDeviceLlmWarmupState =
+      OnDeviceLlmWarmupState()
+
+    override fun ensureWarmForActiveSession(): OnDeviceLlmWarmupState {
+      ensureWarmForActiveSessionCallCount += 1
+      return OnDeviceLlmWarmupState()
+    }
+
+    override fun clear(): OnDeviceLlmWarmupState = OnDeviceLlmWarmupState()
   }
 
   private class RecordingSafetySettingsFacade : com.opencray.app.facade.safety.SafetySettingsFacade {

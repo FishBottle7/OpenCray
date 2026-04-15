@@ -800,6 +800,10 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Stream<OpenCrayChatLiveAssistantDraftEvent> watchLiveAssistantDraftEvents() =>
+      const Stream<OpenCrayChatLiveAssistantDraftEvent>.empty();
+
+  @override
   Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId) async =>
       null;
 

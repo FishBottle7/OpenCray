@@ -357,6 +357,9 @@ class _SettingsHome extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final visibleEntries = snapshot.entries
+        .where((entry) => entry.page != SettingsPage.agents)
+        .toList(growable: false);
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
       child: Column(
@@ -382,7 +385,7 @@ class _SettingsHome extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
-          ...snapshot.entries.map(
+          ...visibleEntries.map(
             (SettingsHomeEntrySnapshot item) => _HomeEntryRow(
               title: item.title,
               selected: false,

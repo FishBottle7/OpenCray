@@ -8,7 +8,10 @@ import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.core.orchestrator.SessionTaskRuntime
 import com.opencray.llm.DefaultLiteLlmGateway
 import com.opencray.llm.InMemoryLiteLlmRoutingSettingsStore
+import com.opencray.llm.LiteLlmBuiltinToolDefinition
 import com.opencray.llm.LiteLlmGateway
+import com.opencray.llm.LiteLlmGatewayMessage
+import com.opencray.llm.LiteLlmGatewayMessageRole
 import com.opencray.llm.LiteLlmGatewayRequest
 import com.opencray.llm.LiteLlmProviderClient
 import com.opencray.llm.ModelProfile
@@ -16,6 +19,8 @@ import com.opencray.llm.ProviderRoute
 import com.opencray.llm.ProviderRouting
 import com.opencray.mcp.McpClientExposureReport
 import com.opencray.persistence.model.MemoryRecord
+import com.opencray.runtime.AgentToolParameter
+import com.opencray.runtime.AgentToolDefinition
 import com.opencray.runtime.AgentTodoStore
 import com.opencray.runtime.AgentTodoStatus
 import com.opencray.runtime.AgentToolResultStatus
@@ -63,6 +68,7 @@ import com.opencray.runtime.context.ContextSourceBudgetPolicy
 import com.opencray.runtime.context.ContextSourceBudgetProfile
 import com.opencray.runtime.context.GlobalContextBudgetCoordinator
 import com.opencray.runtime.context.LiveContextTrace
+import com.opencray.runtime.context.PromptAssemblyInput
 import com.opencray.runtime.context.PromptAssembler
 import com.opencray.runtime.context.RecentToolObservationSupport
 import com.opencray.runtime.context.RuntimeConversationMessage
@@ -73,6 +79,7 @@ import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.RuntimeConversationToolCall
 import com.opencray.runtime.context.RuntimeConversationToolResult
 import com.opencray.runtime.context.TranscriptWindowBuilder
+import com.opencray.runtime.memory.MemoryFlushTrace
 import com.opencray.runtime.memory.MemoryRecallRequest
 import com.opencray.runtime.memory.MemoryRecallResult
 import com.opencray.runtime.memory.MemoryRetriever
@@ -110,6 +117,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -1084,6 +1092,408 @@ internal class AppAgentSessionTaskRuntimeFactory(
     )
   }
 
+  internal fun buildOnDeviceWarmupSpec(
+    sessionId: String,
+  ): OnDeviceLlmWarmupSpec? {
+    val llmSettings = llmSettingsProvider().sanitized()
+    if (!llmSettings.enabled || !llmSettings.isOnDeviceProviderMode()) {
+      return null
+    }
+    val modelId = llmSettings.selectedOnDeviceModelId.trim()
+    if (modelId.isBlank() || !onDeviceModelReadyProvider(modelId)) {
+      return null
+    }
+    val safetySettings = safetySettingsProvider().sanitized()
+    val routeMetadata = effectiveLlmRouteMetadata(settings = llmSettings)
+    val llmMetadata = buildRuntimeLlmMetadata(
+      requiresLlmConfig = true,
+      taskMetadata = emptyMap(),
+      sessionId = sessionId,
+      nativeWebSearchRunApproved = false,
+      nativeWebSearchSessionApproved = nativeWebSearchSessionApprovalProvider(sessionId),
+      llmSettings = llmSettings,
+      routeMetadata = routeMetadata,
+    )
+    val sourceBudgetProfile = contextSourceBudgetPolicy.resolve(llmMetadata)
+    val effectiveLiveContextMode = effectiveLiveContextMode(
+      configuredMode = liveContextModeProvider(),
+      llmSettings = llmSettings,
+    )
+    val effectiveMemoryToolsEnabled = effectiveMemoryToolsEnabled(
+      configuredValue = safetySettings.memoryToolsEnabled,
+      llmSettings = llmSettings,
+    )
+    val workspaceId = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider())
+    val memoryRecords = memoryRecordsProvider()
+    val sessionContext = prepareOnDeviceWarmupSessionContext(
+      sessionId = sessionId,
+      workspaceId = workspaceId,
+      soulProfile = soulProfileProvider(),
+      memoryRecords = memoryRecords,
+      sourceBudgetProfile = sourceBudgetProfile,
+      liveContextMode = effectiveLiveContextMode,
+      memoryToolsEnabled = effectiveMemoryToolsEnabled,
+    )
+    val toolDispatcher = onDeviceWarmupToolDispatcher(
+      sessionId = sessionId,
+      workspaceId = workspaceId,
+      effectiveMemoryRecords = memoryRecords,
+      memoryToolsEnabled = effectiveMemoryToolsEnabled,
+      approvedTaskId = null,
+    )
+    val allDefinitions = toolDispatcher.definitions()
+    val visibleToolDefinitions = visibleWarmupToolDefinitions(
+      allDefinitions = allDefinitions,
+      llmMetadata = llmMetadata,
+      memoryToolsEnabled = effectiveMemoryToolsEnabled,
+    )
+    val builtinTools = builtinToolsForWarmup(
+      visibleToolDefinitions = visibleToolDefinitions,
+      llmMetadata = llmMetadata,
+    )
+    val functionVisibleToolDefinitions = functionToolDefinitionsForWarmup(
+      visibleToolDefinitions = visibleToolDefinitions,
+      builtinTools = builtinTools,
+      llmMetadata = llmMetadata,
+    )
+    val nativeToolCallingEnabled =
+      functionVisibleToolDefinitions.isNotEmpty() || builtinTools.isNotEmpty()
+    val parallelToolCallsEnabled =
+      nativeToolCallingEnabled &&
+        llmMetadata["parallelToolCalls"]?.trim()?.lowercase() == "true"
+    val strictToolSchemaEnabled = llmMetadata["toolSchemaStrict"]?.trim()?.lowercase() == "true"
+    val managedContext = contextManagerFor(sourceBudgetProfile).prepare(
+      PromptAssemblyInput(
+        task = onDeviceWarmupTask(sessionId),
+        baseSystemPrompt = llmSettings.systemPrompt.ifBlank {
+          OpenCrayAgentRuntimeConfig.DEFAULT_OPENCRAY_SYSTEM_PROMPT
+        },
+        sessionContext = sessionContext,
+        nativeToolCallingEnabled = nativeToolCallingEnabled,
+        parallelToolCallsEnabled = parallelToolCallsEnabled,
+        legacyJsonFallbackEnabled = !nativeToolCallingEnabled,
+        toolDefinitions = functionVisibleToolDefinitions,
+        liveConversation = sessionContext.conversation,
+        todoSnapshot = toolDispatcher.todoSnapshot(),
+        llmMetadata = llmMetadata,
+      ),
+    )
+    val assembledPrompt = promptAssemblerFor(sourceBudgetProfile).assemble(managedContext)
+    return OnDeviceLlmWarmupSpec(
+      modelId = llmSettings.selectedOnDeviceModelId,
+      backend = llmSettings.onDeviceAccelerator,
+      maxContextWindow = llmSettings.onDeviceMaxContextWindow,
+      maxTokens = llmSettings.onDeviceMaxTokens,
+      topK = llmSettings.onDeviceTopK,
+      topP = llmSettings.onDeviceTopP,
+      temperature = llmSettings.onDeviceTemperature,
+      thinkingEnabled = llmSettings.onDeviceThinkingEnabled,
+      systemPrompt = assembledPrompt.systemPrompt.trim().takeIf(String::isNotBlank),
+      messages = assembledPrompt.frontContextZones.durableContextPrompt
+        .trim()
+        .takeIf(String::isNotBlank)
+        ?.let { durablePrompt ->
+          listOf(
+            LiteLlmGatewayMessage(
+              role = LiteLlmGatewayMessageRole.USER,
+              content = durablePrompt,
+            ),
+          )
+        }
+        .orEmpty(),
+      tools = if (nativeToolCallingEnabled) {
+        functionVisibleToolDefinitions.map { definition ->
+          definition.toWarmupLiteLlmToolDefinition(strict = strictToolSchemaEnabled)
+        }
+      } else {
+        emptyList()
+      },
+      builtinTools = if (nativeToolCallingEnabled) builtinTools else emptyList(),
+    )
+  }
+
+  private fun prepareOnDeviceWarmupSessionContext(
+    sessionId: String,
+    workspaceId: String?,
+    soulProfile: WorkspaceSoulProfile?,
+    memoryRecords: List<MemoryRecord>,
+    sourceBudgetProfile: ContextSourceBudgetProfile,
+    liveContextMode: LiveContextMode,
+    memoryToolsEnabled: Boolean,
+  ): AgentRuntimeSessionContext {
+    val liveContextPolicy = liveContextPolicyFor(liveContextMode)
+    val baseContext = sessionContextFactory.create(
+      sessionId = sessionId,
+      soulProfile = soulProfile.takeIf { liveContextPolicy.soulEnabled },
+      workingState = workingStateStoreForSession(sessionId).snapshot(),
+    )
+    val skillCatalog = skillCatalogFor()
+    return baseContext.copy(
+      soulProfile = if (liveContextPolicy.soulEnabled) {
+        memoryBackedSoulResolver.overlay(
+          baseProfile = baseContext.soulProfile,
+          records = memoryRecords,
+          sessionId = sessionId,
+          workspaceId = workspaceId,
+        )
+      } else {
+        baseContext.soulProfile
+      },
+      turnSemanticSignal = null,
+      injectionPolicy = liveContextPolicy.injectionPolicy,
+      memoryToolsEnabled = memoryToolsEnabled,
+      liveContextTrace = LiveContextTrace(
+        mode = liveContextMode.wireValue,
+        soulEnabled = liveContextPolicy.soulEnabled,
+        memoryRecallEnabled = liveContextPolicy.memoryRecallEnabled,
+      ),
+      bootstrapContext = bootstrapContextFor(
+        mode = liveContextPolicy.bootstrapMode,
+        sourceBudgetProfile = sourceBudgetProfile,
+      ),
+      recalledMemory = MemoryRecallResult(),
+      memoryFlushTrace = MemoryFlushTrace(),
+      durableCompaction = durableCompactionCoordinator.currentContext(
+        compactionStoreForSession(sessionId),
+      ),
+      skillInventory = skillCatalog.inventory,
+      skillCatalog = skillCatalog,
+      conversation = baseContext.conversation,
+    )
+  }
+
+  private fun onDeviceWarmupToolDispatcher(
+    sessionId: String,
+    workspaceId: String?,
+    effectiveMemoryRecords: List<MemoryRecord>,
+    memoryToolsEnabled: Boolean,
+    approvedTaskId: String?,
+  ): OpenCrayToolDispatcher {
+    val skillPackageManager = skillPackageManagerProvider()
+    val skillPolicyReadRoots = skillPackageManager?.let { manager ->
+      setOf(
+        manager.managedRootPath().toPath(),
+        manager.catalogRootPath().toPath(),
+      )
+    }.orEmpty()
+    val skillPolicyWriteRoots = skillPackageManager?.let { manager ->
+      buildSet {
+        add(manager.managedRootPath().toPath())
+        manager.compatStagingRootPath()?.let(::add)
+      }
+    }.orEmpty()
+    val scheduledTaskManager = scheduledTaskManagerProvider()
+    val scheduledTaskPolicyRoots = scheduledTaskManager?.let { manager ->
+      setOf(manager.policyTargetPath())
+    }.orEmpty()
+    return OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = workspaceRootsProvider(),
+        readRoots = readRootsProvider(),
+        hiddenToolNamePrefixes = hiddenToolNamePrefixesProvider(),
+        extraPolicyReadRoots = skillPolicyReadRoots + scheduledTaskPolicyRoots,
+        extraPolicyWriteRoots = skillPolicyWriteRoots + scheduledTaskPolicyRoots,
+        skillsRoots = skillsRootsProvider(),
+        skillPackageManager = skillPackageManager,
+        scheduledTaskManager = scheduledTaskManager,
+        mcpExposureReport = mcpReportProvider(),
+        approvedTaskId = approvedTaskId,
+        commandExecutor = commandExecutorProvider(),
+        pythonRuntimeAdapter = pythonRuntimeProvider(),
+        pythonRuntimeManifestProvider = pythonRuntimeManifestProvider,
+        supportsManagedPythonProcessStart = true,
+        managedPythonProcessUsesRuntimeAdapter = true,
+        todoStore = todoStoreForSession(sessionId),
+        processRegistry = processRegistryForSession(sessionId),
+        webSearchProvider = webSearchProviderFactory(),
+        sandboxPreviewService = sandboxPreviewServiceProvider(),
+        sandboxSessionControlService = sandboxSessionControlServiceProvider(),
+        sandboxSessionInfoService = sandboxSessionInfoServiceProvider(),
+        mediaToolSettingsProvider = mediaToolSettingsProvider,
+        imageGenerationClient = imageGenerationClientProvider(),
+        speechSynthesisClient = speechSynthesisClientProvider(),
+        chatAttachmentResolver = { null },
+        memoryToolContext = if (memoryToolsEnabled) {
+          MemoryToolContext(
+            sessionId = sessionId,
+            workspaceId = workspaceId,
+            records = effectiveMemoryRecords,
+          )
+        } else {
+          null
+        },
+      ),
+      managedProcessObservationTracker = managedProcessObservationTrackerForSession(sessionId),
+    )
+  }
+
+  private fun visibleWarmupToolDefinitions(
+    allDefinitions: List<AgentToolDefinition>,
+    llmMetadata: Map<String, String>,
+    memoryToolsEnabled: Boolean,
+  ): List<AgentToolDefinition> {
+    if (llmMetadata["onDeviceLiteModeEnabled"]?.trim()?.lowercase() == "true") {
+      return emptyList()
+    }
+    val memoryAwareDefinitions = if (memoryToolsEnabled) {
+      allDefinitions
+    } else {
+      allDefinitions.filterNot { definition ->
+        definition.name.equals("memory_search", ignoreCase = true) ||
+          definition.name.equals("memory_get", ignoreCase = true)
+      }
+    }
+    val webSearchEnabled = llmMetadata["webSearchEnabled"]
+      ?.trim()
+      ?.lowercase()
+      ?.let { rawValue ->
+        when (rawValue) {
+          "true" -> true
+          "false" -> false
+          else -> null
+        }
+      } ?: true
+    return if (webSearchEnabled) {
+      memoryAwareDefinitions
+    } else {
+      memoryAwareDefinitions.filterNot { definition ->
+        definition.name.equals("WebSearch", ignoreCase = true)
+      }
+    }
+  }
+
+  private fun builtinToolsForWarmup(
+    visibleToolDefinitions: List<AgentToolDefinition>,
+    llmMetadata: Map<String, String>,
+  ): List<LiteLlmBuiltinToolDefinition> {
+    val nativeProviderWebSearchEnabled = llmMetadata["nativeWebSearchEnabled"]
+      ?.trim()
+      ?.lowercase()
+      ?.let { rawValue ->
+        when (rawValue) {
+          "true" -> true
+          "false" -> false
+          else -> null
+        }
+      } ?: false
+    if (!nativeProviderWebSearchEnabled) {
+      return emptyList()
+    }
+    val hostWebSearchVisible = visibleToolDefinitions.any { definition ->
+      definition.name.equals("WebSearch", ignoreCase = true)
+    }
+    if (!hostWebSearchVisible) {
+      return emptyList()
+    }
+    return listOf(
+      LiteLlmBuiltinToolDefinition(
+        type = com.opencray.llm.LiteLlmBuiltinToolType.WEB_SEARCH,
+        includeSources = true,
+      ),
+    )
+  }
+
+  private fun functionToolDefinitionsForWarmup(
+    visibleToolDefinitions: List<AgentToolDefinition>,
+    builtinTools: List<LiteLlmBuiltinToolDefinition>,
+    llmMetadata: Map<String, String>,
+  ): List<AgentToolDefinition> {
+    val dualExposeWebSearchEnabled = llmMetadata["dualExposeWebSearch"]
+      ?.trim()
+      ?.lowercase() == "true"
+    val hidesHostWebSearch = builtinTools.any { tool ->
+      tool.type == com.opencray.llm.LiteLlmBuiltinToolType.WEB_SEARCH
+    } && !dualExposeWebSearchEnabled
+    return if (hidesHostWebSearch) {
+      visibleToolDefinitions.filterNot { definition ->
+        definition.name.equals("WebSearch", ignoreCase = true)
+      }
+    } else {
+      visibleToolDefinitions
+    }
+  }
+
+  private fun onDeviceWarmupTask(sessionId: String): AgentTask {
+    val createdAtEpochMs = System.currentTimeMillis()
+    return AgentTask(
+      id = "warmup-$sessionId",
+      type = com.opencray.core.contracts.AgentTaskType.PROMPT,
+      input = "Prime the on-device model cache.",
+      createdAtEpochMs = createdAtEpochMs,
+      updatedAtEpochMs = createdAtEpochMs,
+      metadata = mapOf(METADATA_HOST_SESSION_ID to sessionId),
+    )
+  }
+
+  private fun AgentToolDefinition.toWarmupLiteLlmToolDefinition(
+    strict: Boolean,
+  ): com.opencray.llm.LiteLlmToolDefinition = com.opencray.llm.LiteLlmToolDefinition(
+    name = name,
+    description = description,
+    inputSchema = toWarmupJsonSchema(),
+    strict = strict.takeIf { it },
+  )
+
+  private fun AgentToolDefinition.toWarmupJsonSchema(): JsonObject = buildJsonObject {
+    put("type", "object")
+    put(
+      "properties",
+      buildJsonObject {
+        parameters.forEach { parameter ->
+          put(parameter.name, parameter.toWarmupJsonSchemaProperty())
+        }
+      },
+    )
+    parameters
+      .filter(AgentToolParameter::required)
+      .map(AgentToolParameter::name)
+      .takeIf { requiredParameters -> requiredParameters.isNotEmpty() }
+      ?.let { requiredParameters ->
+        put(
+          "required",
+          buildJsonArray {
+            requiredParameters.forEach { requiredParameter ->
+              add(JsonPrimitive(requiredParameter))
+            }
+          },
+        )
+      }
+    put("additionalProperties", false)
+  }
+
+  private fun AgentToolParameter.toWarmupJsonSchemaProperty(): JsonObject {
+    jsonSchema?.let { explicitSchema -> return explicitSchema }
+    return buildJsonObject {
+      when (type.trim().lowercase()) {
+        "string" -> put("type", "string")
+        "number" -> put("type", "number")
+        "boolean" -> put("type", "boolean")
+        "string[]" -> {
+          put("type", "array")
+          put(
+            "items",
+            buildJsonObject {
+              put("type", "string")
+            },
+          )
+        }
+
+        "object[]" -> {
+          put("type", "array")
+          put(
+            "items",
+            buildJsonObject {
+              put("type", "object")
+            },
+          )
+        }
+
+        else -> put("type", "string")
+      }
+      put("description", description)
+    }
+  }
+
   private fun buildRuntimeLlmMetadata(
     requiresLlmConfig: Boolean,
     taskMetadata: Map<String, String>,
@@ -1795,6 +2205,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     ): LiteLlmProviderClient = AppConfiguredLiteLlmProviderClient(
       cloudProviderClient = OpenAiCompatibleLiteLlmProviderClient(
         userAgent = providerUserAgent,
+        streamUpdateMinIntervalMs = 40L,
       ),
       onDeviceProviderClient = LiteRtOnDeviceLlmProviderClient(
         runtime = LiteRtOnDeviceRuntime(

@@ -1,5 +1,6 @@
 package com.opencray.app
 
+import android.util.Log
 import com.opencray.app.facade.safety.SafetySettingsFacade
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
@@ -24,6 +25,11 @@ import kotlinx.serialization.json.Json
 
 private const val CHAT_ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
 private const val CHAT_ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
+private const val CHAT_FLOW_DEBUG_TAG: String = "OpenCrayDiag"
+
+private fun chatFlowDebug(message: String) {
+  runCatching { Log.d(CHAT_FLOW_DEBUG_TAG, message) }
+}
 
 internal fun latestChatRunForSnapshot(runs: List<AgentRunSnapshot>): AgentRunSnapshot? {
   var latest: AgentRunSnapshot? = null
@@ -112,6 +118,9 @@ internal class ChatSubmissionCoordinator(
     repairStaleSupplements(sessionId)
     val liveRun = supplementTargetRun(sessionId)
     val queuedBefore = chatSessionStore.loadPendingUserInputs(sessionId)
+    chatFlowDebug(
+      "chat.submit session=$sessionId textLen=${trimmed.length} attachments=${archivedAttachments.size} liveRun=${liveRun?.runId ?: "-"} queued=${queuedBefore.size} pendingTasks=${pendingTaskCount(sessionId)}",
+    )
     val submission = if (liveRun != null) {
       when {
         isLlmRetryPausedAwaitingResumeRun(liveRun) -> resumePausedRunWithUserInput(
@@ -413,6 +422,9 @@ internal class ChatSubmissionCoordinator(
           attachments = attachments,
         ) +
         taskMetadataProvider(RunSubmissionSources.CHAT_USER_MESSAGE),
+    )
+    chatFlowDebug(
+      "chat.submitPromptRun session=$sessionId run=${submittedRun.runId} task=${submittedRun.taskId} pending=$pendingMessageId textLen=${userText.length} attachments=${attachments.size}",
     )
     try {
       chatSessionStore.appendSubmittedTurn(

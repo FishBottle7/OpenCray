@@ -1,5 +1,6 @@
 package com.opencray.app
 
+import android.util.Log
 import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.AgentTaskState
 import com.opencray.core.contracts.ExecutionResult
@@ -129,6 +130,11 @@ const val METADATA_RESTORED_FROM_DURABLE_STORE: String = "restoredFromDurableSto
 const val METADATA_RUN_REPAIR_SOURCE: String = "runRepairSource"
 const val RUN_REPAIR_SOURCE_MANAGED_PROCESS_RESTORE: String = "managed_process_restore"
 const val RESTORED_TERMINAL_STATE_INTERRUPTED: String = "interrupted"
+private const val RUNTIME_FLOW_DEBUG_TAG: String = "OpenCrayDiag"
+
+private fun runtimeFlowDebug(message: String) {
+  runCatching { Log.d(RUNTIME_FLOW_DEBUG_TAG, message) }
+}
 
 internal interface AgentSessionRuntimeManager {
   fun forSession(sessionId: String): AgentSessionHandle
@@ -470,6 +476,9 @@ private class ManagedAgentSessionHandle(
       text: String,
       emittedAtEpochMs: Long,
     ) {
+      runtimeFlowDebug(
+        "runtime.draftUpdated session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"} len=${text.length} preview=${text.take(80).replace('\n', ' ')}",
+      )
       listenerProvider().forEach { listener ->
         listener.onAssistantDraftUpdated(
           sessionId = sessionId,
@@ -484,6 +493,9 @@ private class ManagedAgentSessionHandle(
       task: AgentTask,
       emittedAtEpochMs: Long,
     ) {
+      runtimeFlowDebug(
+        "runtime.draftCleared session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"}",
+      )
       listenerProvider().forEach { listener ->
         listener.onAssistantDraftCleared(
           sessionId = sessionId,
@@ -538,12 +550,18 @@ private class ManagedAgentSessionHandle(
   )
   private val loop = OpenCrayAgentEngine(
     runtime = SessionTaskRuntime { task, hooks ->
+      runtimeFlowDebug(
+        "runtime.taskStarted session=$sessionId task=${task.id} run=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID] ?: "-"} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"} type=${task.type}",
+      )
       listenerProvider().forEach { listener ->
         listener.onTaskStarted(sessionId = sessionId, task = task)
       }
       val result = enrichResultExecutionContext(
         task = task,
         result = baseRuntime.execute(task, hooks),
+      )
+      runtimeFlowDebug(
+        "runtime.taskFinished session=$sessionId task=${task.id} run=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID] ?: "-"} status=${result.status} error=${result.errorCode ?: "-"}",
       )
       recordRunResult(task = task, result = result)
       listenerProvider().forEach { listener ->
@@ -822,6 +840,9 @@ private class ManagedAgentSessionHandle(
     )
     val cancelRequested = AtomicBoolean(false)
     val future = FutureTask<Unit> {
+      runtimeFlowDebug(
+        "runtime.detachedTaskStarted session=$sessionId task=${executionTask.id} run=${executionTask.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID] ?: "-"} kind=$executionKind",
+      )
       listenerProvider().forEach { listener ->
         listener.onTaskStarted(sessionId = sessionId, task = executionTask)
       }
@@ -853,6 +874,9 @@ private class ManagedAgentSessionHandle(
           metadata = executionMetadataFrom(executionTask.metadata),
         )
       }
+      runtimeFlowDebug(
+        "runtime.detachedTaskFinished session=$sessionId task=${executionTask.id} run=${executionTask.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID] ?: "-"} status=${result.status} error=${result.errorCode ?: "-"}",
+      )
       completeDetachedControlExecution(
         submission = submission,
         task = executionTask,

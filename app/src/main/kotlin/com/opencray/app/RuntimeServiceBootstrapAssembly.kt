@@ -125,6 +125,7 @@ private fun RuntimeServiceBootstrapAssembly.toGatewayBundleDependencies():
     approvePendingApproval = approvalDecisionAccess::approve,
     approvePendingApprovalForSession = approvalDecisionAccess::approveForSession,
     rejectPendingApproval = approvalDecisionAccess::reject,
+    onDeviceWarmupPlanner = runtimeAccess.onDeviceWarmupPlanner,
   )
 }
 

@@ -22,6 +22,15 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
   override fun loadChatRuntimeSnapshot(): Map<String, Any?> =
     currentReadGateway().loadChatRuntimeSnapshot()
 
+  override fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit =
+    observeWithDynamicGateway(
+      initialGateway = { fallbackGateway },
+      currentGateway = ::currentReadGateway,
+      observeConnectionState = serviceClient::observeConnectionState,
+      observe = { gateway, callback -> gateway.observeLiveAssistantDraftEvents(callback) },
+      listener = listener,
+    )
+
   override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? =
     currentReadGateway().loadChatRunSnapshot(runId)
 

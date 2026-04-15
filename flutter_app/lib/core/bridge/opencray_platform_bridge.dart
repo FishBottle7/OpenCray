@@ -48,6 +48,9 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   static const EventChannel _chatRuntimeSnapshotChannel = EventChannel(
     'com.opencray.host/chat_runtime_snapshot',
   );
+  static const EventChannel _liveAssistantDraftChannel = EventChannel(
+    'com.opencray.host/live_assistant_draft',
+  );
 
   @override
   Future<OpenCrayShellSnapshot> loadShellSnapshot() async =>
@@ -909,6 +912,13 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
           .receiveBroadcastStream()
           .map(_requireMap)
           .map(OpenCrayChatRuntimeSnapshot.fromMap);
+
+  @override
+  Stream<OpenCrayChatLiveAssistantDraftEvent> watchLiveAssistantDraftEvents() =>
+      _liveAssistantDraftChannel
+          .receiveBroadcastStream()
+          .map(_requireMap)
+          .map(OpenCrayChatLiveAssistantDraftEvent.fromMap);
 
   @override
   Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId) async {

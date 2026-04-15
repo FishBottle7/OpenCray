@@ -1127,7 +1127,7 @@ void main() {
     },
   );
 
-  testWidgets('home settings includes Agent entry and opens agents page', (
+  testWidgets('home settings hides Agent entry from the overview list', (
     tester,
   ) async {
     final facade = _FakeSettingsFacade(
@@ -1171,6 +1171,10 @@ void main() {
         deviceSummary: 'API routes: Search + Media',
         entries: <SettingsHomeEntrySnapshot>[
           SettingsHomeEntrySnapshot(page: SettingsPage.agents, title: 'Agent'),
+          SettingsHomeEntrySnapshot(
+            page: SettingsPage.apiIntegrations,
+            title: 'API Integrations',
+          ),
         ],
       ),
     );
@@ -1180,15 +1184,15 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Agent'), findsOneWidget);
+    expect(find.text('Agent'), findsNothing);
+    expect(find.text('API Integrations'), findsOneWidget);
 
-    await tester.tap(find.text('Agent'));
+    await tester.tap(find.text('API Integrations'));
     await tester.pumpAndSettle();
 
     expect(find.byIcon(Icons.arrow_back_ios_new_rounded), findsOneWidget);
     expect(find.text('Settings'), findsOneWidget);
-    expect(find.text('Agents'), findsOneWidget);
-    expect(find.text('New agent'), findsOneWidget);
+    expect(find.text('Routing rules'), findsOneWidget);
   });
 
   testWidgets('agents page loads host-backed agents and persists creation', (

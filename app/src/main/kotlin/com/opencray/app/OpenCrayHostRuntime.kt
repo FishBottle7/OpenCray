@@ -413,6 +413,7 @@ internal class OpenCrayHostRuntime private constructor(
   private val skillsListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val chatListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val chatRuntimeListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  private val liveAssistantDraftEventListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val onDeviceLlmWarmupController: OnDeviceLlmWarmupController =
     providedOnDeviceLlmWarmupController ?: defaultOnDeviceLlmWarmupController()
   private val voiceMetadataBackfillInFlight = ConcurrentHashMap.newKeySet<String>()
@@ -615,19 +616,30 @@ internal class OpenCrayHostRuntime private constructor(
           text: String,
           emittedAtEpochMs: Long,
         ) {
-          val shouldEmit = synchronized(lock) {
+          val draftEventPayload = synchronized(lock) {
             if (!hasSessionLocked(sessionId)) {
-              return@synchronized false
+              return@synchronized null
             }
-            updateAssistantDraftLocked(
-              sessionId = sessionId,
-              task = task,
-              text = text,
-              emittedAtEpochMs = emittedAtEpochMs,
-            )
+            if (
+              !updateAssistantDraftLocked(
+                sessionId = sessionId,
+                task = task,
+                text = text,
+                emittedAtEpochMs = emittedAtEpochMs,
+              )
+            ) {
+              return@synchronized null
+            }
+            val pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
+              ?.trim()
+              ?.takeIf(String::isNotBlank)
+              ?: return@synchronized null
+            liveAssistantDraftsBySession[sessionId]
+              ?.get(pendingMessageId)
+              ?.toLiveAssistantDraftEventPayload(sessionId = sessionId, cleared = false)
           }
-          if (shouldEmit) {
-            emitChatRuntimeSnapshot()
+          if (draftEventPayload != null) {
+            emitLiveAssistantDraftEvent(draftEventPayload)
           }
         }
 
@@ -636,18 +648,34 @@ internal class OpenCrayHostRuntime private constructor(
           task: AgentTask,
           emittedAtEpochMs: Long,
         ) {
-          val shouldEmit = synchronized(lock) {
+          val draftEventPayload = synchronized(lock) {
             if (!hasSessionLocked(sessionId)) {
-              return@synchronized false
+              return@synchronized null
             }
-            clearAssistantDraftLocked(
+            val pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
+              ?.trim()
+              ?.takeIf(String::isNotBlank)
+              ?: return@synchronized null
+            if (
+              !clearAssistantDraftLocked(
+                sessionId = sessionId,
+                pendingMessageId = pendingMessageId,
+              )
+            ) {
+              return@synchronized null
+            }
+            liveAssistantDraftEventPayload(
               sessionId = sessionId,
-              pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
-                ?.takeIf(String::isNotBlank),
+              runId = runIdFor(task),
+              taskId = task.id,
+              pendingMessageId = pendingMessageId,
+              text = "",
+              updatedAtEpochMs = emittedAtEpochMs,
+              cleared = true,
             )
           }
-          if (shouldEmit) {
-            emitChatRuntimeSnapshot()
+          if (draftEventPayload != null) {
+            emitLiveAssistantDraftEvent(draftEventPayload)
           }
         }
 
@@ -1742,6 +1770,17 @@ internal class OpenCrayHostRuntime private constructor(
       initialPayload = loadChatRuntimeSnapshot(),
       listener = listener,
     )
+
+  override fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit {
+    synchronized(lock) {
+      liveAssistantDraftEventListeners += listener
+    }
+    return {
+      synchronized(lock) {
+        liveAssistantDraftEventListeners -= listener
+      }
+    }
+  }
 
   override fun refreshSandboxSessionInfo() {
     synchronized(lock) {
@@ -7473,6 +7512,10 @@ internal class OpenCrayHostRuntime private constructor(
     emitSnapshotLazy(chatRuntimeListeners, ::loadChatRuntimeSnapshot)
   }
 
+  private fun emitLiveAssistantDraftEvent(payload: Map<String, Any?>) {
+    emitSnapshot(liveAssistantDraftEventListeners, payload)
+  }
+
   private fun emitShellSnapshot() {
     val payload = loadShellSnapshot()
     emitSnapshot(shellListeners, payload)
@@ -7514,6 +7557,37 @@ internal class OpenCrayHostRuntime private constructor(
       currentListeners.forEach { listener -> listener(payload) }
     }
   }
+
+  private fun liveAssistantDraftEventPayload(
+    sessionId: String,
+    runId: String,
+    taskId: String,
+    pendingMessageId: String,
+    text: String,
+    updatedAtEpochMs: Long,
+    cleared: Boolean,
+  ): Map<String, Any?> = mapOf(
+    "sessionId" to sessionId,
+    "runId" to runId,
+    "taskId" to taskId,
+    "pendingMessageId" to pendingMessageId,
+    "text" to text,
+    "updatedAtEpochMs" to updatedAtEpochMs,
+    "cleared" to cleared,
+  )
+
+  private fun LiveAssistantDraftSnapshot.toLiveAssistantDraftEventPayload(
+    sessionId: String,
+    cleared: Boolean,
+  ): Map<String, Any?> = liveAssistantDraftEventPayload(
+    sessionId = sessionId,
+    runId = runId,
+    taskId = taskId,
+    pendingMessageId = pendingMessageId,
+    text = text,
+    updatedAtEpochMs = updatedAtEpochMs,
+    cleared = cleared,
+  )
 
   private fun ChatAttachmentKind.toWireKind(): String = when (this) {
     ChatAttachmentKind.IMAGE -> "image"
