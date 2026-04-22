@@ -65,11 +65,7 @@ internal class RecoveryAwareQueueSnapshotStore(
       val runId = runIdFor(entry.task)
       val runRecord = runRecordsByRunId[runId]
       val journalEntries = runEventJournalStore.listForRun(runId)
-      val lastJournalEvent = journalEntries
-        .asReversed()
-        .asSequence()
-        .mapNotNull { journalEntry -> journalEntry.payload.toRuntimeEventOrNull() }
-        .firstOrNull()
+      val lastJournalEvent = journalEntries.latestRuntimeEventOrNull()
         ?: runRecord?.lastEvent?.toRuntimeEventOrNull()
       val checkpoint = checkpointsByTaskId[entry.task.id]
         ?: synthesizeApprovalCheckpoint(
@@ -356,7 +352,7 @@ internal class RecoveryAwareQueueSnapshotStore(
       }
 
     RunRecoveryAction.INTERRUPT_RECOVERY_REQUIRED ->
-      if (canInterruptRecovery(entry, recoveryPlan)) {
+      if (canInterruptRecovery(entry)) {
         entry.copy(
           lifecycleState = QueueTaskLifecycleState.FAILED,
           task = entry.task.copy(
@@ -391,6 +387,7 @@ internal class RecoveryAwareQueueSnapshotStore(
   }
 
   private fun canRestoreWaitingApproval(entry: SessionQueueTaskSnapshot): Boolean = when {
+    entry.lifecycleState == QueueTaskLifecycleState.QUEUED -> true
     entry.lifecycleState == QueueTaskLifecycleState.SUSPENDED -> true
     isRestoreInterruptedLifecycle(entry.lifecycleState) -> true
     isRestartRestoreFailure(entry) -> true
@@ -422,12 +419,9 @@ internal class RecoveryAwareQueueSnapshotStore(
 
   private fun canInterruptRecovery(
     entry: SessionQueueTaskSnapshot,
-    recoveryPlan: RunRecoveryPlan?,
   ): Boolean = entry.lifecycleState == QueueTaskLifecycleState.QUEUED ||
-    (
-      recoveryPlan?.reasonCode == "uncertain_inflight_mutation" &&
-        isRestoreInterruptedLifecycle(entry.lifecycleState)
-      )
+    isRestoreInterruptedLifecycle(entry.lifecycleState) ||
+    isRestartRestoreFailure(entry)
 
   private fun plannerProjection(
     entry: SessionQueueTaskSnapshot,
@@ -508,6 +502,7 @@ internal class RecoveryAwareQueueSnapshotStore(
       pendingMessageId = entry.task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
         ?: runRecord?.pendingMessageId,
       managedProcessIds = managedProcesses.map(ManagedProcessSnapshot::processId).distinct(),
+      managedProcesses = managedProcesses,
       runningManagedProcessCount = runningManagedProcessCount,
       hasLiveManagedProcesses = runningManagedProcessCount > 0,
       lastEvent = runRecord?.lastEvent?.toRuntimeEventOrNull(),

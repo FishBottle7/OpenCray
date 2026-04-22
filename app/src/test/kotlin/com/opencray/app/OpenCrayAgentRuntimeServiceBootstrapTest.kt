@@ -1819,6 +1819,9 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
 
         override fun loadChatRuntimeSnapshot(): Map<String, Any?> = emptyMap()
 
+        override fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit =
+          { }
+
         override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? = null
 
         override fun waitForChatRun(runId: String, timeoutMs: Long): Map<String, Any?>? = null

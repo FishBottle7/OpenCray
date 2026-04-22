@@ -24,6 +24,50 @@ part 'settings_api_pages.dart';
 part 'safety_settings_pages.dart';
 part 'settings_debug_pages.dart';
 
+bool _llmEndpointAllowsBlankApiKey({
+  required String protocol,
+  required String baseUrl,
+}) {
+  final normalizedProtocol = protocol.trim().toLowerCase();
+  if (normalizedProtocol != 'openai' &&
+      normalizedProtocol != 'openai_responses') {
+    return false;
+  }
+  return _isLikelyLocalLlmBaseUrl(baseUrl);
+}
+
+bool _isLikelyLocalLlmBaseUrl(String baseUrl) {
+  final host = (Uri.tryParse(baseUrl.trim())?.host ?? '').trim().toLowerCase();
+  if (host.isEmpty) {
+    return false;
+  }
+  if (host == 'localhost' ||
+      host == 'localhost.localdomain' ||
+      host == '0.0.0.0' ||
+      host == '::1' ||
+      host == '10.0.2.2' ||
+      host == 'host.docker.internal' ||
+      host.endsWith('.local')) {
+    return true;
+  }
+  return host.startsWith('127.') ||
+      host.startsWith('10.') ||
+      host.startsWith('192.168.') ||
+      _isPrivate172SubnetHost(host);
+}
+
+bool _isPrivate172SubnetHost(String host) {
+  if (!host.startsWith('172.')) {
+    return false;
+  }
+  final parts = host.split('.');
+  if (parts.length < 2) {
+    return false;
+  }
+  final secondOctet = int.tryParse(parts[1]);
+  return secondOctet != null && secondOctet >= 16 && secondOctet <= 31;
+}
+
 class SettingsFeatureScreen extends StatefulWidget {
   const SettingsFeatureScreen({
     super.key,
@@ -964,17 +1008,26 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
   }
 
   List<String> _collectRecentRunIds(OpenCrayChatRuntimeSnapshot snapshot) {
-    final runEpochs = <String, int>{};
-    for (final run in snapshot.activeRuns) {
-      if (run.runId.trim().isEmpty) {
-        continue;
-      }
+  final runEpochs = <String, int>{};
+  for (final run in snapshot.activeRuns) {
+    if (run.runId.trim().isEmpty) {
+      continue;
+    }
+    runEpochs[run.runId] = run.updatedAtEpochMs;
+  }
+  for (final run in snapshot.retainedRuns) {
+    if (run.runId.trim().isEmpty) {
+      continue;
+    }
+    final existingEpoch = runEpochs[run.runId];
+    if (existingEpoch == null || run.updatedAtEpochMs > existingEpoch) {
       runEpochs[run.runId] = run.updatedAtEpochMs;
     }
-    for (final event in snapshot.events) {
-      if (event.runId.trim().isEmpty) {
-        continue;
-      }
+  }
+  for (final event in snapshot.events) {
+    if (event.runId.trim().isEmpty) {
+      continue;
+    }
       final existingEpoch = runEpochs[event.runId];
       if (existingEpoch == null || event.emittedAtEpochMs > existingEpoch) {
         runEpochs[event.runId] = event.emittedAtEpochMs;
@@ -2946,7 +2999,11 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                 ) ??
                 false)
       : (_baseUrlController.text.trim().isNotEmpty &&
-            _apiKeyController.text.trim().isNotEmpty);
+            (_apiKeyController.text.trim().isNotEmpty ||
+                _llmEndpointAllowsBlankApiKey(
+                  protocol: _draftProtocol(),
+                  baseUrl: _baseUrlController.text,
+                )));
 
   Future<void> _saveDraft() async {
     if (_snapshot == null ||

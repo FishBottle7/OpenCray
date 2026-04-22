@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import android.content.Context
+import com.opencray.app.agent.AgentPathResolver
 import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
@@ -57,6 +58,24 @@ internal class FileBackedAgentSessionSupplementStoreFactory(
       FileBackedAgentSessionSupplementStoreFactory(
         runtimeRootDirectory = File(context.filesDir, FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME),
       )
+
+    fun fromAgent(
+      context: Context,
+      agentId: String,
+      pathResolver: AgentPathResolver = AgentPathResolver.fromContext(context),
+    ): FileBackedAgentSessionSupplementStoreFactory = fromAgent(pathResolver, agentId)
+
+    internal fun fromAgent(
+      pathResolver: AgentPathResolver,
+      agentId: String,
+    ): FileBackedAgentSessionSupplementStoreFactory = FileBackedAgentSessionSupplementStoreFactory(
+      runtimeRootDirectory = rootDirectoryForAgent(pathResolver, agentId),
+    )
+
+    internal fun rootDirectoryForAgent(
+      pathResolver: AgentPathResolver,
+      agentId: String,
+    ): File = pathResolver.resolve(agentId).transcriptSupplementsRoot.toFile()
   }
 }
 

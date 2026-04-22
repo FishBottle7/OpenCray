@@ -240,6 +240,48 @@ class AgentToolAliasDispatchTest {
   }
 
   @Test
+  fun strictToolSchemasRequireEveryPropertyAndAllowNullForOptionalFields() {
+    val dispatcher = dispatcher()
+    val lsDefinition = requireNotNull(
+      dispatcher.definitions().firstOrNull { definition -> definition.name == "LS" },
+    )
+    val scheduledTaskDefinition = requireNotNull(
+      dispatcher.definitions().firstOrNull { definition -> definition.name == "ScheduledTaskCreate" },
+    )
+
+    val strictLsSchema = lsDefinition.toJsonSchema(strict = true)
+    assertEquals(
+      listOf("path", "max_entries"),
+      strictLsSchema.requiredStringArray("required"),
+    )
+    assertEquals(
+      listOf("string", "null"),
+      strictLsSchema
+        .requiredProperty("properties")
+        .requiredTypeNames("path"),
+    )
+    assertEquals(
+      listOf("number", "null"),
+      strictLsSchema
+        .requiredProperty("properties")
+        .requiredTypeNames("max_entries"),
+    )
+
+    val strictTriggerSchema = scheduledTaskDefinition
+      .toJsonSchema(strict = true)
+      .requiredProperty("properties")
+      .requiredProperty("trigger")
+    assertEquals(
+      listOf("at", "after", "start_at", "timezone", "rrule", "exdates", "rdates"),
+      strictTriggerSchema.requiredStringArray("required"),
+    )
+    assertEquals(
+      listOf("string", "null"),
+      strictTriggerSchema.requiredProperty("properties").requiredTypeNames("timezone"),
+    )
+  }
+
+  @Test
   fun readAliasDispatchesToClaudeReadAndPreservesCanonicalMapping() {
     val workspaceRoot = temporaryFolder.newFolder("tool-alias-read").toPath()
     Files.write(
@@ -467,6 +509,13 @@ class AgentToolAliasDispatchTest {
   private fun JsonObject.requiredStringArray(key: String): List<String> =
     (get(key) ?: error("Missing array '$key'.")).let { element ->
       (element as JsonArray).map { item -> (item as JsonPrimitive).content }
+    }
+
+  private fun JsonObject.requiredTypeNames(key: String): List<String> =
+    when (val typeElement = requiredProperty(key)["type"]) {
+      is JsonPrimitive -> listOf(typeElement.content)
+      is JsonArray -> typeElement.map { item -> (item as JsonPrimitive).content }
+      else -> error("Missing type for '$key'.")
     }
 
   private class AliasProcessRegistry : AgentProcessRegistry {

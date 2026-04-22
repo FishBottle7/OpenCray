@@ -905,7 +905,13 @@ private fun parseSubmitChatMessageAttachments(body: JSONObject): List<OpenCrayFi
     val relativePath = payload["relativePath"] as String?
     val path = payload["path"] as String?
     val artifactId = payload["artifactId"] as String?
-    if (relativePath.isNullOrBlank() && path.isNullOrBlank() && artifactId.isNullOrBlank()) {
+    val chatAttachmentId = payload["chatAttachmentId"] as String?
+    if (
+      relativePath.isNullOrBlank() &&
+      path.isNullOrBlank() &&
+      artifactId.isNullOrBlank() &&
+      chatAttachmentId.isNullOrBlank()
+    ) {
       return@mapNotNull null
     }
     OpenCrayFinalAttachment(
@@ -913,6 +919,7 @@ private fun parseSubmitChatMessageAttachments(body: JSONObject): List<OpenCrayFi
       relativePath = relativePath,
       path = path,
       artifactId = artifactId,
+      chatAttachmentId = chatAttachmentId,
       displayName = payload["displayName"] as String?,
       mimeType = payload["mimeType"] as String?,
       durationMs = (payload["durationMs"] as Number?)?.toLong(),

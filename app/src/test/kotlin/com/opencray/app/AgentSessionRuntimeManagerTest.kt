@@ -1618,6 +1618,76 @@ class AgentSessionRuntimeManagerTest {
   }
 
   @Test
+  fun restoredInterruptedManagedProcessRunRepairsFromArchivedSnapshotReadById() {
+    val sessionId = "session-restored-archived-process-read"
+    val firstManager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+    )
+    val firstHandle = firstManager.forSession(sessionId)
+
+    val submission = firstHandle.submitPrompt(
+      userText = "restore archived managed process by id",
+      pendingMessageId = "pending-archived-process-read",
+      visibleThroughMessageId = "pending-archived-process-read",
+      policyDecision = allowDecision(),
+    )
+    FileBackedAgentRunRecordStoreFactory(temporaryFolder.root)
+      .forChatSession(sessionId)
+      .upsert(
+        PersistedAgentRunRecord(
+          runId = submission.runId,
+          taskId = submission.taskId,
+          acceptedAtEpochMs = submission.acceptedAtEpochMs,
+          pendingMessageId = "pending-archived-process-read",
+          managedProcessIds = listOf("proc-archived"),
+        ),
+      )
+    firstManager.release(sessionId)
+
+    val restoredFactory = RecordingRuntimeFactory(
+      managedProcessesProvider = { emptyList() },
+      readManagedProcessHandler = { restoredSessionId, processId ->
+        if (restoredSessionId == sessionId && processId == "proc-archived") {
+          managedProcessSnapshot(
+            processId = processId,
+            taskId = submission.taskId,
+            status = ManagedProcessStatus.FAILED,
+          ).copy(
+            errorCode = errorManagedProcessInterruptedOnRestoreForTest,
+            errorMessage = "Archived managed process restore should still repair the run.",
+            updatedAtEpochMs = 1_005L,
+            finishedAtEpochMs = 1_005L,
+            metadata = mapOf(
+              metadataRestoredFromDurableStoreForTest to "true",
+              metadataRestoredTerminalStateForTest to restoredTerminalStateInterruptedForTest,
+            ),
+          )
+        } else {
+          null
+        }
+      },
+    )
+    val restoredHandle = manager(
+      runtimeFactory = restoredFactory,
+      executor = RecordingExecutorService(),
+    ).forSession(sessionId)
+
+    val restoredRun = requireNotNull(restoredHandle.findRun(submission.runId))
+
+    assertEquals(listOf("proc-archived"), restoredRun.managedProcessIds)
+    assertEquals(listOf("proc-archived"), restoredRun.managedProcesses.map(ManagedProcessSnapshot::processId))
+    assertEquals(ExecutionStatus.FAILED, restoredRun.executionStatus)
+    assertEquals(errorManagedProcessInterruptedOnRestoreForTest, restoredRun.errorCode)
+    assertEquals(QueueTaskLifecycleState.FAILED, restoredRun.lifecycleState)
+    assertEquals(AgentTaskState.FAILED, restoredRun.taskState)
+    assertEquals(
+      restoredTerminalStateInterruptedForTest,
+      restoredRun.resultMetadata[metadataRestoredTerminalStateForTest],
+    )
+  }
+
+  @Test
   fun requestRetryClearsPreviousFailureFromQueuedRunSnapshot() {
     val executor = RecordingExecutorService()
     var executionCount = 0
@@ -1781,6 +1851,53 @@ class AgentSessionRuntimeManagerTest {
     })
     assertEquals(submission.runId, observed.first().runId)
     assertEquals(submission.runId, handle.waitForRun(submission.runId, 0L)?.runId)
+  }
+
+  @Test
+  fun runtimeEventsPersistToJournalForProjectionBackedSessions() {
+    val sessionId = "session-runtime-event-journal"
+    val executor = RecordingExecutorService()
+    val journalFactory = FileBackedRunEventJournalStoreFactory(temporaryFolder.root)
+    val runtimeFactory = RecordingRuntimeFactory(
+      onExecute = { task, eventSink ->
+        eventSink.onRunEvent(
+          task,
+          OpenCrayAssistantEvent(
+            runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID].orEmpty(),
+            taskId = task.id,
+            turn = 0,
+            text = "Scanning the latest release notes.",
+            stage = "Planning",
+            emittedAtEpochMs = 10L,
+          ),
+        )
+      },
+    )
+    val manager = manager(
+      runtimeFactory = runtimeFactory,
+      executor = executor,
+      runEventJournalStoreFactory = journalFactory,
+    )
+    val handle = manager.forSession(sessionId)
+
+    val submission = handle.submitPrompt(
+      userText = "check the release notes",
+      pendingMessageId = "pending-runtime-event-journal",
+      visibleThroughMessageId = "pending-runtime-event-journal",
+      policyDecision = allowDecision(),
+    )
+    handle.ensureProcessing()
+
+    executor.runNext()
+
+    val persistedEvent = journalFactory.forChatSession(sessionId)
+      .listRuntimeEvents()
+      .filterIsInstance<OpenCrayAssistantEvent>()
+      .single()
+    assertEquals(submission.runId, persistedEvent.runId)
+    assertEquals(submission.taskId, persistedEvent.taskId)
+    assertEquals("Scanning the latest release notes.", persistedEvent.text)
+    assertEquals("Planning", persistedEvent.stage)
   }
 
   @Test
@@ -2048,6 +2165,7 @@ class AgentSessionRuntimeManagerTest {
     private val detachedControlResultFactory: ((AgentTask) -> ExecutionResult)? = null,
     private val subAgentRecoveryResultFactory: ((AgentTask) -> ExecutionResult)? = null,
     private val managedProcessesProvider: (String) -> List<ManagedProcessSnapshot> = { emptyList() },
+    private val readManagedProcessHandler: (String, String) -> ManagedProcessSnapshot? = { _, _ -> null },
     private val subAgentHandlesProvider: (String) -> List<SubAgentHandleState> = { emptyList() },
     private val terminateManagedProcessHandler: (String, String) -> ManagedProcessSnapshot? = { _, _ -> null },
   ) : AgentSessionTaskRuntimeFactory {
@@ -2067,6 +2185,11 @@ class AgentSessionRuntimeManagerTest {
 
     override fun listManagedProcesses(sessionId: String): List<ManagedProcessSnapshot> =
       managedProcessesProvider(sessionId)
+
+    override fun readManagedProcess(
+      sessionId: String,
+      processId: String,
+    ): ManagedProcessSnapshot? = readManagedProcessHandler(sessionId, processId)
 
     override fun releaseSession(sessionId: String) {
       releasedSessions += sessionId

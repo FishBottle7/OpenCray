@@ -8,42 +8,43 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
   private val fallbackGateway: OpenCrayChatRuntimeGateway,
 ) : OpenCrayChatRuntimeGateway {
   override fun loadChatSnapshot(): Map<String, Any?> =
-    currentReadGateway().loadChatSnapshot()
+    currentLoadGateway().loadChatSnapshot()
 
   override fun observeChat(listener: (Map<String, Any?>) -> Unit): () -> Unit =
-    observeWithDynamicGateway(
-      initialGateway = { fallbackGateway },
-      currentGateway = ::currentReadGateway,
-      observeConnectionState = serviceClient::observeConnectionState,
+    observeWithRuntimeGateway(
       observe = { gateway, callback -> gateway.observeChat(callback) },
       listener = listener,
     )
 
   override fun loadChatRuntimeSnapshot(): Map<String, Any?> =
-    currentReadGateway().loadChatRuntimeSnapshot()
+    currentLoadGateway().loadChatRuntimeSnapshot()
 
   override fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit =
-    observeWithDynamicGateway(
-      initialGateway = { fallbackGateway },
-      currentGateway = ::currentReadGateway,
-      observeConnectionState = serviceClient::observeConnectionState,
+    observeWithStickyRuntimeGateway(
       observe = { gateway, callback -> gateway.observeLiveAssistantDraftEvents(callback) },
       listener = listener,
     )
 
   override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? =
-    currentReadGateway().loadChatRunSnapshot(runId)
+    currentLoadGateway().loadChatRunSnapshot(runId)
 
   override fun waitForChatRun(
     runId: String,
     timeoutMs: Long,
-  ): Map<String, Any?>? = currentReadGateway().waitForChatRun(runId, timeoutMs)
+  ): Map<String, Any?>? {
+    val waitStartedAtEpochMs = System.currentTimeMillis()
+    val gateway = serviceClient.peekChatRuntimeGateway()
+      ?: serviceClient.awaitChatRuntimeGateway(
+        timeoutMs.coerceAtMost(SERVICE_GATEWAY_BIND_AWAIT_TIMEOUT_MS).coerceAtLeast(0L),
+      )
+      ?: fallbackGateway
+    val remainingTimeoutMs = (timeoutMs - (System.currentTimeMillis() - waitStartedAtEpochMs))
+      .coerceAtLeast(0L)
+    return gateway.waitForChatRun(runId, remainingTimeoutMs)
+  }
 
   override fun observeChatRuntime(listener: (Map<String, Any?>) -> Unit): () -> Unit =
-    observeWithDynamicGateway(
-      initialGateway = { fallbackGateway },
-      currentGateway = ::currentReadGateway,
-      observeConnectionState = serviceClient::observeConnectionState,
+    observeWithRuntimeGateway(
       observe = { gateway, callback -> gateway.observeChatRuntime(callback) },
       listener = listener,
     )
@@ -56,25 +57,25 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
   }
 
   override fun loadMemoryDebugSnapshot(): Map<String, Any?> =
-    currentReadGateway().loadMemoryDebugSnapshot()
+    currentLoadGateway().loadMemoryDebugSnapshot()
 
   override fun loadMemoryDebugLinksSnapshot(): Map<String, Any?> =
-    currentReadGateway().loadMemoryDebugLinksSnapshot()
+    currentLoadGateway().loadMemoryDebugLinksSnapshot()
 
   override fun loadSoulDebugSnapshot(): Map<String, Any?> =
-    currentReadGateway().loadSoulDebugSnapshot()
+    currentLoadGateway().loadSoulDebugSnapshot()
 
   override fun searchMemoryDebug(
     query: String,
     maxResults: Int,
     minScore: Int,
-  ): Map<String, Any?> = currentReadGateway().searchMemoryDebug(query, maxResults, minScore)
+  ): Map<String, Any?> = currentLoadGateway().searchMemoryDebug(query, maxResults, minScore)
 
   override fun getMemoryDebugSlice(
     path: String,
     fromLine: Int?,
     lines: Int,
-  ): Map<String, Any?> = currentReadGateway().getMemoryDebugSlice(path, fromLine, lines)
+  ): Map<String, Any?> = currentLoadGateway().getMemoryDebugSlice(path, fromLine, lines)
 
   override fun applyMemoryDebugAction(
     recordId: String,
@@ -204,8 +205,53 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
     )
   }
 
-  private fun currentReadGateway(): OpenCrayChatRuntimeGateway =
+  private fun currentLoadGateway(): OpenCrayChatRuntimeGateway =
+    serviceClient.peekChatRuntimeGateway()
+      ?: serviceClient.awaitChatRuntimeGateway(SERVICE_GATEWAY_BIND_AWAIT_TIMEOUT_MS)
+      ?: fallbackGateway
+
+  private fun currentObservedGateway(): OpenCrayChatRuntimeGateway =
     serviceClient.peekChatRuntimeGateway() ?: fallbackGateway
+
+  private fun <TPayload> observeWithRuntimeGateway(
+    observe: (OpenCrayChatRuntimeGateway, (TPayload) -> Unit) -> (() -> Unit),
+    listener: (TPayload) -> Unit,
+  ): () -> Unit =
+    observeWithDynamicGateway(
+      initialGateway = { fallbackGateway },
+      currentGateway = ::currentObservedGateway,
+      observeConnectionState = serviceClient::observeConnectionState,
+      observe = observe,
+      listener = listener,
+    )
+
+  private fun <TPayload> observeWithStickyRuntimeGateway(
+    observe: (OpenCrayChatRuntimeGateway, (TPayload) -> Unit) -> (() -> Unit),
+    listener: (TPayload) -> Unit,
+  ): () -> Unit {
+    val stickyGateway = stickyRuntimeObservedGatewaySelector()
+    return observeWithDynamicGateway(
+      initialGateway = { fallbackGateway },
+      currentGateway = stickyGateway,
+      observeConnectionState = serviceClient::observeConnectionState,
+      observe = observe,
+      listener = listener,
+    )
+  }
+
+  private fun stickyRuntimeObservedGatewaySelector(): () -> OpenCrayChatRuntimeGateway {
+    val lock = Any()
+    var lastBinderGateway: OpenCrayChatRuntimeGateway? = null
+    return {
+      serviceClient.peekChatRuntimeGateway()?.also { gateway ->
+        synchronized(lock) {
+          lastBinderGateway = gateway
+        }
+      } ?: synchronized(lock) {
+        lastBinderGateway
+      } ?: fallbackGateway
+    }
+  }
 
   private fun dispatchWriteCommand(
     operation: String,

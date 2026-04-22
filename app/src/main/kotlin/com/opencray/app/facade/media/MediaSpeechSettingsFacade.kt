@@ -7,6 +7,7 @@ import com.opencray.app.MediaSpeechSettingsState
 import com.opencray.app.MediaSpeechSettingsStore
 import com.opencray.app.OnDeviceSttSettings
 import com.opencray.app.OpenCrayLocaleManager
+import com.opencray.app.ProviderAuthProtocols
 import com.opencray.app.VoiceProviderSettings
 import org.opencray.app.R
 
@@ -15,13 +16,18 @@ data class MediaProviderSnapshot(
   val baseUrl: String,
   val endpoint: String,
   val model: String,
+  val authProtocol: String = ProviderAuthProtocols.BEARER,
+  val apiKey: String = "",
 )
 
 data class VoiceProviderSnapshot(
   val provider: String,
   val baseUrl: String,
   val endpoint: String,
+  val model: String = VoiceProviderSettings.DEFAULT_MODEL,
   val voicePreset: String,
+  val authProtocol: String = ProviderAuthProtocols.BEARER,
+  val apiKey: String = "",
 )
 
 data class OnDeviceSttSnapshot(
@@ -34,6 +40,12 @@ data class MediaSpeechConfigSnapshot(
   val title: String,
   val subtitle: String,
   val imageGeneration: MediaProviderSnapshot,
+  val videoGeneration: MediaProviderSnapshot = MediaProviderSnapshot(
+    provider = "",
+    baseUrl = "",
+    endpoint = "",
+    model = "",
+  ),
   val voiceGeneration: VoiceProviderSnapshot,
   val sttRouteId: String,
   val externalStt: MediaProviderSnapshot,
@@ -45,13 +57,18 @@ data class SaveMediaProviderRequest(
   val baseUrl: String,
   val endpoint: String,
   val model: String,
+  val authProtocol: String = ProviderAuthProtocols.BEARER,
+  val apiKey: String = "",
 )
 
 data class SaveVoiceProviderRequest(
   val provider: String,
   val baseUrl: String,
   val endpoint: String,
+  val model: String = VoiceProviderSettings.DEFAULT_MODEL,
   val voicePreset: String,
+  val authProtocol: String = ProviderAuthProtocols.BEARER,
+  val apiKey: String = "",
 )
 
 data class SaveOnDeviceSttRequest(
@@ -61,6 +78,12 @@ data class SaveOnDeviceSttRequest(
 
 data class SaveMediaSpeechConfigRequest(
   val imageGeneration: SaveMediaProviderRequest,
+  val videoGeneration: SaveMediaProviderRequest = SaveMediaProviderRequest(
+    provider = "",
+    baseUrl = "",
+    endpoint = "",
+    model = "",
+  ),
   val voiceGeneration: SaveVoiceProviderRequest,
   val sttRouteId: String,
   val externalStt: SaveMediaProviderRequest,
@@ -87,12 +110,25 @@ internal class LocalMediaSpeechSettingsFacade private constructor(
           baseUrl = request.imageGeneration.baseUrl,
           endpoint = request.imageGeneration.endpoint,
           model = request.imageGeneration.model,
+          authProtocol = request.imageGeneration.authProtocol,
+          apiKey = request.imageGeneration.apiKey,
+        ),
+        videoGeneration = MediaProviderSettings(
+          provider = request.videoGeneration.provider,
+          baseUrl = request.videoGeneration.baseUrl,
+          endpoint = request.videoGeneration.endpoint,
+          model = request.videoGeneration.model,
+          authProtocol = request.videoGeneration.authProtocol,
+          apiKey = request.videoGeneration.apiKey,
         ),
         voiceGeneration = VoiceProviderSettings(
           provider = request.voiceGeneration.provider,
           baseUrl = request.voiceGeneration.baseUrl,
           endpoint = request.voiceGeneration.endpoint,
+          model = request.voiceGeneration.model,
           voicePreset = request.voiceGeneration.voicePreset,
+          authProtocol = request.voiceGeneration.authProtocol,
+          apiKey = request.voiceGeneration.apiKey,
         ),
         sttRouteId = request.sttRouteId,
         externalStt = MediaProviderSettings(
@@ -100,6 +136,8 @@ internal class LocalMediaSpeechSettingsFacade private constructor(
           baseUrl = request.externalStt.baseUrl,
           endpoint = request.externalStt.endpoint,
           model = request.externalStt.model,
+          authProtocol = request.externalStt.authProtocol,
+          apiKey = request.externalStt.apiKey,
         ),
         onDeviceModel = OnDeviceSttSettings(
           modelPackage = request.onDeviceModel.modelPackage,
@@ -120,12 +158,25 @@ internal class LocalMediaSpeechSettingsFacade private constructor(
         baseUrl = state.imageGeneration.baseUrl,
         endpoint = state.imageGeneration.endpoint,
         model = state.imageGeneration.model,
+        authProtocol = state.imageGeneration.authProtocol,
+        apiKey = state.imageGeneration.apiKey,
+      ),
+      videoGeneration = MediaProviderSnapshot(
+        provider = state.videoGeneration.provider,
+        baseUrl = state.videoGeneration.baseUrl,
+        endpoint = state.videoGeneration.endpoint,
+        model = state.videoGeneration.model,
+        authProtocol = state.videoGeneration.authProtocol,
+        apiKey = state.videoGeneration.apiKey,
       ),
       voiceGeneration = VoiceProviderSnapshot(
         provider = state.voiceGeneration.provider,
         baseUrl = state.voiceGeneration.baseUrl,
         endpoint = state.voiceGeneration.endpoint,
+        model = state.voiceGeneration.model,
         voicePreset = state.voiceGeneration.voicePreset,
+        authProtocol = state.voiceGeneration.authProtocol,
+        apiKey = state.voiceGeneration.apiKey,
       ),
       sttRouteId = state.sttRouteId,
       externalStt = MediaProviderSnapshot(
@@ -133,6 +184,8 @@ internal class LocalMediaSpeechSettingsFacade private constructor(
         baseUrl = state.externalStt.baseUrl,
         endpoint = state.externalStt.endpoint,
         model = state.externalStt.model,
+        authProtocol = state.externalStt.authProtocol,
+        apiKey = state.externalStt.apiKey,
       ),
       onDeviceModel = OnDeviceSttSnapshot(
         modelPackage = state.onDeviceModel.modelPackage,
@@ -187,12 +240,25 @@ internal object EmptyMediaSpeechSettingsFacade : MediaSpeechSettingsFacade {
         baseUrl = defaults.imageGeneration.baseUrl,
         endpoint = defaults.imageGeneration.endpoint,
         model = defaults.imageGeneration.model,
+        authProtocol = defaults.imageGeneration.authProtocol,
+        apiKey = defaults.imageGeneration.apiKey,
+      ),
+      videoGeneration = MediaProviderSnapshot(
+        provider = defaults.videoGeneration.provider,
+        baseUrl = defaults.videoGeneration.baseUrl,
+        endpoint = defaults.videoGeneration.endpoint,
+        model = defaults.videoGeneration.model,
+        authProtocol = defaults.videoGeneration.authProtocol,
+        apiKey = defaults.videoGeneration.apiKey,
       ),
       voiceGeneration = VoiceProviderSnapshot(
         provider = defaults.voiceGeneration.provider,
         baseUrl = defaults.voiceGeneration.baseUrl,
         endpoint = defaults.voiceGeneration.endpoint,
+        model = defaults.voiceGeneration.model,
         voicePreset = defaults.voiceGeneration.voicePreset,
+        authProtocol = defaults.voiceGeneration.authProtocol,
+        apiKey = defaults.voiceGeneration.apiKey,
       ),
       sttRouteId = defaults.sttRouteId,
       externalStt = MediaProviderSnapshot(
@@ -200,6 +266,8 @@ internal object EmptyMediaSpeechSettingsFacade : MediaSpeechSettingsFacade {
         baseUrl = defaults.externalStt.baseUrl,
         endpoint = defaults.externalStt.endpoint,
         model = defaults.externalStt.model,
+        authProtocol = defaults.externalStt.authProtocol,
+        apiKey = defaults.externalStt.apiKey,
       ),
       onDeviceModel = OnDeviceSttSnapshot(
         modelPackage = defaults.onDeviceModel.modelPackage,

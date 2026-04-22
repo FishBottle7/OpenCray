@@ -9,8 +9,12 @@ import com.opencray.runtime.SandboxPreviewProbeStatus
 import com.opencray.runtime.SandboxSessionCloseOutcome
 import com.opencray.runtime.SandboxSessionCloseResult
 import com.opencray.runtime.PythonScriptRuntime
+import com.opencray.runtime.process.ManagedProcessSnapshot
+import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.process.withNormalizedRemoteState
 import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
@@ -34,6 +38,7 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -44,6 +49,10 @@ private const val DEFAULT_E2B_CONNECT_TIMEOUT_MS: Int = 30_000
 private const val DEFAULT_E2B_READ_TIMEOUT_MS: Int = 300_000
 private const val DEFAULT_E2B_CONTROL_API_URL: String = "https://api.e2b.app"
 private const val DEFAULT_E2B_USER_AGENT: String = "OpenCray-E2B/1.0"
+private const val DURABLE_MANAGED_PROCESS_REGISTRY_FILE_NAME: String = "managed-process-registry.json"
+private const val DURABLE_E2B_NATIVE_RUNTIME_BACKEND: String = "e2b_envd_native_command"
+private const val DURABLE_E2B_NATIVE_BACKEND_KIND: String = "provider_native"
+private const val DURABLE_E2B_NATIVE_PROTOCOL: String = "envd_connect_process_v1"
 internal const val WORKSPACE_SYNC_MANIFEST_PREFIX: String = "__OPENCRAY_SYNC_MANIFEST__="
 private const val MAX_PREVIEW_CANDIDATE_PORTS: Int = 8
 private val PREVIEW_HOST_PORT_REGEX: Regex =
@@ -61,6 +70,8 @@ internal class E2BCodeInterpreterPythonRuntime(
   private val transport: E2BTransport = UrlConnectionE2BTransport(),
   private val clock: () -> Long = { System.currentTimeMillis() },
   private val json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true },
+  private val activityTracker: E2BSandboxActivityTracker = SharedE2BSandboxActivityTracker,
+  private val durableRunningRequestIdsProvider: (String) -> List<String> = { emptyList() },
 ) : PythonScriptRuntime, CancellablePythonScriptRuntime {
   private val lock = Any()
   private val activeRequests: MutableMap<String, ActiveExecution> = ConcurrentHashMap()
@@ -82,31 +93,20 @@ internal class E2BCodeInterpreterPythonRuntime(
   }
 
   internal fun runningRequestIdsForSandbox(sandboxId: String): List<String> =
-    activeRequests.values
-      .asSequence()
-      .filter { execution ->
-        !execution.completed.get() && execution.session.sandboxId == sandboxId
-      }
-      .map { execution -> execution.requestId.trim() }
-      .filter(String::isNotBlank)
-      .distinct()
-      .sorted()
-      .toList()
+    mergeRunningRequestIdsForSandbox(sandboxId)
 
   internal fun closeReusableSession(
     session: E2BSandboxSessionSnapshot,
   ): SandboxSessionCloseResult {
-    val blockingRequest = activeRequests.values.firstOrNull { execution ->
-      !execution.completed.get() && execution.session.sandboxId == session.sandboxId
-    }
-    if (blockingRequest != null) {
+    val blockingRequestId = mergeRunningRequestIdsForSandbox(session.sandboxId).firstOrNull()
+    if (blockingRequestId != null) {
       return SandboxSessionCloseResult(
         providerId = SandboxProviderId.E2B.wireValue,
         outcome = SandboxSessionCloseOutcome.BUSY,
         sandboxId = session.sandboxId,
         sandboxDomain = session.sandboxDomain,
         previewCandidatePorts = session.previewCandidatePorts,
-        blockingRequestId = blockingRequest.requestId,
+        blockingRequestId = blockingRequestId,
       )
     }
     val apiKey = settingsProvider().e2bApiKey?.trim()?.takeIf(String::isNotBlank)
@@ -208,10 +208,12 @@ internal class E2BCodeInterpreterPythonRuntime(
       effectiveRequestTimeoutMs = effectiveRequestTimeoutMs,
     )
     activeRequests[requestId] = activeExecution
+    activityTracker.register(requestId = requestId, sandboxId = session.sandboxId)
     val timeoutWatchdog = startTimeoutWatchdog(activeExecution)
 
     try {
       val syncSummary = syncWorkspace(
+        activeExecution = activeExecution,
         session = session,
         workspaceRoot = workspaceRoot,
         remoteWorkspaceRoot = remoteWorkspaceRoot,
@@ -256,13 +258,55 @@ internal class E2BCodeInterpreterPythonRuntime(
           ),
         )
       }
+      ensurePreContextExecutionActive(activeExecution)
       val contextId = createContext(
+        activeExecution = activeExecution,
         session = session,
         remoteWorkspaceRoot = remoteWorkspaceRoot,
         requestTimeoutMs = effectiveRequestTimeoutMs,
       )
       activeExecution.contextId = contextId
       return try {
+        if (activeExecution.cancelled.get()) {
+          cancelCurrentRequest(activeExecution)
+          return cancelled(
+            request = request,
+            startedAt = startedAt,
+            metadata = commonExecutionMetadata(
+              request = request,
+              state = state,
+              session = session,
+              syncSummary = syncSummary,
+              downloadSummary = WorkspaceDownloadSummary(),
+              remoteWorkspaceRoot = remoteWorkspaceRoot,
+              remoteScriptPath = remotePathFor(remoteWorkspaceRoot, workspaceRoot, resolvedScript),
+              contextId = contextId,
+              requestId = requestId,
+              effectiveRequestTimeoutMs = effectiveRequestTimeoutMs,
+              startupTimeoutMs = startupTimeoutMs,
+            ),
+          )
+        }
+        if (activeExecution.timedOut.get()) {
+          cancelCurrentRequest(activeExecution)
+          return timeout(
+            request = request,
+            startedAt = startedAt,
+            metadata = commonExecutionMetadata(
+              request = request,
+              state = state,
+              session = session,
+              syncSummary = syncSummary,
+              downloadSummary = WorkspaceDownloadSummary(),
+              remoteWorkspaceRoot = remoteWorkspaceRoot,
+              remoteScriptPath = remotePathFor(remoteWorkspaceRoot, workspaceRoot, resolvedScript),
+              contextId = contextId,
+              requestId = requestId,
+              effectiveRequestTimeoutMs = effectiveRequestTimeoutMs,
+              startupTimeoutMs = startupTimeoutMs,
+            ),
+          )
+        }
         executeRemoteScript(
           request = request,
           startedAt = startedAt,
@@ -350,6 +394,7 @@ internal class E2BCodeInterpreterPythonRuntime(
       activeExecution.completed.set(true)
       timeoutWatchdog?.interrupt()
       activeRequests.remove(requestId)
+      activityTracker.complete(requestId)
       cleanupSessionAfterExecution(
         session = activeExecution.session,
         settings = settings,
@@ -366,14 +411,7 @@ internal class E2BCodeInterpreterPythonRuntime(
     }
     val activeExecution = activeRequests[normalizedRequestId] ?: return false
     activeExecution.cancelled.set(true)
-    return runCatching {
-      killSandbox(
-        sandboxId = activeExecution.session.sandboxId,
-        apiKey = activeExecution.apiKey,
-      )
-      clearIfCurrentSession(activeExecution.session.sandboxId)
-      true
-    }.getOrDefault(false)
+    return cancelCurrentRequest(activeExecution)
   }
 
   private fun executeRemoteScript(
@@ -751,12 +789,14 @@ internal class E2BCodeInterpreterPythonRuntime(
   }
 
   private fun syncWorkspace(
+    activeExecution: ActiveExecution,
     session: E2BSandboxSessionSnapshot,
     workspaceRoot: Path,
     remoteWorkspaceRoot: String,
     requestTimeoutMs: Long,
     requestId: String,
   ): WorkspaceSyncSummary {
+    ensurePreContextExecutionActive(activeExecution)
     val plan = planWorkspaceFiles(workspaceRoot)
     val previousState = loadReusableWorkspaceSyncState(
       session = session,
@@ -791,8 +831,10 @@ internal class E2BCodeInterpreterPythonRuntime(
     var uploadedFiles = 0
     var uploadedBytes = 0L
     filesToUpload.forEach { file ->
+      ensurePreContextExecutionActive(activeExecution)
       val remotePath = "$remoteWorkspaceRoot/${file.relativePath}"
       val content = Files.readAllBytes(file.path)
+      ensurePreContextExecutionActive(activeExecution)
       val response = transport.upload(
         E2BUploadRequest(
           url = sandboxFilesUrl(session, remotePath),
@@ -807,6 +849,7 @@ internal class E2BCodeInterpreterPythonRuntime(
       if (response.statusCode !in 200..299) {
         error("E2B workspace upload failed for ${file.path.fileName}: ${response.message()}")
       }
+      ensurePreContextExecutionActive(activeExecution)
       uploadedFiles += 1
       uploadedBytes += content.size.toLong()
     }
@@ -824,10 +867,12 @@ internal class E2BCodeInterpreterPythonRuntime(
   }
 
   private fun createContext(
+    activeExecution: ActiveExecution,
     session: E2BSandboxSessionSnapshot,
     remoteWorkspaceRoot: String,
     requestTimeoutMs: Long,
   ): String {
+    ensurePreContextExecutionActive(activeExecution)
     val response = transport.request(
       E2BRequest(
         method = "POST",
@@ -901,7 +946,7 @@ internal class E2BCodeInterpreterPythonRuntime(
   ) {
     val state = settings.state.sanitized()
     val sticky = SandboxSessionMode.fromWireValue(state.sessionMode) == SandboxSessionMode.STICKY
-    if (!sticky || cancelled || timedOut) {
+    if (!sticky) {
       settings.e2bApiKey?.trim()?.takeIf(String::isNotBlank)?.let { apiKey ->
         runCatching {
           killSandbox(session.sandboxId, apiKey)
@@ -909,6 +954,11 @@ internal class E2BCodeInterpreterPythonRuntime(
       }
       clearWorkspaceSyncState(session)
       clearIfCurrentSession(session.sandboxId)
+      return
+    }
+    if (cancelled || timedOut) {
+      clearWorkspaceSyncState(session)
+      rememberStickySession(session, persist = state.autoResume)
       return
     }
     rememberStickySession(session, persist = state.autoResume)
@@ -1030,13 +1080,7 @@ internal class E2BCodeInterpreterPythonRuntime(
           return@Thread
         }
         activeExecution.timedOut.set(true)
-        runCatching {
-          killSandbox(
-            sandboxId = activeExecution.session.sandboxId,
-            apiKey = activeExecution.apiKey,
-          )
-        }
-        clearIfCurrentSession(activeExecution.session.sandboxId)
+        cancelCurrentRequest(activeExecution)
       },
       "e2b-python-timeout-${activeExecution.requestId}",
     ).apply {
@@ -1044,6 +1088,30 @@ internal class E2BCodeInterpreterPythonRuntime(
       start()
     }
   }
+
+  private fun cancelCurrentRequest(activeExecution: ActiveExecution): Boolean {
+    val contextId = activeExecution.contextId?.trim()?.takeIf(String::isNotBlank) ?: return true
+    return runCatching {
+      deleteContext(
+        session = activeExecution.session,
+        requestTimeoutMs = activeExecution.effectiveRequestTimeoutMs,
+        contextId = contextId,
+      )
+      true
+    }.getOrDefault(false)
+  }
+
+  private fun ensurePreContextExecutionActive(activeExecution: ActiveExecution) {
+    if (activeExecution.cancelled.get() || activeExecution.timedOut.get()) {
+      throw PreContextExecutionInterruptedException()
+    }
+  }
+
+  private fun mergeRunningRequestIdsForSandbox(sandboxId: String): List<String> =
+    mergeRunningRequestIds(
+      activityTracker.runningRequestIdsForSandbox(sandboxId),
+      runCatching { durableRunningRequestIdsProvider(sandboxId) }.getOrDefault(emptyList()),
+    )
 
   private fun resolveScriptInWorkspace(
     workspaceRoot: Path,
@@ -1991,6 +2059,138 @@ private data class DownloadArchiveDirectoryStats(
   val lastModifiedAtEpochMs: Long,
 )
 
+internal interface E2BSandboxActivityTracker {
+  fun register(
+    requestId: String,
+    sandboxId: String,
+  )
+
+  fun complete(requestId: String)
+
+  fun runningRequestIdsForSandbox(sandboxId: String): List<String>
+}
+
+internal object SharedE2BSandboxActivityTracker : E2BSandboxActivityTracker {
+  private val activeRequests: MutableMap<String, String> = ConcurrentHashMap()
+
+  override fun register(
+    requestId: String,
+    sandboxId: String,
+  ) {
+    val normalizedRequestId = requestId.trim()
+    val normalizedSandboxId = sandboxId.trim()
+    if (normalizedRequestId.isBlank() || normalizedSandboxId.isBlank()) {
+      return
+    }
+    activeRequests[normalizedRequestId] = normalizedSandboxId
+  }
+
+  override fun complete(requestId: String) {
+    val normalizedRequestId = requestId.trim()
+    if (normalizedRequestId.isBlank()) {
+      return
+    }
+    activeRequests.remove(normalizedRequestId)
+  }
+
+  override fun runningRequestIdsForSandbox(sandboxId: String): List<String> {
+    val normalizedSandboxId = sandboxId.trim()
+    if (normalizedSandboxId.isBlank()) {
+      return emptyList()
+    }
+    return activeRequests.entries
+      .asSequence()
+      .filter { (_, activeSandboxId) -> activeSandboxId == normalizedSandboxId }
+      .map { (requestId, _) -> requestId }
+      .distinct()
+      .sorted()
+      .toList()
+  }
+
+  internal fun clearForTest() {
+    activeRequests.clear()
+  }
+}
+
+internal fun durableE2BNativeRunningRequestIdsProvider(
+  runtimeRootDirectory: File,
+  json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true },
+): (String) -> List<String> = { sandboxId ->
+  val normalizedSandboxId = sandboxId.trim()
+  if (normalizedSandboxId.isBlank()) {
+    emptyList()
+  } else {
+    runtimeRootDirectory.listFiles()
+      ?.asSequence()
+      ?.filter(File::isDirectory)
+      ?.map { sessionDirectory -> File(sessionDirectory, DURABLE_MANAGED_PROCESS_REGISTRY_FILE_NAME) }
+      ?.filter(File::isFile)
+      ?.flatMap { registryFile ->
+        readDurableManagedProcessSnapshots(
+          registryFile = registryFile,
+          json = json,
+        ).asSequence()
+      }
+      ?.map(ManagedProcessSnapshot::withNormalizedRemoteState)
+      ?.filter { snapshot ->
+        snapshot.isDurablyBusyE2BNativeProcessForSandbox(normalizedSandboxId)
+      }
+      ?.map(ManagedProcessSnapshot::processId)
+      ?.distinct()
+      ?.sorted()
+      ?.toList()
+      ?: emptyList()
+  }
+}
+
+private fun readDurableManagedProcessSnapshots(
+  registryFile: File,
+  json: Json,
+): List<ManagedProcessSnapshot> {
+  val encoded = runCatching { registryFile.readText(StandardCharsets.UTF_8) }.getOrNull()
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: return emptyList()
+  val payload = runCatching { json.parseToJsonElement(encoded).jsonObject }.getOrNull()
+    ?: return emptyList()
+  val snapshots = payload["snapshots"] as? JsonArray ?: return emptyList()
+  return snapshots.mapNotNull { snapshotPayload ->
+    runCatching {
+      json.decodeFromJsonElement(ManagedProcessSnapshot.serializer(), snapshotPayload)
+    }.getOrNull()
+  }
+}
+
+private fun ManagedProcessSnapshot.isDurablyBusyE2BNativeProcessForSandbox(
+  sandboxId: String,
+): Boolean {
+  if (status != ManagedProcessStatus.RUNNING) {
+    return false
+  }
+  val normalizedSandboxId = remoteHandle?.sandboxId?.trim()?.takeIf(String::isNotBlank)
+    ?: metadata["sandboxId"]?.trim()?.takeIf(String::isNotBlank)
+    ?: return false
+  if (normalizedSandboxId != sandboxId) {
+    return false
+  }
+  val runtimeBackend = metadata["runtimeBackend"]?.trim()
+  val resolvedBackend = metadata["sandboxCommandBackendResolvedKind"]?.trim()
+  val protocol = remoteHandle?.nativeProtocol?.trim()?.takeIf(String::isNotBlank)
+    ?: metadata["sandboxCommandNativeProtocol"]?.trim()
+  return runtimeBackend == DURABLE_E2B_NATIVE_RUNTIME_BACKEND ||
+    resolvedBackend == DURABLE_E2B_NATIVE_BACKEND_KIND ||
+    protocol == DURABLE_E2B_NATIVE_PROTOCOL
+}
+
+private fun mergeRunningRequestIds(vararg groups: List<String>): List<String> =
+  groups.asSequence()
+    .flatMap { requestIds -> requestIds.asSequence() }
+    .map(String::trim)
+    .filter(String::isNotBlank)
+    .distinct()
+    .sorted()
+    .toList()
+
 internal data class ActiveExecution(
   val requestId: String,
   val apiKey: String,
@@ -2001,6 +2201,8 @@ internal data class ActiveExecution(
   val completed: AtomicBoolean = AtomicBoolean(false),
   @Volatile var contextId: String? = null,
 )
+
+private class PreContextExecutionInterruptedException : RuntimeException()
 
 internal data class E2BRequest(
   val method: String,

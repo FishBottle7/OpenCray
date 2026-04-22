@@ -1888,10 +1888,12 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   }) async {
     final String fileName = switch (kind) {
       OpenCrayChatDraftAttachmentKind.image => 'workspace-shot.png',
+      OpenCrayChatDraftAttachmentKind.voice => 'voice-note.m4a',
       OpenCrayChatDraftAttachmentKind.file => 'mobile-ui-layout-spec.md',
     };
     final String mimeType = switch (kind) {
       OpenCrayChatDraftAttachmentKind.image => 'image/png',
+      OpenCrayChatDraftAttachmentKind.voice => 'audio/mp4',
       OpenCrayChatDraftAttachmentKind.file => 'text/markdown',
     };
     return <OpenCrayChatDraftAttachment>[

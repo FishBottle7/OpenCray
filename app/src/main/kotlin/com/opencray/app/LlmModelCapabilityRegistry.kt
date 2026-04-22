@@ -1073,6 +1073,7 @@ internal fun effectiveLlmRouteMetadata(
     put(LiteRtOnDeviceMetadataKeys.RUNTIME, OnDeviceLlmCatalog.RUNTIME_ID_LITERT_LM)
     put(LiteRtOnDeviceMetadataKeys.MODEL_ID, settings.selectedOnDeviceModelId)
     put(LiteRtOnDeviceMetadataKeys.BACKEND, settings.onDeviceAccelerator)
+    put("stream", settings.streamingEnabled.toString())
     put(
       LiteRtOnDeviceMetadataKeys.MAX_CONTEXT_WINDOW,
       settings.onDeviceMaxContextWindow.toString(),

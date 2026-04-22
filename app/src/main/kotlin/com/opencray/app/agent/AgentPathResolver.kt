@@ -18,6 +18,7 @@ internal data class AgentStoragePaths(
   val transcriptStoreRoot: Path,
   val transcriptSupplementsRoot: Path,
   val compactionRoot: Path,
+  val processRegistryRoot: Path,
   val voiceMetadataCacheRoot: Path,
 ) {
   val managedDirectories: List<Path>
@@ -31,6 +32,7 @@ internal data class AgentStoragePaths(
       transcriptStoreRoot,
       transcriptSupplementsRoot,
       compactionRoot,
+      processRegistryRoot,
       voiceMetadataCacheRoot,
     )
 }
@@ -72,6 +74,7 @@ internal class AgentPathResolver(
     val transcriptStoreRoot = agentRoot.resolve(TRANSCRIPT_STORE_DIRECTORY_NAME).normalize()
     val transcriptSupplementsRoot = agentRoot.resolve(TRANSCRIPT_SUPPLEMENTS_DIRECTORY_NAME).normalize()
     val compactionRoot = agentRoot.resolve(COMPACTION_DIRECTORY_NAME).normalize()
+    val processRegistryRoot = agentRoot.resolve(PROCESS_REGISTRY_DIRECTORY_NAME).normalize()
     val voiceMetadataCacheRoot = agentRoot.resolve(VOICE_METADATA_CACHE_DIRECTORY_NAME).normalize()
     val allPaths = listOf(
       privateRoot,
@@ -83,6 +86,7 @@ internal class AgentPathResolver(
       transcriptStoreRoot,
       transcriptSupplementsRoot,
       compactionRoot,
+      processRegistryRoot,
       voiceMetadataCacheRoot,
     )
     require(allPaths.all { path -> path.startsWith(agentRoot) }) {
@@ -102,6 +106,7 @@ internal class AgentPathResolver(
       transcriptStoreRoot = transcriptStoreRoot,
       transcriptSupplementsRoot = transcriptSupplementsRoot,
       compactionRoot = compactionRoot,
+      processRegistryRoot = processRegistryRoot,
       voiceMetadataCacheRoot = voiceMetadataCacheRoot,
     )
   }
@@ -127,6 +132,7 @@ internal class AgentPathResolver(
     internal const val TRANSCRIPT_STORE_DIRECTORY_NAME: String = "transcript-store"
     internal const val TRANSCRIPT_SUPPLEMENTS_DIRECTORY_NAME: String = "transcript-supplements"
     internal const val COMPACTION_DIRECTORY_NAME: String = "compaction"
+    internal const val PROCESS_REGISTRY_DIRECTORY_NAME: String = "process-registry"
     internal const val VOICE_METADATA_CACHE_DIRECTORY_NAME: String = "voice-metadata-cache"
     private val AGENT_ID_REGEX = Regex("^[a-z0-9][a-z0-9-]*$")
 

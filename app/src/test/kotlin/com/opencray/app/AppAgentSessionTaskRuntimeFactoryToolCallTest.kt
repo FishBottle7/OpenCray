@@ -9,10 +9,14 @@ import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.llm.LiteLlmProviderClient
 import com.opencray.llm.LiteLlmProviderRequest
 import com.opencray.llm.LiteLlmProviderResult
+import com.opencray.persistence.model.ChatAttachmentEntry
+import com.opencray.persistence.model.ChatAttachmentKind
 import com.opencray.policy.SafetyAutomationMode
 import com.opencray.policy.SafetySettingsMetadataKeys
 import com.opencray.policy.ToolPolicyOverride
 import com.opencray.runtime.NoOpOpenCrayAgentRuntimeEventSink
+import com.opencray.runtime.context.RuntimeConversationAttachment
+import com.opencray.runtime.context.RuntimeConversationAttachmentKind
 import com.opencray.runtime.process.AgentProcessRegistry
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
@@ -29,6 +33,8 @@ import com.opencray.skills.SkillLoader
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -290,6 +296,121 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
     val context = checkNotNull(providerClient.recordedAutomaticToolExecutionContext)
     assertEquals(task.id, context.task.id)
     assertEquals(null, LiteRtAutomaticToolExecutionRegistry.current())
+  }
+
+  @Test
+  fun promptTaskInjectsLocalizedThinkingLabelIntoOnDeviceRouteMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-on-device-thinking-label").toPath()
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-on-device-thinking-label"))
+    val providerClient = RecordingLiteRtContextProviderClient(
+      result = LiteLlmProviderResult.Failure(
+        errorCode = "TEST_STOP",
+        errorMessage = "Stop after provider capture.",
+      ),
+    )
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+          providerId = "",
+          selectedOnDeviceModelId = OnDeviceLlmCatalog.GEMMA_4_E2B_IT,
+        )
+      },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      providerClient = providerClient,
+      onDeviceThinkingTextProvider = { "思考中…" },
+    )
+    val runtime = runtimeFactory.create(
+      sessionId = chatStore.loadState().activeSession.sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val task = AgentTask(
+      id = "prompt-on-device-thinking-label",
+      type = AgentTaskType.PROMPT,
+      input = "你好",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+    )
+
+    val result = runtime.execute(
+      task,
+      RuntimeExecutionHooks(
+        isCancellationRequested = { false },
+        requestRetry = { _ -> error("Retry was not expected for on-device thinking label test.") },
+      ),
+    )
+
+    assertEquals(ExecutionStatus.FAILED, result.status)
+    assertEquals("TEST_STOP", result.errorCode)
+    assertEquals(
+      "思考中…",
+      providerClient.recordedRequest?.route?.metadata?.get(LiteRtOnDeviceMetadataKeys.THINKING_LABEL),
+    )
+  }
+
+  @Test
+  fun promptTaskFallsBackToCanonicalThinkingLabelForOnDeviceRouteMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-on-device-thinking-label-default").toPath()
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-on-device-thinking-label-default"))
+    val providerClient = RecordingLiteRtContextProviderClient(
+      result = LiteLlmProviderResult.Failure(
+        errorCode = "TEST_STOP",
+        errorMessage = "Stop after provider capture.",
+      ),
+    )
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+          providerId = "",
+          selectedOnDeviceModelId = OnDeviceLlmCatalog.GEMMA_4_E2B_IT,
+        )
+      },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      providerClient = providerClient,
+    )
+    val runtime = runtimeFactory.create(
+      sessionId = chatStore.loadState().activeSession.sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val task = AgentTask(
+      id = "prompt-on-device-thinking-label-default",
+      type = AgentTaskType.PROMPT,
+      input = "Hello",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+    )
+
+    val result = runtime.execute(
+      task,
+      RuntimeExecutionHooks(
+        isCancellationRequested = { false },
+        requestRetry = { _ -> error("Retry was not expected for default on-device thinking label test.") },
+      ),
+    )
+
+    assertEquals(ExecutionStatus.FAILED, result.status)
+    assertEquals("TEST_STOP", result.errorCode)
+    assertEquals(
+      "Thinking…",
+      providerClient.recordedRequest?.route?.metadata?.get(LiteRtOnDeviceMetadataKeys.THINKING_LABEL),
+    )
   }
 
   @Test
@@ -752,6 +873,140 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
         message.role == RuntimeConversationRole.USER && message.content == "Write the note."
       },
     )
+  }
+
+  @Test
+  fun firstPromptRunUsesStructuredChatTurnOnceWhenChatStoreAlreadyContainsSubmittedTurn() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-first-prompt-structured").toPath()
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-first-prompt-structured"),
+    )
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    Files.createDirectories(workspaceRoot.resolve("uploads"))
+    Files.write(
+      workspaceRoot.resolve("uploads").resolve("diagram.png"),
+      byteArrayOf(1, 2, 3, 4),
+    )
+    val attachment = ChatAttachmentEntry(
+      attachmentId = "attachment-image-1",
+      kind = ChatAttachmentKind.IMAGE,
+      displayName = "diagram.png",
+      localPath = "uploads/diagram.png",
+      mimeType = "image/png",
+      sizeBytes = 4,
+    )
+    val pendingMessageId = "assistant-pending-first-prompt"
+    val promptUserText = "Describe the attachment."
+    chatStore.appendSubmittedTurn(
+      sessionId = sessionId,
+      userText = promptUserText,
+      assistantMessageId = pendingMessageId,
+      assistantPlaceholderText = "Thinking",
+      attachments = listOf(attachment),
+    )
+    val providerClient = RecordingLiteRtContextProviderClient(
+      result = LiteLlmProviderResult.Failure(
+        errorCode = "TEST_STOP",
+        errorMessage = "Stop after request capture.",
+      ),
+    )
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+          providerId = "",
+          selectedOnDeviceModelId = OnDeviceLlmCatalog.GEMMA_4_E2B_IT,
+        )
+      },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      providerClient = providerClient,
+    )
+    val runtime = runtimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val absoluteAttachmentPath = workspaceRoot
+      .resolve("uploads")
+      .resolve("diagram.png")
+      .toAbsolutePath()
+      .normalize()
+      .toString()
+      .replace('\\', '/')
+    val runtimeAttachmentsJson = Json.encodeToString(
+      ListSerializer(RuntimeConversationAttachment.serializer()),
+      listOf(
+        RuntimeConversationAttachment(
+          attachmentId = attachment.attachmentId,
+          kind = RuntimeConversationAttachmentKind.IMAGE,
+          displayName = attachment.displayName,
+          filePath = absoluteAttachmentPath,
+          mimeType = attachment.mimeType,
+        ),
+      ),
+    )
+    val task = AgentTask(
+      id = "prompt-first-prompt-structured",
+      type = AgentTaskType.PROMPT,
+      input = ChatRuntimeTextFormatter.format(
+        text = promptUserText,
+        commandLabel = null,
+        attachments = listOf(attachment),
+      ),
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+      metadata = mapOf(
+        AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to pendingMessageId,
+        AppAgentSessionTaskRuntimeFactory.METADATA_VISIBLE_THROUGH_MESSAGE_ID to pendingMessageId,
+        AppAgentSessionTaskRuntimeFactory.METADATA_PROMPT_USER_TEXT to promptUserText,
+        AppAgentSessionTaskRuntimeFactory.METADATA_PROMPT_RUNTIME_ATTACHMENTS_JSON to runtimeAttachmentsJson,
+      ),
+    )
+
+    val result = runtime.execute(
+      task,
+      RuntimeExecutionHooks(
+        isCancellationRequested = { false },
+        requestRetry = { _ -> error("Retry was not expected for request capture test.") },
+      ),
+    )
+
+    assertEquals(ExecutionStatus.FAILED, result.status)
+    assertEquals("TEST_STOP", result.errorCode)
+    val promptMessages = checkNotNull(providerClient.recordedRequest)
+      .request
+      .messages
+      .filter { message ->
+        message.role == com.opencray.llm.LiteLlmGatewayMessageRole.USER &&
+          message.content == promptUserText
+      }
+    assertEquals(
+      promptMessages.joinToString(separator = "\n---\n") { message ->
+        "content=${message.content} attachments=${message.attachments.map { attachment -> "${attachment.attachmentId}:${attachment.displayName}:${attachment.filePath}" }}"
+      },
+      1,
+      promptMessages.size,
+    )
+    assertEquals(promptUserText, promptMessages.single().content)
+    assertEquals(1, promptMessages.single().attachments.size)
+    assertEquals("diagram.png", promptMessages.single().attachments.single().displayName)
+    assertEquals(absoluteAttachmentPath, promptMessages.single().attachments.single().filePath)
+
+    val transcriptUserMessages = runtimeFactory
+      .transcriptStoreForSession(sessionId)
+      .snapshot()
+      .filter { message -> message.role == RuntimeConversationRole.USER }
+    assertEquals(1, transcriptUserMessages.size)
+    assertEquals(promptUserText, transcriptUserMessages.single().content)
+    assertEquals(1, transcriptUserMessages.single().attachments.size)
+    assertEquals("diagram.png", transcriptUserMessages.single().attachments.single().displayName)
   }
 
   @Test

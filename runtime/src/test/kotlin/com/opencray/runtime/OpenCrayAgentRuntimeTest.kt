@@ -1001,6 +1001,244 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
+  fun runPromptTaskStreamsStructuredActionsDraftText() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-structured-actions-draft-workspace")
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "test-route",
+      providerId = "openai",
+      model = "gpt-test",
+      attemptIndex = 0,
+    )
+    val gateway = object : LiteLlmGateway {
+      override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+        request.streamObserver.onVisibleTextSnapshot(
+          "{\"actions\":[{\"type\":\"commentary\",\"text\":\"Checking the transcript first.\"}",
+        )
+        request.streamObserver.onVisibleTextSnapshot(
+          "{\"actions\":[{\"type\":\"commentary\",\"text\":\"Checking the transcript first.\"},{\"type\":\"final\",\"answer\":\"Here is",
+        )
+        request.streamObserver.onVisibleTextSnapshot(
+          "{\"actions\":[{\"type\":\"commentary\",\"text\":\"Checking the transcript first.\"},{\"type\":\"final\",\"answer\":\"Here is the final answer.\"}]}",
+        )
+        return LiteLlmGatewayResult(
+          requestId = request.requestId,
+          status = LiteLlmGatewayStatus.SUCCESS,
+          completionMode = LiteLlmCompletionMode.PRIMARY,
+          outputText = "{\"actions\":[{\"type\":\"commentary\",\"text\":\"Checking the transcript first.\"},{\"type\":\"final\",\"answer\":\"Here is the final answer.\"}]}",
+          selectedRoute = selection,
+          attempts = listOf(
+            LiteLlmAttemptRecord(
+              route = selection,
+              outcome = LiteLlmAttemptOutcome.SUCCESS,
+              outputChars = 132,
+              startedAtEpochMs = 2_000L,
+              finishedAtEpochMs = 2_100L,
+            ),
+          ),
+          startedAtEpochMs = 2_000L,
+          finishedAtEpochMs = 2_100L,
+        )
+      }
+    }
+    val eventSink = RecordingEventSink()
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 2, maxToolCalls = 0),
+      eventSink = eventSink,
+      clock = IncrementingClock(start = 2_000L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Check first, then answer."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Here is the final answer.", result.stdout)
+    assertEquals(
+      listOf(
+        "Checking the transcript first.",
+        "Here is",
+        "Here is the final answer.",
+      ),
+      eventSink.assistantDrafts,
+    )
+    assertEquals(0, eventSink.assistantDraftClearCount)
+  }
+
+  @Test
+  fun runPromptTaskSuppressesStructuredFinalDraftWhenActionsBatchContainsToolCall() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-structured-actions-tool-final-draft-workspace")
+    Files.write(
+      workspaceRoot.toPath().resolve("README.md"),
+      "tool batch draft".toByteArray(StandardCharsets.UTF_8),
+    )
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "test-route",
+      providerId = "openai",
+      model = "gpt-test",
+      attemptIndex = 0,
+    )
+    var requestIndex = 0
+    val gateway = object : LiteLlmGateway {
+      override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+        return if (requestIndex++ == 0) {
+          request.streamObserver.onVisibleTextSnapshot(
+            "{\"actions\":[{\"type\":\"commentary\",\"text\":\"Checking the transcript first.\"}",
+          )
+          request.streamObserver.onVisibleTextSnapshot(
+            "{\"actions\":[{\"type\":\"commentary\",\"text\":\"Checking the transcript first.\"},{\"type\":\"tool_call\",\"tool_name\":\"Read\",\"arguments\":{\"file_path\":\"README.md\"}},{\"type\":\"final\",\"answer\":\"This final must stay hidden.\"}]}",
+          )
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            outputText = "{\"actions\":[{\"type\":\"commentary\",\"text\":\"Checking the transcript first.\"},{\"type\":\"tool_call\",\"tool_name\":\"Read\",\"arguments\":{\"file_path\":\"README.md\"}},{\"type\":\"final\",\"answer\":\"This final must stay hidden.\"}]}",
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 200,
+                startedAtEpochMs = 2_000L,
+                finishedAtEpochMs = 2_100L,
+              ),
+            ),
+            startedAtEpochMs = 2_000L,
+            finishedAtEpochMs = 2_100L,
+          )
+        } else {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              finalText = "Actual final after the tool call.",
+              rawText = "Actual final after the tool call.",
+            ),
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 33,
+                startedAtEpochMs = 2_200L,
+                finishedAtEpochMs = 2_300L,
+              ),
+            ),
+            startedAtEpochMs = 2_200L,
+            finishedAtEpochMs = 2_300L,
+          )
+        }
+      }
+    }
+    val eventSink = RecordingEventSink()
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 4, maxToolCalls = 1),
+      eventSink = eventSink,
+      clock = IncrementingClock(start = 2_000L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Check first, read README.md, then answer."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Actual final after the tool call.", result.stdout)
+    assertEquals(listOf("Checking the transcript first."), eventSink.assistantDrafts)
+    assertEquals(1, eventSink.assistantDraftClearCount)
+  }
+
+  @Test
+  fun runPromptTaskStreamsTopLevelStructuredCommentaryProgressAndStatusDraftText() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-top-level-structured-draft-workspace")
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "test-route",
+      providerId = "openai",
+      model = "gpt-test",
+      attemptIndex = 0,
+    )
+    val gateway = object : LiteLlmGateway {
+      override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+        request.streamObserver.onVisibleTextSnapshot(
+          "{\"type\":\"commentary\",\"text\":\"Checking the transcript first.\"}",
+        )
+        request.streamObserver.onVisibleTextSnapshot(
+          "{\"type\":\"progress\",\"text\":\"Still checking the workspace.\"}",
+        )
+        request.streamObserver.onVisibleTextSnapshot(
+          "{\"type\":\"status\",\"text\":\"Ready to answer.\"}",
+        )
+        return LiteLlmGatewayResult(
+          requestId = request.requestId,
+          status = LiteLlmGatewayStatus.SUCCESS,
+          completionMode = LiteLlmCompletionMode.PRIMARY,
+          completion = LiteLlmStructuredCompletion(
+            finalText = "Done.",
+            rawText = "Done.",
+          ),
+          selectedRoute = selection,
+          attempts = listOf(
+            LiteLlmAttemptRecord(
+              route = selection,
+              outcome = LiteLlmAttemptOutcome.SUCCESS,
+              outputChars = 5,
+              startedAtEpochMs = 2_000L,
+              finishedAtEpochMs = 2_100L,
+            ),
+          ),
+          startedAtEpochMs = 2_000L,
+          finishedAtEpochMs = 2_100L,
+        )
+      }
+    }
+    val eventSink = RecordingEventSink()
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 2, maxToolCalls = 0),
+      eventSink = eventSink,
+      clock = IncrementingClock(start = 2_000L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Answer directly."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Done.", result.stdout)
+    assertEquals(
+      listOf(
+        "Checking the transcript first.",
+        "Still checking the workspace.",
+        "Ready to answer.",
+      ),
+      eventSink.assistantDrafts,
+    )
+    assertEquals(0, eventSink.assistantDraftClearCount)
+  }
+
+  @Test
   fun runPromptTaskSuppressesPartialStructuredJsonPrefixesUntilAnswerAppears() {
     val workspaceRoot = temporaryFolder.newFolder("agent-structured-prefix-draft-workspace")
     val selection = LiteLlmRouteSelectionMetadata(
@@ -1082,6 +1320,68 @@ class OpenCrayAgentRuntimeTest {
         )
         request.streamObserver.onVisibleTextSnapshot(
           "{\"type\":\"commentary\",\"text\":\"Inspecting files\"}",
+        )
+        return LiteLlmGatewayResult(
+          requestId = request.requestId,
+          status = LiteLlmGatewayStatus.SUCCESS,
+          completionMode = LiteLlmCompletionMode.PRIMARY,
+          completion = LiteLlmStructuredCompletion(
+            finalText = "Done.",
+            rawText = "Done.",
+          ),
+          selectedRoute = selection,
+          attempts = listOf(
+            LiteLlmAttemptRecord(
+              route = selection,
+              outcome = LiteLlmAttemptOutcome.SUCCESS,
+              outputChars = 5,
+              startedAtEpochMs = 2_000L,
+              finishedAtEpochMs = 2_100L,
+            ),
+          ),
+          startedAtEpochMs = 2_000L,
+          finishedAtEpochMs = 2_100L,
+        )
+      }
+    }
+    val eventSink = RecordingEventSink()
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 2, maxToolCalls = 0),
+      eventSink = eventSink,
+      clock = IncrementingClock(start = 2_000L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Answer directly."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Done.", result.stdout)
+    assertTrue(eventSink.assistantDrafts.isEmpty())
+    assertEquals(0, eventSink.assistantDraftClearCount)
+  }
+
+  @Test
+  fun runPromptTaskSuppressesNestedActionsInsideStructuredToolDraftPayloads() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-structured-hidden-nested-actions-workspace")
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "test-route",
+      providerId = "openai",
+      model = "gpt-test",
+      attemptIndex = 0,
+    )
+    val gateway = object : LiteLlmGateway {
+      override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+        request.streamObserver.onVisibleTextSnapshot(
+          "{\"tool_calls\":[{\"tool_name\":\"Read\",\"arguments\":{\"actions\":[{\"type\":\"final\",\"answer\":\"leak\"}],\"file_path\":\"README.md\"}}]}",
         )
         return LiteLlmGatewayResult(
           requestId = request.requestId,
@@ -6478,6 +6778,70 @@ class OpenCrayAgentRuntimeTest {
       "Keep the same run paused if retries are exhausted.",
       resumeState.transcript.lastOrNull()?.content,
     )
+  }
+
+  @Test
+  fun runPromptTaskDoesNotRetryTerminalProviderTimeoutStatuses() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-llm-terminal-timeout")
+    val sleepDurations = mutableListOf<Long>()
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "test-route",
+      providerId = "fake",
+      model = "fake-model",
+      attemptIndex = 0,
+    )
+    val gateway = ScriptedGateway(
+      results = listOf(
+        LiteLlmGatewayResult(
+          requestId = "scripted-timeout-499",
+          status = LiteLlmGatewayStatus.TIMEOUT,
+          completionMode = LiteLlmCompletionMode.TERMINAL,
+          selectedRoute = selection,
+          attempts = listOf(
+            LiteLlmAttemptRecord(
+              route = selection,
+              outcome = LiteLlmAttemptOutcome.TIMEOUT,
+              startedAtEpochMs = 30_000L,
+              finishedAtEpochMs = 30_001L,
+              metadataKeys = listOf("statusCode"),
+            ),
+          ),
+          errorMessage = "Upstream request timed out.",
+          startedAtEpochMs = 30_000L,
+          finishedAtEpochMs = 30_001L,
+          metadata = mapOf("statusCode" to "499"),
+        ),
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        maxRecoverableLlmRetries = 5,
+        recoverableLlmRetryDelayMs = 10L,
+        sleep = { durationMs -> sleepDurations += durationMs },
+      ),
+      clock = IncrementingClock(start = 30_500L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Fail fast when the provider already timed out upstream."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.TIMEOUT, result.status)
+    assertEquals("Upstream request timed out.", result.errorMessage)
+    assertEquals("499", result.metadata["statusCode"])
+    assertEquals(1, gateway.requests.size)
+    assertTrue(sleepDurations.isEmpty())
+    assertEquals("0", result.metadata["llmRetryCount"])
   }
 
   @Test

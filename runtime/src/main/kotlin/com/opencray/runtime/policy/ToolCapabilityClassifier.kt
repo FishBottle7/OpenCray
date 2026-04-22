@@ -35,7 +35,10 @@ internal class ToolCapabilityClassifier {
     "WebSearch",
     "WebFetch",
     "GenerateImage",
+    "GenerateVideo",
     "SynthesizeSpeech",
+    "PollMediaJob",
+    "CancelMediaJob",
     "sandbox_preview_open",
     "sandbox_session_close",
     -> PolicyToolClass.NETWORK_ACCESS
@@ -64,6 +67,10 @@ internal class ToolCapabilityClassifier {
     "sandbox_session_info",
     "ScheduledTaskList",
     "ScheduledTaskGet",
+    "session_search",
+    "session_get",
+    "past_session_search",
+    "past_session_get",
     -> PolicyToolClass.READ_FILE
 
     else -> error("No PolicyToolClass mapping is registered for tool '$toolName'.")
@@ -87,7 +94,10 @@ internal class ToolCapabilityClassifier {
     -> "delegate_task"
 
     "GenerateImage",
+    "GenerateVideo",
     "SynthesizeSpeech",
+    "PollMediaJob",
+    "CancelMediaJob",
     "sandbox_session_close",
     -> "network_access"
 
@@ -123,6 +133,10 @@ internal class ToolCapabilityClassifier {
 
     "memory_search",
     "memory_get",
+    "session_search",
+    "session_get",
+    "past_session_search",
+    "past_session_get",
     -> "read_memory"
 
     "ProcessTerminate" -> "process_control"

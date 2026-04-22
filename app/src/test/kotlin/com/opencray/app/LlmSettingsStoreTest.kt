@@ -24,16 +24,44 @@ class LlmSettingsStoreTest {
   }
 
   @Test
-  fun configuredStateRequiresApiKey() {
+  fun configuredStateRequiresApiKeyForRemoteEndpoint() {
     val state = LlmSettingsState(
       enabled = false,
       providerId = "custom",
-      baseUrl = "http://10.0.2.2:11434/v1",
+      baseUrl = "https://api.example.com/v1",
       apiKey = "",
       model = "qwen2.5",
     )
 
     assertFalse(state.isConfigured())
+  }
+
+  @Test
+  fun configuredStateAllowsBlankApiKeyForLocalOpenAiCompatibleEndpoint() {
+    val state = LlmSettingsState(
+      enabled = false,
+      providerId = "custom",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      baseUrl = "http://10.0.2.2:11434/v1",
+      apiKey = "",
+      model = "qwen2.5",
+    )
+
+    assertTrue(state.isConfigured())
+  }
+
+  @Test
+  fun configuredStateAllowsBlankApiKeyForIpv6LoopbackOpenAiCompatibleEndpoint() {
+    val state = LlmSettingsState(
+      enabled = false,
+      providerId = "custom",
+      protocol = LlmProviderProtocols.OPENAI,
+      baseUrl = "http://[::1]:11434/v1",
+      apiKey = "",
+      model = "qwen2.5",
+    )
+
+    assertTrue(state.isConfigured())
   }
 
   @Test

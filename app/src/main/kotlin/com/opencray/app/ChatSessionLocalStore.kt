@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import android.content.Context
+import com.opencray.app.agent.AgentPathResolver
 import com.opencray.persistence.model.ChatAttachmentEntry
 import com.opencray.persistence.model.ChatPromptTemplateEntry
 import com.opencray.persistence.model.ChatTranscriptMessageEntry
@@ -198,6 +199,79 @@ internal open class ChatSessionLocalStore(
     attachments = emptyList(),
     updateTitle = false,
   )
+
+  fun insertMessageBefore(
+    sessionId: String,
+    anchorMessageId: String,
+    role: ChatTranscriptRole,
+    text: String,
+    messageId: String? = null,
+    attachments: List<ChatAttachmentEntry> = emptyList(),
+    createdAtEpochMs: Long? = null,
+  ): ChatSessionsState {
+    val normalizedAnchorMessageId = anchorMessageId.trim()
+    val trimmedText = text.trim()
+    require(normalizedAnchorMessageId.isNotEmpty()) {
+      "insertMessageBefore anchorMessageId must not be blank."
+    }
+    require(trimmedText.isNotEmpty() || attachments.isNotEmpty()) {
+      "insertMessageBefore requires text or attachments."
+    }
+
+    val workspace = loadWorkspaceOrCreate()
+    val currentSession = workspace.sessions.firstOrNull { it.sessionId == sessionId } ?: activeSessionFrom(workspace)
+      ?: createSessionInternal(workspace).activeSession
+    val anchorIndex = currentSession.messages.indexOfFirst { message ->
+      message.messageId == normalizedAnchorMessageId
+    }
+    if (anchorIndex < 0) {
+      return ChatSessionsState(
+        sessions = sessionsForUi(workspace),
+        activeSession = currentSession,
+      )
+    }
+    val normalizedMessageId = messageId?.trim()?.takeIf(String::isNotBlank)
+    if (
+      normalizedMessageId != null &&
+      currentSession.messages.any { message -> message.messageId == normalizedMessageId }
+    ) {
+      return ChatSessionsState(
+        sessions = sessionsForUi(workspace),
+        activeSession = currentSession,
+      )
+    }
+    val now = nowEpochMs()
+    val insertedMessage = ChatTranscriptMessageEntry(
+      messageId = normalizedMessageId ?: messageId(role.name.lowercase()),
+      role = role,
+      text = trimmedText.ifBlank { null },
+      attachments = attachments,
+      createdAtEpochMs = createdAtEpochMs ?: now,
+    )
+    val updatedMessages = buildList(currentSession.messages.size + 1) {
+      addAll(currentSession.messages.take(anchorIndex))
+      add(insertedMessage)
+      addAll(currentSession.messages.drop(anchorIndex))
+    }
+    val updatedSession = currentSession.copy(
+      messages = updatedMessages,
+      updatedAtEpochMs = now,
+    )
+    val updatedWorkspace = replaceSession(
+      workspace = workspace,
+      updatedSession = updatedSession,
+      activeSessionId = preservedActiveSessionId(
+        workspace = workspace,
+        fallbackSessionId = updatedSession.sessionId,
+      ),
+      updatedAtEpochMs = now,
+    )
+    workspaceStore.save(updatedWorkspace)
+    return ChatSessionsState(
+      sessions = sessionsForUi(updatedWorkspace),
+      activeSession = updatedSession,
+    )
+  }
 
   fun replaceMessage(
     sessionId: String,
@@ -1397,10 +1471,26 @@ internal open class ChatSessionLocalStore(
       directoryName: String = DIRECTORY_NAME,
     ): ChatSessionLocalStore = ChatSessionLocalStore(directoryForContext(context, directoryName))
 
+    fun fromAgent(
+      context: Context,
+      agentId: String,
+      pathResolver: AgentPathResolver = AgentPathResolver.fromContext(context),
+    ): ChatSessionLocalStore = fromAgent(pathResolver, agentId)
+
     fun directoryForContext(
       context: Context,
       directoryName: String = DIRECTORY_NAME,
     ): File = File(context.filesDir, directoryName)
+
+    internal fun directoryForAgent(
+      pathResolver: AgentPathResolver,
+      agentId: String,
+    ): File = pathResolver.resolve(agentId).chatLocalStateRoot.toFile()
+
+    internal fun fromAgent(
+      pathResolver: AgentPathResolver,
+      agentId: String,
+    ): ChatSessionLocalStore = ChatSessionLocalStore(directoryForAgent(pathResolver, agentId))
   }
 }
 

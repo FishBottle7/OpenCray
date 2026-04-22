@@ -9,7 +9,7 @@ internal interface OpenCrayChatRuntimeGateway {
 
   fun loadChatRuntimeSnapshot(): Map<String, Any?>
 
-  fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
+  fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit
 
   fun loadChatRunSnapshot(runId: String): Map<String, Any?>?
 

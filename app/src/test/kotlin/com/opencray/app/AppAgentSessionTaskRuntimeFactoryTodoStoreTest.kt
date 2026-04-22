@@ -1,6 +1,8 @@
 package com.opencray.app
 
 import com.opencray.persistence.model.MemoryRecord
+import com.opencray.persistence.model.ChatAttachmentEntry
+import com.opencray.persistence.model.ChatAttachmentKind
 import com.opencray.persistence.store.MemoryStore
 import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.AgentTaskType
@@ -13,8 +15,12 @@ import com.opencray.runtime.AgentTodoStatus
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
 import com.opencray.runtime.NoOpOpenCrayAgentRuntimeEventSink
+import com.opencray.runtime.OpenCrayExecutionMetadataKeys
+import com.opencray.runtime.OpenCrayFinalAttachment
 import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
+import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCrayPromptResumeState
 import com.opencray.runtime.OpenCrayPromptSupplementMetadata
@@ -40,6 +46,7 @@ import com.opencray.runtime.context.ContextManager
 import com.opencray.runtime.context.PromptAssembler
 import com.opencray.runtime.context.RuntimeConversationAttachment
 import com.opencray.runtime.context.RuntimeConversationAttachmentKind
+import com.opencray.runtime.context.RuntimeConversationAssistantPhase
 import com.opencray.runtime.context.RuntimeConversationMessageKind
 import com.opencray.runtime.soul.SoulProfileExtensionKeys
 import com.opencray.runtime.soul.SoulMemoryObjectTypes
@@ -58,6 +65,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -647,6 +655,65 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
   }
 
   @Test
+  fun transcriptAwareEventSinkPersistsFailedToolResultReplayMessages() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-failed-tool-replay"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-failed-tool-replay").toPath()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    val sessionId = "session-1"
+    val transcriptStore = factory.transcriptStoreForSession(sessionId)
+    val eventSink = factory.transcriptAwareEventSinkForTest(
+      sessionId = sessionId,
+      transcriptStore = transcriptStore,
+    )
+
+    eventSink.onRunEvent(
+      promptTask("Inspect the missing file."),
+      OpenCrayToolResultEvent(
+        runId = "run-1",
+        taskId = "task-live-context",
+        turn = 2,
+        call = AgentToolCall(
+          id = "call-missing-read",
+          toolName = "Read",
+          arguments = buildJsonObject {
+            put("file_path", "missing.txt")
+          },
+          reason = "Inspect the missing file before retrying.",
+        ),
+        result = AgentToolResult(
+          toolName = "Read",
+          status = AgentToolResultStatus.FAILED,
+          content = "missing.txt was not found.",
+          errorCode = "FILE_NOT_FOUND",
+          errorMessage = "missing.txt was not found.",
+          metadata = mapOf("filePath" to "missing.txt"),
+        ),
+        emittedAtEpochMs = 1_000L,
+      ),
+    )
+
+    val snapshot = transcriptStore.snapshot()
+
+    assertEquals(2, snapshot.size)
+    assertEquals(RuntimeConversationMessageKind.TOOL_CALL, snapshot[0].kind)
+    assertEquals(RuntimeConversationMessageKind.TOOL_RESULT, snapshot[1].kind)
+    assertTrue(snapshot[0].content.contains("\"tool_name\":\"Read\""))
+    assertTrue(snapshot[0].content.contains("\"file_path\":\"missing.txt\""))
+    assertTrue(snapshot[1].content.contains("\"status\":\"failed\""))
+    assertTrue(snapshot[1].content.contains("\"error_code\":\"FILE_NOT_FOUND\""))
+    assertTrue(snapshot[1].content.contains("\"error_message\":\"missing.txt was not found.\""))
+    assertEquals("failed", snapshot[1].toolResult?.status)
+    assertEquals(true, snapshot[1].toolResult?.isError)
+  }
+
+  @Test
   fun transcriptAwareEventSinkFiltersResumePayloadFromSupplementReplayMetadata() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-supplement-replay"))
     val workspaceRoot = temporaryFolder.newFolder("workspace-root-supplement-replay").toPath()
@@ -694,6 +761,489 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     assertEquals("manual", replayMetadata?.get("source")?.jsonPrimitive?.content)
     assertEquals(1, replayMetadata?.size)
     assertFalse(replayMetadata?.containsKey(OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON) == true)
+  }
+
+  @Test
+  fun recordFinalAssistantTurnPersistsNonSuccessTerminalRepliesIntoTranscript() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-non-success-final-transcript"),
+    )
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-non-success-final-transcript").toPath()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    val task = AgentTask(
+      id = "task-non-success-final-transcript",
+      type = AgentTaskType.PROMPT,
+      input = "Continue.",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+    )
+    val results = listOf(
+      Triple(
+        "session-cancelled",
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.CANCELLED,
+          startedAtEpochMs = 1_000L,
+          finishedAtEpochMs = 1_001L,
+        ),
+        "Interrupted",
+      ),
+      Triple(
+        "session-denied",
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.DENIED,
+          errorCode = "APPROVAL_REQUIRED",
+          startedAtEpochMs = 1_000L,
+          finishedAtEpochMs = 1_001L,
+        ),
+        "Failed: APPROVAL_REQUIRED",
+      ),
+      Triple(
+        "session-missing-llm",
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.FAILED,
+          errorCode = AppAgentSessionTaskRuntimeFactory.ERROR_CODE_MISSING_LLM_CONFIG,
+          startedAtEpochMs = 1_000L,
+          finishedAtEpochMs = 1_001L,
+        ),
+        "Missing LLM",
+      ),
+    )
+
+    results.forEach { (sessionId, result, expectedText) ->
+      factory.recordFinalAssistantTurnForTest(
+        sessionId = sessionId,
+        task = task,
+        result = result,
+      )
+
+      val snapshot = factory.transcriptStoreForSession(sessionId).snapshot()
+      val assistant = snapshot.single()
+
+      assertEquals(1, snapshot.size)
+      assertEquals(RuntimeConversationRole.ASSISTANT, assistant.role)
+      assertEquals(RuntimeConversationAssistantPhase.FINAL_ANSWER, assistant.assistantPhase)
+      assertEquals(expectedText, assistant.content)
+      assertTrue(assistant.attachments.isEmpty())
+    }
+  }
+
+  @Test
+  fun recordSuccessfulAssistantTurnPersistsAttachmentOnlyFinalAnswerIntoTranscript() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-final-attachment-transcript"),
+    )
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-final-attachment-transcript").toPath()
+    Files.createDirectories(workspaceRoot.resolve("outputs"))
+    Files.write(
+      workspaceRoot.resolve("outputs").resolve("diagram.png"),
+      byteArrayOf(1, 2, 3, 4),
+    )
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    val attachmentsJson = Json.encodeToString(
+      ListSerializer(OpenCrayFinalAttachment.serializer()),
+      listOf(
+        OpenCrayFinalAttachment(
+          kind = "image",
+          relativePath = "outputs/diagram.png",
+          displayName = "diagram.png",
+          mimeType = "image/png",
+        ),
+      ),
+    )
+    val task = AgentTask(
+      id = "task-final-attachment-transcript",
+      type = AgentTaskType.PROMPT,
+      input = "Send the diagram.",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+    )
+
+    factory.recordFinalAssistantTurnForTest(
+      sessionId = "session-1",
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = ExecutionStatus.SUCCESS,
+        stdout = "",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = mapOf(
+          OpenCrayExecutionMetadataKeys.FINAL_ATTACHMENTS_JSON to attachmentsJson,
+        ),
+      ),
+    )
+
+    val snapshot = factory.transcriptStoreForSession("session-1").snapshot()
+    val assistant = snapshot.single()
+    val absoluteAttachmentPath = workspaceRoot
+      .resolve("outputs")
+      .resolve("diagram.png")
+      .toAbsolutePath()
+      .normalize()
+      .toString()
+      .replace('\\', '/')
+
+    assertEquals(1, snapshot.size)
+    assertEquals(RuntimeConversationRole.ASSISTANT, assistant.role)
+    assertEquals(RuntimeConversationAssistantPhase.FINAL_ANSWER, assistant.assistantPhase)
+    assertEquals("", assistant.content)
+    assertEquals(1, assistant.attachments.size)
+    assertEquals("diagram.png", assistant.attachments.single().displayName)
+    assertEquals(RuntimeConversationAttachmentKind.IMAGE, assistant.attachments.single().kind)
+    assertEquals("image/png", assistant.attachments.single().mimeType)
+    assertEquals(absoluteAttachmentPath, assistant.attachments.single().filePath)
+  }
+
+  @Test
+  fun transcriptAwareEventSinkPersistsFinalAssistantReplayEventAndMergesAttachmentsIntoSingleTurn() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-final-event-transcript"),
+    )
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-final-event-transcript").toPath()
+    Files.createDirectories(workspaceRoot.resolve("outputs"))
+    Files.write(
+      workspaceRoot.resolve("outputs").resolve("diagram.png"),
+      byteArrayOf(1, 2, 3, 4),
+    )
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    val sessionId = "session-final-event"
+    val transcriptStore = factory.transcriptStoreForSession(sessionId)
+    val eventSink = factory.transcriptAwareEventSinkForTest(
+      sessionId = sessionId,
+      transcriptStore = transcriptStore,
+    )
+    val task = AgentTask(
+      id = "task-final-event-transcript",
+      type = AgentTaskType.PROMPT,
+      input = "Send the diagram.",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+    )
+    val finalText = "See the attached diagram."
+    val attachmentsJson = Json.encodeToString(
+      ListSerializer(OpenCrayFinalAttachment.serializer()),
+      listOf(
+        OpenCrayFinalAttachment(
+          kind = "image",
+          relativePath = "outputs/diagram.png",
+          displayName = "diagram.png",
+          mimeType = "image/png",
+        ),
+      ),
+    )
+
+    eventSink.onRunEvent(
+      task,
+      OpenCrayAssistantEvent(
+        runId = "run-1",
+        taskId = task.id,
+        turn = 1,
+        text = finalText,
+        isFinal = true,
+        emittedAtEpochMs = 1_000L,
+      ),
+    )
+
+    val replaySnapshot = transcriptStore.snapshot()
+
+    assertEquals(1, replaySnapshot.size)
+    assertEquals(RuntimeConversationRole.ASSISTANT, replaySnapshot.single().role)
+    assertEquals(RuntimeConversationAssistantPhase.FINAL_ANSWER, replaySnapshot.single().assistantPhase)
+    assertEquals(finalText, replaySnapshot.single().content)
+    assertTrue(replaySnapshot.single().attachments.isEmpty())
+
+    factory.recordFinalAssistantTurnForTest(
+      sessionId = sessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = ExecutionStatus.SUCCESS,
+        stdout = finalText,
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = mapOf(
+          OpenCrayExecutionMetadataKeys.FINAL_ATTACHMENTS_JSON to attachmentsJson,
+        ),
+      ),
+    )
+
+    val snapshot = transcriptStore.snapshot()
+    val assistant = snapshot.single()
+    val absoluteAttachmentPath = workspaceRoot
+      .resolve("outputs")
+      .resolve("diagram.png")
+      .toAbsolutePath()
+      .normalize()
+      .toString()
+      .replace('\\', '/')
+
+    assertEquals(1, snapshot.size)
+    assertEquals(RuntimeConversationAssistantPhase.FINAL_ANSWER, assistant.assistantPhase)
+    assertEquals(finalText, assistant.content)
+    assertEquals(1, assistant.attachments.size)
+    assertEquals(absoluteAttachmentPath, assistant.attachments.single().filePath)
+  }
+
+  @Test
+  fun replayedMarkdownOnlyFinalEventIsCollapsedIntoSingleDurableFinalTurnAfterReload() {
+    val transcriptRoot = temporaryFolder.newFolder("transcript-store-markdown-replay-durable")
+    val firstTranscriptFactory = FileBackedAgentSessionTranscriptStoreFactory(transcriptRoot)
+    val secondTranscriptFactory = FileBackedAgentSessionTranscriptStoreFactory(transcriptRoot)
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-markdown-replay-durable"),
+    )
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-markdown-replay-durable").toPath()
+    Files.createDirectories(workspaceRoot.resolve("attachments").resolve("final"))
+    Files.write(
+      workspaceRoot.resolve("attachments").resolve("final").resolve("diagram.png"),
+      byteArrayOf(1, 2, 3),
+    )
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    chatStore.appendUserMessage(
+      sessionId = sessionId,
+      text = "Previous upload",
+      commandLabel = null,
+      attachments = listOf(
+        ChatAttachmentEntry(
+          attachmentId = "attachment-existing",
+          kind = ChatAttachmentKind.IMAGE,
+          displayName = "diagram.png",
+          localPath = "attachments/final/diagram.png",
+          mimeType = "image/png",
+        ),
+      ),
+    )
+    val firstFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      transcriptStoreProvider = firstTranscriptFactory::forChatSession,
+    )
+    val transcriptStore = firstFactory.transcriptStoreForSession(sessionId)
+    val eventSink = firstFactory.transcriptAwareEventSinkForTest(
+      sessionId = sessionId,
+      transcriptStore = transcriptStore,
+    )
+    val task = AgentTask(
+      id = "task-markdown-replay-durable",
+      type = AgentTaskType.PROMPT,
+      input = "Re-send the uploaded diagram.",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+    )
+    val markdownOnlyFinal = "![diagram](attachments/final/diagram.png)"
+
+    eventSink.onRunEvent(
+      task,
+      OpenCrayAssistantEvent(
+        runId = "run-markdown-replay-durable",
+        taskId = task.id,
+        turn = 1,
+        text = markdownOnlyFinal,
+        isFinal = true,
+        emittedAtEpochMs = 1_000L,
+      ),
+    )
+    firstFactory.recordFinalAssistantTurnForTest(
+      sessionId = sessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = ExecutionStatus.SUCCESS,
+        stdout = markdownOnlyFinal,
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+      ),
+    )
+
+    val liveSnapshot = transcriptStore.snapshot()
+    val recreatedFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      transcriptStoreProvider = secondTranscriptFactory::forChatSession,
+    )
+    val reloadedSnapshot = recreatedFactory.transcriptStoreForSession(sessionId).snapshot()
+    val absoluteAttachmentPath = workspaceRoot
+      .resolve("attachments")
+      .resolve("final")
+      .resolve("diagram.png")
+      .toAbsolutePath()
+      .normalize()
+      .toString()
+      .replace('\\', '/')
+
+    listOf(liveSnapshot, reloadedSnapshot).forEach { snapshot ->
+      val assistant = snapshot.single()
+      assertEquals(1, snapshot.size)
+      assertEquals(RuntimeConversationRole.ASSISTANT, assistant.role)
+      assertEquals(RuntimeConversationAssistantPhase.FINAL_ANSWER, assistant.assistantPhase)
+      assertEquals("", assistant.content)
+      assertEquals(1, assistant.attachments.size)
+      assertEquals(absoluteAttachmentPath, assistant.attachments.single().filePath)
+    }
+  }
+
+  @Test
+  fun recordFinalAssistantTurnSkipsPausedRetryAwaitingResumeFailures() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-paused-retry-final-transcript"),
+    )
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-paused-retry-final-transcript").toPath()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    val task = AgentTask(
+      id = "task-paused-retry-final-transcript",
+      type = AgentTaskType.PROMPT,
+      input = "Continue after the checkpoint.",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+    )
+
+    factory.recordFinalAssistantTurnForTest(
+      sessionId = "session-paused-retry",
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = ExecutionStatus.FAILED,
+        errorCode = ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME,
+        errorMessage = "Retry budget exhausted.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+      ),
+    )
+
+    assertTrue(factory.transcriptStoreForSession("session-paused-retry").snapshot().isEmpty())
+  }
+
+  @Test
+  fun recordSuccessfulAssistantTurnPersistsMarkdownCompatibilityAttachmentsIntoTranscript() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-markdown-compat-transcript"),
+    )
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-markdown-compat-transcript").toPath()
+    Files.createDirectories(workspaceRoot.resolve("attachments").resolve("final"))
+    Files.write(
+      workspaceRoot.resolve("attachments").resolve("final").resolve("diagram.png"),
+      byteArrayOf(1, 2, 3),
+    )
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    chatStore.appendUserMessage(
+      sessionId = sessionId,
+      text = "Previous upload",
+      commandLabel = null,
+      attachments = listOf(
+        ChatAttachmentEntry(
+          attachmentId = "attachment-existing",
+          kind = ChatAttachmentKind.IMAGE,
+          displayName = "diagram.png",
+          localPath = "attachments/final/diagram.png",
+          mimeType = "image/png",
+        ),
+      ),
+    )
+    val task = AgentTask(
+      id = "task-markdown-compat-transcript",
+      type = AgentTaskType.PROMPT,
+      input = "Re-send the uploaded diagram.",
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "TEST_ALLOW",
+      ),
+      createdAtEpochMs = 1_000L,
+    )
+
+    factory.recordFinalAssistantTurnForTest(
+      sessionId = sessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = ExecutionStatus.SUCCESS,
+        stdout = "![diagram](attachments/final/diagram.png)",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+      ),
+    )
+
+    val snapshot = factory.transcriptStoreForSession(sessionId).snapshot()
+    val assistant = snapshot.single()
+    val attachment = assistant.attachments.single()
+    val absoluteAttachmentPath = workspaceRoot
+      .resolve("attachments")
+      .resolve("final")
+      .resolve("diagram.png")
+      .toAbsolutePath()
+      .normalize()
+      .toString()
+      .replace('\\', '/')
+
+    assertEquals(1, snapshot.size)
+    assertEquals(RuntimeConversationAssistantPhase.FINAL_ANSWER, assistant.assistantPhase)
+    assertEquals("", assistant.content)
+    assertEquals(1, assistant.attachments.size)
+    assertEquals("diagram.png", attachment.displayName)
+    assertEquals(RuntimeConversationAttachmentKind.IMAGE, attachment.kind)
+    assertEquals("image/png", attachment.mimeType)
+    assertEquals(absoluteAttachmentPath, attachment.filePath)
   }
 
   @Test
@@ -1820,6 +2370,21 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     method.isAccessible = true
     return method.invoke(this, sessionId, transcriptStore, NoOpOpenCrayAgentRuntimeEventSink)
       as OpenCrayAgentRuntimeEventSink
+  }
+
+  private fun AppAgentSessionTaskRuntimeFactory.recordFinalAssistantTurnForTest(
+    sessionId: String,
+    task: AgentTask,
+    result: ExecutionResult,
+  ) {
+    val method = AppAgentSessionTaskRuntimeFactory::class.java.getDeclaredMethod(
+      "recordFinalAssistantTurn",
+      String::class.java,
+      AgentTask::class.java,
+      ExecutionResult::class.java,
+    )
+    method.isAccessible = true
+    method.invoke(this, sessionId, task, result)
   }
 
   private class InMemoryMemoryStore : MemoryStore {

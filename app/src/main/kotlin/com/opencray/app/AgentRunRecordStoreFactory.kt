@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import android.content.Context
+import com.opencray.app.agent.AgentPathResolver
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.persistence.PersistenceJson
@@ -77,6 +78,24 @@ internal class FileBackedAgentRunRecordStoreFactory(
           FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
         ),
       )
+
+    fun fromAgent(
+      context: Context,
+      agentId: String,
+      pathResolver: AgentPathResolver = AgentPathResolver.fromContext(context),
+    ): FileBackedAgentRunRecordStoreFactory = fromAgent(pathResolver, agentId)
+
+    internal fun fromAgent(
+      pathResolver: AgentPathResolver,
+      agentId: String,
+    ): FileBackedAgentRunRecordStoreFactory = FileBackedAgentRunRecordStoreFactory(
+      runtimeRootDirectory = rootDirectoryForAgent(pathResolver, agentId),
+    )
+
+    internal fun rootDirectoryForAgent(
+      pathResolver: AgentPathResolver,
+      agentId: String,
+    ): File = pathResolver.resolve(agentId).runRecordsRoot.toFile()
   }
 }
 
@@ -397,7 +416,7 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     errorCode = result.errorCode,
     errorMessage = result.errorMessage,
     content = if (result.status == AgentToolResultStatus.SUCCESS) {
-      null
+      result.content.takeIf(String::isNotBlank)
     } else {
       result.content.take(MAX_PERSISTED_FAILURE_TOOL_CONTENT_CHARS)
     },

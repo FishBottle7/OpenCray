@@ -58,8 +58,11 @@
 /%TEMP%/
 /tmp_refs/
 /tmp/
+/tmp-android-home/
 /tmp_pytest*/
 /tmp_manual_check/
+/.test-home/
+/review_selector_*/
 /.benchmarks/
 /.home/
 /.codex-home/

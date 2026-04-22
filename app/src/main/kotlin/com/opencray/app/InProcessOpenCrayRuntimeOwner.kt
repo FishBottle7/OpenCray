@@ -76,11 +76,16 @@ internal fun createInProcessOpenCrayRuntimeOwner(
     workspaceRootProvider = workspaceRootProvider,
   )
   val approvalRegistry = AgentTaskApprovalRegistry()
+  val runtimeRootDirectory = File(
+    appContext.filesDir,
+    FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
+  )
   val localPythonRuntime = P4aPythonRuntime.fromContext(appContext)
   val e2bSessionStore = E2BSandboxSessionStore.fromContext(appContext)
   val e2bPythonRuntime = E2BCodeInterpreterPythonRuntime(
     settingsProvider = sandboxSettingsRepository::load,
     sessionStore = e2bSessionStore,
+    durableRunningRequestIdsProvider = durableE2BNativeRunningRequestIdsProvider(runtimeRootDirectory),
   )
   val e2bSandboxPreviewService = E2BSandboxPreviewService(
     settingsProvider = sandboxSettingsRepository::load,
@@ -158,10 +163,6 @@ internal fun createInProcessOpenCrayRuntimeOwner(
   val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext)
   val runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext)
   val subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext)
-  val runtimeRootDirectory = File(
-    appContext.filesDir,
-    FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
-  )
   val processRegistryFactory = FileBackedAgentProcessRegistryFactory(
     runtimeRootDirectory = runtimeRootDirectory,
     controllerFactory = managedProcessControllerFactory,
@@ -276,6 +277,9 @@ internal fun createInProcessOpenCrayRuntimeOwner(
     memoryIngestionCoordinator = memoryIngestionCoordinator,
     soulTurnSemanticSignalInterpreter = soulTurnSignalInterpreter,
     providerClient = liteLlmProviderClient,
+    onDeviceThinkingTextProvider = {
+      localizedHostRuntimeStrings(OpenCrayLocaleManager.wrap(appContext)).agentThinking
+    },
     onDeviceModelReadyProvider = { modelId ->
       LiteRtOnDeviceModelInstallStore.fromContext(appContext).hasReadyModel(modelId)
     },

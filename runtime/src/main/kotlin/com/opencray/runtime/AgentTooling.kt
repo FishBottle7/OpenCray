@@ -48,6 +48,9 @@ import com.opencray.runtime.process.normalizedDeliveredObservationState
 import com.opencray.runtime.process.normalizedObservationState
 import com.opencray.runtime.process.normalizedReconnectState
 import com.opencray.runtime.process.withNormalizedRemoteState
+import com.opencray.runtime.session.SessionSearchMatch
+import com.opencray.runtime.session.SessionSearchService
+import com.opencray.runtime.session.SessionSearchToolContext
 import com.opencray.runtime.context.RuntimeConversationAttachment
 import com.opencray.runtime.context.RuntimeConversationAttachmentKind
 import com.opencray.runtime.skills.SkillPackageBatchInstallEntry
@@ -71,8 +74,15 @@ import java.nio.charset.CodingErrorAction
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
+import java.util.Base64
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.CancellationException
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
@@ -252,6 +262,9 @@ data class OpenCrayToolDispatcherConfig(
   val maxMemorySearchResults: Int = 5,
   val maxMemoryGetLines: Int = 20,
   val json: Json = Json { prettyPrint = true; ignoreUnknownKeys = true },
+  val sessionSearchToolContext: SessionSearchToolContext? = null,
+  val maxSessionSearchResults: Int = 5,
+  val maxSessionGetLines: Int = 20,
 ) {
   init {
     require(workspaceRoots.isNotEmpty()) { "OpenCrayToolDispatcherConfig workspaceRoots must not be empty." }
@@ -262,6 +275,8 @@ data class OpenCrayToolDispatcherConfig(
     require(maxWebSearchResults > 0) { "OpenCrayToolDispatcherConfig maxWebSearchResults must be > 0." }
     require(maxMemorySearchResults > 0) { "OpenCrayToolDispatcherConfig maxMemorySearchResults must be > 0." }
     require(maxMemoryGetLines > 0) { "OpenCrayToolDispatcherConfig maxMemoryGetLines must be > 0." }
+    require(maxSessionSearchResults > 0) { "OpenCrayToolDispatcherConfig maxSessionSearchResults must be > 0." }
+    require(maxSessionGetLines > 0) { "OpenCrayToolDispatcherConfig maxSessionGetLines must be > 0." }
   }
 }
 
@@ -442,6 +457,7 @@ class OpenCrayToolDispatcher(
   private val webContentFetcher = config.webContentFetcher
   private val webSearchProvider = config.webSearchProvider
   private val memorySearchService = MemorySearchService()
+  private val sessionSearchService = SessionSearchService()
   private val commandExecutor = config.commandExecutor ?: CommandExecutor(
     config = CommandExecutionConfig(
       approvedWorkingDirectories = writeBoundary.approvedRoots(),
@@ -456,6 +472,20 @@ class OpenCrayToolDispatcher(
     .filter(String::isNotBlank)
     .map { prefix -> prefix.lowercase(Locale.US) }
     .toSet()
+  private val videoGenerationClient: OpenCrayVideoGenerationClient? =
+    config.imageGenerationClient as? OpenCrayVideoGenerationClient
+      ?: config.speechSynthesisClient as? OpenCrayVideoGenerationClient
+  private val providerMediaJobClient: OpenCrayMediaJobClient? =
+    config.imageGenerationClient as? OpenCrayMediaJobClient
+      ?: config.speechSynthesisClient as? OpenCrayMediaJobClient
+  private val mediaJobExecutor = Executors.newCachedThreadPool { runnable ->
+    Thread(runnable).apply {
+      name = "OpenCrayMediaJob"
+      isDaemon = true
+    }
+  }
+  private val mediaJobIdCounter = AtomicLong(0L)
+  private val mediaJobs = linkedMapOf<String, MediaJobHandle>()
 
   fun todoSnapshot(): List<AgentTodoEntry> = todoStore.snapshot()
 
@@ -532,6 +562,19 @@ class OpenCrayToolDispatcher(
           AgentToolParameter("size", "string", required = false, description = "Optional provider-specific size hint such as 1024x1024."),
           AgentToolParameter("format", "string", required = false, description = "Optional output image format. Supported values: png, jpg, jpeg, webp."),
           AgentToolParameter("model", "string", required = false, description = "Optional provider model override. Defaults to the configured image model."),
+          AgentToolParameter("async", "boolean", required = false, description = "Start the request as a background media job and return a job_id instead of waiting for the final image files."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "GenerateVideo",
+        description = "Generate a video clip through the configured media provider. This tool defaults to a background job and returns a job_id that can be polled until the final artifact is ready.",
+        parameters = listOf(
+          AgentToolParameter("prompt", "string", required = true, description = "Text prompt describing the video to generate."),
+          AgentToolParameter("duration_seconds", "number", required = false, description = "Optional target duration in seconds."),
+          AgentToolParameter("size", "string", required = false, description = "Optional provider-specific size hint such as 1280x720."),
+          AgentToolParameter("format", "string", required = false, description = "Optional output video format. Supported values: mp4, mov, webm."),
+          AgentToolParameter("model", "string", required = false, description = "Optional provider model override. Defaults to the configured video model."),
+          AgentToolParameter("async", "boolean", required = false, description = "Whether to run as a background job. Defaults to true for video generation."),
         ),
       ),
       AgentToolDefinition(
@@ -542,6 +585,21 @@ class OpenCrayToolDispatcher(
           AgentToolParameter("format", "string", required = false, description = "Optional audio format. Supported values: mp3, wav, m4a."),
           AgentToolParameter("voice", "string", required = false, description = "Optional voice override. Defaults to the configured voice preset."),
           AgentToolParameter("model", "string", required = false, description = "Optional provider model override. Defaults to the configured speech model."),
+          AgentToolParameter("async", "boolean", required = false, description = "Start the request as a background media job and return a job_id instead of waiting for the final audio artifact."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "PollMediaJob",
+        description = "Inspect one background media job by job_id and return either the current pending state or the final artifact metadata when the job completes.",
+        parameters = listOf(
+          AgentToolParameter("job_id", "string", required = true, description = "Background media job identifier returned by GenerateImage, GenerateVideo, or SynthesizeSpeech."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "CancelMediaJob",
+        description = "Request cancellation for one background media job by job_id.",
+        parameters = listOf(
+          AgentToolParameter("job_id", "string", required = true, description = "Background media job identifier returned by GenerateImage, GenerateVideo, or SynthesizeSpeech."),
         ),
       ),
       AgentToolDefinition(
@@ -1003,7 +1061,7 @@ class OpenCrayToolDispatcher(
         name = "mcp_list_servers",
         description = "Inspect currently exposed MCP servers and their trust state. This runtime does not proxy remote MCP tools yet.",
       ),
-    ).filterNotNull() + memoryToolDefinitions()
+    ).filterNotNull() + memoryToolDefinitions() + sessionToolDefinitions()
     val visibleCanonicalDefinitions = canonicalDefinitions
       .filter { definition -> !isToolHiddenByConfig(definition.name) }
       .let { visibleDefinitions ->
@@ -1155,8 +1213,11 @@ class OpenCrayToolDispatcher(
         "ImportFile" -> importFileForClaude(task = task, arguments = invocation.arguments)
         "WebSearch" -> webSearch(task = task, arguments = invocation.arguments)
         "WebFetch" -> webFetch(task = task, arguments = invocation.arguments)
-        "GenerateImage" -> generateImage(task = task, arguments = invocation.arguments)
-        "SynthesizeSpeech" -> synthesizeSpeech(task = task, arguments = invocation.arguments)
+        "GenerateImage" -> generateImage(task = task, arguments = invocation.arguments, hooks = hooks)
+        "GenerateVideo" -> generateVideo(task = task, arguments = invocation.arguments, hooks = hooks)
+        "SynthesizeSpeech" -> synthesizeSpeech(task = task, arguments = invocation.arguments, hooks = hooks)
+        "PollMediaJob" -> pollMediaJob(arguments = invocation.arguments)
+        "CancelMediaJob" -> cancelMediaJob(arguments = invocation.arguments)
         "Edit" -> editWorkspaceFile(task = task, arguments = invocation.arguments)
         "MultiEdit" -> multiEditWorkspaceFile(task = task, arguments = invocation.arguments)
         "TodoWrite" -> writeTodoList(arguments = invocation.arguments)
@@ -1190,6 +1251,10 @@ class OpenCrayToolDispatcher(
         "mcp_list_servers" -> listMcpServers()
         "memory_search" -> searchProjectedMemory(invocation.arguments)
         "memory_get" -> getProjectedMemory(invocation.arguments)
+        "session_search" -> searchProjectedSessionHistory(invocation.arguments)
+        "session_get" -> getProjectedSessionHistory(invocation.arguments)
+        "past_session_search" -> searchPastSessionArchive(invocation.arguments)
+        "past_session_get" -> getPastSessionArchive(invocation.arguments)
         else -> AgentToolResult(
           toolName = invocation.requestedToolName,
           status = AgentToolResultStatus.FAILED,
@@ -1245,6 +1310,10 @@ class OpenCrayToolDispatcher(
         "mcp_list_servers",
         "memory_search",
         "memory_get",
+        "session_search",
+        "session_get",
+        "past_session_search",
+        "past_session_get",
         -> true
         else -> false
       }
@@ -2783,7 +2852,11 @@ class OpenCrayToolDispatcher(
     )
   }
 
-  private fun generateImage(task: AgentTask, arguments: JsonObject): AgentToolResult {
+  private fun generateImage(
+    task: AgentTask,
+    arguments: JsonObject,
+    hooks: com.opencray.core.orchestrator.RuntimeExecutionHooks,
+  ): AgentToolResult {
     val settings = config.mediaToolSettingsProvider()?.imageGeneration
       ?: return unavailableMediaTool(
         toolName = "GenerateImage",
@@ -2802,11 +2875,11 @@ class OpenCrayToolDispatcher(
       )
     val prompt = arguments.requiredText("prompt").trim()
     require(prompt.isNotBlank()) { "GenerateImage prompt must not be blank." }
-    val count = arguments.optionalInt("count")?.coerceIn(1, MAX_GENERATED_IMAGE_COUNT)
-      ?: 1
+    val count = arguments.optionalInt("count")?.coerceIn(1, MAX_GENERATED_IMAGE_COUNT) ?: 1
     val format = normalizeGeneratedImageFormat(arguments.optionalString("format")) ?: DEFAULT_GENERATED_IMAGE_FORMAT
     val size = arguments.optionalString("size")?.trim()?.takeIf(String::isNotBlank)
     val modelOverride = arguments.optionalString("model")?.trim()?.takeIf(String::isNotBlank)
+    val runAsync = arguments.optionalBoolean("async") == true
     val outputDirectory = generatedMediaDirectory("images")
     val endpoint = buildConfiguredEndpointPreview(
       baseUrl = settings.baseUrl,
@@ -2834,17 +2907,365 @@ class OpenCrayToolDispatcher(
       askDetail = "Approval is required before GenerateImage can access the network.",
       denyDetail = "Policy denied GenerateImage.",
     )?.let { return it }
+    val baseMetadata = buildMap {
+      put("provider", settings.provider)
+      put("endpoint", endpoint)
+      put("promptPreview", inlinePreview(prompt, maxChars = 240))
+      put("outputDirectory", toolTargetResolver.displayWritablePath(outputDirectory))
+      put("format", format)
+      put("asyncCapable", "true")
+      put("asyncRequested", runAsync.toString())
+      size?.let { put("size", it) }
+      modelOverride?.let { put("modelOverride", it) }
+    }
+    return executeImageGeneration(
+      client = client,
+      settings = settings,
+      prompt = prompt,
+      count = count,
+      size = size,
+      format = format,
+      modelOverride = modelOverride,
+      preferAsync = runAsync,
+      outputDirectory = outputDirectory,
+      plan = plan,
+      endpoint = endpoint,
+      baseMetadata = baseMetadata,
+      cancellationRequested = hooks.isCancellationRequested,
+    )
+  }
 
-    val response = client.generate(
-      OpenCrayImageGenerationRequest(
-        prompt = prompt,
-        count = count,
-        size = size,
-        format = format,
-        modelOverride = modelOverride,
-        settings = settings,
+  private fun generateVideo(
+    task: AgentTask,
+    arguments: JsonObject,
+    hooks: com.opencray.core.orchestrator.RuntimeExecutionHooks,
+  ): AgentToolResult {
+    val settings = config.mediaToolSettingsProvider()?.videoGeneration
+      ?: return unavailableMediaTool(
+        toolName = "GenerateVideo",
+        message = "Video generation settings are unavailable on this runtime.",
+      )
+    if (!settings.isConfigured()) {
+      return unavailableMediaTool(
+        toolName = "GenerateVideo",
+        message = "Video generation is not configured. Set provider base URL, endpoint, and model first.",
+      )
+    }
+    val client = videoGenerationClient
+      ?: return unavailableMediaTool(
+        toolName = "GenerateVideo",
+        message = "Video generation provider support is unavailable on this runtime.",
+      )
+    val prompt = arguments.requiredText("prompt").trim()
+    require(prompt.isNotBlank()) { "GenerateVideo prompt must not be blank." }
+    val durationSeconds = arguments.optionalInt("duration_seconds")?.coerceIn(1, MAX_GENERATED_VIDEO_DURATION_SECONDS)
+    val size = arguments.optionalString("size")?.trim()?.takeIf(String::isNotBlank)
+    val format = normalizeGeneratedVideoFormat(arguments.optionalString("format")) ?: DEFAULT_GENERATED_VIDEO_FORMAT
+    val modelOverride = arguments.optionalString("model")?.trim()?.takeIf(String::isNotBlank)
+    val runAsync = arguments.optionalBoolean("async") ?: true
+    val outputDirectory = generatedMediaDirectory("videos")
+    val endpoint = buildConfiguredEndpointPreview(
+      baseUrl = settings.baseUrl,
+      endpoint = settings.endpoint,
+    )
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "GenerateVideo",
+      targetPath = outputDirectory,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        primaryPath = outputDirectory,
+        primaryTargetPath = toolTargetResolver.displayWritablePath(outputDirectory),
+        workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+        targetSummary = inlinePreview(prompt, maxChars = 240),
       ),
     )
+    toolPolicyPipeline.gate(
+      plan = plan,
+      affectedPaths = buildMap {
+        put("provider", settings.provider)
+        put("endpoint", endpoint)
+        put("outputDirectory", toolTargetResolver.displayWritablePath(outputDirectory))
+      },
+      askDetail = "Approval is required before GenerateVideo can access the network.",
+      denyDetail = "Policy denied GenerateVideo.",
+    )?.let { return it }
+    val baseMetadata = buildMap {
+      put("provider", settings.provider)
+      put("endpoint", endpoint)
+      put("promptPreview", inlinePreview(prompt, maxChars = 240))
+      put("outputDirectory", toolTargetResolver.displayWritablePath(outputDirectory))
+      put("format", format)
+      put("asyncCapable", "true")
+      put("asyncRequested", runAsync.toString())
+      durationSeconds?.let { put("durationSeconds", it.toString()) }
+      size?.let { put("size", it) }
+      modelOverride?.let { put("modelOverride", it) }
+    }
+    return executeVideoGeneration(
+      client = client,
+      settings = settings,
+      prompt = prompt,
+      durationSeconds = durationSeconds,
+      size = size,
+      format = format,
+      modelOverride = modelOverride,
+      preferAsync = runAsync,
+      outputDirectory = outputDirectory,
+      plan = plan,
+      endpoint = endpoint,
+      baseMetadata = baseMetadata,
+      cancellationRequested = hooks.isCancellationRequested,
+    )
+  }
+
+  private fun synthesizeSpeech(
+    task: AgentTask,
+    arguments: JsonObject,
+    hooks: com.opencray.core.orchestrator.RuntimeExecutionHooks,
+  ): AgentToolResult {
+    val settings = config.mediaToolSettingsProvider()?.speechSynthesis
+      ?: return unavailableMediaTool(
+        toolName = "SynthesizeSpeech",
+        message = "Speech synthesis settings are unavailable on this runtime.",
+      )
+    if (!settings.isConfigured()) {
+      return unavailableMediaTool(
+        toolName = "SynthesizeSpeech",
+        message = "Speech synthesis is not configured. Set provider base URL, endpoint, and default voice first.",
+      )
+    }
+    val client = config.speechSynthesisClient
+      ?: return unavailableMediaTool(
+        toolName = "SynthesizeSpeech",
+        message = "Speech synthesis provider support is unavailable on this runtime.",
+      )
+    val text = arguments.requiredText("text").trim()
+    require(text.isNotBlank()) { "SynthesizeSpeech text must not be blank." }
+    val format = normalizeGeneratedAudioFormat(arguments.optionalString("format")) ?: DEFAULT_GENERATED_AUDIO_FORMAT
+    val voiceOverride = arguments.optionalString("voice")?.trim()?.takeIf(String::isNotBlank)
+    val modelOverride = arguments.optionalString("model")?.trim()?.takeIf(String::isNotBlank)
+    val runAsync = arguments.optionalBoolean("async") == true
+    val outputDirectory = generatedMediaDirectory("voices")
+    val endpoint = buildConfiguredEndpointPreview(
+      baseUrl = settings.baseUrl,
+      endpoint = settings.endpoint,
+    )
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "SynthesizeSpeech",
+      targetPath = outputDirectory,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        primaryPath = outputDirectory,
+        primaryTargetPath = toolTargetResolver.displayWritablePath(outputDirectory),
+        workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+        targetSummary = inlinePreview(text, maxChars = 240),
+      ),
+    )
+    toolPolicyPipeline.gate(
+      plan = plan,
+      affectedPaths = buildMap {
+        put("provider", settings.provider)
+        put("endpoint", endpoint)
+        put("outputDirectory", toolTargetResolver.displayWritablePath(outputDirectory))
+      },
+      askDetail = "Approval is required before SynthesizeSpeech can access the network.",
+      denyDetail = "Policy denied SynthesizeSpeech.",
+    )?.let { return it }
+    val baseMetadata = buildMap {
+      put("provider", settings.provider)
+      put("endpoint", endpoint)
+      put("textPreview", inlinePreview(text, maxChars = 240))
+      put("outputDirectory", toolTargetResolver.displayWritablePath(outputDirectory))
+      put("format", format)
+      put("asyncCapable", "true")
+      put("asyncRequested", runAsync.toString())
+      voiceOverride?.let { put("voiceOverride", it) }
+      modelOverride?.let { put("modelOverride", it) }
+    }
+    return executeSpeechSynthesis(
+      client = client,
+      settings = settings,
+      text = text,
+      format = format,
+      voiceOverride = voiceOverride,
+      modelOverride = modelOverride,
+      preferAsync = runAsync,
+      outputDirectory = outputDirectory,
+      plan = plan,
+      endpoint = endpoint,
+      baseMetadata = baseMetadata,
+      cancellationRequested = hooks.isCancellationRequested,
+    )
+  }
+
+  private fun pollMediaJob(arguments: JsonObject): AgentToolResult {
+    val jobId = arguments.requiredText("job_id").trim()
+    require(jobId.isNotBlank()) { "PollMediaJob job_id must not be blank." }
+    decodeProviderMediaJobId(jobId)?.let { providerSnapshot ->
+      return pollProviderMediaJob(
+        externalJobId = jobId,
+        snapshot = providerSnapshot,
+      )
+    }
+    val handle = synchronized(mediaJobs) { mediaJobs[jobId] }
+      ?: return missingMediaJobResult(toolName = "PollMediaJob", jobId = jobId)
+    if (!handle.future.isDone) {
+      return mediaJobPendingResult(toolName = "PollMediaJob", handle = handle)
+    }
+    val finalResult = try {
+      handle.future.get()
+    } catch (_: CancellationException) {
+      cancelledMediaJobTerminalResult(handle)
+    } catch (exception: Throwable) {
+      failedMediaJobTerminalResult(
+        toolName = handle.toolName,
+        message = exception.cause?.message ?: exception.message ?: "Background media job failed.",
+      )
+    }
+    return when (finalResult.status) {
+      AgentToolResultStatus.SUCCESS -> AgentToolResult(
+        toolName = "PollMediaJob",
+        status = AgentToolResultStatus.SUCCESS,
+        content = buildString {
+          appendLine("Media job completed.")
+          appendLine("job_id=${handle.jobId}")
+          appendLine()
+          append(finalResult.content)
+        }.trim(),
+        metadata = toolPolicyPipeline.resultMetadata(
+          toolName = "PollMediaJob",
+          request = ToolMetadataContextRequest(
+            targetKind = ToolTargetKind.NETWORK,
+            workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+          ),
+          metadata = finalResult.metadata + mediaJobMetadata(
+            handle = handle,
+            status = OpenCrayMediaJobStatus.COMPLETED,
+          ),
+        ),
+      )
+
+      AgentToolResultStatus.CANCELLED -> mediaJobCancelledObservationResult(handle)
+      else -> AgentToolResult(
+        toolName = "PollMediaJob",
+        status = AgentToolResultStatus.FAILED,
+        content = finalResult.content,
+        errorCode = finalResult.errorCode ?: "MEDIA_JOB_FAILED",
+        errorMessage = finalResult.errorMessage ?: finalResult.content,
+        metadata = toolPolicyPipeline.resultMetadata(
+          toolName = "PollMediaJob",
+          request = ToolMetadataContextRequest(
+            targetKind = ToolTargetKind.NETWORK,
+            workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+          ),
+          metadata = finalResult.metadata + mediaJobMetadata(
+            handle = handle,
+            status = OpenCrayMediaJobStatus.FAILED,
+          ),
+        ),
+      )
+    }
+  }
+
+  private fun cancelMediaJob(arguments: JsonObject): AgentToolResult {
+    val jobId = arguments.requiredText("job_id").trim()
+    require(jobId.isNotBlank()) { "CancelMediaJob job_id must not be blank." }
+    decodeProviderMediaJobId(jobId)?.let { providerSnapshot ->
+      return cancelProviderMediaJob(
+        externalJobId = jobId,
+        snapshot = providerSnapshot,
+      )
+    }
+    val handle = synchronized(mediaJobs) { mediaJobs[jobId] }
+      ?: return missingMediaJobResult(toolName = "CancelMediaJob", jobId = jobId)
+    val alreadyDone = handle.future.isDone
+    if (!alreadyDone) {
+      handle.cancelRequested.set(true)
+      handle.future.cancel(true)
+    }
+    val status = if (handle.future.isDone) {
+      if (alreadyDone) {
+        OpenCrayMediaJobStatus.COMPLETED
+      } else {
+        OpenCrayMediaJobStatus.CANCELLED
+      }
+    } else {
+      OpenCrayMediaJobStatus.PENDING
+    }
+    return AgentToolResult(
+      toolName = "CancelMediaJob",
+      status = AgentToolResultStatus.SUCCESS,
+      content = when (status) {
+        OpenCrayMediaJobStatus.CANCELLED ->
+          "Cancellation requested for media job.\njob_id=${handle.jobId}"
+
+        OpenCrayMediaJobStatus.COMPLETED ->
+          "Media job already completed.\njob_id=${handle.jobId}"
+
+        else ->
+          "Media job cancellation is pending.\njob_id=${handle.jobId}"
+      },
+      metadata = toolPolicyPipeline.resultMetadata(
+        toolName = "CancelMediaJob",
+        request = ToolMetadataContextRequest(
+          targetKind = ToolTargetKind.NETWORK,
+          workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+        ),
+        metadata = handle.baseMetadata + mediaJobMetadata(
+          handle = handle,
+          status = status,
+        ),
+      ),
+    )
+  }
+
+  private fun executeImageGeneration(
+    client: OpenCrayImageGenerationClient,
+    settings: OpenCrayImageGenerationSettings,
+    prompt: String,
+    count: Int,
+    size: String?,
+    format: String,
+    modelOverride: String?,
+    preferAsync: Boolean,
+    outputDirectory: Path,
+    plan: ToolPolicyPlan,
+    endpoint: String,
+    baseMetadata: Map<String, String>,
+    cancellationRequested: () -> Boolean,
+  ): AgentToolResult {
+    val response = try {
+      client.generate(
+        request = OpenCrayImageGenerationRequest(
+          prompt = prompt,
+          count = count,
+          size = size,
+          format = format,
+          modelOverride = modelOverride,
+          preferAsync = preferAsync,
+          settings = settings,
+        ),
+        cancellationRequested = cancellationRequested,
+      )
+    } catch (_: CancellationException) {
+      return cancelledMediaToolResult(
+        toolName = "GenerateImage",
+        message = "Image generation was cancelled.",
+        metadata = mapOf(
+          "provider" to settings.provider,
+          "endpoint" to endpoint,
+        ),
+      )
+    }
+    response.pendingJob?.let { pendingJob ->
+      return providerPendingMediaJobResult(
+        plan = plan,
+        snapshot = pendingJob,
+        metadata = response.metadata + baseMetadata,
+      )
+    }
     require(response.images.isNotEmpty()) { "Image provider returned no images." }
     require(response.images.size <= MAX_GENERATED_IMAGE_COUNT) {
       "Image provider returned too many images (${response.images.size})."
@@ -2892,65 +3313,138 @@ class OpenCrayToolDispatcher(
     )
   }
 
-  private fun synthesizeSpeech(task: AgentTask, arguments: JsonObject): AgentToolResult {
-    val settings = config.mediaToolSettingsProvider()?.speechSynthesis
-      ?: return unavailableMediaTool(
-        toolName = "SynthesizeSpeech",
-        message = "Speech synthesis settings are unavailable on this runtime.",
+  private fun executeVideoGeneration(
+    client: OpenCrayVideoGenerationClient,
+    settings: OpenCrayVideoGenerationSettings,
+    prompt: String,
+    durationSeconds: Int?,
+    size: String?,
+    format: String,
+    modelOverride: String?,
+    preferAsync: Boolean,
+    outputDirectory: Path,
+    plan: ToolPolicyPlan,
+    endpoint: String,
+    baseMetadata: Map<String, String>,
+    cancellationRequested: () -> Boolean,
+  ): AgentToolResult {
+    val response = try {
+      client.generateVideo(
+        request = OpenCrayVideoGenerationRequest(
+          prompt = prompt,
+          durationSeconds = durationSeconds,
+          size = size,
+          format = format,
+          modelOverride = modelOverride,
+          preferAsync = preferAsync,
+          settings = settings,
+        ),
+        cancellationRequested = cancellationRequested,
       )
-    if (!settings.isConfigured()) {
-      return unavailableMediaTool(
-        toolName = "SynthesizeSpeech",
-        message = "Speech synthesis is not configured. Set provider base URL, endpoint, and default voice first.",
+    } catch (_: CancellationException) {
+      return cancelledMediaToolResult(
+        toolName = "GenerateVideo",
+        message = "Video generation was cancelled.",
+        metadata = mapOf(
+          "provider" to settings.provider,
+          "endpoint" to endpoint,
+        ),
       )
     }
-    val client = config.speechSynthesisClient
-      ?: return unavailableMediaTool(
-        toolName = "SynthesizeSpeech",
-        message = "Speech synthesis provider support is unavailable on this runtime.",
+    response.pendingJob?.let { pendingJob ->
+      return providerPendingMediaJobResult(
+        plan = plan,
+        snapshot = pendingJob,
+        metadata = response.metadata + baseMetadata,
       )
-    val text = arguments.requiredText("text").trim()
-    require(text.isNotBlank()) { "SynthesizeSpeech text must not be blank." }
-    val format = normalizeGeneratedAudioFormat(arguments.optionalString("format")) ?: DEFAULT_GENERATED_AUDIO_FORMAT
-    val voiceOverride = arguments.optionalString("voice")?.trim()?.takeIf(String::isNotBlank)
-    val modelOverride = arguments.optionalString("model")?.trim()?.takeIf(String::isNotBlank)
-    val outputDirectory = generatedMediaDirectory("voices")
-    val endpoint = buildConfiguredEndpointPreview(
-      baseUrl = settings.baseUrl,
-      endpoint = settings.endpoint,
-    )
-    val plan = toolPolicyPipeline.plan(
-      task = task,
-      toolName = "SynthesizeSpeech",
-      targetPath = outputDirectory,
-      metadataRequest = ToolMetadataContextRequest(
-        targetKind = ToolTargetKind.NETWORK,
-        primaryPath = outputDirectory,
-        primaryTargetPath = toolTargetResolver.displayWritablePath(outputDirectory),
-        workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
-        targetSummary = inlinePreview(text, maxChars = 240),
+    }
+    require(response.videos.isNotEmpty()) { "Video provider returned no videos." }
+    val batchId = UUID.randomUUID().toString().replace("-", "").take(12)
+    val artifacts = response.videos.mapIndexed { index, asset ->
+      writeGeneratedWorkspaceArtifact(
+        directory = outputDirectory,
+        stem = buildString {
+          append("video-")
+          append(batchId)
+          if (response.videos.size > 1) {
+            append("-")
+            append(index + 1)
+          }
+        },
+        requestedExtension = format,
+        defaultExtension = DEFAULT_GENERATED_VIDEO_FORMAT,
+        asset = asset,
+        kindHint = "file",
+      )
+    }
+    return AgentToolResult(
+      toolName = "GenerateVideo",
+      status = AgentToolResultStatus.SUCCESS,
+      content = buildGeneratedVideoResultContent(artifacts = artifacts),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = buildMap {
+          put("provider", settings.provider)
+          put("endpoint", endpoint)
+          put("promptPreview", inlinePreview(prompt, maxChars = 240))
+          put("videoCount", artifacts.size.toString())
+          put("outputDirectory", toolTargetResolver.displayWritablePath(outputDirectory))
+          put("format", format)
+          durationSeconds?.let { put("durationSeconds", it.toString()) }
+          size?.let { put("size", it) }
+          modelOverride?.let { put("modelOverride", it) }
+          response.providerRequestId?.let { put("providerRequestId", it) }
+          putAll(attachmentArtifactsMetadata(artifacts))
+          putAll(response.metadata)
+        },
       ),
     )
-    toolPolicyPipeline.gate(
-      plan = plan,
-      affectedPaths = buildMap {
-        put("provider", settings.provider)
-        put("endpoint", endpoint)
-        put("outputDirectory", toolTargetResolver.displayWritablePath(outputDirectory))
-      },
-      askDetail = "Approval is required before SynthesizeSpeech can access the network.",
-      denyDetail = "Policy denied SynthesizeSpeech.",
-    )?.let { return it }
+  }
 
-    val response = client.synthesize(
-      OpenCraySpeechSynthesisRequest(
-        text = text,
-        format = format,
-        voiceOverride = voiceOverride,
-        modelOverride = modelOverride,
-        settings = settings,
-      ),
-    )
+  private fun executeSpeechSynthesis(
+    client: OpenCraySpeechSynthesisClient,
+    settings: OpenCraySpeechSynthesisSettings,
+    text: String,
+    format: String,
+    voiceOverride: String?,
+    modelOverride: String?,
+    preferAsync: Boolean,
+    outputDirectory: Path,
+    plan: ToolPolicyPlan,
+    endpoint: String,
+    baseMetadata: Map<String, String>,
+    cancellationRequested: () -> Boolean,
+  ): AgentToolResult {
+    val response = try {
+      client.synthesize(
+        request = OpenCraySpeechSynthesisRequest(
+          text = text,
+          format = format,
+          voiceOverride = voiceOverride,
+          modelOverride = modelOverride,
+          preferAsync = preferAsync,
+          settings = settings,
+        ),
+        cancellationRequested = cancellationRequested,
+      )
+    } catch (_: CancellationException) {
+      return cancelledMediaToolResult(
+        toolName = "SynthesizeSpeech",
+        message = "Speech synthesis was cancelled.",
+        metadata = mapOf(
+          "provider" to settings.provider,
+          "endpoint" to endpoint,
+        ),
+      )
+    }
+    response.pendingJob?.let { pendingJob ->
+      return providerPendingMediaJobResult(
+        plan = plan,
+        snapshot = pendingJob,
+        metadata = response.metadata + baseMetadata,
+      )
+    }
+    val audio = requireNotNull(response.audio) { "Speech provider returned no audio payload." }
     val transcriptText = response.transcriptText
       ?.trim()
       ?.takeIf(String::isNotBlank)
@@ -2960,7 +3454,7 @@ class OpenCrayToolDispatcher(
       stem = "voice-${UUID.randomUUID().toString().replace("-", "").take(12)}",
       requestedExtension = format,
       defaultExtension = DEFAULT_GENERATED_AUDIO_FORMAT,
-      asset = response.audio,
+      asset = audio,
       kindHint = "voice",
       durationMs = response.durationMs,
       transcriptText = transcriptText,
@@ -2984,6 +3478,630 @@ class OpenCrayToolDispatcher(
           putAll(response.metadata)
         },
       ),
+    )
+  }
+
+  private fun startBackgroundMediaJob(
+    task: AgentTask,
+    hooks: com.opencray.core.orchestrator.RuntimeExecutionHooks,
+    toolName: String,
+    plan: ToolPolicyPlan,
+    summary: String,
+    baseMetadata: Map<String, String>,
+    work: ((() -> Boolean)) -> AgentToolResult,
+  ): AgentToolResult {
+    val jobId = nextMediaJobId(toolName)
+    val cancelRequested = AtomicBoolean(false)
+    val future = mediaJobExecutor.submit<AgentToolResult> {
+      work {
+        cancelRequested.get() || hooks.isCancellationRequested()
+      }
+    }
+    val handle = MediaJobHandle(
+      jobId = jobId,
+      toolName = toolName,
+      summary = summary,
+      createdAtEpochMs = System.currentTimeMillis(),
+      cancelRequested = cancelRequested,
+      future = future,
+      baseMetadata = baseMetadata,
+    )
+    synchronized(mediaJobs) {
+      mediaJobs[jobId] = handle
+    }
+    val snapshot = OpenCrayMediaJobSnapshot(
+      receipt = OpenCrayMediaJobReceipt(
+        jobId = jobId,
+        toolName = toolName,
+        status = OpenCrayMediaJobStatus.PENDING,
+      ),
+      metadata = baseMetadata,
+    )
+    return AgentToolResult(
+      toolName = toolName,
+      status = AgentToolResultStatus.SUCCESS,
+      content = pendingMediaJobContent(snapshot),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = baseMetadata + mediaJobMetadata(
+          handle = handle,
+          status = OpenCrayMediaJobStatus.PENDING,
+        ),
+      ),
+    )
+  }
+
+  private fun nextMediaJobId(toolName: String): String {
+    val normalizedToolName = toolName.trim()
+      .lowercase(Locale.US)
+      .replace("[^a-z0-9]+".toRegex(), "-")
+      .trim('-')
+    val suffix = mediaJobIdCounter.incrementAndGet()
+    return "media-$normalizedToolName-$suffix"
+  }
+
+  private fun mediaJobPendingResult(
+    toolName: String,
+    handle: MediaJobHandle,
+  ): AgentToolResult = AgentToolResult(
+    toolName = toolName,
+    status = AgentToolResultStatus.SUCCESS,
+    content = pendingMediaJobContent(
+      OpenCrayMediaJobSnapshot(
+        receipt = OpenCrayMediaJobReceipt(
+          jobId = handle.jobId,
+          toolName = handle.toolName,
+          status = OpenCrayMediaJobStatus.PENDING,
+        ),
+        metadata = handle.baseMetadata,
+      ),
+    ),
+    metadata = toolPolicyPipeline.resultMetadata(
+      toolName = toolName,
+      request = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+      ),
+      metadata = handle.baseMetadata + mediaJobMetadata(
+        handle = handle,
+        status = OpenCrayMediaJobStatus.PENDING,
+      ),
+    ),
+  )
+
+  private fun mediaJobCancelledObservationResult(
+    handle: MediaJobHandle,
+  ): AgentToolResult = AgentToolResult(
+    toolName = "PollMediaJob",
+    status = AgentToolResultStatus.SUCCESS,
+    content = "Media job was cancelled.\njob_id=${handle.jobId}",
+    metadata = toolPolicyPipeline.resultMetadata(
+      toolName = "PollMediaJob",
+      request = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+      ),
+      metadata = handle.baseMetadata + mediaJobMetadata(
+        handle = handle,
+        status = OpenCrayMediaJobStatus.CANCELLED,
+      ),
+    ),
+  )
+
+  private fun missingMediaJobResult(
+    toolName: String,
+    jobId: String,
+  ): AgentToolResult = AgentToolResult(
+    toolName = toolName,
+    status = AgentToolResultStatus.FAILED,
+    content = "Media job '$jobId' was not found.",
+    errorCode = "MEDIA_JOB_NOT_FOUND",
+    errorMessage = "Media job '$jobId' was not found.",
+    metadata = toolPolicyPipeline.resultMetadata(
+      toolName = toolName,
+      request = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+      ),
+      metadata = mapOf(
+        "jobId" to jobId,
+        "jobStatus" to OpenCrayMediaJobStatus.FAILED.name.lowercase(Locale.US),
+      ),
+    ),
+  )
+
+  private fun cancelledMediaToolResult(
+    toolName: String,
+    message: String,
+    metadata: Map<String, String>,
+  ): AgentToolResult = AgentToolResult(
+    toolName = toolName,
+    status = AgentToolResultStatus.CANCELLED,
+    content = message,
+    errorCode = "MEDIA_JOB_CANCELLED",
+    errorMessage = message,
+    metadata = metadata,
+  )
+
+  private fun cancelledMediaJobTerminalResult(handle: MediaJobHandle): AgentToolResult =
+    AgentToolResult(
+      toolName = handle.toolName,
+      status = AgentToolResultStatus.CANCELLED,
+      content = "Media job was cancelled.",
+      errorCode = "MEDIA_JOB_CANCELLED",
+      errorMessage = "Media job was cancelled.",
+      metadata = handle.baseMetadata,
+    )
+
+  private fun failedMediaJobTerminalResult(
+    toolName: String,
+    message: String,
+  ): AgentToolResult = AgentToolResult(
+    toolName = toolName,
+    status = AgentToolResultStatus.FAILED,
+    content = message,
+    errorCode = "MEDIA_JOB_FAILED",
+    errorMessage = message,
+  )
+
+  private fun pendingMediaJobContent(
+    snapshot: OpenCrayMediaJobSnapshot,
+    externalJobId: String = snapshot.receipt.jobId,
+  ): String = buildString {
+    appendLine("Media job is pending.")
+    appendLine("job_id=$externalJobId")
+    appendLine("status=${snapshot.receipt.status.name.lowercase(Locale.US)}")
+    appendLine("poll_tool=${snapshot.receipt.pollToolName}")
+    appendLine("cancel_tool=${snapshot.receipt.cancelToolName}")
+    append("Call ${snapshot.receipt.pollToolName} with this job_id to check completion.")
+  }.trim()
+
+  private fun mediaJobMetadata(
+    handle: MediaJobHandle,
+    status: OpenCrayMediaJobStatus,
+  ): Map<String, String> = mapOf(
+    "jobId" to handle.jobId,
+    "jobStatus" to status.name.lowercase(Locale.US),
+    "jobToolName" to handle.toolName,
+    "jobCreatedAtEpochMs" to handle.createdAtEpochMs.toString(),
+    "jobPollToolName" to "PollMediaJob",
+    "jobCancelToolName" to "CancelMediaJob",
+    "jobPending" to (status == OpenCrayMediaJobStatus.PENDING).toString(),
+  )
+
+  private fun providerPendingMediaJobResult(
+    plan: ToolPolicyPlan,
+    snapshot: OpenCrayMediaJobSnapshot,
+    metadata: Map<String, String>,
+  ): AgentToolResult {
+    val externalJobId = encodeProviderMediaJobId(snapshot)
+    return AgentToolResult(
+      toolName = snapshot.receipt.toolName,
+      status = AgentToolResultStatus.SUCCESS,
+      content = pendingMediaJobContent(snapshot, externalJobId = externalJobId),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = metadata + providerMediaJobMetadata(
+          externalJobId = externalJobId,
+          snapshot = snapshot,
+        ),
+      ),
+    )
+  }
+
+  private fun pollProviderMediaJob(
+    externalJobId: String,
+    snapshot: OpenCrayMediaJobSnapshot,
+  ): AgentToolResult {
+    val settings = config.mediaToolSettingsProvider()
+      ?: return unavailableMediaTool(
+        toolName = "PollMediaJob",
+        message = "Media job settings are unavailable on this runtime.",
+      )
+    val client = providerMediaJobClient
+      ?: return unavailableMediaTool(
+        toolName = "PollMediaJob",
+        message = "Provider media job support is unavailable on this runtime.",
+      )
+    val polled = try {
+      client.poll(
+        job = snapshot,
+        settings = settings,
+      )
+    } catch (_: CancellationException) {
+      return providerCancelledMediaJobResult(
+        externalJobId = externalJobId,
+        snapshot = snapshot.copy(
+          receipt = snapshot.receipt.copy(status = OpenCrayMediaJobStatus.CANCELLED),
+        ),
+      )
+    } catch (exception: Throwable) {
+      return AgentToolResult(
+        toolName = "PollMediaJob",
+        status = AgentToolResultStatus.FAILED,
+        content = exception.message ?: "Media job polling failed.",
+        errorCode = "MEDIA_JOB_FAILED",
+        errorMessage = exception.message ?: "Media job polling failed.",
+        metadata = toolPolicyPipeline.resultMetadata(
+          toolName = "PollMediaJob",
+          request = ToolMetadataContextRequest(
+            targetKind = ToolTargetKind.NETWORK,
+            workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+          ),
+          metadata = providerMediaJobMetadata(
+            externalJobId = externalJobId,
+            snapshot = snapshot.copy(
+              receipt = snapshot.receipt.copy(status = OpenCrayMediaJobStatus.FAILED),
+            ),
+          ),
+        ),
+      )
+    }
+    val updatedExternalJobId = encodeProviderMediaJobId(polled.snapshot)
+    return when (polled.snapshot.receipt.status) {
+      OpenCrayMediaJobStatus.PENDING -> AgentToolResult(
+        toolName = "PollMediaJob",
+        status = AgentToolResultStatus.SUCCESS,
+        content = pendingMediaJobContent(polled.snapshot, externalJobId = updatedExternalJobId),
+        metadata = toolPolicyPipeline.resultMetadata(
+          toolName = "PollMediaJob",
+          request = ToolMetadataContextRequest(
+            targetKind = ToolTargetKind.NETWORK,
+            workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+          ),
+          metadata = polled.snapshot.metadata +
+            polled.metadata +
+            providerMediaJobMetadata(
+              externalJobId = updatedExternalJobId,
+              snapshot = polled.snapshot,
+            ),
+        ),
+      )
+
+      OpenCrayMediaJobStatus.CANCELLED -> providerCancelledMediaJobResult(
+        externalJobId = updatedExternalJobId,
+        snapshot = polled.snapshot,
+      )
+
+      OpenCrayMediaJobStatus.FAILED -> AgentToolResult(
+        toolName = "PollMediaJob",
+        status = AgentToolResultStatus.FAILED,
+        content = "Media job failed.",
+        errorCode = "MEDIA_JOB_FAILED",
+        errorMessage = "Media job failed.",
+        metadata = toolPolicyPipeline.resultMetadata(
+          toolName = "PollMediaJob",
+          request = ToolMetadataContextRequest(
+            targetKind = ToolTargetKind.NETWORK,
+            workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+          ),
+          metadata = polled.snapshot.metadata +
+            polled.metadata +
+            providerMediaJobMetadata(
+              externalJobId = updatedExternalJobId,
+              snapshot = polled.snapshot,
+            ),
+        ),
+      )
+
+      OpenCrayMediaJobStatus.COMPLETED -> completedProviderMediaJobResult(
+        externalJobId = updatedExternalJobId,
+        snapshot = polled.snapshot,
+        pollResult = polled,
+      )
+    }
+  }
+
+  private fun cancelProviderMediaJob(
+    externalJobId: String,
+    snapshot: OpenCrayMediaJobSnapshot,
+  ): AgentToolResult {
+    val settings = config.mediaToolSettingsProvider()
+      ?: return unavailableMediaTool(
+        toolName = "CancelMediaJob",
+        message = "Media job settings are unavailable on this runtime.",
+      )
+    val client = providerMediaJobClient
+      ?: return unavailableMediaTool(
+        toolName = "CancelMediaJob",
+        message = "Provider media job support is unavailable on this runtime.",
+      )
+    val cancelledSnapshot = try {
+      client.cancel(
+        job = snapshot,
+        settings = settings,
+      )
+    } catch (_: CancellationException) {
+      snapshot.copy(
+        receipt = snapshot.receipt.copy(status = OpenCrayMediaJobStatus.CANCELLED),
+      )
+    } catch (exception: Throwable) {
+      return AgentToolResult(
+        toolName = "CancelMediaJob",
+        status = AgentToolResultStatus.FAILED,
+        content = exception.message ?: "Media job cancellation failed.",
+        errorCode = "MEDIA_JOB_CANCEL_FAILED",
+        errorMessage = exception.message ?: "Media job cancellation failed.",
+        metadata = toolPolicyPipeline.resultMetadata(
+          toolName = "CancelMediaJob",
+          request = ToolMetadataContextRequest(
+            targetKind = ToolTargetKind.NETWORK,
+            workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+          ),
+          metadata = providerMediaJobMetadata(
+            externalJobId = externalJobId,
+            snapshot = snapshot.copy(
+              receipt = snapshot.receipt.copy(status = OpenCrayMediaJobStatus.FAILED),
+            ),
+          ),
+        ),
+      )
+    }
+    val updatedExternalJobId = encodeProviderMediaJobId(cancelledSnapshot)
+    val status = cancelledSnapshot.receipt.status
+    return AgentToolResult(
+      toolName = "CancelMediaJob",
+      status = AgentToolResultStatus.SUCCESS,
+      content = when (status) {
+        OpenCrayMediaJobStatus.CANCELLED ->
+          "Cancellation requested for media job.\njob_id=$updatedExternalJobId"
+
+        OpenCrayMediaJobStatus.COMPLETED ->
+          "Media job already completed.\njob_id=$updatedExternalJobId"
+
+        else ->
+          "Media job cancellation is pending.\njob_id=$updatedExternalJobId"
+      },
+      metadata = toolPolicyPipeline.resultMetadata(
+        toolName = "CancelMediaJob",
+        request = ToolMetadataContextRequest(
+          targetKind = ToolTargetKind.NETWORK,
+          workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+        ),
+        metadata = cancelledSnapshot.metadata + providerMediaJobMetadata(
+          externalJobId = updatedExternalJobId,
+          snapshot = cancelledSnapshot,
+        ),
+      ),
+    )
+  }
+
+  private fun completedProviderMediaJobResult(
+    externalJobId: String,
+    snapshot: OpenCrayMediaJobSnapshot,
+    pollResult: OpenCrayMediaJobPollResult,
+  ): AgentToolResult {
+    val request = ToolMetadataContextRequest(
+      targetKind = ToolTargetKind.NETWORK,
+      workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+    )
+    return when (snapshot.receipt.toolName) {
+      "GenerateImage" -> {
+        require(pollResult.images.isNotEmpty()) { "Media job completed without image payloads." }
+        val artifacts = pollResult.images.mapIndexed { index, asset ->
+          writeGeneratedWorkspaceArtifact(
+            directory = generatedMediaDirectory("images"),
+            stem = buildString {
+              append("image-")
+              append(UUID.randomUUID().toString().replace("-", "").take(12))
+              if (pollResult.images.size > 1) {
+                append("-")
+                append(index + 1)
+              }
+            },
+            requestedExtension = snapshot.metadata["format"],
+            defaultExtension = DEFAULT_GENERATED_IMAGE_FORMAT,
+            asset = asset,
+            kindHint = "image",
+          )
+        }
+        AgentToolResult(
+          toolName = "PollMediaJob",
+          status = AgentToolResultStatus.SUCCESS,
+          content = buildString {
+            appendLine("Media job completed.")
+            appendLine("job_id=$externalJobId")
+            appendLine()
+            append(buildGeneratedImageResultContent(artifacts))
+          }.trim(),
+          metadata = toolPolicyPipeline.resultMetadata(
+            toolName = "PollMediaJob",
+            request = request,
+            metadata = snapshot.metadata +
+              pollResult.metadata +
+              mapOf("imageCount" to artifacts.size.toString()) +
+              attachmentArtifactsMetadata(artifacts) +
+              providerMediaJobMetadata(
+                externalJobId = externalJobId,
+                snapshot = snapshot,
+              ),
+          ),
+        )
+      }
+
+      "GenerateVideo" -> {
+        require(pollResult.videos.isNotEmpty()) { "Media job completed without video payloads." }
+        val artifacts = pollResult.videos.mapIndexed { index, asset ->
+          writeGeneratedWorkspaceArtifact(
+            directory = generatedMediaDirectory("videos"),
+            stem = buildString {
+              append("video-")
+              append(UUID.randomUUID().toString().replace("-", "").take(12))
+              if (pollResult.videos.size > 1) {
+                append("-")
+                append(index + 1)
+              }
+            },
+            requestedExtension = snapshot.metadata["format"],
+            defaultExtension = DEFAULT_GENERATED_VIDEO_FORMAT,
+            asset = asset,
+            kindHint = "file",
+          )
+        }
+        AgentToolResult(
+          toolName = "PollMediaJob",
+          status = AgentToolResultStatus.SUCCESS,
+          content = buildString {
+            appendLine("Media job completed.")
+            appendLine("job_id=$externalJobId")
+            appendLine()
+            append(buildGeneratedVideoResultContent(artifacts))
+          }.trim(),
+          metadata = toolPolicyPipeline.resultMetadata(
+            toolName = "PollMediaJob",
+            request = request,
+            metadata = snapshot.metadata +
+              pollResult.metadata +
+              mapOf("videoCount" to artifacts.size.toString()) +
+              attachmentArtifactsMetadata(artifacts) +
+              providerMediaJobMetadata(
+                externalJobId = externalJobId,
+                snapshot = snapshot,
+              ),
+          ),
+        )
+      }
+
+      else -> {
+        val audio = requireNotNull(pollResult.audio) { "Media job completed without audio payload." }
+        val transcriptText = pollResult.transcriptText
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+        val artifact = writeGeneratedWorkspaceArtifact(
+          directory = generatedMediaDirectory("voices"),
+          stem = "voice-${UUID.randomUUID().toString().replace("-", "").take(12)}",
+          requestedExtension = snapshot.metadata["format"],
+          defaultExtension = DEFAULT_GENERATED_AUDIO_FORMAT,
+          asset = audio,
+          kindHint = "voice",
+          durationMs = pollResult.durationMs,
+          transcriptText = transcriptText,
+        )
+        AgentToolResult(
+          toolName = "PollMediaJob",
+          status = AgentToolResultStatus.SUCCESS,
+          content = buildString {
+            appendLine("Media job completed.")
+            appendLine("job_id=$externalJobId")
+            appendLine()
+            append(buildGeneratedSpeechResultContent(artifact))
+          }.trim(),
+          metadata = toolPolicyPipeline.resultMetadata(
+            toolName = "PollMediaJob",
+            request = request,
+            metadata = snapshot.metadata +
+              pollResult.metadata +
+              attachmentArtifactsMetadata(listOf(artifact)) +
+              providerMediaJobMetadata(
+                externalJobId = externalJobId,
+                snapshot = snapshot,
+              ),
+          ),
+        )
+      }
+    }
+  }
+
+  private fun providerCancelledMediaJobResult(
+    externalJobId: String,
+    snapshot: OpenCrayMediaJobSnapshot,
+  ): AgentToolResult = AgentToolResult(
+    toolName = "PollMediaJob",
+    status = AgentToolResultStatus.SUCCESS,
+    content = "Media job was cancelled.\njob_id=$externalJobId",
+    metadata = toolPolicyPipeline.resultMetadata(
+      toolName = "PollMediaJob",
+      request = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
+      ),
+      metadata = snapshot.metadata + providerMediaJobMetadata(
+        externalJobId = externalJobId,
+        snapshot = snapshot.copy(
+          receipt = snapshot.receipt.copy(status = OpenCrayMediaJobStatus.CANCELLED),
+        ),
+      ),
+    ),
+  )
+
+  private fun providerMediaJobMetadata(
+    externalJobId: String,
+    snapshot: OpenCrayMediaJobSnapshot,
+  ): Map<String, String> = mapOf(
+    "jobId" to externalJobId,
+    "providerJobId" to snapshot.receipt.jobId,
+    "jobStatus" to snapshot.receipt.status.name.lowercase(Locale.US),
+    "jobToolName" to snapshot.receipt.toolName,
+    "jobPollToolName" to "PollMediaJob",
+    "jobCancelToolName" to "CancelMediaJob",
+    "jobPending" to (snapshot.receipt.status == OpenCrayMediaJobStatus.PENDING).toString(),
+    "jobPollAfterMs" to snapshot.receipt.pollAfterMs.toString(),
+  ) + snapshot.providerRequestId?.let { mapOf("providerRequestId" to it) }.orEmpty()
+
+  private fun encodeProviderMediaJobId(snapshot: OpenCrayMediaJobSnapshot): String {
+    val payload = buildJsonObject {
+      put("v", 1)
+      put("toolName", snapshot.receipt.toolName)
+      put("providerJobId", snapshot.receipt.jobId)
+      put("status", snapshot.receipt.status.name.lowercase(Locale.US))
+      put("pollAfterMs", snapshot.receipt.pollAfterMs)
+      snapshot.providerRequestId?.let { put("providerRequestId", it) }
+      put(
+        "metadata",
+        buildJsonObject {
+          snapshot.metadata
+            .filterKeys { key -> key in ENCODED_PROVIDER_MEDIA_JOB_METADATA_KEYS }
+            .toSortedMap()
+            .forEach { (key, value) ->
+            put(key, value)
+          }
+        },
+      )
+    }
+    val encoded = Base64.getUrlEncoder()
+      .withoutPadding()
+      .encodeToString(config.json.encodeToString(JsonObject.serializer(), payload).toByteArray(StandardCharsets.UTF_8))
+    return "$PROVIDER_MEDIA_JOB_ID_PREFIX$encoded"
+  }
+
+  private fun decodeProviderMediaJobId(jobId: String): OpenCrayMediaJobSnapshot? {
+    if (!jobId.startsWith(PROVIDER_MEDIA_JOB_ID_PREFIX)) {
+      return null
+    }
+    val encodedPayload = jobId.removePrefix(PROVIDER_MEDIA_JOB_ID_PREFIX)
+    val decoded = runCatching {
+      String(Base64.getUrlDecoder().decode(encodedPayload), StandardCharsets.UTF_8)
+    }.getOrNull() ?: return null
+    val payload = config.json.parseToJsonElement(decoded) as? JsonObject ?: return null
+    val toolName = (payload["toolName"] as? JsonPrimitive)?.content.orEmpty()
+      .takeIf(String::isNotBlank)
+      ?: return null
+    val providerJobId = (payload["providerJobId"] as? JsonPrimitive)?.content.orEmpty()
+      .takeIf(String::isNotBlank)
+      ?: return null
+    val status = (payload["status"] as? JsonPrimitive)?.content
+      ?.trim()
+      ?.uppercase(Locale.US)
+      ?.let { raw -> OpenCrayMediaJobStatus.entries.firstOrNull { entry -> entry.name == raw } }
+      ?: OpenCrayMediaJobStatus.PENDING
+    val pollAfterMs = (payload["pollAfterMs"] as? JsonPrimitive)?.content
+      ?.toLongOrNull()
+      ?.takeIf { it > 0L }
+      ?: 1_000L
+    val providerRequestId = (payload["providerRequestId"] as? JsonPrimitive)?.content
+      ?.takeIf(String::isNotBlank)
+    val metadata = (payload["metadata"] as? JsonObject)
+      ?.mapValues { (_, value) -> (value as? JsonPrimitive)?.content.orEmpty() }
+      .orEmpty()
+    return OpenCrayMediaJobSnapshot(
+      receipt = OpenCrayMediaJobReceipt(
+        jobId = providerJobId,
+        toolName = toolName,
+        status = status,
+        pollAfterMs = pollAfterMs,
+      ),
+      providerRequestId = providerRequestId,
+      metadata = metadata,
     )
   }
 
@@ -4755,6 +5873,18 @@ class OpenCrayToolDispatcher(
     append("Attach the artifact_id values in the final response attachments array to send these images.")
   }.trim()
 
+  private fun buildGeneratedVideoResultContent(
+    artifacts: List<OpenCrayGeneratedWorkspaceArtifact>,
+  ): String = buildString {
+    appendLine("Generated ${artifacts.size} video file(s).")
+    artifacts.forEachIndexed { index, artifact ->
+      val descriptor = attachmentArtifactDescriptor(artifact) ?: return@forEachIndexed
+      appendLine("${index + 1}. artifact_id=${descriptor.artifactId}")
+      appendLine("   relative_path=${descriptor.relativePath}")
+    }
+    append("Use kind=file when attaching these artifact_id values in the final response.")
+  }.trim()
+
   private fun buildGeneratedSpeechResultContent(
     artifact: OpenCrayGeneratedWorkspaceArtifact,
   ): String {
@@ -4785,7 +5915,7 @@ class OpenCrayToolDispatcher(
     durationMs: Long? = null,
     transcriptText: String? = null,
   ): OpenCrayGeneratedWorkspaceArtifact {
-    require(asset.bytes.isNotEmpty()) { "Generated media asset was empty." }
+    require(asset.bytes.isNotEmpty() || asset.sourcePath != null) { "Generated media asset was empty." }
     val resolvedExtension = resolveGeneratedAssetExtension(
       requestedExtension = requestedExtension,
       defaultExtension = defaultExtension,
@@ -4794,7 +5924,14 @@ class OpenCrayToolDispatcher(
     )
     Files.createDirectories(directory)
     val outputPath = directory.resolve("$stem.$resolvedExtension")
-    Files.write(outputPath, asset.bytes)
+    asset.sourcePath?.let { sourcePath ->
+      runCatching {
+        Files.move(sourcePath, outputPath, StandardCopyOption.REPLACE_EXISTING)
+      }.getOrElse {
+        Files.copy(sourcePath, outputPath, StandardCopyOption.REPLACE_EXISTING)
+        Files.deleteIfExists(sourcePath)
+      }
+    } ?: Files.write(outputPath, asset.bytes)
     return OpenCrayGeneratedWorkspaceArtifact(
       path = outputPath,
       kindHint = kindHint,
@@ -4837,6 +5974,9 @@ class OpenCrayToolDispatcher(
     "audio/m4a",
     "audio/x-m4a",
     -> "m4a"
+    "video/mp4" -> "mp4"
+    "video/quicktime" -> "mov"
+    "video/webm" -> "webm"
     else -> null
   }
 
@@ -4859,6 +5999,16 @@ class OpenCrayToolDispatcher(
     "wav" -> "wav"
     "m4a" -> "m4a"
     else -> throw IllegalArgumentException("SynthesizeSpeech format must be mp3, wav, or m4a.")
+  }
+
+  private fun normalizeGeneratedVideoFormat(rawValue: String?): String? = when (rawValue?.trim()?.lowercase(Locale.US)) {
+    null,
+    "",
+    -> null
+    "mp4" -> "mp4"
+    "mov" -> "mov"
+    "webm" -> "webm"
+    else -> throw IllegalArgumentException("GenerateVideo format must be mp4, mov, or webm.")
   }
 
   private fun copyIntoWorkspace(source: Path, destination: Path) {
@@ -7614,6 +8764,50 @@ class OpenCrayToolDispatcher(
     )
   }
 
+  private fun sessionToolDefinitions(): List<AgentToolDefinition> {
+    if (config.sessionSearchToolContext == null) {
+      return emptyList()
+    }
+    return listOf(
+      AgentToolDefinition(
+        name = "session_search",
+        description = "Search projected prior-session history before answering questions about what happened in an earlier chat. The current session is excluded by default. Use this first, then session_get for a narrow snippet.",
+        parameters = listOf(
+          AgentToolParameter("query", "string", required = true, description = "Search query describing the prior session context to retrieve."),
+          AgentToolParameter("max_results", "number", required = false, description = "Maximum number of prior-session matches to return."),
+          AgentToolParameter("min_score", "number", required = false, description = "Minimum relevance score for returned matches."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "session_get",
+        description = "Read a narrow line range from the projected prior-session history corpus after session_search identifies the relevant path and line range.",
+        parameters = listOf(
+          AgentToolParameter("path", "string", required = true, description = "Projected session path such as SESSIONS.md or sessions/<sessionId>.md."),
+          AgentToolParameter("from", "number", required = false, description = "1-based start line to read."),
+          AgentToolParameter("lines", "number", required = false, description = "Maximum number of lines to read."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "past_session_search",
+        description = "Search the past-session archive explicitly. Returns per-session summary hits plus key snippet references so you can drill in with past_session_get.",
+        parameters = listOf(
+          AgentToolParameter("query", "string", required = true, description = "Search query describing what to retrieve from other archived sessions."),
+          AgentToolParameter("max_results", "number", required = false, description = "Maximum number of archived session matches to return."),
+          AgentToolParameter("min_score", "number", required = false, description = "Minimum relevance score for returned matches."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "past_session_get",
+        description = "Read a narrow line range from one past-session archive reference returned by past_session_search.",
+        parameters = listOf(
+          AgentToolParameter("path", "string", required = true, description = "Projected archive path such as SESSIONS.md or sessions/<sessionId>.md."),
+          AgentToolParameter("from", "number", required = false, description = "1-based start line to read."),
+          AgentToolParameter("lines", "number", required = false, description = "Maximum number of lines to read."),
+        ),
+      ),
+    )
+  }
+
   private fun searchProjectedMemory(arguments: JsonObject): AgentToolResult {
     val context = config.memoryToolContext
       ?: return AgentToolResult(
@@ -7684,6 +8878,83 @@ class OpenCrayToolDispatcher(
     )
   }
 
+  private fun searchProjectedSessionHistory(arguments: JsonObject): AgentToolResult {
+    val context = config.sessionSearchToolContext
+      ?: return AgentToolResult(
+        toolName = "session_search",
+        status = AgentToolResultStatus.FAILED,
+        content = "Projected prior-session history search is not configured for this runtime.",
+        errorCode = "SESSION_SEARCH_UNAVAILABLE",
+      )
+    val query = arguments.requiredString("query")
+    val maxResults = (arguments.optionalInt("max_results") ?: arguments.optionalInt("maxResults")
+      ?: config.maxSessionSearchResults).coerceIn(1, config.maxSessionSearchResults)
+    val minScore = (arguments.optionalInt("min_score") ?: arguments.optionalInt("minScore")
+      ?: 1).coerceAtLeast(1)
+    val response = sessionSearchService.search(
+      context = context,
+      query = query,
+      maxResults = maxResults,
+      minScore = minScore,
+    )
+    val content = if (response.matches.isEmpty()) {
+      "No matching projected prior-session snippets were found."
+    } else {
+      buildString {
+        appendLine("Found ${response.matches.size} projected session match(es).")
+        response.matches.forEachIndexed { index, match ->
+          append(index + 1)
+          append(". ")
+          append(renderSessionSearchHeader(match))
+          appendLine()
+          appendLine(match.snippet)
+          if (index != response.matches.lastIndex) {
+            appendLine()
+          }
+        }
+      }.trim()
+    }
+    return AgentToolResult(
+      toolName = "session_search",
+      status = AgentToolResultStatus.SUCCESS,
+      content = content,
+      metadata = toolPolicySupport.commonMetadata(
+        toolName = "session_search",
+        metadataContext = policyMetadataContext(
+          toolName = "session_search",
+          workspaceRelation = ToolWorkspaceRelation.NONE,
+          targetSummary = inlinePreview(query, maxChars = 256),
+        ),
+      ) + buildMap {
+        put("query", query)
+        put("surface", "session_history")
+        put("queryTerms", response.queryTerms.joinToString(separator = ","))
+        put("resultCount", response.matches.size.toString())
+        put("corpusFileCount", response.corpusFileCount.toString())
+        if (response.matches.isNotEmpty()) {
+          put(
+            "recordIds",
+            response.matches.joinToString(separator = ",") { match -> match.sessionId },
+          )
+          put(
+            "sessionIds",
+            response.matches.joinToString(separator = ",") { match -> match.sessionId },
+          )
+          put(
+            "paths",
+            response.matches.joinToString(separator = ",") { match -> match.path },
+          )
+          put(
+            "lineRanges",
+            response.matches.joinToString(separator = ",") { match ->
+              renderSessionLineRange(match.startLine, match.endLine)
+            },
+          )
+        }
+      },
+    )
+  }
+
   private fun getProjectedMemory(arguments: JsonObject): AgentToolResult {
     val context = config.memoryToolContext
       ?: return AgentToolResult(
@@ -7727,6 +8998,165 @@ class OpenCrayToolDispatcher(
         "returnedLineCount" to (response.endLine - response.startLine + 1).toString(),
         "totalLineCount" to response.totalLineCount.toString(),
         "recordIds" to response.recordIds.joinToString(separator = ","),
+      ),
+    )
+  }
+
+  private fun getProjectedSessionHistory(arguments: JsonObject): AgentToolResult {
+    val context = config.sessionSearchToolContext
+      ?: return AgentToolResult(
+        toolName = "session_get",
+        status = AgentToolResultStatus.FAILED,
+        content = "Projected prior-session history reads are not configured for this runtime.",
+        errorCode = "SESSION_GET_UNAVAILABLE",
+      )
+    val path = arguments.requiredString("path")
+    val from = arguments.optionalInt("from")?.coerceAtLeast(1)
+    val lines = (arguments.optionalInt("lines") ?: config.maxSessionGetLines)
+      .coerceIn(1, config.maxSessionGetLines)
+    val response = sessionSearchService.get(
+      context = context,
+      path = path,
+      from = from,
+      lines = lines,
+    )
+    return AgentToolResult(
+      toolName = "session_get",
+      status = AgentToolResultStatus.SUCCESS,
+      content = buildString {
+        append(response.path)
+        append("#")
+        append(renderSessionLineRange(response.startLine, response.endLine))
+        appendLine()
+        append(response.text)
+      }.trim(),
+      metadata = toolPolicySupport.commonMetadata(
+        toolName = "session_get",
+        metadataContext = policyMetadataContext(
+          toolName = "session_get",
+          targetKind = ToolTargetKind.FILE,
+          workspaceRelation = ToolWorkspaceRelation.NONE,
+          primaryTargetPath = response.path,
+          targetSummary = response.path,
+        ),
+      ) + mapOf(
+        "surface" to "session_history",
+        "path" to response.path,
+        "from" to response.startLine.toString(),
+        "returnedLineCount" to (response.endLine - response.startLine + 1).toString(),
+        "totalLineCount" to response.totalLineCount.toString(),
+        "recordIds" to response.sessionIds.joinToString(separator = ","),
+        "sessionIds" to response.sessionIds.joinToString(separator = ","),
+      ),
+    )
+  }
+
+  private fun searchPastSessionArchive(arguments: JsonObject): AgentToolResult {
+    val context = config.sessionSearchToolContext
+      ?: return AgentToolResult(
+        toolName = "past_session_search",
+        status = AgentToolResultStatus.FAILED,
+        content = "Past-session archive search is not configured for this runtime.",
+        errorCode = "PAST_SESSION_SEARCH_UNAVAILABLE",
+      )
+    val query = arguments.requiredString("query")
+    val maxResults = (arguments.optionalInt("max_results") ?: arguments.optionalInt("maxResults")
+      ?: config.maxSessionSearchResults).coerceIn(1, config.maxSessionSearchResults)
+    val minScore = (arguments.optionalInt("min_score") ?: arguments.optionalInt("minScore")
+      ?: 1).coerceAtLeast(1)
+    val response = sessionSearchService.search(
+      context = context,
+      query = query,
+      maxResults = maxResults,
+      minScore = minScore,
+    )
+    val content = renderPastSessionSearchContent(response.matches)
+    return AgentToolResult(
+      toolName = "past_session_search",
+      status = AgentToolResultStatus.SUCCESS,
+      content = content,
+      metadata = toolPolicySupport.commonMetadata(
+        toolName = "past_session_search",
+        metadataContext = policyMetadataContext(
+          toolName = "past_session_search",
+          workspaceRelation = ToolWorkspaceRelation.NONE,
+          targetSummary = inlinePreview(query, maxChars = 256),
+        ),
+      ) + buildMap {
+        put("query", query)
+        put("surface", "session_archive")
+        put("queryTerms", response.queryTerms.joinToString(separator = ","))
+        put("resultCount", response.matches.size.toString())
+        put("corpusFileCount", response.corpusFileCount.toString())
+        if (response.matches.isNotEmpty()) {
+          put(
+            "recordIds",
+            response.matches.joinToString(separator = ",") { match -> match.sessionId },
+          )
+          put(
+            "sessionIds",
+            response.matches.joinToString(separator = ",") { match -> match.sessionId },
+          )
+          put(
+            "paths",
+            response.matches.joinToString(separator = ",") { match -> match.path },
+          )
+          put(
+            "lineRanges",
+            response.matches.joinToString(separator = ",") { match ->
+              renderSessionLineRange(match.startLine, match.endLine)
+            },
+          )
+        }
+      },
+    )
+  }
+
+  private fun getPastSessionArchive(arguments: JsonObject): AgentToolResult {
+    val context = config.sessionSearchToolContext
+      ?: return AgentToolResult(
+        toolName = "past_session_get",
+        status = AgentToolResultStatus.FAILED,
+        content = "Past-session archive reads are not configured for this runtime.",
+        errorCode = "PAST_SESSION_GET_UNAVAILABLE",
+      )
+    val path = arguments.requiredString("path")
+    val from = arguments.optionalInt("from")?.coerceAtLeast(1)
+    val lines = (arguments.optionalInt("lines") ?: config.maxSessionGetLines)
+      .coerceIn(1, config.maxSessionGetLines)
+    val response = sessionSearchService.get(
+      context = context,
+      path = path,
+      from = from,
+      lines = lines,
+    )
+    return AgentToolResult(
+      toolName = "past_session_get",
+      status = AgentToolResultStatus.SUCCESS,
+      content = buildString {
+        append(response.path)
+        append("#")
+        append(renderSessionLineRange(response.startLine, response.endLine))
+        appendLine()
+        append(response.text)
+      }.trim(),
+      metadata = toolPolicySupport.commonMetadata(
+        toolName = "past_session_get",
+        metadataContext = policyMetadataContext(
+          toolName = "past_session_get",
+          targetKind = ToolTargetKind.FILE,
+          workspaceRelation = ToolWorkspaceRelation.NONE,
+          primaryTargetPath = response.path,
+          targetSummary = response.path,
+        ),
+      ) + mapOf(
+        "surface" to "session_archive",
+        "path" to response.path,
+        "from" to response.startLine.toString(),
+        "returnedLineCount" to (response.endLine - response.startLine + 1).toString(),
+        "totalLineCount" to response.totalLineCount.toString(),
+        "recordIds" to response.sessionIds.joinToString(separator = ","),
+        "sessionIds" to response.sessionIds.joinToString(separator = ","),
       ),
     )
   }
@@ -8080,6 +9510,16 @@ class OpenCrayToolDispatcher(
     val kind: String,
   )
 
+  private data class MediaJobHandle(
+    val jobId: String,
+    val toolName: String,
+    val summary: String,
+    val createdAtEpochMs: Long,
+    val cancelRequested: AtomicBoolean,
+    val future: Future<AgentToolResult>,
+    val baseMetadata: Map<String, String>,
+  )
+
   companion object {
     private const val HOST_SESSION_ID_METADATA_KEY: String = "_host.sessionId"
     private const val DEFAULT_BASH_WAIT_TIMEOUT_MS: Long = 1_000L
@@ -8096,8 +9536,15 @@ class OpenCrayToolDispatcher(
     private const val MAX_VIEW_WORKSPACE_IMAGE_BYTES: Long = 20L * 1024L * 1024L
     private const val MAX_VIEW_WORKSPACE_PDF_BYTES: Long = 32L * 1024L * 1024L
     private const val DEFAULT_GENERATED_IMAGE_FORMAT: String = "png"
+    private const val DEFAULT_GENERATED_VIDEO_FORMAT: String = "mp4"
     private const val DEFAULT_GENERATED_AUDIO_FORMAT: String = "mp3"
+    private const val PROVIDER_MEDIA_JOB_ID_PREFIX: String = "provider_media_job:"
+    private val ENCODED_PROVIDER_MEDIA_JOB_METADATA_KEYS: Set<String> = setOf(
+      "providerPollUrl",
+      "providerCancelUrl",
+    )
     private const val MAX_GENERATED_IMAGE_COUNT: Int = 9
+    private const val MAX_GENERATED_VIDEO_DURATION_SECONDS: Int = 60
     private const val MAX_EXECUTION_ATTACHMENT_ARTIFACT_PREVIEW_COUNT: Int = 12
     private val WINDOWS_ABSOLUTE_PATH_REGEX: Regex = Regex("^[A-Za-z]:[\\\\/].+")
     private val MANAGED_PROCESS_RESERVED_METADATA_KEYS: Set<String> = setOf(
@@ -8364,7 +9811,73 @@ class OpenCrayToolDispatcher(
     }
   }
 
+  private fun renderSessionSearchHeader(match: SessionSearchMatch): String = buildString {
+    append(match.path)
+    append("#")
+    append(renderSessionLineRange(match.startLine, match.endLine))
+    append(" score=")
+    append(match.score)
+    append(" session_id=")
+    append(match.sessionId)
+    match.title
+      ?.takeIf(String::isNotBlank)
+      ?.let { title ->
+        append(" title=")
+        append(title)
+      }
+    if (match.matchedTerms.isNotEmpty()) {
+      append(" matched_terms=")
+      append(match.matchedTerms.joinToString(separator = "|"))
+    }
+  }
+
+  private fun renderPastSessionSearchContent(matches: List<SessionSearchMatch>): String {
+    if (matches.isEmpty()) {
+      return "No matching past-session archive snippets were found."
+    }
+    return buildString {
+      appendLine("Found ${matches.size} past-session archive match(es).")
+      matches.forEachIndexed { index, match ->
+        append(index + 1)
+        append(". session_id=")
+        append(match.sessionId)
+        match.title
+          ?.takeIf(String::isNotBlank)
+          ?.let { title ->
+            append(" title=")
+            append(title)
+          }
+        append(" score=")
+        append(match.score)
+        appendLine()
+        append("summary=")
+        appendLine(match.snippet)
+        append("reference=")
+        append(match.path)
+        append("#")
+        append(renderSessionLineRange(match.startLine, match.endLine))
+        if (match.matchedTerms.isNotEmpty()) {
+          append(" matched_terms=")
+          append(match.matchedTerms.joinToString(separator = "|"))
+        }
+        if (index != matches.lastIndex) {
+          appendLine()
+          appendLine()
+        }
+      }
+    }.trim()
+  }
+
   private fun renderMemoryLineRange(
+    startLine: Int,
+    endLine: Int,
+  ): String = if (startLine == endLine) {
+    "L$startLine"
+  } else {
+    "L$startLine-L$endLine"
+  }
+
+  private fun renderSessionLineRange(
     startLine: Int,
     endLine: Int,
   ): String = if (startLine == endLine) {
@@ -8375,30 +9888,37 @@ class OpenCrayToolDispatcher(
 
 }
 
-internal fun AgentToolDefinition.toJsonSchema(): JsonObject = buildJsonObject {
+internal fun AgentToolDefinition.toJsonSchema(strict: Boolean = false): JsonObject = buildJsonObject {
   put("type", "object")
   put(
     "properties",
     buildJsonObject {
       parameters.forEach { parameter ->
-        put(parameter.name, parameter.toJsonSchemaProperty())
+        put(
+          parameter.name,
+          parameter.toJsonSchemaProperty(
+            strict = strict,
+            nullable = strict && !parameter.required,
+          ),
+        )
       }
     },
   )
-  parameters
-    .filter(AgentToolParameter::required)
-    .map(AgentToolParameter::name)
-    .takeIf { requiredParameters -> requiredParameters.isNotEmpty() }
-    ?.let { requiredParameters ->
-      put(
-        "required",
-        buildJsonArray {
-          requiredParameters.forEach { requiredParameter ->
-            add(JsonPrimitive(requiredParameter))
-          }
-        },
-      )
-    }
+  val requiredParameters = if (strict) {
+    parameters.map(AgentToolParameter::name)
+  } else {
+    parameters.filter(AgentToolParameter::required).map(AgentToolParameter::name)
+  }
+  if (strict || requiredParameters.isNotEmpty()) {
+    put(
+      "required",
+      buildJsonArray {
+        requiredParameters.forEach { requiredParameter ->
+          add(JsonPrimitive(requiredParameter))
+        }
+      },
+    )
+  }
   put("additionalProperties", false)
 }
 
@@ -8406,13 +9926,15 @@ internal fun AgentToolDefinition.toLiteLlmToolDefinition(strict: Boolean = false
   LiteLlmToolDefinition(
     name = name,
     description = description,
-    inputSchema = toJsonSchema(),
+    inputSchema = toJsonSchema(strict = strict),
     strict = strict.takeIf { it },
   )
 
-private fun AgentToolParameter.toJsonSchemaProperty(): JsonObject {
-  jsonSchema?.let { explicitSchema -> return explicitSchema }
-  return buildJsonObject {
+private fun AgentToolParameter.toJsonSchemaProperty(
+  strict: Boolean = false,
+  nullable: Boolean = false,
+): JsonObject {
+  val baseSchema = jsonSchema ?: buildJsonObject {
     when (type.trim().lowercase(Locale.ROOT)) {
       "string" -> put("type", "string")
       "number" -> put("type", "number")
@@ -8441,6 +9963,13 @@ private fun AgentToolParameter.toJsonSchemaProperty(): JsonObject {
     }
     put("description", description)
   }
+  if (!strict) {
+    return baseSchema
+  }
+  return strictCompatibleToolSchema(
+    schema = baseSchema,
+    nullable = nullable,
+  )
 }
 
 private fun multiEditArraySchema(description: String): JsonObject = objectArraySchema(
@@ -8629,3 +10158,132 @@ private fun objectArraySchema(
     },
   )
 }
+
+private fun strictCompatibleToolSchema(
+  schema: JsonObject,
+  nullable: Boolean = false,
+): JsonObject {
+  val normalized = normalizeToolSchemaForStrictMode(schema)
+  return if (nullable) {
+    allowNullInToolSchema(normalized)
+  } else {
+    normalized
+  }
+}
+
+private fun normalizeToolSchemaForStrictMode(
+  schema: JsonObject,
+): JsonObject {
+  val normalizedEntries = schema.mapValues { (key, value) ->
+    when {
+      key == "properties" && value is JsonObject -> normalizeToolSchemaProperties(value, schema)
+      key in STRICT_TOOL_SCHEMA_CHILD_ARRAY_KEYS && value is JsonArray -> JsonArray(
+        value.map { item ->
+          if (item is JsonObject) {
+            normalizeToolSchemaForStrictMode(item)
+          } else {
+            item
+          }
+        },
+      )
+      key == "items" && value is JsonObject -> normalizeToolSchemaForStrictMode(value)
+      else -> value
+    }
+  }.toMutableMap()
+  if (toolSchemaTypeNames(schema).contains("object")) {
+    if ("additionalProperties" !in normalizedEntries) {
+      normalizedEntries["additionalProperties"] = JsonPrimitive(false)
+    }
+    val propertyNames = (normalizedEntries["properties"] as? JsonObject)
+      ?.keys
+      ?.toList()
+      .orEmpty()
+    normalizedEntries["required"] = JsonArray(propertyNames.map(::JsonPrimitive))
+  }
+  return JsonObject(normalizedEntries)
+}
+
+private fun normalizeToolSchemaProperties(
+  properties: JsonObject,
+  ownerSchema: JsonObject,
+): JsonObject {
+  val requiredPropertyNames = (ownerSchema["required"] as? JsonArray)
+    ?.mapNotNull { item -> (item as? JsonPrimitive)?.content }
+    ?.toSet()
+    .orEmpty()
+  return buildJsonObject {
+    properties.forEach { (propertyName, propertyValue) ->
+      val propertySchema = propertyValue as? JsonObject ?: return@forEach
+      val normalizedProperty = strictCompatibleToolSchema(
+        schema = propertySchema,
+        nullable = propertyName !in requiredPropertyNames,
+      )
+      put(propertyName, normalizedProperty)
+    }
+    if (properties.isEmpty()) {
+      return@buildJsonObject
+    }
+  }
+}
+
+private fun allowNullInToolSchema(
+  schema: JsonObject,
+): JsonObject {
+  if (toolSchemaAllowsNull(schema)) {
+    return schema
+  }
+  val mutableEntries = schema.toMutableMap()
+  when (val typeValue = schema["type"]) {
+    is JsonPrimitive -> {
+      mutableEntries["type"] = JsonArray(listOf(typeValue, JsonPrimitive("null")))
+    }
+
+    is JsonArray -> {
+      val normalizedTypes = typeValue
+        .mapNotNull { item -> item as? JsonPrimitive }
+        .map(JsonPrimitive::content)
+        .toMutableList()
+      if ("null" !in normalizedTypes) {
+        normalizedTypes += "null"
+      }
+      mutableEntries["type"] = JsonArray(normalizedTypes.map(::JsonPrimitive))
+    }
+
+    else -> {
+      val anyOf = buildJsonArray {
+        (schema["anyOf"] as? JsonArray)?.forEach(::add) ?: add(schema)
+        add(buildJsonObject { put("type", "null") })
+      }
+      return buildJsonObject {
+        schema["description"]?.let { description -> put("description", description) }
+        put("anyOf", JsonArray(anyOf))
+      }
+    }
+  }
+  (schema["enum"] as? JsonArray)?.let { enumValues ->
+    if (enumValues.none { item -> item is JsonNull }) {
+      mutableEntries["enum"] = JsonArray(enumValues + JsonNull)
+    }
+  }
+  return JsonObject(mutableEntries)
+}
+
+private fun toolSchemaAllowsNull(schema: JsonObject): Boolean {
+  if ("null" in toolSchemaTypeNames(schema)) {
+    return true
+  }
+  return (schema["anyOf"] as? JsonArray)
+    ?.any { option ->
+      (option as? JsonObject)?.let(::toolSchemaAllowsNull) == true
+    } == true
+}
+
+private fun toolSchemaTypeNames(
+  schema: JsonObject,
+): Set<String> = when (val typeValue = schema["type"]) {
+  is JsonPrimitive -> setOf(typeValue.content)
+  is JsonArray -> typeValue.mapNotNull { item -> (item as? JsonPrimitive)?.content }.toSet()
+  else -> emptySet()
+}
+
+private val STRICT_TOOL_SCHEMA_CHILD_ARRAY_KEYS: Set<String> = setOf("anyOf", "allOf", "oneOf")

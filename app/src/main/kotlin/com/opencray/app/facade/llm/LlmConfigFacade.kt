@@ -21,6 +21,7 @@ import com.opencray.app.OpenCrayUserAgent
 import com.opencray.app.SavedCustomLlmProvider
 import com.opencray.app.effectiveLlmRouteMetadata
 import com.opencray.app.isOperationallyConfigured
+import com.opencray.app.llmEndpointAllowsBlankApiKey
 import com.opencray.app.recommendedValidationProviderRouteTimeoutMs
 import com.opencray.llm.DefaultLiteLlmGateway
 import com.opencray.llm.InMemoryLiteLlmRoutingSettingsStore
@@ -262,7 +263,14 @@ internal class LocalLlmConfigFacade private constructor(
     )
     val savedState = resolvedStateFromRequest(
       SaveLlmConfigRequest(
-        enabled = providerRecord.baseUrl.isNotBlank() && providerRecord.apiKey.isNotBlank(),
+        enabled = providerRecord.baseUrl.isNotBlank() &&
+          (
+            providerRecord.apiKey.isNotBlank() ||
+              llmEndpointAllowsBlankApiKey(
+                protocol = providerRecord.protocol,
+                baseUrl = providerRecord.baseUrl,
+              )
+            ),
         streamingEnabled = request.streamingEnabled,
         providerId = "custom",
         selectedProviderOptionId = providerRecord.id,

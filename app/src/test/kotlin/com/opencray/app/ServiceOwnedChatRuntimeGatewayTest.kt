@@ -1012,6 +1012,9 @@ class ServiceOwnedChatRuntimeGatewayTest {
       return { }
     }
 
+    override fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit =
+      { }
+
     override fun loadChatRuntimeSnapshot(): Map<String, Any?> = chatRuntimePayload
 
     override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? = mapOf(

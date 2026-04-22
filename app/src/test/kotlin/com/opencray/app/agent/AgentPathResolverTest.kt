@@ -30,6 +30,7 @@ class AgentPathResolverTest {
       paths.agentRoot.resolve("personalization-local-state").normalize(),
       paths.personalizationLocalStateRoot,
     )
+    assertEquals(paths.agentRoot.resolve("process-registry").normalize(), paths.processRegistryRoot)
   }
 
   @Test

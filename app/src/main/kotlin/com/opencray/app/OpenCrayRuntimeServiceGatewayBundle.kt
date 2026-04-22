@@ -24,8 +24,11 @@ import com.opencray.app.facade.skills.LocalSkillsFacade
 import com.opencray.app.facade.skills.SkillsFacade
 import com.opencray.app.shell.AppShellStateStore
 import java.nio.file.Path
+import java.util.Timer
+import java.util.TimerTask
 
 private const val SERVICE_CHAT_DEBUG_TAG: String = "OpenCrayDiag"
+private const val SERVICE_RUNTIME_LIVE_REFRESH_INTERVAL_MS: Long = 400L
 
 private fun serviceChatDebug(message: String) {
   runCatching { Log.d(SERVICE_CHAT_DEBUG_TAG, message) }
@@ -428,6 +431,7 @@ internal class ServiceOwnedChatRuntimeGateway(
   private var latestChatRuntimePayload: Map<String, Any?> = decorateChatRuntimePayload(
     runtimeSnapshotGateway().loadChatRuntimeSnapshot(),
   )
+  private var liveChatRuntimeRefreshTimer: Timer? = null
 
   @Suppress("unused")
   private val chatObservationDisposer = chatSnapshotGateway().observeChat { payload ->
@@ -471,6 +475,7 @@ internal class ServiceOwnedChatRuntimeGateway(
           serviceChatDebug(
             "service.draftUpdated session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"} len=${text.length} preview=${text.take(80).replace('\n', ' ')}",
           )
+          emitChatRuntimePayload(loadChatRuntimeSnapshot())
           emitLiveAssistantDraftEvent(draftEventPayload)
         }
       }
@@ -510,6 +515,7 @@ internal class ServiceOwnedChatRuntimeGateway(
           serviceChatDebug(
             "service.draftCleared session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"}",
           )
+          emitChatRuntimePayload(loadChatRuntimeSnapshot())
           emitLiveAssistantDraftEvent(draftEventPayload)
         }
       }
@@ -549,6 +555,7 @@ internal class ServiceOwnedChatRuntimeGateway(
           serviceChatDebug(
             "service.taskFinishedClearedDraft session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"} status=${result.status} error=${result.errorCode ?: "-"}",
           )
+          emitChatRuntimePayload(loadChatRuntimeSnapshot())
           emitLiveAssistantDraftEvent(draftEventPayload)
         }
       }
@@ -689,6 +696,7 @@ internal class ServiceOwnedChatRuntimeGateway(
       chatRuntimeListeners += listener
       latestChatRuntimePayload
     }
+    syncLiveChatRuntimeRefreshLoop()
     mainThreadPoster.post {
       listener(initialPayload)
     }
@@ -696,6 +704,7 @@ internal class ServiceOwnedChatRuntimeGateway(
       synchronized(lock) {
         chatRuntimeListeners -= listener
       }
+      syncLiveChatRuntimeRefreshLoop()
     }
   }
 
@@ -951,26 +960,97 @@ internal class ServiceOwnedChatRuntimeGateway(
   }
 
   private fun emitChatRuntimePayload(payload: Map<String, Any?>) {
+    syncLiveChatRuntimeRefreshLoop()
     val listeners = synchronized(lock) {
       latestChatRuntimePayload = payload
       chatRuntimeListeners.toList()
     }
-    val liveDraftCount = (payload["liveAssistantDrafts"] as? List<*>)?.size ?: 0
     serviceChatDebug(
-      "service.emitChatRuntimePayload listeners=${listeners.size} liveDrafts=$liveDraftCount activeRuns=${(payload["activeRuns"] as? List<*>)?.size ?: 0}",
+      "service.emitChatRuntimePayload listeners=${listeners.size} ${chatRuntimePayloadDebugSummary(payload)}",
     )
     if (listeners.isEmpty()) {
       return
     }
     mainThreadPoster.post {
       listeners.forEach { listener -> listener(payload) }
+      syncLiveChatRuntimeRefreshLoop()
     }
+  }
+
+  private fun syncLiveChatRuntimeRefreshLoop() {
+    val shouldRun = shouldRunLiveChatRuntimeRefresh()
+    synchronized(lock) {
+      if (!shouldRun) {
+        liveChatRuntimeRefreshTimer?.cancel()
+        liveChatRuntimeRefreshTimer = null
+        return
+      }
+      if (liveChatRuntimeRefreshTimer != null) {
+        return
+      }
+      liveChatRuntimeRefreshTimer = Timer("service-chat-runtime-live-refresh", true).apply {
+        scheduleAtFixedRate(
+          object : TimerTask() {
+            override fun run() {
+              if (!shouldRunLiveChatRuntimeRefresh()) {
+                syncLiveChatRuntimeRefreshLoop()
+                return
+              }
+              emitChatRuntimePayload(loadChatRuntimeSnapshot())
+            }
+          },
+          SERVICE_RUNTIME_LIVE_REFRESH_INTERVAL_MS,
+          SERVICE_RUNTIME_LIVE_REFRESH_INTERVAL_MS,
+        )
+      }
+    }
+  }
+
+  private fun shouldRunLiveChatRuntimeRefresh(): Boolean {
+    val hasListeners = synchronized(lock) { chatRuntimeListeners.isNotEmpty() }
+    if (!hasListeners) {
+      return false
+    }
+    val access = runtimeHostAccess ?: return false
+    val summary = access.activeWorkSummary()
+    return summary.activeRunCount > 0 ||
+      summary.pendingWorkSessionIds.isNotEmpty() ||
+      summary.liveManagedProcessSessionIds.isNotEmpty() ||
+      summary.liveSubAgentSessionIds.isNotEmpty()
+  }
+
+  private fun chatRuntimePayloadDebugSummary(payload: Map<String, Any?>): String {
+    val activeRuns = (payload["activeRuns"] as? List<*>)
+      .orEmpty()
+      .mapNotNull { item -> item as? Map<*, *> }
+    val runSummary = activeRuns.joinToString(separator = ";") { run ->
+      val runId = (run["runId"] as? String).orEmpty()
+      val taskId = (run["taskId"] as? String).orEmpty()
+      val managedProcessCount = (run["managedProcesses"] as? List<*>)?.size ?: 0
+      val managedProcessIds = (run["managedProcessIds"] as? List<*>)?.joinToString(",") ?: ""
+      val runningManagedProcessCount = run["runningManagedProcessCount"] ?: 0
+      val hasLiveManagedProcesses = run["hasLiveManagedProcesses"] ?: false
+      val lastEvent = run["lastEvent"] as? Map<*, *>
+      val lastKind = lastEvent?.get("kind") as? String ?: "-"
+      val lastTool = lastEvent?.get("toolName") as? String ?: "-"
+      "${runId.takeLast(12)} task=${taskId.takeLast(12)} mp=$managedProcessCount[$managedProcessIds] running=$runningManagedProcessCount live=$hasLiveManagedProcesses last=$lastKind/$lastTool"
+    }
+    return "session=${payload["sessionId"] ?: "-"} liveDrafts=${(payload["liveAssistantDrafts"] as? List<*>)?.size ?: 0} activeRuns=${activeRuns.size} retainedRuns=${(payload["retainedRuns"] as? List<*>)?.size ?: 0} events=${(payload["events"] as? List<*>)?.size ?: 0} runs=[$runSummary]"
   }
 
   private fun decorateChatPayload(
     payload: Map<String, Any?>,
   ): Map<String, Any?> {
     val warmupState = onDeviceWarmupAccess.ensureWarmForActiveSession()
+    if (warmupState.phase == OnDeviceLlmWarmupPhase.FAILED) {
+      val failureMessage = warmupState.failureMessage
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: onDevicePreparingPlaceholder
+      return payload.toMutableMap().apply {
+        this["composerPlaceholder"] = failureMessage
+      }
+    }
     if (!warmupState.blocksChatInput()) {
       return payload
     }

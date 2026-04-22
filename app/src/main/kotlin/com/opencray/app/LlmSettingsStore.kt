@@ -3,6 +3,7 @@ package com.opencray.app
 import android.content.Context
 import android.content.SharedPreferences
 import com.opencray.runtime.context.ModelContextBudgetPreset
+import java.net.URI
 import java.util.UUID
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -88,7 +89,13 @@ internal data class LlmSettingsState(
       selectedOnDeviceModelId.trim().isNotEmpty()
     } else {
       baseUrl.trim().isNotEmpty() &&
-        apiKey.trim().isNotEmpty()
+        (
+          apiKey.trim().isNotEmpty() ||
+            llmEndpointAllowsBlankApiKey(
+              protocol = protocol,
+              baseUrl = baseUrl,
+            )
+          )
     }
 
   fun contextBudgetRuntimeMetadataOverrides(): Map<String, String> = buildMap {
@@ -263,6 +270,60 @@ internal data class LlmSettingsState(
       rawValue.coerceIn(MIN_ON_DEVICE_TEMPERATURE, MAX_ON_DEVICE_TEMPERATURE)
         .roundToDecimals(2)
   }
+}
+
+internal fun llmEndpointAllowsBlankApiKey(
+  protocol: String,
+  baseUrl: String,
+): Boolean {
+  val normalizedProtocol = LlmProviderProtocols.normalize(protocol)
+  if (
+    normalizedProtocol != LlmProviderProtocols.OPENAI &&
+    normalizedProtocol != LlmProviderProtocols.OPENAI_RESPONSES
+  ) {
+    return false
+  }
+  return isLikelyLocalLlmBaseUrl(baseUrl)
+}
+
+internal fun isLikelyLocalLlmBaseUrl(baseUrl: String): Boolean {
+  val host = runCatching {
+    URI(baseUrl.trim()).host
+      .orEmpty()
+      .trim()
+      .removePrefix("[")
+      .removeSuffix("]")
+      .lowercase()
+  }.getOrDefault("")
+  if (host.isBlank()) {
+    return false
+  }
+  if (
+    host == "localhost" ||
+    host == "localhost.localdomain" ||
+    host == "0.0.0.0" ||
+    host == "::1" ||
+    host == "10.0.2.2" ||
+    host == "host.docker.internal" ||
+    host.endsWith(".local")
+  ) {
+    return true
+  }
+  return when {
+    host.startsWith("127.") -> true
+    host.startsWith("10.") -> true
+    host.startsWith("192.168.") -> true
+    host.isPrivate172SubnetHost() -> true
+    else -> false
+  }
+}
+
+private fun String.isPrivate172SubnetHost(): Boolean {
+  if (!startsWith("172.")) {
+    return false
+  }
+  val secondOctet = split('.').getOrNull(1)?.toIntOrNull() ?: return false
+  return secondOctet in 16..31
 }
 
 private fun Double.roundToDecimals(decimals: Int): Double {

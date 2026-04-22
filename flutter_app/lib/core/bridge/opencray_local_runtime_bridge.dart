@@ -994,7 +994,9 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   @override
   Future<List<OpenCrayChatDraftAttachment>> pickChatAttachments({
     required OpenCrayChatDraftAttachmentKind kind,
-  }) async => const <OpenCrayChatDraftAttachment>[];
+  }) async => throw UnsupportedError(
+    'Adding attachments is unavailable in local runtime mode.',
+  );
 
   @override
   Future<OpenCrayChatRunSubmission?> submitChatMessage(

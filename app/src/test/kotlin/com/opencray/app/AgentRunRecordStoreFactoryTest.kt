@@ -1,8 +1,12 @@
 package com.opencray.app
 
+import com.opencray.runtime.AgentToolCall
+import com.opencray.runtime.AgentToolResult
+import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCraySupplementEvent
+import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import org.junit.Assert.assertNull
@@ -12,6 +16,36 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRunRecordStoreFactoryTest {
+  @Test
+  fun successfulToolResultRoundTripsThroughPersistedRecordWithFullContent() {
+    val event = OpenCrayToolResultEvent(
+      runId = "run-tool",
+      taskId = "task-tool",
+      turn = 1,
+      call = AgentToolCall(
+        toolName = "Read",
+        reason = "Inspect README",
+      ),
+      result = AgentToolResult(
+        toolName = "Read",
+        status = AgentToolResultStatus.SUCCESS,
+        content = "README full content from durable storage.",
+      ),
+      emittedAtEpochMs = 1_234L,
+    )
+
+    val restored = runtimeEventForTest(
+      persistedRecordForTest(event),
+    ) as OpenCrayToolResultEvent
+
+    assertEquals("run-tool", restored.runId)
+    assertEquals("task-tool", restored.taskId)
+    assertEquals("Read", restored.call.toolName)
+    assertEquals("Inspect README", restored.call.reason)
+    assertEquals(AgentToolResultStatus.SUCCESS, restored.result.status)
+    assertEquals("README full content from durable storage.", restored.result.content)
+  }
+
   @Test
   fun subagentEventRoundTripsThroughPersistedRecord() {
     val event = OpenCraySubAgentEvent(

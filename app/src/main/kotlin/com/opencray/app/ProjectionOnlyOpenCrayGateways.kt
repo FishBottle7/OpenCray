@@ -468,6 +468,130 @@ internal fun observeProjectionWithPollingSnapshot(
   }
 }
 
+internal fun observeLiveAssistantDraftsWithPollingSnapshot(
+  mainThreadPoster: MainThreadPoster,
+  runtimePayloadProvider: () -> Map<String, Any?>,
+  listener: (Map<String, Any?>) -> Unit,
+  pollIntervalMs: Long,
+): () -> Unit {
+  val lock = Any()
+  var disposed = false
+  var latestDrafts = polledLiveAssistantDrafts(runtimePayloadProvider())
+  val timer = Timer("projection-draft-gateway-observer", true)
+  timer.scheduleAtFixedRate(
+    object : TimerTask() {
+      override fun run() {
+        val nextPayload = runCatching(runtimePayloadProvider).getOrNull() ?: return
+        val nextDrafts = polledLiveAssistantDrafts(nextPayload)
+        val events = synchronized(lock) {
+          if (disposed) {
+            emptyList()
+          } else {
+            diffPolledLiveAssistantDrafts(
+              previous = latestDrafts,
+              current = nextDrafts,
+            ).also {
+              latestDrafts = nextDrafts
+            }
+          }
+        }
+        if (events.isEmpty()) {
+          return
+        }
+        mainThreadPoster.post {
+          synchronized(lock) {
+            if (disposed) {
+              return@post
+            }
+          }
+          events.forEach(listener)
+        }
+      }
+    },
+    pollIntervalMs.coerceAtLeast(1L),
+    pollIntervalMs.coerceAtLeast(1L),
+  )
+  return {
+    synchronized(lock) {
+      disposed = true
+    }
+    timer.cancel()
+  }
+}
+
+private data class PolledLiveAssistantDraft(
+  val sessionId: String,
+  val runId: String,
+  val taskId: String,
+  val pendingMessageId: String,
+  val text: String,
+  val updatedAtEpochMs: Long,
+)
+
+private fun polledLiveAssistantDrafts(
+  payload: Map<String, Any?>,
+): Map<String, PolledLiveAssistantDraft> {
+  val sessionId = (payload["sessionId"] as? String)
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: return emptyMap()
+  @Suppress("UNCHECKED_CAST")
+  val drafts = payload["liveAssistantDrafts"] as? List<Map<String, Any?>> ?: return emptyMap()
+  return drafts.mapNotNull { draft ->
+    val pendingMessageId = (draft["pendingMessageId"] as? String)
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return@mapNotNull null
+    val runId = (draft["runId"] as? String)?.trim().orEmpty()
+    val taskId = (draft["taskId"] as? String)?.trim().orEmpty()
+    val text = (draft["text"] as? String)?.trim().orEmpty()
+    val updatedAtEpochMs = (draft["updatedAtEpochMs"] as? Number)?.toLong() ?: 0L
+    "${sessionId}:${pendingMessageId}" to PolledLiveAssistantDraft(
+      sessionId = sessionId,
+      runId = runId,
+      taskId = taskId,
+      pendingMessageId = pendingMessageId,
+      text = text,
+      updatedAtEpochMs = updatedAtEpochMs,
+    )
+  }.toMap(linkedMapOf())
+}
+
+private fun diffPolledLiveAssistantDrafts(
+  previous: Map<String, PolledLiveAssistantDraft>,
+  current: Map<String, PolledLiveAssistantDraft>,
+): List<Map<String, Any?>> {
+  val events = mutableListOf<Map<String, Any?>>()
+  current.forEach { (key, draft) ->
+    val prior = previous[key]
+    if (prior != draft) {
+      events += draft.toEventPayload(cleared = false)
+    }
+  }
+  previous.forEach { (key, draft) ->
+    if (key !in current) {
+      events += draft.toEventPayload(
+        cleared = true,
+        textOverride = "",
+      )
+    }
+  }
+  return events
+}
+
+private fun PolledLiveAssistantDraft.toEventPayload(
+  cleared: Boolean,
+  textOverride: String? = null,
+): Map<String, Any?> = mapOf(
+  "sessionId" to sessionId,
+  "runId" to runId,
+  "taskId" to taskId,
+  "pendingMessageId" to pendingMessageId,
+  "text" to (textOverride ?: text),
+  "updatedAtEpochMs" to updatedAtEpochMs,
+  "cleared" to cleared,
+)
+
 private const val DEFAULT_PROJECTION_SHELL_POLL_INTERVAL_MS: Long = 350L
 
 private fun SettingsOverviewSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(

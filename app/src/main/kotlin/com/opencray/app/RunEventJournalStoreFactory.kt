@@ -37,10 +37,20 @@ internal interface RunEventJournalStore {
 }
 
 internal fun List<PersistedRunJournalEntry>.latestRuntimeEventOrNull():
-  com.opencray.runtime.OpenCrayAgentRunEvent? = asReversed()
-  .asSequence()
-  .mapNotNull { entry -> entry.payload.toRuntimeEventOrNull() }
-  .firstOrNull()
+  com.opencray.runtime.OpenCrayAgentRunEvent? = asSequence()
+  .mapNotNull { entry ->
+    entry.payload.toRuntimeEventOrNull()?.let { runtimeEvent -> entry to runtimeEvent }
+  }
+  .maxWithOrNull(
+    compareBy<Pair<PersistedRunJournalEntry, com.opencray.runtime.OpenCrayAgentRunEvent>> {
+      it.first.persistedAtEpochMs
+    }
+      .thenBy { it.first.runId }
+      .thenBy { it.first.seq }
+      .thenBy { it.first.emittedAtEpochMs }
+      .thenBy { it.first.eventId },
+  )
+  ?.second
 
 internal fun inMemoryRunEventJournalStoreFactory(): RunEventJournalStoreFactory =
   InMemoryRunEventJournalStoreFactory()
@@ -122,7 +132,13 @@ private class InMemoryRunEventJournalStore(
 
   override fun append(event: com.opencray.runtime.OpenCrayAgentRunEvent): PersistedRunJournalEntry =
     synchronized(lock) {
-      appendPayloadLocked(event.toPersistedRecord())
+      val payload = event.toPersistedRecord()
+      entriesByRunId[payload.runId]
+        ?.firstOrNull { entry -> entry.payload == payload }
+        ?.let { existing ->
+          return@synchronized existing
+        }
+      appendPayloadLocked(payload)
     }
 
   override fun appendCheckpoint(
@@ -153,7 +169,7 @@ private class InMemoryRunEventJournalStore(
 
   override fun listForRun(runId: String): List<PersistedRunJournalEntry> = synchronized(lock) {
     entriesByRunId[runId]
-      ?.sortedWith(PERSISTED_JOURNAL_ENTRY_COMPARATOR)
+      ?.sortedWith(PERSISTED_RUN_JOURNAL_ENTRY_COMPARATOR)
       .orEmpty()
   }
 
@@ -197,7 +213,13 @@ private class FileBackedRunEventJournalStore(
 
   override fun append(event: com.opencray.runtime.OpenCrayAgentRunEvent): PersistedRunJournalEntry =
     synchronized(lock) {
-      appendPayloadLocked(event.toPersistedRecord())
+      val payload = event.toPersistedRecord()
+      val existing = listForRun(payload.runId)
+        .firstOrNull { entry -> entry.payload == payload }
+      if (existing != null) {
+        return@synchronized existing
+      }
+      appendPayloadLocked(payload)
     }
 
   override fun appendCheckpoint(
@@ -244,7 +266,7 @@ private class FileBackedRunEventJournalStore(
       ?.asSequence()
       ?.filter { file -> file.isFile && file.name.endsWith(FILE_SUFFIX) }
       ?.mapNotNull(::decodeJournalEntry)
-      ?.sortedWith(PERSISTED_JOURNAL_ENTRY_COMPARATOR)
+      ?.sortedWith(PERSISTED_RUN_JOURNAL_ENTRY_COMPARATOR)
       ?.toList()
       .orEmpty()
   }
@@ -348,10 +370,18 @@ private fun checkpointPayload(
 )
 
 private val PERSISTED_JOURNAL_ENTRY_COMPARATOR = compareBy<PersistedRunJournalEntry>(
-  PersistedRunJournalEntry::emittedAtEpochMs,
   PersistedRunJournalEntry::persistedAtEpochMs,
   PersistedRunJournalEntry::runId,
   PersistedRunJournalEntry::seq,
+  PersistedRunJournalEntry::emittedAtEpochMs,
+  PersistedRunJournalEntry::eventId,
+)
+
+private val PERSISTED_RUN_JOURNAL_ENTRY_COMPARATOR = compareBy<PersistedRunJournalEntry>(
+  PersistedRunJournalEntry::persistedAtEpochMs,
+  PersistedRunJournalEntry::seq,
+  PersistedRunJournalEntry::emittedAtEpochMs,
+  PersistedRunJournalEntry::eventId,
 )
 
 private val PROMPT_CHECKPOINT_JSON: Json = Json { prettyPrint = false }

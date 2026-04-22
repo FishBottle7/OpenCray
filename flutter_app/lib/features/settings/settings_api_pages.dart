@@ -584,14 +584,27 @@ class _MediaSpeechSettingsPageState extends State<_MediaSpeechSettingsPage> {
   late final TextEditingController _imageBaseUrlController;
   late final TextEditingController _imageEndpointController;
   late final TextEditingController _imageModelController;
+  late final TextEditingController _imageAuthProtocolController;
+  late final TextEditingController _imageApiKeyController;
+  late final TextEditingController _videoProviderController;
+  late final TextEditingController _videoBaseUrlController;
+  late final TextEditingController _videoEndpointController;
+  late final TextEditingController _videoModelController;
+  late final TextEditingController _videoAuthProtocolController;
+  late final TextEditingController _videoApiKeyController;
   late final TextEditingController _voiceProviderController;
   late final TextEditingController _voiceBaseUrlController;
   late final TextEditingController _voiceEndpointController;
+  late final TextEditingController _voiceModelController;
   late final TextEditingController _voicePresetController;
+  late final TextEditingController _voiceAuthProtocolController;
+  late final TextEditingController _voiceApiKeyController;
   late final TextEditingController _sttProviderController;
   late final TextEditingController _sttBaseUrlController;
   late final TextEditingController _sttEndpointController;
   late final TextEditingController _sttModelController;
+  late final TextEditingController _sttAuthProtocolController;
+  late final TextEditingController _sttApiKeyController;
 
   @override
   void initState() {
@@ -600,14 +613,27 @@ class _MediaSpeechSettingsPageState extends State<_MediaSpeechSettingsPage> {
     _imageBaseUrlController = TextEditingController();
     _imageEndpointController = TextEditingController();
     _imageModelController = TextEditingController();
+    _imageAuthProtocolController = TextEditingController();
+    _imageApiKeyController = TextEditingController();
+    _videoProviderController = TextEditingController();
+    _videoBaseUrlController = TextEditingController();
+    _videoEndpointController = TextEditingController();
+    _videoModelController = TextEditingController();
+    _videoAuthProtocolController = TextEditingController();
+    _videoApiKeyController = TextEditingController();
     _voiceProviderController = TextEditingController();
     _voiceBaseUrlController = TextEditingController();
     _voiceEndpointController = TextEditingController();
+    _voiceModelController = TextEditingController();
     _voicePresetController = TextEditingController();
+    _voiceAuthProtocolController = TextEditingController();
+    _voiceApiKeyController = TextEditingController();
     _sttProviderController = TextEditingController();
     _sttBaseUrlController = TextEditingController();
     _sttEndpointController = TextEditingController();
     _sttModelController = TextEditingController();
+    _sttAuthProtocolController = TextEditingController();
+    _sttApiKeyController = TextEditingController();
     _load();
   }
 
@@ -618,14 +644,27 @@ class _MediaSpeechSettingsPageState extends State<_MediaSpeechSettingsPage> {
     _imageBaseUrlController.dispose();
     _imageEndpointController.dispose();
     _imageModelController.dispose();
+    _imageAuthProtocolController.dispose();
+    _imageApiKeyController.dispose();
+    _videoProviderController.dispose();
+    _videoBaseUrlController.dispose();
+    _videoEndpointController.dispose();
+    _videoModelController.dispose();
+    _videoAuthProtocolController.dispose();
+    _videoApiKeyController.dispose();
     _voiceProviderController.dispose();
     _voiceBaseUrlController.dispose();
     _voiceEndpointController.dispose();
+    _voiceModelController.dispose();
     _voicePresetController.dispose();
+    _voiceAuthProtocolController.dispose();
+    _voiceApiKeyController.dispose();
     _sttProviderController.dispose();
     _sttBaseUrlController.dispose();
     _sttEndpointController.dispose();
     _sttModelController.dispose();
+    _sttAuthProtocolController.dispose();
+    _sttApiKeyController.dispose();
     super.dispose();
   }
 
@@ -719,6 +758,135 @@ class _MediaSpeechSettingsPageState extends State<_MediaSpeechSettingsPage> {
                     );
                   },
                 ),
+                const SizedBox(height: 12),
+                _PrototypeField(
+                  label: 'Auth protocol',
+                  controller: _imageAuthProtocolController,
+                  hintText: 'bearer',
+                  onChanged: (value) {
+                    _updateSnapshot(
+                      _snapshot!.copyWith(
+                        imageGeneration: _snapshot!.imageGeneration.copyWith(
+                          authProtocol: value,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
+                _PrototypeField(
+                  label: 'API key',
+                  controller: _imageApiKeyController,
+                  hintText: 'sk_...',
+                  obscureText: true,
+                  onChanged: (value) {
+                    _updateSnapshot(
+                      _snapshot!.copyWith(
+                        imageGeneration: _snapshot!.imageGeneration.copyWith(
+                          apiKey: value,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          _MediaSpeechServiceCard(
+            title: 'Video generation',
+            child: Column(
+              children: [
+                _PrototypeField(
+                  label: 'Provider',
+                  controller: _videoProviderController,
+                  hintText: 'Runway',
+                  onChanged: (value) {
+                    _updateSnapshot(
+                      _snapshot!.copyWith(
+                        videoGeneration: _snapshot!.videoGeneration.copyWith(
+                          provider: value,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
+                _PrototypeField(
+                  label: 'Base URL',
+                  controller: _videoBaseUrlController,
+                  hintText: 'https://api.runwayml.com',
+                  onChanged: (value) {
+                    _updateSnapshot(
+                      _snapshot!.copyWith(
+                        videoGeneration: _snapshot!.videoGeneration.copyWith(
+                          baseUrl: value,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
+                _PrototypeField(
+                  label: 'Endpoint',
+                  controller: _videoEndpointController,
+                  hintText: '/v1/videos',
+                  onChanged: (value) {
+                    _updateSnapshot(
+                      _snapshot!.copyWith(
+                        videoGeneration: _snapshot!.videoGeneration.copyWith(
+                          endpoint: value,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
+                _PrototypeField(
+                  label: 'Model',
+                  controller: _videoModelController,
+                  hintText: 'gen4_turbo',
+                  onChanged: (value) {
+                    _updateSnapshot(
+                      _snapshot!.copyWith(
+                        videoGeneration: _snapshot!.videoGeneration.copyWith(
+                          model: value,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
+                _PrototypeField(
+                  label: 'Auth protocol',
+                  controller: _videoAuthProtocolController,
+                  hintText: 'bearer',
+                  onChanged: (value) {
+                    _updateSnapshot(
+                      _snapshot!.copyWith(
+                        videoGeneration: _snapshot!.videoGeneration.copyWith(
+                          authProtocol: value,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
+                _PrototypeField(
+                  label: 'API key',
+                  controller: _videoApiKeyController,
+                  hintText: 'sk_...',
+                  obscureText: true,
+                  onChanged: (value) {
+                    _updateSnapshot(
+                      _snapshot!.copyWith(
+                        videoGeneration: _snapshot!.videoGeneration.copyWith(
+                          apiKey: value,
+                        ),
+                      ),
+                    );
+                  },
+                ),
               ],
             ),
           ),
@@ -773,6 +941,21 @@ class _MediaSpeechSettingsPageState extends State<_MediaSpeechSettingsPage> {
                 ),
                 const SizedBox(height: 12),
                 _PrototypeField(
+                  label: 'Model',
+                  controller: _voiceModelController,
+                  hintText: 'tts-1',
+                  onChanged: (value) {
+                    _updateSnapshot(
+                      _snapshot!.copyWith(
+                        voiceGeneration: _snapshot!.voiceGeneration.copyWith(
+                          model: value,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
+                _PrototypeField(
                   label: 'Voice preset',
                   controller: _voicePresetController,
                   hintText: 'alloy · calm',
@@ -781,6 +964,37 @@ class _MediaSpeechSettingsPageState extends State<_MediaSpeechSettingsPage> {
                       _snapshot!.copyWith(
                         voiceGeneration: _snapshot!.voiceGeneration.copyWith(
                           voicePreset: value,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
+                _PrototypeField(
+                  label: 'Auth protocol',
+                  controller: _voiceAuthProtocolController,
+                  hintText: 'bearer',
+                  onChanged: (value) {
+                    _updateSnapshot(
+                      _snapshot!.copyWith(
+                        voiceGeneration: _snapshot!.voiceGeneration.copyWith(
+                          authProtocol: value,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
+                _PrototypeField(
+                  label: 'API key',
+                  controller: _voiceApiKeyController,
+                  hintText: 'sk_...',
+                  obscureText: true,
+                  onChanged: (value) {
+                    _updateSnapshot(
+                      _snapshot!.copyWith(
+                        voiceGeneration: _snapshot!.voiceGeneration.copyWith(
+                          apiKey: value,
                         ),
                       ),
                     );
@@ -883,6 +1097,37 @@ class _MediaSpeechSettingsPageState extends State<_MediaSpeechSettingsPage> {
                       );
                     },
                   ),
+                  const SizedBox(height: 12),
+                  _PrototypeField(
+                    label: 'Auth protocol',
+                    controller: _sttAuthProtocolController,
+                    hintText: 'bearer',
+                    onChanged: (value) {
+                      _updateSnapshot(
+                        _snapshot!.copyWith(
+                          externalStt: _snapshot!.externalStt.copyWith(
+                            authProtocol: value,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  _PrototypeField(
+                    label: 'API key',
+                    controller: _sttApiKeyController,
+                    hintText: 'sk_...',
+                    obscureText: true,
+                    onChanged: (value) {
+                      _updateSnapshot(
+                        _snapshot!.copyWith(
+                          externalStt: _snapshot!.externalStt.copyWith(
+                            apiKey: value,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
                 ] else ...[
                   const SizedBox(height: 12),
                   _MediaSpeechInfoField(
@@ -943,6 +1188,26 @@ class _MediaSpeechSettingsPageState extends State<_MediaSpeechSettingsPage> {
     );
     _syncController(_imageModelController, snapshot.imageGeneration.model);
     _syncController(
+      _imageAuthProtocolController,
+      snapshot.imageGeneration.authProtocol,
+    );
+    _syncController(_imageApiKeyController, snapshot.imageGeneration.apiKey);
+    _syncController(
+      _videoProviderController,
+      snapshot.videoGeneration.provider,
+    );
+    _syncController(_videoBaseUrlController, snapshot.videoGeneration.baseUrl);
+    _syncController(
+      _videoEndpointController,
+      snapshot.videoGeneration.endpoint,
+    );
+    _syncController(_videoModelController, snapshot.videoGeneration.model);
+    _syncController(
+      _videoAuthProtocolController,
+      snapshot.videoGeneration.authProtocol,
+    );
+    _syncController(_videoApiKeyController, snapshot.videoGeneration.apiKey);
+    _syncController(
       _voiceProviderController,
       snapshot.voiceGeneration.provider,
     );
@@ -951,14 +1216,25 @@ class _MediaSpeechSettingsPageState extends State<_MediaSpeechSettingsPage> {
       _voiceEndpointController,
       snapshot.voiceGeneration.endpoint,
     );
+    _syncController(_voiceModelController, snapshot.voiceGeneration.model);
     _syncController(
       _voicePresetController,
       snapshot.voiceGeneration.voicePreset,
     );
+    _syncController(
+      _voiceAuthProtocolController,
+      snapshot.voiceGeneration.authProtocol,
+    );
+    _syncController(_voiceApiKeyController, snapshot.voiceGeneration.apiKey);
     _syncController(_sttProviderController, snapshot.externalStt.provider);
     _syncController(_sttBaseUrlController, snapshot.externalStt.baseUrl);
     _syncController(_sttEndpointController, snapshot.externalStt.endpoint);
     _syncController(_sttModelController, snapshot.externalStt.model);
+    _syncController(
+      _sttAuthProtocolController,
+      snapshot.externalStt.authProtocol,
+    );
+    _syncController(_sttApiKeyController, snapshot.externalStt.apiKey);
   }
 
   void _syncController(TextEditingController controller, String value) {

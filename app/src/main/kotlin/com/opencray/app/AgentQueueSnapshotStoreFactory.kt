@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import android.content.Context
+import com.opencray.app.agent.AgentPathResolver
 import com.opencray.core.orchestrator.SessionQueueSnapshotStore
 import com.opencray.persistence.store.SessionStoreQueueSnapshotStore
 import com.opencray.persistence.store.file.JsonFileSessionStore
@@ -42,5 +43,23 @@ internal class FileBackedAgentQueueSnapshotStoreFactory(
       FileBackedAgentQueueSnapshotStoreFactory(
         runtimeRootDirectory = File(context.filesDir, DIRECTORY_NAME),
       )
+
+    fun fromAgent(
+      context: Context,
+      agentId: String,
+      pathResolver: AgentPathResolver = AgentPathResolver.fromContext(context),
+    ): FileBackedAgentQueueSnapshotStoreFactory = fromAgent(pathResolver, agentId)
+
+    internal fun fromAgent(
+      pathResolver: AgentPathResolver,
+      agentId: String,
+    ): FileBackedAgentQueueSnapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory(
+      runtimeRootDirectory = rootDirectoryForAgent(pathResolver, agentId),
+    )
+
+    internal fun rootDirectoryForAgent(
+      pathResolver: AgentPathResolver,
+      agentId: String,
+    ): File = pathResolver.resolve(agentId).queueSnapshotsRoot.toFile()
   }
 }

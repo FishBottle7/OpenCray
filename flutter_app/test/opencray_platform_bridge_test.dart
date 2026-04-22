@@ -6,6 +6,7 @@ import 'package:opencray/core/bridge/opencray_failure_bridge.dart';
 import 'package:opencray/core/bridge/opencray_host_bridge_bootstrap.dart';
 import 'package:opencray/core/bridge/opencray_platform_bridge.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
+import 'package:opencray/core/models/opencray_chat_draft_attachment.dart';
 import 'package:opencray/core/models/opencray_image_reference.dart';
 import 'package:opencray/core/models/opencray_notification_settings.dart';
 
@@ -1671,6 +1672,63 @@ void main() {
       'actionId': 'suppress',
     });
   });
+
+  test(
+    'platform bridge preserves attachment references when submitting chat messages',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return <String, Object?>{
+              'sessionId': 'session-1',
+              'runId': 'run-1',
+              'taskId': 'task-1',
+              'acceptedAtEpochMs': 123,
+            };
+          });
+
+      await bridge.submitChatMessage(
+        'Reuse prior references',
+        attachments: const <OpenCrayChatDraftAttachment>[
+          OpenCrayChatDraftAttachment(
+            kind: OpenCrayChatDraftAttachmentKind.file,
+            displayName: 'diagram.png',
+            artifactId: 'artifact-diagram-1',
+          ),
+          OpenCrayChatDraftAttachment(
+            kind: OpenCrayChatDraftAttachmentKind.file,
+            displayName: 'report.pdf',
+            chatAttachmentId: 'chat-attachment-1',
+          ),
+        ],
+      );
+
+      expect(capturedCall.method, 'submitChatMessage');
+      expect(capturedCall.arguments, isA<Map<Object?, Object?>>());
+      final arguments = capturedCall.arguments as Map<Object?, Object?>;
+      expect(arguments['text'], 'Reuse prior references');
+      expect(arguments['attachments'], <Object?>[
+        <String, Object?>{
+          'kind': 'file',
+          'displayName': 'diagram.png',
+          'relativePath': '',
+          'artifactId': 'artifact-diagram-1',
+          'mimeType': null,
+          'sizeBytes': null,
+        },
+        <String, Object?>{
+          'kind': 'file',
+          'displayName': 'report.pdf',
+          'relativePath': '',
+          'chatAttachmentId': 'chat-attachment-1',
+          'mimeType': null,
+          'sizeBytes': null,
+        },
+      ]);
+    },
+  );
 
   test(
     'platform bridge forwards native toast requests to the host channel',

@@ -106,8 +106,12 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
     val protocol = resolvedProtocol(request)
     val streamResponses = shouldStreamResponses(request, protocol)
+    val startedAtEpochMs = System.currentTimeMillis()
     streamDebug(
       "provider.execute protocol=$protocol stream=$streamResponses model=${request.route.model} routeStream=${request.route.metadata["stream"]}",
+    )
+    providerFlowDebug(
+      "provider.executeStart ${request.debugSummary(protocol = protocol, streamResponses = streamResponses)}",
     )
     val requestDiagnostics = requestDiagnosticsMetadata(request)
     invalidToolMessageContract(request.request.messages)?.let { validationError ->
@@ -164,7 +168,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         readStream(connection.errorStream)
       }
 
-      when {
+      val providerResult = when {
         responseCode == 429 -> LiteLlmProviderResult.RateLimited(
           retryAfterMs = parseRetryAfterMillis(connection.getHeaderField("Retry-After")),
           errorMessage = extractErrorMessage(responseText).ifBlank { "Provider returned HTTP 429." },
@@ -236,23 +240,139 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
           }
         }
       }
+      providerFlowDebug(
+        "provider.executeEnd ${request.debugSummary(protocol = protocol, streamResponses = streamResponses)} http=$responseCode durationMs=${System.currentTimeMillis() - startedAtEpochMs} outcome=${providerResult.debugOutcome()}",
+      )
+      providerResult
     } catch (timeout: java.net.SocketTimeoutException) {
       streamDebug("provider.timeout protocol=$protocol message=${timeout.message ?: "-"}")
-      LiteLlmProviderResult.Timeout(
+      val providerResult = LiteLlmProviderResult.Timeout(
         errorMessage = timeout.message ?: "Provider request timed out.",
         metadata = requestDiagnostics,
       )
+      providerFlowDebug(
+        "provider.executeEnd ${request.debugSummary(protocol = protocol, streamResponses = streamResponses)} http=- durationMs=${System.currentTimeMillis() - startedAtEpochMs} outcome=${providerResult.debugOutcome()}",
+      )
+      providerResult
     } catch (exception: Exception) {
       streamDebug(
         "provider.exception protocol=$protocol type=${exception::class.java.name} message=${exception.message ?: "-"}",
       )
-      LiteLlmProviderResult.Failure(
+      val providerResult = LiteLlmProviderResult.Failure(
         errorCode = "PROVIDER_TRANSPORT_ERROR",
         errorMessage = exception.message ?: exception::class.java.simpleName,
         metadata = requestDiagnostics + mapOf("exceptionType" to exception::class.java.name),
       )
+      providerFlowDebug(
+        "provider.executeEnd ${request.debugSummary(protocol = protocol, streamResponses = streamResponses)} http=- durationMs=${System.currentTimeMillis() - startedAtEpochMs} outcome=${providerResult.debugOutcome()}",
+      )
+      providerResult
     } finally {
       connection.disconnect()
+    }
+  }
+
+  private fun LiteLlmProviderRequest.debugSummary(
+    protocol: String,
+    streamResponses: Boolean,
+  ): String {
+    val gatewayRequestId = request.requestId
+    val source = request.metadata["source"]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: gatewayRequestId.substringBefore('-')
+    val sessionId = request.metadata["sessionId"]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: "-"
+    val taskId = request.metadata["taskId"]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: "-"
+    val runId = request.metadata["runId"]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: gatewayRequestId
+        .takeIf { candidate -> candidate.startsWith("agent-") && "-turn-" in candidate }
+        ?.removePrefix("agent-")
+        ?.substringBefore("-turn-")
+      ?: "-"
+    val previousResponseId = request.previousResponseId
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.take(24)
+      ?: "-"
+    return buildString {
+      append("requestId=")
+      append(gatewayRequestId)
+      append(" source=")
+      append(source)
+      append(" session=")
+      append(sessionId)
+      append(" run=")
+      append(runId)
+      append(" task=")
+      append(taskId)
+      append(" protocol=")
+      append(protocol)
+      append(" stream=")
+      append(streamResponses)
+      append(" model=")
+      append(route.model)
+      append(" prev=")
+      append(previousResponseId)
+      append(" tools=")
+      append(request.tools.size)
+      append(" builtinTools=")
+      append(request.builtinTools.size)
+    }
+  }
+
+  private fun LiteLlmProviderResult.debugOutcome(): String = when (this) {
+    is LiteLlmProviderResult.Success -> buildString {
+      append("success")
+      providerResponseId?.trim()?.takeIf(String::isNotBlank)?.let { responseId ->
+        append(" providerResponseId=")
+        append(responseId)
+      }
+      finishReason?.trim()?.takeIf(String::isNotBlank)?.let { finish ->
+        append(" finish=")
+        append(finish)
+      }
+      append(" outputChars=")
+      append(outputText.length)
+    }
+
+    is LiteLlmProviderResult.Timeout -> buildString {
+      append("timeout")
+      metadata["statusCode"]?.trim()?.takeIf(String::isNotBlank)?.let { statusCode ->
+        append(" statusCode=")
+        append(statusCode)
+      }
+      append(" detail=")
+      append(errorMessage)
+    }
+
+    is LiteLlmProviderResult.RateLimited -> buildString {
+      append("rate_limited")
+      retryAfterMs?.let { retryAfter ->
+        append(" retryAfterMs=")
+        append(retryAfter)
+      }
+      append(" detail=")
+      append(errorMessage)
+    }
+
+    is LiteLlmProviderResult.Failure -> buildString {
+      append("failure")
+      append(" errorCode=")
+      append(errorCode)
+      providerResponseId?.trim()?.takeIf(String::isNotBlank)?.let { responseId ->
+        append(" providerResponseId=")
+        append(responseId)
+      }
+      append(" detail=")
+      append(errorMessage)
     }
   }
 
@@ -619,19 +739,30 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
   private fun responsesMessageTextSegments(payload: JSONObject): ResponsesTextSegments {
     val output = payload.optJSONArray("output") ?: return ResponsesTextSegments()
+    return responsesTextSegments(
+      buildList {
+        for (index in 0 until output.length()) {
+          output.optJSONObject(index)?.let(::add)
+        }
+      },
+    )
+  }
+
+  private fun responsesTextSegments(
+    items: Iterable<JSONObject>,
+  ): ResponsesTextSegments {
     val commentary = mutableListOf<String>()
     val finalAnswer = mutableListOf<String>()
     val unphased = mutableListOf<String>()
     val ordered = mutableListOf<String>()
-    for (index in 0 until output.length()) {
-      val item = output.optJSONObject(index) ?: continue
+    items.forEach { item ->
       if (item.optString("type") != "message") {
-        continue
+        return@forEach
       }
       val text = extractResponsesMessageText(item)
         .trim()
         .takeIf(String::isNotBlank)
-        ?: continue
+        ?: return@forEach
       ordered += text
       when (item.optString("phase").trim().lowercase()) {
         "commentary" -> commentary += text
@@ -4040,7 +4171,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         if (response != null) {
           mergeResponseObjectIntoPayload(payload, response)
           response.optJSONArray("output")?.let { output ->
-            if (output.length() > 0 || outputItems.isEmpty()) {
+            if (output.length() > 0) {
               replaceResponsesOutputItems(
                 outputItems = outputItems,
                 outputIndexByItemId = outputIndexByItemId,
@@ -4059,7 +4190,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         eventPayload.optJSONObject("response")?.let { response ->
           mergeResponseObjectIntoPayload(payload, response)
           response.optJSONArray("output")?.let { output ->
-            if (output.length() > 0 || outputItems.isEmpty()) {
+            if (output.length() > 0) {
               replaceResponsesOutputItems(
                 outputItems = outputItems,
                 outputIndexByItemId = outputIndexByItemId,
@@ -4113,11 +4244,13 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     explicitIndex: Int?,
     replace: Boolean,
   ): Int {
-    val normalizedItem = JSONObject(item.toString())
-    val resolvedIndex = explicitIndex
-      ?: responsesOutputItemIdentities(normalizedItem)
-        .firstNotNullOfOrNull(outputIndexByItemId::get)
-      ?: nextResponsesOutputIndex(outputItems)
+    val normalizedItem = sanitizeResponsesOutputItem(item)
+    val resolvedIndex = resolveResponsesStoredOutputIndex(
+      outputItems = outputItems,
+      outputIndexByItemId = outputIndexByItemId,
+      item = normalizedItem,
+      explicitIndex = explicitIndex,
+    )
     val storedItem = if (!replace) {
       outputItems[resolvedIndex]?.apply {
         mergeResponsesStreamItemSkeleton(this, normalizedItem)
@@ -4138,6 +4271,24 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       outputIndex = resolvedIndex,
     )
     return resolvedIndex
+  }
+
+  private fun resolveResponsesStoredOutputIndex(
+    outputItems: Map<Int, JSONObject>,
+    outputIndexByItemId: Map<String, Int>,
+    item: JSONObject,
+    explicitIndex: Int?,
+  ): Int {
+    responsesOutputItemIdentities(item)
+      .firstNotNullOfOrNull(outputIndexByItemId::get)
+      ?.let { index -> return index }
+    explicitIndex?.let { index ->
+      if (shouldSplitResponsesOutputIndex(existing = outputItems[index], incoming = item)) {
+        return nextResponsesOutputIndex(outputItems)
+      }
+      return index
+    }
+    return nextResponsesOutputIndex(outputItems)
   }
 
   private fun mergeResponsesStreamItemSkeleton(
@@ -4169,7 +4320,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     outputIndexByItemId.clear()
     for (index in 0 until output.length()) {
       val item = output.optJSONObject(index) ?: continue
-      val copiedItem = JSONObject(item.toString())
+      val copiedItem = sanitizeResponsesOutputItem(item)
       outputItems[index] = copiedItem
       registerResponsesOutputItemIdentities(
         outputIndexByItemId = outputIndexByItemId,
@@ -4195,12 +4346,22 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     outputIndexByItemId: Map<String, Int>,
     activeAssistantMessageIndex: Int?,
   ): Int {
-    eventPayload.optInt("output_index", -1).takeIf { index -> index >= 0 }?.let { return it }
     firstNonBlankString(
       eventPayload.nonBlankString("item_id"),
       eventPayload.nonBlankString("output_item_id"),
     )?.let { itemId ->
       outputIndexByItemId[itemId]?.let { return it }
+    }
+    eventPayload.optInt("output_index", -1).takeIf { index -> index >= 0 }?.let { index ->
+      if (
+        shouldSplitResponsesOutputIndex(
+          existing = outputItems[index],
+          incoming = responsesMessageCandidateFrom(eventPayload),
+        )
+      ) {
+        return nextResponsesOutputIndex(outputItems)
+      }
+      return index
     }
     activeAssistantMessageIndex?.let { return it }
     outputItems.toSortedMap().entries.lastOrNull { (_, item) ->
@@ -4231,7 +4392,6 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     outputItems: Map<Int, JSONObject>,
     outputIndexByItemId: Map<String, Int>,
   ): Int {
-    eventPayload.optInt("output_index", -1).takeIf { index -> index >= 0 }?.let { return it }
     firstNonBlankString(
       eventPayload.nonBlankString("item_id"),
       eventPayload.nonBlankString("output_item_id"),
@@ -4240,7 +4400,107 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     )?.let { itemId ->
       outputIndexByItemId[itemId]?.let { return it }
     }
+    eventPayload.optInt("output_index", -1).takeIf { index -> index >= 0 }?.let { index ->
+      if (
+        shouldSplitResponsesOutputIndex(
+          existing = outputItems[index],
+          incoming = responsesFunctionCallCandidateFrom(eventPayload),
+        )
+      ) {
+        return nextResponsesOutputIndex(outputItems)
+      }
+      return index
+    }
     return nextResponsesOutputIndex(outputItems)
+  }
+
+  private fun responsesMessageCandidateFrom(eventPayload: JSONObject): JSONObject = JSONObject()
+    .put("type", "message")
+    .put("role", "assistant")
+    .apply {
+      firstNonBlankString(
+        eventPayload.nonBlankString("item_id"),
+        eventPayload.nonBlankString("output_item_id"),
+      )?.let { itemId ->
+        put("id", itemId)
+      }
+    }
+
+  private fun responsesFunctionCallCandidateFrom(eventPayload: JSONObject): JSONObject = JSONObject()
+    .put("type", "function_call")
+    .apply {
+      firstNonBlankString(
+        eventPayload.nonBlankString("item_id"),
+        eventPayload.nonBlankString("output_item_id"),
+        eventPayload.nonBlankString("id"),
+      )?.let { itemId ->
+        put("id", itemId)
+      }
+      eventPayload.nonBlankString("call_id")?.let { callId ->
+        put("call_id", callId)
+      }
+      eventPayload.nonBlankString("name")?.let { toolName ->
+        put("name", toolName)
+      }
+    }
+
+  private fun shouldSplitResponsesOutputIndex(
+    existing: JSONObject?,
+    incoming: JSONObject,
+  ): Boolean {
+    val current = existing ?: return false
+    if (responsesItemsShareIdentity(current, incoming)) {
+      return false
+    }
+    val currentType = current.optString("type").trim().lowercase()
+    val incomingType = incoming.optString("type").trim().lowercase()
+    if (currentType.isBlank() || incomingType.isBlank()) {
+      return false
+    }
+    if (currentType != incomingType) {
+      return true
+    }
+    val currentIdentities = responsesOutputItemIdentities(current)
+    val incomingIdentities = responsesOutputItemIdentities(incoming)
+    if (currentIdentities.isNotEmpty() && incomingIdentities.isNotEmpty()) {
+      return true
+    }
+    return currentType == "message" && responsesMessageItemsConflict(current, incoming)
+  }
+
+  private fun responsesItemsShareIdentity(
+    left: JSONObject,
+    right: JSONObject,
+  ): Boolean {
+    val leftIdentities = responsesOutputItemIdentities(left)
+    if (leftIdentities.isEmpty()) {
+      return false
+    }
+    return responsesOutputItemIdentities(right).any(leftIdentities::contains)
+  }
+
+  private fun responsesMessageItemsConflict(
+    existing: JSONObject,
+    incoming: JSONObject,
+  ): Boolean {
+    val existingId = existing.nonBlankString("id")
+    val incomingId = incoming.nonBlankString("id")
+    if (
+      existingId != null &&
+      incomingId != null &&
+      !existingId.equals(incomingId, ignoreCase = true)
+    ) {
+      return true
+    }
+    val existingPhase = existing.nonBlankString("phase")
+      ?.trim()
+      ?.lowercase()
+    val incomingPhase = incoming.nonBlankString("phase")
+      ?.trim()
+      ?.lowercase()
+    return existingPhase != null &&
+      incomingPhase != null &&
+      existingPhase != incomingPhase
   }
 
   private fun ensureResponsesFunctionCallItem(
@@ -4402,18 +4662,15 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
   private fun responsesVisibleText(
     outputItems: Map<Int, JSONObject>,
-  ): String = outputItems.toSortedMap().values
-    .mapNotNull { item ->
-      if (!isResponsesAssistantMessage(item)) {
-        null
-      } else {
-        extractResponsesMessageText(item)
-          .trim()
-          .takeIf(String::isNotBlank)
-      }
-    }
-    .joinToString(separator = "\n")
-    .trim()
+  ): String {
+    val textSegments = responsesTextSegments(outputItems.toSortedMap().values)
+    return firstNonBlankString(
+      textSegments.finalAnswer.joinToString(separator = "\n").trim().takeIf(String::isNotBlank),
+      textSegments.unphased.joinToString(separator = "\n").trim().takeIf(String::isNotBlank),
+      textSegments.commentary.lastOrNull()?.trim()?.takeIf(String::isNotBlank),
+      textSegments.ordered.lastOrNull()?.trim()?.takeIf(String::isNotBlank),
+    ).orEmpty()
+  }
 
   private fun backfillResponsesVisibleTextOutput(
     outputItems: MutableMap<Int, JSONObject>,
@@ -4447,6 +4704,230 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       ?.let(::add)
   }
 
+  private fun sanitizeResponsesOutputItem(
+    item: JSONObject,
+  ): JSONObject = when (item.optString("type").trim().lowercase()) {
+    "message" -> sanitizeResponsesMessageItem(item)
+    "function_call" -> sanitizeResponsesFunctionCallItem(item)
+    "web_search_call" -> sanitizeResponsesWebSearchCallItem(item)
+    "reasoning" -> sanitizeResponsesReasoningItem(item)
+    else -> sanitizeResponsesGenericItem(item)
+  }
+
+  private fun sanitizeResponsesMessageItem(
+    item: JSONObject,
+  ): JSONObject = JSONObject().apply {
+    copyJsonScalarFieldIfPresent(item, this, "id")
+    copyJsonScalarFieldIfPresent(item, this, "type")
+    copyJsonScalarFieldIfPresent(item, this, "role")
+    copyJsonScalarFieldIfPresent(item, this, "status")
+    copyJsonScalarFieldIfPresent(item, this, "phase")
+    when (val content = item.opt("content")) {
+      is String -> put("content", content)
+      is JSONArray -> sanitizeResponsesContentArray(content)?.let { sanitized -> put("content", sanitized) }
+      is JSONObject -> sanitizeResponsesContentPart(content)?.let { sanitized ->
+        put("content", JSONArray().put(sanitized))
+      }
+    }
+    if (!has("content")) {
+      copyJsonScalarFieldIfPresent(item, this, "text")
+    }
+  }
+
+  private fun sanitizeResponsesFunctionCallItem(
+    item: JSONObject,
+  ): JSONObject = JSONObject().apply {
+    copyJsonScalarFieldIfPresent(item, this, "id")
+    copyJsonScalarFieldIfPresent(item, this, "type")
+    copyJsonScalarFieldIfPresent(item, this, "call_id")
+    copyJsonScalarFieldIfPresent(item, this, "name")
+    copyJsonScalarFieldIfPresent(item, this, "arguments")
+    copyJsonScalarFieldIfPresent(item, this, "status")
+  }
+
+  private fun sanitizeResponsesWebSearchCallItem(
+    item: JSONObject,
+  ): JSONObject = JSONObject().apply {
+    copyJsonScalarFieldIfPresent(item, this, "id")
+    copyJsonScalarFieldIfPresent(item, this, "type")
+    copyJsonScalarFieldIfPresent(item, this, "call_id")
+    copyJsonScalarFieldIfPresent(item, this, "status")
+    copyJsonScalarFieldIfPresent(item, this, "action_type")
+    copyJsonScalarFieldIfPresent(item, this, "query")
+    copyJsonScalarFieldIfPresent(item, this, "url")
+    copyJsonScalarFieldIfPresent(item, this, "page_url")
+    copyJsonScalarFieldIfPresent(item, this, "text")
+    copyJsonScalarFieldIfPresent(item, this, "pattern")
+    sanitizeJsonStringArray(item.optJSONArray("domains"))?.let { domains ->
+      put("domains", domains)
+    }
+    sanitizeResponsesWebSearchAction(item.optJSONObject("action"))?.let { action ->
+      put("action", action)
+    }
+    sanitizeResponsesWebSearchSources(item.optJSONArray("sources"))?.let { sources ->
+      put("sources", sources)
+    }
+  }
+
+  private fun sanitizeResponsesReasoningItem(
+    item: JSONObject,
+  ): JSONObject = JSONObject().apply {
+    copyJsonScalarFieldIfPresent(item, this, "id")
+    copyJsonScalarFieldIfPresent(item, this, "type")
+    copyJsonScalarFieldIfPresent(item, this, "status")
+    copyJsonScalarFieldIfPresent(item, this, "text")
+    sanitizeResponsesTextPayload(item.opt("summary"))?.let { summary ->
+      put("summary", summary)
+    }
+    sanitizeResponsesTextPayload(item.opt("content"))?.let { content ->
+      put("content", content)
+    }
+  }
+
+  private fun sanitizeResponsesGenericItem(
+    item: JSONObject,
+  ): JSONObject = JSONObject().apply {
+    copyJsonScalarFieldIfPresent(item, this, "id")
+    copyJsonScalarFieldIfPresent(item, this, "type")
+    copyJsonScalarFieldIfPresent(item, this, "call_id")
+    copyJsonScalarFieldIfPresent(item, this, "status")
+    copyJsonScalarFieldIfPresent(item, this, "name")
+    copyJsonScalarFieldIfPresent(item, this, "phase")
+    copyJsonScalarFieldIfPresent(item, this, "text")
+    sanitizeResponsesTextPayload(item.opt("content"))?.let { content ->
+      put("content", content)
+    }
+    sanitizeResponsesTextPayload(item.opt("summary"))?.let { summary ->
+      put("summary", summary)
+    }
+  }
+
+  private fun sanitizeResponsesTextPayload(
+    value: Any?,
+  ): Any? = when (value) {
+    null,
+    JSONObject.NULL,
+    -> null
+    is String -> value
+    is JSONObject -> sanitizeResponsesContentPart(value)
+    is JSONArray -> sanitizeResponsesContentArray(value)
+    else -> null
+  }
+
+  private fun sanitizeResponsesContentArray(
+    content: JSONArray,
+  ): JSONArray? {
+    val sanitized = JSONArray()
+    for (index in 0 until content.length()) {
+      when (val item = content.opt(index)) {
+        is String -> sanitized.put(item)
+        is JSONObject -> sanitizeResponsesContentPart(item)?.let(sanitized::put)
+      }
+    }
+    return sanitized.takeIf { it.length() > 0 }
+  }
+
+  private fun sanitizeResponsesContentPart(
+    content: JSONObject,
+  ): JSONObject? = JSONObject().apply {
+    copyJsonScalarFieldIfPresent(content, this, "type")
+    copyJsonScalarFieldIfPresent(content, this, "text")
+    copyJsonScalarFieldIfPresent(content, this, "output_text")
+    copyJsonScalarFieldIfPresent(content, this, "summary_text")
+    copyJsonScalarFieldIfPresent(content, this, "refusal")
+    copyJsonScalarFieldIfPresent(content, this, "content")
+    copyJsonScalarFieldIfPresent(content, this, "value")
+    sanitizeResponsesAnnotations(content.optJSONArray("annotations"))?.let { annotations ->
+      put("annotations", annotations)
+    }
+  }.takeIf { sanitized ->
+    sanitized.length() > 0
+  }
+
+  private fun sanitizeResponsesAnnotations(
+    annotations: JSONArray?,
+  ): JSONArray? {
+    if (annotations == null || annotations.length() == 0) {
+      return null
+    }
+    val sanitized = JSONArray()
+    for (index in 0 until annotations.length()) {
+      val annotation = annotations.optJSONObject(index) ?: continue
+      val normalized = JSONObject().apply {
+        copyJsonScalarFieldIfPresent(annotation, this, "type")
+        copyJsonScalarFieldIfPresent(annotation, this, "title")
+        copyJsonScalarFieldIfPresent(annotation, this, "url")
+        copyJsonScalarFieldIfPresent(annotation, this, "start_index")
+        copyJsonScalarFieldIfPresent(annotation, this, "end_index")
+      }
+      if (normalized.length() > 0) {
+        sanitized.put(normalized)
+      }
+    }
+    return sanitized.takeIf { it.length() > 0 }
+  }
+
+  private fun sanitizeResponsesWebSearchAction(
+    action: JSONObject?,
+  ): JSONObject? {
+    if (action == null) {
+      return null
+    }
+    return JSONObject().apply {
+      copyJsonScalarFieldIfPresent(action, this, "type")
+      copyJsonScalarFieldIfPresent(action, this, "query")
+      copyJsonScalarFieldIfPresent(action, this, "url")
+      copyJsonScalarFieldIfPresent(action, this, "page_url")
+      copyJsonScalarFieldIfPresent(action, this, "text")
+      copyJsonScalarFieldIfPresent(action, this, "pattern")
+      sanitizeJsonStringArray(action.optJSONArray("queries"))?.let { queries ->
+        put("queries", queries)
+      }
+      sanitizeJsonStringArray(action.optJSONArray("domains"))?.let { domains ->
+        put("domains", domains)
+      }
+      sanitizeResponsesWebSearchSources(action.optJSONArray("sources"))?.let { sources ->
+        put("sources", sources)
+      }
+    }.takeIf { sanitized -> sanitized.length() > 0 }
+  }
+
+  private fun sanitizeResponsesWebSearchSources(
+    sources: JSONArray?,
+  ): JSONArray? {
+    if (sources == null || sources.length() == 0) {
+      return null
+    }
+    val sanitized = JSONArray()
+    for (index in 0 until sources.length()) {
+      val source = sources.optJSONObject(index) ?: continue
+      val normalized = JSONObject().apply {
+        copyJsonScalarFieldIfPresent(source, this, "title")
+        copyJsonScalarFieldIfPresent(source, this, "url")
+      }
+      if (normalized.length() > 0) {
+        sanitized.put(normalized)
+      }
+    }
+    return sanitized.takeIf { it.length() > 0 }
+  }
+
+  private fun sanitizeJsonStringArray(
+    source: JSONArray?,
+  ): JSONArray? {
+    if (source == null || source.length() == 0) {
+      return null
+    }
+    val sanitized = JSONArray()
+    for (index in 0 until source.length()) {
+      val value = source.optString(index).trim()
+      if (value.isNotBlank()) {
+        sanitized.put(value)
+      }
+    }
+    return sanitized.takeIf { it.length() > 0 }
+  }
+
   private fun nextResponsesOutputIndex(
     outputItems: Map<Int, JSONObject>,
   ): Int = (outputItems.keys.maxOrNull() ?: -1) + 1
@@ -4459,6 +4940,22 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     val delta = value?.takeIf(String::isNotEmpty) ?: return
     val existing = target.optString(key)
     target.put(key, existing + delta)
+  }
+
+  private fun copyJsonScalarFieldIfPresent(
+    source: JSONObject,
+    target: JSONObject,
+    key: String,
+  ) {
+    if (!source.has(key)) {
+      return
+    }
+    when (val value = source.opt(key)) {
+      is String,
+      is Number,
+      is Boolean,
+      -> target.put(key, value)
+    }
   }
 
   private fun copyJsonFieldIfPresent(
@@ -4639,24 +5136,13 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   private fun extractStructuredAssistantDraftText(rawText: String): String? {
     val lowercase = rawText.lowercase()
     val hasExplicitTypeField = "\"type\"" in lowercase || "\"decision\"" in lowercase
-    if (
-      "\"tool_name\"" in lowercase ||
-      "\"tool_calls\"" in lowercase ||
-      "\"function_call\"" in lowercase ||
-      "\"call_id\"" in lowercase ||
-      "\"arguments\"" in lowercase ||
-      "\"is_task_bearing_request\"" in lowercase ||
-      "\"user_affect\"" in lowercase ||
-      "\"user_invites_playfulness\"" in lowercase ||
-      "\"user_requests_relational_support\"" in lowercase ||
-      "\"clarification_needed\"" in lowercase
-    ) {
+    if ("\"actions\"" in lowercase) {
+      extractStructuredActionsDraftText(rawText)?.let { return it }
+    }
+    if (containsStructuredAssistantExecutionSignal(lowercase)) {
       return null
     }
-    val actionType = firstNonBlankString(
-      partialJsonStringFieldValue(rawText, "type")?.trim()?.lowercase()?.takeIf(String::isNotBlank),
-      partialJsonStringFieldValue(rawText, "decision")?.trim()?.lowercase()?.takeIf(String::isNotBlank),
-    )
+    val actionType = structuredAssistantDraftActionType(rawText)
     return when (actionType) {
       "final",
       "answer",
@@ -4665,6 +5151,15 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         partialJsonStringFieldValue(rawText, "text"),
         partialJsonStringFieldValue(rawText, "message"),
         partialJsonStringFieldValue(rawText, "summary"),
+      )?.trim()?.takeIf(String::isNotBlank)
+
+      "progress",
+      "commentary",
+      "status",
+      -> firstNonBlankString(
+        partialJsonStringFieldValue(rawText, "text"),
+        partialJsonStringFieldValue(rawText, "summary"),
+        partialJsonStringFieldValue(rawText, "message"),
       )?.trim()?.takeIf(String::isNotBlank)
 
       null,
@@ -4679,6 +5174,209 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
       else -> null
     }
+  }
+
+  private fun extractStructuredActionsDraftText(rawText: String): String? {
+    val actions = partialJsonObjectFieldArrayElements(rawText, "actions")
+    if (actions.isEmpty()) {
+      return null
+    }
+    val hasExecutionAction = actions.any(::structuredAssistantActionSuppressesFinalDraft)
+    return actions
+      .mapNotNull { rawAction ->
+        val visibleText = extractStructuredAssistantDraftTextFromAction(rawAction) ?: return@mapNotNull null
+        if (hasExecutionAction && isStructuredAssistantFinalAction(rawAction)) {
+          return@mapNotNull null
+        }
+        visibleText
+      }
+      .lastOrNull()
+  }
+
+  private fun extractStructuredAssistantDraftTextFromAction(rawAction: String): String? {
+    val actionType = structuredAssistantDraftActionType(rawAction)
+    return when (actionType) {
+      "final",
+      "answer",
+      -> firstNonBlankString(
+        partialJsonStringFieldValue(rawAction, "answer"),
+        partialJsonStringFieldValue(rawAction, "text"),
+        partialJsonStringFieldValue(rawAction, "message"),
+        partialJsonStringFieldValue(rawAction, "summary"),
+      )?.trim()?.takeIf(String::isNotBlank)
+
+      "progress",
+      "commentary",
+      "status",
+      -> firstNonBlankString(
+        partialJsonStringFieldValue(rawAction, "text"),
+        partialJsonStringFieldValue(rawAction, "summary"),
+        partialJsonStringFieldValue(rawAction, "message"),
+      )?.trim()?.takeIf(String::isNotBlank)
+
+      else -> null
+    }
+  }
+
+  private fun structuredAssistantDraftActionType(rawText: String): String? = firstNonBlankString(
+    partialJsonStringFieldValue(rawText, "type")?.trim()?.lowercase()?.takeIf(String::isNotBlank),
+    partialJsonStringFieldValue(rawText, "decision")?.trim()?.lowercase()?.takeIf(String::isNotBlank),
+  )
+
+  private fun isStructuredAssistantFinalAction(rawText: String): Boolean =
+    structuredAssistantDraftActionType(rawText) in setOf("final", "answer")
+
+  private fun structuredAssistantActionSuppressesFinalDraft(rawAction: String): Boolean {
+    val lowercase = rawAction.lowercase()
+    if (containsStructuredAssistantExecutionSignal(lowercase)) {
+      return true
+    }
+    return when (structuredAssistantDraftActionType(rawAction)) {
+      null,
+      "",
+      "final",
+      "answer",
+      "progress",
+      "commentary",
+      "status",
+      -> false
+
+      else -> true
+    }
+  }
+
+  private fun containsStructuredAssistantExecutionSignal(lowercase: String): Boolean =
+    containsStructuredAssistantToolSignal(lowercase) ||
+      "\"is_task_bearing_request\"" in lowercase ||
+      "\"user_affect\"" in lowercase ||
+      "\"user_invites_playfulness\"" in lowercase ||
+      "\"user_requests_relational_support\"" in lowercase ||
+      "\"clarification_needed\"" in lowercase
+
+  private fun containsStructuredAssistantToolSignal(lowercase: String): Boolean =
+    "\"tool_name\"" in lowercase ||
+      "\"tool_calls\"" in lowercase ||
+      "\"function_call\"" in lowercase ||
+      "\"call_id\"" in lowercase ||
+      "\"arguments\"" in lowercase
+
+  private fun partialJsonObjectFieldArrayElements(
+    rawText: String,
+    fieldName: String,
+  ): List<String> {
+    val fieldPattern = "\"$fieldName\""
+    var searchFrom = 0
+    var keyIndex = -1
+    while (searchFrom < rawText.length) {
+      val candidateIndex = rawText.indexOf(fieldPattern, searchFrom)
+      if (candidateIndex < 0) {
+        return emptyList()
+      }
+      if (isTopLevelPartialJsonObjectKey(rawText = rawText, keyIndex = candidateIndex)) {
+        keyIndex = candidateIndex
+        break
+      }
+      searchFrom = candidateIndex + fieldPattern.length
+    }
+    var index = keyIndex + fieldPattern.length
+    while (index < rawText.length && rawText[index].isWhitespace()) {
+      index += 1
+    }
+    if (index >= rawText.length || rawText[index] != ':') {
+      return emptyList()
+    }
+    index += 1
+    while (index < rawText.length && rawText[index].isWhitespace()) {
+      index += 1
+    }
+    if (index >= rawText.length || rawText[index] != '[') {
+      return emptyList()
+    }
+    index += 1
+    val elements = mutableListOf<String>()
+    var objectStart = -1
+    var objectDepth = 0
+    var inString = false
+    var escaped = false
+    while (index < rawText.length) {
+      val character = rawText[index]
+      if (inString) {
+        if (escaped) {
+          escaped = false
+        } else {
+          when (character) {
+            '\\' -> escaped = true
+            '"' -> inString = false
+          }
+        }
+        index += 1
+        continue
+      }
+      when (character) {
+        '"' -> inString = true
+        '{' -> {
+          if (objectDepth == 0) {
+            objectStart = index
+          }
+          objectDepth += 1
+        }
+        '}' -> {
+          if (objectDepth > 0) {
+            objectDepth -= 1
+            if (objectDepth == 0 && objectStart >= 0) {
+              elements += rawText.substring(objectStart, index + 1)
+              objectStart = -1
+            }
+          }
+        }
+        ']' -> {
+          if (objectDepth == 0) {
+            return elements
+          }
+        }
+      }
+      index += 1
+    }
+    if (objectStart >= 0) {
+      elements += rawText.substring(objectStart)
+    }
+    return elements
+  }
+
+  private fun isTopLevelPartialJsonObjectKey(
+    rawText: String,
+    keyIndex: Int,
+  ): Boolean {
+    var objectDepth = 0
+    var arrayDepth = 0
+    var inString = false
+    var escaped = false
+    for (index in 0 until keyIndex) {
+      val character = rawText[index]
+      if (inString) {
+        if (escaped) {
+          escaped = false
+        } else {
+          when (character) {
+            '\\' -> escaped = true
+            '"' -> inString = false
+          }
+        }
+        continue
+      }
+      when (character) {
+        '"' -> inString = true
+        '{' -> objectDepth += 1
+        '}' -> if (objectDepth > 0) {
+          objectDepth -= 1
+        }
+        '[' -> arrayDepth += 1
+        ']' -> if (arrayDepth > 0) {
+          arrayDepth -= 1
+        }
+      }
+    }
+    return objectDepth == 1 && arrayDepth == 0 && !inString
   }
 
   private fun partialJsonStringFieldValue(
@@ -4836,4 +5534,10 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   private fun streamDebug(message: String) {
     runCatching { Log.d(STREAM_DEBUG_TAG, message) }
   }
+}
+
+private const val PROVIDER_FLOW_DEBUG_TAG: String = "OpenCrayDiag"
+
+private fun providerFlowDebug(message: String) {
+  runCatching { Log.d(PROVIDER_FLOW_DEBUG_TAG, message) }
 }

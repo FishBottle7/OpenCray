@@ -209,6 +209,7 @@ data class OpenCrayMemoryRetrievalEvent(
   override val turn: Int,
   val toolName: String,
   val operation: String,
+  val surface: String? = null,
   val query: String? = null,
   val queryTerms: List<String> = emptyList(),
   val resultCount: Int? = null,

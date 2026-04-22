@@ -3,6 +3,7 @@ package com.opencray.app
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import com.opencray.app.facade.llm.EmptyLlmConfigFacade
 import com.opencray.app.facade.llm.LlmConfigFacade
 import com.opencray.app.facade.llm.LlmConfigSnapshot
@@ -134,6 +135,7 @@ import com.opencray.runtime.memory.MemoryOperator
 import com.opencray.runtime.memory.MemoryOperatorAction
 import com.opencray.runtime.memory.MemoryOperatorRequest
 import com.opencray.runtime.memory.MemoryRecordExtensionKeys
+import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.subagent.SubAgentApprovalResume
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
 import com.opencray.runtime.subagent.SubAgentContinuationKind
@@ -154,6 +156,8 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.ArrayDeque
 import java.util.Locale
+import java.util.Timer
+import java.util.TimerTask
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
@@ -170,6 +174,13 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import org.opencray.app.R
+
+private const val HOST_CHAT_DEBUG_TAG: String = "OpenCrayDiag"
+private const val HOST_RUNTIME_LIVE_REFRESH_INTERVAL_MS: Long = 400L
+
+private fun hostChatDebug(message: String) {
+  runCatching { Log.d(HOST_CHAT_DEBUG_TAG, message) }
+}
 
 internal class OpenCrayHostRuntime private constructor(
   private val appContext: Context?,
@@ -233,6 +244,7 @@ internal class OpenCrayHostRuntime private constructor(
   private val chatUnreadMessageState: ChatUnreadMessageState = ChatUnreadMessageState(),
   private val chatPendingApprovalState: ChatPendingApprovalState = ChatPendingApprovalState(),
   private val chatRuntimeEventState: ChatRuntimeEventState = ChatRuntimeEventState(),
+  private val liveChatRuntimeRefreshIntervalMs: Long = HOST_RUNTIME_LIVE_REFRESH_INTERVAL_MS,
 ) : OpenCrayLocalHostGateway,
   OpenCrayShellGateway,
   OpenCrayChatRuntimeGateway,
@@ -414,6 +426,7 @@ internal class OpenCrayHostRuntime private constructor(
   private val chatListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val chatRuntimeListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val liveAssistantDraftEventListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  private var liveChatRuntimeRefreshTimer: Timer? = null
   private val onDeviceLlmWarmupController: OnDeviceLlmWarmupController =
     providedOnDeviceLlmWarmupController ?: defaultOnDeviceLlmWarmupController()
   private val voiceMetadataBackfillInFlight = ConcurrentHashMap.newKeySet<String>()
@@ -590,6 +603,11 @@ internal class OpenCrayHostRuntime private constructor(
               return@synchronized EventEmissionDecision(shouldEmit = false)
             }
             recordRuntimeEventLocked(sessionId = sessionId, event = event)
+            maybePersistAssistantPhaseChatMessageLocked(
+              sessionId = sessionId,
+              task = task,
+              event = event,
+            )
             maybePersistGeneralResumeCheckpointLocked(
               sessionId = sessionId,
               task = task,
@@ -634,12 +652,21 @@ internal class OpenCrayHostRuntime private constructor(
               ?.trim()
               ?.takeIf(String::isNotBlank)
               ?: return@synchronized null
+            recordRuntimeEventLocked(
+              sessionId = sessionId,
+              event = assistantDraftRuntimeEvent(
+                task = task,
+                text = text,
+                emittedAtEpochMs = emittedAtEpochMs,
+              ),
+            )
             liveAssistantDraftsBySession[sessionId]
               ?.get(pendingMessageId)
               ?.toLiveAssistantDraftEventPayload(sessionId = sessionId, cleared = false)
           }
           if (draftEventPayload != null) {
             emitLiveAssistantDraftEvent(draftEventPayload)
+            emitChatRuntimeSnapshot()
           }
         }
 
@@ -656,14 +683,18 @@ internal class OpenCrayHostRuntime private constructor(
               ?.trim()
               ?.takeIf(String::isNotBlank)
               ?: return@synchronized null
-            if (
-              !clearAssistantDraftLocked(
-                sessionId = sessionId,
-                pendingMessageId = pendingMessageId,
-              )
-            ) {
-              return@synchronized null
-            }
+            clearAssistantDraftLocked(
+              sessionId = sessionId,
+              pendingMessageId = pendingMessageId,
+            )
+            recordRuntimeEventLocked(
+              sessionId = sessionId,
+              event = assistantDraftRuntimeEvent(
+                task = task,
+                text = "",
+                emittedAtEpochMs = emittedAtEpochMs,
+              ),
+            )
             liveAssistantDraftEventPayload(
               sessionId = sessionId,
               runId = runIdFor(task),
@@ -676,6 +707,7 @@ internal class OpenCrayHostRuntime private constructor(
           }
           if (draftEventPayload != null) {
             emitLiveAssistantDraftEvent(draftEventPayload)
+            emitChatRuntimeSnapshot()
           }
         }
 
@@ -804,6 +836,7 @@ internal class OpenCrayHostRuntime private constructor(
     payload: Map<String, Any?>,
   ): Map<String, Any?> {
     val imageGeneration = payload["imageGeneration"] as? Map<String, Any?> ?: emptyMap()
+    val videoGeneration = payload["videoGeneration"] as? Map<String, Any?> ?: emptyMap()
     val voiceGeneration = payload["voiceGeneration"] as? Map<String, Any?> ?: emptyMap()
     val externalStt = payload["externalStt"] as? Map<String, Any?> ?: emptyMap()
     val onDeviceModel = payload["onDeviceModel"] as? Map<String, Any?> ?: emptyMap()
@@ -815,12 +848,25 @@ internal class OpenCrayHostRuntime private constructor(
             baseUrl = imageGeneration["baseUrl"]?.toString().orEmpty(),
             endpoint = imageGeneration["endpoint"]?.toString().orEmpty(),
             model = imageGeneration["model"]?.toString().orEmpty(),
+            authProtocol = imageGeneration["authProtocol"]?.toString().orEmpty(),
+            apiKey = imageGeneration["apiKey"]?.toString().orEmpty(),
+          ),
+          videoGeneration = SaveMediaProviderRequest(
+            provider = videoGeneration["provider"]?.toString().orEmpty(),
+            baseUrl = videoGeneration["baseUrl"]?.toString().orEmpty(),
+            endpoint = videoGeneration["endpoint"]?.toString().orEmpty(),
+            model = videoGeneration["model"]?.toString().orEmpty(),
+            authProtocol = videoGeneration["authProtocol"]?.toString().orEmpty(),
+            apiKey = videoGeneration["apiKey"]?.toString().orEmpty(),
           ),
           voiceGeneration = SaveVoiceProviderRequest(
             provider = voiceGeneration["provider"]?.toString().orEmpty(),
             baseUrl = voiceGeneration["baseUrl"]?.toString().orEmpty(),
             endpoint = voiceGeneration["endpoint"]?.toString().orEmpty(),
+            model = voiceGeneration["model"]?.toString().orEmpty(),
             voicePreset = voiceGeneration["voicePreset"]?.toString().orEmpty(),
+            authProtocol = voiceGeneration["authProtocol"]?.toString().orEmpty(),
+            apiKey = voiceGeneration["apiKey"]?.toString().orEmpty(),
           ),
           sttRouteId = payload["sttRouteId"]?.toString().orEmpty(),
           externalStt = SaveMediaProviderRequest(
@@ -828,6 +874,8 @@ internal class OpenCrayHostRuntime private constructor(
             baseUrl = externalStt["baseUrl"]?.toString().orEmpty(),
             endpoint = externalStt["endpoint"]?.toString().orEmpty(),
             model = externalStt["model"]?.toString().orEmpty(),
+            authProtocol = externalStt["authProtocol"]?.toString().orEmpty(),
+            apiKey = externalStt["apiKey"]?.toString().orEmpty(),
           ),
           onDeviceModel = SaveOnDeviceSttRequest(
             modelPackage = onDeviceModel["modelPackage"]?.toString().orEmpty(),
@@ -1646,6 +1694,14 @@ internal class OpenCrayHostRuntime private constructor(
         strings.chatSummaryRestored
       }
     }
+    val runtimeActivity = runtimeActivitySnapshotMap(
+      sessionId = activeSession.sessionId,
+      displayedRuns = displayedRuns,
+      recentEvents = recentEvents,
+    )
+    val runtimeActivityUpdatedAtEpochMs = (runtimeActivity["updatedAtEpochMs"] as? Number)
+      ?.toLong()
+      ?: 0L
     return ChatSnapshotBuildResult(
       snapshot = mapOf(
       "screenTitle" to strings.chatScreenTitle,
@@ -1715,10 +1771,10 @@ internal class OpenCrayHostRuntime private constructor(
           )
         },
       ),
-      "runtimeActivity" to runtimeActivitySnapshotMap(
-        sessionId = activeSession.sessionId,
-        displayedRuns = displayedRuns,
-        recentEvents = recentEvents,
+      "runtimeActivity" to runtimeActivity,
+      "updatedAtEpochMs" to maxOf(
+        activeSession.updatedAtEpochMs,
+        runtimeActivityUpdatedAtEpochMs,
       ),
       "isInputEnabled" to !warmupState.blocksChatInput(),
     ),
@@ -1769,6 +1825,7 @@ internal class OpenCrayHostRuntime private constructor(
       listeners = chatRuntimeListeners,
       initialPayload = loadChatRuntimeSnapshot(),
       listener = listener,
+      onListenerSetChanged = ::syncLiveChatRuntimeRefreshLoop,
     )
 
   override fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit {
@@ -2526,12 +2583,26 @@ internal class OpenCrayHostRuntime private constructor(
   )
 
   private fun recordRuntimeEventLocked(sessionId: String, event: OpenCrayAgentRunEvent) {
+    recordRuntimeEventLocked(
+      sessionId = sessionId,
+      event = event,
+      persistToJournal = true,
+    )
+  }
+
+  private fun recordRuntimeEventLocked(
+    sessionId: String,
+    event: OpenCrayAgentRunEvent,
+    persistToJournal: Boolean,
+  ) {
     chatRuntimeEventState.append(
       sessionId = sessionId,
       event = event,
       maxHistory = MAX_RUNTIME_EVENT_HISTORY,
     )
-    runEventJournalStoreForSession(sessionId).append(event)
+    if (persistToJournal) {
+      runEventJournalStoreForSession(sessionId).append(event)
+    }
     maybeClearPromptCheckpointAfterRuntimeEventLocked(sessionId = sessionId, event = event)
   }
 
@@ -2628,6 +2699,37 @@ internal class OpenCrayHostRuntime private constructor(
       ?: task.input
   }
 
+  private fun maybePersistAssistantPhaseChatMessageLocked(
+    sessionId: String,
+    task: AgentTask,
+    event: OpenCrayAgentRunEvent,
+  ) {
+    val assistantPhaseEvent = event as? OpenCrayAssistantPhaseEvent ?: return
+    if (assistantPhaseEvent.isFinal || hideAssistantPhaseFromChatBubble(assistantPhaseEvent)) {
+      return
+    }
+    val pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return
+    val run = runtimeSession(sessionId).findRun(assistantPhaseEvent.runId) ?: return
+    if (!eventMatchesRunExecution(run = run, event = assistantPhaseEvent)) {
+      return
+    }
+    val projectedText = projectedRuntimeMessageText(event = assistantPhaseEvent)
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return
+    chatSessionStore.insertMessageBefore(
+      sessionId = sessionId,
+      anchorMessageId = pendingMessageId,
+      role = ChatTranscriptRole.ASSISTANT,
+      text = projectedText,
+      messageId = runtimeProjectedMessageId(assistantPhaseEvent),
+      createdAtEpochMs = assistantPhaseEvent.emittedAtEpochMs.takeIf { emittedAt -> emittedAt > 0L },
+    )
+  }
+
   private fun updateAssistantDraftLocked(
     sessionId: String,
     task: AgentTask,
@@ -2674,20 +2776,58 @@ internal class OpenCrayHostRuntime private constructor(
   private fun liveAssistantDraftsForSnapshot(
     sessionId: String,
     displayedRuns: List<AgentRunSnapshot>,
+    recentEvents: List<OpenCrayAgentRunEvent>,
   ): List<LiveAssistantDraftSnapshot> {
     val sessionDrafts = liveAssistantDraftsBySession[sessionId].orEmpty()
-    if (sessionDrafts.isEmpty()) {
+    val activeRuns = displayedRuns.filter(AgentRunSnapshot::isActive)
+    if (activeRuns.isEmpty()) {
       return emptyList()
     }
-    val visiblePendingMessageIds = displayedRuns
-      .asSequence()
-      .filter(AgentRunSnapshot::isActive)
-      .mapNotNull { run -> run.pendingMessageId?.trim()?.takeIf(String::isNotBlank) }
-      .toSet()
-    if (visiblePendingMessageIds.isEmpty()) {
-      return emptyList()
+    return activeRuns.mapNotNull { run ->
+      val pendingMessageId = run.pendingMessageId
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: return@mapNotNull null
+      sessionDrafts[pendingMessageId]
+        ?: persistedAssistantDraftForRun(
+          run = run,
+          pendingMessageId = pendingMessageId,
+          recentEvents = recentEvents,
+        )
     }
-    return visiblePendingMessageIds.mapNotNull(sessionDrafts::get)
+  }
+
+  private fun persistedAssistantDraftForRun(
+    run: AgentRunSnapshot,
+    pendingMessageId: String,
+    recentEvents: List<OpenCrayAgentRunEvent>,
+  ): LiveAssistantDraftSnapshot? {
+    val runEvents = recentEvents.filter { event ->
+      (event.runId == run.runId || event.taskId == run.taskId) &&
+        eventMatchesRunExecution(run = run, event = event)
+    }
+    val latestDraftEvent = runEvents
+      .filterIsInstance<OpenCrayAssistantPhaseEvent>()
+      .lastOrNull(::isPersistedDraftAssistantPhase)
+      ?: return null
+    val newerVisibleEventExists = runEvents.any { event ->
+      event.emittedAtEpochMs > latestDraftEvent.emittedAtEpochMs &&
+        (
+          event !is OpenCrayAssistantPhaseEvent ||
+            !isPersistedDraftAssistantPhase(event)
+          )
+    }
+    if (newerVisibleEventExists) {
+      return null
+    }
+    val text = latestDraftEvent.text.trim().takeIf(String::isNotBlank) ?: return null
+    return LiveAssistantDraftSnapshot(
+      runId = run.runId,
+      taskId = run.taskId,
+      pendingMessageId = pendingMessageId,
+      text = text,
+      updatedAtEpochMs = latestDraftEvent.emittedAtEpochMs,
+    )
   }
 
   private fun runtimeActivitySnapshotLocked(sessionId: String): Map<String, Any?> {
@@ -2728,9 +2868,17 @@ internal class OpenCrayHostRuntime private constructor(
     val liveAssistantDrafts = liveAssistantDraftsForSnapshot(
       sessionId = sessionId,
       displayedRuns = displayedRuns,
+      recentEvents = recentEvents,
+    )
+    val updatedAtEpochMs = runtimeActivityUpdatedAtEpochMs(
+      displayedRuns = displayedRuns,
+      recentEvents = recentEvents,
+      subAgentSnapshots = subAgentSnapshots,
+      liveAssistantDrafts = liveAssistantDrafts,
     )
     return buildMap {
       put("sessionId", sessionId)
+      put("updatedAtEpochMs", updatedAtEpochMs)
       putRuntimeServiceDiagnosticsSnapshot(
         hostLifecycle = lifecycleDescriptor,
         runtimeOwnerLifecycle = runtimeDiagnosticsBridge.runtimeOwnerDescriptor,
@@ -2752,6 +2900,27 @@ internal class OpenCrayHostRuntime private constructor(
       put("events", recentEvents.map(::runtimeEventToMap))
       put("liveAssistantDrafts", liveAssistantDrafts.map(::liveAssistantDraftToMap))
     }
+  }
+
+  private fun runtimeActivityUpdatedAtEpochMs(
+    displayedRuns: List<AgentRunSnapshot>,
+    recentEvents: List<OpenCrayAgentRunEvent>,
+    subAgentSnapshots: List<SubAgentActivitySnapshot>,
+    liveAssistantDrafts: List<LiveAssistantDraftSnapshot>,
+  ): Long {
+    val latestRunEpochMs = displayedRuns.maxOfOrNull(AgentRunSnapshot::updatedAtEpochMs) ?: 0L
+    val latestEventEpochMs = recentEvents.maxOfOrNull(OpenCrayAgentRunEvent::emittedAtEpochMs) ?: 0L
+    val latestSubAgentEpochMs =
+      subAgentSnapshots.maxOfOrNull(SubAgentActivitySnapshot::updatedAtEpochMs) ?: 0L
+    val latestDraftEpochMs =
+      liveAssistantDrafts.maxOfOrNull(LiveAssistantDraftSnapshot::updatedAtEpochMs) ?: 0L
+    return maxOf(
+      lifecycleDescriptor.hostCreatedAtEpochMs,
+      latestRunEpochMs,
+      latestEventEpochMs,
+      latestSubAgentEpochMs,
+      latestDraftEpochMs,
+    )
   }
 
   private fun subAgentSnapshotsForActivity(
@@ -3036,14 +3205,21 @@ internal class OpenCrayHostRuntime private constructor(
     val runEvents = recentEvents.filter { event -> event.runId == run.runId }
     val currentExecutionId = run.executionId?.trim()?.takeIf(String::isNotBlank)
     if (currentExecutionId == null) {
-      return if (
+      if (
         run.pendingExecutionKind?.trim()?.takeIf(String::isNotBlank) != null &&
         run.isActive
       ) {
-        emptyList()
-      } else {
-        runEvents
+        val untaggedEvents = runEvents.filter(::isUntaggedExecutionEvent)
+        if (untaggedEvents.isNotEmpty()) {
+          return untaggedEvents
+        }
+        return if (runEvents.any { event -> !isUntaggedExecutionEvent(event) }) {
+          emptyList()
+        } else {
+          runEvents
+        }
       }
+      return runEvents
     }
     val matching = runEvents.filter { event ->
       event.executionId?.trim() == currentExecutionId
@@ -3075,16 +3251,34 @@ internal class OpenCrayHostRuntime private constructor(
     }
     val currentExecutionId = run.executionId?.trim()?.takeIf(String::isNotBlank)
     if (currentExecutionId == null) {
-      return run.pendingExecutionKind?.trim()?.takeIf(String::isNotBlank) == null || !run.isActive
+      return if (
+        run.pendingExecutionKind?.trim()?.takeIf(String::isNotBlank) != null &&
+        run.isActive
+      ) {
+        isUntaggedExecutionEvent(event)
+      } else {
+        true
+      }
     }
     return event.executionId?.trim() == currentExecutionId
   }
+
+  private fun isUntaggedExecutionEvent(event: OpenCrayAgentRunEvent): Boolean =
+    event.executionId?.trim().isNullOrEmpty() &&
+      event.executionOrdinal == null &&
+      event.executionKind?.trim().isNullOrEmpty()
 
   private fun composerPlaceholderForSnapshot(
     displayedRuns: List<AgentRunSnapshot>,
     hasPendingApprovals: Boolean,
     warmupState: OnDeviceLlmWarmupState = OnDeviceLlmWarmupState(),
   ): String {
+    if (warmupState.phase == OnDeviceLlmWarmupPhase.FAILED) {
+      return warmupState.failureMessage
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: strings.composerPlaceholder
+    }
     if (warmupState.blocksChatInput()) {
       return strings.chatMessageOnDevicePreparing
     }
@@ -3124,20 +3318,13 @@ internal class OpenCrayHostRuntime private constructor(
 
   private fun retainedRunsForSnapshot(
     runs: List<AgentRunSnapshot>,
-  ): List<AgentRunSnapshot> {
-    val latestRun = latestRunForSnapshot(runs) ?: return emptyList()
-    return if (
-      latestRun.isTerminal &&
-      !latestRun.hasLiveManagedProcesses &&
+  ): List<AgentRunSnapshot> = runs.filter { run ->
+    !run.isActive &&
       (
-        isAwaitingDirectionRun(latestRun) ||
-          isInterruptedOnRestoreRun(latestRun)
+        run.isTerminal ||
+          isAwaitingDirectionRun(run) ||
+          isInterruptedOnRestoreRun(run)
         )
-    ) {
-      listOf(latestRun)
-    } else {
-      emptyList()
-    }
   }
 
   private fun latestRunForSnapshot(
@@ -3220,6 +3407,12 @@ internal class OpenCrayHostRuntime private constructor(
       .mapTo(linkedSetOf(), ChatTranscriptMessageEntry::messageId)
     val projectedByAnchor = projectedMessages
       .mapNotNull { projection ->
+        val projectedMessageId = (projection.snapshot["messageId"] as? String)
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+        if (projectedMessageId != null && projectedMessageId in visibleMessageIds) {
+          return@mapNotNull null
+        }
         val anchorMessageId = projection.anchorMessageId ?: return@mapNotNull null
         if (anchorMessageId !in visibleMessageIds) {
           return@mapNotNull null
@@ -3271,7 +3464,7 @@ internal class OpenCrayHostRuntime private constructor(
     runs: List<AgentRunSnapshot>,
     runtimeEvents: List<OpenCrayAgentRunEvent>,
   ): List<ProjectedRuntimeChatMessage> {
-    if (runtimeEvents.isEmpty()) {
+    if (runtimeEvents.isEmpty() && runs.none { run -> run.managedProcesses.isNotEmpty() }) {
       return emptyList()
     }
     val pendingMessageIdByRunId = linkedMapOf<String, String>()
@@ -3296,31 +3489,80 @@ internal class OpenCrayHostRuntime private constructor(
         }.thenBy(IndexedValue<OpenCrayAgentRunEvent>::index),
       )
       .map(IndexedValue<OpenCrayAgentRunEvent>::value)
-    return orderedEvents.mapNotNull { event ->
-      val run = runsByRunId[event.runId] ?: runsByTaskId[event.taskId] ?: return@mapNotNull null
-      if (!eventMatchesRunExecution(run = run, event = event)) {
-        return@mapNotNull null
+    val projectedRuntimeEvents = buildList<OrderedProjectedRuntimeChatMessage> {
+      for ((index, event) in orderedEvents.withIndex()) {
+        val run = runsByRunId[event.runId] ?: runsByTaskId[event.taskId] ?: continue
+        if (!eventMatchesRunExecution(run = run, event = event)) {
+          continue
+        }
+        val anchorMessageId = pendingMessageIdByRunId[event.runId]
+          ?: pendingMessageIdByTaskId[event.taskId]
+          ?: continue
+        val text = projectedRuntimeMessageText(
+          event = event,
+        ) ?: continue
+        if (text.isBlank()) {
+          continue
+        }
+        add(
+          OrderedProjectedRuntimeChatMessage(
+            sortEpochMs = event.emittedAtEpochMs,
+            sourceOrder = index,
+            message = ProjectedRuntimeChatMessage(
+              anchorMessageId = anchorMessageId,
+              snapshot = chatMessageSnapshotMap(
+                messageId = runtimeProjectedMessageId(event),
+                kind = projectedRuntimeMessageKind(event),
+                text = text,
+                createdAtEpochMs = event.emittedAtEpochMs.takeIf { emittedAt -> emittedAt > 0L },
+                isEphemeral = true,
+              ),
+            ),
+          ),
+        )
       }
-      val anchorMessageId = pendingMessageIdByRunId[event.runId]
-        ?: pendingMessageIdByTaskId[event.taskId]
-        ?: return@mapNotNull null
-      val text = projectedRuntimeMessageText(
-        event = event,
-      ) ?: return@mapNotNull null
-      if (text.isBlank()) {
-        return@mapNotNull null
-      }
-      ProjectedRuntimeChatMessage(
-        anchorMessageId = anchorMessageId,
-        snapshot = chatMessageSnapshotMap(
-          messageId = runtimeProjectedMessageId(event),
-          kind = projectedRuntimeMessageKind(event),
-          text = text,
-          createdAtEpochMs = event.emittedAtEpochMs.takeIf { emittedAt -> emittedAt > 0L },
-          isEphemeral = true,
-        ),
-      )
     }
+    var nextSourceOrder = projectedRuntimeEvents.size
+    val projectedManagedProcesses = runs.flatMap { run ->
+      val anchorMessageId = pendingMessageIdByRunId[run.runId]
+        ?: pendingMessageIdByTaskId[run.taskId]
+        ?: return@flatMap emptyList()
+      run.managedProcesses
+        .sortedWith(
+          compareBy<ManagedProcessSnapshot> { process ->
+            process.startedAtEpochMs
+          }.thenBy(ManagedProcessSnapshot::updatedAtEpochMs)
+            .thenBy(ManagedProcessSnapshot::processId),
+        )
+        .map { process ->
+          OrderedProjectedRuntimeChatMessage(
+            sortEpochMs = process.startedAtEpochMs.takeIf { startedAt -> startedAt > 0L }
+              ?: process.updatedAtEpochMs.takeIf { updatedAt -> updatedAt > 0L }
+              ?: 0L,
+            sourceOrder = nextSourceOrder++,
+            message = ProjectedRuntimeChatMessage(
+              anchorMessageId = anchorMessageId,
+              snapshot = chatMessageSnapshotMap(
+                messageId = runtimeProjectedManagedProcessMessageId(
+                  runId = run.runId,
+                  process = process,
+                ),
+                kind = "inbound",
+                text = projectedManagedProcessMessageText(process),
+                createdAtEpochMs = process.startedAtEpochMs.takeIf { startedAt -> startedAt > 0L }
+                  ?: process.updatedAtEpochMs.takeIf { updatedAt -> updatedAt > 0L },
+                isEphemeral = true,
+              ),
+            ),
+          )
+        }
+    }
+    return (projectedRuntimeEvents + projectedManagedProcesses)
+      .sortedWith(
+        compareBy<OrderedProjectedRuntimeChatMessage>(OrderedProjectedRuntimeChatMessage::sortEpochMs)
+          .thenBy(OrderedProjectedRuntimeChatMessage::sourceOrder),
+      )
+      .map(OrderedProjectedRuntimeChatMessage::message)
   }
 
   private fun projectedRuntimeMessageText(
@@ -3343,6 +3585,12 @@ internal class OpenCrayHostRuntime private constructor(
     is OpenCraySupplementEvent -> "outbound"
     else -> "inbound"
   }
+
+  private fun isPersistedDraftAssistantPhase(
+    event: OpenCrayAssistantPhaseEvent,
+  ): Boolean = event.stage
+    ?.trim()
+    ?.equals(AppAgentSessionTaskRuntimeFactory.PERSISTED_DRAFT_ASSISTANT_STAGE, ignoreCase = true) == true
 
   private fun hideAssistantPhaseFromChatBubble(event: OpenCrayAssistantPhaseEvent): Boolean =
     (
@@ -3371,6 +3619,49 @@ internal class OpenCrayHostRuntime private constructor(
       text.isEmpty() -> stage
       else -> "$stage\n\n$text"
     }
+  }
+
+  private fun runtimeProjectedManagedProcessMessageId(
+    runId: String,
+    process: ManagedProcessSnapshot,
+  ): String = "runtime-process-$runId-${process.processId}"
+
+  private fun projectedManagedProcessMessageText(
+    process: ManagedProcessSnapshot,
+  ): String {
+    val status = managedProcessStatusLabelForChat(process)
+    val command = (listOf(process.command) + process.args)
+      .map(String::trim)
+      .filter(String::isNotBlank)
+      .joinToString(separator = " ")
+    val output = managedProcessOutputPreview(process.stdout)
+      .trim()
+      .takeIf(String::isNotBlank)
+    return buildString {
+      append("Process ")
+      append(process.processId)
+      append("\n\n")
+      append(status)
+      append(": ")
+      append(command)
+      output?.let { stdoutPreview ->
+        append("\n\n")
+        append(stdoutPreview)
+      }
+    }
+  }
+
+  private fun managedProcessStatusLabelForChat(
+    process: ManagedProcessSnapshot,
+  ): String = when (process.status) {
+    com.opencray.runtime.process.ManagedProcessStatus.RUNNING -> "running"
+    com.opencray.runtime.process.ManagedProcessStatus.SUCCESS -> "finished"
+    com.opencray.runtime.process.ManagedProcessStatus.FAILED,
+    com.opencray.runtime.process.ManagedProcessStatus.SPAWN_ERROR,
+    -> "failed"
+    com.opencray.runtime.process.ManagedProcessStatus.CANCELLED -> "cancelled"
+    com.opencray.runtime.process.ManagedProcessStatus.TIMEOUT -> "timed out"
+    else -> process.status.name.lowercase()
   }
 
   private fun chatToolCallText(event: OpenCrayToolCallEvent): String {
@@ -4391,12 +4682,14 @@ internal class OpenCrayHostRuntime private constructor(
       ?: metadataBoolean(metadata, "truncated")
       ?: false
 
-  private fun toolResultDetailedContentSnapshot(result: AgentToolResult): String? =
-    if (result.status == AgentToolResultStatus.SUCCESS) {
-      null
+  private fun toolResultDetailedContentSnapshot(result: AgentToolResult): String? {
+    val content = result.content.trim().takeIf(String::isNotBlank) ?: return null
+    return if (result.status == AgentToolResultStatus.SUCCESS) {
+      content
     } else {
-      result.content.trim().takeIf(String::isNotBlank)?.take(MAX_RUNTIME_EVENT_FAILURE_CONTENT_CHARS)
+      content.take(MAX_RUNTIME_EVENT_FAILURE_CONTENT_CHARS)
     }
+  }
 
   private fun JsonObject.replayObjectArray(key: String): List<JsonObject>? =
     (this[key] as? JsonArray)?.mapNotNull { entry -> entry as? JsonObject }
@@ -4413,7 +4706,20 @@ internal class OpenCrayHostRuntime private constructor(
   )
 
   private fun runtimeProjectedMessageId(event: OpenCrayAgentRunEvent): String = when (event) {
-    is OpenCrayAssistantPhaseEvent -> "runtime-assistant-${event.phase.name.lowercase(Locale.US)}-${event.runId}-${event.emittedAtEpochMs}"
+    is OpenCrayAssistantPhaseEvent -> buildString {
+      append("runtime-assistant-")
+      append(event.phase.name.lowercase(Locale.US))
+      append('-')
+      append(event.runId)
+      append('-')
+      append(event.turn ?: -1)
+      append('-')
+      append(event.stage?.trim()?.ifEmpty { "-" } ?: "-")
+      append('-')
+      append(event.emittedAtEpochMs)
+      append('-')
+      append(event.text.trim().hashCode())
+    }
     is OpenCraySupplementEvent -> "runtime-supplement-${event.entryId}"
     is OpenCrayApprovalEvent -> "runtime-approval-${event.phase.name.lowercase(Locale.US)}-${event.runId}-${event.emittedAtEpochMs}"
     is OpenCrayToolCallEvent -> "runtime-tool-call-${event.runId}-${event.turn}-${event.emittedAtEpochMs}"
@@ -4949,6 +5255,8 @@ internal class OpenCrayHostRuntime private constructor(
     "activeSkill" to activeSkillFromMetadata(run.resultMetadata),
     "pendingMessageId" to run.pendingMessageId,
     "managedProcessIds" to run.managedProcessIds,
+    "managedProcesses" to run.managedProcesses.map(::managedProcessSnapshotToMap),
+    "finalAttachments" to finalAttachmentsForRunLocked(run).map(::chatAttachmentSnapshotMap),
     "runningManagedProcessCount" to run.runningManagedProcessCount,
     "hasLiveManagedProcesses" to run.hasLiveManagedProcesses,
     "isActive" to run.isActive,
@@ -4957,6 +5265,40 @@ internal class OpenCrayHostRuntime private constructor(
     "diagnostics" to run.lifecycleDiagnostics.toMap(),
     "recoveryPlan" to recoveryPlanForRunLocked(run)?.toMap(),
   )
+
+  private fun managedProcessSnapshotToMap(
+    snapshot: ManagedProcessSnapshot,
+  ): Map<String, Any?> {
+    val stdoutTruncated = snapshot.stdout.length > MAX_MANAGED_PROCESS_OUTPUT_PREVIEW_CHARS
+    val stderrTruncated = snapshot.stderr.length > MAX_MANAGED_PROCESS_OUTPUT_PREVIEW_CHARS
+    return mapOf(
+      "processId" to snapshot.processId,
+      "status" to snapshot.status.name.lowercase(),
+      "command" to snapshot.command,
+      "args" to snapshot.args,
+      "workingDirectory" to snapshot.workingDirectory,
+      "processStarted" to snapshot.processStarted,
+      "timeoutMs" to snapshot.timeoutMs,
+      "startedAtEpochMs" to snapshot.startedAtEpochMs,
+      "updatedAtEpochMs" to snapshot.updatedAtEpochMs,
+      "finishedAtEpochMs" to snapshot.finishedAtEpochMs,
+      "exitCode" to snapshot.exitCode,
+      "errorCode" to snapshot.errorCode,
+      "errorMessage" to snapshot.errorMessage,
+      "timedOut" to snapshot.timedOut,
+      "cancelled" to snapshot.cancelled,
+      "outputLimitExceeded" to snapshot.outputLimitExceeded,
+      "stdout" to snapshot.stdout,
+      "stderr" to snapshot.stderr,
+      "stdoutPreview" to managedProcessOutputPreview(snapshot.stdout),
+      "stderrPreview" to managedProcessOutputPreview(snapshot.stderr),
+      "stdoutTruncated" to stdoutTruncated,
+      "stderrTruncated" to stderrTruncated,
+    )
+  }
+
+  private fun managedProcessOutputPreview(text: String): String =
+    text.takeLast(MAX_MANAGED_PROCESS_OUTPUT_PREVIEW_CHARS)
 
   private fun liveAssistantDraftToMap(
     draft: LiveAssistantDraftSnapshot,
@@ -5871,6 +6213,23 @@ internal class OpenCrayHostRuntime private constructor(
     attachment.contentSha256?.let { contentSha256 -> put("contentSha256", contentSha256) }
   }
 
+  private fun finalAttachmentsForRunLocked(
+    run: AgentRunSnapshot,
+  ): List<ChatAttachmentEntry> {
+    val pendingMessageId = run.pendingMessageId
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return emptyList()
+    return chatSessionStore.loadSession(run.sessionId)
+      ?.messages
+      ?.firstOrNull { message ->
+        message.messageId == pendingMessageId &&
+          message.role == ChatTranscriptRole.ASSISTANT
+      }
+      ?.attachments
+      .orEmpty()
+  }
+
   private fun finalTextForLocked(
     sessionId: String,
     task: AgentTask,
@@ -5940,7 +6299,11 @@ internal class OpenCrayHostRuntime private constructor(
     task: AgentTask,
     result: ExecutionResult,
   ): String? {
-    if (hasFinalAttachments(result) || !shouldUseSuccessfulToolSummaryFallback(result)) {
+    if (
+      task.type == AgentTaskType.PROMPT ||
+      hasFinalAttachments(result) ||
+      !shouldUseSuccessfulToolSummaryFallback(result)
+    ) {
       return null
     }
     val latestToolResult = latestSuccessfulToolResultEventForTaskLocked(
@@ -6225,18 +6588,22 @@ internal class OpenCrayHostRuntime private constructor(
   private fun parseAttachmentMarkdownReferences(
     text: String,
   ): List<AttachmentMarkdownReference> = ATTACHMENT_MARKDOWN_REFERENCE_REGEX.findAll(text)
-    .map { match ->
+    .mapNotNull { match ->
       val href = match.groupValues[3]
         .trim()
         .substringBefore(' ')
         .trim()
+      if (!isAttachmentMarkdownHref(href)) {
+        return@mapNotNull null
+      }
+      val normalizedHref = href
         .removePrefix("attachment:")
         .removePrefix("//")
         .trim()
       AttachmentMarkdownReference(
         raw = match.value,
         label = match.groupValues[2].trim(),
-        targetToken = normalizeAttachmentMarkdownToken(href),
+        targetToken = normalizeAttachmentMarkdownToken(normalizedHref),
         isImage = match.groupValues[1] == "!",
       )
     }
@@ -6511,8 +6878,12 @@ internal class OpenCrayHostRuntime private constructor(
     runId: String,
     artifactIds: Set<String>,
   ): Map<String, ResolvedAttachmentArtifact> {
-    val events = chatRuntimeEventState.eventsForSession(sessionId)
-      .asReversed()
+    val durableEvents = runEventJournalStoreForSession(sessionId)
+      .listForRun(runId)
+      .mapNotNull { entry -> entry.payload.toRuntimeEventOrNull() }
+    val liveEvents = chatRuntimeEventState.eventsForSession(sessionId)
+      .filter { event -> event.runId == runId }
+    val events = (durableEvents + liveEvents).asReversed()
     val resolved = linkedMapOf<String, ResolvedAttachmentArtifact>()
     events.forEach { event ->
       val toolEvent = event as? OpenCrayToolResultEvent ?: return@forEach
@@ -7258,6 +7629,7 @@ internal class OpenCrayHostRuntime private constructor(
     "title" to title,
     "subtitle" to subtitle,
     "imageGeneration" to imageGeneration.toMap(),
+    "videoGeneration" to videoGeneration.toMap(),
     "voiceGeneration" to voiceGeneration.toMap(),
     "sttRouteId" to sttRouteId,
     "externalStt" to externalStt.toMap(),
@@ -7269,13 +7641,18 @@ internal class OpenCrayHostRuntime private constructor(
     "baseUrl" to baseUrl,
     "endpoint" to endpoint,
     "model" to model,
+    "authProtocol" to authProtocol,
+    "apiKey" to apiKey,
   )
 
   private fun VoiceProviderSnapshot.toMap(): Map<String, Any?> = mapOf(
     "provider" to provider,
     "baseUrl" to baseUrl,
     "endpoint" to endpoint,
+    "model" to model,
     "voicePreset" to voicePreset,
+    "authProtocol" to authProtocol,
+    "apiKey" to apiKey,
   )
 
   private fun OnDeviceSttSnapshot.toMap(): Map<String, Any?> = mapOf(
@@ -7506,15 +7883,18 @@ internal class OpenCrayHostRuntime private constructor(
     listeners: LinkedHashSet<(Map<String, Any?>) -> Unit>,
     initialPayload: Map<String, Any?>,
     listener: (Map<String, Any?>) -> Unit,
+    onListenerSetChanged: (() -> Unit)? = null,
   ): () -> Unit {
     synchronized(lock) {
       listeners += listener
     }
+    onListenerSetChanged?.invoke()
     mainThreadPoster.post { listener(initialPayload) }
     return {
       synchronized(lock) {
         listeners -= listener
       }
+      onListenerSetChanged?.invoke()
     }
   }
 
@@ -7523,7 +7903,60 @@ internal class OpenCrayHostRuntime private constructor(
   }
 
   private fun emitChatRuntimeSnapshot() {
-    emitSnapshotLazy(chatRuntimeListeners, ::loadChatRuntimeSnapshot)
+    syncLiveChatRuntimeRefreshLoop()
+    val currentListeners = synchronized(lock) { chatRuntimeListeners.toList() }
+    if (currentListeners.isEmpty()) {
+      return
+    }
+    mainThreadPoster.post {
+      val payload = loadChatRuntimeSnapshot()
+      hostChatDebug(
+        "host.emitChatRuntimeSnapshot ${chatRuntimePayloadDebugSummary(payload)}",
+      )
+      currentListeners.forEach { listener -> listener(payload) }
+      syncLiveChatRuntimeRefreshLoop()
+    }
+  }
+
+  private fun syncLiveChatRuntimeRefreshLoop() {
+    val shouldRun = shouldRunLiveChatRuntimeRefresh()
+    synchronized(lock) {
+      if (!shouldRun) {
+        liveChatRuntimeRefreshTimer?.cancel()
+        liveChatRuntimeRefreshTimer = null
+        return
+      }
+      if (liveChatRuntimeRefreshTimer != null) {
+        return
+      }
+      liveChatRuntimeRefreshTimer = Timer("host-chat-runtime-live-refresh", true).apply {
+        scheduleAtFixedRate(
+          object : TimerTask() {
+            override fun run() {
+              if (!shouldRunLiveChatRuntimeRefresh()) {
+                syncLiveChatRuntimeRefreshLoop()
+                return
+              }
+              emitChatRuntimeSnapshot()
+            }
+          },
+          liveChatRuntimeRefreshIntervalMs.coerceAtLeast(1L),
+          liveChatRuntimeRefreshIntervalMs.coerceAtLeast(1L),
+        )
+      }
+    }
+  }
+
+  private fun shouldRunLiveChatRuntimeRefresh(): Boolean {
+    val hasListeners = synchronized(lock) { chatRuntimeListeners.isNotEmpty() }
+    if (!hasListeners) {
+      return false
+    }
+    val summary = runtimeHostAccess.activeWorkSummary()
+    return summary.activeRunCount > 0 ||
+      summary.pendingWorkSessionIds.isNotEmpty() ||
+      summary.liveManagedProcessSessionIds.isNotEmpty() ||
+      summary.liveSubAgentSessionIds.isNotEmpty()
   }
 
   private fun emitLiveAssistantDraftEvent(payload: Map<String, Any?>) {
@@ -7572,6 +8005,25 @@ internal class OpenCrayHostRuntime private constructor(
     }
   }
 
+  private fun chatRuntimePayloadDebugSummary(payload: Map<String, Any?>): String {
+    val activeRuns = (payload["activeRuns"] as? List<*>)
+      .orEmpty()
+      .mapNotNull { item -> item as? Map<*, *> }
+    val runSummary = activeRuns.joinToString(separator = ";") { run ->
+      val runId = (run["runId"] as? String).orEmpty()
+      val taskId = (run["taskId"] as? String).orEmpty()
+      val managedProcessCount = (run["managedProcesses"] as? List<*>)?.size ?: 0
+      val managedProcessIds = (run["managedProcessIds"] as? List<*>)?.joinToString(",") ?: ""
+      val runningManagedProcessCount = run["runningManagedProcessCount"] ?: 0
+      val hasLiveManagedProcesses = run["hasLiveManagedProcesses"] ?: false
+      val lastEvent = run["lastEvent"] as? Map<*, *>
+      val lastKind = lastEvent?.get("kind") as? String ?: "-"
+      val lastTool = lastEvent?.get("toolName") as? String ?: "-"
+      "${runId.takeLast(12)} task=${taskId.takeLast(12)} mp=$managedProcessCount[$managedProcessIds] running=$runningManagedProcessCount live=$hasLiveManagedProcesses last=$lastKind/$lastTool"
+    }
+    return "session=${payload["sessionId"] ?: "-"} activeRuns=${activeRuns.size} retainedRuns=${(payload["retainedRuns"] as? List<*>)?.size ?: 0} events=${(payload["events"] as? List<*>)?.size ?: 0} runs=[$runSummary]"
+  }
+
   private fun liveAssistantDraftEventPayload(
     sessionId: String,
     runId: String,
@@ -7588,6 +8040,20 @@ internal class OpenCrayHostRuntime private constructor(
     "text" to text,
     "updatedAtEpochMs" to updatedAtEpochMs,
     "cleared" to cleared,
+  )
+
+  private fun assistantDraftRuntimeEvent(
+    task: AgentTask,
+    text: String,
+    emittedAtEpochMs: Long,
+  ): OpenCrayAssistantEvent = OpenCrayAssistantEvent(
+    runId = runIdFor(task),
+    taskId = task.id,
+    turn = -1,
+    text = text.trim(),
+    isFinal = false,
+    stage = AppAgentSessionTaskRuntimeFactory.PERSISTED_DRAFT_ASSISTANT_STAGE,
+    emittedAtEpochMs = emittedAtEpochMs,
   )
 
   private fun LiveAssistantDraftSnapshot.toLiveAssistantDraftEventPayload(
@@ -7620,8 +8086,10 @@ internal class OpenCrayHostRuntime private constructor(
     private const val MAX_RUNTIME_EVENT_HISTORY: Int = 24
     private const val MAX_RUNTIME_EVENT_PREVIEW_CHARS: Int = 240
     private const val MAX_RUNTIME_EVENT_FAILURE_CONTENT_CHARS: Int = 16_384
+    private const val MAX_MANAGED_PROCESS_OUTPUT_PREVIEW_CHARS: Int = 4_096
     private const val INTERNAL_PROMPT_CHECKPOINT_MARKER: String = "internal_prompt_checkpoint"
     private val HIDDEN_ASSISTANT_CHAT_STAGES: Set<String> = setOf(
+      "draft",
       "llm_retry",
       "responses_recovery",
     )
@@ -7754,6 +8222,7 @@ internal class OpenCrayHostRuntime private constructor(
       runtimeServiceConnectionChangeRegistrar: RuntimeServiceConnectionChangeRegistrar? = null,
       resumeActiveSessionOnInit: Boolean = true,
       onDeviceLlmWarmupController: OnDeviceLlmWarmupController? = null,
+      liveChatRuntimeRefreshIntervalMs: Long = HOST_RUNTIME_LIVE_REFRESH_INTERVAL_MS,
     ): OpenCrayHostRuntime {
       val resolvedRuntimeHostAccess = DefaultOpenCrayRuntimeHostAccess(
         lifecycleDescriptor = runtimeOwnerDescriptor,
@@ -7816,6 +8285,7 @@ internal class OpenCrayHostRuntime private constructor(
         lifecycleDescriptor = lifecycleDescriptor,
         runtimeDiagnosticsBridge = runtimeDiagnosticsBridge,
         resumeActiveSessionOnInit = resumeActiveSessionOnInit,
+        liveChatRuntimeRefreshIntervalMs = liveChatRuntimeRefreshIntervalMs,
       )
     }
 
@@ -7943,7 +8413,7 @@ internal class OpenCrayHostRuntime private constructor(
 }
 
 private val ATTACHMENT_MARKDOWN_REFERENCE_REGEX: Regex =
-  Regex("""(!?)\[([^\]]*)]\((attachment:[^)]+)\)""")
+  Regex("""(!?)\[([^\]]*)]\(([^)]+)\)""")
 
 private val IMAGE_ATTACHMENT_EXTENSIONS: Set<String> = setOf(
   "apng",
@@ -7962,6 +8432,19 @@ private fun normalizeAttachmentMarkdownToken(value: String): String = value
   .removePrefix("/")
   .replace('\\', '/')
   .lowercase(Locale.US)
+
+private fun isAttachmentMarkdownHref(href: String): Boolean {
+  val normalized = href.trim()
+  if (normalized.isBlank()) {
+    return false
+  }
+  if (normalized.startsWith("attachment:", ignoreCase = true)) {
+    return true
+  }
+  return !listOf("http://", "https://", "mailto:", "data:").any { prefix ->
+    normalized.startsWith(prefix, ignoreCase = true)
+  }
+}
 
 private data class CompletedTurnForMemoryIngestion(
   val sessionId: String,
@@ -8069,6 +8552,12 @@ private fun AgentRunSnapshot.replayExecutionContext(): RuntimeReplayExecutionCon
 private data class ProjectedRuntimeChatMessage(
   val anchorMessageId: String?,
   val snapshot: Map<String, Any?>,
+)
+
+private data class OrderedProjectedRuntimeChatMessage(
+  val sortEpochMs: Long,
+  val sourceOrder: Int,
+  val message: ProjectedRuntimeChatMessage,
 )
 
 private data class SubAgentActivityAccumulator(

@@ -17,22 +17,10 @@ internal object LlmProviderProtocols {
   fun authHeaders(
     protocol: String,
     apiKey: String,
-  ): Map<String, String> {
-    val sanitizedApiKey = apiKey.trim()
-    if (sanitizedApiKey.isEmpty()) {
-      return emptyMap()
-    }
-    return when (normalize(protocol)) {
-      ANTHROPIC -> mapOf(
-        "x-api-key" to sanitizedApiKey,
-        "anthropic-version" to DEFAULT_ANTHROPIC_VERSION,
-      )
-
-      else -> mapOf(
-        "Authorization" to "Bearer $sanitizedApiKey",
-      )
-    }
-  }
+  ): Map<String, String> = ProviderAuthProtocols.authHeaders(
+    protocol = protocol,
+    apiKey = apiKey,
+  )
 
   fun routeMetadata(
     protocol: String,
@@ -187,6 +175,46 @@ internal object LlmProviderProtocols {
   }
 }
 
+internal object ProviderAuthProtocols {
+  const val NONE: String = "none"
+  const val BEARER: String = "bearer"
+  const val ANTHROPIC: String = LlmProviderProtocols.ANTHROPIC
+
+  private const val DEFAULT_ANTHROPIC_VERSION: String = "2023-06-01"
+
+  fun normalize(rawValue: String?): String = when (rawValue?.trim()?.lowercase()) {
+    NONE -> NONE
+    ANTHROPIC -> ANTHROPIC
+    LlmProviderProtocols.OPENAI,
+    LlmProviderProtocols.OPENAI_RESPONSES,
+    BEARER,
+    -> BEARER
+
+    else -> BEARER
+  }
+
+  fun authHeaders(
+    protocol: String,
+    apiKey: String,
+  ): Map<String, String> {
+    val sanitizedApiKey = apiKey.trim()
+    if (sanitizedApiKey.isEmpty()) {
+      return emptyMap()
+    }
+    return when (normalize(protocol)) {
+      NONE -> emptyMap()
+      ANTHROPIC -> mapOf(
+        "x-api-key" to sanitizedApiKey,
+        "anthropic-version" to DEFAULT_ANTHROPIC_VERSION,
+      )
+
+      else -> mapOf(
+        "Authorization" to "Bearer $sanitizedApiKey",
+      )
+    }
+  }
+}
+
 internal object LlmPromptCachingMetadataKeys {
   const val PROMPT_CACHE_KEY_STRATEGY: String = "promptCacheKeyStrategy"
   const val PROMPT_CACHE_RETENTION: String = "promptCacheRetention"
@@ -211,7 +239,7 @@ internal object AnthropicPromptCacheTtlPolicies {
   const val HOUR_1: String = "1h"
 }
 
-private const val DEFAULT_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS: Long = 30_000L
+private const val DEFAULT_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS: Long = 120_000L
 private const val DEFAULT_SHORT_PROVIDER_ROUTE_TIMEOUT_MS: Long = 15_000L
 private const val ON_DEVICE_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS: Long = 180_000L
 private const val ON_DEVICE_SHORT_PROVIDER_ROUTE_TIMEOUT_MS: Long = 60_000L

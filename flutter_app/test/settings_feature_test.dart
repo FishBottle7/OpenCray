@@ -1641,6 +1641,160 @@ void main() {
   });
 
   testWidgets(
+    'local OpenAI-compatible custom provider stays enabled without API key',
+    (tester) async {
+      final facade = _FakeSettingsFacade(
+        llmConfig: const LlmConfigSnapshot(
+          localeTag: 'en',
+          enabled: false,
+          providerId: 'custom',
+          selectedProviderOptionId: 'custom',
+          protocol: 'openai',
+          providerOptions: <LlmProviderOption>[
+            LlmProviderOption(
+              id: 'custom',
+              providerId: 'custom',
+              title: 'Custom provider',
+              subtitle:
+                  'Any OpenAI-compatible, OpenAI Responses, or Anthropic endpoint.',
+              defaultBaseUrl: '',
+              defaultModel: '',
+              protocol: 'openai',
+              apiKey: '',
+              isCustom: true,
+            ),
+          ],
+          providerName: 'Custom provider',
+          providerNotes: '',
+          baseUrl: '',
+          apiKey: '',
+          model: '',
+          reasoningEffort: 'medium',
+          systemPrompt: '',
+          helperText: 'Helper text',
+        ),
+        validationResult: const LlmValidationResult(
+          isSuccess: true,
+          message: 'Validated.',
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.llm,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField).at(0), 'LM Studio');
+      await tester.enterText(find.byType(TextField).at(1), 'Local desktop endpoint');
+      await tester.enterText(find.byType(TextField).at(2), 'http://10.0.2.2:1234/v1');
+      await tester.enterText(find.byType(TextField).at(3), '');
+      await tester.enterText(find.byType(TextField).at(4), 'qwen2.5-7b-instruct');
+
+      final onTap = tester
+          .widget<InkWell>(
+            find.byKey(const ValueKey<String>('settings-llm-save-provider')),
+          )
+          .onTap;
+      expect(onTap, isNotNull);
+      await tester.runAsync(() async {
+        final result = Function.apply(onTap!, const <Object?>[]);
+        if (result is Future<void>) {
+          await result;
+        }
+      });
+      await tester.pumpAndSettle();
+
+      expect(facade.llmConfig.enabled, isTrue);
+      expect(facade.llmConfig.apiKey, isEmpty);
+      expect(facade.llmConfig.providerOptions.last.apiKey, isEmpty);
+      expect(facade.llmConfig.providerOptions.last.defaultBaseUrl, 'http://10.0.2.2:1234/v1');
+    },
+  );
+
+  testWidgets(
+    'IPv6 loopback OpenAI-compatible custom provider stays enabled without API key',
+    (tester) async {
+      final facade = _FakeSettingsFacade(
+        llmConfig: const LlmConfigSnapshot(
+          localeTag: 'en',
+          enabled: false,
+          providerId: 'custom',
+          selectedProviderOptionId: 'custom',
+          protocol: 'openai',
+          providerOptions: <LlmProviderOption>[
+            LlmProviderOption(
+              id: 'custom',
+              providerId: 'custom',
+              title: 'Custom provider',
+              subtitle:
+                  'Any OpenAI-compatible, OpenAI Responses, or Anthropic endpoint.',
+              defaultBaseUrl: '',
+              defaultModel: '',
+              protocol: 'openai',
+              apiKey: '',
+              isCustom: true,
+            ),
+          ],
+          providerName: 'Custom provider',
+          providerNotes: '',
+          baseUrl: '',
+          apiKey: '',
+          model: '',
+          reasoningEffort: 'medium',
+          systemPrompt: '',
+          helperText: 'Helper text',
+        ),
+        validationResult: const LlmValidationResult(
+          isSuccess: true,
+          message: 'Validated.',
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.llm,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField).at(0), 'LM Studio IPv6');
+      await tester.enterText(find.byType(TextField).at(1), 'IPv6 loopback endpoint');
+      await tester.enterText(find.byType(TextField).at(2), 'http://[::1]:1234/v1');
+      await tester.enterText(find.byType(TextField).at(3), '');
+      await tester.enterText(find.byType(TextField).at(4), 'qwen2.5-7b-instruct');
+
+      final onTap = tester
+          .widget<InkWell>(
+            find.byKey(const ValueKey<String>('settings-llm-save-provider')),
+          )
+          .onTap;
+      expect(onTap, isNotNull);
+      await tester.runAsync(() async {
+        final result = Function.apply(onTap!, const <Object?>[]);
+        if (result is Future<void>) {
+          await result;
+        }
+      });
+      await tester.pumpAndSettle();
+
+      expect(facade.llmConfig.enabled, isTrue);
+      expect(facade.llmConfig.apiKey, isEmpty);
+      expect(facade.llmConfig.providerOptions.last.apiKey, isEmpty);
+      expect(facade.llmConfig.providerOptions.last.defaultBaseUrl, 'http://[::1]:1234/v1');
+    },
+  );
+
+  testWidgets(
     'saved custom provider edits stay selected, show temporary hint, and overwrite on save',
     (tester) async {
       final facade = _FakeSettingsFacade(
@@ -2790,6 +2944,20 @@ void main() {
       facade.mediaSpeechConfig.imageGeneration.baseUrl,
       'https://media.example.com',
     );
+
+    await tester.ensureVisible(find.text('Video generation'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).at(6), 'Runway Turbo');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump(const Duration(milliseconds: 800));
+
+    expect(facade.mediaSpeechConfig.videoGeneration.provider, 'Runway Turbo');
+
+    await tester.enterText(find.byType(TextField).at(15), 'tts-omni');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump(const Duration(milliseconds: 800));
+
+    expect(facade.mediaSpeechConfig.voiceGeneration.model, 'tts-omni');
 
     await tester.ensureVisible(find.text('External API'));
     await tester.pumpAndSettle();
@@ -4244,12 +4412,25 @@ class _FakeSettingsFacade implements SettingsFacade {
       baseUrl: 'https://api.fal.ai',
       endpoint: '/v1/images',
       model: 'flux-pro',
+      authProtocol: 'bearer',
+      apiKey: '',
+    ),
+    videoGeneration: MediaProviderConfigSnapshot(
+      provider: 'Runway',
+      baseUrl: 'https://api.runwayml.com',
+      endpoint: '/v1/videos',
+      model: 'gen4_turbo',
+      authProtocol: 'bearer',
+      apiKey: '',
     ),
     voiceGeneration: VoiceProviderConfigSnapshot(
       provider: 'OpenAI TTS',
       baseUrl: 'https://api.openai.com',
       endpoint: '/v1/audio/speech',
+      model: 'tts-1',
       voicePreset: 'alloy · calm',
+      authProtocol: 'bearer',
+      apiKey: '',
     ),
     sttRoute: MediaSpeechSttRoute.onDeviceModel,
     externalStt: MediaProviderConfigSnapshot(
@@ -4257,6 +4438,8 @@ class _FakeSettingsFacade implements SettingsFacade {
       baseUrl: 'https://api.openai.com',
       endpoint: '/v1/audio/transcriptions',
       model: 'whisper-1',
+      authProtocol: 'bearer',
+      apiKey: '',
     ),
     onDeviceModel: OnDeviceSttConfigSnapshot(
       modelPackage: 'Whisper Small',
@@ -4612,7 +4795,13 @@ class _FakeSettingsFacade implements SettingsFacade {
     );
     llmConfig = LlmConfigSnapshot(
       localeTag: llmConfig.localeTag,
-      enabled: baseUrl.isNotEmpty && apiKey.isNotEmpty,
+      enabled:
+          baseUrl.isNotEmpty &&
+          (apiKey.isNotEmpty ||
+              _llmEndpointAllowsBlankApiKeyForTest(
+                protocol: protocol,
+                baseUrl: baseUrl,
+              )),
       streamingEnabled: streamingEnabled ?? llmConfig.streamingEnabled,
       providerMode: 'cloud',
       providerId: 'custom',
@@ -4776,6 +4965,44 @@ class _FakeSettingsFacade implements SettingsFacade {
     safetySettings = snapshot;
     return safetySettings;
   }
+}
+
+bool _llmEndpointAllowsBlankApiKeyForTest({
+  required String protocol,
+  required String baseUrl,
+}) {
+  final normalizedProtocol = protocol.trim().toLowerCase();
+  if (normalizedProtocol != 'openai' &&
+      normalizedProtocol != 'openai_responses') {
+    return false;
+  }
+  final host = (Uri.tryParse(baseUrl.trim())?.host ?? '').trim().toLowerCase();
+  if (host.isEmpty) {
+    return false;
+  }
+  if (host == 'localhost' ||
+      host == 'localhost.localdomain' ||
+      host == '0.0.0.0' ||
+      host == '::1' ||
+      host == '10.0.2.2' ||
+      host == 'host.docker.internal' ||
+      host.endsWith('.local')) {
+    return true;
+  }
+  if (host.startsWith('127.') ||
+      host.startsWith('10.') ||
+      host.startsWith('192.168.')) {
+    return true;
+  }
+  if (!host.startsWith('172.')) {
+    return false;
+  }
+  final parts = host.split('.');
+  if (parts.length < 2) {
+    return false;
+  }
+  final secondOctet = int.tryParse(parts[1]);
+  return secondOctet != null && secondOctet >= 16 && secondOctet <= 31;
 }
 
 class _FakeDebugBridge extends OpenCraySeedBridge {

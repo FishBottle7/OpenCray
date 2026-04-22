@@ -31,6 +31,8 @@ internal data class MediaProviderSettings(
   val baseUrl: String,
   val endpoint: String,
   val model: String,
+  val authProtocol: String = ProviderAuthProtocols.BEARER,
+  val apiKey: String = "",
 ) {
   fun sanitized(
     defaults: MediaProviderSettings,
@@ -39,6 +41,8 @@ internal data class MediaProviderSettings(
     baseUrl = baseUrl.trim(),
     endpoint = endpoint.trim(),
     model = model.trim(),
+    authProtocol = ProviderAuthProtocols.normalize(authProtocol.ifBlank { defaults.authProtocol }),
+    apiKey = apiKey.trim(),
   )
 
   fun toJson(): JSONObject = JSONObject()
@@ -46,17 +50,23 @@ internal data class MediaProviderSettings(
     .put("baseUrl", baseUrl)
     .put("endpoint", endpoint)
     .put("model", model)
+    .put("authProtocol", authProtocol)
+    .put("apiKey", apiKey)
 
   companion object {
     fun fromJson(
       payload: JSONObject?,
       defaults: MediaProviderSettings,
-    ): MediaProviderSettings = MediaProviderSettings(
-      provider = payload?.optString("provider").orEmpty(),
-      baseUrl = payload?.optString("baseUrl").orEmpty(),
-      endpoint = payload?.optString("endpoint").orEmpty(),
-      model = payload?.optString("model").orEmpty(),
-    ).sanitized(defaults)
+    ): MediaProviderSettings = payload?.let {
+      MediaProviderSettings(
+        provider = it.optString("provider"),
+        baseUrl = it.optString("baseUrl"),
+        endpoint = it.optString("endpoint"),
+        model = it.optString("model"),
+        authProtocol = it.optString("authProtocol"),
+        apiKey = it.optString("apiKey"),
+      ).sanitized(defaults)
+    } ?: defaults
   }
 }
 
@@ -64,7 +74,10 @@ internal data class VoiceProviderSettings(
   val provider: String,
   val baseUrl: String,
   val endpoint: String,
+  val model: String = DEFAULT_MODEL,
   val voicePreset: String,
+  val authProtocol: String = ProviderAuthProtocols.BEARER,
+  val apiKey: String = "",
 ) {
   fun sanitized(
     defaults: VoiceProviderSettings,
@@ -72,25 +85,38 @@ internal data class VoiceProviderSettings(
     provider = provider.trim().ifBlank { defaults.provider },
     baseUrl = baseUrl.trim(),
     endpoint = endpoint.trim(),
+    model = model.trim().ifBlank { defaults.model },
     voicePreset = voicePreset.trim(),
+    authProtocol = ProviderAuthProtocols.normalize(authProtocol.ifBlank { defaults.authProtocol }),
+    apiKey = apiKey.trim(),
   )
 
   fun toJson(): JSONObject = JSONObject()
     .put("provider", provider)
     .put("baseUrl", baseUrl)
     .put("endpoint", endpoint)
+    .put("model", model)
     .put("voicePreset", voicePreset)
+    .put("authProtocol", authProtocol)
+    .put("apiKey", apiKey)
 
   companion object {
+    const val DEFAULT_MODEL: String = "tts-1"
+
     fun fromJson(
       payload: JSONObject?,
       defaults: VoiceProviderSettings,
-    ): VoiceProviderSettings = VoiceProviderSettings(
-      provider = payload?.optString("provider").orEmpty(),
-      baseUrl = payload?.optString("baseUrl").orEmpty(),
-      endpoint = payload?.optString("endpoint").orEmpty(),
-      voicePreset = payload?.optString("voicePreset").orEmpty(),
-    ).sanitized(defaults)
+    ): VoiceProviderSettings = payload?.let {
+      VoiceProviderSettings(
+        provider = it.optString("provider"),
+        baseUrl = it.optString("baseUrl"),
+        endpoint = it.optString("endpoint"),
+        model = it.optString("model"),
+        voicePreset = it.optString("voicePreset"),
+        authProtocol = it.optString("authProtocol"),
+        apiKey = it.optString("apiKey"),
+      ).sanitized(defaults)
+    } ?: defaults
   }
 }
 
@@ -113,15 +139,18 @@ internal data class OnDeviceSttSettings(
     fun fromJson(
       payload: JSONObject?,
       defaults: OnDeviceSttSettings,
-    ): OnDeviceSttSettings = OnDeviceSttSettings(
-      modelPackage = payload?.optString("modelPackage").orEmpty(),
-      downloadStatus = payload?.optString("downloadStatus").orEmpty(),
-    ).sanitized(defaults)
+    ): OnDeviceSttSettings = payload?.let {
+      OnDeviceSttSettings(
+        modelPackage = it.optString("modelPackage"),
+        downloadStatus = it.optString("downloadStatus"),
+      ).sanitized(defaults)
+    } ?: defaults
   }
 }
 
 internal data class MediaSpeechSettingsState(
   val imageGeneration: MediaProviderSettings,
+  val videoGeneration: MediaProviderSettings,
   val voiceGeneration: VoiceProviderSettings,
   val sttRouteId: String,
   val externalStt: MediaProviderSettings,
@@ -131,6 +160,7 @@ internal data class MediaSpeechSettingsState(
     val defaults = defaults()
     return MediaSpeechSettingsState(
       imageGeneration = imageGeneration.sanitized(defaults.imageGeneration),
+      videoGeneration = videoGeneration.sanitized(defaults.videoGeneration),
       voiceGeneration = voiceGeneration.sanitized(defaults.voiceGeneration),
       sttRouteId = SpeechToTextRouteId.fromWireValue(sttRouteId)?.wireValue
         ?: defaults.sttRouteId,
@@ -141,6 +171,7 @@ internal data class MediaSpeechSettingsState(
 
   fun toJson(): JSONObject = JSONObject()
     .put("imageGeneration", imageGeneration.toJson())
+    .put("videoGeneration", videoGeneration.toJson())
     .put("voiceGeneration", voiceGeneration.toJson())
     .put("sttRouteId", sttRouteId)
     .put("externalStt", externalStt.toJson())
@@ -153,12 +184,22 @@ internal data class MediaSpeechSettingsState(
         baseUrl = "https://api.fal.ai",
         endpoint = "/v1/images",
         model = "flux-pro",
+        authProtocol = ProviderAuthProtocols.BEARER,
+      ),
+      videoGeneration = MediaProviderSettings(
+        provider = "Runway",
+        baseUrl = "https://api.runwayml.com",
+        endpoint = "/v1/videos",
+        model = "gen4_turbo",
+        authProtocol = ProviderAuthProtocols.BEARER,
       ),
       voiceGeneration = VoiceProviderSettings(
         provider = "OpenAI TTS",
         baseUrl = "https://api.openai.com",
         endpoint = "/v1/audio/speech",
+        model = VoiceProviderSettings.DEFAULT_MODEL,
         voicePreset = "alloy · calm",
+        authProtocol = ProviderAuthProtocols.BEARER,
       ),
       sttRouteId = SpeechToTextRouteId.ON_DEVICE_MODEL.wireValue,
       externalStt = MediaProviderSettings(
@@ -166,6 +207,7 @@ internal data class MediaSpeechSettingsState(
         baseUrl = "https://api.openai.com",
         endpoint = "/v1/audio/transcriptions",
         model = "whisper-1",
+        authProtocol = ProviderAuthProtocols.BEARER,
       ),
       onDeviceModel = OnDeviceSttSettings(
         modelPackage = "Whisper Small",
@@ -179,6 +221,10 @@ internal data class MediaSpeechSettingsState(
         imageGeneration = MediaProviderSettings.fromJson(
           payload.optJSONObject("imageGeneration"),
           defaults.imageGeneration,
+        ),
+        videoGeneration = MediaProviderSettings.fromJson(
+          payload.optJSONObject("videoGeneration"),
+          defaults.videoGeneration,
         ),
         voiceGeneration = VoiceProviderSettings.fromJson(
           payload.optJSONObject("voiceGeneration"),

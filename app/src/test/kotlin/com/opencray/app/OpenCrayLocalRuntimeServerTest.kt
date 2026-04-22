@@ -1072,6 +1072,39 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun submitChatMessageRoutePreservesArtifactAndChatAttachmentReferences() {
+    val chatGateway = RecordingChatRuntimeGateway()
+    val server = localRuntimeServer(chatRuntimeGatewayResolver = { chatGateway })
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/submit_chat_message",
+        body = JSONObject().apply {
+          put("text", "Reuse prior attachments")
+          put(
+            "attachments",
+            JSONArray().apply {
+              put(JSONObject().apply { put("artifactId", "artifact-diagram-1") })
+              put(JSONObject().apply { put("chatAttachmentId", "chat-attachment-1") })
+            },
+          )
+        }.toString(),
+      )
+
+      assertEquals(200, response.statusCode)
+      assertEquals("Reuse prior attachments", chatGateway.submittedText)
+      assertEquals(2, chatGateway.submittedAttachments.size)
+      assertEquals("artifact-diagram-1", chatGateway.submittedAttachments[0].artifactId)
+      assertEquals("chat-attachment-1", chatGateway.submittedAttachments[1].chatAttachmentId)
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun exposesChatRunSnapshotOverLoopbackHttp() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-route"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -2783,6 +2816,8 @@ class OpenCrayLocalRuntimeServerTest {
   private class RecordingChatRuntimeGateway : OpenCrayChatRuntimeGateway {
     var submittedText: String? = null
       private set
+    var submittedAttachments: List<com.opencray.runtime.OpenCrayFinalAttachment> = emptyList()
+      private set
 
     var refreshSandboxSessionInfoCallCount: Int = 0
       private set
@@ -2804,6 +2839,9 @@ class OpenCrayLocalRuntimeServerTest {
     }
 
     override fun loadChatRuntimeSnapshot(): Map<String, Any?> = mapOf("source" to "gateway")
+
+    override fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit =
+      { }
 
     override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? = mapOf("runId" to runId)
 
@@ -2853,6 +2891,7 @@ class OpenCrayLocalRuntimeServerTest {
       attachments: List<com.opencray.runtime.OpenCrayFinalAttachment>,
     ): Map<String, Any?>? {
       submittedText = text
+      submittedAttachments = attachments
       return mapOf("submittedText" to text, "attachmentCount" to attachments.size)
     }
 

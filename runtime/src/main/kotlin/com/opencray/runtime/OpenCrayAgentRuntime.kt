@@ -1301,6 +1301,9 @@ class OpenCrayAgentRuntime(
         return GatewayTurnExecution.Cancelled
       }
       val gatewayResult = gateway.execute(observedRequest)
+      if (hooks.isCancellationRequested()) {
+        return GatewayTurnExecution.Cancelled
+      }
       val retryDelayMs = recoverableGatewayRetryDelayMs(gatewayResult)
       if (retryDelayMs == null) {
         return GatewayTurnExecution.Completed(result = gatewayResult)
@@ -1331,7 +1334,8 @@ class OpenCrayAgentRuntime(
   }
 
   private fun recoverableGatewayRetryDelayMs(gatewayResult: LiteLlmGatewayResult): Long? = when {
-    gatewayResult.status == LiteLlmGatewayStatus.TIMEOUT ->
+    gatewayResult.status == LiteLlmGatewayStatus.TIMEOUT &&
+      !isTerminalProviderTimeout(gatewayResult) ->
       config.recoverableLlmRetryDelayMs
 
     gatewayResult.status == LiteLlmGatewayStatus.RATE_LIMITED ->
@@ -1346,6 +1350,9 @@ class OpenCrayAgentRuntime(
 
     else -> null
   }
+
+  private fun isTerminalProviderTimeout(gatewayResult: LiteLlmGatewayResult): Boolean =
+    gatewayResult.metadata["statusCode"] in TERMINAL_PROVIDER_TIMEOUT_STATUS_CODES
 
   private fun recoverableGatewayFailureObservation(
     gatewayResult: LiteLlmGatewayResult,
@@ -1560,10 +1567,15 @@ class OpenCrayAgentRuntime(
     task: AgentTask,
   ): LiteLlmVisibleTextObserver = object : LiteLlmVisibleTextObserver {
     private var hasVisibleDraft: Boolean = false
+    private var lastVisibleDraftText: String? = null
 
     override fun onVisibleTextSnapshot(text: String) {
       val normalized = visibleAssistantDraftText(text) ?: return
+      if (normalized == lastVisibleDraftText) {
+        return
+      }
       hasVisibleDraft = true
+      lastVisibleDraftText = normalized
       eventSink.onAssistantDraftUpdated(
         task = task,
         text = normalized,
@@ -1577,6 +1589,7 @@ class OpenCrayAgentRuntime(
       }
       clearAssistantDraft(task)
       hasVisibleDraft = false
+      lastVisibleDraftText = null
     }
   }
 
@@ -1617,24 +1630,13 @@ class OpenCrayAgentRuntime(
   private fun extractStructuredAssistantDraftText(rawText: String): String? {
     val lowercase = rawText.lowercase()
     val hasExplicitTypeField = "\"type\"" in lowercase || "\"decision\"" in lowercase
-    if (
-      "\"tool_name\"" in lowercase ||
-      "\"tool_calls\"" in lowercase ||
-      "\"arguments\"" in lowercase ||
-      "\"is_task_bearing_request\"" in lowercase ||
-      "\"user_affect\"" in lowercase ||
-      "\"user_invites_playfulness\"" in lowercase ||
-      "\"user_requests_relational_support\"" in lowercase ||
-      "\"clarification_needed\"" in lowercase
-    ) {
+    if ("\"actions\"" in lowercase) {
+      extractStructuredActionsDraftText(rawText)?.let { return it }
+    }
+    if (containsStructuredAssistantExecutionSignal(lowercase)) {
       return null
     }
-    val actionType = partialJsonStringFieldValue(rawText, "type")
-      ?.trim()
-      ?.lowercase()
-      ?: partialJsonStringFieldValue(rawText, "decision")
-        ?.trim()
-        ?.lowercase()
+    val actionType = structuredAssistantDraftActionType(rawText)
     return when (actionType) {
       "final",
       "answer",
@@ -1643,6 +1645,15 @@ class OpenCrayAgentRuntime(
         partialJsonStringFieldValue(rawText, "text"),
         partialJsonStringFieldValue(rawText, "message"),
         partialJsonStringFieldValue(rawText, "summary"),
+      )?.trim()?.takeIf(String::isNotBlank)
+
+      "progress",
+      "commentary",
+      "status",
+      -> firstNonBlankAssistantDraftField(
+        partialJsonStringFieldValue(rawText, "text"),
+        partialJsonStringFieldValue(rawText, "summary"),
+        partialJsonStringFieldValue(rawText, "message"),
       )?.trim()?.takeIf(String::isNotBlank)
 
       null,
@@ -1659,8 +1670,210 @@ class OpenCrayAgentRuntime(
     }
   }
 
+  private fun extractStructuredActionsDraftText(rawText: String): String? {
+    val actions = partialJsonObjectFieldArrayElements(rawText, "actions")
+    if (actions.isEmpty()) {
+      return null
+    }
+    val hasExecutionAction = actions.any(::structuredAssistantActionSuppressesFinalDraft)
+    return actions
+      .mapNotNull { rawAction ->
+        val visibleText = extractStructuredAssistantDraftTextFromAction(rawAction) ?: return@mapNotNull null
+        if (hasExecutionAction && isStructuredAssistantFinalAction(rawAction)) {
+          return@mapNotNull null
+        }
+        visibleText
+      }
+      .lastOrNull()
+  }
+
+  private fun extractStructuredAssistantDraftTextFromAction(rawAction: String): String? {
+    val actionType = structuredAssistantDraftActionType(rawAction)
+    return when (actionType) {
+      "final",
+      "answer",
+      -> firstNonBlankAssistantDraftField(
+        partialJsonStringFieldValue(rawAction, "answer"),
+        partialJsonStringFieldValue(rawAction, "text"),
+        partialJsonStringFieldValue(rawAction, "message"),
+        partialJsonStringFieldValue(rawAction, "summary"),
+      )?.trim()?.takeIf(String::isNotBlank)
+
+      "progress",
+      "commentary",
+      "status",
+      -> firstNonBlankAssistantDraftField(
+        partialJsonStringFieldValue(rawAction, "text"),
+        partialJsonStringFieldValue(rawAction, "summary"),
+        partialJsonStringFieldValue(rawAction, "message"),
+      )?.trim()?.takeIf(String::isNotBlank)
+
+      else -> null
+    }
+  }
+
+  private fun structuredAssistantDraftActionType(rawText: String): String? =
+    firstNonBlankAssistantDraftField(
+      partialJsonStringFieldValue(rawText, "type")?.trim()?.lowercase()?.takeIf(String::isNotBlank),
+      partialJsonStringFieldValue(rawText, "decision")?.trim()?.lowercase()?.takeIf(String::isNotBlank),
+    )
+
+  private fun isStructuredAssistantFinalAction(rawText: String): Boolean =
+    structuredAssistantDraftActionType(rawText) in setOf("final", "answer")
+
+  private fun structuredAssistantActionSuppressesFinalDraft(rawAction: String): Boolean {
+    val lowercase = rawAction.lowercase()
+    if (containsStructuredAssistantExecutionSignal(lowercase)) {
+      return true
+    }
+    return when (structuredAssistantDraftActionType(rawAction)) {
+      null,
+      "",
+      "final",
+      "answer",
+      "progress",
+      "commentary",
+      "status",
+      -> false
+
+      else -> true
+    }
+  }
+
+  private fun containsStructuredAssistantExecutionSignal(lowercase: String): Boolean =
+    containsStructuredAssistantToolSignal(lowercase) ||
+      "\"is_task_bearing_request\"" in lowercase ||
+      "\"user_affect\"" in lowercase ||
+      "\"user_invites_playfulness\"" in lowercase ||
+      "\"user_requests_relational_support\"" in lowercase ||
+      "\"clarification_needed\"" in lowercase
+
+  private fun containsStructuredAssistantToolSignal(lowercase: String): Boolean =
+    "\"tool_name\"" in lowercase ||
+      "\"tool_calls\"" in lowercase ||
+      "\"arguments\"" in lowercase
+
   private fun firstNonBlankAssistantDraftField(vararg values: String?): String? =
     values.firstOrNull { value -> !value.isNullOrBlank() }
+
+  private fun partialJsonObjectFieldArrayElements(
+    rawText: String,
+    fieldName: String,
+  ): List<String> {
+    val fieldPattern = "\"$fieldName\""
+    var searchFrom = 0
+    var keyIndex = -1
+    while (searchFrom < rawText.length) {
+      val candidateIndex = rawText.indexOf(fieldPattern, searchFrom)
+      if (candidateIndex < 0) {
+        return emptyList()
+      }
+      if (isTopLevelPartialJsonObjectKey(rawText = rawText, keyIndex = candidateIndex)) {
+        keyIndex = candidateIndex
+        break
+      }
+      searchFrom = candidateIndex + fieldPattern.length
+    }
+    var index = keyIndex + fieldPattern.length
+    while (index < rawText.length && rawText[index].isWhitespace()) {
+      index += 1
+    }
+    if (index >= rawText.length || rawText[index] != ':') {
+      return emptyList()
+    }
+    index += 1
+    while (index < rawText.length && rawText[index].isWhitespace()) {
+      index += 1
+    }
+    if (index >= rawText.length || rawText[index] != '[') {
+      return emptyList()
+    }
+    index += 1
+    val elements = mutableListOf<String>()
+    var objectStart = -1
+    var objectDepth = 0
+    var inString = false
+    var escaped = false
+    while (index < rawText.length) {
+      val character = rawText[index]
+      if (inString) {
+        if (escaped) {
+          escaped = false
+        } else {
+          when (character) {
+            '\\' -> escaped = true
+            '"' -> inString = false
+          }
+        }
+        index += 1
+        continue
+      }
+      when (character) {
+        '"' -> inString = true
+        '{' -> {
+          if (objectDepth == 0) {
+            objectStart = index
+          }
+          objectDepth += 1
+        }
+        '}' -> {
+          if (objectDepth > 0) {
+            objectDepth -= 1
+            if (objectDepth == 0 && objectStart >= 0) {
+              elements += rawText.substring(objectStart, index + 1)
+              objectStart = -1
+            }
+          }
+        }
+        ']' -> {
+          if (objectDepth == 0) {
+            return elements
+          }
+        }
+      }
+      index += 1
+    }
+    if (objectStart >= 0) {
+      elements += rawText.substring(objectStart)
+    }
+    return elements
+  }
+
+  private fun isTopLevelPartialJsonObjectKey(
+    rawText: String,
+    keyIndex: Int,
+  ): Boolean {
+    var objectDepth = 0
+    var arrayDepth = 0
+    var inString = false
+    var escaped = false
+    for (index in 0 until keyIndex) {
+      val character = rawText[index]
+      if (inString) {
+        if (escaped) {
+          escaped = false
+        } else {
+          when (character) {
+            '\\' -> escaped = true
+            '"' -> inString = false
+          }
+        }
+        continue
+      }
+      when (character) {
+        '"' -> inString = true
+        '{' -> objectDepth += 1
+        '}' -> if (objectDepth > 0) {
+          objectDepth -= 1
+        }
+        '[' -> arrayDepth += 1
+        ']' -> if (arrayDepth > 0) {
+          arrayDepth -= 1
+        }
+      }
+    }
+    return objectDepth == 1 && arrayDepth == 0 && !inString
+  }
 
   private fun partialJsonStringFieldValue(
     rawText: String,
@@ -3242,7 +3455,13 @@ class OpenCrayAgentRuntime(
     ?: emptySet()
 
   private fun isMemoryTool(toolName: String): Boolean = when (toolPolicyKey(toolName)) {
-    "memory_search", "memory_get" -> true
+    "memory_search",
+    "memory_get",
+    "session_search",
+    "session_get",
+    "past_session_search",
+    "past_session_get",
+    -> true
     else -> false
   }
 
@@ -4590,7 +4809,10 @@ class OpenCrayAgentRuntime(
     if (
       lastEntry?.role == RuntimeConversationRole.USER &&
       lastEntry.content == normalizedInput &&
-      lastEntry.attachments == attachments
+      promptAttachmentsEquivalent(
+        existing = lastEntry.attachments,
+        incoming = attachments,
+      )
     ) {
       return seeded
     }
@@ -4600,6 +4822,49 @@ class OpenCrayAgentRuntime(
       attachments = attachments,
     )
     return seeded
+  }
+
+  private fun promptAttachmentsEquivalent(
+    existing: List<RuntimeConversationAttachment>,
+    incoming: List<RuntimeConversationAttachment>,
+  ): Boolean {
+    if (existing.size != incoming.size) {
+      return false
+    }
+    return existing.zip(incoming).all { (seededAttachment, incomingAttachment) ->
+      seededAttachment.kind == incomingAttachment.kind &&
+        promptAttachmentFieldEquivalent(
+          seededAttachment.attachmentId,
+          incomingAttachment.attachmentId,
+        ) &&
+        promptAttachmentFieldEquivalent(
+          seededAttachment.displayName,
+          incomingAttachment.displayName,
+        ) &&
+        promptAttachmentFieldEquivalent(
+          seededAttachment.filePath,
+          incomingAttachment.filePath,
+        ) &&
+        promptAttachmentFieldEquivalent(
+          seededAttachment.mimeType,
+          incomingAttachment.mimeType,
+        ) &&
+        promptAttachmentFieldEquivalent(
+          seededAttachment.transcriptText,
+          incomingAttachment.transcriptText,
+        )
+    }
+  }
+
+  private fun promptAttachmentFieldEquivalent(
+    existing: String?,
+    incoming: String?,
+  ): Boolean {
+    val normalizedExisting = existing?.trim()?.takeIf(String::isNotBlank)
+    val normalizedIncoming = incoming?.trim()?.takeIf(String::isNotBlank)
+    return normalizedExisting == normalizedIncoming ||
+      normalizedExisting == null ||
+      normalizedIncoming == null
   }
 
   private fun promptUserText(task: AgentTask): String =
@@ -5227,6 +5492,7 @@ class OpenCrayAgentRuntime(
             turn = turn,
             toolName = trace.toolName,
             operation = trace.operation,
+            surface = trace.surface,
             query = trace.query,
             queryTerms = trace.queryTerms,
             resultCount = trace.resultCount,
@@ -5251,6 +5517,7 @@ class OpenCrayAgentRuntime(
     "memory_search" -> MemoryRetrievalTrace(
       operation = "search",
       toolName = call.toolName,
+      surface = result.metadata["surface"]?.takeIf(String::isNotBlank),
       query = result.metadata["query"]?.takeIf(String::isNotBlank),
       queryTerms = splitCsvMetadata(result.metadata["queryTerms"]),
       resultCount = result.metadata["resultCount"]?.toIntOrNull(),
@@ -5270,6 +5537,81 @@ class OpenCrayAgentRuntime(
     "memory_get" -> MemoryRetrievalTrace(
       operation = "get",
       toolName = call.toolName,
+      surface = result.metadata["surface"]?.takeIf(String::isNotBlank),
+      recordIds = splitCsvMetadata(result.metadata["recordIds"]),
+      path = result.metadata["path"]?.takeIf(String::isNotBlank),
+      fromLine = result.metadata["from"]?.toIntOrNull(),
+      returnedLineCount = result.metadata["returnedLineCount"]?.toIntOrNull(),
+      totalLineCount = result.metadata["totalLineCount"]?.toIntOrNull(),
+    ).takeIf { trace ->
+      trace.recordIds.isNotEmpty() ||
+        trace.path != null ||
+        trace.fromLine != null ||
+        trace.returnedLineCount != null ||
+        trace.totalLineCount != null
+    }
+
+    "session_search" -> MemoryRetrievalTrace(
+      operation = "search",
+      toolName = call.toolName,
+      surface = result.metadata["surface"]?.takeIf(String::isNotBlank),
+      query = result.metadata["query"]?.takeIf(String::isNotBlank),
+      queryTerms = splitCsvMetadata(result.metadata["queryTerms"]),
+      resultCount = result.metadata["resultCount"]?.toIntOrNull(),
+      corpusFileCount = result.metadata["corpusFileCount"]?.toIntOrNull(),
+      recordIds = splitCsvMetadata(result.metadata["recordIds"]),
+      paths = splitCsvMetadata(result.metadata["paths"]),
+      lineRanges = splitCsvMetadata(result.metadata["lineRanges"]),
+    ).takeIf { trace ->
+      trace.query != null ||
+        trace.queryTerms.isNotEmpty() ||
+        trace.resultCount != null ||
+        trace.corpusFileCount != null ||
+        trace.recordIds.isNotEmpty() ||
+        trace.paths.isNotEmpty()
+    }
+
+    "session_get" -> MemoryRetrievalTrace(
+      operation = "get",
+      toolName = call.toolName,
+      surface = result.metadata["surface"]?.takeIf(String::isNotBlank),
+      recordIds = splitCsvMetadata(result.metadata["recordIds"]),
+      path = result.metadata["path"]?.takeIf(String::isNotBlank),
+      fromLine = result.metadata["from"]?.toIntOrNull(),
+      returnedLineCount = result.metadata["returnedLineCount"]?.toIntOrNull(),
+      totalLineCount = result.metadata["totalLineCount"]?.toIntOrNull(),
+    ).takeIf { trace ->
+      trace.recordIds.isNotEmpty() ||
+        trace.path != null ||
+        trace.fromLine != null ||
+        trace.returnedLineCount != null ||
+        trace.totalLineCount != null
+    }
+
+    "past_session_search" -> MemoryRetrievalTrace(
+      operation = "search",
+      toolName = call.toolName,
+      surface = result.metadata["surface"]?.takeIf(String::isNotBlank),
+      query = result.metadata["query"]?.takeIf(String::isNotBlank),
+      queryTerms = splitCsvMetadata(result.metadata["queryTerms"]),
+      resultCount = result.metadata["resultCount"]?.toIntOrNull(),
+      corpusFileCount = result.metadata["corpusFileCount"]?.toIntOrNull(),
+      recordIds = splitCsvMetadata(result.metadata["recordIds"]),
+      paths = splitCsvMetadata(result.metadata["paths"]),
+      lineRanges = splitCsvMetadata(result.metadata["lineRanges"]),
+    ).takeIf { trace ->
+      trace.query != null ||
+        trace.queryTerms.isNotEmpty() ||
+        trace.resultCount != null ||
+        trace.corpusFileCount != null ||
+        trace.recordIds.isNotEmpty() ||
+        trace.paths.isNotEmpty()
+    }
+
+    "past_session_get" -> MemoryRetrievalTrace(
+      operation = "get",
+      toolName = call.toolName,
+      surface = result.metadata["surface"]?.takeIf(String::isNotBlank),
       recordIds = splitCsvMetadata(result.metadata["recordIds"]),
       path = result.metadata["path"]?.takeIf(String::isNotBlank),
       fromLine = result.metadata["from"]?.toIntOrNull(),
@@ -5620,68 +5962,7 @@ class OpenCrayAgentRuntime(
   private fun agentToolDefinitionToLiteLlmToolDefinition(
     definition: AgentToolDefinition,
     strict: Boolean,
-  ): LiteLlmToolDefinition = LiteLlmToolDefinition(
-    name = definition.name,
-    description = definition.description,
-    inputSchema = agentToolDefinitionToJsonSchema(definition),
-    strict = strict.takeIf { it },
-  )
-
-  private fun agentToolDefinitionToJsonSchema(definition: AgentToolDefinition): JsonObject = buildJsonObject {
-    put("type", "object")
-    put(
-      "properties",
-      buildJsonObject {
-        definition.parameters.forEach { parameter ->
-          put(parameter.name, agentToolParameterToJsonSchemaProperty(parameter))
-        }
-      },
-    )
-    definition.parameters
-      .filter(AgentToolParameter::required)
-      .map(AgentToolParameter::name)
-      .takeIf { requiredParameters -> requiredParameters.isNotEmpty() }
-      ?.let { requiredParameters ->
-        put(
-          "required",
-          JsonArray(requiredParameters.map(::JsonPrimitive)),
-        )
-      }
-    put("additionalProperties", false)
-  }
-
-  private fun agentToolParameterToJsonSchemaProperty(parameter: AgentToolParameter): JsonObject {
-    parameter.jsonSchema?.let { explicitSchema -> return explicitSchema }
-    return buildJsonObject {
-      when (parameter.type.trim().lowercase()) {
-        "string" -> put("type", "string")
-        "number" -> put("type", "number")
-        "boolean" -> put("type", "boolean")
-        "string[]" -> {
-          put("type", "array")
-          put(
-            "items",
-            buildJsonObject {
-              put("type", "string")
-            },
-          )
-        }
-
-        "object[]" -> {
-          put("type", "array")
-          put(
-            "items",
-            buildJsonObject {
-              put("type", "object")
-            },
-          )
-        }
-
-        else -> put("type", "string")
-      }
-      put("description", parameter.description)
-    }
-  }
+  ): LiteLlmToolDefinition = definition.toLiteLlmToolDefinition(strict = strict)
 
   private fun runtimeToolResultFor(entry: RuntimeConversationMessage): ParsedToolResultObservation? =
     parseToolResultObservation(entry)
@@ -8515,6 +8796,10 @@ class OpenCrayAgentRuntime(
     "skill_read" -> "skill_read"
     "memory_search" -> "memory_search"
     "memory_get" -> "memory_get"
+    "session_search" -> "session_search"
+    "session_get" -> "session_get"
+    "past_session_search" -> "past_session_search"
+    "past_session_get" -> "past_session_get"
     "mcp_list_servers" -> "mcp_list_servers"
     else -> toolName.trim().lowercase()
   }
@@ -8710,6 +8995,7 @@ class OpenCrayAgentRuntime(
   private data class MemoryRetrievalTrace(
     val operation: String,
     val toolName: String,
+    val surface: String? = null,
     val query: String? = null,
     val queryTerms: List<String> = emptyList(),
     val resultCount: Int? = null,
@@ -8810,6 +9096,7 @@ class OpenCrayAgentRuntime(
     const val MAX_PROTOCOL_ERROR_PREVIEW_CHARS: Int = 600
     const val MAX_STRUCTURED_TOOL_CALL_ERROR_COUNT: Int = 3
     const val RECOVERABLE_LLM_RETRY_SLEEP_CHUNK_MS: Long = 250L
+    val TERMINAL_PROVIDER_TIMEOUT_STATUS_CODES: Set<String> = setOf("449", "499")
     const val ACTIVATION_SOURCE_SKILL_READ: String = "skill_read"
     const val PENULTIMATE_TURN_SYSTEM_PROMPT_APPENDIX: String =
       "[Turn Budget]\nYou have two model turns left including this one. If another tool is still necessary, use at most one more tool now and be ready to answer on the next turn."

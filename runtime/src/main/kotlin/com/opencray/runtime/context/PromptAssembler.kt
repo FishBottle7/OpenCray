@@ -357,6 +357,11 @@ class PromptAssembler(
     val hasListSubAgentsTool = hasAnyTool(normalizedToolNames, "list_subagents")
     val hasMemorySearchTool = toolDefinitions.any { definition -> definition.name == "memory_search" }
     val hasMemoryGetTool = toolDefinitions.any { definition -> definition.name == "memory_get" }
+    val hasSessionSearchTool = toolDefinitions.any { definition -> definition.name == "session_search" }
+    val hasSessionGetTool = toolDefinitions.any { definition -> definition.name == "session_get" }
+    val hasPastSessionSearchTool = toolDefinitions.any { definition -> definition.name == "past_session_search" }
+    val hasPastSessionGetTool = toolDefinitions.any { definition -> definition.name == "past_session_get" }
+    val hasAnySessionHistorySearchTool = hasSessionSearchTool || hasPastSessionSearchTool
     val hasImportTool = toolDefinitions.any { definition ->
       definition.name == "ImportFile" || definition.name == "workspace_import_file"
     }
@@ -769,10 +774,29 @@ class PromptAssembler(
     if (!parallelToolCallsEnabled) {
       appendLine("Do not return multiple tool calls in one response.")
     }
+    if (hasMemorySearchTool && hasAnySessionHistorySearchTool) {
+      appendToolGuidance("Durable memory tools expose long-lived remembered records. Prior-session history tools expose bounded transcript snippets from earlier sessions.")
+    }
     if (hasMemorySearchTool) {
-      appendToolGuidance("When the user asks about prior work, earlier decisions, remembered preferences, dates, people, paths, or todos, search projected memory first instead of guessing from partial context.")
+      if (hasAnySessionHistorySearchTool) {
+        appendToolGuidance("Use memory_search for durable remembered facts, stored preferences, dates, people, paths, or todos that should survive across sessions.")
+      } else {
+        appendToolGuidance("When the user asks about prior work, earlier decisions, remembered preferences, dates, people, paths, or todos, search projected memory first instead of guessing from partial context.")
+      }
       if (hasMemoryGetTool) {
         appendToolGuidance("Use memory_search to locate the relevant memory path, then memory_get to read only the narrow line range you need.")
+      }
+    }
+    if (hasSessionSearchTool) {
+      appendToolGuidance("When the user asks what happened in an earlier chat or prior session, search projected session history instead of guessing from the current transcript.")
+      if (hasSessionGetTool) {
+        appendToolGuidance("Use session_search to locate the relevant prior-session path, then session_get to read only the narrow line range you need. session_search excludes the current session by default.")
+      }
+    }
+    if (hasPastSessionSearchTool) {
+      appendToolGuidance("When you need explicit continuity from other archived sessions, call past_session_search. This retrieval surface is tool-driven and not auto-injected.")
+      if (hasPastSessionGetTool) {
+        appendToolGuidance("Use past_session_search to get matched session summaries and key references, then call past_session_get only for the cited line range.")
       }
     }
     appendLine()

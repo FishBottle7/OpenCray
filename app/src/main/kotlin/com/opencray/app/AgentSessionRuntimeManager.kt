@@ -67,6 +67,7 @@ internal data class AgentRunSnapshot(
   val resultMetadata: Map<String, String> = emptyMap(),
   val pendingMessageId: String? = null,
   val managedProcessIds: List<String> = emptyList(),
+  val managedProcesses: List<ManagedProcessSnapshot> = emptyList(),
   val runningManagedProcessCount: Int = 0,
   val hasLiveManagedProcesses: Boolean = false,
   val lastEvent: OpenCrayAgentRunEvent? = null,
@@ -265,6 +266,12 @@ internal interface AgentSessionTaskRuntimeFactory {
 
   fun listManagedProcesses(sessionId: String): List<ManagedProcessSnapshot> = emptyList()
 
+  fun readManagedProcess(
+    sessionId: String,
+    processId: String,
+  ): ManagedProcessSnapshot? = listManagedProcesses(sessionId)
+    .firstOrNull { snapshot -> snapshot.processId == processId }
+
   fun terminateManagedProcess(
     sessionId: String,
     processId: String,
@@ -434,6 +441,7 @@ private class ManagedAgentSessionHandle(
   private val detachedControlTasksByTaskId = linkedMapOf<String, DetachedControlTaskState>()
   private val processingLock = Any()
   private var processing: Boolean = false
+  private var processingThread: Thread? = null
   private var lastAccessEpochMs: Long = System.currentTimeMillis()
   private val snapshotStore: SessionQueueSnapshotStore = RecoveryAwareQueueSnapshotStore(
     sessionId = sessionId,
@@ -450,6 +458,7 @@ private class ManagedAgentSessionHandle(
         metadata = task.metadata,
       )
       recordRunEvent(enrichedEvent)
+      runEventJournalStore.append(enrichedEvent)
       listenerProvider().forEach { listener ->
         listener.onRunEvent(sessionId = sessionId, task = task, event = enrichedEvent)
         when (enrichedEvent) {
@@ -642,6 +651,9 @@ private class ManagedAgentSessionHandle(
       runRecordsById[runId] = record
       persistRunRecordLocked(record)
     }
+    runtimeFlowDebug(
+      "runtime.submit session=$sessionId task=${submittedTask.id} run=$runId pending=${submittedTask.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"} source=${submission.lifecycleDiagnostics.submissionSource ?: "-"}",
+    )
     return submission
   }
 
@@ -703,6 +715,7 @@ private class ManagedAgentSessionHandle(
   override fun ensureProcessing() {
     touch()
     if (!hasRunnableWork()) {
+      runtimeFlowDebug("runtime.ensureProcessingSkipped session=$sessionId reason=no_runnable_work")
       return
     }
     val shouldSchedule = synchronized(processingLock) {
@@ -714,9 +727,14 @@ private class ManagedAgentSessionHandle(
       }
     }
     if (!shouldSchedule) {
+      runtimeFlowDebug("runtime.ensureProcessingSkipped session=$sessionId reason=already_processing")
       return
     }
+    runtimeFlowDebug("runtime.ensureProcessingScheduled session=$sessionId")
     executor.execute {
+      synchronized(processingLock) {
+        processingThread = Thread.currentThread()
+      }
       try {
         loop.resume()
         while (true) {
@@ -725,14 +743,20 @@ private class ManagedAgentSessionHandle(
           }
           val results = loop.runUntilIdle()
           if (results.isEmpty()) {
+            runtimeFlowDebug("runtime.ensureProcessingIdle session=$sessionId reason=no_results")
             break
           }
         }
       } finally {
+        Thread.interrupted()
         val reschedule = synchronized(processingLock) {
+          if (processingThread === Thread.currentThread()) {
+            processingThread = null
+          }
           processing = false
           hasRunnableWork()
         }
+        runtimeFlowDebug("runtime.ensureProcessingFinished session=$sessionId reschedule=$reschedule")
         if (reschedule) {
           ensureProcessing()
         }
@@ -989,6 +1013,9 @@ private class ManagedAgentSessionHandle(
   override fun requestCancel(taskId: String): Boolean {
     touch()
     if (loop.requestCancel(taskId)) {
+      if (isQueueTaskAwaitingCancellation(taskId)) {
+        interruptProcessingThread()
+      }
       return true
     }
     if (requestDetachedControlCancel(taskId)) {
@@ -1122,6 +1149,20 @@ private class ManagedAgentSessionHandle(
   }
 
   override fun hasPendingWork(): Boolean = currentRunSnapshots().any { snapshot -> !snapshot.isTerminal }
+
+  private fun isQueueTaskAwaitingCancellation(taskId: String): Boolean =
+    loop.snapshot().tasks.any { taskSnapshot ->
+      taskSnapshot.task.id == taskId &&
+        taskSnapshot.lifecycleState == QueueTaskLifecycleState.CANCEL_REQUESTED
+    }
+
+  private fun interruptProcessingThread() {
+    val activeThread = synchronized(processingLock) { processingThread }
+    runtimeFlowDebug(
+      "runtime.requestCancelInterrupt session=$sessionId threadActive=${activeThread != null}",
+    )
+    activeThread?.interrupt()
+  }
 
   private fun hasRunnableWork(): Boolean {
     val runnableTaskIds = loop.snapshot().tasks
@@ -1341,8 +1382,14 @@ private class ManagedAgentSessionHandle(
         existingIds = record?.managedProcessIds.orEmpty(),
         managedProcessesById = managedProcessesById,
       )
-      val runningManagedProcessCount = managedProcessIds.count { processId ->
-        managedProcessesById[processId]?.status == ManagedProcessStatus.RUNNING
+      val associatedProcesses = associatedManagedProcesses(
+        taskId = taskId,
+        existingIds = managedProcessIds,
+        managedProcessesById = managedProcessesById,
+        managedProcessReader = { processId -> runtimeFactory.readManagedProcess(sessionId, processId) },
+      )
+      val runningManagedProcessCount = associatedProcesses.count { process ->
+        process.status == ManagedProcessStatus.RUNNING
       }
       val acceptedAtEpochMs = record?.submission?.acceptedAtEpochMs
         ?: taskSnapshot?.task?.createdAtEpochMs
@@ -1351,9 +1398,7 @@ private class ManagedAgentSessionHandle(
         taskSnapshot?.task?.updatedAtEpochMs ?: 0L,
         result?.finishedAtEpochMs ?: 0L,
         record?.lastEvent?.emittedAtEpochMs ?: 0L,
-        managedProcessIds.maxOfOrNull { processId ->
-          managedProcessesById[processId]?.updatedAtEpochMs ?: 0L
-        } ?: 0L,
+        associatedProcesses.maxOfOrNull(ManagedProcessSnapshot::updatedAtEpochMs) ?: 0L,
         acceptedAtEpochMs,
       )
       val projectedLifecycleState = projectedLifecycleState(
@@ -1398,6 +1443,7 @@ private class ManagedAgentSessionHandle(
           ?.get(AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID)
           ?: record?.pendingMessageId,
         managedProcessIds = managedProcessIds,
+        managedProcesses = associatedProcesses,
         runningManagedProcessCount = runningManagedProcessCount,
         hasLiveManagedProcesses = runningManagedProcessCount > 0,
         lastEvent = record?.lastEvent,
@@ -1425,6 +1471,7 @@ private class ManagedAgentSessionHandle(
         taskId = taskId,
         existingIds = record.managedProcessIds,
         managedProcessesById = managedProcessesById,
+        managedProcessReader = { processId -> runtimeFactory.readManagedProcess(sessionId, processId) },
       )
       if (!shouldRepairRestoredInterruptedRun(taskSnapshot, record, associatedProcesses)) {
         return@forEach
@@ -1700,11 +1747,14 @@ private class ManagedAgentSessionHandle(
     taskId: String,
     existingIds: List<String>,
     managedProcessesById: Map<String, ManagedProcessSnapshot>,
+    managedProcessReader: ((String) -> ManagedProcessSnapshot?)? = null,
   ): List<ManagedProcessSnapshot> = associatedManagedProcessIds(
     taskId = taskId,
     existingIds = existingIds,
     managedProcessesById = managedProcessesById,
-  ).mapNotNull(managedProcessesById::get)
+  ).mapNotNull { processId ->
+    managedProcessesById[processId] ?: managedProcessReader?.invoke(processId)
+  }
 
   private fun projectedLifecycleState(
     original: QueueTaskLifecycleState?,

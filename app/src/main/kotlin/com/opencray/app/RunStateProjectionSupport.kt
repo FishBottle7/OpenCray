@@ -11,6 +11,7 @@ internal fun associatedManagedProcessesForProjection(
   taskId: String,
   existingIds: List<String>,
   managedProcessesById: Map<String, ManagedProcessSnapshot>,
+  managedProcessReader: ((String) -> ManagedProcessSnapshot?)? = null,
 ): List<ManagedProcessSnapshot> = (
   existingIds +
     managedProcessesById.values
@@ -18,7 +19,9 @@ internal fun associatedManagedProcessesForProjection(
       .filter { snapshot -> snapshot.taskId == taskId }
       .map(ManagedProcessSnapshot::processId)
       .toList()
-  ).distinct().mapNotNull(managedProcessesById::get)
+  ).distinct().mapNotNull { processId ->
+    managedProcessesById[processId] ?: managedProcessReader?.invoke(processId)
+  }
 
 internal fun projectedLifecycleStateForRestoreResult(
   original: QueueTaskLifecycleState?,

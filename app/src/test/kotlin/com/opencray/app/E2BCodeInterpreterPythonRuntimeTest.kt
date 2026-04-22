@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -32,6 +33,11 @@ class E2BCodeInterpreterPythonRuntimeTest {
   val temporaryFolder: TemporaryFolder = TemporaryFolder()
 
   private val json: Json = Json { ignoreUnknownKeys = true }
+
+  @After
+  fun tearDown() {
+    SharedE2BSandboxActivityTracker.clearForTest()
+  }
 
   @Test
   fun execCreatesSandboxUploadsWorkspaceExecutesAndKillsEphemeralSandbox() {
@@ -966,6 +972,339 @@ class E2BCodeInterpreterPythonRuntimeTest {
     assertEquals(ExecutionStatus.CANCELLED, result!!.status)
     assertEquals(E2BCodeInterpreterPythonRuntime.ERROR_E2B_CANCELLED, result.errorCode)
     assertTrue(deleteSandboxCount.get() >= 1)
+  }
+
+  @Test
+  fun stickyRequestCancellationCancelsContextWithoutDeletingSandbox() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-sticky-cancel").toPath()
+    writeFile(workspaceRoot.resolve("scripts/run.py"), "print('cancel sticky')\n")
+    val streamStarted = CountDownLatch(1)
+    val allowStreamFailure = CountDownLatch(1)
+    val deleteContextCount = AtomicInteger(0)
+    val deleteSandboxCount = AtomicInteger(0)
+    val resultRef = AtomicReference<ExecutionResult?>()
+    val sessionStore = E2BSandboxSessionStore(InMemoryE2BSandboxSessionKeyValueStore())
+    val transport = FakeE2BTransport().apply {
+      requestHandler = { request ->
+        when {
+          request.method == "POST" && request.url == "https://api.e2b.app/sandboxes" ->
+            E2BResponse(
+              statusCode = 201,
+              body = """{"sandboxID":"sb-sticky-cancel","domain":"e2b.app","envdAccessToken":"envd-sticky-cancel","trafficAccessToken":"traffic-sticky-cancel"}""",
+            )
+
+          request.method == "POST" && request.url == "https://49999-sb-sticky-cancel.e2b.app/contexts" ->
+            E2BResponse(
+              statusCode = 200,
+              body = """{"id":"ctx-sticky-cancel","language":"python","cwd":"/x"}""",
+            )
+
+          request.method == "DELETE" && request.url == "https://49999-sb-sticky-cancel.e2b.app/contexts/ctx-sticky-cancel" -> {
+            deleteContextCount.incrementAndGet()
+            allowStreamFailure.countDown()
+            E2BResponse(statusCode = 204)
+          }
+
+          request.method == "DELETE" && request.url == "https://api.e2b.app/sandboxes/sb-sticky-cancel" -> {
+            deleteSandboxCount.incrementAndGet()
+            E2BResponse(statusCode = 204)
+          }
+
+          else -> error("Unexpected request ${request.method} ${request.url}")
+        }
+      }
+      uploadHandler = { E2BResponse(statusCode = 200, body = "[]") }
+      streamHandler = { _, _ ->
+        streamStarted.countDown()
+        allowStreamFailure.await(2, TimeUnit.SECONDS)
+        throw IllegalStateException("context terminated")
+      }
+    }
+    val runtime = runtime(
+      state = SandboxSettingsState(
+        enabled = true,
+        sessionMode = SandboxSessionMode.STICKY.wireValue,
+        autoResume = true,
+      ),
+      transport = transport,
+      sessionStore = sessionStore,
+    )
+
+    val executionThread = Thread {
+      resultRef.set(
+        runtime.exec(
+          PythonExecRequest(
+            taskId = "task-sticky-cancel",
+            workspaceRoot = workspaceRoot,
+            scriptPath = workspaceRoot.resolve("scripts/run.py"),
+            timeoutMs = 30_000L,
+            requestId = "req-sticky-cancel",
+          ),
+        ),
+      )
+    }
+    executionThread.start()
+    assertTrue(streamStarted.await(2, TimeUnit.SECONDS))
+
+    assertTrue(runtime.requestCancellation("req-sticky-cancel"))
+    executionThread.join(2_000L)
+
+    val result = resultRef.get()
+    assertNotNull(result)
+    assertEquals(ExecutionStatus.CANCELLED, result!!.status)
+    assertEquals(E2BCodeInterpreterPythonRuntime.ERROR_E2B_CANCELLED, result.errorCode)
+    assertTrue(deleteContextCount.get() >= 1)
+    assertEquals(0, deleteSandboxCount.get())
+    assertEquals("sb-sticky-cancel", sessionStore.load()?.sandboxId)
+    assertEquals("sb-sticky-cancel", runtime.activeStickySessionSnapshot()?.sandboxId)
+  }
+
+  @Test
+  fun stickyRequestTimeoutCancelsContextWithoutDeletingSandbox() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-sticky-timeout").toPath()
+    writeFile(workspaceRoot.resolve("scripts/run.py"), "print('timeout sticky')\n")
+    val streamStarted = CountDownLatch(1)
+    val contextCancelled = CountDownLatch(1)
+    val deleteContextCount = AtomicInteger(0)
+    val deleteSandboxCount = AtomicInteger(0)
+    val sessionStore = E2BSandboxSessionStore(InMemoryE2BSandboxSessionKeyValueStore())
+    val transport = FakeE2BTransport().apply {
+      requestHandler = { request ->
+        when {
+          request.method == "POST" && request.url == "https://api.e2b.app/sandboxes" ->
+            E2BResponse(
+              statusCode = 201,
+              body = """{"sandboxID":"sb-sticky-timeout","domain":"e2b.app","envdAccessToken":"envd-sticky-timeout","trafficAccessToken":"traffic-sticky-timeout"}""",
+            )
+
+          request.method == "POST" && request.url == "https://49999-sb-sticky-timeout.e2b.app/contexts" ->
+            E2BResponse(
+              statusCode = 200,
+              body = """{"id":"ctx-sticky-timeout","language":"python","cwd":"/x"}""",
+            )
+
+          request.method == "DELETE" && request.url == "https://49999-sb-sticky-timeout.e2b.app/contexts/ctx-sticky-timeout" -> {
+            deleteContextCount.incrementAndGet()
+            contextCancelled.countDown()
+            E2BResponse(statusCode = 204)
+          }
+
+          request.method == "DELETE" && request.url == "https://api.e2b.app/sandboxes/sb-sticky-timeout" -> {
+            deleteSandboxCount.incrementAndGet()
+            E2BResponse(statusCode = 204)
+          }
+
+          else -> error("Unexpected request ${request.method} ${request.url}")
+        }
+      }
+      uploadHandler = { E2BResponse(statusCode = 200, body = "[]") }
+      streamHandler = { _, _ ->
+        streamStarted.countDown()
+        contextCancelled.await(2, TimeUnit.SECONDS)
+        throw IllegalStateException("context timed out")
+      }
+    }
+    val runtime = runtime(
+      state = SandboxSettingsState(
+        enabled = true,
+        sessionMode = SandboxSessionMode.STICKY.wireValue,
+        autoResume = true,
+      ),
+      transport = transport,
+      sessionStore = sessionStore,
+    )
+
+    val result = runtime.exec(
+      PythonExecRequest(
+        taskId = "task-sticky-timeout",
+        workspaceRoot = workspaceRoot,
+        scriptPath = workspaceRoot.resolve("scripts/run.py"),
+        timeoutMs = 100L,
+        requestId = "req-sticky-timeout",
+      ),
+    )
+
+    assertTrue(streamStarted.await(2, TimeUnit.SECONDS))
+    assertEquals(ExecutionStatus.TIMEOUT, result.status)
+    assertEquals(E2BCodeInterpreterPythonRuntime.ERROR_E2B_TIMEOUT, result.errorCode)
+    assertTrue(deleteContextCount.get() >= 1)
+    assertEquals(0, deleteSandboxCount.get())
+    assertEquals("sb-sticky-timeout", sessionStore.load()?.sandboxId)
+    assertEquals("sb-sticky-timeout", runtime.activeStickySessionSnapshot()?.sandboxId)
+  }
+
+  @Test
+  fun stickyCancellationDuringWorkspaceUploadStopsBeforeRemainingUploadsOrContextCreation() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-sticky-pre-context-cancel").toPath()
+    writeFile(workspaceRoot.resolve("scripts/run.py"), "print('cancel during upload')\n")
+    writeFile(workspaceRoot.resolve("input.txt"), "payload\n")
+    val firstUploadStarted = CountDownLatch(1)
+    val allowFirstUploadFinish = CountDownLatch(1)
+    val uploadCount = AtomicInteger(0)
+    val createContextCount = AtomicInteger(0)
+    val deleteSandboxCount = AtomicInteger(0)
+    val resultRef = AtomicReference<ExecutionResult?>()
+    val sessionStore = E2BSandboxSessionStore(InMemoryE2BSandboxSessionKeyValueStore())
+    val transport = FakeE2BTransport().apply {
+      requestHandler = { request ->
+        when {
+          request.method == "POST" && request.url == "https://api.e2b.app/sandboxes" ->
+            E2BResponse(
+              statusCode = 201,
+              body = """{"sandboxID":"sb-sticky-pre-context-cancel","domain":"e2b.app","envdAccessToken":"envd-pre-context-cancel","trafficAccessToken":"traffic-pre-context-cancel"}""",
+            )
+
+          request.method == "POST" && request.url == "https://49999-sb-sticky-pre-context-cancel.e2b.app/contexts" -> {
+            createContextCount.incrementAndGet()
+            E2BResponse(statusCode = 200, body = """{"id":"ctx-pre-context-cancel","language":"python","cwd":"/x"}""")
+          }
+
+          request.method == "DELETE" && request.url == "https://api.e2b.app/sandboxes/sb-sticky-pre-context-cancel" -> {
+            deleteSandboxCount.incrementAndGet()
+            E2BResponse(statusCode = 204)
+          }
+
+          else -> error("Unexpected request ${request.method} ${request.url}")
+        }
+      }
+      uploadHandler = {
+        val currentUpload = uploadCount.incrementAndGet()
+        if (currentUpload == 1) {
+          firstUploadStarted.countDown()
+          allowFirstUploadFinish.await(2, TimeUnit.SECONDS)
+        }
+        E2BResponse(statusCode = 200, body = "[]")
+      }
+      streamHandler = { request, _ ->
+        error("Unexpected stream ${request.method} ${request.url}")
+      }
+    }
+    val runtime = runtime(
+      state = SandboxSettingsState(
+        enabled = true,
+        sessionMode = SandboxSessionMode.STICKY.wireValue,
+        autoResume = true,
+      ),
+      transport = transport,
+      sessionStore = sessionStore,
+    )
+
+    val executionThread = Thread {
+      resultRef.set(
+        runtime.exec(
+          PythonExecRequest(
+            taskId = "task-sticky-pre-context-cancel",
+            workspaceRoot = workspaceRoot,
+            scriptPath = workspaceRoot.resolve("scripts/run.py"),
+            timeoutMs = 30_000L,
+            requestId = "req-sticky-pre-context-cancel",
+          ),
+        ),
+      )
+    }
+    executionThread.start()
+    assertTrue(firstUploadStarted.await(2, TimeUnit.SECONDS))
+
+    assertTrue(runtime.requestCancellation("req-sticky-pre-context-cancel"))
+    allowFirstUploadFinish.countDown()
+    executionThread.join(2_000L)
+
+    val result = resultRef.get()
+    assertNotNull(result)
+    assertEquals(ExecutionStatus.CANCELLED, result!!.status)
+    assertEquals(E2BCodeInterpreterPythonRuntime.ERROR_E2B_CANCELLED, result.errorCode)
+    assertEquals(1, uploadCount.get())
+    assertEquals(0, createContextCount.get())
+    assertEquals(0, deleteSandboxCount.get())
+    assertTrue(transport.streamRequests.isEmpty())
+    assertEquals("sb-sticky-pre-context-cancel", sessionStore.load()?.sandboxId)
+  }
+
+  @Test
+  fun stickyTimeoutDuringWorkspaceUploadStopsBeforeRemainingUploadsOrContextCreation() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-sticky-pre-context-timeout").toPath()
+    writeFile(workspaceRoot.resolve("scripts/run.py"), "print('timeout during upload')\n")
+    writeFile(workspaceRoot.resolve("input.txt"), "payload\n")
+    val firstUploadStarted = CountDownLatch(1)
+    val allowFirstUploadFinish = CountDownLatch(1)
+    val uploadCount = AtomicInteger(0)
+    val createContextCount = AtomicInteger(0)
+    val deleteSandboxCount = AtomicInteger(0)
+    val resultRef = AtomicReference<ExecutionResult?>()
+    val sessionStore = E2BSandboxSessionStore(InMemoryE2BSandboxSessionKeyValueStore())
+    val transport = FakeE2BTransport().apply {
+      requestHandler = { request ->
+        when {
+          request.method == "POST" && request.url == "https://api.e2b.app/sandboxes" ->
+            E2BResponse(
+              statusCode = 201,
+              body = """{"sandboxID":"sb-sticky-pre-context-timeout","domain":"e2b.app","envdAccessToken":"envd-pre-context-timeout","trafficAccessToken":"traffic-pre-context-timeout"}""",
+            )
+
+          request.method == "POST" && request.url == "https://49999-sb-sticky-pre-context-timeout.e2b.app/contexts" -> {
+            createContextCount.incrementAndGet()
+            E2BResponse(statusCode = 200, body = """{"id":"ctx-pre-context-timeout","language":"python","cwd":"/x"}""")
+          }
+
+          request.method == "DELETE" && request.url == "https://api.e2b.app/sandboxes/sb-sticky-pre-context-timeout" -> {
+            deleteSandboxCount.incrementAndGet()
+            E2BResponse(statusCode = 204)
+          }
+
+          else -> error("Unexpected request ${request.method} ${request.url}")
+        }
+      }
+      uploadHandler = {
+        val currentUpload = uploadCount.incrementAndGet()
+        if (currentUpload == 1) {
+          firstUploadStarted.countDown()
+          allowFirstUploadFinish.await(2, TimeUnit.SECONDS)
+        }
+        E2BResponse(statusCode = 200, body = "[]")
+      }
+      streamHandler = { request, _ ->
+        error("Unexpected stream ${request.method} ${request.url}")
+      }
+    }
+    val runtime = runtime(
+      state = SandboxSettingsState(
+        enabled = true,
+        sessionMode = SandboxSessionMode.STICKY.wireValue,
+        autoResume = true,
+      ),
+      transport = transport,
+      sessionStore = sessionStore,
+    )
+
+    val executionThread = Thread {
+      resultRef.set(
+        runtime.exec(
+          PythonExecRequest(
+            taskId = "task-sticky-pre-context-timeout",
+            workspaceRoot = workspaceRoot,
+            scriptPath = workspaceRoot.resolve("scripts/run.py"),
+            timeoutMs = 100L,
+            requestId = "req-sticky-pre-context-timeout",
+          ),
+        ),
+      )
+    }
+    executionThread.start()
+    assertTrue(firstUploadStarted.await(2, TimeUnit.SECONDS))
+
+    Thread.sleep(200L)
+    allowFirstUploadFinish.countDown()
+    executionThread.join(2_000L)
+
+    val result = resultRef.get()
+    assertNotNull(result)
+    assertEquals(ExecutionStatus.TIMEOUT, result!!.status)
+    assertEquals(E2BCodeInterpreterPythonRuntime.ERROR_E2B_TIMEOUT, result.errorCode)
+    assertEquals(1, uploadCount.get())
+    assertEquals(0, createContextCount.get())
+    assertEquals(0, deleteSandboxCount.get())
+    assertTrue(transport.streamRequests.isEmpty())
+    assertEquals("sb-sticky-pre-context-timeout", sessionStore.load()?.sandboxId)
   }
 
   @Test

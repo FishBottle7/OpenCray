@@ -810,6 +810,14 @@ private class LoopbackHttpOpenCrayChatRuntimeGateway(
   override fun loadChatRuntimeSnapshot(): Map<String, Any?> =
     requestClient.getObject(path = "v1/chat_runtime_snapshot")
 
+  override fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit =
+    observeLiveAssistantDraftsWithPollingSnapshot(
+      mainThreadPoster = mainThreadPoster,
+      runtimePayloadProvider = ::loadChatRuntimeSnapshot,
+      listener = listener,
+      pollIntervalMs = pollIntervalMs,
+    )
+
   override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? =
     requestClient.getObjectOrNull(
       path = "v1/chat_run_snapshot",

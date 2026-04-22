@@ -175,18 +175,38 @@ internal class OpenCrayFlutterHostBridge(
           return
         }
         "loadSoulVisualIdentity" -> localHostGateway.loadSoulVisualIdentity()
-        "loadWorkspaceImagePreview" -> localHostGateway.loadWorkspaceImagePreview(
-          relativePath = call.argument<String>("relativePath").orEmpty(),
-        )
-        "loadWorkspaceTextPreview" -> localHostGateway.loadWorkspaceTextPreview(
-          relativePath = call.argument<String>("relativePath").orEmpty(),
-        )
-        "loadWorkspaceVoicePlaybackSource" -> localHostGateway.loadWorkspaceVoicePlaybackSource(
-          relativePath = call.argument<String>("relativePath").orEmpty(),
-        )
-        "loadWorkspaceTextDocument" -> localHostGateway.loadWorkspaceTextDocument(
-          relativePath = call.argument<String>("relativePath").orEmpty(),
-        )
+        "loadWorkspaceImagePreview" -> {
+          runAsync(result) {
+            localHostGateway.loadWorkspaceImagePreview(
+              relativePath = call.argument<String>("relativePath").orEmpty(),
+            )
+          }
+          return
+        }
+        "loadWorkspaceTextPreview" -> {
+          runAsync(result) {
+            localHostGateway.loadWorkspaceTextPreview(
+              relativePath = call.argument<String>("relativePath").orEmpty(),
+            )
+          }
+          return
+        }
+        "loadWorkspaceVoicePlaybackSource" -> {
+          runAsync(result) {
+            localHostGateway.loadWorkspaceVoicePlaybackSource(
+              relativePath = call.argument<String>("relativePath").orEmpty(),
+            )
+          }
+          return
+        }
+        "loadWorkspaceTextDocument" -> {
+          runAsync(result) {
+            localHostGateway.loadWorkspaceTextDocument(
+              relativePath = call.argument<String>("relativePath").orEmpty(),
+            )
+          }
+          return
+        }
         "openWorkspaceEntry" -> {
           localHostGateway.openWorkspaceEntry(
             relativePath = call.argument<String>("relativePath").orEmpty(),
@@ -909,7 +929,17 @@ internal class OpenCrayFlutterHostBridge(
         backgroundRunner {
           runCatching { importAction(pickedUris) }
             .onSuccess { payload ->
-              mainThreadPoster { result.success(payload) }
+              if (payload is List<*> && payload.isEmpty()) {
+                mainThreadPoster {
+                  result.error(
+                    "HOST_BRIDGE_ERROR",
+                    "Unable to import the selected attachments.",
+                    null,
+                  )
+                }
+              } else {
+                mainThreadPoster { result.success(payload) }
+              }
             }
             .onFailure { throwable ->
               mainThreadPoster {
@@ -932,7 +962,13 @@ internal class OpenCrayFlutterHostBridge(
         val relativePath = payload["relativePath"] as String?
         val path = payload["path"] as String?
         val artifactId = payload["artifactId"] as String?
-        if (relativePath.isNullOrBlank() && path.isNullOrBlank() && artifactId.isNullOrBlank()) {
+        val chatAttachmentId = payload["chatAttachmentId"] as String?
+        if (
+          relativePath.isNullOrBlank() &&
+          path.isNullOrBlank() &&
+          artifactId.isNullOrBlank() &&
+          chatAttachmentId.isNullOrBlank()
+        ) {
           return@mapNotNull null
         }
         OpenCrayFinalAttachment(
@@ -940,6 +976,7 @@ internal class OpenCrayFlutterHostBridge(
           relativePath = relativePath,
           path = path,
           artifactId = artifactId,
+          chatAttachmentId = chatAttachmentId,
           displayName = payload["displayName"] as String?,
           mimeType = payload["mimeType"] as String?,
           durationMs = (payload["durationMs"] as Number?)?.toLong(),

@@ -263,24 +263,32 @@ class MediaProviderConfigSnapshot {
     required this.baseUrl,
     required this.endpoint,
     required this.model,
+    this.authProtocol = 'bearer',
+    this.apiKey = '',
   });
 
   final String provider;
   final String baseUrl;
   final String endpoint;
   final String model;
+  final String authProtocol;
+  final String apiKey;
 
   MediaProviderConfigSnapshot copyWith({
     String? provider,
     String? baseUrl,
     String? endpoint,
     String? model,
+    String? authProtocol,
+    String? apiKey,
   }) {
     return MediaProviderConfigSnapshot(
       provider: provider ?? this.provider,
       baseUrl: baseUrl ?? this.baseUrl,
       endpoint: endpoint ?? this.endpoint,
       model: model ?? this.model,
+      authProtocol: authProtocol ?? this.authProtocol,
+      apiKey: apiKey ?? this.apiKey,
     );
   }
 }
@@ -290,25 +298,37 @@ class VoiceProviderConfigSnapshot {
     required this.provider,
     required this.baseUrl,
     required this.endpoint,
+    this.model = 'tts-1',
     required this.voicePreset,
+    this.authProtocol = 'bearer',
+    this.apiKey = '',
   });
 
   final String provider;
   final String baseUrl;
   final String endpoint;
+  final String model;
   final String voicePreset;
+  final String authProtocol;
+  final String apiKey;
 
   VoiceProviderConfigSnapshot copyWith({
     String? provider,
     String? baseUrl,
     String? endpoint,
+    String? model,
     String? voicePreset,
+    String? authProtocol,
+    String? apiKey,
   }) {
     return VoiceProviderConfigSnapshot(
       provider: provider ?? this.provider,
       baseUrl: baseUrl ?? this.baseUrl,
       endpoint: endpoint ?? this.endpoint,
+      model: model ?? this.model,
       voicePreset: voicePreset ?? this.voicePreset,
+      authProtocol: authProtocol ?? this.authProtocol,
+      apiKey: apiKey ?? this.apiKey,
     );
   }
 }
@@ -339,6 +359,12 @@ class MediaSpeechConfigSnapshot {
     required this.title,
     required this.subtitle,
     required this.imageGeneration,
+    this.videoGeneration = const MediaProviderConfigSnapshot(
+      provider: '',
+      baseUrl: '',
+      endpoint: '',
+      model: '',
+    ),
     required this.voiceGeneration,
     required this.sttRoute,
     required this.externalStt,
@@ -349,6 +375,7 @@ class MediaSpeechConfigSnapshot {
   final String title;
   final String subtitle;
   final MediaProviderConfigSnapshot imageGeneration;
+  final MediaProviderConfigSnapshot videoGeneration;
   final VoiceProviderConfigSnapshot voiceGeneration;
   final MediaSpeechSttRoute sttRoute;
   final MediaProviderConfigSnapshot externalStt;
@@ -359,6 +386,7 @@ class MediaSpeechConfigSnapshot {
     String? title,
     String? subtitle,
     MediaProviderConfigSnapshot? imageGeneration,
+    MediaProviderConfigSnapshot? videoGeneration,
     VoiceProviderConfigSnapshot? voiceGeneration,
     MediaSpeechSttRoute? sttRoute,
     MediaProviderConfigSnapshot? externalStt,
@@ -369,6 +397,7 @@ class MediaSpeechConfigSnapshot {
       title: title ?? this.title,
       subtitle: subtitle ?? this.subtitle,
       imageGeneration: imageGeneration ?? this.imageGeneration,
+      videoGeneration: videoGeneration ?? this.videoGeneration,
       voiceGeneration: voiceGeneration ?? this.voiceGeneration,
       sttRoute: sttRoute ?? this.sttRoute,
       externalStt: externalStt ?? this.externalStt,

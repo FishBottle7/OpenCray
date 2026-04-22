@@ -55,6 +55,7 @@ internal object LiteRtOnDeviceMetadataKeys {
   const val BACKEND: String = "onDeviceBackend"
   const val MAX_CONTEXT_WINDOW: String = "onDeviceMaxContextWindow"
   const val THINKING_ENABLED: String = "onDeviceThinkingEnabled"
+  const val THINKING_LABEL: String = "onDeviceThinkingLabel"
   const val LITE_MODE_ENABLED: String = "onDeviceLiteModeEnabled"
   const val INSTALLED: String = "onDeviceInstalled"
   const val SHA256_VERIFIED: String = "onDeviceSha256Verified"
@@ -70,6 +71,7 @@ internal data class LiteRtOnDeviceRuntimeRequest(
   val topK: Int,
   val topP: Double,
   val temperature: Double,
+  val streamingEnabled: Boolean = LlmSettingsState.DEFAULT_STREAMING_ENABLED,
   val thinkingEnabled: Boolean,
   val prompt: String,
   val systemPrompt: String? = null,
@@ -191,9 +193,15 @@ internal open class LiteRtOnDeviceRuntime(
 
   @Synchronized
   open fun releaseActiveModel() {
+    activeEngineHandle?.runCatching { cancelActiveGeneration() }
     activeEngineHandle?.runCatching { close() }
     activeEngineHandle = null
     activeModelKey = null
+  }
+
+  @Synchronized
+  open fun cancelActiveGeneration() {
+    activeEngineHandle?.runCatching { cancelActiveGeneration() }
   }
 
   protected fun failure(
@@ -221,6 +229,7 @@ internal open class LiteRtOnDeviceRuntime(
     LiteRtOnDeviceMetadataKeys.RUNTIME to OnDeviceLlmCatalog.RUNTIME_ID_LITERT_LM,
     LiteRtOnDeviceMetadataKeys.MODEL_ID to request.modelId,
     LiteRtOnDeviceMetadataKeys.BACKEND to request.backend,
+    "stream" to request.streamingEnabled.toString(),
     LiteRtOnDeviceMetadataKeys.MAX_CONTEXT_WINDOW to request.maxContextWindow.toString(),
     LiteRtOnDeviceMetadataKeys.THINKING_ENABLED to request.thinkingEnabled.toString(),
     LiteRtOnDeviceMetadataKeys.INSTALLED to installed.toString(),
@@ -258,9 +267,7 @@ internal open class LiteRtOnDeviceRuntime(
     if (activeModelKey == nextKey && activeEngineHandle != null) {
       return checkNotNull(activeEngineHandle)
     }
-    activeEngineHandle?.runCatching { close() }
-    activeEngineHandle = null
-    activeModelKey = null
+    releaseActiveModel()
     return engineFactory.create(
       modelFile = modelFile,
       backend = backend,
@@ -542,6 +549,7 @@ internal open class LiteRtOnDeviceRuntime(
 
     fun clearForTest() {
       synchronized(this) {
+        instance?.releaseActiveModel()
         instance = null
       }
     }

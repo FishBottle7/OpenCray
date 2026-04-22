@@ -3979,6 +3979,15 @@ List<String> _collectRecentDebugRunIds(OpenCrayChatRuntimeSnapshot snapshot) {
     }
     runEpochs[run.runId] = run.updatedAtEpochMs;
   }
+  for (final run in snapshot.retainedRuns) {
+    if (run.runId.trim().isEmpty) {
+      continue;
+    }
+    final existingEpoch = runEpochs[run.runId];
+    if (existingEpoch == null || run.updatedAtEpochMs > existingEpoch) {
+      runEpochs[run.runId] = run.updatedAtEpochMs;
+    }
+  }
   for (final event in snapshot.events) {
     if (event.runId.trim().isEmpty) {
       continue;

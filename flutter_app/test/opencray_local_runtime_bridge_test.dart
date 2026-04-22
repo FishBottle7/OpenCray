@@ -6,6 +6,7 @@ import 'package:opencray/core/bridge/opencray_host_bridge.dart';
 import 'package:opencray/core/bridge/opencray_host_bridge_bootstrap.dart';
 import 'package:opencray/core/bridge/opencray_local_runtime_bridge.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
+import 'package:opencray/core/models/opencray_chat_draft_attachment.dart';
 import 'package:opencray/core/models/opencray_image_reference.dart';
 import 'package:opencray/core/models/opencray_notification_settings.dart';
 
@@ -326,6 +327,26 @@ void main() {
     expect(preview.height, 1);
     expect(preview.bytes, base64Decode(_tinyPngBase64));
   });
+
+  test(
+    'local runtime bridge reports attachment picking as unsupported',
+    () async {
+      final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+
+      expect(
+        () => bridge.pickChatAttachments(
+          kind: OpenCrayChatDraftAttachmentKind.file,
+        ),
+        throwsA(
+          isA<UnsupportedError>().having(
+            (error) => error.message,
+            'message',
+            'Adding attachments is unavailable in local runtime mode.',
+          ),
+        ),
+      );
+    },
+  );
 
   test('local runtime bridge loads settings image assets over http', () async {
     requestHandler = (request) async {
@@ -985,6 +1006,61 @@ void main() {
 
     expect(capturedBody['uri'], 'https://opencray.dev/docs');
   });
+
+  test(
+    'local runtime bridge preserves attachment references when submitting chat messages',
+    () async {
+      late Map<String, Object?> capturedBody;
+      requestHandler = (request) async {
+        expect(request.method, 'POST');
+        expect(request.uri.path, '/v1/submit_chat_message');
+        capturedBody = await readJsonBody(request);
+        await writeJson(request, <String, Object?>{
+          'sessionId': 'session-1',
+          'runId': 'run-1',
+          'taskId': 'task-1',
+          'acceptedAtEpochMs': 123,
+        });
+      };
+
+      final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+      await bridge.submitChatMessage(
+        'Reuse prior references',
+        attachments: const <OpenCrayChatDraftAttachment>[
+          OpenCrayChatDraftAttachment(
+            kind: OpenCrayChatDraftAttachmentKind.file,
+            displayName: 'diagram.png',
+            artifactId: 'artifact-diagram-1',
+          ),
+          OpenCrayChatDraftAttachment(
+            kind: OpenCrayChatDraftAttachmentKind.file,
+            displayName: 'report.pdf',
+            chatAttachmentId: 'chat-attachment-1',
+          ),
+        ],
+      );
+
+      expect(capturedBody['text'], 'Reuse prior references');
+      expect(capturedBody['attachments'], <Object?>[
+        <String, Object?>{
+          'kind': 'file',
+          'displayName': 'diagram.png',
+          'relativePath': '',
+          'artifactId': 'artifact-diagram-1',
+          'mimeType': null,
+          'sizeBytes': null,
+        },
+        <String, Object?>{
+          'kind': 'file',
+          'displayName': 'report.pdf',
+          'relativePath': '',
+          'chatAttachmentId': 'chat-attachment-1',
+          'mimeType': null,
+          'sizeBytes': null,
+        },
+      ]);
+    },
+  );
 
   test('local runtime bridge inspects skill sources over http', () async {
     late Map<String, Object?> capturedBody;

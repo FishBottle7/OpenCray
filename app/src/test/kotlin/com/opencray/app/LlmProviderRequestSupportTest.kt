@@ -10,7 +10,7 @@ class LlmProviderRequestSupportTest {
   fun recommendedInteractiveProviderRouteTimeoutUsesLongerBudgetForKimiK2Family() {
     assertEquals(120_000L, recommendedInteractiveProviderRouteTimeoutMs("kimi-k2.5"))
     assertEquals(120_000L, recommendedInteractiveProviderRouteTimeoutMs("moonshotai/kimi-k2:online"))
-    assertEquals(30_000L, recommendedInteractiveProviderRouteTimeoutMs("gpt-4o-mini"))
+    assertEquals(120_000L, recommendedInteractiveProviderRouteTimeoutMs("gpt-4o-mini"))
   }
 
   @Test

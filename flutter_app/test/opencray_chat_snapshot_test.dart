@@ -72,6 +72,7 @@ void main() {
   test('chat runtime snapshot parses host lifecycle and run diagnostics', () {
     final snapshot = OpenCrayChatRuntimeSnapshot.fromMap(<Object?, Object?>{
       'sessionId': 'session-1',
+      'updatedAtEpochMs': 2200,
       'hostLifecycle': <Object?, Object?>{
         'processStartId': 'process-1',
         'processStartedAtEpochMs': 1500,
@@ -113,6 +114,7 @@ void main() {
       'events': <Object?>[],
     });
 
+    expect(snapshot.updatedAtEpochMs, 2200);
     expect(snapshot.hostLifecycle, isNotNull);
     expect(snapshot.hostLifecycle!.processStartId, 'process-1');
     expect(snapshot.hostLifecycle!.hostInstanceId, 'host-1');
@@ -137,6 +139,31 @@ void main() {
     expect(recoveryPlan.requiresUserAction, isFalse);
     expect(recoveryPlan.checkpointKind, 'general_resume');
     expect(recoveryPlan.journalTailKind, 'tool_result');
+  });
+
+  test('chat snapshot parses top-level updatedAtEpochMs', () {
+    final snapshot = OpenCrayChatSnapshot.fromMap(<Object?, Object?>{
+      'screenTitle': 'Chat',
+      'modeLabel': 'SAFE',
+      'sessionButtonLabel': 'Sessions',
+      'composerPlaceholder': 'Message OpenCray',
+      'updatedAtEpochMs': 3100,
+      'summary': <Object?, Object?>{
+        'title': 'Session',
+        'badge': '1 message',
+        'body': 'Reply in progress',
+      },
+      'messages': <Object?>[],
+      'drawer': <Object?, Object?>{
+        'eyebrow': 'Recent sessions',
+        'title': 'Recent sessions',
+        'ctaLabel': 'New session',
+        'sessions': <Object?>[],
+      },
+      'isInputEnabled': true,
+    });
+
+    expect(snapshot.updatedAtEpochMs, 3100);
   });
 
   test('chat runtime snapshot parses projected subagent payloads', () {
@@ -224,6 +251,129 @@ void main() {
     expect(snapshot.pendingExecutionKind, 'checkpoint_resume');
   });
 
+  test('chat run snapshot parses managed process payloads', () {
+    final snapshot = OpenCrayChatRunSnapshot.fromMap(<Object?, Object?>{
+      'sessionId': 'session-1',
+      'runId': 'run-process',
+      'taskId': 'task-process',
+      'acceptedAtEpochMs': 1000,
+      'updatedAtEpochMs': 2300,
+      'attempt': 1,
+      'isTerminal': false,
+      'managedProcessIds': <Object?>['proc-live'],
+      'runningManagedProcessCount': 1,
+      'hasLiveManagedProcesses': true,
+      'managedProcesses': <Object?>[
+        <Object?, Object?>{
+          'processId': 'proc-live',
+          'status': 'running',
+          'command': 'npm',
+          'args': <Object?>['run', 'dev'],
+          'workingDirectory': '.',
+          'startedAtEpochMs': 1200,
+          'updatedAtEpochMs': 2300,
+          'stdoutPreview': 'ready on http://localhost:3000',
+          'stdoutTruncated': false,
+          'stderrPreview': '',
+          'stderrTruncated': false,
+        },
+      ],
+    });
+
+    expect(snapshot.managedProcessIds, <String>['proc-live']);
+    expect(snapshot.runningManagedProcessCount, 1);
+    expect(snapshot.hasLiveManagedProcesses, isTrue);
+    expect(snapshot.managedProcesses, hasLength(1));
+    expect(snapshot.managedProcesses.single.processId, 'proc-live');
+    expect(snapshot.managedProcesses.single.command, 'npm');
+    expect(snapshot.managedProcesses.single.args, <String>['run', 'dev']);
+    expect(
+      snapshot.managedProcesses.single.stdout,
+      'ready on http://localhost:3000',
+    );
+    expect(
+      snapshot.managedProcesses.single.stdoutPreview,
+      'ready on http://localhost:3000',
+    );
+  });
+
+  test('chat run snapshot parses full managed process output when present', () {
+    final snapshot = OpenCrayChatRunSnapshot.fromMap(<Object?, Object?>{
+      'sessionId': 'session-1',
+      'runId': 'run-process-full',
+      'taskId': 'task-process-full',
+      'acceptedAtEpochMs': 1000,
+      'updatedAtEpochMs': 2300,
+      'attempt': 1,
+      'isTerminal': false,
+      'managedProcesses': <Object?>[
+        <Object?, Object?>{
+          'processId': 'proc-live',
+          'status': 'running',
+          'command': 'npm',
+          'args': <Object?>['run', 'dev'],
+          'workingDirectory': '.',
+          'startedAtEpochMs': 1200,
+          'updatedAtEpochMs': 2300,
+          'stdout': 'booting\nready on http://localhost:3000',
+          'stdoutPreview': 'ready on http://localhost:3000',
+          'stdoutTruncated': true,
+          'stderr': 'warn: deprecated dependency\nwatching for changes',
+          'stderrPreview': 'watching for changes',
+          'stderrTruncated': true,
+        },
+      ],
+    });
+
+    expect(
+      snapshot.managedProcesses.single.stdout,
+      'booting\nready on http://localhost:3000',
+    );
+    expect(
+      snapshot.managedProcesses.single.stdoutPreview,
+      'ready on http://localhost:3000',
+    );
+    expect(
+      snapshot.managedProcesses.single.stderr,
+      'warn: deprecated dependency\nwatching for changes',
+    );
+    expect(
+      snapshot.managedProcesses.single.stderrPreview,
+      'watching for changes',
+    );
+  });
+
+  test('chat run snapshot parses final attachments', () {
+    final snapshot = OpenCrayChatRunSnapshot.fromMap(<Object?, Object?>{
+      'sessionId': 'session-1',
+      'runId': 'run-final-attachments',
+      'taskId': 'task-final-attachments',
+      'acceptedAtEpochMs': 1000,
+      'updatedAtEpochMs': 2300,
+      'attempt': 1,
+      'isTerminal': true,
+      'finalAttachments': <Object?>[
+        <Object?, Object?>{
+          'attachmentId': 'artifact-diagram',
+          'kind': 'image',
+          'displayName': 'diagram.png',
+          'localPath': '.opencray/chat-media/session-1/diagram.png',
+          'mimeType': 'image/png',
+        },
+      ],
+    });
+
+    expect(snapshot.finalAttachments, hasLength(1));
+    expect(snapshot.finalAttachments.single.attachmentId, 'artifact-diagram');
+    expect(snapshot.finalAttachments.single.kind, 'image');
+    expect(snapshot.finalAttachments.single.displayName, 'diagram.png');
+    expect(
+      snapshot.finalAttachments.single.localPath,
+      '.opencray/chat-media/session-1/diagram.png',
+    );
+    expect(snapshot.finalAttachments.single.mimeType, 'image/png');
+  });
+
   test(
     'chat run snapshot preserves trace history across approval resume while keeping event matching scoped',
     () {
@@ -273,6 +423,37 @@ void main() {
       ]);
       expect(run.matchesRuntimeEvent(previousExecution), isFalse);
       expect(run.matchesRuntimeEvent(currentExecution), isTrue);
+    },
+  );
+
+  test(
+    'chat run snapshot keeps untagged live history visible while execution id is still pending',
+    () {
+      const run = OpenCrayChatRunSnapshot(
+        sessionId: 'session-1',
+        runId: 'run-pending-1',
+        taskId: 'task-pending-1',
+        acceptedAtEpochMs: 1000,
+        updatedAtEpochMs: 2200,
+        attempt: 1,
+        pendingExecutionKind: 'initial',
+        isTerminal: false,
+      );
+      const livePhase = OpenCrayChatRuntimeEventSnapshot(
+        kind: 'assistant_phase',
+        runId: 'run-pending-1',
+        taskId: 'task-pending-1',
+        emittedAtEpochMs: 2200,
+        phase: 'commentary',
+        text: 'Streaming planning update.',
+      );
+
+      final scoped = run.scopeRuntimeEvents(
+        const <OpenCrayChatRuntimeEventSnapshot>[livePhase],
+      );
+
+      expect(scoped, <OpenCrayChatRuntimeEventSnapshot>[livePhase]);
+      expect(run.matchesRuntimeEvent(livePhase), isTrue);
     },
   );
 

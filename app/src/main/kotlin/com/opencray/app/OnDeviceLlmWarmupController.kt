@@ -141,6 +141,7 @@ internal class AppOnDeviceLlmWarmupController(
 
   override fun clear(): OnDeviceLlmWarmupState = synchronized(lock) {
     desiredSpec = null
+    runtime.releaseActiveModel()
     state = OnDeviceLlmWarmupState()
     state
   }

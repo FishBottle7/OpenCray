@@ -353,14 +353,20 @@ internal class DefaultOpenCrayLocalHostGateway(
     requestedKind: String,
     uriStrings: List<String>,
   ): List<Map<String, Any?>> {
-    val workspaceRoot = workspaceRootProvider?.invoke() ?: return emptyList()
-    val context = appContext ?: return emptyList()
-    return AppChatAttachmentDraftImporter.importAttachments(
+    val workspaceRoot = workspaceRootProvider?.invoke()
+      ?: throw IllegalStateException("Attachment import is unavailable because the workspace is not ready.")
+    val context = appContext
+      ?: throw IllegalStateException("Attachment import is unavailable on this host.")
+    val imported = AppChatAttachmentDraftImporter.importAttachments(
       appContext = context,
       workspaceRoot = workspaceRoot,
       requestedKind = requestedKind,
       uriStrings = uriStrings,
-    ).map(::chatDraftAttachmentMap)
+    )
+    if (uriStrings.isNotEmpty() && imported.isEmpty()) {
+      throw IllegalStateException("Unable to import the selected attachments.")
+    }
+    return imported.map(::chatDraftAttachmentMap)
   }
 
   override fun probeTwinImportSource(filePath: String): Map<String, Any?> =
