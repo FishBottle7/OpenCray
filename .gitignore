@@ -32,7 +32,9 @@
 /.p4a-storage/
 /.p4a-wsl-bin/
 /.pytest_cache/
+/.pytest_cache_repo/
 /.pytest-cache/
+/.pytest_temp/
 /.pytest-tmp/
 /.appdata/
 /.sandbox-appdata/
@@ -50,7 +52,12 @@
 /.pytest-temp-*/
 /.pytest-tmp-*/
 **/.pytest_cache/
+**/.pytest_cache_repo/
 **/.pytest-cache/
+**/.pytest_temp/
+**/.tmp_pytest*/
+**/pytest-cache-files-*/
+**/pytest-temp-run/
 **/.ruff_cache/
 **/.cache/
 **/.dart_tool/

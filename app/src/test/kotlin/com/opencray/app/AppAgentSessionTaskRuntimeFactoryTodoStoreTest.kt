@@ -1820,6 +1820,54 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
   }
 
   @Test
+  fun prepareSessionContextAppendsPromptToSeededTranscriptWhenHistoryAlreadyExists() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-seeded-prompt-append"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-seeded-prompt-append").toPath()
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    chatStore.appendMessage(
+      sessionId = sessionId,
+      role = com.opencray.persistence.model.ChatTranscriptRole.USER,
+      text = "Earlier message kept from chat history.",
+    )
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+
+    val prepared = factory.prepareSessionContext(
+      sessionId = sessionId,
+      workspaceId = "workspace-seeded-prompt-append",
+      visibleThroughMessageId = null,
+      excludedMessageIds = emptySet(),
+      soulProfile = null,
+      taskType = AgentTaskType.PROMPT,
+      taskId = "task-seeded-prompt-append",
+      taskInput = "New prompt should be appended to the seeded runtime transcript.",
+      transcriptStore = factory.transcriptStoreForSession(sessionId),
+      memoryRecords = emptyList(),
+    )
+
+    assertEquals(
+      listOf(
+        "Earlier message kept from chat history.",
+        "New prompt should be appended to the seeded runtime transcript.",
+      ),
+      prepared.sessionContext.conversation.map { message -> message.content },
+    )
+    assertEquals(
+      listOf(
+        "Earlier message kept from chat history.",
+        "New prompt should be appended to the seeded runtime transcript.",
+      ),
+      factory.transcriptStoreForSession(sessionId).snapshot().map { message -> message.content },
+    )
+  }
+
+  @Test
   fun bootstrapContextForLoadsWorkspaceBootstrapFilesAndSupportsLightweightMode() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-bootstrap"))
     val workspaceRoot = temporaryFolder.newFolder("workspace-root-bootstrap")

@@ -540,6 +540,17 @@ public final class LiteRtLmBridge {
     private final ToolDefinition definition;
     private final ToolExecutorResolver executorResolver;
 
+    private BridgeOpenApiTool(ToolDefinition definition, ToolExecutor executor) {
+      this(
+          definition,
+          new ToolExecutorResolver() {
+            @Override
+            public ToolExecutor resolve() {
+              return executor;
+            }
+          });
+    }
+
     private BridgeOpenApiTool(ToolDefinition definition, ToolExecutorResolver executorResolver) {
       this.definition = definition;
       this.executorResolver = executorResolver;

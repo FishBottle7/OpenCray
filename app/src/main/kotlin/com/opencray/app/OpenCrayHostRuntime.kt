@@ -1774,6 +1774,7 @@ internal class OpenCrayHostRuntime private constructor(
       "runtimeActivity" to runtimeActivity,
       "updatedAtEpochMs" to maxOf(
         activeSession.updatedAtEpochMs,
+        chatState.sessions.maxOfOrNull(ChatSessionLocalStore.SessionSummary::updatedAtEpochMs) ?: 0L,
         runtimeActivityUpdatedAtEpochMs,
       ),
       "isInputEnabled" to !warmupState.blocksChatInput(),
@@ -3403,29 +3404,44 @@ internal class OpenCrayHostRuntime private constructor(
     ) {
       return visibleMessages.map(::chatMessageToMap)
     }
-    val visibleMessageIds = visibleMessages
-      .mapTo(linkedSetOf(), ChatTranscriptMessageEntry::messageId)
+    val visibleMessagesById = visibleMessages.associateBy(ChatTranscriptMessageEntry::messageId)
+    val visibleMessageIds = visibleMessagesById.keys
+    val persistedProjectedMessageIds = linkedSetOf<String>()
     val projectedByAnchor = projectedMessages
       .mapNotNull { projection ->
         val projectedMessageId = (projection.snapshot["messageId"] as? String)
           ?.trim()
           ?.takeIf(String::isNotBlank)
-        if (projectedMessageId != null && projectedMessageId in visibleMessageIds) {
-          return@mapNotNull null
-        }
         val anchorMessageId = projection.anchorMessageId ?: return@mapNotNull null
         if (anchorMessageId !in visibleMessageIds) {
           return@mapNotNull null
         }
-        anchorMessageId to projection
+        val persistedVisibleMessage = projectedMessageId?.let(visibleMessagesById::get)
+        val effectiveProjection = if (persistedVisibleMessage != null) {
+          persistedProjectedMessageIds += persistedVisibleMessage.messageId
+          projection.copy(snapshot = chatMessageToMap(persistedVisibleMessage))
+        } else {
+          projection
+        }
+        anchorMessageId to effectiveProjection
       }
       .groupBy(
         keySelector = Pair<String, ProjectedRuntimeChatMessage>::first,
         valueTransform = Pair<String, ProjectedRuntimeChatMessage>::second,
       )
-    val merged = ArrayList<Map<String, Any?>>(visibleMessages.size + projectedMessages.size)
-    visibleMessages.forEach { message ->
-      projectedByAnchor[message.messageId]?.forEach { projection ->
+    val baseVisibleMessages = if (persistedProjectedMessageIds.isEmpty()) {
+      visibleMessages
+    } else {
+      visibleMessages.filterNot { message -> message.messageId in persistedProjectedMessageIds }
+    }
+    val merged = ArrayList<Map<String, Any?>>(baseVisibleMessages.size + projectedMessages.size)
+    baseVisibleMessages.forEach { message ->
+      projectedByAnchor[message.messageId]
+        ?.sortedWith(
+          compareBy<ProjectedRuntimeChatMessage>(ProjectedRuntimeChatMessage::effectiveSortEpochMs)
+            .thenBy(ProjectedRuntimeChatMessage::sourceOrder),
+        )
+        ?.forEach { projection ->
         merged += projection.snapshot
       }
       merged += chatMessageToMap(message)
@@ -3510,6 +3526,8 @@ internal class OpenCrayHostRuntime private constructor(
             sourceOrder = index,
             message = ProjectedRuntimeChatMessage(
               anchorMessageId = anchorMessageId,
+              sortEpochMs = event.emittedAtEpochMs,
+              sourceOrder = index,
               snapshot = chatMessageSnapshotMap(
                 messageId = runtimeProjectedMessageId(event),
                 kind = projectedRuntimeMessageKind(event),
@@ -3524,6 +3542,9 @@ internal class OpenCrayHostRuntime private constructor(
     }
     var nextSourceOrder = projectedRuntimeEvents.size
     val projectedManagedProcesses = runs.flatMap { run ->
+      if (run.isTerminal) {
+        return@flatMap emptyList()
+      }
       val anchorMessageId = pendingMessageIdByRunId[run.runId]
         ?: pendingMessageIdByTaskId[run.taskId]
         ?: return@flatMap emptyList()
@@ -3535,13 +3556,17 @@ internal class OpenCrayHostRuntime private constructor(
             .thenBy(ManagedProcessSnapshot::processId),
         )
         .map { process ->
+          val sortEpochMs = process.startedAtEpochMs.takeIf { startedAt -> startedAt > 0L }
+            ?: process.updatedAtEpochMs.takeIf { updatedAt -> updatedAt > 0L }
+            ?: 0L
+          val sourceOrder = nextSourceOrder++
           OrderedProjectedRuntimeChatMessage(
-            sortEpochMs = process.startedAtEpochMs.takeIf { startedAt -> startedAt > 0L }
-              ?: process.updatedAtEpochMs.takeIf { updatedAt -> updatedAt > 0L }
-              ?: 0L,
-            sourceOrder = nextSourceOrder++,
+            sortEpochMs = sortEpochMs,
+            sourceOrder = sourceOrder,
             message = ProjectedRuntimeChatMessage(
               anchorMessageId = anchorMessageId,
+              sortEpochMs = sortEpochMs,
+              sourceOrder = sourceOrder,
               snapshot = chatMessageSnapshotMap(
                 messageId = runtimeProjectedManagedProcessMessageId(
                   runId = run.runId,
@@ -3559,7 +3584,7 @@ internal class OpenCrayHostRuntime private constructor(
     }
     return (projectedRuntimeEvents + projectedManagedProcesses)
       .sortedWith(
-        compareBy<OrderedProjectedRuntimeChatMessage>(OrderedProjectedRuntimeChatMessage::sortEpochMs)
+        compareBy<OrderedProjectedRuntimeChatMessage>(OrderedProjectedRuntimeChatMessage::effectiveSortEpochMs)
           .thenBy(OrderedProjectedRuntimeChatMessage::sourceOrder),
       )
       .map(OrderedProjectedRuntimeChatMessage::message)
@@ -8551,14 +8576,22 @@ private fun AgentRunSnapshot.replayExecutionContext(): RuntimeReplayExecutionCon
 
 private data class ProjectedRuntimeChatMessage(
   val anchorMessageId: String?,
+  val sortEpochMs: Long,
+  val sourceOrder: Int,
   val snapshot: Map<String, Any?>,
-)
+) {
+  fun effectiveSortEpochMs(): Long =
+    (snapshot["createdAtEpochMs"] as? Number)?.toLong()?.takeIf { createdAt -> createdAt > 0L }
+      ?: sortEpochMs
+}
 
 private data class OrderedProjectedRuntimeChatMessage(
   val sortEpochMs: Long,
   val sourceOrder: Int,
   val message: ProjectedRuntimeChatMessage,
-)
+) {
+  fun effectiveSortEpochMs(): Long = message.effectiveSortEpochMs()
+}
 
 private data class SubAgentActivityAccumulator(
   val firstEvent: OpenCraySubAgentEvent,

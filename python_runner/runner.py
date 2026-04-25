@@ -5,9 +5,11 @@ import dataclasses
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -95,6 +97,10 @@ def _manifest_path(workspace_root: Path) -> Path:
     return _opencray_dir(workspace_root) / "manifest.json"
 
 
+def _temp_dir(workspace_root: Path) -> Path:
+    return _opencray_dir(workspace_root) / "tmp"
+
+
 def _atomic_write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -111,9 +117,9 @@ def _ensure_venv(workspace_root: Path, timeout_seconds: float) -> tuple[bool, st
     venv_dir.parent.mkdir(parents=True, exist_ok=True)
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "venv", str(venv_dir)],
+            [sys.executable, "-m", "venv", "--without-pip", str(venv_dir)],
             cwd=str(workspace_root),
-            env=_base_env(),
+            env=_base_env(workspace_root),
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
@@ -124,7 +130,46 @@ def _ensure_venv(workspace_root: Path, timeout_seconds: float) -> tuple[bool, st
     return proc.returncode == 0, proc.stdout, proc.stderr
 
 
-def _base_env() -> dict[str, str]:
+def _venv_site_packages_dir(workspace_root: Path) -> Path:
+    venv_dir = _venv_dir(workspace_root)
+    if os.name == "nt":
+        return venv_dir / "Lib" / "site-packages"
+    version_tag = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    return venv_dir / "lib" / version_tag / "site-packages"
+
+
+def _bundled_pip_wheel_path() -> Path | None:
+    try:
+        import ensurepip
+    except Exception:
+        return None
+    bundled_dir = Path(ensurepip.__file__).resolve().parent / "_bundled"
+    wheels = sorted(bundled_dir.glob("pip-*.whl"))
+    return wheels[-1] if wheels else None
+
+
+def _bootstrap_pip_into_venv(workspace_root: Path) -> tuple[bool, str, str]:
+    site_packages_dir = _venv_site_packages_dir(workspace_root)
+    site_packages_dir.mkdir(parents=True, exist_ok=True)
+    if any(site_packages_dir.glob("pip-*.dist-info")) and (site_packages_dir / "pip").exists():
+        return True, "", ""
+
+    wheel_path = _bundled_pip_wheel_path()
+    if wheel_path is None or not wheel_path.exists():
+        return False, "", "Bundled pip wheel is unavailable."
+
+    for path in site_packages_dir.glob("pip*"):
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            path.unlink(missing_ok=True)
+
+    with zipfile.ZipFile(wheel_path) as wheel_archive:
+        wheel_archive.extractall(site_packages_dir)
+    return True, "", ""
+
+
+def _base_env(workspace_root: Path | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
@@ -132,6 +177,13 @@ def _base_env() -> dict[str, str]:
     # Ignore global/user pip config for determinism.
     env["PIP_CONFIG_FILE"] = os.devnull
     env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    if workspace_root is not None:
+        temp_dir = _temp_dir(workspace_root)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_dir_value = str(temp_dir)
+        env["TEMP"] = temp_dir_value
+        env["TMP"] = temp_dir_value
+        env["TMPDIR"] = temp_dir_value
     return env
 
 
@@ -217,16 +269,22 @@ def install_requirements(
                 metadata=metadata,
             )
 
-        # Ensure pip exists (offline). If ensurepip is unavailable, pip call will fail with INSTALL_ERROR.
-        env = _base_env()
-        subprocess.run(
-            [str(python_exe), "-m", "ensurepip"],
-            cwd=str(ws),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
+        bootstrap_ok, bootstrap_out, bootstrap_err = _bootstrap_pip_into_venv(ws)
+        if not bootstrap_ok:
+            finished = _now_ms()
+            return OperationResult(
+                status=Status.FAILED,
+                exit_code=None,
+                stdout=bootstrap_out,
+                stderr=bootstrap_err,
+                error_code=ErrorCode.VENV_CREATE_ERROR,
+                error_message="Failed to bootstrap pip in workspace venv.",
+                started_at_epoch_ms=started,
+                finished_at_epoch_ms=finished,
+                metadata=metadata,
+            )
+
+        env = _base_env(ws)
 
         pip_install_cmd = [
             str(python_exe),

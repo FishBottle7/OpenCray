@@ -1774,11 +1774,13 @@ internal class AppAgentSessionTaskRuntimeFactory(
     if (promptMessage != null) {
       if (!transcriptWasEmptyBeforeSeed || baseContext.conversation.isEmpty()) {
         transcriptStore.appendIfDistinct(promptMessage)
-      } else {
-        mergePromptMessageIntoSeededTranscript(
+      } else if (
+        !mergePromptMessageIntoSeededTranscript(
           transcriptStore = transcriptStore,
           promptMessage = promptMessage,
         )
+      ) {
+        transcriptStore.appendIfDistinct(promptMessage)
       }
     }
     val memoryFlushStartedAtEpochMs = System.currentTimeMillis()
@@ -2252,7 +2254,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private fun mergePromptMessageIntoSeededTranscript(
     transcriptStore: SessionTranscriptStore,
     promptMessage: RuntimeConversationMessage,
-  ) {
+  ): Boolean {
     val existingMessages = transcriptStore.snapshot()
     val matchIndex = existingMessages.indexOfLast { message ->
       message.role == RuntimeConversationRole.USER &&
@@ -2263,7 +2265,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
         )
     }
     if (matchIndex < 0) {
-      return
+      return false
     }
     val existingMessage = existingMessages[matchIndex]
     val mergedMessage = existingMessage.copy(
@@ -2273,11 +2275,12 @@ internal class AppAgentSessionTaskRuntimeFactory(
       ),
     )
     if (mergedMessage == existingMessage) {
-      return
+      return true
     }
     val updatedMessages = existingMessages.toMutableList()
     updatedMessages[matchIndex] = mergedMessage
     transcriptStore.replace(updatedMessages)
+    return true
   }
 
   private fun mergePromptAttachments(

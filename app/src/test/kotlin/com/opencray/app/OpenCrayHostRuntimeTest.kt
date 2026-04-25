@@ -4772,6 +4772,11 @@ class OpenCrayHostRuntimeTest {
 
     val messages = (hostRuntime.loadChatSnapshot()["messages"] as List<*>)
       .map { message -> message as Map<*, *> }
+    println(
+      messages.joinToString(separator = " | ") { message ->
+        "${message["text"]} @${message["createdAtEpochMs"]}"
+      },
+    )
 
     assertEquals(
       listOf(

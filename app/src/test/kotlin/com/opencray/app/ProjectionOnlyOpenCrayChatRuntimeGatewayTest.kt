@@ -165,6 +165,44 @@ class ProjectionOnlyOpenCrayChatRuntimeGatewayTest {
   }
 
   @Test
+  fun projectionOnlyChatRuntimeGatewayIncludesTopLevelUpdatedAtForDrawerOnlySessionChanges() {
+    val chatRoot = temporaryFolder.newFolder("projection-chat-top-level-updated-at-store")
+    val runtimeRoot = temporaryFolder.newFolder("projection-runtime-top-level-updated-at-store")
+    val chatStore = ChatSessionLocalStore(chatRoot)
+    val sessionId = chatStore.loadState().activeSession.sessionId
+
+    val queueFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val runRecordFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
+    val journalFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val checkpointFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val processFactory = FileBackedAgentProcessRegistryFactory(runtimeRoot)
+    val supplementFactory = FileBackedAgentSessionSupplementStoreFactory(runtimeRoot)
+    val gateway = ProjectionOnlyOpenCrayChatRuntimeGateway(
+      chatSessionStore = chatStore,
+      queueSnapshotStoreFactory = queueFactory,
+      runRecordStoreFactory = runRecordFactory,
+      runEventJournalStoreFactory = journalFactory,
+      promptCheckpointStoreFactory = checkpointFactory,
+      processRegistryFactory = processFactory,
+      supplementStoreFactory = supplementFactory,
+      strings = projectionTestStrings(),
+      connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { 2_000L },
+    )
+
+    val initialSnapshotUpdatedAtEpochMs =
+      (gateway.loadChatSnapshot()["updatedAtEpochMs"] as Number).toLong()
+    chatStore.copySession(sessionId)
+    chatStore.selectSession(sessionId)
+    val refreshedSnapshotUpdatedAtEpochMs =
+      (gateway.loadChatSnapshot()["updatedAtEpochMs"] as Number).toLong()
+
+    assertTrue(initialSnapshotUpdatedAtEpochMs > 0L)
+    assertTrue(refreshedSnapshotUpdatedAtEpochMs > initialSnapshotUpdatedAtEpochMs)
+  }
+
+  @Test
   fun projectionOnlyChatRuntimeGatewayIgnoresCheckpointJournalEntriesWhenLoadingRunSnapshots() {
     val chatRoot = temporaryFolder.newFolder("projection-chat-checkpoint-store")
     val runtimeRoot = temporaryFolder.newFolder("projection-runtime-checkpoint-store")

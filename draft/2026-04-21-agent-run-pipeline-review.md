@@ -1354,3 +1354,238 @@ Status: source-level confirmed, not yet patched in this pass
 - F1 是 runtime snapshot 的 shrink/overlay 契约错位。
 - F4 是 chat snapshot 的 warmup/UI 字段契约错位。
 - 两者共同说明：当前 native -> Flutter 的 snapshot 替换规则，并没有建立“所有 decorator 改写都必须带版本信号”这个基本约束。
+
+### 2026-04-23 复审补盲：state application / embedded-vs-streamed runtime resolution
+
+Status: source-level confirmed, not yet patched in this pass
+
+#### F5. Flutter 已经接受了更“厚”的 streamed runtime snapshot，但在真正映射 UI 之前又可能被更“薄”的 embedded runtime 覆盖回去
+
+证据链：
+- `flutter_app/lib/features/chat/chat_feature_screen.dart:30`
+- `flutter_app/lib/features/chat/chat_feature_screen.dart:43`
+- `flutter_app/lib/features/chat/chat_feature_screen.dart:163`
+- `flutter_app/lib/features/chat/chat_feature_screen.dart:181`
+- `flutter_app/lib/features/chat/chat_feature_screen.dart:2238`
+- `flutter_app/lib/features/chat/chat_feature_screen.dart:2537`
+- `flutter_app/lib/features/chat/chat_feature_screen.dart:3447`
+- `flutter_app/test/chat_feature_screen_test.dart:27`
+- `flutter_app/test/chat_feature_screen_test.dart:574`
+
+根因：
+- `shouldReplaceObservedRuntimeSnapshot(...)` 在同版本时明确接受“更厚”的 runtime snapshot：
+  - `events` 更多 -> 接受
+  - `liveAssistantDrafts` 更多 -> 接受
+  - `subAgents` 更多 -> 接受
+  - 可见 run 更多 -> 接受
+- `_handleChatRuntimeSnapshot(...)` 只要这个 gate 通过，就会把 incoming 写进 `_latestChatRuntimeSnapshot`。
+- 但 `_applyHostState()` / `_mapSnapshot()` 在真正生成 `ChatFeatureState` 之前，又会调用 `resolveChatRuntimeSnapshot(snapshot.runtimeActivity, runtimeSnapshot)`。
+- `resolveChatRuntimeSnapshot(...)` 在版本相等且 `visibleRuns` 数量不等时，返回的是 run 更少的那个 snapshot：
+  - `embedded < streamed` -> 返回 `embedded`
+  - `embedded > streamed` -> 返回 `streamed`
+- 这和 runtime replace gate 的“同版本优先更厚 snapshot”是正面冲突。
+
+影响：
+- 只要出现“独立 runtime 流已经收到更厚 snapshot，但 chat snapshot 内嵌 runtime 仍是同版本更薄副本”的场景，Flutter 会先接受新的 `_latestChatRuntimeSnapshot`，随后又在 `_mapSnapshot()` 阶段把它解析回更薄的 embedded runtime。
+- 结果不是单纯的“多收了一次无效更新”，而是 UI 最终消费到的 `runTraces / previewCard / sessionCard / assistant phase` 仍可能按旧 runtime 构建。
+- 如果构建出来的 `resolvedNextState` 和旧 `_state` 恰好等价，`chatFeatureStatesEquivalent(...)` 还会直接短路这次刷新，于是新增 run / run trace 根本不会进入界面。
+
+我为什么把它单列成新问题：
+- 这不是 F1/F4 那种“版本信号不单调”问题，而是 Flutter 自己内部两段逻辑的契约冲突：
+  - 入口 gate 认定 incoming runtime 值得替换
+  - 真正映射 UI 时的 resolver 又把它撤销
+- 对应测试也已经把这组相互冲突的偏好写死了：
+  - `resolveChatRuntimeSnapshot prefers the settled snapshot when versions tie`
+  - `shouldReplaceObservedRuntimeSnapshot ignores thinner snapshots at the same version`
+
+#### F6. projection-only / fallback chat snapshot 没有顶层 `updatedAtEpochMs`，导致一整类 drawer / summary / 标题更新会被 Flutter 静默丢弃
+
+证据链：
+- `app/src/main/kotlin/com/opencray/app/ProjectionOnlyOpenCrayChatRuntimeGateway.kt:315`
+- `app/src/main/kotlin/com/opencray/app/ProjectionOnlyOpenCrayChatRuntimeGateway.kt:337`
+- `app/src/main/kotlin/com/opencray/app/ProjectionOnlyOpenCrayChatRuntimeGateway.kt:356`
+- `app/src/main/kotlin/com/opencray/app/ServiceBackedOpenCrayChatRuntimeGateway.kt:208`
+- `app/src/main/kotlin/com/opencray/app/ServiceBackedOpenCrayChatRuntimeGateway.kt:214`
+- `app/src/main/kotlin/com/opencray/app/ServiceBackedOpenCrayChatRuntimeGateway.kt:280`
+- `flutter_app/lib/core/models/opencray_chat_snapshot.dart:1821`
+- `flutter_app/lib/core/models/opencray_chat_snapshot.dart:1879`
+- `flutter_app/lib/features/chat/chat_feature_screen.dart:106`
+- `flutter_app/lib/features/chat/chat_feature_screen.dart:126`
+- `flutter_app/lib/features/chat/chat_feature_screen.dart:244`
+- `flutter_app/lib/features/chat/chat_feature_screen.dart:3494`
+
+根因：
+- projection-only chat snapshot 在顶层 map 里写了：
+  - `screenTitle`
+  - `modeLabel`
+  - `sessionButtonLabel`
+  - `summary`
+  - `drawer`
+  - `runtimeActivity`
+- 但没有写顶层 `updatedAtEpochMs`。
+- Flutter `OpenCrayChatSnapshot.fromMap(...)` 对缺失的 `updatedAtEpochMs` 会直接回落到 `0`。
+- `chatSnapshotVersion(...)` 只看：
+  - `snapshot.updatedAtEpochMs`
+  - 最新 message 时间
+  - `runtimeVersion`
+- `shouldReplaceObservedChatSnapshot(...)` 在版本相等后，只再比较：
+  - `runtimeVersion`
+  - `messages.length`
+  - `pendingApprovals.length`
+  - `todos.length`
+- 也就是说，只要 projection/fallback 路径上发生的是“drawer / summary / 标题 / 会话 unread/title/preview”等 chat-only 变化，而没有同步改变 message/runtime/todo/approval 数量，Flutter 会把 incoming chat snapshot 直接拒掉。
+
+影响：
+- 这不是 service-owned warmup 那种单一字段问题，而是 projection-only chat snapshot 上整类 UI 字段都没有可靠版本信号。
+- service-backed gateway 在 binder 未连上、切回 fallback、或观察流尚未切到 binder 时，都会走这个 projection-only fallback。
+- 结果是 session drawer 的 unread/title/preview、summary 标题、session button 文案、mode label 这类信息，可能 native/projection 端已经变了，Flutter 侧仍然继续显示旧值。
+
+补充：
+- `chatFeatureStatesEquivalent(...)` 实际上已经把这些 UI 字段都纳入比较；问题发生在更早的 snapshot replace gate。
+- Host path 也不是完全安全：
+  - `ChatSessionLocalStore` 会维护 workspace 级 `updatedAtEpochMs`，session 列表也按各自 `updatedAtEpochMs` 排序。
+  - 但 `OpenCrayHostRuntime` 生成 chat snapshot 顶层时间戳时，只取 `activeSession.updatedAtEpochMs` 和 `runtimeActivityUpdatedAtEpochMs`。
+  - 这意味着 host path 对“非当前 session 的 drawer 变化 / workspace 级变化”同样缺少直接版本覆盖。
+  - 证据：`app/src/main/kotlin/com/opencray/app/ChatSessionLocalStore.kt:72`、`app/src/main/kotlin/com/opencray/app/ChatSessionLocalStore.kt:928`、`app/src/main/kotlin/com/opencray/app/ChatSessionLocalStore.kt:1373`、`app/src/main/kotlin/com/opencray/app/OpenCrayHostRuntime.kt:1751`、`app/src/main/kotlin/com/opencray/app/OpenCrayHostRuntime.kt:1775`
+
+## 2026-04-23 修复记录
+
+Status: patched and regression-verified
+
+### 本轮关闭的问题
+
+1. F1 service-owned live draft overlay / clear 现在会发出稳定的顶层版本信号。
+   - `ServiceOwnedChatRuntimeGateway` 不再只覆盖 `liveAssistantDrafts`。
+   - 当 draft 集合变化时会推进 `updatedAtEpochMs`；当重复读取同一装饰态时会保留上一次已经推进过的顶层时间戳，避免回退到底层 payload 的旧时间戳。
+   - 这同时修掉了“更新后下一次 load 又掉回旧时间戳”的二次回滚窗口。
+
+2. F4 service-owned warmup chat decoration 现在也有版本信号。
+   - `decorateChatPayload(...)` 改写 `isInputEnabled` / `composerPlaceholder` 后，会同步推进或继承顶层 `updatedAtEpochMs`。
+   - Flutter chat snapshot comparator 现在能稳定接住 warmup 输入禁用态、准备中占位文案和失败占位文案变化。
+
+3. F5 Flutter runtime resolver 和 replace gate 已经对齐。
+   - `resolveChatRuntimeSnapshot(...)` 不再在同版本 tie 时偏向更薄的 embedded runtime。
+   - 它现在按和 `shouldReplaceObservedRuntimeSnapshot(...)` 一致的偏好选择更厚的 runtime：events / live drafts / subagents / visible runs。
+   - 这样 `_handleChatRuntimeSnapshot(...)` 接受下来的 streamed runtime，不会在 `_mapSnapshot()` 里又被 embedded runtime 覆盖回去。
+
+4. F3 Flutter live draft override 合并现在保留顶层 `updatedAtEpochMs`。
+   - `_resolveRuntimeSnapshot(...)` 重建 runtime snapshot 时已复制 `updatedAtEpochMs`，不再把 override 后的 runtime 顶层时间戳归零。
+
+5. F2 Run Inspector 主线时序已修正。
+   - tool call 只有在没有插入有意义中间事件时才会和 tool result 分组。
+   - managed process history 改为按 `startedAtEpochMs -> updatedAtEpochMs -> processId` 排序。
+   - durable subagent / process / final attachments 不再按类别尾插，而是按时间合并进主历史线。
+   - 这修掉了 tool result 被提前挂回 tool call、process 被统一落尾、final attachments 固定尾插带来的审计错位。
+
+6. F6 projection-only / fallback chat snapshot 现在带顶层 `updatedAtEpochMs`。
+   - `ProjectionOnlyOpenCrayChatRuntimeGateway.loadProjectionChatSnapshot()` 现在把 active session、runtime projection、drawer session 更新时间、rendered message 时间合并成顶层时间戳。
+   - 我顺手把 host path 也扩成了包含 drawer session 更新时间，补掉文档里提到的 host 非当前 session drawer 变化盲区。
+
+### 这轮新增回归覆盖
+
+- Flutter
+  - `chat_feature_screen_test.dart`
+    - `resolveChatRuntimeSnapshot prefers the thicker snapshot when versions tie`
+    - `same-version streamed runtime overrides a thinner embedded runtime when mapping UI`
+    - `fullscreen inspector preserves chronology across tool, process, and final attachment entries`
+
+- Kotlin
+  - `ServiceOwnedChatRuntimeGatewayTest`
+    - `serviceOwnedChatRuntimeGatewayAdvancesChatSnapshotUpdatedAtWhenWarmupDecorationChanges`
+    - 扩展 `serviceOwnedChatRuntimeGatewayAugmentsProjectionRuntimeSnapshotsWithLiveDraftsWhenDelegateMissing`，断言 draft update / clear 都会推进 runtime top-level `updatedAtEpochMs`
+  - `ProjectionOnlyOpenCrayChatRuntimeGatewayTest`
+    - `projectionOnlyChatRuntimeGatewayIncludesTopLevelUpdatedAtForDrawerOnlySessionChanges`
+
+### 2026-04-23 定向验证
+
+已通过：
+- `./gradlew.bat :app:testDebugUnitTest --no-daemon --console=plain --tests "com.opencray.app.ServiceOwnedChatRuntimeGatewayTest" --tests "com.opencray.app.ProjectionOnlyOpenCrayChatRuntimeGatewayTest"`
+- `flutter test test/chat_feature_screen_test.dart --plain-name "resolveChatRuntimeSnapshot prefers the thicker snapshot when versions tie"`
+- `flutter test test/chat_feature_screen_test.dart --plain-name "same-version streamed runtime overrides a thinner embedded runtime when mapping UI"`
+- `flutter test test/chat_feature_screen_test.dart --plain-name "fullscreen inspector preserves chronology across tool, process, and final attachment entries"`
+
+辅助检查：
+- `git diff --check`
+
+### 备注
+
+- 这轮 app 定向单测第一次重跑时，新增的 service-owned 时间戳修复自己打出了一个真实回归：装饰态虽然在变化时推进了时间戳，但重复 `loadChatRuntimeSnapshot()` 会掉回底层 payload 的旧时间戳。我随后把“相同装饰态读取时继承上一次顶层时间戳”的逻辑补上，第二次重跑后目标测试类通过。
+- chronology 用例最开始把 subagent 也塞进了主 actor 断言，但 fullscreen inspector 对 subagent 使用独立 actor tab；我把断言收敛到默认主视图中真正同屏可见的主线条目，避免用错误的 UI 选择器制造假红。
+
+## 2026-04-24 修复记录
+
+Status: patched and targeted regression-verified
+
+### 本轮关闭的问题
+
+1. seeded runtime transcript 在已有 chat history 的首轮 prompt 上会静默丢当前 user turn。
+   - 触发条件：
+     - `transcriptStore` 为空；
+     - `baseContext.conversation` 非空；
+     - 当前 prompt 不与 seeded history 中任一现有 user message 完全匹配。
+   - 旧逻辑会只尝试 `mergePromptMessageIntoSeededTranscript(...)`，找不到匹配时直接返回，不做 append。
+   - 结果：
+     - 当前 prompt 不进入 runtime transcript；
+     - memory flush / durable compaction 的 omitted 计数被少算 1；
+     - prompt assembly 看到的 live conversation 落后一轮；
+     - prompt 自带 attachment 也会跟着丢。
+   - 修复：
+     - `mergePromptMessageIntoSeededTranscript(...)` 现在返回是否真正完成 merge；
+     - 当 merge 未命中时，`prepareSessionContext(...)` 回退到 `transcriptStore.appendIfDistinct(promptMessage)`。
+
+2. P4A bridge wait loop 对小 timeout 的轮询过粗，会把剩余 deadline 整段睡过去。
+   - `waitForBridgeResult(...)` 现在先计算单次 `pollIntervalMs`，每轮只 sleep 到 `min(pollIntervalMs, remainingMs)`，不再越过当前 deadline。
+   - 同时把最小轮询间隔从 `25ms` 下调到 `10ms`，避免显式小 timeout 下只轮询到 1-2 次。
+
+3. `P4aPythonRuntimeTest.execDoesNotSpendStartupBudgetDuringLauncherPreparation` 之前是在用 Windows 线程调度粒度证明 runtime 语义，测试前提本身不稳。
+   - 当前环境里失败 metadata 直接表明：超时点是 `startup`，且 `serviceReadyExists=false`、`serviceStateExists=false`，说明后台线程压根没在贴边预算内落盘 marker。
+   - 这个测试现在改成：
+     - 保留 `launcherDispatchDurationMs >= 100ms`；
+     - 直接断言 `launcherDispatchCompletedAtEpochMs == startupTimerStartedAtEpochMs`；
+     - 同时把 timeout 拉到不会把线程调度噪音误报成产品 bug 的范围。
+   - 这样测试验证的是“startup 计时锚点”，而不是“后台线程一定在 100ms 内被系统调度”。
+
+4. `OpenCrayAgentRuntimeTest` 中关于 streamed draft 的一个 runtime 断言已经过时。
+   - 现有 runtime 行为是：
+     - 压掉 structured tool payload；
+     - 压掉 internal signal payload；
+     - 保留 public commentary 作为对用户可见的流式 draft。
+   - 旧测试还在断言 `assistantDrafts.isEmpty()`，与当前 commentary 可见链路不一致。
+   - 已把断言改成仅保留 `Inspecting files` 这一条 public commentary。
+
+### 这轮新增回归覆盖
+
+- `AppAgentSessionTaskRuntimeFactoryTodoStoreTest`
+  - `prepareSessionContextAppendsPromptToSeededTranscriptWhenHistoryAlreadyExists`
+
+### 2026-04-24 定向验证
+
+已通过：
+- `./gradlew.bat :app:testDebugUnitTest --tests "com.opencray.app.P4aPythonRuntimeTest.execDoesNotSpendStartupBudgetDuringLauncherPreparation" --tests "com.opencray.app.AppAgentSessionTaskRuntimeFactoryTodoStoreTest.prepareSessionContextFlushesOmittedHistoryAndReloadsFreshMemoryRecords" --tests "com.opencray.app.AppAgentSessionTaskRuntimeFactoryTodoStoreTest.prepareSessionContextCompactsOlderTranscriptIntoDurableSummaries" --tests "com.opencray.app.AppAgentSessionTaskRuntimeFactoryTodoStoreTest.prepareSessionContextAppendsPromptToSeededTranscriptWhenHistoryAlreadyExists" --no-daemon --console=plain`
+- `./gradlew.bat :runtime:testDebugUnitTest --tests "com.opencray.runtime.OpenCrayAgentRuntimeTest.runPromptTaskSuppressesStructuredToolAndInternalDraftPayloadsButKeepsPublicCommentary" --no-daemon --console=plain`
+
+补充说明：
+- 我把 `:runtime:testDebugUnitTest` 顺手带起来时，还额外撞出了上面的 runtime commentary 旧断言红点；它不是本轮 app 修复引入的回归，而是此前行为已经切成“commentary 可见、tool/internal JSON 不可见”，测试还停在旧预期。
+
+### 2026-04-24 全仓验证补记
+
+1. JVM 全仓 `./gradlew.bat test` 在沙箱内第一次失败，不是业务红点，而是 Kotlin 编译的 `Metaspace` OOM。
+   - 沙箱内报错集中在多个 `compile*UnitTestKotlin` task，根因是编译期内存不足，不是测试断言失败。
+   - 提权后用更高 JVM 参数重跑：
+     - `ORG_GRADLE_JVMARGS='-Xmx4g -XX:MaxMetaspaceSize=1024m'`
+     - `./gradlew.bat test --no-daemon --console=plain`
+   - 结果：`BUILD SUCCESSFUL`
+
+2. Python 全仓 `python -m pytest` 第一次失败在 collection，不是业务用例失败。
+   - 根因：
+     - `python_tests/` 里有残留的 `pytest-cache-files-*`、`pytest-temp-run` 等目录；
+     - `pytest.ini` 没有限制递归目录，pytest 会把这些权限异常目录当成测试路径继续扫。
+   - 修复：
+     - 在 `pytest.ini` 增加 `norecursedirs`，显式跳过这些临时目录；
+     - 同时禁用 `cacheprovider`，避免 pytest 在仓库根目录做原子 cache 写入时再次撞到历史残留目录权限问题。
+   - 结果：`41 passed`
+
+3. Flutter 模块全量测试已通过。
+   - 执行：
+     - `flutter test`
+   - 结果：全量通过。

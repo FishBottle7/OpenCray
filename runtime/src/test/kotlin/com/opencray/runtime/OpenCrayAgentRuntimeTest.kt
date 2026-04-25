@@ -1301,7 +1301,7 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
-  fun runPromptTaskSuppressesStructuredToolAndInternalDraftPayloads() {
+  fun runPromptTaskSuppressesStructuredToolAndInternalDraftPayloadsButKeepsPublicCommentary() {
     val workspaceRoot = temporaryFolder.newFolder("agent-structured-hidden-draft-workspace")
     val selection = LiteLlmRouteSelectionMetadata(
       profileId = "test-profile",
@@ -1364,7 +1364,7 @@ class OpenCrayAgentRuntimeTest {
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("Done.", result.stdout)
-    assertTrue(eventSink.assistantDrafts.isEmpty())
+    assertEquals(listOf("Inspecting files"), eventSink.assistantDrafts)
     assertEquals(0, eventSink.assistantDraftClearCount)
   }
 

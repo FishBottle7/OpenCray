@@ -1815,7 +1815,13 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
         sessions: updatedSessions,
       ),
       isInputEnabled: _chatSnapshot.isInputEnabled,
+      todos: _chatSnapshot.todos,
+      todoState: _chatSnapshot.todoState,
+      todoHideDelayMs: _chatSnapshot.todoHideDelayMs,
+      todoCompletedAtEpochMs: _chatSnapshot.todoCompletedAtEpochMs,
       pendingApprovals: _chatSnapshot.pendingApprovals,
+      runtimeActivity: _chatSnapshot.runtimeActivity,
+      updatedAtEpochMs: _nextChatSnapshotUpdatedAt(),
     );
     _emitChatSnapshot();
   }
@@ -1843,7 +1849,13 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       messages: updatedMessages,
       drawer: _chatSnapshot.drawer,
       isInputEnabled: _chatSnapshot.isInputEnabled,
+      todos: _chatSnapshot.todos,
+      todoState: _chatSnapshot.todoState,
+      todoHideDelayMs: _chatSnapshot.todoHideDelayMs,
+      todoCompletedAtEpochMs: _chatSnapshot.todoCompletedAtEpochMs,
       pendingApprovals: _chatSnapshot.pendingApprovals,
+      runtimeActivity: _chatSnapshot.runtimeActivity,
+      updatedAtEpochMs: _nextChatSnapshotUpdatedAt(),
     );
     _emitChatSnapshot();
   }
@@ -1877,7 +1889,13 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
           .toList(growable: false),
       drawer: _chatSnapshot.drawer,
       isInputEnabled: _chatSnapshot.isInputEnabled,
+      todos: _chatSnapshot.todos,
+      todoState: _chatSnapshot.todoState,
+      todoHideDelayMs: _chatSnapshot.todoHideDelayMs,
+      todoCompletedAtEpochMs: _chatSnapshot.todoCompletedAtEpochMs,
       pendingApprovals: _chatSnapshot.pendingApprovals,
+      runtimeActivity: _chatSnapshot.runtimeActivity,
+      updatedAtEpochMs: _nextChatSnapshotUpdatedAt(),
     );
     _emitChatSnapshot();
   }
@@ -1950,7 +1968,13 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       ],
       drawer: _chatSnapshot.drawer,
       isInputEnabled: true,
+      todos: _chatSnapshot.todos,
+      todoState: _chatSnapshot.todoState,
+      todoHideDelayMs: _chatSnapshot.todoHideDelayMs,
+      todoCompletedAtEpochMs: _chatSnapshot.todoCompletedAtEpochMs,
       pendingApprovals: _chatSnapshot.pendingApprovals,
+      runtimeActivity: _chatSnapshot.runtimeActivity,
+      updatedAtEpochMs: _nextChatSnapshotUpdatedAt(),
     );
     _emitChatSnapshot();
     return const OpenCrayChatRunSubmission(
@@ -2069,7 +2093,13 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       messages: _chatSnapshot.messages,
       drawer: drawer,
       isInputEnabled: _chatSnapshot.isInputEnabled,
+      todos: _chatSnapshot.todos,
+      todoState: _chatSnapshot.todoState,
+      todoHideDelayMs: _chatSnapshot.todoHideDelayMs,
+      todoCompletedAtEpochMs: _chatSnapshot.todoCompletedAtEpochMs,
       pendingApprovals: _chatSnapshot.pendingApprovals,
+      runtimeActivity: _chatSnapshot.runtimeActivity,
+      updatedAtEpochMs: _nextChatSnapshotUpdatedAt(),
     );
   }
 
@@ -2089,9 +2119,21 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       messages: _chatSnapshot.messages,
       drawer: _chatSnapshot.drawer,
       isInputEnabled: _chatSnapshot.isInputEnabled,
+      todos: _chatSnapshot.todos,
+      todoState: _chatSnapshot.todoState,
+      todoHideDelayMs: _chatSnapshot.todoHideDelayMs,
+      todoCompletedAtEpochMs: _chatSnapshot.todoCompletedAtEpochMs,
       pendingApprovals: remainingApprovals,
+      runtimeActivity: _chatSnapshot.runtimeActivity,
+      updatedAtEpochMs: _nextChatSnapshotUpdatedAt(),
     );
     _emitChatSnapshot();
+  }
+
+  int _nextChatSnapshotUpdatedAt() {
+    final int now = DateTime.now().millisecondsSinceEpoch;
+    final int previous = _chatSnapshot.updatedAtEpochMs;
+    return now > previous ? now : previous + 1;
   }
 }
 

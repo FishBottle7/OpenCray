@@ -104,7 +104,7 @@ class OpenCrayChatDraftAttachment {
     if (chatAttachmentId != null) 'chatAttachmentId': chatAttachmentId,
     'mimeType': mimeType,
     'sizeBytes': sizeBytes,
-    'durationMs': durationMs,
+    if (durationMs != null) 'durationMs': durationMs,
     if (waveformBars.isNotEmpty) 'waveformBars': waveformBars,
     if (transcriptText != null) 'transcriptText': transcriptText,
   };

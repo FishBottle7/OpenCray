@@ -423,15 +423,17 @@ internal class ServiceOwnedChatRuntimeGateway(
   private val chatListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val chatRuntimeListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val liveAssistantDraftEventListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
-  private var latestChatPayload: Map<String, Any?> = decorateChatPayload(
-    chatSnapshotGateway().loadChatSnapshot(),
-  )
+  private var latestChatPayload: Map<String, Any?> = emptyMap()
   private val liveAssistantDraftsBySession =
     linkedMapOf<String, LinkedHashMap<String, ServiceOwnedLiveAssistantDraftSnapshot>>()
-  private var latestChatRuntimePayload: Map<String, Any?> = decorateChatRuntimePayload(
-    runtimeSnapshotGateway().loadChatRuntimeSnapshot(),
-  )
+  private var latestChatRuntimePayload: Map<String, Any?> = emptyMap()
   private var liveChatRuntimeRefreshTimer: Timer? = null
+
+  init {
+    latestChatPayload = decorateChatPayload(chatSnapshotGateway().loadChatSnapshot())
+    latestChatRuntimePayload =
+      decorateChatRuntimePayload(runtimeSnapshotGateway().loadChatRuntimeSnapshot())
+  }
 
   @Suppress("unused")
   private val chatObservationDisposer = chatSnapshotGateway().observeChat { payload ->
@@ -639,9 +641,9 @@ internal class ServiceOwnedChatRuntimeGateway(
         .orEmpty()
     }
     if (liveDrafts.isEmpty()) {
-      return payload
+      return ensureDecoratedRuntimePayloadVersionSignal(payload)
     }
-    return payload.toMutableMap().apply {
+    return ensureDecoratedRuntimePayloadVersionSignal(payload.toMutableMap().apply {
       this["liveAssistantDrafts"] = liveDrafts.map { draft ->
         mapOf(
           "runId" to draft.runId,
@@ -651,7 +653,7 @@ internal class ServiceOwnedChatRuntimeGateway(
           "updatedAtEpochMs" to draft.updatedAtEpochMs,
         )
       }
-    }
+    })
   }
 
   override fun loadChatSnapshot(): Map<String, Any?> =
@@ -1038,6 +1040,95 @@ internal class ServiceOwnedChatRuntimeGateway(
     return "session=${payload["sessionId"] ?: "-"} liveDrafts=${(payload["liveAssistantDrafts"] as? List<*>)?.size ?: 0} activeRuns=${activeRuns.size} retainedRuns=${(payload["retainedRuns"] as? List<*>)?.size ?: 0} events=${(payload["events"] as? List<*>)?.size ?: 0} runs=[$runSummary]"
   }
 
+  private fun payloadUpdatedAtEpochMs(payload: Map<String, Any?>): Long =
+    (payload["updatedAtEpochMs"] as? Number)?.toLong() ?: 0L
+
+  private fun payloadSessionId(payload: Map<String, Any?>): String = (payload["sessionId"] as? String)
+    ?.trim()
+    .orEmpty()
+
+  private fun payloadLiveAssistantDrafts(payload: Map<String, Any?>): List<Map<*, *>> =
+    (payload["liveAssistantDrafts"] as? List<*>)
+      ?.mapNotNull { item -> item as? Map<*, *> }
+      .orEmpty()
+
+  private fun withPayloadUpdatedAtEpochMs(
+    payload: Map<String, Any?>,
+    updatedAtEpochMs: Long,
+  ): Map<String, Any?> {
+    if (payloadUpdatedAtEpochMs(payload) == updatedAtEpochMs) {
+      return payload
+    }
+    return payload.toMutableMap().apply {
+      this["updatedAtEpochMs"] = updatedAtEpochMs
+    }
+  }
+
+  private fun ensureDecoratedChatPayloadVersionSignal(
+    payload: Map<String, Any?>,
+  ): Map<String, Any?> {
+    val previousPayload = synchronized(lock) { latestChatPayload }
+    if (previousPayload.isEmpty()) {
+      return payload
+    }
+    val previousInputEnabled = previousPayload["isInputEnabled"] as? Boolean ?: true
+    val currentInputEnabled = payload["isInputEnabled"] as? Boolean ?: true
+    val previousPlaceholder = previousPayload["composerPlaceholder"] as? String ?: ""
+    val currentPlaceholder = payload["composerPlaceholder"] as? String ?: ""
+    if (
+      previousInputEnabled == currentInputEnabled &&
+      previousPlaceholder == currentPlaceholder
+    ) {
+      return withPayloadUpdatedAtEpochMs(
+        payload,
+        maxOf(
+          payloadUpdatedAtEpochMs(payload),
+          payloadUpdatedAtEpochMs(previousPayload),
+        ),
+      )
+    }
+    val updatedAtEpochMs = maxOf(
+      payloadUpdatedAtEpochMs(payload),
+      payloadUpdatedAtEpochMs(previousPayload) + 1L,
+      System.currentTimeMillis(),
+    )
+    return withPayloadUpdatedAtEpochMs(payload, updatedAtEpochMs)
+  }
+
+  private fun ensureDecoratedRuntimePayloadVersionSignal(
+    payload: Map<String, Any?>,
+  ): Map<String, Any?> {
+    val sessionId = payloadSessionId(payload)
+    if (sessionId.isEmpty()) {
+      return payload
+    }
+    val previousPayload = synchronized(lock) { latestChatRuntimePayload }
+    if (previousPayload.isEmpty() || payloadSessionId(previousPayload) != sessionId) {
+      return payload
+    }
+    val currentDrafts = payloadLiveAssistantDrafts(payload)
+    val previousDrafts = payloadLiveAssistantDrafts(previousPayload)
+    if (currentDrafts == previousDrafts) {
+      return withPayloadUpdatedAtEpochMs(
+        payload,
+        maxOf(
+          payloadUpdatedAtEpochMs(payload),
+          payloadUpdatedAtEpochMs(previousPayload),
+        ),
+      )
+    }
+    val latestDraftEpochMs = currentDrafts.maxOfOrNull { draft ->
+      (draft["updatedAtEpochMs"] as? Number)?.toLong() ?: 0L
+    } ?: 0L
+    val updatedAtEpochMs = maxOf(
+      payloadUpdatedAtEpochMs(payload),
+      payloadUpdatedAtEpochMs(previousPayload) + 1L,
+      latestDraftEpochMs,
+      System.currentTimeMillis(),
+    )
+    return withPayloadUpdatedAtEpochMs(payload, updatedAtEpochMs)
+  }
+
   private fun decorateChatPayload(
     payload: Map<String, Any?>,
   ): Map<String, Any?> {
@@ -1047,17 +1138,17 @@ internal class ServiceOwnedChatRuntimeGateway(
         ?.trim()
         ?.takeIf(String::isNotBlank)
         ?: onDevicePreparingPlaceholder
-      return payload.toMutableMap().apply {
+      return ensureDecoratedChatPayloadVersionSignal(payload.toMutableMap().apply {
         this["composerPlaceholder"] = failureMessage
-      }
+      })
     }
     if (!warmupState.blocksChatInput()) {
-      return payload
+      return ensureDecoratedChatPayloadVersionSignal(payload)
     }
-    return payload.toMutableMap().apply {
+    return ensureDecoratedChatPayloadVersionSignal(payload.toMutableMap().apply {
       this["isInputEnabled"] = false
       this["composerPlaceholder"] = onDevicePreparingPlaceholder
-    }
+    })
   }
 
   private fun delegateFor(operation: String): OpenCrayChatRuntimeGateway =

@@ -26,6 +26,18 @@ import 'chat_models.dart';
 import 'chat_seed_data.dart';
 import 'chat_voice_playback.dart';
 
+class _TimedChatRunTraceHistoryEntry {
+  const _TimedChatRunTraceHistoryEntry({
+    required this.sortEpochMs,
+    required this.sourceOrder,
+    required this.entry,
+  });
+
+  final int sortEpochMs;
+  final int sourceOrder;
+  final ChatRunTraceHistoryEntry entry;
+}
+
 @visibleForTesting
 OpenCrayChatRuntimeSnapshot? resolveChatRuntimeSnapshot(
   OpenCrayChatRuntimeSnapshot? embedded,
@@ -37,55 +49,655 @@ OpenCrayChatRuntimeSnapshot? resolveChatRuntimeSnapshot(
   if (streamed == null) {
     return embedded;
   }
-  final int embeddedVersion = runtimeSnapshotVersion(embedded);
-  final int streamedVersion = runtimeSnapshotVersion(streamed);
-  if (streamedVersion > embeddedVersion) {
-    return streamed;
+  if (!_runtimeSnapshotsShareSession(embedded, streamed)) {
+    return _preferRuntimeSnapshot(embedded, streamed);
   }
-  if (embeddedVersion > streamedVersion) {
-    return embedded;
+  return _mergeRuntimeSnapshots(embedded, streamed);
+}
+
+bool _runtimeSnapshotsShareSession(
+  OpenCrayChatRuntimeSnapshot left,
+  OpenCrayChatRuntimeSnapshot right,
+) {
+  final String leftSessionId = left.sessionId.trim();
+  final String rightSessionId = right.sessionId.trim();
+  return leftSessionId.isEmpty ||
+      rightSessionId.isEmpty ||
+      leftSessionId == rightSessionId;
+}
+
+OpenCrayChatRuntimeSnapshot _preferRuntimeSnapshot(
+  OpenCrayChatRuntimeSnapshot left,
+  OpenCrayChatRuntimeSnapshot right,
+) {
+  final String leftHostInstanceId = _hostInstanceId(left);
+  final String rightHostInstanceId = _hostInstanceId(right);
+  if (leftHostInstanceId != rightHostInstanceId &&
+      rightHostInstanceId.isNotEmpty) {
+    return right;
   }
-  if (_visibleRunCount(embedded) != _visibleRunCount(streamed)) {
-    return _visibleRunCount(embedded) < _visibleRunCount(streamed)
-        ? embedded
-        : streamed;
+  final int leftOperationalVersion = _runtimeOperationalVersion(left);
+  final int rightOperationalVersion = _runtimeOperationalVersion(right);
+  if (rightOperationalVersion != leftOperationalVersion) {
+    return rightOperationalVersion > leftOperationalVersion ? right : left;
   }
-  if (_visibleSubAgentCount(embedded) != _visibleSubAgentCount(streamed)) {
-    return _visibleSubAgentCount(embedded) > _visibleSubAgentCount(streamed)
-        ? embedded
-        : streamed;
+  final int leftVersion = runtimeSnapshotVersion(left);
+  final int rightVersion = runtimeSnapshotVersion(right);
+  if (rightVersion != leftVersion) {
+    return rightVersion > leftVersion ? right : left;
   }
-  final String embeddedHostInstanceId = _hostInstanceId(embedded);
-  final String streamedHostInstanceId = _hostInstanceId(streamed);
-  if (embeddedHostInstanceId != streamedHostInstanceId &&
-      streamedHostInstanceId.isNotEmpty) {
-    return streamed;
+  final int leftDetailWeight = _runtimeDetailWeight(left);
+  final int rightDetailWeight = _runtimeDetailWeight(right);
+  if (rightDetailWeight != leftDetailWeight) {
+    return rightDetailWeight > leftDetailWeight ? right : left;
   }
-  return streamed;
+  return right;
+}
+
+OpenCrayChatRuntimeSnapshot _mergeRuntimeSnapshots(
+  OpenCrayChatRuntimeSnapshot left,
+  OpenCrayChatRuntimeSnapshot right,
+) {
+  final List<OpenCrayChatRunSnapshot> runs = _mergeRuntimeRuns(
+    _visibleRuns(left),
+    _visibleRuns(right),
+  );
+  final List<OpenCrayChatRunSnapshot> activeRuns = runs
+      .where(_isRuntimeRunActiveForProjection)
+      .toList(growable: false);
+  final List<OpenCrayChatRunSnapshot> retainedRuns = runs
+      .where((run) => !_isRuntimeRunActiveForProjection(run))
+      .toList(growable: false);
+  final List<OpenCrayChatRuntimeEventSnapshot> events = _mergeRuntimeEvents(
+    left.events,
+    right.events,
+  );
+  final List<OpenCrayChatSubAgentSnapshot> subAgents = _mergeRuntimeSubAgents(
+    left.subAgents,
+    right.subAgents,
+  );
+  final List<OpenCrayChatLiveAssistantDraftSnapshot> drafts =
+      _mergeRuntimeDrafts(left.liveAssistantDrafts, right.liveAssistantDrafts);
+  final OpenCrayHostLifecycleSnapshot? hostLifecycle = _preferHostLifecycle(
+    left.hostLifecycle,
+    right.hostLifecycle,
+  );
+  return OpenCrayChatRuntimeSnapshot(
+    sessionId: right.sessionId.trim().isNotEmpty
+        ? right.sessionId
+        : left.sessionId,
+    activeRuns: activeRuns,
+    retainedRuns: retainedRuns,
+    subAgents: subAgents,
+    events: events,
+    liveAssistantDrafts: drafts,
+    hostLifecycle: hostLifecycle,
+    updatedAtEpochMs: math.max(left.updatedAtEpochMs, right.updatedAtEpochMs),
+  );
+}
+
+List<OpenCrayChatRunSnapshot> _mergeRuntimeRuns(
+  List<OpenCrayChatRunSnapshot> left,
+  List<OpenCrayChatRunSnapshot> right,
+) {
+  final List<OpenCrayChatRunSnapshot> merged = <OpenCrayChatRunSnapshot>[];
+  void addRun(OpenCrayChatRunSnapshot run) {
+    final int existingIndex = merged.indexWhere(
+      (existing) => _runtimeRunsReferToSameRun(existing, run),
+    );
+    if (existingIndex < 0) {
+      merged.add(run);
+      return;
+    }
+    merged[existingIndex] = _mergeRuntimeRunSnapshots(
+      merged[existingIndex],
+      run,
+    );
+  }
+
+  left.forEach(addRun);
+  right.forEach(addRun);
+  merged.sort((leftRun, rightRun) {
+    if (leftRun.acceptedAtEpochMs != rightRun.acceptedAtEpochMs) {
+      return leftRun.acceptedAtEpochMs.compareTo(rightRun.acceptedAtEpochMs);
+    }
+    return _runtimeRunKey(leftRun).compareTo(_runtimeRunKey(rightRun));
+  });
+  return merged;
+}
+
+bool _runtimeRunsReferToSameRun(
+  OpenCrayChatRunSnapshot left,
+  OpenCrayChatRunSnapshot right,
+) {
+  final String leftRunId = left.runId.trim();
+  final String rightRunId = right.runId.trim();
+  if (leftRunId.isNotEmpty && rightRunId.isNotEmpty) {
+    return leftRunId == rightRunId;
+  }
+  final String leftTaskId = left.taskId.trim();
+  final String rightTaskId = right.taskId.trim();
+  return leftTaskId.isNotEmpty &&
+      rightTaskId.isNotEmpty &&
+      leftTaskId == rightTaskId;
+}
+
+String _runtimeRunKey(OpenCrayChatRunSnapshot run) {
+  final String runId = run.runId.trim();
+  if (runId.isNotEmpty) {
+    return 'run:$runId';
+  }
+  final String taskId = run.taskId.trim();
+  if (taskId.isNotEmpty) {
+    return 'task:$taskId';
+  }
+  return 'accepted:${run.acceptedAtEpochMs}';
+}
+
+OpenCrayChatRunSnapshot _preferRuntimeRunSnapshot(
+  OpenCrayChatRunSnapshot left,
+  OpenCrayChatRunSnapshot right,
+) {
+  if (right.isTerminal &&
+      !left.isTerminal &&
+      right.updatedAtEpochMs >= left.updatedAtEpochMs) {
+    return right;
+  }
+  if (left.isTerminal &&
+      !right.isTerminal &&
+      left.updatedAtEpochMs >= right.updatedAtEpochMs) {
+    return left;
+  }
+  final int leftVersion = _runtimeRunDetailEpochMs(left);
+  final int rightVersion = _runtimeRunDetailEpochMs(right);
+  if (rightVersion != leftVersion) {
+    return rightVersion > leftVersion ? right : left;
+  }
+  final int leftWeight = _runtimeRunDetailWeight(left);
+  final int rightWeight = _runtimeRunDetailWeight(right);
+  if (rightWeight != leftWeight) {
+    return rightWeight > leftWeight ? right : left;
+  }
+  return right.updatedAtEpochMs >= left.updatedAtEpochMs ? right : left;
+}
+
+OpenCrayChatRunSnapshot _mergeRuntimeRunSnapshots(
+  OpenCrayChatRunSnapshot left,
+  OpenCrayChatRunSnapshot right,
+) {
+  final OpenCrayChatRunSnapshot preferred = _preferRuntimeRunSnapshot(
+    left,
+    right,
+  );
+  final OpenCrayChatRunSnapshot supplement = identical(preferred, left)
+      ? right
+      : left;
+  if (!_runtimeRunsReferToSameRun(preferred, supplement)) {
+    return preferred;
+  }
+  final List<OpenCrayChatManagedProcessSnapshot> managedProcesses =
+      _mergeRuntimeManagedProcesses(
+        preferred.managedProcesses,
+        supplement.managedProcesses,
+      );
+  final List<String> managedProcessIds = _mergeRuntimeStringList(
+    <String>[
+      ...preferred.managedProcessIds,
+      for (final process in preferred.managedProcesses) process.processId,
+    ],
+    <String>[
+      ...supplement.managedProcessIds,
+      for (final process in supplement.managedProcesses) process.processId,
+    ],
+  );
+  return OpenCrayChatRunSnapshot(
+    sessionId: _preferNonEmpty(preferred.sessionId, supplement.sessionId),
+    runId: _preferNonEmpty(preferred.runId, supplement.runId),
+    taskId: _preferNonEmpty(preferred.taskId, supplement.taskId),
+    acceptedAtEpochMs: preferred.acceptedAtEpochMs != 0
+        ? preferred.acceptedAtEpochMs
+        : supplement.acceptedAtEpochMs,
+    updatedAtEpochMs: math.max(
+      preferred.updatedAtEpochMs,
+      supplement.updatedAtEpochMs,
+    ),
+    attempt: preferred.attempt != 0 ? preferred.attempt : supplement.attempt,
+    isTerminal: preferred.isTerminal,
+    executionOrdinal: preferred.executionOrdinal != 0
+        ? preferred.executionOrdinal
+        : supplement.executionOrdinal,
+    executionId: _preferNonEmptyNullable(
+      preferred.executionId,
+      supplement.executionId,
+    ),
+    executionKind: _preferNonEmptyNullable(
+      preferred.executionKind,
+      supplement.executionKind,
+    ),
+    pendingExecutionKind: _preferNonEmptyNullable(
+      preferred.pendingExecutionKind,
+      supplement.pendingExecutionKind,
+    ),
+    lifecycleState: _preferNonEmptyNullable(
+      preferred.lifecycleState,
+      supplement.lifecycleState,
+    ),
+    taskState: _preferNonEmptyNullable(
+      preferred.taskState,
+      supplement.taskState,
+    ),
+    executionStatus: _preferNonEmptyNullable(
+      preferred.executionStatus,
+      supplement.executionStatus,
+    ),
+    errorCode: _preferNonEmptyNullable(
+      preferred.errorCode,
+      supplement.errorCode,
+    ),
+    errorMessage: _preferNonEmptyNullable(
+      preferred.errorMessage,
+      supplement.errorMessage,
+    ),
+    responseFormat: _preferNonEmptyNullable(
+      preferred.responseFormat,
+      supplement.responseFormat,
+    ),
+    pendingMessageId: _preferNonEmptyNullable(
+      preferred.pendingMessageId,
+      supplement.pendingMessageId,
+    ),
+    finalAttachments: _mergeRuntimeAttachments(
+      preferred.finalAttachments,
+      supplement.finalAttachments,
+    ),
+    managedProcessIds: managedProcessIds,
+    managedProcesses: managedProcesses,
+    runningManagedProcessCount: preferred.runningManagedProcessCount,
+    hasLiveManagedProcesses: preferred.hasLiveManagedProcesses,
+    lastEvent: _preferRuntimeRunLastEvent(
+      preferred.lastEvent,
+      supplement.lastEvent,
+    ),
+    llmDiagnostics: preferred.llmDiagnostics ?? supplement.llmDiagnostics,
+    liveContext: preferred.liveContext ?? supplement.liveContext,
+    contextBudget: preferred.contextBudget ?? supplement.contextBudget,
+    memoryTrace: preferred.memoryTrace ?? supplement.memoryTrace,
+    memoryFlush: preferred.memoryFlush ?? supplement.memoryFlush,
+    bootstrap: preferred.bootstrap ?? supplement.bootstrap,
+    durableCompaction:
+        preferred.durableCompaction ?? supplement.durableCompaction,
+    skillInventory: preferred.skillInventory ?? supplement.skillInventory,
+    activeSkill: preferred.activeSkill ?? supplement.activeSkill,
+    diagnostics: preferred.diagnostics ?? supplement.diagnostics,
+    recoveryPlan: preferred.recoveryPlan ?? supplement.recoveryPlan,
+  );
+}
+
+String _preferNonEmpty(String preferred, String fallback) =>
+    preferred.trim().isNotEmpty ? preferred : fallback;
+
+String? _preferNonEmptyNullable(String? preferred, String? fallback) =>
+    preferred?.trim().isNotEmpty == true ? preferred : fallback;
+
+List<String> _mergeRuntimeStringList(
+  List<String> preferred,
+  List<String> supplement,
+) {
+  final Set<String> seen = <String>{};
+  final List<String> merged = <String>[];
+  for (final value in <String>[...preferred, ...supplement]) {
+    final String trimmed = value.trim();
+    if (trimmed.isEmpty || !seen.add(trimmed)) {
+      continue;
+    }
+    merged.add(value);
+  }
+  return merged;
+}
+
+OpenCrayChatRuntimeEventSnapshot? _preferRuntimeRunLastEvent(
+  OpenCrayChatRuntimeEventSnapshot? preferred,
+  OpenCrayChatRuntimeEventSnapshot? supplement,
+) {
+  if (preferred == null || supplement == null) {
+    return preferred ?? supplement;
+  }
+  return preferred.emittedAtEpochMs >= supplement.emittedAtEpochMs
+      ? preferred
+      : supplement;
+}
+
+List<OpenCrayChatManagedProcessSnapshot> _mergeRuntimeManagedProcesses(
+  List<OpenCrayChatManagedProcessSnapshot> preferred,
+  List<OpenCrayChatManagedProcessSnapshot> supplement,
+) {
+  final Map<String, OpenCrayChatManagedProcessSnapshot> byKey =
+      <String, OpenCrayChatManagedProcessSnapshot>{};
+  for (final process in <OpenCrayChatManagedProcessSnapshot>[
+    ...preferred,
+    ...supplement,
+  ]) {
+    final String key = _runtimeManagedProcessMergeKey(process);
+    final OpenCrayChatManagedProcessSnapshot? existing = byKey[key];
+    if (existing == null) {
+      byKey[key] = process;
+      continue;
+    }
+    byKey[key] = _preferRuntimeManagedProcessSnapshot(existing, process);
+  }
+  return byKey.values.toList(growable: false)..sort((left, right) {
+    final int leftEpoch = math.max(
+      left.startedAtEpochMs,
+      left.updatedAtEpochMs,
+    );
+    final int rightEpoch = math.max(
+      right.startedAtEpochMs,
+      right.updatedAtEpochMs,
+    );
+    if (leftEpoch != rightEpoch) {
+      return leftEpoch.compareTo(rightEpoch);
+    }
+    return left.processId.compareTo(right.processId);
+  });
+}
+
+String _runtimeManagedProcessMergeKey(
+  OpenCrayChatManagedProcessSnapshot process,
+) {
+  final String processId = process.processId.trim();
+  if (processId.isNotEmpty) {
+    return 'process:$processId';
+  }
+  return <String>[
+    process.command,
+    process.args.join('\u0001'),
+    process.startedAtEpochMs.toString(),
+  ].join('\u0001');
+}
+
+OpenCrayChatManagedProcessSnapshot _preferRuntimeManagedProcessSnapshot(
+  OpenCrayChatManagedProcessSnapshot left,
+  OpenCrayChatManagedProcessSnapshot right,
+) {
+  final int leftEpoch = _runtimeManagedProcessDetailEpochMs(left);
+  final int rightEpoch = _runtimeManagedProcessDetailEpochMs(right);
+  if (rightEpoch != leftEpoch) {
+    return rightEpoch > leftEpoch ? right : left;
+  }
+  final int leftWeight = _runtimeManagedProcessDetailWeight(left);
+  final int rightWeight = _runtimeManagedProcessDetailWeight(right);
+  if (rightWeight != leftWeight) {
+    return rightWeight > leftWeight ? right : left;
+  }
+  return right;
+}
+
+int _runtimeManagedProcessDetailEpochMs(
+  OpenCrayChatManagedProcessSnapshot process,
+) => math.max(
+  process.updatedAtEpochMs,
+  math.max(process.startedAtEpochMs, process.finishedAtEpochMs ?? 0),
+);
+
+List<OpenCrayChatAttachmentSnapshot> _mergeRuntimeAttachments(
+  List<OpenCrayChatAttachmentSnapshot> preferred,
+  List<OpenCrayChatAttachmentSnapshot> supplement,
+) {
+  final Map<String, OpenCrayChatAttachmentSnapshot> byKey =
+      <String, OpenCrayChatAttachmentSnapshot>{};
+  for (final attachment in <OpenCrayChatAttachmentSnapshot>[
+    ...preferred,
+    ...supplement,
+  ]) {
+    final String key = _runtimeAttachmentMergeKey(attachment);
+    final OpenCrayChatAttachmentSnapshot? existing = byKey[key];
+    if (existing == null ||
+        _runtimeAttachmentDetailWeight(attachment) >
+            _runtimeAttachmentDetailWeight(existing)) {
+      byKey[key] = attachment;
+    }
+  }
+  return byKey.values.toList(growable: false);
+}
+
+String _runtimeAttachmentMergeKey(OpenCrayChatAttachmentSnapshot attachment) {
+  final String attachmentId = attachment.attachmentId.trim();
+  if (attachmentId.isNotEmpty) {
+    return 'attachment:$attachmentId';
+  }
+  final String localPath = attachment.localPath.trim();
+  if (localPath.isNotEmpty) {
+    return 'path:$localPath';
+  }
+  return <String>[attachment.kind, attachment.displayName].join('\u0001');
+}
+
+int _runtimeAttachmentDetailWeight(OpenCrayChatAttachmentSnapshot attachment) =>
+    attachment.displayName.length +
+    attachment.localPath.length +
+    (attachment.mimeType?.length ?? 0) +
+    (attachment.sizeBytes == null ? 0 : 4) +
+    (attachment.widthPx == null ? 0 : 4) +
+    (attachment.heightPx == null ? 0 : 4) +
+    (attachment.durationMs == null ? 0 : 4) +
+    attachment.waveformBars.length +
+    (attachment.transcriptText?.length ?? 0) +
+    (attachment.contentSha256?.length ?? 0);
+
+bool _isRuntimeRunActiveForProjection(OpenCrayChatRunSnapshot run) =>
+    !run.isTerminal ||
+    run.hasLiveManagedProcesses ||
+    run.runningManagedProcessCount > 0;
+
+List<OpenCrayChatRuntimeEventSnapshot> _mergeRuntimeEvents(
+  List<OpenCrayChatRuntimeEventSnapshot> left,
+  List<OpenCrayChatRuntimeEventSnapshot> right,
+) {
+  final Map<String, OpenCrayChatRuntimeEventSnapshot> byKey =
+      <String, OpenCrayChatRuntimeEventSnapshot>{};
+  for (final event in <OpenCrayChatRuntimeEventSnapshot>[...left, ...right]) {
+    final String key = _runtimeEventMergeKey(event);
+    final OpenCrayChatRuntimeEventSnapshot? existing = byKey[key];
+    if (existing == null) {
+      byKey[key] = event;
+      continue;
+    }
+    byKey[key] = _preferRuntimeEventSnapshot(existing, event);
+  }
+  return byKey.values.toList(growable: false)..sort(
+    (leftEvent, rightEvent) =>
+        leftEvent.emittedAtEpochMs.compareTo(rightEvent.emittedAtEpochMs),
+  );
+}
+
+OpenCrayChatRuntimeEventSnapshot _preferRuntimeEventSnapshot(
+  OpenCrayChatRuntimeEventSnapshot left,
+  OpenCrayChatRuntimeEventSnapshot right,
+) {
+  if (right.emittedAtEpochMs != left.emittedAtEpochMs) {
+    return right.emittedAtEpochMs > left.emittedAtEpochMs ? right : left;
+  }
+  final int leftWeight = _runtimeEventDetailWeight(left);
+  final int rightWeight = _runtimeEventDetailWeight(right);
+  if (rightWeight != leftWeight) {
+    return rightWeight > leftWeight ? right : left;
+  }
+  return right;
+}
+
+int _runtimeEventDetailWeight(OpenCrayChatRuntimeEventSnapshot event) =>
+    (event.executionId?.length ?? 0) +
+    (event.executionOrdinal == null ? 0 : 4) +
+    (event.executionKind?.length ?? 0) +
+    (event.entryId?.length ?? 0) +
+    (event.checkpoint?.length ?? 0) +
+    (event.turn == null ? 0 : 4) +
+    (event.phase?.length ?? 0) +
+    (event.status?.length ?? 0) +
+    (event.errorCode?.length ?? 0) +
+    (event.errorMessage?.length ?? 0) +
+    (event.responseFormat?.length ?? 0) +
+    (event.isFinal == null ? 0 : 1) +
+    (event.text?.length ?? 0) +
+    (event.stage?.length ?? 0) +
+    (event.toolName?.length ?? 0) +
+    (event.isHighRisk ? 1 : 0) +
+    (event.label?.length ?? 0) +
+    (event.childRunId?.length ?? 0) +
+    (event.childTaskId?.length ?? 0) +
+    (event.subagentType?.length ?? 0) +
+    (event.contextMode?.length ?? 0) +
+    (event.depth == null ? 0 : 4) +
+    (event.executionState?.length ?? 0) +
+    (event.continuationKind?.length ?? 0) +
+    (event.toolReason?.length ?? 0) +
+    (event.argumentsJson?.length ?? 0) +
+    (event.toolStatus?.length ?? 0) +
+    (event.content?.length ?? 0) +
+    (event.contentPreview?.length ?? 0) +
+    event.resultMetadata.entries.fold<int>(
+      0,
+      (total, entry) => total + entry.key.length + entry.value.length,
+    ) +
+    (event.operation?.length ?? 0) +
+    (event.query?.length ?? 0) +
+    event.queryTerms.fold<int>(0, (total, value) => total + value.length) +
+    (event.resultCount == null ? 0 : 4) +
+    (event.corpusFileCount == null ? 0 : 4) +
+    event.recordIds.fold<int>(0, (total, value) => total + value.length) +
+    event.writtenRecordIds.fold<int>(
+      0,
+      (total, value) => total + value.length,
+    ) +
+    event.writtenKinds.fold<int>(0, (total, value) => total + value.length) +
+    event.resolvedRecordIds.fold<int>(
+      0,
+      (total, value) => total + value.length,
+    ) +
+    event.suppressedRecordIds.fold<int>(
+      0,
+      (total, value) => total + value.length,
+    ) +
+    event.reaffirmedRecordIds.fold<int>(
+      0,
+      (total, value) => total + value.length,
+    ) +
+    event.expiredRecordIds.fold<int>(
+      0,
+      (total, value) => total + value.length,
+    ) +
+    event.paths.fold<int>(0, (total, value) => total + value.length) +
+    event.lineRanges.fold<int>(0, (total, value) => total + value.length) +
+    (event.path?.length ?? 0) +
+    (event.fromLine == null ? 0 : 4) +
+    (event.returnedLineCount == null ? 0 : 4) +
+    (event.totalLineCount == null ? 0 : 4);
+
+String _runtimeEventMergeKey(OpenCrayChatRuntimeEventSnapshot event) =>
+    <String>[
+      event.kind,
+      event.runId,
+      event.taskId,
+      event.executionId ?? '',
+      event.executionOrdinal?.toString() ?? '',
+      event.executionKind ?? '',
+      event.emittedAtEpochMs.toString(),
+      event.phase ?? '',
+      event.stage ?? '',
+      event.toolName ?? '',
+      event.childRunId ?? '',
+      event.childTaskId ?? '',
+      event.entryId ?? '',
+      event.text ?? '',
+    ].join('\u0001');
+
+List<OpenCrayChatSubAgentSnapshot> _mergeRuntimeSubAgents(
+  List<OpenCrayChatSubAgentSnapshot> left,
+  List<OpenCrayChatSubAgentSnapshot> right,
+) {
+  final Map<String, OpenCrayChatSubAgentSnapshot> byKey =
+      <String, OpenCrayChatSubAgentSnapshot>{};
+  for (final subAgent in <OpenCrayChatSubAgentSnapshot>[...left, ...right]) {
+    final String key = _runtimeSubAgentMergeKey(subAgent);
+    final OpenCrayChatSubAgentSnapshot? existing = byKey[key];
+    if (existing == null ||
+        subAgent.updatedAtEpochMs >= existing.updatedAtEpochMs) {
+      byKey[key] = subAgent;
+    }
+  }
+  return byKey.values.toList(growable: false)..sort(
+    (leftSubAgent, rightSubAgent) =>
+        leftSubAgent.updatedAtEpochMs.compareTo(rightSubAgent.updatedAtEpochMs),
+  );
+}
+
+String _runtimeSubAgentMergeKey(OpenCrayChatSubAgentSnapshot subAgent) {
+  final String childRunId = subAgent.childRunId.trim();
+  if (childRunId.isNotEmpty) {
+    return 'run:$childRunId';
+  }
+  final String childTaskId = subAgent.childTaskId.trim();
+  if (childTaskId.isNotEmpty) {
+    return 'task:$childTaskId';
+  }
+  return <String>[
+    subAgent.parentRunId,
+    subAgent.parentTaskId,
+    subAgent.label,
+    subAgent.subagentType,
+    subAgent.depth.toString(),
+  ].join('\u0001');
+}
+
+List<OpenCrayChatLiveAssistantDraftSnapshot> _mergeRuntimeDrafts(
+  List<OpenCrayChatLiveAssistantDraftSnapshot> left,
+  List<OpenCrayChatLiveAssistantDraftSnapshot> right,
+) {
+  final Map<String, OpenCrayChatLiveAssistantDraftSnapshot> byMessageId =
+      <String, OpenCrayChatLiveAssistantDraftSnapshot>{};
+  for (final draft in <OpenCrayChatLiveAssistantDraftSnapshot>[
+    ...left,
+    ...right,
+  ]) {
+    final String pendingMessageId = draft.pendingMessageId.trim();
+    if (pendingMessageId.isEmpty) {
+      continue;
+    }
+    final OpenCrayChatLiveAssistantDraftSnapshot? existing =
+        byMessageId[pendingMessageId];
+    if (existing == null ||
+        draft.updatedAtEpochMs >= existing.updatedAtEpochMs) {
+      byMessageId[pendingMessageId] = draft;
+    }
+  }
+  return byMessageId.values.toList(growable: false)..sort(
+    (leftDraft, rightDraft) =>
+        leftDraft.updatedAtEpochMs.compareTo(rightDraft.updatedAtEpochMs),
+  );
+}
+
+OpenCrayHostLifecycleSnapshot? _preferHostLifecycle(
+  OpenCrayHostLifecycleSnapshot? left,
+  OpenCrayHostLifecycleSnapshot? right,
+) {
+  if (left == null || right == null) {
+    return right ?? left;
+  }
+  final int leftEpoch = left.hostCreatedAtEpochMs ?? 0;
+  final int rightEpoch = right.hostCreatedAtEpochMs ?? 0;
+  if (rightEpoch != leftEpoch) {
+    return rightEpoch > leftEpoch ? right : left;
+  }
+  final String rightHostInstanceId = right.hostInstanceId?.trim() ?? '';
+  if (rightHostInstanceId.isNotEmpty &&
+      rightHostInstanceId != (left.hostInstanceId?.trim() ?? '')) {
+    return right;
+  }
+  return right;
 }
 
 @visibleForTesting
 int runtimeSnapshotVersion(OpenCrayChatRuntimeSnapshot snapshot) {
-  final int latestEventEpochMs = snapshot.events.fold<int>(
-    0,
-    (latest, event) =>
-        latest > event.emittedAtEpochMs ? latest : event.emittedAtEpochMs,
-  );
-  final int latestRunEpochMs = _visibleRuns(snapshot).fold<int>(
-    0,
-    (latest, run) =>
-        latest > run.updatedAtEpochMs ? latest : run.updatedAtEpochMs,
-  );
-  final int latestSubAgentEpochMs = snapshot.subAgents.fold<int>(
-    0,
-    (latest, subAgent) =>
-        latest > subAgent.updatedAtEpochMs ? latest : subAgent.updatedAtEpochMs,
-  );
-  final int latestDraftEpochMs = snapshot.liveAssistantDrafts.fold<int>(
-    0,
-    (latest, draft) =>
-        latest > draft.updatedAtEpochMs ? latest : draft.updatedAtEpochMs,
-  );
   final int latestHostEpochMs =
       snapshot.hostLifecycle?.hostCreatedAtEpochMs ?? 0;
   return math.max(
@@ -93,13 +705,99 @@ int runtimeSnapshotVersion(OpenCrayChatRuntimeSnapshot snapshot) {
     math.max(
       latestHostEpochMs,
       math.max(
-        math.max(latestSubAgentEpochMs, latestDraftEpochMs),
-        latestEventEpochMs > latestRunEpochMs
-            ? latestEventEpochMs
-            : latestRunEpochMs,
+        _runtimeOperationalVersion(snapshot),
+        _latestRuntimeDraftEpochMs(snapshot),
       ),
     ),
   );
+}
+
+int _runtimeOperationalVersion(OpenCrayChatRuntimeSnapshot snapshot) {
+  return math.max(
+    _latestRuntimeEventEpochMs(snapshot),
+    math.max(
+      _latestRuntimeRunEpochMs(snapshot),
+      _latestRuntimeSubAgentEpochMs(snapshot),
+    ),
+  );
+}
+
+int _latestRuntimeEventEpochMs(OpenCrayChatRuntimeSnapshot snapshot) =>
+    snapshot.events.fold<int>(
+      0,
+      (latest, event) =>
+          latest > event.emittedAtEpochMs ? latest : event.emittedAtEpochMs,
+    );
+
+int _latestRuntimeRunEpochMs(OpenCrayChatRuntimeSnapshot snapshot) =>
+    _visibleRuns(snapshot).fold<int>(0, (latest, run) {
+      final int runEpochMs = _runtimeRunDetailEpochMs(run);
+      return latest > runEpochMs ? latest : runEpochMs;
+    });
+
+int _latestRuntimeSubAgentEpochMs(OpenCrayChatRuntimeSnapshot snapshot) =>
+    snapshot.subAgents.fold<int>(
+      0,
+      (latest, subAgent) => latest > subAgent.updatedAtEpochMs
+          ? latest
+          : subAgent.updatedAtEpochMs,
+    );
+
+int _latestRuntimeDraftEpochMs(OpenCrayChatRuntimeSnapshot snapshot) =>
+    snapshot.liveAssistantDrafts.fold<int>(
+      0,
+      (latest, draft) =>
+          latest > draft.updatedAtEpochMs ? latest : draft.updatedAtEpochMs,
+    );
+
+int _runtimeRunDetailEpochMs(OpenCrayChatRunSnapshot run) {
+  final int latestManagedProcessEpochMs = run.managedProcesses.fold<int>(0, (
+    latest,
+    process,
+  ) {
+    final int processEpochMs = math.max(
+      process.updatedAtEpochMs,
+      process.startedAtEpochMs,
+    );
+    return latest > processEpochMs ? latest : processEpochMs;
+  });
+  return math.max(
+    run.updatedAtEpochMs,
+    math.max(run.lastEvent?.emittedAtEpochMs ?? 0, latestManagedProcessEpochMs),
+  );
+}
+
+int _runtimeDetailWeight(OpenCrayChatRuntimeSnapshot snapshot) =>
+    snapshot.events.length * 100000 +
+    snapshot.subAgents.length * 10000 +
+    _visibleRuns(
+      snapshot,
+    ).fold<int>(0, (total, run) => total + _runtimeRunDetailWeight(run)) +
+    snapshot.liveAssistantDrafts.length;
+
+int _runtimeRunDetailWeight(OpenCrayChatRunSnapshot run) =>
+    1 +
+    (run.isTerminal ? 20000 : 0) +
+    (run.lastEvent == null ? 0 : 500) +
+    run.finalAttachments.length * 250 +
+    run.managedProcessIds.length * 100 +
+    run.managedProcesses.fold<int>(
+      0,
+      (total, process) => total + _runtimeManagedProcessDetailWeight(process),
+    );
+
+int _runtimeManagedProcessDetailWeight(
+  OpenCrayChatManagedProcessSnapshot process,
+) {
+  final bool terminal = process.status.trim().toLowerCase() != 'running';
+  return 1000 +
+      (process.processStarted ? 100 : 0) +
+      (terminal ? 200 : 0) +
+      process.stdout.length +
+      process.stderr.length +
+      process.stdoutPreview.length +
+      process.stderrPreview.length +
+      (process.errorMessage?.length ?? 0);
 }
 
 @visibleForTesting
@@ -144,6 +842,13 @@ bool shouldReplaceObservedChatSnapshot(
   if (incomingRuntimeVersion != currentRuntimeVersion) {
     return incomingRuntimeVersion > currentRuntimeVersion;
   }
+  if (incoming.runtimeActivity != null &&
+      shouldReplaceObservedRuntimeSnapshot(
+        current.runtimeActivity,
+        incoming.runtimeActivity!,
+      )) {
+    return true;
+  }
   if (incoming.messages.length != current.messages.length) {
     if (incoming.messages.length > current.messages.length) {
       return true;
@@ -167,34 +872,79 @@ bool shouldReplaceObservedRuntimeSnapshot(
   if (current == null) {
     return true;
   }
+  final OpenCrayChatRuntimeSnapshot candidate =
+      resolveChatRuntimeSnapshot(current, incoming) ?? incoming;
   final int currentVersion = runtimeSnapshotVersion(current);
-  final int incomingVersion = runtimeSnapshotVersion(incoming);
-  if (incomingVersion != currentVersion) {
-    return incomingVersion > currentVersion;
+  final int candidateVersion = runtimeSnapshotVersion(candidate);
+  if (candidateVersion != currentVersion) {
+    return candidateVersion > currentVersion;
   }
-  if (incoming.events.length != current.events.length) {
-    return incoming.events.length > current.events.length;
+  final int currentOperationalVersion = _runtimeOperationalVersion(current);
+  final int candidateOperationalVersion = _runtimeOperationalVersion(candidate);
+  if (candidateOperationalVersion != currentOperationalVersion) {
+    return candidateOperationalVersion > currentOperationalVersion;
   }
-  if (incoming.liveAssistantDrafts.length !=
-      current.liveAssistantDrafts.length) {
-    return incoming.liveAssistantDrafts.length >
-        current.liveAssistantDrafts.length;
+  if (_runtimeSnapshotTerminalizesRun(candidate, current)) {
+    return true;
   }
-  if (incoming.subAgents.length != current.subAgents.length) {
-    return incoming.subAgents.length > current.subAgents.length;
+  if (_runtimeSnapshotTerminalizesRun(current, candidate)) {
+    return false;
+  }
+  final int currentDetailWeight = _runtimeDetailWeight(current);
+  final int candidateDetailWeight = _runtimeDetailWeight(candidate);
+  if (candidateDetailWeight != currentDetailWeight) {
+    return candidateDetailWeight > currentDetailWeight;
+  }
+  final int currentDraftVersion = _latestRuntimeDraftEpochMs(current);
+  final int candidateDraftVersion = _latestRuntimeDraftEpochMs(candidate);
+  if (candidateDraftVersion != currentDraftVersion) {
+    return candidateDraftVersion > currentDraftVersion;
   }
   final int currentVisibleRuns = _visibleRunCount(current);
-  final int incomingVisibleRuns = _visibleRunCount(incoming);
-  if (incomingVisibleRuns != currentVisibleRuns) {
-    return incomingVisibleRuns > currentVisibleRuns;
+  final int candidateVisibleRuns = _visibleRunCount(candidate);
+  if (candidateVisibleRuns != currentVisibleRuns) {
+    return candidateVisibleRuns > currentVisibleRuns;
   }
   final String currentHostInstanceId = _hostInstanceId(current);
-  final String incomingHostInstanceId = _hostInstanceId(incoming);
-  if (currentHostInstanceId != incomingHostInstanceId &&
-      incomingHostInstanceId.isNotEmpty) {
+  final String candidateHostInstanceId = _hostInstanceId(candidate);
+  if (currentHostInstanceId != candidateHostInstanceId &&
+      candidateHostInstanceId.isNotEmpty) {
     return true;
   }
   return false;
+}
+
+bool _runtimeSnapshotTerminalizesRun(
+  OpenCrayChatRuntimeSnapshot candidate,
+  OpenCrayChatRuntimeSnapshot current,
+) {
+  for (final candidateRun in _visibleRuns(candidate)) {
+    if (!candidateRun.isTerminal) {
+      continue;
+    }
+    final OpenCrayChatRunSnapshot? currentRun = _findRuntimeRun(
+      _visibleRuns(current),
+      candidateRun,
+    );
+    if (currentRun != null &&
+        !currentRun.isTerminal &&
+        candidateRun.updatedAtEpochMs >= currentRun.updatedAtEpochMs) {
+      return true;
+    }
+  }
+  return false;
+}
+
+OpenCrayChatRunSnapshot? _findRuntimeRun(
+  List<OpenCrayChatRunSnapshot> runs,
+  OpenCrayChatRunSnapshot target,
+) {
+  for (final run in runs) {
+    if (_runtimeRunsReferToSameRun(run, target)) {
+      return run;
+    }
+  }
+  return null;
 }
 
 List<OpenCrayChatRunSnapshot> _visibleRuns(
@@ -206,9 +956,6 @@ List<OpenCrayChatRunSnapshot> _visibleRuns(
 
 int _visibleRunCount(OpenCrayChatRuntimeSnapshot snapshot) =>
     snapshot.activeRuns.length + snapshot.retainedRuns.length;
-
-int _visibleSubAgentCount(OpenCrayChatRuntimeSnapshot snapshot) =>
-    snapshot.subAgents.length;
 
 String _hostInstanceId(OpenCrayChatRuntimeSnapshot snapshot) =>
     snapshot.hostLifecycle?.hostInstanceId?.trim() ?? '';
@@ -2236,23 +2983,26 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   void _handleChatRuntimeSnapshot(OpenCrayChatRuntimeSnapshot snapshot) {
+    final OpenCrayChatRuntimeSnapshot resolvedSnapshot =
+        resolveChatRuntimeSnapshot(_latestChatRuntimeSnapshot, snapshot) ??
+        snapshot;
     if (!shouldReplaceObservedRuntimeSnapshot(
       _latestChatRuntimeSnapshot,
-      snapshot,
+      resolvedSnapshot,
     )) {
       return;
     }
-    final List<String> activeRunSummaries = snapshot.activeRuns
+    final List<String> activeRunSummaries = resolvedSnapshot.activeRuns
         .map(
           (run) =>
               '${run.runId}:${run.managedProcesses.length}/${run.runningManagedProcessCount}/${run.hasLiveManagedProcesses}',
         )
         .toList(growable: false);
     _runTraceDebug(
-      'feature.runtime session=${snapshot.sessionId} activeRuns=${snapshot.activeRuns.length} retainedRuns=${snapshot.retainedRuns.length} events=${snapshot.events.length} runs=${activeRunSummaries.join(';')}',
+      'feature.runtime session=${resolvedSnapshot.sessionId} activeRuns=${resolvedSnapshot.activeRuns.length} retainedRuns=${resolvedSnapshot.retainedRuns.length} events=${resolvedSnapshot.events.length} runs=${activeRunSummaries.join(';')}',
     );
-    _reconcileLiveAssistantDraftOverrides(snapshot);
-    _latestChatRuntimeSnapshot = snapshot;
+    _reconcileLiveAssistantDraftOverrides(resolvedSnapshot);
+    _latestChatRuntimeSnapshot = resolvedSnapshot;
     _applyHostState();
   }
 
@@ -3967,9 +4717,53 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
               messageId: messageId,
               kind: ChatMessageKind.inbound,
               text: text,
+              createdAtEpochMs: event.emittedAtEpochMs,
               isEphemeral: true,
             ),
           );
+    }
+    for (final run in visibleRuns) {
+      if (run.isTerminal) {
+        continue;
+      }
+      final String anchorMessageId = run.pendingMessageId?.trim() ?? '';
+      if (anchorMessageId.isEmpty ||
+          !visibleMessageIds.contains(anchorMessageId)) {
+        continue;
+      }
+      final List<OpenCrayChatManagedProcessSnapshot> processes =
+          run.managedProcesses.toList(growable: false)..sort((left, right) {
+            final int leftSortEpochMs = _managedProcessSortEpochMs(left);
+            final int rightSortEpochMs = _managedProcessSortEpochMs(right);
+            if (leftSortEpochMs != rightSortEpochMs) {
+              return leftSortEpochMs.compareTo(rightSortEpochMs);
+            }
+            return left.processId.compareTo(right.processId);
+          });
+      for (final process in processes) {
+        final String messageId = _projectedManagedProcessMessageId(
+          run: run,
+          process: process,
+        );
+        if (!seenMessageIds.add(messageId)) {
+          continue;
+        }
+        final String text = _projectedManagedProcessMessageText(process);
+        if (text.trim().isEmpty) {
+          continue;
+        }
+        projectedByAnchorMessageId
+            .putIfAbsent(anchorMessageId, () => <ChatMessageData>[])
+            .add(
+              ChatMessageData(
+                messageId: messageId,
+                kind: ChatMessageKind.inbound,
+                text: text,
+                createdAtEpochMs: _managedProcessSortEpochMs(process),
+                isEphemeral: true,
+              ),
+            );
+      }
     }
     if (projectedByAnchorMessageId.isEmpty) {
       return messages;
@@ -3979,7 +4773,16 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       final List<ChatMessageData>? projections =
           projectedByAnchorMessageId[message.messageId];
       if (projections != null) {
-        mergedMessages.addAll(projections);
+        mergedMessages.addAll(
+          projections.toList(growable: false)..sort((left, right) {
+            final int leftEpochMs = left.createdAtEpochMs ?? 0;
+            final int rightEpochMs = right.createdAtEpochMs ?? 0;
+            if (leftEpochMs != rightEpochMs) {
+              return leftEpochMs.compareTo(rightEpochMs);
+            }
+            return left.messageId.compareTo(right.messageId);
+          }),
+        );
       }
       mergedMessages.add(message);
     }
@@ -4022,6 +4825,33 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   bool _hideAssistantPhaseBubble(OpenCrayChatRuntimeEventSnapshot event) {
     final String stage = event.stage?.trim().toLowerCase() ?? '';
     return stage == 'llm_retry' || stage == 'responses_recovery';
+  }
+
+  String _projectedManagedProcessMessageId({
+    required OpenCrayChatRunSnapshot run,
+    required OpenCrayChatManagedProcessSnapshot process,
+  }) {
+    final String runId = run.runId.trim().isNotEmpty
+        ? run.runId.trim()
+        : run.taskId.trim();
+    return 'runtime-process-$runId-${process.processId}';
+  }
+
+  String _projectedManagedProcessMessageText(
+    OpenCrayChatManagedProcessSnapshot process,
+  ) {
+    final String command = <String>[
+      process.command,
+      ...process.args,
+    ].map((part) => part.trim()).where((part) => part.isNotEmpty).join(' ');
+    final String output =
+        (process.stdout.isNotEmpty ? process.stdout : process.stdoutPreview)
+            .trim();
+    return _joinTraceSections(<String?>[
+      'Process ${process.processId}',
+      '${_managedProcessStatusSummary(process)}: $command',
+      output.isEmpty ? null : output,
+    ]);
   }
 
   ChatRunTraceData _mapRunTrace({
@@ -4330,8 +5160,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     List<OpenCrayChatRuntimeEventSnapshot> durableSubAgentEvents =
         const <OpenCrayChatRuntimeEventSnapshot>[],
   }) {
-    final history = <ChatRunTraceHistoryEntry>[];
+    final timedHistory = <_TimedChatRunTraceHistoryEntry>[];
     final consumedIndexes = <int>{};
+    int nextSourceOrder = 0;
     for (int index = 0; index < runEvents.length; index += 1) {
       if (consumedIndexes.contains(index)) {
         continue;
@@ -4343,19 +5174,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         consumedIndexes: consumedIndexes,
       );
       if (mapped != null) {
-        history.add(mapped);
+        timedHistory.add(
+          _TimedChatRunTraceHistoryEntry(
+            sortEpochMs: runEvents[index].emittedAtEpochMs,
+            sourceOrder: nextSourceOrder++,
+            entry: mapped,
+          ),
+        );
       }
-    }
-    final List<ChatRunTraceHistoryEntry> contextHistory =
-        _buildRunContextHistory(run);
-    if (contextHistory.isNotEmpty) {
-      final int insertionIndex =
-          history.isNotEmpty &&
-              history.first.label == widget.copy.chatRunWorkingLabel &&
-              history.first.body == widget.copy.chatRunThinkingActive
-          ? 1
-          : 0;
-      history.insertAll(insertionIndex, contextHistory);
     }
     final Set<String> appendedSubAgentStates = runEvents
         .where((event) => event.kind == 'subagent')
@@ -4366,24 +5192,61 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       if (!appendedSubAgentStates.add(signature)) {
         continue;
       }
-      history.add(
-        _subagentHistoryEntry(
-          event: event,
-          label: _subagentTraceLabel(event),
-          body: _buildSubagentHistoryBody(event),
-          isHighRisk: event.isHighRisk,
+      timedHistory.add(
+        _TimedChatRunTraceHistoryEntry(
+          sortEpochMs: event.emittedAtEpochMs,
+          sourceOrder: nextSourceOrder++,
+          entry: _subagentHistoryEntry(
+            event: event,
+            label: _subagentTraceLabel(event),
+            body: _buildSubagentHistoryBody(event),
+            isHighRisk: event.isHighRisk,
+          ),
         ),
       );
     }
-    final List<ChatRunTraceHistoryEntry> processHistory =
-        _buildRunManagedProcessHistory(run);
-    if (processHistory.isNotEmpty) {
-      history.addAll(processHistory);
+    for (final process in _orderedManagedProcesses(run)) {
+      timedHistory.add(
+        _TimedChatRunTraceHistoryEntry(
+          sortEpochMs: _managedProcessSortEpochMs(process),
+          sourceOrder: nextSourceOrder++,
+          entry: _managedProcessHistoryEntry(process),
+        ),
+      );
     }
-    final List<ChatRunTraceHistoryEntry> finalAttachmentHistory =
-        _buildRunFinalAttachmentHistory(run);
-    if (finalAttachmentHistory.isNotEmpty) {
-      history.addAll(finalAttachmentHistory);
+    final ChatRunTraceHistoryEntry? finalAttachmentHistory =
+        _buildRunFinalAttachmentHistoryEntry(run);
+    if (finalAttachmentHistory != null) {
+      timedHistory.add(
+        _TimedChatRunTraceHistoryEntry(
+          sortEpochMs: run.updatedAtEpochMs,
+          sourceOrder: nextSourceOrder++,
+          entry: finalAttachmentHistory,
+        ),
+      );
+    }
+    timedHistory.sort((
+      _TimedChatRunTraceHistoryEntry left,
+      _TimedChatRunTraceHistoryEntry right,
+    ) {
+      if (left.sortEpochMs != right.sortEpochMs) {
+        return left.sortEpochMs.compareTo(right.sortEpochMs);
+      }
+      return left.sourceOrder.compareTo(right.sourceOrder);
+    });
+    final history = timedHistory
+        .map((_TimedChatRunTraceHistoryEntry timedEntry) => timedEntry.entry)
+        .toList(growable: true);
+    final List<ChatRunTraceHistoryEntry> contextHistory =
+        _buildRunContextHistory(run);
+    if (contextHistory.isNotEmpty) {
+      final int insertionIndex =
+          history.isNotEmpty &&
+              history.first.label == widget.copy.chatRunWorkingLabel &&
+              history.first.body == widget.copy.chatRunThinkingActive
+          ? 1
+          : 0;
+      history.insertAll(insertionIndex, contextHistory);
     }
     final bool hasApprovalWaitEvent = runEvents.any(
       (event) => event.kind == 'approval_wait',
@@ -4476,28 +5339,32 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     );
   }
 
-  List<ChatRunTraceHistoryEntry> _buildRunManagedProcessHistory(
+  List<OpenCrayChatManagedProcessSnapshot> _orderedManagedProcesses(
     OpenCrayChatRunSnapshot run,
-  ) {
-    if (run.managedProcesses.isEmpty) {
-      return const <ChatRunTraceHistoryEntry>[];
-    }
-    final List<OpenCrayChatManagedProcessSnapshot> orderedProcesses =
-        run.managedProcesses.toList(growable: false)..sort(
-          (left, right) => left.updatedAtEpochMs != right.updatedAtEpochMs
-              ? left.updatedAtEpochMs.compareTo(right.updatedAtEpochMs)
-              : left.processId.compareTo(right.processId),
-        );
-    return orderedProcesses
-        .map(_managedProcessHistoryEntry)
-        .toList(growable: false);
+  ) => run.managedProcesses.toList(growable: false)
+    ..sort((left, right) {
+      final int leftSortEpochMs = _managedProcessSortEpochMs(left);
+      final int rightSortEpochMs = _managedProcessSortEpochMs(right);
+      if (leftSortEpochMs != rightSortEpochMs) {
+        return leftSortEpochMs.compareTo(rightSortEpochMs);
+      }
+      if (left.updatedAtEpochMs != right.updatedAtEpochMs) {
+        return left.updatedAtEpochMs.compareTo(right.updatedAtEpochMs);
+      }
+      return left.processId.compareTo(right.processId);
+    });
+
+  int _managedProcessSortEpochMs(OpenCrayChatManagedProcessSnapshot process) {
+    return process.startedAtEpochMs > 0
+        ? process.startedAtEpochMs
+        : process.updatedAtEpochMs;
   }
 
-  List<ChatRunTraceHistoryEntry> _buildRunFinalAttachmentHistory(
+  ChatRunTraceHistoryEntry? _buildRunFinalAttachmentHistoryEntry(
     OpenCrayChatRunSnapshot run,
   ) {
     if (run.finalAttachments.isEmpty) {
-      return const <ChatRunTraceHistoryEntry>[];
+      return null;
     }
     final String label = widget.copy.isChinese ? '最终附件' : 'Final attachments';
     final String compactBody = run.finalAttachments
@@ -4508,17 +5375,15 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         .map(_finalAttachmentInspectorSection)
         .where((section) => section.trim().isNotEmpty)
         .join('\n\n');
-    return <ChatRunTraceHistoryEntry>[
-      _mainHistoryEntry(
-        label: label,
-        body: compactBody.isNotEmpty ? compactBody : label,
-        compactBody: compactBody.isNotEmpty ? compactBody : null,
-        inspectorCallParts: <ChatRunTraceInspectorTextPart>[
-          _inspectorAction(label),
-        ],
-        inspectorResultBody: inspectorResultBody,
-      ),
-    ];
+    return _mainHistoryEntry(
+      label: label,
+      body: compactBody.isNotEmpty ? compactBody : label,
+      compactBody: compactBody.isNotEmpty ? compactBody : null,
+      inspectorCallParts: <ChatRunTraceInspectorTextPart>[
+        _inspectorAction(label),
+      ],
+      inspectorResultBody: inspectorResultBody,
+    );
   }
 
   String _finalAttachmentTitle(OpenCrayChatAttachmentSnapshot attachment) {
@@ -5768,6 +6633,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         return null;
       }
       if (candidate.kind != 'tool_result') {
+        if (!_isSkippableToolGroupingInterveningEvent(candidate)) {
+          return null;
+        }
         continue;
       }
       final String? candidateToolName = _canonicalToolName(candidate.toolName);
@@ -5779,6 +6647,16 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       }
     }
     return null;
+  }
+
+  bool _isSkippableToolGroupingInterveningEvent(
+    OpenCrayChatRuntimeEventSnapshot event,
+  ) {
+    if (event.kind == 'lifecycle') {
+      final String phase = event.phase?.trim().toLowerCase() ?? '';
+      return phase.isNotEmpty;
+    }
+    return event.kind == 'subagent';
   }
 
   ChatRunTraceHistoryEntry _buildGroupedToolHistoryEntry({
@@ -8452,6 +9330,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       events: resolved?.events ?? const <OpenCrayChatRuntimeEventSnapshot>[],
       liveAssistantDrafts: sortedDrafts,
       hostLifecycle: resolved?.hostLifecycle,
+      updatedAtEpochMs: resolved?.updatedAtEpochMs ?? 0,
     );
   }
 }

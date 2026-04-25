@@ -2,8 +2,9 @@ import json
 import os
 import pathlib
 import subprocess
-import sys
 import time
+
+from python_tests.subprocess_helpers import popen_repo_module, run_repo_module
 
 
 SCRIPT_MODULE = "python_runner.p4a_service_main"
@@ -47,20 +48,16 @@ def _run_bridge(
     env: dict[str, str] | None = None,
 ) -> dict[str, object]:
     runtime_root = request_path.parent.parent
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            SCRIPT_MODULE,
-            "--runtime-root",
-            str(runtime_root),
-            "--once",
-        ],
+    completed = run_repo_module(
+        SCRIPT_MODULE,
+        "--runtime-root",
+        str(runtime_root),
+        "--once",
         capture_output=True,
         text=True,
         check=False,
         timeout=60,
-        env={**os.environ, **(env or {})},
+        env=env,
     )
     assert completed.returncode == 0, completed.stderr
     return json.loads(result_path.read_text(encoding="utf-8"))
@@ -138,9 +135,11 @@ def test_android_p4a_bridge_executes_workspace_script(workspace: pathlib.Path) -
     assert not request_path.exists()
 
 
-def test_android_p4a_bridge_denies_script_outside_workspace(workspace: pathlib.Path, tmp_path: pathlib.Path) -> None:
+def test_android_p4a_bridge_denies_script_outside_workspace(workspace: pathlib.Path) -> None:
     request_path, result_path, log_path = _bridge_paths(workspace, "request-outside")
-    outside_script = tmp_path / "outside.py"
+    outside_root = workspace.parent / "outside"
+    outside_root.mkdir(exist_ok=True)
+    outside_script = outside_root / "outside.py"
     outside_script.write_text("print('outside')\n", encoding="utf-8")
     _write_request(
         request_path,
@@ -214,15 +213,11 @@ def test_android_p4a_bridge_cancels_when_cancel_marker_is_created(workspace: pat
         timeout_ms=5000,
     )
 
-    completed = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            SCRIPT_MODULE,
-            "--runtime-root",
-            str(request_path.parent.parent),
-            "--once",
-        ],
+    completed = popen_repo_module(
+        SCRIPT_MODULE,
+        "--runtime-root",
+        str(request_path.parent.parent),
+        "--once",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -436,19 +431,14 @@ def test_android_p4a_service_reads_fallback_start_argument_when_env_argument_mis
     android_argument_path = files_root / "app"
     android_argument_path.mkdir(parents=True, exist_ok=True)
 
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            SCRIPT_MODULE,
-            "--once",
-        ],
+    completed = run_repo_module(
+        SCRIPT_MODULE,
+        "--once",
         capture_output=True,
         text=True,
         check=False,
         timeout=60,
         env={
-            **os.environ,
             "PYTHON_SERVICE_ARGUMENT": "",
             "OPENCRAY_P4A_RUNTIME_ROOT": "",
             "ANDROID_ARGUMENT": str(android_argument_path),

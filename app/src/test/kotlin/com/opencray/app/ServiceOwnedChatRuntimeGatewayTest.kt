@@ -379,6 +379,45 @@ class ServiceOwnedChatRuntimeGatewayTest {
   }
 
   @Test
+  fun serviceOwnedChatRuntimeGatewayAdvancesChatSnapshotUpdatedAtWhenWarmupDecorationChanges() {
+    val warmupAccess = object : OnDeviceLlmWarmupAccess {
+      var state: OnDeviceLlmWarmupState = OnDeviceLlmWarmupState()
+
+      override fun ensureWarmForSession(sessionId: String): OnDeviceLlmWarmupState = state
+
+      override fun ensureWarmForActiveSession(): OnDeviceLlmWarmupState = state
+
+      override fun clear(): OnDeviceLlmWarmupState {
+        state = OnDeviceLlmWarmupState()
+        return state
+      }
+    }
+    val readGateway = RecordingChatGateway("projection").apply {
+      chatPayload = mapOf(
+        "source" to "projection-chat",
+        "updatedAtEpochMs" to 1_000L,
+        "composerPlaceholder" to "Message OpenCray",
+        "isInputEnabled" to true,
+      )
+    }
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = readGateway,
+      onDeviceWarmupAccess = warmupAccess,
+      onDevicePreparingPlaceholder = "Preparing on-device model",
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+
+    val initialPayload = gateway.loadChatSnapshot()
+    warmupAccess.state = OnDeviceLlmWarmupState(phase = OnDeviceLlmWarmupPhase.WARMING)
+    val warmingPayload = gateway.loadChatSnapshot()
+
+    assertEquals(true, initialPayload["isInputEnabled"])
+    assertEquals(false, warmingPayload["isInputEnabled"])
+    assertEquals("Preparing on-device model", warmingPayload["composerPlaceholder"])
+    assertTrue((warmingPayload["updatedAtEpochMs"] as Number).toLong() > 1_000L)
+  }
+
+  @Test
   fun serviceOwnedChatRuntimeGatewaySkipsSubmitWhileOnDeviceWarmupIsRunning() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("service-owned-chat-warmup-block-store"))
     val sessionId = chatStore.loadState().activeSession.sessionId
@@ -461,6 +500,7 @@ class ServiceOwnedChatRuntimeGatewayTest {
       chatRuntimePayload = mapOf(
         "source" to "projection-runtime",
         "sessionId" to "session-stream",
+        "updatedAtEpochMs" to 1_000L,
         "liveAssistantDrafts" to emptyList<Map<String, Any?>>(),
       )
     }
@@ -500,8 +540,10 @@ class ServiceOwnedChatRuntimeGatewayTest {
         emittedAtEpochMs = 1_234L,
       )
       val runtimePayload = gateway.loadChatRuntimeSnapshot()
+      val runtimeUpdatedAtEpochMs = (runtimePayload["updatedAtEpochMs"] as Number).toLong()
       assertEquals("projection-runtime", runtimePayload["source"])
       assertEquals(1, (runtimePayload["liveAssistantDrafts"] as List<*>).size)
+      assertTrue(runtimeUpdatedAtEpochMs > 1_000L)
 
       runtimeHostAccess.emitAssistantDraftCleared(
         sessionId = "session-stream",
@@ -509,7 +551,9 @@ class ServiceOwnedChatRuntimeGatewayTest {
         emittedAtEpochMs = 1_235L,
       )
       val clearedPayload = gateway.loadChatRuntimeSnapshot()
+      val clearedUpdatedAtEpochMs = (clearedPayload["updatedAtEpochMs"] as Number).toLong()
       assertEquals(0, (clearedPayload["liveAssistantDrafts"] as List<*>).size)
+      assertTrue(clearedUpdatedAtEpochMs > runtimeUpdatedAtEpochMs)
       assertEquals(listOf(0, 1, 0), observedDraftCounts)
     } finally {
       disposer()
